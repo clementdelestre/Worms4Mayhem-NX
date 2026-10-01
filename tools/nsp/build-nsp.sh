@@ -40,7 +40,10 @@ npdmtool "$NSP_SRC_DIR/worms4nx.json" "$OUT/exefs/main.npdm"
 nacptool --create "Worms4NX" "cdelestre" "0.1.0" "$OUT/control/control.nacp" --titleid="$TITLE_ID"
 # assets/ui/icon.jpg is built from the user's own W4M install (never committed); fall back to the bundled icon
 ICON=client/assets/ui/icon.jpg; [ -f "$ICON" ] || ICON=client/icon.jpg
-cp "$ICON" "$OUT/control/icon_AmericanEnglish.dat"
+# HOME picks the icon matching the console language, so ship it for every NACP language
+for L in AmericanEnglish BritishEnglish Japanese French German LatinAmericanSpanish Spanish Italian Dutch CanadianFrench Portuguese Russian Korean TraditionalChinese SimplifiedChinese BrazilianPortuguese; do
+    cp "$ICON" "$OUT/control/icon_$L.dat"
+done
 
 echo "== 3/4 hacBrewPack (build from source, cached in tools/nsp/out) =="
 HBP_BIN="$OUT/hacbrewpack-bin/hacbrewpack"
