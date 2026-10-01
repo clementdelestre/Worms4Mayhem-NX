@@ -26,6 +26,11 @@ Server: `cd server && cargo run --release -- 0.0.0.0:7777` (or `docker build -t 
 Copy `worms4nx.nro` to `sdmc:/switch/worms4nx/`. Online: put `<server-ip> 7777 <name>` in `sdmc:/switch/worms4nx/server.txt` (desktop: `client/server.txt`).
 Ryubing: open the `.nro`, enable *Guest Internet Access* for online play.
 
+### Installable NSP
+`./tools/nsp/build-nsp.sh` packs an application NSP (HOME menu entry, own icon,
+full app memory) instead of the `.nro` — see `docs/nsp.md` for prerequisites
+(Atmosphère + sigpatches), install (DBI/Goldleaf) and limits.
+
 ## Controls
 | | Controller | Keyboard |
 |---|---|---|

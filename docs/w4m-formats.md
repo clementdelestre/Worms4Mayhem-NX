@@ -1,6 +1,6 @@
-# Worms 4 Mayhem landscape formats (reverse-engineered)
+# Worms 4 Mayhem data formats (reverse-engineered)
 
-Sources: AlexBond2/Worms3DTools (XomView `XomLib.pas`/`XomCntrLib.pas`), w4tweaks wiki (poxel/height-map pages), plus byte inspection of the Steam *Worms Ultimate Mayhem* data. Implemented in `tools/w4m-maps` (Rust). All game data stays local; nothing extracted is committed.
+Sources: AlexBond2/Worms3DTools (XomView `XomLib.pas`/`XomCntrLib.pas`), w4tweaks wiki (poxel/height-map pages), plus byte inspection of the Steam *Worms Ultimate Mayhem* data. Implemented in `tools/w4m-maps` and `tools/w4m-models` (Rust). All game data stays local; nothing extracted is committed.
 
 ## XOM container (`.xan`, `.xom`)
 
@@ -42,11 +42,45 @@ Scale k = fit into 78 x 60 m (max 1). Each solid poxel voxel becomes a hexahedro
 
 `Data/Themes/Theme<X>/Theme<X>.txt`: 64 materials × 7 lines: top texture, side texture, ?, bump/second texture (`NULL`), surface sound (`Rock01`, `grass01blend`…), ?, blank. Textures (`C01`…) are `XImage`s in `Data/Bundles/Bundl13..21.xom` (one bundle per theme; Worms 3D banks in `Bundl15x`): name (path string `ThemeCamelot\C01.tga`), w, h (u16), mips (u8+pad), flags (u16), strides (count + u32s), mip offsets (count + u32s), format (u32: 0 = R8G8B8, 1/2 = 8888, 9/10/11 = DXT), varint size, pixels top mip first. The importer writes the top mip of format 0/1/2 images (1660 textures) as `maps/tex/<stem>.qoi` (only those used by an imported map) and keeps their average as the fallback palette colour.
 
-`Data/Themes/* Detail List.txt` names the theme's detail objects (lamps, statues, plants); `DetailEntityStore` = name + library + transform (not imported).
+`Data/Themes/* Detail List.txt` names the theme's detail objects (lamps, statues, plants). `DetailEntityStore` (in the `.xan`, referenced from a poxel's detail list): name (`visible_grass`, `visible_flower`), library (`HORROR1`), then 4 vec3 that look like position, rotation, voxel cell and size in the poxel's local grid, 8 + 12 + 1 bytes. Mostly grass and flower sprites. Not imported yet.
+
+## Meshes, skeletons and animations (`Data/Bundles/*.xom`)
+
+Implemented in `tools/w4m-models` (glTF binary output). Splitting on `CTNR` does not work for bundles: some containers have no tag, and a few tagged ones are followed by untagged ones. Every container is read in type order; types sized by their content (XomView `ReadXContainer`, see `exact()`) are parsed to their end, the others run to the next `CTNR`. Data after the tag starts with 3 header bytes, except descriptors, `XGraphSet` and anim data (no tag, no header).
+
+| type | layout after the header (varint = 7-bit, ref = 1-based container index, set = varint count + refs) |
+|---|---|
+| `XMeshDescriptor` | name (`W4.Worm`, `Bazooka.Payload`, `Crate.Health`, ...), 2 bytes, ref → `XGraphSet` |
+| `XGraphSet` | count × (16-byte GUID, ref, name): scene roots, `XAnimClipLibrary`, collision data |
+| `XInteriorNode` | set children, bounds (16), bound mode (u32), name |
+| `XGroup` | ref transform (`XJointTransform`, `XTransform`, `XMatrix`, or `XChildSelector` = texture-animation switch: children are alternatives), set children, bounds, mode, name |
+| `XBinModifier` | 2 bytes, ref matrix, set children (eye colour overlays) |
+| `XSkin` | ref skeleton root group, set `XSkinShape` |
+| `XSkinShape` | set `XBone` (the shape's bone palette), u32 flags, ref shader, ref geometry, u32 sort key, 3 refs, data name |
+| `XShape` | u32, ref shader, ref geometry, 7 bytes, data name (rigid, transformed by its parent groups) |
+| `XBone` | pose matrix (4x4 f32, column-major: inverse bind), transform matrix, affine string, set, data name. Appears as a child of the group it follows |
+| `XJointTransform` | 5 × vec3: rotate axis, joint orient, translate, rotation, scale, then u32 and the 4x3 rest matrix. Local = T · R(joint orient) · R(rotation) · R(rotate axis) · S, each R = Rz·Ry·Rx |
+| `XTransform` | translate, rotate (euler), scale, rotate order, 4x3 matrix. Local = T · Rz·Ry·Rx · S |
+| `XIndexedTriangleSet` | ref `XIndexSet` (u16 triangle list), u32 flags, u32 primitive count, refs coords, normals, colours, texcoords, weights, bbox |
+| `XCoord3fSet` / `XNormal3fSet` / `XTexCoord2fSet` | varint n, n × 3 (2) f32 |
+| `XPaletteWeightSet` | varint k, k bytes of palette indices, u16 per-vertex influences (2-3), varint k, k × f32 weights |
+| `XSimpleShader` | set texture stages (→ `XOglTextureMap`: blend u32, colour 16, ref `XImage`, ...), set render states, u32, name |
+
+Skinning is `v' = Σ w · World(bone's group) · Pose(bone) · v`; the bind pose differs from the stored joint transforms. Models are y-up and face +z; the worm is ~25 units tall in its Base pose.
+
+`XAnimClipLibrary`: name, u32 key-type count, key types (u32 type, object name = group path like `main|head`), u32 clip count, then per clip: f32 duration, name, u16 0x100/0x101 (one channel per key type) or u32 channel count with a u16 key-type index per channel; each channel: 4 flags, 8 bytes pre/post infinity, u32 key count, keys of 6 f32 (in-weight, in-angle, out-weight, out-angle, time, value), Bezier-interpolated. Types: `0x102` translate, `0x103` rotate (joint `rotation` / transform euler), `0x104`/`0x904` scale, `0x401` texture offset, `0x1100` texture switch; the top byte is the axis. Clips are layered on `Base` (XomView "base clip"; assumed for all clips, the poses look right): a value is added to Base's first key when Base has the channel (scale: averaged), channels a clip lacks come from Base. `Aim*` clips map the aim pitch to their 2 s timeline and only move the body; `Hold*` clips add the hands (hands are scaled to 0 otherwise).
+
+Locations: the worm (`W4.Worm`, 34 bones, 329 clips) is in `Bundl474`; weapons, projectiles, crates, mines, oil drum, sheep (14 bones, own clips) in `Bundl09`. `Bundl315`-`352` hold customisation (hats, gloves) on the same 34-bone skeleton.
+
+`XImage` formats: 0 = RGB8, 1/2 = RGBA8 (bytes used as R, G, B, A), 9/10/11 = DXT (not needed by the exported models).
+
+### Conversion (`tools/w4m-models`)
+
+Each model is normalised (feet or centre at the origin, size from a table) and written as `client/assets/models/<name>.glb` with stored-deflate PNG textures. Static models get their rest pose baked into the vertices. Skinned ones (worm, sheep) get one flat joint node per bone with an identity inverse bind matrix, and every clip is sampled at 30 fps into that joint's full skinning matrix (TRS). raylib then rebuilds `inverse(bind) * pose` without a node hierarchy or shear. raylib-nx skins on the CPU (`SUPPORT_GPU_SKINNING 0`): `Models::draw` poses the shared mesh right before each draw and skips it when the pose has not changed.
 
 ## Unknown / not imported
 
-- Detail objects (trees as meshes, statues, barrels), mines/barrels/crates from mission data, worm start positions (mission `WormDataContainer` positions are all zero: scripts place them).
+- Map detail objects (placement relative to the poxel still to be confirmed, meshes in the theme bundles). Mines/barrels/crates from mission data are not placed either (their models are exported), worm start positions (mission `WormDataContainer` positions are all zero: scripts place them).
 - Exact heightmap extent/height scale and water level; possible x mirroring (not verifiable without the game running).
 - Voxel bits 8+, the `?` theme lines, texture offsets and directions: we texture triplanar in world space; only the vector lengths are used (median repeat per material).
 - Frontend names: `Data/Tweak/SCRIPTS.XOM` `WXFE_LevelDetails` map `Level_FileName` to `FETXT.*` text ids (theme there is always "preselected").

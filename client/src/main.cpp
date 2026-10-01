@@ -2,6 +2,7 @@
 #include "raymath.h"
 #include "rlgl.h"
 #include "audio.h"
+#include "models.h"
 #include "net.h"
 #include "sim.h"
 #include <algorithm>
@@ -90,6 +91,37 @@ static void onEvent(const Game &g, const GameEvent &e, std::vector<Fx> &fx) {
     }
 }
 
+// W4M worm: team-tinted, animation picked from the sim state (aim clips map pitch to their timeline).
+static bool drawWorm(const Game &g, const Worm &w, float clock) {
+    int i = int(&w - g.worms.data());
+    const WeaponDef &wd = WEAPONS[g.weapon];
+    float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
+    const char *clip = "Base";
+    bool loop = true;
+    if (!w.grounded && fabsf(w.vel.y) > 1) clip = w.vel.y > 0 ? "Jump" : "Fall";  // ignore slope-contact flicker
+    else if (speed > 0.3f) clip = "Walk";
+    else if (i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && (wd.kind == Kind::Shell || wd.kind == Kind::Shotgun)) {
+        clip = wd.kind == Kind::Shotgun ? "AimShotgun" : wd.fuse > 0 ? "AimGrenade" : "AimBazooka";
+        t = (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", clip);  // sim pitch range [-1.2, 1.45]
+        loop = false;
+    }
+    Color tint = ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f);
+    return Models::draw("worm", {w.pos.x, w.pos.y - Game::R, w.pos.z}, w.yaw, 0, tint, clip, t, loop);
+}
+
+// Shells point along their velocity; fused throwables (grenades) tumble instead.
+static bool drawShot(const Projectile &s, float clock) {
+    const WeaponDef &d = WEAPONS[s.weapon];
+    const std::string &n = d.name;
+    const char *m = d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
+                  : n == "Cluster Grenade" ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? (s.child ? "bananette" : "banana")
+                  : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
+    float h = sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z), yaw = atan2f(s.vel.x, s.vel.z);
+    if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, s.pos, yaw, 0, WHITE, "Run", clock);
+    if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, s.pos, clock * 6, clock * 4);
+    return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h));
+}
+
 enum class Screen { Menu, Lobby, Play };
 
 int main(int argc, char **argv) {
@@ -98,6 +130,7 @@ int main(int argc, char **argv) {
     rlSetClipPlanes(0.5, 500);  // default 0.01 near plane z-fights the water on GLES depth buffers
     Audio::init();
     Audio::music(true);
+    Models::load();
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
     bool shot = argc > 1 || FileExists(DATA_DIR "shot");
@@ -332,10 +365,12 @@ int main(int argc, char **argv) {
         game.terrain.draw();
         for (const Worm &w : game.worms) {
             if (!w.alive) continue;
-            Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
-            DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
-            for (float s : {-0.13f, 0.13f})
-                DrawSphere(Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 0.3f), Vector3Add(Vector3Scale(side, s), {0, 0.4f, 0}))), 0.1f, WHITE);
+            if (!drawWorm(game, w, clock)) {
+                Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
+                DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
+                for (float s : {-0.13f, 0.13f})
+                    DrawSphere(Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 0.3f), Vector3Add(Vector3Scale(side, s), {0, 0.4f, 0}))), 0.1f, WHITE);
+            }
             if ((game.cfg.rules & RULE_KING) && int(&w - game.worms.data()) % game.perTeam == 0)
                 DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
         }
@@ -356,6 +391,7 @@ int main(int argc, char **argv) {
         }
         for (const Projectile &s : game.shots) {
             const WeaponDef &d = WEAPONS[s.weapon];
+            if (drawShot(s, clock)) continue;
             Vector3 f = Vector3Normalize({s.vel.x, 0, s.vel.z});
             switch (d.kind) {
             case Kind::Sheep:
@@ -427,6 +463,7 @@ int main(int argc, char **argv) {
     }
     net.close();
     game.terrain.unload();
+    Models::unload();
     Audio::shutdown();
     CloseWindow();
 }
