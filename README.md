@@ -51,6 +51,8 @@ Menus: D-pad or left stick (held = auto-repeat), A confirm, B back (Esc), + star
 system controller screen (pair / split Joy-Cons), + on the title screen quits. Every screen shows its buttons in a bottom bar;
 the full list is under Options > Controls and in the pause menu.
 Local play: team N uses controller N when connected, otherwise controller 1 is shared. Single Joy-Cons work held sideways.
+Starting a local match with 2+ human teams (or fewer pads than human teams) opens the system controller screen first, sized
+to that many players; cancelling it just falls back to sharing controller 1.
 
 ## Modding
 - Weapons: `client/romfs/weapons.json`.

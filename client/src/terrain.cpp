@@ -178,7 +178,7 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
 }
 
 bool Terrain::load(const std::string &map, unsigned seed) {
-    spawns.clear(), objects.clear(), objModels.clear();
+    spawns.clear(), objects.clear(), objModels.clear(), markers.clear();
     hasFinish = false;
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -247,6 +247,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         spawns.push_back(raycast({p, {0, -1, 0}}, p.y, &hit) ? Vector3{hit.x, hit.y + 0.8f, hit.z} : p);
     }
     if (j["finish"].type == Json::Arr) hasFinish = true, finish = vec(j["finish"], {cx, 8, cz});
+    for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz})});
     const Json &ob = j["objects"];
     for (size_t i = 0; i < ob.size(); i++) {
         const Json &o = ob[i], &b = o["basis"];
@@ -339,8 +340,10 @@ void Terrain::carve(Vector3 c, float radius) {
     for (int z = lo[2]; z <= hi[2]; z++)
         for (int y = lo[1]; y <= hi[1]; y++)
             for (int x = lo[0]; x <= hi[0]; x++) {
-                signed char &v = d[idx(x, y, z)];
-                v = std::min(v, qd(Vector3Distance({x * VOX, y * VOX, z * VOX}, c) - radius));
+                size_t i = idx(x, y, z);
+                signed char nv = std::min(d[i], qd(Vector3Distance({x * VOX, y * VOX, z * VOX}, c) - radius));
+                if (undo && nv != d[i]) undo->emplace_back((int)i, d[i]);
+                d[i] = nv;
             }
     // decor goes with the blast, or with the ground it stood on (sampled 0.3 m below its base, along its up axis)
     objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const Object &o) {

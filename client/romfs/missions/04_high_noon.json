@@ -1,0 +1,20 @@
+{
+  "name": "High Noon",
+  "kind": "mission",
+  "order": 4,
+  "map": "wildwest",
+  "brief": "Big Bad Bart runs Dead Man's Gulch from the top of the eastern mesa. His gang will cover him, but only Bart has to go. Watch out: he has a lot of energy.",
+  "success": "Bart is gone and the gulch is free. Drinks are on the sheriff!",
+  "failure": "Bart's gang ran you out of town.",
+  "turn_time": 45,
+  "barrels": 3,
+  "crate_chance": 30,
+  "teams": [
+    {"name": "Sheriff's Posse", "cpu": 0,
+     "worms": [{"name": "Sheriff Boggy", "pos": [22, 30, 24]}, {"name": "Deputy Spadge", "pos": [14, 30, 40]}, {"name": "Deputy Nobby", "pos": [20, 30, 30]}]},
+    {"name": "Bart's Gang", "cpu": 2,
+     "worms": [{"name": "Big Bad Bart", "hp": 200, "pos": [56, 30, 58]}, {"name": "Lefty", "hp": 70, "pos": [68, 30, 46]}, {"name": "Rusty", "hp": 70, "pos": [52, 30, 52]}]}
+  ],
+  "objectives": [{"type": "kill", "team": 1, "worm": 0}],
+  "fail": [{"type": "worm_dies", "team": 0, "worm": 0}]
+}

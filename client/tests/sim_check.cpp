@@ -33,10 +33,11 @@ static uint32_t run(std::vector<bool> &used) {
 }
 
 // Generic scripted run (turn, aim, fire, walk, jump, weapon-cycle) used to compare two runs of the same rule combo.
-static uint32_t runRules(uint32_t rules, uint32_t seed, const Scheme &scheme = Scheme{}) {
+static uint32_t runRules(uint32_t rules, uint32_t seed, const Scheme &scheme = Scheme{}, uint32_t wormpot = 0) {
     Game g;
     GameConfig c{seed, 2, 2, "", rules};
     c.scheme = scheme;
+    c.wormpot = wormpot;
     g.start(c);
     for (int t = 0; t < 60 * 200 && g.phase != Phase::GameOver; t++) {
         int tick = t % 300;
@@ -174,9 +175,9 @@ static int weaponNamed(const char *n) {
 }
 
 // One scripted turn per weapon (charge, release, steer, detonate): its Fire event must show up.
-static uint32_t fireEach(int wi, bool &fired) {
+static uint32_t fireEach(int wi, bool &fired, const GameConfig *cfg = nullptr) {
     Game g;
-    g.start({99u + wi, 2, 2, "", 0});
+    g.start(cfg ? *cfg : GameConfig{99u + wi, 2, 2, "", 0});
     g.ammo[g.worms[g.current].team][wi] = 1;
     g.weapon = wi;
     fired = false;
@@ -323,6 +324,88 @@ static void checkScheme() {
     assert(w.hp == 150 || !w.alive);
 }
 
+static int hitHp(uint32_t wormpot) {  // victim hp after a cluster bomblet lands on it
+    Game g;
+    GameConfig c{6, 2, 1, "", 0};
+    c.wormpot = wormpot;
+    g.start(c);
+    int victim = 1 - g.current;
+    g.shots = {{g.worms[victim].pos, {0, 0, 0}, clusterWeapon(), 0, true, 1}};
+    g.step(Input{});
+    return g.worms[victim].hp;
+}
+
+static float walked(uint32_t wormpot) {
+    Game g;
+    GameConfig c{31, 2, 1, "", 0};
+    c.wormpot = wormpot;
+    g.start(c);
+    settle(g);
+    Vector3 p = g.worms[g.current].pos;
+    Input in;
+    in.walk = 127;
+    for (int t = 0; t < 30; t++) g.step(in);
+    return Vector3Distance(p, g.worms[g.current].pos);
+}
+
+static void checkWormpot() {
+    int normal = hitHp(0);
+    assert(normal < 100 && 100 - hitHp(WP_DOUBLE_DAMAGE) >= 2 * (100 - normal) - 1);
+    assert(hitHp(WP_WORMS_DROWN) == 100);
+    assert(walked(WP_QUICK_WALK) > walked(0) * 1.5f);
+
+    GameConfig c{41, 2, 3, "", 0};
+    c.wormpot = WP_GOLIATH | WP_CRATE_DROPS | WP_VITAL_WORM | WP_LOW_GRAVITY;
+    Game g;
+    g.start(c);
+    assert(g.worms[0].hp == 200 && g.worms[1].hp == 50 && (g.cfg.rules & RULE_KING) && (g.cfg.rules & RULE_LOW_GRAVITY));
+    for (size_t i = 0; i < WEAPONS.size(); i++)
+        if (WEAPONS[i].kind != Kind::SkipGo && WEAPONS[i].kind != Kind::Surrender) assert(g.ammo[0][i] == 0);
+    c.wormpot = WP_ONE_SHOT;
+    g.start(c);
+    for (const Worm &w : g.worms) assert(w.hp == 1);
+
+    c.wormpot = WP_NO_JUMPING;
+    g.start(c);
+    settle(g);
+    Input jump;
+    jump.buttons = Input::JUMP;
+    g.step(jump);
+    assert(!g.jumpDelay);
+    for (int b = 0; b < WORMPOT_REELS[3]; b++) assert(runRules(0, 44, Scheme{}, 1u << b) == runRules(0, 44, Scheme{}, 1u << b));
+    assert(runRules(0, 44, Scheme{}, WP_DOUBLE_DAMAGE) != runRules(0, 44, Scheme{}));  // the wormpot is part of the checksum
+}
+
+// Weapon Factory: custom weapons append to the table at start(), survive a save/load, and fire.
+static void checkCustomWeapons() {
+    size_t base = WEAPONS.size();
+    WeaponDef w = {"Test Lobber", Kind::Shell, 4, 70, 25, 2, 0.5f, 1.5f, 20, 2, 3, 1, false, 4};
+    w.model = "holy", w.icon = "Secret Weapon";
+    WeaponDef a = w;
+    a.name = "Test Strike", a.kind = Kind::Airstrike, a.clusters = 3;
+    assert(saveCustomWeapons("custom_weapons_test.json", {w, a}));
+    std::vector<WeaponDef> list;
+    assert(loadCustomWeapons("custom_weapons_test.json", list));
+    remove("custom_weapons_test.json");
+    assert(list.size() == 2 && list[0].name == w.name && list[0].fuse == w.fuse && list[0].bounce == w.bounce && list[0].model == "holy" && list[1].kind == Kind::Airstrike);
+    GameConfig c{51, 2, 2, "", 0};
+    c.custom = list;
+    Game g;
+    g.start(c);
+    assert(WEAPONS.size() == base + 2 && WEAPONS[base].name == "Test Lobber" && g.ammo[0][base] == 2);
+    uint32_t with = g.checksum();
+    for (size_t i = base; i < WEAPONS.size(); i++) {
+        bool fired, again;
+        c.seed = 99u + (int)i;
+        uint32_t x = fireEach((int)i, fired, &c), y = fireEach((int)i, again, &c);
+        assert(fired && again && x == y);
+    }
+    c.custom.clear();
+    c.seed = 51;
+    g.start(c);
+    assert(WEAPONS.size() == base && g.checksum() != with);
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<bool> used(WEAPONS.size()), again(WEAPONS.size());
@@ -355,6 +438,8 @@ int main() {
     checkSelfHurtEndsTurn();
     checkHotSeat();
     checkScheme();
+    checkWormpot();
+    checkCustomWeapons();
     for (size_t i = 0; i < WEAPONS.size(); i++) {
         bool fired, again;
         uint32_t a = fireEach((int)i, fired), b = fireEach((int)i, again);

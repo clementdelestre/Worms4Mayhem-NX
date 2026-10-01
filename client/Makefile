@@ -8,10 +8,16 @@ worms4nx: $(SRC) $(wildcard src/*.h)
 	$(CXX) $(CXXFLAGS) $(SRC) -o $@ $(LDLIBS)
 
 clean:
-	rm -f worms4nx sim_check ai_check
+	rm -f worms4nx sim_check ai_check mission_check
 
 check: tests/sim_check.cpp $(filter-out src/main.cpp,$(SRC))
 	$(CXX) $(CXXFLAGS) $^ -o sim_check $(LDLIBS) && ./sim_check
 
 ai_check: tests/ai_check.cpp $(filter-out src/main.cpp,$(SRC))
 	$(CXX) $(CXXFLAGS) $^ -o ai_check $(LDLIBS) && ./ai_check
+
+replay_check: tests/replay_check.cpp $(filter-out src/main.cpp,$(SRC))
+	$(CXX) $(CXXFLAGS) $^ -o replay_check $(LDLIBS) && ./replay_check
+
+mission_check: tests/mission_check.cpp $(filter-out src/main.cpp,$(SRC))
+	$(CXX) $(CXXFLAGS) $^ -o mission_check $(LDLIBS) && ./mission_check

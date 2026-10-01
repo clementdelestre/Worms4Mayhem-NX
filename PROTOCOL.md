@@ -25,7 +25,7 @@ C = client → server, S = server → client.
 | 0x13 | JoinRoom   | C   | `u32 roomId` |
 | 0x14 | RoomState  | S   | `u32 roomId, u32 hostId, u8 n, n × (u32 playerId, str name, u8 online)` — players in slot order |
 | 0x15 | Leave      | C   | — |
-| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × (str name, u8 cpu, u8 voice, u8 hat), u8 k, k × u8 scheme` (server relays the bytes after the owners untouched) |
+| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × (str name, u8 cpu, u8 voice, u8 hat), u8 k, k × u8 scheme, u32 wormpot, u8 c, c × Weapon` (server relays the bytes after the owners untouched) |
 | 0x21 | Inputs     | C/S | `u32 firstTick, u8 n, n × Input` |
 | 0x22 | TurnEnd    | C   | `u32 tick, u32 checksum` |
 | 0x23 | Desync     | S   | `u32 tick` |
@@ -47,6 +47,11 @@ C = client → server, S = server → client.
   round minutes, worm energy, crate %, weapon/health/utility crate shares, crate hp, mines, barrels, mine fuse,
   sudden death type, fall damage, wind, weapon set). Fields are only ever appended: a reader keeps defaults for
   bytes it does not get (missing block = default scheme) and ignores extra ones.
+- **Start wormpot / custom weapons** (optional, after the scheme block; absent = 0 / none): `wormpot` is the
+  `Wormpot` bitmask of `sim.h`. `Weapon` = `str name, u8 kind, 8 × f32 (radius, damage, speed, fuse, bounce,
+  cluster radius, cluster damage, poison), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon`
+  (f32 = IEEE-754 bits as u32). These are the host's Weapon Factory weapons: every client appends them to its
+  `weapons.json` table at start, so the table (part of the checksum) is the same everywhere.
 - **Inputs**: the match is one input stream indexed by tick (tick 0 = first `step` after
   `start`). The owner of the active team sends an `Input` for *every* tick it steps, batched
   (~3 ticks per frame). The server requires `firstTick == ticks logged so far`; otherwise it
@@ -61,3 +66,15 @@ C = client → server, S = server → client.
   Inputs frames from tick 0. The client restarts the game and fast-forwards through them; it never
   sends its own input for a tick below the Replay count (the log may arrive over several reads).
   In a lobby that has not started, a disconnect is a Leave.
+- **Teams**: one human team per console. Each client announces its team as a Chat whose text starts with
+  `\x01`: `"\x01<voice> <hat> <cpuTeams> <team name>"` (cpuTeams: CPU teams the host will add), resent on every
+  RoomState; clients hide these chats. The host's Start has one team per room player (slot order, owner = that
+  player), then its CPU teams (`cpu` > 0, owner = host); 4 teams max.
+
+## LAN
+
+No external server: the hosting console runs the same relay for one room (`client/src/lanhost.cpp`) on TCP 7777
+and its own client joins it over 127.0.0.1. Every second it sends a UDP beacon to port 7778 (255.255.255.255,
+the subnet broadcast on Switch, and 127.0.0.1): `"W4NX", u16 version, u16 tcpPort, u32 session, u8 players,
+u8 maxPlayers, u8 started, str roomName` (raw datagram, no frame header). Clients list beacons heard in the
+last 3 s (deduplicated by session), connect to the sender's address and join room 1.

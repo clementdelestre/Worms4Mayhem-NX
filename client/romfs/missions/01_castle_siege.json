@@ -1,0 +1,20 @@
+{
+  "name": "Storm the Keep",
+  "kind": "mission",
+  "order": 1,
+  "map": "camelot",
+  "brief": "The Castle Guard have locked themselves inside the keep with the last of the cake. Cross the moat, breach the walls and send every guard for an early bath.",
+  "success": "The keep is ours. Cake for everyone!",
+  "failure": "The guards held the keep. Regroup and try again.",
+  "turn_time": 45,
+  "mines": 2,
+  "crate_chance": 20,
+  "teams": [
+    {"name": "Knights of NX", "cpu": 0,
+     "worms": [{"name": "Sir Wiggles", "pos": [40, 30, 12]}, {"name": "Sir Squirm", "pos": [33, 30, 11]}, {"name": "Sir Noodle", "pos": [47, 30, 11]}]},
+    {"name": "Castle Guard", "cpu": 1,
+     "worms": [{"name": "Guard Gizmo", "hp": 60, "pos": [35, 30, 35]}, {"name": "Guard Pickles", "hp": 60, "pos": [45, 30, 36]}, {"name": "Guard Biscuit", "hp": 60, "pos": [36, 30, 46]}]}
+  ],
+  "objects": [{"type": "crate", "pos": [40, 30, 20], "weapon": "health"}],
+  "objectives": [{"type": "kill_all"}]
+}

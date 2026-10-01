@@ -3,7 +3,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+mod lua;
 mod mesh;
+mod mission;
 
 const NX: usize = 320;
 const NY: usize = 256;
@@ -528,16 +530,21 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         texs.push(format!("[{},{},{:.2},{:.2}]", f[0], f[1], r[0], r[1]));
     }
     // detail objects: "visible" entities whose library names a theme detail mesh (PREHISTORIC18...)
-    let mut objs = Vec::new();
+    let (mut objs, mut marks) = (Vec::new(), Vec::new());
     for r in &dets {
         let Some((_, d)) = xom.ctn.get(r.ctn.wrapping_sub(1)).filter(|c| c.0 == "DetailEntityStore") else { continue };
         let mut p = 3;
         let (name, lib) = (xom.s.get(vi(d, &mut p)).cloned().unwrap_or_default(), xom.s.get(vi(d, &mut p)).cloned().unwrap_or_default());
         let n = name.to_lowercase();
-        if !(n.starts_with("visible") || n.starts_with("visable")) { continue; }
         let f: Vec<f32> = (0..12).map(|i| f32le(d, p + 4 * i)).collect();
         let w = xform(&r.w, [f[0], f[1], f[2]]);
         let pos = [w[0] * k + ox, w[1] * k + WATER, w[2] * k + oz];
+        if !(n.starts_with("visible") || n.starts_with("visable")) {
+            if let Some(t) = marker_type(&lib, &n) {
+                marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
+            }
+            continue;
+        }
         if pos[1] < 0.0 || pos[0] < 0.0 || pos[2] < 0.0 || pos[0] > NX as f32 * VOX || pos[2] > NZ as f32 * VOX { continue; }
         // basis = poxel rotation * detail rotation * detail scale * k (row-major 3x3)
         let rs = local(&Poxel { rot: [f[3], f[4], f[5]], scale: [f[9], f[10], f[11]], ..Default::default() }, true);
@@ -550,14 +557,28 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let spawns = spawn_points(&grid);
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}],\n  \"objects\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","),
         spawns.iter().map(|p| format!("[{:.1},{:.1},{:.1}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
-        objs.join(",\n    ")
+        marks.join(",\n    "), objs.join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
     Ok(format!("{} cells, {faces} faces, {} objects, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
         cells.len(), objs.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
+}
+
+// Script markers (DetailEntityStore library) exported for missions; cameras, lights, emitters, sounds are skipped.
+fn marker_type(lib: &str, name: &str) -> Option<&'static str> {
+    Some(match lib.to_uppercase().as_str() {
+        "CHEESYGRINWORM" => "worm",
+        "TARGET" | "CRATE.TARGET" => "target",
+        "CRATE" | "CRATE.WEAPON" => "crate",
+        "MINE" | "LANDMINE" => "mine",
+        "OILDRUM" | "OIL DRUM" if name.starts_with("oildrum") => "oildrum",
+        "COLLISION SPHERE" => "trigger",
+        "TELEPAD" => "telepad",
+        _ => return None,
+    })
 }
 
 // Detail meshes named in `libs` (lowercase XMeshDescriptor names), written as <dir>/<name>.glb in W4M world units.
@@ -664,6 +685,7 @@ fn main() {
         }
     }
     println!("{ok}/{} maps imported, {} textures", stems.len(), tex.len());
+    mission::import(&data, &out, &out.join("../missions"));
     decor(&data.join("Bundles"), &out.join("../models/decor"), &libs);
 }
 

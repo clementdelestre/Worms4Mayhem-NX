@@ -4,8 +4,11 @@
 #include "ai.h"
 #include "audio.h"
 #include "fx.h"
+#include "lanhost.h"
+#include "mission.h"
 #include "models.h"
 #include "net.h"
+#include "replay.h"
 #include "sim.h"
 #include "ui.h"
 #include <algorithm>
@@ -183,6 +186,7 @@ static bool drawShot(const Projectile &s, float clock) {
                   : d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
                   : n == "Cluster Grenade" ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? (s.child ? "bananette" : "banana")
                   : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
+    if (!d.model.empty()) m = d.model.c_str();  // Weapon Factory
     float h = sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z), yaw = atan2f(s.vel.x, s.vel.z);
     if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, s.pos, yaw, 0, WHITE, "Run", clock);
     if (d.kind == Kind::OldWoman) return Models::draw(m, {s.pos.x, s.pos.y - 0.3f, s.pos.z}, yaw, 0, WHITE, "Walk", clock);
@@ -192,7 +196,7 @@ static bool drawShot(const Projectile &s, float clock) {
     return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h));
 }
 
-enum class Screen { Menu, Lobby, Play };
+enum class Screen { Menu, Lobby, Play, Replays, Missions };
 
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--netbot")) SetConfigFlags(FLAG_WINDOW_HIDDEN);
@@ -286,17 +290,53 @@ int main(int argc, char **argv) {
     };
     double benchSum[T_COUNT] = {}, benchCpu[T_COUNT] = {}, benchMax[T_COUNT] = {}, benchStart = 0, frameMax = 0, frameStart = 0;
 
+    // Match recording (saved to replays/ at game over or quit), Replays playback, instant replay of big shots (local only).
+    Recording rec, play;
+    Snapshot snap;  // turn start, for the instant replay
+    bool recSaved = true, playing = false, paused = false, freeCam = false, instant = true, shotDone = false;
+    int speed = 1, irEnd = -1, replaySel = 0;  // irEnd: live tick the instant replay catches up to, -1 = live
+    uint32_t irTick = 0, irLive = 0, fireTick = 0;
+    float irAcc = 0, fcYaw = 0, fcPitch = 0;
+    Vector3 fcPos{};
+    std::vector<std::string> replayFiles;
+    if (char *t = FileExists(DATA_DIR "replay.txt") ? LoadFileText(DATA_DIR "replay.txt") : nullptr) instant = t[0] != '0', UnloadFileText(t);
+    auto saveRec = [&] {
+        if (recSaved || playing || rec.inputs.empty() || shot || bench || uiShot || netbot || rec.cfg.mission) return;  // replays don't carry missions
+        recSaved = true;
+        rec.checksum = irEnd < 0 && rec.inputs.size() == tick ? game.checksum() : 0;
+        MakeDirectory(DATA_DIR "replays");
+        std::string path = DATA_DIR "replays/" + replayName(rec.cfg);
+        if (!rec.save(path)) TraceLog(LOG_WARNING, "cannot save %s", path.c_str());
+    };
+    auto irFinish = [&] {  // the replayed ticks end on the live state (determinism)
+        if (irEnd < 0) return;
+        for (; irTick < (uint32_t)irEnd; irTick++) game.step(rec.inputs[irTick]);
+        if (game.checksum() != irLive) TraceLog(LOG_ERROR, "instant replay diverged from the live state");  // local only: keep playing
+        irEnd = -1;
+        Fx::clear();
+    };
     auto stepOnce = [&](const Input &in) {
+        Phase was = game.phase;
         game.step(in);
         tick++;
+        if (!playing) rec.inputs.push_back(in);
+        shotDone |= was == Phase::Flying && game.phase != Phase::Flying;
         for (const GameEvent &e : game.events) {
             onEvent(game, e);
+            if (e.kind == GameEvent::Fire && e.worm >= 0) fireTick = tick;
+            if (e.kind == GameEvent::TurnStart && !online && !playing) snap.take(game, tick);
+            if (e.kind == GameEvent::GameOver) saveRec();
             if (e.kind != GameEvent::TurnStart && e.kind != GameEvent::GameOver) continue;
             if (online) net.turnEnd(tick, game.checksum());
             if (netbot) printf("[%s] turn %d tick %u checksum %08x%s\n", name.c_str(), ++turns, tick, game.checksum(), e.kind == GameEvent::GameOver ? " gameover" : "");
         }
     };
     auto startMatch = [&](const GameConfig &c) {
+        game.terrain.undo = nullptr;
+        snap.valid = false;
+        rec = {c, {}, 0};
+        recSaved = shotDone = false;
+        irEnd = -1;
         game.start(c);
         Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str());
         game.terrain.remesh();
@@ -310,15 +350,29 @@ int main(int argc, char **argv) {
     bool botStarted = false;
     float botAt = 0, botDone = 1e9f;
     int proxyTurn = -1, botSpeed = getenv("W4NX_SPEED") ? atoi(getenv("W4NX_SPEED")) : 8;  // ticks per frame
-    if (netbot) {
+    // LAN: this console hosts (embedded relay, its own Net joins over loopback) or joins a game heard on the LAN
+    LanHost lanHost;
+    LanScan lanScan;
+    bool lan = false;
+    int lanSel = 0;
+    std::string connHost = host;  // where `net` connects / reconnects (host:port stays the Options server)
+    int connPort = port;
+    auto leaveLan = [&] { net.close(), lanHost.close(), net.roomId = 0, net.players.clear(), net.profiles.clear(); };
+    if (netbot) {  // host "lan": create = host the LAN game on `port`, join = find it by its beacon
         host = argv[2], port = atoi(argv[3]), name = argv[4];
+        lan = host == "lan";
+        connHost = lan ? "127.0.0.1" : host, connPort = port;
         if (FILE *f = fopen("netbot.token", "r")) botStarted = fscanf(f, "%llx", (unsigned long long *)&net.token) == 1, fclose(f);
         opt.map = argc > 7 ? argv[7] : "";
         opt.rules = argc > 8 ? (uint32_t)atoi(argv[8]) : 0;
         if (argc > 9) opt.scheme = SCHEMES[atoi(argv[9]) % SCHEMES.size()].s;
         if (argc > 10) opt.scheme.roundTime = atoi(argv[10]);
-        opt.teamSetup = {{"Bot A"}, {"Bot B"}};
-        if (!net.connect(host.c_str(), port, name.c_str())) return printf("[%s] cannot reach %s\n", name.c_str(), host.c_str()), 1;
+        opt.teamSetup = {{"Bot " + name}};
+        if (getenv("W4NX_CPU")) opt.teamSetup.push_back({"CPU", (uint8_t)atoi(getenv("W4NX_CPU"))});  // host's CPU team level
+        opt.teams = (int)opt.teamSetup.size();
+        if (lan && botCreate && !lanHost.open(port, "netbot")) return printf("[%s] cannot host on port %d\n", name.c_str(), port), 1;
+        if (lan && !botCreate) lanScan.open();
+        else if (!net.connect(connHost.c_str(), connPort, name.c_str())) return printf("[%s] cannot reach %s\n", name.c_str(), host.c_str()), 1;
     }
     if (cpuAll) {
         if (bench) SetTargetFPS(0), opt.seed = 1234;
@@ -330,6 +384,20 @@ int main(int argc, char **argv) {
     Ui::Frontend front;
     Ui::Hud hud;
     Ui::Pause pause;
+    // Single player: missions list (loaded on first use), progress.txt, the end-of-mission screen's choice
+    std::vector<MissionSpec> missions;
+    Progress progress;
+    Ui::MissionMenu missionMenu;
+    int missionIdx = -1, missionAct = 0;
+    bool missionSaved = false;
+    auto openMissions = [&] {
+        if (missions.empty()) missions = listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt");
+        screen = Screen::Missions;
+    };
+    auto startMission = [&](int i) {
+        missionIdx = i, missionSaved = false, online = false;
+        startMatch(missionConfig(missions[i], (uint32_t)(GetTime() * 1000)));
+    };
     if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause"))) {
         startMatch({1234, 2, 2, argc > 3 ? argv[3] : "", 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
         hud.open = !strcmp(uiShot, "panel");
@@ -337,6 +405,18 @@ int main(int argc, char **argv) {
     } else if (uiShot) {
         front.screen = !strcmp(uiShot, "main") ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::Setup
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
+        if (!strcmp(uiShot, "wormpot")) front.screen = Ui::Frontend::Wormpot, opt.wormpot = WP_DOUBLE_DAMAGE | WP_QUICK_WALK | WP_CRATE_SHOWER;
+        if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
+        if (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback")) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
+        if (!strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
+        // missions | briefing | missionhud | missionend [mission id]
+        if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "briefing")) openMissions(), missionMenu.brief = !strcmp(uiShot, "briefing");
+        for (size_t i = 0; i < missions.size() && (!strcmp(uiShot, "missionhud") || !strcmp(uiShot, "missionend")); i++)
+            if (argc > 3 ? missions[i].id == argv[3] : i == 0) {
+                startMission((int)i);
+                if (!strcmp(uiShot, "missionend")) game.run.result = 1, game.run.ticks = 5000, game.phase = Phase::GameOver;
+                break;
+            }
     }
     auto cpu = [&](int team) { return team < (int)game.cfg.teamSetup.size() && game.cfg.teamSetup[team].cpu > 0; };
     auto pressed = [](std::initializer_list<int> buttons, std::initializer_list<int> keys) { return pressedAny(-1, buttons, keys); };
@@ -348,11 +428,18 @@ int main(int argc, char **argv) {
         Audio::update();
 
         if (online) {
+            lanHost.poll();
             net.poll();
             Net::Event e;
             while (net.next(e)) {
                 switch (e.type) {
-                case Net::Welcome: net.listRooms(); status = "Connected to " + host; break;
+                case Net::Welcome:
+                    if (lanHost.running()) net.createRoom((name + "'s game").c_str(), 4);
+                    else net.listRooms();
+                    status = "Connected to " + connHost;
+                    break;
+                case Net::RoomList: if (lan && !net.roomId && !net.rooms.empty()) net.joinRoom(net.rooms[0].id); break;
+                case Net::RoomState: if (net.roomId && !opt.teamSetup.empty()) net.sendProfile(opt.teamSetup[0], opt.teams - 1); break;
                 case Net::Error: status = "Server: " + e.text; break;
                 case Net::Start: startMatch(net.cfg); status.clear(); break;
                 case Net::Desync: status = TextFormat("DESYNC at tick %u", e.a); desynced = true; break;
@@ -368,7 +455,7 @@ int main(int argc, char **argv) {
             }
             // the token kept in `net` resumes the match: server resends Start + the whole input log
             if (!net.online() && screen == Screen::Play && clock > reconnectAt) {
-                net.connect(host.c_str(), port, name.c_str());
+                net.connect(connHost.c_str(), connPort, name.c_str());
                 reconnectAt = clock + 3;
             }
         }
@@ -378,15 +465,61 @@ int main(int argc, char **argv) {
             if (uiShot && frame > 10) break;
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;
+            if (a == Ui::Frontend::Replays) replayFiles = listReplays(DATA_DIR "replays"), replaySel = 0, screen = Screen::Replays;
+            if (a == Ui::Frontend::SinglePlayer) openMissions();
             if (a == Ui::Frontend::StartLocal) {
                 online = false;
                 opt.seed = (uint32_t)(clock * 1000) + frame;
                 startMatch(opt);
             } else if (a == Ui::Frontend::StartOnline) {
-                online = true;
+                online = true, lan = false, connHost = host, connPort = port;
                 status = net.connect(host.c_str(), port, name.c_str()) ? "Connecting to " + host + "..." : "Cannot reach " + host;
                 screen = Screen::Lobby;
+            } else if (a == Ui::Frontend::StartLan) {
+                online = lan = true;
+                net.close();
+                status = lanScan.open() ? "" : "Network unavailable";
+                screen = Screen::Lobby;
             }
+            continue;
+        }
+
+        if (screen == Screen::Missions) {
+            BeginDrawing();
+            Ui::background();
+            int pick = Ui::missionMenu(missionMenu, missions, progress);
+            if (uiShot && frame == 10) {
+                rlDrawRenderBatchActive();
+                Image img = LoadImageFromScreen();
+                ExportImage(img, "ui.png");
+                UnloadImage(img);
+            }
+            EndDrawing();
+            if (uiShot && frame >= 10) break;
+            if (pick == -2) screen = Screen::Menu;
+            else if (pick >= 0) missionMenu.brief = false, startMission(pick);
+            continue;
+        }
+
+        if (screen == Screen::Replays) {
+            bool was = instant;
+            BeginDrawing();
+            Ui::background();
+            int pick = Ui::replayList(replayFiles, replaySel, instant);
+            if (uiShot && frame == 10) {
+                rlDrawRenderBatchActive();
+                Image img = LoadImageFromScreen();
+                ExportImage(img, "ui.png");
+                UnloadImage(img);
+            }
+            EndDrawing();
+            if (uiShot && frame >= 10) break;
+            if (instant != was) SaveFileText(DATA_DIR "replay.txt", (char *)(instant ? "1\n" : "0\n"));
+            if (pick == -2) screen = Screen::Menu;
+            else if (pick >= 0 && play.load(DATA_DIR "replays/" + replayFiles[pick])) {
+                online = false, playing = true, paused = freeCam = false, speed = 1;
+                startMatch(play.cfg);
+            } else if (pick >= 0) TraceLog(LOG_WARNING, "unreadable replay %s", replayFiles[pick].c_str());
             continue;
         }
 
@@ -402,29 +535,57 @@ int main(int argc, char **argv) {
                 if (!inRoom && botCreate) net.createRoom("netbot", 2);
                 else if (!inRoom) net.rooms.empty() ? net.listRooms() : net.joinRoom(net.rooms[0].id);
             }
+            if (lan && !net.online()) {  // LAN list: games heard by their beacon, or host one here
+                if (!lanHost.running()) lanScan.open();
+                lanScan.poll(clock);
+                const std::vector<LanGame> &games = lanScan.games;
+                int n = (int)games.size();
+                lanSel = n ? (lanSel + pressed({GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {KEY_DOWN}) - pressed({GAMEPAD_BUTTON_LEFT_FACE_UP}, {KEY_UP}) + n) % n : 0;
+                bool join = n && (netbot ? !botCreate : pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER}));
+                if (!netbot && pressed({GAMEPAD_BUTTON_RIGHT_FACE_UP}, {KEY_C})) {
+                    if (lanHost.open(port, (name + "'s game").c_str())) connHost = "127.0.0.1", connPort = port;
+                    else status = TextFormat("Cannot host: port %d busy", port);
+                }
+                if (join) connHost = games[lanSel].ip, connPort = games[lanSel].port;
+                if (join && netbot) printf("[%s] lan game at %s:%d\n", name.c_str(), connHost.c_str(), connPort);
+                if (join || lanHost.running()) {
+                    lanScan.close();
+                    status = net.connect(connHost.c_str(), connPort, name.c_str()) ? "Connecting to " + connHost + "..." : "Cannot reach " + connHost;
+                }
+                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) { lanScan.close(); online = lan = false; screen = Screen::Menu; }
+                BeginDrawing();
+                Ui::background();
+                Ui::lanGames(games, lanSel, status);
+                EndDrawing();
+                continue;
+            }
             if (!inRoom) {
                 int n = (int)net.rooms.size();
                 if (n) roomSel = (roomSel + pressed({GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {KEY_DOWN}) - pressed({GAMEPAD_BUTTON_LEFT_FACE_UP}, {KEY_UP}) + n) % n;
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER}) && n) net.joinRoom(net.rooms[roomSel].id);
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_UP}, {KEY_C})) net.createRoom((name + "'s room").c_str(), 4);
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) net.listRooms();
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) { net.close(); online = false; screen = Screen::Menu; }
+                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) {
+                    if (lan) leaveLan();
+                    else net.close(), online = false, screen = Screen::Menu;
+                }
             } else {
                 if (isHost && net.players.size() >= 2 && (netbot ? !botStarted : pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER}))) {
                     botStarted = true;
-                    std::vector<uint32_t> owners;
-                    for (size_t i = 0; i < net.players.size() && i < 4; i++) owners.push_back(net.players[i].id);
                     GameConfig c = opt;
                     c.seed = (uint32_t)(clock * 1000) + frame;
-                    c.teams = (int)owners.size();
-                    net.start(c, owners);
+                    net.startMatch(c);  // one team per console + the host's CPU teams
                 }
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) { net.leave(); net.listRooms(); }
+                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) {
+                    if (lan) leaveLan();
+                    else net.leave(), net.listRooms();
+                }
             }
             BeginDrawing();
             Ui::background();
-            drawTextCentered(inRoom ? "ROOM" : "ONLINE LOBBY", 640, 60, 60, {255, 220, 120, 255});
-            if (!inRoom) {
+            if (inRoom) Ui::room(net, opt, lan, status);
+            else {
+                drawTextCentered(lan ? "JOINING..." : "ONLINE LOBBY", 640, 60, 60, {255, 220, 120, 255});
                 for (size_t i = 0; i < net.rooms.size(); i++) {
                     const NetRoom &r = net.rooms[i];
                     drawTextCentered(TextFormat("%s %s  (%d/%d)%s", (int)i == roomSel ? ">" : " ", r.name.c_str(), r.players, r.maxPlayers, r.started ? " playing" : ""),
@@ -432,17 +593,8 @@ int main(int argc, char **argv) {
                 }
                 if (net.rooms.empty()) drawTextCentered("No rooms yet", 640, 200, 30, LIGHTGRAY);
                 Ui::hints({{"A", "Enter", "Join"}, {"X", "C", "Create room"}, {"Y", "R", "Refresh"}, {"B", "Esc", "Back"}});
-            } else {
-                for (size_t i = 0; i < net.players.size(); i++) {
-                    const NetPlayer &pl = net.players[i];
-                    drawTextCentered(TextFormat("%s%s%s", pl.name.c_str(), pl.id == net.hostId ? " (host)" : "", pl.online ? "" : " - offline"), 640, 160 + (int)i * 40, 30,
-                                     i < 4 ? TEAM_COLORS[i] : GRAY);
-                }
-                if (isHost) Ui::hints({{"A", "Enter", "Start (2+ players)"}, {"B", "Esc", "Leave room"}});
-                else Ui::hints({{"B", "Esc", "Leave room"}});
-                if (!isHost) drawTextCentered("Waiting for the host to start...", 640, 600, 24, LIGHTGRAY);
+                drawTextCentered(status.c_str(), 640, 660, 22, ORANGE);
             }
-            drawTextCentered(status.c_str(), 640, 660, 22, ORANGE);
             EndDrawing();
             continue;
         }
@@ -450,13 +602,35 @@ int main(int argc, char **argv) {
         mark = GetTime();
         const Worm &cur = game.worms[game.current];
         int pad = !online && IsGamepadAvailable(cur.team) ? cur.team : 0;
-        if (!shot && pause.update() == Ui::Pause::Quit) {
-            if (online) net.leave(), net.listRooms();
-            screen = online ? Screen::Lobby : Screen::Menu;
+        bool quit;
+        if (playing) {  // match playback controls
+            if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) paused = !paused;
+            if (pressed({GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, {KEY_TAB})) speed = speed == 4 ? 1 : speed * 2;
+            if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_UP}, {KEY_C})) {
+                Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+                freeCam = !freeCam, fcPos = cam.position, fcYaw = atan2f(f.x, f.z), fcPitch = asinf(f.y);
+            }
+            if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_N})) {  // fast-forward to the next turn, unrendered
+                for (bool next = false; !next && tick < play.inputs.size();) {
+                    game.step(play.inputs[tick++]);
+                    for (const GameEvent &e : game.events) next |= e.kind == GameEvent::TurnStart || e.kind == GameEvent::GameOver;
+                }
+                Fx::clear();
+                game.terrain.remesh();
+            }
+            quit = pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN, GAMEPAD_BUTTON_MIDDLE_RIGHT}, {KEY_ESCAPE, KEY_BACKSPACE});
+        } else quit = !shot && pause.update() == Ui::Pause::Quit;
+        if (quit) {
+            irFinish();
+            saveRec();
+            playing = false;
+            if (lan) leaveLan();  // a host leaving ends the LAN game: it is the server
+            else if (online) net.leave(), net.listRooms();
+            screen = online ? Screen::Lobby : game.cfg.mission ? Screen::Missions : Screen::Menu;
             Audio::music(true, "theme");
             continue;
         }
-        Input in = shot ? scriptInput(frame, shotWeapon) : pause.open ? Input{} : readInput(pad);
+        Input in = shot ? scriptInput(frame, shotWeapon) : pause.open || playing || irEnd >= 0 ? Input{} : readInput(pad);
         for (uint32_t o : net.owners) {  // an owner who left the room counts as offline too
             auto p = std::find_if(net.players.begin(), net.players.end(), [&](const NetPlayer &pl) { return pl.id == o; });
             if (p != net.players.end() && p->online) offlineSince.erase(o);
@@ -471,8 +645,20 @@ int main(int argc, char **argv) {
         // the host also plays the CPU teams
         auto owns = [&](int team) { return (cpu(team) && net.hostId == net.id) || (team < (int)net.owners.size() && (net.owners[team] == net.id || proxied(team))); };
         bool remoteTurn = online && game.phase != Phase::GameOver && !owns(cur.team);
-        hud.input(game, in, !shot && !remoteTurn && !pause.open, pad, tick);
-        if (!online) {
+        hud.input(game, in, !shot && !remoteTurn && !pause.open && !playing && irEnd < 0, pad, tick);
+        if (playing) {
+            for (acc += paused ? 0 : dt * speed; acc >= Game::DT; acc -= Game::DT) {
+                if (tick >= play.inputs.size()) { acc = 0; break; }
+                stepOnce(play.inputs[tick]);
+            }
+        } else if (irEnd >= 0) {  // instant replay: slow motion, A skips
+            if (!pause.open && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) irFinish();
+            for (irAcc += pause.open ? 0 : dt * 0.5f; irAcc >= Game::DT && irEnd >= 0; irAcc -= Game::DT) {
+                game.step(rec.inputs[irTick++]);
+                for (const GameEvent &e : game.events) onEvent(game, e);
+                if (irTick == (uint32_t)irEnd) irFinish();
+            }
+        } else if (!online) {
             for (acc += pause.open ? 0 : dt; acc >= Game::DT; acc -= Game::DT) stepOnce(!shot && cpu(game.worms[game.current].team) ? ai.think(game) : in);
         } else {
             // remote/replayed inputs first, then ours when we own the active team; otherwise wait
@@ -491,6 +677,25 @@ int main(int argc, char **argv) {
                 acc -= Game::DT;
             }
         }
+        if (shotDone && instant && snap.valid && irEnd < 0 && !online && !playing && !shot && !bench) {
+            int dmg = 0;
+            bool kill = false;
+            for (size_t i = 0; i < game.worms.size() && i < snap.g.worms.size(); i++) {
+                const Worm &a = snap.g.worms[i], &b = game.worms[i];
+                if (a.alive) dmg += std::max(0, a.hp - std::max(0, b.hp)), kill |= !b.alive || b.hp <= 0;
+            }
+            if (kill || dmg >= 30) {  // replay from just before the shot, at most the last 8 s
+                irLive = game.checksum(), irEnd = (int)tick;
+                snap.restore(game);
+                snap.valid = false;
+                irTick = std::max({snap.tick, fireTick > 45 ? fireTick - 45 : 0, tick > 480 ? tick - 480 : 0});
+                for (uint32_t t = snap.tick; t < irTick; t++) game.step(rec.inputs[t]);
+                game.terrain.remesh();
+                Fx::clear();
+                irAcc = 0;
+            }
+        }
+        shotDone = false;
         lap(T_SIM);
         game.terrain.remesh(0.003);  // a big blast's rebuild spreads over a few frames, hidden by the fireball
         lap(T_REMESH);
@@ -499,7 +704,7 @@ int main(int argc, char **argv) {
         lastSec = sec;
         if (netbot && botDone > 1e8f && (game.phase == Phase::GameOver || turns >= botTurns)) botDone = clock + 2;  // let the last inputs and sums out
         if (netbot && clock > botDone) break;
-        if (game.phase == Phase::GameOver && !pause.open && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) {
+        if (game.phase == Phase::GameOver && !pause.open && !playing && irEnd < 0 && !game.cfg.mission && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) {
             screen = online ? Screen::Lobby : Screen::Menu;
             Audio::music(true, "theme");
         }
@@ -538,6 +743,21 @@ int main(int argc, char **argv) {
         cam.fovy = Lerp(cam.fovy, scope ? 25.0f : 50.0f, 1 - expf(-dt * 8));
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
         if (fixedView) view = viewCam;
+        if (playing && freeCam) {  // LS / arrows move, RS / A D W S look, ZL ZR / Z X down up
+            auto ax = [&](int a) { float v = GetGamepadAxisMovement(pad, a); return fabsf(v) < 0.2f ? 0.0f : v; };
+#ifdef __SWITCH__
+            const float up = 1;
+#else
+            const float up = -1;
+#endif
+            fcYaw -= (ax(GAMEPAD_AXIS_RIGHT_X) + IsKeyDown(KEY_D) - IsKeyDown(KEY_A)) * dt * 2;
+            fcPitch = Clamp(fcPitch + (up * ax(GAMEPAD_AXIS_RIGHT_Y) + IsKeyDown(KEY_W) - IsKeyDown(KEY_S)) * dt * 1.5f, -1.4f, 1.4f);
+            Vector3 f = {sinf(fcYaw) * cosf(fcPitch), sinf(fcPitch), cosf(fcYaw) * cosf(fcPitch)}, right = {-cosf(fcYaw), 0, sinf(fcYaw)};
+            float mv = up * ax(GAMEPAD_AXIS_LEFT_Y) + IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN), st = ax(GAMEPAD_AXIS_LEFT_X) + IsKeyDown(KEY_RIGHT) - IsKeyDown(KEY_LEFT);
+            float lift = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2) + IsKeyDown(KEY_X) - IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) - IsKeyDown(KEY_Z);
+            fcPos = Vector3Add(fcPos, Vector3Scale(Vector3Add(Vector3Add(Vector3Scale(f, mv), Vector3Scale(right, st)), {0, lift, 0}), dt * 15));
+            view.position = fcPos, view.target = Vector3Add(fcPos, f), view.fovy = 50;
+        }
         Vector3 jolt = Vector3Scale({sinf(clock * 53), sinf(clock * 61 + 1) * 0.7f, sinf(clock * 47 + 2)}, Fx::shake);
         view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt);
         mark = GetTime();
@@ -595,11 +815,17 @@ int main(int argc, char **argv) {
         }
         for (const Object &o : game.objects) {
             const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry"
-                          : o.weapon < 0 ? "crate_health" : "crate_weapon";
+                          : o.type == Object::Target ? "target" : o.weapon < 0 ? "crate_health" : "crate_weapon";
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute
             if (!Models::draw(m, o.pos, (&o - game.objects.data()) * 1.3f)) {
                 if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
                 else if (o.type == Object::Barrel) DrawCylinder({o.pos.x, o.pos.y - 0.5f, o.pos.z}, 0.35f, 0.35f, 1, 10, MAROON);
+                else if (o.type == Object::Target) {  // bullseye facing the active worm
+                    Vector3 f = Vector3Normalize({cur.pos.x - o.pos.x, 0, cur.pos.z - o.pos.z});
+                    for (int k = 0; k < 3; k++)
+                        DrawCylinderEx(Vector3Add(o.pos, Vector3Scale(f, 0.02f * k)), Vector3Add(o.pos, Vector3Scale(f, 0.02f * k + 0.06f)), 0.5f - 0.15f * k, 0.5f - 0.15f * k, 16, k % 2 ? WHITE : RED);
+                    DrawCylinderEx(Vector3Add(o.pos, {0, -0.5f, 0}), Vector3Add(o.pos, {0, -1.2f, 0}), 0.05f, 0.05f, 6, BROWN);
+                }
                 else DrawCube(o.pos, 0.8f, 0.8f, 0.8f, o.weapon < 0 ? RAYWHITE : BROWN);
             }
             if (o.type == Object::Mine && o.fuse >= 0 && fmodf(clock, 0.3f) < 0.15f) DrawSphere(Vector3Add(o.pos, {0, 0.15f, 0}), 0.08f, RED);
@@ -609,6 +835,13 @@ int main(int argc, char **argv) {
                 for (float a : {0.8f, 2.4f, 3.9f, 5.5f}) DrawLine3D(Vector3Add(o.pos, {0, 0.4f, 0}), Vector3Add(top, {cosf(a) * 1.1f, 0, sinf(a) * 1.1f}), LIGHTGRAY);
             }
         }
+        if (game.cfg.mission)  // reach objectives: a gold beacon
+            for (const MissionSpec::Goal &g : game.cfg.mission->objectives) {
+                if (g.type != MissionSpec::Goal::Reach) continue;
+                Vector3 p = placeOf(game, g.at);
+                DrawCylinderEx(p, Vector3Add(p, {0, 10, 0}), 0.15f, 0.15f, 8, Fade(GOLD, 0.5f));
+                DrawCircle3D(Vector3Add(p, {0, 0.05f, 0}), g.radius, {1, 0, 0}, 90, GOLD);
+            }
         if (game.cfg.rules & RULE_ROPE_RACE) {
             DrawCylinderEx(game.raceFinish, Vector3Add(game.raceFinish, {0, 10, 0}), 0.15f, 0.15f, 8, Fade(GOLD, 0.5f));
             DrawCube(Vector3Add(game.raceFinish, {0, 10.3f, 0}), 1.2f, 0.6f, 0.08f, RED);
@@ -629,7 +862,20 @@ int main(int argc, char **argv) {
             DrawRectangle(c.x - 40, c.y - 1, 80, 2, Fade(BLACK, 0.7f)), DrawRectangle(c.x - 1, c.y - 40, 2, 80, Fade(BLACK, 0.7f));
         }
         hud.draw(game, view, tick);
+        if (const MissionSpec *ms = game.cfg.mission; ms && game.phase != Phase::GameOver) Ui::missionHud(game, *ms);
+        else if (ms && !pause.open && missionIdx >= 0) {
+            if (!missionSaved && !uiShot) progress.record(ms->id, game.run.result > 0, game.run.ticks), progress.save(DATA_DIR "progress.txt");
+            missionSaved = true;
+            int next = missionIdx + 1;
+            bool more = next < (int)missions.size() && missions[next].kind == ms->kind && missions[next].campaign == ms->campaign && progress.unlocked(missions, next);
+            missionAct = Ui::missionEnd(game, *ms, progress.get(ms->id), more);
+        }
         pause.draw(online);
+        if (playing) {
+            bool end = tick >= play.inputs.size();
+            Ui::playbackBar(paused, speed, freeCam, tick * Game::DT, play.inputs.size() * Game::DT,
+                            !end ? "" : play.checksum && game.checksum() != play.checksum ? "Replay out of sync (other game version?)" : "End of replay");
+        } else if (irEnd >= 0) Ui::replayBadge();
         if (remoteTurn) drawTextCentered("Remote player's turn", 640, 90, 24, WHITE);
         if (online && !status.empty()) drawTextCentered(status.c_str(), 640, 120, 24, ORANGE);
         if (perfOn && !bench) {  // bench: keep the overlay out of the measured ui cost
@@ -661,6 +907,13 @@ int main(int argc, char **argv) {
         }
         EndDrawing();
         lap(T_PRESENT);
+        if (missionAct) {  // end-of-mission choice, outside the frame: next, retry, back to the list
+            int act = missionAct;
+            missionAct = 0;
+            if (act == 3) screen = Screen::Missions, Audio::music(true, "theme");
+            else startMission(act == 1 ? missionIdx + 1 : missionIdx);
+            continue;
+        }
         const int warm = 10;  // skip load / first-use frames
         if (bench && frame == warm) benchStart = GetTime();
         if (bench && frame > warm) {
@@ -692,6 +945,7 @@ int main(int argc, char **argv) {
         }
         if ((shot && frame == 150) || (uiShot && frame == 40)) break;
     }
+    if (screen == Screen::Play) irFinish(), saveRec();
     net.close();
     game.terrain.unload();
     Models::unload();

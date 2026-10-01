@@ -12,16 +12,18 @@ std::vector<WeaponDef> WEAPONS = {
     {"Grenade", Kind::Shell, 3, 45, 22, 3, 0.45f, 0, 0, -1, 0, 1, false},
 };
 
+static size_t baseWeapons = WEAPONS.size();  // loaded table; start() appends GameConfig::custom after it
+static const char *KINDS[] = {"shell", "sheep", "airstrike", "donkey", "shotgun", "rope", "jetpack", "teleport", "supersheep", "oldwoman",
+                              "melee", "homing", "mine", "scouser", "sentry", "abduction", "flood", "parachute", "skipgo", "surrender", "changeworm"};
+
 // Minimal JSON: one array of flat objects with string/number/bool values.
-bool loadWeapons(const char *path) {
+static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
     std::string src;
     char buf[4096];
     for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) src.append(buf, n);
     fclose(f);
-    static const char *KINDS[] = {"shell", "sheep", "airstrike", "donkey", "shotgun", "rope", "jetpack", "teleport", "supersheep", "oldwoman",
-                                  "melee", "homing", "mine", "scouser", "sentry", "abduction", "flood", "parachute", "skipgo", "surrender", "changeworm"};
     const char *p = src.c_str();
     auto ws = [&] { while (isspace((unsigned char)*p)) p++; };
     auto eat = [&](char c) {
@@ -36,7 +38,7 @@ bool loadWeapons(const char *path) {
         out.assign(b, p++);
         return true;
     };
-    std::vector<WeaponDef> list;
+    list.clear();
     if (!eat('[')) return false;
     while (eat('{')) {
         WeaponDef w = {"?", Kind::Shell, 2, 30, 20, 0, 0, 1.5f, 15, -1, 0, 1, false};
@@ -58,6 +60,8 @@ bool loadWeapons(const char *path) {
                 p = e;
             }
             if (key == "name") w.name = sv;
+            if (key == "model") w.model = sv;
+            if (key == "icon") w.icon = sv;
             if (key == "wind") w.wind = b;
             for (int k = 0; k < (int)(sizeof KINDS / sizeof *KINDS); k++) if (key == "kind" && sv == KINDS[k]) w.kind = (Kind)k;
             for (auto &fl : floats) if (key == fl.k) *fl.v = num;
@@ -68,10 +72,58 @@ bool loadWeapons(const char *path) {
         list.push_back(w);
         if (!eat(',')) break;
     }
-    if (!eat(']') || list.empty()) return false;
+    return eat(']');
+}
+
+bool loadWeapons(const char *path) {
+    std::vector<WeaponDef> list;
+    if (!parseWeapons(path, list) || list.empty()) return false;
     WEAPONS = list;
+    baseWeapons = list.size();
     return true;
 }
+
+bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out) { return parseWeapons(path, out); }
+
+bool saveCustomWeapons(const char *path, const std::vector<WeaponDef> &list) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    auto clean = [](std::string s) { s.erase(std::remove_if(s.begin(), s.end(), [](char c) { return c == '"' || c == '\\' || (unsigned char)c < 32; }), s.end()); return s; };
+    fputs("[\n", f);
+    for (size_t i = 0; i < list.size(); i++) {
+        const WeaponDef &w = list[i];
+        fprintf(f, "  {\"name\": \"%s\", \"kind\": \"%s\", \"radius\": %g, \"damage\": %g, \"speed\": %g, \"fuse\": %g, \"bounce\": %g, "
+                   "\"clusters\": %d, \"cluster_radius\": %g, \"cluster_damage\": %g, \"count\": %d, \"shots\": %d, \"crate_weight\": %d, "
+                   "\"poison\": %g, \"wind\": %s, \"model\": \"%s\", \"icon\": \"%s\"}%s\n",
+                clean(w.name).c_str(), KINDS[(int)w.kind], w.radius, w.damage, w.speed, w.fuse, w.bounce, w.clusters, w.cradius, w.cdamage,
+                w.count, w.shots, w.weight, w.poison, w.wind ? "true" : "false", clean(w.model).c_str(), clean(w.icon).c_str(), i + 1 < list.size() ? "," : "");
+    }
+    fputs("]\n", f);
+    return fclose(f) == 0;
+}
+
+const WormpotMode WORMPOT_MODES[18] = {
+    {"Double Damage", "Everything does twice the amount of damage."},
+    {"Super Explosives", "All explosive weapons do increased damage and will throw worms further than usual."},
+    {"Super Animals", "All animal weapons do increased damage and will throw worms further than usual."},
+    {"Wind Affects All", "Wind affects all weapons in the game, even the grenade."},
+    {"Worms Only Drown", "Worms can only be killed by knocking them into the water, no health is removed via a shot."},
+    {"Quick Walk", "Worms will be able to walk a lot faster than normal."},
+    {"Slippy Mode", "Worms will slide around the landscape more easily."},
+    {"Sticky Mode", "Worms will stick to the landscape more and be harder to move around."},
+    {"Low Gravity", "Gravity has less of an effect on worms making them jump higher."},
+    {"No Jumping", "Worms lose their ability to jump and can only walk around the landscape."},
+    {"Max Fall Damage", "Fall damage will hurt worms a lot."},
+    {"Crate Shower", "A crate shower will arrive at the start of every turn."},
+    {"Crate Drops Only", "Weapons can only be obtained through crate drops."},
+    {"Max Health Drops", "Health crates will contain 100 health."},
+    {"David And Goliath", "One of your worms is the mighty Goliath (lots of energy) and the rest are Davids (not much energy)."},
+    {"One Shot One Kill", "All worms start with 1 health so one shot does indeed mean one kill."},
+    {"Vampire", "Half the damage a worm inflicts on another worm is gifted back to him."},
+    {"Vital Worm", "One worm on each team is vital, if he dies the team dies."},
+};
+const int WORMPOT_REELS[4] = {0, 5, 11, 18};  // weapons, worms, crates & energy
+
 
 // Order: turn, retreat, hot seat, round (min), energy, crate %, weapon/health/utility shares, crate hp,
 // mines, barrels, mine fuse, sudden death, fall damage, wind, weapon set. Mines, barrels, sets: ours.
@@ -112,6 +164,17 @@ Vector3 Game::aimDir(const Worm &w) const {
 
 void Game::start(const GameConfig &c) {
     cfg = c;
+    WEAPONS.resize(std::min(WEAPONS.size(), baseWeapons));
+    WEAPONS.insert(WEAPONS.end(), c.custom.begin(), c.custom.end());
+    // Wormpot modes that are existing rules or scheme values: set them on our copy, which the checksum covers
+    const uint32_t wp = c.wormpot;
+    if (wp & WP_LOW_GRAVITY) cfg.rules |= RULE_LOW_GRAVITY;
+    if (wp & WP_VAMPIRE) cfg.rules |= RULE_VAMPIRE;
+    if (wp & WP_VITAL_WORM) cfg.rules |= RULE_KING;
+    if (wp & WP_CRATE_DROPS) cfg.scheme.weapons = Scheme::SET_CRATES;
+    if (wp & WP_MAX_HEALTH) cfg.scheme.crateHealth = 100;
+    if (wp & WP_CRATE_SHOWER) cfg.scheme.crateChance = 100;
+    if (wp & WP_ONE_SHOT) cfg.scheme.health = 1;
     terrain.load(c.map, c.seed);
     rng = c.seed * 2654435761u + 1;
     teams = c.teams;
@@ -167,6 +230,7 @@ void Game::start(const GameConfig &c) {
                     break;
                 }
             }
+            if ((cfg.wormpot & WP_GOLIATH) && per > 1) w.hp = k ? std::max(1, w.hp / 2) : w.hp * 2;
             worms.push_back(w);
         }
     if (!(cfg.rules & RULE_ROPE_RACE)) {
@@ -192,6 +256,9 @@ void Game::start(const GameConfig &c) {
                 }
         }
     }
+    idle.assign(teams, 0);
+    run = MissionRun{};
+    if (cfg.mission) missionStart(*this);
     beginTurn(teams - 1);
 }
 
@@ -202,7 +269,7 @@ void Game::beginTurn(int team) {
     int alive = 0, last = -1;
     for (const Worm &w : worms)
         if (w.alive && !has[w.team]) { has[w.team] = true; alive++; last = w.team; }
-    if (alive <= 1) {
+    if (alive <= 1 && !cfg.mission) {  // missions end through their objectives
         phase = Phase::GameOver;
         winner = alive ? last : -1;
         emit(GameEvent::GameOver, {0, 0, 0});
@@ -217,7 +284,7 @@ void Game::beginTurn(int team) {
     if (suddenDeath && sc.sdType != Scheme::SD_ONE_HP) water = fminf(water + 1.25f, Terrain::WATER + 15);  // W4M Water.RiseAmount 25
     for (int i = 1; i <= teams; i++) {
         int t = (team + i) % teams;
-        if (!has[t]) continue;
+        if (!has[t] || idle[t]) continue;
         for (int k = 0; k < perTeam; k++) {
             int slot = (nextWorm[t] + k) % perTeam, c = t * perTeam + slot;
             if (!worms[c].alive) continue;
@@ -233,7 +300,8 @@ void Game::beginTurn(int team) {
             roped = jetting = chute = false;
             shotsLeft = 0;
             if (!ammo[t][weapon]) nextWeapon(t);
-            if (!(cfg.rules & RULE_ROPE_RACE) && rand01() * 100 < sc.crateChance && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
+            for (int n = cfg.wormpot & WP_CRATE_SHOWER ? 3 : 1; n > 0; n--)
+                if (!(cfg.rules & RULE_ROPE_RACE) && rand01() * 100 < sc.crateChance && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
             emit(GameEvent::TurnStart, worms[c].pos, c);
             return;
         }
@@ -285,7 +353,8 @@ void Game::stepObjects() {
     for (size_t i = 0; i < objects.size();) {
         Object &o = objects[i];
         float h = halfHeight(o.type);
-        if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
+        if (o.tag >= 0 && (o.type == Object::Crate || o.type == Object::Target)) {  // pinned mission object
+        } else if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
             o.vel = {o.vel.x * 0.8f, 0, o.vel.z * 0.8f};
             o.falling = false;
         } else {
@@ -320,9 +389,11 @@ void Game::stepObjects() {
                 t.vel = Vector3Add(t.vel, Vector3Add(Vector3Scale(to, 4 / dist), {0, 2, 0}));
             }
         }
+        bool sheep = false;  // W4M challenges: a Super Sheep collects mission crates for its worm
+        for (const Projectile &s : shots) sheep |= o.tag >= 0 && WEAPONS[s.weapon].kind == Kind::SuperSheep && Vector3Distance(s.pos, o.pos) < 1.2f;
         if (o.type == Object::Crate && !o.dead)
             for (Worm &w : worms) {
-                if (!w.alive || Vector3Distance(w.pos, o.pos) >= R + 0.7f) continue;
+                if (!(sheep && &w == &worms[current]) && (!w.alive || Vector3Distance(w.pos, o.pos) >= R + 0.7f)) continue;
                 if (o.weapon < 0) w.hp += cfg.scheme.crateHealth, w.poison = 0;
                 else if (ammo[w.team][o.weapon] >= 0) ammo[w.team][o.weapon]++;
                 emit(GameEvent::Collect, o.pos, int(&w - worms.data()), o.weapon);
@@ -381,6 +452,10 @@ void Game::use(Worm &w) {
         for (const Worm &o : worms) {
             float t = Vector3DotProduct(Vector3Subtract(o.pos, r.position), dir);
             if (o.alive && &o != &w && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < R + 0.1f) dist = t;
+        }
+        for (const Object &o : objects) {
+            float t = Vector3DotProduct(Vector3Subtract(o.pos, r.position), dir);
+            if (o.type == Object::Target && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < 0.6f) dist = t;
         }
         if (dist < 60) explode(Vector3Add(r.position, Vector3Scale(dir, dist)), wd.radius, wd.damage);
         if (--shotsLeft == 0) phase = Phase::Flying;
@@ -453,12 +528,15 @@ void Game::stepWorm(Worm &w) {
     float fallSpeed = -w.vel.y;
     w.grounded = w.vel.y <= 0 && feet(0.05f);
     if (w.grounded) {
-        if (!wasGrounded && fallSpeed > FALL_SAFE && cfg.scheme.fallDamage) {
-            int dmg = (int)((fallSpeed - FALL_SAFE) * FALL_SCALE), wi = int(&w - worms.data());
+        bool maxFall = cfg.wormpot & WP_MAX_FALL;
+        float safe = maxFall ? FALL_SAFE * 0.7f : FALL_SAFE;
+        if (!wasGrounded && fallSpeed > safe && (cfg.scheme.fallDamage || maxFall) && !(cfg.wormpot & WP_WORMS_DROWN)) {
+            int dmg = (int)((fallSpeed - safe) * FALL_SCALE * (maxFall ? 3 : 1)), wi = int(&w - worms.data());
             if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi); }
         }
         Vector3 n = terrain.normal({w.pos.x, w.pos.y - R, w.pos.z});
-        float keep = n.y < SLIDE_NY ? SLIDE_FRICTION : 0.85f;  // too steep to stand: slide downhill
+        float flat = cfg.wormpot & WP_SLIPPY ? 0.97f : cfg.wormpot & WP_STICKY ? 0.5f : 0.85f;
+        float keep = n.y < SLIDE_NY ? SLIDE_FRICTION : flat;  // too steep to stand: slide downhill
         if (n.y < SLIDE_NY) w.vel.x += n.x * gravity() * DT, w.vel.z += n.z * gravity() * DT;
         w.vel = {w.vel.x * keep, 0, w.vel.z * keep};
     } else w.vel.y -= gravity() * DT;
@@ -499,7 +577,8 @@ void Game::stepRope(Worm &w) {
 }
 
 void Game::hurt(Worm &w, int dmg) {
-    if (dmg <= 0) return;
+    if (cfg.wormpot & WP_DOUBLE_DAMAGE) dmg *= 2;
+    if (dmg <= 0 || (cfg.wormpot & WP_WORMS_DROWN)) return;
     w.hp -= dmg;
     int wi = int(&w - worms.data());
     emit(GameEvent::Hurt, w.pos, wi);
@@ -510,7 +589,7 @@ void Game::hurt(Worm &w, int dmg) {
     if (cfg.rules & RULE_HIGHLANDER) lastHitTeam[wi] = h.team;
 }
 
-void Game::explode(Vector3 p, float radius, float damage, float poison) {
+void Game::explode(Vector3 p, float radius, float damage, float poison, float push) {
     terrain.carve(p, radius);
     emit(radius >= 5 ? GameEvent::BigBoom : GameEvent::Boom, p);
     float reach = radius * 2;
@@ -519,13 +598,13 @@ void Game::explode(Vector3 p, float radius, float damage, float poison) {
         if (!w.alive || d >= reach) continue;
         float f = 1 - d / reach;
         hurt(w, (int)(damage * f + 0.5f));
-        if (poison > 0) w.poison = std::max(w.poison, (int)poison);
+        if (poison > 0 && !(cfg.wormpot & WP_WORMS_DROWN)) w.poison = std::max(w.poison, (int)poison);
         Vector3 dir = Vector3Normalize(Vector3Add(Vector3Subtract(w.pos, p), {0, 1, 0}));
-        w.vel = Vector3Add(w.vel, Vector3Scale(dir, 14 * f));
+        w.vel = Vector3Add(w.vel, Vector3Scale(dir, 14 * f * push * (cfg.wormpot & WP_STICKY ? 0.6f : 1)));
     }
     for (Object &o : objects) {
         float d = Vector3Distance(o.pos, p);
-        if (d >= reach) continue;
+        if (d >= reach || (o.tag >= 0 && o.type == Object::Crate)) continue;
         Vector3 dir = Vector3Normalize(Vector3Add(Vector3Subtract(o.pos, p), {0, 1, 0}));
         o.vel = Vector3Add(o.vel, Vector3Scale(dir, 10 * (1 - d / reach)));
         o.falling = false;
@@ -539,6 +618,7 @@ void Game::stepShots(const Input &in, bool detonate) {
     std::vector<Projectile> spawned;
     auto touches = [&](Vector3 p) {
         for (const Worm &w : worms) if (w.alive && Vector3Distance(p, w.pos) < R + 0.3f) return true;
+        for (const Object &o : objects) if (o.type == Object::Target && Vector3Distance(p, o.pos) < 0.7f) return true;
         return false;
     };
     for (size_t i = 0; i < shots.size();) {
@@ -578,7 +658,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             bool homing = wd.kind == Kind::Homing && (s.fuse += DT) > 0.4f;  // fuse counts flight time: ballistic, then locks on
             if (homing) s.vel = Vector3Lerp(s.vel, Vector3Scale(Vector3Normalize(Vector3Subtract(s.aim, s.pos)), wd.speed), 3 * DT);
             else s.vel.y -= gravity() * DT;
-            if (wd.wind) s.vel.x += wind * 6 * DT;
+            if (wd.wind || (cfg.wormpot & WP_WIND_ALL)) s.vel.x += wind * 6 * DT;
             np = Vector3Add(s.pos, Vector3Scale(s.vel, DT));
             bool impact = s.child || wd.fuse == 0;
             if (terrain.solid(np)) {
@@ -594,7 +674,9 @@ void Game::stepShots(const Input &in, bool detonate) {
         bool gone = s.pos.y < water - 2 || s.pos.x < -20 || s.pos.z < -20 || s.pos.x > W + 20 || s.pos.z > W + 20;
         if (boom) {
             s.pos = np;
-            explode(np, s.child ? wd.cradius : wd.radius, s.child ? wd.cdamage : wd.damage, s.child ? 0 : wd.poison);
+            bool animal = wd.kind == Kind::Sheep || wd.kind == Kind::SuperSheep || wd.kind == Kind::Donkey || wd.kind == Kind::OldWoman;
+            float super = (cfg.wormpot & (animal ? WP_SUPER_ANIMALS : WP_SUPER_EXPLOSIVES)) ? 1.5f : 1;
+            explode(np, s.child ? wd.cradius : wd.radius, (s.child ? wd.cdamage : wd.damage) * super, s.child ? 0 : wd.poison, super);
             if (!s.child && wd.kind != Kind::Airstrike && wd.kind != Kind::Donkey)
                 for (int k = 0; k < wd.clusters; k++)
                     spawned.push_back({Vector3Add(np, {0, 0.5f, 0}), {(rand01() - 0.5f) * 8, 6 + rand01() * 5, (rand01() - 0.5f) * 8}, s.weapon, 0, true, 1});
@@ -616,18 +698,19 @@ void Game::step(const Input &in) {
     if (phase == Phase::Aim && hotSeat > 0) hotSeat = in.turn || in.walk || in.aim || in.buttons ? 0 : hotSeat - 1;
     if (w.alive && (phase == Phase::Aim || phase == Phase::Retreat)) {
         w.yaw += in.turn / 127.0f * 2.5f * DT;
+        const float ws = cfg.wormpot & WP_QUICK_WALK ? 6 : 3;
         if (w.grounded && in.walk && !jumpDelay) {
-            Vector3 np = {w.pos.x + sinf(w.yaw) * in.walk / 127.0f * 3 * DT, w.pos.y, w.pos.z + cosf(w.yaw) * in.walk / 127.0f * 3 * DT};
+            Vector3 np = {w.pos.x + sinf(w.yaw) * in.walk / 127.0f * ws * DT, w.pos.y, w.pos.z + cosf(w.yaw) * in.walk / 127.0f * ws * DT};
             float climb = 0;
             while (climb <= 0.6f && terrain.solid({np.x, np.y - R + climb, np.z})) climb += 0.05f;
             if (climb <= 0.6f && !terrain.solid({np.x, np.y + climb + R, np.z})) { np.y += climb; w.pos = np; }
             int i = 0;
             for (; i < 12 && !terrain.solid({w.pos.x, w.pos.y - R - 0.05f, w.pos.z}); i++) w.pos.y -= 0.05f;
-            if (i == 12) w.vel = Vector3Scale({sinf(w.yaw), 0, cosf(w.yaw)}, in.walk / 127.0f * 3 * WALK_OFF);  // walked off a ledge
+            if (i == 12) w.vel = Vector3Scale({sinf(w.yaw), 0, cosf(w.yaw)}, in.walk / 127.0f * ws * WALK_OFF);  // walked off a ledge
         }
         // W4M: JUMP waits JUMP_WINDOW ticks, a second press in that window makes it a backflip
         bool flip = jumpDelay && (pressed & Input::JUMP);
-        if ((pressed & Input::JUMP) && !jumpDelay && w.grounded && !tool) jumpDelay = JUMP_WINDOW;
+        if ((pressed & Input::JUMP) && !jumpDelay && w.grounded && !tool && !(cfg.wormpot & WP_NO_JUMPING)) jumpDelay = JUMP_WINDOW;
         else if (jumpDelay && (flip || --jumpDelay == 0)) {
             jumpDelay = 0;
             if (w.grounded) {
@@ -722,6 +805,7 @@ void Game::step(const Input &in) {
     }
     case Phase::GameOver: break;
     }
+    if (cfg.mission && phase != Phase::GameOver) missionStep(*this);
 }
 
 uint32_t Game::checksum() const {
@@ -742,9 +826,15 @@ uint32_t Game::checksum() const {
     mix(&jumpDelay, sizeof jumpDelay);
     mix(&selfHurt, sizeof selfHurt);
     mix(&cfg.scheme, sizeof cfg.scheme);
+    mix(&cfg.rules, sizeof cfg.rules);
+    mix(&cfg.wormpot, sizeof cfg.wormpot);
     mix(&suddenDeath, sizeof suddenDeath);
     mix(&raceFinish, sizeof raceFinish);
-    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); }
+    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); }
+    if (cfg.mission) {
+        mix(&run.result, 5 * sizeof(int));
+        mix(run.state.data(), run.state.size()), mix(run.met.data(), run.met.size()), mix(idle.data(), idle.size());
+    }
     for (const auto &a : ammo) mix(a.data(), a.size() * sizeof(int));
     // weapon table: every client must have loaded the same weapons.json
     for (const WeaponDef &wd : WEAPONS) {

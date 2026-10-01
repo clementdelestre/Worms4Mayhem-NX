@@ -1,4 +1,6 @@
 #include "net.h"
+#include "wire.h"
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -6,6 +8,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <arpa/inet.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -16,46 +19,19 @@
 #define MSG_NOSIGNAL 0
 #endif
 
-enum : uint8_t {
-    HELLO = 0x01, WELCOME, ERROR_, LIST_ROOMS = 0x10, ROOM_LIST, CREATE_ROOM, JOIN_ROOM, ROOM_STATE, LEAVE,
-    START = 0x20, INPUTS, TURN_END, DESYNC, REPLAY, CHAT = 0x30, PING, PONG,
-};
-static const uint16_t VERSION = 1;
+using namespace wire;
 
-namespace {
-struct W {
-    std::string b;
-    explicit W(uint8_t ty) : b{0, 0, (char)ty} {}
-    W &u8(uint8_t v) { b += (char)v; return *this; }
-    W &u16(uint16_t v) { return u8(v).u8(v >> 8); }
-    W &u32(uint32_t v) { return u16(v).u16(v >> 16); }
-    W &u64(uint64_t v) { return u32(v).u32(v >> 32); }
-    W &str(const char *s) { size_t n = strnlen(s, 255); u8(n); b.append(s, n); return *this; }
-    std::string done() { size_t n = b.size() - 2; b[0] = n; b[1] = n >> 8; return b; }
-};
-
-struct R {
-    const uint8_t *p, *e;
-    bool ok = true;
-    const uint8_t *take(size_t n) {
-        if ((size_t)(e - p) < n) { ok = false; static const uint8_t z[8] = {}; return z; }
-        p += n;
-        return p - n;
-    }
-    uint8_t u8() { return *take(1); }
-    uint16_t u16() { const uint8_t *q = take(2); return q[0] | q[1] << 8; }
-    uint32_t u32() { uint32_t lo = u16(); return lo | (uint32_t)u16() << 16; }
-    uint64_t u64() { uint64_t lo = u32(); return lo | (uint64_t)u32() << 32; }
-    std::string str() { size_t n = u8(); if ((size_t)(e - p) < n) { ok = false; return {}; } return std::string((const char *)take(n), n); }
-    Input input() { Input in; in.turn = u8(); in.walk = u8(); in.aim = u8(); in.buttons = u8(); return in; }
-};
-}  // namespace
-
-bool Net::connect(const char *host, int port, const char *name) {
+bool netInit() {
 #ifdef __SWITCH__
     static bool init = R_SUCCEEDED(socketInitializeDefault());
-    if (!init) return false;
+    return init;
+#else
+    return true;
 #endif
+}
+
+bool Net::connect(const char *host, int port, const char *name) {
+    if (!netInit()) return false;
     close();
     char ports[8];
     snprintf(ports, sizeof ports, "%d", port);
@@ -198,6 +174,19 @@ void Net::handle(const uint8_t *p, size_t n) {
                 uint8_t v = r.u8();
                 if (i < sizeof(Scheme)) ((uint8_t *)&cfg.scheme)[i] = v;
             }
+        cfg.wormpot = r.ok && r.p < r.e ? r.u32() : 0;
+        cfg.custom.clear();
+        for (int i = 0, n = r.ok && r.p < r.e ? r.u8() : 0; i < n && r.ok; i++) {
+            WeaponDef w{};
+            w.name = r.str();
+            w.kind = (Kind)std::min<int>(r.u8(), (int)Kind::ChangeWorm);
+            for (float *f : {&w.radius, &w.damage, &w.speed, &w.fuse, &w.bounce, &w.cradius, &w.cdamage, &w.poison}) *f = r.f32();
+            for (int *v : {&w.count, &w.clusters, &w.shots, &w.weight}) *v = (int32_t)r.u32();
+            w.wind = r.u8();
+            w.model = r.str();
+            w.icon = r.str();
+            if (r.ok) cfg.custom.push_back(w);
+        }
         inbox.clear();
         batch.clear();
         replay = 0;
@@ -212,7 +201,11 @@ void Net::handle(const uint8_t *p, size_t n) {
     case REPLAY: replay = r.u32(); break;
     case CHAT: {
         uint32_t from = r.u32();
-        events.push_back({Chat, from, r.str()});
+        std::string text = r.str();
+        int voice = 0, hat = 0, cpus = 0, k = 0;
+        if (text[0] != '\1') events.push_back({Chat, from, text});
+        else if (sscanf(text.c_str() + 1, "%d %d %d %n", &voice, &hat, &cpus, &k) == 3)
+            profiles[from] = {{text.substr(1 + k), 0, (uint8_t)voice, (uint8_t)hat}, cpus};
         break;
     }
     case PONG: events.push_back({Pong, r.u32()}); break;
@@ -251,5 +244,83 @@ void Net::start(const GameConfig &c, const std::vector<uint32_t> &own) {
     for (const auto &t : c.teamSetup) w.str(t.name.c_str()).u8(t.cpu).u8(t.voice).u8(t.hat);
     w.u8(sizeof(Scheme));
     for (size_t i = 0; i < sizeof(Scheme); i++) w.u8(((const uint8_t *)&c.scheme)[i]);
+    w.u32(c.wormpot).u8((uint8_t)std::min<size_t>(c.custom.size(), 255));
+    for (size_t i = 0; i < c.custom.size() && i < 255; i++) {
+        const WeaponDef &d = c.custom[i];
+        w.str(d.name.c_str()).u8((uint8_t)d.kind);
+        for (float f : {d.radius, d.damage, d.speed, d.fuse, d.bounce, d.cradius, d.cdamage, d.poison}) w.f32(f);
+        for (int v : {d.count, d.clusters, d.shots, d.weight}) w.u32((uint32_t)v);
+        w.u8(d.wind).str(d.model.c_str()).str(d.icon.c_str());
+    }
     send(w.done());
+}
+
+void Net::sendProfile(const GameConfig::Team &t, int cpus) {
+    char b[300];
+    snprintf(b, sizeof b, "\1%d %d %d %s", t.voice, t.hat, cpus, t.name.c_str());
+    chat(b);
+}
+
+void Net::startMatch(GameConfig c) {
+    std::vector<GameConfig::Team> teams;
+    std::vector<uint32_t> own;
+    for (const NetPlayer &p : players) {
+        if (own.size() == 4) break;
+        auto it = profiles.find(p.id);
+        GameConfig::Team t = p.id == id && !c.teamSetup.empty() ? c.teamSetup[0] : it != profiles.end() ? it->second.team : GameConfig::Team{p.name};
+        t.cpu = 0;
+        teams.push_back(t), own.push_back(p.id);
+    }
+    for (int k = 1; k < c.teams && k < (int)c.teamSetup.size() && own.size() < 4; k++) {
+        GameConfig::Team t = c.teamSetup[k];
+        t.cpu = std::max<uint8_t>(t.cpu, 1);
+        teams.push_back(t), own.push_back(id);
+    }
+    c.teamSetup = teams;
+    c.teams = (int)own.size();
+    start(c, own);
+}
+
+bool LanScan::open() {
+    if (fd >= 0) return true;
+    if (!netInit() || (fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) return false;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one);  // several instances on one desktop
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    sockaddr_in a = {};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(LAN_BEACON_PORT);
+    a.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, (sockaddr *)&a, sizeof a) != 0) { close(); return false; }
+    return true;
+}
+
+void LanScan::close() {
+    if (fd >= 0) ::close(fd);
+    fd = -1;
+    games.clear();
+}
+
+// Beacon: "W4NX", u16 version, u16 tcp port, u32 session, u8 players, u8 maxPlayers, u8 started, str name
+void LanScan::poll(double now) {
+    uint8_t buf[512];
+    sockaddr_in from;
+    socklen_t len = sizeof from;
+    for (ssize_t n; fd >= 0 && (n = recvfrom(fd, buf, sizeof buf, 0, (sockaddr *)&from, &len)) > 0; len = sizeof from) {
+        R r{buf, buf + n};
+        if (n < 4 || memcmp(r.take(4), "W4NX", 4) || r.u16() != VERSION) continue;
+        LanGame g;
+        g.ip = inet_ntoa(from.sin_addr);
+        g.port = r.u16();
+        g.session = r.u32();
+        g.players = r.u8(), g.maxPlayers = r.u8(), g.started = r.u8();
+        g.name = r.str();
+        g.seen = now;
+        if (!r.ok) continue;
+        auto it = std::find_if(games.begin(), games.end(), [&](const LanGame &o) { return o.session == g.session; });
+        if (it == games.end()) games.push_back(g);
+        else g.ip = it->ip, *it = g;  // first address heard wins (loopback and broadcast copies)
+    }
+    games.erase(std::remove_if(games.begin(), games.end(), [&](const LanGame &g) { return now - g.seen > 3; }), games.end());
 }

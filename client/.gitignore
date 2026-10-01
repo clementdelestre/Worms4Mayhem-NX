@@ -10,9 +10,12 @@ shot_aim.png
 assets/
 server.txt
 ai_check
+replay_check
 ui_check
 setup.txt
 ui.png
 build_*/
 romfs/romfs
 .synced-*
+mission_check
+progress.txt

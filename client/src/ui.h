@@ -1,5 +1,7 @@
 #pragma once
 #include "raylib.h"
+#include "mission.h"
+#include "net.h"
 #include "sim.h"
 #include <string>
 #include <vector>
@@ -23,18 +25,25 @@ void controls();  // full-screen controls help page
 
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 struct Frontend {
-    enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit } screen = Title;
-    enum Action { None, StartLocal, StartOnline, Quit };
+    enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit } screen = Title;
+    enum Action { None, StartLocal, StartOnline, Quit, Replays, StartLan, SinglePlayer };
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
 
 private:
     int row = 0, mainRow = 0, mapSel = 0, hats = 0, schemeRow = 0;
-    bool online = false, loaded = false, music = true;
+    bool online = false, lan = false, loaded = false, music = true;  // online: network setup (LAN or server)
     std::string *editing = nullptr;  // desktop text entry target
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;
     bool edit(std::string &s, const char *hint);  // true when s changed (Switch: swkbd, desktop: starts inline entry)
+    // Wormpot slot machine (3 reels) and Weapon Factory (custom_weapons.json, sent to the room in Start)
+    int reel = 0, spinTo[3] = {}, facSel = 0, facRow = 0;
+    float spinEnd[3] = {};
+    std::vector<WeaponDef> customs;
+    void wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, float t);
+    void factory(int dx, int dy, bool ok, bool back);
+    void factoryEdit(int dx, int dy, bool ok, bool back, bool typing, float t);
 };
 
 // In-game HUD and W4M weapon panel (X / Q). The panel selects by holding NEXT_WEAPON until the weapon changes, then
@@ -60,4 +69,17 @@ struct Pause {
     Action update();
     void draw(bool online) const;
 };
+// Replays list (inside Begin/EndDrawing): picked file index, -1 none yet, -2 back. Y toggles `instant` (instant replay).
+int replayList(const std::vector<std::string> &files, int &sel, bool &instant);
+void playbackBar(bool paused, int speed, bool freeCam, float sec, float total, const char *note);  // match playback overlay
+void replayBadge();  // instant replay overlay
+// Network lobby (inside Begin/EndDrawing): LAN games heard, or the room's consoles (one team each) and the host's CPU teams.
+void lanGames(const std::vector<LanGame> &games, int sel, const std::string &status);
+void room(const Net &net, const GameConfig &opt, bool lan, const std::string &status);
+// Single player (inside Begin/EndDrawing): Missions / Challenges list, then the briefing. Mission index to start, -1 none yet, -2 back.
+struct MissionMenu { int tab = 0, sel[2] = {}; bool brief = false; };
+int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p);
+void missionHud(const Game &g, const MissionSpec &m);  // objectives and clock during a mission
+// Mission over (drawn over the match): 0 nothing yet, 1 next mission, 2 retry, 3 back to the list
+int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best, bool hasNext);
 }  // namespace Ui

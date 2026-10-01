@@ -1,0 +1,47 @@
+#pragma once
+#include "sim.h"
+#include <string>
+#include <vector>
+
+// Single-player missions and challenges: JSON files (docs/missions.md) from romfs:/missions (ours) and
+// assets/missions (imported from W4M by tools/w4m-maps). Team 0 is the player. Played through the sim, so deterministic.
+struct MissionSpec {
+    std::string id, name, kind, campaign, map, preview, brief, success, failure;
+    int order = 0, par = 0;  // par: W4M target time (s), 0 = none
+    Scheme scheme;
+    bool endless = false;    // turn_time 0: the turn never runs out (challenges)
+    bool sequence = false;   // targets / crates appear one at a time, in file order
+    bool placeObjects = false;  // also the map's mine / oil drum markers
+    struct Place { std::string marker; Vector3 pos{}; bool set = false; };  // marker name (map JSON "markers") or position
+    struct WormSpec { std::string name; int hp = 100; Place at; };
+    struct TeamSpec { std::string name; uint8_t cpu = 0; bool idle = false, weaponsSet = false; std::vector<std::pair<std::string, int>> weapons; std::vector<WormSpec> worms; };
+    std::vector<TeamSpec> teams;
+    struct ObjectSpec { Object::Type type = Object::Crate; Place at; std::string weapon; bool drop = false; };  // drop: onto the ground below
+    std::vector<ObjectSpec> objects;
+    // Win: every objective met. Lose: player team wiped out or any fail condition.
+    struct Goal {
+        enum Type { KillAll, Kill, Reach, Collect, Destroy, PoisonAll, Survive, Hurt, Time, Turns, WormDies, Unknown } type = Unknown;
+        int team = 1, worm = 0, count = 1, seconds = 0, turns = 0;
+        Place at;
+        float radius = 2;
+    };
+    std::vector<Goal> objectives, fail;
+};
+
+bool loadMission(const std::string &path, MissionSpec &out);
+// All missions whose map is available, sorted by kind, campaign, order.
+std::vector<MissionSpec> listMissions(const char *romfsDir, const char *dataDir);
+GameConfig missionConfig(const MissionSpec &m, uint32_t seed);  // cfg.mission points at m: keep m alive during the match
+std::string goalText(const MissionSpec &m, const MissionSpec::Goal &g, const Game *game);  // "Destroy the targets 3/10"
+Vector3 placeOf(const Game &g, const MissionSpec::Place &p);  // marker / position resolved on the loaded map
+
+// progress.txt: "<mission id> <completed 0/1> <best ticks>" per line
+struct Progress {
+    struct Entry { bool done = false; int best = 0; };
+    std::vector<std::pair<std::string, Entry>> entries;
+    Entry get(const std::string &id) const;
+    void record(const std::string &id, bool done, int ticks);
+    bool unlocked(const std::vector<MissionSpec> &list, size_t i) const;  // missions: previous one of the campaign done
+    void load(const char *path);
+    void save(const char *path) const;
+};

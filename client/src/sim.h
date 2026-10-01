@@ -27,9 +27,12 @@ struct WeaponDef {
     bool wind;
     int weight = 0;  // crate_weight: relative odds in weapon crates (0 = never)
     float poison = 0;  // hp lost per turn by worms caught in the blast (health crate cures)
+    std::string model, icon;  // Weapon Factory: projectile model, icon weapon name (cosmetic, "" = default)
 };
-extern std::vector<WeaponDef> WEAPONS;  // built-in fallback until loadWeapons() succeeds
+extern std::vector<WeaponDef> WEAPONS;  // built-in fallback until loadWeapons() succeeds, then + GameConfig::custom
 bool loadWeapons(const char *path);
+bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out);  // same JSON as weapons.json
+bool saveCustomWeapons(const char *path, const std::vector<WeaponDef> &list);
 
 struct Worm {
     Vector3 pos, vel;
@@ -49,14 +52,16 @@ struct Projectile {
 };
 
 // Battlefield object. Crate: weapon = contents (-1 = health). Mine: fuse < 0 idle, else counting down.
+// Target: mission bullseye, floats until an explosion or a shot reaches it.
 struct Object {
-    enum Type : uint8_t { Crate, Mine, Barrel, Sentry } type;
+    enum Type : uint8_t { Crate, Mine, Barrel, Sentry, Target } type;
     Vector3 pos, vel;
     int weapon;
     float fuse;
     bool falling;  // crate under parachute
     bool dead;     // hit by an explosion: detonates (barrel, weapon crate) or vanishes next step
     int team = -1;  // sentry owner (weapon = its WEAPONS index, fuse = reload left)
+    int tag = -1;   // mission object index; tagged crates and targets are pinned in place, crates can't be blown up
 };
 
 // Things that happened this tick, for audio/fx; not part of the checksum. worm/weapon = -1 when not applicable.
@@ -90,6 +95,16 @@ struct Scheme {
     enum : uint8_t { FUSE_RANDOM = 6, SD_BOTH = 0, SD_WATER, SD_ONE_HP, SET_DEFAULT = 0, SET_BNG, SET_CRATES, SET_UNLIMITED };
 };
 static_assert(sizeof(Scheme) == 17, "Scheme must stay plain bytes");
+// W4M Wormpot modes (FETXT.WPotName.*), one bit each; bits [first, last) of WORMPOT_REELS form one slot reel.
+enum Wormpot : uint32_t {
+    WP_DOUBLE_DAMAGE = 1, WP_SUPER_EXPLOSIVES = 2, WP_SUPER_ANIMALS = 4, WP_WIND_ALL = 8, WP_WORMS_DROWN = 16,
+    WP_QUICK_WALK = 32, WP_SLIPPY = 64, WP_STICKY = 128, WP_LOW_GRAVITY = 256, WP_NO_JUMPING = 512, WP_MAX_FALL = 1024,
+    WP_CRATE_SHOWER = 2048, WP_CRATE_DROPS = 4096, WP_MAX_HEALTH = 8192, WP_GOLIATH = 16384, WP_ONE_SHOT = 32768,
+    WP_VAMPIRE = 65536, WP_VITAL_WORM = 131072,
+};
+struct WormpotMode { const char *name, *help; };
+extern const WormpotMode WORMPOT_MODES[18];  // [bit index]
+extern const int WORMPOT_REELS[4];          // reel r = bits WORMPOT_REELS[r] .. WORMPOT_REELS[r + 1] - 1
 struct SchemePreset { const char *name; Scheme s; };
 extern const std::vector<SchemePreset> SCHEMES;  // [0] = Standard; values from W4M Data/Tweak/LOCAL.XOM
 struct GameConfig {
@@ -100,6 +115,16 @@ struct GameConfig {
     struct Team { std::string name; uint8_t cpu = 0, voice = 0, hat = 0; };  // cpu: 0 = human, 1..3 = AI level
     std::vector<Team> teamSetup;  // per team; may be shorter than teams (defaults apply)
     Scheme scheme;
+    uint32_t wormpot = 0;            // Wormpot flags
+    std::vector<WeaponDef> custom;   // host's Weapon Factory weapons, appended to the loaded table at start()
+    const struct MissionSpec *mission = nullptr;  // single-player mission (mission.h), owned by the caller
+};
+
+// Mission progress, driven by mission.cpp (checksummed). result: 0 running, 1 success, -1 failure.
+struct MissionRun {
+    int result = 0, ticks = 0, collected = 0, destroyed = 0, turns = 0;
+    std::vector<uint8_t> state;  // per spec object: 0 waiting (sequence), 1 placed, 2 collected / destroyed / lost
+    std::vector<uint8_t> met;    // per objective: latched once met
 };
 
 enum class Phase { Aim, Flying, Retreat, Settle, GameOver };
@@ -134,6 +159,8 @@ struct Game {
     float water = Terrain::WATER;    // rises in sudden death; terrain.* keeps using the constant
     bool suddenDeath = false;
     Vector3 raceFinish{};  // rope race: terrain.finish, or a deterministic fallback
+    std::vector<uint8_t> idle;  // per team: never takes a turn (mission captives)
+    MissionRun run;
 
     GameConfig cfg;
 
@@ -154,9 +181,11 @@ private:
     void drown(Worm &w);
     void stepRope(Worm &w);
     void stepShots(const Input &in, bool detonate);
-    void explode(Vector3 p, float radius, float damage, float poison = 0);
+    void explode(Vector3 p, float radius, float damage, float poison = 0, float push = 1);
     void hurt(Worm &w, int dmg);  // applies the vampire/karma/highlander rules for the active worm
     bool dropPoint(Vector3 &out);
     bool addObject(Object::Type t, float lift);
     void stepObjects();
 };
+void missionStart(Game &g);  // mission.cpp: worms, ammo, objects from cfg.mission
+void missionStep(Game &g);   // mission.cpp: sequences, objectives, result

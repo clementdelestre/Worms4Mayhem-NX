@@ -14,12 +14,15 @@ struct Terrain {
     std::vector<std::vector<Part>> parts;
     std::vector<bool> dirty;
     std::vector<std::pair<int, std::vector<Part>>> pending;  // rebuilt chunks held back until the dirty set is done
+    std::vector<std::pair<int, signed char>> *undo = nullptr;  // when set, carve() logs (voxel, old density) here
     Material mat{};  // loaded on first remesh, so the sim runs without a GL context
 
     // Filled by load(): fixed spawn points (team-major order), optional race finish, theme palette.
     std::vector<Vector3> spawns;
     bool hasFinish = false;
     Vector3 finish{};
+    struct Marker { std::string name, type; Vector3 pos; };  // W4M script markers (missions): worm, target, crate, mine...
+    std::vector<Marker> markers;
     Color sky = {120, 170, 230, 255}, top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255};
     std::string theme;  // lowercase theme name (music/<theme>.ogg), empty for the procedural fallback
     std::string time = "day";  // map's "time": day/evening/night (Fx::theme picks the matching sky/water set)

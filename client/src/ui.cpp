@@ -28,6 +28,7 @@ const int A = GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, B = GAMEPAD_BUTTON_RIGHT_FACE_DOW
           MINUS = GAMEPAD_BUTTON_MIDDLE_LEFT, UP = GAMEPAD_BUTTON_LEFT_FACE_UP, DOWN = GAMEPAD_BUTTON_LEFT_FACE_DOWN, LEFT = GAMEPAD_BUTTON_LEFT_FACE_LEFT,
           RIGHT = GAMEPAD_BUTTON_LEFT_FACE_RIGHT, PLUS = GAMEPAD_BUTTON_MIDDLE_RIGHT;
 const int PANEL_COLS = 8;
+const int MAX_CUSTOM = 8;  // Weapon Factory slots
 #ifdef __SWITCH__
 const char *APPLET = "-";  // controller applet glyph, Switch only
 #else
@@ -390,15 +391,48 @@ static bool swkbd(std::string &s, const char *hint) {
     return true;
 }
 
-// system controller applet: lets players pair, split or turn single Joy-Cons sideways
-static void controllerApplet() {
+// system controller applet: lets players pair, split or turn single Joy-Cons sideways.
+// players: controllers the match needs; team k always lands on pad k afterwards (padInitialize No1..No4 order).
+static void controllerApplet(int players) {
     HidLaControllerSupportArg arg;
     HidLaControllerSupportResultInfo info;
     hidLaCreateControllerSupportArg(&arg);
-    arg.hdr.player_count_max = 4;
+    arg.hdr.player_count_min = arg.hdr.player_count_max = (s8)Clamp(players, 1, 4);
+    arg.hdr.enable_single_mode = players == 1;  // lets 1 player stay in handheld mode
+    arg.hdr.enable_identification_color = 1;
+    for (int i = 0; i < 4; i++) arg.identification_color[i] = {TEAM_COLORS[i].r, TEAM_COLORS[i].g, TEAM_COLORS[i].b, TEAM_COLORS[i].a};
     hidLaShowControllerSupport(&info, &arg);
 }
+
+// human (non-CPU) teams: the applet's player count, each later mapped to the same-index pad
+static int humanTeams(const GameConfig &cfg) {
+    int n = 0;
+    for (int k = 0; k < cfg.teams; k++) if (!cfg.teamSetup[k].cpu) n++;
+    return n;
+}
+static int connectedPads() {
+    int n = 0;
+    for (int i = 0; i < 4; i++) if (IsGamepadAvailable(i)) n++;
+    return n;
+}
+// short device label for the setup card ("Pro Controller", "Joy-Con L"...)
+static const char *padStyle(int pad) {
+    const char *n = GetGamepadName(pad);
+    if (strstr(n, "Pro")) return "Pro Controller";
+    if (strstr(n, "Handheld")) return "Handheld";
+    if (strstr(n, "Dual")) return "Dual Joy-Con";
+    if (strstr(n, "left")) return "Joy-Con L";
+    if (strstr(n, "right")) return "Joy-Con R";
+    return "Controller";
+}
 #endif
+
+// Network setup: card 0 is this console's player, the other cards are the host's CPU teams.
+static void netTeams(GameConfig &cfg, int dx) {
+    cfg.teamSetup[0].cpu = 0;
+    for (size_t k = 1; k < cfg.teamSetup.size(); k++)
+        if (!cfg.teamSetup[k].cpu) cfg.teamSetup[k].cpu = dx < 0 ? 3 : 1;
+}
 
 bool Frontend::edit(std::string &s, const char *hint) {
 #ifdef __SWITCH__
@@ -417,14 +451,19 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
     hats = Models::hatCount();
     cfg.teamSetup.resize(4);
     for (int t = 0; t < 4; t++) cfg.teamSetup[t] = {DEFAULT_TEAMS[t], 0, (uint8_t)(Audio::voiceBanks() ? t % Audio::voiceBanks() : 0), 0};
-    char *txt = LoadFileText(DATA_DIR "setup.txt");
+    if (!loadCustomWeapons(DATA_DIR "custom_weapons.json", customs)) customs.clear();
+    if (customs.size() > (size_t)MAX_CUSTOM) customs.resize(MAX_CUSTOM);
+    bool netFile = online && FileExists(DATA_DIR "setup_net.txt");
+    if (online && !netFile) cfg.teams = 1;
+    char *txt = LoadFileText(netFile ? DATA_DIR "setup_net.txt" : DATA_DIR "setup.txt");
     if (!txt) return;
     for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
         char s[64] = "", nm[64] = "";
         int a = 0, b = 0, c = 0, n = 0;
-        if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, 2, 4);
+        if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, online ? 1 : 2, 4);
         else if (sscanf(line, "worms %d", &a) == 1) cfg.wormsPerTeam = Clamp(a, 1, 4);
         else if (sscanf(line, "rules %d", &a) == 1) cfg.rules = (uint32_t)a;
+        else if (sscanf(line, "wormpot %d", &a) == 1) cfg.wormpot = (uint32_t)a & ((1u << WORMPOT_REELS[3]) - 1);
         else if (!strncmp(line, "scheme ", 7)) {
             char *p = line + 7;
             for (size_t i = 0; i < sizeof(Scheme); i++) {
@@ -452,7 +491,8 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
 }
 
 void Frontend::saveSetup(const GameConfig &cfg) const {
-    std::string s = TextFormat("teams %d\nworms %d\nrules %u\nmap %s\nscheme", cfg.teams, cfg.wormsPerTeam, cfg.rules, cfg.map.empty() ? "-" : cfg.map.c_str());
+    std::string s = TextFormat("teams %d\nworms %d\nrules %u\nwormpot %u\nmap %s\nscheme", cfg.teams, cfg.wormsPerTeam, cfg.rules, cfg.wormpot,
+                               cfg.map.empty() ? "-" : cfg.map.c_str());
     for (size_t i = 0; i < sizeof(Scheme); i++) s += TextFormat(" %d", ((const uint8_t *)&cfg.scheme)[i]);
     s += "\n";
     for (int t = 0; t < (int)cfg.teamSetup.size(); t++) {
@@ -460,7 +500,7 @@ void Frontend::saveSetup(const GameConfig &cfg) const {
         const char *v = Audio::voiceBankName(m.voice);
         s += TextFormat("team %d %d %d %s %s\n", t, m.cpu, m.hat, v[0] ? v : "-", m.name.c_str());
     }
-    SaveFileText(DATA_DIR "setup.txt", s.data());
+    SaveFileText(online ? DATA_DIR "setup_net.txt" : DATA_DIR "setup.txt", s.data());
 }
 
 Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name) {
@@ -492,29 +532,32 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         break;
     }
     case Main: {
-        static const char *ITEMS[] = {"Local game", "Online game", "Options"};
-        mainRow = clampWrap(mainRow + dy, 3);
-        logo(640, 30, 460);
-        for (int i = 0; i < 3; i++) {
-            Rectangle r = {440, 330 + i * 100.0f, 400, 80};
+        static const char *ITEMS[] = {"Single player", "Local (same console)", "LAN", "Online (server)", "Replays", "Options"};
+        const int n = sizeof ITEMS / sizeof *ITEMS;
+        mainRow = clampWrap(mainRow + dy, n);
+        logo(640, 24, 420);
+        for (int i = 0; i < n; i++) {
+            Rectangle r = {420, 250 + i * 70.0f, 440, 60};
             panel(r, i == mainRow);
-            text(ITEMS[i], 640, r.y + 20, 40, i == mainRow ? GOLDEN : WHITE, 1);
+            text(ITEMS[i], 640, r.y + 13, 34, i == mainRow ? GOLDEN : WHITE, 1);
         }
         hints({{"A", "Enter", "Select"}, {"B", "Esc", "Back"}});
         if (back) screen = Title;
         if (ok) {
-            if (mainRow == 2) screen = Options, row = 0;
-            else screen = Setup, online = mainRow == 1, row = 0;
+            if (mainRow == 0) act = SinglePlayer;
+            else if (mainRow == 5) screen = Options, row = 0;
+            else if (mainRow == 4) act = Replays;
+            else screen = Setup, online = mainRow > 1, lan = mainRow == 2, row = 0, loaded = false;  // reload: net setup has its own file
         }
         break;
     }
     case Options: {
-        row = clampWrap(row + dy, 4);
+        row = clampWrap(row + dy, 5);
         text("OPTIONS", 640, 60, 60, GOLDEN, 1);
         std::string portS = TextFormat("%d", port);
-        const char *labels[] = {"Player name", "Server", "Music", "Controls"};
-        const std::string vals[] = {name, host + ":" + portS, music ? "On" : "Off", ">"};
-        for (int i = 0; i < 4; i++) {
+        const char *labels[] = {"Player name", "Server", "Music", "Controls", "Weapon Factory"};
+        const std::string vals[] = {name, host + ":" + portS, music ? "On" : "Off", ">", TextFormat("%d / %d  >", (int)customs.size(), MAX_CUSTOM)};
+        for (int i = 0; i < 5; i++) {
             Rectangle r = {290, 180 + i * 90.0f, 700, 70};
             panel(r, i == row);
             text(labels[i], r.x + 30, r.y + 18, 32, i == row ? GOLDEN : WHITE);
@@ -526,9 +569,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (ok && row == 0) edit(name, "Player name");
         if (ok && row == 1) edit(host, "Server address");
         if (ok && row == 3) screen = Controls;
+        if (ok && row == 4) screen = Factory, facSel = 0;
         if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
         else if (row == 1) hints({{"A", "Enter", "Edit address"}, {"D-pad", "Left/Right", "Port"}, {"B", "Esc", "Save & back"}});
-        else hints({{"A", "Enter", row == 2 ? "Toggle" : row == 3 ? "Open" : "Edit"}, {"B", "Esc", "Save & back"}});
+        else hints({{"A", "Enter", row == 2 ? "Toggle" : row >= 3 ? "Open" : "Edit"}, {"B", "Esc", "Save & back"}});
         if (back) {
             for (char &c : name) if (c == ' ') c = '_';
             SaveFileText(DATA_DIR "server.txt", (char *)TextFormat("%s %d %s\n", host.c_str(), port, name.c_str()));
@@ -541,6 +585,9 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         hints({{"B", "Esc", "Back"}});
         if (back || ok) screen = Options;
         break;
+    case Wormpot: wormpot(cfg, dx, dy, ok, back, t); break;
+    case Factory: factory(dx, dy, ok, back); break;
+    case FactoryEdit: factoryEdit(dx, dy, ok, back, typing, t); break;
     case SchemeEdit: {
         const int n = (int)sizeof(Scheme);
         schemeRow = clampWrap(schemeRow + dy, n + 1);
@@ -576,11 +623,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         for (int k = 0; k < cfg.teams; k++) for (int f = 0; f < 4; f++) ids.push_back(100 + k * 4 + f);
         ids.push_back(200), ids.push_back(201), ids.push_back(299);
         for (int r = 0; r < 7; r++) ids.push_back(300 + r);
+        ids.push_back(350);
         ids.push_back(400);
         row = clampWrap(row + dy, (int)ids.size());
         int id = ids[row];
         int nb = Audio::voiceBanks();
-        if (id == 0) cfg.teams = Clamp(cfg.teams + dx, 2, 4);
+        if (id == 0) cfg.teams = Clamp(cfg.teams + dx, online ? 1 : 2, 4);
         if (id >= 100 && id < 200) {
             GameConfig::Team &tm = cfg.teamSetup[(id - 100) / 4];
             int k = (id - 100) / 4;
@@ -603,16 +651,18 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         int preset = presetOf(cfg.scheme), np = (int)SCHEMES.size();
         if (id == 299 && dx) cfg.scheme = SCHEMES[clampWrap(preset < 0 ? (dx > 0 ? 0 : np - 1) : preset + dx, np)].s;
         if (id == 299 && ok) screen = SchemeEdit, schemeRow = 0;
+        if (id == 350 && ok) screen = Wormpot, reel = 0;
         cfg.map = maps.empty() ? "" : maps[std::min(mapSel, (int)maps.size() - 1)];
+        if (online) netTeams(cfg, dx);
 
-        text(online ? "ONLINE MATCH" : "LOCAL MATCH", 640, 18, 48, GOLDEN, 1);
+        text(online ? lan ? "LAN MATCH" : "ONLINE MATCH" : "LOCAL MATCH", 640, 18, 48, GOLDEN, 1);
         auto value = [&](int vid, Rectangle r, const char *label, const std::string &v, float size) {
             bool hi = ids[row] == vid;
             if (hi) DrawRectangleRounded(r, 0.4f, 6, {255, 210, 60, 70});
             text(label, r.x + 10, r.y + (r.height - size) / 2, size, hi ? GOLDEN : WHITE);
             text(TextFormat(hi ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + (r.height - size) / 2, size, WHITE, 2);
         };
-        value(0, {40, 86, 600, 40}, "Teams", TextFormat("%d", cfg.teams), 28);
+        value(0, {40, 86, 600, 40}, "Teams", online ? TextFormat("You + %d CPU", cfg.teams - 1) : TextFormat("%d", cfg.teams), 28);
         static const char *CTRL[] = {"Human", "CPU 1", "CPU 2", "CPU 3"};
         for (int k = 0; k < cfg.teams; k++) {
             GameConfig::Team &tm = cfg.teamSetup[k];
@@ -622,9 +672,16 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             bool hiName = ids[row] == 100 + k * 4, ed = editing == &tm.name;
             if (hiName) DrawRectangleRounded({card.x + 36, card.y + 10, 540, 38}, 0.4f, 6, {255, 210, 60, 70});
             text(TextFormat("%s%s", tm.name.c_str(), ed && fmodf(t, 1) < 0.5f ? "_" : ""), card.x + 44, card.y + 12, 32, TEAM_COLORS[k]);
-            if (!online && !tm.cpu) text(!k || IsGamepadAvailable(k) ? TextFormat("Controller %d", k + 1) : "Controller 1 (shared)", card.x + card.width - 24, card.y + 18, 20, LIGHTGRAY, 2);
+            if (!online && !tm.cpu) {
+#ifdef __SWITCH__
+                const char *lbl = (!k || IsGamepadAvailable(k)) ? TextFormat("P%d %s", k + 1, padStyle(k)) : "Controller 1 (shared)";
+#else
+                const char *lbl = (!k || IsGamepadAvailable(k)) ? TextFormat("Controller %d", k + 1) : "Controller 1 (shared)";
+#endif
+                text(lbl, card.x + card.width - 24, card.y + 18, 20, LIGHTGRAY, 2);
+            }
             const char *hat = !hats ? "-" : tm.hat ? Models::hatName(tm.hat - 1) : "None";
-            value(101 + k * 4, {card.x + 36, card.y + 50, 540, 24}, "Player", CTRL[tm.cpu], 22);
+            value(101 + k * 4, {card.x + 36, card.y + 50, 540, 24}, "Player", online && !k ? "You (this console)" : CTRL[tm.cpu], 22);
             value(102 + k * 4, {card.x + 36, card.y + 74, 540, 24}, "Voice", nb ? Audio::voiceBankName(tm.voice) : "-", 22);
             value(103 + k * 4, {card.x + 36, card.y + 98, 540, 24}, "Hat", hat, 22);
         }
@@ -635,25 +692,33 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         text(mapTitle(cfg.map).c_str(), 930, 140, 28, WHITE);
         text(TextFormat("%d / %d", mapSel + 1, (int)maps.size()), 930, 176, 20, LIGHTGRAY);
         value(200, {920, 230, 330, 40}, "Worms", TextFormat("%d", cfg.wormsPerTeam), 28);
-        text(online ? "Teams = players in the room" : "One controller per team, or share one", 930, 280, 18, LIGHTGRAY);
+        text(online ? "+1 team per console that joins" : "One controller per team, or share one", 930, 280, 18, LIGHTGRAY);
         popup({672, 330, 584, 262});
         value(299, {690, 342, 548, 28}, "Scheme", preset < 0 ? "Custom" : SCHEMES[preset].name, 22);
         for (int r = 0; r < 7; r++)
-            value(300 + r, {690, 372 + r * 29.0f, 548, 28}, RULE_LABELS[r], cfg.rules & (1u << r) ? "ON" : "off", 22);
+            value(300 + r, {690, 372 + r * 27.0f, 548, 26}, RULE_LABELS[r], cfg.rules & (1u << r) ? "ON" : "off", 22);
+        int pots = 0, pot = 0;
+        for (int b = 0; b < WORMPOT_REELS[3]; b++) if (cfg.wormpot & (1u << b)) pots++, pot = b;
+        value(350, {690, 372 + 7 * 27.0f, 548, 26}, "Wormpot", !pots ? "None" : pots == 1 ? WORMPOT_MODES[pot].name : TextFormat("%d modes", pots), 22);
         Rectangle go = {860, 608, 390, 70};
         panel(go, ids[row] == 400);
-        text(online ? "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ids[row] == 400 ? GOLDEN : WHITE, 1);
+        text(online ? lan ? "FIND GAMES" : "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ids[row] == 400 ? GOLDEN : WHITE, 1);
         if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
         else if (id == 299) hints({{"D-pad", "Left/Right", "Preset"}, {"A", "Enter", "Edit scheme"}, {"B", "Esc", "Back"}});
+        else if (id == 350) hints({{"A", "Enter", "Open Wormpot"}, {"B", "Esc", "Back"}});
         else if (online) hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Go online"}, {"B", "Esc", "Back"}});
         else hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Start"}, {APPLET, nullptr, "Controllers"}, {"B", "Esc", "Back"}});
 #ifdef __SWITCH__
-        if (!online && P({MINUS}, {})) controllerApplet();
+        if (!online && P({MINUS}, {})) controllerApplet(humanTeams(cfg));
 #endif
         if (back) saveSetup(cfg), screen = Main;
         if ((ok && id == 400) || (!typing && P({PLUS}, {}))) {
             saveSetup(cfg);
-            act = online ? StartOnline : StartLocal;
+#ifdef __SWITCH__
+            // 2+ human teams, or not enough pads for them yet: let players pair up before the match starts
+            if (!online) { int hu = humanTeams(cfg); if (hu >= 2 || connectedPads() < hu) controllerApplet(hu); }
+#endif
+            act = online ? lan ? StartLan : StartOnline : StartLocal;
         }
         break;
     }
@@ -669,15 +734,199 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     if (act != None) {
         for (int k = 0; k < 4; k++) Audio::setTeamVoice(k, cfg.teamSetup[k].voice);
         cfg.teamSetup.resize(cfg.teams);
+        cfg.custom = customs;
         loaded = false;  // reload (and re-pad to 4 teams) next time the menu shows
     }
     return act;
+}
+
+// ---------------------------------------------------------------- wormpot & weapon factory
+
+namespace {
+int reelSize(int r) { return WORMPOT_REELS[r + 1] - WORMPOT_REELS[r]; }
+int reelMode(uint32_t wp, int r) {  // -1 = empty reel
+    for (int b = WORMPOT_REELS[r]; b < WORMPOT_REELS[r + 1]; b++) if (wp & (1u << b)) return b - WORMPOT_REELS[r];
+    return -1;
+}
+void setReel(uint32_t &wp, int r, int m) {
+    for (int b = WORMPOT_REELS[r]; b < WORMPOT_REELS[r + 1]; b++) wp &= ~(1u << b);
+    if (m >= 0) wp |= 1u << (WORMPOT_REELS[r] + m);
+}
+const char *modeName(int r, int m) { return m < 0 ? "- Empty Reel -" : WORMPOT_MODES[WORMPOT_REELS[r] + m].name; }
+
+// centred, word-wrapped to width w
+void wrapped(const char *s, float cx, float y, float w, float size, Color c) {
+    std::string line, word;
+    for (const char *p = s;; p++) {
+        if (*p && *p != ' ') { word += *p; continue; }
+        std::string next = line.empty() ? word : line + " " + word;
+        if (textWidth(next.c_str(), size) > w && !line.empty()) text(line.c_str(), cx, y, size, c, 1), y += size + 4, next = word;
+        line = next, word.clear();
+        if (!*p) break;
+    }
+    if (!line.empty()) text(line.c_str(), cx, y, size, c, 1);
+}
+
+const char *LAUNCH[] = {"Bazooka", "Grenade", "Airstrike", "Homing"};
+const char *SHOT_MODELS[] = {"bazooka", "grenade", "cluster", "banana", "holy", "homing", "airstrike", "dynamite", "gas", "arrow", "sheep", "mine", "barrel", "starburst"};
+const char *ICONS[] = {"Secret Weapon", "Bazooka", "Grenade", "Cluster Grenade", "Banana Bomb", "Holy Hand Grenade", "Homing Missile", "Airstrike",
+                       "Super Airstrike", "Dynamite", "Gas Canister", "Sheep", "Pipe Gun", "Tail Nail", "Mad Cow Strike", "Bubble Trubble"};
+int launchOf(const WeaponDef &w) { return w.kind == Kind::Airstrike ? 2 : w.kind == Kind::Homing ? 3 : w.fuse > 0 ? 1 : 0; }
+template <size_t N> int indexOf(const char *(&list)[N], const std::string &v) {
+    for (size_t i = 0; i < N; i++) if (v == list[i]) return (int)i;
+    return 0;
+}
+}  // namespace
+
+std::string iconOf(const WeaponDef &w) { return weaponIcon(w.icon.empty() ? w.name : w.icon); }
+
+void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, float t) {
+    bool spinning = false;
+    for (int r = 0; r < 3; r++) {
+        if (spinEnd[r] > 0 && t >= spinEnd[r]) spinEnd[r] = 0, setReel(cfg.wormpot, r, spinTo[r]), Audio::play(Audio::Sfx::Tick);
+        spinning |= spinEnd[r] > 0;
+    }
+    reel = clampWrap(reel + dx, 3);
+    if (dy && !spinning) setReel(cfg.wormpot, reel, clampWrap(reelMode(cfg.wormpot, reel) + 1 + dy, reelSize(reel) + 1) - 1);
+    if (!spinning && P({X}, {KEY_S}))
+        for (int r = 0; r < 3; r++) spinEnd[r] = t + 1 + 0.6f * r, spinTo[r] = GetRandomValue(-1, reelSize(r) - 1);
+    if (!spinning && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) cfg.wormpot = 0;
+
+    text("WORMPOT", 640, 18, 48, GOLDEN, 1);
+    popup({120, 84, 1040, 500});
+    image("fe/icon_wxpot", {140, 96, 96, 96});
+    text("Wormpot modifies the game rules to create new ways to play.", 660, 120, 24, WHITE, 1);
+    static const char *REELS[] = {"Weapons", "Worms", "Crates & Energy"};
+    for (int r = 0; r < 3; r++) {
+        Rectangle box = {190 + r * 310.0f, 210, 280, 270};
+        text(REELS[r], box.x + box.width / 2, box.y - 36, 28, r == reel ? GOLDEN : WHITE, 1);
+        DrawRectangleRounded(box, 0.12f, 6, {20, 24, 36, 255});
+        int n = reelSize(r) + 1, cur = reelMode(cfg.wormpot, r) + 1;
+        float scroll = 0;
+        if (spinEnd[r] > 0) {
+            float k = (t + r * 0.37f) * 14;
+            cur = (int)k % n, scroll = k - floorf(k);
+        }
+        BeginScissorMode((int)box.x, (int)box.y + 4, (int)box.width, (int)box.height - 8);
+        for (int k = -2; k <= 2; k++) {
+            float y = box.y + box.height / 2 - 14 + (k - scroll) * 90;
+            text(modeName(r, clampWrap(cur + k, n) - 1), box.x + box.width / 2, y, 24, k ? Fade(LIGHTGRAY, 0.6f) : WHITE, 1);
+        }
+        EndScissorMode();
+        DrawRectangleLinesEx({box.x, box.y + box.height / 2 - 40, box.width, 80}, 3, GOLDEN);
+        DrawRectangleRoundedLinesEx(box, 0.12f, 6, r == reel ? 5 : 2, r == reel ? GOLDEN : GRAY);
+    }
+    int m = reelMode(cfg.wormpot, reel);
+    wrapped(m < 0 ? "No wormpot mode selected on this reel." : WORMPOT_MODES[WORMPOT_REELS[reel] + m].help, 640, 500, 900, 24, WHITE);
+    text(spinning ? "Spinning..." : "Spin those reels!", 640, 600, 30, GOLDEN, 1);
+    hints({{"D-pad", "Left/Right", "Reel"}, {"D-pad", "Up/Down", "Nudge"}, {"X", "S", "Spin"}, {"Y", "R", "Reset"}, {"B", "Esc", "Back"}});
+    if ((back || ok) && !spinning) screen = Setup;
+}
+
+void Frontend::factory(int dx, int dy, bool ok, bool back) {
+    (void)dx;
+    int n = (int)customs.size(), slots = std::min(n + 1, MAX_CUSTOM);
+    facSel = clampWrap(facSel + dy, slots);
+    text("WEAPON FACTORY", 640, 18, 48, GOLDEN, 1);
+    popup({290, 84, 700, 590});
+    for (int i = 0; i < slots; i++) {
+        Rectangle r = {310, 100 + i * 70.0f, 660, 62};
+        bool hi = i == facSel;
+        if (hi) DrawRectangleRounded(r, 0.3f, 6, {255, 210, 60, 70});
+        if (i == n) { text("+ Create a weapon", r.x + r.width / 2, r.y + 16, 28, hi ? GOLDEN : WHITE, 1); continue; }
+        const WeaponDef &w = customs[i];
+        if (!image(iconOf(w), {r.x + 8, r.y + 3, 56, 56})) DrawRectangleRounded({r.x + 8, r.y + 3, 56, 56}, 0.3f, 4, GRAY);
+        text(w.name.c_str(), r.x + 80, r.y + 6, 28, hi ? GOLDEN : WHITE);
+        text(TextFormat("%s  -  %.0f dmg, radius %.1f%s", LAUNCH[launchOf(w)], w.kind == Kind::Airstrike ? w.cdamage : w.damage,
+                        w.kind == Kind::Airstrike ? w.cradius : w.radius, w.clusters ? TextFormat(", %d x %.0f", w.clusters, w.cdamage) : ""),
+             r.x + 80, r.y + 36, 18, LIGHTGRAY);
+    }
+    hints({{"A", "Enter", facSel == n ? "Create" : "Edit"}, {"Y", "Delete", "Delete"}, {"B", "Esc", "Save & back"}});
+    if (ok && facSel == n) {
+        WeaponDef w = {TextFormat("Custom %d", n + 1), Kind::Shell, 3, 45, 30, 0, 0, 1.5f, 15, 1, 0, 1, true, 2};
+        w.model = "bazooka", w.icon = "Secret Weapon";
+        customs.push_back(w);
+    }
+    if (ok) screen = FactoryEdit, facRow = 0;
+    if (facSel < n && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_DELETE})) customs.erase(customs.begin() + facSel);
+    if (back) {
+        if (!saveCustomWeapons(DATA_DIR "custom_weapons.json", customs)) TraceLog(LOG_WARNING, "cannot save custom_weapons.json");
+        screen = Options;
+    }
+}
+
+void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, float t) {
+    if (customs.empty()) { screen = Factory; return; }
+    WeaponDef &w = customs[std::min<int>(facSel, (int)customs.size() - 1)];
+    int launch = launchOf(w);
+    struct Num { const char *label; float *f; int *i; float lo, hi, step; const char *fmt; };
+    const Num nums[] = {
+        {"Blast radius", &w.radius, nullptr, 0.5f, 8, 0.5f, "%.1f m"}, {"Damage", &w.damage, nullptr, 0, 100, 5, "%.0f"},
+        {"Launch speed", &w.speed, nullptr, 5, 50, 1, "%.0f"}, {"Fuse", &w.fuse, nullptr, 1, 5, 0.5f, "%.1f s"},
+        {"Bounce", &w.bounce, nullptr, 0, 1, 0.05f, "%.2f"}, {launch == 2 ? "Missiles" : "Clusters", nullptr, &w.clusters, 0, 10, 1, "%d"},
+        {launch == 2 ? "Missile radius" : "Cluster radius", &w.cradius, nullptr, 0.5f, 5, 0.5f, "%.1f m"},
+        {launch == 2 ? "Missile damage" : "Cluster damage", &w.cdamage, nullptr, 0, 60, 5, "%.0f"},
+        {"Crate weight", nullptr, &w.weight, 0, 10, 1, "%d"}, {"Ammo", nullptr, &w.count, -1, 9, 1, "%d"},
+    };
+    const int N = 5 + (int)(sizeof nums / sizeof *nums);  // name, launch, model, icon, wind + numbers
+    facRow = clampWrap(facRow + dy, N);
+    if (dx) switch (facRow) {
+    case 1:
+        launch = clampWrap(launch + dx, 4);
+        w.kind = launch == 2 ? Kind::Airstrike : launch == 3 ? Kind::Homing : Kind::Shell;
+        w.fuse = launch == 1 ? fmaxf(w.fuse, 3) : 0;
+        if (launch == 2 && !w.clusters) w.clusters = 5;
+        break;
+    case 2: w.model = SHOT_MODELS[clampWrap(indexOf(SHOT_MODELS, w.model) + dx, (int)(sizeof SHOT_MODELS / sizeof *SHOT_MODELS))]; break;
+    case 3: w.icon = ICONS[clampWrap(indexOf(ICONS, w.icon) + dx, (int)(sizeof ICONS / sizeof *ICONS))]; break;
+    case 4: w.wind = !w.wind; break;
+    default: {
+        const Num &k = nums[facRow - 5];
+        if (k.f == &w.fuse && launch != 1) break;  // only grenades have a fuse
+        if (k.f) *k.f = Clamp(roundf((*k.f + dx * k.step) / k.step) * k.step, k.lo, k.hi);
+        else *k.i = (int)Clamp(*k.i + dx, k.lo, k.hi);
+        if (k.i == &w.clusters && launch == 2) w.clusters = std::max(w.clusters, 1);
+    }
+    }
+    if (ok && facRow == 0) edit(w.name, "Weapon name");
+    if (ok && facRow == 4) w.wind = !w.wind;
+
+    text("WEAPON FACTORY", 640, 18, 48, GOLDEN, 1);
+    popup({200, 80, 640, 600});
+    Rectangle pv = {870, 120, 300, 300};
+    panel(pv, false);
+    if (!image(iconOf(w), {pv.x + 50, pv.y + 30, 200, 200})) text("?", pv.x + 150, pv.y + 80, 90, WHITE, 1);
+    text(w.name.c_str(), pv.x + 150, pv.y + 244, 28, GOLDEN, 1);
+    wrapped("In every match's weapon panel. Online, the host's weapons are used.", 1020, 444, 300, 20, LIGHTGRAY);
+    for (int i = 0; i < N; i++) {
+        Rectangle r = {216, 92 + i * 38.0f, 608, 34};
+        bool hi = i == facRow;
+        std::string v;
+        const char *label = i == 0 ? "Name" : i == 1 ? "Launch" : i == 2 ? "Model" : i == 3 ? "Icon" : i == 4 ? "Wind" : nums[i - 5].label;
+        if (i == 0) v = w.name + (typing && fmodf(t, 1) < 0.5f ? "_" : "");
+        else if (i == 1) v = LAUNCH[launch];
+        else if (i == 2) v = w.model;
+        else if (i == 3) v = w.icon;
+        else if (i == 4) v = w.wind ? "Affected" : "Not affected";
+        else {
+            const Num &k = nums[i - 5];
+            v = k.f == &w.fuse && launch != 1 ? "Impact" : k.i == &w.count && w.count < 0 ? "Infinite" : k.f ? TextFormat(k.fmt, *k.f) : TextFormat(k.fmt, *k.i);
+        }
+        if (hi) DrawRectangleRounded(r, 0.4f, 6, {255, 210, 60, 70});
+        text(label, r.x + 10, r.y + 5, 24, hi ? GOLDEN : WHITE);
+        text(TextFormat(hi && i ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + 5, 24, WHITE, 2);
+    }
+    if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
+    else if (facRow == 0) hints({{"A", "Enter", "Rename"}, {"D-pad", "Up/Down", "Move"}, {"B", "Esc", "Back"}});
+    else hints({{"D-pad", "Up/Down", "Move"}, {"D-pad", "Left/Right", "Change"}, {"B", "Esc", "Back"}});
+    if (back) screen = Factory;
 }
 
 // ---------------------------------------------------------------- HUD
 
 void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
+    const uint8_t held = in.buttons;  // before the panel blanks `in`: the swallow must wait for a real release
     if (cur.team < (int)g.cfg.teamSetup.size() && g.cfg.teamSetup[cur.team].cpu) local = false;
     mine = local;
     // swallow: a button still held from a menu or another turn must not fire or jump
@@ -693,7 +942,7 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
         in = Input{};
     }
     if (swallow) {
-        if (!(in.buttons & (Input::FIRE | Input::JUMP))) swallow = false;
+        if (!(held & (Input::FIRE | Input::JUMP))) swallow = false;
         in.buttons &= ~(Input::FIRE | Input::JUMP);
     }
     if (target >= 0) {
@@ -847,7 +1096,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     int ammo = g.ammo[cur.team][g.weapon];
     Vector2 wp = {1176, 92};
     if (!sprite("secondback", wp, 0.5f, {128, 128})) DrawCircleV(wp, 44, {0, 119, 155, 230});
-    if (!image(weaponIcon(wd.name), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
+    if (!image(iconOf(wd), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
     digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
     text(wd.name.c_str(), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
     // turn timer (bottom right): turn seconds, round clock below
@@ -912,7 +1161,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         int a = g.ammo[cur.team][i];
         if (i == cursor && !nine("fe/buttonbig_highlight", c, 64, 0.25f)) DrawRectangleRoundedLinesEx(c, 0.2f, 4, 4, GOLDEN);
         Rectangle ic = {c.x + 8, c.y + 8, c.width - 16, c.height - 16};
-        if (!image(weaponIcon(WEAPONS[i].name), ic, a ? WHITE : Fade(GRAY, 0.5f))) {
+        if (!image(iconOf(WEAPONS[i]), ic, a ? WHITE : Fade(GRAY, 0.5f))) {
             DrawRectangleRounded(ic, 0.2f, 4, a ? PANEL : Fade(PANEL, 0.4f));
             text(WEAPONS[i].name.substr(0, 4).c_str(), ic.x + ic.width / 2, ic.y + ic.height / 2 - 10, 20, a ? WHITE : GRAY, 1);
         }
@@ -961,6 +1210,210 @@ void Pause::draw(bool online) const {
     }
     if (online) text("The match keeps running", 640, 520, 20, LIGHTGRAY, 1);
     hints({{"A", "Enter", "Select"}, {"B/+", "Esc", "Resume"}});
+}
+
+// ---------------------------------------------------------------- replays
+
+int replayList(const std::vector<std::string> &files, int &sel, bool &instant) {
+    int n = (int)files.size(), first = std::max(0, std::min(sel - 4, n - 9));
+    sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
+    if (P({X}, {KEY_Y})) instant = !instant;
+    text("REPLAYS", 640, 50, 60, GOLDEN, 1);
+    for (int i = first; i < n && i < first + 9; i++) {
+        Rectangle r = {290, 130 + (i - first) * 52.0f, 700, 46};
+        panel(r, i == sel);
+        text(files[i].substr(0, files[i].size() - 4).c_str(), r.x + 20, r.y + 9, 28, i == sel ? GOLDEN : WHITE);
+    }
+    if (!n) text("No replays yet: finished matches are saved here", 640, 300, 28, LIGHTGRAY, 1);
+    text(TextFormat("Instant replay of big shots: %s", instant ? "On" : "Off"), 640, 610, 26, WHITE, 1);
+    hints({{"A", "Enter", "Watch"}, {"X", "Y", "Instant replay"}, {"B", "Esc", "Back"}});
+    if (P({B}, {KEY_BACKSPACE, KEY_ESCAPE})) return -2;
+    return n && P({A}, {KEY_ENTER, KEY_SPACE}) ? sel : -1;
+}
+
+void playbackBar(bool paused, int speed, bool freeCam, float sec, float total, const char *note) {
+    DrawRectangle(340, 58, 600, 60, Fade(BLACK, 0.55f));
+    text(TextFormat("%s  %dx   %d:%02d / %d:%02d%s", paused ? "PAUSED" : "REPLAY", speed, (int)sec / 60, (int)sec % 60, (int)total / 60, (int)total % 60,
+                    freeCam ? "   free camera" : ""), 640, 62, 26, GOLDEN, 1);
+    DrawRectangle(360, 100, 560, 8, Fade(WHITE, 0.3f));
+    DrawRectangle(360, 100, (int)(560 * (total > 0 ? sec / total : 1)), 8, GOLDEN);
+    if (note && *note) text(note, 640, 126, 26, ORANGE, 1);
+    if (freeCam) hints({{"A", "Space", "Pause"}, {"R", "Tab", "Speed"}, {"Y", "N", "Next turn"}, {"X", "C", "Chase cam"}, {"LS/RS", "Arrows/WASD", "Move/look"}, {"B", "Esc", "Quit"}});
+    else hints({{"A", "Space", "Pause"}, {"R", "Tab", "Speed"}, {"Y", "N", "Next turn"}, {"X", "C", "Free cam"}, {"B", "Esc", "Quit"}});
+}
+
+void replayBadge() {
+    if (fmodf((float)GetTime(), 1) < 0.7f) text("REPLAY", 640, 70, 44, GOLDEN, 1);
+    hints({{"A", "Space", "Skip replay"}});
+}
+
+void lanGames(const std::vector<LanGame> &games, int sel, const std::string &status) {
+    text("LAN GAMES", 640, 40, 60, GOLDEN, 1);
+    for (size_t i = 0; i < games.size() && i < 6; i++) {
+        const LanGame &g = games[i];
+        Rectangle r = {290, 150 + i * 70.0f, 700, 60};
+        panel(r, (int)i == sel);
+        text(g.name.c_str(), r.x + 24, r.y + 14, 30, (int)i == sel ? GOLDEN : WHITE);
+        text(TextFormat("%s  %d/%d%s", g.ip.c_str(), g.players, g.maxPlayers, g.started ? "  playing" : ""), r.x + r.width - 24, r.y + 18, 24, LIGHTGRAY, 2);
+    }
+    if (games.empty()) text("Looking for games on this network...", 640, 220, 30, LIGHTGRAY, 1);
+    text(status.c_str(), 640, 620, 22, ORANGE, 1);
+    hints({{"A", "Enter", "Join"}, {"X", "C", "Host game"}, {"B", "Esc", "Back"}});
+}
+
+void room(const Net &net, const GameConfig &opt, bool lan, const std::string &status) {
+    bool isHost = net.hostId == net.id;
+    text(lan ? "LAN GAME" : "ROOM", 640, 40, 60, GOLDEN, 1);
+    int row = 0, humans = std::min<int>((int)net.players.size(), 4);
+    auto line = [&](const std::string &team, const std::string &who, bool cpu) {
+        Rectangle r = {290, 140 + row * 66.0f, 700, 58};
+        panel(r, false);
+        Color c = row < 4 ? TEAM_COLORS[row] : GRAY;
+        DrawRectangleRounded({r.x + 14, r.y + 12, 10, r.height - 24}, 1, 4, c);
+        text(team.c_str(), r.x + 40, r.y + 12, 30, c);
+        text(who.c_str(), r.x + r.width - 24, r.y + 18, 22, cpu ? SKYBLUE : WHITE, 2);
+        row++;
+    };
+    for (const NetPlayer &p : net.players) {
+        auto it = net.profiles.find(p.id);
+        std::string team = p.id == net.id && !opt.teamSetup.empty() ? opt.teamSetup[0].name : it != net.profiles.end() ? it->second.team.name : p.name;
+        line(team, p.name + (p.id == net.hostId ? " (host)" : "") + (p.id == net.id ? " - you" : "") + (p.online ? "" : " - offline"), false);
+    }
+    auto hp = net.profiles.find(net.hostId);
+    int cpus = isHost ? opt.teams - 1 : hp != net.profiles.end() ? hp->second.cpus : 0;
+    for (int k = 0; k < cpus && humans + k < 4; k++)
+        line(isHost && k + 1 < (int)opt.teamSetup.size() ? opt.teamSetup[k + 1].name : TextFormat("CPU team %d", k + 1),
+             TextFormat("CPU %d", isHost && k + 1 < (int)opt.teamSetup.size() ? std::max<int>(opt.teamSetup[k + 1].cpu, 1) : 2), true);
+    if (humans + cpus > 4) text("4 teams max: extra CPU teams are left out", 640, 140 + row * 66.0f, 20, LIGHTGRAY, 1);
+    text(status.c_str(), 640, 620, 22, ORANGE, 1);
+    if (isHost) {
+        text(net.players.size() >= 2 ? "Ready" : "Waiting for a second console to join...", 640, 580, 24, LIGHTGRAY, 1);
+        hints({{"A", "Enter", "Start (2+ consoles)"}, {"B", "Esc", "Leave"}});
+    } else {
+        text("Waiting for the host to start...", 640, 580, 24, LIGHTGRAY, 1);
+        hints({{"B", "Esc", "Leave"}});
+    }
+}
+
+// ---------------------------------------------------------------- single player
+
+static std::string clockText(int ticks) { return TextFormat("%d:%02d.%d", ticks / 3600, ticks / 60 % 60, ticks % 60 / 6); }
+
+// Word-wrapped text, at most maxLines lines; returns the height used.
+static float paragraph(const std::string &s, float x, float y, float w, float size, Color c, int maxLines = 99) {
+    std::string line, word;
+    int lines = 0;
+    auto flush = [&] { if (lines < maxLines) text(line.c_str(), x, y + lines * (size + 4), size, c); lines++, line.clear(); };
+    for (size_t i = 0; i <= s.size(); i++) {
+        char ch = i < s.size() ? s[i] : ' ';
+        if (ch != ' ' && ch != '\n') { word += ch; continue; }
+        std::string t = line.empty() ? word : line + " " + word;
+        if (!line.empty() && textWidth(t.c_str(), size) > w) flush(), t = word;
+        line = t, word.clear();
+        if (ch == '\n') flush();
+    }
+    if (!line.empty()) flush();
+    return std::min(lines, maxLines) * (size + 4);
+}
+
+int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p) {
+    static const char *TABS[2] = {"Missions", "Challenges"};
+    std::vector<int> rows;
+    for (size_t i = 0; i < list.size(); i++) if ((list[i].kind == "mission") == (st.tab == 0)) rows.push_back((int)i);
+    int &sel = st.sel[st.tab], n = (int)rows.size();
+    sel = n ? clampWrap(sel, n) : 0;
+    bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    int pick = n ? rows[sel] : -1;
+    bool open = pick >= 0 && p.unlocked(list, pick);
+    if (st.brief && pick >= 0) {
+        const MissionSpec &m = list[pick];
+        popup({140, 40, 1000, 630});
+        text(m.name.c_str(), 640, 60, 48, GOLDEN, 1);
+        text(m.campaign.c_str(), 640, 112, 22, SKYBLUE, 1);
+        if (!image(m.preview.empty() ? preview(m.map) : m.preview, {180, 150, 240, 240})) image(preview(m.map), {180, 150, 240, 240});
+        float y = 150 + paragraph(m.brief, 450, 150, 650, 24, WHITE, 9) + 16;
+        text("Objectives", 450, y, 28, GOLDEN), y += 36;
+        for (const MissionSpec::Goal &g : m.objectives) text(("- " + goalText(m, g, nullptr)).c_str(), 470, y, 24, WHITE), y += 30;
+        for (const MissionSpec::Goal &g : m.fail) text(("- " + goalText(m, g, nullptr)).c_str(), 470, y, 24, ORANGE), y += 30;
+        y = std::max(y + 10, 420.0f);
+        for (size_t t = 0; t < m.teams.size(); t++) {
+            const MissionSpec::TeamSpec &ts = m.teams[t];
+            text(TextFormat("%s: %d worm%s%s", ts.name.c_str(), (int)ts.worms.size(), ts.worms.size() > 1 ? "s" : "", t == 0 ? " (you)" : ts.idle ? "" : TextFormat(" (CPU %d)", ts.cpu)),
+                 180, y, 22, TEAM_COLORS[t % 4]);
+            y += 28;
+        }
+        Progress::Entry e = p.get(m.id);
+        if (e.done) text(TextFormat("Best time %s", clockText(e.best).c_str()), 1100, 630, 24, GOLDEN, 2);
+        if (m.par) text(TextFormat("Par %d:%02d", m.par / 60, m.par % 60), 180, 630, 24, LIGHTGRAY);
+        hints({{"A", "Enter", "Start"}, {"B", "Esc", "Back"}});
+        if (back) st.brief = false;
+        return ok ? pick : -1;
+    }
+    st.tab = clampWrap(st.tab + P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT}), 2);
+    if (n) sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
+    text("SINGLE PLAYER", 640, 16, 52, GOLDEN, 1);
+    for (int t = 0; t < 2; t++) {
+        Rectangle r = {40 + t * 300.0f, 80, 280, 50};
+        panel(r, t == st.tab);
+        text(TABS[t], r.x + r.width / 2, r.y + 10, 30, t == st.tab ? GOLDEN : WHITE, 1);
+    }
+    int first = std::max(0, std::min(sel - 4, n - 9));
+    for (int k = first; k < n && k < first + 9; k++) {
+        const MissionSpec &m = list[rows[k]];
+        Rectangle r = {40, 146 + (k - first) * 58.0f, 700, 52};
+        Progress::Entry e = p.get(m.id);
+        bool lock = !p.unlocked(list, rows[k]);
+        panel(r, k == sel);
+        text(m.name.c_str(), r.x + 20, r.y + 11, 28, lock ? GRAY : k == sel ? GOLDEN : WHITE);
+        text(lock ? "Locked" : e.done ? TextFormat("Done  %s", clockText(e.best).c_str()) : "New", r.x + r.width - 20, r.y + 14, 22,
+             lock ? GRAY : e.done ? GOLDEN : SKYBLUE, 2);
+    }
+    if (!n) text(st.tab ? "No challenges found" : "No missions found", 390, 300, 28, LIGHTGRAY, 1);
+    if (pick >= 0) {
+        const MissionSpec &m = list[pick];
+        Rectangle pv = {800, 146, 420, 236};
+        panel({pv.x - 8, pv.y - 8, pv.width + 16, pv.height + 16}, false);
+        std::string img = m.preview.empty() ? preview(m.map) : m.preview;
+        if (!image(img, pv, open ? WHITE : GRAY) && !image(preview(m.map), pv, open ? WHITE : GRAY)) DrawRectangleRec(pv, {30, 60, 40, 255});
+        text(m.campaign.c_str(), 800, 400, 22, SKYBLUE);
+        paragraph(open ? goalText(m, m.objectives[0], nullptr) : "Complete the previous mission to unlock", 800, 430, 420, 26, open ? WHITE : GRAY, 2);
+        paragraph(m.brief, 800, 500, 420, 20, LIGHTGRAY, 7);
+    }
+    hints({{"D-pad", "Left/Right", TABS[1 - st.tab]}, {"A", "Enter", "Briefing"}, {"B", "Esc", "Back"}});
+    if (back) return -2;
+    if (ok && open) st.brief = true;
+    return -1;
+}
+
+void missionHud(const Game &g, const MissionSpec &m) {
+    int lines = (int)(m.objectives.size() + m.fail.size());
+    DrawRectangleRounded({390, 78, 500, 34.0f + lines * 26}, 0.2f, 6, Fade(BLACK, 0.45f));
+    text(TextFormat("%s  %s", m.name.c_str(), clockText(g.run.ticks).c_str()), 640, 82, 24, GOLDEN, 1);
+    float y = 110;
+    for (size_t i = 0; i < m.objectives.size(); i++, y += 26)
+        text(((i < g.run.met.size() && g.run.met[i] ? "[x] " : "[ ] ") + goalText(m, m.objectives[i], &g)).c_str(), 410, y, 20, WHITE);
+    for (const MissionSpec::Goal &f : m.fail) {
+        std::string s = goalText(m, f, &g);
+        if (f.type == MissionSpec::Goal::Time) s = "Time left " + clockText(std::max(0, f.seconds * 60 - g.run.ticks));
+        text(("(!) " + s).c_str(), 410, y, 20, ORANGE), y += 26;
+    }
+}
+
+int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best, bool hasNext) {
+    bool won = g.run.result > 0;
+    DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 110});
+    popup({340, 170, 600, 380});
+    text(m.kind == "mission" ? (won ? "MISSION COMPLETE!" : "MISSION FAILED") : (won ? "CHALLENGE COMPLETE!" : "CHALLENGE FAILED"), 640, 196, 44, won ? GOLDEN : ORANGE, 1);
+    text(m.name.c_str(), 640, 252, 28, WHITE, 1);
+    paragraph(won ? m.success : m.failure, 380, 300, 520, 22, LIGHTGRAY, 3);
+    text(TextFormat("Time  %s", clockText(g.run.ticks).c_str()), 640, 400, 32, WHITE, 1);
+    if (best.done) text(won && best.best == g.run.ticks ? "New best time!" : TextFormat("Best  %s", clockText(best.best).c_str()), 640, 444, 26, GOLDEN, 1);
+    DrawRectangle(0, 686, 1280, 34, BLACK);  // covers the HUD's game-over hints
+    if (won && hasNext) hints({{"A", "Enter", "Next"}, {"X", "R", "Retry"}, {"B", "Backspace", "Back to list"}});
+    else hints({{"A", "Enter", won ? "Continue" : "Retry"}, {"B", "Backspace", "Back to list"}});
+    if (P({A}, {KEY_ENTER, KEY_SPACE})) return won ? (hasNext ? 1 : 3) : 2;
+    if (P({X}, {KEY_R})) return 2;
+    return P({B}, {KEY_BACKSPACE, KEY_ESCAPE}) ? 3 : 0;
 }
 
 }  // namespace Ui
