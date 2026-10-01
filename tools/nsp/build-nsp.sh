@@ -7,7 +7,7 @@
 # Usage: tools/nsp/build-nsp.sh [path-to-prod.keys]
 set -euo pipefail
 
-TITLE_ID=0100576F524D2000
+TITLE_ID=0100576F524D3000
 TARGET=worms4nx_nsp
 BUILD_DIR=build_nsp
 NSP_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
