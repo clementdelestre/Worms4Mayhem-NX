@@ -827,7 +827,7 @@ int main(int argc, char **argv) {
                 DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 0.4f, {1, 0, 0}, 90, RED);
                 DrawLine3D(t, Vector3Add(t, {0, 6, 0}), RED);
             }
-            Vector3 tip = Vector3Add(cur.pos, Vector3Scale(game.aimDir(cur), 3));
+            Vector3 tip = Vector3Add(cur.pos, Vector3Scale(game.aimDir(cur), Controls::aiming() ? 10 : 3));
             DrawLine3D(cur.pos, tip, RED);
             DrawSphere(tip, 0.12f, RED);
             DrawCube(Vector3Add(cur.pos, {0, 1.5f + sinf(clock * 5) * 0.15f, 0}), 0.25f, 0.25f, 0.25f, YELLOW);
@@ -894,6 +894,11 @@ int main(int argc, char **argv) {
             Vector2 c = GetWorldToScreen(Vector3Add(cur.pos, Vector3Scale(game.aimDir(cur), 30)), view);
             DrawRing(c, 26, 29, 0, 360, 32, Fade(BLACK, 0.7f));
             DrawRectangle(c.x - 40, c.y - 1, 80, 2, Fade(BLACK, 0.7f)), DrawRectangle(c.x - 1, c.y - 40, 2, 80, Fade(BLACK, 0.7f));
+        } else if (Controls::aiming() && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting) {
+            Vector2 c = GetWorldToScreen(Controls::aimPoint(game), view);  // where the shot line points (screen centre)
+            DrawRing(c, 9, 11, 0, 360, 24, Fade(WHITE, 0.85f));
+            for (Vector2 d : {Vector2{1, 0}, Vector2{-1, 0}, Vector2{0, 1}, Vector2{0, -1}})
+                DrawLineEx(Vector2Add(c, Vector2Scale(d, 14)), Vector2Add(c, Vector2Scale(d, 22)), 2, Fade(WHITE, 0.85f));
         }
         hud.quiet = pause.open || playing || irEnd >= 0;  // those draw their own hints
         hud.draw(game, view, tick);

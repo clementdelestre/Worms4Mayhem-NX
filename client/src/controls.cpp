@@ -16,6 +16,7 @@ static const float AIM_YAW = 1.6f, AIM_PITCH = 1.0f, AIM_TURN = 1.2f, FINE = 0.3
 // Move mode: turn gain toward the stick direction, stick share below which the worm only turns, max error still walking.
 static const float TURN_GAIN = 8, STEP = 0.25f, FACE = 0.9f;
 // Camera: orbit speeds (rad/s), idle seconds before it swings back behind the worm, default elevation.
+static const float AIM_FOCUS = 40;  // aim camera looks at this far point of the shot line (screen centre)
 static const float CAM_YAW = 2.8f, CAM_PITCH = 1.4f, RECENTER_AFTER = 2.5f, EL0 = 0.42f;
 // Gyro: noise floor (rad/s), axis signs (check on hardware), mouse rad per pixel.
 static const float GYRO_FLOOR = 0.03f, GYRO_YAW = 1, GYRO_PITCH = 1, MOUSE = 0.004f;
@@ -199,12 +200,13 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     Vector3 focus = cur.pos, from = focus, want;
     if (chase) from = focus = Vector3Add(g.shots[0].pos, Vector3Scale(g.shots[0].vel, 0.1f));  // lead the shot a little
     float kt = 1 - expf(-dt * 6), kp = 1 - expf(-dt * (chase ? 2.5f : 3));
-    if (aimMode && !scope) {  // over the right shoulder, looking down the aim
-        Vector3 right = {-cosf(cur.yaw), 0, sinf(cur.yaw)}, f = {sinf(camYaw), 0, cosf(camYaw)};
-        from = Vector3Add(cur.pos, Vector3Add(Vector3Scale(right, 1.3f), {0, 0.9f, 0}));
-        want = Vector3Add(from, Vector3Add(Vector3Scale(f, -(fine ? 5.0f : 6.5f) * zoom), {0, 1.0f - sinf(cur.pitch) * 0.8f, 0}));
-        float lp = cur.pitch * 0.6f;  // looks less steep than the aim: the worm stays in frame
-        focus = Vector3Add(from, Vector3Scale({cosf(lp) * sinf(cur.yaw), sinf(lp) - 0.15f, cosf(lp) * cosf(cur.yaw)}, 10));
+    if (aimMode && !scope) {  // on the aim axis, looking at a far point of the shot line: it meets the screen centre
+        Vector3 dir = g.aimDir(cur);
+        float cp = Clamp(cur.pitch, -0.5f, 0.8f);  // camera placement only: steep aims would put it in the ground
+        Vector3 back = {cosf(cp) * sinf(cur.yaw), sinf(cp), cosf(cp) * cosf(cur.yaw)};
+        from = cur.pos;
+        want = Vector3Add(from, Vector3Add(Vector3Scale(back, -(fine ? 5.0f : 6.5f) * zoom), {0, 0.8f, 0}));
+        focus = Vector3Add(from, Vector3Scale(dir, AIM_FOCUS));
         kt = 1 - expf(-dt * 10), kp = 1 - expf(-dt * 8);
     } else {
         float back = (chase ? 17.5f : 9.85f) * zoom;
@@ -222,6 +224,8 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     cam.position = Vector3Lerp(cam.position, want, kp);
     cam.fovy = Lerp(cam.fovy, scope ? 25.0f : fine ? 42.0f : 50.0f, 1 - expf(-dt * 8));
 }
+
+Vector3 aimPoint(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Add(w.pos, Vector3Scale(g.aimDir(w), AIM_FOCUS)); }
 
 static float amp[4], left[4];
 static bool quiet[4] = {true, true, true, true};

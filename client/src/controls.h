@@ -17,6 +17,7 @@ Input read(const Game &g, int pad, bool live, float dt);
 Input tick(Input in);                    // per sim tick: in's axes from read()'s rates
 int8_t diffuse(float rate, float &carry);  // rate in int8 units; the rounding error carries to the next tick
 bool aiming();                           // aim mode: ZL / L held, charging, sniper
+Vector3 aimPoint(const Game &g);         // far point of the active worm's shot line, centred by the aim camera
 // Free orbit while moving, over the shoulder in aim mode, chasing a shot, through the sniper scope.
 void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt);
 void rumble(int pad, float amp, float secs);  // pad -1: nobody
