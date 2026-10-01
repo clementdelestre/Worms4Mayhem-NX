@@ -29,6 +29,10 @@ struct Terrain {
     std::vector<Material> texMats;      // per material, built with the textures on first remesh
     std::vector<Texture2D> textures;
     int scaleLoc = -1;
+    // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
+    struct Object { int model; Vector3 pos; Matrix m; };
+    std::vector<Object> objects;
+    std::vector<std::string> objModels;
 
     bool load(const std::string &map, unsigned seed);  // empty or missing map => generate(seed)
     void generate(unsigned seed);
@@ -40,6 +44,7 @@ struct Terrain {
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
     void remesh();
     void draw() const;
+    void drawObjects(Vector3 cam) const;
     void unload();
 
 private:

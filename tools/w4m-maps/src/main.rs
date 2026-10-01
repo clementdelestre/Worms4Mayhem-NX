@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+mod mesh;
 
 const NX: usize = 320;
 const NY: usize = 256;
@@ -15,6 +16,7 @@ const WATER: f32 = 3.0; // our water height (m); W4M water assumed at y = 0
 const HMP_EXTENT: f32 = 80.0; // .hmp covers [-80, 80] in x and z
 const HMP_SCALE: f32 = 5.0; // .hmp height 0..1 -> W4M units (fitted, see docs)
 const HMP_BASE: f32 = -1.5;
+const MESH_UNIT: f32 = 0.05; // detail mesh units -> W4M world units (the 25-unit worm mesh is ~1.25 voxels tall)
 
 fn vi(d: &[u8], p: &mut usize) -> usize {
     let mut v = 0usize;
@@ -29,7 +31,7 @@ fn vi(d: &[u8], p: &mut usize) -> usize {
 fn u32le(d: &[u8], p: usize) -> u32 { d.get(p..p + 4).map_or(0, |s| u32::from_le_bytes(s.try_into().unwrap())) }
 fn f32le(d: &[u8], p: usize) -> f32 { f32::from_bits(u32le(d, p)) }
 
-struct Xom { ctn: Vec<(String, Vec<u8>)>, root: usize }
+struct Xom { ctn: Vec<(String, Vec<u8>)>, root: usize, s: Vec<String> }
 
 fn strings(b: &[u8]) -> Option<(Vec<String>, usize)> {
     let nt = u32le(b, 24) as usize;
@@ -49,7 +51,7 @@ fn strings(b: &[u8]) -> Option<(Vec<String>, usize)> {
 // Containers are stored per type in header order, each starting with "CTNR".
 fn read_xom(b: &[u8]) -> Option<Xom> {
     if b.get(0..4)? != b"MOIK" { return None; }
-    let (_, start) = strings(b)?;
+    let (s, start) = strings(b)?;
     let mut starts: Vec<usize> = (start..b.len().saturating_sub(3)).filter(|&i| &b[i..i + 4] == b"CTNR").collect();
     starts.push(b.len());
     let mut ctn = Vec::new();
@@ -62,14 +64,14 @@ fn read_xom(b: &[u8]) -> Option<Xom> {
             ctn.push((name.clone(), b[starts[k] + 4..starts[k + 1]].to_vec()));
         }
     }
-    Some(Xom { ctn, root: u32le(b, 32) as usize })
+    Some(Xom { ctn, root: u32le(b, 32) as usize, s })
 }
 
 #[derive(Default)]
 struct Poxel {
     pos: [f32; 3], rot: [f32; 3], scale: [f32; 3],
     l1: Vec<[f32; 2]>, l2: Vec<[f32; 2]>,
-    size: [usize; 3], hm: Vec<f32>, visible: bool, vox: Vec<u32>, kids: Vec<usize>,
+    size: [usize; 3], hm: Vec<f32>, visible: bool, vox: Vec<u32>, kids: Vec<usize>, dets: Vec<usize>,
     tex: [f32; 2], // floor X / wall Y texture vector lengths (texture repeats per local unit)
 }
 
@@ -105,7 +107,7 @@ fn parse_poxel(d: &[u8]) -> Poxel {
     x.vox = (0..n).map(|i| u32le(d, p + 4 * i)).collect();
     p += 4 * n;
     let n = vi(d, &mut p); // detail objects (DetailEntityStore refs)
-    for _ in 0..n { vi(d, &mut p); }
+    x.dets = (0..n).map(|_| vi(d, &mut p)).collect();
     let n = vi(d, &mut p);
     x.kids = (0..n).map(|_| vi(d, &mut p)).collect();
     x
@@ -139,7 +141,10 @@ fn local(x: &Poxel, scaled: bool) -> M4 {
 // Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index.
 struct Cell { c: [[f32; 3]; 8], mat: u8, tex: [f32; 2] }
 
-fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &mut Vec<Cell>, depth: u32) {
+// Detail entity reference with its poxel's world matrices (with / without the poxel's own scale).
+struct DetRef { ctn: usize, w: M4, wn: M4 }
+
+fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &mut Vec<Cell>, dets: &mut Vec<DetRef>, depth: u32) {
     let Some(x) = px.get(&k) else { return };
     if depth > 64 { return; }
     let (w, wn) = if root { (*parent, *parent) } else { (mul(parent, &local(x, true)), mul(parent, &local(x, false))) };
@@ -166,7 +171,8 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
             }
         }
     }
-    for &kid in &x.kids { collect(px, kid, &wn, false, out, depth + 1); }
+    dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w, wn }));
+    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, depth + 1); }
 }
 
 // Case-insensitive path lookup (game data uses Windows paths).
@@ -314,14 +320,14 @@ fn points(lo: V3, hi: V3) -> impl Iterator<Item = (usize, usize, usize)> {
 }
 fn gi(x: usize, y: usize, z: usize) -> usize { (z * NY + y) * NX + x }
 
-fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, out_dir: &Path, written: &mut HashSet<String>) -> Result<String, String> {
+fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, out_dir: &Path, written: &mut HashSet<String>, used_libs: &mut HashSet<String>) -> Result<String, String> {
     let maps = data.join("Maps");
     let xb = fs::read(maps.join(format!("{stem}.xan"))).map_err(|e| e.to_string())?;
     let xom = read_xom(&xb).ok_or("bad xom")?;
     let px: HashMap<usize, Poxel> = xom.ctn.iter().enumerate()
         .filter(|(_, (t, _))| t == "LandFrameStore").map(|(i, (_, d))| (i + 1, parse_poxel(d))).collect();
-    let mut cells = Vec::new();
-    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, 0);
+    let (mut cells, mut dets) = (Vec::new(), Vec::new());
+    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, 0);
 
     // level databank: material file, theme, heightmap textures (value string precedes its key)
     // LP_/SPLP_/Multi_ variants share the databank of their base level
@@ -516,16 +522,68 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, out_dir: &Path, writ
         let r = reps.get_mut(m).map_or([TEX_REPEAT * k; 2], |r| [median(&mut r[0]), median(&mut r[1])]);
         texs.push(format!("[{},{},{:.2},{:.2}]", f[0], f[1], r[0], r[1]));
     }
+    // detail objects: "visible" entities whose library names a theme detail mesh (PREHISTORIC18...)
+    let mut objs = Vec::new();
+    for r in &dets {
+        let Some((_, d)) = xom.ctn.get(r.ctn.wrapping_sub(1)).filter(|c| c.0 == "DetailEntityStore") else { continue };
+        let mut p = 3;
+        let (name, lib) = (xom.s.get(vi(d, &mut p)).cloned().unwrap_or_default(), xom.s.get(vi(d, &mut p)).cloned().unwrap_or_default());
+        let n = name.to_lowercase();
+        if !(n.starts_with("visible") || n.starts_with("visable")) { continue; }
+        let f: Vec<f32> = (0..12).map(|i| f32le(d, p + 4 * i)).collect();
+        let w = xform(&r.w, [f[0], f[1], f[2]]);
+        let pos = [w[0] * k + ox, w[1] * k + WATER, w[2] * k + oz];
+        if pos[1] < 0.0 || pos[0] < 0.0 || pos[2] < 0.0 || pos[0] > NX as f32 * VOX || pos[2] > NZ as f32 * VOX { continue; }
+        // basis = poxel rotation * detail rotation * detail scale * k (row-major 3x3)
+        let rs = local(&Poxel { rot: [f[3], f[4], f[5]], scale: [f[9], f[10], f[11]], ..Default::default() }, true);
+        let m = mul(&r.wn, &rs);
+        let b: Vec<String> = (0..9).map(|i| format!("{:.4}", m[i / 3][i % 3] * k)).collect();
+        let lib = lib.to_lowercase();
+        objs.push(format!("{{\"model\":\"{lib}\",\"pos\":[{:.2},{:.2},{:.2}],\"basis\":[{}]}}", pos[0], pos[1], pos[2], b.join(",")));
+        used_libs.insert(lib);
+    }
     let spawns = spawn_points(&grid);
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}],\n  \"objects\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","),
-        spawns.iter().map(|p| format!("[{:.1},{:.1},{:.1}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(",")
+        spawns.iter().map(|p| format!("[{:.1},{:.1},{:.1}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
+        objs.join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
-    Ok(format!("{} cells, {faces} faces, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
-        cells.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
+    Ok(format!("{} cells, {faces} faces, {} objects, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
+        cells.len(), objs.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
+}
+
+// Detail meshes named in `libs` (lowercase XMeshDescriptor names), written as <dir>/<name>.glb in W4M world units.
+fn decor(bundles: &Path, dir: &Path, libs: &HashSet<String>) {
+    let _ = fs::create_dir_all(dir);
+    let mut todo = libs.clone();
+    let Ok(rd) = fs::read_dir(bundles) else { return };
+    let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let Ok(b) = fs::read(&path) else { continue };
+        let Some((s, _)) = strings(&b) else { continue };
+        if !s.iter().any(|n| todo.contains(&n.to_lowercase())) { continue; }
+        let Some(x) = mesh::Xom::read(&b) else { continue };
+        for (name, i) in x.meshes() {
+            let n = name.to_lowercase();
+            if !todo.contains(&n) { continue; }
+            match mesh::convert(&x, i, MESH_UNIT) {
+                Some((glb, lo, hi)) => {
+                    let _ = fs::write(dir.join(format!("{n}.glb")), &glb);
+                    println!("decor {n} ({}): {:.1}..{:.1} x {:.1}..{:.1} x {:.1}..{:.1}, {} KB", path.file_name().unwrap().to_string_lossy(),
+                        lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], glb.len() / 1024);
+                }
+                None => println!("decor {n}: no geometry"),
+            }
+            todo.remove(&n);
+        }
+    }
+    let mut missing: Vec<_> = todo.into_iter().collect();
+    missing.sort();
+    println!("{} detail meshes, missing: {missing:?}", libs.len() - missing.len());
 }
 
 // 16 spread-out open-sky standing spots above the water: farthest-point sampling from the centre.
@@ -565,7 +623,7 @@ fn main() {
     let out = PathBuf::from(args.get(2).map_or("client/assets/maps", |s| s.as_str()));
     fs::create_dir_all(&out).expect("create out dir");
     let tex = textures(&data.join("Bundles"));
-    let mut written = HashSet::new();
+    let (mut written, mut libs) = (HashSet::new(), HashSet::new());
     let mut stems: Vec<String> = args[3..].to_vec();
     if stems.is_empty() {
         stems = fs::read_dir(data.join("Maps")).expect("Data/Maps").flatten()
@@ -574,12 +632,13 @@ fn main() {
     }
     let mut ok = 0;
     for s in &stems {
-        match run(&data, s, &tex, &out, &mut written) {
+        match run(&data, s, &tex, &out, &mut written, &mut libs) {
             Ok(msg) => { ok += 1; println!("{s}: {msg}"); }
             Err(e) => println!("{s}: FAILED {e}"),
         }
     }
     println!("{ok}/{} maps imported, {} textures", stems.len(), tex.len());
+    decor(&data.join("Bundles"), &out.join("../models/decor"), &libs);
 }
 
 #[cfg(test)]

@@ -175,7 +175,7 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
 }
 
 bool Terrain::load(const std::string &map, unsigned seed) {
-    spawns.clear();
+    spawns.clear(), objects.clear(), objModels.clear();
     hasFinish = false;
     theme.clear(), mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -238,6 +238,15 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         spawns.push_back(raycast({p, {0, -1, 0}}, p.y, &hit) ? Vector3{hit.x, hit.y + 0.8f, hit.z} : p);
     }
     if (j["finish"].type == Json::Arr) hasFinish = true, finish = vec(j["finish"], {cx, 8, cz});
+    const Json &ob = j["objects"];
+    for (size_t i = 0; i < ob.size(); i++) {
+        const Json &o = ob[i], &b = o["basis"];
+        std::string name = o["model"].s();
+        int m = (int)(std::find(objModels.begin(), objModels.end(), name) - objModels.begin());
+        if (m == (int)objModels.size()) objModels.push_back(name);
+        Vector3 p = vec(o["pos"], {cx, 8, cz});
+        objects.push_back({m, p, {b[0].f(1), b[1].f(0), b[2].f(0), p.x, b[3].f(0), b[4].f(1), b[5].f(0), p.y, b[6].f(0), b[7].f(0), b[8].f(1), p.z, 0, 0, 0, 1}});
+    }
     return true;
 }
 
@@ -273,7 +282,7 @@ bool Terrain::loadVoxels(const std::string &path) {
 }
 
 void Terrain::generate(unsigned seed) {
-    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear();
+    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear();
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
@@ -324,6 +333,13 @@ void Terrain::carve(Vector3 c, float radius) {
                 signed char &v = d[idx(x, y, z)];
                 v = std::min(v, qd(Vector3Distance({x * VOX, y * VOX, z * VOX}, c) - radius));
             }
+    // decor goes with the blast, or with the ground it stood on (sampled 0.3 m below its base, along its up axis)
+    objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const Object &o) {
+        float dist = Vector3Distance(o.pos, c);
+        if (dist > radius + 2) return false;
+        Vector3 up = Vector3Normalize({o.m.m4, o.m.m5, o.m.m6});
+        return dist < radius + 0.2f || !solid(Vector3Subtract(o.pos, Vector3Scale(up, 0.3f)));
+    }), objects.end());
     // chunk cells sample one voxel past their bounds, so neighbours of the box are dirty too
     for (int z = std::max(0, lo[2] - 1) / CS; z <= std::min(NZ - 1, hi[2] + 1) / CS; z++)
         for (int y = std::max(0, lo[1] - 1) / CS; y <= std::min(NY - 1, hi[1] + 1) / CS; y++)
@@ -543,6 +559,74 @@ void Terrain::draw() const {
             }
             DrawMesh(p.mesh, tex ? texMats[m] : mat, MatrixIdentity());
         }
+}
+
+// Decor: textured, alpha-tested (grass cards), lit on both sides since culling is off for single-sided cards.
+static const char *OVS = R"(
+attribute vec3 vertexPosition;
+attribute vec2 vertexTexCoord;
+attribute vec3 vertexNormal;
+uniform mat4 mvp;
+uniform mat4 matNormal;
+varying vec2 uv;
+varying vec3 n;
+void main() { uv = vertexTexCoord; n = (matNormal * vec4(vertexNormal, 0.0)).xyz; gl_Position = mvp * vec4(vertexPosition, 1.0); }
+)";
+static const char *OFS = R"(
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+varying vec2 uv;
+varying vec3 n;
+void main() {
+    vec4 c = texture2D(texture0, uv) * colDiffuse;
+    if (c.a < 0.5) discard;
+    float l = 0.6 + 0.4 * abs(dot(normalize(n), normalize(vec3(0.4, 1.0, 0.3))));
+    gl_FragColor = vec4(c.rgb * l, 1.0);
+}
+)";
+
+void Terrain::drawObjects(Vector3 cam) const {
+#ifdef __SWITCH__
+    static const std::string dir = "sdmc:/switch/worms4nx/assets/models/decor/";
+#else
+    static const std::string dir = "./assets/models/decor/";
+#endif
+    struct Entry { Model m{}; float r = 0; };
+    static std::map<std::string, Entry> cache;  // loaded on first use, kept across matches
+    static Shader sh{};
+    if (objects.empty()) return;
+    if (!sh.id) {
+        bool es = rlGetVersion() == RL_OPENGL_ES_20 || rlGetVersion() == RL_OPENGL_ES_30;
+        std::string vs = es ? "#version 100\n" : "#version 330\n#define attribute in\n#define varying out\n";
+        std::string fs = es ? "#version 100\nprecision mediump float;\n" : "#version 330\n#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n";
+        sh = LoadShaderFromMemory((vs + OVS).c_str(), (fs + OFS).c_str());
+    }
+    std::vector<const Entry *> ms;
+    for (const std::string &name : objModels) {
+        auto it = cache.find(name);
+        if (it == cache.end()) {
+            Entry e;
+            std::string path = dir + name + ".glb";
+            if (FileExists(path.c_str())) e.m = LoadModel(path.c_str());
+            for (int k = 0; k < e.m.materialCount; k++) {
+                if (sh.id != rlGetShaderIdDefault()) e.m.materials[k].shader = sh;
+                Texture2D &t = e.m.materials[k].maps[MATERIAL_MAP_ALBEDO].texture;
+                if (t.id != rlGetTextureIdDefault()) { GenTextureMipmaps(&t); SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR); }
+            }
+            if (e.m.meshCount) { BoundingBox b = GetModelBoundingBox(e.m); e.r = Vector3Distance(b.min, b.max) / 2; }
+            it = cache.emplace(name, e).first;
+        }
+        ms.push_back(&it->second);
+    }
+    rlDisableBackfaceCulling();
+    for (const Object &o : objects) {
+        const Entry &e = *ms[o.model];
+        // ponytail: distance cull only (~100-300 objects per map); frustum/instancing if a map ever has thousands
+        float size = e.r * Vector3Length({o.m.m0, o.m.m1, o.m.m2});
+        if (!e.m.meshCount || Vector3Distance(cam, o.pos) > 35 + 40 * size) continue;
+        for (int i = 0; i < e.m.meshCount; i++) DrawMesh(e.m.meshes[i], e.m.materials[e.m.meshMaterial[i]], o.m);
+    }
+    rlEnableBackfaceCulling();
 }
 
 void Terrain::unload() {
