@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pause -> Quit to menu must stay on the menu: title, Quick match, pause, Quit (Enter), then arrows; fails on a 2nd Play.
+# Pause -> Quit to menu must stay on the menu: title, Local, Quick match, pause, Quit (Enter), then arrows; fails on a 2nd Play.
 # Usage: tests/quit_check.sh   Env: W4NX=client binary (built if unset)
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -13,10 +13,10 @@ ln -s "$ROOT/client/romfs" "$W/romfs"; ln -s "$ROOT/client/assets" "$W/assets"
 ENTER=257 ESC=256 RIGHT=262 LEFT=263 DOWN=264 UP=265
 tap() { echo "$1 $2 1"; echo "$(($1 + 3)) $2 0"; }
 {
-    tap 30 $ENTER; tap 60 $ENTER                      # title -> main -> Quick match
-    tap 240 $ESC; tap 270 $DOWN; tap 290 $DOWN; tap 320 $ENTER  # pause, Quit to menu
-    f=360; for k in $UP $DOWN $LEFT $RIGHT $UP $UP $DOWN; do tap $f $k; f=$((f + 25)); done
-    echo "600 -1 0"
+    tap 30 $ENTER; tap 60 $ENTER; tap 100 $ENTER      # title -> main -> Local -> Quick match
+    tap 280 $ESC; tap 310 $DOWN; tap 330 $DOWN; tap 360 $ENTER  # pause, Quit to menu
+    f=400; for k in $UP $DOWN $LEFT $RIGHT $UP $UP $DOWN; do tap $f $k; f=$((f + 25)); done
+    echo "640 -1 0"
 } > "$W/script"
 (cd "$W" && W4NX_INPUTSCRIPT=script timeout 120 "$W4NX" > log 2>&1)
 grep '^frame' "$W/log"
