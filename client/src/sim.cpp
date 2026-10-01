@@ -40,7 +40,7 @@ bool loadWeapons(const char *path) {
         WeaponDef w = {"?", Kind::Shell, 2, 30, 20, 0, 0, 1.5f, 15, -1, 0, 1, false};
         const struct { const char *k; float *v; } floats[] = {{"radius", &w.radius}, {"damage", &w.damage}, {"speed", &w.speed}, {"fuse", &w.fuse},
             {"bounce", &w.bounce}, {"cluster_radius", &w.cradius}, {"cluster_damage", &w.cdamage}};
-        const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}};
+        const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}, {"crate_weight", &w.weight}};
         std::string key, sv;
         while (str(key) && eat(':')) {
             float num = 0;
@@ -94,6 +94,7 @@ void Game::start(const GameConfig &c) {
     const int per = perTeam;
     worms.clear();
     shots.clear();
+    objects.clear();
     nextWorm.assign(teams, 0);
     winner = -1;
     weapon = 0;
@@ -136,6 +137,10 @@ void Game::start(const GameConfig &c) {
             }
             worms.push_back(w);
         }
+    if (!(cfg.rules & RULE_ROPE_RACE)) {
+        for (int i = 0; i < MINES; i++) addObject(Object::Mine, 0);
+        for (int i = 0; i < BARRELS; i++) addObject(Object::Barrel, 0);
+    }
 
     if (cfg.rules & RULE_ROPE_RACE) {
         raceFinish = terrain.finish;
@@ -191,6 +196,7 @@ void Game::beginTurn(int team) {
             roped = jetting = false;
             shotsLeft = 0;
             if (!ammo[t][weapon]) nextWeapon(t);
+            if (!(cfg.rules & RULE_ROPE_RACE) && rand01() < CRATE_CHANCE && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
             emit(GameEvent::TurnStart, worms[c].pos, c);
             return;
         }
@@ -201,6 +207,79 @@ void Game::nextWeapon(int team) {
     for (int i = 1; i <= (int)WEAPONS.size(); i++) {
         int k = (weapon + i) % WEAPONS.size();
         if (ammo[team][k]) { weapon = k; return; }
+    }
+}
+
+static float halfHeight(Object::Type t) { return t == Object::Mine ? 0.1f : t == Object::Barrel ? 0.5f : 0.45f; }
+
+// Random dry ground point away from living worms and other objects.
+bool Game::dropPoint(Vector3 &out) {
+    const float W = Terrain::NX * Terrain::VOX;
+    for (int tries = 0; tries < 100; tries++) {
+        Vector3 hit, top = {8 + rand01() * (W - 16), (Terrain::NY - 1) * Terrain::VOX, 8 + rand01() * (W - 16)};
+        if (!terrain.raycast({top, {0, -1, 0}}, Terrain::NY * Terrain::VOX, &hit) || hit.y < water + 1.5f) continue;
+        bool clear = true;
+        for (const Worm &w : worms) clear = clear && (!w.alive || Vector3Distance(w.pos, hit) > 3.5f);
+        for (const Object &o : objects) clear = clear && Vector3Distance(o.pos, hit) > 2;
+        if (clear) { out = hit; return true; }
+    }
+    return false;
+}
+
+// lift > 0: dropped from that height under a parachute.
+bool Game::addObject(Object::Type t, float lift) {
+    Vector3 p;
+    if (!dropPoint(p)) return false;
+    Object o = {t, {p.x, fminf(p.y + halfHeight(t) + 0.05f + lift, (Terrain::NY - 1) * Terrain::VOX), p.z}, {0, 0, 0}, -1, -1, lift > 0, false};
+    if (t == Object::Crate && rand01() >= HEALTH_CHANCE) {
+        int total = 0;
+        for (const WeaponDef &wd : WEAPONS) total += wd.weight;
+        int r = (int)(rand01() * total);
+        for (size_t k = 0; k < WEAPONS.size() && o.weapon < 0; k++) if ((r -= WEAPONS[k].weight) < 0) o.weapon = (int)k;
+    }
+    objects.push_back(o);
+    return true;
+}
+
+void Game::stepObjects() {
+    for (size_t i = 0; i < objects.size();) {
+        Object &o = objects[i];
+        float h = halfHeight(o.type);
+        if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
+            o.vel = {o.vel.x * 0.8f, 0, o.vel.z * 0.8f};
+            o.falling = false;
+        } else {
+            o.vel.y -= gravity() * DT;
+            if (o.falling) o.vel.y = fmaxf(o.vel.y, -2.5f);
+        }
+        Vector3 np = Vector3Add(o.pos, Vector3Scale(o.vel, DT));
+        if (terrain.solid({np.x, o.pos.y, np.z})) { o.vel.x = o.vel.z = 0; np.x = o.pos.x; np.z = o.pos.z; }
+        o.pos = np;
+        for (int k = 0; k < 20 && terrain.solid({o.pos.x, o.pos.y - h, o.pos.z}); k++) o.pos.y += 0.05f;
+
+        bool gone = o.pos.y < water, boom = o.dead && (o.type == Object::Barrel || (o.type == Object::Crate && o.weapon >= 0));
+        if (o.type == Object::Mine) {
+            for (const Worm &w : worms)
+                if (o.fuse < 0 && w.alive && Vector3Distance(w.pos, o.pos) < 1.5f) { o.fuse = MINE_FUSE; emit(GameEvent::MineArm, o.pos); }
+            if (o.fuse >= 0 && (o.fuse -= DT) <= 0) boom = true;
+        }
+        if (o.type == Object::Crate && !o.dead)
+            for (Worm &w : worms) {
+                if (!w.alive || Vector3Distance(w.pos, o.pos) >= R + 0.7f) continue;
+                if (o.weapon < 0) w.hp += 25;
+                else if (ammo[w.team][o.weapon] >= 0) ammo[w.team][o.weapon]++;
+                emit(GameEvent::Collect, o.pos, int(&w - worms.data()), o.weapon);
+                gone = true;
+                break;
+            }
+        if (!gone && !boom && !o.dead) { i++; continue; }
+        Object x = o;
+        objects.erase(objects.begin() + i);  // before explode(), which only flags the others
+        if (boom && !gone) {
+            if (x.type == Object::Barrel) explode(x.pos, 4, 50);
+            else if (x.type == Object::Mine) explode(x.pos, 3, 45);
+            else explode(x.pos, 3, 35);
+        }
     }
 }
 
@@ -334,6 +413,15 @@ void Game::explode(Vector3 p, float radius, float damage) {
         Vector3 dir = Vector3Normalize(Vector3Add(Vector3Subtract(w.pos, p), {0, 1, 0}));
         w.vel = Vector3Add(w.vel, Vector3Scale(dir, 14 * f));
     }
+    for (Object &o : objects) {
+        float d = Vector3Distance(o.pos, p);
+        if (d >= reach) continue;
+        Vector3 dir = Vector3Normalize(Vector3Add(Vector3Subtract(o.pos, p), {0, 1, 0}));
+        o.vel = Vector3Add(o.vel, Vector3Scale(dir, 10 * (1 - d / reach)));
+        o.falling = false;
+        if (o.type != Object::Mine) o.dead = true;
+        else if (o.fuse < 0 || o.fuse > 1) o.fuse = 1;
+    }
     if (heal > 0) worms[hitter].hp = (int)fminf(200, worms[hitter].hp + heal + 0.5f);
     if (karma > 0) worms[hitter].hp -= (int)(karma + 0.5f);
 }
@@ -441,6 +529,7 @@ void Game::step(const Input &in) {
         if (roped && &x == &w) stepRope(x);
         else stepWorm(x);
     stepShots(detonate);
+    stepObjects();
 
     if ((cfg.rules & RULE_ROPE_RACE) && phase != Phase::GameOver)
         for (const Worm &x : worms)
@@ -464,6 +553,7 @@ void Game::step(const Input &in) {
     case Phase::Settle: {
         bool still = shots.empty();
         for (const Worm &x : worms) still = still && (!x.alive || x.grounded);
+        for (const Object &o : objects) still = still && o.fuse < 0 && Vector3LengthSqr(o.vel) < 0.01f;
         if (--timer <= 0 || (still && timer < 270)) {
             for (Worm &x : worms) {
                 if (!x.alive || x.hp > 0) continue;
@@ -507,6 +597,7 @@ uint32_t Game::checksum() const {
     mix(&turnCount, sizeof turnCount);
     mix(&suddenDeath, sizeof suddenDeath);
     mix(&raceFinish, sizeof raceFinish);
+    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); }
     for (const auto &a : ammo) mix(a.data(), a.size() * sizeof(int));
     // weapon table: every client must have loaded the same weapons.json
     for (const WeaponDef &wd : WEAPONS) {
@@ -515,6 +606,7 @@ uint32_t Game::checksum() const {
         mix(&wd.radius, 7 * sizeof(float));
         mix(&wd.count, 3 * sizeof(int));
         mix(&wd.wind, sizeof wd.wind);
+        mix(&wd.weight, sizeof wd.weight);
     }
     return h;
 }

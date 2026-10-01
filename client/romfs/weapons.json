@@ -2,15 +2,15 @@
   {"name": "Bazooka", "kind": "shell", "radius": 3, "damage": 45, "speed": 32, "wind": true, "count": -1},
   {"name": "Grenade", "kind": "shell", "radius": 3, "damage": 45, "speed": 22, "fuse": 3, "bounce": 0.45, "count": -1},
   {"name": "Cluster Grenade", "kind": "shell", "radius": 2, "damage": 25, "speed": 22, "fuse": 3, "bounce": 0.45,
-   "clusters": 5, "cluster_radius": 1.5, "cluster_damage": 15, "count": 3},
+   "clusters": 5, "cluster_radius": 1.5, "cluster_damage": 15, "count": 3, "crate_weight": 10},
   {"name": "Banana Bomb", "kind": "shell", "radius": 3, "damage": 40, "speed": 22, "fuse": 3, "bounce": 0.6,
-   "clusters": 5, "cluster_radius": 2.5, "cluster_damage": 30, "count": 1},
-  {"name": "Holy Hand Grenade", "kind": "shell", "radius": 7, "damage": 90, "speed": 18, "fuse": 3, "bounce": 0.2, "count": 1},
-  {"name": "Sheep", "kind": "sheep", "radius": 3.5, "damage": 60, "speed": 4, "fuse": 8, "count": 2},
-  {"name": "Airstrike", "kind": "airstrike", "radius": 2.5, "damage": 30, "speed": 20, "clusters": 5, "wind": true, "count": 1},
-  {"name": "Concrete Donkey", "kind": "donkey", "radius": 3, "damage": 50, "speed": 10, "clusters": 6, "count": 1},
+   "clusters": 5, "cluster_radius": 2.5, "cluster_damage": 30, "count": 1, "crate_weight": 3},
+  {"name": "Holy Hand Grenade", "kind": "shell", "radius": 7, "damage": 90, "speed": 18, "fuse": 3, "bounce": 0.2, "count": 1, "crate_weight": 1},
+  {"name": "Sheep", "kind": "sheep", "radius": 3.5, "damage": 60, "speed": 4, "fuse": 8, "count": 2, "crate_weight": 6},
+  {"name": "Airstrike", "kind": "airstrike", "radius": 2.5, "damage": 30, "speed": 20, "clusters": 5, "wind": true, "count": 1, "crate_weight": 4},
+  {"name": "Concrete Donkey", "kind": "donkey", "radius": 3, "damage": 50, "speed": 10, "clusters": 6, "count": 1, "crate_weight": 1},
   {"name": "Shotgun", "kind": "shotgun", "radius": 0.8, "damage": 25, "shots": 2, "count": -1},
   {"name": "Ninja Rope", "kind": "rope", "speed": 25, "count": -1},
-  {"name": "Jetpack", "kind": "jetpack", "speed": 28, "fuse": 6, "count": 2},
-  {"name": "Teleport", "kind": "teleport", "count": 2}
+  {"name": "Jetpack", "kind": "jetpack", "speed": 28, "fuse": 6, "count": 2, "crate_weight": 5},
+  {"name": "Teleport", "kind": "teleport", "count": 2, "crate_weight": 5}
 ]

@@ -84,16 +84,46 @@ float Models::clipLength(const char *name, const char *clip) {
     return a ? (a->keyframeCount - 1) / 60.0f : 0;  // raylib samples glTF clips at 60 fps
 }
 
+static const ModelAnimation *clipFrame(const Entry &e, const char *clip, float t, bool loop, int *f) {
+    const ModelAnimation *a = find(e, clip);
+    if (!a && e.count) a = &e.anims[0];
+    if (!a) return nullptr;
+    int last = a->keyframeCount - 1;
+    *f = (int)(t * 60);
+    *f = loop && last > 0 ? *f % last : (int)Clamp(*f, 0, last);
+    return a;
+}
+
+bool Models::joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out) {
+    auto it = models.find(name);
+    if (it == models.end()) return false;
+    const Entry &e = it->second;
+    int f, b = 0;
+    const ModelAnimation *a = clipFrame(e, clip, t, loop, &f);
+    int n = (int)e.m.skeleton.boneCount;
+    while (b < n && strcmp(e.m.skeleton.bones[b].name, joint)) b++;
+    if (!a || b == n || b >= (int)a->boneCount) return false;
+    const Transform &p = a->keyframePoses[f][b];
+    *out = MatrixMultiply(MatrixMultiply(MatrixScale(p.scale.x, p.scale.y, p.scale.z), QuaternionToMatrix(p.rotation)),
+                          MatrixTranslate(p.translation.x, p.translation.y, p.translation.z));
+    return true;
+}
+
+bool Models::draw(const char *name, Matrix m, Color tint) {
+    auto it = models.find(name);
+    if (it == models.end()) return false;
+    it->second.m.transform = m;
+    DrawModel(it->second.m, {0, 0, 0}, 1, tint);
+    return true;
+}
+
 bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     Entry &e = it->second;
     // skinned meshes are shared: pose them right before each draw (CPU skinning), unless already in that pose
-    const ModelAnimation *a = find(e, clip);
-    if (!a && e.count) a = &e.anims[0];
-    if (a) {
-        int last = a->keyframeCount - 1, f = (int)(t * 60);
-        f = loop && last > 0 ? f % last : (int)Clamp(f, 0, last);
+    int f;
+    if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f)) {
         if (a != e.posed || f != e.frame) UpdateModelAnimation(e.m, *a, f);
         e.posed = a, e.frame = f;
     }

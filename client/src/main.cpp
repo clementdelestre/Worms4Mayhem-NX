@@ -84,6 +84,9 @@ static void onEvent(const Game &g, const GameEvent &e, std::vector<Fx> &fx) {
     case GameEvent::Hurt: Audio::voice(team, Voice::Hurt); break;
     case GameEvent::Jump: Audio::play(Sfx::Jump); Audio::voice(team, Voice::Jump); break;
     case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); Audio::voice(team, Voice::Idle); break;
+    case GameEvent::CrateDrop: Audio::play(Sfx::Airstrike, 0.5f); break;
+    case GameEvent::Collect: Audio::play(Sfx::Teleport, 0.7f); break;
+    case GameEvent::MineArm: Audio::play(Sfx::Tick); break;
     case GameEvent::GameOver:
         Audio::music(true, "victory");
         if (g.winner >= 0) Audio::voice(g.winner, Voice::Victory);
@@ -91,22 +94,52 @@ static void onEvent(const Game &g, const GameEvent &e, std::vector<Fx> &fx) {
     }
 }
 
+// Mesh held at the worm's WeaponLocator while aiming, and the Aim/Hold clip that shows the hands.
+static const char *heldModel(const WeaponDef &d, const char **clip) {
+    const std::string &n = d.name;
+    switch (d.kind) {
+    case Kind::Shell:
+        *clip = d.fuse > 0 ? "AimGrenade" : "AimBazooka";
+        return d.fuse <= 0 ? "hold_bazooka" : n == "Cluster Grenade" ? "hold_cluster" : n == "Banana Bomb" ? "hold_banana"
+             : n == "Holy Hand Grenade" ? "hold_holy" : "hold_grenade";
+    case Kind::Shotgun: *clip = "AimShotgun"; return "hold_shotgun";
+    case Kind::Sheep: *clip = "HoldBazooka"; return "hold_sheep";  // HoldSheep tilts the whole worm with our clip layering
+    case Kind::Airstrike: case Kind::Donkey: *clip = "HoldAirstrike"; return "hold_radio";
+    case Kind::Rope: *clip = "HoldNinjarope"; return "hold_rope";
+    default: return nullptr;
+    }
+}
+
 // W4M worm: team-tinted, animation picked from the sim state (aim clips map pitch to their timeline).
 static bool drawWorm(const Game &g, const Worm &w, float clock) {
     int i = int(&w - g.worms.data());
-    const WeaponDef &wd = WEAPONS[g.weapon];
     float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
-    const char *clip = "Base";
+    float fidget = fmodf(clock + i * 7.3f, 25);  // desynchronised per worm
+    const char *clip = "Base", *held = nullptr;
     bool loop = true;
     if (!w.grounded && fabsf(w.vel.y) > 1) clip = w.vel.y > 0 ? "Jump" : "Fall";  // ignore slope-contact flicker
     else if (speed > 0.3f) clip = "Walk";
-    else if (i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && (wd.kind == Kind::Shell || wd.kind == Kind::Shotgun)) {
-        clip = wd.kind == Kind::Shotgun ? "AimShotgun" : wd.fuse > 0 ? "AimGrenade" : "AimBazooka";
-        t = (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", clip);  // sim pitch range [-1.2, 1.45]
-        loop = false;
-    }
+    else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up
+    else if (g.phase == Phase::GameOver && w.team == g.winner) clip = "Victorious_Grin";
+    else if (i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && (held = heldModel(WEAPONS[g.weapon], &clip))) {
+        if (clip[0] == 'A') t = (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", clip), loop = false;  // sim pitch range [-1.2, 1.45]
+    } else if (w.hp < 25) clip = "Wounded";
+    else if (fidget < Models::clipLength("worm", i % 2 ? "Yawn" : "ScratchHead")) clip = i % 2 ? "Yawn" : "ScratchHead", t = fidget, loop = false;
     Color tint = ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f);
-    return Models::draw("worm", {w.pos.x, w.pos.y - Game::R, w.pos.z}, w.yaw, 0, tint, clip, t, loop);
+    Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
+    if (!Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop)) return false;
+    Matrix m;
+    if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m))
+        Models::draw(held, MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
+    return true;
+}
+
+// Dead worms leave their team's W4M gravestone, dropped onto whatever terrain is left below (render only).
+static void drawGrave(const Game &g, const Worm &w) {
+    if (w.pos.y < g.water) return;  // drowned
+    Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
+    for (int k = 0; k < 100 && p.y > g.water && !g.terrain.solid(p); k++) p.y -= 0.1f;
+    Models::draw(TextFormat("grave%d", w.team % 4), p, w.yaw);
 }
 
 // Shells point along their velocity; fused throwables (grenades) tumble instead.
@@ -363,8 +396,9 @@ int main(int argc, char **argv) {
         ClearBackground(game.terrain.sky);
         BeginMode3D(cam);
         game.terrain.draw();
+        game.terrain.drawObjects(cam.position);
         for (const Worm &w : game.worms) {
-            if (!w.alive) continue;
+            if (!w.alive) { drawGrave(game, w); continue; }
             if (!drawWorm(game, w, clock)) {
                 Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
                 DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
@@ -402,6 +436,20 @@ int main(int argc, char **argv) {
             case Kind::Airstrike: DrawCylinderEx(s.pos, Vector3Add(s.pos, Vector3Scale(Vector3Normalize(s.vel), -1)), 0.15f, 0.15f, 6, MAROON); break;
             default:
                 DrawSphere(s.pos, s.child ? 0.15f : 0.2f, s.child ? ORANGE : d.radius >= 5 ? GOLD : d.clusters ? YELLOW : d.fuse > 0 ? DARKGREEN : DARKGRAY);
+            }
+        }
+        for (const Object &o : game.objects) {
+            const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.weapon < 0 ? "crate_health" : "crate_weapon";
+            if (!Models::draw(m, o.pos, (&o - game.objects.data()) * 1.3f)) {
+                if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
+                else if (o.type == Object::Barrel) DrawCylinder({o.pos.x, o.pos.y - 0.5f, o.pos.z}, 0.35f, 0.35f, 1, 10, MAROON);
+                else DrawCube(o.pos, 0.8f, 0.8f, 0.8f, o.weapon < 0 ? RAYWHITE : BROWN);
+            }
+            if (o.type == Object::Mine && o.fuse >= 0 && fmodf(clock, 0.3f) < 0.15f) DrawSphere(Vector3Add(o.pos, {0, 0.15f, 0}), 0.08f, RED);
+            if (o.falling) {
+                Vector3 top = Vector3Add(o.pos, {0, 2.2f, 0});
+                DrawCylinderEx(top, Vector3Add(top, {0, 0.5f, 0}), 1.1f, 0.3f, 10, o.weapon < 0 ? RED : ORANGE);
+                for (float a : {0.8f, 2.4f, 3.9f, 5.5f}) DrawLine3D(Vector3Add(o.pos, {0, 0.4f, 0}), Vector3Add(top, {cosf(a) * 1.1f, 0, sinf(a) * 1.1f}), LIGHTGRAY);
             }
         }
         if (game.cfg.rules & RULE_ROPE_RACE) {

@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-// (output name, XMeshDescriptor name, target size in metres, origin at the feet instead of the centre, clips; none = static)
+// (output name, XMeshDescriptor name, target size in metres (0 = raw units, for meshes held at the worm's WeaponLocator),
+// origin at the feet instead of the centre, clips; none = static)
 const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("worm", "W4.Worm", 1.25, true, WORM_CLIPS),
     ("bazooka", "Bazooka.Payload", 0.8, false, &[]),
@@ -22,11 +23,25 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("crate_utility", "Crate.Utility", 0.9, false, &[]),
     ("mine", "Landmine", 0.4, false, &[]),
     ("barrel", "OilDrum", 1.0, false, &[]),
+    ("hold_bazooka", "Bazooka.Weapon", 0.0, false, &[]),
+    ("hold_grenade", "Grenade.Weapon", 0.0, false, &[]),
+    ("hold_cluster", "ClusterGrenade", 0.0, false, &[]),
+    ("hold_banana", "BananaBomb", 0.0, false, &[]),
+    ("hold_holy", "HolyHandGrenade", 0.0, false, &[]),
+    ("hold_sheep", "Sheep", 0.0, false, &[]),
+    ("hold_shotgun", "Shotgun", 0.0, false, &[]),
+    ("hold_radio", "Radio", 0.0, false, &[]),
+    ("hold_rope", "NinjaRope.Gun", 0.0, false, &[]),
+    ("grave0", "Grave.Cross", 0.9, true, &[]),
+    ("grave1", "Grave.Worm", 0.9, true, &[]),
+    ("grave2", "Grave.Obelisk", 0.9, true, &[]),
+    ("grave3", "Grave.SkullnBones", 0.9, true, &[]),
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
 const WORM_CLIPS: &[&str] = &[
     "Base", "Walk", "Jump", "Fall", "Land", "Backflip", "Blastflight2", "AimBazooka+HoldBazooka", "AimGrenade+HoldThrown", "AimShotgun+HoldShotgun",
-    "HoldBazooka", "HoldThrown", "Wounded", "Victorious_Grin", "Hit_Front",
+    "HoldBazooka", "HoldThrown", "Wounded", "Victorious_Grin", "Hit_Front", "HoldAirstrike", "HoldNinjarope", "Wave",
+    "Yawn", "ScratchHead",
 ];
 const FPS: f32 = 30.0;
 
@@ -522,9 +537,12 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for pt in &s.parts { for (i, &v) in pt.pos.iter().enumerate() { let q = place(pt, v, 1.0, i); for k in 0..3 { lo[k] = lo[k].min(q[k]); hi[k] = hi[k].max(q[k]); } } }
     let ext = if feet { hi[1] - lo[1] } else { (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f32::max) };
-    let k = size / ext.max(1e-6);
+    let k = if size > 0.0 { size / ext.max(1e-6) } else { 1.0 };
     let c = [(lo[0] + hi[0]) / 2.0, if feet { lo[1] } else { (lo[1] + hi[1]) / 2.0 }, (lo[2] + hi[2]) / 2.0];
-    let norm = mul(&sc([k; 3]), &tr(c.map(|v| -v)));
+    let norm = if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
+    // extra joint without vertices: its pose is the locator's world matrix, where held meshes attach
+    let sockets: Vec<usize> = s.groups.iter().position(|g| animated && g.path.ends_with("WeaponLocator")).into_iter().collect();
+    let skin_all = |w: &[M4]| { let mut m = s.skinning(x, w); m.extend(sockets.iter().map(|&g| w[g])); m };
 
     let mut g = Glb::default();
     let mut images: Vec<usize> = s.parts.iter().map(|p| p.img).filter(|&i| i != 0).collect();
@@ -575,8 +593,12 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let mut clip_names = Vec::new();
     if animated {
         let trs = |m: &M4| decompose(&mul(&norm, m));
-        for (bi, m) in skin_rest.iter().enumerate() {
+        for (bi, m) in skin_all(&rest).iter().enumerate() {
             let (t, r, sc) = trs(m);
+            if bi >= s.bones.len() {
+                nodes.push(format!("{{\"name\":\"WeaponLocator\",\"translation\":{t:?},\"rotation\":{r:?},\"scale\":{sc:?}}}"));
+                continue;
+            }
             // XBone: 2 matrices, affine string, set, bounds + mode, name
             let (d, mut q) = (x.d(s.bones[bi].0), 3 + 128);
             vi(d, &mut q);
@@ -584,7 +606,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             q += 20;
             nodes.push(format!("{{\"name\":\"{}\",\"translation\":{t:?},\"rotation\":{r:?},\"scale\":{sc:?}}}", x.str(vi(d, &mut q))));
         }
-        let nb = s.bones.len();
+        let nb = s.bones.len() + sockets.len();
         let ibm: Vec<f32> = (0..nb).flat_map(|_| [1.0, 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.]).collect();
         let a_ibm = g.floats(&ibm, "MAT4", nb, false);
         let joints: Vec<String> = (1..=nb).map(|i| i.to_string()).collect();
@@ -598,7 +620,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             let mut rv = vec![Vec::new(); nb];
             let mut sv = vec![Vec::new(); nb];
             for &t in &times {
-                let m = s.skinning(x, &s.worlds(&s.locals(x, Some((&layers[..], base, t)))));
+                let m = skin_all(&s.worlds(&s.locals(x, Some((&layers[..], base, t)))));
                 for b in 0..nb {
                     let (t, mut r, sc) = trs(&m[b]);
                     // keep quaternions in one hemisphere so linear sampling doesn't spin

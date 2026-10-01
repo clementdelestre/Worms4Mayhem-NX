@@ -137,6 +137,33 @@ static void checkHighlander() {
     assert(g.ammo[0][wi] == 1);  // killer's team inherits the victim's weapon
 }
 
+static void checkObjects() {
+    Game g;
+    g.start({17, 2, 1, "", 0});
+    assert(!g.objects.empty());
+    int wi = 0, team = g.worms[g.current].team;
+    while (WEAPONS[wi].count < 0) wi++;  // a finite weapon, so the +1 shows
+    int before = g.ammo[team][wi];
+    Vector3 p = g.worms[g.current].pos;
+    g.objects = {{Object::Crate, p, {0, 0, 0}, wi, -1, false, false}, {Object::Crate, p, {0, 0, 0}, -1, -1, false, false}};
+    g.step(Input{});
+    g.step(Input{});
+    assert(g.objects.empty() && g.ammo[team][wi] == before + 1 && g.worms[g.current].hp == 125);
+
+    Vector3 sky = {5, 50, 5};  // open air: nothing else in reach
+    g.objects = {{Object::Barrel, sky, {0, 0, 0}, -1, -1, false, true}, {Object::Barrel, {7.5f, 50, 5}, {0, 0, 0}, -1, -1, false, false},
+                 {Object::Barrel, {25, 50, 5}, {0, 0, 0}, -1, -1, false, false}};
+    g.step(Input{});
+    assert(g.objects.size() == 1);  // chain: the barrel in reach went off, the far one survives
+
+    int victim = g.current, hp = g.worms[victim].hp;
+    g.objects = {{Object::Mine, g.worms[victim].pos, {0, 0, 0}, -1, -1, false, false}};
+    g.step(Input{});
+    assert(g.objects.size() == 1 && g.objects[0].fuse > 0);
+    for (int t = 0; t < 200 && !g.objects.empty(); t++) g.step(Input{});
+    assert(g.objects.empty() && g.worms[victim].hp < hp);
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<bool> used(WEAPONS.size()), again(WEAPONS.size());
@@ -154,6 +181,7 @@ int main() {
     checkSuddenDeath();
     checkRopeRace();
     checkHighlander();
+    checkObjects();
 
     puts("sim_check OK");
 }
