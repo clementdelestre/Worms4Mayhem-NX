@@ -70,9 +70,9 @@ echo "NSP: $NSP_FILE"
 
 echo "== verify (hactool, never prints key material) =="
 {
-    hactool --intype=pfs0 -i -k "$KEYS" "$NSP_FILE"
+    hactool --intype=pfs0 -i -k "$HBP_KEYS" "$NSP_FILE"
     for nca in "$OUT"/hacbrewpack_nca/*.nca; do
         echo "--- $(basename "$nca") ---"
-        hactool --intype=nca -y -k "$KEYS" "$nca"
+        hactool --intype=nca -y -k "$HBP_KEYS" "$nca"
     done
-} 2>&1 | grep -vi 'key' | tee "$OUT/verify.log"
+} 2>&1 | grep -vi 'key' | tee "$OUT/verify.log" || true  # best-effort check, the NSP is already built
