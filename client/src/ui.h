@@ -28,7 +28,7 @@ extern bool forceHelp;      // --ui help captures
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 struct Frontend {
     enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit } screen = Title;
-    enum Action { None, StartLocal, StartOnline, Quit, Replays, StartLan, SinglePlayer };
+    enum Action { None, StartLocal, StartOnline, Quit, Replays, StartLan, SinglePlayer, QuickMatch };
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
 

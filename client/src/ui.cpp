@@ -611,22 +611,23 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         break;
     }
     case Main: {
-        static const char *ITEMS[] = {"Single player", "Local (same console)", "LAN", "Online (server)", "Replays", "Options"};
+        static const char *ITEMS[] = {"Quick match", "Custom match", "Missions & challenges", "LAN", "Online (server)", "Replays", "Options"};
         const int n = sizeof ITEMS / sizeof *ITEMS;
         mainRow = clampWrap(mainRow + dy, n);
-        logo(640, 24, 420);
+        logo(640, 16, 330);
         for (int i = 0; i < n; i++) {
-            Rectangle r = {420, 250 + i * 70.0f, 440, 60};
+            Rectangle r = {420, 205 + i * 64.0f, 440, 56};
             panel(r, i == mainRow);
-            text(ITEMS[i], 640, r.y + 13, 34, i == mainRow ? GOLDEN : WHITE, 1);
+            text(ITEMS[i], 640, r.y + 11, 34, i == mainRow ? GOLDEN : WHITE, 1);
         }
         hints({{"A", "Enter", "Select"}, {"B", "Esc", "Back"}});
         if (back) screen = Title;
         if (ok) {
-            if (mainRow == 0) act = SinglePlayer;
-            else if (mainRow == 5) screen = Options, row = 0;
-            else if (mainRow == 4) act = Replays;
-            else screen = Setup, online = mainRow > 1, lan = mainRow == 2, row = 0, loaded = false;  // reload: net setup has its own file
+            if (mainRow == 0) act = QuickMatch;
+            else if (mainRow == 2) act = SinglePlayer;
+            else if (mainRow == 6) screen = Options, row = 0;
+            else if (mainRow == 5) act = Replays;
+            else screen = Setup, online = mainRow > 2, lan = mainRow == 3, row = 0, loaded = false;  // reload: net setup has its own file
         }
         break;
     }

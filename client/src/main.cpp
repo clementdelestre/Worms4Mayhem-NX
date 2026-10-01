@@ -503,6 +503,18 @@ int main(int argc, char **argv) {
             if (a == Ui::Frontend::Quit) break;
             if (a == Ui::Frontend::Replays) replayFiles = listReplays(DATA_DIR "replays"), replaySel = 0, screen = Screen::Replays;
             if (a == Ui::Frontend::SinglePlayer) openMissions();
+            if (a == Ui::Frontend::QuickMatch) {  // you vs one level-2 CPU team on a random map, Standard scheme; opt untouched
+                GameConfig q = opt;
+                q.teams = 2, q.wormsPerTeam = 4, q.rules = 0, q.wormpot = 0, q.mission = nullptr, q.scheme = SCHEMES[0].s;
+                q.custom.clear();
+                q.teamSetup.resize(2);
+                q.teamSetup[0].cpu = 0;
+                q.teamSetup[1] = {"CPU", 2, 1, 0};
+                q.map = maps[GetRandomValue(0, (int)maps.size() - 1)];
+                q.seed = (uint32_t)(clock * 1000) + frame;
+                online = lan = false;
+                startMatch(q);
+            }
             if (a == Ui::Frontend::StartLocal) {
                 online = false;
                 opt.seed = (uint32_t)(clock * 1000) + frame;
