@@ -22,7 +22,7 @@ const char *SFX_NAMES[(int)Sfx::Count] = {
     "shotgun",   "airstrike",     "donkey", "rope", "teleport",
     "bat_swing", "fire_punch", "prod", "sniper", "bow", "homing", "old_woman", "scouser", "sentry_place", "sentry_fire",
     "dynamite", "gas", "abduction", "flood", "parachute", "mine_beep", "crate_land", "pickup", "super_sheep",
-    "step", "land",
+    "step", "land", "hp_tick",
 };
 const char *VOICE_NAMES[(int)Voice::Count] = {"fire", "hurt", "death", "victory", "jump", "idle"};
 constexpr int MAX_VARIANTS = 12;

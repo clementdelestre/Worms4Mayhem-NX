@@ -218,18 +218,114 @@ static void checkPoison() {
     assert(g.worms[victim].hp == hp - g.worms[victim].poison);  // ticks at the next turn start
 }
 
-static void checkMelee() {
+static void settle(Game &g);
+
+// Victim placed `ahead` m in front of the settled attacker, `up` m higher; returns the victim after the swing.
+static Worm melee(const char *weapon, float ahead, float up = 0) {
     Game g;
     g.start({23, 2, 1, "", 0});
+    settle(g);
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
-    v.pos = Vector3Add(a.pos, {sinf(a.yaw), 0, cosf(a.yaw)});
+    v.pos = Vector3Add(a.pos, {sinf(a.yaw) * ahead, up, cosf(a.yaw) * ahead});
     v.vel = {0, 0, 0};
     a.pitch = 0.3f;
-    g.weapon = weaponNamed("Baseball Bat");
+    g.weapon = weaponNamed(weapon);
     Input in;
     in.buttons = Input::FIRE;
     g.step(in);
+    assert(g.phase != Phase::Aim);  // the swing ends the attack
+    return v;
+}
+
+static void checkMelee() {
+    Worm v = melee("Fire Punch", 1);
+    assert(v.hp == 100 - (int)WEAPONS[weaponNamed("Fire Punch")].damage && v.vel.y > 10);  // uppercut: launched up
+    assert(melee("Fire Punch", 0.4f, -0.6f).hp < 100);  // touching, a bit lower on a slope
+    assert(melee("Fire Punch", 1, 2).hp < 100);         // above: the punch leaps
+    assert(melee("Fire Punch", 3).hp == 100 && melee("Fire Punch", -1).hp == 100);  // out of reach, behind
+    v = melee("Baseball Bat", 1.6f);
     assert(v.hp < 100 && Vector3Length(v.vel) > 10);  // knocked away along the aim
+    v = melee("Prod", 1);
+    assert(v.hp >= 90 && v.hp < 100 && Vector3Length(v.vel) > 3 && Vector3Length(v.vel) < 10);  // small push
+}
+
+// A worm hit by a gun takes the weapon's full damage, not a blast falloff.
+static void checkShotgun() {
+    Game g;
+    g.start({25, 2, 1, "", 0});
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    a.pos = {10, 55, 10}, v.pos = {10.4f, 55, 20};  // open sky, off-centre hit
+    a.yaw = 0, a.pitch = 0;
+    g.weapon = weaponNamed("Shotgun");
+    Input in;
+    in.buttons = Input::FIRE;
+    g.step(in);
+    assert(v.hp == 100 - (int)WEAPONS[g.weapon].damage);
+}
+
+// Homing missile: flies off along the aim, then dives onto the reticle point.
+static void checkHoming() {
+    Game g;
+    g.start({29, 2, 1, "", 0});
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    g.hotSeat = 0;
+    a.pos = {20, 55, 20}, a.yaw = 0, a.pitch = 0;  // open sky: the reticle falls on the ground 30 m ahead
+    g.weapon = weaponNamed("Homing Missile");
+    g.ammo[a.team][g.weapon] = 1;
+    Input in;
+    in.buttons = Input::FIRE;
+    for (int t = 0; t < 89; t++) g.step(in), a.pos = {20, 55, 20}, a.vel = {0, 0, 0};
+    v.pos = Vector3Add(g.target(), {0, Game::R + 0.05f, 0}), v.vel = {0, 0, 0};
+    g.step(in);  // full charge fires
+    assert(g.phase == Phase::Flying);
+    while (g.phase == Phase::Flying) g.step(Input{});
+    assert(v.hp <= 100 - 40 || !v.alive);
+}
+
+// W4M: each team gets back the weapon it last had in hand, or the next one with ammo.
+static void checkTeamWeapon() {
+    Game g;
+    g.start({39, 2, 1, "", 0});
+    int t0 = g.worms[g.current].team, bat = weaponNamed("Baseball Bat"), sheep = weaponNamed("Sheep");
+    auto endTurn = [&] { g.phase = Phase::Settle, g.timer = 1, g.step(Input{}); };
+    g.weapon = sheep;
+    endTurn();
+    assert(g.worms[g.current].team != t0 && g.weapon != sheep);
+    g.weapon = bat;
+    endTurn();
+    assert(g.worms[g.current].team == t0 && g.weapon == sheep);
+    g.ammo[t0][bat] = 0;
+    g.ammo[1 - t0][bat] = 0;
+    endTurn();
+    assert(g.weapon != bat && g.ammo[1 - t0][g.weapon]);  // out of ammo: next available
+    uint32_t sum = g.checksum();
+    g.picked[t0] = bat;
+    assert(g.checksum() != sum);
+}
+
+// Walking into a crate (real input, no teleport) collects it: health heals, a weapon adds ammo.
+static void checkCrateWalk() {
+    for (int weapon : {-1, weaponNamed("Sheep")}) {
+        GameConfig c{31, 2, 1, "", 0};
+        c.scheme.crateChance = c.scheme.mines = c.scheme.barrels = 0;
+        Game g;
+        g.start(c);
+        settle(g);
+        Worm &a = g.worms[g.current];
+        Vector3 hit, p = Vector3Add(a.pos, {sinf(a.yaw) * 3, 4, cosf(a.yaw) * 3});
+        assert(g.terrain.raycast({p, {0, -1, 0}}, 12, &hit));
+        g.objects = {{Object::Crate, {hit.x, hit.y + 0.5f, hit.z}, {0, 0, 0}, weapon, -1, false, false}};
+        int hp = a.hp, ammo = weapon < 0 ? 0 : g.ammo[a.team][weapon];
+        bool got = false;
+        Input in;
+        in.walk = 127;
+        for (int t = 0; t < 180 && !got; t++) {
+            g.step(in);
+            for (const GameEvent &e : g.events) got |= e.kind == GameEvent::Collect && e.worm == g.current && e.weapon == weapon;
+        }
+        assert(got && g.objects.empty());
+        assert(weapon < 0 ? a.hp == hp + g.cfg.scheme.crateHealth : g.ammo[a.team][weapon] == ammo + 1);
+    }
 }
 
 static void checkSniper() {
@@ -444,6 +540,10 @@ int main() {
     checkPoison();
     checkMelee();
     checkSniper();
+    checkCrateWalk();
+    checkShotgun();
+    checkHoming();
+    checkTeamWeapon();
     checkSentry();
     checkDiffuse();
     checkJumps();

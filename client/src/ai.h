@@ -7,7 +7,7 @@
 struct Ai {
     Input think(const Game &g);
 
-    struct Plan { int weapon = -1, charge = 0, target = -1; float yaw = 0, pitch = 0, score = -1e9f; };
+    struct Plan { int weapon = -1, charge = 0, target = -1; float yaw = 0, pitch = 0, score = -1e9f, rank = -1e9f; };  // rank: score + taste
     struct RopePlan { float yaw = 0, pitch = 0; int release = -1; bool reel = false; };  // release < 0: walk toward the finish
     struct RopeRun { int t = 0, held = 0, after = -1; bool fired = false, done = true; };
 
@@ -15,6 +15,7 @@ private:
     enum class Mode { Eval, Walk, Act, Jet };
     Plan plan;
     Mode mode = Mode::Eval;
+    uint32_t salt = 0;  // per turn: seeds the weapon taste
     int worm = -1, lastTimer = -1, tick = 0, stage = 0, walk = 0, walks = 0, charged = 0, shotsSeen = 0;
     bool moved = false, retreatPicked = false, retreatOn = false, chuteWanted = false;
     float stopAt = 0, retreatYaw = 0;

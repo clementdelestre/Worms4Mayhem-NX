@@ -6,7 +6,7 @@
 #include <chrono>
 #include <cstdio>
 
-static std::vector<int> fires;  // per weapon, all matches
+static std::vector<int> fires[4];  // [level][weapon], all matches
 static double maxTick = 0, maxTurn = 0;
 
 struct Result { uint32_t sum; int turns, fired, damage, winner; bool over, reached; };
@@ -38,7 +38,7 @@ static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint
         maxTick = std::max(maxTick, ms);
         turn += ms;
         g.step(in);
-        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Fire && e.worm >= 0) fires[e.weapon]++;
+        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Fire && e.worm >= 0) fires[g.worms[e.worm].team ? l1 : l0][e.weapon]++;
         if (prev == Phase::Settle && g.phase != Phase::Settle) {  // turn boundary
             if (r.turns) r.damage += before - enemyHp();
             maxTurn = std::max(maxTurn, turn);
@@ -60,10 +60,28 @@ static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint
     return r;
 }
 
+// Enemy right next to the active CPU worm: the weapon it fires first.
+static int pointBlank(uint32_t seed, uint8_t level) {
+    Game g;
+    GameConfig c{seed, 2, 1, "", 0};
+    c.teamSetup = {{"CPU", level}, {"CPU", level}};
+    g.start(c);
+    for (int t = 0; t < 120; t++) g.step(Input{1});  // land; any input skips the hot seat
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    v.pos = a.pos + Vector3{sinf(a.yaw), 0.1f, cosf(a.yaw)} * 1.0f;
+    v.vel = {0, 0, 0};
+    Ai ai;
+    for (int t = 0; t < 60 * 40 && g.phase == Phase::Aim; t++) {
+        g.step(ai.think(g));
+        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Fire && e.worm >= 0) return e.weapon;
+    }
+    return -1;
+}
+
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
-    fires.assign(WEAPONS.size(), 0);
+    for (auto &f : fires) f.assign(WEAPONS.size(), 0);
     const char *maps[] = {"", "arabian", "wildwest", "camelot", "jurassic", "construction"};
     int over = 0, n = 0;
     for (const char *map : maps)
@@ -74,8 +92,22 @@ int main() {
             n++;
         }
     assert(over * 4 >= n * 3);  // most matches finish
-    for (size_t i = 0; i < WEAPONS.size(); i++) if (fires[i]) printf("%s:%d ", WEAPONS[i].name.c_str(), fires[i]);
+    for (int l = 1; l <= 3; l++) {
+        printf("level %d:", l);
+        for (size_t i = 0; i < WEAPONS.size(); i++) if (fires[l][i]) printf(" %s:%d", WEAPONS[i].name.c_str(), fires[l][i]);
+        printf("\n");
+    }
+
+    int melee = 0, close = 0;
+    printf("point blank:");
+    for (uint32_t seed = 1; seed <= 12; seed++) {
+        int wi = pointBlank(seed, 1 + seed % 3);
+        printf(" %s", wi < 0 ? "-" : WEAPONS[wi].name.c_str());
+        melee += wi >= 0 && WEAPONS[wi].kind == Kind::Melee;
+        close += wi >= 0 && (WEAPONS[wi].kind == Kind::Melee || WEAPONS[wi].kind == Kind::Shotgun);
+    }
     printf("\n");
+    assert(melee >= 3 && close >= 10);  // adjacent enemy: melee or a gun, not a blast that hurts the shooter
 
     int wins = 0, games = 0;
     for (const char *map : maps)

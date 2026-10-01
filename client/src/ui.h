@@ -13,6 +13,7 @@ void load();
 void unload();
 void text(const char *t, float x, float y, float size, Color c, int align = 0);  // align: 0 left, 1 centre, 2 right
 float textWidth(const char *t, float size);
+const Font &textFont();  // the font text() draws, for rotated or outline-free text
 Texture2D art(const char *name);  // assets/ui/<name>.png, cached; id 0 when missing
 void logo(float cx, float y, float w, float deg = 0);  // W4M logo, top centre at (cx, y), tilted deg
 // Menu language: 0 English, 1 French (lang.txt, else the system language). tr(): W4M's string for key
@@ -75,6 +76,7 @@ struct Hud {
     // local: a human here plays the current turn; tick: ticks simulated so far
     void input(const Game &g, Input &in, bool local, int pad, uint32_t tick);
     void draw(const Game &g, const Camera3D &cam, uint32_t tick);
+    int shown(const Game &g) const { return target >= 0 ? target : g.weapon; }  // the pick while NEXT_WEAPON steps toward it
     void select(int weapon) { target = weapon, tries = 0, pressedOn = -1, releasedAt = 0, open = false, swallow = true; }
 
 private:
@@ -84,7 +86,19 @@ private:
     uint32_t releasedAt = 0;  // tick when the release began
     int introWorm = -1;       // turn-start name banner (CPU/remote): current worm and the tick it became current
     uint32_t introStart = 0;
+    // W4M hp count: labels/bars show `shown`, which ticks toward the sim hp one worm at a time, damage held until Settle
+    struct HpTrack { int seen = 0; float shown = 0, from = 0, gone = 0; bool hold = false, poison = false; };
+    struct Popup { int worm, amount; float age; bool poison; };
+    std::vector<HpTrack> hpt;
+    std::vector<Popup> popups;
+    std::vector<int> order;  // worms with a count to play, in first-hit order
+    int counting = -1;  // worm whose label is counting, camera on it; wait: camera travel / linger seconds
+    float wait = 0, tickGap = 0;
+    uint32_t hpTick = 0;
+    int hpClock = 0;
+    bool trackHp(const Game &g, bool turnStart, uint32_t tick);  // true while the camera is on a worm or a crate
 };
+void hudEvent(const Game &g, const GameEvent &e);  // per sim event: W4M commentary banners (deaths, crates)
 // + menu in a match. Local play stops stepping the sim while open; online it is only an overlay.
 struct Pause {
     enum Action { None, Quit };

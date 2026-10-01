@@ -149,6 +149,13 @@ static constexpr float JUMP_UP = 7.75f, JUMP_FWD = 3.1f, FLIP_UP = 9.8f, FLIP_BA
 static constexpr float SLIDE_NY = 0.5f, SLIDE_FRICTION = 0.95f, WALK_OFF = 0.7f;  // W4M SlideAngle 60, WalkOffCliffVelMulti
 static const float WIND_MAX[] = {0, 0.5f, 1, 1.5f};
 
+// W4M melee box: in front of the attacker, a worm height up or down; the Fire Punch (a leap) also reaches above.
+bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd) {
+    Vector3 d = Vector3Subtract(p, a.pos);
+    float ahead = d.x * sinf(a.yaw) + d.z * cosf(a.yaw), side = fabsf(d.x * cosf(a.yaw) - d.z * sinf(a.yaw));
+    return ahead > -0.2f && ahead < 2 && side < 1 && d.y > -1.2f && d.y < (wd.fuse > 0 ? 3 : 1.2f);
+}
+
 static bool utility(Kind k) { return k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::ChangeWorm; }
 
 float Game::rand01() {
@@ -256,6 +263,7 @@ void Game::start(const GameConfig &c) {
                 }
         }
     }
+    picked.assign(teams, weapon);
     idle.assign(teams, 0);
     run = MissionRun{};
     if (cfg.mission) missionStart(*this);
@@ -299,6 +307,7 @@ void Game::beginTurn(int team) {
             wind = (rand01() * 2 - 1) * WIND_MAX[std::min<int>(sc.wind, 3)];
             roped = jetting = chute = false;
             shotsLeft = 0;
+            weapon = picked[t];
             if (!ammo[t][weapon]) nextWeapon(t);
             for (int n = cfg.wormpot & WP_CRATE_SHOWER ? 3 : 1; n > 0; n--)
                 if (!(cfg.rules & RULE_ROPE_RACE) && rand01() * 100 < sc.crateChance && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
@@ -391,9 +400,11 @@ void Game::stepObjects() {
         }
         bool sheep = false;  // W4M challenges: a Super Sheep collects mission crates for its worm
         for (const Projectile &s : shots) sheep |= o.tag >= 0 && WEAPONS[s.weapon].kind == Kind::SuperSheep && Vector3Distance(s.pos, o.pos) < 1.2f;
+        // touching the 0.9 m crate box, with some slack: beside it, on top or just under it
+        auto touching = [&](const Worm &w) { return fabsf(w.pos.y - o.pos.y) < 1.3f && Vector2Distance({w.pos.x, w.pos.z}, {o.pos.x, o.pos.z}) < R + 0.75f; };
         if (o.type == Object::Crate && !o.dead)
             for (Worm &w : worms) {
-                if (!(sheep && &w == &worms[current]) && (!w.alive || Vector3Distance(w.pos, o.pos) >= R + 0.7f)) continue;
+                if (!(sheep && &w == &worms[current]) && (!w.alive || !touching(w))) continue;
                 if (o.weapon < 0) w.hp += cfg.scheme.crateHealth, w.poison = 0;
                 else if (ammo[w.team][o.weapon] >= 0) ammo[w.team][o.weapon]++;
                 emit(GameEvent::Collect, o.pos, int(&w - worms.data()), o.weapon);
@@ -449,15 +460,18 @@ void Game::use(Worm &w) {
         Ray r = {Vector3Add(w.pos, Vector3Scale(dir, 0.6f)), dir};
         Vector3 hit;
         float dist = terrain.raycast(r, 60, &hit) ? Vector3Distance(r.position, hit) : 60;
-        for (const Worm &o : worms) {
+        Worm *struck = nullptr;
+        for (Worm &o : worms) {
             float t = Vector3DotProduct(Vector3Subtract(o.pos, r.position), dir);
-            if (o.alive && &o != &w && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < R + 0.1f) dist = t;
+            if (o.alive && &o != &w && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < R + 0.1f) dist = t, struck = &o;
         }
         for (const Object &o : objects) {
             float t = Vector3DotProduct(Vector3Subtract(o.pos, r.position), dir);
-            if (o.type == Object::Target && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < 0.6f) dist = t;
+            if (o.type == Object::Target && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < 0.6f) dist = t, struck = nullptr;
         }
-        if (dist < 60) explode(Vector3Add(r.position, Vector3Scale(dir, dist)), wd.radius, wd.damage);
+        // a worm hit takes the full damage (W4M gun), the blast only digs and pushes
+        if (dist < 60) explode(Vector3Add(r.position, Vector3Scale(dir, dist)), wd.radius, struck ? 0 : wd.damage);
+        if (struck) hurt(*struck, (int)wd.damage);
         if (--shotsLeft == 0) phase = Phase::Flying;
         break;
     }
@@ -483,9 +497,7 @@ void Game::use(Worm &w) {
         break;
     case Kind::Melee:
         for (Worm &o : worms) {
-            Vector3 d = Vector3Subtract(o.pos, w.pos);
-            float dist = Vector3Length(d);
-            if (!o.alive || &o == &w || dist > 1.8f || Vector3DotProduct(d, f) < 0.5f * dist) continue;
+            if (!o.alive || &o == &w || !meleeHits(w, o.pos, wd)) continue;
             hurt(o, (int)wd.damage);
             o.vel = Vector3Add(Vector3Scale(dir, wd.speed), {0, wd.bounce, 0});
         }
@@ -799,6 +811,7 @@ void Game::step(const Input &in) {
                             if (x.alive) { x.alive = false; x.hp = 0; emit(GameEvent::Boom, x.pos); emit(GameEvent::Death, x.pos, t * perTeam + k); }
                         }
                 }
+            picked[w.team] = weapon;
             beginTurn(w.team);
         }
         break;
@@ -820,6 +833,7 @@ uint32_t Game::checksum() const {
     mix(&rng, sizeof rng);
     mix(&current, sizeof current);
     mix(&weapon, sizeof weapon);
+    mix(picked.data(), picked.size() * sizeof(int));
     mix(&water, sizeof water);
     mix(&clock, sizeof clock);
     mix(&hotSeat, sizeof hotSeat);

@@ -9,7 +9,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  Shotgun, Airstrike, Donkey, Rope, Teleport,
                  BatSwing, FirePunch, Prod, Sniper, Bow, Homing, OldWomanFire, ScouserFire, SentryPlace, SentryFire,
                  Dynamite, Gas, Abduction, Flood, Parachute, MineBeep, CrateLand, Pickup, SuperSheepFire,
-                 Step, Land, Count };  // Step, Land: worm foley, silent when not imported
+                 Step, Land, HpTick, Count };  // Step, Land: worm foley; HpTick: HUD hp count; silent when not imported
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle, Count };
 
 void init();

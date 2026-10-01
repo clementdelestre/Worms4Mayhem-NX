@@ -1,6 +1,5 @@
 #include "loading.h"
 #include "frontbg.h"
-#include "rlgl.h"
 #include "ui.h"
 #include <cmath>
 #include <string>
@@ -45,14 +44,22 @@ void loading() {
     else DrawRectangleGradientV(0, 0, 1280, 720, {40, 80, 150, 255}, {120, 170, 220, 255});
     DrawCircleSector({-700, 360}, 1680, 0, 360, 240, {24, 62, 118, 255});
     DrawCircleSector({-700, 360}, 1665, 0, 360, 240, {10, 32, 70, 255});
+    // W4M's watermark: packed columns of the word read bottom to top, big/medium/small, a shade above the panel, cut by its curve
     const char *word = Ui::tr("Text.Loading", "Loading", "Chargement");
-    float step = Ui::textWidth(word, 80) + 60;
-    for (int col = 0; col < 6; col++) {  // vertical, scrolling up
-        rlPushMatrix();
-        rlTranslatef(60 + col * 160.0f, 0, 0);
-        rlRotatef(-90, 0, 0, 1);
-        for (float y = -fmodf(t * 25 + col * 97, step) - step; y < 720 + step; y += step) Ui::text(word, -720 + y, -40, 80, {255, 255, 255, 10});
-        rlPopMatrix();
+    const Font &f = Ui::textFont();
+    static const float SIZES[] = {190, 130, 165, 105, 180, 140, 120};
+    float x = -30;
+    for (int col = 0; x < 965; col++) {
+        float size = SIZES[col % 7], step = MeasureTextEx(f, word, size, 0).x + size * 0.3f;
+        float y0 = 720 + fmodf(col * 211.0f + t * (col % 2 ? 6 : -6), step);  // barely drifting
+        auto draw = [&] { for (float y = y0 + step; y > -step; y -= step) DrawTextPro(f, word, {x, y}, {}, -90, size, 0, {19, 45, 90, 255}); };
+        float w = size * 0.8f;
+        if (x + w < 925) draw();  // clear of the curve top to bottom
+        else for (float sx = x; sx < x + w; sx += 6) {
+            float h = sqrtf(fmaxf(1665.0f * 1665 - (sx + 706) * (sx + 706), 0));
+            BeginScissorMode((int)sx, (int)(360 - h), 6, (int)(2 * h)), draw(), EndScissorMode();
+        }
+        x += w;
     }
     Texture2D worm = Ui::art("fe2/loading_worm");
     Vector2 wc = {640, 118};

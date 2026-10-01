@@ -19,7 +19,11 @@ Matrix trs(const Transform &p) {
     return MatrixMultiply(MatrixMultiply(MatrixScale(p.scale.x, p.scale.y, p.scale.z), QuaternionToMatrix(p.rotation)),
                           MatrixTranslate(p.translation.x, p.translation.y, p.translation.z));
 }
-struct Entry { Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr; int frame = -1; std::vector<Matrix> invBind; };
+struct Entry {
+    Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr, *aimed = nullptr; int frame = -1, aimFrame = -1;
+    std::vector<Matrix> invBind;
+    std::vector<int> arm;  // per bone: its shoulder bone, -1 off the arms (the glb skeleton is flat: matched by name)
+};
 std::map<std::string, Entry> models;
 std::vector<std::string> hatNames;
 Shader shader{};
@@ -41,6 +45,13 @@ void Models::load(void (*progress)()) {
         }
         if (e.m.skeleton.boneCount) e.anims = LoadModelAnimations(files.paths[i], &e.count);
         for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
+        for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
+            const char *n = e.m.skeleton.bones[b].name;
+            bool left = strstr(n, "_left"), hand = !strcmp(n, "WeaponLocator");
+            for (const char *p : {"wrist_", "pinky", "index", "fore", "thumb_"}) hand |= !strncmp(n, p, strlen(p));
+            if (!strncmp(n, "shoulder_", 9)) s[left] = b;
+            e.arm.push_back(!strncmp(n, "shoulder_", 9) || hand ? s[left] : -1);  // bones follow their shoulder in the file
+        }
         std::string name = GetFileNameWithoutExt(files.paths[i]);
         if (strstr(files.paths[i], "/hats/")) hatNames.push_back(name);
         models[name] = e;
@@ -77,9 +88,9 @@ float Models::clipLength(const char *name, const char *clip) {
     return a ? (a->keyframeCount - 1) / 60.0f : 0;  // raylib samples glTF clips at 60 fps
 }
 
-static const ModelAnimation *clipFrame(const Entry &e, const char *clip, float t, bool loop, int *f) {
+static const ModelAnimation *clipFrame(const Entry &e, const char *clip, float t, bool loop, int *f, bool fallback = true) {
     const ModelAnimation *a = find(e, clip);
-    if (!a && e.count) a = &e.anims[0];
+    if (!a && e.count && fallback) a = &e.anims[0];
     if (!a) return nullptr;
     int last = a->keyframeCount - 1;
     *f = (int)(t * 60);
@@ -87,27 +98,34 @@ static const ModelAnimation *clipFrame(const Entry &e, const char *clip, float t
     return a;
 }
 
-bool Models::joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out) {
+// Model-space matrix of bone b; aim (frame af): an arm bone keeps its offset from its shoulder, which takes aim's pose
+static Matrix bone(const Entry &e, const ModelAnimation &a, int f, int b, const ModelAnimation *aim, int af) {
+    int s = aim && b < (int)e.arm.size() ? e.arm[b] : -1;
+    if (s < 0 || s >= (int)aim->boneCount) return trs(a.keyframePoses[f][b]);
+    return MatrixMultiply(MatrixMultiply(trs(a.keyframePoses[f][b]), MatrixInvert(trs(a.keyframePoses[f][s]))), trs(aim->keyframePoses[af][s]));
+}
+
+bool Models::joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim, float aimT) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     const Entry &e = it->second;
-    int f, b = 0;
-    const ModelAnimation *a = clipFrame(e, clip, t, loop, &f);
+    int f, af = 0, b = 0;
+    const ModelAnimation *a = clipFrame(e, clip, t, loop, &f), *am = aim ? clipFrame(e, aim, aimT, false, &af, false) : nullptr;
     int n = (int)e.m.skeleton.boneCount;
     while (b < n && strcmp(e.m.skeleton.bones[b].name, joint)) b++;
     if (!a || b == n || b >= (int)a->boneCount) return false;
-    *out = trs(a->keyframePoses[f][b]);
+    *out = bone(e, *a, f, b, am, af);
     return true;
 }
 
 // UpdateModelAnimation() equivalent at an integer frame; raylib inverts a bone matrix per vertex for the normals
-static void skin(Entry &e, const ModelAnimation &a, int f) {
+static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af) {
     Model &m = e.m;
     int n = std::min(m.skeleton.boneCount, a.boneCount);
     static std::vector<Matrix> nm;
     nm.resize(m.skeleton.boneCount);
     for (int b = 0; b < n; b++) {
-        m.boneMatrices[b] = MatrixMultiply(e.invBind[b], trs(a.keyframePoses[f][b]));
+        m.boneMatrices[b] = MatrixMultiply(e.invBind[b], bone(e, a, f, b, aim, af));
         nm[b] = MatrixTranspose(MatrixInvert(m.boneMatrices[b]));
     }
     for (int i = 0; i < m.meshCount; i++) {
@@ -150,15 +168,16 @@ bool Models::draw(const char *name, Matrix m, Color tint) {
     return true;
 }
 
-bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop) {
+bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     Entry &e = it->second;
     // skinned meshes are shared: pose them right before each draw (CPU skinning), unless already in that pose
-    int f;
+    int f, af = -1;
+    const ModelAnimation *am = aim ? clipFrame(e, aim, aimT, false, &af, false) : nullptr;
     if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f)) {
-        if ((a != e.posed || f != e.frame) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f);
-        e.posed = a, e.frame = f;
+        if ((a != e.posed || f != e.frame || am != e.aimed || af != e.aimFrame) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, am, af);
+        e.posed = a, e.frame = f, e.aimed = am, e.aimFrame = af;
     }
     e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
     DrawModel(e.m, pos, 1, tint);

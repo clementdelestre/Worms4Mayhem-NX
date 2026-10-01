@@ -78,12 +78,13 @@ struct Outcome {
     bool smart;
     std::vector<float> dmg;
     std::vector<Vector3> kick;
+    std::vector<float> pois;
     std::vector<char> hit, gone;
     float extra = 0;
     bool started = false;
 
     Outcome(const Game &g, bool smart) : g(g), team(g.worms[g.current].team), self(g.current), smart(smart), dmg(g.worms.size()),
-        kick(g.worms.size()), hit(g.worms.size()), gone(g.objects.size()) {}
+        kick(g.worms.size()), pois(g.worms.size()), hit(g.worms.size()), gone(g.objects.size()) {}
 
     void blast(Vector3 p, float radius, float damage, float poison = 0, int depth = 0) {
         float reach = radius * 2, nearest = 100;
@@ -96,7 +97,7 @@ struct Outcome {
             dmg[i] += (int)(damage * f + 0.5f);
             kick[i] = kick[i] + Vector3Normalize(w.pos - p + Vector3{0, 1, 0}) * (14 * f);
             hit[i] = 1;
-            if (poison > 0 && w.poison < poison) extra += (w.team == team ? -2 : 1) * poison * 2;
+            pois[i] = fmaxf(pois[i], poison);
         }
         if (!started) { started = true; extra -= 0.05f * nearest; }  // tie-breaker: land near an enemy
         if (!smart || depth > 2) return;
@@ -125,7 +126,8 @@ struct Outcome {
             Vector3 v = w.vel + kick[i];
             float fall = 0;
             bool sunk = smart && Vector3LengthSqr(v) > 1 && !fling(g, w.pos, v, fall);
-            float lost = sunk ? w.hp : fminf(w.hp, dmg[i] + fall), val = lost + (lost >= w.hp ? 30 : 0);
+            float lost = sunk ? w.hp : fminf(w.hp, dmg[i] + fall);
+            float val = lost + (lost >= w.hp ? 30 : 2 * fmaxf(0, pois[i] - w.poison));  // poison: worth ~2 turns on a survivor
             s += w.team == team ? -2 * val : val;
             if ((int)i != self) { karma += dmg[i] * 0.5f; if (w.team != team) leech += dmg[i] * 0.5f; }
         }
@@ -404,10 +406,15 @@ void Ai::evalWeapon(const Game &g, int wi, int only) {
     const float wind = level > 1 ? g.wind : g.wind * 0.5f;  // level 1 half-guesses the wind
     const bool smart = level > 1;
     if (!g.ammo[team][wi] && !(g.shotsLeft && wi == g.weapon)) return;
-    if (level == 1 && wd.count >= 0) return;
+    const Kind kd = wd.kind;  // level 1: plain throws, shots, sheep and melee only
+    if (level == 1 && (kd == Kind::SuperSheep || kd == Kind::Homing || kd == Kind::Airstrike || kd == Kind::Donkey || kd == Kind::Abduction ||
+                       kd == Kind::Sentry || wd.radius > 5)) return;
+    // taste: a per-turn random lean per weapon (less steady at low levels), and a nudge away from last turn's weapon
+    uint32_t h = (salt ^ (uint32_t)wi * 2654435761u) * 2246822519u;
+    const float taste = ((h >> 8) / 16777216.0f * 2 - 1) * (level == 1 ? 12 : level == 2 ? 10 : 5) - (wi == g.picked[team] ? 8 : 0);
     auto consider = [&](float score, float yaw, float pitch, int charge, int target) {
-        if (wd.count > 0) score -= 8;  // keep specials for good chances
-        if (score > plan.score) plan = {wi, charge, target, yaw, pitch, score};
+        if (wd.count > 0) score -= 4;  // keep specials for good chances
+        if (score + taste > plan.rank) plan = {wi, charge, target, yaw, pitch, score, score + taste};
     };
     auto shell = [&](Vector3 at) {
         Outcome o(g, smart);
@@ -465,31 +472,36 @@ void Ai::evalWeapon(const Game &g, int wi, int only) {
             float pitch = atan2f(to.y - (isWorm ? 0 : 0.3f), horiz);
             Vector3 d = dirOf(yawE, pitch), o = w.pos + d * 0.6f, hit;
             float dist = g.terrain.raycast({o, d}, 60, &hit) ? Vector3Distance(o, hit) : 60;
-            for (const Worm &x : g.worms) {
+            int struck = -1;
+            for (size_t i = 0; i < g.worms.size(); i++) {
+                const Worm &x = g.worms[i];
                 float t = Vector3DotProduct(x.pos - o, d);
-                if (x.alive && &x != &w && t > 0 && t < dist && Vector3Distance(x.pos, o + d * t) < R + 0.1f) dist = t;
+                if (x.alive && &x != &w && t > 0 && t < dist && Vector3Distance(x.pos, o + d * t) < R + 0.1f) dist = t, struck = (int)i;
             }
             if (dist < 60 && pitch > -1.2f && pitch < 1.45f) {
                 Outcome oc(g, smart);
-                for (int s = 0; s < wd.shots; s++) oc.blast(o + d * dist, wd.radius, wd.damage);
+                for (int s = 0; s < wd.shots; s++) {
+                    oc.blast(o + d * dist, wd.radius, struck >= 0 ? 0 : wd.damage);
+                    if (struck >= 0) oc.dmg[struck] += wd.damage, oc.hit[struck] = 1;
+                }
                 consider(oc.total(), yawE, pitch, 0, ti);
             }
             break;
         }
         case Kind::Melee:
-            if (!isWorm || Vector3Distance(e, w.pos) > 1.7f) break;
+            if (!isWorm || Vector3Distance(e, w.pos) > 3.5f) break;
             for (float dy : {-0.8f, -0.4f, 0.0f, 0.4f, 0.8f})
                 for (float pitch : {0.0f, 0.5f, 1.0f}) {
-                    float yaw = yawE + dy;
-                    Vector3 f = flat(yaw), v = dirOf(yaw, pitch) * wd.speed + Vector3{0, wd.bounce, 0};
+                    Worm at = w;
+                    at.yaw = yawE + dy;
+                    const float yaw = at.yaw;
+                    Vector3 v = dirOf(yaw, pitch) * wd.speed + Vector3{0, wd.bounce, 0};
                     Outcome oc(g, smart);
                     for (size_t i = 0; i < g.worms.size(); i++) {
                         const Worm &x = g.worms[i];
-                        Vector3 dd = x.pos - w.pos;
-                        float dist = Vector3Length(dd);
-                        if (x.alive && (int)i != g.current && dist <= 1.8f && Vector3DotProduct(dd, f) >= 0.5f * dist) oc.strike((int)i, (int)wd.damage, v);
+                        if (x.alive && (int)i != g.current && meleeHits(at, x.pos, wd)) oc.strike((int)i, (int)wd.damage, v);
                     }
-                    consider(oc.total(), yaw, pitch, 0, ti);
+                    if (oc.total() > 0) consider(oc.total() + 15, yaw, pitch, 0, ti);  // W4M CPUs favour a sure point-blank hit
                 }
             break;
         case Kind::Sheep:
@@ -769,6 +781,7 @@ Input Ai::think(const Game &g) {
         stage = -1;
         run = RopeRun{};
         lastBoom = w.pos;
+        salt = (g.rng ^ (uint32_t)g.clock * 2654435761u) + (uint32_t)g.current;
     }
     lastTimer = g.timer;
     if (++tick < 20) return in;  // short pause so a watcher can follow

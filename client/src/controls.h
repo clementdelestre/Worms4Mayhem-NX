@@ -7,7 +7,7 @@
 namespace Controls {
 struct Settings {
     float aim = 1, cam = 1, gyro = 1;  // sensitivities
-    bool invertAim = false, invertCam = false, gyroOn = true, rumbleOn = true;
+    bool invertAim = false, invertCam = false, gyroOn = false, rumbleOn = true;
 };
 extern Settings settings;
 void load(const char *path);
@@ -22,7 +22,9 @@ float sinceFirstPerson();                 // seconds since the first-person aim 
 extern int forceAim;                     // capture mode: 1 aim, 2 fine aim
 Vector3 aimPoint(const Game &g);         // far point of the active worm's shot line, centred by the aim camera
 // Free orbit while moving, over the shoulder in aim mode, chasing a shot, through the sniper scope.
+void reset();  // new match: camera cut behind the first worm, aim state cleared
 void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt);
+void focus(const Vector3 *at);  // HUD cinematic target (hp count, crate drop) until focus(nullptr)
 void rumble(int pad, float amp, float secs);  // pad -1: nobody
 void update(float dt);                         // rumble envelopes, once per frame
 }  // namespace Controls

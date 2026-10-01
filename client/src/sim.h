@@ -41,6 +41,7 @@ struct Worm {
     bool alive, grounded;
     int poison = 0;  // hp lost at each turn start, never below 1
 };
+bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd);  // p inside a's melee hit box (shared with the AI)
 
 struct Projectile {
     Vector3 pos, vel;
@@ -142,6 +143,7 @@ struct Game {
     std::vector<int> nextWorm;
     std::vector<std::vector<int>> ammo;  // [team][weapon]
     std::vector<int> lastHitTeam;        // per worm: team index of last attacker, -1 none (highlander)
+    std::vector<int> picked;             // per team: weapon in hand when its last turn ended, reselected next turn (W4M)
     int teams = 2, perTeam = 1, current = 0, weapon = 0, winner = -1, timer = 0;
     int clock = 0;      // ticks played (hot seat excluded): sudden death after cfg.scheme.roundTime
     int hotSeat = 0;    // ticks left before the turn clock starts

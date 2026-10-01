@@ -7,6 +7,7 @@
 #include "frontbg.h"
 #include "fx.h"
 #include "lanhost.h"
+#include "lit.h"
 #include "loading.h"
 #include "mission.h"
 #include "models.h"
@@ -62,7 +63,11 @@ static void drawTextCentered(const char *t, int x, int y, int size, Color c) {
     Ui::text(t, x, y, size, c, 1);
 }
 
+static void animEvent(const Game &g, const GameEvent &e);
+
 static void onEvent(const Game &g, const GameEvent &e) {
+    animEvent(g, e);
+    Ui::hudEvent(g, e);
     using Audio::Sfx;
     using Audio::Voice;
     int team = e.worm >= 0 ? g.worms[e.worm].team : 0;
@@ -130,9 +135,56 @@ static const char *heldModel(const WeaponDef &d, const char **clip) {
     }
 }
 
+// W4M's use clip for a weapon; *keep: the held item stays in hand (launchers, bat, radio) instead of leaving it (throws, animals, placed items).
+static const char *fireClip(const WeaponDef &d, bool *keep) {
+    const std::string &n = d.name;
+    *keep = true;
+    switch (d.kind) {
+    case Kind::Shell:
+        if (n == "Poison Arrow") return "FireBow";
+        *keep = d.fuse <= 0;
+        return n == "Dynamite" ? "FireDynamite" : d.fuse > 0 ? "FireThrown" : "FireBazooka";
+    case Kind::Shotgun: return n == "Sniper Rifle" ? "FireSniper" : "FireShotgun";
+    case Kind::Homing: return "FireHomingMissile";
+    case Kind::Melee: return n == "Baseball Bat" ? "Fire2Bat" : n == "Prod" ? "FireProd" : "Fire2Firepunch";
+    case Kind::Airstrike: case Kind::Donkey: case Kind::Abduction: case Kind::Flood: return "HoldAirstrike";  // talks into the radio
+    case Kind::Surrender: return "TauntSurrender";
+    default: break;
+    }
+    *keep = false;
+    switch (d.kind) {
+    case Kind::Sheep: case Kind::SuperSheep: return n == "Starburst" ? nullptr : "FireSheep";
+    case Kind::OldWoman: return "FireOldWoman";
+    case Kind::Scouser: return "FireScouser";
+    case Kind::Mine: return "FireLandmine";
+    case Kind::Sentry: return "FireSentrygun";
+    default: return nullptr;
+    }
+}
+
 // Render-only gait state: the sim walks worms by moving pos (vel stays 0), so the cycle follows position deltas.
-struct WormAnim { Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, flip = false; };
+// act: one-shot clip started by a sim event (weapon use, flinch, drowning), held: item kept at the WeaponLocator meanwhile.
+struct WormAnim {
+    Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, flip = false;
+    struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr; } act;  // aim: Aim* clip layered on the arms
+};
 static std::vector<WormAnim> wormAnims;
+
+static void animEvent(const Game &g, const GameEvent &e) {
+    if (e.worm < 0 || e.worm >= (int)g.worms.size()) return;
+    wormAnims.resize(g.worms.size());
+    WormAnim::Act &a = wormAnims[e.worm].act;
+    const char *c = nullptr, *h = nullptr;
+    bool keep;
+    if (e.kind == GameEvent::Fire && WEAPONS[e.weapon].kind == Kind::Teleport) a = {"TelepadAppear", 1.5f};  // its first half is invisible
+    else if (e.kind == GameEvent::Fire) h = heldModel(WEAPONS[e.weapon], &c), a = {fireClip(WEAPONS[e.weapon], &keep), 0, keep ? h : nullptr, c && c[0] == 'A' ? c : nullptr};
+    else if (e.kind == GameEvent::Hurt && !a.clip) a = {"Hit_Front"};
+    else if (e.kind == GameEvent::Splash) a = {"FallDrown"};
+}
+static bool drowning(const Worm &w, const Game &g) {
+    size_t i = &w - g.worms.data();
+    return i < wormAnims.size() && wormAnims[i].act.clip && !strcmp(wormAnims[i].act.clip, "FallDrown");
+}
 
 // Once per frame, for every worm: walk phase advances with distance walked, footsteps on the cycle beat, landing thud.
 static void animateWorms(const Game &g, float dt) {
@@ -143,8 +195,15 @@ static void animateWorms(const Game &g, float dt) {
         WormAnim &a = wormAnims[i];
         Vector3 d = Vector3Subtract(w.pos, a.pos);
         float dist = sqrtf(d.x * d.x + d.z * d.z), turn = fabsf(remainderf(w.yaw - a.yaw, 2 * PI));
-        if (!a.init || dist > 2) a = WormAnim{}, a.init = true, dist = turn = 0;  // spawn, teleport, replay rewind
+        if (!a.init || dist > 2) { WormAnim::Act act = a.act; a = WormAnim{}, a.act = act, a.init = true, dist = turn = 0; }  // spawn, teleport, replay rewind
         a.pos = w.pos, a.yaw = w.yaw;
+        if (WormAnim::Act &c = a.act; c.clip) {
+            bool air = !w.grounded && fabsf(w.vel.y) > 1, leap = !strcmp(c.clip, "Fire2Firepunch"), drown = !strcmp(c.clip, "FallDrown");
+            c.t += dt;
+            bool done = c.t >= Models::clipLength("worm", c.clip) || (leap ? w.grounded && c.t > 0.3f : !drown && (air || a.moving));
+            if (c.held && (int)i == g.current && g.phase == Phase::Aim && c.t > 0.4f) done = true;  // shotgun: aiming the next shot
+            if (done) c = {};
+        }
         if (!w.grounded && fabsf(w.vel.y) > 1) {  // ignore slope-contact flicker
             if (a.air == 0) a.flip = w.vel.x * sinf(w.yaw) + w.vel.z * cosf(w.yaw) < -0.5f;  // backflip leaves backwards
             a.air += dt, a.fallV = fminf(a.fallV, w.vel.y), a.walk = 0, a.moving = false;
@@ -173,15 +232,17 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     WormAnim a = i < (int)wormAnims.size() ? wormAnims[i] : WormAnim{};
     float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
     float fidget = fmodf(clock + i * 7.3f, 25);  // desynchronised per worm
-    const char *clip = "Base", *held = nullptr;
+    const char *clip = "Base", *held = nullptr, *aim = nullptr;
     bool loop = true;
-    bool tool = i == g.current && (g.roped || g.jetting);
-    if (a.air > 0 && speed > 4 && !tool) clip = "Blastflight2";  // knocked flying
-    else if (a.air > 0) {
+    bool tool = i == g.current && (g.roped || g.jetting || (g.chute && a.air > 0));
+    if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
+    else if (tool) clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteWobble", held = g.roped ? "hold_rope" : nullptr;
+    else if (bool air = a.air > 0.15f || w.vel.y > 2; air && speed > 4) clip = "Blastflight2";  // knocked flying (short drops keep the pose)
+    else if (air) {
         clip = a.flip ? "Backflip" : w.vel.y > 0 ? "Jump" : "Fall";
         if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
     } else if (a.moving || a.walk > 0) clip = "Walk", t = a.walk;
-    else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0) clip = "Land", t = a.land, loop = false;
+    else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0 && !(i == g.current && g.phase == Phase::Aim)) clip = "Land", t = a.land, loop = false;
     else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up
     else if (g.phase == Phase::GameOver && w.team == g.winner) clip = "Victorious_Grin";
     else if (i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && (held = heldModel(WEAPONS[g.weapon], &clip))) {
@@ -189,10 +250,11 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     } else if (w.hp < 25) clip = "Wounded";
     else if (fidget < Models::clipLength("worm", i % 2 ? "Yawn" : "ScratchHead")) clip = i % 2 ? "Yawn" : "ScratchHead", t = fidget, loop = false;
     Color tint = ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f);
-    Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
-    if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop)) return false;
+    Vector3 p = {w.pos.x, w.pos.y - Game::R - (w.alive ? 0 : a.act.t * 0.6f), w.pos.z};  // dead: drowning, sinks
+    float aimT = aim ? (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", aim) : 0;
+    if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop, aim, aimT)) return false;
     Matrix m;
-    if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m)) {
+    if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT)) {
         m = MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z)));
         if (fp) {  // the aim clip's hand orientation, moved to the bottom right of the view
             Vector3 f = Vector3Normalize(Vector3Subtract(fp->target, fp->position)), r = Vector3Normalize(Vector3CrossProduct(f, {0, 1, 0})), u = Vector3CrossProduct(r, f);
@@ -205,7 +267,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
         Models::draw(held, m);
     }
     int hat = !fp && w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
-    if (hat && Models::joint("worm", "HatLocator", clip, t, loop, &m))
+    if (hat && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT))
         Models::draw(Models::hatName(hat - 1), MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
     return true;
 }
@@ -272,6 +334,32 @@ int main(int argc, char **argv) {
     Controls::load(DATA_DIR "controls.txt");
     Fx::load();
     boot();
+    // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit; --animshot <weapon>: a turn firing it, anim_<frame>.png
+    if (argc > 2 && !strcmp(argv[1], "--animshot") && (argv[2][0] < '0' || argv[2][0] > '9')) {
+        float L = Models::clipLength("worm", argv[2]);
+        Camera3D c = {{0, 0.4f, 11}, {0, 0.4f, 0}, {0, 1, 0}, 30, CAMERA_PERSPECTIVE};
+        BeginDrawing();
+        ClearBackground(SKYBLUE);
+        Lit::frame(c.position);
+        BeginMode3D(c);
+        for (int k = 0; k < 8; k++) {
+            Vector3 p = {-3.6f + (k % 4) * 2.4f, k < 4 ? 1 : -1.6f, 0};
+            Matrix m;
+            const char *aim = argc > 5 ? argv[4] : nullptr;
+            float aimT = argc > 5 ? atof(argv[5]) : 0;
+            Models::draw("worm", p, PI / 2, 0, WHITE, argv[2], L * k / 7, false, aim, aimT);
+            if (argc > 3 && Models::joint("worm", "WeaponLocator", argv[2], L * k / 7, false, &m, aim, aimT))
+                Models::draw(argv[3], MatrixMultiply(m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))));
+        }
+        EndMode3D();
+        for (int k = 0; k < 8; k++) Ui::text(TextFormat("%.2fs", L * k / 7), 200 + (k % 4) * 290, k < 4 ? 20 : 380, 24, BLACK, 1);
+        Ui::text(TextFormat("%s %.2fs", argv[2], L), 640, 690, 24, BLACK, 1);
+        rlDrawRenderBatchActive();
+        Image img = LoadImageFromScreen();
+        ExportImage(img, "animshot.png");
+        EndDrawing();
+        return 0;
+    }
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
@@ -303,6 +391,7 @@ int main(int argc, char **argv) {
     bool aimShot = shot && argc > 2 && !strcmp(argv[1], "--aimshot");
     // --aimseq <weapon> [map]: aim mode from frame 40 to 90, aimseq_NNN.png around the entry and the exit
     bool aimSeq = shot && argc > 2 && !strcmp(argv[1], "--aimseq");
+    bool animShot = shot && argc > 2 && !strcmp(argv[1], "--animshot");
     if (aimShot) Controls::forceAim = argc > 4 && !strcmp(argv[4], "fine") ? 2 : 1;
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
@@ -376,7 +465,8 @@ int main(int argc, char **argv) {
     Snapshot snap;  // turn start, for the instant replay
     bool recSaved = true, playing = false, paused = false, freeCam = false, instant = true, shotDone = false;
     int speed = 1, irEnd = -1, replaySel = 0;  // irEnd: live tick the instant replay catches up to, -1 = live
-    uint32_t irTick = 0, irLive = 0, fireTick = 0;
+    uint32_t irTick = 0, irLive = 0, fireTick = 0, shotTick = 0;
+    bool irSwallow = false;  // the A that skipped the replay must not jump/fire afterwards
     float irAcc = 0, fcYaw = 0, fcPitch = 0;
     Vector3 fcPos{};
     std::vector<std::string> replayFiles;
@@ -394,6 +484,7 @@ int main(int argc, char **argv) {
         for (; irTick < (uint32_t)irEnd; irTick++) game.step(rec.inputs[irTick]);
         if (game.checksum() != irLive) TraceLog(LOG_ERROR, "instant replay diverged from the live state");  // local only: keep playing
         irEnd = -1;
+        irSwallow = true;
         Fx::clear();
     };
     int livePad = -1;  // pad of the human playing this turn here, -1 none
@@ -415,7 +506,7 @@ int main(int argc, char **argv) {
         game.step(in);
         tick++;
         if (!playing) rec.inputs.push_back(in);
-        shotDone |= was == Phase::Flying && game.phase != Phase::Flying;
+        if (was == Phase::Flying && game.phase != Phase::Flying) shotDone = true, shotTick = tick;
         for (const GameEvent &e : game.events) {
             onEvent(game, e);
             feel(e);
@@ -478,6 +569,7 @@ int main(int argc, char **argv) {
         for (double &m : loadMs) m = 0;
         tick = 0;
         acc = 0;
+        Controls::reset();
         if (bench || netbot || (uiShot && !loadShot)) {  // no loading screen: game is ready on return
             while (loadStep >= 0) prepStep(true);
             screen = Screen::Play;
@@ -567,8 +659,18 @@ int main(int argc, char **argv) {
     FILE *inScript = getenv("W4NX_INPUTSCRIPT") ? fopen(getenv("W4NX_INPUTSCRIPT"), "r") : nullptr;
     int sf = -1, sk = 0, sd = 0;
     Screen shown = screen;
+    // W4NX_CAPFRAMES="10 11 12": cap_<frame>.png of the match / loading screen at those frames, fixed dt
+    std::vector<int> capFrames;
+    for (char *c = getenv("W4NX_CAPFRAMES"), *e; c && *c; c = e) { int f = strtol(c, &e, 10); if (e == c) break; capFrames.push_back(f); }
+    auto capture = [&](int frame) {
+        if (!std::count(capFrames.begin(), capFrames.end(), frame)) return;
+        rlDrawRenderBatchActive();
+        Image img = LoadImageFromScreen();
+        ExportImage(img, TextFormat("cap_%d.png", frame));
+        UnloadImage(img);
+    };
     for (int frame = 0; !WindowShouldClose(); frame++) {
-        float dt = bench || shot || uiShot ? Game::DT : fminf(GetFrameTime(), 0.25f);  // fixed: reproducible captures
+        float dt = bench || shot || uiShot || !capFrames.empty() ? Game::DT : fminf(GetFrameTime(), 0.25f);  // fixed: reproducible captures
         clock += dt;
         bool scriptEnd = false;
         for (; inScript && (sf >= 0 || fscanf(inScript, "%d %d %d", &sf, &sk, &sd) == 3) && sf <= frame; sf = -1)
@@ -661,6 +763,7 @@ int main(int argc, char **argv) {
                 ExportImage(img, TextFormat(DATA_DIR "ui_%d.png", frame));
                 UnloadImage(img);
             }
+            capture(frame);
             EndDrawing();
             if (loadShot && frame >= uiFrames.back()) break;
             if (Loading::ready() && loadStep >= 0) prepStep(false);  // after EndDrawing: the frame shows while this step blocks
@@ -835,9 +938,17 @@ int main(int argc, char **argv) {
         bool remoteTurn = online && game.phase != Phase::GameOver && !owns(cur.team);
         bool padTurn = !shot && !remoteTurn && !pause.open && !playing && irEnd < 0;
         if (aimSeq) Controls::forceAim = frame >= 40 && frame < 90;
+        int simWeapon = game.weapon;
+        game.weapon = hud.shown(game);  // panel pick: controls and the view skip the weapons stepped through on the way
         Input pin = Controls::read(game, pad, aimShot || aimSeq || (padTurn && !cpu(cur.team)), dt);
-        Input in = shot ? scriptInput(frame, shotWeapon, !aimShot && !aimSeq) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
+        game.weapon = simWeapon;
+        int late = animShot ? 2 * shotWeapon : 0;  // animshot: fire once the weapon cycling is over
+        Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, shotWeapon, !aimShot && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
         if (aimSeq && frame > 40 && frame < 80) in.aim = 127;  // look up: the exit starts from the sky
+        if (irSwallow) {
+            if (in.buttons & (Input::FIRE | Input::JUMP)) in.buttons &= ~(Input::FIRE | Input::JUMP);
+            else irSwallow = false;
+        }
         hud.input(game, in, padTurn, pad, tick);
         bool feedPad = padTurn && !hud.open;
         auto local = [&] { return feedPad ? Controls::tick(in) : in; };  // stick rates spread over ticks
@@ -848,7 +959,7 @@ int main(int argc, char **argv) {
                 stepOnce(play.inputs[tick]);
             }
         } else if (irEnd >= 0) {  // instant replay: slow motion, A skips
-            if (!pause.open && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) irFinish();
+            if (!pause.open && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER})) irFinish();
             for (irAcc += pause.open ? 0 : dt * 0.5f; irAcc >= Game::DT && irEnd >= 0; irAcc -= Game::DT) {
                 game.step(rec.inputs[irTick++]);
                 for (const GameEvent &e : game.events) onEvent(game, e);
@@ -873,14 +984,23 @@ int main(int argc, char **argv) {
                 acc -= Game::DT;
             }
         }
+        if (shotDone && game.phase == Phase::Aim) shotDone = false;
+        bool wait = false;
         if (shotDone && instant && snap.valid && irEnd < 0 && !online && !playing && !shot && !bench) {
+            // let the live action settle first (worms landed, nothing flying), capped at 2.5 s
+            bool still = !game.shots.empty();
+            for (const Worm &w : game.worms) still |= w.alive && (!w.grounded || Vector3LengthSqr(w.vel) > 0.01f);
+            for (const Object &o : game.objects) still |= o.falling || Vector3LengthSqr(o.vel) > 0.01f;
+            uint32_t since = tick - shotTick;
+            bool ready = since >= 150 || game.phase == Phase::GameOver || (since >= 90 && !still);
             int dmg = 0;
             bool kill = false;
             for (size_t i = 0; i < game.worms.size() && i < snap.g.worms.size(); i++) {
                 const Worm &a = snap.g.worms[i], &b = game.worms[i];
                 if (a.alive) dmg += std::max(0, a.hp - std::max(0, b.hp)), kill |= !b.alive || b.hp <= 0;
             }
-            if (kill || dmg >= 30) {  // replay from just before the shot, at most the last 8 s
+            wait = !ready;
+            if (ready && (kill || dmg >= 30)) {  // replay from just before the shot, at most the last 8 s
                 irLive = game.checksum(), irEnd = (int)tick;
                 snap.restore(game);
                 snap.valid = false;
@@ -891,7 +1011,7 @@ int main(int argc, char **argv) {
                 irAcc = 0;
             }
         }
-        shotDone = false;
+        if (!wait) shotDone = false;
         lap(T_SIM);
         game.terrain.remesh(0.003);  // a big blast's rebuild spreads over a few frames, hidden by the fireball
         lap(T_REMESH);
@@ -906,6 +1026,7 @@ int main(int argc, char **argv) {
         }
 
         // camera (controls.cpp): free orbit, first person in aim mode, chasing the projectile, sniper scope
+        simWeapon = game.weapon, game.weapon = hud.shown(game);  // render only, restored after EndDrawing
         const WeaponDef &wd = WEAPONS[game.weapon];
         bool chase = game.phase == Phase::Flying && !game.shots.empty();
         bool scope = !chase && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && wd.name == "Sniper Rifle";
@@ -918,6 +1039,12 @@ int main(int argc, char **argv) {
         hud.fp = fp || Controls::sinceFirstPerson() < 0.3f;
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
         if (fixedView) view = viewCam;
+        if (animShot) {  // side view of the shooter
+            static int who = game.current;
+            const Worm &s = game.worms[who];
+            view.target = Vector3Add(s.pos, {0, 0.3f, 0}), view.fovy = 45;
+            view.position = Vector3Add(view.target, {cosf(s.yaw) * 5, 1, -sinf(s.yaw) * 5});
+        }
         if (playing && freeCam) {  // LS / arrows move, RS / A D W S look, ZL ZR / Z X down up
             auto ax = [&](int a) { float v = GetGamepadAxisMovement(pad, a); return fabsf(v) < 0.2f ? 0.0f : v; };
 #ifdef __SWITCH__
@@ -949,7 +1076,7 @@ int main(int argc, char **argv) {
         lap(T_DECOR);
         animateWorms(game, dt);
         for (const Worm &w : game.worms) {
-            if (!w.alive) { drawGrave(game, w); continue; }
+            if (!w.alive && !drowning(w, game)) { drawGrave(game, w); continue; }
             if ((inside && &w == &cur) || !Models::visible(w.pos, 2)) continue;
             if (!drawWorm(game, w, clock)) {
                 Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
@@ -969,7 +1096,6 @@ int main(int argc, char **argv) {
                 DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 0.4f, {1, 0, 0}, 90, RED);
                 DrawLine3D(t, Vector3Add(t, {0, 6, 0}), RED);
             }
-            DrawCube(Vector3Add(cur.pos, {0, 1.5f + sinf(clock * 5) * 0.15f, 0}), 0.25f, 0.25f, 0.25f, YELLOW);
         }
         for (const Projectile &s : game.shots) {
             const WeaponDef &d = WEAPONS[s.weapon];
@@ -1085,6 +1211,13 @@ int main(int argc, char **argv) {
             ExportImage(img, "aim.png");
             UnloadImage(img);
         }
+        if (animShot && frame >= 40 + 2 * shotWeapon && frame % 6 == 4) {
+            if (frame < 46 + 2 * shotWeapon) printf("animshot: %s\n", wd.name.c_str());
+            rlDrawRenderBatchActive();
+            Image img = LoadImageFromScreen();
+            ExportImage(img, TextFormat("anim_%03d.png", frame));
+            UnloadImage(img);
+        }
         if (aimSeq && ((frame >= 38 && frame < 56) || (frame >= 88 && frame < 106))) {
             rlDrawRenderBatchActive();
             Image img = LoadImageFromScreen();
@@ -1097,7 +1230,9 @@ int main(int argc, char **argv) {
             ExportImage(img, loadShot ? TextFormat(DATA_DIR "ui_%d.png", frame) : "ui.png");
             UnloadImage(img);
         }
+        capture(frame);
         EndDrawing();
+        game.weapon = simWeapon;
         lap(T_PRESENT);
         if (missionAct) {  // end-of-mission choice, outside the frame: next, retry, back to the list
             int act = missionAct;
@@ -1135,7 +1270,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && frame == 150) || (aimShot && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : 40))) break;
+        if ((shot && frame == 150 + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : 40))) break;
     }
     if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();

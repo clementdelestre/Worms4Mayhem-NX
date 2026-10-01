@@ -9,17 +9,17 @@
 namespace Controls {
 Settings settings;
 
-// Tuning. Sticks: radial dead zones, share of |x|^2 in the response curve.
-static const float DEAD = 0.12f, OUTER = 0.95f, CURVE = 0.7f;
-// Aim (rad/s at full tilt), ZL precision factor, full-tilt acceleration (delay, ramp time, top multiplier).
-static const float AIM_YAW = 1.6f, AIM_PITCH = 1.0f, AIM_TURN = 1.2f, FINE = 0.33f, RAMP_DELAY = 0.3f, RAMP_TIME = 0.4f, RAMP_MAX = 1.6f;
+// Tuning. Sticks: radial dead zones (Joy-Con sticks are small and noisy), share of |x|^2 in the response curve.
+static const float DEAD = 0.12f, OUTER = 0.95f, JC_DEAD = 0.18f, JC_OUTER = 0.88f, CURVE = 0.7f;
+// Aim (rad/s at full tilt), extra |x| share for small-tilt precision, ZL factor, full-tilt acceleration (delay, ramp time, top multiplier).
+static const float AIM_YAW = 1.1f, AIM_PITCH = 0.7f, AIM_TURN = 1.2f, AIM_CURVE = 0.5f, FINE = 0.25f, RAMP_DELAY = 0.45f, RAMP_TIME = 0.8f, RAMP_MAX = 1.5f;
 // Move mode: turn gain toward the stick direction, stick share below which the worm only turns, max error still walking.
 static const float TURN_GAIN = 8, STEP = 0.25f, FACE = 0.9f;
 // Camera: orbit speeds (rad/s), idle seconds before it swings back behind the worm, default elevation.
 static const float AIM_FOCUS = 40;  // aim camera looks at this far point of the shot line (screen centre)
 static const float CAM_YAW = 2.8f, CAM_PITCH = 1.4f, RECENTER_AFTER = 2.5f, EL0 = 0.42f;
-// Gyro: noise floor (rad/s), axis signs (check on hardware), mouse rad per pixel.
-static const float GYRO_FLOOR = 0.03f, GYRO_YAW = 1, GYRO_PITCH = 1, MOUSE = 0.004f;
+// Gyro: dead band (rad/s, hand tremor), axis signs (check on hardware), mouse rad per pixel.
+static const float GYRO_FLOOR = 0.06f, GYRO_YAW = 1, GYRO_PITCH = 1, MOUSE = 0.004f;
 static const float SIM_TURN = 2.5f, SIM_AIM = 1.5f;  // sim rad/s at +-127 (Game::step)
 
 #ifdef __SWITCH__
@@ -37,6 +37,13 @@ static float camYaw = 0, camEl = EL0, zoom = 1, idle = 0;
 static int lastWorm = -1;
 static bool snap = false;  // new worm: swing behind it
 static float fpOut = 9;     // seconds since the first-person aim view
+static bool cut = true;     // place the camera at once (new match, in and out of first person)
+static bool focusOn = false;
+static Vector3 focusAt{};
+
+void focus(const Vector3 *at) { focusOn = at, focusAt = at ? *at : focusAt; }
+
+void reset() { cut = true, focusOn = false, lastWorm = -1, fpOut = 9, tilt = 0, carry[0] = carry[1] = carry[2] = 0; }
 
 void load(const char *path) {
     Settings &s = settings;
@@ -54,13 +61,15 @@ void save(const char *path) {
 }
 
 static bool down(int pad, int b) { return IsGamepadButtonDown(pad, b); }
+static bool joyCon(int pad);
 
 // ax: GAMEPAD_AXIS_LEFT_X or RIGHT_X; +y up, magnitude through the dead zones and curve
 static Vector2 stick(int pad, int ax) {
     Vector2 v = {GetGamepadAxisMovement(pad, ax), UP * GetGamepadAxisMovement(pad, ax + 1)};
-    float m = Vector2Length(v);
-    if (m < DEAD) return {0, 0};
-    float t = fminf((m - DEAD) / (OUTER - DEAD), 1);
+    bool jc = joyCon(pad);
+    float m = Vector2Length(v), dead = jc ? JC_DEAD : DEAD, outer = jc ? JC_OUTER : OUTER;
+    if (m < dead) return {0, 0};
+    float t = fminf((m - dead) / (outer - dead), 1);
     return Vector2Scale(v, Lerp(t, t * t, CURVE) / m);
 }
 
@@ -92,6 +101,8 @@ static Pad &sync(int pad) {
     return p;
 }
 
+static bool joyCon(int pad) { return sync(pad).style != HidNpadStyleTag_NpadFullKey; }  // handheld too: Joy-Con sticks
+
 // aim yaw, pitch rates (rad/s): yaw about gravity whatever the grip, pitch about the controller's left-right axis
 static Vector2 gyro(int pad) {
     Pad &p = sync(pad);
@@ -102,9 +113,11 @@ static Vector2 gyro(int pad) {
     float al = Vector3Length(a);
     float yaw = al > 0.5f ? Vector3DotProduct(w, a) / al : w.z;
     float pitch = p.style == HidNpadStyleTag_NpadJoyLeft ? -w.y : p.style == HidNpadStyleTag_NpadJoyRight ? w.y : w.x;  // sideways Joy-Cons
-    auto gate = [](float v) { return fabsf(v) < GYRO_FLOOR ? 0 : v; };
+    auto gate = [](float v) { return copysignf(fmaxf(fabsf(v) - GYRO_FLOOR, 0), v); };  // soft: no step at the floor
     return {GYRO_YAW * gate(yaw), GYRO_PITCH * gate(pitch)};
 }
+#else
+static bool joyCon(int) { return false; }
 #endif
 
 Input read(const Game &g, int pad, bool live, float dt) {
@@ -124,6 +137,7 @@ Input read(const Game &g, int pad, bool live, float dt) {
     if (aimMode) {
         Vector2 a = rs;
         if (lHeld && !rs.x && !rs.y) a = ls, ls = {0, 0};  // L + stick: single Joy-Con
+        a = Vector2Scale(a, Lerp(1, Vector2Length(a), AIM_CURVE));
         tilt = Vector2Length(a) > 0.98f ? tilt + dt : 0;
         float k = settings.aim * (fine ? FINE : 1) * Lerp(1, RAMP_MAX, Clamp((tilt - RAMP_DELAY) / RAMP_TIME, 0, 1));
         turn = -a.x * AIM_YAW * k - ls.x * AIM_TURN;
@@ -181,7 +195,8 @@ float sinceFirstPerson() { return fpOut; }
 
 bool firstPerson(const Game &g) {
     Kind k = WEAPONS[g.weapon].kind;
-    return aimMode && k != Kind::Airstrike && k != Kind::Donkey && k != Kind::Teleport && k != Kind::Abduction;
+    // ground-targeted weapons aim from above; melee is third person like W4M (the punch/swing is the worm itself)
+    return aimMode && k != Kind::Airstrike && k != Kind::Donkey && k != Kind::Teleport && k != Kind::Abduction && k != Kind::Melee;
 }
 
 static Vector3 eye(const Worm &w) { return {w.pos.x - sinf(w.yaw) * 0.15f, w.pos.y + 0.5f, w.pos.z - cosf(w.yaw) * 0.15f}; }
@@ -196,6 +211,7 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     if (input) rs.x += IsKeyDown(KEY_D) - IsKeyDown(KEY_A), zin += IsKeyDown(KEY_X) - IsKeyDown(KEY_Z), wheel = GetMouseWheelMove();
 #endif
     bool moving = input && Vector2Length(stick(pad, GAMEPAD_AXIS_LEFT_X)) > 0;
+    if (lastWorm < 0) camYaw = cur.yaw, camEl = EL0, zoom = 1, lastWorm = g.current;  // new match
     if (g.current != lastWorm) lastWorm = g.current, snap = true;
     if (rs.x || rs.y) snap = false;
     idle = rs.x || rs.y || moving ? 0 : idle + dt;
@@ -207,29 +223,32 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     if (fabsf(err) < 0.05f) snap = false;
     zoom = Clamp(zoom * expf(-zin * dt * 1.5f - wheel * 0.1f), 0.45f, 2.5f);
 
-    if (firstPerson(g) || scope) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
+    if (!focusOn && (firstPerson(g) || scope)) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
         Vector3 e = eye(cur), f = Vector3Add(e, Vector3Scale(g.aimDir(cur), AIM_FOCUS));
-        float k = 1 - expf(-dt * 16);
+        float k = cut || fpOut > 0 ? 1 : 1 - expf(-dt * 16), fov = scope ? 25.0f : fine ? 42.0f : 60.0f;  // cut in: a fly-in crosses the worm's body
         cam.position = Vector3Lerp(cam.position, e, k), cam.target = Vector3Lerp(cam.target, f, k);
-        cam.fovy = Lerp(cam.fovy, scope ? 25.0f : fine ? 42.0f : 60.0f, 1 - expf(-dt * 8));
-        fpOut = 0;
+        cam.fovy = k == 1 ? fov : Lerp(cam.fovy, fov, 1 - expf(-dt * 8));
+        fpOut = 0, cut = false;
         return;
     }
-    Vector3 focus = cur.pos, from = focus, want;
+    Vector3 focus = focusOn ? focusAt : cur.pos, from = focus, want;
+    if (focusOn) chase = false;
     if (chase) from = focus = Vector3Add(g.shots[0].pos, Vector3Scale(g.shots[0].vel, 0.1f));  // lead the shot a little
-    float kt = 1 - expf(-dt * 6), kp = 1 - expf(-dt * (chase ? 2.5f : 3));
+    if (fpOut == 0 && !chase) cut = true;  // cut out too: backing out passes through the worm's head
+    if (fpOut == 0 && chase) cam.target = Vector3Add(cam.position, Vector3Normalize(Vector3Subtract(cam.target, cam.position)));  // far aim point pulled in
+    fpOut += dt;
+    float kt = cut ? 1 : 1 - expf(-dt * 6), kp = cut ? 1 : 1 - expf(-dt * (chase ? 2.5f : 3));
     {
-        float back = (chase ? 17.5f : 9.85f) * zoom;
+        float back = (chase ? 17.5f : focusOn ? 7.5f : 9.85f) * zoom;
         want = Vector3Add(focus, {-sinf(camYaw) * cosf(camEl) * back, sinf(camEl) * back, -cosf(camYaw) * cosf(camEl) * back});
     }
-    if (fpOut == 0) cam.target = Vector3Add(cam.position, Vector3Normalize(Vector3Subtract(cam.target, cam.position)));  // far aim point pulled in: the view swings back at once
-    if ((fpOut += dt) < 0.6f && !chase) kt = kp = 1 - expf(-dt * 8);  // back out of first person quickly
     Vector3 hit, to = Vector3Subtract(want, from);
     if (chase) want.y = fmaxf(want.y, cur.pos.y + 4);  // donkey/airstrike dig below the surface: stay above ground
     else if (g.terrain.raycast({from, Vector3Normalize(to)}, Vector3Length(to), &hit)) want = Vector3Lerp(from, hit, 0.85f);  // into a hill
     cam.target = Vector3Lerp(cam.target, focus, kt);
     cam.position = Vector3Lerp(cam.position, want, kp);
-    cam.fovy = Lerp(cam.fovy, 50.0f, 1 - expf(-dt * 8));
+    cam.fovy = cut ? 50 : Lerp(cam.fovy, 50.0f, 1 - expf(-dt * 8));
+    cut = false;
 }
 
 Vector3 aimPoint(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Add(eye(w), Vector3Scale(g.aimDir(w), AIM_FOCUS)); }

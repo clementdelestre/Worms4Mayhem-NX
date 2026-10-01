@@ -148,6 +148,12 @@ const WORM_CLIPS: &[&str] = &[
     "Yawn", "ScratchHead", "AimBat+HoldBat", "AimSniper+HoldSniper", "AimBow+HoldBow", "AimHomingMissile+HoldHomingMissile",
     "HoldFirepunch", "HoldProd", "HoldDynamite", "HoldLandmine", "HoldOldWoman", "HoldScouser", "HoldSentrygun", "HoldSurrender",
     "HoldSkipGo", "HoldGasgrenade", "HoldStarburst", "HoldSheep",
+    // weapon use (W4M's Fire* clips end holstered), rope/jetpack/parachute, teleport, flinch, drowning
+    "FireBazooka+HoldBazooka", "FireThrown+HoldThrown", "FireBow+HoldBow", "FireDynamite+HoldDynamite", "FireShotgun+HoldShotgun",
+    "FireSniper+HoldSniper", "FireHomingMissile+HoldHomingMissile", "FireSheep+HoldSheep", "FireOldWoman+HoldOldWoman",
+    "FireScouser+HoldScouser", "FireLandmine+HoldLandmine", "FireSentrygun+HoldSentrygun", "Fire2Bat+HoldBat", "FireProd+HoldProd",
+    "Fire2Firepunch+HoldFirepunch", "TauntSurrender+HoldSurrender", "SwingNinjarope", "JetpackFly", "ParachuteWobble", "TelepadAppear",
+    "FallDrown",
 ];
 const FPS: f32 = 30.0;
 
