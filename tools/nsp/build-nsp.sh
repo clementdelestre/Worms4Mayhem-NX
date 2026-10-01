@@ -38,7 +38,9 @@ echo "== 2/4 nso + npdm + nacp + icon =="
 elf2nso "client/$TARGET.elf" "$OUT/exefs/main"
 npdmtool "$NSP_SRC_DIR/worms4nx.json" "$OUT/exefs/main.npdm"
 nacptool --create "Worms4NX" "cdelestre" "0.1.0" "$OUT/control/control.nacp" --titleid="$TITLE_ID"
-cp client/icon.jpg "$OUT/control/icon_AmericanEnglish.dat"
+# assets/ui/icon.jpg is built from the user's own W4M install (never committed); fall back to the bundled icon
+ICON=client/assets/ui/icon.jpg; [ -f "$ICON" ] || ICON=client/icon.jpg
+cp "$ICON" "$OUT/control/icon_AmericanEnglish.dat"
 
 echo "== 3/4 hacBrewPack (build from source, cached in tools/nsp/out) =="
 HBP_BIN="$OUT/hacbrewpack-bin/hacbrewpack"
