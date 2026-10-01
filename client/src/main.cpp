@@ -250,12 +250,28 @@ int main(int argc, char **argv) {
     SetExitKey(KEY_NULL);  // Esc is back / pause; quit from the title screen
     SetTargetFPS(60);
     rlSetClipPlanes(0.5, 500);  // default 0.01 near plane z-fights the water on GLES depth buffers
+    // boot splash: W4M's spinning worm on black while assets load (the screen was plain black)
+    static Texture2D bootWorm = LoadTexture(DATA_DIR "assets/ui/fe2/loading_worm.png");
+    static const double bootT0 = GetTime();
+    auto boot = [] {
+        BeginDrawing();
+        ClearBackground(BLACK);
+        if (bootWorm.id) {
+            float s = 200, deg = (float)(GetTime() - bootT0) * 180;  // double clock: raw GetTime() is huge on Switch
+            DrawTexturePro(bootWorm, {0, 0, (float)bootWorm.width, (float)bootWorm.height}, {640, 360, s, s}, {s / 2, s / 2}, deg, WHITE);
+        }
+        EndDrawing();
+    };
+    boot();
     Audio::init();
+    boot();
     Audio::music(true);
-    Models::load();
+    Models::load(boot);
     Ui::load();
+    boot();
     Controls::load(DATA_DIR "controls.txt");
     Fx::load();
+    boot();
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)

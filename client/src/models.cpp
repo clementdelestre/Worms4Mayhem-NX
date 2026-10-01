@@ -25,7 +25,7 @@ std::vector<std::string> hatNames;
 Shader shader{};
 }
 
-void Models::load() {
+void Models::load(void (*progress)()) {
     if (!DirectoryExists(MODEL_DIR)) return;
     shader = Lit::modelShader(true);  // textured, alpha-tested (teeth/eye overlays), W4M worm light
     FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", true);  // recurses into hats/
@@ -44,6 +44,7 @@ void Models::load() {
         std::string name = GetFileNameWithoutExt(files.paths[i]);
         if (strstr(files.paths[i], "/hats/")) hatNames.push_back(name);
         models[name] = e;
+        if (progress) progress();
     }
     std::sort(hatNames.begin(), hatNames.end());  // same file set on every client -> same order
     UnloadDirectoryFiles(files);
