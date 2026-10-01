@@ -10,7 +10,9 @@
 namespace Ui {
 extern const Color TEAM_COLORS[4];
 void load();
+bool preload(double until);  // boot: uploads the decoded frontend art until GetTime() reaches until; true while some is pending
 void unload();
+bool warmWeaponIcons(int &i);  // loads weapon icon i++ into the cache (match prep, not on the first panel open); true while more remain
 void text(const char *t, float x, float y, float size, Color c, int align = 0);  // align: 0 left, 1 centre, 2 right
 float textWidth(const char *t, float size);
 const Font &textFont();  // the font text() draws, for rotated or outline-free text
@@ -86,9 +88,9 @@ private:
     uint32_t releasedAt = 0;  // tick when the release began
     int introWorm = -1;       // turn-start name banner (CPU/remote): current worm and the tick it became current
     uint32_t introStart = 0;
-    // W4M hp count: labels/bars show `shown`, which ticks toward the sim hp one worm at a time, damage held until Settle
-    struct HpTrack { int seen = 0; float shown = 0, from = 0, gone = 0; bool hold = false, poison = false; };
-    struct Popup { int worm, amount; float age; bool poison; };
+    // W4M hp count: labels/bars show `shown`, which ticks toward the sim's counted hp (Settle: timed by the sim)
+    struct HpTrack { int seen = 0; float shown = 0, from = 0; bool poison = false; };
+    struct Popup { int worm, amount; float age, punch; bool poison, live; };  // big damage counter; age runs once its count ends
     std::vector<HpTrack> hpt;
     std::vector<Popup> popups;
     std::vector<int> order;  // worms with a count to play, in first-hit order

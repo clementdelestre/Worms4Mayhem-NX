@@ -14,9 +14,9 @@ namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, RING, TEX_COUNT };  // also the draw order within a blend pass
-const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_005", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b"};
-const int MAX = 512;
+enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, TEX_COUNT };  // also the draw order within a blend pass
+const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_005", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
+const int MAX = 1024;
 
 struct Particle {
     Vector3 p, v;
@@ -24,12 +24,18 @@ struct Particle {
     Color c;
     unsigned char tex;
     bool add;  // additive (fire, sparks) vs alpha (smoke, dust, debris, water)
+    float stretch = 0;  // > 0: ribbon along -velocity (s of travel), size = width
+    Color tail = {};  // alpha > 0: leaves a trail of additive puffs of this colour (W4M anchor particles)
 };
 struct Streak { Vector3 p, dir; float len, width; unsigned char tex; };
 
 Texture2D tex[TEX_COUNT];
 std::vector<Particle> ps;
 std::vector<Streak> streaks;
+struct Seen { Vector3 p; int weapon; bool child; };
+std::vector<Seen> seen, seenPrev;  // live shots of this / the previous frame: which weapon blew up where
+float show = 0, nextBurst = 0;  // victory fireworks
+Vector3 camAt{};
 Texture2D skyTex{}, waterTex[3]{};
 Shader skySh{}, waterSh{};
 Mesh dome{}, plane{};
@@ -135,6 +141,7 @@ void load() {
             ImageDrawPixel(&ring, x, y, {255, 255, 255, (unsigned char)(255 * a * a)});
         }
     tex[RING] = LoadTextureFromImage(ring);
+    tex[JET] = loadTex("hud", "jetfire", true), tex[TOON] = loadTex("hud", "toonfire", true), tex[CROSS] = loadTex("hud", "wxp_sprite_006", true);
     UnloadImage(ring);
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
@@ -184,23 +191,62 @@ void unload() {
     MemFree(skyMat.maps), MemFree(waterMat.maps);
 }
 
-void clear() { ps.clear(), streaks.clear(), shake = 0; }
+void clear() { ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), shake = show = 0; }
 
 Color fog() { return fogCol; }
 int count() { return (int)ps.size(); }
+
+namespace {
+const Seen *shotAt(Vector3 p) {  // the shot drawn last frame closest to where something just blew up
+    const Seen *best = nullptr;
+    float bd = 2.5f;
+    for (const Seen &s : seenPrev)
+        if (float d = Vector3Distance(s.p, p); d < bd) bd = d, best = &s;
+    return best;
+}
+bool is(const Seen *s, const char *name) { return s && s->weapon >= 0 && WEAPONS[s->weapon].name == name; }
+
+// W4M anchors (WXP_ExplosionX_TailAnchors / AnchorsHigh, HolyHG_Anchors): heads flung up and out, each trailing WXP_ExplosionX_Tail fire
+void anchors(Vector3 c, int n, float up, float size, Color col, unsigned char t) {
+    for (int i = 0; i < n; i++)
+        add({c, {rnd(-6, 6), up * rnd(0.7f, 1.2f), rnd(-6, 6)}, -rnd(0, 0.05f), rnd(1.2f, 2.0f), size, size * 0.7f, 0, rnd(-6, 6), 14, 0.3f, col, t, true, 0, {255, 140, 20, 150}});
+}
+// W4M firework (WXP_StarburstExplosion, WXPF_Firework*): glow bang, trail-sprite spray, delayed glints
+void burst(Vector3 c, Color glow, unsigned char trailTex, Color trailCol) {
+    add({c, {}, 0, 0.8f, 1.5f, 3, 0, 0, 0, 0, glow, GLOW, true});
+    add({c, {}, -0.005f, 1.8f, 4, 7, 0, 0, 0, 0, {glow.r, glow.g, glow.b, 110}, GLOW, true});
+    for (int i = 0; i < 32; i++)
+        add({c, Vector3Scale(rndDir(), rnd(6, 10)), 0, rnd(1.2f, 1.75f), 0.5f, 0.2f, 0, 0, 4, 1.2f, trailCol, trailTex, true, 0.18f});
+    for (int i = 0; i < 20; i++)  // WXP_StarB_ManyGlows: crackle 0.4 s later, within 5 m
+        add({Vector3Add(c, Vector3Scale(rndDir(), rnd(1, 5))), {}, -rnd(0.4f, 0.9f), 0.8f, 1.3f, 0.2f, 0, 0, 0, 0, {glow.r, glow.g, glow.b, 220}, GLOW, true});
+}
+}  // namespace
 
 void event(const GameEvent &e, Color dirt) {
     bool big = e.kind == GameEvent::BigBoom;
     if (e.kind == GameEvent::Boom || big) {
         float r = big ? 5.5f : 2.5f;
+        const Seen *s = shotAt(e.pos);
+        bool holy = is(s, "Holy Hand Grenade");  // WXP_Holy_HG_Explosion = WXP_ExplosionX_Large with a gold ring, white cloud and crosses
         shake = fmaxf(shake, big ? 0.6f : 0.18f);
         add({e.pos, {}, 0, 0.3f, r * 1.5f, r * 3, 0, 0, 0, 0, {255, 220, 150, 255}, GLOW, true});  // flash
         add({e.pos, {}, 0, 0.45f, r * 0.4f, r * 2.6f, 0, 0, 0, 0, {255, 230, 180, 200}, RING, true});
         for (int i = 0; i < (big ? 18 : 10); i++) {
             Vector3 d = rndDir();
-            add({Vector3Add(e.pos, Vector3Scale(d, r * 0.2f)), Vector3Scale(d, rnd(1, 3) * r * 0.5f), -rnd(0, 0.08f), rnd(0.4f, 0.7f), r * 0.5f, r * 1.2f, 0, rnd(-2, 2), -1.5f, 4,
-                 {255, (unsigned char)rnd(120, 220), (unsigned char)rnd(30, 90), 255}, FIRE, false});  // fireball
+            Color c = holy ? Color{255, (unsigned char)rnd(225, 250), (unsigned char)rnd(150, 210), 255} : Color{255, (unsigned char)rnd(120, 220), (unsigned char)rnd(30, 90), 255};
+            add({Vector3Add(e.pos, Vector3Scale(d, r * 0.2f)), Vector3Scale(d, rnd(1, 3) * r * 0.5f), -rnd(0, 0.08f), rnd(0.4f, 0.7f), r * 0.5f, r * 1.2f, 0, rnd(-2, 2), -1.5f, 4, c, FIRE, false});  // fireball
         }
+        if (is(s, "Starburst")) burst(e.pos, {77, 255, 255, 255}, TRAIL_B, WHITE);
+        if (holy) {
+            anchors(e.pos, 8, 14, 1.4f, WHITE, CROSS);
+            for (int i = 0; i < 24; i++) {  // WXP_Explosion_Holy_HG_Ring: gold halo spreading 3 m up
+                float a = i * 2 * PI / 24 + rnd(0, 0.2f), v = rnd(3, 5);
+                add({Vector3Add(e.pos, {0, 3, 0}), {cosf(a) * v, rnd(0, 0.5f), sinf(a) * v}, -rnd(0, 0.15f), rnd(2.5f, 3.5f), 1.5f, 3.5f, 0, rnd(-1, 1), -0.3f, 1.2f, {255, 170, 60, 45}, PUFF, true});
+            }
+        } else if (!s || !s->child) anchors(e.pos, big ? 8 : 4, big ? 10 : 8, 0.35f, {255, 190, 0, 255}, PUFF);
+        if (big) anchors(e.pos, 8, 16, 0.3f, {255, 190, 0, 255}, PUFF);
+        for (int i = 0; i < (big ? 24 : 8); i++)  // WXP_BangTrails(Large): yellow streaks
+            add({e.pos, Vector3Scale(rndDir(), rnd(6, 12)), 0, rnd(0.6f, 0.9f), 0.22f, 0.08f, 0, 0, 18, 0.5f, {255, 230, 60, 255}, TRAIL_W, true, 0.06f});
         for (int i = 0; i < (big ? 14 : 7); i++) {
             Vector3 d = rndDir();
             d.y = fabsf(d.y) * 0.6f + 0.3f;
@@ -220,6 +266,26 @@ void event(const GameEvent &e, Color dirt) {
             Vector3 d = {cosf(a), 0.15f, sinf(a)};
             add({Vector3Add(e.pos, {0, -r * 0.4f, 0}), Vector3Scale(d, r * rnd(1.2f, 1.8f)), 0, rnd(1.0f, 1.6f), r * 0.4f, r * 1.2f, 0, rnd(-1, 1), 0, 2.5f, dust, PUFF, false});
         }
+    } else if (e.kind == GameEvent::Collect) {  // PARTTWK WXP_PickupFX (the only pickup effect the exe spawns): poof + sparklies + glow
+        Vector3 c = Vector3Add(e.pos, {0, 0.3f, 0});
+        add({c, {}, 0, 0.3f, 0.8f, 2.0f, 0, 0, 0, 0, {255, 215, 70, 255}, GLOW, true});
+        for (int i = 0; i < 6; i++)  // WXP_PickupGlow: additive (SrcAlpha, One) at alpha 0.3, 30 units, 350 +-100 ms
+            add({Vector3Add(c, Vector3Scale(rndDir(), 0.25f)), {}, 0, rnd(0.25f, 0.45f), rnd(1.25f, 1.75f), 0.5f, 0, 0, 0, 0, {128, 230, 255, 77}, GLOW, true});
+        for (int i = 0; i < 8; i++) {
+            Vector3 d = rndDir();
+            d.y = fabsf(d.y) * 0.5f + 0.1f;
+            float t = rnd(0, 0.6f);  // white -> (0.3, 0.85, 1) ramp, sampled per cloud
+            add({Vector3Add(c, Vector3Scale(d, 0.2f)), Vector3Scale(d, rnd(2, 3.5f)), -rnd(0.04f, 0.1f), rnd(0.8f, 1.1f), 0.3f, 1.4f, 0, rnd(-1, 1), -0.5f, 3,
+                 {(unsigned char)(255 - 178 * t), (unsigned char)(255 - 38 * t), 255, 190}, PUFF, false});
+        }
+        for (int i = 0; i < 24; i++) {
+            Vector3 d = rndDir();
+            d.y = fabsf(d.y) * 0.8f + 0.2f;
+            bool ray = i % 2;
+            Color col = ray ? Color{180, 245, 255, 255} : rnd() < 0.5f ? Color{51, 255, 255, 255} : Color{220, 255, 255, 255};
+            add({c, Vector3Scale(Vector3Normalize(d), ray ? rnd(9, 14) : rnd(4, 8)), 0, ray ? rnd(0.3f, 0.45f) : rnd(0.6f, 0.9f), ray ? 0.3f : 0.32f, 0.08f, 0,
+                 rnd(-6, 6), ray ? 0.0f : 3.0f, ray ? 4.0f : 2.5f, col, (unsigned char)(ray ? TRAIL_W : STAR), true, ray ? 0.07f : 0});
+        }
     } else if (e.kind == GameEvent::Splash) {
         for (int i = 0; i < 24; i++) {
             Vector3 d = {rnd(-1, 1), 0, rnd(-1, 1)};
@@ -228,13 +294,24 @@ void event(const GameEvent &e, Color dirt) {
         add({e.pos, {}, 0, 0.9f, 1, 5, 0, 0, 0, 0, {255, 255, 255, 170}, RING, false});
         for (int i = 0; i < 8; i++)
             add({e.pos, {rnd(-1, 1), rnd(1, 4), rnd(-1, 1)}, 0, rnd(0.8f, 1.3f), 0.8f, 2.2f, 0, rnd(-1, 1), 2, 1.5f, {235, 245, 255, 170}, PUFF, false});  // spray
-    }
+    } else if (e.kind == GameEvent::GameOver) show = 8, nextBurst = 0.3f;  // W4M GameOverLogicEntity: WXPF_Firework1-5
 }
 
 void trail(const Projectile &s, float dt) {
     const WeaponDef &d = WEAPONS[s.weapon];
-    bool rocket = (d.kind == Kind::Shell && d.fuse <= 0 && d.name != "Poison Arrow") || d.kind == Kind::Homing || (d.kind == Kind::Airstrike && s.child) ||
-                  (d.kind == Kind::SuperSheep && d.name != "Starburst");
+    seen.push_back({s.pos, s.weapon, s.child});
+    if (d.name == "Holy Hand Grenade" && rnd() < dt * 16)  // WXP_HolyHG_Trails: crosses left floating behind
+        add({s.pos, {rnd(-0.2f, 0.2f), rnd(0.1f, 0.4f), rnd(-0.2f, 0.2f)}, 0, rnd(1.8f, 2.2f), 0.35f, 0.05f, 0, rnd(-1, 1), -0.1f, 1, {255, 240, 200, 230}, CROSS, false});
+    if (d.name == "Starburst") {  // rocket: WXP_Wep_StarburstRocket flames + orange glow; stars: blue trail + cyan glow
+        float v = Vector3Length(s.vel);
+        add({s.pos, {}, 0, 0.06f, s.child ? 0.9f : 0.75f, 0.6f, 0, 0, 0, 0, s.child ? Color{120, 230, 255, 255} : Color{255, 77, 0, 255}, GLOW, true});
+        if (s.child && v > 0.5f) streaks.push_back({s.pos, Vector3Scale(s.vel, -1 / v), fminf(v * 0.15f, 2.5f), 0.3f, TRAIL_B});
+        if (rnd() < dt * (s.child ? 20 : 60))
+            add({s.pos, {rnd(-0.3f, 0.3f), rnd(-0.3f, 0.3f), rnd(-0.3f, 0.3f)}, 0, rnd(0.3f, 0.7f), s.child ? 0.2f : 0.4f, 0.05f, 0, rnd(-3, 3), s.child ? 3.0f : 0.0f, 1,
+                 s.child ? Color{180, 245, 255, 255} : Color{255, 200, 60, 255}, (unsigned char)(s.child ? STAR : PUFF), true});
+        return;
+    }
+    bool rocket = (d.kind == Kind::Shell && d.fuse <= 0 && d.name != "Poison Arrow") || d.kind == Kind::Homing || (d.kind == Kind::Airstrike && s.child) || d.kind == Kind::SuperSheep;
     float v = Vector3Length(s.vel);
     if (!rocket || v < 0.5f) return;
     Vector3 back = Vector3Scale(s.vel, -1 / v);
@@ -250,8 +327,19 @@ void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, b
     add({p, v, 0, life, size0, size1, 0, rnd(-1, 1), fire ? -1.0f : -0.3f, 0.6f, c, (unsigned char)(fire ? FIRE : PUFF), fire});
 }
 
+void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet) {
+    add({Vector3Add(p, Vector3Scale(rndDir(), size0 * 0.25f)), Vector3Add(v, Vector3Scale(rndDir(), 0.5f)), 0, life, size0, size1, 0, rnd(-2, 2), 0, 2, jet ? Color{255, 200, 140, 255} : Color{255, 110, 30, 255}, (unsigned char)(jet ? JET : TOON), true});
+}
+
 void update(float dt) {
     shake *= expf(-dt * 6);
+    if (show > 0 && (nextBurst -= dt) <= 0) {
+        static const Color COLS[] = {{77, 255, 255, 255}, {255, 128, 0, 255}, {0, 255, 64, 255}, {255, 220, 80, 255}};
+        Color c = COLS[(int)rnd(0, 3.99f)];
+        burst(Vector3Add(camAt, {rnd(-10, 10), rnd(5, 10), rnd(-10, 10)}), c, TRAIL_W, c);
+        nextBurst = rnd(0.4f, 0.9f);
+    }
+    show -= dt;
     for (size_t i = 0; i < ps.size();) {
         Particle &p = ps[i];
         p.age += dt;
@@ -261,6 +349,8 @@ void update(float dt) {
         p.v.y -= p.grav * dt;
         p.p = Vector3Add(p.p, Vector3Scale(p.v, dt));
         p.rot += p.spin * dt;
+        if (p.tail.a && rnd() < dt * 60)  // add() never reallocates (reserved MAX), so p stays valid
+            add({p.p, {rnd(-0.3f, 0.3f), rnd(0, 0.3f), rnd(-0.3f, 0.3f)}, 0, rnd(0.25f, 0.41f), 0.4f, 0.05f, 0, rnd(-3, 3), -0.5f, 1, p.tail, PUFF, true});
         i++;
     }
 }
@@ -310,7 +400,14 @@ void draw(const Camera3D &cam) {
                 Vector3 r = Vector3Add(Vector3Scale(right, c), Vector3Scale(up, sn)), u = Vector3Subtract(Vector3Scale(up, c), Vector3Scale(right, sn));
                 Color col = p.c;
                 col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));
-                quad(p.p, r, u, col);
+                if (p.stretch > 0) {  // trail texture: u = 0 head, 1 tail
+                    Vector3 tail = Vector3Subtract(p.p, Vector3Scale(p.v, p.stretch)), w = Vector3Scale(Vector3Normalize(Vector3CrossProduct(Vector3Subtract(tail, p.p), fwd)), s);
+                    rlColor4ub(col.r, col.g, col.b, col.a);
+                    rlTexCoord2f(0, 0); rlVertex3f(p.p.x + w.x, p.p.y + w.y, p.p.z + w.z);
+                    rlTexCoord2f(0, 1); rlVertex3f(p.p.x - w.x, p.p.y - w.y, p.p.z - w.z);
+                    rlTexCoord2f(1, 1); rlVertex3f(tail.x - w.x, tail.y - w.y, tail.z - w.z);
+                    rlTexCoord2f(1, 0); rlVertex3f(tail.x + w.x, tail.y + w.y, tail.z + w.z);
+                } else quad(p.p, r, u, col);
             }
             if (add && (t == TRAIL_R || t == TRAIL_B))
                 for (const Streak &st : streaks) {
@@ -329,6 +426,7 @@ void draw(const Camera3D &cam) {
         EndBlendMode();
     }
     streaks.clear();
+    seenPrev.swap(seen), seen.clear(), camAt = cam.target;
     rlEnableDepthMask();
     rlEnableBackfaceCulling();
 }

@@ -110,6 +110,8 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("splash", "weapons", &["SplashHeavy1", "SplashHeavy2", "SplashHeavy3"]),
     ("sheep", "weapons", &["SheepBaa"]),
     ("holy", "weapons", &["Hallelujah"]),
+    ("holy_boom", "weapons", &["HolyGrenadeEx"]),
+    ("holy_held", "weapons", &["HolyGrenadeHeld"]),
     ("turn_start", "weapons", &["HudAlert"]),
     ("tick", "weapons", &["ClockFast"]),
     ("shotgun", "weapons", &["Shotgun1", "Shotgun2"]),
@@ -134,17 +136,55 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("parachute", "weapons", &["ParachuteOpen"]),
     ("mine_beep", "weapons", &["MineArmLoop"]),
     ("crate_land", "weapons", &["CrateSpawn"]),
+    ("crate_impact_health", "weapons", &["CrateHitHealth"]),
+    ("crate_impact_weapon", "weapons", &["CrateImpactWeapons"]),
+    ("crate_impact_util", "weapons", &["CrateImpactUtil"]),
+    ("cheer", "cheer", &["CrowdCheer"]),
     ("pickup", "weapons", &["PickUpAmmo", "PickUpHealth", "PickUpUtility"]),
     ("super_sheep", "weapons", &["WingFlap1", "WingFlap2", "WingFlap3"]),
     // W4M has no worm walk event: the Old Woman's soft footsteps stand in for the shuffle
     ("step", "weapons", &["OldWomenFootstep1", "OldWomenFootstep2", "OldWomenFootstep3", "OldWomenFootStep4", "OldWomenFootstep5"]),
     ("land", "weapons", &["Thud1", "Thud2", "Thud3", "Thud4"]),
     ("hp_tick", "global", &["Click3"]),
+    // frontend: WormsMayhem.exe kAUDIO_* (WXFE_ControlAudioEnum) -> frontendsfx/ or global/ events
+    ("fe_highlight", "global", &["Highlight"]),
+    ("fe_change", "global", &["Click2"]),
+    ("fe_click", "frontendsfx", &["Click"]),
+    ("fe_cancel", "frontendsfx", &["Cancel"]),
+    ("fe_error", "global", &["FEError"]),
+    ("fe_type", "global", &["Typewriter"]),
+    ("fe_page", "frontendsfx", &["PageTurn"]),
+    ("fe_popup_in", "global", &["In_ScaleY"]),
+    ("fe_popup_out", "frontendsfx", &["Out_ScaleY"]),
+    ("fe_next_in", "frontendsfx", &["In_Next"]),
+    ("fe_next_out", "frontendsfx", &["Out_Next"]),
+    ("fe_prev_in", "frontendsfx", &["In_Prev"]),
+    ("fe_prev_out", "frontendsfx", &["Out_Prev"]),
+    ("fe_bounce", "frontendsfx", &["In_Bigbounce"]),
+    ("fe_slide", "frontendsfx", &["In_SlideX"]),
+    ("fe_net", "frontendsfx", &["In_Net"]),
+    ("fe_custom", "frontendsfx", &["In_Custom"]),
+    ("fe_soundvid", "frontendsfx", &["In_SoundVid"]),
+    ("fe_controller", "global", &["In_Controller"]),
+    ("fe_factory", "frontendsfx", &["In_WeaponFactory"]),
+    ("fe_book_in", "frontendsfx", &["In_Book"]),
+    ("fe_book_out", "frontendsfx", &["Out_Book"]),
+    ("fe_grenade", "frontendsfx", &["Grenade"]),
+    ("fe_wormpot", "frontendsfx", &["In_WormPot"]),
+    ("wormpot_spin", "frontendsfx", &["WormPotLoop"]),
+    ("wormpot_stop", "frontendsfx", &["WormPotStop"]),
 ];
 // our voice file -> W4M speech category (Data/Audio/Speech/<bank>.lsd)
 const VOICES: &[(&str, &str)] = &[
     ("fire", "WeaponFired"), ("hurt", "FireDamage"), ("death", "FriendlyDeath"),
     ("victory", "Victory"), ("jump", "Jump"), ("idle", "StartTurn"),
+    // WORMACTING.XOM scene lines (docs/worm-reactions.md)
+    ("startled", "Startled"), ("grenade", "GrenadeLanded"), ("shriek", "Shriek"), ("gasp", "Gasp"), ("shakefist", "ShakeFist"),
+    ("titter", "Titter"), ("disbelief", "Disbelief"), ("incoming", "Incoming"), ("missed", "Missed"), ("mistake", "Mistake"),
+    ("traitor", "Traitor"), ("damage", "DamageInflictedA"), ("firstblood", "FirstBlood"), ("enemydeath", "EnemyDeath"),
+    ("sadsigh", "SadSigh"), ("yawn", "Yawn"), ("sneeze", "Sneeze"), ("clutchchest", "ClutchChest"), ("nooo", "Nooo"),
+    ("bounce", "WormBounce"), ("taunt", "Taunt"), ("waiting", "Waiting"), ("shortontime", "ShortOnTime"), ("skipgo", "SkipGo"),
+    ("collect", "Collect"), ("cratedrop", "CrateDrop"), ("drown", "ShallowDrown"),
 ];
 // W4M music bank -> our file; map themes use their docs/maps.md name
 const MUSIC: &[(&str, &str)] = &[
@@ -187,10 +227,15 @@ fn safe(name: &str) -> String {
 
 fn to_ogg(j: &Job) -> Result<(), String> {
     let tmp = j.out.with_extension("tmp.ogg");
-    let mut p = Command::new("ffmpeg")
-        .args(["-y", "-loglevel", "error", "-f", if j.fmt == "wav" { "wav" } else { "mp3" }, "-i", "pipe:0", "-c:a", "libvorbis", "-q:a", "4", "-ar"])
-        .arg(j.rate.to_string()).arg(&tmp).stdin(Stdio::piped()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
-    p.stdin.take().unwrap().write_all(&j.input).map_err(|e| e.to_string())?;
+    // ffmpeg's mp3 probe wants two frames: a one-frame blip (global/Highlight, Click2) is fed twice, -t cuts the copy
+    let once = j.fmt != "wav" && j.secs < 0.05;
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-y", "-loglevel", "error", "-f", if j.fmt == "wav" { "wav" } else { "mp3" }, "-i", "pipe:0", "-c:a", "libvorbis", "-q:a", "4", "-ar"])
+        .arg(j.rate.to_string());
+    if once { cmd.arg("-t").arg(j.secs.to_string()); }
+    let mut p = cmd.arg(&tmp).stdin(Stdio::piped()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+    let input = if once { [&j.input[..], &j.input[..]].concat() } else { j.input.clone() };
+    p.stdin.take().unwrap().write_all(&input).map_err(|e| e.to_string())?;
     if !p.wait().map_err(|e| e.to_string())?.success() { return Err(format!("ffmpeg failed on {}", j.out.display())); }
     fs::rename(&tmp, &j.out).map_err(|e| e.to_string())
 }

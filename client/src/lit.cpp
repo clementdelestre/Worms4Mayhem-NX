@@ -11,7 +11,7 @@ static std::vector<std::pair<Shader, bool>> shaders;  // bool: fixed worm light
 // Worm.Light.Ambient / Worm.Light.Diffuse from Data/Tweak/TWEAK.XOM.
 static const Vector3 WORM_AMB = {0.5f, 0.5f, 0.6f}, WORM_DIF = {0.7f, 0.7f, 0.6f};
 
-static const char *MVS = R"(
+const char *MVS = R"(
 attribute vec3 vertexPosition;
 attribute vec2 vertexTexCoord;
 attribute vec3 vertexNormal;

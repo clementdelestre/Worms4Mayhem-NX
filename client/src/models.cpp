@@ -2,7 +2,11 @@
 #include "lit.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include "external/cgltf.h"
 #include <algorithm>
+#include <atomic>
+#include <deque>
+#include <mutex>
 #include <cstring>
 #include <map>
 #include <string>
@@ -27,39 +31,224 @@ struct Entry {
 std::map<std::string, Entry> models;
 std::vector<std::string> hatNames;
 Shader shader{};
+
+// Boot: the worker reads each .glb, decodes its textures and samples its clips; the main thread only uploads.
+struct Job {
+    std::string path;
+    unsigned char *data = nullptr;  // the file, trimmed (blank()) so LoadModel() skips the texture decodes and the clips
+    int size = 0;
+    std::vector<Image> albedo;  // per raylib material (0 = default), mipmapped
+    ModelAnimation *anims = nullptr;
+    int count = 0;
+    Model m{};
+    int next = -1;  // albedo to upload next, -1 before LoadModel()
+};
+std::mutex mu;
+std::deque<Job> jobs;
+std::atomic<bool> prepared{false};
+std::map<std::string, Model> spare;  // decoded on the worker but not drawn here (frontend/): take()
+thread_local Job *serve = nullptr;
+
+// LoadFileData() hook: gives LoadModel() the job's bytes (raylib frees them), plain file read otherwise
+unsigned char *readFile(const char *path, int *size) {
+    *size = 0;
+    if (serve && serve->path == path) {
+        unsigned char *d = serve->data;
+        serve->data = nullptr;
+        return *size = serve->size, d;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) return TraceLog(LOG_WARNING, "FILEIO: [%s] Failed to open file", path), nullptr;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char *d = n > 0 ? (unsigned char *)malloc(n) : nullptr;
+    if (d && fread(d, 1, n, f) == (size_t)n) *size = (int)n;
+    else free(d), d = nullptr;
+    fclose(f);
+    return d;
+}
+const bool hooked = (SetLoadFileDataCallback(readFile), true);
+
+// JSON chunk of the glb (after its 12-byte header and the chunk's own 8)
+std::pair<char *, char *> json(Job &j) {
+    uint32_t len = 0;
+    memcpy(&len, j.data + 12, 4);
+    return {(char *)j.data + 20, (char *)j.data + 20 + std::min<size_t>(len, j.size - 20)};
 }
 
-void Models::load(void (*progress)()) {
-    if (!DirectoryExists(MODEL_DIR)) return;
-    shader = Lit::modelShader(true);  // textured, alpha-tested (teeth/eye overlays), W4M worm light
-    FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", true);  // recurses into hats/
-    for (unsigned i = 0; i < files.count; i++) {
-        if (strstr(files.paths[i], "/frontend/")) continue;  // FrontBg loads (and frees) its own scene
-        Entry e;
-        e.m = LoadModel(files.paths[i]);
-        if (!e.m.meshCount) continue;
-        for (int k = 0; k < e.m.materialCount; k++) {
-            if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
-            Texture2D &t = e.m.materials[k].maps[MATERIAL_MAP_ALBEDO].texture;
-            if (t.id != rlGetTextureIdDefault()) { GenTextureMipmaps(&t); SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR); }
+// Spaces out the elements of the top-level array `key` from index keep on: same length, so every offset holds
+void blank(Job &j, const char *key, size_t keep) {
+    auto [js, end] = json(j);
+    std::string k = std::string("\"") + key + "\":[";
+    char *p = std::search(js, end, k.begin(), k.end());
+    if (p == end) return;
+    p += k.size();
+    char *from = keep ? nullptr : p;
+    for (int depth = 0, n = 0; p < end; p++) {
+        if (*p == '"') {
+            while (++p < end && *p != '"') p += *p == '\\';
+        } else if (*p == '{' || *p == '[') {
+            depth++;
+        } else if (*p == '}' || *p == ']') {
+            if (depth-- == 0) break;
+        } else if (*p == ',' && !depth && ++n == (int)keep) {
+            from = p;
         }
-        if (e.m.skeleton.boneCount) e.anims = LoadModelAnimations(files.paths[i], &e.count);
-        for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
-        for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
-            const char *n = e.m.skeleton.bones[b].name;
-            bool left = strstr(n, "_left"), hand = !strcmp(n, "WeaponLocator");
-            for (const char *p : {"wrist_", "pinky", "index", "fore", "thumb_"}) hand |= !strncmp(n, p, strlen(p));
-            if (!strncmp(n, "shoulder_", 9)) s[left] = b;
-            e.arm.push_back(!strncmp(n, "shoulder_", 9) || hand ? s[left] : -1);  // bones follow their shoulder in the file
-        }
-        std::string name = GetFileNameWithoutExt(files.paths[i]);
-        if (strstr(files.paths[i], "/hats/")) hatNames.push_back(name);
-        models[name] = e;
-        if (progress) progress();
     }
-    std::sort(hatNames.begin(), hatNames.end());  // same file set on every client -> same order
-    UnloadDirectoryFiles(files);
-    TraceLog(LOG_INFO, "MODELS: %d loaded from %s (%d hats)", (int)models.size(), MODEL_DIR, (int)hatNames.size());
+    if (from && p < end) memset(from, ' ', p - from);
+}
+
+// Drops the JSON's blanks (outside strings) and closes the gap: buffer view offsets count from the BIN chunk
+void compact(Job &j) {
+    auto [js, end] = json(j);
+    char *w = js;
+    bool str = false;
+    for (char *p = js; p < end; p++) {
+        if (*p == ' ' && !str) continue;
+        if (str && *p == '\\' && p + 1 < end) *w++ = *p++;
+        else if (*p == '"') str = !str;
+        *w++ = *p;
+    }
+    while ((w - js) % 4) *w++ = ' ';  // chunks stay 4-byte aligned
+    uint32_t len = w - js;
+    memcpy(j.data + 12, &len, 4);
+    memmove(w, end, (char *)j.data + j.size - end);
+    j.size -= end - w;
+    memcpy(j.data + 8, &j.size, 4);
+}
+
+Job prepare(const char *path) {
+    Job j{path};
+    j.data = readFile(path, &j.size);
+    cgltf_options o{};
+    cgltf_data *g = nullptr;
+    if (!j.data || j.size < 20 || cgltf_parse(&o, j.data, j.size, &g) != cgltf_result_success || g->file_type != cgltf_file_type_glb ||
+        cgltf_load_buffers(&o, g, path) != cgltf_result_success) {
+        if (g) cgltf_free(g);
+        return j;
+    }
+    j.albedo.resize(g->materials_count + 1);
+    for (size_t i = 0; i < g->materials_count; i++) {
+        cgltf_texture *t = g->materials[i].pbr_metallic_roughness.base_color_texture.texture;
+        cgltf_buffer_view *v = t && t->image ? t->image->buffer_view : nullptr;
+        if (!v || !v->buffer->data) continue;
+        j.albedo[i + 1] = LoadImageFromMemory(".png", (unsigned char *)v->buffer->data + v->offset, (int)v->size);
+        ImageMipmaps(&j.albedo[i + 1]);  // here rather than GenTextureMipmaps(): no GPU blits on the main thread
+    }
+    size_t acc = 0, views = 0;  // accessors / buffer views LoadModel() reads: meshes and skins (the clips' come after)
+    auto use = [&](const cgltf_accessor *a) { if (a) acc = std::max(acc, (size_t)(a - g->accessors) + 1); };
+    for (size_t i = 0; i < g->meshes_count; i++)
+        for (size_t k = 0; k < g->meshes[i].primitives_count; k++) {
+            const cgltf_primitive &pr = g->meshes[i].primitives[k];
+            use(pr.indices);
+            for (size_t a = 0; a < pr.attributes_count; a++) use(pr.attributes[a].data);
+            for (size_t t = 0; t < pr.targets_count; t++)
+                for (size_t a = 0; a < pr.targets[t].attributes_count; a++) use(pr.targets[t].attributes[a].data);
+        }
+    for (size_t i = 0; i < g->skins_count; i++) use(g->skins[i].inverse_bind_matrices);
+    auto view = [&](const cgltf_buffer_view *v) { if (v) views = std::max(views, (size_t)(v - g->buffer_views) + 1); };
+    for (size_t i = 0; i < acc; i++)
+        view(g->accessors[i].buffer_view), view(g->accessors[i].sparse.indices_buffer_view), view(g->accessors[i].sparse.values_buffer_view);
+    for (size_t i = 0; i < g->images_count; i++) view(g->images[i].buffer_view);  // still parsed
+    bool skinned = g->skins_count > 0;
+    cgltf_free(g);
+    auto [js, end] = json(j);
+    const char *tag = "\"baseColorTexture\"";
+    for (char *p = js; (p = std::search(p, end, tag, tag + 18)) != end; p++) p[16] = 'X';  // a key cgltf ignores: no decode
+    if (skinned) j.anims = LoadModelAnimations(path, &j.count);  // reads the file again: it needs the clips blank() drops
+    blank(j, "animations", 0), blank(j, "accessors", acc), blank(j, "bufferViews", views), compact(j);
+    return j;
+}
+
+// One step of a job's GPU side (LoadModel(), then a texture); true once j.m is complete
+bool uploadStep(Job &j) {
+    if (j.next < 0) {
+        serve = &j;
+        j.m = LoadModel(j.path.c_str());
+        serve = nullptr;
+        free(j.data), j.data = nullptr, j.next = 0;  // null unless LoadModel() failed before reading it
+        return false;
+    }
+    for (; j.next < (int)j.albedo.size(); j.next++) {
+        Image &img = j.albedo[j.next];
+        if (!img.data) continue;
+        if (j.next < j.m.materialCount) {
+            Texture2D &t = j.m.materials[j.next].maps[MATERIAL_MAP_ALBEDO].texture;
+            t = LoadTextureFromImage(img);
+            SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
+        }
+        UnloadImage(img), img = {};
+        return j.next++, false;
+    }
+    return true;
+}
+
+void add(Job &j) {
+    Entry e;
+    e.m = j.m;
+    if (!e.m.meshCount) return UnloadModelAnimations(j.anims, j.count);
+    if (strstr(j.path.c_str(), "/frontend/")) return (void)(spare[j.path] = e.m);  // FrontBg's scene, freed by FrontBg
+    for (int k = 0; k < e.m.materialCount; k++)
+        if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
+    e.anims = j.anims, e.count = j.count;
+    for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
+    for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
+        const char *n = e.m.skeleton.bones[b].name;
+        bool left = strstr(n, "_left"), hand = !strcmp(n, "WeaponLocator");
+        for (const char *p : {"wrist_", "pinky", "index", "fore", "thumb_"}) hand |= !strncmp(n, p, strlen(p));
+        if (!strncmp(n, "shoulder_", 9)) s[left] = b;
+        e.arm.push_back(!strncmp(n, "shoulder_", 9) || hand ? s[left] : -1);  // bones follow their shoulder in the file
+    }
+    std::string name = GetFileNameWithoutExt(j.path.c_str());
+    if (strstr(j.path.c_str(), "/hats/")) hatNames.push_back(name);
+    models[name] = e;
+}
+}  // namespace
+
+void Models::prepare() {
+    if (DirectoryExists(MODEL_DIR)) {
+        FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", true);  // recurses into hats/ and frontend/
+        for (unsigned i = 0; i < files.count; i++) {
+            Job j = ::prepare(files.paths[i]);
+            std::lock_guard<std::mutex> l(mu);
+            jobs.push_back(std::move(j));
+        }
+        UnloadDirectoryFiles(files);
+    }
+    prepared = true;
+}
+
+bool Models::upload(double until) {
+    if (!shader.id) shader = Lit::modelShader(true);  // textured, alpha-tested (teeth/eye overlays), W4M worm light
+    static Job cur;
+    static bool busy = false;
+    for (bool done = prepared; GetTime() < until;) {
+        if (!busy) {
+            std::lock_guard<std::mutex> l(mu);
+            if (jobs.empty()) {
+                if (!done) return true;
+                std::sort(hatNames.begin(), hatNames.end());  // same file set on every client -> same order
+                TraceLog(LOG_INFO, "MODELS: %d loaded from %s (%d hats)", (int)models.size(), MODEL_DIR, (int)hatNames.size());
+                return false;
+            }
+            cur = std::move(jobs.front()), jobs.pop_front(), busy = true;
+        }
+        if (uploadStep(cur)) add(cur), busy = false;
+    }
+    return true;
+}
+
+Model Models::take(const char *path) {
+    auto it = spare.find(path);
+    if (it == spare.end()) {
+        Job j = ::prepare(path);
+        while (!uploadStep(j)) {}
+        return j.m;
+    }
+    Model m = it->second;
+    spare.erase(it);
+    return m;
 }
 
 void Models::unload() {
@@ -149,6 +338,16 @@ static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation 
     }
 }
 
+static Shader over{};
+void Models::shade(Shader s) { over = s; }
+
+static void drawModel(Model &m, Vector3 pos, Color tint) {
+    Shader keep = m.materials[0].shader;
+    for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = over;
+    DrawModel(m, pos, 1, tint);
+    for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = keep;
+}
+
 bool Models::visible(Vector3 c, float r) {
     Matrix m = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
     Vector4 w = {m.m3, m.m7, m.m11, m.m15}, rows[3] = {{m.m0, m.m4, m.m8, m.m12}, {m.m1, m.m5, m.m9, m.m13}, {m.m2, m.m6, m.m10, m.m14}};
@@ -160,11 +359,17 @@ bool Models::visible(Vector3 c, float r) {
     return true;
 }
 
-bool Models::draw(const char *name, Matrix m, Color tint) {
+bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, float t) {
     auto it = models.find(name);
     if (it == models.end()) return false;
-    it->second.m.transform = m;
-    DrawModel(it->second.m, {0, 0, 0}, 1, tint);
+    Entry &e = it->second;
+    int f;
+    if (const ModelAnimation *a = clip ? clipFrame(e, clip, t, true, &f, false) : nullptr) {
+        if ((a != e.posed || f != e.frame || e.aimed) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, nullptr, -1);
+        e.posed = a, e.frame = f, e.aimed = nullptr, e.aimFrame = -1;
+    }
+    e.m.transform = m;
+    drawModel(e.m, {0, 0, 0}, tint);
     return true;
 }
 
@@ -180,6 +385,6 @@ bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color t
         e.posed = a, e.frame = f, e.aimed = am, e.aimFrame = af;
     }
     e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
-    DrawModel(e.m, pos, 1, tint);
+    drawModel(e.m, pos, tint);
     return true;
 }

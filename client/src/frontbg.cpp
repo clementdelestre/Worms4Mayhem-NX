@@ -77,11 +77,7 @@ void main() {
 )";
 
 void setShader(Model &m) {
-    for (int i = 0; i < m.materialCount; i++) {
-        m.materials[i].shader = sh;
-        Texture2D &t = m.materials[i].maps[MATERIAL_MAP_ALBEDO].texture;
-        if (t.id != rlGetTextureIdDefault()) GenTextureMipmaps(&t), SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
-    }
+    for (int i = 0; i < m.materialCount; i++) m.materials[i].shader = sh;
 }
 
 void drawModel(const Model &m, float lit) {
@@ -96,8 +92,8 @@ void FrontBg::load() {
     double t0 = GetTime();
     sh = Lit::shader(VS, FS);
     locLit = GetShaderLocation(sh, "lit");
-    title = LoadModel(DIR "title.glb");
-    sky = LoadModel(DIR "sky.glb");
+    title = Models::take(DIR "title.glb");
+    sky = Models::take(DIR "sky.glb");
     ok = title.meshCount && sky.meshCount && sh.id != rlGetShaderIdDefault();
     if (!ok) return unload();
     setShader(title), setShader(sky);

@@ -4,7 +4,9 @@
 // W4M meshes converted by tools/w4m-models into assets/models/<name>.glb. Missing => draw() returns false
 // and the caller keeps its placeholder shapes.
 namespace Models {
-void load(void (*progress)() = nullptr);  // progress: called after each file (boot splash)
+void prepare();               // worker thread: reads, decodes and samples every .glb
+bool upload(double until);    // main thread, until GetTime() reaches until: GPU uploads; true while models are pending
+Model take(const char *path);  // a frontend/ model prepare() decoded (else loaded now); the caller unloads it
 void unload();
 // Model faces +z: yaw turns it about +y, pitch raises the nose. clip: animation name, t in seconds.
 // aim: the arms (shoulder subtrees) re-aimed by that clip at aimT, as W4M layers its shoulder-only Aim* clips over Fire* ones.
@@ -14,7 +16,8 @@ float clipLength(const char *name, const char *clip);  // seconds, 0 if absent
 bool has(const char *name);
 // Model-space matrix of a joint (e.g. "WeaponLocator") in that clip pose; false if missing.
 bool joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim = nullptr, float aimT = 0);
-bool draw(const char *name, Matrix m, Color tint = WHITE);  // static model, full world matrix
+bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0);  // full world matrix; clip loops
+void shade(Shader s);  // every draw() uses s until shade({})
 bool visible(Vector3 c, float r);  // sphere vs the current BeginMode3D view frustum
 // Hats (assets/models/hats/*.glb), sorted by file name so every client's list agrees. draw() them by hatName(i).
 int hatCount();

@@ -90,7 +90,8 @@ Texture2D tex(const std::string &name) {
 // Frontend art, decoded off the main thread at startup: SD read + PNG decode of these took a frame on menu changes
 const char *const PRELOAD[] = {"fe/bluedivide", "fe2/art_local", "fe2/art_local_static", "fe2/nav_normal", "fe/title_underline", "fe2/art_network",
                                "fe2/art_help", "fe2/art_myworms", "fe/paperpopup01", "fe/paperpopup02", "fe/buttonbig_highlight", "fe/text_border_charcoal",
-                               "fe/icon_wxpot", "fe2/paper_strip", "fe/icon_splat", "fe2/loading_worm", "fe/hintpanel", "hud/trailparticle"};
+                               "fe/icon_wxpot", "fe2/paper_strip", "fe/icon_splat", "fe2/loading_worm", "fe/hintpanel", "hud/trailparticle",
+                               "back/loadbackgeneric", "fe/tournament_vsus"};
 const int NPRE = sizeof PRELOAD / sizeof *PRELOAD;
 Image preImg[NPRE];
 std::atomic<int> preDecoded{0};
@@ -106,17 +107,16 @@ void decodeArt() {
         snprintf(p, sizeof p, DATA_DIR "assets/ui/%s.png", PRELOAD[i]);
         int n = 0;
         if (unsigned char *d = FileExists(p) ? LoadFileData(p, &n) : nullptr) preImg[i] = LoadImageFromMemory(".png", d, n), UnloadFileData(d);
+        ImageMipmaps(&preImg[i]);  // here: no GPU mipmap blits on the main thread
         preDecoded.store(i + 1);
     }
 }
 
-// one GPU upload per frame
 void uploadArt() {
     if (preUploaded >= preDecoded.load()) return;
     Image &img = preImg[preUploaded];
     if (img.data && !cache.count(PRELOAD[preUploaded])) {
         Texture2D t = LoadTextureFromImage(img);
-        GenTextureMipmaps(&t);
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
         cache[PRELOAD[preUploaded]] = t;
     }
@@ -202,8 +202,15 @@ std::string weaponIcon(const std::string &n) {
 
 int clampWrap(int v, int n) { return n ? ((v % n) + n) % n : 0; }
 
-// single press of any button/key on any pad
-bool P(std::initializer_list<int> b, std::initializer_list<int> k) { return pressed(-1, b, k); }
+// single press of any button/key on any pad, with W4M's menu sound for it (menus only: the HUD calls pressed())
+bool P(std::initializer_list<int> b, std::initializer_list<int> k) {
+    if (!pressed(-1, b, k)) return false;
+    using S = Audio::Sfx;
+    int f = b.size() ? *b.begin() : -1;
+    if (f == UP || f == DOWN || f == LEFT || f == RIGHT || f == A || f == B)
+        Audio::play(f == UP || f == DOWN ? S::FeHighlight : f == A ? S::FeClick : f == B ? S::FeCancel : S::FeChange);
+    return true;
+}
 }  // namespace
 
 static bool dirFire[4][4];  // [pad][up, right, down, left] (raylib LEFT_FACE_* order): press or auto-repeat
@@ -303,7 +310,6 @@ void load() {
     for (int c = 32; c < 256; c++) if (c < 127 || c > 160) cps.push_back(c);
 #ifdef __SWITCH__
     hidSetNpadJoyHoldType(HidNpadJoyHoldType_Horizontal);  // single Joy-Cons are held sideways (one per player)
-    plOk = R_SUCCEEDED(plInitialize(PlServiceType_User));
 #endif
     // W4M's FE.Font (tools/w4m-ui, user's install), else the Switch shared font / a desktop TTF
 #ifdef __SWITCH__
@@ -320,6 +326,7 @@ void load() {
     }
 #ifdef __SWITCH__
     PlFontData fd;
+    plOk = R_SUCCEEDED(plInitialize(PlServiceType_User));
     if (plOk && R_SUCCEEDED(plGetSharedFontByType(&fd, PlSharedFontType_Standard))) {
         font = LoadFontFromMemory(".ttf", (const unsigned char *)fd.address, (int)fd.size, 48, cps.data(), (int)cps.size());
         fontLoaded = font.texture.id != 0;
@@ -569,8 +576,15 @@ void controls(bool game) {
     else text("Each screen lists its other buttons at the bottom", 640, 640, 22, LIGHTGRAY, 1);
 }
 
+bool preload(double until) {
+    while (preUploaded < NPRE && preUploaded < preDecoded.load() && GetTime() < until) uploadArt();
+    if (preUploaded < NPRE) return true;
+    if (preThread.joinable()) preThread.join();  // all decoded: join here so no exit path leaves it running
+    return false;
+}
+
 void background() {
-    uploadArt();
+    uploadArt();  // one GPU upload per frame
     Texture2D t = tex("back/loadbackgeneric");
     if (t.id) DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {0, 0, 1280, 720}, {}, 0, WHITE);
     else DrawRectangleGradientV(0, 0, 1280, 720, {40, 80, 150, 255}, {120, 170, 220, 255});
@@ -695,13 +709,36 @@ static const MenuItem HELP_MENU[] = {
 };
 
 static const float LEAVE = 0.18f;
+static bool feBack = false;  // last A/B in a menu was B: screen changes play W4M's prev in/out sounds
+// W4M's intro sound for screen s (kAUDIO_In_*), entered from `from`
+static Audio::Sfx enterSfx(Frontend::Screen s, Frontend::Screen from) {
+    using F = Frontend;
+    using S = Audio::Sfx;
+    if (s == F::Confirm || s == F::SchemeEdit) return S::FePopupIn;
+    if (from == F::Confirm || from == F::SchemeEdit) return S::FePopupOut;
+    if (feBack) return S::FePrevIn;
+    switch (s) {
+    case F::Main: return S::FeBounce;
+    case F::Local: case F::HelpOpts: return S::FeSlide;
+    case F::Network: return S::FeNet;
+    case F::MyWorms: return S::FeCustom;
+    case F::Options: return S::FeSoundVid;
+    case F::Controls: return S::FeController;
+    case F::Factory: case F::FactoryEdit: return S::FeFactory;
+    case F::Wormpot: return S::FeWormpot;
+    default: return S::FeNextIn;
+    }
+}
 static int bgPage(Frontend::Screen s, bool online) {
     using F = Frontend;
     return s <= F::Main || s == F::Confirm ? 0 : s == F::Local || (s == F::Setup && !online) ? 1 : s == F::Network || s == F::Setup ? 2 : 3;
 }
 
 float Frontend::subIn(float t) const { return leaving >= 0 ? 1 - (t - leaving) / LEAVE : (t - entered) / 0.4f; }
-void Frontend::go(Screen s) { next = s, leaving = now(), FrontBg::page(bgPage(s, online)); }
+void Frontend::go(Screen s) {
+    next = s, leaving = now(), FrontBg::page(bgPage(s, online));
+    Audio::play(feBack ? Audio::Sfx::FePrevOut : Audio::Sfx::FeNextOut);
+}
 
 void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live) {
     sel = clampWrap(sel + dy, n);
@@ -861,18 +898,20 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     bool typing = editing != nullptr, busy = typing || leaving >= 0;  // no input while the menu flies out
     if (editing) {
         for (int c = GetCharPressed(); c; c = GetCharPressed())
-            if (c >= 32 && c < 256 && editing->size() < 20) editing->push_back((char)c);
-        if (IsKeyPressed(KEY_BACKSPACE) && !editing->empty()) editing->pop_back();
-        if (IsKeyPressed(KEY_ENTER) || IsGamepadButtonPressed(0, A)) editing = nullptr;
+            if (c >= 32 && c < 256 && editing->size() < 20) editing->push_back((char)c), Audio::play(Audio::Sfx::FeType);
+        if (IsKeyPressed(KEY_BACKSPACE) && !editing->empty()) editing->pop_back(), Audio::play(Audio::Sfx::FeType);
+        if (IsKeyPressed(KEY_ENTER) || IsGamepadButtonPressed(0, A)) editing = nullptr, Audio::play(Audio::Sfx::FeClick);
     }
     int dy = busy ? 0 : P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP});
     int dx = busy ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
     bool ok = !busy && P({A}, {KEY_ENTER, KEY_SPACE}), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    if (ok || back) feBack = back;
     if (screen != shown) {  // W4M menus: slide in (not on the first frame: --ui captures), highlight the current entry
         entered = shown == (Screen)-1 ? -100 : t, from = shown, shown = screen;
         int sel = screen == Main ? mainRow : screen >= Local ? subRow[screen - Local] : 0;
         for (int i = 0; i < 8; i++) glow[i] = i == sel;
         FrontBg::page(bgPage(screen, online));
+        if (from != (Screen)-1) Audio::play(enterSfx(screen, from));
     }
 
     BeginDrawing();
@@ -1203,6 +1242,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     EndDrawing();
     if (act != None) {
+        if (act != Quit && act != Replays && act != SinglePlayer) Audio::play(Audio::Sfx::FeGrenade);  // match launch
         for (int k = 0; k < 4; k++) Audio::setTeamVoice(k, cfg.teamSetup[k].voice);
         cfg.teamSetup.resize(cfg.teams);
         cfg.custom = customs;
@@ -1251,16 +1291,24 @@ template <size_t N> int indexOf(const char *(&list)[N], const std::string &v) {
 
 std::string iconOf(const WeaponDef &w) { return weaponIcon(w.icon.empty() ? w.name : w.icon); }
 
+bool warmWeaponIcons(int &i) {
+    if (i >= (int)WEAPONS.size()) return false;
+    tex(iconOf(WEAPONS[i++]));
+    return i < (int)WEAPONS.size();
+}
+
 void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, float t) {
     bool spinning = false;
     for (int r = 0; r < 3; r++) {
-        if (spinEnd[r] > 0 && t >= spinEnd[r]) spinEnd[r] = 0, setReel(cfg.wormpot, r, spinTo[r]), Audio::play(Audio::Sfx::Tick);
+        if (spinEnd[r] > 0 && t >= spinEnd[r]) spinEnd[r] = 0, setReel(cfg.wormpot, r, spinTo[r]), Audio::play(Audio::Sfx::WormpotStop);
         spinning |= spinEnd[r] > 0;
     }
     reel = clampWrap(reel + dx, 3);
     if (dy && !spinning) setReel(cfg.wormpot, reel, clampWrap(reelMode(cfg.wormpot, reel) + 1 + dy, reelSize(reel) + 1) - 1);
-    if (!spinning && P({X}, {KEY_S}))
+    if (!spinning && P({X}, {KEY_S})) {
         for (int r = 0; r < 3; r++) spinEnd[r] = t + 1 + 0.6f * r, spinTo[r] = GetRandomValue(-1, reelSize(r) - 1);
+        Audio::play(Audio::Sfx::WormpotSpin);
+    }
     if (!spinning && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) cfg.wormpot = 0;
 
     heading("Wormpot", 640, 14, 48);
@@ -1404,13 +1452,19 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     if (tick == 0) swallow = true;
     if (!local || g.phase != Phase::Aim) { open = false, target = -1, swallow = true; return; }
     int n = (int)WEAPONS.size(), cols = PANEL_COLS;
-    if (pressed(pad, {X}, {KEY_Q})) open = !open, cursor = g.weapon;
+    using S = Audio::Sfx;
+    if (pressed(pad, {X}, {KEY_Q})) open = !open, cursor = g.weapon, Audio::play(open ? S::FePopupIn : S::FePopupOut);
     if (open) {
         int dx = pressed(pad, {RIGHT}, {KEY_RIGHT}) - pressed(pad, {LEFT}, {KEY_LEFT});
         int dy = pressed(pad, {DOWN}, {KEY_DOWN}) - pressed(pad, {UP}, {KEY_UP});
+        int was = cursor;
         cursor = clampWrap(cursor + dx + dy * cols, n);
-        if (pressed(pad, {A}, {KEY_SPACE, KEY_ENTER}) && g.ammo[cur.team][cursor]) select(cursor);
-        if (pressed(pad, {B}, {KEY_BACKSPACE})) open = false, swallow = true;
+        if (cursor != was) Audio::play(S::FeHighlight);
+        if (pressed(pad, {A}, {KEY_SPACE, KEY_ENTER})) {
+            if (g.ammo[cur.team][cursor]) select(cursor), Audio::play(S::FeClick);
+            else Audio::play(S::FeError);
+        }
+        if (pressed(pad, {B}, {KEY_BACKSPACE})) open = false, swallow = true, Audio::play(S::FeCancel);
         in = Input{};
     }
     if (swallow) {
@@ -1478,12 +1532,12 @@ void reticle(const WeaponDef &wd, Vector2 c, bool scope) {
 }
 
 // W4M HUD digits: "0-9 . m", '~' = infinity, ':' = two dots; h = cell height. Falls back to text().
-static void digits(const char *s, float x, float y, float h, int align, bool grey = false) {
+static float digits(const char *s, float x, float y, float h, int align, bool grey = false, Color tint = WHITE) {  // returns the width
     static const char *ROW[2] = {"012345.", "6789~m"};
     static const short COL[2][7][2] = {{{6, 78}, {87, 131}, {142, 211}, {218, 290}, {300, 376}, {384, 455}, {463, 500}},
                                        {{6, 78}, {86, 149}, {158, 233}, {238, 312}, {319, 418}, {428, 508}}};
     Texture2D t = tex(grey ? "hud/hud_font_grey" : "hud/hud_font");
-    if (!t.id) return text(s, x, y + h * 0.1f, h * 0.75f, grey ? WHITE : GOLDEN, align);
+    if (!t.id) return text(s, x, y + h * 0.1f, h * 0.75f, grey ? tint : GOLDEN, align), textWidth(s, h * 0.75f);
     float k = h / 128, w = 0;
     for (int pass = 0; pass < 2; pass++) {
         float cx = pass ? x - w * align / 2 : 0;
@@ -1493,12 +1547,13 @@ static void digits(const char *s, float x, float y, float h, int align, bool gre
                 if (!f) continue;
                 float x0 = COL[r][f - ROW[r]][0], gw = COL[r][f - ROW[r]][1] - x0;
                 Rectangle src = {x0, r * 128.0f, gw, 128};
-                if (pass) DrawTexturePro(t, src, {cx, y, gw * k, h}, {}, 0, WHITE);
-                if (pass && *p == ':') DrawTexturePro(t, src, {cx, y - h * 0.36f, gw * k, h}, {}, 0, WHITE);
+                if (pass) DrawTexturePro(t, src, {cx, y, gw * k, h}, {}, 0, tint);
+                if (pass && *p == ':') DrawTexturePro(t, src, {cx, y - h * 0.36f, gw * k, h}, {}, 0, tint);
                 cx += gw * k * 0.9f;
             }
-        w = cx;
+        if (!pass) w = cx;
     }
+    return w;
 }
 
 static void healthBar(int team, float x, float y, float w, float h, float frac) {
@@ -1541,7 +1596,7 @@ static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
     for (const Object &ob : g.objects) {
         if (ob.dead || ob.type == Object::Barrel) continue;
         Kind k = ob.weapon >= 0 && ob.weapon < (int)WEAPONS.size() ? WEAPONS[ob.weapon].kind : Kind::Shell;
-        bool util = k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::ChangeWorm;
+        bool util = utility(k);
         int cell = ob.type == Object::Mine ? 5 : ob.type == Object::Sentry ? 4 : ob.weapon < 0 ? 1 : util ? 2 : 0;
         Vector2 p = at(ob.pos);
         if (!sprite("radar_objects", p, 0.45f, {16, 16}, 0, WHITE, {(cell % 4) * 32.0f, (cell / 4) * 32.0f, 32, 32}))
@@ -1586,9 +1641,9 @@ void hudEvent(const Game &g, const GameEvent &e) {
     } else if (e.kind == GameEvent::CrateDrop && !g.objects.empty()) {
         int wi = g.objects.back().weapon;
         Kind k = wi >= 0 && wi < (int)WEAPONS.size() ? WEAPONS[wi].kind : Kind::Shell;
-        bool util = k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::ChangeWorm;
+        bool util = utility(k);
         comment(wi < 0 ? "Health" : util ? "Utility" : "Crate", "");
-        crateFocus = 3;
+        crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
     } else if (e.kind == GameEvent::Collect && e.worm >= 0) {
         const Worm &w = g.worms[e.worm];
         const char *who = wormName(w.team, e.worm % std::max(1, g.perTeam));
@@ -1603,7 +1658,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
 
 static void drawBanner(float dt) {
     if (banners.empty()) return;
-    const float LIFE = 3, SIZE = 26, MAXW = 680;  // clear of the radar (left) and the weapon (right)
+    const float LIFE = banners.size() > 1 ? 2 : 3, SIZE = 26, MAXW = 680;  // queued: keeps pace with the death queue (2 s a worm)
     if ((bannerAge += dt) > LIFE) { banners.erase(banners.begin()), bannerAge = 0; return; }
     std::vector<std::string> lines(1);  // word wrap
     for (size_t i = 0, j; i < banners[0].size(); i = j + 1) {
@@ -1614,13 +1669,16 @@ static void drawBanner(float dt) {
     }
     float w = 0;
     for (const std::string &l : lines) w = fmaxf(w, textWidth(l.c_str(), SIZE));
-    w += 64;
-    float h = 22 + 30 * lines.size(), y = 52 - (h + 60) * (fmaxf(0, 1 - bannerAge / 0.2f) + fmaxf(0, (bannerAge - LIFE + 0.2f) / 0.2f));
+    w += 80;
+    float h = 44 + 30 * lines.size(), y = 66 - (h + 60) * (fmaxf(0, 1 - bannerAge / 0.2f) + fmaxf(0, (bannerAge - LIFE + 0.2f) / 0.2f));
     Rectangle r = {640 - w / 2, y, w, h};
-    Texture2D p = tex("fe/com_panel");  // lower panel of the sheet: the upper one's right border is clipped
-    if (p.id) DrawTextureNPatch(p, {{0, 130, 254, 125}, 26, 26, 26, 26, NPATCH_NINE_PATCH}, r, {}, 0, WHITE);
-    else DrawRectangleRounded(r, 0.3f, 6, {0, 104, 138, 230});
-    for (size_t i = 0; i < lines.size(); i++) text(lines[i].c_str(), 640, y + 10 + 30 * i, SIZE, WHITE, 1);
+    Texture2D p = tex("fe/com_panel");
+    if (p.id) {  // the sheet holds a left-capped (top) and a right-capped (bottom) half: W4M joins them
+        float half = floorf(r.width / 2);  // seam at sheet column 120, where both halves' edges line up
+        DrawTextureNPatch(p, {{2, 2, 118, 124}, 26, 26, 0, 26, NPATCH_NINE_PATCH}, {r.x, r.y, half, h}, {}, 0, WHITE);
+        DrawTextureNPatch(p, {{120, 130, 131, 124}, 0, 26, 26, 26, NPATCH_NINE_PATCH}, {r.x + half, r.y, r.width - half, h}, {}, 0, WHITE);
+    } else DrawRectangleRounded(r, 0.3f, 6, {0, 104, 138, 230});
+    for (size_t i = 0; i < lines.size(); i++) text(lines[i].c_str(), 640, y + 20 + 30 * i, SIZE, WHITE, 1);
 }
 
 bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
@@ -1628,35 +1686,60 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     if (hpt.size() != g.worms.size() || tick < hpTick) announced.assign(g.worms.size() + g.teams, 0), banners.clear(), crateFocus = 0, bannerTick = tick;  // new match
     if (hpt.size() != g.worms.size() || tick < hpTick || g.clock < hpClock) {  // new match, replay seek or instant replay
         hpt.assign(g.worms.size(), {});
-        for (size_t i = 0; i < hpt.size(); i++) hpt[i].seen = std::max(0, g.worms[i].hp), hpt[i].shown = hpt[i].seen;
+        for (size_t i = 0; i < hpt.size(); i++) hpt[i].seen = g.worms[i].counted, hpt[i].shown = hpt[i].seen;
         popups.clear(), order.clear(), counting = -1;
     }
     hpTick = tick, hpClock = g.clock;
-    bool settle = g.phase == Phase::Settle || g.phase == Phase::GameOver;
-    bool turn = g.phase == Phase::Flying || g.phase == Phase::Retreat || (g.phase == Phase::Aim && !g.hotSeat && !turnStart);
-    for (size_t i = 0; i < hpt.size(); i++) {
+    for (size_t i = 0; i < hpt.size(); i++) {  // labels follow the sim's counted hp; out of Settle only poison moves it
         HpTrack &t = hpt[i];
         const Worm &w = g.worms[i];
-        int hp = std::max(0, w.hp), d = hp - t.seen;
-        if (d) {
-            bool poison = turnStart && w.poison && d < 0;  // beginTurn's poison tick
-            auto p = std::find_if(popups.begin(), popups.end(), [&](const Popup &q) { return q.worm == (int)i && q.age < 0.4f && (q.amount < 0) == (d < 0); });
-            if (p != popups.end()) p->amount += d;
-            else popups.push_back({(int)i, d, 0, poison});
-            t.poison = poison, t.hold |= d < 0 && turn, t.seen = hp;
-            if (std::find(order.begin(), order.end(), (int)i) == order.end()) order.push_back((int)i);
+        if (w.counted == t.seen) continue;
+        if (w.counted > t.seen && g.phase != Phase::Settle) {  // health crate: +N on the spot, no count
+            popups.push_back({(int)i, w.counted - t.seen, 0, 0, false, false});
+            t.seen = w.counted, t.shown = t.from = (float)w.counted;
+            continue;
         }
-        if (!w.alive && w.pos.y < g.water) t.shown = 0, t.hold = false;  // drowned: straight to 0, sinks with it
-        t.gone = w.alive ? 0 : t.gone + dt;
-        if (settle) t.hold = false;
+        if (!w.alive) { t.shown = t.seen = w.counted; continue; }  // drowned: no count (W4M)
+        t.poison = turnStart && w.poison && w.counted < t.seen, t.seen = w.counted;
+        if (std::find(order.begin(), order.end(), (int)i) == order.end()) order.push_back((int)i);
     }
-    for (Popup &p : popups) p.age += dt;
-    popups.erase(std::remove_if(popups.begin(), popups.end(), [](const Popup &p) { return p.age > 1.6f; }), popups.end());
-    auto pending = [&](int i) { return !hpt[i].hold && hpt[i].shown != hpt[i].seen; };
-    bool live = g.phase == Phase::Aim && !g.hotSeat, chain = false;  // live: the next turn's clock runs
+    // big W4M damage counters: follow their counting label, then pop and fade
+    for (Popup &p : popups) p.punch += dt, p.age += p.live ? 0 : dt;
+    popups.erase(std::remove_if(popups.begin(), popups.end(), [](const Popup &p) { return p.age > 1.0f; }), popups.end());
+    auto bump = [&](int i) {
+        int a = (int)lroundf(hpt[i].shown) - (int)lroundf(hpt[i].from);
+        auto p = std::find_if(popups.begin(), popups.end(), [&](const Popup &q) { return q.worm == i && q.live; });
+        if (p == popups.end() && a) popups.push_back({i, a, 0, 0, hpt[i].poison, true});
+        else if (p != popups.end() && p->amount != a) p->amount = a, p->punch = 0;
+    };
+    const std::vector<int> &grp = g.phase == Phase::Settle ? g.countGroup : std::vector<int>{};
+    for (Popup &p : popups) p.live &= p.worm == counting || std::count(grp.begin(), grp.end(), p.worm);
+    tickGap -= dt;
+    if (!grp.empty()) {  // the sim times this count: same on every client
+        Vector3 lo = {1e9f, 1e9f, 1e9f}, hi = Vector3Scale(lo, -1);
+        bool ticked = false;
+        for (int i : grp) {
+            const Worm &w = g.worms[i];
+            HpTrack &t = hpt[i];
+            long before = lroundf(t.shown);
+            float k = Clamp((g.countT - Game::COUNT_TRAVEL) / (float)g.countTicks(i), 0, 1);
+            if (w.alive) t.from = w.counted, t.shown = w.counted + (std::max(0, w.hp) - w.counted) * k, t.poison = false, bump(i);
+            ticked |= lroundf(t.shown) != before;
+            Vector3 at = {w.pos.x, fmaxf(w.pos.y, g.water) + 1.2f, w.pos.z};  // drowned: the surface above it; room for the counter
+            lo = Vector3Min(lo, at), hi = Vector3Max(hi, at);
+        }
+        if (ticked && tickGap <= 0) Audio::play(Audio::Sfx::HpTick, 0.5f), tickGap = 0.06f;
+        Vector3 c = Vector3Lerp(lo, hi, 0.5f);
+        if (int d = g.dying(); d >= 0) c = {g.worms[d].pos.x, fmaxf(g.worms[d].pos.y, g.water) + 0.6f, g.worms[d].pos.z}, lo = hi;  // close on each blast
+        Controls::focus(&c, Vector3Distance(lo, hi) / 2);
+        counting = -1;
+        return true;
+    }
+    auto pending = [&](int i) { return hpt[i].shown != hpt[i].seen; };
+    bool live = g.phase == Phase::Aim && !g.hotSeat && !g.dropping(), chain = false;  // live: the next turn's clock runs
     wait -= dt;
     if (counting >= 0 && !pending(counting) && wait <= 0) counting = -1, chain = true;
-    if (counting < 0 && (!live || chain)) {  // next worm in hit order; one hit twice counts its total once
+    if (counting < 0 && (!live || chain)) {  // poison ticks, in hit order
         order.erase(std::remove_if(order.begin(), order.end(), [&](int i) { return hpt[i].shown == hpt[i].seen; }), order.end());
         for (int i : order) if (pending(i)) { counting = i; break; }
         if (counting >= 0) hpt[counting].from = hpt[counting].shown, wait = 0.7f;  // camera travel
@@ -1664,12 +1747,15 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     // A, or a local human's turn going live: no more camera, labels jump to their values (CPU/remote turns let it finish)
     bool skip = (live && (mine || counting < 0)) || ((counting >= 0 || crateFocus > 0) && pressed(-1, {GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_SPACE}));
     if (skip) {
-        for (HpTrack &t : hpt) if (!t.hold) t.shown = t.seen;
+        for (HpTrack &t : hpt) t.shown = t.seen;
         counting = -1, crateFocus = 0;
     }
     if (counting < 0) {
+        for (Popup &p : popups) p.live = false;
+        static size_t landed = 0;  // last falling crate: stays framed while the sim's landHold runs
         const Object *crate = nullptr;
-        for (const Object &o : g.objects) if (o.type == Object::Crate && o.falling) crate = &o;
+        for (size_t i = 0; i < g.objects.size(); i++) if (g.objects[i].type == Object::Crate && g.objects[i].falling) crate = &g.objects[i], landed = i;
+        if (!crate && g.landHold > 0 && landed < g.objects.size() && g.objects[landed].type == Object::Crate) crate = &g.objects[landed];
         crateFocus = crate ? crateFocus - dt : 0;
         Controls::focus(crateFocus > 0 ? &crate->pos : nullptr);
         return crateFocus > 0;
@@ -1681,8 +1767,8 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     float d = t.seen - t.shown, step = fmaxf(40, fabsf(t.seen - t.from) / 1.5f) * dt;  // 40 hp/s, at most 1.5 s per worm
     long before = lroundf(t.shown);
     t.shown = fabsf(d) <= step ? t.seen : t.shown + copysignf(step, d);
+    bump(counting);
     if (t.shown == t.seen) wait = 0.5f;  // linger on the final value
-    tickGap -= dt;
     if (lroundf(t.shown) != before && tickGap <= 0) Audio::play(Audio::Sfx::HpTick, 0.5f), tickGap = 0.06f;
     return true;
 }
@@ -1697,7 +1783,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     // W4M worm labels: name over hp, team colour, black outline (hidden during the ready screen)
     if (!ready) for (const Worm &w : g.worms) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
-        if (!w.alive && (hp > 0 ? false : w.pos.y >= g.water || hpt[i].gone > 2.5f)) continue;  // count to 0; drowned: "0" while it sinks
+        if (!w.alive) continue;  // blown up, or drowned: W4M shows no label afloat
         Vector3 top = Vector3Add(w.pos, {0, 1.1f, 0});
         float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
         if (dist < 0.5f || (fp && &w == &cur) || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // first person: inside it
@@ -1707,18 +1793,29 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         const Color POISON = {120, 220, 60, 255};
         text(TextFormat("%d", hp), sp.x, sp.y - s, s, i == counting && hpt[i].poison ? POISON : c, 1);
         text(wormName(w.team, k), sp.x, sp.y - s * 2, s, c, 1);
-        for (const Popup &p : popups) {  // W4M damage number: pops up, rises and fades over the name
-            if (p.worm != i || !p.amount) continue;
-            float a = Clamp((1.6f - p.age) / 0.5f, 0, 1), pop = 1 + 0.4f * fmaxf(0, 1 - p.age / 0.15f);
-            Color pc = p.amount > 0 || p.poison ? POISON : Color{235, 45, 35, 255};
-            text(TextFormat("%+d", p.amount), sp.x, sp.y - s * 3.2f - p.age * 26, s * 1.3f * pop, Fade(pc, a), 1);
+        if (&w == &cur && g.jetting) text(TextFormat("%d", (int)ceilf(g.fuel)), sp.x, sp.y - s * 3.2f, s * 1.3f, WHITE, 1);  // W4M fuel counter
+        for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
+            if (p.worm != i) continue;
+            float a = Clamp(1 - (p.age - 0.5f) / 0.5f, 0, 1), pop = 1 + 0.25f * fmaxf(0, 1 - p.punch / 0.08f) + 0.3f * sinf(fminf(p.age / 0.25f, 1) * PI);
+            float h = fmaxf(36, s * 2.6f) * (1 + fminf(abs(p.amount), 100) * 0.005f) * pop, bw = h * 0.3f;
+            Color pc = p.amount > 0 || p.poison ? Color{150, 235, 90, 255} : Color{255, 244, 228, 255};
+            const char *n = TextFormat("%d", abs(p.amount));
+            float y = sp.y - s * 2.4f - h - fmaxf(0, p.age - 0.25f) * 60;
+            float x0 = sp.x + bw * 0.6f - digits(n, sp.x + bw * 0.6f, y, h, 1, true, Fade(pc, a)) / 2;
+            Rectangle bar = {x0 - bw * 1.25f, y + h * 0.42f, bw, h * 0.14f};  // the font has no sign glyphs
+            for (int k = 0; k < (p.amount > 0 ? 2 : 1); k++) {
+                Rectangle r = k ? Rectangle{bar.x + bw / 2 - bar.height / 2, bar.y - bw / 2 + bar.height / 2, bar.height, bw} : bar;
+                DrawRectangleRec({r.x + h * 0.05f, r.y + h * 0.05f, r.width, r.height}, Fade({20, 30, 60, 255}, a));
+                DrawRectangleRec(r, Fade(pc, a));
+            }
         }
-        if (&w == &cur && g.phase == Phase::Aim) {  // bobbing "this one" arrow
+        if (&w == &cur && g.phase == Phase::Aim && !g.jetting) {  // bobbing "this one" arrow
             float b = sinf(tick * 0.12f) * 4;
             if (!sprite("wormlocarrow", {sp.x, sp.y - s * 2 - 18 + b}, 0.22f, {64, 120}, 0, c)) DrawTriangle({sp.x - 8, sp.y - s * 2 - 30 + b}, {sp.x, sp.y - s * 2 - 18 + b}, {sp.x + 8, sp.y - s * 2 - 30 + b}, c);
         }
     }
-    drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f)), bannerTick = tick;
+    if (!quiet) drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f));
+    bannerTick = tick;
     if (g.phase == Phase::GameOver) {
         if (g.winner >= 0) text(TextFormat("%s WINS!", teamName(g.cfg, g.winner).c_str()), 640, 260, 70, TEAM_COLORS[g.winner % 4], 1);
         else text("DRAW!", 640, 260, 70, WHITE, 1);
@@ -1760,12 +1857,13 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (!image(iconOf(wd), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
     digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
     text(wd.name.c_str(), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
+    if (wd.userFuse) text(TextFormat("%s %ds", tr("FETXT.Fuse", "Fuse", "Mèche"), (int)g.fuseOf(wd)), wp.x - 54, wp.y + 16, 22, GOLDEN, 2);  // d-pad up/down
     // turn timer (bottom right): turn seconds, round clock below
     int left = aiming && g.hotSeat ? g.hotSeat : aiming || g.phase == Phase::Retreat ? g.timer : 0, secs = (left + 59) / 60;
     Vector2 tp = {1180, 612};
     bool urgent = (secs <= 5 && aiming && !g.hotSeat) || g.phase == Phase::Retreat;
     if (!sprite("timer_back", tp, 0.62f, {128, 128}, 0, urgent && tick / 15 % 2 ? Color{255, 120, 120, 255} : WHITE)) DrawCircleV(tp, 54, {0, 119, 155, 230});
-    digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);
+    if (g.phase != Phase::Retreat || g.shots.empty()) digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);  // W4M: the dynamite fuse is hidden
     int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
     digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
     if (g.phase == Phase::Retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
@@ -1836,17 +1934,17 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
 Pause::Action Pause::update() {
     bool plus = P({PLUS}, {KEY_ESCAPE, KEY_P});
     if (!open) {
-        if (plus) open = true, help = false, row = 0;
+        if (plus) open = true, help = false, row = 0, Audio::play(Audio::Sfx::FePopupIn);
         return None;
     }
     bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = plus || P({B}, {KEY_BACKSPACE});
     if (help) {
-        if (ok || back) help = false;
+        if (ok || back) help = false, Audio::play(Audio::Sfx::FePrevIn);
         return None;
     }
     row = clampWrap(row + P({DOWN}, {}) - P({UP}, {}), 3);
-    if (back || (ok && row == 0)) open = false;
-    if (ok && row == 1) help = true;
+    if (back || (ok && row == 0)) open = false, Audio::play(Audio::Sfx::FePopupOut);
+    if (ok && row == 1) help = true, Audio::play(Audio::Sfx::FeController);
     if (ok && row == 2) { open = false; return Quit; }
     return None;
 }
@@ -1974,6 +2072,9 @@ static float paragraph(const std::string &s, float x, float y, float w, float si
 
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p) {
     static const char *TABS[2] = {"Missions", "Challenges"};
+    static double seen = -1;  // last frame shown: a gap means the list just opened (W4M's story book)
+    if (GetTime() - seen > 0.5) Audio::play(Audio::Sfx::FeBookIn);
+    seen = GetTime();
     std::vector<int> rows;
     for (size_t i = 0; i < list.size(); i++) if ((list[i].kind == "mission") == (st.tab == 0)) rows.push_back((int)i);
     int &sel = st.sel[st.tab], n = (int)rows.size();
@@ -2002,10 +2103,12 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
         if (e.done) text(TextFormat("Best time %s", clockText(e.best).c_str()), 1100, 630, 24, GOLDEN, 2);
         if (m.par) text(TextFormat("Par %d:%02d", m.par / 60, m.par % 60), 180, 630, 24, LIGHTGRAY);
         hints({{"A", "Enter", "Start"}, {"B", "Esc", "Back"}});
-        if (back) st.brief = false;
+        if (back) st.brief = false, Audio::play(Audio::Sfx::FePage);
         return ok ? pick : -1;
     }
+    int tab = st.tab;
     st.tab = clampWrap(st.tab + P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT}), 2);
+    if (st.tab != tab) Audio::play(Audio::Sfx::FePage);
     if (n) sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
     heading("Single player", 640, 10, 52);
     for (int t = 0; t < 2; t++) {
@@ -2036,8 +2139,8 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
         paragraph(m.brief, 800, 500, 420, 20, LIGHTGRAY, 7);
     }
     hints({{"D-pad", "Left/Right", TABS[1 - st.tab]}, {"A", "Enter", "Briefing"}, {"B", "Esc", "Back"}});
-    if (back) return -2;
-    if (ok && open) st.brief = true;
+    if (back) { Audio::play(Audio::Sfx::FeBookOut); return -2; }
+    if (ok && open) st.brief = true, Audio::play(Audio::Sfx::FePage);
     return -1;
 }
 

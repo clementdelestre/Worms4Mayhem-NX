@@ -1,6 +1,7 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include "acting.h"
 #include "ai.h"
 #include "audio.h"
 #include "controls.h"
@@ -15,6 +16,7 @@
 #include "replay.h"
 #include "sim.h"
 #include "ui.h"
+#include "xray.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -65,16 +67,19 @@ static void drawTextCentered(const char *t, int x, int y, int size, Color c) {
 
 static void animEvent(const Game &g, const GameEvent &e);
 
+static bool holyNext = false;  // the blast after the Hallelujah is the holy grenade's own
 static void onEvent(const Game &g, const GameEvent &e) {
     animEvent(g, e);
+    Acting::event(g, e);
     Ui::hudEvent(g, e);
     using Audio::Sfx;
     using Audio::Voice;
     int team = e.worm >= 0 ? g.worms[e.worm].team : 0;
     Fx::event(e, g.terrain.side);
     switch (e.kind) {
-    case GameEvent::Boom: Audio::play(Sfx::Explosion); break;
-    case GameEvent::BigBoom: Audio::play(Sfx::Holy); Audio::play(Sfx::BigExplosion); break;
+    case GameEvent::Boom: Audio::play(Sfx::Explosion); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    case GameEvent::BigBoom: Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion), holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    case GameEvent::Hallelujah: Audio::play(Sfx::Holy), holyNext = true; break;
     case GameEvent::Fire: {
         const WeaponDef &d = WEAPONS[e.weapon];
         Kind k = d.kind;
@@ -88,21 +93,25 @@ static void onEvent(const Game &g, const GameEvent &e) {
         else if (k == Kind::Shotgun && d.name == "Sniper Rifle") s = Sfx::Sniper;
         else if (k == Kind::Sentry && e.worm >= 0) s = Sfx::SentryPlace;  // placing vs. the turret's own shots (worm -1)
         Audio::play(s);
-        bool utility = k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::SkipGo || k == Kind::ChangeWorm;
-        if (e.worm >= 0 && !utility) Audio::voice(team, Voice::Fire);  // worm -1: sentry gun shot
+        bool tool = utility(k) || k == Kind::SkipGo;
+        if (e.worm >= 0 && !tool) Audio::voice(team, Voice::Fire);  // worm -1: sentry gun shot
         break;
     }
     case GameEvent::Bounce: Audio::play(Sfx::Bounce, 0.6f); break;
-    case GameEvent::Splash: Audio::play(Sfx::Splash); break;
+    case GameEvent::Splash: Audio::play(Sfx::Splash); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking
     case GameEvent::Death: Audio::voice(team, Voice::Death); break;
     case GameEvent::Hurt: Audio::voice(team, Voice::Hurt); break;
     case GameEvent::Jump: Audio::play(Sfx::Jump); Audio::voice(team, Voice::Jump); break;
     case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); Audio::voice(team, Voice::Idle); break;
     case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, 0.5f); break;
+    case GameEvent::CrateLand:
+        Audio::play(e.weapon < 0 ? Sfx::CrateImpactHealth : utility(WEAPONS[e.weapon].kind) ? Sfx::CrateImpactUtil : Sfx::CrateImpactWeapon, 0.7f);
+        break;
     case GameEvent::Collect: Audio::play(Sfx::Pickup, 0.7f); break;
     case GameEvent::MineArm: Audio::play(Sfx::MineBeep); break;
     case GameEvent::GameOver:
         Audio::music(true, "victory");
+        Audio::play(Sfx::Cheer, 0.6f);
         if (g.winner >= 0) Audio::voice(g.winner, Voice::Victory);
         break;
     }
@@ -181,10 +190,6 @@ static void animEvent(const Game &g, const GameEvent &e) {
     else if (e.kind == GameEvent::Hurt && !a.clip) a = {"Hit_Front"};
     else if (e.kind == GameEvent::Splash) a = {"FallDrown"};
 }
-static bool drowning(const Worm &w, const Game &g) {
-    size_t i = &w - g.worms.data();
-    return i < wormAnims.size() && wormAnims[i].act.clip && !strcmp(wormAnims[i].act.clip, "FallDrown");
-}
 
 // Once per frame, for every worm: walk phase advances with distance walked, footsteps on the cycle beat, landing thud.
 static void animateWorms(const Game &g, float dt) {
@@ -222,8 +227,46 @@ static void animateWorms(const Game &g, float dt) {
         bool self = (int)i == g.current && (g.phase == Phase::Aim || g.phase == Phase::Retreat) && Vector3Length(w.vel) < 0.3f;  // not sliding
         if (a.moving && beat && self) Audio::play(Audio::Sfx::Step, 0.3f);
     }
+    static std::vector<uint8_t> busy;
+    busy.assign(g.worms.size(), 0);
+    for (size_t i = 0; i < g.worms.size(); i++) busy[i] = wormAnims[i].moving || wormAnims[i].air > 0 || wormAnims[i].act.clip;
+    Acting::update(g, dt, busy);
 }
 
+// W4M jetpack/parachute meshes sit on the worm's root in raw units; WORM_K: worm.glb's export scale (tools/w4m-models).
+static const float WORM_K = 0.0496f;
+static Matrix rootMatrix(const Worm &w, Vector3 raw) {
+    return MatrixMultiply(MatrixMultiply(MatrixTranslate(raw.x, raw.y, raw.z), MatrixScale(WORM_K, WORM_K, WORM_K)),
+                          MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(w.pos.x, w.pos.y - Game::R, w.pos.z)));
+}
+static const Vector3 JETPACK_AT = {0, 12, 3};  // pack origin on the worm's back, its sticks in the JetpackFly hands
+
+// Once per frame: jetpack exhaust (full jets while fuel burns) and the Fire Punch's flaming fist.
+static void toolFx(const Game &g, float dt) {
+    static float thrust = 0, lastFuel = 0, acc = 0;
+    thrust = g.jetting && g.fuel < lastFuel ? 0.1f : fmaxf(thrust - dt, 0);  // bridges frames without a sim tick
+    lastFuel = g.fuel;
+    if (g.jetting && g.current < (int)g.worms.size()) {
+        const Worm &w = g.worms[g.current];
+        Matrix m = MatrixMultiply(MatrixTranslate(JETPACK_AT.x, JETPACK_AT.y, JETPACK_AT.z), rootMatrix(w, {}));
+        for (acc += dt * (thrust > 0 ? 50 : 12); acc >= 1; acc--)
+            for (float x : {5.0f, -5.0f}) {  // JetLeft/JetRight nozzles
+                Vector3 n = Vector3Transform({x, -10, -6}, m), v = {w.vel.x, w.vel.y - (thrust > 0 ? 6 : 2), w.vel.z};
+                Fx::flame(n, v, thrust > 0 ? 0.3f : 0.12f, thrust > 0 ? 0.7f : 0.25f, 0.15f, true);
+                if (thrust > 0 && acc < 1.5f) Fx::puff(Vector3Add(n, {0, -0.5f, 0}), {0, -1.5f, 0}, 0.9f, 0.3f, 1.1f, {200, 200, 200, 120});
+            }
+    }
+    for (size_t i = 0; i < g.worms.size() && i < wormAnims.size(); i++) {
+        const WormAnim::Act &c = wormAnims[i].act;
+        Matrix h;
+        if (!c.clip || strcmp(c.clip, "Fire2Firepunch") || !Models::joint("worm", "WeaponLocator", c.clip, c.t, false, &h)) continue;
+        const Worm &w = g.worms[i];
+        Vector3 f = Vector3Transform({h.m12, h.m13, h.m14}, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(w.pos.x, w.pos.y - Game::R, w.pos.z)));
+        for (int k = 0; k < 2; k++) Fx::flame(f, {0, 1.5f, 0}, 0.35f, 0.5f, 0.15f, false);
+    }
+}
+
+static const float FLOAT_DEPTH = 0.1f;  // root under the surface: the FallDrown body lies half out
 static const float VM_RIGHT = 0.4f, VM_UP = -0.32f, VM_FWD = 0.7f, VM_SCALE = 0.4f, VM_CONV = 3;  // first-person view-model offset from the eye
 
 // W4M worm: team-tinted, animation picked from the sim state (aim clips map pitch to their timeline).
@@ -231,11 +274,12 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     int i = int(&w - g.worms.data());
     WormAnim a = i < (int)wormAnims.size() ? wormAnims[i] : WormAnim{};
     float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
-    float fidget = fmodf(clock + i * 7.3f, 25);  // desynchronised per worm
     const char *clip = "Base", *held = nullptr, *aim = nullptr;
     bool loop = true;
     bool tool = i == g.current && (g.roped || g.jetting || (g.chute && a.air > 0));
-    if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
+    float drown = Models::clipLength("worm", "FallDrown");  // dead and still drawn: drowned, afloat until Settle pops it
+    if (!w.alive) clip = "FallDrown", t = a.act.clip ? fminf(a.act.t, drown) : drown, loop = false;
+    else if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
     else if (tool) clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteWobble", held = g.roped ? "hold_rope" : nullptr;
     else if (bool air = a.air > 0.15f || w.vel.y > 2; air && speed > 4) clip = "Blastflight2";  // knocked flying (short drops keep the pose)
     else if (air) {
@@ -243,14 +287,15 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
         if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
     } else if (a.moving || a.walk > 0) clip = "Walk", t = a.walk;
     else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0 && !(i == g.current && g.phase == Phase::Aim)) clip = "Land", t = a.land, loop = false;
+    else if (const char *c = fp ? nullptr : Acting::clip(g, i, clock, &t, &loop)) clip = c;  // W4M acting: gestures, emotes
     else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up
     else if (g.phase == Phase::GameOver && w.team == g.winner) clip = "Victorious_Grin";
     else if (i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && (held = heldModel(WEAPONS[g.weapon], &clip))) {
         if (clip[0] == 'A') t = (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", clip), loop = false;  // sim pitch range [-1.2, 1.45]
     } else if (w.hp < 25) clip = "Wounded";
-    else if (fidget < Models::clipLength("worm", i % 2 ? "Yawn" : "ScratchHead")) clip = i % 2 ? "Yawn" : "ScratchHead", t = fidget, loop = false;
     Color tint = ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f);
-    Vector3 p = {w.pos.x, w.pos.y - Game::R - (w.alive ? 0 : a.act.t * 0.6f), w.pos.z};  // dead: drowning, sinks
+    Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
+    if (!w.alive) p.y = g.water - FLOAT_DEPTH - 1.2f * t / 0.3f * expf(1 - t / 0.3f) + 0.05f * sinf(clock * 3);  // dips 1.2 m, bobs back up
     float aimT = aim ? (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", aim) : 0;
     if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop, aim, aimT)) return false;
     Matrix m;
@@ -266,30 +311,34 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
         }
         Models::draw(held, m);
     }
+    if (tool && !fp && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE, g.jetting ? nullptr : clip, t);  // the canopy's own ParachuteWobble
     int hat = !fp && w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
-    if (hat && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT))
-        Models::draw(Models::hatName(hat - 1), MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
+    const char *hatN = tool && !fp && g.jetting ? "jetpack" : hat ? Models::hatName(hat - 1) : nullptr;  // W4M's jetpack helmet
+    if (hatN && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT))
+        Models::draw(hatN, MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
     return true;
 }
 
-// Dead worms leave their team's W4M gravestone, dropped onto whatever terrain is left below (render only).
+// Dead worms leave a random W4M gravestone, dropped onto whatever terrain is left below (render only).
 static void drawGrave(const Game &g, const Worm &w) {
     if (w.pos.y < g.water) return;  // drowned
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
     for (int k = 0; k < 100 && p.y > g.water && !g.terrain.solid(p); k++) p.y -= 0.1f;
-    Models::draw(TextFormat("grave%d", w.team % 4), p, w.yaw);
+    uint32_t h = (g.cfg.seed + uint32_t(&w - g.worms.data()) * 40503u) * 2654435761u;  // random per worm, same every view
+    Models::draw(TextFormat("grave%u", (h >> 16) % 4), p, w.yaw);
 }
 
 // Shells point along their velocity; fused throwables (grenades) tumble instead.
 static bool drawShot(const Projectile &s, float clock) {
     const WeaponDef &d = WEAPONS[s.weapon];
     const std::string &n = d.name;
-    if (s.child && d.kind == Kind::SuperSheep) return false;  // starburst stars: placeholder spheres
+    if (s.child && d.kind == Kind::SuperSheep) return true;  // starburst stars: particles only (Fx::trail)
+    if (!s.child && d.kind == Kind::Airstrike && d.fuse <= 0) return true;  // air strike plane: no mesh, only its bombs show
     const char *m = n == "Fatkins Strike" ? "fatkins" : n == "Starburst" ? "starburst" : n == "Poison Arrow" ? "arrow" : n == "Dynamite" ? "dynamite"
                   : n == "Gas Canister" ? "gas" : d.kind == Kind::SuperSheep ? "supersheep" : d.kind == Kind::OldWoman ? "oldwoman"
                   : d.kind == Kind::Homing ? "homing" : d.kind == Kind::Scouser ? "scouser"
                   : d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
-                  : n == "Cluster Grenade" ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? (s.child ? "bananette" : "banana")
+                  : n == "Cluster Grenade" ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? "banana"  // W4M bananettes reuse the BananaBomb mesh
                   : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
     if (!d.model.empty()) m = d.model.c_str();  // Weapon Factory
     float h = sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z), yaw = atan2f(s.vel.x, s.vel.z);
@@ -312,28 +361,43 @@ int main(int argc, char **argv) {
     SetExitKey(KEY_NULL);  // Esc is back / pause; quit from the title screen
     SetTargetFPS(60);
     rlSetClipPlanes(0.5, 500);  // default 0.01 near plane z-fights the water on GLES depth buffers
-    // boot splash: W4M's spinning worm on black while assets load (the screen was plain black)
+    // boot splash: W4M's spinning worm on black while a worker decodes the assets and this thread uploads them
     static Texture2D bootWorm = LoadTexture(DATA_DIR "assets/ui/fe2/loading_worm.png");
     static const double bootT0 = GetTime();
     auto boot = [] {
         BeginDrawing();
         ClearBackground(BLACK);
         if (bootWorm.id) {
-            float s = 200, deg = (float)(GetTime() - bootT0) * 180;  // double clock: raw GetTime() is huge on Switch
+            float s = 200, deg = (float)fmod((GetTime() - bootT0) * 180, 360);  // double clock: raw GetTime() is huge on Switch
             DrawTexturePro(bootWorm, {0, 0, (float)bootWorm.width, (float)bootWorm.height}, {640, 360, s, s}, {s / 2, s / 2}, deg, WHITE);
         }
         EndDrawing();
     };
-    boot();
-    Audio::init();
-    boot();
-    Audio::music(true);
-    Models::load(boot);
+    // GL-only work first, on black: shader compiles and the font can't run on the workers
     Ui::load();
-    boot();
-    Controls::load(DATA_DIR "controls.txt");
     Fx::load();
-    boot();
+    Models::upload(0);  // compiles the model shader
+    std::vector<std::string> maps = {""};  // "" = procedural island
+    std::thread sounds([&] {
+        Audio::init();
+        for (const char *dir : {ROMFS_DIR "maps", DATA_DIR "assets/maps"}) {  // assets/ = maps imported from the user's W4M install
+            if (!DirectoryExists(dir)) continue;
+            FilePathList files = LoadDirectoryFilesEx(dir, ".json", false);
+            for (unsigned i = 0; i < files.count; i++) {
+                std::string m = files.paths[i];  // GetFileNameWithoutExt() isn't thread-safe
+                m = m.substr(m.find_last_of('/') + 1), m.resize(m.size() - 5);
+                if (std::find(maps.begin(), maps.end(), m) == maps.end()) maps.push_back(m);
+            }
+            UnloadDirectoryFiles(files);
+        }
+    });
+    std::thread meshes(Models::prepare);
+    Controls::load(DATA_DIR "controls.txt");
+    BeginDrawing(), ClearBackground(BLACK), EndDrawing();  // flushes those uploads before the spinner starts
+    for (double until = 0; Ui::preload(until) | Models::upload(until); until = GetTime() + 0.008) boot();  // ~half a frame of uploads
+    meshes.join(), sounds.join();
+    FrontBg::load();
+    Audio::music(true);
     // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit; --animshot <weapon>: a turn firing it, anim_<frame>.png
     if (argc > 2 && !strcmp(argv[1], "--animshot") && (argv[2][0] < '0' || argv[2][0] > '9')) {
         float L = Models::clipLength("worm", argv[2]);
@@ -412,16 +476,6 @@ int main(int argc, char **argv) {
     Screen screen = shot ? Screen::Play : netbot ? Screen::Lobby : Screen::Menu;
     int roomSel = 0, lastSec = -1;
     GameConfig opt;
-    std::vector<std::string> maps = {""};  // "" = procedural island
-    for (const char *dir : {ROMFS_DIR "maps", DATA_DIR "assets/maps"}) {  // assets/ = maps imported from the user's W4M install
-        if (!DirectoryExists(dir)) continue;
-        FilePathList files = LoadDirectoryFilesEx(dir, ".json", false);
-        for (unsigned i = 0; i < files.count; i++) {
-            std::string m = GetFileNameWithoutExt(files.paths[i]);
-            if (std::find(maps.begin(), maps.end(), m) == maps.end()) maps.push_back(m);
-        }
-        UnloadDirectoryFiles(files);
-    }
     uint32_t tick = 0;
     std::string status;
     std::map<uint32_t, float> offlineSince;  // player id -> clock when seen offline
@@ -521,7 +575,7 @@ int main(int argc, char **argv) {
     // Match prep while the loading screen animates: CPU work (sim start, texture decode, voices) on `loader`, then
     // GL steps between frames. The sim starts (and online inputs leave net's buffer) once screen is Play.
     GameConfig loadCfg;
-    int loadStep = -1;  // -1: done
+    int loadStep = -1, warmIcon = 0;  // -1: done
     double loadMs[5] = {}, loadT0 = 0;
     std::thread loader;
     std::atomic<bool> loaderDone{false};
@@ -537,26 +591,27 @@ int main(int argc, char **argv) {
             if (!loaderDone && !wait) return;
             loader.join();
             loadMs[1] = (GetTime() - loadT0) * 1000;  // wall clock, the screen kept drawing
-            Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str());
             Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);
             Fx::clear();
             game.terrain.remesh(0);  // texture upload and shadow columns only
             break;
         case 2: game.terrain.remesh(0.012); break;
         case 3: game.terrain.drawObjects({1e6f, 0, 0}); break;  // loads the decor models, all culled
+        case 4: if (Ui::warmWeaponIcons(warmIcon)) return; break;  // one icon per frame
         }
         if (loadStep != 1 || wait) loadMs[loadStep] += (GetTime() - t0) * 1000;
         else loadMs[0] = std::max(loadMs[0], (GetTime() - t0) * 1000);  // longest main-thread block of step 1
         if (loadStep == 2 && std::count(game.terrain.dirty.begin(), game.terrain.dirty.end(), true)) return;
-        if (++loadStep == 4)
+        if (++loadStep == 5)
             loadStep = -1, TraceLog(LOG_INFO, "LOAD: thread %.0f ms (start, decode, voices), upload %.0f, remesh %.0f, decor %.0f, total %.0f",
                                     loadMs[1], loadMs[0], loadMs[2], loadMs[3], (GetTime() - loadT0) * 1000);
     };
+    auto mapMusic = [&] { Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str()); };  // once the match shows
     auto loadProgress = [&] {
         if (loadStep < 0) return 1.0f;
         const std::vector<bool> &d = game.terrain.dirty;
         float part = loadStep == 2 && !d.empty() ? 1 - (float)std::count(d.begin(), d.end(), true) / d.size() : 0;
-        return (loadStep + part) / 4;
+        return (loadStep + part) / 5;
     };
     auto startMatch = [&](const GameConfig &c) {
         game.terrain.undo = nullptr;
@@ -565,13 +620,14 @@ int main(int argc, char **argv) {
         recSaved = shotDone = false;
         irEnd = -1;
         if (loader.joinable()) loader.join();  // online: Start again mid-load
-        loadCfg = c, loadStep = 0;
+        loadCfg = c, loadStep = 0, warmIcon = 0;
         for (double &m : loadMs) m = 0;
         tick = 0;
         acc = 0;
         Controls::reset();
         if (bench || netbot || (uiShot && !loadShot)) {  // no loading screen: game is ready on return
             while (loadStep >= 0) prepStep(true);
+            mapMusic();
             screen = Screen::Play;
         } else Loading::begin(c), screen = Screen::Loading;
     };
@@ -767,7 +823,7 @@ int main(int argc, char **argv) {
             EndDrawing();
             if (loadShot && frame >= uiFrames.back()) break;
             if (Loading::ready() && loadStep >= 0) prepStep(false);  // after EndDrawing: the frame shows while this step blocks
-            if (done) screen = Screen::Play;
+            if (done) screen = Screen::Play, mapMusic();
             continue;
         }
 
@@ -939,7 +995,7 @@ int main(int argc, char **argv) {
         bool padTurn = !shot && !remoteTurn && !pause.open && !playing && irEnd < 0;
         if (aimSeq) Controls::forceAim = frame >= 40 && frame < 90;
         int simWeapon = game.weapon;
-        game.weapon = hud.shown(game);  // panel pick: controls and the view skip the weapons stepped through on the way
+        game.weapon = cpu(cur.team) && ai.picking >= 0 ? ai.picking : hud.shown(game);  // panel or CPU pick: controls and the view skip the weapons stepped through on the way
         Input pin = Controls::read(game, pad, aimShot || aimSeq || (padTurn && !cpu(cur.team)), dt);
         game.weapon = simWeapon;
         int late = animShot ? 2 * shotWeapon : 0;  // animshot: fire once the weapon cycling is over
@@ -962,7 +1018,8 @@ int main(int argc, char **argv) {
             if (!pause.open && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER})) irFinish();
             for (irAcc += pause.open ? 0 : dt * 0.5f; irAcc >= Game::DT && irEnd >= 0; irAcc -= Game::DT) {
                 game.step(rec.inputs[irTick++]);
-                for (const GameEvent &e : game.events) onEvent(game, e);
+                for (const GameEvent &e : game.events)
+                    if (e.kind != GameEvent::GameOver) onEvent(game, e);  // the jingle already played live
                 if (irTick == (uint32_t)irEnd) irFinish();
             }
         } else if (!online) {
@@ -1026,10 +1083,13 @@ int main(int argc, char **argv) {
         }
 
         // camera (controls.cpp): free orbit, first person in aim mode, chasing the projectile, sniper scope
-        simWeapon = game.weapon, game.weapon = hud.shown(game);  // render only, restored after EndDrawing
+        simWeapon = game.weapon, game.weapon = cpu(game.worms[game.current].team) && ai.picking >= 0 ? ai.picking : hud.shown(game);  // render only, restored after EndDrawing
         const WeaponDef &wd = WEAPONS[game.weapon];
+        static int drawn = -1;  // weapon in hand: the holy grenade hums when drawn (W4M HolyGrenadeHeld)
+        if (game.phase != Phase::Aim) drawn = -1;
+        else if (game.weapon != drawn && (drawn = game.weapon, wd.name == "Holy Hand Grenade")) Audio::play(Audio::Sfx::HolyHeld, 0.7f);
         bool chase = game.phase == Phase::Flying && !game.shots.empty();
-        bool scope = !chase && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && wd.name == "Sniper Rifle";
+        bool scope = !chase && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && wd.name == "Sniper Rifle" && Controls::aiming();  // L / ZL held
         bool fp = scope || (!chase && Controls::firstPerson(game));  // W4M first-person aim
         if ((IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) &&
              (IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))) || IsKeyPressed(KEY_F3))
@@ -1075,10 +1135,20 @@ int main(int argc, char **argv) {
         game.terrain.drawObjects(view.position);
         lap(T_DECOR);
         animateWorms(game, dt);
+        toolFx(game, dt);
+        Xray::begin();
+        bool blimp = playing && freeCam;  // W4M outlines every live worm in the blimp view (camera-w4m.md section 5)
         for (const Worm &w : game.worms) {
-            if (!w.alive && !drowning(w, game)) { drawGrave(game, w); continue; }
+            if (!w.alive && w.counted <= 0) { drawGrave(game, w); continue; }
             if ((inside && &w == &cur) || !Models::visible(w.pos, 2)) continue;
-            if (!drawWorm(game, w, clock)) {
+            if (Models::has("worm")) {  // every pass below draws the same pose: no re-skin
+                bool bin = blimp || &w == &cur;  // W4M OutlinedWorms1: the active worm only, outside the blimp view
+                float op = &w == &cur && !blimp ? Xray::opacity(view.position, w.pos) : 1;
+                if (op > 0 && op < 1) Xray::depth(), drawWorm(game, w, clock), Xray::fade(op);
+                if (op > 0) drawWorm(game, w, clock);
+                Xray::done();
+                if (bin && Xray::mask(w.team)) drawWorm(game, w, clock), Xray::hidden(), drawWorm(game, w, clock), Xray::done();
+            } else {
                 Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
                 DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
                 for (float s : {-0.13f, 0.13f})
@@ -1088,7 +1158,6 @@ int main(int argc, char **argv) {
                 DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
         }
         if (game.roped) DrawLine3D(game.anchor, cur.pos, BROWN);
-        if (game.jetting) DrawCube(Vector3Add(cur.pos, {-sinf(cur.yaw) * 0.4f, 0.1f, -cosf(cur.yaw) * 0.4f}), 0.35f, 0.5f, 0.35f, GRAY);
         if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && !hud.fp && !inside) {
             if (wd.kind == Kind::Airstrike || wd.kind == Kind::Donkey || wd.kind == Kind::Teleport || wd.kind == Kind::Homing || wd.kind == Kind::Abduction) {
                 Vector3 t = game.target();
@@ -1114,7 +1183,8 @@ int main(int argc, char **argv) {
         }
         for (const Object &o : game.objects) {
             const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry"
-                          : o.type == Object::Target ? "target" : o.weapon < 0 ? "crate_health" : "crate_weapon";
+                          : o.type == Object::Target ? "target" : o.weapon < 0 ? "crate_health"
+                          : utility(WEAPONS[o.weapon].kind) && Models::has("crate_utility") ? "crate_utility" : "crate_weapon";
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute
             if (!Models::draw(m, o.pos, (&o - game.objects.data()) * 1.3f)) {
                 if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
@@ -1150,10 +1220,14 @@ int main(int argc, char **argv) {
         lap(T_SKY);
         float fxDt = pause.open ? 0 : dt;
         for (const Projectile &s : game.shots) Fx::trail(s, fxDt);
+        for (const Game::Gas &c : game.gas)  // W4M WXP_GasCloudDelayed: green puffs over the cloud, ~4 a second
+            if (fxDt > 0 && GetRandomValue(0, 14) == 0)
+                Fx::puff(Vector3Add(c.pos, {GetRandomValue(-40, 40) / 10.0f, GetRandomValue(0, 15) / 10.0f, GetRandomValue(-40, 40) / 10.0f}), {game.wind, 0.2f, 0}, 5, 2, 3.5f, {120, 200, 60, 110});
         Fx::update(fxDt);
         Fx::draw(view);
         lap(T_FX);
         EndMode3D();
+        if (blimp) Xray::outline(TEAM_COLORS);
         if (fp && inside && !scope && (wd.kind == Kind::Shell || wd.kind == Kind::Homing || wd.kind == Kind::Shotgun)) {  // held weapon over the scene with its own near plane, never clipped by it or the terrain
             glClear(0x100);  // GL_DEPTH_BUFFER_BIT
             rlSetClipPlanes(0.05, 50);

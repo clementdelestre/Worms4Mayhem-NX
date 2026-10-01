@@ -16,15 +16,18 @@ void save(const char *path);
 Input read(const Game &g, int pad, bool live, float dt);
 Input tick(Input in);                    // per sim tick: in's axes from read()'s rates
 int8_t diffuse(float rate, float &carry);  // rate in int8 units; the rounding error carries to the next tick
-bool aiming();                           // aim mode: ZL / L held, charging, sniper
+bool aiming();                           // aim mode: ZL / L held, charging
 bool firstPerson(const Game &g);         // aim mode seen from the worm's eyes (target-marker weapons stay third person)
 float sinceFirstPerson();                 // seconds since the first-person aim view, 0 in it
 extern int forceAim;                     // capture mode: 1 aim, 2 fine aim
+Vector3 eye(const Game &g);              // first-person aim camera position
 Vector3 aimPoint(const Game &g);         // far point of the active worm's shot line, centred by the aim camera
 // Free orbit while moving, over the shoulder in aim mode, chasing a shot, through the sniper scope.
 void reset();  // new match: camera cut behind the first worm, aim state cleared
 void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt);
-void focus(const Vector3 *at);  // HUD cinematic target (hp count, crate drop) until focus(nullptr)
+void impact(Vector3 at);  // explosion: the camera holds on it ~1 s once no shot is left to chase
+float occluded();  // 0..1: the active worm is behind terrain or the camera is right on it (W4M shows it as an outline)
+void focus(const Vector3 *at, float radius = 0);  // HUD cinematic target (hp count, crate drop), radius m kept in view; held while set each frame, nullptr or no call: released after 0.2 s
 void rumble(int pad, float amp, float secs);  // pad -1: nobody
 void update(float dt);                         // rumble envelopes, once per frame
 }  // namespace Controls

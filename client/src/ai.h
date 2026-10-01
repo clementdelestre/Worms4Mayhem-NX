@@ -6,6 +6,7 @@
 // Planning is a state machine: one (weapon, target) pair per tick bounds the per-frame cost.
 struct Ai {
     Input think(const Game &g);
+    int picking = -1;  // weapon NEXT_WEAPON steps toward this tick: shown instead of the ones on the way
 
     struct Plan { int weapon = -1, charge = 0, target = -1; float yaw = 0, pitch = 0, score = -1e9f, rank = -1e9f; };  // rank: score + taste
     struct RopePlan { float yaw = 0, pitch = 0; int release = -1; bool reel = false; };  // release < 0: walk toward the finish

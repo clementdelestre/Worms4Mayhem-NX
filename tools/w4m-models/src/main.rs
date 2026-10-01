@@ -55,6 +55,8 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_scouser", "Scouser", 0.0, false, &[]),
     ("hold_sentry", "SentryGun", 0.0, false, &[]),
     ("hold_flag", "SurrenderFlag", 0.0, false, &[]),
+    ("hold_jetpack", "Jetpack", 0.0, false, &[]),
+    ("hold_chute", "Worm.Chute", 0.0, false, &[]),
     ("grave0", "Grave.Cross", 0.9, true, &[]),
     ("grave1", "Grave.Worm", 0.9, true, &[]),
     ("grave2", "Grave.Obelisk", 0.9, true, &[]),
@@ -154,6 +156,11 @@ const WORM_CLIPS: &[&str] = &[
     "FireScouser+HoldScouser", "FireLandmine+HoldLandmine", "FireSentrygun+HoldSentrygun", "Fire2Bat+HoldBat", "FireProd+HoldProd",
     "Fire2Firepunch+HoldFirepunch", "TauntSurrender+HoldSurrender", "SwingNinjarope", "JetpackFly", "ParachuteWobble", "TelepadAppear",
     "FallDrown",
+    // WORMACTING.XOM scene emotes (looped) and gestures, docs/worm-reactions.md
+    "Scared", "Terror", "Nervous", "CowerEmote", "CantLook", "Sad", "Ill",
+    "Startled", "Shriek", "Cover_Head", "Gasp", "Blow", "Disbelief", "Pray", "Shake_Fist", "Titter", "Chuckle", "PointAndLaugh",
+    "Wipe_Brow", "ShakeHead", "Indicate", "Watch_Distant", "Cheer", "Thumbs_Up", "Salute", "ClaspHands", "ClutchChest", "Doh",
+    "SighAndShakeHead", "WhatWereYouThinking", "SeeImpact", "Vomit", "Sneeze", "Yawn2", "Bored", "Taunt1", "BringItOn",
 ];
 const FPS: f32 = 30.0;
 

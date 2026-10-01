@@ -106,7 +106,7 @@ struct Outcome {
             if (gone[k] || Vector3Distance(o.pos, p) >= reach) continue;
             gone[k] = 1;
             if (o.type == Object::Barrel) blast(o.pos, 4, 50, 0, depth + 1);
-            else if (o.type == Object::Mine) blast(o.pos, 3, 45, 0, depth + 1);
+            else if (o.type == Object::Mine) blast(o.pos, 3, 40, 0, depth + 1);
             else if (o.type == Object::Crate && o.weapon >= 0) blast(o.pos, 3, 35, 0, depth + 1);
             else if (o.type == Object::Sentry) extra += o.team == team ? -15 : 15;
             else extra -= 5;  // health crate lost
@@ -140,9 +140,9 @@ struct Outcome {
 // Point copy of Game::stepShots for a ballistic or homing (aim != null) projectile; false when lost.
 static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float wind, bool child, Vector3 &out, const Vector3 *aim = nullptr) {
     bool impact = child || wd.fuse == 0;
-    float fuse = aim ? 0 : wd.fuse;
-    for (int i = 0; i < 360; i++) {
-        if (aim && (fuse += DT) > 0.4f) v = Vector3Lerp(v, Vector3Normalize(*aim - p) * wd.speed, 3 * DT);
+    float fuse = aim ? 0 : g.fuseOf(wd);  // the team's current fuse: the AI never changes it
+    for (int i = 0; i < 600; i++) {
+        if (aim && (fuse += DT) > Game::HOMING_LOCK && fuse < Game::HOMING_LOCK + Game::HOMING_TIME) v = Vector3Lerp(v, Vector3Normalize(*aim - p) * wd.speed, 3 * DT);
         else v.y -= grav(g) * DT;
         if (wd.wind) v.x += wind * 6 * DT;
         Vector3 np = p + v * DT;
@@ -152,7 +152,7 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
             v = Vector3Reflect(v, g.terrain.normal(np)) * wd.bounce;
         } else p = np;
         if (impact && wd.kind != Kind::Donkey && touches(g, np)) return true;
-        if (!impact && (fuse -= DT) <= 0) return true;
+        if (!impact && (!wd.restFuse || fuse < wd.fuse || Vector3Length(v) < 1) && (fuse -= DT) < DT / 2) return true;
         if (outside(g, p)) return false;
     }
     return false;
@@ -191,8 +191,8 @@ static void steer(const Game &g, Vector3 p, Vector3 v, Vector3 e, Input &in) {
 
 // Planned super sheep flight under the autopilot; false if it is lost.
 static bool superFly(const Game &g, const WeaponDef &wd, Vector3 pos, float yaw, float pitch, Vector3 e, Vector3 &out) {
-    Vector3 d = dirOf(yaw, pitch), p = pos + d * 1.2f, v = d * wd.speed;
-    for (float t = wd.fuse; t > 0; t -= DT) {
+    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = wd.walks ? pos + flat(yaw) * 0.9f : pos + d * 1.2f, v = d * wd.speed;
+    for (float t = wd.fuse; t > 0; t -= DT) {  // walks: takes off at once (think() presses FIRE)
         Input in;
         steer(g, p, v, e, in);
         bool det = Vector3Distance(p, e) < 1.5f;
@@ -406,6 +406,7 @@ void Ai::evalWeapon(const Game &g, int wi, int only) {
     const float wind = level > 1 ? g.wind : g.wind * 0.5f;  // level 1 half-guesses the wind
     const bool smart = level > 1;
     if (!g.ammo[team][wi] && !(g.shotsLeft && wi == g.weapon)) return;
+    if (w.nailed && !nailUsable(wd.kind)) return;  // Tail Nail: the sim refuses it
     const Kind kd = wd.kind;  // level 1: plain throws, shots, sheep and melee only
     if (level == 1 && (kd == Kind::SuperSheep || kd == Kind::Homing || kd == Kind::Airstrike || kd == Kind::Donkey || kd == Kind::Abduction ||
                        kd == Kind::Sentry || wd.radius > 5)) return;
@@ -419,7 +420,9 @@ void Ai::evalWeapon(const Game &g, int wi, int only) {
     auto shell = [&](Vector3 at) {
         Outcome o(g, smart);
         o.blast(at, wd.radius, wd.damage, wd.poison);
+        if (wd.poison > 0 && wd.fuse > 0) o.blast(at, Game::GAS_RADIUS / 2, 0, wd.poison);  // gas cloud (reach = 2 radius); ponytail: no wind drift
         if (wd.clusters) o.blast(at, wd.cradius * 1.5f, wd.cdamage * wd.clusters * 0.4f, 0, 3);  // expected bomblet share
+        if (dropped(wd) && smart) o.hit[o.self] = 0, o.dmg[o.self] = 0;  // retreat() walks clear while the fuse burns
         return o.total();
     };
     if (wd.kind == Kind::Sentry) {
@@ -440,6 +443,10 @@ void Ai::evalWeapon(const Game &g, int wi, int only) {
         const float yawE = atan2f(to.x, to.z), horiz = sqrtf(to.x * to.x + to.z * to.z);
         switch (wd.kind) {
         case Kind::Shell:
+            if (dropped(wd)) {  // also set it down at the feet, facing the target
+                Vector3 d = dirOf(yawE, 0), out;
+                if (fly(g, wd, w.pos + d * 1.2f, d * (wd.speed * 0.15f), wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
+            }
             // constant acceleration A: hit T at time t with V = (T - P - A t(t+DT)/2) / t (semi-implicit Euler)
             for (float t = 0.2f; t < 4.5f; t += 0.15f) {
                 Vector3 A = {wd.wind ? wind * 6 : 0, -grav(g), 0}, P = w.pos, V{};
@@ -508,7 +515,6 @@ void Ai::evalWeapon(const Game &g, int wi, int only) {
         case Kind::OldWoman: {
             if (!isWorm) break;
             Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, w.pos + f * 0.9f, f, e, end);
-            if (wd.kind == Kind::OldWoman) p = end;
             if (Vector3Distance(p, e) < 2) consider(shell(p), yawE, w.pitch, 0, ti);
             break;
         }
@@ -526,7 +532,7 @@ void Ai::evalWeapon(const Game &g, int wi, int only) {
             if (Vector3Distance(tgt, e) > wd.radius || pitch < -1.2f) break;
             Outcome oc(g, smart);
             for (size_t i = 0; i < g.worms.size(); i++)
-                if (g.worms[i].alive && Vector3Distance(g.worms[i].pos, tgt) < wd.radius) oc.strike((int)i, 0, {0, wd.speed, 0});
+                if (g.worms[i].alive && Vector3Distance(g.worms[i].pos, tgt) < wd.radius) oc.strike((int)i, g.worms[i].hp / 2, {0, wd.speed, 0});
             consider(oc.total(), yawE, pitch, 0, ti);
             break;
         }
@@ -538,12 +544,15 @@ void Ai::evalWeapon(const Game &g, int wi, int only) {
                     float yaw = yawE + dy;
                     Vector3 tgt = reticle(g, w.pos, yaw, pitch), f = flat(yaw), out;
                     Outcome oc(g, smart);
-                    if (wd.kind == Kind::Donkey) {
+                    if (wd.kind == Kind::Airstrike && wd.fuse > 0) {  // steered bomber: think() drops the cows over the target
+                        if (dy != 0 || pitch > 1.4f) continue;
+                        for (int i = 0; i < std::min(wd.clusters, 2); i++) oc.blast(e - Vector3{0, R, 0}, wd.cradius, wd.cdamage);
+                    } else if (wd.kind == Kind::Donkey) {
                         // ponytail: scores its first impact twice, not the whole dig
                         if (fly(g, wd, tgt + Vector3{0, 25, 0}, {0, -wd.speed, 0}, wind, false, out)) { oc.blast(out, wd.radius, wd.damage); oc.blast(out, wd.radius, wd.damage); }
                     } else
                         for (int i = 0; i < wd.clusters; i++) {
-                            float s = (i - (wd.clusters - 1) / 2.0f) * 2;
+                            float s = (i - (wd.clusters - 1) / 2.0f) * Game::STRIKE_GAP;  // sim: the plane drops bomb i STRIKE_GAP further on
                             if (fly(g, wd, tgt + Vector3{f.x * s, 25, f.z * s}, {0, -wd.speed, 0}, wind, true, out)) oc.blast(out, wd.cradius, wd.cdamage);
                         }
                     if (oc.started) consider(oc.total(), yaw, pitch, 0, ti);
@@ -572,7 +581,7 @@ void Ai::decide(const Game &g) {
     const Worm &w = g.worms[g.current];
     const int team = w.team, level = levelOf(g, team);
     if (plan.score >= 5) return finish(g);
-    if (walks < (level > 1 ? 3 : 1)) {
+    if (walks < (level > 1 ? 3 : 1) && !w.nailed) {
         const Object *crate = nullptr;
         for (const Object &o : g.objects) {
             Vector3 d = o.pos - w.pos;
@@ -590,7 +599,7 @@ void Ai::decide(const Game &g) {
             return;
         }
     }
-    if (level == 3 && !moved && plan.target >= 0) {
+    if (level == 3 && !moved && plan.target >= 0 && !w.nailed) {
         moved = true;
         float here = spot(g, team, w.pos) + 5, best = here;
         int tele = owned(g, team, Kind::Teleport), jetpack = owned(g, team, Kind::Jetpack);
@@ -620,8 +629,9 @@ void Ai::decide(const Game &g) {
     if (skip >= 0) { plan = Plan{skip, 0, -1}; plan.yaw = w.yaw; plan.pitch = w.pitch; mode = Mode::Act; }
 }
 
-static bool select(const Game &g, int wi, Input &in) {
+static bool select(const Game &g, int wi, Input &in, int &picking) {
     if (g.weapon == wi || g.shotsLeft) return true;
+    picking = wi;
     in.buttons = g.prevButtons ? 0 : Input::NEXT_WEAPON;
     return false;
 }
@@ -640,7 +650,7 @@ Input Ai::act(const Game &g) {
         else { finish(g); }
         return in;
     }
-    if (!select(g, plan.weapon, in)) return in;
+    if (!select(g, plan.weapon, in, picking)) return in;
     Kind k = WEAPONS[g.weapon].kind;
     if (k == Kind::Jetpack) {
         if (!g.prevButtons) { in.buttons = Input::FIRE; mode = Mode::Jet; }
@@ -663,7 +673,7 @@ Input Ai::walkTo(const Game &g) {
     const Worm &w = g.worms[g.current];
     int chute = owned(g, w.team, Kind::Parachute);
     if (chuteWanted && chute >= 0 && !g.chute) {  // drop ahead: open the parachute before walking off
-        if (select(g, chute, in) && !g.prevButtons) in.buttons = Input::FIRE;
+        if (select(g, chute, in, picking) && !g.prevButtons) in.buttons = Input::FIRE;
         return in;
     }
     float dy = angle(yawTo(w.pos, goal) - w.yaw);
@@ -757,20 +767,29 @@ Input Ai::retreat(const Game &g) {
 
 Input Ai::think(const Game &g) {
     Input in;
+    picking = -1;
     const Worm &w = g.worms[g.current];
     for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) lastBoom = e.pos;
     if (g.phase == Phase::Flying) {  // sheep: detonate next to an enemy; super sheep: autopilot
         for (const Projectile &s : g.shots) {
             Kind k = WEAPONS[s.weapon].kind;
-            if (s.child || (k != Kind::Sheep && k != Kind::SuperSheep)) continue;
-            bool near = false;
-            for (const Worm &e : g.worms) near = near || (e.alive && e.team != w.team && Vector3Distance(s.pos, e.pos) < (k == Kind::Sheep ? 1.2f : 1.5f));
+            if (k == Kind::Airstrike && WEAPONS[s.weapon].fuse > 0 && !s.child) {  // bomber: head for the target, drop with the lead
+                if (plan.target < 0 || !g.worms[plan.target].alive) continue;
+                Vector3 e = g.worms[plan.target].pos, land = s.pos + s.vel * (0.3f * (s.pos.y - e.y) / Game::COW_CHUTE);
+                in.turn = q(angle(yawTo(s.pos, e) - atan2f(s.vel.x, s.vel.z)) / (0.8f * DT));
+                if (Vector2Distance({land.x, land.z}, {e.x, e.z}) < 1.5f && !g.prevButtons) in.buttons = Input::FIRE;
+                continue;
+            }
+            if (s.child || (k != Kind::Sheep && k != Kind::SuperSheep && k != Kind::OldWoman)) continue;
+            bool near = k == Kind::SuperSheep && WEAPONS[s.weapon].walks && !s.stage;  // take off at once
+            for (const Worm &e : g.worms) near = near || (e.alive && e.team != w.team && Vector3Distance(s.pos, e.pos) < (k == Kind::SuperSheep ? 1.5f : 1.2f));
             if (k == Kind::SuperSheep && plan.target >= 0 && g.worms[plan.target].alive) steer(g, s.pos, s.vel, g.worms[plan.target].pos, in);
             if (near && !g.prevButtons) in.buttons = Input::FIRE;
         }
         return in;
     }
     if (!w.alive) return in;
+    if (g.phase == Phase::Retreat && !g.shots.empty()) lastBoom = g.shots[0].pos;  // dynamite burning: flee it
     if (g.phase == Phase::Retreat) return retreat(g);
     if (g.phase != Phase::Aim) return in;
     if (g.timer > lastTimer || g.current != worm) {
@@ -784,6 +803,7 @@ Input Ai::think(const Game &g) {
         salt = (g.rng ^ (uint32_t)g.clock * 2654435761u) + (uint32_t)g.current;
     }
     lastTimer = g.timer;
+    if (g.dropping()) return in;
     if (++tick < 20) return in;  // short pause so a watcher can follow
     if (g.cfg.rules & RULE_ROPE_RACE) return race(g);
     if (g.jetting) return mode == Mode::Jet ? jet(g) : Input{0, 0, 0, (uint8_t)(g.prevButtons ? 0 : Input::JUMP)};

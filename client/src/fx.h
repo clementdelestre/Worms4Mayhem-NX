@@ -15,6 +15,7 @@ void clear();
 void event(const GameEvent &e, Color dirt);
 void trail(const Projectile &s, float dt);  // call once per frame per live projectile
 void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire = false);  // one ambient particle (rises, slows down)
+void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet);  // additive W4M jetfire (jet) or toonfire sprite
 void update(float dt);
 Color fog();  // horizon colour: clear colour and terrain/water fog
 void drawSky(const Camera3D &cam);  // first thing inside BeginMode3D

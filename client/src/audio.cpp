@@ -2,6 +2,7 @@
 #include "raylib.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -17,14 +18,23 @@ namespace Audio {
 namespace {
 
 // importer drops extracted W4M sounds under ASSET_ROOT; bundled CC0 defaults live in ROMFS_ROOT
-const char *SFX_NAMES[(int)Sfx::Count] = {
+const char *SFX_NAMES[] = {
     "explosion", "big_explosion", "fire", "bounce", "splash", "jump", "sheep", "holy", "turn_start", "tick",
     "shotgun",   "airstrike",     "donkey", "rope", "teleport",
     "bat_swing", "fire_punch", "prod", "sniper", "bow", "homing", "old_woman", "scouser", "sentry_place", "sentry_fire",
     "dynamite", "gas", "abduction", "flood", "parachute", "mine_beep", "crate_land", "pickup", "super_sheep",
     "step", "land", "hp_tick",
+    "crate_impact_health", "crate_impact_weapon", "crate_impact_util", "cheer",
+    "fe_highlight", "fe_change", "fe_click", "fe_cancel", "fe_error", "fe_type", "fe_page", "fe_popup_in", "fe_popup_out", "fe_next_in", "fe_next_out",
+    "fe_prev_in", "fe_prev_out", "fe_bounce", "fe_slide", "fe_net", "fe_custom", "fe_soundvid", "fe_controller", "fe_factory",
+    "fe_book_in", "fe_book_out", "fe_grenade", "fe_wormpot", "wormpot_spin", "wormpot_stop",
+    "holy_boom", "holy_held",
 };
-const char *VOICE_NAMES[(int)Voice::Count] = {"fire", "hurt", "death", "victory", "jump", "idle"};
+static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
+const char *VOICE_NAMES[(int)Voice::Count] = {"fire", "hurt", "death", "victory", "jump", "idle",
+    "startled", "grenade", "shriek", "gasp", "shakefist", "titter", "disbelief", "incoming", "missed", "mistake", "traitor", "damage",
+    "firstblood", "enemydeath", "sadsigh", "yawn", "sneeze", "clutchchest", "nooo", "bounce", "taunt", "waiting", "shortontime", "skipgo",
+    "collect", "cratedrop", "drown"};
 constexpr int MAX_VARIANTS = 12;
 
 struct Variants {
@@ -44,8 +54,9 @@ std::vector<int> teamBank;  // team -> bank, -1 = default
 Music theme;
 std::string track;
 bool musicLoaded = false, musicOn = false;
+float fade = 1;  // music fade-in, 0..1 over ~1 s
 
-// base.ogg, base_2.ogg, ... until the first gap. No TextFormat: preloadVoices runs on the loading thread.
+// base.ogg, base_2.ogg, ... until the first gap. No TextFormat: init and preloadVoices run on loading threads.
 Variants loadVariants(const std::string &base) {
     Variants v;
     for (; v.n < MAX_VARIANTS; v.n++) {
@@ -70,9 +81,9 @@ void playRandom(Variants &v, float volume) {
 
 std::vector<std::string> bankDirs(const char *root) {
     std::vector<std::string> dirs;
-    const char *voices = TextFormat("%svoices", root);
-    if (!DirectoryExists(voices)) return dirs;
-    FilePathList l = LoadDirectoryFilesEx(voices, "DIRS*", false);
+    std::string voices = std::string(root) + "voices";
+    if (!DirectoryExists(voices.c_str())) return dirs;
+    FilePathList l = LoadDirectoryFilesEx(voices.c_str(), "DIRS*", false);
     for (unsigned i = 0; i < l.count; i++) dirs.push_back(l.paths[i]);
     UnloadDirectoryFiles(l);
     std::sort(dirs.begin(), dirs.end());  // stable team -> bank mapping across runs
@@ -81,13 +92,14 @@ std::vector<std::string> bankDirs(const char *root) {
 
 bool openMusic(const char *name) {
     for (const char *root : {ASSET_ROOT, ROMFS_ROOT}) {
-        const char *p = TextFormat("%smusic/%s.ogg", root, name);
+        std::string s = std::string(root) + "music/" + name + ".ogg";
+        const char *p = s.c_str();
         if (!FileExists(p)) continue;
         Music m = LoadMusicStream(p);
         if (!IsMusicValid(m)) continue;
         if (musicLoaded) UnloadMusicStream(theme);
         theme = m;
-        theme.looping = true;
+        theme.looping = std::string(name) != "victory";  // jingle: once, then silence
         musicLoaded = true;
         track = name;
         return true;
@@ -100,12 +112,13 @@ bool openMusic(const char *name) {
 void init() {
     InitAudioDevice();
     for (int i = 0; i < (int)Sfx::Count; i++) {
-        sfx[i] = loadVariants(TextFormat("%ssfx/%s", ASSET_ROOT, SFX_NAMES[i]));
-        if (!sfx[i].n) sfx[i] = loadVariants(TextFormat("%ssfx/%s", ROMFS_ROOT, SFX_NAMES[i]));
+        sfx[i] = loadVariants(std::string(ASSET_ROOT "sfx/") + SFX_NAMES[i]);
+        if (!sfx[i].n) sfx[i] = loadVariants(std::string(ROMFS_ROOT "sfx/") + SFX_NAMES[i]);
     }
     std::vector<std::string> dirs = bankDirs(ASSET_ROOT);
     if (dirs.empty()) dirs = bankDirs(ROMFS_ROOT);
     for (auto &d : dirs) banks.push_back(Bank{d, false, {}});
+    SetAudioStreamBufferSizeDefault(16384);  // ~370 ms per half: rides out long frames
     openMusic("theme");
 }
 
@@ -119,7 +132,9 @@ void shutdown() {
 }
 
 void update() {
-    if (musicLoaded && musicOn) UpdateMusicStream(theme);
+    if (!musicLoaded || !musicOn) return;
+    if (fade < 1) fade = fminf(fade + GetFrameTime(), 1), SetMusicVolume(theme, fade);
+    UpdateMusicStream(theme);
 }
 
 void play(Sfx id, float volume) {
@@ -140,7 +155,9 @@ static Bank &bankOf(int team) {
 }
 
 void voice(int team, Voice id) {
-    if (!banks.empty()) playRandom(bankOf(team).lines[(int)id], 1.0f);
+    if (banks.empty()) return;
+    Bank &b = bankOf(team);
+    playRandom(b.lines[(int)id].n || id != Voice::Drown ? b.lines[(int)id] : b.lines[(int)Voice::Death], 1.0f);  // romfs banks lack drown
 }
 
 void preloadVoices(int teams) {
@@ -157,10 +174,11 @@ void setTeamVoice(int team, int bank) {
 }
 
 void music(bool on, const char *name) {
+    if (name && track != name && sfx[(int)Sfx::Cheer].n) StopSound(sfx[(int)Sfx::Cheer].s[0]);  // the crowd leaves with the jingle
     if (name && track != name && !openMusic(name) && track != "theme") openMusic("theme");
     musicOn = on;
     if (!musicLoaded) return;
-    if (on && !IsMusicStreamPlaying(theme)) PlayMusicStream(theme);
+    if (on && !IsMusicStreamPlaying(theme)) fade = track == "victory" ? 1 : 0, SetMusicVolume(theme, fade), PlayMusicStream(theme);
     else if (!on) StopMusicStream(theme);
 }
 

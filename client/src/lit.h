@@ -8,6 +8,7 @@ struct Light {
     Vector3 ambient = {0.52f, 0.62f, 0.85f}, diffuse = {0.45f, 0.56f, 0.6f}, specular = {0.35f, 0.33f, 0.2f};
 };
 extern Light sun;  // set by Terrain::load from the map's "light"
+extern const char *MVS;  // the model vertex shader: other passes reuse it so their depths match
 Shader shader(const char *vs, const char *fs);  // GLSL 100 source, macro-wrapped for 330; refreshed by frame()
 // Textured, alpha-tested, two-sided lambert + rim. worm: W4M's fixed worm light, else the map light.
 Shader modelShader(bool worm);

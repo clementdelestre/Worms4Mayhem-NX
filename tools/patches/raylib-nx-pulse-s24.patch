@@ -1,0 +1,22 @@
+diff --git a/src/external/miniaudio.h b/src/external/miniaudio.h
+index c6d493e..0188051 100644
+--- a/src/external/miniaudio.h
++++ b/src/external/miniaudio.h
+@@ -32052,7 +32052,7 @@ static ma_result ma_device_init__pulse(ma_device* pDevice, const ma_device_confi
+             } else {
+                 ss.format = MA_PA_SAMPLE_FLOAT32BE;
+             }
+-            streamFlags |= MA_PA_STREAM_FIX_FORMAT;
++            /* no FIX_FORMAT: it would hand back the sink's unsupported format (PipeWire HDMI sinks: S24_32LE) */
+             ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_INFO, "[PulseAudio] sample_spec.format not supported by miniaudio. Defaulting to PA_SAMPLE_FLOAT32.\n");
+         }
+         if (ss.rate == 0) {
+@@ -32210,7 +32210,7 @@ static ma_result ma_device_init__pulse(ma_device* pDevice, const ma_device_confi
+             } else {
+                 ss.format = MA_PA_SAMPLE_FLOAT32BE;
+             }
+-            streamFlags |= MA_PA_STREAM_FIX_FORMAT;
++            /* no FIX_FORMAT: it would hand back the sink's unsupported format (PipeWire HDMI sinks: S24_32LE) */
+             ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_INFO, "[PulseAudio] sample_spec.format not supported by miniaudio. Defaulting to PA_SAMPLE_FLOAT32.\n");
+         }
+         if (ss.rate == 0) {
