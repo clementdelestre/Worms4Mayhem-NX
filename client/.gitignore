@@ -15,3 +15,4 @@ setup.txt
 ui.png
 build_*/
 romfs/romfs
+.synced-*

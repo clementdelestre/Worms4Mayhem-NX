@@ -32,6 +32,8 @@ Ryubing: open the `.nro`, enable *Guest Internet Access* for online play.
 full app memory) instead of the `.nro` — see `docs/nsp.md` for prerequisites
 (Atmosphère + sigpatches), install (DBI/Goldleaf) and limits.
 
+Assets to a real Switch: start an FTP server on it (sphaira or ftpd), then `tools/sync-switch.sh <ip:port>` uploads only changed files of `client/assets/` (`--all` forces a full upload).
+
 ## Controls
 | In a match | Controller | Keyboard |
 |---|---|---|
