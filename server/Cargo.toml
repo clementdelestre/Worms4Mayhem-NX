@@ -1,0 +1,10 @@
+[package]
+name = "worms4nx-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+
+[profile.release]
+strip = true

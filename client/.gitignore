@@ -1,0 +1,11 @@
+worms4nx
+*.nro
+*.nacp
+*.elf
+build/
+shot
+shot.png
+sim_check
+shot_aim.png
+assets/
+server.txt

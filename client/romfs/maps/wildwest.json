@@ -1,0 +1,19 @@
+{
+  "name": "Dead Man's Gulch",
+  "theme": "wildwest",
+  "base": {"type": "island", "base": 5, "height": 3, "radius": 0.95, "roughness": 1.5},
+  "shapes": [
+    {"type": "box", "pos": [40, 5, 40], "size": [7, 10, 90], "yaw": 25, "subtract": true},
+    {"type": "cone", "pos": [22, 10, 24], "radius": 11, "top": 8, "height": 10},
+    {"type": "cone", "pos": [56, 9, 58], "radius": 12, "top": 9.5, "height": 8},
+    {"type": "cylinder", "pos": [58, 12, 18], "radius": 3, "height": 16},
+    {"type": "cone", "pos": [18, 13, 56], "radius": 4.5, "top": 3, "height": 18},
+    {"type": "cone", "pos": [66, 11, 36], "radius": 3.5, "top": 2.5, "height": 14},
+    {"type": "box", "pos": [40, 7.2, 40], "size": [12, 0.8, 3], "yaw": 25},
+    {"type": "torus", "pos": [46, 5, 18], "radius": 5, "thickness": 1.4, "yaw": 70},
+    {"type": "box", "pos": [30, 9, 64], "size": [8, 5, 6]},
+    {"type": "box", "pos": [30, 12, 61], "size": [8, 2, 0.5]}
+  ],
+  "spawns": [[22, 30, 24], [56, 30, 58], [12, 30, 40], [68, 30, 46], [14, 30, 12], [46, 30, 70], [24, 30, 64], [62, 30, 26],
+             [20, 30, 30], [52, 30, 52], [14, 30, 66], [70, 30, 60], [30, 30, 40], [54, 30, 44], [8, 30, 24], [62, 30, 10]]
+}

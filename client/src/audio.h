@@ -1,0 +1,20 @@
+#pragma once
+
+// Sound effects and voice lines. Missing asset files are silently skipped, never fatal.
+// Each sound may have variants (name.ogg, name_2.ogg, ...); one is picked at random per play.
+namespace Audio {
+
+// Shotgun..Teleport are per-weapon fire sounds; they fall back to Fire when not imported.
+enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Holy, TurnStart, Tick,
+                 Shotgun, Airstrike, Donkey, Rope, Teleport, Count };
+enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle, Count };
+
+void init();
+void shutdown();
+void update();  // call once per frame: streams music
+void play(Sfx id, float volume = 1.0f);
+void voice(int team, Voice id);  // team i speaks with bank i % bank count (banks = dirs under voices/)
+// track = music/<track>.ogg (e.g. the map theme); null keeps the current track, unknown falls back to theme.ogg
+void music(bool on, const char *track = nullptr);
+
+}  // namespace Audio

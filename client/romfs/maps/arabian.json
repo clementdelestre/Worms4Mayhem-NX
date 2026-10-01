@@ -1,0 +1,22 @@
+{
+  "name": "Desert Palace",
+  "theme": "arabian",
+  "base": {"type": "island", "base": 5, "height": 4, "radius": 0.9, "roughness": 1.5},
+  "shapes": [
+    {"type": "pyramid", "pos": [28, 14, 28], "size": [22, 14, 22]},
+    {"type": "box", "pos": [28, 9, 28], "size": [24, 2.5, 2.5], "subtract": true},
+    {"type": "pyramid", "pos": [53, 11, 24], "size": [12, 8, 12], "yaw": 20},
+    {"type": "box", "pos": [50, 9.5, 54], "size": [14, 5, 10]},
+    {"type": "sphere", "pos": [50, 12, 54], "radius": 4.5},
+    {"type": "cylinder", "pos": [42, 14, 48], "radius": 1, "height": 14},
+    {"type": "cylinder", "pos": [58, 14, 60], "radius": 1, "height": 14},
+    {"type": "sphere", "pos": [42, 21.5, 48], "radius": 1.6},
+    {"type": "sphere", "pos": [58, 21.5, 60], "radius": 1.6},
+    {"type": "box", "pos": [50, 9.5, 49], "size": [3, 3.5, 2], "subtract": true},
+    {"type": "torus", "pos": [24, 7, 56], "radius": 4, "thickness": 1},
+    {"type": "torus", "pos": [32, 7, 62], "radius": 3, "thickness": 0.8, "yaw": 90},
+    {"type": "cylinder", "pos": [20, 5, 66], "radius": 5, "height": 8, "subtract": true}
+  ],
+  "spawns": [[16, 30, 40], [62, 30, 38], [40, 30, 40], [66, 30, 54], [28, 30, 46], [50, 30, 54], [14, 30, 18], [60, 30, 18],
+             [36, 30, 66], [34, 30, 48], [44, 30, 14], [12, 30, 56], [62, 30, 68], [40, 30, 28], [24, 30, 10], [72, 30, 44]]
+}
