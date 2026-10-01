@@ -27,9 +27,9 @@ control into a real NCA-based NSP.
 > The upstream `The-4n/hacBrewPack` repo is gone from GitHub; the script builds
 > the `rlaphoenix/hacBrewPack` mirror (identical source/README).
 
-Output: `tools/nsp/out/nsp/0100576f524d0000.nsp`.
+Output: `tools/nsp/out/nsp/0100576f524d2000.nsp`.
 
-- **Title ID**: `0100576F524D0000` (homebrew range, spells "WoRM" in hex).
+- **Title ID**: `0100576F524D2000` (homebrew range, spells "WoRM" in hex).
 - **NPDM**: application-type, `pool_partition=0` (Application memory pool, not
   Applet), full filesystem/service permissions — same shape as devkitPro's own
   homebrew/sysmodule template, not a cut-down applet profile.

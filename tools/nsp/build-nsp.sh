@@ -7,7 +7,7 @@
 # Usage: tools/nsp/build-nsp.sh [path-to-prod.keys]
 set -euo pipefail
 
-TITLE_ID=0100576F524D0000
+TITLE_ID=0100576F524D2000
 TARGET=worms4nx_nsp
 BUILD_DIR=build_nsp
 NSP_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,7 +37,7 @@ make -C client -f Makefile.switch BUILD="$BUILD_DIR" TARGET="$TARGET" NO_ICON=1 
 echo "== 2/4 nso + npdm + nacp + icon =="
 elf2nso "client/$TARGET.elf" "$OUT/exefs/main"
 npdmtool "$NSP_SRC_DIR/worms4nx.json" "$OUT/exefs/main.npdm"
-nacptool --create "Worms4NX" "cdelestre" "0.1.0" "$OUT/control/control.nacp" --titleid="$TITLE_ID"
+nacptool --create "Worms4NX" "cdelestre" "0.1.$(git rev-list --count HEAD 2>/dev/null || echo 0)" "$OUT/control/control.nacp" --titleid="$TITLE_ID"
 # assets/ui/icon.jpg is built from the user's own W4M install (never committed); fall back to the bundled icon
 ICON=client/assets/ui/icon.jpg; [ -f "$ICON" ] || ICON=client/icon.jpg
 # HOME picks the icon matching the console language, so ship it for every NACP language
