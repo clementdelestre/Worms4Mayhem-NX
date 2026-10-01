@@ -553,6 +553,7 @@ int main(int argc, char **argv) {
 
         if (screen == Screen::Menu) {
             if (intro && frame == 20) front.screen = Ui::Frontend::Main;
+            if (intro && frame == 80) front.screen = Ui::Frontend::Local;
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame))
                 snprintf(capPath, sizeof capPath, uiShot == flagUi ? DATA_DIR "ui_%d.png" : "ui.png", frame), front.capture = capPath, TraceLog(LOG_INFO, "UI: frame %d", frame);
             if (uiShot && frame > uiFrames.back()) break;
@@ -890,9 +891,6 @@ int main(int argc, char **argv) {
                 DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 0.4f, {1, 0, 0}, 90, RED);
                 DrawLine3D(t, Vector3Add(t, {0, 6, 0}), RED);
             }
-            Vector3 tip = Vector3Add(cur.pos, Vector3Scale(game.aimDir(cur), Controls::aiming() ? 10 : 3));
-            DrawLine3D(cur.pos, tip, RED);
-            DrawSphere(tip, 0.12f, RED);
             DrawCube(Vector3Add(cur.pos, {0, 1.5f + sinf(clock * 5) * 0.15f, 0}), 0.25f, 0.25f, 0.25f, YELLOW);
         }
         for (const Projectile &s : game.shots) {

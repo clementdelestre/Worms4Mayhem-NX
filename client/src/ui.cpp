@@ -629,7 +629,7 @@ static const MenuItem MAIN_MENU[] = {
 };
 static const MenuItem LOCAL_MENU[] = {
     {"FETXT.QuickGame", "Quick Game", "Partie rapide", 870, 160, 60, -3},
-    {"FETXT.Versus", "Versus", "Versus", 1075, 262, 50, 3},
+    {nullptr, "Custom match", "Partie personnalisée", 1075, 262, 50, 3},  // W4M calls it Versus: too vague
     {"FETXT.Story", "Story", "Histoire", 860, 362, 68, -2},
     {"FETXT.Challenges", "Challenges", "Défis", 1060, 470, 52, 2},
 };
