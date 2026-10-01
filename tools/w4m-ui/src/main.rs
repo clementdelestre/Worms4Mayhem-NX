@@ -9,6 +9,8 @@ const TGA_DIRS: &[(&str, &str)] = &[("Frontend/Levels", "levels"), ("HUD/Weapons
 const BUNDLES: &[&str] = &["Bundl00", "Bundl06", "Bundl08", "Bundl10", "Bundl472", "Bundl03"];
 // Sky/water bundles, one per (theme, time): their *Sky*/*Water* XImages go to sky/<image name>.png.
 // Names embed the time as a numeric suffix (01 day, 02 evening, 03 night), e.g. C_Sky02.tga -> sky/c_sky02.png.
+// In-match HUD (also holds particles): images go to hud/<image name>.png
+const HUD_BUNDLE: &str = "Bundl09";
 const SKY_BUNDLES: &[&str] = &[
     "Bundl93", "Bundl94", "Bundl95", "Bundl96", "Bundl97", "Bundl98", "Bundl99", "Bundl100", "Bundl101", "Bundl102",
     "Bundl103", "Bundl104", "Bundl105", "Bundl106", "Bundl107", "Bundl108", "Bundl109", "Bundl110", "Bundl111", "Bundl112",
@@ -240,15 +242,17 @@ fn main() {
     }
     fs::create_dir_all(out.join("fe")).expect("create out dir");
     fs::create_dir_all(out.join("sky")).expect("create out dir");
-    for bundle in BUNDLES.iter().chain(SKY_BUNDLES) {
+    fs::create_dir_all(out.join("hud")).expect("create out dir");
+    for bundle in BUNDLES.iter().chain(SKY_BUNDLES).chain([&HUD_BUNDLE]) {
         let sky = SKY_BUNDLES.contains(bundle);
+        let dir = if sky { "sky" } else if *bundle == HUD_BUNDLE { "hud" } else { "fe" };
         let Some(b) = find_ci(&data, &format!("Bundles/{bundle}.xom")).and_then(|p| fs::read(p).ok()) else { println!("{bundle}: missing"); continue };
         for (name, d) in ximages(&b).unwrap_or_default() {
             if name.contains("ExportedTGAS") { continue; }  // hashed names: model textures
             let l = name.to_lowercase();
             if sky && !(l.contains("sky") || l.contains("water")) { continue; }
             if let Some((w, h, px)) = image(&d) {
-                fs::write(out.join(if sky { "sky" } else { "fe" }).join(format!("{}.png", stem(&name))), png(w, h, &px)).expect("write");
+                fs::write(out.join(dir).join(format!("{}.png", stem(&name))), png(w, h, &px)).expect("write");
                 n += 1;
             }
         }

@@ -705,39 +705,114 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     }
 }
 
+// assets/ui/hud/<name>.png (or a src cell of it) scaled by s, rotated deg about pivot (src px) placed at pos
+static bool sprite(const char *name, Vector2 pos, float s, Vector2 pivot, float deg = 0, Color tint = WHITE, Rectangle src = {}) {
+    Texture2D t = tex(std::string("hud/") + name);
+    if (!t.id) return false;
+    if (!src.width) src = {0, 0, (float)t.width, (float)t.height};
+    DrawTexturePro(t, src, {pos.x, pos.y, src.width * s, src.height * s}, {pivot.x * s, pivot.y * s}, deg, tint);
+    return true;
+}
+
+// W4M HUD digits: "0-9 . m", '~' = infinity, ':' = two dots; h = cell height. Falls back to text().
+static void digits(const char *s, float x, float y, float h, int align, bool grey = false) {
+    static const char *ROW[2] = {"012345.", "6789~m"};
+    static const short COL[2][7][2] = {{{6, 78}, {87, 131}, {142, 211}, {218, 290}, {300, 376}, {384, 455}, {463, 500}},
+                                       {{6, 78}, {86, 149}, {158, 233}, {238, 312}, {319, 418}, {428, 508}}};
+    Texture2D t = tex(grey ? "hud/hud_font_grey" : "hud/hud_font");
+    if (!t.id) return text(s, x, y + h * 0.1f, h * 0.75f, grey ? WHITE : GOLDEN, align);
+    float k = h / 128, w = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        float cx = pass ? x - w * align / 2 : 0;
+        for (const char *p = s; *p; p++)
+            for (int r = 0; r < 2; r++) {
+                const char *f = strchr(ROW[r], *p == ':' ? '.' : *p);
+                if (!f) continue;
+                float x0 = COL[r][f - ROW[r]][0], gw = COL[r][f - ROW[r]][1] - x0;
+                Rectangle src = {x0, r * 128.0f, gw, 128};
+                if (pass) DrawTexturePro(t, src, {cx, y, gw * k, h}, {}, 0, WHITE);
+                if (pass && *p == ':') DrawTexturePro(t, src, {cx, y - h * 0.36f, gw * k, h}, {}, 0, WHITE);
+                cx += gw * k * 0.9f;
+            }
+        w = cx;
+    }
+}
+
 static void healthBar(int team, float x, float y, float w, float h, float frac) {
     Texture2D t = tex("fe/team_health");
-    DrawRectangleRounded({x - 2, y - 2, w + 4, h + 4}, 0.5f, 4, {0, 0, 0, 160});
+    DrawRectangleRounded({x - 3, y - 3, w + 6, h + 6}, 0.3f, 4, {20, 20, 20, 230});
+    DrawRectangleRounded({x, y, w, h}, 0.3f, 4, {170, 150, 110, 255});
     if (t.id) {
         float row = 4 + HEALTH_ROW[team % 4] * 102.0f, sw = 489 * frac;
         DrawTexturePro(t, {11, row, sw, 97}, {x, y, w * frac, h}, {}, 0, WHITE);
     } else {
-        DrawRectangleRounded({x, y, w * frac, h}, 0.5f, 4, TEAM_COLORS[team % 4]);
+        DrawRectangleRounded({x, y, w * frac, h}, 0.3f, 4, TEAM_COLORS[team % 4]);
     }
+}
+
+// Top-left compass centred on the active worm, up = camera forward: worm dots, crates, mines, aim target.
+static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
+    const float R = 54, RANGE = 40;  // px, metres
+    const Color TEAL = {0, 104, 138, 210};
+    Vector2 f = Vector2Normalize({fwd.x, fwd.z});
+    Vector3 o = g.worms[g.current].pos;
+    auto dir = [&](float dx, float dz) { return Vector2{-dx * f.y + dz * f.x, -(dx * f.x + dz * f.y)}; };
+    auto at = [&](Vector3 p) {
+        Vector2 v = Vector2Scale(dir(p.x - o.x, p.z - o.z), R / RANGE);
+        float l = Vector2Length(v);
+        return Vector2Add(c, l > R - 6 ? Vector2Scale(v, (R - 6) / l) : v);
+    };
+    if (!sprite("radar_back", c, 2 * R / 174, {128, 128})) DrawCircleV(c, R, TEAL), DrawRing(c, R, R + 3, 0, 360, 32, BLACK);
+    for (int i = 0; i < 16; i++) {
+        float a = i * PI / 8;
+        Vector2 p = {c.x + cosf(a) * (R + 9), c.y + sinf(a) * (R + 9)};
+        if (!sprite("radar_marks", p, 0.42f, {16, 32}, 0, WHITE, {i % 4 ? 32.0f : 0, 0, 32, 64})) DrawCircleV(p, i % 4 ? 2 : 3.5f, WHITE);
+    }
+    const char *NSEW = "NSWE";
+    const Vector2 D[4] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};  // world (x, z): N = -z
+    for (int i = 0; i < 4; i++) {
+        Vector2 p = Vector2Add(c, Vector2Scale(dir(D[i].x, D[i].y), R + 22));
+        if (!sprite("radar_nsew", p, 0.42f, {32, 32}, 0, WHITE, {(i & 1) * 64.0f, (i / 2) * 64.0f, 64, 64}))
+            text(TextFormat("%c", NSEW[i]), p.x, p.y - 11, 22, GOLDEN, 1);
+    }
+    for (const Object &ob : g.objects) {
+        if (ob.dead || ob.type == Object::Barrel) continue;
+        Kind k = ob.weapon >= 0 && ob.weapon < (int)WEAPONS.size() ? WEAPONS[ob.weapon].kind : Kind::Shell;
+        bool util = k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::ChangeWorm;
+        int cell = ob.type == Object::Mine ? 5 : ob.type == Object::Sentry ? 4 : ob.weapon < 0 ? 1 : util ? 2 : 0;
+        Vector2 p = at(ob.pos);
+        if (!sprite("radar_objects", p, 0.45f, {16, 16}, 0, WHITE, {(cell % 4) * 32.0f, (cell / 4) * 32.0f, 32, 32}))
+            DrawRectangleV({p.x - 3, p.y - 3}, {6, 6}, cell == 5 ? RED : BROWN);
+    }
+    for (const Worm &w : g.worms) {
+        if (!w.alive) continue;
+        Vector2 p = at(w.pos);
+        float r = &w == &g.worms[g.current] ? 6 : 4.5f;
+        DrawCircleV(p, r + 1.5f, &w == &g.worms[g.current] ? WHITE : BLACK);
+        DrawCircleV(p, r, TEAM_COLORS[w.team % 4]);
+    }
+    if (aiming && !sprite("radar_objects", at(g.target()), 0.5f, {16, 16}, 0, WHITE, {96, 0, 32, 32})) DrawCircleLinesV(at(g.target()), 5, WHITE);
 }
 
 void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
-    // names + health above worms
+    // W4M worm labels: name over hp, team colour, black outline
     for (const Worm &w : g.worms) {
         if (!w.alive) continue;
         Vector3 top = Vector3Add(w.pos, {0, 1.1f, 0});
-        Vector3 rel = Vector3Subtract(top, cam.position);
-        float dist = Vector3DotProduct(rel, fwd);
+        float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
         if (dist < 0.5f) continue;
         Vector2 sp = GetWorldToScreen(top, cam);
-        float s = Clamp(160 / dist, 11, 22);
+        float s = Clamp(170 / dist, 12, 24);
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam);
         Color c = TEAM_COLORS[w.team % 4];
-        const char *hp = TextFormat("%d", w.hp > 0 ? w.hp : 0);
-        float bw = textWidth(hp, s) + s;
-        Rectangle box = {sp.x - bw / 2, sp.y - s * 1.3f, bw, s * 1.2f};
-        DrawRectangleRounded(box, 0.4f, 4, {0, 0, 0, 170});
-        DrawRectangleRoundedLinesEx(box, 0.4f, 4, 2, c);
-        text(hp, sp.x, box.y + s * 0.1f, s, WHITE, 1);
-        text(wormName(w.team, k), sp.x, box.y - s * 1.1f, s, c, 1);
-        if (&w == &cur) text(teamName(g.cfg, w.team).c_str(), sp.x, box.y - s * 2.0f, s * 0.75f, c, 1);
+        text(TextFormat("%d", w.hp > 0 ? w.hp : 0), sp.x, sp.y - s, s, c, 1);
+        text(wormName(w.team, k), sp.x, sp.y - s * 2, s, c, 1);
+        if (&w == &cur && g.phase == Phase::Aim) {  // bobbing "this one" arrow
+            float b = sinf(tick * 0.12f) * 4;
+            if (!sprite("wormlocarrow", {sp.x, sp.y - s * 2 - 18 + b}, 0.22f, {64, 120}, 0, c)) DrawTriangle({sp.x - 8, sp.y - s * 2 - 30 + b}, {sp.x, sp.y - s * 2 - 18 + b}, {sp.x + 8, sp.y - s * 2 - 30 + b}, c);
+        }
     }
     if (g.phase == Phase::GameOver) {
         if (g.winner >= 0) text(TextFormat("%s WINS!", teamName(g.cfg, g.winner).c_str()), 640, 260, 70, TEAM_COLORS[g.winner % 4], 1);
@@ -747,62 +822,79 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     const WeaponDef &wd = WEAPONS[g.weapon];
     Color tc = TEAM_COLORS[cur.team % 4];
-    // turn banner
-    text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(cur.team, g.current % std::max(1, g.perTeam))), 640, 14, 28, tc, 1);
-    if (g.cfg.rules & RULE_ROPE_RACE) text(TextFormat("Race %ds", tick / 60), 1260, 14, 26, GOLDEN, 2);
+    bool aiming = g.phase == Phase::Aim;
+    // turn start banner + W4M "- Press Fire -" while the hot seat waits
+    if (g.hotSeat || (aiming && g.timer > std::max(1, (int)g.cfg.scheme.turnTime) * 60 - 120))
+        text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(cur.team, g.current % std::max(1, g.perTeam))), 640, 14, 28, tc, 1);
+    if (g.hotSeat && mine) text("- Press Fire -", 640, 350, 36, WHITE, 1);
+    if (g.cfg.rules & RULE_ROPE_RACE) text(TextFormat("Race %ds", tick / 60), 640, 80, 26, GOLDEN, 1);
     bool crate = false;
     for (const Object &o : g.objects) crate = crate || (o.type == Object::Crate && o.falling);
     if (crate || g.suddenDeath) text(crate ? "Crate drop!" : "SUDDEN DEATH!", 640, 46, 26, GOLDEN, 1);
-    rlPushMatrix();
-    rlTranslatef(0, -30, 0);  // bottom HUD sits above the hint bar
-    // turn timer (bottom left)
-    int left = g.phase == Phase::Aim && g.hotSeat ? g.hotSeat : g.phase == Phase::Aim || g.phase == Phase::Retreat ? g.timer : 0, secs = (left + 59) / 60;
-    Rectangle clockR = {20, 600, 100, 100};
-    bool urgent = (secs <= 5 && g.phase == Phase::Aim && !g.hotSeat) || g.phase == Phase::Retreat;
-    if (!image(urgent ? "fe/buttonsmall_highlight" : "fe/buttonsmall_normal", clockR)) DrawCircle(70, 650, 48, PANEL);
-    text(TextFormat("%d", secs), 70, 626, 46, WHITE, 1);
-    if (g.phase == Phase::Retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", 70, 580, 20, GOLDEN, 1);
-    // team health (bottom centre)
+
+    radar(g, {124, 112}, fwd, aiming && mine);
+    // wind: arrow along the wind on screen, length by strength; distance to the aim target
+    Vector2 wc = {58, 236};
+    float wind = g.wind, ws = fabsf(wind);
+    if (!sprite(ws < 0.01f ? "wind_backdisabled" : "wind_back", wc, 0.72f, {64, 64})) DrawCircleV(wc, 30, {0, 104, 138, 220});
+    if (ws >= 0.01f) {
+        Vector2 f = Vector2Normalize({fwd.x, fwd.z}), v = {-wind * f.y, -wind * f.x};
+        float deg = atan2f(v.y, v.x) * RAD2DEG, l = 0.12f + 0.12f * Clamp(ws / 1.5f, 0, 1);
+        if (!sprite("wormlocarrow", wc, l, {64, 64}, deg - 90, {255, 170, 30, 255})) DrawLineEx(wc, Vector2Add(wc, Vector2Scale(Vector2Normalize(v), 24)), 5, ORANGE);
+    }
+    if (aiming) digits(TextFormat("%02dm", (int)roundf(Vector3Distance(cur.pos, g.target()))), 96, 216, 40, 0);
+    // current weapon (top right) + ammo
+    int ammo = g.ammo[cur.team][g.weapon];
+    Vector2 wp = {1176, 92};
+    if (!sprite("secondback", wp, 0.5f, {128, 128})) DrawCircleV(wp, 44, {0, 119, 155, 230});
+    if (!image(weaponIcon(wd.name), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
+    digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
+    text(wd.name.c_str(), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
+    // turn timer (bottom right): turn seconds, round clock below
+    int left = aiming && g.hotSeat ? g.hotSeat : aiming || g.phase == Phase::Retreat ? g.timer : 0, secs = (left + 59) / 60;
+    Vector2 tp = {1180, 612};
+    bool urgent = (secs <= 5 && aiming && !g.hotSeat) || g.phase == Phase::Retreat;
+    if (!sprite("timer_back", tp, 0.62f, {128, 128}, 0, urgent && tick / 15 % 2 ? Color{255, 120, 120, 255} : WHITE)) DrawCircleV(tp, 54, {0, 119, 155, 230});
+    digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);
+    int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
+    digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
+    if (g.phase == Phase::Retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
+    // team health (bottom centre, above the hint bar)
+    static const char *FLAGS[4] = {"flags/custom_cool", "flags/custom_police", "flags/custom_genie", "flags/custom_crown"};
     int maxHp = std::max(1, (int)g.cfg.scheme.health) * std::max(1, g.perTeam);
     for (int t = 0; t < g.teams; t++) {
         int hp = 0;
         for (const Worm &w : g.worms) if (w.team == t && w.alive) hp += w.hp > 0 ? w.hp : 0;
-        float y = 690 - (g.teams - 1 - t) * 26.0f;
-        text(teamName(g.cfg, t).c_str(), 600, y - 2, 20, TEAM_COLORS[t % 4], 2);
-        healthBar(t, 612, y, 260, 18, Clamp((float)hp / maxHp, 0, 1));
+        float y = 646 - (g.teams - 1 - t) * 38.0f;
+        text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, TEAM_COLORS[t % 4], 2);
+        if (!image(FLAGS[t % 4], {584, y - 4, 32, 32})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, TEAM_COLORS[t % 4]);
+        healthBar(t, 628, y, 240, 24, Clamp((float)hp / maxHp, 0, 1));
     }
-    // wind (bottom right)
-    Rectangle wr = {1030, 664, 230, 36};
-    DrawRectangleRounded(wr, 0.5f, 6, {0, 0, 0, 150});
-    DrawRectangleRoundedLinesEx(wr, 0.5f, 6, 2, WHITE);
-    float wind = Clamp(g.wind, -1, 1);
-    DrawRectangleRounded({wind > 0 ? 1145.0f : 1145 + wind * 105, 672, fabsf(wind) * 105, 20}, 0.5f, 4, wind > 0 ? SKYBLUE : PINK);
-    Texture2D arrow = tex("fe/mouse");
-    for (int a = 0; a < (int)roundf(fabsf(wind) * 4); a++) {
-        float x = wind > 0 ? 1150 + a * 26.0f : 1140 - a * 26.0f - 26;
-        if (arrow.id) DrawTexturePro(arrow, {0, 0, wind > 0 ? -(float)arrow.width : (float)arrow.width, (float)arrow.height}, {x, 668, 26, 26}, {}, 0, WHITE);
-        else text(wind > 0 ? ">" : "<", x + 13, 668, 24, WHITE, 1);
+    // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)
+    Vector2 pb = {22, 520};
+    float ps = 0.62f, pf = Clamp(g.power, 0, 1);
+    if (sprite("powerbar_off", pb, ps, {80, 30})) {
+        float top = 215 - (215 - 41) * pf;
+        if (pf > 0) sprite("powerbar_on", {pb.x, pb.y + (top - 30) * ps}, ps, {80, 0}, 0, WHITE, {0, top, 256, 256 - top});
+    } else {
+        DrawRectangleRounded({pb.x, pb.y, 40, 120}, 0.3f, 4, {0, 0, 0, 150});
+        DrawRectangleRounded({pb.x + 4, pb.y + 4 + 112 * (1 - pf), 32, 112 * pf}, 0.3f, 4, ColorLerp(YELLOW, RED, pf));
     }
-    DrawLine(1145, 668, 1145, 696, WHITE);
-    text("WIND", 1145, 640, 20, WHITE, 1);
-    // current weapon (above wind)
-    int ammo = g.ammo[cur.team][g.weapon];
-    Rectangle ib = {1030, 560, 64, 64};
-    if (!image(weaponIcon(wd.name), ib)) panel(ib, false);
-    text(wd.name.c_str(), 1102, 568, 24, ammo ? WHITE : GRAY);
-    text(ammo < 0 ? "Infinite" : TextFormat("x%d", ammo), 1102, 596, 20, LIGHTGRAY);
-    // state hints and power
-    if (g.shotsLeft) text(TextFormat("%d shot(s) left", g.shotsLeft), 140, 610, 22, WHITE);
-    if (g.roped) text("Rope: stick swings, aim = length, jump releases", 140, 610, 22, WHITE);
+    Vector2 ap = {102, 590};  // arc pivot: flat edge centre
+    float deg = -cur.pitch * RAD2DEG;
+    if (sprite("angle_back", ap, 0.6f, {70, 130})) sprite("angle_head", ap, 0.55f, {16, 32}, deg);
+    else {
+        DrawCircleSector(ap, 58, -90, 90, 16, {0, 104, 138, 210});
+        DrawLineEx(ap, {ap.x + cosf(-cur.pitch) * 56, ap.y + sinf(-cur.pitch) * 56}, 4, GOLDEN);
+        DrawCircleV(ap, 7, MAROON);
+    }
+    // state hints
+    if (g.shotsLeft) text(TextFormat("%d shot(s) left", g.shotsLeft), 190, 600, 22, WHITE);
+    if (g.roped) text("Rope: stick swings, aim = length, jump releases", 190, 600, 22, WHITE);
     if (g.jetting) {
-        text("Jetpack: hold fire to thrust, jump to stop", 140, 610, 22, WHITE);
-        healthBar(1, 140, 650, 300, 18, Clamp(g.fuel / fmaxf(wd.fuse, 0.01f), 0, 1));
+        text("Jetpack: hold fire to thrust, jump to stop", 190, 600, 22, WHITE);
+        healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / fmaxf(wd.fuse, 0.01f), 0, 1));
     }
-    if (g.power > 0) {
-        DrawRectangleRounded({138, 648, 304, 22}, 0.5f, 4, {0, 0, 0, 160});
-        DrawRectangleRounded({140, 650, 300 * g.power, 18}, 0.5f, 4, ColorLerp(YELLOW, RED, g.power));
-    }
-    rlPopMatrix();
     if (open) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
     else if (mine && g.phase == Phase::Aim)
         hints({{"A", "Space", "Fire (hold)"}, {"B", "Enter", "Jump (x2 flip)"}, {"X", "Q", "Weapons"}, {"Y/R", "Tab", "Next"}, {"+", "Esc", "Pause"}});
