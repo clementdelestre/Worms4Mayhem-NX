@@ -2,6 +2,7 @@
 #include <switch.h>
 #endif
 #include "ui.h"
+#include "controls.h"
 #include "audio.h"
 #include "models.h"
 #include "raymath.h"
@@ -341,11 +342,11 @@ void controls(bool game) {
                                    {160, -112, 6}, {45, -70, 14}, {150, -69, 20}, {116, -35, 20}, {184, -35, 20}, {150, -1, 20}, {75, 35, 40}};  // x, y, radius
     struct Call { int part; float ly; const char *label, *key; };
     static const Call GAME[] = {
-        {ZL, 232, "Zoom out", "Z"}, {L, 276, "L + stick: aim\n(single Joy-Con)", nullptr}, {MIN, 356, "Hold: controls", "F1"},
-        {LS, 414, "Move / turn", "Arrows"}, {DPAD, 488, "Weapon panel cursor", "Arrows"}, {ZR, 232, "Zoom in", "X"},
-        {R, 270, "Next weapon", "Tab"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"}, {BY, 380, "Next weapon", "Tab"},
-        {BA, 440, "Fire (hold = power)", "Space"}, {BB, 482, "Jump (twice = backflip)", "Enter"},
-        {RS, 530, "Aim (up / down)\nCamera orbit (left / right)", "W/S/A/D"}};
+        {ZL, 232, "Hold: precise aim", "RMB"}, {L, 276, "L + stick: aim\n(single Joy-Con)", nullptr}, {MIN, 356, "Hold: controls", "F1"},
+        {LS, 414, "Move (camera-relative)\nAim mode: walk / turn", "Arrows"}, {DPAD, 488, "Zoom in / out\nWeapon panel cursor", "X/Z"},
+        {ZR, 232, "Fire", "Space"}, {R, 270, "Next weapon", "Tab"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"},
+        {BY, 380, "Next weapon", "Tab"}, {BA, 440, "Fire (hold = power)", "Space"}, {BB, 482, "Jump (twice = backflip)", "Enter"},
+        {RS, 530, "Camera orbit\nAim mode: aim (+ gyro)", "A/D/W/S"}};
     static const Call MENU[] = {
         {MIN, 330, "Tap: controllers (setup)\nHold: controls", "F1"}, {LS, 414, "Move", "Arrows"}, {DPAD, 488, "Move / change value", "Arrows"},
         {PLS, 300, "Start match (setup)\nQuit (title screen)", "Esc"}, {BA, 430, "Confirm", "Enter"}, {BB, 482, "Back", "Esc"}};
@@ -418,7 +419,8 @@ void controls(bool game) {
             }
         }
     }
-    if (game) text(keys ? "L + R  (F3): performance overlay" : "L + R: performance overlay", 640, 640, 22, LIGHTGRAY, 1);
+    if (game) text(keys ? "Hold right mouse button: aim with the mouse  -  F3: performance overlay"
+                        : "Aim mode: hold ZL, or while charging (A)  -  L + R: performance overlay", 640, 640, 22, LIGHTGRAY, 1);
     else text("Each screen lists its other buttons at the bottom", 640, 640, 22, LIGHTGRAY, 1);
 }
 
@@ -657,11 +659,40 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         }
         break;
     }
-    case Controls:
-        controls(true);
-        hints({{"B", "Esc", "Back"}});
-        if (back || ok) screen = Options;
+    case Controls: {
+        if (layout) {
+            controls(true);
+            hints({{"B", "Esc", "Back"}});
+            if (back || ok) layout = false;
+            break;
+        }
+        ::Controls::Settings &s = ::Controls::settings;
+        const int n = 8;
+        row = clampWrap(row + dy, n);
+        text("CONTROLS", 640, 40, 56, GOLDEN, 1);
+        static const char *labels[n] = {"Aim sensitivity", "Camera sensitivity", "Invert aim Y", "Invert camera Y", "Gyro aiming (aim mode)", "Gyro sensitivity", "Rumble", "Button layout"};
+        float *slider[n] = {&s.aim, &s.cam, nullptr, nullptr, nullptr, &s.gyro};
+        bool *toggle[n] = {nullptr, nullptr, &s.invertAim, &s.invertCam, &s.gyroOn, nullptr, &s.rumbleOn};
+        for (int i = 0; i < n; i++) {
+            Rectangle r = {290, 130 + i * 66.0f, 700, 58};
+            panel(r, i == row);
+            text(labels[i], r.x + 30, r.y + 13, 30, i == row ? GOLDEN : WHITE);
+            if (slider[i]) {
+                Rectangle bar = {r.x + 380, r.y + 24, 180, 10};
+                DrawRectangleRec(bar, {0, 0, 0, 120});
+                DrawRectangleRec({bar.x, bar.y, bar.width * (*slider[i] - 0.2f) / 2.8f, bar.height}, GOLDEN);
+            }
+            const char *v = slider[i] ? TextFormat("x%.1f", *slider[i]) : toggle[i] ? (*toggle[i] ? "On" : "Off") : ">";
+            text(v, r.x + r.width - 30, r.y + 13, 30, WHITE, 2);
+        }
+        if (slider[row] && dx) *slider[row] = Clamp(roundf(*slider[row] * 10 + dx) / 10, 0.2f, 3.0f);
+        if (toggle[row] && (dx || ok)) *toggle[row] = !*toggle[row];
+        if (row == 6 && (dx || ok)) ::Controls::rumble(0, 0.6f, 0.15f);  // feel it (no-op when off)
+        if (row == 7 && ok) layout = true;
+        hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", row == 7 ? "Open" : "Toggle"}, {"B", "Esc", "Save & back"}});
+        if (back) ::Controls::save(DATA_DIR "controls.txt"), screen = Options;
         break;
+    }
     case Wormpot: wormpot(cfg, dx, dy, ok, back, t); break;
     case Factory: factory(dx, dy, ok, back); break;
     case FactoryEdit: factoryEdit(dx, dy, ok, back, typing, t); break;

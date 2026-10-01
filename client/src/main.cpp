@@ -3,6 +3,7 @@
 #include "rlgl.h"
 #include "ai.h"
 #include "audio.h"
+#include "controls.h"
 #include "fx.h"
 #include "lanhost.h"
 #include "mission.h"
@@ -33,31 +34,6 @@ extern "C" void glFinish(void);  // perf overlay only; rlgl does not wrap it
 static const Color TEAM_COLORS[] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60, 190, 70, 255}, {240, 200, 40, 255}};
 
 static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) { return Ui::pressed(pad, buttons, keys); }
-
-static Input readInput(int pad) {
-    auto ax = [&](int a) {
-        float v = GetGamepadAxisMovement(pad, a);
-        return fabsf(v) < 0.2f ? 0.0f : v;
-    };
-    auto q = [](float v) { return (int8_t)(Clamp(v, -1, 1) * 127); };
-    // yaw grows toward +x, which is the camera's left
-    Input in;
-    in.turn = q(-ax(GAMEPAD_AXIS_LEFT_X) + IsKeyDown(KEY_LEFT) - IsKeyDown(KEY_RIGHT));
-#ifdef __SWITCH__
-    const float up = 1;  // libnx HID sticks report +y for up, GLFW reports -y
-#else
-    const float up = -1;
-#endif
-    in.walk = q(up * ax(GAMEPAD_AXIS_LEFT_Y) + IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN));
-    in.aim = q(up * ax(GAMEPAD_AXIS_RIGHT_Y) + IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
-    if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && !in.aim) in.aim = in.walk, in.walk = 0;  // L + stick aims (single Joy-Con)
-    if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT) || IsKeyDown(KEY_SPACE)) in.buttons |= Input::FIRE;
-    if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN) || IsKeyDown(KEY_ENTER)) in.buttons |= Input::JUMP;
-    bool r = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) && !IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1);  // L+R: perf overlay
-    if (r || IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT) || IsKeyDown(KEY_TAB))
-        in.buttons |= Input::NEXT_WEAPON;
-    return in;
-}
 
 // Scripted input for shot mode: select weapon, aim up, charge, release.
 static Input scriptInput(int frame, int weapon) {
@@ -249,6 +225,7 @@ int main(int argc, char **argv) {
     Audio::music(true);
     Models::load();
     Ui::load();
+    Controls::load(DATA_DIR "controls.txt");
     Fx::load();
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
@@ -315,7 +292,7 @@ int main(int argc, char **argv) {
     if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time); }
 
     Camera3D cam = {{40, 30, 0}, {40, 8, 40}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
-    float camYaw = 0, orbit = 0, zoom = 1, acc = 0, clock = 0, reconnectAt = 0;
+    float acc = 0, clock = 0, reconnectAt = 0;
     // perf overlay (L+R / F3 cycles off, CPU, GPU-synced): ms per section, smoothed. CPU mode only times command
     // submission (GPU work lands in "present"); synced mode glFinish()es after each section to charge the GPU cost to it.
     enum { T_SIM, T_REMESH, T_SKY, T_TERRAIN, T_DECOR, T_MODELS, T_FX, T_UI, T_PRESENT, T_COUNT };
@@ -356,6 +333,20 @@ int main(int argc, char **argv) {
         irEnd = -1;
         Fx::clear();
     };
+    int livePad = -1;  // pad of the human playing this turn here, -1 none
+    auto feel = [&](const GameEvent &e) {  // HD rumble, local players' own pads only
+        if (playing || shot || bench || netbot || uiShot) return;
+        auto padOf = [&](int team) {
+            if (team < (int)game.cfg.teamSetup.size() && game.cfg.teamSetup[team].cpu) return -1;
+            if (online) return team < (int)net.owners.size() && net.owners[team] == net.id ? 0 : -1;
+            return IsGamepadAvailable(team) ? team : 0;
+        };
+        int view = online ? 0 : livePad >= 0 ? livePad : 0;
+        if (e.kind == GameEvent::Fire && e.worm >= 0) Controls::rumble(livePad, 0.3f, 0.08f);
+        if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom)
+            Controls::rumble(view, (e.kind == GameEvent::BigBoom ? 1 : 0.8f) * Clamp(1 - Vector3Distance(e.pos, cam.target) / 30, 0, 1), 0.3f);
+        if (e.kind == GameEvent::Hurt && e.worm >= 0) Controls::rumble(padOf(game.worms[e.worm].team), 0.9f, 0.2f);
+    };
     auto stepOnce = [&](const Input &in) {
         Phase was = game.phase;
         game.step(in);
@@ -364,6 +355,7 @@ int main(int argc, char **argv) {
         shotDone |= was == Phase::Flying && game.phase != Phase::Flying;
         for (const GameEvent &e : game.events) {
             onEvent(game, e);
+            feel(e);
             if (e.kind == GameEvent::Fire && e.worm >= 0) fireTick = tick;
             if (e.kind == GameEvent::TurnStart && !online && !playing) snap.take(game, tick);
             if (e.kind == GameEvent::GameOver) saveRec();
@@ -469,6 +461,7 @@ int main(int argc, char **argv) {
         clock += dt;
         Ui::pollStick();
         Audio::update();
+        Controls::update(dt);
 
         if (online) {
             lanHost.poll();
@@ -677,7 +670,6 @@ int main(int argc, char **argv) {
             Audio::music(true, "theme");
             continue;
         }
-        Input in = shot ? scriptInput(frame, shotWeapon) : pause.open || playing || irEnd >= 0 ? Input{} : readInput(pad);
         for (uint32_t o : net.owners) {  // an owner who left the room counts as offline too
             auto p = std::find_if(net.players.begin(), net.players.end(), [&](const NetPlayer &pl) { return pl.id == o; });
             if (p != net.players.end() && p->online) offlineSince.erase(o);
@@ -692,7 +684,13 @@ int main(int argc, char **argv) {
         // the host also plays the CPU teams
         auto owns = [&](int team) { return (cpu(team) && net.hostId == net.id) || (team < (int)net.owners.size() && (net.owners[team] == net.id || proxied(team))); };
         bool remoteTurn = online && game.phase != Phase::GameOver && !owns(cur.team);
-        hud.input(game, in, !shot && !remoteTurn && !pause.open && !playing && irEnd < 0, pad, tick);
+        bool padTurn = !shot && !remoteTurn && !pause.open && !playing && irEnd < 0;
+        Input pin = Controls::read(game, pad, padTurn && !cpu(cur.team), dt);
+        Input in = shot ? scriptInput(frame, shotWeapon) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
+        hud.input(game, in, padTurn, pad, tick);
+        bool feedPad = padTurn && !hud.open;
+        auto local = [&] { return feedPad ? Controls::tick(in) : in; };  // stick rates spread over ticks
+        livePad = padTurn && !cpu(cur.team) ? pad : -1;
         if (playing) {
             for (acc += paused ? 0 : dt * speed; acc >= Game::DT; acc -= Game::DT) {
                 if (tick >= play.inputs.size()) { acc = 0; break; }
@@ -706,7 +704,7 @@ int main(int argc, char **argv) {
                 if (irTick == (uint32_t)irEnd) irFinish();
             }
         } else if (!online) {
-            for (acc += pause.open ? 0 : dt; acc >= Game::DT; acc -= Game::DT) stepOnce(!shot && cpu(game.worms[game.current].team) ? ai.think(game) : in);
+            for (acc += pause.open ? 0 : dt; acc >= Game::DT; acc -= Game::DT) stepOnce(!shot && cpu(game.worms[game.current].team) ? ai.think(game) : local());
         } else {
             // remote/replayed inputs first, then ours when we own the active team; otherwise wait
             acc = netbot ? Game::DT * botSpeed : fminf(acc + dt, Game::DT * 4);
@@ -717,7 +715,7 @@ int main(int argc, char **argv) {
                 if (!mine || acc < Game::DT) break;
                 int team = game.worms[game.current].team;
                 bool bot = netbot && team < (int)net.owners.size() && net.owners[team] == net.id;
-                Input mineIn = cpu(team) || bot ? ai.think(game) : proxied(team) ? Input{} : in;
+                Input mineIn = cpu(team) || bot ? ai.think(game) : proxied(team) ? Input{} : local();
                 if (netbot && proxied(team) && proxyTurn != turns) printf("[%s] playing turn %d for offline team %d\n", name.c_str(), turns + 1, team), proxyTurn = turns;
                 net.sendInput(tick, mineIn);
                 stepOnce(mineIn);
@@ -747,7 +745,7 @@ int main(int argc, char **argv) {
         game.terrain.remesh(0.003);  // a big blast's rebuild spreads over a few frames, hidden by the fireball
         lap(T_REMESH);
         int sec = game.phase == Phase::Aim && game.timer <= 300 ? game.timer / 60 : -1;
-        if (sec >= 0 && sec != lastSec) Audio::play(Audio::Sfx::Tick);
+        if (sec >= 0 && sec != lastSec) Audio::play(Audio::Sfx::Tick), Controls::rumble(livePad, 0.12f, 0.05f);
         lastSec = sec;
         if (netbot && botDone > 1e8f && (game.phase == Phase::GameOver || turns >= botTurns)) botDone = clock + 2;  // let the last inputs and sums out
         if (netbot && clock > botDone) break;
@@ -756,38 +754,14 @@ int main(int argc, char **argv) {
             Audio::music(true, "theme");
         }
 
-        // camera: behind the active worm (right stick X / A D orbits, ZL ZR / Z X / wheel zoom), chasing the projectile,
-        // or through the sniper's eyes while aiming it
+        // camera (controls.cpp): free orbit, over the shoulder in aim mode, chasing the projectile, sniper scope
         const WeaponDef &wd = WEAPONS[game.weapon];
         bool chase = game.phase == Phase::Flying && !game.shots.empty();
         bool scope = !chase && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && wd.name == "Sniper Rifle";
-        bool camIn = !pause.open && !hud.open;
-        float ox = GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_X);
-        ox = camIn * ((fabsf(ox) < 0.2f ? 0 : ox) + IsKeyDown(KEY_D) - IsKeyDown(KEY_A));
-        orbit = ox ? Clamp(orbit - ox * dt * 2.5f, -PI, PI) : orbit * expf(-dt * 0.7f);  // springs back behind the worm
-        float zin = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2) + IsKeyDown(KEY_X) - IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) - IsKeyDown(KEY_Z);
-        zoom = Clamp(zoom * expf(camIn * (-zin * dt * 1.5f - GetMouseWheelMove() * 0.1f)), 0.45f, 2.5f);
         if ((IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) &&
              (IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))) || IsKeyPressed(KEY_F3))
             perfOn = (perfOn + 1) % 3;
-        Vector3 focus = cur.pos;
-        if (chase) focus = Vector3Add(game.shots[0].pos, Vector3Scale(game.shots[0].vel, 0.1f));  // lead the shot a little
-        float dy = cur.yaw + orbit - camYaw;
-        camYaw += atan2f(sinf(dy), cosf(dy)) * (1 - expf(-dt * 4));
-        float back = (chase ? 16 : 9) * zoom;
-        Vector3 want = Vector3Add(focus, {-sinf(camYaw) * back, (chase ? 7.0f : 4.0f) * zoom, -cosf(camYaw) * back});
-        Vector3 hit, to = Vector3Subtract(want, focus);
-        if (chase) want.y = fmaxf(want.y, cur.pos.y + 4);  // donkey/airstrike dig below the surface: stay above ground
-        else if (game.terrain.raycast({focus, Vector3Normalize(to)}, Vector3Length(to), &hit)) want = Vector3Lerp(focus, hit, 0.85f);  // orbiting into a hill
-        float kt = 1 - expf(-dt * 6), kp = 1 - expf(-dt * (chase ? 2.5f : 3));
-        if (scope) {
-            want = Vector3Add(cur.pos, {0, 0.35f, 0});
-            focus = Vector3Add(want, Vector3Scale(game.aimDir(cur), 30));
-            kt = kp = 1 - expf(-dt * 12);
-        }
-        cam.target = Vector3Lerp(cam.target, focus, kt);
-        cam.position = Vector3Lerp(cam.position, want, kp);
-        cam.fovy = Lerp(cam.fovy, scope ? 25.0f : 50.0f, 1 - expf(-dt * 8));
+        Controls::camera(cam, game, chase, scope, !pause.open && !hud.open && !(playing && freeCam), dt);
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
         if (fixedView) view = viewCam;
         if (playing && freeCam) {  // LS / arrows move, RS / A D W S look, ZL ZR / Z X down up

@@ -34,7 +34,7 @@ struct Frontend {
 
 private:
     int row = 0, mainRow = 0, mapSel = 0, hats = 0, schemeRow = 0;
-    bool online = false, lan = false, loaded = false, music = true;  // online: network setup (LAN or server)
+    bool online = false, lan = false, loaded = false, music = true, layout = false;  // layout: Controls shows the pad diagram  // online: network setup (LAN or server)
     std::string *editing = nullptr;  // desktop text entry target
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;

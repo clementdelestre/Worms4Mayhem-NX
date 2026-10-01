@@ -1,9 +1,20 @@
 // Determinism check: two games fed the same seed and inputs must stay bit-identical.
 // Each turn selects the next weapon in the table and uses it, so the whole arsenal gets exercised.
 #include "../src/sim.h"
+#include "../src/controls.h"
 #include "raymath.h"
 #include <cassert>
 #include <cstdio>
+
+// Slow stick rates must survive the int8 rounding on average; a released stick sends 0 at once.
+static void checkDiffuse() {
+    float carry = 0;
+    int sum = 0;
+    for (int t = 0; t < 100; t++) sum += Controls::diffuse(0.3f, carry);
+    assert(sum == 30);
+    assert(Controls::diffuse(0, carry) == 0 && carry == 0);
+    for (int t = 0; t < 10; t++) assert(Controls::diffuse(-300, carry) == -127);
+}
 
 static uint32_t run(std::vector<bool> &used) {
     Game g;
@@ -434,6 +445,7 @@ int main() {
     checkMelee();
     checkSniper();
     checkSentry();
+    checkDiffuse();
     checkJumps();
     checkSelfHurtEndsTurn();
     checkHotSeat();
