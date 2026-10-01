@@ -1,0 +1,37 @@
+--- a/src/platforms/rcore_nx.c
++++ b/src/platforms/rcore_nx.c
+@@ -376,6 +376,13 @@
+ // Module Functions Definition: Inputs
+ //----------------------------------------------------------------------------------
+ 
++// Single Joy-Con held sideways: map face buttons by their on-screen position, SL/SR to L/R, its stick to the left stick
++static u64 NxSideways(u64 k, u64 a, u64 b, u64 x, u64 y, u64 sl, u64 sr, u64 plus, u64 stick)
++{
++    return ((k & a)? HidNpadButton_A : 0) | ((k & b)? HidNpadButton_B : 0) | ((k & x)? HidNpadButton_X : 0) | ((k & y)? HidNpadButton_Y : 0) |
++           ((k & sl)? HidNpadButton_L : 0) | ((k & sr)? HidNpadButton_R : 0) | ((k & plus)? HidNpadButton_Plus : 0) | ((k & stick)? HidNpadButton_StickL : 0);
++}
++
+ const char *GetNxGamePadName(int gamepad)
+ {
+     switch(platform.nxPadStyle[gamepad]) {
+@@ -546,6 +553,9 @@
+ 
+             // Returns the set of buttons that are currently pressed
+             u64 kHeld = padGetButtons(&platform.nxPad[i]);
++            bool joyRight = styleTag == HidNpadStyleTag_NpadJoyRight;
++            if (styleTag == HidNpadStyleTag_NpadJoyLeft) kHeld = NxSideways(kHeld, HidNpadButton_Down, HidNpadButton_Left, HidNpadButton_Right, HidNpadButton_Up, HidNpadButton_LeftSL, HidNpadButton_LeftSR, HidNpadButton_Minus, HidNpadButton_StickL);
++            if (joyRight) kHeld = NxSideways(kHeld, HidNpadButton_X, HidNpadButton_A, HidNpadButton_Y, HidNpadButton_B, HidNpadButton_RightSL, HidNpadButton_RightSR, HidNpadButton_Plus, HidNpadButton_StickR);
+             u64 kButton;
+             for (int k = 0; k < MAX_GAMEPAD_BUTTONS; k++)
+             {
+@@ -582,8 +592,8 @@
+             }
+ 
+             // Check analogic axis and buttons
+-            HidAnalogStickState kAxisL = padGetStickPos(&platform.nxPad[i], 0);
+-            HidAnalogStickState kAxisR = padGetStickPos(&platform.nxPad[i], 1);
++            HidAnalogStickState kAxisL = padGetStickPos(&platform.nxPad[i], joyRight? 1 : 0);
++            HidAnalogStickState kAxisR = joyRight? (HidAnalogStickState){ 0 } : padGetStickPos(&platform.nxPad[i], 1);
+ 
+             CORE.Input.Gamepad.axisState[i][GAMEPAD_AXIS_LEFT_X] = (float)kAxisL.x / 32767.0f;
+             CORE.Input.Gamepad.axisState[i][GAMEPAD_AXIS_LEFT_Y] = (float)kAxisL.y / 32767.0f;

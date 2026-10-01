@@ -13,6 +13,7 @@ raylib libs (once):
 ```sh
 cd third_party/raylib-nx/src
 make PLATFORM=PLATFORM_DESKTOP RAYLIB_RELEASE_PATH=../out/desktop && rm -f *.o
+git -C .. apply ../../tools/patches/raylib-nx-sideways-joycon.patch   # single Joy-Cons held sideways
 docker run --rm -u $(id -u):$(id -g) -v "$PWD/../..":/w -w /w/raylib-nx/src devkitpro/devkita64 make PLATFORM=PLATFORM_NX RAYLIB_RELEASE_PATH=../out/nx CUSTOM_CFLAGS=-DNX_DISABLE_GAMEPAD_EMULATION && rm -f *.o
 ```
 Game:
@@ -32,13 +33,22 @@ full app memory) instead of the `.nro` — see `docs/nsp.md` for prerequisites
 (Atmosphère + sigpatches), install (DBI/Goldleaf) and limits.
 
 ## Controls
-| | Controller | Keyboard |
+| In a match | Controller | Keyboard |
 |---|---|---|
 | Turn / walk | left stick | arrows |
-| Aim | right stick | W / S |
+| Aim | right stick (single Joy-Con: hold L + stick) | W / S |
 | Fire (hold = power) | A | Space |
-| Jump | B | Enter |
-| Next weapon | R / Y | Tab |
+| Jump / let go of rope | B | Enter |
+| Weapon panel | X (B closes) | Q (Backspace closes) |
+| Next weapon | Y / R | Tab |
+| Camera orbit / zoom | right stick ←→ / ZL ZR | A D / Z X |
+| Performance overlay | L + R | F3 |
+| Pause (resume, controls, quit / leave match) | + | Esc |
+
+Menus: D-pad or left stick (held = auto-repeat), A confirm, B back (Esc), + starts from match setup, − opens the
+system controller screen (pair / split Joy-Cons), + on the title screen quits. Every screen shows its buttons in a bottom bar;
+the full list is under Options > Controls and in the pause menu.
+Local play: team N uses controller N when connected, otherwise controller 1 is shared. Single Joy-Cons work held sideways.
 
 ## Modding
 - Weapons: `client/romfs/weapons.json`.

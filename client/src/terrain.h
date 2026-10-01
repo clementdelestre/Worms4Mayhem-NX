@@ -44,6 +44,7 @@ struct Terrain {
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
     void remesh();
     void draw() const;
+    void setFog(Vector3 cam, Color c, float start, float end) const;  // textured maps only
     void drawObjects(Vector3 cam) const;
     void unload();
 

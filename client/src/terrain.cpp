@@ -489,6 +489,9 @@ uniform sampler2D texture0;
 uniform sampler2D texture1;
 uniform vec3 light;
 uniform vec2 scale;  // 1 / repeat: top, side
+uniform vec3 camPos;
+uniform vec3 fogColor;
+uniform vec2 fogRange;
 varying vec3 vPos;
 varying vec3 vN;
 void main() {
@@ -499,7 +502,8 @@ void main() {
     vec3 c = texture2D(texture1, vec2(p.z, -p.y)).rgb * w.x + texture2D(texture1, vec2(p.x, -p.y)).rgb * w.z
            + mix(texture2D(texture1, p.xz).rgb, texture2D(texture0, t).rgb, step(0.0, n.y)) * w.y;
     float l = 0.55 + 0.45 * max(dot(n, light), 0.0) + 0.1 * n.y;
-    gl_FragColor = vec4(c * l, 1.0);
+    float f = clamp((length(vPos - camPos) - fogRange.x) / (fogRange.y - fogRange.x), 0.0, 1.0);
+    gl_FragColor = vec4(mix(c * l, fogColor, f), 1.0);
 }
 )";
 
@@ -517,6 +521,8 @@ void Terrain::loadTextures() {
     Vector3 l = Vector3Normalize({0.4f, 1, 0.3f});
     SetShaderValue(sh, GetShaderLocation(sh, "light"), &l, SHADER_UNIFORM_VEC3);
     scaleLoc = GetShaderLocation(sh, "scale");
+    Vector2 noFog = {1e4f, 2e4f};
+    SetShaderValue(sh, GetShaderLocation(sh, "fogRange"), &noFog, SHADER_UNIFORM_VEC2);
     std::map<std::string, Texture2D> cache;
     auto tex = [&](const std::string &f) {
         if (f.empty() || !FileExists(f.c_str())) return Texture2D{};
@@ -539,6 +545,16 @@ void Terrain::loadTextures() {
         texMats[m].maps[MATERIAL_MAP_DIFFUSE].texture = a;
         texMats[m].maps[MATERIAL_MAP_SPECULAR].texture = b;
     }
+}
+
+void Terrain::setFog(Vector3 cam, Color c, float start, float end) const {
+    if (texMats.empty() || !texMats[0].maps) return;
+    Shader sh = texMats[0].shader;  // shared by every textured material
+    Vector3 fc = {c.r / 255.f, c.g / 255.f, c.b / 255.f};
+    Vector2 r = {start, end};
+    SetShaderValue(sh, GetShaderLocation(sh, "camPos"), &cam, SHADER_UNIFORM_VEC3);
+    SetShaderValue(sh, GetShaderLocation(sh, "fogColor"), &fc, SHADER_UNIFORM_VEC3);
+    SetShaderValue(sh, GetShaderLocation(sh, "fogRange"), &r, SHADER_UNIFORM_VEC2);
 }
 
 void Terrain::remesh() {

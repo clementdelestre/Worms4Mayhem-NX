@@ -3,6 +3,7 @@
 #include "rlgl.h"
 #include "ai.h"
 #include "audio.h"
+#include "fx.h"
 #include "models.h"
 #include "net.h"
 #include "sim.h"
@@ -24,6 +25,8 @@
 #define ROMFS_DIR "./romfs/"
 #endif
 
+extern "C" void glFinish(void);  // perf overlay only; rlgl does not wrap it
+
 static const Color TEAM_COLORS[] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60, 190, 70, 255}, {240, 200, 40, 255}};
 
 static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) { return Ui::pressed(pad, buttons, keys); }
@@ -44,9 +47,11 @@ static Input readInput(int pad) {
 #endif
     in.walk = q(up * ax(GAMEPAD_AXIS_LEFT_Y) + IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN));
     in.aim = q(up * ax(GAMEPAD_AXIS_RIGHT_Y) + IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
+    if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && !in.aim) in.aim = in.walk, in.walk = 0;  // L + stick aims (single Joy-Con)
     if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT) || IsKeyDown(KEY_SPACE)) in.buttons |= Input::FIRE;
     if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN) || IsKeyDown(KEY_ENTER)) in.buttons |= Input::JUMP;
-    if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) || IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT) || IsKeyDown(KEY_TAB))
+    bool r = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) && !IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1);  // L+R: perf overlay
+    if (r || IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT) || IsKeyDown(KEY_TAB))
         in.buttons |= Input::NEXT_WEAPON;
     return in;
 }
@@ -64,21 +69,27 @@ static void drawTextCentered(const char *t, int x, int y, int size, Color c) {
     Ui::text(t, x, y, size, c, 1);
 }
 
-struct Fx { Vector3 p; float t, r; };
-
-static void onEvent(const Game &g, const GameEvent &e, std::vector<Fx> &fx) {
+static void onEvent(const Game &g, const GameEvent &e) {
     using Audio::Sfx;
     using Audio::Voice;
     int team = e.worm >= 0 ? g.worms[e.worm].team : 0;
+    Fx::event(e, g.terrain.side);
     switch (e.kind) {
-    case GameEvent::Boom: fx.push_back({e.pos, 0, 3}); Audio::play(Sfx::Explosion); break;
-    case GameEvent::BigBoom: fx.push_back({e.pos, 0, 7}); Audio::play(Sfx::Holy); Audio::play(Sfx::BigExplosion); break;
+    case GameEvent::Boom: Audio::play(Sfx::Explosion); break;
+    case GameEvent::BigBoom: Audio::play(Sfx::Holy); Audio::play(Sfx::BigExplosion); break;
     case GameEvent::Fire: {
-        Kind k = WEAPONS[e.weapon].kind;
+        const WeaponDef &d = WEAPONS[e.weapon];
+        Kind k = d.kind;
         static const Sfx FIRE_SFX[] = {Sfx::Fire, Sfx::Sheep, Sfx::Airstrike, Sfx::Donkey, Sfx::Shotgun, Sfx::Rope, Sfx::Fire, Sfx::Teleport,
-                                       Sfx::Sheep, Sfx::Fire, Sfx::Bounce, Sfx::Fire, Sfx::Tick, Sfx::Fire, Sfx::Shotgun, Sfx::Teleport, Sfx::Splash,
-                                       Sfx::Jump, Sfx::TurnStart, Sfx::TurnStart, Sfx::TurnStart};  // by Kind
-        Audio::play(FIRE_SFX[(int)k]);
+                                       Sfx::SuperSheepFire, Sfx::OldWomanFire, Sfx::Bounce, Sfx::Homing, Sfx::Tick, Sfx::ScouserFire, Sfx::SentryFire,
+                                       Sfx::Abduction, Sfx::Flood, Sfx::Parachute, Sfx::TurnStart, Sfx::TurnStart, Sfx::TurnStart};  // by Kind
+        Sfx s = FIRE_SFX[(int)k];
+        // a few Kinds cover several named weapons with distinct W4M sounds; pick by name like heldModel() does
+        if (k == Kind::Shell) s = d.name == "Poison Arrow" ? Sfx::Bow : d.name == "Dynamite" ? Sfx::Dynamite : d.name == "Gas Canister" ? Sfx::Gas : s;
+        else if (k == Kind::Melee) s = d.name == "Baseball Bat" ? Sfx::BatSwing : d.name == "Prod" ? Sfx::Prod : Sfx::FirePunch;
+        else if (k == Kind::Shotgun && d.name == "Sniper Rifle") s = Sfx::Sniper;
+        else if (k == Kind::Sentry && e.worm >= 0) s = Sfx::SentryPlace;  // placing vs. the turret's own shots (worm -1)
+        Audio::play(s);
         bool utility = k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::SkipGo || k == Kind::ChangeWorm;
         if (e.worm >= 0 && !utility) Audio::voice(team, Voice::Fire);  // worm -1: sentry gun shot
         break;
@@ -89,9 +100,9 @@ static void onEvent(const Game &g, const GameEvent &e, std::vector<Fx> &fx) {
     case GameEvent::Hurt: Audio::voice(team, Voice::Hurt); break;
     case GameEvent::Jump: Audio::play(Sfx::Jump); Audio::voice(team, Voice::Jump); break;
     case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); Audio::voice(team, Voice::Idle); break;
-    case GameEvent::CrateDrop: Audio::play(Sfx::Airstrike, 0.5f); break;
-    case GameEvent::Collect: Audio::play(Sfx::Teleport, 0.7f); break;
-    case GameEvent::MineArm: Audio::play(Sfx::Tick); break;
+    case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, 0.5f); break;
+    case GameEvent::Collect: Audio::play(Sfx::Pickup, 0.7f); break;
+    case GameEvent::MineArm: Audio::play(Sfx::MineBeep); break;
     case GameEvent::GameOver:
         Audio::music(true, "victory");
         if (g.winner >= 0) Audio::voice(g.winner, Voice::Victory);
@@ -147,6 +158,9 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     Matrix m;
     if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m))
         Models::draw(held, MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
+    int hat = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
+    if (hat && Models::joint("worm", "HatLocator", clip, t, loop, &m))
+        Models::draw(Models::hatName(hat - 1), MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
     return true;
 }
 
@@ -182,12 +196,14 @@ enum class Screen { Menu, Lobby, Play };
 
 int main(int argc, char **argv) {
     InitWindow(1280, 720, "Worms4NX");
+    SetExitKey(KEY_NULL);  // Esc is back / pause; quit from the title screen
     SetTargetFPS(60);
     rlSetClipPlanes(0.5, 500);  // default 0.01 near plane z-fights the water on GLES depth buffers
     Audio::init();
     Audio::music(true);
     Models::load();
     Ui::load();
+    Fx::load();
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
@@ -235,17 +251,26 @@ int main(int argc, char **argv) {
         if (sscanf(t, "%63s", m) == 1) shotMap = m;
         UnloadFileText(t);
     }
-    if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); }
+    if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); Fx::theme(game.terrain.theme, game.terrain.sky); }
 
-    std::vector<Fx> fx;
     Camera3D cam = {{40, 30, 0}, {40, 8, 40}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
-    float camYaw = 0, acc = 0, clock = 0, reconnectAt = 0;
+    float camYaw = 0, orbit = 0, zoom = 1, acc = 0, clock = 0, reconnectAt = 0;
+    // perf overlay (L+R / F3 cycles off, CPU, GPU-synced): ms per section, smoothed. CPU mode only times command
+    // submission (GPU work lands in "present"); synced mode glFinish()es after each section to charge the GPU cost to it.
+    enum { T_SIM, T_REMESH, T_SKY, T_TERRAIN, T_MODELS, T_FX, T_UI, T_PRESENT, T_COUNT };
+    double perf[T_COUNT] = {}, cost[T_COUNT] = {}, mark = 0;
+    int perfOn = 0;
+    auto lap = [&](int k) {
+        if (perfOn == 2) rlDrawRenderBatchActive(), glFinish();
+        double t = GetTime();
+        cost[k] += t - mark, mark = t;
+    };
 
     auto stepOnce = [&](const Input &in) {
         game.step(in);
         tick++;
         for (const GameEvent &e : game.events) {
-            onEvent(game, e, fx);
+            onEvent(game, e);
             if (online && e.kind == GameEvent::TurnStart) net.turnEnd(tick, game.checksum());
         }
     };
@@ -253,7 +278,8 @@ int main(int argc, char **argv) {
         game.start(c);
         Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str());
         game.terrain.remesh();
-        fx.clear();
+        Fx::theme(game.terrain.theme, game.terrain.sky);
+        Fx::clear();
         tick = 0;
         acc = 0;
         screen = Screen::Play;
@@ -266,15 +292,17 @@ int main(int argc, char **argv) {
     Ai ai;
     Ui::Frontend front;
     Ui::Hud hud;
-    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel"))) {
+    Ui::Pause pause;
+    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause"))) {
         startMatch({1234, 2, 2, argc > 3 ? argv[3] : "", 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
         hud.open = !strcmp(uiShot, "panel");
+        pause.open = !strcmp(uiShot, "pause");
     } else if (uiShot) {
         front.screen = !strcmp(uiShot, "main") ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::Setup
-                     : !strcmp(uiShot, "options") ? Ui::Frontend::Options : Ui::Frontend::Title;
+                     : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
     }
     auto cpu = [&](int team) { return team < (int)game.cfg.teamSetup.size() && game.cfg.teamSetup[team].cpu > 0; };
-    auto pressed = [](std::initializer_list<int> buttons, std::initializer_list<int> keys) { return pressedAny(0, buttons, keys); };
+    auto pressed = [](std::initializer_list<int> buttons, std::initializer_list<int> keys) { return pressedAny(-1, buttons, keys); };
 
     for (int frame = 0; !WindowShouldClose(); frame++) {
         float dt = fminf(GetFrameTime(), 0.25f);
@@ -305,6 +333,7 @@ int main(int argc, char **argv) {
             if (uiShot && frame == 10) front.capture = "ui.png";
             if (uiShot && frame > 10) break;
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
+            if (a == Ui::Frontend::Quit) break;
             if (a == Ui::Frontend::StartLocal) {
                 online = false;
                 opt.seed = (uint32_t)(clock * 1000) + frame;
@@ -325,7 +354,7 @@ int main(int argc, char **argv) {
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER}) && n) net.joinRoom(net.rooms[roomSel].id);
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_UP}, {KEY_C})) net.createRoom((name + "'s room").c_str(), 4);
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) net.listRooms();
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE})) { net.close(); online = false; screen = Screen::Menu; }
+                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) { net.close(); online = false; screen = Screen::Menu; }
             } else {
                 if (isHost && net.players.size() >= 2 && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER})) {
                     std::vector<uint32_t> owners;
@@ -335,7 +364,7 @@ int main(int argc, char **argv) {
                     c.teams = (int)owners.size();
                     net.start(c, owners);
                 }
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE})) { net.leave(); net.listRooms(); }
+                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) { net.leave(); net.listRooms(); }
             }
             BeginDrawing();
             Ui::background();
@@ -347,23 +376,32 @@ int main(int argc, char **argv) {
                                      640, 160 + (int)i * 40, 30, (int)i == roomSel ? YELLOW : WHITE);
                 }
                 if (net.rooms.empty()) drawTextCentered("No rooms yet", 640, 200, 30, LIGHTGRAY);
-                drawTextCentered("A: join   X: create   Y: refresh   B: back", 640, 600, 24, LIGHTGRAY);
+                Ui::hints({{"A", "Enter", "Join"}, {"X", "C", "Create room"}, {"Y", "R", "Refresh"}, {"B", "Esc", "Back"}});
             } else {
                 for (size_t i = 0; i < net.players.size(); i++) {
                     const NetPlayer &pl = net.players[i];
                     drawTextCentered(TextFormat("%s%s%s", pl.name.c_str(), pl.id == net.hostId ? " (host)" : "", pl.online ? "" : " - offline"), 640, 160 + (int)i * 40, 30,
                                      i < 4 ? TEAM_COLORS[i] : GRAY);
                 }
-                drawTextCentered(isHost ? "A: start (2+ players)   B: leave" : "Waiting for host...   B: leave", 640, 600, 24, LIGHTGRAY);
+                if (isHost) Ui::hints({{"A", "Enter", "Start (2+ players)"}, {"B", "Esc", "Leave room"}});
+                else Ui::hints({{"B", "Esc", "Leave room"}});
+                if (!isHost) drawTextCentered("Waiting for the host to start...", 640, 600, 24, LIGHTGRAY);
             }
             drawTextCentered(status.c_str(), 640, 660, 22, ORANGE);
             EndDrawing();
             continue;
         }
 
+        mark = GetTime();
         const Worm &cur = game.worms[game.current];
         int pad = !online && IsGamepadAvailable(cur.team) ? cur.team : 0;
-        Input in = shot ? scriptInput(frame, shotWeapon) : readInput(pad);
+        if (!shot && pause.update() == Ui::Pause::Quit) {
+            if (online) net.leave(), net.listRooms();
+            screen = online ? Screen::Lobby : Screen::Menu;
+            Audio::music(true, "theme");
+            continue;
+        }
+        Input in = shot ? scriptInput(frame, shotWeapon) : pause.open ? Input{} : readInput(pad);
         for (const NetPlayer &pl : net.players)
             if (pl.online) offlineSince.erase(pl.id);
             else offlineSince.emplace(pl.id, clock);
@@ -376,9 +414,9 @@ int main(int argc, char **argv) {
         // the host also plays the CPU teams
         auto owns = [&](int team) { return (cpu(team) && net.hostId == net.id) || (team < (int)net.owners.size() && (net.owners[team] == net.id || proxied(team))); };
         bool remoteTurn = online && game.phase != Phase::GameOver && !owns(cur.team);
-        hud.input(game, in, !shot && !remoteTurn, pad, tick);
+        hud.input(game, in, !shot && !remoteTurn && !pause.open, pad, tick);
         if (!online) {
-            for (acc += dt; acc >= Game::DT; acc -= Game::DT) stepOnce(!shot && cpu(game.worms[game.current].team) ? ai.think(game) : in);
+            for (acc += pause.open ? 0 : dt; acc >= Game::DT; acc -= Game::DT) stepOnce(!shot && cpu(game.worms[game.current].team) ? ai.think(game) : in);
         } else {
             // remote/replayed inputs first, then ours when we own the active team; otherwise wait
             acc = fminf(acc + dt, Game::DT * 4);
@@ -394,33 +432,66 @@ int main(int argc, char **argv) {
                 acc -= Game::DT;
             }
         }
+        lap(T_SIM);
         game.terrain.remesh();
+        lap(T_REMESH);
         int sec = game.phase == Phase::Aim && game.timer <= 300 ? game.timer / 60 : -1;
         if (sec >= 0 && sec != lastSec) Audio::play(Audio::Sfx::Tick);
         lastSec = sec;
-        if (game.phase == Phase::GameOver && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) {
+        if (game.phase == Phase::GameOver && !pause.open && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) {
             screen = online ? Screen::Lobby : Screen::Menu;
             Audio::music(true, "theme");
         }
 
-        // camera: behind the active worm, or chasing the projectile
+        // camera: behind the active worm (right stick X / A D orbits, ZL ZR / Z X / wheel zoom), chasing the projectile,
+        // or through the sniper's eyes while aiming it
+        const WeaponDef &wd = WEAPONS[game.weapon];
         bool chase = game.phase == Phase::Flying && !game.shots.empty();
-        Vector3 focus = chase ? game.shots[0].pos : cur.pos;
-        float dy = cur.yaw - camYaw;
-        camYaw += atan2f(sinf(dy), cosf(dy)) * fminf(1, dt * 4);
-        float back = chase ? 16 : 9;
-        Vector3 want = Vector3Add(focus, {-sinf(camYaw) * back, chase ? 7.0f : 4.0f, -cosf(camYaw) * back});
-        want.y = fmaxf(want.y, cur.pos.y + 4);  // donkey/airstrike dig below the surface: stay above ground
-        cam.target = Vector3Lerp(cam.target, focus, fminf(1, dt * 6));
-        cam.position = Vector3Lerp(cam.position, want, fminf(1, dt * 3));
+        bool scope = !chase && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && wd.name == "Sniper Rifle";
+        bool camIn = !pause.open && !hud.open;
+        float ox = GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_X);
+        ox = camIn * ((fabsf(ox) < 0.2f ? 0 : ox) + IsKeyDown(KEY_D) - IsKeyDown(KEY_A));
+        orbit = ox ? Clamp(orbit - ox * dt * 2.5f, -PI, PI) : orbit * expf(-dt * 0.7f);  // springs back behind the worm
+        float zin = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2) + IsKeyDown(KEY_X) - IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) - IsKeyDown(KEY_Z);
+        zoom = Clamp(zoom * expf(camIn * (-zin * dt * 1.5f - GetMouseWheelMove() * 0.1f)), 0.45f, 2.5f);
+        if ((IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) &&
+             (IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))) || IsKeyPressed(KEY_F3))
+            perfOn = (perfOn + 1) % 3;
+        Vector3 focus = cur.pos;
+        if (chase) focus = Vector3Add(game.shots[0].pos, Vector3Scale(game.shots[0].vel, 0.1f));  // lead the shot a little
+        float dy = cur.yaw + orbit - camYaw;
+        camYaw += atan2f(sinf(dy), cosf(dy)) * (1 - expf(-dt * 4));
+        float back = (chase ? 16 : 9) * zoom;
+        Vector3 want = Vector3Add(focus, {-sinf(camYaw) * back, (chase ? 7.0f : 4.0f) * zoom, -cosf(camYaw) * back});
+        Vector3 hit, to = Vector3Subtract(want, focus);
+        if (chase) want.y = fmaxf(want.y, cur.pos.y + 4);  // donkey/airstrike dig below the surface: stay above ground
+        else if (game.terrain.raycast({focus, Vector3Normalize(to)}, Vector3Length(to), &hit)) want = Vector3Lerp(focus, hit, 0.85f);  // orbiting into a hill
+        float kt = 1 - expf(-dt * 6), kp = 1 - expf(-dt * (chase ? 2.5f : 3));
+        if (scope) {
+            want = Vector3Add(cur.pos, {0, 0.35f, 0});
+            focus = Vector3Add(want, Vector3Scale(game.aimDir(cur), 30));
+            kt = kp = 1 - expf(-dt * 12);
+        }
+        cam.target = Vector3Lerp(cam.target, focus, kt);
+        cam.position = Vector3Lerp(cam.position, want, kp);
+        cam.fovy = Lerp(cam.fovy, scope ? 25.0f : 50.0f, 1 - expf(-dt * 8));
+        Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
+        Vector3 jolt = Vector3Scale({sinf(clock * 53), sinf(clock * 61 + 1) * 0.7f, sinf(clock * 47 + 2)}, Fx::shake);
+        view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt);
+        mark = GetTime();
 
         BeginDrawing();
-        ClearBackground(game.terrain.sky);
-        BeginMode3D(cam);
+        ClearBackground(Fx::fog());
+        BeginMode3D(view);
+        Fx::drawSky(view);
+        lap(T_SKY);
+        game.terrain.setFog(view.position, Fx::fog(), Fx::FOG_NEAR, Fx::FOG_FAR);
         game.terrain.draw();
-        game.terrain.drawObjects(cam.position);
+        lap(T_TERRAIN);
+        game.terrain.drawObjects(view.position);
         for (const Worm &w : game.worms) {
             if (!w.alive) { drawGrave(game, w); continue; }
+            if (scope && &w == &cur) continue;  // the camera is inside it
             if (!drawWorm(game, w, clock)) {
                 Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
                 DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
@@ -430,10 +501,9 @@ int main(int argc, char **argv) {
             if ((game.cfg.rules & RULE_KING) && int(&w - game.worms.data()) % game.perTeam == 0)
                 DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
         }
-        const WeaponDef &wd = WEAPONS[game.weapon];
         if (game.roped) DrawLine3D(game.anchor, cur.pos, BROWN);
         if (game.jetting) DrawCube(Vector3Add(cur.pos, {-sinf(cur.yaw) * 0.4f, 0.1f, -cosf(cur.yaw) * 0.4f}), 0.35f, 0.5f, 0.35f, GRAY);
-        if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting) {
+        if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && !scope) {
             if (wd.kind == Kind::Airstrike || wd.kind == Kind::Donkey || wd.kind == Kind::Teleport || wd.kind == Kind::Homing || wd.kind == Kind::Abduction) {
                 Vector3 t = game.target();
                 DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 1.2f, {1, 0, 0}, 90, RED);
@@ -479,20 +549,41 @@ int main(int argc, char **argv) {
             DrawCylinderEx(game.raceFinish, Vector3Add(game.raceFinish, {0, 10, 0}), 0.15f, 0.15f, 8, Fade(GOLD, 0.5f));
             DrawCube(Vector3Add(game.raceFinish, {0, 10.3f, 0}), 1.2f, 0.6f, 0.08f, RED);
         }
-        DrawPlane({40, game.water, 40}, {400, 400}, {30, 80, 160, 180});
-        for (size_t i = 0; i < fx.size();) {
-            fx[i].t += dt;
-            if (fx[i].t > 0.4f) { fx.erase(fx.begin() + i); continue; }
-            float k = fx[i].t / 0.4f;
-            DrawSphere(fx[i].p, fx[i].r * (0.5f + k), Fade(ORANGE, 1 - k));
-            i++;
-        }
+        lap(T_MODELS);
+        Fx::drawWater(view, game.water, clock);
+        lap(T_SKY);
+        float fxDt = pause.open ? 0 : dt;
+        for (const Projectile &s : game.shots) Fx::trail(s, fxDt);
+        Fx::update(fxDt);
+        Fx::draw(view);
+        lap(T_FX);
         EndMode3D();
 
-        hud.draw(game, cam, tick);
+        if (scope) {
+            Vector2 c = GetWorldToScreen(Vector3Add(cur.pos, Vector3Scale(game.aimDir(cur), 30)), view);
+            DrawRing(c, 26, 29, 0, 360, 32, Fade(BLACK, 0.7f));
+            DrawRectangle(c.x - 40, c.y - 1, 80, 2, Fade(BLACK, 0.7f)), DrawRectangle(c.x - 1, c.y - 40, 2, 80, Fade(BLACK, 0.7f));
+        }
+        hud.draw(game, view, tick);
+        pause.draw(online);
         if (remoteTurn) drawTextCentered("Remote player's turn", 640, 90, 24, WHITE);
         if (online && !status.empty()) drawTextCentered(status.c_str(), 640, 120, 24, ORANGE);
-        DrawFPS(10, 10);
+        if (perfOn) {
+            static const char *NAMES[T_COUNT] = {"sim", "remesh", "sky+water", "terrain", "models", "fx", "ui", "present+wait"};
+            int tris = 0;
+            for (const auto &ps : game.terrain.parts)
+                for (const Terrain::Part &p : ps) tris += p.mesh.triangleCount;
+            DrawRectangle(6, 34, 270, 40 + T_COUNT * 20, Fade(BLACK, 0.6f));
+            double total = 0;
+            for (double c : perf) total += c;
+            Ui::text(TextFormat("%d fps  %.2f ms %s", GetFPS(), total * 1000, perfOn == 2 ? "gpu sync" : "cpu"), 14, 38, 20, YELLOW);
+            for (int k = 0; k < T_COUNT; k++) {
+                Ui::text(NAMES[k], 14, 60 + k * 20, 18, WHITE);
+                Ui::text(TextFormat("%.2f", perf[k] * 1000), 200, 60 + k * 20, 18, WHITE, 2);
+            }
+            Ui::text(TextFormat("terrain %dk tris  fx %d", tris / 1000, Fx::count()), 14, 62 + T_COUNT * 20, 18, LIGHTGRAY);
+        } else DrawFPS(10, 10);
+        lap(T_UI);
         if (shot && (frame == 35 || frame == 150)) {
             rlDrawRenderBatchActive();
             Image img = LoadImageFromScreen();
@@ -506,12 +597,15 @@ int main(int argc, char **argv) {
             UnloadImage(img);
         }
         EndDrawing();
+        lap(T_PRESENT);
+        for (int k = 0; k < T_COUNT; k++) perf[k] = perf[k] * 0.95 + cost[k] * 0.05, cost[k] = 0;
         if ((shot && frame == 150) || (uiShot && frame == 40)) break;
     }
     net.close();
     game.terrain.unload();
     Models::unload();
     Ui::unload();
+    Fx::unload();
     Audio::shutdown();
     CloseWindow();
 }

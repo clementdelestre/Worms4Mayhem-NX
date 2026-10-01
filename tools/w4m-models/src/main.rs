@@ -59,6 +59,83 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("grave1", "Grave.Worm", 0.9, true, &[]),
     ("grave2", "Grave.Obelisk", 0.9, true, &[]),
     ("grave3", "Grave.SkullnBones", 0.9, true, &[]),
+    // Hats (Bundl172-248, one "Hat.<Name>" XMeshDescriptor each; attach at the worm's HatLocator like held items at WeaponLocator)
+    ("hats/afro", "Hat.Afro", 0.0, false, &[]),
+    ("hats/alien", "Hat.Alien", 0.0, false, &[]),
+    ("hats/americanfootball", "Hat.AmericanFootball", 0.0, false, &[]),
+    ("hats/americanfootball_bl", "Hat.AmericanFootball.Bl", 0.0, false, &[]),
+    ("hats/americanfootball_s", "Hat.AmericanFootball.S", 0.0, false, &[]),
+    ("hats/americanfootball_y", "Hat.AmericanFootball.Y", 0.0, false, &[]),
+    ("hats/arabian", "Hat.Arabian", 0.0, false, &[]),
+    ("hats/arabian_d", "Hat.Arabian.D", 0.0, false, &[]),
+    ("hats/arabian_r", "Hat.Arabian.R", 0.0, false, &[]),
+    ("hats/arabian_w", "Hat.Arabian.W", 0.0, false, &[]),
+    ("hats/baseball", "Hat.Baseball", 0.0, false, &[]),
+    ("hats/baseball_c", "Hat.Baseball.C", 0.0, false, &[]),
+    ("hats/baseball_gy", "Hat.Baseball.Gy", 0.0, false, &[]),
+    ("hats/baseball_p", "Hat.Baseball.P", 0.0, false, &[]),
+    ("hats/baseball_pe", "Hat.Baseball.Pe", 0.0, false, &[]),
+    ("hats/baseball_r", "Hat.Baseball.R", 0.0, false, &[]),
+    ("hats/baseball_t17", "Hat.Baseball.T17", 0.0, false, &[]),
+    ("hats/bishop", "Hat.Bishop", 0.0, false, &[]),
+    ("hats/bluesbrother", "Hat.BluesBrother", 0.0, false, &[]),
+    ("hats/britishtommy", "Hat.BritishTommy", 0.0, false, &[]),
+    ("hats/builder", "Hat.Builder", 0.0, false, &[]),
+    ("hats/bunny", "Hat.Bunny", 0.0, false, &[]),
+    ("hats/burberry", "Hat.Burberry", 0.0, false, &[]),
+    ("hats/chinese", "Hat.Chinese", 0.0, false, &[]),
+    ("hats/cowboy", "Hat.Cowboy", 0.0, false, &[]),
+    ("hats/cowboy_bk", "Hat.Cowboy.Bk", 0.0, false, &[]),
+    ("hats/cowboy_r", "Hat.Cowboy.R", 0.0, false, &[]),
+    ("hats/cowboy_w", "Hat.Cowboy.W", 0.0, false, &[]),
+    ("hats/cowboy2", "Hat.Cowboy2", 0.0, false, &[]),
+    ("hats/crown", "Hat.Crown", 0.0, false, &[]),
+    ("hats/dino", "Hat.Dino", 0.0, false, &[]),
+    ("hats/flatcap", "Hat.FlatCap", 0.0, false, &[]),
+    ("hats/frankenstein", "Hat.Frankenstein", 0.0, false, &[]),
+    ("hats/german", "Hat.German", 0.0, false, &[]),
+    ("hats/helmet", "Hat.Helmet", 0.0, false, &[]),
+    ("hats/helmetking", "Hat.HelmetKing", 0.0, false, &[]),
+    ("hats/hockey", "Hat.Hockey", 0.0, false, &[]),
+    ("hats/jetpack", "Hat.JetPack", 0.0, false, &[]),
+    ("hats/party", "Hat.Party", 0.0, false, &[]),
+    ("hats/pirate", "Hat.Pirate", 0.0, false, &[]),
+    ("hats/pigtails", "Hat.Pigtails", 0.0, false, &[]),
+    ("hats/pigtails_bl", "Hat.Pigtails.Bl", 0.0, false, &[]),
+    ("hats/pigtails_bnd", "Hat.Pigtails.Bnd", 0.0, false, &[]),
+    ("hats/pigtails_r", "Hat.Pigtails.R", 0.0, false, &[]),
+    ("hats/police", "Hat.Police", 0.0, false, &[]),
+    ("hats/prehistoric", "Hat.Prehistoric", 0.0, false, &[]),
+    ("hats/professor", "Hat.Professor", 0.0, false, &[]),
+    ("hats/punk", "Hat.Punk", 0.0, false, &[]),
+    ("hats/punk_bl", "Hat.Punk.Bl", 0.0, false, &[]),
+    ("hats/punk_gr", "Hat.Punk.Gr", 0.0, false, &[]),
+    ("hats/punk_y", "Hat.Punk.Y", 0.0, false, &[]),
+    ("hats/queenofsheba", "Hat.QueenOfSheba", 0.0, false, &[]),
+    ("hats/redberet", "Hat.RedBeret", 0.0, false, &[]),
+    ("hats/rocketman", "Hat.Rocketman", 0.0, false, &[]),
+    ("hats/scottish", "Hat.Scottish", 0.0, false, &[]),
+    ("hats/skull", "Hat.Skull", 0.0, false, &[]),
+    ("hats/sovietarmy", "Hat.SovietArmy", 0.0, false, &[]),
+    ("hats/spacesuit", "Hat.Spacesuit", 0.0, false, &[]),
+    ("hats/spacesuit_bl", "Hat.Spacesuit.Bl", 0.0, false, &[]),
+    ("hats/spacesuit_gy", "Hat.Spacesuit.Gy", 0.0, false, &[]),
+    ("hats/spacesuit_p", "Hat.Spacesuit.P", 0.0, false, &[]),
+    ("hats/terminator", "Hat.Terminator", 0.0, false, &[]),
+    ("hats/usmarine", "Hat.USMarine", 0.0, false, &[]),
+    ("hats/viking", "Hat.Viking", 0.0, false, &[]),
+    ("hats/wizard", "Hat.Wizard", 0.0, false, &[]),
+    ("hats/wizard_d", "Hat.Wizard.D", 0.0, false, &[]),
+    ("hats/wizard_gr", "Hat.Wizard.Gr", 0.0, false, &[]),
+    ("hats/wizard_r", "Hat.Wizard.R", 0.0, false, &[]),
+    ("hats/alienbreed", "Hat.AlienBreed", 0.0, false, &[]),
+    ("hats/worms", "Hat.Worms", 0.0, false, &[]),
+    ("hats/wormsarmageddon", "Hat.WormsArmageddon", 0.0, false, &[]),
+    ("hats/daveycrockett", "Hat.DaveyCrockett", 0.0, false, &[]),
+    ("hats/deerstalker", "Hat.Deerstalker", 0.0, false, &[]),
+    ("hats/fighterpilot", "Hat.FighterPilot", 0.0, false, &[]),
+    ("hats/samurai", "Hat.Samurai", 0.0, false, &[]),
+    ("hats/polarbear", "Hat.PolarBear", 0.0, false, &[]),
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
 const WORM_CLIPS: &[&str] = &[
@@ -565,9 +642,11 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let k = if size > 0.0 { size / ext.max(1e-6) } else { 1.0 };
     let c = [(lo[0] + hi[0]) / 2.0, if feet { lo[1] } else { (lo[1] + hi[1]) / 2.0 }, (lo[2] + hi[2]) / 2.0];
     let norm = if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
-    // extra joint without vertices: its pose is the locator's world matrix, where held meshes attach
-    let sockets: Vec<usize> = s.groups.iter().position(|g| animated && g.path.ends_with("WeaponLocator")).into_iter().collect();
-    let skin_all = |w: &[M4]| { let mut m = s.skinning(x, w); m.extend(sockets.iter().map(|&g| w[g])); m };
+    // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
+    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator"];
+    let sockets: Vec<(usize, &str)> = LOCATORS.iter()
+        .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();
+    let skin_all = |w: &[M4]| { let mut m = s.skinning(x, w); m.extend(sockets.iter().map(|&(g, _)| w[g])); m };
 
     let mut g = Glb::default();
     let mut images: Vec<usize> = s.parts.iter().map(|p| p.img).filter(|&i| i != 0).collect();
@@ -621,7 +700,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         for (bi, m) in skin_all(&rest).iter().enumerate() {
             let (t, r, sc) = trs(m);
             if bi >= s.bones.len() {
-                nodes.push(format!("{{\"name\":\"WeaponLocator\",\"translation\":{t:?},\"rotation\":{r:?},\"scale\":{sc:?}}}"));
+                let name = sockets[bi - s.bones.len()].1;
+                nodes.push(format!("{{\"name\":\"{name}\",\"translation\":{t:?},\"rotation\":{r:?},\"scale\":{sc:?}}}"));
                 continue;
             }
             // XBone: 2 matrices, affine string, set, bounds + mode, name
@@ -710,7 +790,7 @@ fn main() {
     }
     let data = find_ci(Path::new(&args[1]), "Data").unwrap_or_else(|| PathBuf::from(&args[1]));
     let out = PathBuf::from(args.get(2).map_or("client/assets/models", |s| s.as_str()));
-    fs::create_dir_all(&out).expect("create out dir");
+    fs::create_dir_all(out.join("hats")).expect("create out dir");
     let mut bundles: Vec<PathBuf> = fs::read_dir(data.join("Bundles")).expect("Data/Bundles").flatten().map(|e| e.path()).collect();
     bundles.sort_by_key(|p| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok()).unwrap_or(u32::MAX));
     let mut todo: Vec<_> = MODELS.iter().collect();

@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 const TGA_DIRS: &[(&str, &str)] = &[("Frontend/Levels", "levels"), ("HUD/Weapons", "weapons"), ("HUD/Flags", "flags"), ("Frontend/mechanics", "back")];
 // UI bundles: all their XImages go to fe/<image name>.png
 const BUNDLES: &[&str] = &["Bundl00", "Bundl06", "Bundl08", "Bundl10", "Bundl472", "Bundl03"];
+// Daytime sky/water bundles, one per theme: their *Sky*/*Water* XImages go to sky/<image name>.png
+const SKY_BUNDLES: &[&str] = &["Bundl93", "Bundl94", "Bundl95", "Bundl96", "Bundl97", "Bundl108", "Bundl109", "Bundl110", "Bundl111", "Bundl112", "Bundl113"];
 
 fn vi(d: &[u8], p: &mut usize) -> usize {
     let mut v = 0usize;
@@ -231,12 +233,16 @@ fn main() {
         }
     }
     fs::create_dir_all(out.join("fe")).expect("create out dir");
-    for bundle in BUNDLES {
+    fs::create_dir_all(out.join("sky")).expect("create out dir");
+    for bundle in BUNDLES.iter().chain(SKY_BUNDLES) {
+        let sky = SKY_BUNDLES.contains(bundle);
         let Some(b) = find_ci(&data, &format!("Bundles/{bundle}.xom")).and_then(|p| fs::read(p).ok()) else { println!("{bundle}: missing"); continue };
         for (name, d) in ximages(&b).unwrap_or_default() {
             if name.contains("ExportedTGAS") { continue; }  // hashed names: model textures
+            let l = name.to_lowercase();
+            if sky && !(l.contains("sky") || l.contains("water")) { continue; }
             if let Some((w, h, px)) = image(&d) {
-                fs::write(out.join("fe").join(format!("{}.png", stem(&name))), png(w, h, &px)).expect("write");
+                fs::write(out.join(if sky { "sky" } else { "fe" }).join(format!("{}.png", stem(&name))), png(w, h, &px)).expect("write");
                 n += 1;
             }
         }

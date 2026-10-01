@@ -1,9 +1,11 @@
 #include "models.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include <algorithm>
 #include <cstring>
 #include <map>
 #include <string>
+#include <vector>
 
 #ifdef __SWITCH__
 #define MODEL_DIR "sdmc:/switch/worms4nx/assets/models"
@@ -14,6 +16,7 @@
 namespace {
 struct Entry { Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr; int frame = -1; };
 std::map<std::string, Entry> models;
+std::vector<std::string> hatNames;
 Shader shader{};
 
 // Textured + one directional light; alpha-tested for the teeth/eye overlays. GLSL 100, macro-wrapped for 330.
@@ -47,7 +50,7 @@ void Models::load() {
     std::string vs = es ? "#version 100\n" : "#version 330\n#define attribute in\n#define varying out\n";
     std::string fs = es ? "#version 100\nprecision mediump float;\n" : "#version 330\n#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n";
     shader = LoadShaderFromMemory((vs + VS).c_str(), (fs + FS).c_str());
-    FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", false);
+    FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", true);  // recurses into hats/
     for (unsigned i = 0; i < files.count; i++) {
         Entry e;
         e.m = LoadModel(files.paths[i]);
@@ -58,10 +61,13 @@ void Models::load() {
             if (t.id != rlGetTextureIdDefault()) { GenTextureMipmaps(&t); SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR); }
         }
         if (e.m.skeleton.boneCount) e.anims = LoadModelAnimations(files.paths[i], &e.count);
-        models[GetFileNameWithoutExt(files.paths[i])] = e;
+        std::string name = GetFileNameWithoutExt(files.paths[i]);
+        if (strstr(files.paths[i], "/hats/")) hatNames.push_back(name);
+        models[name] = e;
     }
+    std::sort(hatNames.begin(), hatNames.end());  // same file set on every client -> same order
     UnloadDirectoryFiles(files);
-    TraceLog(LOG_INFO, "MODELS: %d loaded from %s", (int)models.size(), MODEL_DIR);
+    TraceLog(LOG_INFO, "MODELS: %d loaded from %s (%d hats)", (int)models.size(), MODEL_DIR, (int)hatNames.size());
 }
 
 void Models::unload() {
@@ -70,8 +76,12 @@ void Models::unload() {
         UnloadModel(e.m);
     }
     models.clear();
+    hatNames.clear();
     if (shader.id) UnloadShader(shader);
 }
+
+int Models::hatCount() { return (int)hatNames.size(); }
+const char *Models::hatName(int i) { return i >= 0 && i < (int)hatNames.size() ? hatNames[i].c_str() : ""; }
 
 static const ModelAnimation *find(const Entry &e, const char *clip) {
     for (int i = 0; clip && i < e.count; i++) if (!strcmp(e.anims[i].name, clip)) return &e.anims[i];

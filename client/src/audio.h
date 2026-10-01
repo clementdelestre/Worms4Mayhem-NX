@@ -4,9 +4,11 @@
 // Each sound may have variants (name.ogg, name_2.ogg, ...); one is picked at random per play.
 namespace Audio {
 
-// Shotgun..Teleport are per-weapon fire sounds; they fall back to Fire when not imported.
+// Shotgun..SuperSheepFire are per-weapon fire sounds; they fall back to Fire when not imported.
 enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Holy, TurnStart, Tick,
-                 Shotgun, Airstrike, Donkey, Rope, Teleport, Count };
+                 Shotgun, Airstrike, Donkey, Rope, Teleport,
+                 BatSwing, FirePunch, Prod, Sniper, Bow, Homing, OldWomanFire, ScouserFire, SentryPlace, SentryFire,
+                 Dynamite, Gas, Abduction, Flood, Parachute, MineBeep, CrateLand, Pickup, SuperSheepFire, Count };
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle, Count };
 
 void init();

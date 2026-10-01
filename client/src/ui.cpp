@@ -3,6 +3,7 @@
 #endif
 #include "ui.h"
 #include "audio.h"
+#include "models.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
@@ -24,9 +25,14 @@ const Color TEAM_COLORS[4] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60, 190,
 
 namespace {
 const int A = GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, B = GAMEPAD_BUTTON_RIGHT_FACE_DOWN, X = GAMEPAD_BUTTON_RIGHT_FACE_UP,
-          UP = GAMEPAD_BUTTON_LEFT_FACE_UP, DOWN = GAMEPAD_BUTTON_LEFT_FACE_DOWN, LEFT = GAMEPAD_BUTTON_LEFT_FACE_LEFT,
+          MINUS = GAMEPAD_BUTTON_MIDDLE_LEFT, UP = GAMEPAD_BUTTON_LEFT_FACE_UP, DOWN = GAMEPAD_BUTTON_LEFT_FACE_DOWN, LEFT = GAMEPAD_BUTTON_LEFT_FACE_LEFT,
           RIGHT = GAMEPAD_BUTTON_LEFT_FACE_RIGHT, PLUS = GAMEPAD_BUTTON_MIDDLE_RIGHT;
 const int PANEL_COLS = 8;
+#ifdef __SWITCH__
+const char *APPLET = "-";  // controller applet glyph, Switch only
+#else
+const char *APPLET = nullptr;
+#endif
 const Color GOLDEN = {255, 210, 60, 255}, PANEL = {16, 52, 84, 230};
 const char *RULE_LABELS[] = {"King", "Highlander", "Vampire", "Karma", "Low gravity", "Rope race", "Sudden death"};
 const char *DEFAULT_TEAMS[] = {"Red Rockets", "Blue Bombers", "Green Grubs", "Gold Diggers"};
@@ -133,11 +139,11 @@ std::string weaponIcon(const std::string &n) {
 
 int clampWrap(int v, int n) { return n ? ((v % n) + n) % n : 0; }
 
-// single press of any button/key on pad 0
-bool P(std::initializer_list<int> b, std::initializer_list<int> k) { return pressed(0, b, k); }
+// single press of any button/key on any pad
+bool P(std::initializer_list<int> b, std::initializer_list<int> k) { return pressed(-1, b, k); }
 }  // namespace
 
-static bool stickEdge[4][4];  // [pad][up, right, down, left], raylib LEFT_FACE_* order
+static bool dirFire[4][4];  // [pad][up, right, down, left] (raylib LEFT_FACE_* order): press or auto-repeat
 
 void pollStick() {
 #ifdef __SWITCH__
@@ -145,18 +151,29 @@ void pollStick() {
 #else
     const float up = -1;
 #endif
-    static bool held[4][4];
+    static bool was[4][4];
+    static float wait[4][4];
+    const int KEYS[4] = {KEY_UP, KEY_RIGHT, KEY_DOWN, KEY_LEFT};
+    float dt = GetFrameTime();
     for (int p = 0; p < 4; p++) {
         float x = GetGamepadAxisMovement(p, GAMEPAD_AXIS_LEFT_X), y = up * GetGamepadAxisMovement(p, GAMEPAD_AXIS_LEFT_Y);
-        bool now[4] = {y > 0.5f, x > 0.5f, y < -0.5f, x < -0.5f};
-        for (int d = 0; d < 4; d++) { stickEdge[p][d] = now[d] && !held[p][d]; held[p][d] = now[d]; }
+        bool stick[4] = {y > 0.5f, x > 0.5f, y < -0.5f, x < -0.5f};
+        for (int d = 0; d < 4; d++) {
+            bool h = stick[d] || IsGamepadButtonDown(p, GAMEPAD_BUTTON_LEFT_FACE_UP + d) || (p == 0 && IsKeyDown(KEYS[d]));
+            float &w = wait[p][d];
+            bool fire = h && (!was[p][d] || (w -= dt) <= 0);
+            if (fire) w = was[p][d] ? w + 0.1f : 0.35f;  // first repeat after 0.35 s, then every 0.1 s
+            was[p][d] = h, dirFire[p][d] = fire;
+        }
     }
 }
 
 bool pressed(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) {
-    for (int b : buttons) {
-        if (IsGamepadButtonPressed(pad, b)) return true;
-        if (pad < 4 && b >= GAMEPAD_BUTTON_LEFT_FACE_UP && b <= GAMEPAD_BUTTON_LEFT_FACE_LEFT && stickEdge[pad][b - GAMEPAD_BUTTON_LEFT_FACE_UP]) return true;
+    if (pad < 0) {
+        for (int p = 0; p < 4; p++) if (pressed(p, buttons, {})) return true;
+    } else for (int b : buttons) {
+        bool dir = b >= UP && b <= LEFT;
+        if (dir ? pad < 4 && dirFire[pad][b - UP] : IsGamepadButtonPressed(pad, b)) return true;
     }
     for (int k : keys) if (IsKeyPressed(k)) return true;
     return false;
@@ -167,6 +184,7 @@ void load() {
     for (int c = 32; c < 256; c++) if (c < 127 || c > 160) cps.push_back(c);
 #ifdef __SWITCH__
     // system shared font: nicer than raylib's bitmap font and nothing to bundle
+    hidSetNpadJoyHoldType(HidNpadJoyHoldType_Horizontal);  // single Joy-Cons are held sideways (one per player)
     PlFontData fd;
     plOk = R_SUCCEEDED(plInitialize(PlServiceType_User));
     if (plOk && R_SUCCEEDED(plGetSharedFontByType(&fd, PlSharedFontType_Standard))) {
@@ -206,6 +224,78 @@ void text(const char *t, float x, float y, float size, Color c, int align) {
 }
 
 static float textWidth(const char *t, float size) { return MeasureTextEx(font, t, size, fontLoaded ? 0 : size / 10).x; }
+
+// "Y/R" -> two glyphs. Pad: dark pills (round for one letter), key: light keycaps. Returns the width.
+static float glyphs(const char *g, float x, float y, float h, bool key, bool draw = true) {
+    float x0 = x, fs = h * 0.62f, sp = fontLoaded ? 0 : fs / 10;
+    for (const char *t = g; *t;) {
+        const char *e = strchr(t, '/');
+        std::string s(t, e ? e - t : strlen(t));
+        float w = fmaxf(h, textWidth(s.c_str(), fs) + h * 0.55f);
+        if (draw) {
+            Rectangle r = {x, y, w, h};
+            DrawRectangleRounded(r, key ? 0.3f : 1, 8, key ? Color{235, 235, 235, 255} : Color{45, 45, 45, 255});
+            DrawRectangleRoundedLinesEx(r, key ? 0.3f : 1, 8, 2, key ? DARKGRAY : WHITE);
+            Vector2 m = MeasureTextEx(font, s.c_str(), fs, sp);
+            DrawTextEx(font, s.c_str(), {roundf(x + (w - m.x) / 2), roundf(y + (h - m.y) / 2)}, fs, sp, key ? BLACK : WHITE);
+        }
+        x += w;
+        if (!e) break;
+        if (draw) text("/", x + 3, y, h * 0.8f, WHITE);
+        x += h * 0.5f, t = e + 1;
+    }
+    return x - x0;
+}
+
+static bool keyGlyphs() {
+#ifdef __SWITCH__
+    return false;
+#else
+    return !IsGamepadAvailable(0);
+#endif
+}
+
+void hints(std::initializer_list<Hint> h) {
+    const float G = 24, S = 21;
+    bool keys = keyGlyphs();
+    auto pick = [&](const Hint &x) { return keys ? x.key : x.pad ? x.pad : x.key; };
+    float total = 0;
+    for (const Hint &x : h) if (pick(x)) total += glyphs(pick(x), 0, 0, G, pick(x) == x.key, false) + 8 + textWidth(x.label, S) + 28;
+    DrawRectangle(0, 686, 1280, 34, {0, 0, 0, 225});
+    float x = 640 - (total - 28) / 2;
+    for (const Hint &x0 : h) {
+        const char *g = pick(x0);
+        if (!g) continue;
+        x += glyphs(g, x, 691, G, g == x0.key) + 8;
+        text(x0.label, x, 691, S, WHITE);
+        x += textWidth(x0.label, S) + 28;
+    }
+}
+
+void controls() {
+    struct Row { const char *what, *pad, *key; };
+    static const Row GAME[] = {{"Walk / turn", "LS", "Arrows"}, {"Aim", "RS", "W/S"}, {"Aim (single Joy-Con)", "L", nullptr},
+                               {"Fire (hold = power)", "A", "Space"}, {"Jump / let go of rope", "B", "Enter"}, {"Weapon panel", "X", "Q"},
+                               {"Next weapon", "Y/R", "Tab"}, {"Rotate camera", "RS", "A/D"}, {"Zoom", "ZL/ZR", "Z/X"},
+                               {"Performance overlay", "L+R", "F3"}, {"Pause", "+", "Esc"}};
+    static const Row MENU[] = {{"Move", "D-pad/LS", "Arrows"}, {"Confirm", "A", "Enter"}, {"Back", "B", "Esc"},
+                               {"Start match (setup)", "+", nullptr}, {"Controllers (setup)", "-", nullptr}, {"Quit (title screen)", "+", "Esc"}};
+    DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 120});
+    popup({90, 24, 1100, 652});
+    text("CONTROLS", 640, 40, 46, GOLDEN, 1);
+    auto table = [](const char *title, const Row *r, int n, float y) {
+        text(title, 140, y, 28, GOLDEN);
+        for (int i = 0; i < n; i++, r++) {
+            float ry = y + 34 + i * 29;
+            text(r->what, 160, ry, 22, WHITE);
+            glyphs(r->pad, 560, ry, 24, false);
+            if (r->key) glyphs(r->key, 800, ry, 24, true);
+        }
+    };
+    table("In a match", GAME, 11, 96);
+    table("Menus", MENU, 6, 96 + 34 + 11 * 29 + 8);
+    text("hold L + stick up/down", 640, 96 + 34 + 2 * 29 + 2, 18, LIGHTGRAY);
+}
 
 void background() {
     Texture2D t = tex("back/loadbackgeneric");
@@ -252,6 +342,15 @@ static bool swkbd(std::string &s, const char *hint) {
     s = out;
     return true;
 }
+
+// system controller applet: lets players pair, split or turn single Joy-Cons sideways
+static void controllerApplet() {
+    HidLaControllerSupportArg arg;
+    HidLaControllerSupportResultInfo info;
+    hidLaCreateControllerSupportArg(&arg);
+    arg.hdr.player_count_max = 4;
+    hidLaShowControllerSupport(&info, &arg);
+}
 #endif
 
 bool Frontend::edit(std::string &s, const char *hint) {
@@ -268,12 +367,7 @@ bool Frontend::edit(std::string &s, const char *hint) {
 // setup.txt: "teams N", "worms N", "map NAME|-", "rules N", "hats N"... then "team <i> <cpu> <hat> <voice bank|-> <name>"
 void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) {
     loaded = true;
-    hats = 0;
-    if (DirectoryExists(DATA_DIR "assets/models")) {
-        FilePathList l = LoadDirectoryFilesEx(DATA_DIR "assets/models", ".glb", false);
-        for (unsigned i = 0; i < l.count; i++) hats += strncmp(GetFileName(l.paths[i]), "hat", 3) == 0;
-        UnloadDirectoryFiles(l);
-    }
+    hats = Models::hatCount();
     cfg.teamSetup.resize(4);
     for (int t = 0; t < 4; t++) cfg.teamSetup[t] = {DEFAULT_TEAMS[t], 0, (uint8_t)(Audio::voiceBanks() ? t % Audio::voiceBanks() : 0), 0};
     char *txt = LoadFileText(DATA_DIR "setup.txt");
@@ -323,16 +417,18 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     int dy = typing ? 0 : P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP});
     int dx = typing ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
-    bool ok = !typing && P({A}, {KEY_ENTER, KEY_SPACE}), back = !typing && P({B}, {KEY_BACKSPACE});
+    bool ok = !typing && P({A}, {KEY_ENTER, KEY_SPACE}), back = !typing && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
 
     BeginDrawing();
     background();
     switch (screen) {
     case Title: {
         logo(640, 90, 760);
-        if (fmodf(t, 1.2f) < 0.8f) text("Press A to start", 640, 560, 40, WHITE, 1);
-        text("Worms4NX - fan-made homebrew", 640, 680, 20, {230, 230, 230, 200}, 1);
-        if (ok || P({PLUS}, {})) screen = Main;
+        if (fmodf(t, 1.2f) < 0.8f) text(keyGlyphs() ? "Press Enter to start" : "Press A to start", 640, 560, 40, WHITE, 1);
+        text("Worms4NX - fan-made homebrew", 640, 648, 20, {230, 230, 230, 200}, 1);
+        hints({{"A", "Enter", "Start"}, {"+", "Esc", "Quit"}});
+        if (ok) screen = Main;
+        else if (P({PLUS}, {KEY_ESCAPE})) act = Quit;
         break;
     }
     case Main: {
@@ -344,7 +440,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             panel(r, i == mainRow);
             text(ITEMS[i], 640, r.y + 20, 40, i == mainRow ? GOLDEN : WHITE, 1);
         }
-        text("A: select   B: back", 640, 680, 22, WHITE, 1);
+        hints({{"A", "Enter", "Select"}, {"B", "Esc", "Back"}});
         if (back) screen = Title;
         if (ok) {
             if (mainRow == 2) screen = Options, row = 0;
@@ -353,12 +449,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         break;
     }
     case Options: {
-        row = clampWrap(row + dy, 3);
+        row = clampWrap(row + dy, 4);
         text("OPTIONS", 640, 60, 60, GOLDEN, 1);
         std::string portS = TextFormat("%d", port);
-        const char *labels[] = {"Player name", "Server", "Music"};
-        const std::string vals[] = {name, host + ":" + portS, music ? "On" : "Off"};
-        for (int i = 0; i < 3; i++) {
+        const char *labels[] = {"Player name", "Server", "Music", "Controls"};
+        const std::string vals[] = {name, host + ":" + portS, music ? "On" : "Off", ">"};
+        for (int i = 0; i < 4; i++) {
             Rectangle r = {290, 180 + i * 90.0f, 700, 70};
             panel(r, i == row);
             text(labels[i], r.x + 30, r.y + 18, 32, i == row ? GOLDEN : WHITE);
@@ -369,7 +465,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (row == 2 && (dx || ok)) music = !music, Audio::music(music);
         if (ok && row == 0) edit(name, "Player name");
         if (ok && row == 1) edit(host, "Server address");
-        text("A: edit   Left/Right: port   B: back (saves server.txt)", 640, 680, 22, WHITE, 1);
+        if (ok && row == 3) screen = Controls;
+        if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
+        else if (row == 1) hints({{"A", "Enter", "Edit address"}, {"D-pad", "Left/Right", "Port"}, {"B", "Esc", "Save & back"}});
+        else hints({{"A", "Enter", row == 2 ? "Toggle" : row == 3 ? "Open" : "Edit"}, {"B", "Esc", "Save & back"}});
         if (back) {
             for (char &c : name) if (c == ' ') c = '_';
             SaveFileText(DATA_DIR "server.txt", (char *)TextFormat("%s %d %s\n", host.c_str(), port, name.c_str()));
@@ -377,6 +476,11 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         }
         break;
     }
+    case Controls:
+        controls();
+        hints({{"B", "Esc", "Back"}});
+        if (back || ok) screen = Options;
+        break;
     case Setup: {
         // focus order: teams count, 4 fields per visible team, worms, map, rules, start
         std::vector<int> ids = {0};
@@ -426,7 +530,8 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             bool hiName = ids[row] == 100 + k * 4, ed = editing == &tm.name;
             if (hiName) DrawRectangleRounded({card.x + 36, card.y + 10, 540, 38}, 0.4f, 6, {255, 210, 60, 70});
             text(TextFormat("%s%s", tm.name.c_str(), ed && fmodf(t, 1) < 0.5f ? "_" : ""), card.x + 44, card.y + 12, 32, TEAM_COLORS[k]);
-            const char *hat = !hats ? "-" : tm.hat ? TextFormat("Hat %d", tm.hat) : "None";
+            if (!online && !tm.cpu) text(!k || IsGamepadAvailable(k) ? TextFormat("Controller %d", k + 1) : "Controller 1 (shared)", card.x + card.width - 24, card.y + 18, 20, LIGHTGRAY, 2);
+            const char *hat = !hats ? "-" : tm.hat ? Models::hatName(tm.hat - 1) : "None";
             value(101 + k * 4, {card.x + 36, card.y + 50, 540, 24}, "Player", CTRL[tm.cpu], 22);
             value(102 + k * 4, {card.x + 36, card.y + 74, 540, 24}, "Voice", nb ? Audio::voiceBankName(tm.voice) : "-", 22);
             value(103 + k * 4, {card.x + 36, card.y + 98, 540, 24}, "Hat", hat, 22);
@@ -445,7 +550,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         Rectangle go = {860, 608, 390, 70};
         panel(go, ids[row] == 400);
         text(online ? "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ids[row] == 400 ? GOLDEN : WHITE, 1);
-        text(typing ? "Type the name, Enter: done" : "Up/Down: move   Left/Right: change   A: edit/toggle   +: start   B: back", 40, 690, 20, WHITE);
+        if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
+        else if (online) hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Go online"}, {"B", "Esc", "Back"}});
+        else hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Start"}, {APPLET, nullptr, "Controllers"}, {"B", "Esc", "Back"}});
+#ifdef __SWITCH__
+        if (!online && P({MINUS}, {})) controllerApplet();
+#endif
         if (back) saveSetup(cfg), screen = Main;
         if ((ok && id == 400) || (!typing && P({PLUS}, {}))) {
             saveSetup(cfg);
@@ -475,7 +585,9 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
 void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
     if (cur.team < (int)g.cfg.teamSetup.size() && g.cfg.teamSetup[cur.team].cpu) local = false;
-    if (!local || g.phase != Phase::Aim) { open = false, target = -1, swallow = false; return; }
+    mine = local;
+    // swallow: a button still held from a menu or another turn must not fire or jump
+    if (!local || g.phase != Phase::Aim) { open = false, target = -1, swallow = true; return; }
     int n = (int)WEAPONS.size(), cols = PANEL_COLS;
     if (pressed(pad, {X}, {KEY_Q})) open = !open, cursor = g.weapon;
     if (open) {
@@ -536,7 +648,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (g.phase == Phase::GameOver) {
         if (g.winner >= 0) text(TextFormat("%s WINS!", teamName(g.cfg, g.winner).c_str()), 640, 260, 70, TEAM_COLORS[g.winner % 4], 1);
         else text("DRAW!", 640, 260, 70, WHITE, 1);
-        text("A / Space: menu", 640, 360, 30, WHITE, 1);
+        hints({{"A", "Space", "Continue"}, {"+", "Esc", "Pause"}});
         return;
     }
     const WeaponDef &wd = WEAPONS[g.weapon];
@@ -544,6 +656,8 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     // turn banner
     text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(cur.team, g.current % std::max(1, g.perTeam))), 640, 14, 28, tc, 1);
     if (g.cfg.rules & RULE_ROPE_RACE) text(TextFormat("Race %ds", tick / 60), 1260, 14, 26, GOLDEN, 2);
+    rlPushMatrix();
+    rlTranslatef(0, -30, 0);  // bottom HUD sits above the hint bar
     // turn timer (bottom left)
     int secs = g.phase == Phase::Aim || g.phase == Phase::Retreat ? g.timer / 60 : 0;
     Rectangle clockR = {20, 600, 100, 100};
@@ -589,7 +703,11 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         DrawRectangleRounded({138, 648, 304, 22}, 0.5f, 4, {0, 0, 0, 160});
         DrawRectangleRounded({140, 650, 300 * g.power, 18}, 0.5f, 4, ColorLerp(YELLOW, RED, g.power));
     }
-    if (g.phase == Phase::Aim && !open) text("X / Q: weapons", 140, 676, 18, {255, 255, 255, 170});
+    rlPopMatrix();
+    if (open) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
+    else if (mine && g.phase == Phase::Aim)
+        hints({{"A", "Space", "Fire (hold)"}, {"B", "Enter", "Jump"}, {"X", "Q", "Weapons"}, {"Y/R", "Tab", "Next"}, {"+", "Esc", "Pause"}});
+    else hints({{"+", "Esc", "Pause"}});
     if (!open) return;
 
     // weapon panel
@@ -612,6 +730,46 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const WeaponDef &sel = WEAPONS[cursor];
     int sa = g.ammo[cur.team][cursor];
     text(TextFormat("%s  %s", sel.name.c_str(), sa < 0 ? "(infinite)" : TextFormat("x%d", sa)), 640, pr.y + ph - 58, 30, sa ? WHITE : GRAY, 1);
+}
+
+// ---------------------------------------------------------------- pause
+
+Pause::Action Pause::update() {
+    bool plus = P({PLUS}, {KEY_ESCAPE, KEY_P});
+    if (!open) {
+        if (plus) open = true, help = false, row = 0;
+        return None;
+    }
+    bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = plus || P({B}, {KEY_BACKSPACE});
+    if (help) {
+        if (ok || back) help = false;
+        return None;
+    }
+    row = clampWrap(row + P({DOWN}, {}) - P({UP}, {}), 3);
+    if (back || (ok && row == 0)) open = false;
+    if (ok && row == 1) help = true;
+    if (ok && row == 2) { open = false; return Quit; }
+    return None;
+}
+
+void Pause::draw(bool online) const {
+    if (!open) return;
+    if (help) {
+        controls();
+        hints({{"B", "Esc", "Back"}});
+        return;
+    }
+    DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 140});
+    popup({440, 170, 400, 380});
+    text("PAUSED", 640, 190, 50, GOLDEN, 1);
+    const char *items[] = {"Resume", "Controls", online ? "Leave match" : "Quit to menu"};
+    for (int i = 0; i < 3; i++) {
+        Rectangle r = {490, 270 + i * 86.0f, 300, 68};
+        panel(r, i == row);
+        text(items[i], 640, r.y + 16, 34, i == row ? GOLDEN : WHITE, 1);
+    }
+    if (online) text("The match keeps running", 640, 520, 20, LIGHTGRAY, 1);
+    hints({{"A", "Enter", "Select"}, {"B/+", "Esc", "Resume"}});
 }
 
 }  // namespace Ui
