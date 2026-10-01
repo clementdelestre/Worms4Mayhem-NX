@@ -37,6 +37,15 @@ static const Color TEAM_COLORS[] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60
 
 static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) { return Ui::pressed(pad, buttons, keys); }
 
+#ifdef __SWITCH__
+// raylib's log, timestamped, to the SD card (no console on Switch)
+static void logLine(int, const char *fmt, va_list ap) {
+    static FILE *f = fopen(DATA_DIR "log.txt", "w");
+    if (!f) return;
+    fprintf(f, "%.3f ", GetTime()), vfprintf(f, fmt, ap), fputc('\n', f), fflush(f);
+}
+#endif
+
 // Scripted input for shot mode: select weapon, aim up, charge, release.
 static Input scriptInput(int frame, int weapon, bool fire) {
     Input in;
@@ -230,6 +239,9 @@ static bool drawShot(const Projectile &s, float clock) {
 enum class Screen { Menu, Lobby, Play, Replays, Missions };
 
 int main(int argc, char **argv) {
+#ifdef __SWITCH__
+    SetTraceLogCallback(logLine);
+#endif
     if (argc > 1 && !strcmp(argv[1], "--netbot")) SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(1280, 720, "Worms4NX");
     SetExitKey(KEY_NULL);  // Esc is back / pause; quit from the title screen
@@ -246,6 +258,15 @@ int main(int argc, char **argv) {
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
     // --ui title|main|local|network|myworms|helpopts|confirm|setup|options|hud|panel|ready [map]: capture that screen to ui.png and quit
     const char *uiShot = argc > 2 && !strcmp(argv[1], "--ui") ? argv[2] : nullptr;
+    // shot flag file "ui <screen> [frames...]": the same, ui_<frame>.png at each frame (Switch has no args); intro = title, A at frame 20
+    char *flag = argc <= 3 && FileExists(DATA_DIR "shot") ? LoadFileText(DATA_DIR "shot") : nullptr, flagUi[32], capPath[64];
+    std::vector<int> uiFrames;
+    if (int n = 0, f; flag && sscanf(flag, "ui %31s%n", flagUi, &n) == 1) {
+        for (char *p = flag + n; sscanf(p, "%d%n", &f, &n) == 1; p += n) uiFrames.push_back(f);
+        uiShot = flagUi, UnloadFileText(flag), flag = nullptr;
+    }
+    bool intro = uiShot && !strcmp(uiShot, "intro");
+    if (uiFrames.empty()) uiFrames.push_back(10);
     // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
     bool bench = argc > 2 && !strcmp(argv[1], "--bench");
     int benchFrames = bench && argc > 3 ? atoi(argv[3]) : 1200;
@@ -303,10 +324,10 @@ int main(int argc, char **argv) {
         viewCam.position = {(float)atof(argv[3]), (float)atof(argv[4]), (float)atof(argv[5])};
         viewCam.target = {(float)atof(argv[6]), (float)atof(argv[7]), (float)atof(argv[8])};
     }
-    if (char *t = argc <= 3 && FileExists(DATA_DIR "shot") ? LoadFileText(DATA_DIR "shot") : nullptr) {
+    if (flag) {
         char m[64] = "";
-        if (sscanf(t, "%63s", m) == 1) shotMap = m;
-        UnloadFileText(t);
+        if (sscanf(flag, "%63s", m) == 1) shotMap = m;
+        UnloadFileText(flag);
     }
     if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time); }
 
@@ -531,8 +552,10 @@ int main(int argc, char **argv) {
         }
 
         if (screen == Screen::Menu) {
-            if (uiShot && frame == 10) front.capture = "ui.png";
-            if (uiShot && frame > 10) break;
+            if (intro && frame == 20) front.screen = Ui::Frontend::Main;
+            if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame))
+                snprintf(capPath, sizeof capPath, uiShot == flagUi ? DATA_DIR "ui_%d.png" : "ui.png", frame), front.capture = capPath, TraceLog(LOG_INFO, "UI: frame %d", frame);
+            if (uiShot && frame > uiFrames.back()) break;
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;
             if (a == Ui::Frontend::Replays) replayFiles = listReplays(DATA_DIR "replays"), replaySel = 0, screen = Screen::Replays;

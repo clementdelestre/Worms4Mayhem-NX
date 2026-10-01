@@ -40,7 +40,7 @@ struct Frontend {
 
 private:
     int row = 0, mainRow = 0, mapSel = 0, hats = 0, schemeRow = 0, subRow[5] = {};  // subRow: Local, Network, MyWorms, HelpOpts, Confirm
-    Screen shown = (Screen)-1;  // W4M menus: item slide-in since `entered`, smoothed highlight per item
+    Screen shown = (Screen)-1, from = Title;  // W4M menus: item slide-in since `entered` (from: previous screen), smoothed highlight per item
     float entered = -100, glow[8] = {};
     void menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live = true);  // live: animate + take input
     bool online = false, lan = false, loaded = false, music = true, layout = false;  // layout: Controls shows the pad diagram  // online: network setup (LAN or server)

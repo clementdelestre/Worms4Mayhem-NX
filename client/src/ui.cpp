@@ -1,5 +1,6 @@
 #ifdef __SWITCH__
 #include <switch.h>
+#include <unistd.h>
 #endif
 #include "ui.h"
 #include "controls.h"
@@ -63,6 +64,8 @@ const int HEALTH_ROW[4] = {2, 1, 4, 3};  // team colour -> bar of fe/team_health
 
 Font font;
 bool fontLoaded = false;
+double t0;  // raylib-nx's GetTime() counts from console boot: as a float it barely moves
+float now() { return (float)(GetTime() - t0); }
 #ifdef __SWITCH__
 bool plOk = false;
 #endif
@@ -254,6 +257,7 @@ static int systemLanguage() {
 }
 
 void load() {
+    t0 = GetTime();
     language = systemLanguage();
     std::vector<int> cps;
     for (int c = 32; c < 256; c++) if (c < 127 || c > 160) cps.push_back(c);
@@ -262,8 +266,11 @@ void load() {
     plOk = R_SUCCEEDED(plInitialize(PlServiceType_User));
 #endif
     // W4M's FE.Font (tools/w4m-ui, user's install), else the Switch shared font / a desktop TTF
-    if (FileExists(DATA_DIR "assets/ui/font/w4m.fnt")) {
-        font = LoadFont(DATA_DIR "assets/ui/font/w4m.fnt");
+#ifdef __SWITCH__
+    chdir(DATA_DIR);  // raylib turns the BMFont page dir of "sdmc:/..." into "./sdmc:/...": load it relative
+#endif
+    if (FileExists("assets/ui/font/w4m.fnt")) {
+        font = LoadFont("assets/ui/font/w4m.fnt");
         fontLoaded = font.texture.id != GetFontDefault().texture.id;  // LoadFont falls back to the default font
         if (fontLoaded) {
             GenTextureMipmaps(&font.texture);
@@ -547,8 +554,8 @@ static void logo(float cx, float y, float w, float deg) {
 #ifndef W4NX_VERSION
 #define W4NX_VERSION "0.1.0"
 #endif
-// x, y: label centre; deg: tilt; cap: small gold caption above the label
-struct MenuItem { const char *key, *en, *fr; float x, y, size, deg; const char *capKey = nullptr, *capEn = nullptr, *capFr = nullptr; };
+// x, y: label centre; deg: tilt
+struct MenuItem { const char *key, *en, *fr; float x, y, size, deg; };
 
 static const Color GOLD_TOP = {255, 240, 130, 255}, GOLD_BOT = {245, 140, 25, 255}, INK = {22, 36, 58, 255}, BLUE_PANEL = {2, 79, 119, 255};
 static float easeOut(float k) { k = Clamp(k, 0, 1); return 1 - (1 - k) * (1 - k) * (1 - k); }
@@ -614,7 +621,7 @@ static void subPanel(const char *title, const char *art, float t, float appear) 
 // W4M layouts: staggered, tilted, one size per entry
 static const MenuItem MAIN_MENU[] = {
     {"FETXT.LocalGame", "Local Game", "Partie locale", 905, 150, 62, -3},
-    {"FETXT.HTPHeader3", "Network Game", "Partie en réseau", 975, 248, 48, 2, nullptr, "LAN / Online", "LAN / En ligne"},
+    {"FETXT.HTPHeader3", "Network Game", "Partie en réseau", 975, 248, 48, 2},
     {"FETXT.MyWorms", "My Worms", "Mes Worms", 880, 334, 56, -2},
     {nullptr, "Replays", "Replays", 990, 416, 46, 3},
     {"FETXT.Help&Options", "Help & Options", "Aide et options", 900, 494, 52, -2},
@@ -643,7 +650,6 @@ void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, boo
         const MenuItem &m = items[i];
         float &g = glow[i], a = live ? easeOut((t - entered - 0.05f * i) / 0.35f) : 1;
         g = live ? g + ((i == sel) - g) * k : i == sel;
-        if (m.capEn && a > 0) text(tr(m.capKey, m.capEn, m.capFr), m.x + (1 - a) * 260, m.y - m.size * 1.02f, m.size * 0.4f, Fade(GOLD_TOP, a), 1);
         menuEntry(tr(m.key, m.en, m.fr), m.x, m.y, m.size, m.deg, g, a, t);
     }
 }
@@ -789,7 +795,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     if (!loaded) loadSetup(cfg, maps);
     if (cfg.teamSetup.size() < 4) cfg.teamSetup.resize(4);
     Action act = None;
-    float t = (float)GetTime();
+    float t = now();
     bool typing = editing != nullptr;
     if (editing) {
         for (int c = GetCharPressed(); c; c = GetCharPressed())
@@ -801,7 +807,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     int dx = typing ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
     bool ok = !typing && P({A}, {KEY_ENTER, KEY_SPACE}), back = !typing && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
     if (screen != shown) {  // W4M menus: slide in (not on the first frame: --ui captures), highlight the current entry
-        entered = shown == (Screen)-1 ? -100 : t, shown = screen;
+        entered = shown == (Screen)-1 ? -100 : t, from = shown, shown = screen;
         int sel = screen == Main ? mainRow : screen >= Local ? subRow[screen - Local] : 0;
         for (int i = 0; i < 8; i++) glow[i] = i == sel;
         FrontBg::page(screen <= Main || screen == Confirm ? 0 : screen == Local || (screen == Setup && !online) ? 1 : screen == Network || screen == Setup ? 2 : 3);
@@ -823,9 +829,13 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     case Main:
     case Confirm: {
         bool confirm = screen == Confirm;
-        logo(330, 40, 560, -6);
+        float a = from == Title ? easeOut((t - entered) / 0.4f) : 1;  // the title's logo glides to its menu spot
+        logo(Lerp(640, 330, a), Lerp(90, 40, a), Lerp(760, 560, a), -6 * a);
         menu(MAIN_MENU, 6, mainRow, confirm ? 0 : dy, t, !confirm);
+        rlPushMatrix();
+        rlTranslatef(0, (1 - a) * 110, 0);
         paperStrip(t, false);
+        rlPopMatrix();
         if (confirm) {
             int &r = subRow[4];
             r = clampWrap(r + dy + dx, 2);
@@ -1687,7 +1697,7 @@ void playbackBar(bool paused, int speed, bool freeCam, float sec, float total, c
 }
 
 void replayBadge() {
-    if (fmodf((float)GetTime(), 1) < 0.7f) text("REPLAY", 640, 70, 44, GOLDEN, 1);
+    if (fmodf(now(), 1) < 0.7f) text("REPLAY", 640, 70, 44, GOLDEN, 1);
     hints({{"A", "Space", "Skip replay"}});
 }
 
