@@ -25,7 +25,7 @@ C = client → server, S = server → client.
 | 0x13 | JoinRoom   | C   | `u32 roomId` |
 | 0x14 | RoomState  | S   | `u32 roomId, u32 hostId, u8 n, n × (u32 playerId, str name, u8 online)` — players in slot order |
 | 0x15 | Leave      | C   | — |
-| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules` (server relays the bytes after the owners untouched) |
+| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × (str name, u8 cpu, u8 voice, u8 hat)` (server relays the bytes after the owners untouched) |
 | 0x21 | Inputs     | C/S | `u32 firstTick, u8 n, n × Input` |
 | 0x22 | TurnEnd    | C   | `u32 tick, u32 checksum` |
 | 0x23 | Desync     | S   | `u32 tick` |

@@ -73,6 +73,8 @@ struct GameConfig {
     int teams = 2, wormsPerTeam = 3;
     std::string map;     // romfs maps/<map>.json; empty = procedural island
     uint32_t rules = 0;  // Rule flags
+    struct Team { std::string name; uint8_t cpu = 0, voice = 0, hat = 0; };  // cpu: 0 = human, 1..3 = AI level
+    std::vector<Team> teamSetup;  // per team; may be shorter than teams (defaults apply)
 };
 
 enum class Phase { Aim, Flying, Retreat, Settle, GameOver };

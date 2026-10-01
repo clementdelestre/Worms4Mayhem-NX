@@ -189,6 +189,8 @@ void Net::handle(const uint8_t *p, size_t n) {
         for (int t = 0; t < cfg.teams && r.ok; t++) owners.push_back(r.u32());
         cfg.map = r.str();
         cfg.rules = r.u32();
+        cfg.teamSetup.resize(r.u8());
+        for (auto &t : cfg.teamSetup) { t.name = r.str(); t.cpu = r.u8(); t.voice = r.u8(); t.hat = r.u8(); }
         inbox.clear();
         batch.clear();
         events.push_back({Start});
@@ -236,6 +238,7 @@ void Net::start(const GameConfig &c, const std::vector<uint32_t> &own) {
     W w(START);
     w.u32(c.seed).u8(c.teams).u8(c.wormsPerTeam);
     for (uint32_t o : own) w.u32(o);
-    w.str(c.map.c_str()).u32(c.rules);
+    w.str(c.map.c_str()).u32(c.rules).u8((uint8_t)c.teamSetup.size());
+    for (const auto &t : c.teamSetup) w.str(t.name.c_str()).u8(t.cpu).u8(t.voice).u8(t.hat);
     send(w.done());
 }
