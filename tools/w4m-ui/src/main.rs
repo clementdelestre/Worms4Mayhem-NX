@@ -22,9 +22,10 @@ const FE2: &[(&str, &str, usize, &str)] = &[
     ("Bundl06", "maya:file5/-1", 2, "art_network"),      // globe
     ("Bundl06", "maya:paint_bits/-1", 0, "art_myworms"), // brushes + paint (Mes Worms)
     ("Bundl474", "Nav Normal.tga", 0, "nav_normal"),     // 2x2: grenade, tick, back arrow, cross
+    ("Bundl05", "maya:file8/-1", 0, "loading_worm"),    // loading screen's round worm (LoadingIcon)
 ];
 // Frontend strings -> lang/<code>.txt ("key<TAB>value", \n = newline): (code, Data/Language/PC files)
-const LANGS: &[(&str, &[&str])] = &[("en", &["EngFE.xom", "English.xom"]), ("fr", &["FreFE.xom", "French.xom"])];
+const LANGS: &[(&str, &[&str])] = &[("en", &["EngFE.xom", "English.xom", "EngLoading.xom"]), ("fr", &["FreFE.xom", "French.xom", "FreLoading.xom"])];
 const SKY_BUNDLES: &[&str] = &[
     "Bundl93", "Bundl94", "Bundl95", "Bundl96", "Bundl97", "Bundl98", "Bundl99", "Bundl100", "Bundl101", "Bundl102",
     "Bundl103", "Bundl104", "Bundl105", "Bundl106", "Bundl107", "Bundl108", "Bundl109", "Bundl110", "Bundl111", "Bundl112",

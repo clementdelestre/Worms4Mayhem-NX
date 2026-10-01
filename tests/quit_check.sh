@@ -14,12 +14,12 @@ ENTER=257 ESC=256 RIGHT=262 LEFT=263 DOWN=264 UP=265
 tap() { echo "$1 $2 1"; echo "$(($1 + 3)) $2 0"; }
 {
     tap 30 $ENTER; tap 60 $ENTER; tap 100 $ENTER      # title -> main -> Local -> Quick match
-    tap 280 $ESC; tap 310 $DOWN; tap 330 $DOWN; tap 360 $ENTER  # pause, Quit to menu
-    f=400; for k in $UP $DOWN $LEFT $RIGHT $UP $UP $DOWN; do tap $f $k; f=$((f + 25)); done
-    echo "640 -1 0"
+    tap 530 $ESC; tap 560 $DOWN; tap 580 $DOWN; tap 610 $ENTER  # past the ~3.3 s loading sequence: pause, Quit to menu
+    f=650; for k in $UP $DOWN $LEFT $RIGHT $UP $UP $DOWN; do tap $f $k; f=$((f + 25)); done
+    echo "890 -1 0"
 } > "$W/script"
 (cd "$W" && W4NX_INPUTSCRIPT=script timeout 120 "$W4NX" > log 2>&1)
 grep '^frame' "$W/log"
-# screens: 0 Menu, 2 Play
-[ "$(grep '^frame' "$W/log" | awk '{print $4}' | tr '\n' ' ')" = "0 2 0 " ] && echo PASS && exit 0
+# screens: 0 Menu, 5 Loading, 2 Play
+[ "$(grep '^frame' "$W/log" | awk '{print $4}' | tr '\n' ' ')" = "0 5 2 0 " ] && echo PASS && exit 0
 echo FAIL; exit 1

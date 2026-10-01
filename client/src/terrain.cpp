@@ -573,7 +573,8 @@ void Terrain::loadTextures() {
         if (f.empty() || !FileExists(f.c_str())) return Texture2D{};
         auto it = cache.find(f);
         if (it != cache.end()) return it->second;
-        Texture2D t = LoadTexture(f.c_str());
+        auto d = decoded.find(f);
+        Texture2D t = d != decoded.end() ? LoadTextureFromImage(d->second) : LoadTexture(f.c_str());
         GenTextureMipmaps(&t);
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
         SetTextureFilter(t, TEXTURE_FILTER_ANISOTROPIC_4X);
@@ -590,6 +591,13 @@ void Terrain::loadTextures() {
         texMats[m].maps[MATERIAL_MAP_DIFFUSE].texture = a;
         texMats[m].maps[MATERIAL_MAP_SPECULAR].texture = b;
     }
+    for (auto &[f, img] : decoded) UnloadImage(img);
+    decoded.clear();
+}
+
+void Terrain::decodeTextures() {
+    for (const std::string &f : texFiles)
+        if (!f.empty() && !decoded.count(f) && FileExists(f.c_str())) decoded[f] = LoadImage(f.c_str());
 }
 
 void Terrain::setFog(Vector3 cam, Color c, float start, float end) const {

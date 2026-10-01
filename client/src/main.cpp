@@ -7,6 +7,7 @@
 #include "frontbg.h"
 #include "fx.h"
 #include "lanhost.h"
+#include "loading.h"
 #include "mission.h"
 #include "models.h"
 #include "net.h"
@@ -14,12 +15,14 @@
 #include "sim.h"
 #include "ui.h"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef __SWITCH__
@@ -236,7 +239,7 @@ static bool drawShot(const Projectile &s, float clock) {
     return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h));
 }
 
-enum class Screen { Menu, Lobby, Play, Replays, Missions };
+enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading };
 
 int main(int argc, char **argv) {
 #ifdef __SWITCH__
@@ -256,16 +259,20 @@ int main(int argc, char **argv) {
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
-    // --ui title|main|local|network|myworms|helpopts|confirm|setup|options|hud|panel|ready [map]: capture that screen to ui.png and quit
+    // --ui title|main|local|network|myworms|helpopts|confirm|setup|options|hud|panel|ready|loading [map]: capture that screen to ui.png (loading: ui_<frame>.png) and quit
     const char *uiShot = argc > 2 && !strcmp(argv[1], "--ui") ? argv[2] : nullptr;
-    // shot flag file "ui <screen> [frames...]": the same, ui_<frame>.png at each frame (Switch has no args); intro = title, A at frame 20
-    char *flag = argc <= 3 && FileExists(DATA_DIR "shot") ? LoadFileText(DATA_DIR "shot") : nullptr, flagUi[32], capPath[64];
+    // shot flag file "ui <screen> [frames...] [map]": the same, ui_<frame>.png at each frame (Switch has no args); intro = title, A at frame 20, Local at 80
+    char *flag = argc <= 3 && FileExists(DATA_DIR "shot") ? LoadFileText(DATA_DIR "shot") : nullptr, flagUi[32], capPath[64], flagMap[64] = "";
     std::vector<int> uiFrames;
     if (int n = 0, f; flag && sscanf(flag, "ui %31s%n", flagUi, &n) == 1) {
-        for (char *p = flag + n; sscanf(p, "%d%n", &f, &n) == 1; p += n) uiFrames.push_back(f);
+        char *p = flag + n;
+        for (; sscanf(p, "%d%n", &f, &n) == 1; p += n) uiFrames.push_back(f);
+        sscanf(p, "%63s", flagMap);  // optional map after the frames
         uiShot = flagUi, UnloadFileText(flag), flag = nullptr;
     }
     bool intro = uiShot && !strcmp(uiShot, "intro");
+    bool loadShot = uiShot && !strcmp(uiShot, "loading");
+    if (uiFrames.empty() && loadShot) uiFrames = {20, 60, 120, 170};  // intro, intro, loading screen x2
     if (uiFrames.empty()) uiFrames.push_back(10);
     // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
     bool bench = argc > 2 && !strcmp(argv[1], "--bench");
@@ -404,22 +411,61 @@ int main(int argc, char **argv) {
             if (netbot) printf("[%s] turn %d tick %u checksum %08x%s\n", name.c_str(), ++turns, tick, game.checksum(), e.kind == GameEvent::GameOver ? " gameover" : "");
         }
     };
+    // Match prep while the loading screen animates: CPU work (sim start, texture decode, voices) on `loader`, then
+    // GL steps between frames. The sim starts (and online inputs leave net's buffer) once screen is Play.
+    GameConfig loadCfg;
+    int loadStep = -1;  // -1: done
+    double loadMs[5] = {}, loadT0 = 0;
+    std::thread loader;
+    std::atomic<bool> loaderDone{false};
+    auto prepStep = [&](bool wait) {
+        double t0 = GetTime();
+        switch (loadStep) {
+        case 0:
+            FrontBg::unload();  // ~9 MB of menu scene; the next menu frame reloads it
+            loaderDone = false, loadT0 = t0;
+            loader = std::thread([&] { game.start(loadCfg), game.terrain.decodeTextures(), Audio::preloadVoices(game.teams), loaderDone = true; });
+            break;
+        case 1:
+            if (!loaderDone && !wait) return;
+            loader.join();
+            loadMs[1] = (GetTime() - loadT0) * 1000;  // wall clock, the screen kept drawing
+            Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str());
+            Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);
+            Fx::clear();
+            game.terrain.remesh(0);  // texture upload and shadow columns only
+            break;
+        case 2: game.terrain.remesh(0.012); break;
+        case 3: game.terrain.drawObjects({1e6f, 0, 0}); break;  // loads the decor models, all culled
+        }
+        if (loadStep != 1 || wait) loadMs[loadStep] += (GetTime() - t0) * 1000;
+        else loadMs[0] = std::max(loadMs[0], (GetTime() - t0) * 1000);  // longest main-thread block of step 1
+        if (loadStep == 2 && std::count(game.terrain.dirty.begin(), game.terrain.dirty.end(), true)) return;
+        if (++loadStep == 4)
+            loadStep = -1, TraceLog(LOG_INFO, "LOAD: thread %.0f ms (start, decode, voices), upload %.0f, remesh %.0f, decor %.0f, total %.0f",
+                                    loadMs[1], loadMs[0], loadMs[2], loadMs[3], (GetTime() - loadT0) * 1000);
+    };
+    auto loadProgress = [&] {
+        if (loadStep < 0) return 1.0f;
+        const std::vector<bool> &d = game.terrain.dirty;
+        float part = loadStep == 2 && !d.empty() ? 1 - (float)std::count(d.begin(), d.end(), true) / d.size() : 0;
+        return (loadStep + part) / 4;
+    };
     auto startMatch = [&](const GameConfig &c) {
-        FrontBg::unload();  // ~9 MB of menu scene; the next menu frame reloads it
         game.terrain.undo = nullptr;
         snap.valid = false;
         rec = {c, {}, 0};
         recSaved = shotDone = false;
         irEnd = -1;
-        game.start(c);
-        Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str());
-        game.terrain.remesh();
-        Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);
-        Fx::clear();
-        Audio::preloadVoices(game.teams);
+        if (loader.joinable()) loader.join();  // online: Start again mid-load
+        loadCfg = c, loadStep = 0;
+        for (double &m : loadMs) m = 0;
         tick = 0;
         acc = 0;
-        screen = Screen::Play;
+        if (bench || netbot || (uiShot && !loadShot)) {  // no loading screen: game is ready on return
+            while (loadStep >= 0) prepStep(true);
+            screen = Screen::Play;
+        } else Loading::begin(c), screen = Screen::Loading;
     };
     bool botStarted = false;
     float botAt = 0, botDone = 1e9f;
@@ -474,8 +520,8 @@ int main(int argc, char **argv) {
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu
     Ui::forceHelp = uiShot && (!strcmp(uiShot, "help") || !strcmp(uiShot, "helpmenu"));
-    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready"))) {
-        startMatch({1234, 2, 2, argc > 3 ? argv[3] : "", 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
+    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready") || !strcmp(uiShot, "loading"))) {
+        startMatch({1234, 2, 2, argc > 3 ? argv[3] : flagMap, 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
         if (strcmp(uiShot, "ready")) game.hotSeat = 0;  // every shot but "ready" skips the hot-seat pause
         hud.open = !strcmp(uiShot, "panel");
         pause.open = !strcmp(uiShot, "pause");
@@ -545,7 +591,7 @@ int main(int argc, char **argv) {
                     if (FILE *f = fopen("netbot.token", "w")) fprintf(f, "%llx\n", (unsigned long long)net.token), fclose(f);
             }
             // the token kept in `net` resumes the match: server resends Start + the whole input log
-            if (!net.online() && screen == Screen::Play && clock > reconnectAt) {
+            if (!net.online() && (screen == Screen::Play || screen == Screen::Loading) && clock > reconnectAt) {
                 net.connect(connHost.c_str(), connPort, name.c_str());
                 reconnectAt = clock + 3;
             }
@@ -553,7 +599,7 @@ int main(int argc, char **argv) {
 
         if (screen == Screen::Menu) {
             if (intro && frame == 20) front.screen = Ui::Frontend::Main;
-            if (intro && frame == 80) front.screen = Ui::Frontend::Local;
+            if (intro && frame == 80) front.go(Ui::Frontend::Local);
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame))
                 snprintf(capPath, sizeof capPath, uiShot == flagUi ? DATA_DIR "ui_%d.png" : "ui.png", frame), front.capture = capPath, TraceLog(LOG_INFO, "UI: frame %d", frame);
             if (uiShot && frame > uiFrames.back()) break;
@@ -587,6 +633,22 @@ int main(int argc, char **argv) {
                 status = lanScan.open() ? "" : "Network unavailable";
                 screen = Screen::Lobby;
             }
+            continue;
+        }
+
+        if (screen == Screen::Loading) {
+            BeginDrawing();
+            bool done = Loading::frame(dt, loadProgress());
+            if (loadShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
+                rlDrawRenderBatchActive();
+                Image img = LoadImageFromScreen();
+                ExportImage(img, TextFormat(DATA_DIR "ui_%d.png", frame));
+                UnloadImage(img);
+            }
+            EndDrawing();
+            if (loadShot && frame >= uiFrames.back()) break;
+            if (Loading::ready() && loadStep >= 0) prepStep(false);  // after EndDrawing: the frame shows while this step blocks
+            if (done) screen = Screen::Play;
             continue;
         }
 
@@ -978,6 +1040,7 @@ int main(int argc, char **argv) {
         } else if (irEnd >= 0) Ui::replayBadge();
         if (remoteTurn) drawTextCentered("Remote player's turn", 640, 90, 24, WHITE);
         if (online && !status.empty()) drawTextCentered(status.c_str(), 640, 120, 24, ORANGE);
+        Loading::overlay(dt);
         if (Ui::helpHeld()) Ui::controls(true);
         if (perfOn && !bench) {  // bench: keep the overlay out of the measured ui cost
             int tris = 0;
@@ -1012,10 +1075,10 @@ int main(int argc, char **argv) {
             ExportImage(img, TextFormat("aimseq_%03d.png", frame));
             UnloadImage(img);
         }
-        if (uiShot && frame == 40) {
+        if (uiShot && (loadShot ? std::count(uiFrames.begin(), uiFrames.end(), frame) > 0 : frame == 40)) {
             rlDrawRenderBatchActive();
             Image img = LoadImageFromScreen();
-            ExportImage(img, "ui.png");
+            ExportImage(img, loadShot ? TextFormat(DATA_DIR "ui_%d.png", frame) : "ui.png");
             UnloadImage(img);
         }
         EndDrawing();
@@ -1056,8 +1119,9 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && frame == 150) || (aimShot && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == 40)) break;
+        if ((shot && frame == 150) || (aimShot && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : 40))) break;
     }
+    if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();
     net.close();
     game.terrain.unload();

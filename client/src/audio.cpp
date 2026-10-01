@@ -45,13 +45,13 @@ Music theme;
 std::string track;
 bool musicLoaded = false, musicOn = false;
 
-// base.ogg, base_2.ogg, ... until the first gap; base is copied since TextFormat recycles its buffers
-Variants loadVariants(std::string base) {
+// base.ogg, base_2.ogg, ... until the first gap. No TextFormat: preloadVoices runs on the loading thread.
+Variants loadVariants(const std::string &base) {
     Variants v;
     for (; v.n < MAX_VARIANTS; v.n++) {
-        const char *p = v.n ? TextFormat("%s_%d.ogg", base.c_str(), v.n + 1) : TextFormat("%s.ogg", base.c_str());
-        if (!FileExists(p)) break;
-        v.s[v.n] = LoadSound(p);
+        std::string p = v.n ? base + "_" + std::to_string(v.n + 1) + ".ogg" : base + ".ogg";
+        if (!FileExists(p.c_str())) break;
+        v.s[v.n] = LoadSound(p.c_str());
     }
     return v;
 }
@@ -133,7 +133,7 @@ static Bank &bankOf(int team) {
     int k = team < (int)teamBank.size() && teamBank[team] >= 0 ? teamBank[team] : team;
     Bank &b = banks[k % banks.size()];
     if (!b.loaded) {
-        for (int i = 0; i < (int)Voice::Count; i++) b.lines[i] = loadVariants(TextFormat("%s/%s", b.dir.c_str(), VOICE_NAMES[i]));
+        for (int i = 0; i < (int)Voice::Count; i++) b.lines[i] = loadVariants(b.dir + "/" + VOICE_NAMES[i]);
         b.loaded = true;
     }
     return b;

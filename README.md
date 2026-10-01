@@ -26,7 +26,7 @@ Server: `cd server && cargo run --release -- 0.0.0.0:7777` (or `docker build -t 
 ## Run on Switch / emulator
 Copy `worms4nx.nro` to `sdmc:/switch/worms4nx/`. Online: put `<server-ip> 7777 <name>` in `sdmc:/switch/worms4nx/server.txt` (desktop: `client/server.txt`).
 Ryubing: open the `.nro`, enable *Guest Internet Access* for online play.
-Debug on Switch: raylib's log goes to `sdmc:/switch/worms4nx/log.txt`. A `sdmc:/switch/worms4nx/shot` flag file runs a capture and quits: `<map>` = scripted turn → `shot.png`; `ui <screen> <frame>...` (same screens as `--ui`, plus `intro` = title then A at frame 20) → `ui_<frame>.png`. Delete the flag afterwards.
+Debug on Switch: raylib's log goes to `sdmc:/switch/worms4nx/log.txt`. A `sdmc:/switch/worms4nx/shot` flag file runs a capture and quits: `<map>` = scripted turn → `shot.png`; `ui <screen> <frame>...` (same screens as `--ui`, plus `intro` = title then A at frame 20, Local at 80) → `ui_<frame>.png`. Delete the flag afterwards.
 
 ### Installable NSP
 `./tools/nsp/build-nsp.sh` packs an application NSP (HOME menu entry, own icon,

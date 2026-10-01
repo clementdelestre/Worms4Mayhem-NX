@@ -12,6 +12,9 @@ extern const Color TEAM_COLORS[4];
 void load();
 void unload();
 void text(const char *t, float x, float y, float size, Color c, int align = 0);  // align: 0 left, 1 centre, 2 right
+float textWidth(const char *t, float size);
+Texture2D art(const char *name);  // assets/ui/<name>.png, cached; id 0 when missing
+void logo(float cx, float y, float w, float deg = 0);  // W4M logo, top centre at (cx, y), tilted deg
 // Menu language: 0 English, 1 French (lang.txt, else the system language). tr(): W4M's string for key
 // (assets/lang/<en|fr>.txt from tools/w4m-ui), else the built-in en / fr text (key may be null).
 extern int language;
@@ -36,12 +39,16 @@ struct Frontend {
     enum Action { None, StartLocal, StartOnline, Quit, Replays, StartLan, SinglePlayer, QuickMatch };
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
     int missionTab = 0;             // SinglePlayer: 0 story missions, 1 challenges
+    void go(Screen s);              // W4M menu change: current items fly out, then s slides in
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
 
 private:
     int row = 0, mainRow = 0, mapSel = 0, hats = 0, schemeRow = 0, subRow[5] = {};  // subRow: Local, Network, MyWorms, HelpOpts, Confirm
     Screen shown = (Screen)-1, from = Title;  // W4M menus: item slide-in since `entered` (from: previous screen), smoothed highlight per item
     float entered = -100, glow[8] = {};
+    Screen next = Title;  // W4M menu change: the current items fly out for LEAVE s since `leaving`, then `next` slides in
+    float leaving = -1;
+    float subIn(float t) const;  // submenu panel progress: 0 hidden .. 1 shown
     void menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live = true);  // live: animate + take input
     bool online = false, lan = false, loaded = false, music = true, layout = false;  // layout: Controls shows the pad diagram  // online: network setup (LAN or server)
     std::string *editing = nullptr;  // desktop text entry target

@@ -1,5 +1,6 @@
 #pragma once
 #include "raylib.h"
+#include <map>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,7 @@ struct Terrain {
     std::vector<Vector2> texRepeat;     // per material: metres per texture repeat (top, side)
     std::vector<Material> texMats;      // per material, built with the textures on first remesh
     std::vector<Texture2D> textures;
+    std::map<std::string, Image> decoded;  // decodeTextures() output, uploaded by the first remesh
     int scaleLoc = -1;
     std::vector<unsigned char> colTop;  // per (x, z) column: 1 + highest solid voxel at remesh time (shadow ray early-out); back() = max
     // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
@@ -48,6 +50,7 @@ struct Terrain {
     Vector3 normal(Vector3 p) const;
     void carve(Vector3 c, float radius);
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
+    void decodeTextures();  // CPU only (worker thread): moves the PNG decode out of remesh
     void remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call
     void draw() const;
     void setFog(Vector3 cam, Color c, float start, float end) const;  // textured maps only

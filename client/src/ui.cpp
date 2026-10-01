@@ -15,7 +15,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
 #include <map>
+#include <thread>
 
 #ifdef __SWITCH__
 #define DATA_DIR "sdmc:/switch/worms4nx/"
@@ -83,6 +85,43 @@ Texture2D tex(const std::string &name) {
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
     }
     return cache[name] = t;
+}
+
+// Frontend art, decoded off the main thread at startup: SD read + PNG decode of these took a frame on menu changes
+const char *const PRELOAD[] = {"fe/bluedivide", "fe2/art_local", "fe2/art_local_static", "fe2/nav_normal", "fe/title_underline", "fe2/art_network",
+                               "fe2/art_help", "fe2/art_myworms", "fe/paperpopup01", "fe/paperpopup02", "fe/buttonbig_highlight", "fe/text_border_charcoal",
+                               "fe/icon_wxpot", "fe2/paper_strip", "fe/icon_splat", "fe2/loading_worm", "fe/hintpanel", "hud/trailparticle"};
+const int NPRE = sizeof PRELOAD / sizeof *PRELOAD;
+Image preImg[NPRE];
+std::atomic<int> preDecoded{0};
+int preUploaded = 0;
+std::thread preThread;
+
+void decodeArt() {
+#ifdef __SWITCH__
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3F);  // only runs while the main thread waits (vsync, GPU)
+#endif
+    for (int i = 0; i < NPRE; i++) {
+        char p[160];
+        snprintf(p, sizeof p, DATA_DIR "assets/ui/%s.png", PRELOAD[i]);
+        int n = 0;
+        if (unsigned char *d = FileExists(p) ? LoadFileData(p, &n) : nullptr) preImg[i] = LoadImageFromMemory(".png", d, n), UnloadFileData(d);
+        preDecoded.store(i + 1);
+    }
+}
+
+// one GPU upload per frame
+void uploadArt() {
+    if (preUploaded >= preDecoded.load()) return;
+    Image &img = preImg[preUploaded];
+    if (img.data && !cache.count(PRELOAD[preUploaded])) {
+        Texture2D t = LoadTextureFromImage(img);
+        GenTextureMipmaps(&t);
+        SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
+        cache[PRELOAD[preUploaded]] = t;
+    }
+    UnloadImage(img), img = {};
+    preUploaded++;
 }
 
 // 9-slice: source margin m px drawn at m * s
@@ -258,6 +297,7 @@ static int systemLanguage() {
 
 void load() {
     t0 = GetTime();
+    if (!preThread.joinable()) preThread = std::thread(decodeArt);
     language = systemLanguage();
     std::vector<int> cps;
     for (int c = 32; c < 256; c++) if (c < 127 || c > 160) cps.push_back(c);
@@ -297,6 +337,9 @@ void load() {
 }
 
 void unload() {
+    if (preThread.joinable()) preThread.join();
+    for (Image &i : preImg) if (i.data) UnloadImage(i), i = {};
+    preUploaded = NPRE;
     for (auto &kv : cache) if (kv.second.id) UnloadTexture(kv.second);
     cache.clear();
     if (fontLoaded) UnloadFont(font);
@@ -354,7 +397,8 @@ static void textG(const char *t, float x, float y, float size, Color c, Color c2
 
 void text(const char *t, float x, float y, float size, Color c, int align) { textG(t, x, y, size, c, c, align); }
 
-static float textWidth(const char *t, float size) { return MeasureTextEx(font, t, size, fontLoaded ? 0 : size / 10).x; }
+float textWidth(const char *t, float size) { return MeasureTextEx(font, t, size, fontLoaded ? 0 : size / 10).x; }
+Texture2D art(const char *name) { return tex(name); }
 
 // W4M menu look: cream text, golden titles over a brush underline, charcoal stroke + orange arrow on the selection
 static const Color CREAM = {238, 226, 186, 255}, BRIGHT = {255, 250, 232, 255}, TITLE = {255, 224, 120, 255};
@@ -431,7 +475,6 @@ void hints(std::initializer_list<Hint> h) {
     }
 }
 
-static void logo(float cx, float y, float w, float deg = 0);
 
 // both windings: rlgl culls back faces
 static void tri(Vector2 a, Vector2 b, Vector2 c, Color col) { DrawTriangle(a, b, c, col), DrawTriangle(a, c, b, col); }
@@ -526,6 +569,7 @@ void controls(bool game) {
 }
 
 void background() {
+    uploadArt();
     Texture2D t = tex("back/loadbackgeneric");
     if (t.id) DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {0, 0, 1280, 720}, {}, 0, WHITE);
     else DrawRectangleGradientV(0, 0, 1280, 720, {40, 80, 150, 255}, {120, 170, 220, 255});
@@ -533,7 +577,7 @@ void background() {
 }
 
 // tilted deg about its centre
-static void logo(float cx, float y, float w, float deg) {
+void logo(float cx, float y, float w, float deg) {
     Texture2D t = tex("fe/tournament_vsus");
     Rectangle src = {130, 50, 780, 400};
     float h = w * src.height / src.width;
@@ -564,6 +608,7 @@ static float easeOut(float k) { k = Clamp(k, 0, 1); return 1 - (1 - k) * (1 - k)
 static void menuEntry(const char *label, float cx, float cy, float size, float deg, float glow, float appear, float t) {
     if (appear <= 0) return;
     float w = textWidth(label, size), s = 1 + glow * (0.04f - 0.04f * cosf(t * 4 * PI));
+    cx = fminf(cx, 1250 - w * 0.54f);  // long translations stay on screen
     rlPushMatrix();
     rlTranslatef(cx + (1 - appear) * 260, cy, 0);
     rlRotatef(deg, 0, 0, 1);
@@ -579,14 +624,15 @@ static void menuEntry(const char *label, float cx, float cy, float size, float d
 
 // Bottom torn paper strip: scrolling ticker, version; back: bobbing back arrow (submenus)
 static void paperStrip(float t, bool back) {
-    const float y = 626;
+    const float y = 598;  // paper band y + 16 .. y + 80; the black bar below it holds the button hints
     Texture2D p = tex("fe2/paper_strip");
+    DrawRectangle(0, (int)y + 80, 1280, 60, BLACK);
     if (p.id) for (float x = 0; x < 1280; x += 255) DrawTexturePro(p, {0, 0, 256, 128}, {x, y, 256, 128}, {}, 0, WHITE);
-    else DrawRectangle(0, y + 8, 1280, 90, {246, 243, 232, 255}), DrawRectangle(0, y + 6, 1280, 4, BLACK);
+    else DrawRectangle(0, y + 16, 1280, 64, {246, 243, 232, 255}), DrawRectangle(0, y + 12, 1280, 4, BLACK);
     const char *tick = tr("WXFE.TickerTapeDefault", "Worms4NX - fan-made homebrew                    ");
-    float w = textWidth(tick, 24) + 120;
-    for (float x = -fmodf(t * 70, w); x < 1280; x += w) text(tick, x, y + 16, 24, INK);
-    text("Ver# " W4NX_VERSION, 1268, y + 76, 14, INK, 2);
+    float w = textWidth(tick, 34) + 160;
+    for (float x = -fmodf(t * 90, w); x < 1280; x += w) text(tick, x, y + 30, 34, INK);
+    text("Ver# " W4NX_VERSION, 1268, 698, 14, GRAY, 2);
     if (!back) return;
     Rectangle d = {16, y - 26 + 5 * sinf(t * 3), 96, 96};
     Texture2D a = tex("fe2/nav_normal");
@@ -594,9 +640,12 @@ static void paperStrip(float t, bool back) {
     else tri({d.x + 14, d.y + 52}, {d.x + 60, d.y + 22}, {d.x + 60, d.y + 82}, ORANGE);
 }
 
+static float backOut(float k) { k = Clamp(k, 0, 1) - 1; return 1 + 2.7f * k * k * k + 1.7f * k * k; }
+
 // Submenu page: curved blue panel (slides in from the left) with the title, its vertical watermark and an illustration
-static void subPanel(const char *title, const char *art, float t, float appear) {
-    float x = (1 - appear) * -420;
+// that pops in after it; p: 0 hidden .. 1 shown (the panel takes the first 0.7)
+static void subPanel(const char *title, const char *art, float t, float p) {
+    float x = (1 - easeOut(p / 0.7f)) * -820, pop = backOut((p - 0.3f) / 0.7f);
     if (!image("fe/bluedivide", {x - 60, -40, 800, 800})) DrawCircleV({x - 260, 360}, 760, BLUE_PANEL);
     rlPushMatrix();
     rlTranslatef(x + 40, 700, 0);
@@ -610,6 +659,7 @@ static void subPanel(const char *title, const char *art, float t, float appear) 
     rlPushMatrix();
     rlTranslatef(r.x + r.width / 2, r.y + r.height / 2, 0);
     rlRotatef(3 * sinf(t * 1.1f), 0, 0, 1);
+    rlScalef(pop, pop, 1);
     if (!strcmp(art, "fe2/art_local") && tex(art).id) {  // the TV robot shows noise
         float o = (float)((int)(t * 12) * 37 % 97);
         DrawTexturePro(tex("fe2/art_local_static"), {o, o * 0.7f, 128, 128}, {-0.06f * r.width, -0.14f * r.height, 0.34f * r.width, 0.36f * r.height}, {}, 0, WHITE);
@@ -643,12 +693,22 @@ static const MenuItem HELP_MENU[] = {
     {nullptr, "Weapon Factory", "Usine d'armes", 900, 420, 56, -2},
 };
 
+static const float LEAVE = 0.18f;
+static int bgPage(Frontend::Screen s, bool online) {
+    using F = Frontend;
+    return s <= F::Main || s == F::Confirm ? 0 : s == F::Local || (s == F::Setup && !online) ? 1 : s == F::Network || s == F::Setup ? 2 : 3;
+}
+
+float Frontend::subIn(float t) const { return leaving >= 0 ? 1 - (t - leaving) / LEAVE : (t - entered) / 0.4f; }
+void Frontend::go(Screen s) { next = s, leaving = now(), FrontBg::page(bgPage(s, online)); }
+
 void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live) {
     sel = clampWrap(sel + dy, n);
     float k = fminf(1, GetFrameTime() * 14);
     for (int i = 0; i < n; i++) {
         const MenuItem &m = items[i];
-        float &g = glow[i], a = live ? easeOut((t - entered - 0.05f * i) / 0.35f) : 1;
+        float &g = glow[i], a = !live ? 1 : leaving >= 0 ? 1 - easeOut((t - leaving - 0.012f * i) / (LEAVE - 0.06f))
+                                                           : easeOut((t - entered - 0.05f * i) / 0.35f);
         g = live ? g + ((i == sel) - g) * k : i == sel;
         menuEntry(tr(m.key, m.en, m.fr), m.x, m.y, m.size, m.deg, g, a, t);
     }
@@ -796,21 +856,22 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     if (cfg.teamSetup.size() < 4) cfg.teamSetup.resize(4);
     Action act = None;
     float t = now();
-    bool typing = editing != nullptr;
+    if (leaving >= 0 && t - leaving >= LEAVE) screen = next, leaving = -1;
+    bool typing = editing != nullptr, busy = typing || leaving >= 0;  // no input while the menu flies out
     if (editing) {
         for (int c = GetCharPressed(); c; c = GetCharPressed())
             if (c >= 32 && c < 256 && editing->size() < 20) editing->push_back((char)c);
         if (IsKeyPressed(KEY_BACKSPACE) && !editing->empty()) editing->pop_back();
         if (IsKeyPressed(KEY_ENTER) || IsGamepadButtonPressed(0, A)) editing = nullptr;
     }
-    int dy = typing ? 0 : P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP});
-    int dx = typing ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
-    bool ok = !typing && P({A}, {KEY_ENTER, KEY_SPACE}), back = !typing && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    int dy = busy ? 0 : P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP});
+    int dx = busy ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
+    bool ok = !busy && P({A}, {KEY_ENTER, KEY_SPACE}), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
     if (screen != shown) {  // W4M menus: slide in (not on the first frame: --ui captures), highlight the current entry
         entered = shown == (Screen)-1 ? -100 : t, from = shown, shown = screen;
         int sel = screen == Main ? mainRow : screen >= Local ? subRow[screen - Local] : 0;
         for (int i = 0; i < 8; i++) glow[i] = i == sel;
-        FrontBg::page(screen <= Main || screen == Confirm ? 0 : screen == Local || (screen == Setup && !online) ? 1 : screen == Network || screen == Setup ? 2 : 3);
+        FrontBg::page(bgPage(screen, online));
     }
 
     BeginDrawing();
@@ -830,7 +891,8 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     case Confirm: {
         bool confirm = screen == Confirm;
         float a = from == Title ? easeOut((t - entered) / 0.4f) : 1;  // the title's logo glides to its menu spot
-        logo(Lerp(640, 330, a), Lerp(90, 40, a), Lerp(760, 560, a), -6 * a);
+        float up = leaving >= 0 ? easeOut((t - leaving) / LEAVE) : from == Title ? 0 : 1 - easeOut((t - entered) / 0.35f);  // to / from a submenu
+        logo(Lerp(640, 330, a), Lerp(90, 40, a) - up * 300, Lerp(760, 560, a), -6 * a);
         menu(MAIN_MENU, 6, mainRow, confirm ? 0 : dy, t, !confirm);
         rlPushMatrix();
         rlTranslatef(0, (1 - a) * 110, 0);
@@ -863,10 +925,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (back) screen = Title;
         if (ok) {
             Screen to[] = {Local, Network, MyWorms, Main, HelpOpts, Confirm};
-            screen = to[mainRow];
             if (mainRow == 3) act = Replays;
-            if (screen == MyWorms) online = false, loaded = false;  // the local setup.txt teams
-            if (screen == Confirm) subRow[4] = 0;
+            else if (mainRow == 5) screen = Confirm, subRow[4] = 0;
+            else go(to[mainRow]);
+            if (mainRow == 2) online = false, loaded = false;  // the local setup.txt teams
         }
         break;
     }
@@ -875,12 +937,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         const MenuItem *items = k == 0 ? LOCAL_MENU : k == 1 ? NET_MENU : HELP_MENU;
         const char *title = k == 0 ? tr("FETXTH.LOCALGAME", "LOCAL GAME", "PARTIE LOCALE") : k == 1 ? tr("FETXTH.NetworkPlay", "NETWORK PLAY", "JEU EN RÉSEAU")
                                    : tr("FETXTH.HELP&OPTIONS", "HELP & OPTIONS", "AIDE ET OPTIONS");
-        subPanel(title, k == 0 ? "fe2/art_local" : k == 1 ? "fe2/art_network" : "fe2/art_help", t, easeOut((t - entered) / 0.35f));
+        subPanel(title, k == 0 ? "fe2/art_local" : k == 1 ? "fe2/art_network" : "fe2/art_help", t, subIn(t));
         int &sel = subRow[k];
         menu(items, n, sel, dy, t);
         paperStrip(t, true);
         hints({{"A", "Enter", tr(nullptr, "Select", "Sélectionner")}, {"B", "Esc", tr(nullptr, "Back", "Retour")}});
-        if (back) screen = Main;
+        if (back) go(Main);
         if (ok && k == 0) {
             if (sel == 0) act = QuickMatch;
             else if (sel == 1) screen = Setup, online = lan = false, row = 0, loaded = false;
@@ -900,10 +962,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (f == 1 && dx && nb) tm.voice = (uint8_t)clampWrap(tm.voice + dx, nb), Audio::setTeamVoice(k, tm.voice);
         if (f == 1 && (dx || ok) && nb) Audio::voice(k, Audio::Voice::Idle);
         if (f == 2 && dx && hats) tm.hat = (uint8_t)clampWrap(tm.hat + dx, hats + 1);
-        subPanel(tr("FETXTH.MYWORMS", "MY WORMS", "MES WORMS"), "fe2/art_myworms", t, easeOut((t - entered) / 0.35f));
+        subPanel(tr("FETXTH.MYWORMS", "MY WORMS", "MES WORMS"), "fe2/art_myworms", t, subIn(t));
         for (int i = 0; i < 4; i++) {
             const GameConfig::Team &m = cfg.teamSetup[i];
-            float a = easeOut((t - entered - 0.06f * i) / 0.35f);
+            float a = leaving >= 0 ? 1 - easeOut((t - leaving - 0.012f * i) / (LEAVE - 0.06f)) : easeOut((t - entered - 0.06f * i) / 0.35f);
             Rectangle c = {560 + (i % 2) * 355.0f + (1 - a) * 400, 104 + (i / 2) * 250.0f, 335, 220};
             popup(c);
             if (k == i && !nine("fe/buttonbig_highlight", {c.x - 6, c.y - 6, c.width + 12, c.height + 12}, 110, 0.5f)) DrawRectangleRoundedLinesEx(c, 0.1f, 6, 4, GOLDEN);
@@ -924,7 +986,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
         else hints({{"A", "Enter", f ? tr(nullptr, "Listen", "Écouter") : tr(nullptr, "Rename", "Renommer")}, {"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")},
                     {"B", "Esc", tr(nullptr, "Save & back", "Enregistrer")}});
-        if (back) saveSetup(cfg), screen = Main;
+        if (back) saveSetup(cfg), go(Main);
         break;
     }
     case Options: {
