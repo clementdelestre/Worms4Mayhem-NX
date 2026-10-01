@@ -22,6 +22,7 @@ const char *SFX_NAMES[(int)Sfx::Count] = {
     "shotgun",   "airstrike",     "donkey", "rope", "teleport",
     "bat_swing", "fire_punch", "prod", "sniper", "bow", "homing", "old_woman", "scouser", "sentry_place", "sentry_fire",
     "dynamite", "gas", "abduction", "flood", "parachute", "mine_beep", "crate_land", "pickup", "super_sheep",
+    "step", "land",
 };
 const char *VOICE_NAMES[(int)Voice::Count] = {"fire", "hurt", "death", "victory", "jump", "idle"};
 constexpr int MAX_VARIANTS = 12;
@@ -123,7 +124,7 @@ void update() {
 
 void play(Sfx id, float volume) {
     Variants *v = &sfx[(int)id];
-    if (!v->n && id > Sfx::Tick) v = &sfx[(int)Sfx::Fire];
+    if (!v->n && id > Sfx::Tick && id <= Sfx::SuperSheepFire) v = &sfx[(int)Sfx::Fire];
     playRandom(*v, volume);
 }
 

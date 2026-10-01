@@ -8,7 +8,8 @@ namespace Audio {
 enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Holy, TurnStart, Tick,
                  Shotgun, Airstrike, Donkey, Rope, Teleport,
                  BatSwing, FirePunch, Prod, Sniper, Bow, Homing, OldWomanFire, ScouserFire, SentryPlace, SentryFire,
-                 Dynamite, Gas, Abduction, Flood, Parachute, MineBeep, CrateLand, Pickup, SuperSheepFire, Count };
+                 Dynamite, Gas, Abduction, Flood, Parachute, MineBeep, CrateLand, Pickup, SuperSheepFire,
+                 Step, Land, Count };  // Step, Land: worm foley, silent when not imported
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle, Count };
 
 void init();

@@ -18,10 +18,12 @@ const char *wormName(int team, int i);
 // pad -1 = any pad. D-pad buttons also fire on left-stick flicks and auto-repeat while held.
 bool pressed(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys);
 void pollStick();  // once per frame, before any pressed()
-// Bottom button-hint bar. pad: "A" "B" "X" "Y" "+" "-" "L" "R" "ZL"...; key: shown on desktop without a controller.
+// Bottom button hints. pad: "A" "B" "X" "Y" "+" "-" "L" "R" "ZL"...; key: shown on desktop without a controller.
 struct Hint { const char *pad, *key, *label; };
 void hints(std::initializer_list<Hint> h);
-void controls();  // full-screen controls help page
+void controls(bool game);  // full-screen controller diagram: match or menu controls
+bool helpHeld();            // - (desktop F1) held past 0.35 s: show controls()
+extern bool forceHelp;      // --ui help captures
 
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 struct Frontend {
@@ -50,6 +52,7 @@ private:
 // releasing for at least one tick, until game.weapon matches: the sim and the network only ever see plain inputs.
 struct Hud {
     bool open = false, mine = false;  // mine: a human here plays the current turn
+    bool quiet = false;               // no bottom hints this frame
     // local: a human here plays the current turn; tick: ticks simulated so far
     void input(const Game &g, Input &in, bool local, int pad, uint32_t tick);
     void draw(const Game &g, const Camera3D &cam, uint32_t tick);
@@ -57,7 +60,7 @@ struct Hud {
 
 private:
     int cursor = 0, target = -1, tries = 0;
-    bool swallow = false;  // the A that picked a weapon must not fire
+    bool swallow = true;  // a held A (weapon pick, menu START) must not fire
     int pressedOn = -1;       // weapon when the current press began, -1 = releasing
     uint32_t releasedAt = 0;  // tick when the release began
 };

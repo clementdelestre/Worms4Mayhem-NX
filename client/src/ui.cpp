@@ -162,6 +162,11 @@ bool P(std::initializer_list<int> b, std::initializer_list<int> k) { return pres
 }  // namespace
 
 static bool dirFire[4][4];  // [pad][up, right, down, left] (raylib LEFT_FACE_* order): press or auto-repeat
+static float minusFor = 0;     // seconds - (desktop F1) has been held
+static bool minusTap = false;  // - released this frame before HOLD
+const float HOLD = 0.35f;
+bool forceHelp = false;
+bool helpHeld() { return forceHelp || minusFor >= HOLD; }
 
 void pollStick() {
 #ifdef __SWITCH__
@@ -173,6 +178,10 @@ void pollStick() {
     static float wait[4][4];
     const int KEYS[4] = {KEY_UP, KEY_RIGHT, KEY_DOWN, KEY_LEFT};
     float dt = GetFrameTime();
+    bool m = IsKeyDown(KEY_F1);
+    for (int p = 0; p < 4; p++) m |= IsGamepadButtonDown(p, MINUS);
+    minusTap = !m && minusFor > 0 && minusFor < HOLD;
+    minusFor = m ? minusFor + dt : 0;
     for (int p = 0; p < 4; p++) {
         float x = GetGamepadAxisMovement(p, GAMEPAD_AXIS_LEFT_X), y = up * GetGamepadAxisMovement(p, GAMEPAD_AXIS_LEFT_Y);
         bool stick[4] = {y > 0.5f, x > 0.5f, y < -0.5f, x < -0.5f};
@@ -304,45 +313,113 @@ static bool keyGlyphs() {
 }
 
 void hints(std::initializer_list<Hint> h) {
-    const float G = 24, S = 21;
+    const float G = 22, S = 19;
     bool keys = keyGlyphs();
     auto pick = [&](const Hint &x) { return keys ? x.key : x.pad ? x.pad : x.key; };
     float total = 0;
     for (const Hint &x : h) if (pick(x)) total += glyphs(pick(x), 0, 0, G, pick(x) == x.key, false) + 8 + textWidth(x.label, S) + 28;
-    DrawRectangle(0, 686, 1280, 34, {0, 0, 0, 225});
     float x = 640 - (total - 28) / 2;
     for (const Hint &x0 : h) {
         const char *g = pick(x0);
         if (!g) continue;
-        x += glyphs(g, x, 691, G, g == x0.key) + 8;
-        text(x0.label, x, 691, S, WHITE);
+        DrawRectangleRounded({x + 2, 694, glyphs(g, 0, 0, G, g == x0.key, false), G}, 1, 8, {0, 0, 0, 110});  // drop shadow
+        x += glyphs(g, x, 692, G, g == x0.key) + 8;
+        text(x0.label, x, 693, S, WHITE);
         x += textWidth(x0.label, S) + 28;
     }
 }
 
-void controls() {
-    struct Row { const char *what, *pad, *key; };
-    static const Row GAME[] = {{"Walk / turn", "LS", "Arrows"}, {"Aim", "RS", "W/S"}, {"Aim (single Joy-Con)", "L", nullptr},
-                               {"Fire (hold = power)", "A", "Space"}, {"Jump (twice: backflip) / let go of rope", "B", "Enter"}, {"Weapon panel", "X", "Q"},
-                               {"Next weapon", "Y/R", "Tab"}, {"Rotate camera", "RS", "A/D"}, {"Zoom", "ZL/ZR", "Z/X"},
-                               {"Performance overlay", "L+R", "F3"}, {"Pause", "+", "Esc"}};
-    static const Row MENU[] = {{"Move", "D-pad/LS", "Arrows"}, {"Confirm", "A", "Enter"}, {"Back", "B", "Esc"},
-                               {"Start match (setup)", "+", nullptr}, {"Controllers (setup)", "-", nullptr}, {"Quit (title screen)", "+", "Esc"}};
-    DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 120});
-    popup({90, 24, 1100, 652});
-    text("CONTROLS", 640, 40, 46, GOLDEN, 1);
-    auto table = [](const char *title, const Row *r, int n, float y) {
-        text(title, 140, y, 28, GOLDEN);
-        for (int i = 0; i < n; i++, r++) {
-            float ry = y + 34 + i * 29;
-            text(r->what, 160, ry, 22, WHITE);
-            glyphs(r->pad, 560, ry, 24, false);
-            if (r->key) glyphs(r->key, 800, ry, 24, true);
+static void logo(float cx, float y, float w);
+
+// both windings: rlgl culls back faces
+static void tri(Vector2 a, Vector2 b, Vector2 c, Color col) { DrawTriangle(a, b, c, col), DrawTriangle(a, c, b, col); }
+
+// Generic twin-stick controller drawn with shapes, each control's callout arrow pointing at it.
+void controls(bool game) {
+    enum { ZL, L, MIN, LS, DPAD, ZR, R, PLS, BX, BY, BA, BB, RS };
+    static const Vector3 PART[] = {{-185, -137, 6}, {-160, -112, 6}, {-45, -70, 14}, {-150, -35, 40}, {-75, 35, 40}, {185, -137, 6},
+                                   {160, -112, 6}, {45, -70, 14}, {150, -69, 20}, {116, -35, 20}, {184, -35, 20}, {150, -1, 20}, {75, 35, 40}};  // x, y, radius
+    struct Call { int part; float ly; const char *label, *key; };
+    static const Call GAME[] = {
+        {ZL, 232, "Zoom out", "Z"}, {L, 276, "L + stick: aim\n(single Joy-Con)", nullptr}, {MIN, 356, "Hold: controls", "F1"},
+        {LS, 414, "Move / turn", "Arrows"}, {DPAD, 488, "Weapon panel cursor", "Arrows"}, {ZR, 232, "Zoom in", "X"},
+        {R, 270, "Next weapon", "Tab"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"}, {BY, 380, "Next weapon", "Tab"},
+        {BA, 440, "Fire (hold = power)", "Space"}, {BB, 482, "Jump (twice = backflip)", "Enter"},
+        {RS, 530, "Aim (up / down)\nCamera orbit (left / right)", "W/S/A/D"}};
+    static const Call MENU[] = {
+        {MIN, 330, "Tap: controllers (setup)\nHold: controls", "F1"}, {LS, 414, "Move", "Arrows"}, {DPAD, 488, "Move / change value", "Arrows"},
+        {PLS, 300, "Start match (setup)\nQuit (title screen)", "Esc"}, {BA, 430, "Confirm", "Enter"}, {BB, 482, "Back", "Esc"}};
+    const float cx = 640, cy = 450;
+    const Color BODY = {58, 62, 72, 255}, EDGE = {225, 228, 236, 255}, DARK = {30, 31, 36, 255};
+    auto at = [&](int p) { return Vector2{cx + PART[p].x, cy + PART[p].y}; };
+    bool keys = keyGlyphs();
+
+    DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 225});
+    logo(640, 4, 300);
+    text(game ? "MATCH CONTROLS" : "MENU CONTROLS", 640, 164, 40, GOLDEN, 1);
+    // shoulders, then the body silhouette (outline pass under the fill)
+    for (float s : {-1.0f, 1.0f}) {
+        Rectangle zl = {cx + s * 180 - 65, cy - 152, 130, 40}, l = {cx + s * 160 - 80, cy - 126, 160, 36};
+        DrawRectangleRounded(zl, 0.8f, 8, DARK), DrawRectangleRoundedLinesEx(zl, 0.8f, 8, 2, EDGE);
+        DrawRectangleRounded(l, 0.8f, 8, {44, 47, 55, 255}), DrawRectangleRoundedLinesEx(l, 0.8f, 8, 2, EDGE);
+        text(s < 0 ? "ZL" : "ZR", zl.x + zl.width / 2, zl.y + 3, 16, LIGHTGRAY, 1);
+        text(s < 0 ? "L" : "R", l.x + l.width / 2, l.y + 3, 16, LIGHTGRAY, 1);
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        float g = pass ? 0 : 3;
+        Color c = pass ? BODY : EDGE;
+        DrawRectangleRounded({cx - 250 - g, cy - 100 - g, 500 + 2 * g, 170 + 2 * g}, 0.55f, 12, c);
+        for (float s : {-1.0f, 1.0f}) DrawCircleV({cx + s * 190, cy + 70}, 80 + g, c);
+    }
+    DrawRectangleRounded({cx - 236, cy - 92, 472, 44}, 0.9f, 8, {255, 255, 255, 14});
+    // callout lines run under the buttons, arrow heads stop at their edge
+    const Call *calls = game ? GAME : MENU;
+    int n = game ? sizeof GAME / sizeof *GAME : sizeof MENU / sizeof *MENU;
+    for (int i = 0; i < n; i++) {
+        Vector2 a = at(calls[i].part), e = {a.x < cx ? 368.0f : 912.0f, calls[i].ly + 11}, via = e;
+        if (calls[i].part == BY) via = {cx + 218, cy - 69}, DrawLineEx(via, e, 2, GOLDEN);  // out between X and A
+        Vector2 d = Vector2Normalize(Vector2Subtract(via, a)), tip = Vector2Add(a, Vector2Scale(d, PART[calls[i].part].z + 2)), q = {-d.y, d.x};
+        DrawLineEx(tip, via, 2, GOLDEN);
+        tri(tip, Vector2Add(Vector2Add(tip, Vector2Scale(d, 12)), Vector2Scale(q, 6)), Vector2Add(Vector2Add(tip, Vector2Scale(d, 12)), Vector2Scale(q, -6)), GOLDEN);
+        DrawCircleV(e, 3, GOLDEN);
+    }
+    for (int p : {LS, RS}) {
+        Vector2 c = at(p);
+        DrawCircleV(c, 38, DARK), DrawCircleV(c, 28, {78, 82, 94, 255}), DrawCircleLinesV(c, 28, EDGE), DrawCircleV(c, 17, {64, 68, 78, 255});
+    }
+    Vector2 dp = at(DPAD);
+    DrawRectangleRounded({dp.x - 13, dp.y - 38, 26, 76}, 0.3f, 4, DARK), DrawRectangleRounded({dp.x - 38, dp.y - 13, 76, 26}, 0.3f, 4, DARK);
+    for (int k = 0; k < 4; k++) {
+        Vector2 u = {cosf(k * PI / 2), sinf(k * PI / 2)}, v = {-u.y, u.x}, t = Vector2Add(dp, Vector2Scale(u, 33));
+        tri(t, Vector2Add(Vector2Add(dp, Vector2Scale(u, 22)), Vector2Scale(v, 7)), Vector2Add(Vector2Add(dp, Vector2Scale(u, 22)), Vector2Scale(v, -7)), EDGE);
+    }
+    const char *FACE[] = {"X", "Y", "A", "B"};
+    for (int k = 0; k < 4; k++) {
+        Vector2 c = at(BX + k);
+        DrawCircleV(c, 19, DARK), DrawCircleLinesV(c, 19, EDGE);
+        text(FACE[k], c.x, c.y - 11, 22, WHITE, 1);
+    }
+    Vector2 mi = at(MIN), pl = at(PLS);
+    DrawCircleV(mi, 12, DARK), DrawCircleV(pl, 12, DARK);
+    DrawRectangle(mi.x - 6, mi.y - 1.5f, 12, 3, EDGE), DrawRectangle(pl.x - 6, pl.y - 1.5f, 12, 3, EDGE), DrawRectangle(pl.x - 1.5f, pl.y - 6, 3, 12, EDGE);
+    // labels: right-aligned on the left of the pad, left-aligned on the right; keycaps on desktop
+    for (int i = 0; i < n; i++) {
+        bool left = at(calls[i].part).x < cx;
+        std::string lines = calls[i].label;
+        float y = calls[i].ly, x = left ? 355.0f : 925.0f;
+        for (size_t s = 0, e; s <= lines.size(); s = e + 1, y += 25) {
+            e = lines.find('\n', s);
+            if (e == std::string::npos) e = lines.size();
+            std::string ln = lines.substr(s, e - s);
+            text(ln.c_str(), x, y, 22, WHITE, left ? 2 : 0);
+            if (keys && calls[i].key && y == calls[i].ly) {
+                float w = textWidth(ln.c_str(), 22) + 10;
+                glyphs(calls[i].key, left ? x - w - glyphs(calls[i].key, 0, 0, 24, true, false) : x + w, y - 1, 24, true);
+            }
         }
-    };
-    table("In a match", GAME, 11, 96);
-    table("Menus", MENU, 6, 96 + 34 + 11 * 29 + 8);
-    text("hold L + stick up/down", 640, 96 + 34 + 2 * 29 + 2, 18, LIGHTGRAY);
+    }
+    if (game) text(keys ? "L + R  (F3): performance overlay" : "L + R: performance overlay", 640, 640, 22, LIGHTGRAY, 1);
+    else text("Each screen lists its other buttons at the bottom", 640, 640, 22, LIGHTGRAY, 1);
 }
 
 void background() {
@@ -581,7 +658,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         break;
     }
     case Controls:
-        controls();
+        controls(true);
         hints({{"B", "Esc", "Back"}});
         if (back || ok) screen = Options;
         break;
@@ -707,9 +784,9 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         else if (id == 299) hints({{"D-pad", "Left/Right", "Preset"}, {"A", "Enter", "Edit scheme"}, {"B", "Esc", "Back"}});
         else if (id == 350) hints({{"A", "Enter", "Open Wormpot"}, {"B", "Esc", "Back"}});
         else if (online) hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Go online"}, {"B", "Esc", "Back"}});
-        else hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Start"}, {APPLET, nullptr, "Controllers"}, {"B", "Esc", "Back"}});
+        else hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Start"}, {APPLET, nullptr, "Tap: controllers"}, {"B", "Esc", "Back"}});
 #ifdef __SWITCH__
-        if (!online && P({MINUS}, {})) controllerApplet(humanTeams(cfg));
+        if (!online && minusTap) controllerApplet(humanTeams(cfg));
 #endif
         if (back) saveSetup(cfg), screen = Main;
         if ((ok && id == 400) || (!typing && P({PLUS}, {}))) {
@@ -723,6 +800,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         break;
     }
     }
+    if (helpHeld()) controls(false);
     if (capture) {
         rlDrawRenderBatchActive();
         Image img = LoadImageFromScreen();
@@ -929,7 +1007,8 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     const uint8_t held = in.buttons;  // before the panel blanks `in`: the swallow must wait for a real release
     if (cur.team < (int)g.cfg.teamSetup.size() && g.cfg.teamSetup[cur.team].cpu) local = false;
     mine = local;
-    // swallow: a button still held from a menu or another turn must not fire or jump
+    // swallow: a button still held from a menu (START at tick 0) or another turn must not fire or jump
+    if (tick == 0) swallow = true;
     if (!local || g.phase != Phase::Aim) { open = false, target = -1, swallow = true; return; }
     int n = (int)WEAPONS.size(), cols = PANEL_COLS;
     if (pressed(pad, {X}, {KEY_Q})) open = !open, cursor = g.weapon;
@@ -1066,7 +1145,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (g.phase == Phase::GameOver) {
         if (g.winner >= 0) text(TextFormat("%s WINS!", teamName(g.cfg, g.winner).c_str()), 640, 260, 70, TEAM_COLORS[g.winner % 4], 1);
         else text("DRAW!", 640, 260, 70, WHITE, 1);
-        hints({{"A", "Space", "Continue"}, {"+", "Esc", "Pause"}});
+        if (!g.cfg.mission && !quiet) hints({{"A", "Space", "Continue"}});  // missionEnd() has its own
         return;
     }
     const WeaponDef &wd = WEAPONS[g.weapon];
@@ -1108,7 +1187,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
     digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
     if (g.phase == Phase::Retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
-    // team health (bottom centre, above the hint bar)
+    // team health (bottom centre, above the hints)
     static const char *FLAGS[4] = {"flags/custom_cool", "flags/custom_police", "flags/custom_genie", "flags/custom_crown"};
     int maxHp = std::max(1, (int)g.cfg.scheme.health) * std::max(1, g.perTeam);
     for (int t = 0; t < g.teams; t++) {
@@ -1145,9 +1224,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / fmaxf(wd.fuse, 0.01f), 0, 1));
     }
     if (open) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
-    else if (mine && g.phase == Phase::Aim)
-        hints({{"A", "Space", "Fire (hold)"}, {"B", "Enter", "Jump (x2 flip)"}, {"X", "Q", "Weapons"}, {"Y/R", "Tab", "Next"}, {"+", "Esc", "Pause"}});
-    else hints({{"+", "Esc", "Pause"}});
+    else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});
     if (!open) return;
 
     // weapon panel
@@ -1195,7 +1272,7 @@ Pause::Action Pause::update() {
 void Pause::draw(bool online) const {
     if (!open) return;
     if (help) {
-        controls();
+        controls(true);
         hints({{"B", "Esc", "Back"}});
         return;
     }
@@ -1408,7 +1485,6 @@ int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best,
     paragraph(won ? m.success : m.failure, 380, 300, 520, 22, LIGHTGRAY, 3);
     text(TextFormat("Time  %s", clockText(g.run.ticks).c_str()), 640, 400, 32, WHITE, 1);
     if (best.done) text(won && best.best == g.run.ticks ? "New best time!" : TextFormat("Best  %s", clockText(best.best).c_str()), 640, 444, 26, GOLDEN, 1);
-    DrawRectangle(0, 686, 1280, 34, BLACK);  // covers the HUD's game-over hints
     if (won && hasNext) hints({{"A", "Enter", "Next"}, {"X", "R", "Retry"}, {"B", "Backspace", "Back to list"}});
     else hints({{"A", "Enter", won ? "Continue" : "Retry"}, {"B", "Backspace", "Back to list"}});
     if (P({A}, {KEY_ENTER, KEY_SPACE})) return won ? (hasNext ? 1 : 3) : 2;

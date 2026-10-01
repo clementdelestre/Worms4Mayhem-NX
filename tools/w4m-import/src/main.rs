@@ -136,6 +136,9 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("crate_land", "weapons", &["CrateSpawn"]),
     ("pickup", "weapons", &["PickUpAmmo", "PickUpHealth", "PickUpUtility"]),
     ("super_sheep", "weapons", &["WingFlap1", "WingFlap2", "WingFlap3"]),
+    // W4M has no worm walk event: the Old Woman's soft footsteps stand in for the shuffle
+    ("step", "weapons", &["OldWomenFootstep1", "OldWomenFootstep2", "OldWomenFootstep3", "OldWomenFootStep4", "OldWomenFootstep5"]),
+    ("land", "weapons", &["Thud1", "Thud2", "Thud3", "Thud4"]),
 ];
 // our voice file -> W4M speech category (Data/Audio/Speech/<bank>.lsd)
 const VOICES: &[(&str, &str)] = &[

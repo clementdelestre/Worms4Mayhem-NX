@@ -140,15 +140,56 @@ static const char *heldModel(const WeaponDef &d, const char **clip) {
     }
 }
 
+// Render-only gait state: the sim walks worms by moving pos (vel stays 0), so the cycle follows position deltas.
+struct WormAnim { Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, flip = false; };
+static std::vector<WormAnim> wormAnims;
+
+// Once per frame, for every worm: walk phase advances with distance walked, footsteps on the cycle beat, landing thud.
+static void animateWorms(const Game &g, float dt) {
+    wormAnims.resize(g.worms.size());
+    const float L = fmaxf(Models::clipLength("worm", "Walk"), 0.1f);
+    for (size_t i = 0; i < g.worms.size(); i++) {
+        const Worm &w = g.worms[i];
+        WormAnim &a = wormAnims[i];
+        Vector3 d = Vector3Subtract(w.pos, a.pos);
+        float dist = sqrtf(d.x * d.x + d.z * d.z), turn = fabsf(remainderf(w.yaw - a.yaw, 2 * PI));
+        if (!a.init || dist > 2) a = WormAnim{}, a.init = true, dist = turn = 0;  // spawn, teleport, replay rewind
+        a.pos = w.pos, a.yaw = w.yaw;
+        if (!w.grounded && fabsf(w.vel.y) > 1) {  // ignore slope-contact flicker
+            if (a.air == 0) a.flip = w.vel.x * sinf(w.yaw) + w.vel.z * cosf(w.yaw) < -0.5f;  // backflip leaves backwards
+            a.air += dt, a.fallV = fminf(a.fallV, w.vel.y), a.walk = 0, a.moving = false;
+            continue;
+        }
+        if (a.air > 0.2f && a.fallV < -4 && w.alive) a.land = 0, Audio::play(Audio::Sfx::Land, fminf(-a.fallV / 20, 0.5f));
+        a.air = a.fallV = 0, a.land += dt;
+        float step = dist + turn * 0.6f;  // turning in place shuffles at half the walk pace
+        a.still = step > 1e-4f ? 0 : a.still + dt;
+        a.moving = w.alive && a.still < 0.1f;  // bridges render frames that ran no sim tick
+        float before = a.walk, B = 0.4f * L;   // one body surge per cycle; B: where it lands
+        if (a.moving) a.walk += step / 3;      // in-place clip, 1x at the 3 u/s walk speed
+        else if (a.walk > 0) a.walk = a.walk < L / 2 ? fmaxf(a.walk - dt, 0) : a.walk + dt >= L ? 0 : a.walk + dt;  // ease to the upright pose
+        bool beat = floorf((a.walk - B) / L) > floorf((before - B) / L);
+        a.walk = fmodf(a.walk, L);
+        bool self = (int)i == g.current && (g.phase == Phase::Aim || g.phase == Phase::Retreat) && Vector3Length(w.vel) < 0.3f;  // not sliding
+        if (a.moving && beat && self) Audio::play(Audio::Sfx::Step, 0.3f);
+    }
+}
+
 // W4M worm: team-tinted, animation picked from the sim state (aim clips map pitch to their timeline).
 static bool drawWorm(const Game &g, const Worm &w, float clock) {
     int i = int(&w - g.worms.data());
+    WormAnim a = i < (int)wormAnims.size() ? wormAnims[i] : WormAnim{};
     float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
     float fidget = fmodf(clock + i * 7.3f, 25);  // desynchronised per worm
     const char *clip = "Base", *held = nullptr;
     bool loop = true;
-    if (!w.grounded && fabsf(w.vel.y) > 1) clip = w.vel.y > 0 ? "Jump" : "Fall";  // ignore slope-contact flicker
-    else if (speed > 0.3f) clip = "Walk";
+    bool tool = i == g.current && (g.roped || g.jetting);
+    if (a.air > 0 && speed > 4 && !tool) clip = "Blastflight2";  // knocked flying
+    else if (a.air > 0) {
+        clip = a.flip ? "Backflip" : w.vel.y > 0 ? "Jump" : "Fall";
+        if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
+    } else if (a.moving || a.walk > 0) clip = "Walk", t = a.walk;
+    else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0) clip = "Land", t = a.land, loop = false;
     else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up
     else if (g.phase == Phase::GameOver && w.team == g.winner) clip = "Victorious_Grin";
     else if (i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && (held = heldModel(WEAPONS[g.weapon], &clip))) {
@@ -398,12 +439,14 @@ int main(int argc, char **argv) {
         missionIdx = i, missionSaved = false, online = false;
         startMatch(missionConfig(missions[i], (uint32_t)(GetTime() * 1000)));
     };
-    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause"))) {
+    // help | helpmenu: the hold - controls overlay over a match / the main menu
+    Ui::forceHelp = uiShot && (!strcmp(uiShot, "help") || !strcmp(uiShot, "helpmenu"));
+    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help"))) {
         startMatch({1234, 2, 2, argc > 3 ? argv[3] : "", 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
         hud.open = !strcmp(uiShot, "panel");
         pause.open = !strcmp(uiShot, "pause");
     } else if (uiShot) {
-        front.screen = !strcmp(uiShot, "main") ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::Setup
+        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::Setup
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
         if (!strcmp(uiShot, "wormpot")) front.screen = Ui::Frontend::Wormpot, opt.wormpot = WP_DOUBLE_DAMAGE | WP_QUICK_WALK | WP_CRATE_SHOWER;
         if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
@@ -488,6 +531,7 @@ int main(int argc, char **argv) {
             BeginDrawing();
             Ui::background();
             int pick = Ui::missionMenu(missionMenu, missions, progress);
+            if (Ui::helpHeld()) Ui::controls(false);
             if (uiShot && frame == 10) {
                 rlDrawRenderBatchActive();
                 Image img = LoadImageFromScreen();
@@ -506,6 +550,7 @@ int main(int argc, char **argv) {
             BeginDrawing();
             Ui::background();
             int pick = Ui::replayList(replayFiles, replaySel, instant);
+            if (Ui::helpHeld()) Ui::controls(false);
             if (uiShot && frame == 10) {
                 rlDrawRenderBatchActive();
                 Image img = LoadImageFromScreen();
@@ -556,6 +601,7 @@ int main(int argc, char **argv) {
                 BeginDrawing();
                 Ui::background();
                 Ui::lanGames(games, lanSel, status);
+                if (Ui::helpHeld()) Ui::controls(false);
                 EndDrawing();
                 continue;
             }
@@ -595,6 +641,7 @@ int main(int argc, char **argv) {
                 Ui::hints({{"A", "Enter", "Join"}, {"X", "C", "Create room"}, {"Y", "R", "Refresh"}, {"B", "Esc", "Back"}});
                 drawTextCentered(status.c_str(), 640, 660, 22, ORANGE);
             }
+            if (Ui::helpHeld()) Ui::controls(false);
             EndDrawing();
             continue;
         }
@@ -772,6 +819,7 @@ int main(int argc, char **argv) {
         lap(T_TERRAIN);
         game.terrain.drawObjects(view.position);
         lap(T_DECOR);
+        animateWorms(game, dt);
         for (const Worm &w : game.worms) {
             if (!w.alive) { drawGrave(game, w); continue; }
             if ((scope && &w == &cur) || !Models::visible(w.pos, 2)) continue;  // scope: the camera is inside it
@@ -861,6 +909,7 @@ int main(int argc, char **argv) {
             DrawRing(c, 26, 29, 0, 360, 32, Fade(BLACK, 0.7f));
             DrawRectangle(c.x - 40, c.y - 1, 80, 2, Fade(BLACK, 0.7f)), DrawRectangle(c.x - 1, c.y - 40, 2, 80, Fade(BLACK, 0.7f));
         }
+        hud.quiet = pause.open || playing || irEnd >= 0;  // those draw their own hints
         hud.draw(game, view, tick);
         if (const MissionSpec *ms = game.cfg.mission; ms && game.phase != Phase::GameOver) Ui::missionHud(game, *ms);
         else if (ms && !pause.open && missionIdx >= 0) {
@@ -878,6 +927,7 @@ int main(int argc, char **argv) {
         } else if (irEnd >= 0) Ui::replayBadge();
         if (remoteTurn) drawTextCentered("Remote player's turn", 640, 90, 24, WHITE);
         if (online && !status.empty()) drawTextCentered(status.c_str(), 640, 120, 24, ORANGE);
+        if (Ui::helpHeld()) Ui::controls(true);
         if (perfOn && !bench) {  // bench: keep the overlay out of the measured ui cost
             int tris = 0;
             for (const auto &ps : game.terrain.parts)
