@@ -13,7 +13,10 @@ void init();
 void shutdown();
 void update();  // call once per frame: streams music
 void play(Sfx id, float volume = 1.0f);
-void voice(int team, Voice id);  // team i speaks with bank i % bank count (banks = dirs under voices/)
+void voice(int team, Voice id);  // team i speaks with its bank (setTeamVoice), default i % bank count (banks = dirs under voices/)
+int voiceBanks();
+const char *voiceBankName(int bank);  // folder name, "" if out of range
+void setTeamVoice(int team, int bank);
 // track = music/<track>.ogg (e.g. the map theme); null keeps the current track, unknown falls back to theme.ogg
 void music(bool on, const char *track = nullptr);
 

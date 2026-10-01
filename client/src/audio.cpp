@@ -37,6 +37,7 @@ struct Bank {
 
 Variants sfx[(int)Sfx::Count];
 std::vector<Bank> banks;
+std::vector<int> teamBank;  // team -> bank, -1 = default
 Music theme;
 std::string track;
 bool musicLoaded = false, musicOn = false;
@@ -126,13 +127,23 @@ void play(Sfx id, float volume) {
 
 void voice(int team, Voice id) {
     if (banks.empty()) return;
-    Bank &b = banks[team % banks.size()];
+    int k = team < (int)teamBank.size() && teamBank[team] >= 0 ? teamBank[team] : team;
+    Bank &b = banks[k % banks.size()];
     // ponytail: lazy per-bank load hitches once on a team's first line; ~30 banks decoded upfront would cost ~300 MB
     if (!b.loaded) {
         for (int i = 0; i < (int)Voice::Count; i++) b.lines[i] = loadVariants(TextFormat("%s/%s", b.dir.c_str(), VOICE_NAMES[i]));
         b.loaded = true;
     }
     playRandom(b.lines[(int)id], 1.0f);
+}
+
+int voiceBanks() { return (int)banks.size(); }
+
+const char *voiceBankName(int bank) { return bank >= 0 && bank < (int)banks.size() ? GetFileName(banks[bank].dir.c_str()) : ""; }
+
+void setTeamVoice(int team, int bank) {
+    if (team >= (int)teamBank.size()) teamBank.resize(team + 1, -1);
+    teamBank[team] = bank;
 }
 
 void music(bool on, const char *name) {

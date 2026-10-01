@@ -8,7 +8,10 @@ worms4nx: $(SRC) $(wildcard src/*.h)
 	$(CXX) $(CXXFLAGS) $(SRC) -o $@ $(LDLIBS)
 
 clean:
-	rm -f worms4nx sim_check
+	rm -f worms4nx sim_check ai_check
 
 check: tests/sim_check.cpp $(filter-out src/main.cpp,$(SRC))
 	$(CXX) $(CXXFLAGS) $^ -o sim_check $(LDLIBS) && ./sim_check
+
+ai_check: tests/ai_check.cpp $(filter-out src/main.cpp,$(SRC))
+	$(CXX) $(CXXFLAGS) $^ -o ai_check $(LDLIBS) && ./ai_check

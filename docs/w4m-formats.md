@@ -87,9 +87,19 @@ Locations: the worm (`W4.Worm`, 34 bones, 329 clips) is in `Bundl474`; weapons, 
 
 Each model is normalised (feet or centre at the origin, size from a table) and written as `client/assets/models/<name>.glb` with stored-deflate PNG textures. Static models get their rest pose baked into the vertices. Skinned ones (worm, sheep) get one flat joint node per bone with an identity inverse bind matrix, and every clip is sampled at 30 fps into that joint's full skinning matrix (TRS). raylib then rebuilds `inverse(bind) * pose` without a node hierarchy or shear. raylib-nx skins on the CPU (`SUPPORT_GPU_SKINNING 0`): `Models::draw` poses the shared mesh right before each draw and skips it when the pose has not changed.
 
+## Weapon tweaks (`Data/Tweak/WEAPTWK.XOM`)
+
+Plain XOM, containers split on `CTNR`, grouped by type in header order. `X{Int,Uint,Float}ResourceDetails`: 3 header bytes, value (4 B), varint name (`Mine.MaxFuse` 5000 ms, `Gravity` -0.00025, `Wind.MaxSpeed`...). `XContainerResourceDetails`: varint ref, varint name (`kWeaponBazooka` -> its `PayloadWeaponPropertiesContainer` / `Melee...` / `Gun...` / `Homing...` / `Flying...` / `JumpingPayload...` / `SentryGun...`). Payload containers hold a 6 x f32 run, read as land crater radius, impulse, worm damage radius, max worm damage, impulse radius, impulse offset (Bazooka 50, 0.29, 82.5, 60, 110, -45; Holy 80, 0.45, 187, 129, 150, -60). Gun: damage after `0.92` (Shotgun 25, Sniper 40); melee: first f32 (Bat 20, Fire Punch 16, Prod 5). Field names are inferred from values only. World units: 20 per metre.
+
 ## Unknown / not imported
 
 - Detail objects: the poxel's own (non-uniform) scale is not applied to the object basis; animated details (swinging sign) are static. Mines/barrels/crates from mission data are not placed either (their models are exported), worm start positions (mission `WormDataContainer` positions are all zero: scripts place them).
 - Exact heightmap extent/height scale and water level; possible x mirroring (not verifiable without the game running).
 - Voxel bits 8+, the `?` theme lines, texture offsets and directions: we texture triplanar in world space; only the vector lengths are used (median repeat per material).
 - Frontend names: `Data/Tweak/SCRIPTS.XOM` `WXFE_LevelDetails` map `Level_FileName` to `FETXT.*` text ids (theme there is always "preselected").
+
+## Frontend / HUD art (`tools/w4m-ui`)
+
+- Loose 32-bit TGAs (uncompressed, bottom-up): `Data/Frontend/Levels` (level previews, 256²), `Data/HUD/Weapons` (weapon icons, 256²), `Data/HUD/Flags`, `Data/Frontend/mechanics` (`LoadBack*` 1920×1080 backgrounds). Written as `assets/ui/{levels,weapons,flags,back}/<lowercase stem>.png`.
+- UI `XImage`s (`Bundl00/06/08/10/472`: buttons, popups, borders, team health bars, game logo in `Tournament VsUS`) are found by scanning `CTNR` tags for a `.tga`-named container whose header size matches (those bundles hold untagged types we cannot size). Pixels are stored bottom row first (GL); format 9/10/11 = DXT1/3/5. Output `assets/ui/fe/<name>.png`.
+- `Bundl03` `FE.Font` is a 31-page (512², RGBA8, unnamed) multi-texture font incl. CJK and button glyphs; glyph metrics (`XMultiTexFontPage`) not decoded: the client uses the Switch shared system font instead.

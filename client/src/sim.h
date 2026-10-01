@@ -12,7 +12,11 @@ struct Input {
 };
 
 // Shell covers bazooka/grenades/clusters; speed = rope length or jetpack thrust, fuse = sheep timeout or jetpack fuel.
-enum class Kind : uint8_t { Shell, Sheep, Airstrike, Donkey, Shotgun, Rope, Jetpack, Teleport };
+// Melee: speed = knock along the aim, bounce = upward knock, fuse = attacker's leap. Sentry: radius = range, fuse = reload.
+enum class Kind : uint8_t { Shell, Sheep, Airstrike, Donkey, Shotgun, Rope, Jetpack, Teleport,
+                            SuperSheep, OldWoman, Melee, Homing, Mine, Scouser, Sentry, Abduction, Flood,
+                            Parachute, SkipGo, Surrender, ChangeWorm };
+inline bool powered(Kind k) { return k == Kind::Shell || k == Kind::Homing; }  // hold FIRE to charge, release to fire
 
 struct WeaponDef {
     std::string name;
@@ -22,6 +26,7 @@ struct WeaponDef {
     int count, clusters, shots;                 // count: ammo per team (-1 = infinite); clusters: bomblets/missiles/smashes
     bool wind;
     int weight = 0;  // crate_weight: relative odds in weapon crates (0 = never)
+    float poison = 0;  // hp lost per turn by worms caught in the blast (health crate cures)
 };
 extern std::vector<WeaponDef> WEAPONS;  // built-in fallback until loadWeapons() succeeds
 bool loadWeapons(const char *path);
@@ -31,6 +36,7 @@ struct Worm {
     float yaw, pitch;
     int hp, team;
     bool alive, grounded;
+    int poison = 0;  // hp lost at each turn start, never below 1
 };
 
 struct Projectile {
@@ -39,16 +45,18 @@ struct Projectile {
     float fuse;
     bool child;  // cluster bomblet or airstrike missile: explodes on impact, never splits
     int hits;    // explosions left before it disappears (donkey)
+    Vector3 aim{};  // homing target
 };
 
 // Battlefield object. Crate: weapon = contents (-1 = health). Mine: fuse < 0 idle, else counting down.
 struct Object {
-    enum Type : uint8_t { Crate, Mine, Barrel } type;
+    enum Type : uint8_t { Crate, Mine, Barrel, Sentry } type;
     Vector3 pos, vel;
     int weapon;
     float fuse;
     bool falling;  // crate under parachute
     bool dead;     // hit by an explosion: detonates (barrel, weapon crate) or vanishes next step
+    int team = -1;  // sentry owner (weapon = its WEAPONS index, fuse = reload left)
 };
 
 // Things that happened this tick, for audio/fx; not part of the checksum. worm/weapon = -1 when not applicable.
@@ -97,6 +105,7 @@ struct Game {
     int teams = 2, perTeam = 1, current = 0, weapon = 0, winner = -1, timer = 0, turnCount = 0;
     float power = 0, wind = 0;
     bool roped = false, jetting = false;  // active utility: keeps the turn going
+    bool chute = false;                   // parachute open until the turn ends
     Vector3 anchor{};
     float ropeLen = 0, fuel = 0;
     int shotsLeft = 0;
@@ -125,8 +134,9 @@ private:
     void stepWorm(Worm &w);
     void drown(Worm &w);
     void stepRope(Worm &w);
-    void stepShots(bool detonate);
-    void explode(Vector3 p, float radius, float damage);
+    void stepShots(const Input &in, bool detonate);
+    void explode(Vector3 p, float radius, float damage, float poison = 0);
+    void hurt(Worm &w, int dmg);  // applies the vampire/karma/highlander rules for the active worm
     bool dropPoint(Vector3 &out);
     bool addObject(Object::Type t, float lift);
     void stepObjects();

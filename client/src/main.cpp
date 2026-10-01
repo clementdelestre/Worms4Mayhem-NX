@@ -1,14 +1,17 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include "ai.h"
 #include "audio.h"
 #include "models.h"
 #include "net.h"
 #include "sim.h"
+#include "ui.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -57,9 +60,7 @@ static Input scriptInput(int frame, int weapon) {
 }
 
 static void drawTextCentered(const char *t, int x, int y, int size, Color c) {
-    int w = MeasureText(t, size);
-    DrawText(t, x - w / 2 + 2, y + 2, size, {0, 0, 0, 160});
-    DrawText(t, x - w / 2, y, size, c);
+    Ui::text(t, x, y, size, c, 1);
 }
 
 struct Fx { Vector3 p; float t, r; };
@@ -73,9 +74,12 @@ static void onEvent(const Game &g, const GameEvent &e, std::vector<Fx> &fx) {
     case GameEvent::BigBoom: fx.push_back({e.pos, 0, 7}); Audio::play(Sfx::Holy); Audio::play(Sfx::BigExplosion); break;
     case GameEvent::Fire: {
         Kind k = WEAPONS[e.weapon].kind;
-        static const Sfx FIRE_SFX[] = {Sfx::Fire, Sfx::Sheep, Sfx::Airstrike, Sfx::Donkey, Sfx::Shotgun, Sfx::Rope, Sfx::Fire, Sfx::Teleport};  // by Kind
+        static const Sfx FIRE_SFX[] = {Sfx::Fire, Sfx::Sheep, Sfx::Airstrike, Sfx::Donkey, Sfx::Shotgun, Sfx::Rope, Sfx::Fire, Sfx::Teleport,
+                                       Sfx::Sheep, Sfx::Fire, Sfx::Bounce, Sfx::Fire, Sfx::Tick, Sfx::Fire, Sfx::Shotgun, Sfx::Teleport, Sfx::Splash,
+                                       Sfx::Jump, Sfx::TurnStart, Sfx::TurnStart, Sfx::TurnStart};  // by Kind
         Audio::play(FIRE_SFX[(int)k]);
-        if (k != Kind::Rope && k != Kind::Jetpack && k != Kind::Teleport) Audio::voice(team, Voice::Fire);
+        bool utility = k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::SkipGo || k == Kind::ChangeWorm;
+        if (e.worm >= 0 && !utility) Audio::voice(team, Voice::Fire);  // worm -1: sentry gun shot
         break;
     }
     case GameEvent::Bounce: Audio::play(Sfx::Bounce, 0.6f); break;
@@ -99,12 +103,23 @@ static const char *heldModel(const WeaponDef &d, const char **clip) {
     const std::string &n = d.name;
     switch (d.kind) {
     case Kind::Shell:
+        if (n == "Poison Arrow") { *clip = "AimBow"; return "hold_bow"; }
+        if (n == "Dynamite") { *clip = "HoldDynamite"; return "hold_dynamite"; }
         *clip = d.fuse > 0 ? "AimGrenade" : "AimBazooka";
         return d.fuse <= 0 ? "hold_bazooka" : n == "Cluster Grenade" ? "hold_cluster" : n == "Banana Bomb" ? "hold_banana"
-             : n == "Holy Hand Grenade" ? "hold_holy" : "hold_grenade";
-    case Kind::Shotgun: *clip = "AimShotgun"; return "hold_shotgun";
+             : n == "Holy Hand Grenade" ? "hold_holy" : n == "Gas Canister" ? "hold_gas" : "hold_grenade";
+    case Kind::Shotgun: *clip = n == "Sniper Rifle" ? "AimSniper" : "AimShotgun"; return n == "Sniper Rifle" ? "hold_sniper" : "hold_shotgun";
+    case Kind::Homing: *clip = "AimHomingMissile"; return "hold_homing";
     case Kind::Sheep: *clip = "HoldBazooka"; return "hold_sheep";  // HoldSheep tilts the whole worm with our clip layering
-    case Kind::Airstrike: case Kind::Donkey: *clip = "HoldAirstrike"; return "hold_radio";
+    case Kind::SuperSheep: *clip = n == "Starburst" ? "HoldStarburst" : "HoldBazooka"; return n == "Starburst" ? "hold_starburst" : "hold_supersheep";
+    case Kind::OldWoman: *clip = "HoldOldWoman"; return "hold_oldwoman";
+    case Kind::Scouser: *clip = "HoldScouser"; return "hold_scouser";
+    case Kind::Melee: *clip = n == "Baseball Bat" ? "HoldBat" : n == "Prod" ? "HoldProd" : "HoldFirepunch"; return n == "Baseball Bat" ? "hold_bat" : "";  // "": hands only
+    case Kind::Mine: *clip = "HoldLandmine"; return "hold_landmine";
+    case Kind::Sentry: *clip = "HoldSentrygun"; return "hold_sentry";
+    case Kind::Surrender: *clip = "HoldSurrender"; return "hold_flag";
+    case Kind::SkipGo: *clip = "HoldSkipGo"; return "";
+    case Kind::Airstrike: case Kind::Donkey: case Kind::Abduction: case Kind::Flood: *clip = "HoldAirstrike"; return "hold_radio";
     case Kind::Rope: *clip = "HoldNinjarope"; return "hold_rope";
     default: return nullptr;
     }
@@ -146,11 +161,18 @@ static void drawGrave(const Game &g, const Worm &w) {
 static bool drawShot(const Projectile &s, float clock) {
     const WeaponDef &d = WEAPONS[s.weapon];
     const std::string &n = d.name;
-    const char *m = d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
+    if (s.child && d.kind == Kind::SuperSheep) return false;  // starburst stars: placeholder spheres
+    const char *m = n == "Fatkins Strike" ? "fatkins" : n == "Starburst" ? "starburst" : n == "Poison Arrow" ? "arrow" : n == "Dynamite" ? "dynamite"
+                  : n == "Gas Canister" ? "gas" : d.kind == Kind::SuperSheep ? "supersheep" : d.kind == Kind::OldWoman ? "oldwoman"
+                  : d.kind == Kind::Homing ? "homing" : d.kind == Kind::Scouser ? "scouser"
+                  : d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
                   : n == "Cluster Grenade" ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? (s.child ? "bananette" : "banana")
                   : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
     float h = sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z), yaw = atan2f(s.vel.x, s.vel.z);
     if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, s.pos, yaw, 0, WHITE, "Run", clock);
+    if (d.kind == Kind::OldWoman) return Models::draw(m, {s.pos.x, s.pos.y - 0.3f, s.pos.z}, yaw, 0, WHITE, "Walk", clock);
+    if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
+    if (d.kind == Kind::Scouser) return Models::draw(m, s.pos, clock * 0.7f);
     if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, s.pos, clock * 6, clock * 4);
     return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h));
 }
@@ -164,13 +186,17 @@ int main(int argc, char **argv) {
     Audio::init();
     Audio::music(true);
     Models::load();
+    Ui::load();
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
-    bool shot = argc > 1 || FileExists(DATA_DIR "shot");
+    // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
+    // --ui title|main|setup|options|hud|panel [map]: capture that screen to ui.png and quit
+    const char *uiShot = argc > 2 && !strcmp(argv[1], "--ui") ? argv[2] : nullptr;
+    bool cpuAll = argc > 1 && !strcmp(argv[1], "--cpu"), shot = !cpuAll && !uiShot && (argc > 1 || FileExists(DATA_DIR "shot"));
     int shotWeapon = argc > 2 ? atoi(argv[2]) : 0;  // --shot N: use weapon N
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
-    // server.txt on the SD card: "<host> [port] [name]" — saves us an on-screen keyboard
+    // server.txt on the SD card: "<host> [port] [name]", rewritten by the Options screen
     std::string host = "127.0.0.1", name = "Worm";
     int port = 7777;
     if (char *txt = LoadFileText(DATA_DIR "server.txt")) {
@@ -183,9 +209,9 @@ int main(int argc, char **argv) {
 
     Game game;
     Net net;
-    bool online = false, optOnline = false;
+    bool online = false;
     Screen screen = shot ? Screen::Play : Screen::Menu;
-    int menuRow = 0, optMap = 0, roomSel = 0, lastSec = -1;
+    int roomSel = 0, lastSec = -1;
     GameConfig opt;
     std::vector<std::string> maps = {""};  // "" = procedural island
     for (const char *dir : {ROMFS_DIR "maps", DATA_DIR "assets/maps"}) {  // assets/ = maps imported from the user's W4M install
@@ -197,7 +223,6 @@ int main(int argc, char **argv) {
         }
         UnloadDirectoryFiles(files);
     }
-    static const char *RULE_LABELS[] = {"King", "Highlander", "Vampire", "Karma", "Low gravity", "Rope race", "Sudden death"};
     uint32_t tick = 0;
     std::string status;
     std::map<uint32_t, float> offlineSince;  // player id -> clock when seen offline
@@ -232,6 +257,22 @@ int main(int argc, char **argv) {
         acc = 0;
         screen = Screen::Play;
     };
+    if (cpuAll) {
+        opt.map = argc > 2 ? argv[2] : "";
+        opt.teamSetup.assign(4, {"CPU", (uint8_t)(argc > 3 ? atoi(argv[3]) : 2)});
+        startMatch(opt);
+    }
+    Ai ai;
+    Ui::Frontend front;
+    Ui::Hud hud;
+    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel"))) {
+        startMatch({1234, 2, 2, argc > 3 ? argv[3] : "", 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
+        hud.open = !strcmp(uiShot, "panel");
+    } else if (uiShot) {
+        front.screen = !strcmp(uiShot, "main") ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::Setup
+                     : !strcmp(uiShot, "options") ? Ui::Frontend::Options : Ui::Frontend::Title;
+    }
+    auto cpu = [&](int team) { return team < (int)game.cfg.teamSetup.size() && game.cfg.teamSetup[team].cpu > 0; };
     auto pressed = [](std::initializer_list<int> buttons, std::initializer_list<int> keys) { return pressedAny(0, buttons, keys); };
 
     for (int frame = 0; !WindowShouldClose(); frame++) {
@@ -259,42 +300,18 @@ int main(int argc, char **argv) {
         }
 
         if (screen == Screen::Menu) {
-            const int ROWS = 4 + 7;  // teams, worms, map, mode, then one toggle per rule
-            if (pressed({GAMEPAD_BUTTON_LEFT_FACE_UP}, {KEY_UP})) menuRow = (menuRow + ROWS - 1) % ROWS;
-            if (pressed({GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {KEY_DOWN})) menuRow = (menuRow + 1) % ROWS;
-            int d = pressed({GAMEPAD_BUTTON_LEFT_FACE_RIGHT}, {KEY_RIGHT}) - pressed({GAMEPAD_BUTTON_LEFT_FACE_LEFT}, {KEY_LEFT});
-            if (menuRow == 0) opt.teams = Clamp(opt.teams + d, 2, 4);
-            if (menuRow == 1) opt.wormsPerTeam = Clamp(opt.wormsPerTeam + d, 1, 4);
-            if (menuRow == 2) optMap = (optMap + d + (int)maps.size()) % (int)maps.size();
-            if (menuRow == 3 && d) optOnline = !optOnline;
-            if (menuRow >= 4 && d) opt.rules ^= 1u << (menuRow - 4);
-            opt.map = maps[optMap];
-            if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER})) {
-                if (!optOnline) {
-                    online = false;
-                    opt.seed = (uint32_t)(clock * 1000) + frame;
-                    startMatch(opt);
-                } else {
-                    online = true;
-                    status = net.connect(host.c_str(), port, name.c_str()) ? "Connecting to " + host + "..." : "Cannot reach " + host;
-                    screen = Screen::Lobby;
-                }
+            if (uiShot && frame == 10) front.capture = "ui.png";
+            if (uiShot && frame > 10) break;
+            Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
+            if (a == Ui::Frontend::StartLocal) {
+                online = false;
+                opt.seed = (uint32_t)(clock * 1000) + frame;
+                startMatch(opt);
+            } else if (a == Ui::Frontend::StartOnline) {
+                online = true;
+                status = net.connect(host.c_str(), port, name.c_str()) ? "Connecting to " + host + "..." : "Cannot reach " + host;
+                screen = Screen::Lobby;
             }
-            BeginDrawing();
-            ClearBackground({40, 70, 120, 255});
-            drawTextCentered("WORMS4NX", 640, 40, 70, {255, 220, 120, 255});
-            for (int r = 0; r < ROWS; r++) {
-                const char *t = r == 0 ? TextFormat("Teams: %d", opt.teams)
-                              : r == 1 ? TextFormat("Worms per team: %d", opt.wormsPerTeam)
-                              : r == 2 ? TextFormat("Map: %s", opt.map.empty() ? "Random island" : opt.map.c_str())
-                              : r == 3 ? (optOnline ? "Mode: Online" : "Mode: Local")
-                                       : TextFormat("%s: %s", RULE_LABELS[r - 4], opt.rules & (1u << (r - 4)) ? "ON" : "off");
-                drawTextCentered(TextFormat("%s %s", menuRow == r ? ">" : " ", t), 640, 140 + r * 44, 32, menuRow == r ? YELLOW : WHITE);
-            }
-            drawTextCentered(optOnline ? TextFormat("Server %s:%d as %s (edit server.txt)", host.c_str(), port, name.c_str())
-                                       : "Local: one controller per team, or share one", 640, 600, 24, LIGHTGRAY);
-            drawTextCentered("Left/Right: change   A / Space: start", 640, 640, 24, LIGHTGRAY);
-            EndDrawing();
             continue;
         }
 
@@ -319,7 +336,7 @@ int main(int argc, char **argv) {
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE})) { net.leave(); net.listRooms(); }
             }
             BeginDrawing();
-            ClearBackground({40, 70, 120, 255});
+            Ui::background();
             drawTextCentered(inRoom ? "ROOM" : "ONLINE LOBBY", 640, 60, 60, {255, 220, 120, 255});
             if (!inRoom) {
                 for (size_t i = 0; i < net.rooms.size(); i++) {
@@ -354,10 +371,12 @@ int main(int argc, char **argv) {
             auto it = team < (int)net.owners.size() ? offlineSince.find(net.owners[team]) : offlineSince.end();
             return net.hostId == net.id && it != offlineSince.end() && clock - it->second > 30;
         };
-        auto owns = [&](int team) { return team < (int)net.owners.size() && (net.owners[team] == net.id || proxied(team)); };
+        // the host also plays the CPU teams
+        auto owns = [&](int team) { return (cpu(team) && net.hostId == net.id) || (team < (int)net.owners.size() && (net.owners[team] == net.id || proxied(team))); };
         bool remoteTurn = online && game.phase != Phase::GameOver && !owns(cur.team);
+        hud.input(game, in, !shot && !remoteTurn, pad, tick);
         if (!online) {
-            for (acc += dt; acc >= Game::DT; acc -= Game::DT) stepOnce(in);
+            for (acc += dt; acc >= Game::DT; acc -= Game::DT) stepOnce(!shot && cpu(game.worms[game.current].team) ? ai.think(game) : in);
         } else {
             // remote/replayed inputs first, then ours when we own the active team; otherwise wait
             acc = fminf(acc + dt, Game::DT * 4);
@@ -366,7 +385,8 @@ int main(int argc, char **argv) {
                 if (net.remoteInput(tick, r)) { stepOnce(r); continue; }
                 bool mine = game.phase != Phase::GameOver && owns(game.worms[game.current].team);
                 if (!mine || acc < Game::DT) break;
-                Input mineIn = proxied(game.worms[game.current].team) ? Input{} : in;
+                int team = game.worms[game.current].team;
+                Input mineIn = cpu(team) ? ai.think(game) : proxied(team) ? Input{} : in;
                 net.sendInput(tick, mineIn);
                 stepOnce(mineIn);
                 acc -= Game::DT;
@@ -412,7 +432,7 @@ int main(int argc, char **argv) {
         if (game.roped) DrawLine3D(game.anchor, cur.pos, BROWN);
         if (game.jetting) DrawCube(Vector3Add(cur.pos, {-sinf(cur.yaw) * 0.4f, 0.1f, -cosf(cur.yaw) * 0.4f}), 0.35f, 0.5f, 0.35f, GRAY);
         if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting) {
-            if (wd.kind == Kind::Airstrike || wd.kind == Kind::Donkey || wd.kind == Kind::Teleport) {
+            if (wd.kind == Kind::Airstrike || wd.kind == Kind::Donkey || wd.kind == Kind::Teleport || wd.kind == Kind::Homing || wd.kind == Kind::Abduction) {
                 Vector3 t = game.target();
                 DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 1.2f, {1, 0, 0}, 90, RED);
                 DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 0.4f, {1, 0, 0}, 90, RED);
@@ -439,7 +459,8 @@ int main(int argc, char **argv) {
             }
         }
         for (const Object &o : game.objects) {
-            const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.weapon < 0 ? "crate_health" : "crate_weapon";
+            const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry"
+                          : o.weapon < 0 ? "crate_health" : "crate_weapon";
             if (!Models::draw(m, o.pos, (&o - game.objects.data()) * 1.3f)) {
                 if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
                 else if (o.type == Object::Barrel) DrawCylinder({o.pos.x, o.pos.y - 0.5f, o.pos.z}, 0.35f, 0.35f, 1, 10, MAROON);
@@ -466,37 +487,7 @@ int main(int argc, char **argv) {
         }
         EndMode3D();
 
-        for (const Worm &w : game.worms) {
-            if (!w.alive) continue;
-            Vector2 sp = GetWorldToScreen(Vector3Add(w.pos, {0, 1.1f, 0}), cam);
-            drawTextCentered(TextFormat("%d", w.hp > 0 ? w.hp : 0), sp.x, sp.y, 20, TEAM_COLORS[w.team]);
-        }
-        if (game.phase == Phase::GameOver) {
-            drawTextCentered(game.winner >= 0 ? TextFormat("TEAM %d WINS!", game.winner + 1) : "DRAW!", 640, 280, 70, game.winner >= 0 ? TEAM_COLORS[game.winner] : WHITE);
-            drawTextCentered("A / Space: menu", 640, 380, 30, WHITE);
-        } else {
-            drawTextCentered(TextFormat("Team %d  -  %d", cur.team + 1, game.phase == Phase::Aim ? game.timer / 60 : 0), 640, 16, 30, TEAM_COLORS[cur.team]);
-            if (game.cfg.rules & RULE_ROPE_RACE) DrawText(TextFormat("Race %ds", tick / 60), 1080, 16, 26, GOLD);
-            DrawRectangle(540, 56, 200, 12, {0, 0, 0, 120});
-            DrawRectangle(game.wind > 0 ? 640 : 640 + (int)(game.wind * 100), 56, (int)fabsf(game.wind * 100), 12, game.wind > 0 ? SKYBLUE : PINK);
-            int ammo = game.ammo[cur.team][game.weapon];
-            DrawText(TextFormat("%s  %s", wd.name.c_str(), ammo < 0 ? "inf" : TextFormat("x%d", ammo)), 20, 680, 28, ammo ? WHITE : GRAY);
-            if (game.shotsLeft) DrawText(TextFormat("%d shot(s) left", game.shotsLeft), 20, 620, 22, WHITE);
-            if (game.roped) DrawText("Rope: stick swings, aim = length, jump releases", 20, 620, 22, WHITE);
-            if (game.jetting) {
-                DrawText("Jetpack: hold fire to thrust, jump to stop", 20, 620, 22, WHITE);
-                DrawRectangle(20, 650, (int)(300 * game.fuel / fmaxf(wd.fuse, 0.01f)), 18, SKYBLUE);
-            }
-            if (game.power > 0) {
-                DrawRectangle(20, 650, 300, 18, {0, 0, 0, 120});
-                DrawRectangle(20, 650, (int)(300 * game.power), 18, ColorLerp(YELLOW, RED, game.power));
-            }
-            for (int t = 0; t < game.teams; t++) {
-                int hp = 0;
-                for (const Worm &w : game.worms) if (w.team == t && w.alive) hp += w.hp > 0 ? w.hp : 0;
-                DrawRectangle(1260 - hp / 2, 680 - t * 22, hp / 2, 16, TEAM_COLORS[t]);
-            }
-        }
+        hud.draw(game, cam, tick);
         if (remoteTurn) drawTextCentered("Remote player's turn", 640, 90, 24, WHITE);
         if (online && !status.empty()) drawTextCentered(status.c_str(), 640, 120, 24, ORANGE);
         DrawFPS(10, 10);
@@ -506,12 +497,19 @@ int main(int argc, char **argv) {
             ExportImage(img, frame == 35 ? DATA_DIR "shot_aim.png" : DATA_DIR "shot.png");
             UnloadImage(img);
         }
+        if (uiShot && frame == 40) {
+            rlDrawRenderBatchActive();
+            Image img = LoadImageFromScreen();
+            ExportImage(img, "ui.png");
+            UnloadImage(img);
+        }
         EndDrawing();
-        if (shot && frame == 150) break;
+        if ((shot && frame == 150) || (uiShot && frame == 40)) break;
     }
     net.close();
     game.terrain.unload();
     Models::unload();
+    Ui::unload();
     Audio::shutdown();
     CloseWindow();
 }

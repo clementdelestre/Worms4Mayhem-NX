@@ -1,6 +1,7 @@
 // Determinism check: two games fed the same seed and inputs must stay bit-identical.
 // Each turn selects the next weapon in the table and uses it, so the whole arsenal gets exercised.
 #include "../src/sim.h"
+#include "raymath.h"
 #include <cassert>
 #include <cstdio>
 
@@ -164,6 +165,83 @@ static void checkObjects() {
     assert(g.objects.empty() && g.worms[victim].hp < hp);
 }
 
+static int weaponNamed(const char *n) {
+    for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].name == n) return (int)i;
+    assert(!"weapon missing from weapons.json");
+    return 0;
+}
+
+// One scripted turn per weapon (charge, release, steer, detonate): its Fire event must show up.
+static uint32_t fireEach(int wi, bool &fired) {
+    Game g;
+    g.start({99u + wi, 2, 2, "", 0});
+    g.ammo[g.worms[g.current].team][wi] = 1;
+    g.weapon = wi;
+    fired = false;
+    for (int t = 0; t < 60 * 30 && g.phase != Phase::GameOver; t++) {
+        Input in;
+        if (t < 20) in.aim = 50;
+        if (t < 30 || t > 120) in.buttons = Input::FIRE;
+        if (t > 60) in.turn = 40;
+        if (t > 125) in.buttons = t % 20 < 10 ? Input::FIRE : 0;
+        g.step(in);
+        for (const GameEvent &e : g.events) fired = fired || (e.kind == GameEvent::Fire && e.weapon == wi);
+    }
+    return g.checksum();
+}
+
+static void checkPoison() {
+    Game g;
+    g.start({21, 2, 1, "", 0});
+    int victim = 1 - g.current, hp = g.worms[victim].hp;
+    g.shots = {{g.worms[victim].pos, {0, 0, 0}, weaponNamed("Poison Arrow"), 0, false, 1}};
+    g.step(Input{});
+    assert(g.worms[victim].poison > 0 && g.worms[victim].hp < hp);
+    hp = g.worms[victim].hp;
+    g.phase = Phase::Settle;
+    g.timer = 1;
+    g.step(Input{});
+    assert(g.worms[victim].hp == hp - g.worms[victim].poison);  // ticks at the next turn start
+}
+
+static void checkMelee() {
+    Game g;
+    g.start({23, 2, 1, "", 0});
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    v.pos = Vector3Add(a.pos, {sinf(a.yaw), 0, cosf(a.yaw)});
+    v.vel = {0, 0, 0};
+    a.pitch = 0.3f;
+    g.weapon = weaponNamed("Baseball Bat");
+    Input in;
+    in.buttons = Input::FIRE;
+    g.step(in);
+    assert(v.hp < 100 && Vector3Length(v.vel) > 10);  // knocked away along the aim
+}
+
+static void checkSniper() {
+    Game g;
+    g.start({25, 2, 1, "", 0});
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    a.pos = {10, 55, 10}, v.pos = {10, 55, 30};  // open sky, 20 m apart
+    a.yaw = 0, a.pitch = 0;
+    g.weapon = weaponNamed("Sniper Rifle");
+    Input in;
+    in.buttons = Input::FIRE;
+    g.step(in);
+    assert(v.hp <= 100 - (int)WEAPONS[g.weapon].damage + 1);
+}
+
+static void checkSentry() {
+    Game g;
+    g.start({27, 2, 1, "", 0});
+    Worm &w = g.worms[g.current];
+    w.pos = {10, 55, 10};
+    Object sentry = {Object::Sentry, {10, 55, 14}, {0, 0, 0}, weaponNamed("Sentry Gun"), -1, false, false, 1 - w.team};
+    g.objects = {sentry};
+    g.step(Input{});
+    assert(w.hp < 100 && g.objects[0].fuse > 0);  // shot the enemy in range, now reloading
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<bool> used(WEAPONS.size()), again(WEAPONS.size());
@@ -182,6 +260,16 @@ int main() {
     checkRopeRace();
     checkHighlander();
     checkObjects();
+    checkPoison();
+    checkMelee();
+    checkSniper();
+    checkSentry();
+    for (size_t i = 0; i < WEAPONS.size(); i++) {
+        bool fired, again;
+        uint32_t a = fireEach((int)i, fired), b = fireEach((int)i, again);
+        printf("%-18s %s\n", WEAPONS[i].name.c_str(), fired ? "fired" : "NOT FIRED");
+        assert(fired && a == b);
+    }
 
     puts("sim_check OK");
 }
