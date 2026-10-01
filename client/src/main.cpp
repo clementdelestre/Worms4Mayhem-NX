@@ -195,6 +195,7 @@ static bool drawShot(const Projectile &s, float clock) {
 enum class Screen { Menu, Lobby, Play };
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--netbot")) SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(1280, 720, "Worms4NX");
     SetExitKey(KEY_NULL);  // Esc is back / pause; quit from the title screen
     SetTargetFPS(60);
@@ -212,7 +213,11 @@ int main(int argc, char **argv) {
     // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
     bool bench = argc > 2 && !strcmp(argv[1], "--bench");
     int benchFrames = bench && argc > 3 ? atoi(argv[3]) : 1200;
-    bool cpuAll = argc > 1 && (!strcmp(argv[1], "--cpu") || bench), shot = !cpuAll && !uiShot && (argc > 1 || FileExists(DATA_DIR "shot"));
+    // --netbot host port name create|join [turns] [map] [rules] [scheme] [roundMin]: own teams played by the AI online,
+    // checksums on stdout, exit 1 on desync. The token is kept in ./netbot.token so a restarted bot resumes its match.
+    bool netbot = argc > 5 && !strcmp(argv[1], "--netbot"), botCreate = netbot && !strcmp(argv[5], "create"), desynced = false;
+    int botTurns = netbot && argc > 6 ? atoi(argv[6]) : 6, turns = 0;
+    bool cpuAll = argc > 1 && (!strcmp(argv[1], "--cpu") || bench), shot = !cpuAll && !uiShot && !netbot && (argc > 1 || FileExists(DATA_DIR "shot"));
     int shotWeapon = argc > 2 ? atoi(argv[2]) : 0;  // --shot N: use weapon N
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
@@ -229,8 +234,8 @@ int main(int argc, char **argv) {
 
     Game game;
     Net net;
-    bool online = false;
-    Screen screen = shot ? Screen::Play : Screen::Menu;
+    bool online = netbot;
+    Screen screen = shot ? Screen::Play : netbot ? Screen::Lobby : Screen::Menu;
     int roomSel = 0, lastSec = -1;
     GameConfig opt;
     std::vector<std::string> maps = {""};  // "" = procedural island
@@ -286,7 +291,9 @@ int main(int argc, char **argv) {
         tick++;
         for (const GameEvent &e : game.events) {
             onEvent(game, e);
-            if (online && e.kind == GameEvent::TurnStart) net.turnEnd(tick, game.checksum());
+            if (e.kind != GameEvent::TurnStart && e.kind != GameEvent::GameOver) continue;
+            if (online) net.turnEnd(tick, game.checksum());
+            if (netbot) printf("[%s] turn %d tick %u checksum %08x%s\n", name.c_str(), ++turns, tick, game.checksum(), e.kind == GameEvent::GameOver ? " gameover" : "");
         }
     };
     auto startMatch = [&](const GameConfig &c) {
@@ -300,6 +307,19 @@ int main(int argc, char **argv) {
         acc = 0;
         screen = Screen::Play;
     };
+    bool botStarted = false;
+    float botAt = 0, botDone = 1e9f;
+    int proxyTurn = -1, botSpeed = getenv("W4NX_SPEED") ? atoi(getenv("W4NX_SPEED")) : 8;  // ticks per frame
+    if (netbot) {
+        host = argv[2], port = atoi(argv[3]), name = argv[4];
+        if (FILE *f = fopen("netbot.token", "r")) botStarted = fscanf(f, "%llx", (unsigned long long *)&net.token) == 1, fclose(f);
+        opt.map = argc > 7 ? argv[7] : "";
+        opt.rules = argc > 8 ? (uint32_t)atoi(argv[8]) : 0;
+        if (argc > 9) opt.scheme = SCHEMES[atoi(argv[9]) % SCHEMES.size()].s;
+        if (argc > 10) opt.scheme.roundTime = atoi(argv[10]);
+        opt.teamSetup = {{"Bot A"}, {"Bot B"}};
+        if (!net.connect(host.c_str(), port, name.c_str())) return printf("[%s] cannot reach %s\n", name.c_str(), host.c_str()), 1;
+    }
     if (cpuAll) {
         if (bench) SetTargetFPS(0), opt.seed = 1234;
         opt.map = argc > 2 ? argv[2] : "";
@@ -330,14 +350,21 @@ int main(int argc, char **argv) {
         if (online) {
             net.poll();
             Net::Event e;
-            while (net.next(e)) switch (e.type) {
+            while (net.next(e)) {
+                switch (e.type) {
                 case Net::Welcome: net.listRooms(); status = "Connected to " + host; break;
                 case Net::Error: status = "Server: " + e.text; break;
                 case Net::Start: startMatch(net.cfg); status.clear(); break;
-                case Net::Desync: status = TextFormat("DESYNC at tick %u", e.a); break;
+                case Net::Desync: status = TextFormat("DESYNC at tick %u", e.a); desynced = true; break;
                 case Net::Chat: status = e.text; break;
                 case Net::Disconnected: status = "Disconnected: " + e.text; reconnectAt = clock + 3; break;
                 default: break;
+                }
+                if (!netbot || e.type == Net::RoomList || e.type == Net::RoomState || e.type == Net::Pong) continue;
+                printf("[%s] %s\n", name.c_str(), e.type == Net::Welcome ? "welcome" : e.type == Net::Start ? "start" : status.c_str());
+                fflush(stdout);
+                if (e.type == Net::Welcome)
+                    if (FILE *f = fopen("netbot.token", "w")) fprintf(f, "%llx\n", (unsigned long long)net.token), fclose(f);
             }
             // the token kept in `net` resumes the match: server resends Start + the whole input log
             if (!net.online() && screen == Screen::Play && clock > reconnectAt) {
@@ -365,6 +392,16 @@ int main(int argc, char **argv) {
 
         if (screen == Screen::Lobby) {
             bool inRoom = net.roomId != 0, isHost = inRoom && net.hostId == net.id;
+            if (netbot && botStarted && clock > 15) {
+                printf("[%s] no match to resume\n", name.c_str());
+                desynced = true;
+                break;
+            }
+            if (netbot && !botStarted && net.id && clock > botAt) {  // botStarted: resuming, the server replays the match
+                botAt = clock + 0.5f;
+                if (!inRoom && botCreate) net.createRoom("netbot", 2);
+                else if (!inRoom) net.rooms.empty() ? net.listRooms() : net.joinRoom(net.rooms[0].id);
+            }
             if (!inRoom) {
                 int n = (int)net.rooms.size();
                 if (n) roomSel = (roomSel + pressed({GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {KEY_DOWN}) - pressed({GAMEPAD_BUTTON_LEFT_FACE_UP}, {KEY_UP}) + n) % n;
@@ -373,7 +410,8 @@ int main(int argc, char **argv) {
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) net.listRooms();
                 if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) { net.close(); online = false; screen = Screen::Menu; }
             } else {
-                if (isHost && net.players.size() >= 2 && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER})) {
+                if (isHost && net.players.size() >= 2 && (netbot ? !botStarted : pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER}))) {
+                    botStarted = true;
                     std::vector<uint32_t> owners;
                     for (size_t i = 0; i < net.players.size() && i < 4; i++) owners.push_back(net.players[i].id);
                     GameConfig c = opt;
@@ -419,9 +457,11 @@ int main(int argc, char **argv) {
             continue;
         }
         Input in = shot ? scriptInput(frame, shotWeapon) : pause.open ? Input{} : readInput(pad);
-        for (const NetPlayer &pl : net.players)
-            if (pl.online) offlineSince.erase(pl.id);
-            else offlineSince.emplace(pl.id, clock);
+        for (uint32_t o : net.owners) {  // an owner who left the room counts as offline too
+            auto p = std::find_if(net.players.begin(), net.players.end(), [&](const NetPlayer &pl) { return pl.id == o; });
+            if (p != net.players.end() && p->online) offlineSince.erase(o);
+            else offlineSince.emplace(o, clock);
+        }
         // the host plays idle turns for owners gone > 30 s so a dropout can't stall the match
         // ponytail: if the owner reconnects mid-turn both may send the same tick; server keeps the first
         auto proxied = [&](int team) {
@@ -436,14 +476,16 @@ int main(int argc, char **argv) {
             for (acc += pause.open ? 0 : dt; acc >= Game::DT; acc -= Game::DT) stepOnce(!shot && cpu(game.worms[game.current].team) ? ai.think(game) : in);
         } else {
             // remote/replayed inputs first, then ours when we own the active team; otherwise wait
-            acc = fminf(acc + dt, Game::DT * 4);
-            for (int budget = 240; budget > 0; budget--) {
+            acc = netbot ? Game::DT * botSpeed : fminf(acc + dt, Game::DT * 4);
+            for (int budget = 240; budget > 0 && !(netbot && turns >= botTurns); budget--) {
                 Input r;
                 if (net.remoteInput(tick, r)) { stepOnce(r); continue; }
-                bool mine = game.phase != Phase::GameOver && owns(game.worms[game.current].team);
+                bool mine = game.phase != Phase::GameOver && tick >= net.replay && owns(game.worms[game.current].team);
                 if (!mine || acc < Game::DT) break;
                 int team = game.worms[game.current].team;
-                Input mineIn = cpu(team) ? ai.think(game) : proxied(team) ? Input{} : in;
+                bool bot = netbot && team < (int)net.owners.size() && net.owners[team] == net.id;
+                Input mineIn = cpu(team) || bot ? ai.think(game) : proxied(team) ? Input{} : in;
+                if (netbot && proxied(team) && proxyTurn != turns) printf("[%s] playing turn %d for offline team %d\n", name.c_str(), turns + 1, team), proxyTurn = turns;
                 net.sendInput(tick, mineIn);
                 stepOnce(mineIn);
                 acc -= Game::DT;
@@ -455,6 +497,8 @@ int main(int argc, char **argv) {
         int sec = game.phase == Phase::Aim && game.timer <= 300 ? game.timer / 60 : -1;
         if (sec >= 0 && sec != lastSec) Audio::play(Audio::Sfx::Tick);
         lastSec = sec;
+        if (netbot && botDone > 1e8f && (game.phase == Phase::GameOver || turns >= botTurns)) botDone = clock + 2;  // let the last inputs and sums out
+        if (netbot && clock > botDone) break;
         if (game.phase == Phase::GameOver && !pause.open && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) {
             screen = online ? Screen::Lobby : Screen::Menu;
             Audio::music(true, "theme");
@@ -655,4 +699,6 @@ int main(int argc, char **argv) {
     Fx::unload();
     Audio::shutdown();
     CloseWindow();
+    if (netbot) printf("[%s] done: %d turns, %s\n", name.c_str(), turns, desynced ? "FAILED" : "in sync");
+    return desynced;
 }

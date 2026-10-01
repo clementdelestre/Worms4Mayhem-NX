@@ -75,6 +75,9 @@ async fn full_match() {
     assert_eq!(R(&b.expect(INPUTS).await).u32(), Some(3));
     a.send(inputs(9, 1)).await; // gap
     a.expect(ERROR).await;
+    assert_eq!(a.expect(START).await, sa, "rejected sender is resynced");
+    assert_eq!(R(&a.expect(REPLAY).await).u32(), Some(6));
+    assert_eq!(a.expect(INPUTS).await.len(), 5 + 6 * 4);
 
     a.send(W::new(TURN_END).u32(6).u32(0xabc)).await;
     b.send(W::new(TURN_END).u32(6).u32(0xabc)).await;
@@ -91,6 +94,7 @@ async fn full_match() {
     let (mut b, id2, _) = C::new(&addr, "bob", tokb).await;
     assert_eq!(id2, idb);
     assert_eq!(b.expect(START).await, sa);
+    assert_eq!(R(&b.expect(REPLAY).await).u32(), Some(6));
     let f = b.expect(INPUTS).await;
     assert_eq!(&f[..5], &[0, 0, 0, 0, 6]);
     assert_eq!(f.len(), 5 + 6 * 4);
@@ -98,4 +102,9 @@ async fn full_match() {
     b.send(W::new(CHAT).str("hi")).await;
     let c = a.expect(CHAT).await;
     assert_eq!(R(&c).u32(), Some(idb));
+
+    // the host drops mid-match: bob takes over (CPU and proxied teams are played by the host)
+    drop(a);
+    let st = b.expect(ROOM_STATE).await;
+    assert_eq!(R(&st[4..]).u32(), Some(idb));
 }

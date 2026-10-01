@@ -22,6 +22,7 @@ struct Net {
     std::vector<NetPlayer> players;
     GameConfig cfg;
     std::vector<uint32_t> owners;  // owners[team] = player id
+    uint32_t replay = 0;           // ticks the server replays after Start: never play our own input below it
 
     bool connect(const char *host, int port, const char *name);
     void close();

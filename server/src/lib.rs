@@ -21,6 +21,7 @@ pub const START: u8 = 0x20;
 pub const INPUTS: u8 = 0x21;
 pub const TURN_END: u8 = 0x22;
 pub const DESYNC: u8 = 0x23;
+pub const REPLAY: u8 = 0x24;
 pub const CHAT: u8 = 0x30;
 pub const PING: u8 = 0x31;
 pub const PONG: u8 = 0x32;
@@ -139,16 +140,21 @@ impl State {
         self.send(id, &W::new(WELCOME).u32(id).u64(token).done());
         if let Some(rid) = room {
             self.room_state(rid);
-            let r = &self.rooms[&rid];
-            if let Some(start) = &r.start {
-                self.send(id, start);
-                for (i, chunk) in r.log.chunks(255 * 4).enumerate() {
-                    let f = W::new(INPUTS).u32(i as u32 * 255).u8((chunk.len() / 4) as u8).bytes(chunk).done();
-                    self.send(id, &f);
-                }
-            }
+            self.replay(id, rid);
         }
         Some(id)
+    }
+
+    /// Start, then the whole input log: the client restarts the match and fast-forwards.
+    fn replay(&self, id: u32, rid: u32) {
+        let r = &self.rooms[&rid];
+        let Some(start) = &r.start else { return };
+        self.send(id, start);
+        self.send(id, &W::new(REPLAY).u32((r.log.len() / 4) as u32).done());
+        for (i, chunk) in r.log.chunks(255 * 4).enumerate() {
+            let f = W::new(INPUTS).u32(i as u32 * 255).u8((chunk.len() / 4) as u8).bytes(chunk).done();
+            self.send(id, &f);
+        }
     }
 
     fn handle(&mut self, id: u32, buf: &[u8]) {
@@ -210,8 +216,10 @@ impl State {
                 let rm = self.rooms.get_mut(&rid)?;
                 rm.start.as_ref()?;
                 if first as usize != rm.log.len() / 4 {
+                    // two clients played the same ticks (owner back while proxied): the log wins, resync the loser
                     let e = format!("Inputs tick {first} != expected {}", rm.log.len() / 4);
                     self.send(id, &error(&e));
+                    self.replay(id, rid);
                     return Some(());
                 }
                 rm.log.extend(inputs);
@@ -250,9 +258,11 @@ impl State {
     }
 
     /// Deletes the room once nobody online is left in it (offline players go with it).
+    /// A dropped host hands over to the first online player, who then plays the CPU and proxied teams.
     fn after_change(&mut self, rid: u32) {
         let rm = &self.rooms[&rid];
-        if rm.players.iter().any(|p| self.players[p].tx.is_some()) {
+        if let Some(&p) = rm.players.iter().find(|p| self.players[p].tx.is_some()) {
+            if self.players[&rm.host].tx.is_none() { self.rooms.get_mut(&rid).unwrap().host = p; }
             return self.room_state(rid);
         }
         for p in self.rooms.remove(&rid).unwrap().players {

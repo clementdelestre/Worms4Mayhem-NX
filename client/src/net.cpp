@@ -18,7 +18,7 @@
 
 enum : uint8_t {
     HELLO = 0x01, WELCOME, ERROR_, LIST_ROOMS = 0x10, ROOM_LIST, CREATE_ROOM, JOIN_ROOM, ROOM_STATE, LEAVE,
-    START = 0x20, INPUTS, TURN_END, DESYNC, CHAT = 0x30, PING, PONG,
+    START = 0x20, INPUTS, TURN_END, DESYNC, REPLAY, CHAT = 0x30, PING, PONG,
 };
 static const uint16_t VERSION = 1;
 
@@ -84,6 +84,7 @@ void Net::close() {
     out.clear();
     in.clear();
     batch.clear();
+    replay = UINT32_MAX;  // offline or reconnecting: nothing of ours to play until the server's Start
 }
 
 void Net::fail(const char *why) {
@@ -199,6 +200,7 @@ void Net::handle(const uint8_t *p, size_t n) {
             }
         inbox.clear();
         batch.clear();
+        replay = 0;
         events.push_back({Start});
         break;
     case INPUTS: {
@@ -207,6 +209,7 @@ void Net::handle(const uint8_t *p, size_t n) {
         break;
     }
     case DESYNC: events.push_back({Desync, r.u32()}); break;
+    case REPLAY: replay = r.u32(); break;
     case CHAT: {
         uint32_t from = r.u32();
         events.push_back({Chat, from, r.str()});
