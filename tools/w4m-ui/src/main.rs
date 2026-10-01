@@ -7,8 +7,14 @@ use std::path::{Path, PathBuf};
 const TGA_DIRS: &[(&str, &str)] = &[("Frontend/Levels", "levels"), ("HUD/Weapons", "weapons"), ("HUD/Flags", "flags"), ("Frontend/mechanics", "back")];
 // UI bundles: all their XImages go to fe/<image name>.png
 const BUNDLES: &[&str] = &["Bundl00", "Bundl06", "Bundl08", "Bundl10", "Bundl472", "Bundl03"];
-// Daytime sky/water bundles, one per theme: their *Sky*/*Water* XImages go to sky/<image name>.png
-const SKY_BUNDLES: &[&str] = &["Bundl93", "Bundl94", "Bundl95", "Bundl96", "Bundl97", "Bundl108", "Bundl109", "Bundl110", "Bundl111", "Bundl112", "Bundl113"];
+// Sky/water bundles, one per (theme, time): their *Sky*/*Water* XImages go to sky/<image name>.png.
+// Names embed the time as a numeric suffix (01 day, 02 evening, 03 night), e.g. C_Sky02.tga -> sky/c_sky02.png.
+const SKY_BUNDLES: &[&str] = &[
+    "Bundl93", "Bundl94", "Bundl95", "Bundl96", "Bundl97", "Bundl98", "Bundl99", "Bundl100", "Bundl101", "Bundl102",
+    "Bundl103", "Bundl104", "Bundl105", "Bundl106", "Bundl107", "Bundl108", "Bundl109", "Bundl110", "Bundl111", "Bundl112",
+    "Bundl113", "Bundl114", "Bundl115", "Bundl116", "Bundl117", "Bundl118", "Bundl119", "Bundl120", "Bundl121", "Bundl122",
+    "Bundl123", "Bundl124", "Bundl125",
+];
 
 fn vi(d: &[u8], p: &mut usize) -> usize {
     let mut v = 0usize;

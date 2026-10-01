@@ -145,18 +145,19 @@ void load() {
     ps.reserve(MAX);
 }
 
-void theme(const std::string &theme, Color sky) {
+void theme(const std::string &theme, Color sky, const std::string &time) {
     static const char *NAMES[] = {"jurassic", "camelot", "arabian", "wildwest", "construction", "arctic", "england", "horror", "lunar", "pirate", "war"};
     static const char LETTERS[] = "pcawbrehlto";
     char l = 'c';  // procedural island and unknown themes
     for (int i = 0; i < 11; i++)
         if (theme == NAMES[i]) l = LETTERS[i];
+    char suffix = time == "night" ? '3' : time == "evening" ? '2' : '1';  // W4M ramp naming: 01 day, 02 evening, 03 night
     if (skyTex.id) UnloadTexture(skyTex);
     for (Texture2D &t : waterTex)
         if (t.id) UnloadTexture(t), t = {};
     skyTex = {};
     fogCol = sky;
-    const char *f = TextFormat(DATA_DIR "assets/ui/sky/%c_sky01.png", l);
+    const char *f = TextFormat(DATA_DIR "assets/ui/sky/%c_sky0%c.png", l, suffix);
     if (FileExists(f)) {
         Image im = LoadImage(f);
         fogCol = GetImageColor(im, im.width * 3 / 4, 0);  // sky colour at the horizon
@@ -165,7 +166,7 @@ void theme(const std::string &theme, Color sky) {
         SetTextureWrap(skyTex, TEXTURE_WRAP_CLAMP);
         UnloadImage(im);
     }
-    for (int i = 0; i < 3; i++) waterTex[i] = loadTex("sky", TextFormat("%c_water01%c", l, 'a' + i), true);
+    for (int i = 0; i < 3; i++) waterTex[i] = loadTex("sky", TextFormat("%c_water0%c%c", l, suffix, 'a' + i), true);
     if (waterTex[2].id) SetTextureWrap(waterTex[2], TEXTURE_WRAP_CLAMP);
     skyMat.maps[MATERIAL_MAP_DIFFUSE].texture = skyTex;
     waterMat.maps[MATERIAL_MAP_DIFFUSE].texture = waterTex[0];

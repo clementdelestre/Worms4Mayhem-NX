@@ -29,6 +29,7 @@ World: 80 x 64 x 80 m (x, y up, z), voxels of 0.25 m (320 x 256 x 320 grid, int8
 | `base.roughness` | noise amplitude in m (default 4, 0 = smooth). |
 | `base.seed` | added to the match seed for the noise. |
 | `voxels` | `<file>.vox` next to the JSON: imported geometry, replaces `base`. `"W4V2"`, u16 NX NY NZ (must match the engine grid), u8 D; then (material, run 1..255) byte pairs over the grid in `(z*NY + y)*NX + x` order (material 0 = air, n = `palette[n-1]`); then density codes in the same order: byte h < 128 skips h voxels left at +D (solid) / -D (air), h >= 128 is followed by h - 127 int8 densities (metres * 254, > 0 = solid). |
+| `light` | `{"dir": [x,y,z], "ambient": [r,g,b], "diffuse": [r,g,b], "specular": [r,g,b]}`: sun direction (towards the sun) and colours (0..1), W4M's per theme/time land light (imported; `time` = `day`/`evening`/`night`, informational). Missing => a Camelot-day default. |
 | `palette` | `[[r,g,b, r,g,b], …]`: top (flat) and side colour per voxel material (fallback when there are no textures). |
 | `textures` | `[[top, side, topRepeat, sideRepeat], …]` aligned with `palette`: texture files (QOI/PNG, relative to the maps dir, `null` = none) and metres per texture repeat. Rendered with a triplanar shader (top texture on up-facing surfaces). |
 | `shapes` | applied in order: union, or carve with `"subtract": true` (tunnels, caves, moats). |

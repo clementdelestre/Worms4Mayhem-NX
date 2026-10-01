@@ -320,7 +320,7 @@ fn points(lo: V3, hi: V3) -> impl Iterator<Item = (usize, usize, usize)> {
 }
 fn gi(x: usize, y: usize, z: usize) -> usize { (z * NY + y) * NX + x }
 
-fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, out_dir: &Path, written: &mut HashSet<String>, used_libs: &mut HashSet<String>) -> Result<String, String> {
+fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<String, String>, out_dir: &Path, written: &mut HashSet<String>, used_libs: &mut HashSet<String>) -> Result<String, String> {
     let maps = data.join("Maps");
     let xb = fs::read(maps.join(format!("{stem}.xan"))).map_err(|e| e.to_string())?;
     let xom = read_xom(&xb).ok_or("bad xom")?;
@@ -336,6 +336,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, out_dir: &Path, writ
         .find_map(|n| find_ci(data, &format!("{n}.xom"))).and_then(|p| fs::read(p).ok()).and_then(|b| strings(&b).map(|s| s.0)).unwrap_or_default();
     let before = |key: &str| lvl.iter().position(|s| s == key).filter(|&i| i > 0).map(|i| lvl[i - 1].clone());
     let theme = before("Databank.Theme").unwrap_or_default();
+    let time = before("Databank.TimeOfDay").unwrap_or("DAY".into());
+    let lit = light.get(&format!("{}.{time}", theme.to_uppercase())).map_or(String::new(), |l| format!("  \"time\": \"{}\",\n  \"light\": {l},\n", time.to_lowercase()));
     let matfile = before("Databank.MaterialFile").or_else(|| find_ci(&maps, &format!("{stem}.txt")).map(|_| format!("Maps\\{stem}.txt")));
     let txt = matfile.and_then(|m| find_ci(data, &m).or_else(|| find_ci(&data.join("Themes"), &m)))
         .and_then(|p| fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
@@ -391,7 +393,10 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, out_dir: &Path, writ
             // the coast keeps sloping under water; cut it 0.5 m down (no seabed geometry)
             if t * VOX < WATER - 0.5 { continue; }
             top[z * NX + x] = t;
-            let m = if mask[r.min(99) * 100 + c.min(99)] > 127 { 66 } else { 65 };
+            // bilinear mask, thresholded: smooth borders instead of 1.6 m squares
+            let mv = |c: usize, r: usize| mask[r.min(99) * 100 + c.min(99)] as f32;
+            let mb = (mv(c, r) * (1.0 - tc) + mv(c + 1, r) * tc) * (1.0 - tr) + (mv(c, r + 1) * (1.0 - tc) + mv(c + 1, r + 1) * tc) * tr;
+            let m = if mb > 127.5 { 66 } else { 65 };
             for y in 0..NY.min(t.max(0.0).ceil() as usize) { if (y as f32) < t { grid[gi(x, y, z)] = m; } }
         } }
     }
@@ -545,7 +550,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, out_dir: &Path, writ
     let spawns = spawn_points(&grid);
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}],\n  \"objects\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}],\n  \"objects\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","),
         spawns.iter().map(|p| format!("[{:.1},{:.1},{:.1}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
         objs.join(",\n    ")
@@ -613,6 +618,26 @@ fn spawn_points(grid: &[u8]) -> Vec<[f32; 3]> {
     out
 }
 
+// Land lighting per "THEME.TIME" from Data/Tweak/TWEAK.XOM (WaterPlaneTweaks, see docs), as a JSON object.
+fn lights(data: &Path) -> HashMap<String, String> {
+    let Some(x) = find_ci(&data.join("Tweak"), "TWEAK.XOM").and_then(|p| fs::read(p).ok()).and_then(|b| read_xom(&b)) else { return HashMap::new() };
+    let mut out = HashMap::new();
+    for (_, d) in x.ctn.iter().filter(|c| c.0 == "XContainerResourceDetails") {
+        let mut p = 3;
+        let (r, n) = (vi(d, &mut p), vi(d, &mut p));
+        let (Some(name), Some((t, w))) = (x.s.get(n), x.ctn.get(r.wrapping_sub(1))) else { continue };
+        let Some(key) = name.strip_prefix("Water.").filter(|_| t == "WaterPlaneTweaks") else { continue };
+        let mut p = 7;
+        for _ in 0..3 { vi(w, &mut p); }
+        p += 14 * 4;
+        let v = |p: usize| format!("[{:.3},{:.3},{:.3}]", f32le(w, p), f32le(w, p + 4), f32le(w, p + 8));
+        let c = |p: usize| format!("[{:.3},{:.3},{:.3}]", w[p] as f32 / 255.0, w[p + 1] as f32 / 255.0, w[p + 2] as f32 / 255.0);
+        if w.len() < p + 24 { continue; }
+        out.insert(key.to_string(), format!("{{\"dir\": {}, \"ambient\": {}, \"diffuse\": {}, \"specular\": {}}}", v(p), c(p + 12), c(p + 15), c(p + 18)));
+    }
+    out
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -623,6 +648,7 @@ fn main() {
     let out = PathBuf::from(args.get(2).map_or("client/assets/maps", |s| s.as_str()));
     fs::create_dir_all(&out).expect("create out dir");
     let tex = textures(&data.join("Bundles"));
+    let light = lights(&data);
     let (mut written, mut libs) = (HashSet::new(), HashSet::new());
     let mut stems: Vec<String> = args[3..].to_vec();
     if stems.is_empty() {
@@ -632,7 +658,7 @@ fn main() {
     }
     let mut ok = 0;
     for s in &stems {
-        match run(&data, s, &tex, &out, &mut written, &mut libs) {
+        match run(&data, s, &tex, &light, &out, &mut written, &mut libs) {
             Ok(msg) => { ok += 1; println!("{s}: {msg}"); }
             Err(e) => println!("{s}: FAILED {e}"),
         }

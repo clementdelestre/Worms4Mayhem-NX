@@ -1,4 +1,5 @@
 #include "models.h"
+#include "lit.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
@@ -14,42 +15,19 @@
 #endif
 
 namespace {
-struct Entry { Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr; int frame = -1; };
+Matrix trs(const Transform &p) {
+    return MatrixMultiply(MatrixMultiply(MatrixScale(p.scale.x, p.scale.y, p.scale.z), QuaternionToMatrix(p.rotation)),
+                          MatrixTranslate(p.translation.x, p.translation.y, p.translation.z));
+}
+struct Entry { Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr; int frame = -1; std::vector<Matrix> invBind; };
 std::map<std::string, Entry> models;
 std::vector<std::string> hatNames;
 Shader shader{};
-
-// Textured + one directional light; alpha-tested for the teeth/eye overlays. GLSL 100, macro-wrapped for 330.
-const char *VS = R"(
-attribute vec3 vertexPosition;
-attribute vec2 vertexTexCoord;
-attribute vec3 vertexNormal;
-uniform mat4 mvp;
-uniform mat4 matNormal;
-varying vec2 uv;
-varying vec3 n;
-void main() { uv = vertexTexCoord; n = (matNormal * vec4(vertexNormal, 0.0)).xyz; gl_Position = mvp * vec4(vertexPosition, 1.0); }
-)";
-const char *FS = R"(
-uniform sampler2D texture0;
-uniform vec4 colDiffuse;
-varying vec2 uv;
-varying vec3 n;
-void main() {
-    vec4 c = texture2D(texture0, uv) * colDiffuse;
-    if (c.a < 0.5) discard;
-    float l = 0.6 + 0.4 * max(dot(normalize(n), normalize(vec3(0.4, 1.0, 0.3))), 0.0);
-    gl_FragColor = vec4(c.rgb * l, 1.0);
-}
-)";
 }
 
 void Models::load() {
     if (!DirectoryExists(MODEL_DIR)) return;
-    bool es = rlGetVersion() == RL_OPENGL_ES_20 || rlGetVersion() == RL_OPENGL_ES_30;
-    std::string vs = es ? "#version 100\n" : "#version 330\n#define attribute in\n#define varying out\n";
-    std::string fs = es ? "#version 100\nprecision mediump float;\n" : "#version 330\n#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n";
-    shader = LoadShaderFromMemory((vs + VS).c_str(), (fs + FS).c_str());
+    shader = Lit::modelShader(true);  // textured, alpha-tested (teeth/eye overlays), W4M worm light
     FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", true);  // recurses into hats/
     for (unsigned i = 0; i < files.count; i++) {
         Entry e;
@@ -61,6 +39,7 @@ void Models::load() {
             if (t.id != rlGetTextureIdDefault()) { GenTextureMipmaps(&t); SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR); }
         }
         if (e.m.skeleton.boneCount) e.anims = LoadModelAnimations(files.paths[i], &e.count);
+        for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
         std::string name = GetFileNameWithoutExt(files.paths[i]);
         if (strstr(files.paths[i], "/hats/")) hatNames.push_back(name);
         models[name] = e;
@@ -113,9 +92,49 @@ bool Models::joint(const char *name, const char *joint, const char *clip, float 
     int n = (int)e.m.skeleton.boneCount;
     while (b < n && strcmp(e.m.skeleton.bones[b].name, joint)) b++;
     if (!a || b == n || b >= (int)a->boneCount) return false;
-    const Transform &p = a->keyframePoses[f][b];
-    *out = MatrixMultiply(MatrixMultiply(MatrixScale(p.scale.x, p.scale.y, p.scale.z), QuaternionToMatrix(p.rotation)),
-                          MatrixTranslate(p.translation.x, p.translation.y, p.translation.z));
+    *out = trs(a->keyframePoses[f][b]);
+    return true;
+}
+
+// UpdateModelAnimation() equivalent at an integer frame; raylib inverts a bone matrix per vertex for the normals
+static void skin(Entry &e, const ModelAnimation &a, int f) {
+    Model &m = e.m;
+    int n = std::min(m.skeleton.boneCount, a.boneCount);
+    static std::vector<Matrix> nm;
+    nm.resize(m.skeleton.boneCount);
+    for (int b = 0; b < n; b++) {
+        m.boneMatrices[b] = MatrixMultiply(e.invBind[b], trs(a.keyframePoses[f][b]));
+        nm[b] = MatrixTranspose(MatrixInvert(m.boneMatrices[b]));
+    }
+    for (int i = 0; i < m.meshCount; i++) {
+        Mesh &me = m.meshes[i];
+        if (!me.boneWeights || !me.boneIndices || !me.animVertices || !me.animNormals) continue;
+        for (int v = 0; v < me.vertexCount; v++) {
+            Vector3 p = {me.vertices[3 * v], me.vertices[3 * v + 1], me.vertices[3 * v + 2]}, op = {}, on = {};
+            Vector3 nr = me.normals ? Vector3{me.normals[3 * v], me.normals[3 * v + 1], me.normals[3 * v + 2]} : Vector3{};
+            for (int j = 0; j < 4; j++) {
+                float w = me.boneWeights[4 * v + j];
+                if (w == 0) continue;
+                int b = me.boneIndices[4 * v + j];
+                op = Vector3Add(op, Vector3Scale(Vector3Transform(p, m.boneMatrices[b]), w));
+                on = Vector3Add(on, Vector3Scale(Vector3Transform(nr, nm[b]), w));
+            }
+            memcpy(&me.animVertices[3 * v], &op, sizeof op);
+            memcpy(&me.animNormals[3 * v], &on, sizeof on);
+        }
+        rlUpdateVertexBuffer(me.vboId[SHADER_LOC_VERTEX_POSITION], me.animVertices, me.vertexCount * 3 * sizeof(float), 0);
+        if (me.normals) rlUpdateVertexBuffer(me.vboId[SHADER_LOC_VERTEX_NORMAL], me.animNormals, me.vertexCount * 3 * sizeof(float), 0);
+    }
+}
+
+bool Models::visible(Vector3 c, float r) {
+    Matrix m = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+    Vector4 w = {m.m3, m.m7, m.m11, m.m15}, rows[3] = {{m.m0, m.m4, m.m8, m.m12}, {m.m1, m.m5, m.m9, m.m13}, {m.m2, m.m6, m.m10, m.m14}};
+    for (Vector4 q : rows)
+        for (float s : {1.0f, -1.0f}) {  // clip planes row3 + row, row3 - row
+            Vector3 n = {w.x + s * q.x, w.y + s * q.y, w.z + s * q.z};
+            if (Vector3DotProduct(n, c) + w.w + s * q.w < -r * Vector3Length(n)) return false;
+        }
     return true;
 }
 
@@ -134,7 +153,7 @@ bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color t
     // skinned meshes are shared: pose them right before each draw (CPU skinning), unless already in that pose
     int f;
     if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f)) {
-        if (a != e.posed || f != e.frame) UpdateModelAnimation(e.m, *a, f);
+        if ((a != e.posed || f != e.frame) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f);
         e.posed = a, e.frame = f;
     }
     e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));

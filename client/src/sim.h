@@ -74,8 +74,24 @@ enum Rule : uint32_t {
     RULE_KARMA = 8,       // attacker takes a share of damage dealt
     RULE_LOW_GRAVITY = 16,
     RULE_ROPE_RACE = 32,  // rope only, first to reach the map's finish wins
-    RULE_SUDDEN_DEATH = 64,  // after SD_TURNS turns: everyone drops to 1 hp, water rises each turn
+    RULE_SUDDEN_DEATH = 64,  // once the scheme's round time is up (see Scheme::sdType)
 };
+// W4M "Game Style". All bytes, no padding: sent and checksummed as raw bytes, so only ever append fields.
+struct Scheme {
+    uint8_t turnTime = 45, retreatTime = 3, hotSeat = 5;  // seconds; hot seat: pause before a turn, any input skips it
+    uint8_t roundTime = 20;                                // minutes of play before sudden death
+    uint8_t health = 100;                                  // worm start energy
+    uint8_t crateChance = 40;                              // % per turn
+    uint8_t weaponShare = 30, healthShare = 20, utilityShare = 30, crateHealth = 25;  // crate odds; hp in a health crate
+    uint8_t mines = 5, barrels = 4, mineFuse = 3;          // fuse seconds 0..5, FUSE_RANDOM: 0..5 s per mine
+    uint8_t sdType = 0;                                    // SD_*
+    uint8_t fallDamage = 1, wind = 2;                      // wind 0..3: none, low, medium, high
+    uint8_t weapons = 0;                                   // SET_*
+    enum : uint8_t { FUSE_RANDOM = 6, SD_BOTH = 0, SD_WATER, SD_ONE_HP, SET_DEFAULT = 0, SET_BNG, SET_CRATES, SET_UNLIMITED };
+};
+static_assert(sizeof(Scheme) == 17, "Scheme must stay plain bytes");
+struct SchemePreset { const char *name; Scheme s; };
+extern const std::vector<SchemePreset> SCHEMES;  // [0] = Standard; values from W4M Data/Tweak/LOCAL.XOM
 struct GameConfig {
     uint32_t seed = 0;
     int teams = 2, wormsPerTeam = 3;
@@ -83,6 +99,7 @@ struct GameConfig {
     uint32_t rules = 0;  // Rule flags
     struct Team { std::string name; uint8_t cpu = 0, voice = 0, hat = 0; };  // cpu: 0 = human, 1..3 = AI level
     std::vector<Team> teamSetup;  // per team; may be shorter than teams (defaults apply)
+    Scheme scheme;
 };
 
 enum class Phase { Aim, Flying, Retreat, Settle, GameOver };
@@ -90,9 +107,7 @@ enum class Phase { Aim, Flying, Retreat, Settle, GameOver };
 // Deterministic simulation: same seed + same inputs => same state on every client.
 struct Game {
     static constexpr float DT = 1.0f / 60, R = 0.5f;
-    static constexpr int TURN_TICKS = 45 * 60, SD_TURNS = 8;  // sudden death after SD_TURNS*teams individual turns
-    static constexpr int MINES = 5, BARRELS = 4;
-    static constexpr float CRATE_CHANCE = 0.5f, HEALTH_CHANCE = 0.3f, MINE_FUSE = 3;  // per turn; share of health crates
+    static constexpr int JUMP_WINDOW = 12;  // ticks a jump waits for a second press (backflip)
 
     Terrain terrain;
     std::vector<Worm> worms;
@@ -102,7 +117,11 @@ struct Game {
     std::vector<int> nextWorm;
     std::vector<std::vector<int>> ammo;  // [team][weapon]
     std::vector<int> lastHitTeam;        // per worm: team index of last attacker, -1 none (highlander)
-    int teams = 2, perTeam = 1, current = 0, weapon = 0, winner = -1, timer = 0, turnCount = 0;
+    int teams = 2, perTeam = 1, current = 0, weapon = 0, winner = -1, timer = 0;
+    int clock = 0;      // ticks played (hot seat excluded): sudden death after cfg.scheme.roundTime
+    int hotSeat = 0;    // ticks left before the turn clock starts
+    int jumpDelay = 0;  // forward jump pending; a second JUMP turns it into a backflip
+    bool selfHurt = false;  // the active worm took damage: its turn ends (W4M)
     float power = 0, wind = 0;
     bool roped = false, jetting = false;  // active utility: keeps the turn going
     bool chute = false;                   // parachute open until the turn ends

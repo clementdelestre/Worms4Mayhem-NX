@@ -12,6 +12,7 @@ float clipLength(const char *name, const char *clip);  // seconds, 0 if absent
 // Model-space matrix of a joint (e.g. "WeaponLocator") in that clip pose; false if missing.
 bool joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out);
 bool draw(const char *name, Matrix m, Color tint = WHITE);  // static model, full world matrix
+bool visible(Vector3 c, float r);  // sphere vs the current BeginMode3D view frustum
 // Hats (assets/models/hats/*.glb), sorted by file name so every client's list agrees. draw() them by hatName(i).
 int hatCount();
 const char *hatName(int i);  // "" if i out of range

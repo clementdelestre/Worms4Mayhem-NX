@@ -33,9 +33,11 @@ static uint32_t run(std::vector<bool> &used) {
 }
 
 // Generic scripted run (turn, aim, fire, walk, jump, weapon-cycle) used to compare two runs of the same rule combo.
-static uint32_t runRules(uint32_t rules, uint32_t seed) {
+static uint32_t runRules(uint32_t rules, uint32_t seed, const Scheme &scheme = Scheme{}) {
     Game g;
-    g.start({seed, 2, 2, "", rules});
+    GameConfig c{seed, 2, 2, "", rules};
+    c.scheme = scheme;
+    g.start(c);
     for (int t = 0; t < 60 * 200 && g.phase != Phase::GameOver; t++) {
         int tick = t % 300;
         Input in;
@@ -103,7 +105,7 @@ static void checkLowGravity() {
 static void checkSuddenDeath() {
     Game g;
     g.start({11, 2, 2, "", RULE_SUDDEN_DEATH});
-    g.turnCount = Game::SD_TURNS * g.teams - 1;  // one more turn flips sudden death
+    g.clock = g.cfg.scheme.roundTime * 3600;  // round time is up: the next turn flips sudden death
     float before = g.water;
     g.phase = Phase::Settle;
     g.timer = 1;
@@ -242,6 +244,85 @@ static void checkSentry() {
     assert(w.hp < 100 && g.objects[0].fuse > 0);  // shot the enemy in range, now reloading
 }
 
+static void settle(Game &g) {
+    for (int t = 0; t < 120; t++) g.step(Input{});  // land; empty input keeps the hot seat running
+}
+
+static Vector3 facing(const Worm &w) { return {sinf(w.yaw), 0, cosf(w.yaw)}; }
+
+static void checkJumps() {
+    Game g;
+    g.start({31, 2, 1, "", 0});
+    settle(g);
+    Worm &w = g.worms[g.current];
+    assert(w.grounded && g.phase == Phase::Aim);
+    Input jump;
+    jump.buttons = Input::JUMP;
+    g.step(jump);
+    assert(g.jumpDelay > 0 && w.grounded);  // waits for a possible second press
+    for (int t = 0; t < Game::JUMP_WINDOW && w.grounded; t++) g.step(Input{});
+    assert(!w.grounded && Vector3DotProduct(w.vel, facing(w)) > 2 && w.vel.y > 6 && w.vel.y < 8);  // forward jump
+
+    Game f;
+    f.start({31, 2, 1, "", 0});
+    settle(f);
+    Worm &b = f.worms[f.current];
+    f.step(jump);
+    f.step(Input{});
+    f.step(jump);  // second press inside the window
+    assert(!b.grounded && Vector3DotProduct(b.vel, facing(b)) < -0.5f && b.vel.y > 9);  // high backflip
+}
+
+// W4M: the turn ends as soon as the active worm takes damage, without retreat time.
+static void checkSelfHurtEndsTurn() {
+    Game g;
+    g.start({33, 2, 1, "", 0});
+    settle(g);
+    g.shots = {{g.worms[g.current].pos, {0, 0, 0}, clusterWeapon(), 0, true, 1}};
+    g.step(Input{});
+    assert(g.worms[g.current].hp < 100 && g.phase == Phase::Settle);
+}
+
+static void checkHotSeat() {
+    Game g;
+    g.start({35, 2, 1, "", 0});
+    int timer = g.timer;
+    assert(g.hotSeat == g.cfg.scheme.hotSeat * 60);
+    g.step(Input{});
+    assert(g.timer == timer && g.clock == 0);  // turn clock frozen
+    Input in;
+    in.turn = 50;
+    g.step(in);
+    g.step(Input{});
+    assert(!g.hotSeat && g.timer < timer && g.clock > 0);  // any input starts the turn
+}
+
+static void checkScheme() {
+    GameConfig c{37, 2, 2, "", 0};
+    c.scheme.health = 150;
+    c.scheme.mines = c.scheme.barrels = 0;
+    c.scheme.crateChance = 0;
+    c.scheme.weapons = Scheme::SET_BNG;
+    c.scheme.turnTime = 20;
+    Game g;
+    g.start(c);
+    for (const Worm &w : g.worms) assert(w.hp == 150);
+    assert(g.objects.empty() && g.timer == 20 * 60);
+    for (size_t i = 0; i < WEAPONS.size(); i++) {
+        Kind k = WEAPONS[i].kind;
+        if (k == Kind::Rope || k == Kind::Sheep) assert(g.ammo[0][i] == 0);
+        if (WEAPONS[i].name == "Bazooka") assert(g.ammo[0][i] == -1);
+    }
+    c.scheme.fallDamage = 0;
+    g.start(c);
+    Worm &w = g.worms[0];
+    w.pos.y += 15;  // long drop
+    w.vel = {0, 0, 0};
+    w.grounded = false;
+    for (int t = 0; t < 200; t++) g.step(Input{});
+    assert(w.hp == 150 || !w.alive);
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<bool> used(WEAPONS.size()), again(WEAPONS.size());
@@ -251,6 +332,12 @@ int main() {
     uint32_t combos[] = {0, RULE_KING, RULE_HIGHLANDER, RULE_VAMPIRE, RULE_KARMA, RULE_LOW_GRAVITY,
                           RULE_ROPE_RACE, RULE_SUDDEN_DEATH, RULE_KARMA | RULE_VAMPIRE};
     for (uint32_t r : combos) assert(runRules(r, 42) == runRules(r, 42));
+    for (const SchemePreset &p : SCHEMES) {
+        Scheme sd = p.s;
+        sd.roundTime = 1;  // reach sudden death within the run
+        assert(runRules(RULE_SUDDEN_DEATH, 43, sd) == runRules(RULE_SUDDEN_DEATH, 43, sd));
+    }
+    assert(runRules(0, 42, SCHEMES[0].s) != runRules(0, 42, SCHEMES[2].s));  // the scheme is part of the checksum
 
     checkKing();
     checkKarma();
@@ -264,6 +351,10 @@ int main() {
     checkMelee();
     checkSniper();
     checkSentry();
+    checkJumps();
+    checkSelfHurtEndsTurn();
+    checkHotSeat();
+    checkScheme();
     for (size_t i = 0; i < WEAPONS.size(); i++) {
         bool fired, again;
         uint32_t a = fireEach((int)i, fired), b = fireEach((int)i, again);

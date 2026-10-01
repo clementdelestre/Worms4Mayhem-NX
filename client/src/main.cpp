@@ -209,7 +209,10 @@ int main(int argc, char **argv) {
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
     // --ui title|main|setup|options|hud|panel [map]: capture that screen to ui.png and quit
     const char *uiShot = argc > 2 && !strcmp(argv[1], "--ui") ? argv[2] : nullptr;
-    bool cpuAll = argc > 1 && !strcmp(argv[1], "--cpu"), shot = !cpuAll && !uiShot && (argc > 1 || FileExists(DATA_DIR "shot"));
+    // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
+    bool bench = argc > 2 && !strcmp(argv[1], "--bench");
+    int benchFrames = bench && argc > 3 ? atoi(argv[3]) : 1200;
+    bool cpuAll = argc > 1 && (!strcmp(argv[1], "--cpu") || bench), shot = !cpuAll && !uiShot && (argc > 1 || FileExists(DATA_DIR "shot"));
     int shotWeapon = argc > 2 ? atoi(argv[2]) : 0;  // --shot N: use weapon N
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
@@ -246,25 +249,37 @@ int main(int argc, char **argv) {
     // --shot [weapon] [map] [rules]
     // the shot flag file may name the map (Switch has no args)
     std::string shotMap = argc > 3 ? argv[3] : "";
+    // --view <map> x y z tx ty tz: shot mode from a fixed camera (overview captures)
+    bool fixedView = argc > 8 && !strcmp(argv[1], "--view");
+    Camera3D viewCam = {{0, 0, 0}, {0, 0, 0}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
+    if (fixedView) {
+        shotMap = argv[2];
+        viewCam.position = {(float)atof(argv[3]), (float)atof(argv[4]), (float)atof(argv[5])};
+        viewCam.target = {(float)atof(argv[6]), (float)atof(argv[7]), (float)atof(argv[8])};
+    }
     if (char *t = argc <= 3 && FileExists(DATA_DIR "shot") ? LoadFileText(DATA_DIR "shot") : nullptr) {
         char m[64] = "";
         if (sscanf(t, "%63s", m) == 1) shotMap = m;
         UnloadFileText(t);
     }
-    if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); Fx::theme(game.terrain.theme, game.terrain.sky); }
+    if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time); }
 
     Camera3D cam = {{40, 30, 0}, {40, 8, 40}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
     float camYaw = 0, orbit = 0, zoom = 1, acc = 0, clock = 0, reconnectAt = 0;
     // perf overlay (L+R / F3 cycles off, CPU, GPU-synced): ms per section, smoothed. CPU mode only times command
     // submission (GPU work lands in "present"); synced mode glFinish()es after each section to charge the GPU cost to it.
-    enum { T_SIM, T_REMESH, T_SKY, T_TERRAIN, T_MODELS, T_FX, T_UI, T_PRESENT, T_COUNT };
-    double perf[T_COUNT] = {}, cost[T_COUNT] = {}, mark = 0;
-    int perfOn = 0;
+    enum { T_SIM, T_REMESH, T_SKY, T_TERRAIN, T_DECOR, T_MODELS, T_FX, T_UI, T_PRESENT, T_COUNT };
+    static const char *NAMES[T_COUNT] = {"sim", "remesh", "sky+water", "terrain", "decor", "models", "fx", "ui", "present+wait"};
+    double perf[T_COUNT] = {}, cost[T_COUNT] = {}, cpuCost[T_COUNT] = {}, mark = 0;
+    int perfOn = bench ? (argc > 4 ? 1 : 2) : 0;  // --bench map frames nosync: real fps, no glFinish
     auto lap = [&](int k) {
-        if (perfOn == 2) rlDrawRenderBatchActive(), glFinish();
+        if (perfOn == 2) rlDrawRenderBatchActive();
+        double c = GetTime();  // before glFinish: CPU submission only
+        if (perfOn == 2) glFinish();
         double t = GetTime();
-        cost[k] += t - mark, mark = t;
+        cpuCost[k] += c - mark, cost[k] += t - mark, mark = t;
     };
+    double benchSum[T_COUNT] = {}, benchCpu[T_COUNT] = {}, benchMax[T_COUNT] = {}, benchStart = 0, frameMax = 0, frameStart = 0;
 
     auto stepOnce = [&](const Input &in) {
         game.step(in);
@@ -278,15 +293,17 @@ int main(int argc, char **argv) {
         game.start(c);
         Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str());
         game.terrain.remesh();
-        Fx::theme(game.terrain.theme, game.terrain.sky);
+        Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);
         Fx::clear();
+        Audio::preloadVoices(game.teams);
         tick = 0;
         acc = 0;
         screen = Screen::Play;
     };
     if (cpuAll) {
+        if (bench) SetTargetFPS(0), opt.seed = 1234;
         opt.map = argc > 2 ? argv[2] : "";
-        opt.teamSetup.assign(4, {"CPU", (uint8_t)(argc > 3 ? atoi(argv[3]) : 2)});
+        opt.teamSetup.assign(4, {"CPU", (uint8_t)(!bench && argc > 3 ? atoi(argv[3]) : 2)});
         startMatch(opt);
     }
     Ai ai;
@@ -305,7 +322,7 @@ int main(int argc, char **argv) {
     auto pressed = [](std::initializer_list<int> buttons, std::initializer_list<int> keys) { return pressedAny(-1, buttons, keys); };
 
     for (int frame = 0; !WindowShouldClose(); frame++) {
-        float dt = fminf(GetFrameTime(), 0.25f);
+        float dt = bench || shot || uiShot ? Game::DT : fminf(GetFrameTime(), 0.25f);  // fixed: reproducible captures
         clock += dt;
         Ui::pollStick();
         Audio::update();
@@ -433,7 +450,7 @@ int main(int argc, char **argv) {
             }
         }
         lap(T_SIM);
-        game.terrain.remesh();
+        game.terrain.remesh(0.003);  // a big blast's rebuild spreads over a few frames, hidden by the fireball
         lap(T_REMESH);
         int sec = game.phase == Phase::Aim && game.timer <= 300 ? game.timer / 60 : -1;
         if (sec >= 0 && sec != lastSec) Audio::play(Audio::Sfx::Tick);
@@ -476,6 +493,7 @@ int main(int argc, char **argv) {
         cam.position = Vector3Lerp(cam.position, want, kp);
         cam.fovy = Lerp(cam.fovy, scope ? 25.0f : 50.0f, 1 - expf(-dt * 8));
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
+        if (fixedView) view = viewCam;
         Vector3 jolt = Vector3Scale({sinf(clock * 53), sinf(clock * 61 + 1) * 0.7f, sinf(clock * 47 + 2)}, Fx::shake);
         view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt);
         mark = GetTime();
@@ -489,9 +507,10 @@ int main(int argc, char **argv) {
         game.terrain.draw();
         lap(T_TERRAIN);
         game.terrain.drawObjects(view.position);
+        lap(T_DECOR);
         for (const Worm &w : game.worms) {
             if (!w.alive) { drawGrave(game, w); continue; }
-            if (scope && &w == &cur) continue;  // the camera is inside it
+            if ((scope && &w == &cur) || !Models::visible(w.pos, 2)) continue;  // scope: the camera is inside it
             if (!drawWorm(game, w, clock)) {
                 Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
                 DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
@@ -533,6 +552,7 @@ int main(int argc, char **argv) {
         for (const Object &o : game.objects) {
             const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry"
                           : o.weapon < 0 ? "crate_health" : "crate_weapon";
+            if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute
             if (!Models::draw(m, o.pos, (&o - game.objects.data()) * 1.3f)) {
                 if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
                 else if (o.type == Object::Barrel) DrawCylinder({o.pos.x, o.pos.y - 0.5f, o.pos.z}, 0.35f, 0.35f, 1, 10, MAROON);
@@ -568,8 +588,7 @@ int main(int argc, char **argv) {
         pause.draw(online);
         if (remoteTurn) drawTextCentered("Remote player's turn", 640, 90, 24, WHITE);
         if (online && !status.empty()) drawTextCentered(status.c_str(), 640, 120, 24, ORANGE);
-        if (perfOn) {
-            static const char *NAMES[T_COUNT] = {"sim", "remesh", "sky+water", "terrain", "models", "fx", "ui", "present+wait"};
+        if (perfOn && !bench) {  // bench: keep the overlay out of the measured ui cost
             int tris = 0;
             for (const auto &ps : game.terrain.parts)
                 for (const Terrain::Part &p : ps) tris += p.mesh.triangleCount;
@@ -598,7 +617,35 @@ int main(int argc, char **argv) {
         }
         EndDrawing();
         lap(T_PRESENT);
-        for (int k = 0; k < T_COUNT; k++) perf[k] = perf[k] * 0.95 + cost[k] * 0.05, cost[k] = 0;
+        const int warm = 10;  // skip load / first-use frames
+        if (bench && frame == warm) benchStart = GetTime();
+        if (bench && frame > warm) {
+            frameMax = fmax(frameMax, GetTime() - frameStart);
+            for (int k = 0; k < T_COUNT; k++) benchSum[k] += cost[k], benchCpu[k] += cpuCost[k], benchMax[k] = fmax(benchMax[k], cost[k]);
+        }
+        frameStart = GetTime();
+        for (int k = 0; k < T_COUNT; k++) perf[k] = perf[k] * 0.95 + cost[k] * 0.05, cost[k] = 0, cpuCost[k] = 0;
+        if (bench && frame == warm + benchFrames) {
+            double n = benchFrames, wall = GetTime() - benchStart, cpu = 0, gpu = 0;
+            printf("BENCH map=%s frames=%d  %.1f fps (%s)  frame avg %.2f ms max %.2f ms\n", opt.map.empty() ? "(procedural)" : opt.map.c_str(), benchFrames, n / wall, perfOn == 2 ? "gpu-synced" : "no sync",
+                   wall / n * 1000, frameMax * 1000);
+            printf("%-13s %8s %8s %8s %8s\n", "section", "cpu", "sync", "gpu", "syncmax");
+            for (int k = 0; k < T_COUNT; k++) {
+                double c = benchCpu[k] / n * 1000, s = benchSum[k] / n * 1000;
+                cpu += c, gpu += s - c;
+                printf("%-13s %8.3f %8.3f %8.3f %8.2f\n", NAMES[k], c, s, s - c, benchMax[k] * 1000);
+            }
+            gpu -= (benchSum[T_PRESENT] - benchCpu[T_PRESENT]) / n * 1000;  // vsync wait, not GPU work
+            // ponytail: Switch ~5x slower CPU, Tegra X1 docked ~4x below a desktop iGPU; glFinish waits overstate GPU time
+            double sw = fmax(5 * cpu, 4 * gpu);
+            printf("total cpu %.2f ms gpu %.2f ms -> Switch ~%.1f ms = max(5x cpu, 4x gpu docked) = %.0f fps\n", cpu, gpu, sw, 1000 / sw);
+            int tris = 0, parts = 0;
+            for (const auto &ps : game.terrain.parts)
+                for (const Terrain::Part &p : ps) tris += p.mesh.triangleCount, parts++;
+            printf("terrain %d tris %d meshes, %d decor, phase %d turn tick %u\n", tris, parts, (int)game.terrain.objects.size(), (int)game.phase, tick);
+            fflush(stdout);
+            break;
+        }
         if ((shot && frame == 150) || (uiShot && frame == 40)) break;
     }
     net.close();

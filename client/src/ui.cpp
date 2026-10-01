@@ -35,6 +35,23 @@ const char *APPLET = nullptr;
 #endif
 const Color GOLDEN = {255, 210, 60, 255}, PANEL = {16, 52, 84, 230};
 const char *RULE_LABELS[] = {"King", "Highlander", "Vampire", "Karma", "Low gravity", "Rope race", "Sudden death"};
+// Scheme edit page: one row per Scheme byte, in struct order. names: enum labels (min = 0).
+struct SchemeField { const char *label, *fmt; int min, max, step; const char *names[7]; };
+const SchemeField SCHEME_FIELDS[] = {
+    {"Turn time", "%d s", 5, 90, 5, {}}, {"Retreat time", "%d s", 0, 10, 1, {}}, {"Hot seat time", "%d s", 0, 10, 1, {}},
+    {"Round time", "%d min", 5, 60, 5, {}}, {"Worm energy", "%d", 25, 250, 25, {}}, {"Crate drops", "%d%%", 0, 100, 10, {}},
+    {"Weapon crates", "%d", 0, 100, 10, {}}, {"Health crates", "%d", 0, 100, 10, {}}, {"Utility crates", "%d", 0, 100, 10, {}},
+    {"Health crate", "%d hp", 5, 100, 5, {}}, {"Mines", "%d", 0, 12, 1, {}}, {"Oil drums", "%d", 0, 12, 1, {}},
+    {"Mine fuse", nullptr, 0, 6, 1, {"0 s", "1 s", "2 s", "3 s", "4 s", "5 s", "Random"}},
+    {"Sudden death", nullptr, 0, 2, 1, {"1 HP + water", "Water rise", "1 HP"}}, {"Fall damage", nullptr, 0, 1, 1, {"Off", "On"}},
+    {"Wind", nullptr, 0, 3, 1, {"None", "Low", "Medium", "High"}}, {"Weapons", nullptr, 0, 3, 1, {"Default", "BnG", "Crates only", "Unlimited"}},
+};
+static_assert(sizeof SCHEME_FIELDS / sizeof *SCHEME_FIELDS == sizeof(Scheme), "one row per Scheme byte");
+
+int presetOf(const Scheme &s) {
+    for (size_t i = 0; i < SCHEMES.size(); i++) if (!memcmp(&SCHEMES[i].s, &s, sizeof s)) return (int)i;
+    return -1;
+}
 const char *DEFAULT_TEAMS[] = {"Red Rockets", "Blue Bombers", "Green Grubs", "Gold Diggers"};
 const char *WORM_NAMES[] = {"Boggy", "Spadge", "Nobby", "Clagnut", "Thumper", "Wiggles", "Squirm", "Noodle",
                             "Gizmo", "Pickles", "Biscuit", "Rumble", "Sprout", "Dumpling", "Chompy", "Fidget"};
@@ -219,8 +236,38 @@ void text(const char *t, float x, float y, float size, Color c, int align) {
     Vector2 p = {roundf(x - m.x * align / 2), roundf(y)};
     float o = fmaxf(1.5f, size / 14);  // W4M text: black outline
     Color k = {0, 0, 0, c.a};
-    for (Vector2 d : {Vector2{-o, -o}, {o, -o}, {-o, o}, {o, o}, {0, o * 1.5f}}) DrawTextEx(font, t, Vector2Add(p, d), size, sp, k);
-    DrawTextEx(font, t, p, size, sp, c);
+    // DrawTextEx() x6, but its linear glyph lookup and per-glyph batch checks run once per string
+    struct G { float ox, oy; int g; };
+    static std::vector<G> gs;
+    gs.clear();
+    float s = size / font.baseSize, pad = (float)font.glyphPadding, ox = 0, oy = 0;
+    for (int i = 0, n = 1; t[i]; i += n) {
+        int cp = GetCodepointNext(t + i, &n), g = GetGlyphIndex(font, cp);
+        if (cp == '\n') { oy += size + 2, ox = 0; continue; }  // raylib's default line spacing
+        if (cp != ' ' && cp != '\t') gs.push_back({ox, oy, g});
+        ox += (font.glyphs[g].advanceX == 0 ? font.recs[g].width * s : font.glyphs[g].advanceX * s) + sp;
+    }
+    float W = (float)font.texture.width, H = (float)font.texture.height;
+    rlSetTexture(font.texture.id);
+    rlBegin(RL_QUADS);
+    rlNormal3f(0, 0, 1);
+    for (Vector2 d : {Vector2{-o, -o}, {o, -o}, {-o, o}, {o, o}, {0, o * 1.5f}, {0, 0}}) {
+        Vector2 q = Vector2Add(p, d);
+        Color col = d.x == 0 && d.y == 0 ? c : k;
+        rlColor4ub(col.r, col.g, col.b, col.a);
+        for (const G &e : gs) {
+            const Rectangle &r = font.recs[e.g];
+            float x = q.x + e.ox + font.glyphs[e.g].offsetX * s - pad * s, y = q.y + e.oy + font.glyphs[e.g].offsetY * s - pad * s;
+            float w = (r.width + 2 * pad) * s, h = (r.height + 2 * pad) * s, u0 = (r.x - pad) / W, v0 = (r.y - pad) / H;
+            float u1 = (r.x - pad + (r.width + 2 * pad)) / W, v1 = (r.y - pad + (r.height + 2 * pad)) / H;
+            rlTexCoord2f(u0, v0), rlVertex2f(x, y);
+            rlTexCoord2f(u0, v1), rlVertex2f(x, y + h);
+            rlTexCoord2f(u1, v1), rlVertex2f(x + w, y + h);
+            rlTexCoord2f(u1, v0), rlVertex2f(x + w, y);
+        }
+    }
+    rlEnd();
+    rlSetTexture(0);
 }
 
 static float textWidth(const char *t, float size) { return MeasureTextEx(font, t, size, fontLoaded ? 0 : size / 10).x; }
@@ -275,7 +322,7 @@ void hints(std::initializer_list<Hint> h) {
 void controls() {
     struct Row { const char *what, *pad, *key; };
     static const Row GAME[] = {{"Walk / turn", "LS", "Arrows"}, {"Aim", "RS", "W/S"}, {"Aim (single Joy-Con)", "L", nullptr},
-                               {"Fire (hold = power)", "A", "Space"}, {"Jump / let go of rope", "B", "Enter"}, {"Weapon panel", "X", "Q"},
+                               {"Fire (hold = power)", "A", "Space"}, {"Jump (twice: backflip) / let go of rope", "B", "Enter"}, {"Weapon panel", "X", "Q"},
                                {"Next weapon", "Y/R", "Tab"}, {"Rotate camera", "RS", "A/D"}, {"Zoom", "ZL/ZR", "Z/X"},
                                {"Performance overlay", "L+R", "F3"}, {"Pause", "+", "Esc"}};
     static const Row MENU[] = {{"Move", "D-pad/LS", "Arrows"}, {"Confirm", "A", "Enter"}, {"Back", "B", "Esc"},
@@ -364,7 +411,7 @@ bool Frontend::edit(std::string &s, const char *hint) {
 #endif
 }
 
-// setup.txt: "teams N", "worms N", "map NAME|-", "rules N", "hats N"... then "team <i> <cpu> <hat> <voice bank|-> <name>"
+// setup.txt: "teams N", "worms N", "map NAME|-", "rules N", "scheme <Scheme bytes>"... then "team <i> <cpu> <hat> <voice bank|-> <name>"
 void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) {
     loaded = true;
     hats = Models::hatCount();
@@ -378,6 +425,17 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
         if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, 2, 4);
         else if (sscanf(line, "worms %d", &a) == 1) cfg.wormsPerTeam = Clamp(a, 1, 4);
         else if (sscanf(line, "rules %d", &a) == 1) cfg.rules = (uint32_t)a;
+        else if (!strncmp(line, "scheme ", 7)) {
+            char *p = line + 7;
+            for (size_t i = 0; i < sizeof(Scheme); i++) {
+                char *e;
+                long v = strtol(p, &e, 10);
+                if (e == p) break;
+                const SchemeField &f = SCHEME_FIELDS[i];
+                ((uint8_t *)&cfg.scheme)[i] = (uint8_t)Clamp(v, f.min, f.max);
+                p = e;
+            }
+        }
         else if (sscanf(line, "map %63s", s) == 1) {
             auto it = std::find(maps.begin(), maps.end(), std::string(s) == "-" ? "" : s);
             if (it != maps.end()) mapSel = int(it - maps.begin());
@@ -394,7 +452,9 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
 }
 
 void Frontend::saveSetup(const GameConfig &cfg) const {
-    std::string s = TextFormat("teams %d\nworms %d\nrules %u\nmap %s\n", cfg.teams, cfg.wormsPerTeam, cfg.rules, cfg.map.empty() ? "-" : cfg.map.c_str());
+    std::string s = TextFormat("teams %d\nworms %d\nrules %u\nmap %s\nscheme", cfg.teams, cfg.wormsPerTeam, cfg.rules, cfg.map.empty() ? "-" : cfg.map.c_str());
+    for (size_t i = 0; i < sizeof(Scheme); i++) s += TextFormat(" %d", ((const uint8_t *)&cfg.scheme)[i]);
+    s += "\n";
     for (int t = 0; t < (int)cfg.teamSetup.size(); t++) {
         const GameConfig::Team &m = cfg.teamSetup[t];
         const char *v = Audio::voiceBankName(m.voice);
@@ -481,11 +541,40 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         hints({{"B", "Esc", "Back"}});
         if (back || ok) screen = Options;
         break;
+    case SchemeEdit: {
+        const int n = (int)sizeof(Scheme);
+        schemeRow = clampWrap(schemeRow + dy, n + 1);
+        int preset = presetOf(cfg.scheme), np = (int)SCHEMES.size();
+        if (schemeRow == 0 && dx) cfg.scheme = SCHEMES[clampWrap(preset < 0 ? (dx > 0 ? 0 : np - 1) : preset + dx, np)].s;
+        uint8_t *bytes = (uint8_t *)&cfg.scheme;
+        if (schemeRow > 0 && dx) {
+            const SchemeField &f = SCHEME_FIELDS[schemeRow - 1];
+            int v = bytes[schemeRow - 1] + dx * f.step;
+            bytes[schemeRow - 1] = (uint8_t)(f.names[0] ? clampWrap(v, f.max + 1) : Clamp(v, f.min, f.max));
+        }
+        text("GAME SCHEME", 640, 18, 48, GOLDEN, 1);
+        popup({300, 80, 680, 590});
+        for (int i = 0; i <= n; i++) {
+            Rectangle r = {320, 92 + i * 31.0f, 640, 29};
+            bool hi = i == schemeRow;
+            std::string v = !i ? (preset < 0 ? "Custom" : SCHEMES[preset].name) : "";
+            if (i) {
+                const SchemeField &f = SCHEME_FIELDS[i - 1];
+                v = f.names[0] ? f.names[std::min<int>(bytes[i - 1], f.max)] : TextFormat(f.fmt, bytes[i - 1]);
+            }
+            if (hi) DrawRectangleRounded(r, 0.4f, 6, {255, 210, 60, 70});
+            text(i ? SCHEME_FIELDS[i - 1].label : "Preset", r.x + 10, r.y + 3, 22, hi ? GOLDEN : i ? WHITE : SKYBLUE);
+            text(TextFormat(hi ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + 3, 22, WHITE, 2);
+        }
+        hints({{"D-pad", "Up/Down", "Move"}, {"D-pad", "Left/Right", "Change"}, {"B", "Esc", "Back"}});
+        if (back || ok) screen = Setup;
+        break;
+    }
     case Setup: {
         // focus order: teams count, 4 fields per visible team, worms, map, rules, start
         std::vector<int> ids = {0};
         for (int k = 0; k < cfg.teams; k++) for (int f = 0; f < 4; f++) ids.push_back(100 + k * 4 + f);
-        ids.push_back(200), ids.push_back(201);
+        ids.push_back(200), ids.push_back(201), ids.push_back(299);
         for (int r = 0; r < 7; r++) ids.push_back(300 + r);
         ids.push_back(400);
         row = clampWrap(row + dy, (int)ids.size());
@@ -511,6 +600,9 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (id == 200) cfg.wormsPerTeam = Clamp(cfg.wormsPerTeam + dx, 1, 4);
         if (id == 201) mapSel = clampWrap(mapSel + dx, (int)maps.size());
         if (id >= 300 && id < 400 && (dx || ok)) cfg.rules ^= 1u << (id - 300);
+        int preset = presetOf(cfg.scheme), np = (int)SCHEMES.size();
+        if (id == 299 && dx) cfg.scheme = SCHEMES[clampWrap(preset < 0 ? (dx > 0 ? 0 : np - 1) : preset + dx, np)].s;
+        if (id == 299 && ok) screen = SchemeEdit, schemeRow = 0;
         cfg.map = maps.empty() ? "" : maps[std::min(mapSel, (int)maps.size() - 1)];
 
         text(online ? "ONLINE MATCH" : "LOCAL MATCH", 640, 18, 48, GOLDEN, 1);
@@ -545,12 +637,14 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         value(200, {920, 230, 330, 40}, "Worms", TextFormat("%d", cfg.wormsPerTeam), 28);
         text(online ? "Teams = players in the room" : "One controller per team, or share one", 930, 280, 18, LIGHTGRAY);
         popup({672, 330, 584, 262});
+        value(299, {690, 342, 548, 28}, "Scheme", preset < 0 ? "Custom" : SCHEMES[preset].name, 22);
         for (int r = 0; r < 7; r++)
-            value(300 + r, {690, 344 + r * 34.0f, 548, 32}, RULE_LABELS[r], cfg.rules & (1u << r) ? "ON" : "off", 24);
+            value(300 + r, {690, 372 + r * 29.0f, 548, 28}, RULE_LABELS[r], cfg.rules & (1u << r) ? "ON" : "off", 22);
         Rectangle go = {860, 608, 390, 70};
         panel(go, ids[row] == 400);
         text(online ? "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ids[row] == 400 ? GOLDEN : WHITE, 1);
         if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
+        else if (id == 299) hints({{"D-pad", "Left/Right", "Preset"}, {"A", "Enter", "Edit scheme"}, {"B", "Esc", "Back"}});
         else if (online) hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Go online"}, {"B", "Esc", "Back"}});
         else hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Start"}, {APPLET, nullptr, "Controllers"}, {"B", "Esc", "Back"}});
 #ifdef __SWITCH__
@@ -656,15 +750,20 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     // turn banner
     text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(cur.team, g.current % std::max(1, g.perTeam))), 640, 14, 28, tc, 1);
     if (g.cfg.rules & RULE_ROPE_RACE) text(TextFormat("Race %ds", tick / 60), 1260, 14, 26, GOLDEN, 2);
+    bool crate = false;
+    for (const Object &o : g.objects) crate = crate || (o.type == Object::Crate && o.falling);
+    if (crate || g.suddenDeath) text(crate ? "Crate drop!" : "SUDDEN DEATH!", 640, 46, 26, GOLDEN, 1);
     rlPushMatrix();
     rlTranslatef(0, -30, 0);  // bottom HUD sits above the hint bar
     // turn timer (bottom left)
-    int secs = g.phase == Phase::Aim || g.phase == Phase::Retreat ? g.timer / 60 : 0;
+    int left = g.phase == Phase::Aim && g.hotSeat ? g.hotSeat : g.phase == Phase::Aim || g.phase == Phase::Retreat ? g.timer : 0, secs = (left + 59) / 60;
     Rectangle clockR = {20, 600, 100, 100};
-    if (!image(secs <= 5 && g.phase == Phase::Aim ? "fe/buttonsmall_highlight" : "fe/buttonsmall_normal", clockR)) DrawCircle(70, 650, 48, PANEL);
+    bool urgent = (secs <= 5 && g.phase == Phase::Aim && !g.hotSeat) || g.phase == Phase::Retreat;
+    if (!image(urgent ? "fe/buttonsmall_highlight" : "fe/buttonsmall_normal", clockR)) DrawCircle(70, 650, 48, PANEL);
     text(TextFormat("%d", secs), 70, 626, 46, WHITE, 1);
+    if (g.phase == Phase::Retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", 70, 580, 20, GOLDEN, 1);
     // team health (bottom centre)
-    int maxHp = 100 * std::max(1, g.perTeam);
+    int maxHp = std::max(1, (int)g.cfg.scheme.health) * std::max(1, g.perTeam);
     for (int t = 0; t < g.teams; t++) {
         int hp = 0;
         for (const Worm &w : g.worms) if (w.team == t && w.alive) hp += w.hp > 0 ? w.hp : 0;
@@ -706,7 +805,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     rlPopMatrix();
     if (open) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
     else if (mine && g.phase == Phase::Aim)
-        hints({{"A", "Space", "Fire (hold)"}, {"B", "Enter", "Jump"}, {"X", "Q", "Weapons"}, {"Y/R", "Tab", "Next"}, {"+", "Esc", "Pause"}});
+        hints({{"A", "Space", "Fire (hold)"}, {"B", "Enter", "Jump (x2 flip)"}, {"X", "Q", "Weapons"}, {"Y/R", "Tab", "Next"}, {"+", "Esc", "Pause"}});
     else hints({{"+", "Esc", "Pause"}});
     if (!open) return;
 

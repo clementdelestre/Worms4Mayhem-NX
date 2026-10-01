@@ -11,9 +11,11 @@ static double maxTick = 0, maxTurn = 0;
 
 struct Result { uint32_t sum; int turns, fired, damage, winner; bool over, reached; };
 
-static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint32_t rules = 0, bool quiet = false, int only = -1, int maxTurns = 1000) {
+static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint32_t rules = 0, bool quiet = false, int only = -1, int maxTurns = 1000,
+                    const Scheme &scheme = Scheme{}) {
     Game g;
     GameConfig c{seed, 2, 3, map, rules};
+    c.scheme = scheme;
     c.teamSetup = {{"CPU", l0}, {"CPU", l1}};
     g.start(c);
     if (only >= 0)  // single weapon test: that weapon plus Skip Go
@@ -94,6 +96,14 @@ int main() {
         printf(" %s %.1f", WEAPONS[k].name.c_str(), (float)d / turns);
     }
     printf("\n");
+
+    for (const SchemePreset &p : SCHEMES) {  // every preset plays: short turns, sudden death, odd weapon sets
+        Scheme sc = p.s;
+        sc.roundTime = 5;
+        Result x = match("arabian", 41, 2, 2, RULE_SUDDEN_DEATH, true, -1, 60, sc);
+        printf("%-10s %3d turns, %3d shots, %5.1f dmg/turn, %s\n", p.name, x.turns, x.fired, x.turns ? (float)x.damage / x.turns : 0.f, x.over ? "over" : "timeout");
+        assert(x.fired > 0 && (x.damage > 0 || sc.weapons == Scheme::SET_CRATES));
+    }
 
     printf("planning cost: max %.2f ms per tick, %.2f ms per turn\n", maxTick, maxTurn);
     maxTick = maxTurn = 0;

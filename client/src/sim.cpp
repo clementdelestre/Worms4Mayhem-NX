@@ -73,8 +73,31 @@ bool loadWeapons(const char *path) {
     return true;
 }
 
+// Order: turn, retreat, hot seat, round (min), energy, crate %, weapon/health/utility shares, crate hp,
+// mines, barrels, mine fuse, sudden death, fall damage, wind, weapon set. Mines, barrels, sets: ours.
+const std::vector<SchemePreset> SCHEMES = {
+    {"Standard", {45, 3, 5, 20, 100, 40, 30, 20, 30, 25, 5, 4, 3, 0, 1, 2, 0}},
+    {"Beginner", {90, 0, 5, 20, 100, 50, 30, 20, 30, 50, 3, 4, 5, 0, 0, 1, 0}},
+    {"Pro", {30, 5, 0, 20, 100, 30, 10, 50, 30, 25, 5, 4, Scheme::FUSE_RANDOM, 0, 1, 3, 0}},
+    {"BnG", {30, 5, 5, 10, 150, 40, 40, 40, 10, 25, 5, 4, 5, 0, 1, 2, Scheme::SET_BNG}},
+    {"Shopping", {60, 3, 5, 20, 100, 100, 60, 20, 20, 25, 5, 4, Scheme::FUSE_RANDOM, 0, 1, 1, Scheme::SET_CRATES}},
+    {"All Action", {30, 3, 5, 10, 200, 40, 30, 20, 30, 25, 5, 6, 1, 0, 1, 1, 0}},
+    {"Strategy", {30, 3, 0, 30, 100, 40, 10, 50, 10, 25, 8, 4, 5, 0, 0, 3, 0}},
+    {"Family", {90, 0, 8, 20, 125, 50, 30, 20, 30, 50, 3, 4, 5, 0, 0, 1, 0}},
+    {"Mega Power", {30, 3, 5, 10, 200, 50, 40, 20, 40, 100, 5, 8, Scheme::FUSE_RANDOM, 0, 1, 1, Scheme::SET_UNLIMITED}},
+    {"Holy Grail", {45, 3, 5, 30, 100, 60, 30, 30, 30, 50, 5, 4, 1, 0, 0, 2, 0}},
+    {"Darksider", {45, 3, 5, 30, 100, 50, 10, 50, 10, 25, 5, 4, 5, 0, 0, 1, 0}},
+};
+
 static constexpr float GRAVITY = 15;
-static constexpr float FALL_SAFE = 9, FALL_SCALE = 4;  // fall damage: speed threshold, hp per m/s above it
+static constexpr float FALL_SAFE = 10.5f, FALL_SCALE = 4;  // fall damage: speed threshold, hp per m/s above it
+// W4M WXWorm.Jump*/Backflip* (world units, 25 = one worm height = 1 m here): forward 3.2 m long, 2 m high;
+// backflip 1.6 m back, 3.2 m high. Speeds for g = 15: v_up = sqrt(2gh), v_side = d * g / (2 v_up).
+static constexpr float JUMP_UP = 7.75f, JUMP_FWD = 3.1f, FLIP_UP = 9.8f, FLIP_BACK = -1.22f;
+static constexpr float SLIDE_NY = 0.5f, SLIDE_FRICTION = 0.95f, WALK_OFF = 0.7f;  // W4M SlideAngle 60, WalkOffCliffVelMulti
+static const float WIND_MAX[] = {0, 0.5f, 1, 1.5f};
+
+static bool utility(Kind k) { return k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::ChangeWorm; }
 
 float Game::rand01() {
     rng = rng * 1664525u + 1013904223u;
@@ -102,7 +125,8 @@ void Game::start(const GameConfig &c) {
     weapon = 0;
     prevButtons = 0;
     water = Terrain::WATER;
-    turnCount = 0;
+    clock = hotSeat = jumpDelay = 0;
+    selfHurt = false;
     suddenDeath = false;
     lastHitTeam.assign(teams * perTeam, -1);
 
@@ -116,13 +140,19 @@ void Game::start(const GameConfig &c) {
         for (auto &a : ammo)
             for (int i = 0; i < 3; i++) a[(int)(rand01() * WEAPONS.size())] += 2;  // small random starting set
     } else {
+        const int set = cfg.scheme.weapons;
         for (auto &a : ammo)
-            for (size_t i = 0; i < WEAPONS.size(); i++) a[i] = WEAPONS[i].count;
+            for (size_t i = 0; i < WEAPONS.size(); i++) {
+                Kind k = WEAPONS[i].kind;
+                bool keep = set == Scheme::SET_DEFAULT || k == Kind::SkipGo || k == Kind::Surrender ||
+                            (set == Scheme::SET_BNG && (k == Kind::Shell || k == Kind::Homing));
+                a[i] = set == Scheme::SET_UNLIMITED ? -1 : keep ? WEAPONS[i].count : 0;
+            }
     }
     const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2;
     for (int t = 0; t < teams; t++)
         for (int k = 0; k < per; k++) {
-            Worm w = {{cx, (Terrain::NY - 1) * Terrain::VOX, cz}, {0, 0, 0}, 0, 0.3f, 100, t, true, false};
+            Worm w = {{cx, (Terrain::NY - 1) * Terrain::VOX, cz}, {0, 0, 0}, 0, 0.3f, std::max(1, (int)cfg.scheme.health), t, true, false};
             size_t slot = t * per + k;
             if (slot < terrain.spawns.size()) {
                 w.pos = terrain.spawns[slot];
@@ -140,8 +170,8 @@ void Game::start(const GameConfig &c) {
             worms.push_back(w);
         }
     if (!(cfg.rules & RULE_ROPE_RACE)) {
-        for (int i = 0; i < MINES; i++) addObject(Object::Mine, 0);
-        for (int i = 0; i < BARRELS; i++) addObject(Object::Barrel, 0);
+        for (int i = 0; i < cfg.scheme.mines; i++) addObject(Object::Mine, 0);
+        for (int i = 0; i < cfg.scheme.barrels; i++) addObject(Object::Barrel, 0);
     }
 
     if (cfg.rules & RULE_ROPE_RACE) {
@@ -178,13 +208,13 @@ void Game::beginTurn(int team) {
         emit(GameEvent::GameOver, {0, 0, 0});
         return;
     }
-    if (cfg.rules & RULE_SUDDEN_DEATH) {
-        if (++turnCount == SD_TURNS * teams && !suddenDeath) {
-            suddenDeath = true;
+    const Scheme &sc = cfg.scheme;
+    if ((cfg.rules & RULE_SUDDEN_DEATH) && !suddenDeath && clock >= sc.roundTime * 3600) {
+        suddenDeath = true;
+        if (sc.sdType != Scheme::SD_WATER)
             for (Worm &x : worms) if (x.alive && x.hp > 1) x.hp = 1;
-        }
-        if (suddenDeath) water = fminf(water + 0.2f, Terrain::WATER + 15);
     }
+    if (suddenDeath && sc.sdType != Scheme::SD_ONE_HP) water = fminf(water + 1.25f, Terrain::WATER + 15);  // W4M Water.RiseAmount 25
     for (int i = 1; i <= teams; i++) {
         int t = (team + i) % teams;
         if (!has[t]) continue;
@@ -194,13 +224,16 @@ void Game::beginTurn(int team) {
             current = c;
             nextWorm[t] = (slot + 1) % perTeam;
             phase = Phase::Aim;
-            timer = TURN_TICKS;
+            timer = std::max(1, (int)sc.turnTime) * 60;
+            hotSeat = sc.hotSeat * 60;
+            jumpDelay = 0;
+            selfHurt = false;
             power = 0;
-            wind = rand01() * 2 - 1;
+            wind = (rand01() * 2 - 1) * WIND_MAX[std::min<int>(sc.wind, 3)];
             roped = jetting = chute = false;
             shotsLeft = 0;
             if (!ammo[t][weapon]) nextWeapon(t);
-            if (!(cfg.rules & RULE_ROPE_RACE) && rand01() < CRATE_CHANCE && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
+            if (!(cfg.rules & RULE_ROPE_RACE) && rand01() * 100 < sc.crateChance && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
             emit(GameEvent::TurnStart, worms[c].pos, c);
             return;
         }
@@ -235,11 +268,14 @@ bool Game::addObject(Object::Type t, float lift) {
     Vector3 p;
     if (!dropPoint(p)) return false;
     Object o = {t, {p.x, fminf(p.y + halfHeight(t) + 0.05f + lift, (Terrain::NY - 1) * Terrain::VOX), p.z}, {0, 0, 0}, -1, -1, lift > 0, false};
-    if (t == Object::Crate && rand01() >= HEALTH_CHANCE) {
+    const Scheme &sc = cfg.scheme;
+    float pick = t == Object::Crate ? rand01() * (sc.healthShare + sc.weaponShare + sc.utilityShare) : -1;
+    if (pick >= sc.healthShare) {
+        bool util = pick >= sc.healthShare + sc.weaponShare;
         int total = 0;
-        for (const WeaponDef &wd : WEAPONS) total += wd.weight;
+        for (const WeaponDef &wd : WEAPONS) total += utility(wd.kind) == util ? wd.weight : 0;
         int r = (int)(rand01() * total);
-        for (size_t k = 0; k < WEAPONS.size() && o.weapon < 0; k++) if ((r -= WEAPONS[k].weight) < 0) o.weapon = (int)k;
+        for (size_t k = 0; k < WEAPONS.size() && o.weapon < 0; k++) if (utility(WEAPONS[k].kind) == util && (r -= WEAPONS[k].weight) < 0) o.weapon = (int)k;
     }
     objects.push_back(o);
     return true;
@@ -264,7 +300,10 @@ void Game::stepObjects() {
         bool gone = o.pos.y < water, boom = o.dead && (o.type == Object::Barrel || (o.type == Object::Crate && o.weapon >= 0));
         if (o.type == Object::Mine) {
             for (const Worm &w : worms)
-                if (o.fuse < 0 && w.alive && Vector3Distance(w.pos, o.pos) < 1.5f) { o.fuse = MINE_FUSE; emit(GameEvent::MineArm, o.pos); }
+                if (o.fuse < 0 && w.alive && Vector3Distance(w.pos, o.pos) < 1.5f) {
+                    o.fuse = cfg.scheme.mineFuse == Scheme::FUSE_RANDOM ? rand01() * 5 : cfg.scheme.mineFuse;
+                    emit(GameEvent::MineArm, o.pos);
+                }
             if (o.fuse >= 0 && (o.fuse -= DT) <= 0) boom = true;
         }
         if (o.type == Object::Sentry) {
@@ -284,7 +323,7 @@ void Game::stepObjects() {
         if (o.type == Object::Crate && !o.dead)
             for (Worm &w : worms) {
                 if (!w.alive || Vector3Distance(w.pos, o.pos) >= R + 0.7f) continue;
-                if (o.weapon < 0) w.hp += 25, w.poison = 0;
+                if (o.weapon < 0) w.hp += cfg.scheme.crateHealth, w.poison = 0;
                 else if (ammo[w.team][o.weapon] >= 0) ammo[w.team][o.weapon]++;
                 emit(GameEvent::Collect, o.pos, int(&w - worms.data()), o.weapon);
                 gone = true;
@@ -414,11 +453,14 @@ void Game::stepWorm(Worm &w) {
     float fallSpeed = -w.vel.y;
     w.grounded = w.vel.y <= 0 && feet(0.05f);
     if (w.grounded) {
-        if (!wasGrounded && fallSpeed > FALL_SAFE) {
-            int dmg = (int)((fallSpeed - FALL_SAFE) * FALL_SCALE);
-            if (dmg > 0) { w.hp -= dmg; emit(GameEvent::Hurt, w.pos, int(&w - worms.data())); }
+        if (!wasGrounded && fallSpeed > FALL_SAFE && cfg.scheme.fallDamage) {
+            int dmg = (int)((fallSpeed - FALL_SAFE) * FALL_SCALE), wi = int(&w - worms.data());
+            if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi); }
         }
-        w.vel = {w.vel.x * 0.85f, 0, w.vel.z * 0.85f};
+        Vector3 n = terrain.normal({w.pos.x, w.pos.y - R, w.pos.z});
+        float keep = n.y < SLIDE_NY ? SLIDE_FRICTION : 0.85f;  // too steep to stand: slide downhill
+        if (n.y < SLIDE_NY) w.vel.x += n.x * gravity() * DT, w.vel.z += n.z * gravity() * DT;
+        w.vel = {w.vel.x * keep, 0, w.vel.z * keep};
     } else w.vel.y -= gravity() * DT;
     Vector3 np = Vector3Add(w.pos, Vector3Scale(w.vel, DT));
     if (terrain.solid({np.x, w.pos.y, np.z})) { w.vel.x = w.vel.z = 0; np.x = w.pos.x; np.z = w.pos.z; }
@@ -461,10 +503,10 @@ void Game::hurt(Worm &w, int dmg) {
     w.hp -= dmg;
     int wi = int(&w - worms.data());
     emit(GameEvent::Hurt, w.pos, wi);
-    if (wi == current) return;
+    if (wi == current) { selfHurt = true; return; }
     Worm &h = worms[current];
     if (cfg.rules & RULE_KARMA) h.hp -= (int)(dmg * 0.5f + 0.5f);
-    if ((cfg.rules & RULE_VAMPIRE) && w.team != h.team) h.hp = std::min(200, h.hp + (int)(dmg * 0.5f + 0.5f));
+    if ((cfg.rules & RULE_VAMPIRE) && w.team != h.team) h.hp = std::max(h.hp, std::min(200, h.hp + (int)(dmg * 0.5f + 0.5f)));
     if (cfg.rules & RULE_HIGHLANDER) lastHitTeam[wi] = h.team;
 }
 
@@ -571,21 +613,31 @@ void Game::step(const Input &in) {
     Worm &w = worms[current];
     bool detonate = phase == Phase::Flying && (pressed & Input::FIRE), tool = roped || jetting;
 
+    if (phase == Phase::Aim && hotSeat > 0) hotSeat = in.turn || in.walk || in.aim || in.buttons ? 0 : hotSeat - 1;
     if (w.alive && (phase == Phase::Aim || phase == Phase::Retreat)) {
         w.yaw += in.turn / 127.0f * 2.5f * DT;
-        if (w.grounded && in.walk) {
+        if (w.grounded && in.walk && !jumpDelay) {
             Vector3 np = {w.pos.x + sinf(w.yaw) * in.walk / 127.0f * 3 * DT, w.pos.y, w.pos.z + cosf(w.yaw) * in.walk / 127.0f * 3 * DT};
             float climb = 0;
             while (climb <= 0.6f && terrain.solid({np.x, np.y - R + climb, np.z})) climb += 0.05f;
             if (climb <= 0.6f && !terrain.solid({np.x, np.y + climb + R, np.z})) { np.y += climb; w.pos = np; }
-            for (int i = 0; i < 12 && !terrain.solid({w.pos.x, w.pos.y - R - 0.05f, w.pos.z}); i++) w.pos.y -= 0.05f;
+            int i = 0;
+            for (; i < 12 && !terrain.solid({w.pos.x, w.pos.y - R - 0.05f, w.pos.z}); i++) w.pos.y -= 0.05f;
+            if (i == 12) w.vel = Vector3Scale({sinf(w.yaw), 0, cosf(w.yaw)}, in.walk / 127.0f * 3 * WALK_OFF);  // walked off a ledge
         }
-        if ((pressed & Input::JUMP) && w.grounded && !tool) {
-            w.vel = {sinf(w.yaw) * 4, 7, cosf(w.yaw) * 4};
-            w.grounded = false;
-            emit(GameEvent::Jump, w.pos, current);
+        // W4M: JUMP waits JUMP_WINDOW ticks, a second press in that window makes it a backflip
+        bool flip = jumpDelay && (pressed & Input::JUMP);
+        if ((pressed & Input::JUMP) && !jumpDelay && w.grounded && !tool) jumpDelay = JUMP_WINDOW;
+        else if (jumpDelay && (flip || --jumpDelay == 0)) {
+            jumpDelay = 0;
+            if (w.grounded) {
+                float side = flip ? FLIP_BACK : JUMP_FWD;
+                w.vel = {sinf(w.yaw) * side, flip ? FLIP_UP : JUMP_UP, cosf(w.yaw) * side};
+                w.grounded = false;
+                emit(GameEvent::Jump, w.pos, current);
+            }
         }
-    }
+    } else jumpDelay = 0;
     if (w.alive && phase == Phase::Aim) {
         Vector3 push = Vector3Scale({sinf(w.yaw), 0, cosf(w.yaw)}, in.walk / 127.0f * DT);
         if (roped) {
@@ -628,15 +680,16 @@ void Game::step(const Input &in) {
                 break;
             }
 
+    if (!hotSeat) clock++;
     switch (phase) {
     case Phase::Aim:
-        if (!w.alive || --timer <= 0) { phase = Phase::Settle; timer = 300; roped = jetting = chute = false; }
+        if (!w.alive || selfHurt || (!hotSeat && --timer <= 0)) { phase = Phase::Settle; timer = 300; roped = jetting = chute = false; }
         break;
     case Phase::Flying:
-        if (shots.empty()) { phase = Phase::Retreat; timer = 180; }
+        if (shots.empty()) { phase = Phase::Retreat; timer = cfg.scheme.retreatTime * 60; }
         break;
     case Phase::Retreat:
-        if (!w.alive || --timer <= 0) { phase = Phase::Settle; timer = 300; }
+        if (!w.alive || selfHurt || --timer <= 0) { phase = Phase::Settle; timer = 300; jumpDelay = 0; }
         break;
     case Phase::Settle: {
         bool still = shots.empty();
@@ -684,7 +737,11 @@ uint32_t Game::checksum() const {
     mix(&current, sizeof current);
     mix(&weapon, sizeof weapon);
     mix(&water, sizeof water);
-    mix(&turnCount, sizeof turnCount);
+    mix(&clock, sizeof clock);
+    mix(&hotSeat, sizeof hotSeat);
+    mix(&jumpDelay, sizeof jumpDelay);
+    mix(&selfHurt, sizeof selfHurt);
+    mix(&cfg.scheme, sizeof cfg.scheme);
     mix(&suddenDeath, sizeof suddenDeath);
     mix(&raceFinish, sizeof raceFinish);
     for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); }

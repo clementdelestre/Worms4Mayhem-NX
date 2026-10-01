@@ -1,5 +1,7 @@
 #include "terrain.h"
 #include "json.h"
+#include "lit.h"
+#include "models.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
@@ -138,6 +140,7 @@ void Terrain::reset(signed char fill) {
     d.assign(TOTAL, fill);
     parts.assign(CX * CY * CZ, {});
     dirty.assign(CX * CY * CZ, true);
+    colTop.clear();
 }
 
 // Noisy hill, evaluated on a 2x coarser grid (the noise is smooth) and trilinearly upsampled: 8x fewer fbm calls.
@@ -177,7 +180,7 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
 bool Terrain::load(const std::string &map, unsigned seed) {
     spawns.clear(), objects.clear(), objModels.clear();
     hasFinish = false;
-    theme.clear(), mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
+    theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
     Json j;
     std::string dir;
@@ -188,6 +191,12 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     for (auto &t : THEMES)
         if (j["theme"].s() == t.name) top = t.top, side = t.side, beach = t.beach, sky = t.sky;
     theme = j["theme"].s();
+    time = j["time"].s("day");
+    Lit::sun = {};
+    if (const Json &l = j["light"]; l.type == Json::Obj) {
+        Lit::sun.dir = vec(l["dir"], Lit::sun.dir), Lit::sun.ambient = vec(l["ambient"], Lit::sun.ambient);
+        Lit::sun.diffuse = vec(l["diffuse"], Lit::sun.diffuse), Lit::sun.specular = vec(l["specular"], Lit::sun.specular);
+    }
     const Json &pal = j["palette"], &tex = j["textures"];
     for (size_t i = 0; i < pal.size(); i++) {
         const Json &c = pal[i];
@@ -355,6 +364,28 @@ bool Terrain::raycast(Ray r, float maxDist, Vector3 *hit) const {
     return false;
 }
 
+// Ambient occlusion (solid fraction of 8 points around the normal) and sun visibility (voxel ray march).
+// ponytail: a carve only remeshes nearby chunks, so shadows cast by blown-away ground elsewhere stay until remeshed
+void Terrain::bake(Vector3 p, Vector3 n, Vector3 l, float *ao, float *vis) const {
+    auto solidAt = [&](Vector3 q) {
+        int x = (int)(q.x * (1 / VOX) + 0.5f), y = (int)(q.y * (1 / VOX) + 0.5f), z = (int)(q.z * (1 / VOX) + 0.5f);
+        return x >= 0 && y >= 0 && z >= 0 && x < NX && z < NZ && y < colTop[z * NX + x] && d[idx(x, y, z)] > 0;
+    };
+    static const float K = 0.57735f;
+    static const Vector3 DIRS[8] = {{K, K, K}, {-K, K, K}, {K, -K, K}, {-K, -K, K}, {K, K, -K}, {-K, K, -K}, {K, -K, -K}, {-K, -K, -K}};
+    int occ = 0;
+    for (const Vector3 &k : DIRS) {
+        Vector3 dir = Vector3Normalize(Vector3Add(n, Vector3Scale(k, 0.9f)));
+        occ += solidAt(Vector3Add(p, Vector3Scale(dir, 0.8f)));
+    }
+    *ao = 1 - 0.7f * occ / 8;
+    *vis = Vector3DotProduct(n, l) > 0;
+    Vector3 q = Vector3Add(p, Vector3Scale(n, 0.3f)), step = Vector3Scale(l, 0.4f);
+    // steps grow 12% each: ~32 lookups reach >100 m instead of 90 fixed ones (remesh cost on Switch)
+    for (int i = 0; i < 32 && *vis > 0 && q.y < colTop.back() * VOX; i++, q = Vector3Add(q, step), step = Vector3Scale(step, 1.12f))
+        if (solidAt(q)) *vis = 0;
+}
+
 void Terrain::buildChunk(int ci) {
     int x0 = ci % CX * CS, y0 = ci / CX % CY * CS, z0 = ci / (CX * CY) * CS;
     constexpr int S = CS + 1, L = CS + 2;  // cells x0-1 .. x0+CS-1, their corners x0-1 .. x0+CS
@@ -420,16 +451,24 @@ void Terrain::buildChunk(int ci) {
     struct Builder { int mat; std::vector<int> vid; std::vector<float> pos, nrm; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
     static std::vector<Builder> bs;
     size_t used = 0;
-    const Vector3 light = Vector3Normalize({0.4f, 1, 0.3f});
+    const Lit::Light &sun = Lit::sun;
+    const Vector3 light = Vector3Normalize(sun.dir);
     auto vertex = [&](Builder &b, int n) {
         if (b.vid[n] >= 0) return b.vid[n];
         Vector3 p = cp[n], nr = cn[n];
         int m = b.mat - 1;
-        Color base = m >= 0 && m < (int)palTop.size() ? (nr.y > 0.7f ? palTop[m] : palSide[m]) : p.y < WATER + 0.8f ? beach : nr.y > 0.7f ? top : side;
-        float shade = 0.4f + 0.6f * fmaxf(0, Vector3DotProduct(nr, light));
+        float ao, vis;
+        bake(p, nr, light, &ao, &vis);
         b.pos.insert(b.pos.end(), {p.x, p.y, p.z});
         b.nrm.insert(b.nrm.end(), {nr.x, nr.y, nr.z});
-        b.col.insert(b.col.end(), {(unsigned char)(base.r * shade), (unsigned char)(base.g * shade), (unsigned char)(base.b * shade), 255});
+        if (m >= 0 && m < (int)texMats.size() && texMats[m].maps) {  // textured: the shader lights it from (ao, sun visibility)
+            b.col.insert(b.col.end(), {(unsigned char)(ao * 255), (unsigned char)(vis * 255), 0, 255});
+            return b.vid[n] = (int)b.pos.size() / 3 - 1;
+        }
+        Color base = m >= 0 && m < (int)palTop.size() ? (nr.y > 0.7f ? palTop[m] : palSide[m]) : p.y < WATER + 0.8f ? beach : nr.y > 0.7f ? top : side;
+        Vector3 l = Vector3Add(sun.ambient, Vector3Scale(sun.diffuse, fmaxf(0, Vector3DotProduct(nr, light)) * vis));
+        auto ch = [&](unsigned char c, float k) { return (unsigned char)fminf(255, c * k * ao); };
+        b.col.insert(b.col.end(), {ch(base.r, l.x), ch(base.g, l.y), ch(base.b, l.z), 255});
         return b.vid[n] = (int)b.pos.size() / 3 - 1;
     };
     for (int k = 1; k < S; k++)
@@ -475,25 +514,32 @@ void Terrain::buildChunk(int ci) {
     }
 }
 
-// Triplanar: top texture on up-facing surfaces, side texture elsewhere; written as GLSL 100, macro-wrapped for 330.
+// Triplanar: top texture on up-facing surfaces, side texture elsewhere. Lighting after W4M's CG/Landscape.cg;
+// vertex colour r = ambient occlusion, g = sun visibility (baked by Terrain::bake).
 static const char *VS = R"(
 attribute vec3 vertexPosition;
 attribute vec3 vertexNormal;
+attribute vec4 vertexColor;
 uniform mat4 mvp;
 varying vec3 vPos;
 varying vec3 vN;
-void main() { vPos = vertexPosition; vN = vertexNormal; gl_Position = mvp * vec4(vertexPosition, 1.0); }
+varying vec2 vL;
+void main() { vPos = vertexPosition; vN = vertexNormal; vL = vertexColor.rg; gl_Position = mvp * vec4(vertexPosition, 1.0); }
 )";
 static const char *FS = R"(
 uniform sampler2D texture0;
 uniform sampler2D texture1;
-uniform vec3 light;
+uniform vec3 sunDir;
+uniform vec3 ambient;
+uniform vec3 diffuse;
+uniform vec3 specular;
 uniform vec2 scale;  // 1 / repeat: top, side
 uniform vec3 camPos;
 uniform vec3 fogColor;
 uniform vec2 fogRange;
 varying vec3 vPos;
 varying vec3 vN;
+varying vec2 vL;
 void main() {
     vec3 n = normalize(vN), w = n * n * n * n;
     w /= w.x + w.y + w.z;
@@ -501,25 +547,21 @@ void main() {
     vec2 t = vPos.xz * scale.x;
     vec3 c = texture2D(texture1, vec2(p.z, -p.y)).rgb * w.x + texture2D(texture1, vec2(p.x, -p.y)).rgb * w.z
            + mix(texture2D(texture1, p.xz).rgb, texture2D(texture0, t).rgb, step(0.0, n.y)) * w.y;
-    float l = 0.55 + 0.45 * max(dot(n, light), 0.0) + 0.1 * n.y;
-    float f = clamp((length(vPos - camPos) - fogRange.x) / (fogRange.y - fogRange.x), 0.0, 1.0);
-    gl_FragColor = vec4(mix(c * l, fogColor, f), 1.0);
+    vec3 e = camPos - vPos, v = normalize(e);
+    float sh = vL.y, nv = max(dot(n, v), 0.0);
+    float s = sh * pow(max(dot(n, normalize(sunDir + v)), 0.0), 20.0);
+    vec3 col = (diffuse * (max(dot(n, sunDir), 0.0) * sh) + ambient) * c + specular * (0.6 * s)
+             + (0.5 + 0.5 * sh) * vec3(0.2, 0.275, 0.175) * (1.0 - nv) * sqrt(1.0 - nv);
+    float f = clamp((length(e) - fogRange.x) / (fogRange.y - fogRange.x), 0.0, 1.0);
+    gl_FragColor = vec4(mix(clamp(col, 0.0, 1.0) * vL.x, fogColor, f), 1.0);
 }
 )";
 
 void Terrain::loadTextures() {
     static Shader sh{};
-    if (!sh.id) {
-        bool es = rlGetVersion() == RL_OPENGL_ES_20 || rlGetVersion() == RL_OPENGL_ES_30;
-        std::string vs = es ? "#version 100\n" : "#version 330\n#define attribute in\n#define varying out\n";
-        std::string fs = es ? "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
-                            : "#version 330\n#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n";
-        sh = LoadShaderFromMemory((vs + VS).c_str(), (fs + FS).c_str());
-    }
+    if (!sh.id) sh = Lit::shader(VS, FS);
     texMats.assign(texFiles.size() / 2, Material{});
     if (sh.id == rlGetShaderIdDefault()) return;  // compile failed: keep the vertex-colour fallback
-    Vector3 l = Vector3Normalize({0.4f, 1, 0.3f});
-    SetShaderValue(sh, GetShaderLocation(sh, "light"), &l, SHADER_UNIFORM_VEC3);
     scaleLoc = GetShaderLocation(sh, "scale");
     Vector2 noFog = {1e4f, 2e4f};
     SetShaderValue(sh, GetShaderLocation(sh, "fogRange"), &noFog, SHADER_UNIFORM_VEC2);
@@ -548,6 +590,7 @@ void Terrain::loadTextures() {
 }
 
 void Terrain::setFog(Vector3 cam, Color c, float start, float end) const {
+    Lit::frame(cam);
     if (texMats.empty() || !texMats[0].maps) return;
     Shader sh = texMats[0].shader;  // shared by every textured material
     Vector3 fc = {c.r / 255.f, c.g / 255.f, c.b / 255.f};
@@ -557,49 +600,70 @@ void Terrain::setFog(Vector3 cam, Color c, float start, float end) const {
     SetShaderValue(sh, GetShaderLocation(sh, "fogRange"), &r, SHADER_UNIFORM_VEC2);
 }
 
-void Terrain::remesh() {
+void Terrain::remesh(double budget) {
     if (!mat.maps) mat = LoadMaterialDefault();
     if (texMats.empty() && !texFiles.empty()) loadTextures();
-    for (int ci = 0; ci < (int)dirty.size(); ci++)
-        if (dirty[ci]) { buildChunk(ci); dirty[ci] = false; }
+    if (colTop.empty()) {
+        colTop.assign(NX * NZ + 1, 0);
+        for (int z = 0; z < NZ; z++)
+            for (int y = 0; y < NY; y++)
+                for (int x = 0; x < NX; x++)
+                    if (d[idx(x, y, z)] > 0) colTop[z * NX + x] = (unsigned char)std::min(y + 1, 255), colTop.back() = std::max(colTop.back(), colTop[z * NX + x]);
+    }
+    // over budget, rebuilt chunks wait in `pending` and swap in together, so new and stale chunks never meet at a seam
+    double end = GetTime() + budget;
+    for (int ci = 0; ci < (int)dirty.size(); ci++) {
+        if (!dirty[ci]) continue;
+        if (GetTime() > end) return;
+        std::vector<Part> old;
+        std::swap(old, parts[ci]);
+        buildChunk(ci);
+        dirty[ci] = false;
+        pending.emplace_back(ci, std::move(parts[ci]));
+        parts[ci] = std::move(old);
+    }
+    for (auto &[ci, ps] : pending) {  // a chunk rebuilt twice: the later entry wins
+        for (Part &p : parts[ci]) UnloadMesh(p.mesh);
+        parts[ci] = std::move(ps);
+    }
+    pending.clear();
 }
 
 void Terrain::draw() const {
-    for (const auto &ps : parts)
-        for (const Part &p : ps) {
-            int m = p.mat - 1;
-            bool tex = m >= 0 && m < (int)texMats.size() && texMats[m].maps;
-            if (tex) {
-                Vector2 s = {1 / texRepeat[m].x, 1 / texRepeat[m].y};
-                SetShaderValue(texMats[m].shader, scaleLoc, &s, SHADER_UNIFORM_VEC2);
-            }
-            DrawMesh(p.mesh, tex ? texMats[m] : mat, MatrixIdentity());
+    static std::vector<const Part *> vis;
+    vis.clear();
+    for (int ci = 0; ci < (int)parts.size(); ci++) {
+        if (parts[ci].empty()) continue;
+        float h = CS * VOX / 2;  // chunk centre; vertices stay within a voxel of the chunk box
+        if (!Models::visible({(ci % CX * CS) * VOX + h, (ci / CX % CY * CS) * VOX + h, (ci / (CX * CY) * CS) * VOX + h}, h * 1.74f + VOX)) continue;
+        for (const Part &p : parts[ci]) vis.push_back(&p);
+    }
+    std::stable_sort(vis.begin(), vis.end(), [](const Part *a, const Part *b) { return a->mat < b->mat; });
+    // per material: DrawMesh sets the full state once; uniforms persist in the program, so the rest only bind their VAO
+    for (size_t i = 0, j; i < vis.size(); i = j) {
+        int m = vis[i]->mat - 1;
+        bool tex = m >= 0 && m < (int)texMats.size() && texMats[m].maps;
+        const Material &M = tex ? texMats[m] : mat;
+        if (tex) {
+            Vector2 s = {1 / texRepeat[m].x, 1 / texRepeat[m].y};
+            SetShaderValue(M.shader, scaleLoc, &s, SHADER_UNIFORM_VEC2);
         }
+        DrawMesh(vis[i]->mesh, M, MatrixIdentity());
+        for (j = i + 1; j < vis.size() && vis[j]->mat == vis[i]->mat && !vis[j]->mesh.vaoId; j++) DrawMesh(vis[j]->mesh, M, MatrixIdentity());  // no VAO support
+        if (j == vis.size() || vis[j]->mat != vis[i]->mat) continue;
+        rlEnableShader(M.shader.id);
+        for (int k = 0; k < 12; k++)  // raylib MAX_MATERIAL_MAPS
+            if (M.maps[k].texture.id) rlActiveTextureSlot(k), rlEnableTexture(M.maps[k].texture.id);
+        for (; j < vis.size() && vis[j]->mat == vis[i]->mat; j++) {
+            rlEnableVertexArray(vis[j]->mesh.vaoId);
+            rlDrawVertexArrayElements(0, vis[j]->mesh.triangleCount * 3, 0);
+        }
+        for (int k = 0; k < 12; k++)
+            if (M.maps[k].texture.id) rlActiveTextureSlot(k), rlDisableTexture();
+        rlDisableVertexArray();
+        rlDisableShader();
+    }
 }
-
-// Decor: textured, alpha-tested (grass cards), lit on both sides since culling is off for single-sided cards.
-static const char *OVS = R"(
-attribute vec3 vertexPosition;
-attribute vec2 vertexTexCoord;
-attribute vec3 vertexNormal;
-uniform mat4 mvp;
-uniform mat4 matNormal;
-varying vec2 uv;
-varying vec3 n;
-void main() { uv = vertexTexCoord; n = (matNormal * vec4(vertexNormal, 0.0)).xyz; gl_Position = mvp * vec4(vertexPosition, 1.0); }
-)";
-static const char *OFS = R"(
-uniform sampler2D texture0;
-uniform vec4 colDiffuse;
-varying vec2 uv;
-varying vec3 n;
-void main() {
-    vec4 c = texture2D(texture0, uv) * colDiffuse;
-    if (c.a < 0.5) discard;
-    float l = 0.6 + 0.4 * abs(dot(normalize(n), normalize(vec3(0.4, 1.0, 0.3))));
-    gl_FragColor = vec4(c.rgb * l, 1.0);
-}
-)";
 
 void Terrain::drawObjects(Vector3 cam) const {
 #ifdef __SWITCH__
@@ -611,12 +675,7 @@ void Terrain::drawObjects(Vector3 cam) const {
     static std::map<std::string, Entry> cache;  // loaded on first use, kept across matches
     static Shader sh{};
     if (objects.empty()) return;
-    if (!sh.id) {
-        bool es = rlGetVersion() == RL_OPENGL_ES_20 || rlGetVersion() == RL_OPENGL_ES_30;
-        std::string vs = es ? "#version 100\n" : "#version 330\n#define attribute in\n#define varying out\n";
-        std::string fs = es ? "#version 100\nprecision mediump float;\n" : "#version 330\n#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n";
-        sh = LoadShaderFromMemory((vs + OVS).c_str(), (fs + OFS).c_str());
-    }
+    if (!sh.id) sh = Lit::modelShader(false);  // textured, alpha-tested, two-sided (grass cards)
     std::vector<const Entry *> ms;
     for (const std::string &name : objModels) {
         auto it = cache.find(name);
@@ -637,9 +696,8 @@ void Terrain::drawObjects(Vector3 cam) const {
     rlDisableBackfaceCulling();
     for (const Object &o : objects) {
         const Entry &e = *ms[o.model];
-        // ponytail: distance cull only (~100-300 objects per map); frustum/instancing if a map ever has thousands
         float size = e.r * Vector3Length({o.m.m0, o.m.m1, o.m.m2});
-        if (!e.m.meshCount || Vector3Distance(cam, o.pos) > 35 + 40 * size) continue;
+        if (!e.m.meshCount || Vector3Distance(cam, o.pos) > 35 + 40 * size || !Models::visible(o.pos, 2 * size)) continue;  // origin may sit on the box edge
         for (int i = 0; i < e.m.meshCount; i++) DrawMesh(e.m.meshes[i], e.m.materials[e.m.meshMaterial[i]], o.m);
     }
     rlEnableBackfaceCulling();
@@ -649,6 +707,9 @@ void Terrain::unload() {
     for (auto &ps : parts)
         for (Part &p : ps) UnloadMesh(p.mesh);
     parts.clear();
+    for (auto &[ci, ps] : pending)
+        for (Part &p : ps) UnloadMesh(p.mesh);
+    pending.clear();
     for (Texture2D &t : textures) UnloadTexture(t);
     for (Material &m : texMats) MemFree(m.maps);
     textures.clear(), texMats.clear();

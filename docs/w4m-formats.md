@@ -11,8 +11,8 @@ Little endian. Header 64 B: `MOIK`, …, `u32 @24` type count, `@28` container c
 | file | content |
 |---|---|
 | `.xan` | the landscape: a tree of `LandFrameStore` ("poxels") + `DetailEntityStore` (objects). 222 files, all parse. |
-| `.hmp` | 50000 B: 100×100 `f32` heights in 0..1 (row = z, column = x), then 100×100 `u8` second-texture mask. All zero for Worms 3D-era (`-w3d`) maps. |
-| `DAY/EVENING/NIGHT.csh` | cached shadow/lighting data per time of day (engine cache, ignored). |
+| `.hmp` | 50000 B: 100×100 `f32` heights in 0..1 (row = z, column = x), then 100×100 `u8` second-texture mask (importer: bilinear, thresholded at 128 → `Heightmap.SecondTexture`). All zero for Worms 3D-era (`-w3d`) maps. |
+| `DAY/EVENING/NIGHT.csh` | engine cache, not decoded: byte-identical across the three times in 152/158 maps, so not sun lighting. Per-poxel blocks (u32 count, count × 4 B, `c5c5c5c5`, then a u16 per voxel). Ignored. |
 | `.txt` (some) | material list override, same layout as the theme file. |
 | `Data/<MAP>.XOM` | level databank: strings `Databank.MaterialFile` (e.g. `ThemeCamelot\ThemeCamelot.txt`), `Databank.Theme` (`CAMELOT`…), `TimeOfDay`, `Heightmap.BaseTexture`/`SecondTexture` (each value string precedes its key in `STRS`), plus mission data (worms, crates, cutscenes). LP_/SPLP_/Multi_ variants reuse their base level's databank. |
 
@@ -37,6 +37,14 @@ Covers x, z ∈ [−80, 80] (fits poxel footprints on DoomCanyon/StormTheCastle)
 ### Conversion to our grid
 
 Scale k = fit into 78 x 60 m (max 1). Each solid poxel voxel becomes a hexahedron (12 triangle planes); grid points inside one are solid. Faces whose outside is covered by another cell or the heightmap are dropped; the stored density is the exact distance to the remaining faces within 1 voxel (0.25 m), signed by occupancy, so surface nets gives flat floors and crisp edges. Cells missing every grid point (thin planks, cone tips) still claim their nearest one.
+
+## Lighting (`Data/Tweak/TWEAK.XOM`, `CG/*.cg`)
+
+`XContainerResourceDetails` `Water.<THEME>.<TIME>` (`DAY`/`EVENING`/`NIGHT`; the level's time is the databank `Databank.TimeOfDay`) → `WaterPlaneTweaks`: 3 header bytes, RGBA water colour, 3 varint strings (water diffuse / normal / env textures), 14 f32 water parameters, then the land light, matching the field names in the exe: `LightDirection` (3 f32, towards the sun, world space, y up), `LightAmbient`, `LightDiffuse`, `LightSpecular`, `LightFresnel` (RGB8 each), `LandSpecularPower` (f32), `LandFresnelColour` (RGB8), `LandFresnelPower` (f32). E.g. Wild West evening: dir (0, 0.3, -0.9), ambient (180, 146, 133), diffuse (153, 135, 128).
+
+`CG/Landscape.cg` (the PC terrain shader): `out = saturate((diffuse·max(n·l, 0)·shadow + ambient)·tex + specular·0.6·shadow·(n·h)^20 + (0.5 + shadow/2)·(0.2, 0.275, 0.175)·fresnel·(1 − v·n)^1.5) · vertexColour`, shadow from a real-time 3×3 PCF shadow map. Models use `CG/FixedFunction.cg` (same diffuse + ambient + specular + fresnel rim); worms get the fixed `Worm.Light.Ambient` (0.5, 0.5, 0.6) / `Worm.Light.Diffuse` (0.7, 0.7, 0.6) from TWEAK.XOM. The sky bundles' `LightGradient_<L>_<TIME>` bitmap is the `<L>_Sky0n.tga` ramp (`_S` = `<L>_SideSky0n.tga`); each sky scene has a `Sun` locator.
+
+The importer writes the level's light as the map JSON `light` (+ `time`); the client applies the Landscape.cg model with per-vertex baked ambient occlusion and sun shadows instead of a shadow map (`Terrain::bake`).
 
 ## Themes and textures
 
@@ -104,3 +112,9 @@ Plain XOM, containers split on `CTNR`, grouped by type in header order. `X{Int,U
 - UI `XImage`s (`Bundl00/06/08/10/472`: buttons, popups, borders, team health bars, game logo in `Tournament VsUS`) are found by scanning `CTNR` tags for a `.tga`-named container whose header size matches (those bundles hold untagged types we cannot size). Pixels are stored bottom row first (GL); format 9/10/11 = DXT1/3/5. Output `assets/ui/fe/<name>.png`.
 - Sky/water: one bundle per theme and time of day (`Bundl93`-`97`, `108`-`113` = DAY `01`; `98`-`107`, `114`-`125` = EVENING `02` / NIGHT `03`). `<L>_Sky0n.tga` is a 256x1 ramp (dark zenith at u = 0 to cream horizon), `<L>_SideSky0n.tga` a second 256x1 ramp (unused), `<L>_Water0na/b/c.tga` = diffuse, normal map, sphere-mapped environment (as sampled by `CG/water.cg`). Theme letters: A Arabian, B Building, C Camelot, P Prehistoric, W Wild West, R Arctic, E England, H Horror, L Lunar, T Pirate, O War. The DAY set goes to `assets/ui/sky/`.
 - `Bundl03` `FE.Font` is a 31-page (512², RGBA8, unnamed) multi-texture font incl. CJK and button glyphs; glyph metrics (`XMultiTexFontPage`) not decoded: the client uses the Switch shared system font instead.
+
+## Game tweaks and schemes (`Data/Tweak/TWEAK.XOM`, `LOCAL.XOM`)
+
+Same resource-details layout as WEAPTWK. `TWEAK.XOM` worm movement (world units, 25 = worm height): `WXWorm.JumpDistance` 80 / `JumpHeight` 50, `BackflipDistance` 40 / `BackflipHeight` 80, `VerticalJumpHeight` 70, `Worm.StepUpHeight` 5, `WXWorm.SlideAngle_Default` 60 (deg) / `SlideFriction_Default` 0.95, `Worm.WalkOffCliffVelMulti` 0.7, `Worm.BounceMultiplier` 0.6; also `Water.RiseAmount` 25, `OilDrum.DamageMagnitude` 55, `Worm.Poison.Default` 10, `Low.Gravity.OnValue` 0.5, `MaxRandomCrates` 15.
+
+`LOCAL.XOM` holds the 19 built-in `SchemeData` (`FE.Scheme.Standard`, `Beginner`, `Pro`, `Bng`, `Shopping`, `Allaction`, `Strategy`, `Family`, `FETXT.Scheme.MegaPower`/`HolyGrail`/`Mystery`/`Darksider`/`Rootnshoot`/`Thekitchensink`, quick/ranked/net ones). After `CTNR`+3: varint name, u8, varint lock name, 58 varint refs to `WeaponSettingsData` (3 × i32: ammo, crate odds, delay in turns; slot order not decoded), varint `AssistedShot.*` string, 8 bytes (first = artillery mode, set in Root'n'Shoot only), then i32s. Read from value patterns (Standard): `[2] worm energy 100, [3] round time 1200000 ms, [4] turn time 45000 ms, [6] crate chance 40 %, [7..10] mystery/weapon/health/utility crate odds 0/30/20/30, [11] health crate 25, [14] wind 1..3, [16] hot seat 5000 ms, [21] mine fuse 3 s (-1 random), [22] retreat 3000 ms`; `[13]` is 0 in Beginner/Family/Strategy (taken as fall damage). Other fields unknown. Lua (`scripts/stdvs.lub`) reads `GM.SchemeData` fields by name: `TurnTime RoundTime DefaultRetreatTime HotSeatTime HealthInCrates FallDamage WindMaxStrength MineFuse MineFactoryOn TelepadsOn Stockpiling WormSelect TeleportIn SuddenDeath WaterSpeed ArtilleryMode LandTime`.

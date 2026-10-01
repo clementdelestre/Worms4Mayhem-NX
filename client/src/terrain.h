@@ -13,6 +13,7 @@ struct Terrain {
     struct Part { int mat; Mesh mesh; };  // one mesh per (chunk, material)
     std::vector<std::vector<Part>> parts;
     std::vector<bool> dirty;
+    std::vector<std::pair<int, std::vector<Part>>> pending;  // rebuilt chunks held back until the dirty set is done
     Material mat{};  // loaded on first remesh, so the sim runs without a GL context
 
     // Filled by load(): fixed spawn points (team-major order), optional race finish, theme palette.
@@ -21,6 +22,7 @@ struct Terrain {
     Vector3 finish{};
     Color sky = {120, 170, 230, 255}, top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255};
     std::string theme;  // lowercase theme name (music/<theme>.ogg), empty for the procedural fallback
+    std::string time = "day";  // map's "time": day/evening/night (Fx::theme picks the matching sky/water set)
     // Imported maps ("voxels"): per-voxel material (0 = none) indexing palTop/palSide and texture files.
     std::vector<unsigned char> mats;
     std::vector<Color> palTop, palSide;
@@ -29,6 +31,7 @@ struct Terrain {
     std::vector<Material> texMats;      // per material, built with the textures on first remesh
     std::vector<Texture2D> textures;
     int scaleLoc = -1;
+    std::vector<unsigned char> colTop;  // per (x, z) column: 1 + highest solid voxel at remesh time (shadow ray early-out); back() = max
     // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
     struct Object { int model; Vector3 pos; Matrix m; };
     std::vector<Object> objects;
@@ -42,7 +45,7 @@ struct Terrain {
     Vector3 normal(Vector3 p) const;
     void carve(Vector3 c, float radius);
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
-    void remesh();
+    void remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call
     void draw() const;
     void setFog(Vector3 cam, Color c, float start, float end) const;  // textured maps only
     void drawObjects(Vector3 cam) const;
@@ -52,6 +55,7 @@ private:
     void reset(signed char fill);
     void island(float bh, float height, float rough, float rad, unsigned s);
     void buildChunk(int ci);
+    void bake(Vector3 p, Vector3 n, Vector3 l, float *ao, float *vis) const;
     bool loadVoxels(const std::string &path);
     void loadTextures();
 };

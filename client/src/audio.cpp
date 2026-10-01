@@ -127,16 +127,23 @@ void play(Sfx id, float volume) {
     playRandom(*v, volume);
 }
 
-void voice(int team, Voice id) {
-    if (banks.empty()) return;
+// banks load lazily (~30 decoded upfront would cost ~300 MB); preloadVoices() moves the hitch to match start
+static Bank &bankOf(int team) {
     int k = team < (int)teamBank.size() && teamBank[team] >= 0 ? teamBank[team] : team;
     Bank &b = banks[k % banks.size()];
-    // ponytail: lazy per-bank load hitches once on a team's first line; ~30 banks decoded upfront would cost ~300 MB
     if (!b.loaded) {
         for (int i = 0; i < (int)Voice::Count; i++) b.lines[i] = loadVariants(TextFormat("%s/%s", b.dir.c_str(), VOICE_NAMES[i]));
         b.loaded = true;
     }
-    playRandom(b.lines[(int)id], 1.0f);
+    return b;
+}
+
+void voice(int team, Voice id) {
+    if (!banks.empty()) playRandom(bankOf(team).lines[(int)id], 1.0f);
+}
+
+void preloadVoices(int teams) {
+    for (int t = 0; t < teams && !banks.empty(); t++) bankOf(t);
 }
 
 int voiceBanks() { return (int)banks.size(); }

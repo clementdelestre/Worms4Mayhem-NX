@@ -4,12 +4,12 @@
 #include <string>
 
 // Client-side visuals (never read by the sim): billboard particles, projectile trails, sky dome, water.
-// Art: assets/ui/fe/wxp_*.png and assets/ui/sky/<theme letter>_{sky01,water01a/b/c}.png from tools/w4m-ui.
+// Art: assets/ui/fe/wxp_*.png and assets/ui/sky/<theme letter>_{sky0n,water0na/b/c}.png (n = 1/2/3 day/evening/night) from tools/w4m-ui.
 namespace Fx {
-constexpr float FOG_NEAR = 45, FOG_FAR = 150;  // metres from the camera
+constexpr float FOG_NEAR = 90, FOG_FAR = 220;  // metres from the camera: W4M shows almost no fog at short range
 extern float shake;  // camera shake amplitude (m), decays in update()
 void load();
-void theme(const std::string &theme, Color sky);  // per match: sky ramp, water textures, fog colour
+void theme(const std::string &theme, Color sky, const std::string &time);  // per match: sky ramp, water textures, fog colour
 void unload();
 void clear();
 void event(const GameEvent &e, Color dirt);

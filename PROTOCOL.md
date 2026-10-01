@@ -25,7 +25,7 @@ C = client → server, S = server → client.
 | 0x13 | JoinRoom   | C   | `u32 roomId` |
 | 0x14 | RoomState  | S   | `u32 roomId, u32 hostId, u8 n, n × (u32 playerId, str name, u8 online)` — players in slot order |
 | 0x15 | Leave      | C   | — |
-| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × (str name, u8 cpu, u8 voice, u8 hat)` (server relays the bytes after the owners untouched) |
+| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × (str name, u8 cpu, u8 voice, u8 hat), u8 k, k × u8 scheme` (server relays the bytes after the owners untouched) |
 | 0x21 | Inputs     | C/S | `u32 firstTick, u8 n, n × Input` |
 | 0x22 | TurnEnd    | C   | `u32 tick, u32 checksum` |
 | 0x23 | Desync     | S   | `u32 tick` |
@@ -41,6 +41,10 @@ C = client → server, S = server → client.
 - **Start**: host only. The server stores it, resets the match log and broadcasts it to the
   whole room *including the host*; everyone (host too) starts the game on receipt.
   Sending Start again restarts the match.
+- **Start scheme**: the `Scheme` struct of `sim.h` as raw bytes in field order (turn, retreat, hot seat time,
+  round minutes, worm energy, crate %, weapon/health/utility crate shares, crate hp, mines, barrels, mine fuse,
+  sudden death type, fall damage, wind, weapon set). Fields are only ever appended: a reader keeps defaults for
+  bytes it does not get (missing block = default scheme) and ignores extra ones.
 - **Inputs**: the match is one input stream indexed by tick (tick 0 = first `step` after
   `start`). The owner of the active team sends an `Input` for *every* tick it steps, batched
   (~3 ticks per frame). The server requires `firstTick == ticks logged so far` (else Error,

@@ -23,13 +23,13 @@ void controls();  // full-screen controls help page
 
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 struct Frontend {
-    enum Screen { Title, Main, Setup, Options, Controls } screen = Title;
+    enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit } screen = Title;
     enum Action { None, StartLocal, StartOnline, Quit };
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
 
 private:
-    int row = 0, mainRow = 0, mapSel = 0, hats = 0;
+    int row = 0, mainRow = 0, mapSel = 0, hats = 0, schemeRow = 0;
     bool online = false, loaded = false, music = true;
     std::string *editing = nullptr;  // desktop text entry target
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);

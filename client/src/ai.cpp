@@ -4,7 +4,8 @@
 #include <cmath>
 
 static constexpr float DT = Game::DT, R = Game::R;
-static constexpr float FALL_SAFE = 9, FALL_SCALE = 4;  // copies of sim.cpp's fall damage
+static constexpr float FALL_SAFE = 10.5f, FALL_SCALE = 4;  // copies of sim.cpp's fall damage, jump and slide
+static constexpr float JUMP_UP = 7.75f, JUMP_FWD = 3.1f, SLIDE_NY = 0.5f, SLIDE_FRICTION = 0.95f, WALK_OFF = 0.7f;
 
 static float grav(const Game &g) { return 15 * ((g.cfg.rules & RULE_LOW_GRAVITY) ? 0.4f : 1.0f); }  // Game::gravity() is private
 static Vector3 dirOf(float yaw, float pitch) { return {cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)}; }
@@ -41,8 +42,11 @@ static bool stepBody(const Game &g, Body &b) {
     float fallSpeed = -b.vel.y;
     b.grounded = b.vel.y <= 0 && feet(0.05f);
     if (b.grounded) {
-        if (!was && fallSpeed > FALL_SAFE) b.fall += (int)((fallSpeed - FALL_SAFE) * FALL_SCALE);
-        b.vel = {b.vel.x * 0.85f, 0, b.vel.z * 0.85f};
+        if (!was && fallSpeed > FALL_SAFE && g.cfg.scheme.fallDamage) b.fall += (int)((fallSpeed - FALL_SAFE) * FALL_SCALE);
+        Vector3 n = g.terrain.normal({b.pos.x, b.pos.y - R, b.pos.z});
+        float keep = n.y < SLIDE_NY ? SLIDE_FRICTION : 0.85f;
+        if (n.y < SLIDE_NY) b.vel.x += n.x * grav(g) * DT, b.vel.z += n.z * grav(g) * DT;
+        b.vel = {b.vel.x * keep, 0, b.vel.z * keep};
     } else b.vel.y -= grav(g) * DT;
     Vector3 np = Vector3Add(b.pos, Vector3Scale(b.vel, DT));
     if (g.terrain.solid({np.x, b.pos.y, np.z})) { b.vel.x = b.vel.z = 0; np.x = b.pos.x; np.z = b.pos.z; }
@@ -126,7 +130,7 @@ struct Outcome {
             if ((int)i != self) { karma += dmg[i] * 0.5f; if (w.team != team) leech += dmg[i] * 0.5f; }
         }
         if (g.cfg.rules & RULE_KARMA) s -= 2 * fminf(karma, me.hp) + (karma + dmg[self] >= me.hp ? 60 : 0);
-        if (g.cfg.rules & RULE_VAMPIRE) s += 0.5f * fminf(leech, 200 - me.hp);
+        if (g.cfg.rules & RULE_VAMPIRE) s += 0.5f * fminf(leech, fmaxf(0, 200 - me.hp));
         return s;
     }
 };
@@ -240,7 +244,7 @@ static bool ground(const Game &g, Vector3 p, Vector3 &hit) {
 
 // --- rope race: exact copy of Game::step for the active worm, driven by a parametric swing policy ---
 
-struct Mover { Body b; float yaw, pitch; bool roped; Vector3 anchor; float len; uint8_t prev; };
+struct Mover { Body b; float yaw, pitch; bool roped; Vector3 anchor; float len; uint8_t prev; int jump = 0; };
 
 static bool stepRope(const Game &g, Mover &m) {
     Body &b = m.b;
@@ -266,14 +270,18 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     Body &b = m.b;
     bool tool = m.roped;
     m.yaw += in.turn / 127.0f * 2.5f * DT;
-    if (b.grounded && in.walk) {
+    if (b.grounded && in.walk && !m.jump) {
         Vector3 np = {b.pos.x + sinf(m.yaw) * in.walk / 127.0f * 3 * DT, b.pos.y, b.pos.z + cosf(m.yaw) * in.walk / 127.0f * 3 * DT};
         float climb = 0;
         while (climb <= 0.6f && g.terrain.solid({np.x, np.y - R + climb, np.z})) climb += 0.05f;
         if (climb <= 0.6f && !g.terrain.solid({np.x, np.y + climb + R, np.z})) { np.y += climb; b.pos = np; }
-        for (int i = 0; i < 12 && !g.terrain.solid({b.pos.x, b.pos.y - R - 0.05f, b.pos.z}); i++) b.pos.y -= 0.05f;
+        int i = 0;
+        for (; i < 12 && !g.terrain.solid({b.pos.x, b.pos.y - R - 0.05f, b.pos.z}); i++) b.pos.y -= 0.05f;
+        if (i == 12) b.vel = flat(m.yaw) * (in.walk / 127.0f * 3 * WALK_OFF);
     }
-    if ((pressed & Input::JUMP) && b.grounded && !tool) { b.vel = {sinf(m.yaw) * 4, 7, cosf(m.yaw) * 4}; b.grounded = false; }
+    // forward jump only: the policies never double-tap
+    if ((pressed & Input::JUMP) && !m.jump && b.grounded && !tool) m.jump = Game::JUMP_WINDOW;
+    else if (m.jump && --m.jump == 0 && b.grounded) { b.vel = {sinf(m.yaw) * JUMP_FWD, JUMP_UP, cosf(m.yaw) * JUMP_FWD}; b.grounded = false; }
     Vector3 push = Vector3Scale({sinf(m.yaw), 0, cosf(m.yaw)}, in.walk / 127.0f * DT);
     if (m.roped) {
         if (pressed & Input::JUMP) m.roped = false;
@@ -323,7 +331,7 @@ Input Ai::race(const Game &g) {
     const Worm &w = g.worms[g.current];
     const float ropeMax = WEAPONS[g.weapon].speed;
     Vector3 fin = g.raceFinish;
-    Mover now{{w.pos, w.vel, w.grounded}, w.yaw, w.pitch, g.roped, g.anchor, g.ropeLen, g.prevButtons};
+    Mover now{{w.pos, w.vel, w.grounded}, w.yaw, w.pitch, g.roped, g.anchor, g.ropeLen, g.prevButtons, g.jumpDelay};
     if (run.done) {
         float best = -1e30f, fy = yawTo(w.pos, fin);
         std::vector<RopePlan> cands = {{0, 0, -1}};
@@ -658,7 +666,7 @@ Input Ai::walkTo(const Game &g) {
     if (drop && safe && chute >= 0 && !g.chute && !chuteWanted && w.grounded) { chuteWanted = true; return in; }
     if (fabsf(dy) < 0.3f && safe) {
         in.walk = 127;
-        if (Vector3Distance(w.pos, lastPos) < 0.005f && tick % 2) in.buttons = Input::JUMP;
+        if (Vector3Distance(w.pos, lastPos) < 0.005f && w.grounded && !g.jumpDelay && !g.prevButtons) in.buttons = Input::JUMP;
     }
     lastPos = w.pos;
     Vector3 d = goal - w.pos;
@@ -729,7 +737,7 @@ Input Ai::retreat(const Game &g) {
     if (!safe) { retreatOn = false; return in; }
     if (fabsf(dy) < 0.3f) {
         in.walk = 127;
-        if (Vector3Distance(w.pos, lastPos) < 0.005f && g.timer % 2) in.buttons = Input::JUMP;
+        if (Vector3Distance(w.pos, lastPos) < 0.005f && w.grounded && !g.jumpDelay && !g.prevButtons) in.buttons = Input::JUMP;
     }
     lastPos = w.pos;
     return in;

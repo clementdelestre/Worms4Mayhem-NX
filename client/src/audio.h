@@ -19,6 +19,7 @@ void voice(int team, Voice id);  // team i speaks with its bank (setTeamVoice), 
 int voiceBanks();
 const char *voiceBankName(int bank);  // folder name, "" if out of range
 void setTeamVoice(int team, int bank);
+void preloadVoices(int teams);  // load the banks of teams 0..teams-1 now instead of on their first line
 // track = music/<track>.ogg (e.g. the map theme); null keeps the current track, unknown falls back to theme.ogg
 void music(bool on, const char *track = nullptr);
 
