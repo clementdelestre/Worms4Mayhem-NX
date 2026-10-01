@@ -31,10 +31,12 @@ static const float UP = -1;
 static float rate[3], carry[3];  // turn, walk, aim: int8 units per tick
 static float tilt = 0;           // seconds the aim stick has been at full tilt
 static bool aimMode = false, fine = false;
+int forceAim = 0;
 static int padUsed = 0;
 static float camYaw = 0, camEl = EL0, zoom = 1, idle = 0;
 static int lastWorm = -1;
 static bool snap = false;  // new worm: swing behind it
+static float fpOut = 9;     // seconds since the first-person aim view
 
 void load(const char *path) {
     Settings &s = settings;
@@ -115,8 +117,8 @@ Input read(const Game &g, int pad, bool live, float dt) {
 #endif
     bool lHeld = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1), zl = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) || (kb && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
     bool canAim = live && g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting;
-    aimMode = canAim && (zl || lHeld || g.power > 0 || WEAPONS[g.weapon].name == "Sniper Rifle");
-    fine = aimMode && zl;
+    aimMode = canAim && (forceAim || zl || lHeld || g.power > 0 || WEAPONS[g.weapon].name == "Sniper Rifle");
+    fine = aimMode && (zl || forceAim == 2);
     Vector2 ls = stick(pad, GAMEPAD_AXIS_LEFT_X), rs = stick(pad, GAMEPAD_AXIS_RIGHT_X);
     float turn = 0, walk = 0, aim = 0, inv = settings.invertAim ? -1 : 1;  // rad/s, walk share, rad/s
     if (aimMode) {
@@ -176,6 +178,13 @@ Input tick(Input in) {
 
 bool aiming() { return aimMode; }
 
+bool firstPerson(const Game &g) {
+    Kind k = WEAPONS[g.weapon].kind;
+    return aimMode && k != Kind::Airstrike && k != Kind::Donkey && k != Kind::Teleport && k != Kind::Abduction;
+}
+
+static Vector3 eye(const Worm &w) { return {w.pos.x - sinf(w.yaw) * 0.15f, w.pos.y + 0.5f, w.pos.z - cosf(w.yaw) * 0.15f}; }
+
 void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt) {
     const Worm &cur = g.worms[g.current];
     int pad = padUsed;
@@ -197,35 +206,31 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     if (fabsf(err) < 0.05f) snap = false;
     zoom = Clamp(zoom * expf(-zin * dt * 1.5f - wheel * 0.1f), 0.45f, 2.5f);
 
+    if (firstPerson(g) || scope) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
+        Vector3 e = eye(cur), f = Vector3Add(e, Vector3Scale(g.aimDir(cur), AIM_FOCUS));
+        float k = 1 - expf(-dt * 16);
+        cam.position = Vector3Lerp(cam.position, e, k), cam.target = Vector3Lerp(cam.target, f, k);
+        cam.fovy = Lerp(cam.fovy, scope ? 25.0f : fine ? 42.0f : 60.0f, 1 - expf(-dt * 8));
+        fpOut = 0;
+        return;
+    }
     Vector3 focus = cur.pos, from = focus, want;
     if (chase) from = focus = Vector3Add(g.shots[0].pos, Vector3Scale(g.shots[0].vel, 0.1f));  // lead the shot a little
     float kt = 1 - expf(-dt * 6), kp = 1 - expf(-dt * (chase ? 2.5f : 3));
-    if (aimMode && !scope) {  // on the aim axis, looking at a far point of the shot line: it meets the screen centre
-        Vector3 dir = g.aimDir(cur);
-        float cp = Clamp(cur.pitch, -0.5f, 0.8f);  // camera placement only: steep aims would put it in the ground
-        Vector3 back = {cosf(cp) * sinf(cur.yaw), sinf(cp), cosf(cp) * cosf(cur.yaw)};
-        from = cur.pos;
-        want = Vector3Add(from, Vector3Add(Vector3Scale(back, -(fine ? 5.0f : 6.5f) * zoom), {0, 0.8f, 0}));
-        focus = Vector3Add(from, Vector3Scale(dir, AIM_FOCUS));
-        kt = 1 - expf(-dt * 10), kp = 1 - expf(-dt * 8);
-    } else {
+    {
         float back = (chase ? 17.5f : 9.85f) * zoom;
         want = Vector3Add(focus, {-sinf(camYaw) * cosf(camEl) * back, sinf(camEl) * back, -cosf(camYaw) * cosf(camEl) * back});
     }
+    if ((fpOut += dt) < 0.6f && !chase) kt = kp = 1 - expf(-dt * 8);  // back out of first person quickly
     Vector3 hit, to = Vector3Subtract(want, from);
     if (chase) want.y = fmaxf(want.y, cur.pos.y + 4);  // donkey/airstrike dig below the surface: stay above ground
     else if (g.terrain.raycast({from, Vector3Normalize(to)}, Vector3Length(to), &hit)) want = Vector3Lerp(from, hit, 0.85f);  // into a hill
-    if (scope) {
-        want = Vector3Add(cur.pos, {0, 0.35f, 0});
-        focus = Vector3Add(want, Vector3Scale(g.aimDir(cur), 30));
-        kt = kp = 1 - expf(-dt * 12);
-    }
     cam.target = Vector3Lerp(cam.target, focus, kt);
     cam.position = Vector3Lerp(cam.position, want, kp);
-    cam.fovy = Lerp(cam.fovy, scope ? 25.0f : fine ? 42.0f : 50.0f, 1 - expf(-dt * 8));
+    cam.fovy = Lerp(cam.fovy, 50.0f, 1 - expf(-dt * 8));
 }
 
-Vector3 aimPoint(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Add(w.pos, Vector3Scale(g.aimDir(w), AIM_FOCUS)); }
+Vector3 aimPoint(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Add(eye(w), Vector3Scale(g.aimDir(w), AIM_FOCUS)); }
 
 static float amp[4], left[4];
 static bool quiet[4] = {true, true, true, true};

@@ -67,6 +67,8 @@ static const ModelAnimation *find(const Entry &e, const char *clip) {
     return nullptr;
 }
 
+bool Models::has(const char *name) { return models.count(name) > 0; }
+
 float Models::clipLength(const char *name, const char *clip) {
     auto it = models.find(name);
     const ModelAnimation *a = it == models.end() ? nullptr : find(it->second, clip);

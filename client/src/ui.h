@@ -50,6 +50,8 @@ private:
 
 // In-game HUD and W4M weapon panel (X / Q). The panel selects by holding NEXT_WEAPON until the weapon changes, then
 // releasing for at least one tick, until game.weapon matches: the sim and the network only ever see plain inputs.
+// First-person aim reticle at screen point c, per weapon like W4M; scope: sniper vignette + cross.
+void reticle(const WeaponDef &wd, Vector2 c, bool scope);
 struct Hud {
     bool open = false, mine = false;  // mine: a human here plays the current turn
     bool quiet = false;               // no bottom hints this frame
@@ -63,6 +65,8 @@ private:
     bool swallow = true;  // a held A (weapon pick, menu START) must not fire
     int pressedOn = -1;       // weapon when the current press began, -1 = releasing
     uint32_t releasedAt = 0;  // tick when the release began
+    int introWorm = -1;       // turn-start name banner (CPU/remote): current worm and the tick it became current
+    uint32_t introStart = 0;
 };
 // + menu in a match. Local play stops stepping the sim while open; online it is only an overlay.
 struct Pause {

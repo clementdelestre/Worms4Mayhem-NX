@@ -30,17 +30,18 @@
 #endif
 
 extern "C" void glFinish(void);  // perf overlay only; rlgl does not wrap it
+extern "C" void glClear(unsigned int mask);
 
 static const Color TEAM_COLORS[] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60, 190, 70, 255}, {240, 200, 40, 255}};
 
 static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) { return Ui::pressed(pad, buttons, keys); }
 
 // Scripted input for shot mode: select weapon, aim up, charge, release.
-static Input scriptInput(int frame, int weapon) {
+static Input scriptInput(int frame, int weapon, bool fire) {
     Input in;
     if (frame < 2 * weapon && frame % 2) in.buttons = Input::NEXT_WEAPON;
-    if (frame > 10 && frame < 30) in.aim = 127;
-    if (frame > 40 && frame < 100) in.buttons = Input::FIRE;
+    if (frame > 10 && frame < (fire ? 30 : 14)) in.aim = 127;
+    if (fire && frame > 40 && frame < 100) in.buttons = Input::FIRE;
     return in;
 }
 
@@ -151,8 +152,10 @@ static void animateWorms(const Game &g, float dt) {
     }
 }
 
+static const float VM_RIGHT = 0.4f, VM_UP = -0.32f, VM_FWD = 0.7f, VM_SCALE = 0.4f, VM_CONV = 3;  // first-person view-model offset from the eye
+
 // W4M worm: team-tinted, animation picked from the sim state (aim clips map pitch to their timeline).
-static bool drawWorm(const Game &g, const Worm &w, float clock) {
+static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *fp = nullptr) {  // fp: held weapon only, as a view-model
     int i = int(&w - g.worms.data());
     WormAnim a = i < (int)wormAnims.size() ? wormAnims[i] : WormAnim{};
     float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
@@ -174,11 +177,21 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     else if (fidget < Models::clipLength("worm", i % 2 ? "Yawn" : "ScratchHead")) clip = i % 2 ? "Yawn" : "ScratchHead", t = fidget, loop = false;
     Color tint = ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f);
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
-    if (!Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop)) return false;
+    if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop)) return false;
     Matrix m;
-    if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m))
-        Models::draw(held, MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
-    int hat = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
+    if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m)) {
+        m = MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z)));
+        if (fp) {  // the aim clip's hand orientation, moved to the bottom right of the view
+            Vector3 f = Vector3Normalize(Vector3Subtract(fp->target, fp->position)), r = Vector3Normalize(Vector3CrossProduct(f, {0, 1, 0})), u = Vector3CrossProduct(r, f);
+            float q = tanf(30 * DEG2RAD) / tanf(fp->fovy * 0.5f * DEG2RAD);  // pushed back as the FOV narrows: same screen spot and size
+            Vector3 at = Vector3Add(fp->position, Vector3Add(Vector3Scale(r, VM_RIGHT), Vector3Add(Vector3Scale(u, VM_UP), Vector3Scale(f, VM_FWD * q))));
+            Matrix in = QuaternionToMatrix(QuaternionFromVector3ToVector3(f, Vector3Normalize(Vector3Subtract(Vector3Add(fp->position, Vector3Scale(f, VM_CONV * q)), at))));
+            m = MatrixMultiply(MatrixMultiply(MatrixScale(VM_SCALE, VM_SCALE, VM_SCALE), m), in);  // toed in toward the centre
+            m.m12 = at.x, m.m13 = at.y, m.m14 = at.z;
+        }
+        Models::draw(held, m);
+    }
+    int hat = !fp && w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
     if (hat && Models::joint("worm", "HatLocator", clip, t, loop, &m))
         Models::draw(Models::hatName(hat - 1), MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
     return true;
@@ -230,7 +243,7 @@ int main(int argc, char **argv) {
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
-    // --ui title|main|setup|options|hud|panel [map]: capture that screen to ui.png and quit
+    // --ui title|main|setup|options|hud|panel|ready [map]: capture that screen to ui.png and quit
     const char *uiShot = argc > 2 && !strcmp(argv[1], "--ui") ? argv[2] : nullptr;
     // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
     bool bench = argc > 2 && !strcmp(argv[1], "--bench");
@@ -241,6 +254,9 @@ int main(int argc, char **argv) {
     int botTurns = netbot && argc > 6 ? atoi(argv[6]) : 6, turns = 0;
     bool cpuAll = argc > 1 && (!strcmp(argv[1], "--cpu") || bench), shot = !cpuAll && !uiShot && !netbot && (argc > 1 || FileExists(DATA_DIR "shot"));
     int shotWeapon = argc > 2 ? atoi(argv[2]) : 0;  // --shot N: use weapon N
+    // --aimshot <weapon> [map] [fine]: shot mode held in aim mode, aim.png at frame 60
+    bool aimShot = shot && argc > 2 && !strcmp(argv[1], "--aimshot");
+    if (aimShot) Controls::forceAim = argc > 4 && !strcmp(argv[4], "fine") ? 2 : 1;
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
     // server.txt on the SD card: "<host> [port] [name]", rewritten by the Options screen
@@ -433,8 +449,9 @@ int main(int argc, char **argv) {
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu
     Ui::forceHelp = uiShot && (!strcmp(uiShot, "help") || !strcmp(uiShot, "helpmenu"));
-    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help"))) {
+    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready"))) {
         startMatch({1234, 2, 2, argc > 3 ? argv[3] : "", 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
+        if (strcmp(uiShot, "ready")) game.hotSeat = 0;  // every shot but "ready" skips the hot-seat pause
         hud.open = !strcmp(uiShot, "panel");
         pause.open = !strcmp(uiShot, "pause");
     } else if (uiShot) {
@@ -456,9 +473,19 @@ int main(int argc, char **argv) {
     auto cpu = [&](int team) { return team < (int)game.cfg.teamSetup.size() && game.cfg.teamSetup[team].cpu > 0; };
     auto pressed = [](std::initializer_list<int> buttons, std::initializer_list<int> keys) { return pressedAny(-1, buttons, keys); };
 
+    // W4NX_INPUTSCRIPT=file of "<frame> <raylib key> <1 down|0 up>" (key -1 = exit): replayed key events, screen changes logged
+    FILE *inScript = getenv("W4NX_INPUTSCRIPT") ? fopen(getenv("W4NX_INPUTSCRIPT"), "r") : nullptr;
+    int sf = -1, sk = 0, sd = 0;
+    Screen shown = screen;
     for (int frame = 0; !WindowShouldClose(); frame++) {
         float dt = bench || shot || uiShot ? Game::DT : fminf(GetFrameTime(), 0.25f);  // fixed: reproducible captures
         clock += dt;
+        bool scriptEnd = false;
+        for (; inScript && (sf >= 0 || fscanf(inScript, "%d %d %d", &sf, &sk, &sd) == 3) && sf <= frame; sf = -1)
+            if (sk < 0) scriptEnd = true;
+            else PlayAutomationEvent({0, sd ? 2u : 1u, {sk}});  // rcore.c INPUT_KEY_DOWN / INPUT_KEY_UP
+        if (inScript && (screen != shown || frame == 0)) printf("frame %d screen %d\n", frame, (int)(shown = screen)), fflush(stdout);
+        if (scriptEnd) break;
         Ui::pollStick();
         Audio::update();
         Controls::update(dt);
@@ -680,6 +707,7 @@ int main(int argc, char **argv) {
             else if (online) net.leave(), net.listRooms();
             screen = online ? Screen::Lobby : game.cfg.mission ? Screen::Missions : Screen::Menu;
             Audio::music(true, "theme");
+            PollInputEvents();  // no EndDrawing this frame: else the menu sees the same A/Enter press and restarts
             continue;
         }
         for (uint32_t o : net.owners) {  // an owner who left the room counts as offline too
@@ -697,8 +725,8 @@ int main(int argc, char **argv) {
         auto owns = [&](int team) { return (cpu(team) && net.hostId == net.id) || (team < (int)net.owners.size() && (net.owners[team] == net.id || proxied(team))); };
         bool remoteTurn = online && game.phase != Phase::GameOver && !owns(cur.team);
         bool padTurn = !shot && !remoteTurn && !pause.open && !playing && irEnd < 0;
-        Input pin = Controls::read(game, pad, padTurn && !cpu(cur.team), dt);
-        Input in = shot ? scriptInput(frame, shotWeapon) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
+        Input pin = Controls::read(game, pad, aimShot || (padTurn && !cpu(cur.team)), dt);
+        Input in = shot ? scriptInput(frame, shotWeapon, !aimShot) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
         hud.input(game, in, padTurn, pad, tick);
         bool feedPad = padTurn && !hud.open;
         auto local = [&] { return feedPad ? Controls::tick(in) : in; };  // stick rates spread over ticks
@@ -766,14 +794,16 @@ int main(int argc, char **argv) {
             Audio::music(true, "theme");
         }
 
-        // camera (controls.cpp): free orbit, over the shoulder in aim mode, chasing the projectile, sniper scope
+        // camera (controls.cpp): free orbit, first person in aim mode, chasing the projectile, sniper scope
         const WeaponDef &wd = WEAPONS[game.weapon];
         bool chase = game.phase == Phase::Flying && !game.shots.empty();
         bool scope = !chase && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && wd.name == "Sniper Rifle";
+        bool fp = scope || (!chase && Controls::firstPerson(game));  // W4M first-person aim
         if ((IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) &&
              (IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))) || IsKeyPressed(KEY_F3))
             perfOn = (perfOn + 1) % 3;
         Controls::camera(cam, game, chase, scope, !pause.open && !hud.open && !(playing && freeCam), dt);
+        bool inside = Vector3Distance(cam.position, cur.pos) < 1.2f;  // the aim camera has flown into the worm
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
         if (fixedView) view = viewCam;
         if (playing && freeCam) {  // LS / arrows move, RS / A D W S look, ZL ZR / Z X down up
@@ -808,7 +838,7 @@ int main(int argc, char **argv) {
         animateWorms(game, dt);
         for (const Worm &w : game.worms) {
             if (!w.alive) { drawGrave(game, w); continue; }
-            if ((scope && &w == &cur) || !Models::visible(w.pos, 2)) continue;  // scope: the camera is inside it
+            if ((inside && &w == &cur) || !Models::visible(w.pos, 2)) continue;
             if (!drawWorm(game, w, clock)) {
                 Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
                 DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
@@ -820,7 +850,7 @@ int main(int argc, char **argv) {
         }
         if (game.roped) DrawLine3D(game.anchor, cur.pos, BROWN);
         if (game.jetting) DrawCube(Vector3Add(cur.pos, {-sinf(cur.yaw) * 0.4f, 0.1f, -cosf(cur.yaw) * 0.4f}), 0.35f, 0.5f, 0.35f, GRAY);
-        if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && !scope) {
+        if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && !fp && !inside) {
             if (wd.kind == Kind::Airstrike || wd.kind == Kind::Donkey || wd.kind == Kind::Teleport || wd.kind == Kind::Homing || wd.kind == Kind::Abduction) {
                 Vector3 t = game.target();
                 DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 1.2f, {1, 0, 0}, 90, RED);
@@ -889,17 +919,16 @@ int main(int argc, char **argv) {
         Fx::draw(view);
         lap(T_FX);
         EndMode3D();
-
-        if (scope) {
-            Vector2 c = GetWorldToScreen(Vector3Add(cur.pos, Vector3Scale(game.aimDir(cur), 30)), view);
-            DrawRing(c, 26, 29, 0, 360, 32, Fade(BLACK, 0.7f));
-            DrawRectangle(c.x - 40, c.y - 1, 80, 2, Fade(BLACK, 0.7f)), DrawRectangle(c.x - 1, c.y - 40, 2, 80, Fade(BLACK, 0.7f));
-        } else if (Controls::aiming() && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting) {
-            Vector2 c = GetWorldToScreen(Controls::aimPoint(game), view);  // where the shot line points (screen centre)
-            DrawRing(c, 9, 11, 0, 360, 24, Fade(WHITE, 0.85f));
-            for (Vector2 d : {Vector2{1, 0}, Vector2{-1, 0}, Vector2{0, 1}, Vector2{0, -1}})
-                DrawLineEx(Vector2Add(c, Vector2Scale(d, 14)), Vector2Add(c, Vector2Scale(d, 22)), 2, Fade(WHITE, 0.85f));
+        if (fp && inside && !scope && (wd.kind == Kind::Shell || wd.kind == Kind::Homing || wd.kind == Kind::Shotgun)) {  // held weapon over the scene with its own near plane, never clipped by it or the terrain
+            glClear(0x100);  // GL_DEPTH_BUFFER_BIT
+            rlSetClipPlanes(0.05, 50);
+            BeginMode3D(view);
+            drawWorm(game, cur, clock, &view);
+            EndMode3D();
+            rlSetClipPlanes(0.5, 500);
         }
+
+        if (fp) Ui::reticle(wd, GetWorldToScreen(Controls::aimPoint(game), view), scope);  // W4M per-weapon aim reticle
         hud.quiet = pause.open || playing || irEnd >= 0;  // those draw their own hints
         hud.draw(game, view, tick);
         if (const MissionSpec *ms = game.cfg.mission; ms && game.phase != Phase::GameOver) Ui::missionHud(game, *ms);
@@ -938,6 +967,12 @@ int main(int argc, char **argv) {
             rlDrawRenderBatchActive();
             Image img = LoadImageFromScreen();
             ExportImage(img, frame == 35 ? DATA_DIR "shot_aim.png" : DATA_DIR "shot.png");
+            UnloadImage(img);
+        }
+        if (aimShot && frame == 60) {
+            rlDrawRenderBatchActive();
+            Image img = LoadImageFromScreen();
+            ExportImage(img, "aim.png");
             UnloadImage(img);
         }
         if (uiShot && frame == 40) {
@@ -984,7 +1019,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && frame == 150) || (uiShot && frame == 40)) break;
+        if ((shot && frame == 150) || (aimShot && frame == 60) || (uiShot && frame == 40)) break;
     }
     if (screen == Screen::Play) irFinish(), saveRec();
     net.close();

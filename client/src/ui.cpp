@@ -211,10 +211,21 @@ void load() {
     std::vector<int> cps;
     for (int c = 32; c < 256; c++) if (c < 127 || c > 160) cps.push_back(c);
 #ifdef __SWITCH__
-    // system shared font: nicer than raylib's bitmap font and nothing to bundle
     hidSetNpadJoyHoldType(HidNpadJoyHoldType_Horizontal);  // single Joy-Cons are held sideways (one per player)
-    PlFontData fd;
     plOk = R_SUCCEEDED(plInitialize(PlServiceType_User));
+#endif
+    // W4M's FE.Font (tools/w4m-ui, user's install), else the Switch shared font / a desktop TTF
+    if (FileExists(DATA_DIR "assets/ui/font/w4m.fnt")) {
+        font = LoadFont(DATA_DIR "assets/ui/font/w4m.fnt");
+        fontLoaded = font.texture.id != GetFontDefault().texture.id;  // LoadFont falls back to the default font
+        if (fontLoaded) {
+            GenTextureMipmaps(&font.texture);
+            SetTextureFilter(font.texture, TEXTURE_FILTER_TRILINEAR);
+            return;
+        }
+    }
+#ifdef __SWITCH__
+    PlFontData fd;
     if (plOk && R_SUCCEEDED(plGetSharedFontByType(&fd, PlSharedFontType_Standard))) {
         font = LoadFontFromMemory(".ttf", (const unsigned char *)fd.address, (int)fd.size, 48, cps.data(), (int)cps.size());
         fontLoaded = font.texture.id != 0;
@@ -282,6 +293,42 @@ void text(const char *t, float x, float y, float size, Color c, int align) {
 }
 
 static float textWidth(const char *t, float size) { return MeasureTextEx(font, t, size, fontLoaded ? 0 : size / 10).x; }
+
+// W4M menu look: cream text, golden titles over a brush underline, charcoal stroke + orange arrow on the selection
+static const Color CREAM = {238, 226, 186, 255}, BRIGHT = {255, 250, 232, 255}, TITLE = {255, 224, 120, 255};
+static Color ink(bool hi) { return hi ? BRIGHT : CREAM; }
+static void tri(Vector2 a, Vector2 b, Vector2 c, Color col);
+
+static void brush(Rectangle r) {
+    if (!image("fe/text_border_charcoal", {r.x - r.height * 0.3f, r.y - r.height * 0.15f, r.width + r.height * 0.6f, r.height * 1.3f}))
+        DrawRectangleRounded(r, 0.5f, 6, {10, 10, 10, 200});
+}
+
+// orange arrow pointing left at (x, y), bobbing
+static void arrow(float x, float y, float h) {
+    x += 4 * fabsf(sinf((float)GetTime() * 5));
+    if (!image("fe/mouse", {x - h * 0.08f, y - h * 0.5f, h, h})) tri({x, y}, {x + h * 0.6f, y - h * 0.35f}, {x + h * 0.6f, y + h * 0.35f}, ORANGE);
+}
+
+// selectable row: stroke behind the whole row, arrow just past its right end
+static void mark(Rectangle r, bool hi) {
+    if (!hi) return;
+    brush(r);
+    arrow(r.x + r.width + r.height * 0.35f, r.y + r.height / 2, fminf(r.height * 1.1f, 60));
+}
+
+// centred menu entry: the stroke hugs the label
+static void item(const char *label, float cx, float y, float size, bool hi) {
+    float w = textWidth(label, size) + size * 0.9f;
+    mark({cx - w / 2, y - size * 0.1f, w, size * 1.15f}, hi);
+    text(label, cx, y, size, ink(hi), 1);
+}
+
+static void heading(const char *t, float cx, float y, float size) {
+    float w = fmaxf(textWidth(t, size) * 1.25f, size * 4);
+    text(t, cx, y, size, TITLE, 1);
+    if (!image("fe/title_underline", {cx - w / 2, y + size * 0.98f, w, w / 16}, CREAM)) DrawRectangle(cx - w / 2, y + size, w, 3, CREAM);
+}
 
 // "Y/R" -> two glyphs. Pad: dark pills (round for one letter), key: light keycaps. Returns the width.
 static float glyphs(const char *g, float x, float y, float h, bool key, bool draw = true) {
@@ -603,8 +650,8 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     switch (screen) {
     case Title: {
         logo(640, 90, 760);
-        if (fmodf(t, 1.2f) < 0.8f) text(keyGlyphs() ? "Press Enter to start" : "Press A to start", 640, 560, 40, WHITE, 1);
-        text("Worms4NX - fan-made homebrew", 640, 648, 20, {230, 230, 230, 200}, 1);
+        if (fmodf(t, 1.2f) < 0.8f) text(keyGlyphs() ? "Press Enter to start" : "Press A to start", 640, 560, 44, BRIGHT, 1);
+        text("Worms4NX - fan-made homebrew", 640, 648, 20, CREAM, 1);
         hints({{"A", "Enter", "Start"}, {"+", "Esc", "Quit"}});
         if (ok) screen = Main;
         else if (P({PLUS}, {KEY_ESCAPE})) act = Quit;
@@ -615,11 +662,8 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         const int n = sizeof ITEMS / sizeof *ITEMS;
         mainRow = clampWrap(mainRow + dy, n);
         logo(640, 16, 330);
-        for (int i = 0; i < n; i++) {
-            Rectangle r = {420, 205 + i * 64.0f, 440, 56};
-            panel(r, i == mainRow);
-            text(ITEMS[i], 640, r.y + 11, 34, i == mainRow ? GOLDEN : WHITE, 1);
-        }
+        popup({370, 192, 540, 480});
+        for (int i = 0; i < n; i++) item(ITEMS[i], 640, 218 + i * 62.0f, 36, i == mainRow);
         hints({{"A", "Enter", "Select"}, {"B", "Esc", "Back"}});
         if (back) screen = Title;
         if (ok) {
@@ -633,16 +677,17 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     case Options: {
         row = clampWrap(row + dy, 5);
-        text("OPTIONS", 640, 60, 60, GOLDEN, 1);
+        heading("Options", 640, 40, 60);
+        popup({230, 150, 820, 500});
         std::string portS = TextFormat("%d", port);
         const char *labels[] = {"Player name", "Server", "Music", "Controls", "Weapon Factory"};
         const std::string vals[] = {name, host + ":" + portS, music ? "On" : "Off", ">", TextFormat("%d / %d  >", (int)customs.size(), MAX_CUSTOM)};
         for (int i = 0; i < 5; i++) {
-            Rectangle r = {290, 180 + i * 90.0f, 700, 70};
-            panel(r, i == row);
-            text(labels[i], r.x + 30, r.y + 18, 32, i == row ? GOLDEN : WHITE);
+            Rectangle r = {290, 190 + i * 86.0f, 700, 60};
+            mark(r, i == row);
+            text(labels[i], r.x + 24, r.y + 12, 34, ink(i == row));
             bool ed = editing && ((i == 0 && editing == &name) || (i == 1 && editing == &host));
-            text(TextFormat("%s%s", vals[i].c_str(), ed && fmodf(t, 1) < 0.5f ? "_" : ""), r.x + r.width - 30, r.y + 18, 32, WHITE, 2);
+            text(TextFormat("%s%s", vals[i].c_str(), ed && fmodf(t, 1) < 0.5f ? "_" : ""), r.x + r.width - 24, r.y + 12, 34, ink(i == row), 2);
         }
         if (row == 1 && dx) port = Clamp(port + dx, 1, 65535);
         if (row == 2 && (dx || ok)) music = !music, Audio::music(music);
@@ -670,21 +715,22 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         ::Controls::Settings &s = ::Controls::settings;
         const int n = 8;
         row = clampWrap(row + dy, n);
-        text("CONTROLS", 640, 40, 56, GOLDEN, 1);
+        heading("Controls", 640, 20, 56);
+        popup({230, 108, 820, 570});
         static const char *labels[n] = {"Aim sensitivity", "Camera sensitivity", "Invert aim Y", "Invert camera Y", "Gyro aiming (aim mode)", "Gyro sensitivity", "Rumble", "Button layout"};
         float *slider[n] = {&s.aim, &s.cam, nullptr, nullptr, nullptr, &s.gyro};
         bool *toggle[n] = {nullptr, nullptr, &s.invertAim, &s.invertCam, &s.gyroOn, nullptr, &s.rumbleOn};
         for (int i = 0; i < n; i++) {
-            Rectangle r = {290, 130 + i * 66.0f, 700, 58};
-            panel(r, i == row);
-            text(labels[i], r.x + 30, r.y + 13, 30, i == row ? GOLDEN : WHITE);
+            Rectangle r = {290, 130 + i * 66.0f, 700, 54};
+            mark(r, i == row);
+            text(labels[i], r.x + 24, r.y + 11, 32, ink(i == row));
             if (slider[i]) {
                 Rectangle bar = {r.x + 380, r.y + 24, 180, 10};
                 DrawRectangleRec(bar, {0, 0, 0, 120});
                 DrawRectangleRec({bar.x, bar.y, bar.width * (*slider[i] - 0.2f) / 2.8f, bar.height}, GOLDEN);
             }
             const char *v = slider[i] ? TextFormat("x%.1f", *slider[i]) : toggle[i] ? (*toggle[i] ? "On" : "Off") : ">";
-            text(v, r.x + r.width - 30, r.y + 13, 30, WHITE, 2);
+            text(v, r.x + r.width - 24, r.y + 11, 32, ink(i == row), 2);
         }
         if (slider[row] && dx) *slider[row] = Clamp(roundf(*slider[row] * 10 + dx) / 10, 0.2f, 3.0f);
         if (toggle[row] && (dx || ok)) *toggle[row] = !*toggle[row];
@@ -708,7 +754,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             int v = bytes[schemeRow - 1] + dx * f.step;
             bytes[schemeRow - 1] = (uint8_t)(f.names[0] ? clampWrap(v, f.max + 1) : Clamp(v, f.min, f.max));
         }
-        text("GAME SCHEME", 640, 18, 48, GOLDEN, 1);
+        heading("Game scheme", 640, 14, 48);
         popup({300, 80, 680, 590});
         for (int i = 0; i <= n; i++) {
             Rectangle r = {320, 92 + i * 31.0f, 640, 29};
@@ -718,8 +764,8 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
                 const SchemeField &f = SCHEME_FIELDS[i - 1];
                 v = f.names[0] ? f.names[std::min<int>(bytes[i - 1], f.max)] : TextFormat(f.fmt, bytes[i - 1]);
             }
-            if (hi) DrawRectangleRounded(r, 0.4f, 6, {255, 210, 60, 70});
-            text(i ? SCHEME_FIELDS[i - 1].label : "Preset", r.x + 10, r.y + 3, 22, hi ? GOLDEN : i ? WHITE : SKYBLUE);
+            if (hi) brush(r);
+            text(i ? SCHEME_FIELDS[i - 1].label : "Preset", r.x + 10, r.y + 3, 22, hi ? BRIGHT : i ? CREAM : SKYBLUE);
             text(TextFormat(hi ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + 3, 22, WHITE, 2);
         }
         hints({{"D-pad", "Up/Down", "Move"}, {"D-pad", "Left/Right", "Change"}, {"B", "Esc", "Back"}});
@@ -764,12 +810,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         cfg.map = maps.empty() ? "" : maps[std::min(mapSel, (int)maps.size() - 1)];
         if (online) netTeams(cfg, dx);
 
-        text(online ? lan ? "LAN MATCH" : "ONLINE MATCH" : "LOCAL MATCH", 640, 18, 48, GOLDEN, 1);
+        heading(online ? lan ? "LAN match" : "Online match" : "Local match", 640, 14, 48);
         auto value = [&](int vid, Rectangle r, const char *label, const std::string &v, float size) {
             bool hi = ids[row] == vid;
-            if (hi) DrawRectangleRounded(r, 0.4f, 6, {255, 210, 60, 70});
-            text(label, r.x + 10, r.y + (r.height - size) / 2, size, hi ? GOLDEN : WHITE);
-            text(TextFormat(hi ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + (r.height - size) / 2, size, WHITE, 2);
+            if (hi) brush(r);
+            text(label, r.x + 10, r.y + (r.height - size) / 2, size, ink(hi));
+            text(TextFormat(hi ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + (r.height - size) / 2, size, ink(hi), 2);
         };
         value(0, {40, 86, 600, 40}, "Teams", online ? TextFormat("You + %d CPU", cfg.teams - 1) : TextFormat("%d", cfg.teams), 28);
         static const char *CTRL[] = {"Human", "CPU 1", "CPU 2", "CPU 3"};
@@ -779,7 +825,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             panel(card, ids[row] >= 100 + k * 4 && ids[row] < 104 + k * 4);
             DrawRectangleRounded({card.x + 16, card.y + 16, 12, card.height - 32}, 1, 4, TEAM_COLORS[k]);
             bool hiName = ids[row] == 100 + k * 4, ed = editing == &tm.name;
-            if (hiName) DrawRectangleRounded({card.x + 36, card.y + 10, 540, 38}, 0.4f, 6, {255, 210, 60, 70});
+            if (hiName) brush({card.x + 36, card.y + 10, 540, 38});
             text(TextFormat("%s%s", tm.name.c_str(), ed && fmodf(t, 1) < 0.5f ? "_" : ""), card.x + 44, card.y + 12, 32, TEAM_COLORS[k]);
             if (!online && !tm.cpu) {
 #ifdef __SWITCH__
@@ -801,7 +847,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         text(mapTitle(cfg.map).c_str(), 930, 140, 28, WHITE);
         text(TextFormat("%d / %d", mapSel + 1, (int)maps.size()), 930, 176, 20, LIGHTGRAY);
         value(200, {920, 230, 330, 40}, "Worms", TextFormat("%d", cfg.wormsPerTeam), 28);
-        text(online ? "+1 team per console that joins" : "One controller per team, or share one", 930, 280, 18, LIGHTGRAY);
+        text(online ? "+1 team per console that joins" : "One controller per team,\nor share one", 930, 280, 18, LIGHTGRAY);
         popup({672, 330, 584, 262});
         value(299, {690, 342, 548, 28}, "Scheme", preset < 0 ? "Custom" : SCHEMES[preset].name, 22);
         for (int r = 0; r < 7; r++)
@@ -811,7 +857,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         value(350, {690, 372 + 7 * 27.0f, 548, 26}, "Wormpot", !pots ? "None" : pots == 1 ? WORMPOT_MODES[pot].name : TextFormat("%d modes", pots), 22);
         Rectangle go = {860, 608, 390, 70};
         panel(go, ids[row] == 400);
-        text(online ? lan ? "FIND GAMES" : "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ids[row] == 400 ? GOLDEN : WHITE, 1);
+        text(online ? lan ? "FIND GAMES" : "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ink(ids[row] == 400), 1);
         if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
         else if (id == 299) hints({{"D-pad", "Left/Right", "Preset"}, {"A", "Enter", "Edit scheme"}, {"B", "Esc", "Back"}});
         else if (id == 350) hints({{"A", "Enter", "Open Wormpot"}, {"B", "Esc", "Back"}});
@@ -902,14 +948,14 @@ void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, floa
         for (int r = 0; r < 3; r++) spinEnd[r] = t + 1 + 0.6f * r, spinTo[r] = GetRandomValue(-1, reelSize(r) - 1);
     if (!spinning && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) cfg.wormpot = 0;
 
-    text("WORMPOT", 640, 18, 48, GOLDEN, 1);
+    heading("Wormpot", 640, 14, 48);
     popup({120, 84, 1040, 500});
     image("fe/icon_wxpot", {140, 96, 96, 96});
     text("Wormpot modifies the game rules to create new ways to play.", 660, 120, 24, WHITE, 1);
     static const char *REELS[] = {"Weapons", "Worms", "Crates & Energy"};
     for (int r = 0; r < 3; r++) {
         Rectangle box = {190 + r * 310.0f, 210, 280, 270};
-        text(REELS[r], box.x + box.width / 2, box.y - 36, 28, r == reel ? GOLDEN : WHITE, 1);
+        text(REELS[r], box.x + box.width / 2, box.y - 36, 28, ink(r == reel), 1);
         DrawRectangleRounded(box, 0.12f, 6, {20, 24, 36, 255});
         int n = reelSize(r) + 1, cur = reelMode(cfg.wormpot, r) + 1;
         float scroll = 0;
@@ -937,16 +983,16 @@ void Frontend::factory(int dx, int dy, bool ok, bool back) {
     (void)dx;
     int n = (int)customs.size(), slots = std::min(n + 1, MAX_CUSTOM);
     facSel = clampWrap(facSel + dy, slots);
-    text("WEAPON FACTORY", 640, 18, 48, GOLDEN, 1);
+    heading("Weapon Factory", 640, 14, 48);
     popup({290, 84, 700, 590});
     for (int i = 0; i < slots; i++) {
         Rectangle r = {310, 100 + i * 70.0f, 660, 62};
         bool hi = i == facSel;
-        if (hi) DrawRectangleRounded(r, 0.3f, 6, {255, 210, 60, 70});
-        if (i == n) { text("+ Create a weapon", r.x + r.width / 2, r.y + 16, 28, hi ? GOLDEN : WHITE, 1); continue; }
+        if (hi) brush(r);
+        if (i == n) { text("+ Create a weapon", r.x + r.width / 2, r.y + 16, 28, ink(hi), 1); continue; }
         const WeaponDef &w = customs[i];
         if (!image(iconOf(w), {r.x + 8, r.y + 3, 56, 56})) DrawRectangleRounded({r.x + 8, r.y + 3, 56, 56}, 0.3f, 4, GRAY);
-        text(w.name.c_str(), r.x + 80, r.y + 6, 28, hi ? GOLDEN : WHITE);
+        text(w.name.c_str(), r.x + 80, r.y + 6, 28, ink(hi));
         text(TextFormat("%s  -  %.0f dmg, radius %.1f%s", LAUNCH[launchOf(w)], w.kind == Kind::Airstrike ? w.cdamage : w.damage,
                         w.kind == Kind::Airstrike ? w.cradius : w.radius, w.clusters ? TextFormat(", %d x %.0f", w.clusters, w.cdamage) : ""),
              r.x + 80, r.y + 36, 18, LIGHTGRAY);
@@ -1001,7 +1047,7 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
     if (ok && facRow == 0) edit(w.name, "Weapon name");
     if (ok && facRow == 4) w.wind = !w.wind;
 
-    text("WEAPON FACTORY", 640, 18, 48, GOLDEN, 1);
+    heading("Weapon Factory", 640, 14, 48);
     popup({200, 80, 640, 600});
     Rectangle pv = {870, 120, 300, 300};
     panel(pv, false);
@@ -1022,8 +1068,8 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
             const Num &k = nums[i - 5];
             v = k.f == &w.fuse && launch != 1 ? "Impact" : k.i == &w.count && w.count < 0 ? "Infinite" : k.f ? TextFormat(k.fmt, *k.f) : TextFormat(k.fmt, *k.i);
         }
-        if (hi) DrawRectangleRounded(r, 0.4f, 6, {255, 210, 60, 70});
-        text(label, r.x + 10, r.y + 5, 24, hi ? GOLDEN : WHITE);
+        if (hi) brush(r);
+        text(label, r.x + 10, r.y + 5, 24, ink(hi));
         text(TextFormat(hi && i ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + 5, 24, WHITE, 2);
     }
     if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
@@ -1072,6 +1118,48 @@ static bool sprite(const char *name, Vector2 pos, float s, Vector2 pivot, float 
     if (!src.width) src = {0, 0, (float)t.width, (float)t.height};
     DrawTexturePro(t, src, {pos.x, pos.y, src.width * s, src.height * s}, {pivot.x * s, pivot.y * s}, deg, tint);
     return true;
+}
+
+void reticle(const WeaponDef &wd, Vector2 c, bool scope) {
+    if (scope) {  // sniper sight: navy all around a round view, dark tapered cross with three ovals per arm
+        const Color NAVY = {6, 18, 36, 255};
+        const float r = 300;
+        DrawRing(c, r, 1600, 0, 360, 72, NAVY);
+        for (int i = 0; i < 14; i++) DrawRing(c, r - 42 + i * 3, r - 39 + i * 3, 0, 360, 72, Fade(NAVY, (i + 1) / 15.0f));
+        for (Vector2 d : {Vector2{1, 0}, Vector2{-1, 0}, Vector2{0, 1}, Vector2{0, -1}}) {
+            Vector2 n = {-d.y, d.x};
+            DrawLineEx(Vector2Add(c, Vector2Scale(d, r)), Vector2Add(c, Vector2Scale(d, r * 0.55f)), 26, NAVY);
+            for (int k = 0; k < 3; k++) {
+                Vector2 o = Vector2Add(c, Vector2Scale(d, r * (0.64f + 0.1f * k)));
+                float along = 9 + 2.0f * k, across = 20 + 7.0f * k;
+                DrawEllipse((int)o.x, (int)o.y, fabsf(d.x) * along + fabsf(n.x) * across, fabsf(d.y) * along + fabsf(n.y) * across, NAVY);
+            }
+            DrawLineEx(Vector2Add(c, Vector2Scale(d, r * 0.55f)), Vector2Add(c, Vector2Scale(d, 16)), 4, NAVY);
+        }
+        DrawCircleV(c, 5, NAVY);
+        return;
+    }
+    const Color CREAM = {255, 244, 228, 240};
+    auto put = [&](const char *name, float w, float h, float top) {  // top: fraction of h above c
+        Texture2D t = tex(std::string("hud/") + name);
+        if (t.id) DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {c.x - w / 2, c.y - h * top, w, h}, {}, 0, CREAM);
+        return t.id != 0;
+    };
+    bool ok;
+    if (wd.kind == Kind::Homing) {
+        Texture2D t[4] = {tex("hud/homing_tl"), tex("hud/homing_tr"), tex("hud/homing_bl"), tex("hud/homing_br")};
+        ok = t[0].id && t[3].id;
+        for (int k = 0; k < 4 && ok; k++)
+            DrawTexturePro(t[k], {0, 0, (float)t[k].width, (float)t[k].height}, {c.x + (k % 2 ? 46 : -94), c.y + (k / 2 ? 46 : -94), 48, 48}, {}, 0, CREAM);
+        put("bazookatargetinner", 185, 370, 0.5f);
+    } else if (wd.kind == Kind::Shell && wd.fuse <= 0) ok = put("bazookatargetouter", 185, 185, 0.5f) && put("bazookatargetinner", 185, 370, 0.5f);
+    else if (wd.kind == Kind::Shell) ok = put("target", 200, 200, 0.5f);  // thrown
+    else ok = put("aimer_outer", 215, 215, 0.5f) && put("aimer_inner", 110, 110, 0.5f);
+    if (!ok) {
+        DrawRing(c, 9, 11, 0, 360, 24, CREAM);
+        for (Vector2 d : {Vector2{1, 0}, Vector2{-1, 0}, Vector2{0, 1}, Vector2{0, -1}})
+            DrawLineEx(Vector2Add(c, Vector2Scale(d, 14)), Vector2Add(c, Vector2Scale(d, 22)), 2, CREAM);
+    }
 }
 
 // W4M HUD digits: "0-9 . m", '~' = infinity, ':' = two dots; h = cell height. Falls back to text().
@@ -1156,13 +1244,15 @@ static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
 
 void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
+    if (g.current != introWorm) introWorm = g.current, introStart = tick;  // turn changed: (re)start the name-banner clock
+    bool ready = mine && g.phase == Phase::Aim && g.hotSeat > 0;  // local human's hot seat: W4M full-screen ready pause
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
-    // W4M worm labels: name over hp, team colour, black outline
-    for (const Worm &w : g.worms) {
+    // W4M worm labels: name over hp, team colour, black outline (hidden during the ready screen)
+    if (!ready) for (const Worm &w : g.worms) {
         if (!w.alive) continue;
         Vector3 top = Vector3Add(w.pos, {0, 1.1f, 0});
         float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
-        if (dist < 0.5f) continue;
+        if (dist < 0.5f || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // first person: inside it
         Vector2 sp = GetWorldToScreen(top, cam);
         float s = Clamp(170 / dist, 12, 24);
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam);
@@ -1183,10 +1273,17 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const WeaponDef &wd = WEAPONS[g.weapon];
     Color tc = TEAM_COLORS[cur.team % 4];
     bool aiming = g.phase == Phase::Aim;
-    // turn start banner + W4M "- Press Fire -" while the hot seat waits
-    if (g.hotSeat || (aiming && g.timer > std::max(1, (int)g.cfg.scheme.turnTime) * 60 - 120))
+    if (ready) {  // W4M ready screen: big worm + team name, "Ready?" + countdown, rest of the HUD hidden
+        const Color CREAM = {255, 244, 228, 255};
+        text(wormName(cur.team, g.current % std::max(1, g.perTeam)), 640, 64, 64, tc, 1);
+        text(teamName(g.cfg, cur.team).c_str(), 640, 136, 38, CREAM, 1);
+        text("Ready?", 640, 560, 32, CREAM, 1);
+        text(TextFormat("%d", (g.hotSeat + 59) / 60), 640, 596, 110, tc, 1);
+        return;
+    }
+    // turn start banner: team/worm name, also briefly for CPU/remote turns that skip the ready screen above
+    if (tick - introStart < 90 || (aiming && g.timer > std::max(1, (int)g.cfg.scheme.turnTime) * 60 - 120))
         text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(cur.team, g.current % std::max(1, g.perTeam))), 640, 14, 28, tc, 1);
-    if (g.hotSeat && mine) text("- Press Fire -", 640, 350, 36, WHITE, 1);
     if (g.cfg.rules & RULE_ROPE_RACE) text(TextFormat("Race %ds", tick / 60), 640, 80, 26, GOLDEN, 1);
     bool crate = false;
     for (const Object &o : g.objects) crate = crate || (o.type == Object::Crate && o.falling);
@@ -1309,15 +1406,11 @@ void Pause::draw(bool online) const {
         return;
     }
     DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 140});
-    popup({440, 170, 400, 380});
-    text("PAUSED", 640, 190, 50, GOLDEN, 1);
-    const char *items[] = {"Resume", "Controls", online ? "Leave match" : "Quit to menu"};
-    for (int i = 0; i < 3; i++) {
-        Rectangle r = {490, 270 + i * 86.0f, 300, 68};
-        panel(r, i == row);
-        text(items[i], 640, r.y + 16, 34, i == row ? GOLDEN : WHITE, 1);
-    }
-    if (online) text("The match keeps running", 640, 520, 20, LIGHTGRAY, 1);
+    popup({420, 150, 440, 400});
+    heading("Pause", 640, 172, 60);
+    const char *items[] = {"Resume", "Help & options", online ? "Leave match" : "Quit"};
+    for (int i = 0; i < 3; i++) item(items[i], 640, 285 + i * 72.0f, 42, i == row);
+    if (online) text("The match keeps running", 640, 505, 20, CREAM, 1);
     hints({{"A", "Enter", "Select"}, {"B/+", "Esc", "Resume"}});
 }
 
@@ -1327,11 +1420,11 @@ int replayList(const std::vector<std::string> &files, int &sel, bool &instant) {
     int n = (int)files.size(), first = std::max(0, std::min(sel - 4, n - 9));
     sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
     if (P({X}, {KEY_Y})) instant = !instant;
-    text("REPLAYS", 640, 50, 60, GOLDEN, 1);
+    heading("Replays", 640, 30, 60);
     for (int i = first; i < n && i < first + 9; i++) {
         Rectangle r = {290, 130 + (i - first) * 52.0f, 700, 46};
         panel(r, i == sel);
-        text(files[i].substr(0, files[i].size() - 4).c_str(), r.x + 20, r.y + 9, 28, i == sel ? GOLDEN : WHITE);
+        text(files[i].substr(0, files[i].size() - 4).c_str(), r.x + 20, r.y + 9, 28, ink(i == sel));
     }
     if (!n) text("No replays yet: finished matches are saved here", 640, 300, 28, LIGHTGRAY, 1);
     text(TextFormat("Instant replay of big shots: %s", instant ? "On" : "Off"), 640, 610, 26, WHITE, 1);
@@ -1357,12 +1450,12 @@ void replayBadge() {
 }
 
 void lanGames(const std::vector<LanGame> &games, int sel, const std::string &status) {
-    text("LAN GAMES", 640, 40, 60, GOLDEN, 1);
+    heading("LAN games", 640, 30, 60);
     for (size_t i = 0; i < games.size() && i < 6; i++) {
         const LanGame &g = games[i];
         Rectangle r = {290, 150 + i * 70.0f, 700, 60};
         panel(r, (int)i == sel);
-        text(g.name.c_str(), r.x + 24, r.y + 14, 30, (int)i == sel ? GOLDEN : WHITE);
+        text(g.name.c_str(), r.x + 24, r.y + 14, 30, ink((int)i == sel));
         text(TextFormat("%s  %d/%d%s", g.ip.c_str(), g.players, g.maxPlayers, g.started ? "  playing" : ""), r.x + r.width - 24, r.y + 18, 24, LIGHTGRAY, 2);
     }
     if (games.empty()) text("Looking for games on this network...", 640, 220, 30, LIGHTGRAY, 1);
@@ -1372,7 +1465,7 @@ void lanGames(const std::vector<LanGame> &games, int sel, const std::string &sta
 
 void room(const Net &net, const GameConfig &opt, bool lan, const std::string &status) {
     bool isHost = net.hostId == net.id;
-    text(lan ? "LAN GAME" : "ROOM", 640, 40, 60, GOLDEN, 1);
+    heading(lan ? "LAN game" : "Room", 640, 30, 60);
     int row = 0, humans = std::min<int>((int)net.players.size(), 4);
     auto line = [&](const std::string &team, const std::string &who, bool cpu) {
         Rectangle r = {290, 140 + row * 66.0f, 700, 58};
@@ -1460,11 +1553,11 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
     }
     st.tab = clampWrap(st.tab + P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT}), 2);
     if (n) sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
-    text("SINGLE PLAYER", 640, 16, 52, GOLDEN, 1);
+    heading("Single player", 640, 10, 52);
     for (int t = 0; t < 2; t++) {
         Rectangle r = {40 + t * 300.0f, 80, 280, 50};
         panel(r, t == st.tab);
-        text(TABS[t], r.x + r.width / 2, r.y + 10, 30, t == st.tab ? GOLDEN : WHITE, 1);
+        text(TABS[t], r.x + r.width / 2, r.y + 10, 30, ink(t == st.tab), 1);
     }
     int first = std::max(0, std::min(sel - 4, n - 9));
     for (int k = first; k < n && k < first + 9; k++) {
@@ -1473,7 +1566,7 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
         Progress::Entry e = p.get(m.id);
         bool lock = !p.unlocked(list, rows[k]);
         panel(r, k == sel);
-        text(m.name.c_str(), r.x + 20, r.y + 11, 28, lock ? GRAY : k == sel ? GOLDEN : WHITE);
+        text(m.name.c_str(), r.x + 20, r.y + 11, 28, lock ? GRAY : ink(k == sel));
         text(lock ? "Locked" : e.done ? TextFormat("Done  %s", clockText(e.best).c_str()) : "New", r.x + r.width - 20, r.y + 14, 22,
              lock ? GRAY : e.done ? GOLDEN : SKYBLUE, 2);
     }

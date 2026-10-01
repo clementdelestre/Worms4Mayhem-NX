@@ -203,6 +203,65 @@ fn png(w: usize, h: usize, rgba: &[u8]) -> Vec<u8> {
     o
 }
 
+// FE.Font (Bundl03) -> BMFont text + one PNG atlas (Latin glyphs only). Format: docs/w4m-formats.md.
+const FONT_EM: f32 = 50.0;  // atlas px per em
+fn font(b: &[u8]) -> Option<(String, usize, usize, Vec<u8>)> {
+    let nt = u32le(b, 24) as usize;
+    let count = |t: usize| u32le(b, 64 + t * 64 + 8) as usize;
+    let name = |t: usize| { let s = &b[64 + t * 64 + 32..64 + t * 64 + 64]; String::from_utf8_lossy(&s[..s.iter().position(|&c| c == 0).unwrap_or(32)]).into_owned() };
+    let ty = (0..nt).find(|&t| name(t) == "XMultiTexFontPage")?;
+    let objects: usize = (0..nt).map(count).sum();
+    let (_, start) = strings(b)?;
+    let tags: Vec<usize> = b[start..].windows(4).enumerate().filter(|(_, w)| *w == b"CTNR").map(|(i, _)| start + i + 4).collect();
+    let skip = objects - tags.len();  // leading objects without a CTNR tag; refs are 1-based object indices
+    let obj = |r: usize| -> Option<&[u8]> { let k = r.checked_sub(1 + skip)?; Some(&b[*tags.get(k)?..tags.get(k + 1).map_or(b.len(), |&e| e - 4)]) };
+    let first: usize = (0..ty).map(count).sum();
+    let (pad, line, base) = (8usize, 56i32, 42i32);
+    let mut glyphs: Vec<(u32, usize, usize, Vec<u8>, i32, i32, i32)> = Vec::new();  // cp, w, h, rgba, xoff, yoff, adv
+    for r in first + 1..=first + count(ty) {
+        let d = obj(r)?;
+        let mut p = 3;
+        let texmap = obj(vi(d, &mut p))?;
+        let (w, _, px) = image(obj(vi(texmap, &mut 23))?)?;
+        let n = vi(d, &mut p);
+        let cps: Vec<u32> = (0..n).map(|i| u16le(d, p + 2 * i) as u32).collect();
+        p += 2 * n;
+        let mut arr = |k: usize| { let c = vi(d, &mut p); let v: Vec<f32> = (0..c * k).map(|i| f32::from_bits(u32le(d, p + 4 * i))).collect(); p += 4 * c * k; v };
+        let (uv, sz, ctr, adv) = (arr(2), arr(2), arr(2), arr(1));
+        for (i, &cp) in cps.iter().enumerate() {
+            let keep = (32..0x250).contains(&cp) || (0x2010..=0x203a).contains(&cp) || cp == 0x20ac || cp == 0x2122;
+            if !keep || glyphs.iter().any(|g| g.0 == cp) || i >= adv.len() { continue; }
+            let (x, y) = ((uv[2 * i] * 512.0).round() as usize + pad, (uv[2 * i + 1] * 512.0).round() as usize + pad);
+            let (gw, gh) = (((sz[2 * i] * 512.0).round() as usize).saturating_sub(2 * pad).max(1), ((sz[2 * i + 1] * 512.0).round() as usize).saturating_sub(2 * pad).max(1));
+            if x + gw > w || y + gh > px.len() / (w * 4) || gh > 64 { continue; }  // taller: pad button icons on ½¼»...
+            let rgba: Vec<u8> = (0..gh).flat_map(|r| px[((y + r) * w + x) * 4..((y + r) * w + x + gw) * 4].iter().copied()).collect();
+            // centre (em, y up from the baseline) -> BMFont offsets from the line top
+            let xo = (ctr[2 * i] * FONT_EM - gw as f32 / 2.0).round() as i32;
+            let yo = base - (ctr[2 * i + 1] * FONT_EM + gh as f32 / 2.0).round() as i32;
+            glyphs.push((cp, gw, gh, rgba, xo, yo, (adv[i] * FONT_EM).round() as i32));
+        }
+    }
+    if glyphs.is_empty() { return None; }
+    // shelf packing, 4 px gaps (mipmapped)
+    let aw = 1024;
+    let (mut x, mut y, mut row) = (0, 0, 0);
+    let mut at = Vec::new();
+    for g in &glyphs {
+        if x + g.1 > aw { x = 0; y += row + 4; row = 0; }
+        at.push((x, y));
+        x += g.1 + 4;
+        row = row.max(g.2);
+    }
+    let ah = (y + row).next_power_of_two();
+    let mut atlas = vec![0u8; aw * ah * 4];
+    let mut fnt = format!("info face=\"W4M FE.Font\" size={line}\ncommon lineHeight={line} base={base} scaleW={aw} scaleH={ah} pages=1\npage id=0 file=\"w4m.png\"\nchars count={}\n", glyphs.len());
+    for (g, &(x, y)) in glyphs.iter().zip(&at) {
+        for r in 0..g.2 { atlas[((y + r) * aw + x) * 4..][..g.1 * 4].copy_from_slice(&g.3[r * g.1 * 4..][..g.1 * 4]); }
+        fnt += &format!("char id={} x={x} y={y} width={} height={} xoffset={} yoffset={} xadvance={} page=0\n", g.0, g.1, g.2, g.4, g.5, g.6);
+    }
+    Some((fnt, aw, ah, atlas))
+}
+
 // Case-insensitive path lookup (game data uses Windows paths).
 fn find_ci(dir: &Path, rel: &str) -> Option<PathBuf> {
     let mut cur = dir.to_path_buf();
@@ -247,6 +306,12 @@ fn main() {
         let sky = SKY_BUNDLES.contains(bundle);
         let dir = if sky { "sky" } else if *bundle == HUD_BUNDLE { "hud" } else { "fe" };
         let Some(b) = find_ci(&data, &format!("Bundles/{bundle}.xom")).and_then(|p| fs::read(p).ok()) else { println!("{bundle}: missing"); continue };
+        if let Some((fnt, w, h, px)) = font(&b) {
+            fs::create_dir_all(out.join("font")).expect("create out dir");
+            fs::write(out.join("font/w4m.fnt"), fnt).expect("write");
+            fs::write(out.join("font/w4m.png"), png(w, h, &px)).expect("write");
+            println!("{bundle}: FE.Font -> font/w4m.fnt");
+        }
         for (name, d) in ximages(&b).unwrap_or_default() {
             if name.contains("ExportedTGAS") { continue; }  // hashed names: model textures
             let l = name.to_lowercase();
