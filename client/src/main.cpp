@@ -41,8 +41,13 @@ static Input readInput(int pad) {
     // yaw grows toward +x, which is the camera's left
     Input in;
     in.turn = q(-ax(GAMEPAD_AXIS_LEFT_X) + IsKeyDown(KEY_LEFT) - IsKeyDown(KEY_RIGHT));
-    in.walk = q(-ax(GAMEPAD_AXIS_LEFT_Y) + IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN));
-    in.aim = q(-ax(GAMEPAD_AXIS_RIGHT_Y) + IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
+#ifdef __SWITCH__
+    const float up = 1;  // libnx HID sticks report +y for up, GLFW reports -y
+#else
+    const float up = -1;
+#endif
+    in.walk = q(up * ax(GAMEPAD_AXIS_LEFT_Y) + IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN));
+    in.aim = q(up * ax(GAMEPAD_AXIS_RIGHT_Y) + IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
     if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT) || IsKeyDown(KEY_SPACE)) in.buttons |= Input::FIRE;
     if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN) || IsKeyDown(KEY_ENTER)) in.buttons |= Input::JUMP;
     if (IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) || IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT) || IsKeyDown(KEY_TAB))

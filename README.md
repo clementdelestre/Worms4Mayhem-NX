@@ -13,7 +13,7 @@ raylib libs (once):
 ```sh
 cd third_party/raylib-nx/src
 make PLATFORM=PLATFORM_DESKTOP RAYLIB_RELEASE_PATH=../out/desktop && rm -f *.o
-docker run --rm -u $(id -u):$(id -g) -v "$PWD/../..":/w -w /w/raylib-nx/src devkitpro/devkita64 make PLATFORM=PLATFORM_NX RAYLIB_RELEASE_PATH=../out/nx && rm -f *.o
+docker run --rm -u $(id -u):$(id -g) -v "$PWD/../..":/w -w /w/raylib-nx/src devkitpro/devkita64 make PLATFORM=PLATFORM_NX RAYLIB_RELEASE_PATH=../out/nx CUSTOM_CFLAGS=-DNX_DISABLE_GAMEPAD_EMULATION && rm -f *.o
 ```
 Game:
 ```sh
