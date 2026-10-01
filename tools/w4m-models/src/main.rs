@@ -136,6 +136,10 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hats/fighterpilot", "Hat.FighterPilot", 0.0, false, &[]),
     ("hats/samurai", "Hat.Samurai", 0.0, false, &[]),
     ("hats/polarbear", "Hat.PolarBear", 0.0, false, &[]),
+    // Title screen diorama (Bundl06/10), raw units: island + wreck, cloud dome, seagull (flight path is its Location clip)
+    ("frontend/title", "WX.Mesh.Title", 0.0, false, &[]),
+    ("frontend/sky", "FRONTEND.Sky", 0.0, false, &[]),
+    ("seagull", "Particle.WXPMesh31", 0.0, false, &["WXM_SGull_WingFlap+WXM_SGull_Location"]),
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
 const WORM_CLIPS: &[&str] = &[
@@ -363,7 +367,7 @@ fn decompose(m: &M4) -> ([f32; 3], [f32; 4], [f32; 3]) {
 }
 
 struct Group { path: String, xf: usize, parent: Option<usize> }
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])> }
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]> }
 #[derive(Default)]
 struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize }
 
@@ -426,7 +430,7 @@ impl Scene {
         let mut p = 3;
         let iset = vi(d, &mut p);
         p += 8;
-        let [cs, ns, _, ts, ws] = [0; 5].map(|_| vi(d, &mut p));
+        let [cs, ns, cl, ts, ws] = [0; 5].map(|_| vi(d, &mut p));
         let arr = |i: usize, k: usize| -> (usize, usize) {
             let d = x.d(i);
             let mut p = 3;
@@ -438,6 +442,7 @@ impl Scene {
         let pos = (0..n).map(|i| fl::<3>(x.d(cs), pp + 12 * i)).collect();
         let nrm = match arr(ns, 12) { (m, q) if m == n && x.t(ns) == "XNormal3fSet" => (0..n).map(|i| fl::<3>(x.d(ns), q + 12 * i)).collect(), _ => vec![[0.0, 1.0, 0.0]; n] };
         let uv = match arr(ts, 8) { (m, q) if m == n && x.t(ts) == "XTexCoord2fSet" => (0..n).map(|i| fl::<2>(x.d(ts), q + 8 * i)).collect(), _ => vec![[0.0; 2]; n] };
+        let rgba = match arr(cl, 4) { (m, q) if m == n && x.t(cl) == "XColor4ubSet" => (0..n).map(|i| std::array::from_fn(|c| x.d(cl)[q + 4 * i + c])).collect(), _ => vec![] };
         let (ni, q) = arr(iset, 2);
         let idx: Vec<u16> = (0..ni).map(|i| u16le(x.d(iset), q + 2 * i) as u16).filter(|&v| (v as usize) < n).collect();
         if x.t(iset) != "XIndexSet" || idx.len() != ni || ni % 3 != 0 { return; }
@@ -469,7 +474,7 @@ impl Scene {
         let mut sp = 3;
         let stages = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
         let img = stages.first().filter(|&&s| x.t(s) == "XOglTextureMap").map_or(0, |&s| { let mut q = 23; vi(x.d(s), &mut q) });
-        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin });
+        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba });
     }
 
     // Local matrix of every group, with the clip's curves layered on Base (offsets for keys Base also has).
@@ -658,7 +663,9 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let v = g.view(&png(w, h, &rgba));
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
-    let mut prims = Vec::new();
+    // static parts sharing a texture are merged (one draw call each), skinned ones kept as they are
+    struct Prim { img: usize, pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8> }
+    let mut out: Vec<Prim> = Vec::new();
     for pt in &s.parts {
         let (pos, nrm): (Vec<f32>, Vec<f32>) = if animated {
             (pt.pos.iter().flatten().copied().collect(), pt.nrm.iter().flatten().copied().collect())
@@ -672,17 +679,37 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             (pos, nrm)
         };
         let n = pt.pos.len();
-        let a_pos = g.floats(&pos, "VEC3", n, true);
-        let a_nrm = g.floats(&nrm, "VEC3", n, false);
-        let a_uv = g.floats(&pt.uv.iter().flatten().copied().collect::<Vec<_>>(), "VEC2", n, false);
+        let uv: Vec<f32> = pt.uv.iter().flatten().copied().collect();
+        let skin = if !animated { vec![] } else if pt.skin.len() == n { pt.skin.clone() } else { vec![([0; 4], [1.0, 0.0, 0.0, 0.0]); n] };
+        let rgba: Vec<u8> = if pt.rgba.len() == n { pt.rgba.iter().flatten().copied().collect() } else { vec![255; 4 * n] };
+        if let Some(o) = out.iter_mut().find(|o| !animated && o.img == pt.img && o.pos.len() / 3 + n < 65536) {
+            let base = (o.pos.len() / 3) as u16;
+            o.idx.extend(pt.idx.iter().map(|&i| i + base));
+            o.pos.extend(pos);
+            o.nrm.extend(nrm);
+            o.uv.extend(uv);
+            o.rgba.extend(rgba);
+        } else {
+            out.push(Prim { img: pt.img, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba });
+        }
+    }
+    let mut prims = Vec::new();
+    for pt in &out {
+        let n = pt.pos.len() / 3;
+        let a_pos = g.floats(&pt.pos, "VEC3", n, true);
+        let a_nrm = g.floats(&pt.nrm, "VEC3", n, false);
+        let a_uv = g.floats(&pt.uv, "VEC2", n, false);
         let ib: Vec<u8> = pt.idx.iter().flat_map(|i| i.to_le_bytes()).collect();
         let a_idx = g.acc(&ib, 5123, pt.idx.len(), "SCALAR", "");
         let mut attrs = format!("\"POSITION\":{a_pos},\"NORMAL\":{a_nrm},\"TEXCOORD_0\":{a_uv}");
+        if pt.rgba.iter().any(|&c| c != 255) {
+            let a_c = g.acc(&pt.rgba, 5121, n, "VEC4", ",\"normalized\":true");
+            attrs += &format!(",\"COLOR_0\":{a_c}");
+        }
         if animated {
-            let skin: Vec<_> = if pt.skin.len() == n { pt.skin.clone() } else { vec![([0; 4], [1.0, 0.0, 0.0, 0.0]); n] };
-            let j: Vec<u8> = skin.iter().flat_map(|s| s.0).collect();
+            let j: Vec<u8> = pt.skin.iter().flat_map(|s| s.0).collect();
             let a_j = g.acc(&j, 5121, n, "VEC4", "");
-            let a_w = g.floats(&skin.iter().flat_map(|s| s.1).collect::<Vec<_>>(), "VEC4", n, false);
+            let a_w = g.floats(&pt.skin.iter().flat_map(|s| s.1).collect::<Vec<_>>(), "VEC4", n, false);
             attrs += &format!(",\"JOINTS_0\":{a_j},\"WEIGHTS_0\":{a_w}");
         }
         let mat = images.iter().position(|&i| i == pt.img).map_or(String::new(), |m| format!(",\"material\":{m}"));
@@ -784,13 +811,35 @@ fn find_ci(dir: &Path, rel: &str) -> Option<PathBuf> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "--list" {
+        // debug: every XMeshDescriptor of one bundle with its parts and clips
+        let b = fs::read(&args[2]).expect("read bundle");
+        let x = Xom::read(&b).expect("unreadable bundle");
+        for i in (1..x.c.len()).filter(|&i| x.t(i) == "XMeshDescriptor") {
+            let mut p = 0;
+            let name = x.str(vi(x.d(i), &mut p));
+            match convert(&x, i, 0.0, false, &[]) { Some((_, info)) => println!("{name}: {info}"), None => println!("{name}: -") }
+            let mut s = Scene::default();
+            p += 2;
+            s.walk(&x, vi(x.d(i), &mut p), None, 0);
+            if s.lib != 0 { println!("  clips: {}", clips(x.d(s.lib), &x.s, &mut 0).iter().map(|c| format!("{} {:.2}s", c.name, c.dur)).collect::<Vec<_>>().join(", ")); }
+            if std::env::var("W4M_GROUPS").is_ok_and(|v| v == name) {
+                let rest = s.worlds(&s.locals(&x, None));
+                for (gi, g) in s.groups.iter().enumerate() {
+                    let n: usize = s.parts.iter().filter(|p| p.group == Some(gi)).map(|p| p.idx.len() / 3).sum();
+                    println!("  {} [{}] tris {n} at {:?}", g.path, x.t(g.xf), [rest[gi][0][3], rest[gi][1][3], rest[gi][2][3]].map(|v| v.round()));
+                }
+            }
+        }
+        return;
+    }
     if args.len() < 2 {
         eprintln!("usage: w4m-models <W4M install dir> [out dir = client/assets/models]");
         std::process::exit(1);
     }
     let data = find_ci(Path::new(&args[1]), "Data").unwrap_or_else(|| PathBuf::from(&args[1]));
     let out = PathBuf::from(args.get(2).map_or("client/assets/models", |s| s.as_str()));
-    fs::create_dir_all(out.join("hats")).expect("create out dir");
+    for d in ["hats", "frontend"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
     let mut bundles: Vec<PathBuf> = fs::read_dir(data.join("Bundles")).expect("Data/Bundles").flatten().map(|e| e.path()).collect();
     bundles.sort_by_key(|p| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok()).unwrap_or(u32::MAX));
     let mut todo: Vec<_> = MODELS.iter().collect();

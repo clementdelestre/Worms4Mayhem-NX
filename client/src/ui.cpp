@@ -5,12 +5,14 @@
 #include "controls.h"
 #include "audio.h"
 #include "models.h"
+#include "frontbg.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 
@@ -35,7 +37,7 @@ const char *APPLET = "-";  // controller applet glyph, Switch only
 #else
 const char *APPLET = nullptr;
 #endif
-const Color GOLDEN = {255, 210, 60, 255}, PANEL = {16, 52, 84, 230};
+const Color GOLDEN = {255, 210, 60, 255}, PANEL = {24, 74, 92, 230};  // W4M teal paper
 const char *RULE_LABELS[] = {"King", "Highlander", "Vampire", "Karma", "Low gravity", "Rope race", "Sudden death"};
 // Scheme edit page: one row per Scheme byte, in struct order. names: enum labels (min = 0).
 struct SchemeField { const char *label, *fmt; int min, max, step; const char *names[7]; };
@@ -207,7 +209,52 @@ bool pressed(int pad, std::initializer_list<int> buttons, std::initializer_list<
     return false;
 }
 
+int language = 0;
+static std::map<std::string, std::string> strings;
+static int stringsFor = -1;
+
+const char *tr(const char *key, const char *en, const char *fr) {
+    const char *path = TextFormat(DATA_DIR "assets/lang/%s.txt", language ? "fr" : "en");
+    if (stringsFor != language && (stringsFor = language, strings.clear(), FileExists(path))) {
+        char *txt = LoadFileText(path);
+        for (char *l = strtok(txt, "\n"); l; l = strtok(nullptr, "\n")) {
+            char *tab = strchr(l, '\t');
+            if (!tab) continue;
+            std::string v;
+            for (char *c = tab + 1; *c; c++) v += c[0] == '\\' && c[1] == 'n' ? (c++, '\n') : *c;
+            strings[std::string(l, tab)] = v;
+        }
+        UnloadFileText(txt);
+    }
+    auto it = key ? strings.find(key) : strings.end();
+    return it != strings.end() ? it->second.c_str() : language && fr ? fr : en;
+}
+
+// lang.txt ("en" / "fr"), else the console / desktop locale
+static int systemLanguage() {
+    if (FileExists(DATA_DIR "lang.txt")) {
+        char *l = LoadFileText(DATA_DIR "lang.txt");
+        int fr = !strncmp(l, "fr", 2);
+        UnloadFileText(l);
+        return fr;
+    }
+#ifdef __SWITCH__
+    u64 code = 0;
+    SetLanguage sl = SetLanguage_ENUS;
+    if (R_SUCCEEDED(setInitialize())) {
+        if (R_SUCCEEDED(setGetSystemLanguage(&code))) setMakeLanguage(code, &sl);
+        setExit();
+    }
+    return sl == SetLanguage_FR || sl == SetLanguage_FRCA;
+#else
+    for (const char *v : {"LANGUAGE", "LC_ALL", "LANG"})
+        if (const char *e = getenv(v); e && *e) return !strncmp(e, "fr", 2);
+    return 0;
+#endif
+}
+
 void load() {
+    language = systemLanguage();
     std::vector<int> cps;
     for (int c = 32; c < 256; c++) if (c < 127 || c > 160) cps.push_back(c);
 #ifdef __SWITCH__
@@ -252,7 +299,8 @@ void unload() {
 #endif
 }
 
-void text(const char *t, float x, float y, float size, Color c, int align) {
+// c2: bottom colour of a vertical gradient over the line height (W4M menu items)
+static void textG(const char *t, float x, float y, float size, Color c, Color c2, int align) {
     float sp = fontLoaded ? 0 : size / 10;
     Vector2 m = MeasureTextEx(font, t, size, sp);
     Vector2 p = {roundf(x - m.x * align / 2), roundf(y)};
@@ -275,22 +323,29 @@ void text(const char *t, float x, float y, float size, Color c, int align) {
     rlNormal3f(0, 0, 1);
     for (Vector2 d : {Vector2{-o, -o}, {o, -o}, {-o, o}, {o, o}, {0, o * 1.5f}, {0, 0}}) {
         Vector2 q = Vector2Add(p, d);
-        Color col = d.x == 0 && d.y == 0 ? c : k;
+        bool main = d.x == 0 && d.y == 0;
+        Color col = main ? c : k;
+        auto at = [&](float vy) {
+            Color v = main ? ColorLerp(c, c2, Clamp((vy - q.y - size * 0.2f) / (size * 0.7f), 0, 1)) : col;
+            rlColor4ub(v.r, v.g, v.b, v.a);
+        };
         rlColor4ub(col.r, col.g, col.b, col.a);
         for (const G &e : gs) {
             const Rectangle &r = font.recs[e.g];
             float x = q.x + e.ox + font.glyphs[e.g].offsetX * s - pad * s, y = q.y + e.oy + font.glyphs[e.g].offsetY * s - pad * s;
             float w = (r.width + 2 * pad) * s, h = (r.height + 2 * pad) * s, u0 = (r.x - pad) / W, v0 = (r.y - pad) / H;
             float u1 = (r.x - pad + (r.width + 2 * pad)) / W, v1 = (r.y - pad + (r.height + 2 * pad)) / H;
-            rlTexCoord2f(u0, v0), rlVertex2f(x, y);
-            rlTexCoord2f(u0, v1), rlVertex2f(x, y + h);
+            at(y), rlTexCoord2f(u0, v0), rlVertex2f(x, y);
+            at(y + h), rlTexCoord2f(u0, v1), rlVertex2f(x, y + h);
             rlTexCoord2f(u1, v1), rlVertex2f(x + w, y + h);
-            rlTexCoord2f(u1, v0), rlVertex2f(x + w, y);
+            at(y), rlTexCoord2f(u1, v0), rlVertex2f(x + w, y);
         }
     }
     rlEnd();
     rlSetTexture(0);
 }
+
+void text(const char *t, float x, float y, float size, Color c, int align) { textG(t, x, y, size, c, c, align); }
 
 static float textWidth(const char *t, float size) { return MeasureTextEx(font, t, size, fontLoaded ? 0 : size / 10).x; }
 
@@ -304,17 +359,9 @@ static void brush(Rectangle r) {
         DrawRectangleRounded(r, 0.5f, 6, {10, 10, 10, 200});
 }
 
-// orange arrow pointing left at (x, y), bobbing
-static void arrow(float x, float y, float h) {
-    x += 4 * fabsf(sinf((float)GetTime() * 5));
-    if (!image("fe/mouse", {x - h * 0.08f, y - h * 0.5f, h, h})) tri({x, y}, {x + h * 0.6f, y - h * 0.35f}, {x + h * 0.6f, y + h * 0.35f}, ORANGE);
-}
-
-// selectable row: stroke behind the whole row, arrow just past its right end
+// selectable row: stroke behind the whole row
 static void mark(Rectangle r, bool hi) {
-    if (!hi) return;
-    brush(r);
-    arrow(r.x + r.width + r.height * 0.35f, r.y + r.height / 2, fminf(r.height * 1.1f, 60));
+    if (hi) brush(r);
 }
 
 // centred menu entry: the stroke hugs the label
@@ -377,7 +424,7 @@ void hints(std::initializer_list<Hint> h) {
     }
 }
 
-static void logo(float cx, float y, float w);
+static void logo(float cx, float y, float w, float deg = 0);
 
 // both windings: rlgl culls back faces
 static void tri(Vector2 a, Vector2 b, Vector2 c, Color col) { DrawTriangle(a, b, c, col), DrawTriangle(a, c, b, col); }
@@ -473,22 +520,131 @@ void controls(bool game) {
 
 void background() {
     Texture2D t = tex("back/loadbackgeneric");
-    if (t.id) {
-        DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {0, 0, 1280, 720}, {}, 0, WHITE);
-        return;
-    }
-    DrawRectangleGradientV(0, 0, 1280, 720, {40, 80, 150, 255}, {120, 170, 220, 255});
+    if (t.id) DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {0, 0, 1280, 720}, {}, 0, WHITE);
+    else DrawRectangleGradientV(0, 0, 1280, 720, {40, 80, 150, 255}, {120, 170, 220, 255});
+    FrontBg::draw(GetFrameTime());
 }
 
-static void logo(float cx, float y, float w) {
+// tilted deg about its centre
+static void logo(float cx, float y, float w, float deg) {
     Texture2D t = tex("fe/tournament_vsus");
+    Rectangle src = {130, 50, 780, 400};
+    float h = w * src.height / src.width;
+    rlPushMatrix();
+    rlTranslatef(cx, y + h / 2, 0);
+    rlRotatef(deg, 0, 0, 1);
     if (t.id) {
-        Rectangle src = {130, 50, 780, 400};
-        float h = w * src.height / src.width;
-        DrawTexturePro(t, src, {cx - w / 2, y, w, h}, {}, 0, WHITE);
-        text("NX", cx + w * 0.41f, y + h * 0.80f, w * 0.09f, GOLDEN, 1);
+        DrawTexturePro(t, src, {-w / 2, -h / 2, w, h}, {}, 0, WHITE);
+        text("NX", w * 0.41f, h * 0.30f, w * 0.09f, GOLDEN, 1);
     } else {
-        text("WORMS4NX", cx, y + w * 0.1f, w * 0.15f, GOLDEN, 1);
+        text("WORMS4NX", 0, -w * 0.08f, w * 0.15f, GOLDEN, 1);
+    }
+    rlPopMatrix();
+}
+
+// ---------------------------------------------------------------- W4M menus
+
+#ifndef W4NX_VERSION
+#define W4NX_VERSION "0.1.0"
+#endif
+// x, y: label centre; deg: tilt; cap: small gold caption above the label
+struct MenuItem { const char *key, *en, *fr; float x, y, size, deg; const char *capKey = nullptr, *capEn = nullptr, *capFr = nullptr; };
+
+static const Color GOLD_TOP = {255, 240, 130, 255}, GOLD_BOT = {245, 140, 25, 255}, INK = {22, 36, 58, 255}, BLUE_PANEL = {2, 79, 119, 255};
+static float easeOut(float k) { k = Clamp(k, 0, 1); return 1 - (1 - k) * (1 - k) * (1 - k); }
+
+// W4M menu entry: gold gradient label tilted about its centre; glow 0..1 = highlight (white on a black brush stroke, pulsing)
+static void menuEntry(const char *label, float cx, float cy, float size, float deg, float glow, float appear, float t) {
+    if (appear <= 0) return;
+    float w = textWidth(label, size), s = 1 + glow * (0.04f - 0.04f * cosf(t * 4 * PI));
+    rlPushMatrix();
+    rlTranslatef(cx + (1 - appear) * 260, cy, 0);
+    rlRotatef(deg, 0, 0, 1);
+    rlScalef(s, s, 1);
+    if (glow > 0.01f) {
+        Rectangle b = {-w / 2 - size * 0.55f, -size * 0.8f, w + size * 1.1f, size * 1.55f};
+        if (!image("fe/icon_splat", b, Fade(WHITE, glow * appear))) DrawRectangleRounded(b, 0.6f, 6, Fade(BLACK, 0.85f * glow * appear));
+    }
+    Color top = Fade(ColorLerp(GOLD_TOP, WHITE, glow), appear), bot = Fade(ColorLerp(GOLD_BOT, WHITE, glow), appear);
+    textG(label, 0, -size * 0.52f, size, top, bot, 1);
+    rlPopMatrix();
+}
+
+// Bottom torn paper strip: scrolling ticker, version; back: bobbing back arrow (submenus)
+static void paperStrip(float t, bool back) {
+    const float y = 626;
+    Texture2D p = tex("fe2/paper_strip");
+    if (p.id) for (float x = 0; x < 1280; x += 255) DrawTexturePro(p, {0, 0, 256, 128}, {x, y, 256, 128}, {}, 0, WHITE);
+    else DrawRectangle(0, y + 8, 1280, 90, {246, 243, 232, 255}), DrawRectangle(0, y + 6, 1280, 4, BLACK);
+    const char *tick = tr("WXFE.TickerTapeDefault", "Worms4NX - fan-made homebrew                    ");
+    float w = textWidth(tick, 24) + 120;
+    for (float x = -fmodf(t * 70, w); x < 1280; x += w) text(tick, x, y + 16, 24, INK);
+    text("Ver# " W4NX_VERSION, 1268, y + 76, 14, INK, 2);
+    if (!back) return;
+    Rectangle d = {16, y - 26 + 5 * sinf(t * 3), 96, 96};
+    Texture2D a = tex("fe2/nav_normal");
+    if (a.id) DrawTexturePro(a, {0, a.height / 2.0f, a.width / 2.0f, a.height / 2.0f}, d, {}, 0, WHITE);
+    else tri({d.x + 14, d.y + 52}, {d.x + 60, d.y + 22}, {d.x + 60, d.y + 82}, ORANGE);
+}
+
+// Submenu page: curved blue panel (slides in from the left) with the title, its vertical watermark and an illustration
+static void subPanel(const char *title, const char *art, float t, float appear) {
+    float x = (1 - appear) * -420;
+    if (!image("fe/bluedivide", {x - 60, -40, 800, 800})) DrawCircleV({x - 260, 360}, 760, BLUE_PANEL);
+    rlPushMatrix();
+    rlTranslatef(x + 40, 700, 0);
+    rlRotatef(-90, 0, 0, 1);
+    text(title, 0, 0, 150, {255, 255, 255, 22});
+    rlPopMatrix();
+    float tw = textWidth(title, 34);
+    text(title, x + 44, 26, 34, GOLD_TOP);
+    if (!image("fe/title_underline", {x + 36, 62, tw + 24, 18})) DrawRectangle(x + 40, 66, tw + 10, 3, WHITE);
+    Rectangle r = {x + 70, 140 + 8 * sinf(t * 1.6f), 400, 400};
+    rlPushMatrix();
+    rlTranslatef(r.x + r.width / 2, r.y + r.height / 2, 0);
+    rlRotatef(3 * sinf(t * 1.1f), 0, 0, 1);
+    if (!strcmp(art, "fe2/art_local") && tex(art).id) {  // the TV robot shows noise
+        float o = (float)((int)(t * 12) * 37 % 97);
+        DrawTexturePro(tex("fe2/art_local_static"), {o, o * 0.7f, 128, 128}, {-0.06f * r.width, -0.14f * r.height, 0.34f * r.width, 0.36f * r.height}, {}, 0, WHITE);
+    }
+    image(art, {-r.width / 2, -r.height / 2, r.width, r.height});
+    rlPopMatrix();
+}
+
+// W4M layouts: staggered, tilted, one size per entry
+static const MenuItem MAIN_MENU[] = {
+    {"FETXT.LocalGame", "Local Game", "Partie locale", 905, 150, 62, -3},
+    {"FETXT.HTPHeader3", "Network Game", "Partie en réseau", 975, 248, 48, 2, nullptr, "LAN / Online", "LAN / En ligne"},
+    {"FETXT.MyWorms", "My Worms", "Mes Worms", 880, 334, 56, -2},
+    {nullptr, "Replays", "Replays", 990, 416, 46, 3},
+    {"FETXT.Help&Options", "Help & Options", "Aide et options", 900, 494, 52, -2},
+    {"Lang.Quit", "Quit", "Quitter", 1010, 570, 44, 2},
+};
+static const MenuItem LOCAL_MENU[] = {
+    {"FETXT.QuickGame", "Quick Game", "Partie rapide", 870, 160, 60, -3},
+    {"FETXT.Versus", "Versus", "Versus", 1075, 262, 50, 3},
+    {"FETXT.Story", "Story", "Histoire", 860, 362, 68, -2},
+    {"FETXT.Challenges", "Challenges", "Défis", 1060, 470, 52, 2},
+};
+static const MenuItem NET_MENU[] = {
+    {"FETXT.LocalNetwork", "Local Network", "Réseau local", 900, 220, 60, -3},
+    {"FETXT.Online", "Online", "En ligne", 1040, 360, 58, 2},
+};
+static const MenuItem HELP_MENU[] = {
+    {"FETXT.Options", "Options", "Options", 890, 190, 60, -3},
+    {"FETXT.Controls", "Controls", "Contrôles", 1050, 300, 52, 2},
+    {nullptr, "Weapon Factory", "Usine d'armes", 900, 420, 56, -2},
+};
+
+void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live) {
+    sel = clampWrap(sel + dy, n);
+    float k = fminf(1, GetFrameTime() * 14);
+    for (int i = 0; i < n; i++) {
+        const MenuItem &m = items[i];
+        float &g = glow[i], a = live ? easeOut((t - entered - 0.05f * i) / 0.35f) : 1;
+        g = live ? g + ((i == sel) - g) * k : i == sel;
+        if (m.capEn && a > 0) text(tr(m.capKey, m.capEn, m.capFr), m.x + (1 - a) * 260, m.y - m.size * 1.02f, m.size * 0.4f, Fade(GOLD_TOP, a), 1);
+        menuEntry(tr(m.key, m.en, m.fr), m.x, m.y, m.size, m.deg, g, a, t);
     }
 }
 
@@ -644,45 +800,132 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     int dy = typing ? 0 : P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP});
     int dx = typing ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
     bool ok = !typing && P({A}, {KEY_ENTER, KEY_SPACE}), back = !typing && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    if (screen != shown) {  // W4M menus: slide in (not on the first frame: --ui captures), highlight the current entry
+        entered = shown == (Screen)-1 ? -100 : t, shown = screen;
+        int sel = screen == Main ? mainRow : screen >= Local ? subRow[screen - Local] : 0;
+        for (int i = 0; i < 8; i++) glow[i] = i == sel;
+        FrontBg::page(screen <= Main || screen == Confirm ? 0 : screen == Local || (screen == Setup && !online) ? 1 : screen == Network || screen == Setup ? 2 : 3);
+    }
 
     BeginDrawing();
     background();
     switch (screen) {
     case Title: {
         logo(640, 90, 760);
-        if (fmodf(t, 1.2f) < 0.8f) text(keyGlyphs() ? "Press Enter to start" : "Press A to start", 640, 560, 44, BRIGHT, 1);
-        text("Worms4NX - fan-made homebrew", 640, 648, 20, CREAM, 1);
-        hints({{"A", "Enter", "Start"}, {"+", "Esc", "Quit"}});
+        if (fmodf(t, 1.2f) < 0.8f)
+            text(keyGlyphs() ? tr(nullptr, "Press Enter to start", "Appuyez sur Entrée") : tr(nullptr, "Press A to start", "Appuyez sur A"), 640, 560, 44, BRIGHT, 1);
+        text(tr(nullptr, "Worms4NX - fan-made homebrew", "Worms4NX - homebrew de fan"), 640, 648, 20, CREAM, 1);
+        hints({{"A", "Enter", tr(nullptr, "Start", "Commencer")}, {"+", "Esc", tr("Lang.Quit", "Quit", "Quitter")}});
         if (ok) screen = Main;
         else if (P({PLUS}, {KEY_ESCAPE})) act = Quit;
         break;
     }
-    case Main: {
-        static const char *ITEMS[] = {"Quick match", "Custom match", "Missions & challenges", "LAN", "Online (server)", "Replays", "Options"};
-        const int n = sizeof ITEMS / sizeof *ITEMS;
-        mainRow = clampWrap(mainRow + dy, n);
-        logo(640, 16, 330);
-        popup({370, 192, 540, 480});
-        for (int i = 0; i < n; i++) item(ITEMS[i], 640, 218 + i * 62.0f, 36, i == mainRow);
-        hints({{"A", "Enter", "Select"}, {"B", "Esc", "Back"}});
+    case Main:
+    case Confirm: {
+        bool confirm = screen == Confirm;
+        logo(330, 40, 560, -6);
+        menu(MAIN_MENU, 6, mainRow, confirm ? 0 : dy, t, !confirm);
+        paperStrip(t, false);
+        if (confirm) {
+            int &r = subRow[4];
+            r = clampWrap(r + dy + dx, 2);
+            DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 120});
+            popup({330, 200, 620, 320});
+            const char *q = tr("FETXT.ConfirmQuit", "Exit Game? Are You Sure?", "Quitter le jeu ? Vraiment ?");
+            float qw = fmaxf(textWidth(q, 36) + 40, 300);
+            text(q, 640, 236, 36, GOLD_TOP, 1);
+            if (!image("fe/title_underline", {640 - qw / 2, 280, qw, 22})) DrawRectangle(640 - qw / 2, 286, qw, 3, WHITE);
+            for (int i = 0; i < 2; i++) {
+                bool hi = i == r;
+                float sz = hi ? 50 : 42, s = hi ? 1.04f - 0.04f * cosf(t * 4 * PI) : 1;
+                rlPushMatrix();
+                rlTranslatef(640, 360 + i * 78.0f, 0);
+                rlScalef(s, s, 1);
+                text(i ? tr("FETXT.Yes", "Yes", "Oui") : tr("FETXT.No", "No", "Non"), 0, -sz / 2, sz, hi ? WHITE : Color{150, 205, 238, 255}, 1);
+                rlPopMatrix();
+            }
+            hints({{"A", "Enter", tr(nullptr, "Select", "Sélectionner")}, {"B", "Esc", tr(nullptr, "Back", "Retour")}});
+            if (back || (ok && !r)) screen = Main;
+            else if (ok) act = Quit;
+            break;
+        }
+        hints({{"A", "Enter", tr(nullptr, "Select", "Sélectionner")}, {"B", "Esc", tr(nullptr, "Back", "Retour")}});
         if (back) screen = Title;
         if (ok) {
-            if (mainRow == 0) act = QuickMatch;
-            else if (mainRow == 2) act = SinglePlayer;
-            else if (mainRow == 6) screen = Options, row = 0;
-            else if (mainRow == 5) act = Replays;
-            else screen = Setup, online = mainRow > 2, lan = mainRow == 3, row = 0, loaded = false;  // reload: net setup has its own file
+            Screen to[] = {Local, Network, MyWorms, Main, HelpOpts, Confirm};
+            screen = to[mainRow];
+            if (mainRow == 3) act = Replays;
+            if (screen == MyWorms) online = false, loaded = false;  // the local setup.txt teams
+            if (screen == Confirm) subRow[4] = 0;
         }
         break;
     }
+    case Local: case Network: case HelpOpts: {
+        int k = screen == Local ? 0 : screen == Network ? 1 : 3, n = k == 0 ? 4 : k == 1 ? 2 : 3;
+        const MenuItem *items = k == 0 ? LOCAL_MENU : k == 1 ? NET_MENU : HELP_MENU;
+        const char *title = k == 0 ? tr("FETXTH.LOCALGAME", "LOCAL GAME", "PARTIE LOCALE") : k == 1 ? tr("FETXTH.NetworkPlay", "NETWORK PLAY", "JEU EN RÉSEAU")
+                                   : tr("FETXTH.HELP&OPTIONS", "HELP & OPTIONS", "AIDE ET OPTIONS");
+        subPanel(title, k == 0 ? "fe2/art_local" : k == 1 ? "fe2/art_network" : "fe2/art_help", t, easeOut((t - entered) / 0.35f));
+        int &sel = subRow[k];
+        menu(items, n, sel, dy, t);
+        paperStrip(t, true);
+        hints({{"A", "Enter", tr(nullptr, "Select", "Sélectionner")}, {"B", "Esc", tr(nullptr, "Back", "Retour")}});
+        if (back) screen = Main;
+        if (ok && k == 0) {
+            if (sel == 0) act = QuickMatch;
+            else if (sel == 1) screen = Setup, online = lan = false, row = 0, loaded = false;
+            else act = SinglePlayer, missionTab = sel - 2;
+        }
+        if (ok && k == 1) screen = Setup, online = true, lan = sel == 0, row = 0, loaded = false;  // reload: net setup has its own file
+        if (ok && k == 3) screen = sel == 0 ? Options : sel == 1 ? Controls : Factory, row = 0, facSel = 0;
+        break;
+    }
+    case MyWorms: {
+        // the 4 teams' name, voice and hat (setup.txt, also edited in the match setup)
+        int nb = Audio::voiceBanks(), &r = subRow[2];
+        r = clampWrap(r + dy, 12);
+        int k = r / 3, f = r % 3;
+        GameConfig::Team &tm = cfg.teamSetup[k];
+        if (f == 0 && ok) edit(tm.name, "Team name");
+        if (f == 1 && dx && nb) tm.voice = (uint8_t)clampWrap(tm.voice + dx, nb), Audio::setTeamVoice(k, tm.voice);
+        if (f == 1 && (dx || ok) && nb) Audio::voice(k, Audio::Voice::Idle);
+        if (f == 2 && dx && hats) tm.hat = (uint8_t)clampWrap(tm.hat + dx, hats + 1);
+        subPanel(tr("FETXTH.MYWORMS", "MY WORMS", "MES WORMS"), "fe2/art_myworms", t, easeOut((t - entered) / 0.35f));
+        for (int i = 0; i < 4; i++) {
+            const GameConfig::Team &m = cfg.teamSetup[i];
+            float a = easeOut((t - entered - 0.06f * i) / 0.35f);
+            Rectangle c = {560 + (i % 2) * 355.0f + (1 - a) * 400, 104 + (i / 2) * 250.0f, 335, 220};
+            popup(c);
+            if (k == i && !nine("fe/buttonbig_highlight", {c.x - 6, c.y - 6, c.width + 12, c.height + 12}, 110, 0.5f)) DrawRectangleRoundedLinesEx(c, 0.1f, 6, 4, GOLDEN);
+            DrawRectangleRounded({c.x + 16, c.y + 18, 10, c.height - 36}, 1, 4, TEAM_COLORS[i]);
+            const char *vals[3] = {TextFormat("%s%s", m.name.c_str(), editing == &cfg.teamSetup[i].name && fmodf(t, 1) < 0.5f ? "_" : ""),
+                                   nb ? Audio::voiceBankName(m.voice) : "-", !hats ? "-" : m.hat ? Models::hatName(m.hat - 1) : tr(nullptr, "None", "Aucun")};
+            const char *labels[3] = {nullptr, tr("FETXTSH.Voice", "Voice", "Voix"), tr(nullptr, "Hat", "Chapeau")};
+            for (int j = 0; j < 3; j++) {
+                bool hi = k == i && f == j;
+                Rectangle l = {c.x + 36, c.y + 20 + j * 62.0f, c.width - 56, 50};
+                if (hi) brush(l);
+                if (!j) { text(vals[0], l.x + 8, l.y + 8, 32, TEAM_COLORS[i]); continue; }
+                text(labels[j], l.x + 8, l.y + 12, 24, ink(hi));
+                text(TextFormat(hi ? "< %s >" : "%s", vals[j]), l.x + l.width - 8, l.y + 12, 24, ink(hi), 2);
+            }
+        }
+        paperStrip(t, true);
+        if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
+        else hints({{"A", "Enter", f ? tr(nullptr, "Listen", "Écouter") : tr(nullptr, "Rename", "Renommer")}, {"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")},
+                    {"B", "Esc", tr(nullptr, "Save & back", "Enregistrer")}});
+        if (back) saveSetup(cfg), screen = Main;
+        break;
+    }
     case Options: {
-        row = clampWrap(row + dy, 5);
-        heading("Options", 640, 40, 60);
-        popup({230, 150, 820, 500});
+        const int n = 4;
+        row = clampWrap(row + dy, n);
+        heading(tr("FETXT.Options", "Options", "Options"), 640, 40, 60);
+        popup({230, 150, 820, 420});
         std::string portS = TextFormat("%d", port);
-        const char *labels[] = {"Player name", "Server", "Music", "Controls", "Weapon Factory"};
-        const std::string vals[] = {name, host + ":" + portS, music ? "On" : "Off", ">", TextFormat("%d / %d  >", (int)customs.size(), MAX_CUSTOM)};
-        for (int i = 0; i < 5; i++) {
+        const char *labels[n] = {tr(nullptr, "Player name", "Nom du joueur"), tr(nullptr, "Server", "Serveur"), tr(nullptr, "Music", "Musique"), tr("FETXT.Language", "Language", "Langue")};
+        const std::string vals[n] = {name, host + ":" + portS, music ? tr("FETXT.On", "On", "Oui") : tr("FETXT.Off", "Off", "Non"), language ? "Français" : "English"};
+        for (int i = 0; i < n; i++) {
             Rectangle r = {290, 190 + i * 86.0f, 700, 60};
             mark(r, i == row);
             text(labels[i], r.x + 24, r.y + 12, 34, ink(i == row));
@@ -691,17 +934,16 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         }
         if (row == 1 && dx) port = Clamp(port + dx, 1, 65535);
         if (row == 2 && (dx || ok)) music = !music, Audio::music(music);
+        if (row == 3 && (dx || ok)) language = !language, SaveFileText(DATA_DIR "lang.txt", (char *)(language ? "fr\n" : "en\n"));
         if (ok && row == 0) edit(name, "Player name");
         if (ok && row == 1) edit(host, "Server address");
-        if (ok && row == 3) screen = Controls;
-        if (ok && row == 4) screen = Factory, facSel = 0;
         if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
         else if (row == 1) hints({{"A", "Enter", "Edit address"}, {"D-pad", "Left/Right", "Port"}, {"B", "Esc", "Save & back"}});
-        else hints({{"A", "Enter", row == 2 ? "Toggle" : row >= 3 ? "Open" : "Edit"}, {"B", "Esc", "Save & back"}});
+        else hints({{"A", "Enter", row >= 2 ? tr(nullptr, "Toggle", "Changer") : tr(nullptr, "Edit", "Modifier")}, {"B", "Esc", tr(nullptr, "Save & back", "Enregistrer")}});
         if (back) {
             for (char &c : name) if (c == ' ') c = '_';
             SaveFileText(DATA_DIR "server.txt", (char *)TextFormat("%s %d %s\n", host.c_str(), port, name.c_str()));
-            screen = Main;
+            screen = HelpOpts;
         }
         break;
     }
@@ -737,7 +979,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (row == 6 && (dx || ok)) ::Controls::rumble(0, 0.6f, 0.15f);  // feel it (no-op when off)
         if (row == 7 && ok) layout = true;
         hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", row == 7 ? "Open" : "Toggle"}, {"B", "Esc", "Save & back"}});
-        if (back) ::Controls::save(DATA_DIR "controls.txt"), screen = Options;
+        if (back) ::Controls::save(DATA_DIR "controls.txt"), screen = HelpOpts;
         break;
     }
     case Wormpot: wormpot(cfg, dx, dy, ok, back, t); break;
@@ -866,7 +1108,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
 #ifdef __SWITCH__
         if (!online && minusTap) controllerApplet(humanTeams(cfg));
 #endif
-        if (back) saveSetup(cfg), screen = Main;
+        if (back) saveSetup(cfg), screen = online ? Network : Local;
         if ((ok && id == 400) || (!typing && P({PLUS}, {}))) {
             saveSetup(cfg);
 #ifdef __SWITCH__
@@ -1007,7 +1249,7 @@ void Frontend::factory(int dx, int dy, bool ok, bool back) {
     if (facSel < n && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_DELETE})) customs.erase(customs.begin() + facSel);
     if (back) {
         if (!saveCustomWeapons(DATA_DIR "custom_weapons.json", customs)) TraceLog(LOG_WARNING, "cannot save custom_weapons.json");
-        screen = Options;
+        screen = HelpOpts;
     }
 }
 
@@ -1252,7 +1494,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         if (!w.alive) continue;
         Vector3 top = Vector3Add(w.pos, {0, 1.1f, 0});
         float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
-        if (dist < 0.5f || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // first person: inside it
+        if (dist < 0.5f || (fp && &w == &cur) || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // first person: inside it
         Vector2 sp = GetWorldToScreen(top, cam);
         float s = Clamp(170 / dist, 12, 24);
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam);

@@ -177,6 +177,7 @@ Input tick(Input in) {
 }
 
 bool aiming() { return aimMode; }
+float sinceFirstPerson() { return fpOut; }
 
 bool firstPerson(const Game &g) {
     Kind k = WEAPONS[g.weapon].kind;
@@ -221,6 +222,7 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
         float back = (chase ? 17.5f : 9.85f) * zoom;
         want = Vector3Add(focus, {-sinf(camYaw) * cosf(camEl) * back, sinf(camEl) * back, -cosf(camYaw) * cosf(camEl) * back});
     }
+    if (fpOut == 0) cam.target = Vector3Add(cam.position, Vector3Normalize(Vector3Subtract(cam.target, cam.position)));  // far aim point pulled in: the view swings back at once
     if ((fpOut += dt) < 0.6f && !chase) kt = kp = 1 - expf(-dt * 8);  // back out of first person quickly
     Vector3 hit, to = Vector3Subtract(want, from);
     if (chase) want.y = fmaxf(want.y, cur.pos.y + 4);  // donkey/airstrike dig below the surface: stay above ground

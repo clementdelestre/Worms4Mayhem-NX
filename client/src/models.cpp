@@ -30,6 +30,7 @@ void Models::load() {
     shader = Lit::modelShader(true);  // textured, alpha-tested (teeth/eye overlays), W4M worm light
     FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", true);  // recurses into hats/
     for (unsigned i = 0; i < files.count; i++) {
+        if (strstr(files.paths[i], "/frontend/")) continue;  // FrontBg loads (and frees) its own scene
         Entry e;
         e.m = LoadModel(files.paths[i]);
         if (!e.m.meshCount) continue;

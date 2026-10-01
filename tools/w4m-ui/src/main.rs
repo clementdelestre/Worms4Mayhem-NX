@@ -1,4 +1,5 @@
-// w4m-ui <W4M dir> [out dir]: exports Worms 4 Mayhem frontend/HUD art as PNG (loose TGAs + XImages of the UI bundles).
+// w4m-ui <W4M dir> [out dir]: exports Worms 4 Mayhem frontend/HUD art as PNG (loose TGAs + XImages of the UI bundles)
+// and the English / French frontend strings to <out dir>/../lang.
 // XOM string/XImage reading as in tools/w4m-models (format notes: docs/w4m-formats.md).
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,6 +12,19 @@ const BUNDLES: &[&str] = &["Bundl00", "Bundl06", "Bundl08", "Bundl10", "Bundl472
 // Names embed the time as a numeric suffix (01 day, 02 evening, 03 night), e.g. C_Sky02.tga -> sky/c_sky02.png.
 // In-match HUD (also holds particles): images go to hud/<image name>.png
 const HUD_BUNDLE: &str = "Bundl09";
+// Frontend menu art -> fe2/<out>.png: (bundle, image name, nth image of that name in the bundle, out). Most are
+// textures of the menu's flat illustration meshes (WX.Mesh.SinglePlayer, NetOptions, CustomiseOptions, Options...).
+const FE2: &[(&str, &str, usize, &str)] = &[
+    ("Bundl10", "maya:file16/-1", 0, "paper_strip"),     // torn paper ticker strip
+    ("Bundl10", "maya:file1/-1", 0, "art_local"),        // TV robot (Partie locale)
+    ("Bundl10", "maya:file1/-1", 5, "art_help"),         // question mark (Aide et options)
+    ("Bundl06", "maya:file7/-1", 1, "art_local_static"), // its screen noise
+    ("Bundl06", "maya:file5/-1", 2, "art_network"),      // globe
+    ("Bundl06", "maya:paint_bits/-1", 0, "art_myworms"), // brushes + paint (Mes Worms)
+    ("Bundl474", "Nav Normal.tga", 0, "nav_normal"),     // 2x2: grenade, tick, back arrow, cross
+];
+// Frontend strings -> lang/<code>.txt ("key<TAB>value", \n = newline): (code, Data/Language/PC files)
+const LANGS: &[(&str, &[&str])] = &[("en", &["EngFE.xom", "English.xom"]), ("fr", &["FreFE.xom", "French.xom"])];
 const SKY_BUNDLES: &[&str] = &[
     "Bundl93", "Bundl94", "Bundl95", "Bundl96", "Bundl97", "Bundl98", "Bundl99", "Bundl100", "Bundl101", "Bundl102",
     "Bundl103", "Bundl104", "Bundl105", "Bundl106", "Bundl107", "Bundl108", "Bundl109", "Bundl110", "Bundl111", "Bundl112",
@@ -46,29 +60,31 @@ fn strings(b: &[u8]) -> Option<(Vec<String>, usize)> {
     Some((s, base + ls))
 }
 
-// Every XImage of a bundle, found by scanning "CTNR" tags (bundles hold untagged types we cannot size):
-// a container whose name string is a .tga and whose pixel size matches its header is an image.
+// Every XImage of a bundle (.tga or Maya "maya:fileN/-1" names), found by trying each byte offset as a container
+// (many are untagged): its name string, header and pixel size must all match. Matches are skipped whole.
 fn ximages(b: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
     if b.get(0..4)? != b"MOIK" { return None; }
     let (s, start) = strings(b)?;
-    let tags: Vec<usize> = b[start..].windows(4).enumerate().filter(|(_, w)| *w == b"CTNR").map(|(i, _)| start + i + 4).collect();
-    let mut out = Vec::new();
-    for (k, &q) in tags.iter().enumerate() {
-        let d = &b[q..tags.get(k + 1).map_or(b.len(), |&e| e - 4)];
+    let at = |d: &[u8]| -> Option<(String, usize)> {
         let mut p = 3;
-        let Some(name) = s.get(vi(d, &mut p)) else { continue };
-        if !name.to_lowercase().ends_with(".tga") || d.len() < p + 10 { continue; }
+        let name = s.get(vi(d, &mut p))?;
+        if !(name.to_lowercase().ends_with(".tga") || name.starts_with("maya:")) { return None; }
         let (w, h) = (u16le(d, p), u16le(d, p + 2));
         let mut r = p + 8;
-        r += 1 + 4 * d[r] as usize;
-        let Some(&m) = d.get(r) else { continue };
-        r += 1 + 4 * m as usize;
+        let ns = *d.get(r)? as usize;
+        r += 1 + 4 * ns;
+        let m = *d.get(r)? as usize;
+        r += 1 + 4 * m;
         let fmt = u32le(d, r);
         r += 4;
         let size = vi(d, &mut r);
         let want = match fmt { 0 => w * h * 3, 1 | 2 => w * h * 4, 9 => w.div_ceil(4) * h.div_ceil(4) * 8, 10 | 11 => w.div_ceil(4) * h.div_ceil(4) * 16, _ => 0 };
-        if w == 0 || h == 0 || want == 0 || size < want || r + want > d.len() { continue; }
-        out.push((name.clone(), d.to_vec()));
+        let ok = w > 0 && h > 0 && w <= 4096 && h <= 4096 && (1..=16).contains(&ns) && (1..=16).contains(&m);
+        (ok && want > 0 && size >= want && size <= 2 * want && r + size <= d.len()).then(|| (name.clone(), r + size))
+    };
+    let (mut out, mut q) = (Vec::new(), start);
+    while q + 16 < b.len() {
+        match at(&b[q..]) { Some((n, end)) => { out.push((n, b[q..q + end].to_vec())); q += end; } None => q += 1 }
     }
     Some(out)
 }
@@ -203,6 +219,25 @@ fn png(w: usize, h: usize, rgba: &[u8]) -> Vec<u8> {
     o
 }
 
+type Glyph = (u32, usize, usize, Vec<u8>, i32, i32, i32);  // cp, w, h, rgba, xoff, yoff, adv
+
+// Two copies of glyph g shrunk to sw x sh (nearest), the second shifted right by ~half a chevron.
+fn guillemet(cp: u32, g: &Glyph, sw: usize, sh: usize) -> Glyph {
+    let step = sw * 11 / 20;
+    let w = sw + step;
+    let mut rgba = vec![0u8; w * sh * 4];
+    for k in 0..2 {
+        for y in 0..sh {
+            for x in 0..sw {
+                let s = &g.3[((y * g.2 / sh) * g.1 + x * g.1 / sw) * 4..][..4];
+                let d = &mut rgba[(y * w + x + k * step) * 4..][..4];
+                if s[3] > d[3] { d.copy_from_slice(s); }
+            }
+        }
+    }
+    (cp, w, sh, rgba, g.4, g.5 + (g.2 - sh) as i32 / 2, g.6 + w as i32 - g.1 as i32)
+}
+
 // FE.Font (Bundl03) -> BMFont text + one PNG atlas (Latin glyphs only). Format: docs/w4m-formats.md.
 const FONT_EM: f32 = 50.0;  // atlas px per em
 fn font(b: &[u8]) -> Option<(String, usize, usize, Vec<u8>)> {
@@ -217,7 +252,7 @@ fn font(b: &[u8]) -> Option<(String, usize, usize, Vec<u8>)> {
     let obj = |r: usize| -> Option<&[u8]> { let k = r.checked_sub(1 + skip)?; Some(&b[*tags.get(k)?..tags.get(k + 1).map_or(b.len(), |&e| e - 4)]) };
     let first: usize = (0..ty).map(count).sum();
     let (pad, line, base) = (8usize, 56i32, 42i32);
-    let mut glyphs: Vec<(u32, usize, usize, Vec<u8>, i32, i32, i32)> = Vec::new();  // cp, w, h, rgba, xoff, yoff, adv
+    let mut glyphs: Vec<Glyph> = Vec::new();
     for r in first + 1..=first + count(ty) {
         let d = obj(r)?;
         let mut p = 3;
@@ -242,6 +277,11 @@ fn font(b: &[u8]) -> Option<(String, usize, usize, Vec<u8>)> {
         }
     }
     if glyphs.is_empty() { return None; }
+    // « » hold pad icons: build them from two 3/4-size '<' / '>'
+    for (cp, src) in [(0xab, 0x3c), (0xbb, 0x3e)] {
+        let Some(g) = glyphs.iter().find(|g| g.0 == src).cloned() else { continue };
+        glyphs.push(guillemet(cp, &g, g.1 * 3 / 4, g.2 * 3 / 4));
+    }
     // shelf packing, 4 px gaps (mipmapped)
     let aw = 1024;
     let (mut x, mut y, mut row) = (0, 0, 0);
@@ -260,6 +300,30 @@ fn font(b: &[u8]) -> Option<(String, usize, usize, Vec<u8>)> {
         fnt += &format!("char id={} x={x} y={y} width={} height={} xoffset={} yoffset={} xadvance={} page=0\n", g.0, g.1, g.2, g.4, g.5, g.6);
     }
     Some((fnt, aw, ah, atlas))
+}
+
+// The stored paper is blue; W4M shows its popups teal (#1e5a6e body).
+fn teal(px: &mut [u8]) {
+    for c in px.chunks_mut(4) {
+        let (g, b) = (c[1] as f32, c[2] as f32);
+        c[0] = (c[0] as f32 + b * 0.23).min(255.0) as u8;
+        c[1] = (g * 0.96) as u8;
+        c[2] = (b * 0.84) as u8;
+    }
+}
+
+// XStringResourceDetails: CTNR + 3 header bytes, varint value, varint key (UTF-8; "/*NL*/" = newline).
+fn lang(b: &[u8]) -> Option<Vec<(String, String)>> {
+    let (s, start) = strings(b)?;
+    let mut out = Vec::new();
+    for (i, w) in b[start..].windows(4).enumerate() {
+        if w != b"CTNR" { continue; }
+        let mut p = start + i + 7;
+        let (v, k) = (vi(b, &mut p), vi(b, &mut p));
+        let (Some(v), Some(k)) = (s.get(v), s.get(k)) else { continue };
+        out.push((k.clone(), v.replace("/*NL*/", "\\n").replace('\n', "\\n").replace(['\u{a0}', '\t', '\r'], " ")));
+    }
+    Some(out)
 }
 
 // Case-insensitive path lookup (game data uses Windows paths).
@@ -313,14 +377,36 @@ fn main() {
             println!("{bundle}: FE.Font -> font/w4m.fnt");
         }
         for (name, d) in ximages(&b).unwrap_or_default() {
-            if name.contains("ExportedTGAS") { continue; }  // hashed names: model textures
+            if name.contains("ExportedTGAS") || name.starts_with("maya:") { continue; }  // model textures
             let l = name.to_lowercase();
             if sky && !(l.contains("sky") || l.contains("water")) { continue; }
-            if let Some((w, h, px)) = image(&d) {
+            if let Some((w, h, mut px)) = image(&d) {
+                if l.contains("paperpopup") { teal(&mut px); }
                 fs::write(out.join(dir).join(format!("{}.png", stem(&name))), png(w, h, &px)).expect("write");
                 n += 1;
             }
         }
+    }
+    fs::create_dir_all(out.join("fe2")).expect("create out dir");
+    let mut last: (&str, Vec<(String, Vec<u8>)>) = ("", Vec::new());
+    for &(bundle, name, nth, dst) in FE2 {
+        if last.0 != bundle {
+            let b = find_ci(&data, &format!("Bundles/{bundle}.xom")).and_then(|p| fs::read(p).ok()).unwrap_or_default();
+            last = (bundle, ximages(&b).unwrap_or_default());
+        }
+        match last.1.iter().filter(|(nm, _)| nm == name).nth(nth).and_then(|(_, d)| image(d)) {
+            Some((w, h, px)) => { fs::write(out.join(format!("fe2/{dst}.png")), png(w, h, &px)).expect("write"); n += 1; }
+            None => println!("{bundle} {name} #{nth}: missing"),
+        }
+    }
+    fs::create_dir_all(out.join("../lang")).expect("create out dir");
+    for (code, files) in LANGS {
+        let mut txt = String::new();
+        for f in *files {
+            let Some(b) = find_ci(&data, &format!("Language/PC/{f}")).and_then(|p| fs::read(p).ok()) else { println!("{f}: missing"); continue };
+            for (k, v) in lang(&b).unwrap_or_default() { txt += &format!("{k}\t{v}\n"); }
+        }
+        fs::write(out.join(format!("../lang/{code}.txt")), txt).expect("write");
     }
     println!("{n} images -> {}", out.display());
 }
@@ -333,6 +419,15 @@ mod tests {
         let mut b = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 24, 0];
         b.extend([1, 2, 3, 4, 5, 6]);  // bottom row then top row, BGR
         assert_eq!(tga(&b).unwrap().2, vec![6, 5, 4, 255, 3, 2, 1, 255]);
+    }
+    #[test]
+    fn lang_string() {
+        let mut b = b"MOIK".to_vec();
+        b.resize(80, 0);
+        b.extend(b"STRS");
+        for v in [2u32, 17, 0, 10] { b.extend(v.to_le_bytes()); }
+        b.extend(b"Oui/*NL*/\0FE.Yes\0CTNR\0\0\0\x00\x01");
+        assert_eq!(lang(&b).unwrap(), vec![("FE.Yes".to_string(), "Oui\\n".to_string())]);
     }
     #[test]
     fn dxt1_solid() {

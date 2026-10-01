@@ -246,6 +246,10 @@ void trail(const Projectile &s, float dt) {
     }
 }
 
+void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire) {
+    add({p, v, 0, life, size0, size1, 0, rnd(-1, 1), fire ? -1.0f : -0.3f, 0.6f, c, (unsigned char)(fire ? FIRE : PUFF), fire});
+}
+
 void update(float dt) {
     shake *= expf(-dt * 6);
     for (size_t i = 0; i < ps.size();) {

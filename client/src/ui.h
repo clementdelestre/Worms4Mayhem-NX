@@ -12,6 +12,10 @@ extern const Color TEAM_COLORS[4];
 void load();
 void unload();
 void text(const char *t, float x, float y, float size, Color c, int align = 0);  // align: 0 left, 1 centre, 2 right
+// Menu language: 0 English, 1 French (lang.txt, else the system language). tr(): W4M's string for key
+// (assets/lang/<en|fr>.txt from tools/w4m-ui), else the built-in en / fr text (key may be null).
+extern int language;
+const char *tr(const char *key, const char *en, const char *fr = nullptr);
 void background();
 std::string teamName(const GameConfig &c, int team);
 const char *wormName(int team, int i);
@@ -25,15 +29,20 @@ void controls(bool game);  // full-screen controller diagram: match or menu cont
 bool helpHeld();            // - (desktop F1) held past 0.35 s: show controls()
 extern bool forceHelp;      // --ui help captures
 
+struct MenuItem;  // ui.cpp: one W4M menu entry and its place on screen
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 struct Frontend {
-    enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit } screen = Title;
+    enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm } screen = Title;
     enum Action { None, StartLocal, StartOnline, Quit, Replays, StartLan, SinglePlayer, QuickMatch };
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
+    int missionTab = 0;             // SinglePlayer: 0 story missions, 1 challenges
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
 
 private:
-    int row = 0, mainRow = 0, mapSel = 0, hats = 0, schemeRow = 0;
+    int row = 0, mainRow = 0, mapSel = 0, hats = 0, schemeRow = 0, subRow[5] = {};  // subRow: Local, Network, MyWorms, HelpOpts, Confirm
+    Screen shown = (Screen)-1;  // W4M menus: item slide-in since `entered`, smoothed highlight per item
+    float entered = -100, glow[8] = {};
+    void menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live = true);  // live: animate + take input
     bool online = false, lan = false, loaded = false, music = true, layout = false;  // layout: Controls shows the pad diagram  // online: network setup (LAN or server)
     std::string *editing = nullptr;  // desktop text entry target
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
@@ -55,6 +64,7 @@ void reticle(const WeaponDef &wd, Vector2 c, bool scope);
 struct Hud {
     bool open = false, mine = false;  // mine: a human here plays the current turn
     bool quiet = false;               // no bottom hints this frame
+    bool fp = false;                  // first-person aim, or just left it: no label on the current worm
     // local: a human here plays the current turn; tick: ticks simulated so far
     void input(const Game &g, Input &in, bool local, int pad, uint32_t tick);
     void draw(const Game &g, const Camera3D &cam, uint32_t tick);

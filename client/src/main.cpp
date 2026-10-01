@@ -4,6 +4,7 @@
 #include "ai.h"
 #include "audio.h"
 #include "controls.h"
+#include "frontbg.h"
 #include "fx.h"
 #include "lanhost.h"
 #include "mission.h"
@@ -243,7 +244,7 @@ int main(int argc, char **argv) {
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
-    // --ui title|main|setup|options|hud|panel|ready [map]: capture that screen to ui.png and quit
+    // --ui title|main|local|network|myworms|helpopts|confirm|setup|options|hud|panel|ready [map]: capture that screen to ui.png and quit
     const char *uiShot = argc > 2 && !strcmp(argv[1], "--ui") ? argv[2] : nullptr;
     // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
     bool bench = argc > 2 && !strcmp(argv[1], "--bench");
@@ -256,6 +257,8 @@ int main(int argc, char **argv) {
     int shotWeapon = argc > 2 ? atoi(argv[2]) : 0;  // --shot N: use weapon N
     // --aimshot <weapon> [map] [fine]: shot mode held in aim mode, aim.png at frame 60
     bool aimShot = shot && argc > 2 && !strcmp(argv[1], "--aimshot");
+    // --aimseq <weapon> [map]: aim mode from frame 40 to 90, aimseq_NNN.png around the entry and the exit
+    bool aimSeq = shot && argc > 2 && !strcmp(argv[1], "--aimseq");
     if (aimShot) Controls::forceAim = argc > 4 && !strcmp(argv[4], "fine") ? 2 : 1;
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
@@ -381,6 +384,7 @@ int main(int argc, char **argv) {
         }
     };
     auto startMatch = [&](const GameConfig &c) {
+        FrontBg::unload();  // ~9 MB of menu scene; the next menu frame reloads it
         game.terrain.undo = nullptr;
         snap.valid = false;
         rec = {c, {}, 0};
@@ -457,6 +461,9 @@ int main(int argc, char **argv) {
     } else if (uiShot) {
         front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::Setup
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
+        static const std::pair<const char *, Ui::Frontend::Screen> MENUS[] = {{"local", Ui::Frontend::Local}, {"network", Ui::Frontend::Network},
+            {"myworms", Ui::Frontend::MyWorms}, {"helpopts", Ui::Frontend::HelpOpts}, {"confirm", Ui::Frontend::Confirm}};
+        for (auto &m : MENUS) if (!strcmp(uiShot, m.first)) front.screen = m.second;
         if (!strcmp(uiShot, "wormpot")) front.screen = Ui::Frontend::Wormpot, opt.wormpot = WP_DOUBLE_DAMAGE | WP_QUICK_WALK | WP_CRATE_SHOWER;
         if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
         if (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback")) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
@@ -529,7 +536,7 @@ int main(int argc, char **argv) {
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;
             if (a == Ui::Frontend::Replays) replayFiles = listReplays(DATA_DIR "replays"), replaySel = 0, screen = Screen::Replays;
-            if (a == Ui::Frontend::SinglePlayer) openMissions();
+            if (a == Ui::Frontend::SinglePlayer) missionMenu.tab = front.missionTab, missionMenu.brief = false, openMissions();
             if (a == Ui::Frontend::QuickMatch) {  // you vs one level-2 CPU team on a random map, Standard scheme; opt untouched
                 GameConfig q = opt;
                 q.teams = 2, q.wormsPerTeam = 4, q.rules = 0, q.wormpot = 0, q.mission = nullptr, q.scheme = SCHEMES[0].s;
@@ -725,8 +732,10 @@ int main(int argc, char **argv) {
         auto owns = [&](int team) { return (cpu(team) && net.hostId == net.id) || (team < (int)net.owners.size() && (net.owners[team] == net.id || proxied(team))); };
         bool remoteTurn = online && game.phase != Phase::GameOver && !owns(cur.team);
         bool padTurn = !shot && !remoteTurn && !pause.open && !playing && irEnd < 0;
-        Input pin = Controls::read(game, pad, aimShot || (padTurn && !cpu(cur.team)), dt);
-        Input in = shot ? scriptInput(frame, shotWeapon, !aimShot) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
+        if (aimSeq) Controls::forceAim = frame >= 40 && frame < 90;
+        Input pin = Controls::read(game, pad, aimShot || aimSeq || (padTurn && !cpu(cur.team)), dt);
+        Input in = shot ? scriptInput(frame, shotWeapon, !aimShot && !aimSeq) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
+        if (aimSeq && frame > 40 && frame < 80) in.aim = 127;  // look up: the exit starts from the sky
         hud.input(game, in, padTurn, pad, tick);
         bool feedPad = padTurn && !hud.open;
         auto local = [&] { return feedPad ? Controls::tick(in) : in; };  // stick rates spread over ticks
@@ -804,6 +813,7 @@ int main(int argc, char **argv) {
             perfOn = (perfOn + 1) % 3;
         Controls::camera(cam, game, chase, scope, !pause.open && !hud.open && !(playing && freeCam), dt);
         bool inside = Vector3Distance(cam.position, cur.pos) < 1.2f;  // the aim camera has flown into the worm
+        hud.fp = fp || Controls::sinceFirstPerson() < 0.3f;
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
         if (fixedView) view = viewCam;
         if (playing && freeCam) {  // LS / arrows move, RS / A D W S look, ZL ZR / Z X down up
@@ -850,7 +860,7 @@ int main(int argc, char **argv) {
         }
         if (game.roped) DrawLine3D(game.anchor, cur.pos, BROWN);
         if (game.jetting) DrawCube(Vector3Add(cur.pos, {-sinf(cur.yaw) * 0.4f, 0.1f, -cosf(cur.yaw) * 0.4f}), 0.35f, 0.5f, 0.35f, GRAY);
-        if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && !fp && !inside) {
+        if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && !hud.fp && !inside) {
             if (wd.kind == Kind::Airstrike || wd.kind == Kind::Donkey || wd.kind == Kind::Teleport || wd.kind == Kind::Homing || wd.kind == Kind::Abduction) {
                 Vector3 t = game.target();
                 DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 1.2f, {1, 0, 0}, 90, RED);
@@ -975,6 +985,12 @@ int main(int argc, char **argv) {
             ExportImage(img, "aim.png");
             UnloadImage(img);
         }
+        if (aimSeq && ((frame >= 38 && frame < 56) || (frame >= 88 && frame < 106))) {
+            rlDrawRenderBatchActive();
+            Image img = LoadImageFromScreen();
+            ExportImage(img, TextFormat("aimseq_%03d.png", frame));
+            UnloadImage(img);
+        }
         if (uiShot && frame == 40) {
             rlDrawRenderBatchActive();
             Image img = LoadImageFromScreen();
@@ -1019,7 +1035,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && frame == 150) || (aimShot && frame == 60) || (uiShot && frame == 40)) break;
+        if ((shot && frame == 150) || (aimShot && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == 40)) break;
     }
     if (screen == Screen::Play) irFinish(), saveRec();
     net.close();
