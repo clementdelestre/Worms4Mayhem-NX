@@ -137,8 +137,27 @@ int clampWrap(int v, int n) { return n ? ((v % n) + n) % n : 0; }
 bool P(std::initializer_list<int> b, std::initializer_list<int> k) { return pressed(0, b, k); }
 }  // namespace
 
+static bool stickEdge[4][4];  // [pad][up, right, down, left], raylib LEFT_FACE_* order
+
+void pollStick() {
+#ifdef __SWITCH__
+    const float up = 1;  // libnx HID sticks report +y for up, GLFW reports -y
+#else
+    const float up = -1;
+#endif
+    static bool held[4][4];
+    for (int p = 0; p < 4; p++) {
+        float x = GetGamepadAxisMovement(p, GAMEPAD_AXIS_LEFT_X), y = up * GetGamepadAxisMovement(p, GAMEPAD_AXIS_LEFT_Y);
+        bool now[4] = {y > 0.5f, x > 0.5f, y < -0.5f, x < -0.5f};
+        for (int d = 0; d < 4; d++) { stickEdge[p][d] = now[d] && !held[p][d]; held[p][d] = now[d]; }
+    }
+}
+
 bool pressed(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) {
-    for (int b : buttons) if (IsGamepadButtonPressed(pad, b)) return true;
+    for (int b : buttons) {
+        if (IsGamepadButtonPressed(pad, b)) return true;
+        if (pad < 4 && b >= GAMEPAD_BUTTON_LEFT_FACE_UP && b <= GAMEPAD_BUTTON_LEFT_FACE_LEFT && stickEdge[pad][b - GAMEPAD_BUTTON_LEFT_FACE_UP]) return true;
+    }
     for (int k : keys) if (IsKeyPressed(k)) return true;
     return false;
 }

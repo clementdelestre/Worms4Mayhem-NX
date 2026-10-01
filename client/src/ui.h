@@ -13,7 +13,8 @@ void text(const char *t, float x, float y, float size, Color c, int align = 0); 
 void background();
 std::string teamName(const GameConfig &c, int team);
 const char *wormName(int team, int i);
-bool pressed(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys);
+bool pressed(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys);  // D-pad buttons also fire on left-stick flicks
+void pollStick();  // once per frame, before any pressed()
 
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 struct Frontend {

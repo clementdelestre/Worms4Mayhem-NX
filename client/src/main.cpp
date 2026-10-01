@@ -26,11 +26,7 @@
 
 static const Color TEAM_COLORS[] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60, 190, 70, 255}, {240, 200, 40, 255}};
 
-static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) {
-    for (int b : buttons) if (IsGamepadButtonPressed(pad, b)) return true;
-    for (int k : keys) if (IsKeyPressed(k)) return true;
-    return false;
-}
+static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) { return Ui::pressed(pad, buttons, keys); }
 
 static Input readInput(int pad) {
     auto ax = [&](int a) {
@@ -283,6 +279,7 @@ int main(int argc, char **argv) {
     for (int frame = 0; !WindowShouldClose(); frame++) {
         float dt = fminf(GetFrameTime(), 0.25f);
         clock += dt;
+        Ui::pollStick();
         Audio::update();
 
         if (online) {
