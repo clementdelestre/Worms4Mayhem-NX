@@ -45,6 +45,7 @@ Assets to a real Switch: start an FTP server on it (sphaira or ftpd), then `tool
 | Jump / let go of rope | B | Enter |
 | Strikes (airstrike, donkey, Fatkins, Bovine Blitz, abduction, homing): sky view | A (or hold L) | Space / E |
 | Sky view: fire (homing: lock) / leave / look / pan / zoom | A / B / left stick / right stick / D-pad ↑↓ | Space / Enter or E / WASD / arrows / Z X |
+| Jetpack (W4M): take off and thrust / steer / drop dynamite, mine or sheep | hold A or ZR / left stick / ZL | hold Space / arrows / Backspace |
 | Weapon panel | X (B closes) | Q (Backspace closes) |
 | Next weapon | Y / R | Tab |
 | Camera orbit / zoom | right stick ←→ / ZL ZR | A D / Z X |

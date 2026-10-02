@@ -2,6 +2,7 @@
 // Each turn selects the next weapon in the table and uses it, so the whole arsenal gets exercised.
 #include "../src/sim.h"
 #include "../src/controls.h"
+#include "../src/ai.h"
 #include "raymath.h"
 #include <cassert>
 #include <cstdio>
@@ -489,6 +490,28 @@ static void checkEventCameras() {
         float d = Vector3Distance(cam.position, g.objects.back().pos);
         assert(d > 10 && d < 26 && inView(cam, g.objects.back().pos));
     }
+    for (int lost : {0, 1}) {  // PayloadTrackCamera 0x532460: no cut while the shell stays in clear view; else ViewPoints around its predicted impact
+        Game g;
+        g.start({23, 2, 1, "", 0});
+        settle(g);
+        Controls::reset();
+        Worm &a = g.worms[g.current];
+        Camera3D cam = away();
+        if (!lost) for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        float top = a.pos.y + 12;
+        g.phase = Phase::Flying;
+        g.shots.push_back({{a.pos.x, top, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
+        Vector3 before = cam.position, cutAt{}, end{};
+        for (int t = 0; t < 60 * 6 && !g.shots.empty(); t++) {
+            Vector3 was = cam.position;
+            Controls::camera(cam, g, true, false, false, Game::DT);
+            if (Vector3Distance(was, cam.position) > 3 && cutAt.y == 0) cutAt = cam.position;
+            if (!lost && t == 70) assert(Vector3Distance(cam.position, before) < 1.5f && inView(cam, g.shots[0].pos));
+            end = g.shots[0].pos;
+            g.step(Input{});
+        }
+        if (lost) assert(cutAt.y > end.y && Vector3Distance(cutAt, end) < 22 && Vector3Distance(cutAt, {a.pos.x, top, a.pos.z}) > 30);
+    }
     {  // game over: the winner from a worm ViewPoint, in clear view
         Game g;
         g.start({23, 2, 1, "", 0});
@@ -775,6 +798,54 @@ static void checkJumpTrajectory() {
     jump(false, RULE_LOW_GRAVITY, h, d, air);
     printf("low gravity jump: %.3f m high, %.3f m long\n", h, d);
     assert(fabsf(h - 5) < 0.1f && fabsf(d - 8) < 0.15f);  // launch speeds stay those of full gravity
+}
+
+// Flat floor at y 50 over x 4..75 m, z 4..20 m; wall: a one-voxel slab at x = wall (m) when > 0.
+static void floorAndWall(Game &g, float wall) {
+    for (int z = 16; z < 80; z++)
+        for (int y = 176; y < 248; y++)
+            for (int x = 16; x < 300; x++)
+                g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] =
+                    x == (int)(wall / Terrain::VOX) && y > 200 ? 127 : (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+}
+
+// W4M launches from the eye (0x585a29): a worm against a thin wall blows its bazooka up on its own side, a shotgun hits the near face,
+// dropped dynamite rests on the land (centre contact, mesh drawn its depth over it: 0x574e90, 0x5761f0).
+static void checkLaunchAtWall() {
+    for (int gun : {0, 1}) {
+        Game g;
+        g.start({33, 2, 1, "", 0});
+        floorAndWall(g, 20.5f);
+        Worm &w = g.worms[g.current];
+        w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = PI / 2, w.pitch = 0;
+        g.hotSeat = 0, g.wind = 0, g.weapon = weaponNamed(gun ? "Shotgun" : "Bazooka");
+        for (int t = 0; t < 30; t++) g.step(Input{});
+        assert(w.grounded && w.pos.x < 20.3f);
+        Input fire;
+        fire.buttons = Input::FIRE;
+        float boom = -1;
+        for (int t = 0; t < 300 && boom < 0; t++) {
+            g.step(t < 40 ? fire : Input{});
+            for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) boom = e.pos.x;
+        }
+        printf("%s into a wall at 20.5 m: blast at x %.2f\n", gun ? "shotgun" : "bazooka", boom);
+        assert(boom > 19.5f && boom < 20.5f);  // the worm's side of the slab
+    }
+    Game g;
+    g.start({33, 2, 1, "", 0});
+    floorAndWall(g, 0);
+    Worm &w = g.worms[g.current];
+    w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = PI / 2, w.pitch = 0;
+    g.hotSeat = 0, g.weapon = weaponNamed("Dynamite");
+    for (int t = 0; t < 30; t++) g.step(Input{});
+    Input fire;
+    fire.buttons = Input::FIRE;
+    g.step(fire), g.step(Input{});
+    for (int t = 0; t < 120; t++) g.step(Input{});
+    assert(g.shots.size() == 1);
+    Vector3 p = g.shots[0].pos, drawn = restOn(g.terrain, p, 0.25f);
+    printf("dynamite at rest: centre %.3f m, mesh bottom %.3f m over the floor\n", p.y - 50, drawn.y - 0.25f - 50);
+    assert(p.y >= 50 && drawn.y - 0.25f > 49.97f && drawn.y - 0.25f < 50.05f);
 }
 
 // W4M payloads (0x57ea40): wind adds Wind.Speed to the acceleration; the homing missile has no gravity and homes only in stage 2.
@@ -1103,7 +1174,7 @@ static void checkParachute() {
     assert(a.grounded && a.hp == 100 && a.pos.x > x + 1);
 }
 
-// Rope and jetpack: a weapon taken in hand fires without leaving the tool, which keeps working through the retreat.
+// Rope and jetpack: what the hand holds goes off without leaving the tool, which keeps working through the retreat.
 static void checkToolWeapons() {
     for (const char *tool : {"Ninja Rope", "Jetpack"}) {
         Game g;
@@ -1112,27 +1183,113 @@ static void checkToolWeapons() {
         g.hotSeat = 0;
         bool rope = tool[0] == 'N';
         if (rope) g.roped = true, g.anchor = {20, 58, 20}, g.ropeLen = 3, g.ropeMax = 25;
-        else g.jetting = true, g.fuel = 6, g.thrust = 28;
+        else g.jetting = g.jetUsed = true, g.fuel = 6, g.thrust = 20;
         a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = false;
-        int gun = weaponNamed("Shotgun"), grenade = weaponNamed("Grenade");
-        g.weapon = rope ? gun : grenade;
+        g.weapon = weaponNamed(rope ? "Shotgun" : "Dynamite");
         g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
         Input fire;
-        fire.buttons = Input::FIRE;
+        fire.buttons = rope ? Input::FIRE : Input::JUMP;  // W4M Fire.Second drops from the jetpack, FIRE thrusts
         g.step(fire);
         if (rope) { g.step(Input{}); g.step(fire); }  // both shotgun shots
-        else g.step(Input{});                          // released: thrown
         assert(g.phase != Phase::Aim && (rope ? g.roped : g.jetting) && g.ammo[a.team][g.weapon] == 0);
         while (g.phase == Phase::Flying) g.step(Input{});
         assert(g.phase == Phase::Retreat && (rope ? g.roped : g.jetting));
         if (!rope) {
+            Input thrust;
+            thrust.buttons = Input::FIRE;
             float vy = a.vel.y;
-            g.step(fire);
+            g.step(thrust);
             assert(a.vel.y > vy);  // still thrusts
         }
         while (g.phase == Phase::Retreat) g.step(Input{});
         assert(!g.roped && !g.jetting);
     }
+}
+
+// W4M JetpackUtilityLogicEntity 0x562810: FIRE takes off and thrusts 20 m/s² x sin((1 - h / 100 m) pi / 2), the fuel burns only
+// while thrusting and runs dry at 20 ms; no button ends it, landing does; the ammo goes once, a landed jetpack takes off again.
+static void checkJetpack() {
+    Game g;
+    g.start({29, 2, 1, "", 0});
+    Worm &a = g.worms[g.current];
+    g.hotSeat = 0, g.wind = 0;
+    const float DT = Game::DT, G = 12.5f, n = DT / 0.02f;
+    int jp = weaponNamed("Jetpack");
+    g.weapon = jp, g.ammo[a.team][jp] = 1, g.delays[a.team][jp] = 0;
+    a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = false, a.yaw = 0;
+    Input fire, none, jump;
+    fire.buttons = Input::FIRE, jump.buttons = Input::JUMP;
+    g.step(fire);
+    assert(g.jetting && g.jetUsed && g.ammo[a.team][jp] == 0 && g.fuel == WEAPONS[jp].fuse && WEAPONS[jp].speed == 20);
+    float vy = a.vel.y, h = a.pos.y - g.water, fuel = g.fuel;
+    g.step(fire);
+    assert(fabsf(a.vel.y - vy - (20 * sinf((1 - h / 100) * PI / 2) - G) * DT) < 1e-4f && fabsf(g.fuel - (fuel - DT)) < 1e-6f);
+    fuel = g.fuel;
+    for (int t = 0; t < 30; t++) g.step(none);
+    g.step(jump);
+    assert(g.jetting && g.fuel == fuel);  // coasting burns nothing, JUMP does not switch it off
+    float yaw = a.yaw;
+    Input turn;
+    turn.turn = 127;
+    for (int t = 0; t < 60; t++) g.step(turn);
+    assert(fabsf(a.yaw - yaw - Game::JET_TURN) < 1e-3f);  // 2 x TurnRotationSpeed 0.0092 per 20 ms
+    a.pos = {20, 55, 20}, a.vel = {5, 0, 0}, a.yaw = 0;
+    g.step(none);
+    assert(fabsf(a.vel.x - 5 * powf(0.95f, n)) < 1e-4f);  // XZWindResNoThrust
+    a.pos = {20, 55, 20}, a.vel = {5, 0, 0}, a.yaw = PI / 2;
+    Input glide;
+    glide.walk = 127;
+    g.step(glide);
+    assert(fabsf(a.vel.x - 5 * powf(0.999f, n)) < 1e-4f);  // XZWindResThrust: the stick leans along the motion
+    a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.yaw = 0;
+    g.boost = 0;
+    Input ahead = fire;
+    ahead.walk = 127;
+    g.step(ahead);
+    h = 55 - g.water;
+    float t = 20 * DT * sinf((1 - h / 100) * PI / 2);
+    assert(fabsf(a.vel.z - t * sinf(0.3f)) < 1e-4f && fabsf(a.vel.y - (t * cosf(0.3f) - G * DT)) < 1e-4f);  // FwdThrustRotation 0.3
+    a.pos = {20, 55, 20}, a.vel = {0, -10, 0};
+    g.step(fire);
+    assert(g.boost > 0);  // SuperThrust: falling past 0.15 units/ms
+    float water = g.water;
+    g.water = -50, a.pos = {20, 55, 20}, a.vel = {0, 1, 0}, g.boost = 0;  // 105 m over the water: past MaxAltitude 2000 units
+    g.step(fire);
+    assert(fabsf(a.vel.y - (1 - G * DT)) < 1e-4f);
+    g.water = water;
+    g.fuel = 0.03f, a.pos = {20, 55, 20}, a.vel = {0, 0, 0};
+    g.step(fire);
+    g.step(fire);
+    assert(!g.jetting && g.jetUsed && g.ammo[a.team][jp] == 0);  // dry: 0x562990, it falls
+    Vector3 ground;
+    assert(g.terrain.raycast({{20, 60, 20}, {0, -1, 0}}, 60, &ground));
+    a.pos = Vector3Add(ground, {0, Game::R + 0.1f, 0}), a.vel = {0, 0, 0};
+    int hp = a.hp;
+    for (int k = 0; k < 600 && !a.grounded; k++) g.step(none);
+    assert(a.grounded && g.phase == Phase::Aim);
+    g.fuel = 5;
+    g.step(fire);
+    assert(g.jetting && g.ammo[a.team][jp] == 0);  // a landed jetpack takes off again on its own fuel
+    a.vel = {0, -25, 0};
+    for (int k = 0; k < 600 && g.jetting; k++) g.step(none);
+    assert(!g.jetting && a.grounded && a.hp == hp);  // landing ends it; no fall damage under the jetpack
+    // with it out, the hand only takes what it drops (W4M 0x565d30 case 0)
+    for (const char *w : {"Bazooka", "Shotgun", "Dynamite", "Landmine", "Sheep", "Teleport"}) g.ammo[a.team][weaponNamed(w)] = 1;
+    g.step(fire);
+    assert(g.jetting);
+    for (int k = 0; k < 2 * (int)WEAPONS.size(); k++) {
+        Input next;
+        next.buttons = k % 2 ? 0 : Input::NEXT_WEAPON;
+        next.buttons |= Input::FIRE;
+        g.step(next);
+        const WeaponDef &d = WEAPONS[g.weapon];
+        assert(d.kind == Kind::Jetpack || d.name == "Dynamite" || d.name == "Landmine" || d.name == "Sheep");
+    }
+    Game c = g;
+    c.fuel += 1;
+    assert(c.checksum() != g.checksum());
+    Ai cpu;  // the CPU has no switch-off either: in flight off its plan it just stops thrusting
+    for (int k = 0; k < 5; k++) assert(!(cpu.think(g).buttons & (Input::JUMP | Input::FIRE)));
 }
 
 // W4M Alien Abduction: worms under the UFO lose half their health and are lifted.
@@ -1806,6 +1963,7 @@ int main() {
     checkJumps();
     checkJumpTrajectory();
     checkPayloadForces();
+    checkLaunchAtWall();
     checkWallClearance();
     checkWalkW4M();
     checkSelfHurtEndsTurn();
@@ -1820,6 +1978,7 @@ int main() {
     checkFuse();
     checkParachute();
     checkToolWeapons();
+    checkJetpack();
     checkAbduction();
     checkSuperSheep();
     checkOldWoman();

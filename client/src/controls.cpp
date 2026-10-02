@@ -17,7 +17,7 @@ static const float AIM_YAW = 1.1f, AIM_PITCH = 0.7f, AIM_TURN = 1.2f, AIM_CURVE 
 static const float TURN_GAIN = 8, STEP = 0.25f, FACE = 0.9f, BACK = 2.4f;  // BACK: error past which the worm about-faces
 // Camera: orbit speeds (rad/s), idle seconds before it swings back behind the worm, default elevation.
 static const float AIM_FOCUS = 40;  // aim camera looks at this far point of the shot line (screen centre)
-static const float CAM_YAW = 2.8f, CAM_PITCH = 1.4f, RECENTER_AFTER = 2.5f, EL0 = 0.42f;
+static const float CAM_YAW = 2.8f, CAM_PITCH = 1.4f, RECENTER_AFTER = 2.5f, EL0 = 0.255f;  // ShoulderCamera DefaultHeight
 // Gyro: dead band (rad/s, hand tremor), axis signs (check on hardware), mouse rad per pixel.
 static const float GYRO_FLOOR = 0.06f, GYRO_YAW = 1, GYRO_PITCH = 1, MOUSE = 0.004f;
 static const float SIM_TURN = 2.5f, SIM_AIM = 1.5f;  // sim rad/s at +-127 (Game::step)
@@ -211,8 +211,9 @@ Input read(const Game &g, int pad, bool live, float dt) {
             turn = Clamp(err * TURN_GAIN, -SIM_TURN, SIM_TURN);
             walk = m > STEP && fabsf(err) < FACE ? m * cosf(err) : 0;
             back = m > STEP && fabsf(err) > BACK;
+            if (g.jetting) walk = fmaxf(m * cosf(err), 0), back = false;  // W4M 0x562ac2: forward thrust once the stick leans along the facing
         }
-        if (g.roped || g.jetting) aim = rs.y * SIM_AIM * inv;  // reel in / out, or aim the weapon in hand
+        if (g.roped) aim = rs.y * SIM_AIM * inv;  // reel in / out, or aim the weapon in hand
     }
     if (kb && !tv && !gk) {  // arrows turn and walk, W S aim, right mouse button held: mouse aim
         turn += (IsKeyDown(KEY_LEFT) - IsKeyDown(KEY_RIGHT)) * SIM_TURN;
@@ -236,7 +237,8 @@ Input read(const Game &g, int pad, bool live, float dt) {
     refusedNow = tv && fireDown && !(prevFire & Input::FIRE) && g.cursorOn && !g.blimpHit(&hit);  // W4M NotClearToFire: no target
     prevFire = (fireDown ? Input::FIRE : 0) | (jumpDown ? Input::JUMP : 0);
     if (swallowFire || (live && held && !tv)) in.buttons &= ~Input::FIRE;  // W4M 0x583a10: no launch outside the Blimp view
-    if (jumpDown && !tv && !swallowJump) in.buttons |= Input::JUMP;
+    if (g.jetting) { if (zl || (kb && IsKeyDown(KEY_BACKSPACE))) in.buttons |= Input::JUMP; }  // W4M Fire.Second (LT, Backspace): drop; no jump
+    else if (jumpDown && !tv && !swallowJump) in.buttons |= Input::JUMP;
     bool r = down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) && !lHeld;  // L+R: perf overlay
     if (r || down(pad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT) || (kb && IsKeyDown(KEY_TAB))) in.buttons |= Input::NEXT_WEAPON;
     if (fuseKeys(g)) {  // W4M FuseUp on the d-pad (camera zoom otherwise)
@@ -284,18 +286,18 @@ bool firstPerson(const Game &g) {
 // On the sim's shot line (rays and launches start at pos + dir * t): the screen centre is where the shot goes.
 Vector3 eye(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Subtract(w.pos, Vector3Scale(g.aimDir(w), 0.5f)); }
 
-// W4M TrackCam (docs/camera-w4m.md 2), ViewPoints in m (units / 20) around the event point. Payload: until 1 s of flight
-// an on-screen shot stays with the worm camera; worm and crate: no cut when they start on screen (CutWhenStartOffScreen)
+// W4M TrackCam (docs/camera-w4m.md 2), ViewPoints in m (units / 20) around the event point (the predicted impact or landing).
+// Payload: requested when its impact point is off screen or after 1 s of flight; worm and crate: CutWhenStartOffScreen
 static const Vector3 PAYLOAD_VP[] = {{-5, 10, 15}, {5, 10, 15}, {1.25f, 2.5f, 2.5f}, {-1.25f, 2.5f, 2.5f}, {3.75f, 5, 3.75f}, {-3.75f, 5, 3.75f},
                                      {2.5f, 3.75f, -2.5f}, {-2.5f, 3.75f, -2.5f}, {2.5f, -2.5f, 3.75f}, {-2.5f, -2.5f, 3.75f}, {0, 1.5f, 0}};
-static const Vector3 FATKINS_VP[] = {{10, 5, 25}, {-10, 5, 25}, {10, 5, -25}, {-10, 5, -25}};
+static const Vector3 FATKINS_VP[] = {{10, 5, -25}, {10, 5, 25}, {-10, 5, 25}, {-10, 5, -25}};
 static const Vector3 WORM_VP[] = {{3.5f, 4, 10}, {-3.5f, 1.5f, 9}, {-2.5f, 3, 10}, {2.5f, 2.5f, 11.5f}, {1, 3, 15}, {0.5f, 1, 5}, {-0.5f, 1.5f, 5},
                                   {-1.5f, 6, 10}, {0.5f, 1.25f, 4}, {0.5f, 4, -10}, {-1.5f, 3, -9}, {0.5f, 1, -4}, {0, 4, 0}};
 static const Vector3 CRATE_VP[] = {{0, 5, 15}, {0, 5, -15}, {15, 5, 0}, {-15, 5, 0}, {0, 25, 2.5f}};
 struct TrackDef { const Vector3 *vp; int n; float far, pref, zoom; bool startCut; };  // Camera2ObjectDistance, MinPreferredDistance m, ZoomSpeed /s
 static const TrackDef PAYLOAD_T = {PAYLOAD_VP, 11, 65, 30, 1.15f, false}, FATKINS_T = {FATKINS_VP, 4, 50, 25, 1.15f, false},
                       WORM_T = {WORM_VP, 13, 30, 10, 0.09f, true}, CRATE_T = {CRATE_VP, 5, 25, 10, 0.54f, true};
-static struct { bool on, cutDone, force; int idx, prio, worm = -1; float flight, cutAgo, rest; Vector3 e, d, obj; const TrackDef *def; } tk;
+static struct { bool on, cutDone, force, seen, frame; int idx, prio, worm = -1, last = -1; float flight, cutAgo, rest; Vector3 e, d, obj, ov, pv; const TrackDef *def; } tk;
 static struct { int prio, worm; Vector3 e, d; float age; } pend;  // the one pending event-camera request (CMS +0x350)
 static float sinceTrack = 9, floodT = 99, lastWater = 0;
 static int lastDying = -1;
@@ -347,28 +349,40 @@ static void watch(const Game &g, const Camera3D &cam, float dt) {
     }
 }
 
-// Shared TrackCam step on tk (e, d, obj set): hard cut to the first clear ViewPoint, 2 a frame; false until one is found
+// Shared TrackCam step on tk (e, d, obj, ov set), 0x532460: no cut while the object stays in clear view, else a hard cut to
+// the first clear ViewPoint from the kept search index, 2 a frame; the camera is inherited from the one before
 static bool trackStep(Camera3D &cam, const Game &g, float dt) {
     const TrackDef &t = *tk.def;
     tk.cutAgo += dt;
     Vector3 hit, to = Vector3Subtract(tk.obj, cam.position);
-    bool lost = !onScreen(cam, tk.obj) || Vector3Length(to) >= t.far || g.terrain.raycast({cam.position, Vector3Normalize(to)}, Vector3Length(to) - 0.5f, &hit);
-    if (!tk.cutDone && t.startCut && !lost && !tk.force) tk.cutDone = true, tk.cutAgo = 1;
-    auto side = [&](Vector3 p) { return tk.d.z * (p.x - tk.e.x) - tk.d.x * (p.z - tk.e.z); };  // never crosses the travel line
-    for (int k = 0; k < 2 && (!tk.cutDone || (lost && tk.cutAgo >= 1)); k++, tk.idx = (tk.idx + 1) % t.n) {
+    bool in = onScreen(cam, tk.obj);
+    tk.seen |= in;  // +0xb9: off screen only counts once seen, or from the start with CutWhenStartOffScreen
+    bool lost = (!in && (tk.seen || t.startCut)) || Vector3Length(to) >= t.far || g.terrain.raycast({cam.position, Vector3Normalize(to)}, Vector3Length(to) - 0.5f, &hit) ||
+                (tk.force && tk.last < 0);
+    Vector3 h = {tk.ov.x, 0, tk.ov.z}, od = Vector3Length(h) > 0.05f ? Vector3Normalize(h) : tk.d;  // 0x5321b0: its velocity, else the event's
+    auto side = [&](Vector3 p) {  // never crosses the object's line of travel
+        Vector3 v = {tk.obj.x - p.x, 0, tk.obj.z - p.z};
+        float L = Vector3Length(v);
+        return L > 0.01f ? (od.z * v.x - od.x * v.z) / L : 0;
+    };
+    for (int k = 0; k < 2 && lost && (tk.cutAgo >= 1 || tk.last < 0); k++, tk.idx = (tk.idx + 1) % t.n) {
         const Vector3 &o = t.vp[tk.idx];
         Vector3 c = Vector3Add(tk.e, {o.x * tk.d.z + o.z * tk.d.x, o.y, -o.x * tk.d.x + o.z * tk.d.z});
         Vector3 a = Vector3Subtract(tk.obj, c), b = Vector3Subtract(tk.e, c);
-        if (c.y < g.water + 1 || g.terrain.solid(c) || (tk.cutDone && side(c) * side(cam.position) < 0) || g.terrain.raycast({c, Vector3Normalize(a)}, Vector3Length(a) - 0.5f, &hit) ||
+        if (c.y < g.water + 1 || g.terrain.solid(c) || side(c) * side(cam.position) < -1e-5f || g.terrain.raycast({c, Vector3Normalize(a)}, Vector3Length(a) - 0.5f, &hit) ||
             (Vector3Length(b) > 0.5f && g.terrain.raycast({c, Vector3Normalize(b)}, Vector3Length(b) - 0.5f, &hit)))
             continue;
-        cam.position = c, cam.target = tk.obj, tk.cutAgo = 0, tk.cutDone = true;  // hard cut
+        if (tk.idx != tk.last) cam.position = c, cam.target = tk.obj, tk.cutAgo = 0, tk.last = tk.idx, tk.cutDone = true;  // hard cut; the same ViewPoint: none
         break;
     }
-    if (!tk.cutDone) return false;
     cam.target = Vector3Lerp(cam.target, tk.obj, 1 - expf(-dt * 6.3f));  // LookSpeed 0.1/frame
-    if (Vector3Distance(cam.position, tk.obj) < t.pref)
-        cam.position = Vector3Lerp(cam.position, Vector3Add(tk.obj, Vector3Scale(Vector3Normalize(Vector3Subtract(cam.position, tk.obj)), t.pref)), 1 - expf(-dt * t.zoom));
+    Vector3 back = Vector3Subtract(cam.position, tk.obj);
+    bool coming = Vector3Length(tk.ov) < 0.01f || Vector3DotProduct(Vector3Subtract(cam.target, cam.position), tk.ov) < 0;
+    if (coming && Vector3Length(back) < t.pref) {  // 0x533190: backs off an object at rest or heading at it, clipped by land
+        Vector3 want = Vector3Add(tk.obj, Vector3Scale(Vector3Normalize(back), t.pref)), w = Vector3Subtract(want, cam.position);
+        if (Vector3Length(w) > 0.01f && g.terrain.raycast({cam.position, Vector3Normalize(w)}, Vector3Length(w), &hit)) want = Vector3Lerp(cam.position, hit, 0.9f);
+        cam.position = Vector3Lerp(cam.position, want, 1 - expf(-dt * t.zoom));
+    }
     cam.position.y = fmaxf(cam.position.y, g.water + 1);
     if (g.terrain.solid(cam.position)) cam.position.y += 15 * dt;
     cam.fovy = Lerp(cam.fovy, 50.0f, 1 - expf(-dt * 8));
@@ -405,15 +419,29 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         bool still = !w.alive || (w.grounded && Vector3Length(w.vel) < 0.1f);
         if ((still && (tk.rest -= dt) <= 0) || (g.phase == Phase::Aim && !tk.force)) return tk = {}, false;
         if (w.pos.y > g.water - 2) tk.obj = Vector3Add(w.pos, {0, 0.5f, 0});  // sinking: stops following
+        tk.ov = w.vel;
         return trackStep(cam, g, dt);
     }
-    if (framing) return false;
+    if (framing) {  // W4M "Worm Dying" / "Worm Displaying Damage Taken": a WormTrackCamera request at 5 on the counted worm
+        if (!tk.frame || Vector3Distance(tk.e, focusAt) > 2) {
+            const Worm *n = nullptr;
+            for (const Worm &w : g.worms) if (Vector3Distance(w.pos, focusAt) < 2.5f && (!n || Vector3Distance(w.pos, focusAt) < Vector3Distance(n->pos, focusAt))) n = &w;
+            Vector3 f = Vector3Subtract(cam.target, cam.position);
+            f.y = 0;
+            tk = {}, tk.on = tk.frame = true, tk.def = &WORM_T, tk.prio = 5, tk.e = focusAt;  // event direction: the worm's facing (group: the view's)
+            tk.d = n ? Vector3{sinf(n->yaw), 0, cosf(n->yaw)} : Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};
+        }
+        tk.obj = focusAt;
+        return trackStep(cam, g, dt);
+    }
+    if (tk.frame) tk = {};
     if (focusOn && focusCrate) {  // CrateTrackCamera, its own position as the event point
         if (tk.def != &CRATE_T) {
             Vector3 f = Vector3Subtract(cam.target, cam.position);
             f.y = 0;
             tk = {}, tk.on = true, tk.def = &CRATE_T, tk.prio = 1, tk.d = Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};
         }
+        tk.ov = dt > 0 && tk.obj.y ? Vector3Scale(Vector3Subtract(focusAt, tk.obj), 1 / dt) : Vector3{};
         tk.e = tk.obj = focusAt;
         return trackStep(cam, g, dt);
     }
@@ -482,12 +510,22 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         tk = {};
         return false;
     }
-    if (tk.flight == 0) {
-        Vector3 v = {s->vel.x, 0, s->vel.z};
-        tk.e = s->pos, tk.d = Vector3Length(v) > 0.1f ? Vector3Normalize(v) : Vector3{sinf(g.worms[g.current].yaw), 0, cosf(g.worms[g.current].yaw)};
+    if (tk.flight == 0 || Vector3Distance(s->vel, tk.pv) > 1.5f) {  // launch or bounce: FindFirstEvent 0x576580 (0x574e90, sweep 0x466ae0)
+        Vector3 p = s->pos, v = s->vel, hv;  // the event: its first predicted land / water contact, or where the fuse runs out
+        float fuse = wd->fuse > 0 && !wd->restFuse && !s->child ? s->fuse : 1e9f;
+        for (int k = 0; k < 600 && p.y > g.water && (fuse -= Game::DT) > 0; k++) {
+            v.y -= g.gravity() * (s->child ? 1 : wd->grav) * Game::DT;
+            if (wd->wind || (g.cfg.wormpot & WP_WIND_ALL)) v.x += g.wind * Game::WIND_ACCEL * Game::DT;
+            Vector3 n = Vector3Add(p, Vector3Scale(v, Game::DT));
+            if (g.terrain.solid(n)) break;
+            p = n;
+        }
+        hv = {v.x, 0, v.z};
+        tk.e = p, tk.d = Vector3Length(hv) > 0.1f ? Vector3Normalize(hv) : Vector3{sinf(g.worms[g.current].yaw), 0, cosf(g.worms[g.current].yaw)};
+        if (!tk.on) tk.flight = 0;  // +0x1a8: flight time since the last event
     }
-    tk.flight += dt, tk.obj = s->pos;
-    if (!tk.on && tk.flight < 1 && onScreen(cam, tk.obj)) return chase = false, false;  // ShoulderCamera meanwhile
+    tk.flight += dt, tk.obj = s->pos, tk.ov = tk.pv = s->vel;
+    if (!tk.on && tk.flight < 1 && onScreen(cam, tk.e)) return chase = false, false;  // ShoulderCamera meanwhile
     tk.on = true, tk.rest = 1.5f, tk.prio = 2, tk.def = fat ? &FATKINS_T : &PAYLOAD_T;
     return trackStep(cam, g, dt);
 }
@@ -574,6 +612,18 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
         fpOut = 0, cut = false;
         return;
     }
+    static float jetEl = 0.5f;
+    if (!focusOn && !chase && g.jetting) {  // W4M JetpackCamMkII 0x52b4c0: no input; behind the worm's yaw, pitch eases to 0.5 - 4 vy
+        float want = 0.5f - 4 * cur.vel.y / 50, k = cut ? 1 : 1 - powf(0.99f, dt / 0.02f);  // DefaultPitch, PitchScale (vy units/ms), PitchSpeed
+        jetEl += (want - jetEl) * k, camYaw = cur.yaw, camEl = Clamp(jetEl, 0.05f, 1.2f);  // MinPitch / MaxPitch -70 / 60 never bind
+        const float L = 11.5f;  // StickLength 230 units
+        Vector3 e = Vector3Add(cur.pos, {-sinf(cur.yaw) * cosf(jetEl) * L, sinf(jetEl) * L, -cosf(cur.yaw) * cosf(jetEl) * L});
+        e.y = fmaxf(e.y, g.water + 0.25f);  // over Water.Level + 5 units
+        cam.position = cut ? e : Vector3Lerp(cam.position, e, 1 - expf(-dt * 8)), cam.target = cur.pos, cam.fovy = 50;
+        fpOut += dt, cut = false;
+        return;
+    }
+    jetEl = 0.5f;
     if (track(cam, g, chase, dt, focusOn && !focusCrate)) { fpOut += dt, cut = false; return; }
     Vector3 focus = focusOn ? focusAt : cur.pos, from = focus, want;
     if (focusOn) chase = false;
@@ -587,7 +637,7 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     fpOut += dt;
     float kt = cut ? 1 : 1 - expf(-dt * 6), kp = cut ? 1 : 1 - expf(-dt * (pet ? 6 : chase ? 2.5f : 3));
     {
-        float back = (chase && !pet ? 17.5f : pet ? 8.5f : g.roped && !focusOn ? 20 : focusOn ? fmaxf(7.5f, focusR * 3 + 4) : 9.85f) * zoom;  // fov 50: 3 r fits r, labels included
+        float back = (chase && !pet ? 17.5f : pet ? 8.5f : g.roped && !focusOn ? 20 : focusOn ? fmaxf(7.5f, focusR * 3 + 4) : 8.5f) * zoom;  // Shoulder DistFromObject 170 units; fov 50: 3 r fits r
         bool group = (focusOn && focusR > 0) || champ;  // hp count of several worms, winner: from higher, around the scenery in the way
         float el = group ? fmaxf(camEl, 0.75f) : pet ? petEl : camEl;  // W4M *ChaseCamera: dist 170, DefaultHeight 0.255 rad
         for (float dy : {0.0f, 0.8f, -0.8f, 1.6f, -1.6f, 2.4f, -2.4f, 0.0f}) {

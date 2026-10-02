@@ -119,6 +119,7 @@ Les vitesses sont données en unités par image de 20 ms. Cette unité est suppo
 ## Autres animations
 
 - **Saut sur un rebord (Vaulting 0x5aca80).** W4M déplace le ver vers la cible de 4 unités par image, 250 ms au plus, sans collision, et joue le clip `Vault` (événement 9). Le sim monte d'un coup. Le rendu trace donc le ver en retard de ce décalage, qui se résorbe à 10 m/s, et joue `Vault`. Choix : seulement au rendu, pour garder la prédiction de l'IA (`walkStep`) et l'état du sim inchangés.
+- **Noyade (kWPS_DrownFloat, état 8, 0x5a06b0).** W4M ne tient pas la dernière image de FallDrown : il fait défiler le clip avec clamp(vy·10, −1, 1), vy en unités/ms. Au repos sur l'eau, on est au milieu du clip : le ver allongé, mains de part et d'autre. En coulant, on est vers le début ; en remontant, vers la fin, où il se retourne. Ici, vy est la dérivée de la plongée et de l'oscillation dessinées. La correspondance entre −1..1 et le temps du clip, 0..L, est supposée. Avant, deux erreurs plaçaient le ver debout dans l'eau, mains au-dessus du corps : l'image finale tenue (ver la tête en bas), et, depuis d2f99f8, une chaîne `else if` cassée par le code du parachute qui remplaçait FallDrown par Fall ou Wave.
 - **Parachute (WAE_Parachute 0x58f180, ParachuteLogicEntity 0x578b77).**
   - La voile joue `FireParachute` à l'ouverture.
   - Ensuite, la voile et le ver jouent `ParachuteLR` au temps 1 − lr.

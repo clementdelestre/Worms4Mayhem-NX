@@ -26,7 +26,7 @@ Addresses are virtual addresses in `WormsMayhem.exe`, image base 0x400000.
   - `HomingMissileFlyCamera`: Homing Missile.
   - Empty: Airstrike, Super Airstrike, Landmine, Fatkins food, Sentry payload.
 - **The container class decides the camera type** (`PayloadLogicEntity`, function 0x575320, called while the payload is alive):
-  - `TrackCameraContainer`: the payload requests a track camera (0x51bf80, priority 2) if its event point is off screen **or** its flight time is greater than `Camera.Track.MinEventTime` = 1000 ms. Disasm; the flight-time comparison itself is only medium confidence.
+  - `TrackCameraContainer`: the payload requests a track camera (0x51bf80, priority 2) if its event point (+0x12c, the predicted first contact, §2) is off screen (0x51b3b0) **or** +0x1a8 is greater than `Camera.Track.MinEventTime` = 1000 ms. +0x1a8 is rewritten by FindFirstEvent (0x5766cb) at launch and at each bounce, so it reads as the flight time since the last event (medium confidence).
   - `ChaseCameraPropertiesContainer`: chase camera starts immediately (0x51d5e0, active priority 6).
   - Fly cameras are started explicitly with `SetCamera("FlyCam")` (0x57e380), by Super Sheep, Starburst and Homing.
 
@@ -74,41 +74,51 @@ Fields of `TrackCameraContainer`, all data:
 | MinTimeBetweenCuts (ms) | 1000 | 1000 | 1000 | 1000 |
 | CutWhenStartOffScreen | 1 | 0 | 0 | 1 |
 
-Candidate offsets (data), in order (x lateral, y up, z along the event direction):
+Candidate offsets (data), in order (x lateral, y up, z along the event direction), with the elevation of the offset seen from the event point, atan(y / √(x² + z²)):
 
-- **Payload:** (-100,200,300) (100,200,300) (25,50,50) (-25,50,50) (75,100,75) (-75,100,75) (50,75,-50) (-50,75,-50) (50,-50,75) (-50,-50,75) (0,30,0)
-- **Worm:** (70,80,200) (-70,30,180) (-50,60,200) (50,50,230) (20,60,300) (10,20,100) (-10,30,100) (-30,120,200) (10,25,80) (10,80,-200) (-30,60,-180) (10,20,-80) (0,80,0)
-- **Crate:** (0,100,±300) (±300,100,0) (0,500,50)
-- **Fatkins:** (±200,100,±500)
+| # | Payload | el | Worm | el | Crate | el | Fatkins | el |
+|---|---|---|---|---|---|---|---|---|
+| 0 | (-100,200,300) | 32° | (70,80,200) | 21° | (0,100,300) | 18° | (200,100,-500) | 11° |
+| 1 | (100,200,300) | 32° | (-70,30,180) | 9° | (0,100,-300) | 18° | (200,100,500) | 11° |
+| 2 | (25,50,50) | 42° | (-50,60,200) | 16° | (300,100,0) | 18° | (-200,100,500) | 11° |
+| 3 | (-25,50,50) | 42° | (50,50,230) | 12° | (-300,100,0) | 18° | (-200,100,-500) | 11° |
+| 4 | (75,100,75) | 43° | (20,60,300) | 11° | (0,500,50) | 84° | | |
+| 5 | (-75,100,75) | 43° | (10,20,100) | 11° | | | | |
+| 6 | (50,75,-50) | 47° | (-10,30,100) | 17° | | | | |
+| 7 | (-50,75,-50) | 47° | (-30,120,200) | 31° | | | | |
+| 8 | (50,-50,75) | -29° | (10,25,80) | 17° | | | | |
+| 9 | (-50,-50,75) | -29° | (10,80,-200) | 22° | | | | |
+| 10 | (0,30,0) | 90° | (-30,60,-180) | 18° | | | | |
+| 11 | | | (10,20,-80) | 14° | | | | |
+| 12 | | | (0,80,0) | 90° | | | | |
 
-Rules (disasm unless marked otherwise):
+Rules (disasm unless marked otherwise). Update 0x533950 calls 0x532a50 (object, object direction, event point, event direction), then the cut search 0x532460, then the back-off 0x533190.
 
-1. **Frame.**
+1. **Frame** (0x532460, 0x5321b0).
    - The base point is the **event point**, not the object:
-     - payload: its launch position, updated at bounces (`+0x12c`);
-     - worm: `Camera.Track.EventPosition`;
+     - payload: `ParabolicPayloadLogicEntity` +0x12c, written by FindFirstEvent (0x576580, sweep 0x574e90 → 0x466ae0): the **predicted first contact** of the current flight (land, water, disarm or expiry plane, or where the fuse runs out), recomputed at launch and after each bounce. +0x138 is the velocity there. TrackCam reads both every frame (0x532ad2);
+     - worm: `Camera.Track.EventPosition`, its predicted landing point;
      - crate: its own position.
-   - The forward axis `d` is the horizontal, normalised event velocity. It falls back to the object's horizontal velocity, then to the direction the object faces.
-   - Candidate = `event + x·(d.z,0,-d.x) + y·(0,1,0) + z·d`. The lateral sign is unchecked, but the offsets come in symmetric pairs so it does not matter.
+   - Event direction `d`: the horizontal, normalised event velocity, else the object direction. Object direction: the object's horizontal velocity, else its facing.
+   - Candidate = `event + x·(d.z,0,-d.x) + y·(0,1,0) + z·d` (0x5326b9–0x532840). `(d.z,0,-d.x)` is up × d. y is world up, relative to the event point's height. Offsets are not scaled. +z is **ahead** of the event point along the travel, so a payload camera stands beyond the impact point, looking back at the incoming shot.
    - A worm's look-at point is its position + 10 in y.
-2. **Accepting a candidate.** All of these must hold:
-   - clear segment ray against the land from the candidate to the object (0x51abf0, a land segment cast);
-   - clear segment ray from the candidate to the event point;
+2. **When it searches.** Every frame, if (off screen **and** +0xb9) **or** the camera-to-object segment hits land **or** distance ≥ `Camera2ObjectDistance`, **and** ≥ `MinTimeBetweenCuts` since the last cut.
+   - +0xb9 starts at `CutWhenStartOffScreen` (0x5338ec) and is set once the object has been on screen. So a payload that starts off screen, never seen, does not cut for that reason.
+   - Activation (0x5337c0) copies position, look-at and up from the camera before and sets the cut timer to `MinTimeBetweenCuts`: **no cut is forced**. A payload in clear view, closer than 1300, keeps the worm camera's position and is only followed by the look-at.
+3. **Accepting a candidate.** All of these must hold:
+   - the 2D sign of `cross(object direction, object − candidate)` agrees with that of the current camera (product > −1e-5): the camera never crosses the object's line of travel. Tested at every search, the first one included;
+   - clear segment from the candidate to the object (0x51abf0);
    - candidate y > water level + `MinPosition`;
-   - the candidate is on the **same side of the travel direction** as the current camera: the 2D cross-product sign is kept, so the camera never crosses the line.
-3. **Searching.**
-   - The search index persists between frames and starts at 0 on activation.
-   - At most 2 candidates are tested per frame, round-robin, so the list order is the preference order.
-   - On acceptance: **hard cut**. Position = candidate, look-at = object, up = (0,1,0), cut timer reset.
-4. **Re-cut condition.** All re-checked every frame:
-   - the object is off screen, line of sight is blocked, or distance ≥ `Camera2ObjectDistance`;
-   - **and** at least `MinTimeBetweenCuts` has passed since the last cut.
-   - `CutWhenStartOffScreen` forces a cut at activation when the object starts off screen.
+   - clear segment from the candidate to the event point.
+4. **Search order.**
+   - Index +0xbc starts at 0 at activation and **persists**; it is never reset after a cut.
+   - At most 2 candidates per frame; a refused one advances the index (mod count), an accepted one does not.
+   - Accepted: if it is the index of the last cut (+0x70, −1 at activation), **no cut**; otherwise a hard cut (position = candidate, look-at = object, up = (0,1,0)), cut timer reset.
 5. **Between cuts:**
-   - look-at: `lerp(lookAt, object, LookSpeed)` per frame;
+   - look-at: `lerp(lookAt, object, LookSpeed)` per frame, while the object exists;
    - up: `lerp(up, (0,1,0), UpSpeed)`;
-   - distance: if the camera is closer than `MinPreferredDistance`, it backs off along object→camera with `lerp(…, ZoomSpeed)`;
-   - height: y is clamped to at least water + `MinPosition`, following water rise;
+   - back-off (0x533190): only when the object is at rest or moving toward the camera (look direction · velocity < 0), and closer than `MinPreferredDistance`: the camera lerps at `ZoomSpeed` toward object + MinPreferred·(camera − object)/|…|, that target clipped by 0x51b040 (the camera.cpp clip chain 0x51ae40 / 0x51af90 / 0x51ac40);
+   - height: y eases to at least water + `MinPosition`;
    - if the camera sphere-tests inside land (radius -30, function 0x466a20), y += 5 per frame.
 6. **End.**
    - Payload or crate: when the tracked entity disappears (explosion), the camera **freezes and keeps looking at the last point** for `Camera.Track.RestTime` = 1500 ms (vtable +7, 0x5334b0). The TrackCam is then finished.
@@ -119,22 +129,13 @@ Rules (disasm unless marked otherwise):
 
 All four cases follow from the rules above (disasm + data):
 
-1. **Close view, no cut.** The grenade stays on screen and lands before the track request (event point off screen or flight > 1 s). In that case it is filmed by the current worm camera (`ShoulderCamera`, distance 170).
-2. **Far view, from the sky, slightly tilted.** This is the normal case: payload candidates 0 and 1 are accepted, at (±100, 200, 300) from the **throw point** along the throw direction.
-   - That is about 370 units out, looking down at about 30°, toward the grenade. Look-at is smoothed with LookSpeed 0.1.
-   - The camera then backs off to stay at least 600 from the grenade, with ZoomSpeed 0.019 per frame.
-3. **Close view, after a refused cut.** Candidates 0 and 1 are refused when:
-   - land blocks the ray to the grenade or to the throw/bounce point (a hill, a valley, under an overhang);
-   - or they would be under water + 20;
-   - or they would cross the line.
-
-   The search then moves on to the close offsets (±25, 50, 50), about 75 units out, then (±75,100,75), behind (±50,75,-50), low (±50,-50,75), and finally directly above (0,30,0). After a close cut the camera drifts back toward 600, but slowly.
-
-   A cut is re-evaluated after a bounce that changes the event point, when line of sight is lost, or beyond 1300 units, with at least 1 s between cuts. So the same throw can switch between far and close.
+1. **The thrower's view, no cut.** The track is requested at once if the predicted landing point is off screen, else after 1 s of flight since the last event. The TrackCam keeps the worm camera's position and turns to follow, as long as the grenade stays in clear view within 1300 units.
+2. **Far and high, beyond the landing point.** When the grenade is lost (behind land, off screen once seen, or beyond 1300), candidate 0 or 1 is taken: (±100, 200, 300) from the **predicted landing point**, 300 past it along the throw, 200 up: about 370 units out, 32° above the landing point, looking back at the grenade.
+3. **Close.** Candidates 0 and 1 are refused when land blocks the ray to the grenade or to the landing point, they would be under water + 20, or they would cross the line of travel. The search moves on to (±25, 50, 50), about 75 units out, then (±75,100,75), behind (±50,75,-50), low (±50,-50,75), and finally above (0,30,0). Each bounce moves the event point to the next predicted contact, so a later re-cut lands around it.
 4. **At the explosion.**
    - The track camera freezes for 1.5 s.
-   - Each worm sent flying asks for `WormTrackCamera`, but only if that worm or its landing point is **not** already visible. If they are visible, the far shot stays.
-   - Otherwise there is a hard cut 180–300 units from the explosion, along the direction the worm flies, 30–120 high. That is a close shot.
+   - Each worm sent flying asks for `WormTrackCamera`, but only if that worm or its landing point is **not** already visible. If they are visible, the shot stays.
+   - Otherwise a cut 80–300 units from the landing point, along the direction the worm flies, 20–120 high (9–31° from the landing point; 90° only for the last one).
    - `Camera.Shake.Exp*` is applied, scaled by the radius. The HHG has `WormDamageRadius` 187 versus 82.5 for the Bazooka, so its shake is much stronger.
 
 ## 3. Other cameras (data, CAMTWK)
@@ -153,7 +154,7 @@ All four cases follow from the rules above (disasm + data):
 | AlienAbduction / Donkey / MineFactory / SuperAirstrike / Flood | Simple | (PosUpdateSpeed, LookUpdateSpeed) = (1,1) / (1,0.1) / (1,0.1) / (1,0.1) / (0.01,0.01) |
 | Orbit (game over) | OrbitCam | `Camera.Orbit.Height` 450, `AdditionalRadius` 100, `Speed` 0.3. Disabled by `Script.NoOrbitCamera` = 1 (LOCAL default 0) |
 | Blimp (free view) | Isometric | HeightAboveLand 6, StickLength 500, DefaultPitch 1.0, Zoom 0.15–2.0, MoveSpeed 250 |
-| Jetpack | JetpackCamMkII | StickLength 230, Pitch -70..60, DefaultPitch 0.5, PosUpdateSpeed 0.995 |
+| Jetpack | JetpackCamMkII | StickLength 230, Pitch -70..60, DefaultPitch 0.5, PosUpdateSpeed 0.995. Update 0x52b4c0: no input; behind the worm's yaw, pitch += 0.01 (PitchSpeed) × (0.5 − PitchScale 4 × vy − pitch) each frame, the -70/60 clamp never binds, kept 5 units over Water.Level. Requested on take-off (0x5624b4), `Default` on landing / dry. "Jetpack Ground" (JetpackGroundCam) is created (0x522191) but never requested by name. Ours: controls.cpp `camera()` jetpack branch |
 | Shake | — | `Camera.Shake.ExpDurationScale` 800, `ExpMagScale` 1, `ExpRadiusScale` 8, `Max` 0.01; earthquake magnitude 1.0, 7000 ms |
 | Worm fade | — | `Camera.WormOpaqueDist` 50, `WormTransparencyDist` 25 (the opaque distance must be greater, per an exe assert) |
 
@@ -321,7 +322,7 @@ Units are W4M world units (20 per metre). Labels: data = read in CAMTWK/WEAPTWK/
 ## 8. Open points
 
 - Whether `PayloadLogic +0x1a8` is an elapsed time or a timestamp, which matters for the 1000 ms flight rule.
-- Exact sign of the TrackCam lateral axis. It does not matter, since the candidates come in symmetric pairs.
+- TrackCam lateral axis: up × d = (d.z, 0, −d.x) (0x5326b9). The pairs are symmetric, so the side only changes which of a pair comes first.
 - OccludingCam: `TimeBeforeZoomOut`, `ZoomOffsetDist` and `MinPosition` seem unused on PC; check before ignoring them.
 - Game over: the condition for 15 s instead of 5 s, the height reference and units of the orbit, and when input stops it.
 - Worm fade: what logical camera index 1 is exactly.

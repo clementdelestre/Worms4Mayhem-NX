@@ -9,8 +9,10 @@ float opacity(Vector3 cam, Vector3 worm);
 void depth();               // draw the worm after this: depth only
 void fade(float op);        // then draw it again: blended at op over the scene, nearest layer only
 void begin();               // per frame, inside BeginMode3D, before the worms
-bool mask(int team);        // draw the worm again after this: its depth into the mask; false if unavailable
-void hidden();              // then draw it once more: the grey fill where the scene hides it
+bool mask();                // one bind for all: team() then draw each worm into the mask; false if unavailable
+void team(int team);
+void unmask();              // after the masks, before the worms' own passes
+void hidden();              // after a worm's draw: draw it once more, the grey fill where the scene hides it
 void done();                // back to normal drawing (after any of the above)
 void outline(const Color *teams);  // after EndMode3D: the 4 team colours
 }

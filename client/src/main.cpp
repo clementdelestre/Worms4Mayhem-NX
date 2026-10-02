@@ -38,6 +38,22 @@
 
 extern "C" void glFinish(void);  // perf overlay only; rlgl does not wrap it
 extern "C" void glClear(unsigned int mask);
+#ifndef __SWITCH__  // bench only: draw calls and framebuffer binds, through the desktop rlgl's glad pointers
+extern "C" void (*glad_glDrawElements)(unsigned, int, unsigned, const void *), (*glad_glDrawArrays)(unsigned, int, int), (*glad_glBindFramebuffer)(unsigned, unsigned);
+static long glDraws, glBinds;
+static void (*realDE)(unsigned, int, unsigned, const void *);
+static void (*realDA)(unsigned, int, int);
+static void (*realBF)(unsigned, unsigned);
+static void countGl() {
+    realDE = glad_glDrawElements, realDA = glad_glDrawArrays, realBF = glad_glBindFramebuffer;
+    glad_glDrawElements = [](unsigned m, int c, unsigned t, const void *i) { glDraws++, realDE(m, c, t, i); };
+    glad_glDrawArrays = [](unsigned m, int f, int c) { glDraws++, realDA(m, f, c); };
+    glad_glBindFramebuffer = [](unsigned t, unsigned f) { glBinds++, realBF(t, f); };
+}
+#else
+static long glDraws, glBinds;
+static void countGl() {}
+#endif
 
 static const Color TEAM_COLORS[] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60, 190, 70, 255}, {240, 200, 40, 255}};
 
@@ -176,7 +192,7 @@ static const char *fireClip(const WeaponDef &d, bool *keep) {
 // act: one-shot clip started by a sim event (weapon use, flinch, drowning), held: item kept at the WeaponLocator meanwhile.
 struct WormAnim {
     Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, flip = false, nailed = false;
-    Vector3 vault{}; float vaultT = 9, chute = -1, lr = 0;  // vault: drawn lag behind a ledge climb; chute: s open, lr: WXWorm.ParachuteLR
+    Vector3 vault{}; float vaultT = 9, chute = -1, lr = 0, drowned = -1;  // drowned: s since it sank  // vault: drawn lag behind a ledge climb; chute: s open, lr: WXWorm.ParachuteLR
     struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr; } act;  // aim: Aim* clip layered on the arms
 };
 static std::vector<WormAnim> wormAnims;
@@ -205,6 +221,7 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         float dist = sqrtf(d.x * d.x + d.z * d.z), turn = fabsf(remainderf(w.yaw - a.yaw, 2 * PI));
         if (!a.init || dist > 2) { WormAnim::Act act = a.act; a = WormAnim{}, a.act = act, a.init = true, dist = turn = 0; }  // spawn, teleport, replay rewind
         a.pos = w.pos, a.yaw = w.yaw;
+        a.drowned = w.alive ? -1 : fmaxf(a.drowned, 0) + dt;
         // W4M Vaulting 0x5aca80: onto a 5..20-unit ledge at 4 units per 20 ms frame, at most 250 ms; the sim climbs at once
         if (w.grounded && a.air == 0 && d.y > Game::STEP && d.y <= Game::STEP_UP + 0.05f && dist < 1) a.vault = Vector3Add(a.vault, d), a.vaultT = 0;
         a.vaultT += dt;
@@ -298,11 +315,14 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     const char *acted = fp ? nullptr : Acting::clip(g, i, clock, &actT, &actLoop, &lay);
     const Models::Layers *ly = fp || !w.alive || w.hp <= 0 ? nullptr : &lay;  // dead or dying: the clip alone
     float drown = Models::clipLength("worm", "FallDrown");  // dead and still drawn: drowned, afloat until Settle pops it
-    if (!w.alive) clip = "FallDrown", t = a.act.clip ? fminf(a.act.t, drown) : drown, loop = false;
+    // W4M kWPS_DrownFloat 0x5a06b0: FallDrown scrubbed by clamp(vy x 10, -1, 1), vy in units/ms (0.02 per m/s); afloat = mid-clip
+    float sunk = fmaxf(a.drowned, 0), k = expf(1 - sunk / 0.3f), vy = -4 * k * (1 - sunk / 0.3f) + 0.15f * cosf(clock * 3);  // d/dt of the dip below
+    if (!w.alive) clip = "FallDrown", t = drown * (1 + Clamp(vy * 0.2f, -1, 1)) / 2, loop = false;
     else if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
-    else if (tool) clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteLR", held = g.roped ? "hold_rope" : nullptr;
-    if (tool && !g.roped && !g.jetting) t = 1 - a.lr, loop = false;  // WAE_Parachute 0x58f2b4: ParachuteLR at 1 - lr, on worm and canopy
-    else if (bool air = a.air > 0.15f || w.vel.y > 2; air && speed > 4) clip = "Blastflight2";  // knocked flying (short drops keep the pose)
+    else if (tool) {
+        clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteLR", held = g.roped ? "hold_rope" : nullptr;
+        if (!g.roped && !g.jetting) t = 1 - a.lr, loop = false;  // WAE_Parachute 0x58f2b4: ParachuteLR at 1 - lr, on worm and canopy
+    } else if (bool air = a.air > 0.15f || w.vel.y > 2; air && speed > 4) clip = "Blastflight2";  // knocked flying (short drops keep the pose)
     else if (air) {
         clip = a.flip ? "Backflip" : w.vel.y > 0 ? "Jump" : "Fall";
         if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
@@ -317,7 +337,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     } else if (w.hp < 25) clip = "Wounded";
     Color tint = Acting::tint(i, ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f));
     Vector3 p = Vector3Subtract({w.pos.x, w.pos.y - Game::R, w.pos.z}, a.vault);
-    if (!w.alive) p.y = g.water - FLOAT_DEPTH - 1.2f * t / 0.3f * expf(1 - t / 0.3f) + 0.05f * sinf(clock * 3);  // dips 1.2 m, bobs back up
+    if (!w.alive) p.y = g.water - FLOAT_DEPTH - 1.2f * sunk / 0.3f * k + 0.05f * sinf(clock * 3);  // dips 1.2 m, bobs back up
     float aimT = aim ? (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", aim) : 0;
     if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop, aim, aimT, ly)) return false;
     Matrix m;
@@ -420,7 +440,7 @@ static bool drawBovine(const Projectile &s, float clock) {
 }
 
 // Shells point along their velocity; fused throwables (grenades) tumble instead.
-static bool drawShot(const Projectile &s, float clock) {
+static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     const WeaponDef &d = WEAPONS[s.weapon];
     const std::string &n = d.name;
     if (s.child && d.kind == Kind::SuperSheep) return true;  // starburst stars: particles only (Fx::trail)
@@ -438,8 +458,8 @@ static bool drawShot(const Projectile &s, float clock) {
     if (d.kind == Kind::OldWoman) return Models::draw(m, {s.pos.x, s.pos.y - 0.3f, s.pos.z}, yaw, 0, WHITE, "Walk", clock);
     if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
     if (d.kind == Kind::Scouser) return Models::draw(m, s.pos, clock * 0.7f);
-    if (dropped(d)) return Models::draw(m, s.pos, 0);  // set down standing, it doesn't tumble
-    if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, s.pos, clock * 6, clock * 4);
+    if (dropped(d)) return Models::draw(m, restOn(t, s.pos, Models::bottom(m)), 0);  // set down standing, it doesn't tumble
+    if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, Vector3Length(s.vel) < 1 ? restOn(t, s.pos, Models::bottom(m)) : s.pos, clock * 6, clock * 4);
     return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h));
 }
 
@@ -449,7 +469,7 @@ int main(int argc, char **argv) {
 #ifdef __SWITCH__
     SetTraceLogCallback(logLine);
 #endif
-    if (argc > 1 && !strcmp(argv[1], "--netbot")) SetConfigFlags(FLAG_WINDOW_HIDDEN);
+    if ((argc > 1 && !strcmp(argv[1], "--netbot")) || getenv("W4NX_HIDDEN")) SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(1280, 720, "Worms4NX");
     SetExitKey(KEY_NULL);  // Esc is back / pause; quit from the title screen
     SetTargetFPS(60);
@@ -558,6 +578,10 @@ int main(int argc, char **argv) {
     uint8_t prevShotJump = 0;
     if (utilShot && !strcmp(utilShot, "Binoculars")) Controls::forceAim = 1;
     if (aimShot) Controls::forceAim = argc > 4 && !strcmp(argv[4], "fine") ? 2 : 1;
+    // W4NX_BENCH=<frames> [W4NX_LOCK=1] with --aimshot: that view, still from frame 60 (homing: locked), timed as --bench
+    int aimBench = aimShot && getenv("W4NX_BENCH") ? atoi(getenv("W4NX_BENCH")) : 0;
+    if (aimBench) bench = true, benchFrames = aimBench, SetTargetFPS(0);
+    if (bench) countGl();
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
     // server.txt on the SD card: "<host> [port] [name]", rewritten by the Options screen
@@ -597,8 +621,8 @@ int main(int argc, char **argv) {
         UnloadFileText(flag);
     }
     if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time); }
-    for (size_t i = 0; utilShot && i < WEAPONS.size(); i++)
-        if (WEAPONS[i].name == utilShot) game.ammo[game.worms[game.current].team][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
+    for (size_t i = 0; (utilShot || aimBench) && i < WEAPONS.size(); i++)
+        if ((utilShot && WEAPONS[i].name == utilShot) || (aimBench && (int)i == shotWeapon)) game.ammo[game.worms[game.current].team][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
 
     Camera3D cam = {{40, 30, 0}, {40, 8, 40}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
     float acc = 0, clock = 0, reconnectAt = 0;
@@ -615,7 +639,7 @@ int main(int argc, char **argv) {
         double t = GetTime();
         cpuCost[k] += c - mark, cost[k] += t - mark, mark = t;
     };
-    double benchSum[T_COUNT] = {}, benchCpu[T_COUNT] = {}, benchMax[T_COUNT] = {}, benchStart = 0, frameMax = 0, frameStart = 0;
+    double benchSum[T_COUNT] = {}, benchCpu[T_COUNT] = {}, benchMax[T_COUNT] = {}, benchStart = 0, frameMax = 0, frameStart = 0, benchDraws = 0, benchBinds = 0;
 
     // Match recording (saved to replays/ at game over or quit), Replays playback, instant replay of big shots (local only).
     Recording rec, play;
@@ -1106,7 +1130,7 @@ int main(int argc, char **argv) {
         wasLocked = game.locked;
         game.weapon = simWeapon;
         int late = animShot ? 2 * shotWeapon : 0;  // animshot: fire once the weapon cycling is over
-        Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, shotWeapon, !aimShot && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
+        Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, aimBench ? 0 : shotWeapon, !aimShot && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
         if (aimSeq && frame > 40 && frame < 80) in.aim = 127;
         if (utilShot && game.girderOn && frame < 38) in.buttons |= Input::TARGET | (frame % 2 ? Input::PITCH : 0), in.walk = 127, in.aim = frame % 2 ? 127 : 0;
         if (utilShot && WEAPONS[game.weapon].kind == Kind::Icarus && frame > 100)  // jump, then flap on each window
@@ -1123,6 +1147,7 @@ int main(int argc, char **argv) {
         }  // look up: the exit starts from the sky
         if (aimShot && Controls::targetView(game) && frame > 30)  // Blimp: pan, yaw, then tilt down
             in.buttons |= Input::TARGET | (frame >= 45 ? Input::PITCH : 0), in.walk = frame < 45 ? 127 : 0, in.turn = frame < 45 ? 40 : 0, in.aim = frame >= 45 ? -60 : 0;
+        if (aimBench && frame >= 60) in = Input{}, in.buttons = Controls::targetView(game) ? Input::TARGET | (frame == 61 && getenv("W4NX_LOCK") ? Input::FIRE : 0) : 0;
         if (irSwallow) {
             if (in.buttons & (Input::FIRE | Input::JUMP)) in.buttons &= ~(Input::FIRE | Input::JUMP);
             else irSwallow = false;
@@ -1266,16 +1291,22 @@ int main(int argc, char **argv) {
         toolFx(game, dt);
         Xray::begin();
         bool blimp = (playing && freeCam) || Controls::targetView(game) || (wd.kind == Kind::Binoculars && Controls::firstPerson(game));  // W4M outlines every live worm in the blimp view and binoculars (camera-w4m.md section 5)
+        auto shown = [&](const Worm &w) { return (w.alive || w.counted > 0) && !(inside && &w == &cur) && Models::visible(w.pos, 2); };
+        auto outlined = [&](const Worm &w) { return Models::has("worm") && shown(w) && (blimp || &w == &cur); };  // W4M OutlinedWorms1: the active worm only, outside the blimp view
+        bool masked = false;  // every outlined worm's depth in one render-target bind
+        for (const Worm &w : game.worms)
+            if (outlined(w) && (masked || (masked = Xray::mask()))) Xray::team(w.team), drawWorm(game, w, clock);
+        if (masked) Xray::unmask();
         for (const Worm &w : game.worms) {
             if (!w.alive && w.counted <= 0) { drawGrave(game, w); continue; }
-            if ((inside && &w == &cur) || !Models::visible(w.pos, 2)) continue;
-            if (Models::has("worm")) {  // every pass below draws the same pose: no re-skin
-                bool bin = blimp || &w == &cur;  // W4M OutlinedWorms1: the active worm only, outside the blimp view
+            if (!shown(w)) continue;
+            if (Models::has("worm")) {  // the passes below draw the same pose: no re-skin
+                bool bin = masked && outlined(w);
                 float op = &w == &cur && !blimp ? Xray::opacity(view.position, w.pos) : 1;
                 if (op > 0 && op < 1) Xray::depth(), drawWorm(game, w, clock), Xray::fade(op);
                 if (op > 0) drawWorm(game, w, clock);
                 Xray::done();
-                if (bin && Xray::mask(w.team)) drawWorm(game, w, clock), Xray::hidden(), drawWorm(game, w, clock), Xray::done();
+                if (bin) Xray::hidden(), drawWorm(game, w, clock), Xray::done();
             } else {
                 Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
                 DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
@@ -1289,7 +1320,7 @@ int main(int argc, char **argv) {
         drawUtilities(game);
         for (const Projectile &s : game.shots) {
             const WeaponDef &d = WEAPONS[s.weapon];
-            if (drawShot(s, clock)) continue;
+            if (drawShot(s, clock, game.terrain)) continue;
             Vector3 f = Vector3Normalize({s.vel.x, 0, s.vel.z});
             switch (d.kind) {
             case Kind::Sheep:
@@ -1405,7 +1436,7 @@ int main(int argc, char **argv) {
             ExportImage(img, frame == 35 ? DATA_DIR "shot_aim.png" : DATA_DIR "shot.png");
             UnloadImage(img);
         }
-        if (aimShot && frame == 60) {
+        if (aimShot && !aimBench && frame == 60) {
             rlDrawRenderBatchActive();
             Image img = LoadImageFromScreen();
             ExportImage(img, "aim.png");
@@ -1441,13 +1472,15 @@ int main(int argc, char **argv) {
             else startMission(act == 1 ? missionIdx + 1 : missionIdx);
             continue;
         }
-        const int warm = 10;  // skip load / first-use frames
+        const int warm = aimBench ? 70 : 10;  // skip load / first-use frames
         if (bench && frame == warm) benchStart = GetTime();
         if (bench && frame > warm) {
             frameMax = fmax(frameMax, GetTime() - frameStart);
+            benchDraws += glDraws, benchBinds += glBinds;
             for (int k = 0; k < T_COUNT; k++) benchSum[k] += cost[k], benchCpu[k] += cpuCost[k], benchMax[k] = fmax(benchMax[k], cost[k]);
         }
         frameStart = GetTime();
+        glDraws = glBinds = 0;
         for (int k = 0; k < T_COUNT; k++) perf[k] = perf[k] * 0.95 + cost[k] * 0.05, cost[k] = 0, cpuCost[k] = 0;
         if (bench && frame == warm + benchFrames) {
             double n = benchFrames, wall = GetTime() - benchStart, cpu = 0, gpu = 0;
@@ -1467,10 +1500,11 @@ int main(int argc, char **argv) {
             for (const auto &ps : game.terrain.parts)
                 for (const Terrain::Part &p : ps) tris += p.mesh.triangleCount, parts++;
             printf("terrain %d tris %d meshes, %d decor, phase %d turn tick %u\n", tris, parts, (int)game.terrain.objects.size(), (int)game.phase, tick);
+            printf("per frame: %.0f draw calls, %.1f framebuffer binds\n", benchDraws / n, benchBinds / n);
             fflush(stdout);
             break;
         }
-        if ((shot && frame == 150 + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : 40))) break;
+        if ((shot && !aimBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : 40))) break;
     }
     if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();

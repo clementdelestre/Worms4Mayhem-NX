@@ -130,9 +130,38 @@ static std::vector<Fired> shots(const char *map, uint32_t seed, uint8_t level, l
     return out;
 }
 
+// A thin wall in front of the CPU, its enemy behind: no walk or jump against the wall (W4M Fits nodes, 0x59edf0)
+// and no shot into it (launch from the eye, a negative plan skips the turn: 0x585a29, 0x49e6d0).
+static void wallAhead(uint32_t seed, uint8_t level, float x0, bool bazooka) {
+    Game g;
+    GameConfig c{seed, 2, 1, "", 0};
+    c.teamSetup = {{"CPU", level}, {"CPU", level}};
+    g.start(c);
+    for (int z = 16; z < 80; z++)  // floor at y 50, a one-voxel slab at x 22 m (face at 21.83 m)
+        for (int y = 176; y < 248; y++)
+            for (int x = 16; x < 300; x++)
+                g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = x == 88 && y > 200 ? 127 : (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+    for (auto &a : g.ammo)
+        for (size_t k = 0; k < a.size(); k++) a[k] = (bazooka && WEAPONS[k].name == "Bazooka") || WEAPONS[k].name == "Shotgun" ? 9 : WEAPONS[k].kind == Kind::SkipGo ? -1 : 0;
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    a.pos = {x0, 50.6f, 12}, v.pos = {30, 50.6f, 12}, a.vel = v.vel = {}, a.yaw = PI / 2, v.yaw = -PI / 2;
+    g.hotSeat = 0, g.wind = 0;
+    Ai ai;
+    const int hp = a.hp;
+    float far = 0, nearBoom = 1e9f;
+    for (int t = 0; t < 60 * 45 && g.phase != Phase::Settle; t++) {
+        g.step(ai.think(g));
+        far = fmaxf(far, a.pos.x);
+        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) nearBoom = fminf(nearBoom, Vector3Distance(e.pos, a.pos));
+    }
+    printf("wall %.2f m ahead, CPU%d: furthest x %.2f, nearest blast %.1f m, hp %d -> %d\n", 21.83f - x0, level, far, nearBoom, hp, a.hp);
+    assert(far < fmaxf(x0 + 0.05f, 21.5f) && a.hp == hp && nearBoom > 2);  // 21.5: the face less 0.33 m
+}
+
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
+    for (uint8_t level : {1, 3, 5}) wallAhead(5, level, 21.4f, true), wallAhead(5, level, 19.4f, false);
     for (auto &f : fires) f.assign(WEAPONS.size(), 0);
     blimpView();
     const char *maps[] = {"", "arabian", "wildwest", "camelot", "jurassic", "construction"};

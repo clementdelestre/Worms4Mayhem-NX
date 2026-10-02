@@ -57,6 +57,8 @@ Blast blastOf(const WeaponDef &d, bool child);
 // W4M IsPoweredWeapon: BasePower + ShotPower x MaxPower, ShotPower 0..1 over Tweaks.MaxPowerUpTime 1500 ms
 inline float launchSpeed(const WeaponDef &d, float power) { return d.base >= 0 ? d.base + (d.speed - d.base) * power : d.speed * fmaxf(power, 0.15f); }
 inline bool dropped(const WeaponDef &d) { return d.kind == Kind::Shell && d.fuse > 0 && d.speed < 5; }
+// W4M WeaponSelected 0x565d30: with rope, jetpack or parachute out, only Dynamite, Landmine and Sheep (payload case 0) keep it
+inline bool toolDrop(const WeaponDef &d) { return dropped(d) || d.kind == Kind::Mine || d.kind == Kind::Sheep; }
 extern std::vector<WeaponDef> WEAPONS;  // built-in fallback until loadWeapons() succeeds, then + GameConfig::custom
 bool loadWeapons(const char *path);
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out);  // same JSON as weapons.json
@@ -78,9 +80,13 @@ bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist);
 void clearWalls(const Terrain &t, Vector3 &pos);
 // Free flight, shared with the AI: a tick's move cut into sub-steps of at most VOX/2, so nothing skips thin land.
 int substeps(Vector3 vel);
-float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel);  // worm body; returns the landing speed, 0 if none
+// W4M 0x585a29 launches from the worm's eye (feet + Worm.EyeLevelOffset 15 units): spawn, pulled back to the last free point eye → spawn
+Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn);
+// W4M payloads touch land by their centre point (0x574e90); at rest the mesh is drawn r along the land normal (0x5761f0)
+Vector3 restOn(const Terrain &t, Vector3 p, float r);
+float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e = 0.3f);  // worm body, walls bounce at e (W4M Rebound 0x5acea0: 0.3); returns the landing speed
 // One worm tick (ground slide, fall, flight), shared with the AI; returns the landing speed, 0 if none.
-float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, float gravity, uint32_t wormpot);
+float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, float gravity, uint32_t wormpot, float e = 0.3f);
 void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity);  // sheep, old woman, scouser on foot
 
 struct Projectile {
@@ -251,13 +257,21 @@ struct Game {
     uint8_t jumpKind = 0;  // W4M DetectJump kind: 0 tapped, 1 pressed twice, 2 held
     bool selfHurt = false;  // the active worm took damage: its turn ends (W4M)
     float power = 0, wind = 0;
-    bool roped = false, jetting = false;  // active utility: keeps the turn going
+    bool roped = false, jetting = false;  // active utility: keeps the turn going; jetting = in flight
+    bool jetUsed = false;  // the jetpack in hand has taken off (ammo spent, fuel live); W4M entity +0xf0
+    float boost = 0;       // W4M Jetpack SuperThrust level 0..1 (+0xa0)
+    // W4M JetpackUtilityLogicEntity 0x562810 (TWEAK Jetpack.*): ThrustScale 0.004 x 2 per 20 ms, FwdThrustRotation 0.3 rad,
+    // MaxAltitude 2000 units over Water.Level, turn 2 x TurnRotationSpeed 0.0092 rad per 20 ms, fuel stops at 20 ms
+    static constexpr float JET_TILT = 0.3f, JET_CEIL = 100, JET_TURN = 0.92f, JET_DRY = 0.02f, JET_BOUNCE = 0.8f;
+    // OverCeilingThrustMod, XZWindResThrust / NoThrust per 20 ms; SuperThrust* under -0.15 units/ms (Mod 0.2 per units/ms = 0.004 per m/s)
+    static constexpr float JET_OVER = 0.05f, JET_RES = 0.999f, JET_RES_IDLE = 0.95f, JET_FALL = 7.5f, BOOST_MOD = 0.004f, BOOST_ACCEL = 0.3f, BOOST_DECAY = 0.97f, BOOST_OFF = 0.01f;
     bool chute = false;                   // parachute open until the turn ends
     Vector3 anchor{};
     float ropeLen = 0, fuel = 0, ropeMax = 0, thrust = 0;  // max/thrust: of the tool in use, the hand may hold a weapon
     std::vector<int> fuses;  // per team: seconds set for userFuse weapons (W4M default 3)
     std::vector<std::vector<int>> delays;  // [team][weapon]: own turns left before it unlocks (W4M InventoryN.WeaponDelays)
     bool usable(int team, int wi) const { return ammo[team][wi] && !delays[team][wi]; }
+    bool selectable(int team, int wi) const;  // usable, and with a movement tool out only the tool itself or a toolDrop()
     int shotsLeft = 0;
     int ropeShots = 0;  // rope launches this turn
     Phase phase = Phase::Aim;

@@ -14,7 +14,7 @@ struct Ai {
     struct RopePlan { float yaw = 0, pitch = 0; int release = -1; bool reel = false; };  // release < 0: walk toward the finish
     struct RopeRun { int t = 0, held = 0, after = -1; bool fired = false, done = true; };
     struct Step { Vector3 to; float yaw = 0; uint8_t move = 0; };  // W4M path move: 0 WALK to `to`, 1 JUMP_FORWARD, 2 JUMP_BACKFLIP along yaw
-    struct StepRun { int t = 0; bool air = false, done = false; };
+    struct StepRun { int t = 0; bool air = false, done = false, stuck = false; };  // stuck: a walk held off its node
     long budget = 20000;  // Terrain::samples per frame: ~0.7 ms on desktop, plus at most one unit (< 2.5 ms)
 
 private:

@@ -528,7 +528,7 @@ void controls(bool game) {
                                    {160, -112, 6}, {45, -70, 14}, {150, -69, 20}, {116, -35, 20}, {184, -35, 20}, {150, -1, 20}, {75, 35, 40}};  // x, y, radius
     struct Call { int part; float ly; const char *label, *key; };
     static const Call GAME[] = {
-        {ZL, 232, "Hold: precise aim", "RMB"}, {L, 276, "L + stick: aim (single Joy-Con)\nHold: sky view (strikes)", nullptr}, {MIN, 356, "Hold: controls", "F1"},
+        {ZL, 222, "Hold: precise aim\nJetpack: drop", "RMB"}, {L, 276, "L + stick: aim (single Joy-Con)\nHold: sky view (strikes)", nullptr}, {MIN, 356, "Hold: controls", "F1"},
         {LS, 414, "Move (camera-relative)\nAim mode: walk / turn", "Arrows"}, {DPAD, 488, "Zoom in / out\nWeapon panel cursor", "X/Z"},
         {ZR, 232, "Fire", "Space"}, {R, 270, "Next weapon", "Tab"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"},
         {BY, 380, "Next weapon", "Tab"}, {BA, 440, "Fire (hold = power)\nStrikes: sky view, then fire", "Space/E"}, {BB, 482, "Jump (twice = backflip)\nSky view: leave", "Enter"},
@@ -607,6 +607,8 @@ void controls(bool game) {
     }
     if (game) text(keys ? "Hold right mouse button: aim with the mouse  -  F3: performance overlay"
                         : "Aim mode: hold ZL, or while charging (A)  -  L + R: performance overlay", 640, 640, 22, LIGHTGRAY, 1);
+    if (game) text(keys ? "Jetpack: Space thrusts, arrows steer, Backspace drops dynamite / mine / sheep"  // W4M UtilityFire group
+                        : "Jetpack: A / ZR thrust, left stick steers, ZL drops dynamite / mine / sheep", 640, 666, 22, LIGHTGRAY, 1);
     else text("Each screen lists its other buttons at the bottom", 640, 640, 22, LIGHTGRAY, 1);
 }
 
@@ -1510,7 +1512,7 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
         cursor = slots.empty() ? 0 : slots[clampWrap(at + dx + dy * cols, (int)slots.size())];
         if (cursor != was) Audio::play(S::FeHighlight);
         if (pressed(pad, {A}, {KEY_SPACE, KEY_ENTER})) {
-            if (g.usable(cur.team, cursor)) select(cursor), Audio::play(S::FeClick);
+            if (g.selectable(cur.team, cursor)) select(cursor), Audio::play(S::FeClick);
             else Audio::play(S::FeError);
         }
         if (pressed(pad, {B}, {KEY_BACKSPACE})) open = false, swallow = true, Audio::play(S::FeCancel);
@@ -1913,7 +1915,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         const Color POISON = {120, 220, 60, 255};
         text(TextFormat("%d", hp), sp.x, sp.y - s, s, i == counting && hpt[i].poison ? POISON : c, 1);
         text(wormName(w.team, k), sp.x, sp.y - s * 2, s, c, 1);
-        if (&w == &cur && g.jetting) text(TextFormat("%d", (int)ceilf(g.fuel)), sp.x, sp.y - s * 3.2f, s * 1.3f, WHITE, 1);  // W4M fuel counter
+        if (&w == &cur && g.jetting) text(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), sp.x, sp.y - s * 3.2f, s * 1.3f, WHITE, 1);  // W4M 0x5626e0: (2 ms + 500) / 1000
         for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
             if (p.worm != i) continue;
             float a = Clamp(1 - (p.age - 0.5f) / 0.5f, 0, 1), pop = 1 + 0.25f * fmaxf(0, 1 - p.punch / 0.08f) + 0.3f * sinf(fminf(p.age / 0.25f, 1) * PI);
@@ -2024,8 +2026,10 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (g.shotsLeft) text(TextFormat("%d shot(s) left", g.shotsLeft), 190, 600, 22, WHITE);
     if (g.roped) text("Rope: stick swings, aim = length, jump releases", 190, 600, 22, WHITE);
     if (g.jetting) {
-        text("Jetpack: hold fire to thrust, jump to stop", 190, 600, 22, WHITE);
-        healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / fmaxf(wd.fuse, 0.01f), 0, 1));
+        text(keyGlyphs() ? "Jetpack: Space thrust, arrows steer, Backspace drop" : "Jetpack: A/ZR thrust, stick steers, ZL drop", 190, 600, 22, WHITE);  // HelpText.kUtilityJetpack0
+        float full = 0.01f;  // the hand may hold what it drops
+        for (const WeaponDef &d : WEAPONS) if (d.kind == Kind::Jetpack) full = fmaxf(full, d.fuse);
+        healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / full, 0, 1));
     }
     if (open) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
     else if (mine && !quiet && g.girderOn && g.phase == Phase::Aim)  // W4M HelpText.kUtilityGirder0: Movement, GirderRaise / Lower, Fire
@@ -2051,11 +2055,12 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         Rectangle c = {pr.x + 30 + (k % cols) * cell, pr.y + 80 + (k / cols) * cell, cell - 8, cell - 8};
         int a = g.ammo[cur.team][i], late = g.delays[cur.team][i];
         if (late) a = 0;  // W4M FETXT.HTPSubtopic4: a delayed weapon is dimmed, its number the turns left
+        bool lit = a && g.selectable(cur.team, i);  // a movement tool out: only what it can drop
         if (i == cursor && !nine("fe/buttonbig_highlight", c, 64, 0.25f)) DrawRectangleRoundedLinesEx(c, 0.2f, 4, 4, GOLDEN);
         Rectangle ic = {c.x + 8, c.y + 8, c.width - 16, c.height - 16};
-        if (!image(iconOf(WEAPONS[i]), ic, a ? WHITE : Fade(GRAY, 0.5f))) {
-            DrawRectangleRounded(ic, 0.2f, 4, a ? PANEL : Fade(PANEL, 0.4f));
-            text(WEAPONS[i].name.substr(0, 4).c_str(), ic.x + ic.width / 2, ic.y + ic.height / 2 - 10, 20, a ? WHITE : GRAY, 1);
+        if (!image(iconOf(WEAPONS[i]), ic, lit ? WHITE : Fade(GRAY, 0.5f))) {
+            DrawRectangleRounded(ic, 0.2f, 4, lit ? PANEL : Fade(PANEL, 0.4f));
+            text(WEAPONS[i].name.substr(0, 4).c_str(), ic.x + ic.width / 2, ic.y + ic.height / 2 - 10, 20, lit ? WHITE : GRAY, 1);
         }
         if (a > 0) text(TextFormat("%d", a), c.x + c.width - 6, c.y + c.height - 26, 22, WHITE, 2);
         if (late) text(TextFormat("%d", late), c.x + c.width / 2, c.y + c.height / 2 - 20, 40, GOLDEN, 1);

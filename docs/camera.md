@@ -5,13 +5,13 @@ W4M units are 20 per metre. "ours" marks a rule with no W4M source.
 
 | Trigger | Shot | Distance / height / angle | Duration | Source |
 |---|---|---|---|---|
-| Active worm, walking/aiming (third person) | ShoulderCamera behind the worm | 9.85 m (W4M 8.5), camEl | while it lasts | camera-w4m §3, §5 |
+| Active worm, walking/aiming (third person) | ShoulderCamera behind the worm | 8.5 m, camEl starts and recentres at 0.255 rad (14.6°) | while it lasts | camera-w4m §3, §5 (DistFromObject 170, DefaultHeight 0.255) |
 | Hill between the worm and the camera | occluded when the centre ray is blocked and ≥ 90 % of 10 rays (centre, ±2.75 m right/up, 5 on a 2.06 m arc, 9–171°; chase cameras: all 5 front rays): zoom in at once to 90 % of the centre hit (minus 0.3 m); a thinner obstacle leaves the camera out (worm drawn as a silhouette) | never turns or climbs | eases back out at 0.02/frame (1.2/s) | §5 OccludingCam (OccInnerTestPoints 5, OccZoomPctge 90, OccZoomInSpeed 1, OccZoomOutSpeed 0.02) |
 | Camera ≤ 2.5 m from the active worm, or terrain hides it | `Controls::occluded()` 0..1, read by the worm renderer (fade / grey silhouette) | 0 at 2.5 m, 1 at 1.25 m | smoothed at 12/s | §5 WormOpaqueDist 50 / WormTransparencyDist 25 |
 | Crate dropping (once per crate, `Ui` crateFocus) | CrateTrackCamera: hard cut (if off screen) to the first clear ViewPoint around the crate, m: (0,5,±15), (±15,5,0), (0,25,2.5); look-at follows it | ≥ 10 m at 0.54/s, re-cut when lost / ≥ 25 m | until the sim's landHold (45 ticks after landing) ends | §2 Crate, §7b |
-| Shell, grenade, cluster, banana, holy, gas, poison arrow in flight | worm camera for the first second while the shot is on screen, then TrackCam: hard cut to the first clear ViewPoint around the launch point (m: (∓5,10,15), (±1.25,2.5,2.5), (±3.75,5,3.75), (±2.5,3.75,-2.5), (±2.5,-2.5,3.75), (0,1.5,0)), 2 candidates a frame | backs out to ≥ 30 m at 1.15/s, look-at 6.3/s, ≥ water + 1 m, no line crossing | re-cut when lost / off screen / ≥ 65 m, ≥ 1 s apart; frozen 1.5 s on the last point after the blast | §2 PayloadTrackCamera, RestTime 1500 |
-| Holy Hand Grenade far and high | same rule: it rests ~2 s before blowing, so the 30 m back-off plays out from the high ViewPoint 0/1 | ~32° down | — | §2 "Why the Holy Hand Grenade…" |
-| Fatkins Strike | TrackCam, ViewPoints (±10,5,±25) m | ≥ 25 m, re-cut at 50 m | as above | §6 Fatkins |
+| Shell, grenade, cluster, banana, holy, gas, poison arrow in flight | requested at once if the predicted impact is off screen, else after 1 s of flight since the last bounce (worm camera meanwhile). The TrackCam keeps the camera it inherits and only turns to follow (LookSpeed); it cuts only when the shot is lost: off screen once seen, land in between, or ≥ 65 m. Then a hard cut to the first clear ViewPoint around the **predicted impact** (recomputed at each bounce), along the travel at impact: m (∓5,10,15) beyond it, then (±1.25,2.5,2.5), (±3.75,5,3.75), (±2.5,3.75,-2.5), (±2.5,-2.5,3.75), (0,1.5,0); 2 a frame from the kept search index, never across the shot's line of travel, never the same ViewPoint twice in a row | backs out to 30 m at 1.15/s only while the shot is at rest or heading at the camera, look-at 6.3/s, ≥ water + 1 m | re-cut ≥ 1 s apart; frozen 1.5 s on the last point after the blast | §2 PayloadTrackCamera (0x532460, 0x533190, FindFirstEvent 0x576580), RestTime 1500 |
+| Holy Hand Grenade far and high | same rule: far and high (32° above the landing point) only once the grenade is lost from the thrower's view | — | — | §2 "Why the Holy Hand Grenade…" |
+| Fatkins Strike | TrackCam, ViewPoints m (10,5,-25), (10,5,25), (-10,5,25), (-10,5,-25) | ≥ 25 m, re-cut at 50 m | as above | §2 FatkinsTrackCamera |
 | Worm knocked ballistic (blast, bat, any impulse ≥ 3 m/s) | WormTrackCamera request: 4 s ballistic sweep, priority 5 at its landing point, 3 with none; dropped when the worm and that point are already in view; served ≥ 0.2 s after the last one, over any running track of lower priority (payload 2, crate 1). Hard cut to the first clear worm ViewPoint around the landing point (m: (3.5,4,10), (-3.5,1.5,9), (-2.5,3,10), (2.5,2.5,11.5), (1,3,15), (±0.5,1–1.5,5), (-1.5,6,10), (0.5,1.25,4), (0.5,4,-10), (-1.5,3,-9), (0.5,1,-4), (0,4,0)) along its flight; no cut if it starts on screen | look-at worm + 0.5 m, ≥ 10 m at 0.09/s, re-cut when lost / ≥ 30 m | until it rests 1.5 s, or the next turn | §1 queue, §2 Worm, §6 3 vs 5 |
 | Homing missile (whole flight), Starburst (after 3.5 s), Super Sheep (once airborne) | FlyCam: 3 m (homing) / 4 m behind it, look-at 5 m ahead, land in between pulls it in, ≥ water + 0.5 m | LookSpeed 0.1 / 0.2 a frame; the position factor starts at 0 and eases to PosSpeed 0.05 at PosRate a frame (homing 0.01: ~2 s to catch up, Starburst 0.1, Super Sheep 1: at once) | then 1 s backing off 25 m from the blast (stopped by land) | §3, §7b HomingMissileFlyCamera / SuperSheepFlyCamera / StarburstCamera; FlyCam 0x527a90 / 0x5282e4 |
 | Homing missile in hand | Blimp view (E / d-pad right) with the Homing cursor: 4 brush ticks (Homing.Cursor.Mesh, 54 × 18 units at ±65, Intro_Inner 6.04 → 0.8 in 1.17 s, Loop_Inner 0.80 ↔ 0.757 / 2.08 s, never tinted) inside 4 corners (Homing.Cursor.SquareMesh locators ±50, bitmaps 128 units × 0.8, Intro_Outer 7.26 → 0.75 → 0.8, Loop_Outer 0.80 ↔ 0.747, tinted white / water blue / no-target red). FIRE in the Blimp takes the target (`Game::locked`, `lockAt`, no charge) and plays `weapons/LockOn` (0 dB, 2D, sample TargetAquired); the view goes back to the normal aim (W4M CreateAimingCursor), where a new press charges and the release fires; Lock_Outer (0.625 s) closes the corners to ±14.6 at scale 0.6 on the target, and the marker stays there, in any view, until the shot. Then the launcher is aimed and powered as usual; FIRE is refused outside the Blimp until the lock | HUD units (screen height / 480) | until the shot | camera-w4m §9; w4m-map §10 (0x582d70, 0x583a10); HomingLockOnGraphicEntity 0x560420 / 0x560590 / 0x5600e0; Bundl09 clips |
@@ -23,8 +23,8 @@ W4M units are 20 per metre. "ours" marks a rule with no W4M source.
 | Airstrike (missiles) | none: the current camera stays on the worm, no flight to each blast | — | — | §6 Airstrike |
 | Sheep, old woman, scouser, Super Sheep walking, Starburst < 3.5 s | *ChaseCamera locked behind the pet, 8.5 m, 0.255 rad, rises 0.4 rad/s when the land hides it | — | while it walks | §3 Sheep/OldWoman/Scouser ChaseCamera |
 | Super Airstrike before its last cow | ours: chase behind the bomber, 17.5 m | camEl | while it flies | ours |
-| HP count of a group | from above the group, yaw searched around the scenery | ≥ 7.5 m, el ≥ 0.75 | per group | ours (W4M WormTrackCamera per worm) |
-| Death queue, hp count | the camera closes on each dying worm in turn (W4M "Worm Dying" / "Worm Displaying Damage Taken": a WormTrackCamera request at 5). A worm thrown meanwhile with a landing point (5) takes over ≥ 0.2 s after the last cut, one with no landing in the 4 s sweep (3, out to sea or off the map) is dropped; a new dying worm (5) takes the camera back from that track | — | `Game::dying()` | docs/death-sequence.md; CMS 0x51cf20 (called at 0x5a7282, 0x5abeec), serve 0x51d3d0 / 0x51d408 |
+| HP count (one worm or a group) | WormTrackCamera around the counted point (group: its centre): no cut while it is in clear view within 30 m, else the worm ViewPoints along the worm's facing (group: the view's) | 4–15 m, 9–31° (90° last) | per count | §1 "Worm Displaying Damage Taken" (0x5abeec); a group count is ours |
+| Death queue, hp count | the dying worm's WormTrackCamera (worm ViewPoints, as the hp count), each in turn (W4M "Worm Dying" / "Worm Displaying Damage Taken": a WormTrackCamera request at 5). A worm thrown meanwhile with a landing point (5) takes over ≥ 0.2 s after the last cut, one with no landing in the 4 s sweep (3, out to sea or off the map) is dropped; a new dying worm (5) takes the camera back from that track | — | `Game::dying()` | docs/death-sequence.md; CMS 0x51cf20 (called at 0x5a7282, 0x5abeec), serve 0x51d3d0 / 0x51d408 |
 | Game over | WormTrackCamera on the winner (current worm first): forced hard cut to the first clear worm ViewPoint along its facing (mission: the old framing from above) | 4–17 m | 4 s | §6 Game over |
 | then | OrbitCam around the level centre; the victory fireworks (5 bursts around the camera target, ±10 m, 5–10 m up) stay in its frame, and so would W4M's placement (Land.Center ± 0.5 Land.Radius, Land.MaxHeight + 0–1.5 m) | radius land half-width + 10 m, look-at max((top + water + 1)/2, water + 1), camera 22.5 m above it, 0.3 rad/s | until the menu | §7b Game over (Orbit); fireworks 0x4ffa56 |
 | Scenery on the way back (any travel) | the camera rises over it (lift ≤ 30 m at 20 m/s), stops 2 m short horizontally until clear | — | lift decays at 10 m/s | ours |
@@ -32,3 +32,38 @@ W4M units are 20 per metre. "ours" marks a rule with no W4M source.
 
 Not done: FallCam at the end of the Super Sheep flight (our sheep blows up when its flight ends, nothing falls); FlyCam `UpSpeed` (0x527ab0 → +0x54: the up vector eases toward the payload's own up, i.e. its roll; ours have no roll, so the view is the same); the fireworks follow the camera target, not W4M's level-centre box (both framed); mine factory (no such weapon).
 Tests: `checkEventCameras` in tests/sim_check.cpp (worm, crate, winner, homing FlyCam, occlusion, NinjaCam, death framing vs thrown worm, abduction, homing lock, fireworks in the orbit frame).
+
+
+## Audit against W4M (TrackCam and worm camera)
+
+Sources: CAMTWK dumped with `tools/w4m-re/xom.py dump Tweak/CAMTWK.XOM <container>`, TrackCam.cpp disassembled (0x5337c0 activation, 0x533950 update, 0x532a50 inputs, 0x5321b0 directions, 0x532460 cut search, 0x533190 back-off), ParabolicPayloadLogicEntity FindFirstEvent 0x576580. Full rules and the candidate table with elevations: camera-w4m.md §2.
+
+| Item | Ours before | W4M | Source | Status |
+|---|---|---|---|---|
+| Payload event point | launch position, never updated | predicted first contact (land, water, fuse expiry), recomputed at each bounce; candidates stand **beyond** it along the travel | 0x576580 → 0x574e90 → 0x466ae0; TrackCam reads +0x12c / +0x138 each frame (0x532ad2) | fixed |
+| Cut at activation | always forced (payload) | none: the camera before is copied, a cut only when lost | 0x5337c0 (cut timer = MinTimeBetweenCuts, no search), 0x532460 condition | fixed |
+| "Lost" off-screen test | always counted | counted once the object was seen, or with CutWhenStartOffScreen | +0xb9, 0x532524 / 0x5338ec | fixed |
+| Payload request | shell on screen < 1 s | impact point on screen and < 1 s since the last event | 0x575320 / 0x5753e3 | fixed |
+| Line-crossing test | event point and event direction, after the first cut only | object position and object direction (velocity, else event direction), every search | 0x532460 (+0x68 side of the current camera), 0x5321b0 | fixed |
+| Accepted = last ViewPoint | cut again | no cut, index kept | 0x5329ab | fixed |
+| Back-off to MinPreferredDistance | always | only when the object is at rest or heading at the camera; target clipped by land | 0x533190, clip 0x51b040 (medium) | fixed |
+| Frame of the offsets | x·(d.z,0,−d.x) + y·up + z·d, unscaled, y relative to the event point | same; +z is ahead of the event point | 0x5326b9–0x532840 | matched |
+| ViewPoints, payload / worm / crate (÷ 20) | as W4M | as dumped | CAMTWK | matched |
+| ViewPoint order, Fatkins | (10,5,25) first | (10,5,−25), (10,5,25), (−10,5,25), (−10,5,−25) | CAMTWK FatkinsTrackCamera | fixed |
+| Camera2ObjectDistance / MinPreferredDistance | 65 / 30, 30 / 10, 25 / 10, 50 / 25 m | 1300 / 600, 600 / 200, 500 / 200, 1000 / 500 | CAMTWK | matched |
+| ZoomSpeed, LookSpeed | 1.15, 0.09, 0.54 /s; 6.3 /s | 0.019, 0.0015, 0.009; 0.1 a frame (60 fps assumed) | CAMTWK | matched |
+| Search | 2 a frame, kept index | 2 a frame, index kept across cuts, never reset | 0x532979 | matched |
+| Shoulder camera | 9.85 m at 0.42 rad (24°, 4 m above) | 170 units (8.5 m) at DefaultHeight 0.255 rad (14.6°, 2.1 m above) | CAMTWK ShoulderCamera, OccludingCam 0x52e2f0 | fixed |
+| HP count / death framing | ours: ≥ 7.5 m, el ≥ 0.75 rad (43°) above the group | WormTrackCamera request at 5 per worm | 0x5abeec, 0x5a7282 | fixed (a group count still frames its centre: ours) |
+| Up vector smoothing (UpSpeed) | none, no roll | lerp to world up | 0x533b25 | not needed |
+| On-screen test | 37° cone | 0x51b3b0 | — | not verified |
+
+Shot statistics, headless CPU vs CPU (2 × 3 worms, CPU level 3, 6 maps × 5 seeds, about 580 shots, Bazooka and Grenade; the Ui hp count is not driven there), downward pitch of the view per tick in Flying / Retreat / Settle:
+
+| Camera | Before: < 20° / 20–40° / ≥ 40° | After |
+|---|---|---|
+| Worm camera (no track) | 6 % / 78 % / 14 % | 70 % / 15 % / 13 % |
+| Payload TrackCam | 84 % / 10 % / 5 %, cut in 100 % of its ticks | 84 % / 9 % / 6 %, 82 % of its ticks on the inherited view, no cut |
+| Worm TrackCam (thrown) | 65 % / 26 % / 8 % | 57 % / 26 % / 15 % (half its ticks on the inherited view) |
+
+Payload cuts by ViewPoint: before 76 % on #0, 12 % on #1, 11 % close (#2–6), 0.3 % above (#10); after 42 % / 44 % (#0 / #1, the side test now splits the pair), 11 % close, 3 % above.

@@ -79,11 +79,6 @@ void Xray::begin() {
         rt = LoadRenderTexture(w, h);  // nearest filtering: texels are read back exactly
     }
     used = false;
-    rlDrawRenderBatchActive();
-    rlEnableFramebuffer(rt.id);
-    rlClearColor(0, 0, 0, 0);
-    rlClearScreenBuffers();
-    rlDisableFramebuffer();
 }
 
 float Xray::opacity(Vector3 cam, Vector3 worm) {
@@ -103,19 +98,28 @@ void Xray::fade(float op) {
     glBlendFunc(GL_CONSTANT_ALPHA_, GL_ONE_MINUS_CONSTANT_ALPHA_);
 }
 
-bool Xray::mask(int team) {
+bool Xray::mask() {
     if (!rt.id || maskS.id == rlGetShaderIdDefault()) return false;
-    float t = team * 0.25f;
-    SetShaderValue(maskS, GetShaderLocation(maskS, "team"), &t, SHADER_UNIFORM_FLOAT);
     rlDrawRenderBatchActive();
     rlEnableFramebuffer(rt.id);
+    rlClearColor(0, 0, 0, 0);
+    rlClearScreenBuffers();
     offset(true);
     Models::shade(maskS);
     return used = true;
 }
 
-void Xray::hidden() {
+void Xray::team(int team) {
+    float t = team * 0.25f;
+    SetShaderValue(maskS, GetShaderLocation(maskS, "team"), &t, SHADER_UNIFORM_FLOAT);
+}
+
+void Xray::unmask() {
     rlDisableFramebuffer();
+    done();
+}
+
+void Xray::hidden() {
     Vector2 px = {1.0f / rt.texture.width, 1.0f / rt.texture.height};
     int slot = SLOT;
     SetShaderValue(hideS, GetShaderLocation(hideS, "px"), &px, SHADER_UNIFORM_VEC2);

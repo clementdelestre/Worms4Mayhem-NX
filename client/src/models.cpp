@@ -302,6 +302,10 @@ static const ModelAnimation *find(const Entry &e, const char *clip) {
 }
 
 bool Models::has(const char *name) { return models.count(name) > 0; }
+float Models::bottom(const char *name) {
+    auto it = models.find(name);
+    return it == models.end() ? 0 : -GetModelBoundingBox(it->second.m).min.y;
+}
 
 float Models::clipLength(const char *name, const char *clip) {
     auto it = models.find(name);

@@ -31,7 +31,7 @@
   {"name": "Tail Nail", "kind": "melee", "damage": 15, "speed": 0, "bounce": 0, "pins": true, "count": 1, "crate_weight": 2},
   {"name": "Sentry Gun", "kind": "sentry", "radius": 15, "damage": 25, "fuse": 10, "count": 1, "crate_weight": 2},
   {"name": "Ninja Rope", "kind": "rope", "speed": 22.5, "count": -1},
-  {"name": "Jetpack", "kind": "jetpack", "speed": 28, "fuse": 7.5, "count": 2, "crate_weight": 5},
+  {"name": "Jetpack", "kind": "jetpack", "speed": 20, "fuse": 7.5, "count": 2, "crate_weight": 5},
   {"name": "Teleport", "kind": "teleport", "count": 2, "crate_weight": 5},
   {"name": "Parachute", "kind": "parachute", "count": 2, "crate_weight": 3},
   {"name": "Armour", "kind": "armour", "count": 0, "crate_weight": 3},

@@ -156,7 +156,7 @@ static constexpr float FALL_SAFE = 15, FALL_SCALE = 2;
 // W4M Sliding 0x5afbe0 (TWEAK WXWorm.*_Default / _Slippy): cos SlideAngle 60 / 10; Start/StopSlideVel 0.2 / 0.06 and 0.01 units/ms;
 // SlideFriction 0.95 / 0.999 per 20 ms frame, here per 1/60 s tick. Fall 0x5b14c7 keeps the walk speed (WalkOffCliffVelMulti unread).
 static constexpr float SLIDE_NY = 0.5f, SLIDE_FRICTION = 0.9582f, START_SLIDE = 10, STOP_SLIDE = 3, WALK_OFF = 1;
-static constexpr float SLIPPY_NY = 0.9848f, SLIPPY_FRICTION = 0.99917f, SLIPPY_SLIDE = 0.5f, REBOUND = 0.3f;  // W4M Rebound 0x5acea0: e 0.3
+static constexpr float SLIPPY_NY = 0.9848f, SLIPPY_FRICTION = 0.99917f, SLIPPY_SLIDE = 0.5f;
 static const float WIND_CAP[] = {0, 0.3f, 0.6f, 1};  // WindMaxStrength / 10: 0, 3, 10 in the W4M schemes; 6: ours
 
 // W4M melee box: in front of the attacker, a worm height up or down; the Fire Punch (a leap) also reaches above.
@@ -200,13 +200,30 @@ void clearWalls(const Terrain &t, Vector3 &pos) {
 
 int substeps(Vector3 vel) { return 1 + (int)(Vector3Length(vel) * Game::DT / (Terrain::VOX / 2)); }
 
-float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel) {
+Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn) {
+    Vector3 p = {pos.x, pos.y - Game::R + 0.75f, pos.z}, d = Vector3Subtract(spawn, p);
+    int n = 1 + (int)(Vector3Length(d) / (Terrain::VOX / 2));
+    for (int k = 1; k <= n; k++) {
+        Vector3 q = Vector3Add(p, Vector3Scale(d, (float)k / n));
+        if (t.solid(q)) return p;
+        p = q;
+    }
+    return spawn;
+}
+
+Vector3 restOn(const Terrain &t, Vector3 p, float r) {
+    Vector3 s = p;
+    for (int k = 0; k < 8 && !t.solid({s.x, s.y - 0.02f, s.z}); k++) s.y -= 0.02f;
+    return t.solid({s.x, s.y - 0.02f, s.z}) ? Vector3Add(s, Vector3Scale(t.normal(s), r)) : p;  // in the air: as is
+}
+
+float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e) {
     const float R = Game::R;
     float landing = 0;
     for (int k = 0, n = substeps(vel); k < n; k++) {
         Vector3 np = Vector3Add(pos, Vector3Scale(vel, Game::DT / n));
-        if (t.solid({np.x, pos.y, np.z})) { vel.x *= -REBOUND, vel.z *= -REBOUND; np.x = pos.x; np.z = pos.z; }  // wall normal taken along v
-        if (vel.y > 0 && t.solid({np.x, np.y + R, np.z})) { vel.y *= -REBOUND; np.y = pos.y; }
+        if (t.solid({np.x, pos.y, np.z})) { vel.x *= -e, vel.z *= -e; np.x = pos.x; np.z = pos.z; }  // wall normal taken along v
+        if (vel.y > 0 && t.solid({np.x, np.y + R, np.z})) { vel.y *= -e; np.y = pos.y; }
         pos = np;
         for (int i = 0; i < 20 && t.solid({pos.x, pos.y - R, pos.z}); i++) {
             pos.y += 0.05f;
@@ -216,7 +233,7 @@ float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel) {
     return landing;
 }
 
-float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, float g, uint32_t wormpot) {
+float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, float g, uint32_t wormpot, float e) {
     const float R = Game::R, DT = Game::DT;
     bool was = grounded, slip = wormpot & WP_SLIPPY;  // assumed: SlippyMode puts worms on the W4M Slippy surface
     float fall = -vel.y, landing = 0;
@@ -232,7 +249,7 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, flo
             vel = {(vel.x + n.x * n.y * g * DT) * k, 0, (vel.z + n.z * n.y * g * DT) * k};  // W4M: gravity along the slope, then friction
         }
     } else vel.y -= g * DT / 2;  // half before and half after the move: exact like W4M Integrate 0x5a6e90
-    float hit = flyBody(t, pos, vel);
+    float hit = flyBody(t, pos, vel, e);
     if (!grounded && !hit) vel.y -= g * DT / 2;
     clearWalls(t, pos);
     return fmaxf(landing, hit);
@@ -312,6 +329,7 @@ void Game::start(const GameConfig &c) {
             }
     countGroup.clear(), countT = countEnd = 0, landHold = 0;
     girderOn = false, girderWait = girders = 0, bubbles.clear(), icarus = flapAt = 0, drift = {}, doubleDamage = false;
+    roped = jetting = jetUsed = chute = false, fuel = boost = 0;
     spy.assign(teams, 0), scout = Scout{};
 
     ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0));
@@ -425,7 +443,7 @@ void Game::beginTurn(int team) {
                 float r = rand01();
                 wind = WIND_CAP[std::min<int>(sc.wind, 3)] * r * r * cosf(rand01() * 2 * PI);
             }
-            roped = jetting = chute = cursorOn = blimp = locked = false;
+            roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = boost = 0;
             for (Object &o : objects) o.hooked = false;
             shotsLeft = ropeShots = 0;
             weapon = picked[t];
@@ -439,14 +457,23 @@ void Game::beginTurn(int team) {
     }
 }
 
+bool Game::selectable(int team, int wi) const {
+    bool chuting = chute && current < (int)worms.size() && !worms[current].grounded, hook = false;
+    for (const Object &o : objects) hook |= o.hooked;
+    if (!roped && !hook && !jetting && !chuting) return usable(team, wi);
+    Kind k = WEAPONS[wi].kind, tool = jetting ? Kind::Jetpack : chuting ? Kind::Parachute : Kind::Rope;
+    return k == tool || (usable(team, wi) && toolDrop(WEAPONS[wi]));  // the tool in use stays selectable, its ammo spent
+}
+
 void Game::nextWeapon(int team) {
     for (int i = 1; i <= (int)WEAPONS.size(); i++) {
         int k = (weapon + i) % WEAPONS.size();
-        if (usable(team, k)) { weapon = k; return; }
+        if (selectable(team, k)) { weapon = k, jetUsed = jetUsed && jetting; return; }  // a new jetpack on the ground (new W4M entity)
     }
 }
 
-static float halfHeight(Object::Type t) { return t == Object::Mine ? 0.1f : t == Object::Barrel || t == Object::Sentry ? 0.5f : 0.45f; }
+// Mine: W4M kWeaponLandmine Radius 3 units, the mesh drawn that far over the land (0x5761f0); the others: our meshes' half heights
+static float halfHeight(Object::Type t) { return t == Object::Mine ? 0.15f : t == Object::Barrel || t == Object::Sentry ? 0.5f : 0.45f; }
 
 // Random dry ground point away from living worms and other objects.
 bool Game::dropPoint(Vector3 &out) {
@@ -629,17 +656,22 @@ void Game::use(Worm &w) {
         emit(GameEvent::Fire, w.pos, current, weapon);
         return;
     }
+    if (wd.kind == Kind::Jetpack) {  // W4M FireUtilPressed 0x562270: takes off with fuel > 20 ms, the first take-off spends the ammo
+        if (!jetUsed) jetUsed = true, fuel = wd.fuse, n -= n > 0;
+        if (fuel > JET_DRY) jetting = true, thrust = wd.speed, boost = 0, emit(GameEvent::Fire, w.pos, current, weapon);
+        return;
+    }
     if (n > 0 && !shotsLeft && !(wd.kind == Kind::Rope && ropeShots)) n--;  // one rope = ROPE_SHOTS launches
     Vector3 dir = aimDir(w), f = {sinf(w.yaw), 0, cosf(w.yaw)}, tgt = target();
     emit(GameEvent::Fire, w.pos, current, weapon);
     switch (wd.kind) {
     case Kind::Shell:
-        shots.push_back({Vector3Add(w.pos, Vector3Scale(dir, 1.2f)), Vector3Scale(dir, launchSpeed(wd, power)), weapon, fuseOf(wd), false, 1});
+        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(dir, 1.2f))), Vector3Scale(dir, launchSpeed(wd, power)), weapon, fuseOf(wd), false, 1});
         if (dropped(wd)) phase = Phase::Retreat, timer = 1;  // W4M: walk away while the fuse burns, the blast ends the turn
         else phase = Phase::Flying;
         break;
     case Kind::Sheep:
-        shots.push_back({Vector3Add(w.pos, Vector3Scale(f, 0.9f)), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
+        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(f, 0.9f))), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
         phase = Phase::Flying;
         break;
     case Kind::Airstrike:
@@ -659,7 +691,7 @@ void Game::use(Worm &w) {
         break;
     case Kind::Shotgun: {
         if (!shotsLeft) shotsLeft = wd.shots;
-        Ray r = {Vector3Add(w.pos, Vector3Scale(dir, 0.6f)), dir};
+        Ray r = {muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(dir, 0.6f))), dir};
         Vector3 hit;
         float dist = terrain.raycast(r, 60, &hit) ? Vector3Distance(r.position, hit) : 60;
         Worm *struck = nullptr;
@@ -701,26 +733,26 @@ void Game::use(Worm &w) {
         else if (reach < wd.speed) { roped = true; anchor = hit; ropeLen = reach; ropeMax = wd.speed; w.grounded = false; }
         break;
     }
-    case Kind::Jetpack: jetting = true; fuel = wd.fuse; thrust = wd.speed; break;
+    case Kind::Jetpack: break;  // above
     case Kind::Teleport: w.pos = Vector3Add(tgt, {0, R + 0.3f, 0}); w.vel = {0, 0, 0}; break;
     case Kind::SuperSheep:
         if (wd.walks) {
-            shots.push_back({Vector3Add(w.pos, Vector3Scale(f, 0.9f)), Vector3Scale(f, SHEEP_STEP), weapon, SHEEP_WALK, false, 1});
+            shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(f, 0.9f))), Vector3Scale(f, SHEEP_STEP), weapon, SHEEP_WALK, false, 1});
             phase = Phase::Flying;
             break;
         }
         [[fallthrough]];
     case Kind::Homing:
-        shots.push_back({Vector3Add(w.pos, Vector3Scale(dir, 1.2f)), Vector3Scale(dir, wd.kind == Kind::Homing ? launchSpeed(wd, power) : wd.speed), weapon, wd.fuse, false, 1,
+        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(dir, 1.2f))), Vector3Scale(dir, wd.kind == Kind::Homing ? launchSpeed(wd, power) : wd.speed), weapon, wd.fuse, false, 1,
                          wd.kind == Kind::Homing && locked ? lockAt : tgt});
         phase = Phase::Flying;
         break;
     case Kind::OldWoman:
-        shots.push_back({Vector3Add(w.pos, Vector3Scale(f, 0.9f)), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
+        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(f, 0.9f))), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
         phase = Phase::Flying;
         break;
     case Kind::Scouser:
-        shots.push_back({Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.4f), {0, 0.6f, 0})), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
+        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.4f), {0, 0.6f, 0}))), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
         phase = Phase::Flying;
         break;
     case Kind::Melee:
@@ -734,11 +766,11 @@ void Game::use(Worm &w) {
         phase = Phase::Flying;
         break;
     case Kind::Mine:
-        objects.push_back({Object::Mine, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.7f), {0, 0.3f, 0})), {0, 0, 0}, -1, -1, false, false, -1, -1, false, MINE_COURTESY});
+        objects.push_back({Object::Mine, muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.7f), {0, 0.3f, 0}))), {0, 0, 0}, -1, -1, false, false, -1, -1, false, MINE_COURTESY});
         phase = Phase::Flying;
         break;
     case Kind::Sentry:
-        objects.push_back({Object::Sentry, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.3f), {0, 0.3f, 0})), {0, 0, 0}, weapon, -1, false, false, w.team});
+        objects.push_back({Object::Sentry, muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.3f), {0, 0.3f, 0}))), {0, 0, 0}, weapon, -1, false, false, w.team});
         phase = Phase::Flying;
         break;
     case Kind::Abduction:
@@ -788,13 +820,14 @@ void Game::stepWorm(Worm &w) {
     auto land = [&](float speed) {  // fall damage
         bool maxFall = cfg.wormpot & WP_MAX_FALL;
         float safe = maxFall ? FALL_SAFE * 0.7f : FALL_SAFE;
-        bool winged = icarus == 2 && &w == &worms[current];  // W4M flag 0x40 each frame of the flight: no fall damage
+        bool winged = (icarus == 2 || jetting) && &w == &worms[current];  // W4M flag 0x40 each frame of the flight: no fall damage
         if (speed > safe && (cfg.scheme.fallDamage || maxFall) && !(cfg.wormpot & WP_WORMS_DROWN) && !winged) {
             int dmg = (int)((speed - safe) * FALL_SCALE * (maxFall ? 3 : 1)) + 1, wi = int(&w - worms.data());
             if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi); }
         }
     };
-    land(wormBody(terrain, w.pos, w.vel, w.grounded, gravity(), cfg.wormpot));
+    bool jet = jetting && &w == &worms[current];  // W4M jetpack contact 0x5633e9: walls and ceilings bounce at 0.8; it lands itself, no Ballistic
+    land(jet ? wormBody(terrain, w.pos, w.vel, w.grounded, gravity(), cfg.wormpot, JET_BOUNCE) : wormBody(terrain, w.pos, w.vel, w.grounded, gravity(), cfg.wormpot));
     if (w.pos.y < water) drown(w);
 }
 
@@ -1075,8 +1108,8 @@ void Game::step(const Input &in) {
     if (phase == Phase::Aim && hotSeat > 0 && !drop) hotSeat = in.turn || in.walk || in.aim || (in.buttons & ~Input::TARGET) ? 0 : hotSeat - 1;
     bool aimCursor = phase == Phase::Aim && (in.buttons & Input::TARGET) && !tool;  // walk and aim drive the cursor, whatever the weapon
     if (w.alive && !drop && (phase == Phase::Aim || phase == Phase::Retreat)) {
-        if (!aimCursor) w.yaw += in.turn / 127.0f * 2.5f * DT;
-        if (pressed & Input::ABOUT_FACE) w.yaw += PI;
+        if (!aimCursor) w.yaw += Clamp(in.turn / 127.0f * 2.5f, jetting ? -JET_TURN : -2.5f, jetting ? JET_TURN : 2.5f) * DT;  // W4M 0x561e40
+        if ((pressed & Input::ABOUT_FACE) && !jetting) w.yaw += PI;
         if (aimCursor && targeted(WEAPONS[weapon].kind)) {  // W4M IsometricCam 0x52a5e0
             if (!cursorOn) cursorYaw = w.yaw, cursorPitch = BLIMP_PITCH, cursor = blimpFocus(w.pos, w.yaw), cursorOn = true;
             cursorYaw += in.turn / 127.0f * BLIMP_TURN * DT;
@@ -1084,8 +1117,12 @@ void Game::step(const Input &in) {
             if (tilt) cursorPitch = Clamp(cursorPitch - in.aim / 127.0f * BLIMP_TILT * DT, 0, PI / 2);  // stick up: RotateUp
             float v = CURSOR_SPEED * DT / 127, y = cursorYaw, side = tilt ? 0 : in.aim;
             cursor.x += (sinf(y) * in.walk - cosf(y) * side) * v, cursor.z += (cosf(y) * in.walk + sinf(y) * side) * v;
-            Vector3 c = landCenter(), off = Vector3Subtract(cursor, c);
-            if (Vector3Length(off) > BLIMP_RANGE) cursor = Vector3Add(c, Vector3Scale(Vector3Normalize(off), BLIMP_RANGE));
+            float dx = cursor.x - Terrain::NX * Terrain::VOX / 2, dz = cursor.z - Terrain::NZ * Terrain::VOX / 2;
+            float dy = fmaxf(fabsf(cursor.y), fabsf(cursor.y - Terrain::NY * Terrain::VOX / 2));  // landCenter().y is in [0, NY VOX / 2]
+            if (dx * dx + dy * dy + dz * dz > (BLIMP_RANGE - 1) * (BLIMP_RANGE - 1)) {  // landTop() costs ~300k samples: only near the edge
+                Vector3 c = landCenter(), off = Vector3Subtract(cursor, c);
+                if (Vector3Length(off) > BLIMP_RANGE) cursor = Vector3Add(c, Vector3Scale(Vector3Normalize(off), BLIMP_RANGE));
+            }
         }
         blimp = aimCursor && targeted(WEAPONS[weapon].kind);
         if (phase == Phase::Aim && WEAPONS[weapon].kind == Kind::Girder) {
@@ -1116,21 +1153,39 @@ void Game::step(const Input &in) {
         } else if (Object *o = hooked()) {
             if (pressed & Input::JUMP) o->hooked = false;
             if (!armed) ropeLen = Clamp(ropeLen - in.aim / 127.0f * 6 * DT, 1, ropeMax);
-        } else if (jetting) {
-            if ((pressed & Input::JUMP) || (fuel <= 0 && w.grounded)) jetting = false;
-            if (!armed && (in.buttons & Input::FIRE) && fuel > 0) { w.vel.y += thrust * DT; fuel -= DT; }
-            w.vel = Vector3Add(w.vel, Vector3Scale(push, 8));
-            w.vel.x *= 0.98f;
-            w.vel.z *= 0.98f;
+        } else if (jetting) {  // W4M 0x562810 every 20 ms, here per tick; FIRE held = FireUtil, whatever the hand holds
+            bool burn = in.buttons & Input::FIRE;
+            if ((w.grounded && !burn) || (burn && fuel <= JET_DRY)) jetting = false;  // landed (0x563252), or dry (0x562990): it falls
+            else {
+                const float n = DT / 0.02f, h = fmaxf(w.pos.y - water, 0);  // W4M steps per tick; height over Water.Level
+                Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, a = {0, 0, 0};
+                bool fwd = in.walk > 1, along = fwd && f.x * w.vel.x + f.z * w.vel.z > 0;  // stick > 0.01 along the facing; InputImpulse.Velocity > 0
+                if (burn) {
+                    float t = thrust * DT;
+                    fuel -= DT;
+                    a = fwd ? Vector3{f.x * sinf(JET_TILT) * t, cosf(JET_TILT) * t, f.z * sinf(JET_TILT) * t} : Vector3{0, t, 0};
+                    if (h > JET_CEIL) a = {a.x * JET_OVER, w.vel.y > 0 ? 0 : a.y * JET_OVER, a.z * JET_OVER};
+                    else {
+                        a = Vector3Scale(a, sinf((1 - h / JET_CEIL) * PI / 2));
+                        if (w.vel.y < -JET_FALL) boost = fminf(1, boost + BOOST_ACCEL * fminf(1, BOOST_MOD * (-JET_FALL - w.vel.y)) * n);  // 0x562180
+                        else if ((boost *= powf(BOOST_DECAY, n)) < BOOST_OFF) boost = 0;
+                        a.y *= 1 + boost;
+                    }
+                } else if ((boost *= powf(BOOST_DECAY, n)) < BOOST_OFF) boost = 0;
+                float k = powf(along ? JET_RES : JET_RES_IDLE, n);
+                w.vel = {w.vel.x * k + a.x, w.vel.y + a.y, w.vel.z * k + a.z};
+            }
         } else if (chute && !w.grounded) w.vel = Vector3Add(w.vel, Vector3Scale(push, 5));
         if (phase == Phase::Aim && !tool) armed = true;
         if (phase == Phase::Aim) {
             if (armed && !aimCursor) w.pitch = Clamp(w.pitch + in.aim / 127.0f * 1.5f * DT, -1.2f, 1.45f);
             if ((pressed & Input::NEXT_WEAPON) && !shotsLeft) nextWeapon(w.team);
             if (WEAPONS[weapon].userFuse) fuses[w.team] = std::clamp(fuses[w.team] + !!(pressed & Input::FUSE_UP) - !!(pressed & Input::FUSE_DOWN), 1, 5);
-            if (armed && ((ammo[w.team][weapon] && !delays[w.team][weapon]) || shotsLeft) && !(w.nailed && !nailUsable(WEAPONS[weapon].kind))) {
+            bool spare = jetUsed && WEAPONS[weapon].kind == Kind::Jetpack;  // takes off again without ammo
+            if (armed && ((ammo[w.team][weapon] && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(WEAPONS[weapon].kind))) {
                 Vector3 h;
-                if (!powered(WEAPONS[weapon].kind)) { if ((pressed & Input::FIRE) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
+                if (jetting) { if (pressed & Input::JUMP) power = 0, use(w); }  // W4M UtilityFire group 0x4e1d50: Fire.Second drops it
+                else if (!powered(WEAPONS[weapon].kind)) { if ((pressed & Input::FIRE) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
                 else if (aimCursor && targeted(WEAPONS[weapon].kind)) {  // homing in the Blimp, W4M state 1: FIRE takes its target, no charge
                     if ((pressed & Input::FIRE) && !locked && cursorOn && blimpHit(&h)) locked = true, lockAt = h;
                 } else {
@@ -1310,7 +1365,7 @@ void Game::stepGirder(const Input &in, uint8_t pressed) {
     Vector3 c = Vector3Add(girder, Vector3Scale(d, GIRDER_STEP));
     c = {Clamp(c.x, girderFrom.x - GIRDER_RANGE, girderFrom.x + GIRDER_RANGE), Clamp(c.y, girderFrom.y - GIRDER_RANGE, girderFrom.y + GIRDER_RANGE),
          Clamp(c.z, girderFrom.z - GIRDER_RANGE, girderFrom.z + GIRDER_RANGE)};  // 0x558b20: per axis
-    bool sea = c.y + 1 <= water, sky = c.y > fminf(landTop() + 37.5f, (Terrain::NY - 6) * Terrain::VOX);  // Land.InitialMaxHeight + 750
+    bool sea = c.y + 1 <= water, sky = c.y > 37.5f && c.y > fminf(landTop() + 37.5f, (Terrain::NY - 6) * Terrain::VOX);  // Land.InitialMaxHeight + 750
     bool into = !(girderFits(girder) & 1) && (girderFits(c) & 1);  // a valid preview can't move into land
     if (!sea && !sky && !into) girder = c;
     girderWait = GIRDER_TICKS;
@@ -1407,6 +1462,7 @@ uint32_t Game::checksum() const {
     for (const Gas &c : gas) mix(&c, sizeof c);
     mix(&girderOn, 1), mix(&girders, sizeof girders), mix(&girderWait, sizeof girderWait);
     if (girderOn) mix(&girder, sizeof girder), mix(&girderFrom, sizeof girderFrom), mix(&cursorYaw, sizeof cursorYaw);
+    if (jetting || jetUsed) mix(&jetting, 1), mix(&jetUsed, 1), mix(&fuel, sizeof fuel), mix(&boost, sizeof boost);  // no jetpack: old replays' sums hold
     for (const Bubble &b : bubbles) mix(&b, sizeof b);
     mix(&icarus, sizeof icarus), mix(&flapAt, sizeof flapAt), mix(&drift, sizeof drift), mix(&doubleDamage, 1), mix(spy.data(), spy.size());
     mix(&scout.t, sizeof scout.t), mix(&scout.power, sizeof scout.power), mix(&scout.pitch, sizeof scout.pitch);

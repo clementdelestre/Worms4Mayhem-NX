@@ -204,7 +204,7 @@ static void steer(const Game &g, Vector3 p, Vector3 v, Vector3 e, Input &in) {
 
 // Planned super sheep flight under the autopilot; false if it is lost.
 static bool superFly(const Game &g, const WeaponDef &wd, Vector3 pos, float yaw, float pitch, Vector3 e, Vector3 &out) {
-    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = wd.walks ? pos + flat(yaw) * 0.9f : pos + d * 1.2f, v = d * wd.speed;
+    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = muzzle(g.terrain, pos, wd.walks ? pos + flat(yaw) * 0.9f : pos + d * 1.2f), v = d * wd.speed;
     for (float t = wd.fuse; t > 0; t -= DT) {  // walks: takes off at once (think() presses FIRE)
         Input in;
         steer(g, p, v, e, in);
@@ -415,7 +415,7 @@ static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::Ste
     if (s.move == 0) {
         Vector3 d = s.to - m.b.pos;
         float h = sqrtf(d.x * d.x + d.z * d.z), dy = angle(atan2f(d.x, d.z) - m.yaw), ws = Game::WALK_SPEED * (g.cfg.wormpot & WP_QUICK_WALK ? 2 : 1);
-        if (h < 0.05f || !m.b.grounded || r.t > 120) { r.air = true; r.done = still; return in; }
+        if (h < 0.05f || !m.b.grounded || r.t > 120) { r.stuck = h >= 0.05f && m.b.grounded; r.air = true; r.done = still; return in; }
         in.turn = q(dy / (2.5f * DT));
         if (fabsf(dy) < 0.3f) in.walk = (int8_t)Clamp(roundf(127 * h / (ws * DT)), 1, 127);
         return in;
@@ -432,7 +432,16 @@ static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::Ste
     return in;
 }
 
-// Plays one step from m as the follower will; false if the worm drowns, gets hurt or never settles.
+// W4M Fits 0x59edf0: three vertical rods at (±4, -3) and (0, 5) units, feet to head; ours scaled to BODY_R, from above the steps
+static bool fits(const Terrain &t, Vector3 p) {
+    const float k = Game::BODY_R / 4;
+    for (Vector2 o : {Vector2{4 * k, -3 * k}, Vector2{-4 * k, -3 * k}, Vector2{0, 5 * k}})
+        for (float y = p.y - R + Game::STEP + 0.05f; y <= p.y + R; y += Terrain::VOX / 2)
+            if (t.solid({p.x + o.x, y, p.z + o.y})) return false;
+    return true;
+}
+
+// Plays one step from m as the follower will; false if the worm drowns, gets hurt, never settles or ends where it doesn't fit.
 static bool runStep(const Game &g, Mover &m, const Ai::Step &s, int &ticks) {
     Ai::StepRun r;
     bool rest = false;  // the last tick left a still worm unchanged: turning on the spot can skip stepBody
@@ -444,7 +453,7 @@ static bool runStep(const Game &g, Mover &m, const Ai::Step &s, int &ticks) {
         rest = m.b.grounded && before.grounded && before.pos.x == m.b.pos.x && before.pos.y == m.b.pos.y && before.pos.z == m.b.pos.z &&
                Vector3LengthSqr(before.vel) == 0 && Vector3LengthSqr(m.b.vel) == 0;
     }
-    return r.done && m.b.fall == 0;
+    return r.done && m.b.fall == 0 && !r.stuck && fits(g.terrain, m.b.pos);  // W4M 0x492510: edges only to walkable nodes
 }
 
 // Where to stand after the shot: away from enemies (and out of their sight), the blast, mines and sentries.
@@ -767,7 +776,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
         case Kind::Shell:
             if (dropped(wd) && pick()) {  // also set it down at the feet, facing the target
                 Vector3 d = dirOf(yawE, 0), out;
-                if (fly(g, wd, w.pos + d * 1.2f, d * launchSpeed(wd, 0), wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, w.pos + d * 1.2f), d * launchSpeed(wd, 0), wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
             }
             // constant acceleration A: hit T at time t with V = (T - P - A t(t+DT)/2) / t (semi-implicit Euler)
             for (float t = 0.2f; t < 4.5f; t += 0.43f) {  // 11 arcs, as W4M samples about 11 speeds (0x4ace50)
@@ -783,7 +792,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                 float pw = 0;
                 for (int j = 0; j < n; j++) pw = fminf(1, pw + DT / 1.5f);
                 Vector3 d = dirOf(yaw, pitch), out;
-                if (fly(g, wd, w.pos + d * 1.2f, d * launchSpeed(wd, pw), wind, false, out)) consider(shell(out), yaw, pitch, n, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, w.pos + d * 1.2f), d * launchSpeed(wd, pw), wind, false, out)) consider(shell(out), yaw, pitch, n, ti);
             }
             break;
         case Kind::Homing: {
@@ -795,14 +804,14 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                 if (!pick()) continue;
                 float pw = 0;
                 for (int j = 0; j < n; j++) pw = fminf(1, pw + DT / 1.5f);
-                if (fly(g, wd, w.pos + d * 1.2f, d * launchSpeed(wd, pw), wind, false, out, &tgt)) consider(shell(out), yawE, pitch, n, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, w.pos + d * 1.2f), d * launchSpeed(wd, pw), wind, false, out, &tgt)) consider(shell(out), yawE, pitch, n, ti);
             }
             break;
         }
         case Kind::Shotgun: {
             if (!pick()) break;
             float pitch = atan2f(to.y - (isWorm ? 0 : 0.3f), horiz);
-            Vector3 d = dirOf(yawE, pitch), o = w.pos + d * 0.6f, hit;
+            Vector3 d = dirOf(yawE, pitch), o = muzzle(g.terrain, w.pos, w.pos + d * 0.6f), hit;
             float dist = g.terrain.raycast({o, d}, 60, &hit) ? Vector3Distance(o, hit) : 60;
             int struck = -1;
             for (size_t i = 0; i < g.worms.size(); i++) {
@@ -842,7 +851,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
         case Kind::Sheep:
         case Kind::OldWoman: {
             if (!isWorm || !pick()) break;
-            Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, w.pos + f * 0.9f, f, e, end);
+            Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, muzzle(g.terrain, w.pos, w.pos + f * 0.9f), f, e, end);
             if (Vector3Distance(p, e) < 2) consider(shell(p), yawE, w.pitch, 0, ti);
             break;
         }
@@ -958,7 +967,7 @@ void Ai::decide(const Game &g) {
             if (best > here) { plan = Plan{jetpack, 0, plan.target}; plan.score = 0; walk = 600; mode = Mode::Act; return; }
         }
     }
-    if (plan.score > -1e9f) return finish(g);
+    if (plan.score > 0) return finish(g);  // W4M 0x49e6d0: a negative plan is forbidden, the turn is skipped
     int skip = owned(g, team, Kind::SkipGo);
     if (skip >= 0) { plan = Plan{skip, 0, -1}; plan.yaw = w.yaw; plan.pitch = w.pitch; mode = Mode::Act; }
 }
@@ -1010,12 +1019,8 @@ Input Ai::jet(const Game &g) {
     if (fabsf(dy) < 0.5f && h > 0.8f) in.walk = (int8_t)(127 * fminf(1, h / 4));
     Vector3 hit;
     bool low = g.terrain.raycast({w.pos + flat(w.yaw) * 2, {0, -1, 0}}, 3, &hit) || g.terrain.solid(w.pos + flat(w.yaw) * 1.5f);
-    if (g.fuel > 0 && ((h > 1.5f && (w.pos.y < goal.y + 3 || low)) || w.vel.y < -5)) in.buttons = Input::FIRE;
-    if ((w.grounded && h < 1.5f) || --walk <= 0) {
-        in.buttons = (g.prevButtons & Input::JUMP) ? 0 : Input::JUMP;
-        mode = Mode::Eval;
-        stage = -1;
-    }
+    if (g.fuel > Game::JET_DRY && ((h > 1.5f && (w.pos.y < goal.y + 3 || low)) || w.vel.y < -5)) in.buttons = Input::FIRE;
+    if (h < 1.5f || --walk <= 0) in.buttons = 0, mode = Mode::Eval, stage = -1;  // W4M: no switch-off, it lands (or falls dry)
     return in;
 }
 
@@ -1076,7 +1081,7 @@ Input Ai::think(const Game &g) {
     if (g.dropping()) return in;
     if (wait > 0) { wait--; return in; }  // W4M DelayAtStart is 0: no pause before thinking
     if (g.cfg.rules & RULE_ROPE_RACE) return race(g);
-    if (g.jetting) return mode == Mode::Jet ? jet(g) : Input{0, 0, 0, (uint8_t)(g.prevButtons ? 0 : Input::JUMP)};
+    if (g.jetting) return mode == Mode::Jet ? jet(g) : Input{};  // drops back down; think again once landed
     if (g.roped) { in.buttons = g.prevButtons ? 0 : Input::JUMP; return in; }
     switch (mode) {
     case Mode::Eval:
@@ -1093,7 +1098,7 @@ Input Ai::think(const Game &g) {
     case Mode::Act:
         if (search) { slice(g); return in; }  // the retreat path, before firing
         return act(g);
-    case Mode::Jet: return in;  // waiting for the jetpack to start
+    case Mode::Jet: if (g.jetUsed) mode = Mode::Eval, stage = -1; return in;  // waiting for the take-off; landed short: think again
     }
     return in;
 }
