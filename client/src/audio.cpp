@@ -36,11 +36,14 @@ const char *SFX_NAMES[] = {
     "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
     "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
+    "tick_slow",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
-// W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m-map.md §12): the event of each file, its gain in dB
+// W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m/audio.md §12): the event of each file, its gain in dB
 // (event + sound definition + category), loop, 3D linear rolloff min..max in m (20 units/m; 0 = 2D), max playbacks.
-struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; };  // fade: FEV fade in/out, s; w: FEV wave weights, null = equal; mode: FEV sounddef play mode (see pick)
+// fade: FEV fade in/out, s; w: FEV wave weights, null = equal; mode: FEV sounddef play mode (see pick);
+// delay: sounddef trigger delay min/max ms (+64/+66); spawn: spawn time min/max ms (+4/+8), for oneshot instances that respawn (hold)
+struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; };
 // every other multi-wave def has equal weights in the FEV (100 each, 20 on OldWomanMutter)
 const int W_SCOUSER_HELD[] = {100, 300, 100};
 const Def DEFS[] = {
@@ -58,13 +61,13 @@ const Def DEFS[] = {
     {"weapons/Bomber", -9, true, 0.5f, 60, 1, 0.5f},
     {"weapons/ConcreteDonkeyRelease", -1, false, 0.5f, 100, 1},
     {"weapons/NinjaRopeFire", 0, false, 0.5f, 25, 1},
-    {"weapons/Teleport", -8, false, 0.5f, 25, 1, 0, nullptr, 2},
+    {"weapons/Teleport", -8, false, 0.5f, 25, 1, 0.35f, nullptr, 2},
     {"weapons/BaseballBarSwing", 0, false, 0, 0, 1},
     {"weapons/FirePunch", -6, false, 0.5f, 25, 1},
     {"weapons/Prod", -4, false, 0, 0, 1},
     {"weapons/SniperRifleFire", -3, false, 0, 0, 1},
     {"weapons/BowRelease", 0, false, 0.5f, 60, 1},
-    {"weapons/MissileLoop", 0, false, 5, 75, 1},  // loops, but its Time envelope cuts it at 5 s: one pass of the clip
+    {"weapons/MissileLoop", 0, false, 5, 75, 1, 0, nullptr, 1, {1000, 1000}},  // loops, but its Time envelope cuts it at 5 s: one pass of the clip
     {"weapons/OldWomenLaunch", 0, false, 0.5f, 60, 1},
     {"weapons/ScouserLaunch", 0, false, 0.5f, 60, 1},
     {"weapons/SentryGunHeld", -8, true, 0.5f, 20, 1},
@@ -72,13 +75,13 @@ const Def DEFS[] = {
     {"weapons/FuseLoop", -4, true, 0.5f, 25, 1},
     {"weapons/GasLoop", -16, false, 0.5f, 15, 1},
     {"weapons/AlienUfoBeamStart", 0, false, 0.5f, 100, 1},
-    {"weapons/RainLoop", -6, true, 0, 0, 1},
+    {"weapons/RainLoop", -6, true, 0, 0, 1, 2},
     {"weapons/ParachuteLoop", -2, false, 0.5f, 25, 1},  // the Open layer, a oneshot
     {"weapons/MineArmLoop", 0, true, 5, 25, 1},
     {"weapons/CrateSpawn", -4, false, 0.5f, 60, 1},
     {"weapons/PickupWeapon", -11, false, 0.5f, 25, 1},  // PickupUtil -11, PickupHealthCrate -6
     {"weapons/WingFlap", -3, false, 0.5f, 25, 1, 0, nullptr, 2},
-    {"weapons/OldWomenFootsteps", -6, false, 0.5f, 60, 1, 0, nullptr, 2},
+    {"weapons/OldWomenFootsteps", -6, false, 0.5f, 60, 1, 0, nullptr, 2, {120, 120}, {0, 1}},
     {"weapons/Thud", 0, false, 0.5f, 25, 2, 0, nullptr, 2},
     {"global/click3", 0, false, 0, 0, 1},
     {"weapons/CrateImpactHealth", -2, false, 0.5f, 60, 1},
@@ -112,7 +115,7 @@ const Def DEFS[] = {
     {"frontendsfx/WormPotLoop", 0, true, 0, 0, 1},
     {"frontendsfx/WormPotStop", 0, false, 0, 0, 1},
     {"weapons/HolyGrenadeExplosion", -1, false, 0, 0, 1},
-    {"weapons/HolyGrenadeHeld", -10, true, 0.5f, 25, 1},
+    {"weapons/HolyGrenadeHeld", -10, true, 0.5f, 25, 1, 0.35f},
     {"weapons/BombWhistle", -14, false, 0.5f, 40, 6},
     {"weapons/CowFall", -6, false, 0.5f, 25, 2, 0, nullptr, 2},
     {"weapons/RocketPowerUp", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
@@ -127,10 +130,10 @@ const Def DEFS[] = {
     {"weapons/ShotgunEquip", -12, false, 0.5f, 500, 1},
     {"weapons/SniperEquip", -12, false, 0.5f, 500, 1},
     {"weapons/UmbrellaOpen", -12, false, 0, 0, 1},  // 2D
-    {"weapons/SheepHeld", -9.2f, false, 0.5f, 25, 1},  // 3D log 10..500 units
+    {"weapons/SheepHeld", -9.2f, false, 0.5f, 25, 1, 0, nullptr, 3, {1000, 3000}, {0, 1}},  // 3D log 10..500 units
     {"weapons/SentryGunHeld", -8, true, 0.5f, 20, 1, 0.35f},
-    {"weapons/ScouserHeld", 0, false, 0.5f, 60, 1, 0, W_SCOUSER_HELD, 0},
-    {"weapons/OldWomanHeld", -7, false, 0.5f, 60, 1, 0, nullptr, 0},
+    {"weapons/ScouserHeld", 0, false, 0.5f, 60, 1, 0, W_SCOUSER_HELD, 0, {200, 1200}, {0, 1}},
+    {"weapons/OldWomanHeld", -7, false, 0.5f, 60, 1, 0, nullptr, 0, {200, 1600}, {0, 1}},
     {"weapons/LockOn", 0, false, 0, 0, 1},  // sample TargetAquired, 2D
     {"weapons/AlienUfoAppearing", 0, false, 0.5f, 100, 1},  // the UFO events: 3D linear 10..2000 units; TakeOff 2D
     {"weapons/AlienUfoActive", 0, false, 0.5f, 100, 1},
@@ -140,9 +143,10 @@ const Def DEFS[] = {
     {"weapons/BaseballBatImpact", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
     {"weapons/BubbleMachineInflate", -2, false, 0.5f, 25, 1},  // sample BubbleMachinePlace; both 3D linear 10..500 units
     {"weapons/BubbleMachineWobble", -2, false, 0.5f, 25, 1},
-    {"weapons/BubbleMachineLoop", -22, false, 0.5f, 20, 1, 0, nullptr, 2},  // 3D linear 10..400 units; one of Bubble1-6 per 500 ms spawn
+    {"weapons/BubbleMachineLoop", -22, false, 0.5f, 20, 1, 0, nullptr, 2, {}, {500, 500}},  // 3D linear 10..400 units; one of Bubble1-6 per 500 ms spawn
     {"weapons/Throw", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
     {"weapons/SecretWeapLaunch", 0, false, 0, 0, 1},  // 2D
+    {"weapons/ClockSlow", -2, true, 0, 0, 1},
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -184,7 +188,9 @@ struct Bank {
 Variants sfx[(int)Sfx::Count];
 std::vector<Bank> banks;
 std::vector<int> teamBank;  // team -> bank, -1 = default
-Music theme;
+Music theme, outgoing;
+float outGain = 0;  // femusic fade-out (FEV 2000 ms) of the track being replaced or stopped
+bool stopping = false;
 std::string track;
 bool musicLoaded = false, musicOn = false;
 // W4M Music.FadeIn (FrontEndService 0x7290b4): +0.01 per frame up to Audio.Vol.Music 0.6 (DEFSAVE), 1 s at 60 fps
@@ -212,7 +218,7 @@ void unload(Variants &v) {
 }
 
 // FMOD 3D linear rolloff (full volume inside min, silent past max) and pan from the listener's right
-void place(Sound s, const Def &d, float gain, const Vector3 *at) {
+float place(Sound s, const Def &d, float gain, const Vector3 *at) {
     float pan = 0;
     if (at && d.max > 0) {
         Vector3 to = Vector3Subtract(*at, ear);
@@ -221,19 +227,24 @@ void place(Sound s, const Def &d, float gain, const Vector3 *at) {
         if (dist > 1e-3f) pan = Vector3DotProduct(to, earRight) / dist;
     }
     SetSoundVolume(s, gain), SetSoundPan(s, pan);
+    return gain;
 }
+// FEV event fade-in on a fire-and-forget start: the volume ramps linearly over the event's fade time
+struct Ramp { Sound s; double t0; float gain, len; };
+std::vector<Ramp> ramps;
 
 // FMOD sounddef play mode (fmod_event.dll selector 0x10038670): 0 and 3 sequential per event instance (from wave 1 / wave 0),
 // 1 weighted random, 2 random without repeating the last wave, 4 per-instance shuffle, 6 global shuffle (7 global sequential: unused).
+struct State { int last = 0, cur = 0; std::vector<int> perm; };  // last: previous wave + 1, 0 = none
+std::map<const Def *, State> state;  // keyed by Def: SPEECH defs live outside DEFS
+void restart(const Def &d) { state[&d].cur = 0; }
 int pick(int n, const Def &d) {
-    struct State { int last = 0, cur = 0; std::vector<int> perm; };  // last: previous wave + 1, 0 = none
-    static std::map<const Def *, State> state;  // keyed by Def: SPEECH defs live outside DEFS
     if (n < 2) return 0;
     State &st = state[&d];
     int &last = st.last, &cur = st.cur;
     std::vector<int> &perm = st.perm;
     auto wt = [&](int i) { return d.w ? d.w[i] : 1; };  // d.w has one weight per variant
-    if (d.mode == 0) return 1 % n;  // a fresh instance starts at index 0 and steps once
+    if (d.mode == 0) return cur = (cur + 1) % n;  // per event instance (reset by restart), from wave 1: state 0 steps before playing
     if (d.mode == 3) return 0;
     if (d.mode == 6) {  // exe shuffle 0x10038870: reshuffle when spent, never starting with the last wave played
         if (perm.size() != (size_t)n || cur + 1 >= n) {
@@ -255,7 +266,7 @@ int pick(int n, const Def &d) {
 }
 
 // past maxpb playing voices the oldest is cut (FMOD max playbacks behaviour 1, steal oldest)
-void playRandom(Variants &v, const Def &d, float volume, const Vector3 *at) {
+void playRandom(Variants &v, const Def &d, float volume, const Vector3 *at, bool ramp = false) {
     if (!v.n) return;
     int k = pick(v.n, d);
     int busy = 0;
@@ -265,9 +276,19 @@ void playRandom(Variants &v, const Def &d, float volume, const Vector3 *at) {
         else if (x.variant == k && !free) free = &x;
     if (busy >= d.maxpb && oldest) StopSound(oldest->s), free = free ? free : oldest;
     if (!free) return;
-    place(free->s, d, volume * powf(10, d.db / 20), at);
+    float g = place(free->s, d, volume * powf(10, d.db / 20), at);
     free->born = ++plays;
+    if (ramp && d.fade > 0) SetSoundVolume(free->s, 0), ramps.push_back({free->s, GetTime(), g, d.fade});
     PlaySound(free->s);
+}
+
+// fmod_event 0x10038400: a trigger delay of min + rand() % (max - min) ms (min when equal) before each sound starts (Channel delay)
+struct Pending { Variants *v; const Def *d; float vol; bool has; Vector3 at; double due; int id; };
+std::vector<Pending> pending;
+int between(const int *r) { return r[0] == r[1] ? r[0] : r[0] + GetRandomValue(0, r[1] - r[0] - 1); }
+void trigger(Variants &v, const Def &d, float vol, const Vector3 *at, int id = -1) {
+    if (int ms = between(d.delay)) return pending.push_back({&v, &d, vol, at != nullptr, at ? *at : Vector3{}, GetTime() + ms / 1000.0, id});
+    playRandom(v, d, vol, at, true);
 }
 
 std::vector<std::string> bankDirs(const char *root) {
@@ -281,6 +302,13 @@ std::vector<std::string> bankDirs(const char *root) {
     return dirs;
 }
 
+// frontendmusic/femusic ("theme") has a 2000 ms event fade-out; the level tracks have none
+void leave() {
+    if (outGain > 0) UnloadMusicStream(outgoing), outGain = 0;
+    if (track == "theme" && IsMusicStreamPlaying(theme)) outgoing = theme, outGain = fade * powf(10, trackDb(track) / 20);
+    else UnloadMusicStream(theme);
+}
+
 bool openMusic(const char *name) {
     for (const char *root : {ASSET_ROOT, ROMFS_ROOT}) {
         std::string s = std::string(root) + "music/" + name + ".ogg";
@@ -288,7 +316,7 @@ bool openMusic(const char *name) {
         if (!FileExists(p)) continue;
         Music m = LoadMusicStream(p);
         if (!IsMusicValid(m)) continue;
-        if (musicLoaded) UnloadMusicStream(theme);
+        if (musicLoaded) leave();
         theme = m;
         theme.looping = std::string(name) != "victory";  // jingle: once, then silence
         musicLoaded = true;
@@ -318,11 +346,37 @@ void shutdown() {
     for (auto &b : banks) for (auto &v : b.lines) unload(v);
     banks.clear();
     if (musicLoaded) UnloadMusicStream(theme);
+    if (outGain > 0) UnloadMusicStream(outgoing), outGain = 0;
     musicLoaded = false;
     CloseAudioDevice();
 }
 
+void stopSfx() {
+    for (auto &v : sfx) for (Slot &k : v.slot) StopSound(k.s);
+    for (auto &b : banks) for (auto &v : b.lines) for (Slot &k : v.slot) StopSound(k.s);
+    pending.clear(), ramps.clear();
+}
+
 void update() {
+    for (size_t i = 0; i < pending.size();)
+        if (Pending p = pending[i]; GetTime() >= p.due) pending.erase(pending.begin() + i), playRandom(*p.v, *p.d, p.vol, p.has ? &p.at : nullptr, true);
+        else i++;
+    if (outGain > 0) {
+        outGain -= GetFrameTime() / 2 * powf(10, trackDb("theme") / 20);
+        if (outGain <= 0) UnloadMusicStream(outgoing), outGain = 0;
+        else SetMusicVolume(outgoing, outGain), UpdateMusicStream(outgoing);
+    }
+    for (size_t i = 0; i < ramps.size();) {
+        Ramp &r = ramps[i];
+        float k = (float)((GetTime() - r.t0) / r.len);
+        if (k >= 1 || !IsSoundPlaying(r.s)) { if (IsSoundPlaying(r.s)) SetSoundVolume(r.s, r.gain); ramps.erase(ramps.begin() + i); }
+        else SetSoundVolume(r.s, r.gain * k), i++;
+    }
+    if (stopping && musicLoaded) {
+        if ((fade -= GetFrameTime() / 2) <= 0) fade = 0, stopping = false, StopMusicStream(theme);
+        else SetMusicVolume(theme, fade * powf(10, trackDb(track) / 20)), UpdateMusicStream(theme);
+        return;
+    }
     if (!musicLoaded || !musicOn) return;
     if (fade < 1) fade = fminf(fade + GetFrameTime(), 1), SetMusicVolume(theme, fade * powf(10, trackDb(track) / 20));
     UpdateMusicStream(theme);
@@ -336,7 +390,7 @@ void listen(const Camera3D &cam) {
 static void play(Sfx id, float volume, const Vector3 *at) {
     Variants *v = &sfx[(int)id];
     if (!v->n && id > Sfx::Tick && id <= Sfx::SuperSheepFire) v = &sfx[(int)Sfx::Fire];
-    playRandom(*v, DEFS[(int)id], volume, at);
+    trigger(*v, DEFS[(int)id], volume, at, (int)id);
 }
 void play(Sfx id, float volume) { play(id, volume, nullptr); }
 void play(Sfx id, Vector3 at) { play(id, 1, &at); }
@@ -356,18 +410,28 @@ void equip(const char *w, Vector3 at) {
     for (const E &e : T) if (!strcmp(w, e.name)) return play(e.id, at);
 }
 
+// One event instance while on. fmod_event 0x10019c40: a oneshot instance with spawn max > 0 respawns once fewer than max spawned
+// sounds (1) play, delayed ones included, and its countdown (always running) is out; it then adds min + rand() % (max - min) ms
 void hold(Sfx id, bool on, const Vector3 *at) {
     static bool was[(int)Sfx::Count];
+    static float wait[(int)Sfx::Count];
     const Def &d = DEFS[(int)id];
-    if (on && !was[(int)id]) play(id, 1, at);
+    bool busy = false;
+    for (Pending &p : pending)
+        if (p.id == (int)id) busy = true, p.has = at != nullptr, p.at = at ? *at : Vector3{};
+    if (!on) pending.erase(std::remove_if(pending.begin(), pending.end(), [&](const Pending &p) { return p.id == (int)id; }), pending.end());
     for (Slot &k : sfx[(int)id].slot) {
         if (!on) StopSound(k.s);
-        else if (IsSoundPlaying(k.s)) place(k.s, d, powf(10, d.db / 20), at);
+        else if (IsSoundPlaying(k.s)) busy = true, place(k.s, d, powf(10, d.db / 20), at);
     }
+    float &w = wait[(int)id];
+    w = fmaxf(0, w - GetFrameTime() * 1000);
+    if (on && !was[(int)id]) restart(d), w = 0;
+    if (on && (!was[(int)id] || (d.spawn[1] > 0 && !busy && w <= 0))) play(id, 1, at), w += between(d.spawn);
     was[(int)id] = on;
 }
 
-void loop(Sfx id, bool on, const Vector3 *at) {
+void loop(Sfx id, bool on, const Vector3 *at, float volume) {
     Variants &v = sfx[(int)id];
     const Def &d = DEFS[(int)id];
     static float level[(int)Sfx::Count];
@@ -376,8 +440,8 @@ void loop(Sfx id, bool on, const Vector3 *at) {
     if (at) last[(int)id] = *at;
     g = d.fade > 0 ? Clamp(g + (on ? 1 : -1) * GetFrameTime() / d.fade, 0, 1) : on;
     if (g <= 0) { for (Slot &k : v.slot) StopSound(k.s); return; }
-    for (Slot &k : v.slot) if (IsSoundPlaying(k.s)) return place(k.s, d, g * powf(10, d.db / 20), &last[(int)id]);
-    if (on) playRandom(v, d, g, &last[(int)id]);
+    for (Slot &k : v.slot) if (IsSoundPlaying(k.s)) return void(place(k.s, d, g * volume * powf(10, d.db / 20), &last[(int)id]));
+    if (on) playRandom(v, d, g * volume, &last[(int)id]);
 }
 
 // banks load lazily (~30 decoded upfront would cost ~300 MB); preloadVoices() moves the hitch to match start
@@ -421,7 +485,9 @@ void music(bool on, const char *name) {
     if (!musicLoaded) return;
     if (on && !IsMusicStreamPlaying(theme))
         fade = track == "victory" ? 1 : 0, SetMusicVolume(theme, fade * powf(10, trackDb(track) / 20)), PlayMusicStream(theme);
+    else if (!on && track == "theme" && IsMusicStreamPlaying(theme)) stopping = true;
     else if (!on) StopMusicStream(theme);
+    if (on) stopping = false;
 }
 
 }  // namespace Audio

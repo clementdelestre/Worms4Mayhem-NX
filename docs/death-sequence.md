@@ -8,7 +8,7 @@ How long the camera stays on a worm that dies, in W4M and here. 60 ticks = 1 s.
 - **The last gesture is a WORMACTING scene.** `Data/Tweak/WORMACTING.XOM` `Death5a`–`e` (the dying worm), `Death15a` (poisoned), `Death10*` (friends nearby). Death5 scenes all end at **3000 ms**: Sad, then WhatWereYouThinking / SighAndShakeHead / Salute / ClutchChest / Doh. Death15a: Ill, Vomit, ends at 3500 ms. Transcribed in `client/src/acting.cpp`.
 - The worms wiki matches: in W4M "the Worms simply salute, groan in disappointment, wave, or pretend to move before they explode, and when they are poisoned, they explode right before they vomit"; a worm at 0 hp "will soon self-destruct, causing a small explosion, and leaving behind a gravestone"; the drowned "float for a few seconds and they explode in the surface of the water" (search excerpts from [Death explosions](https://worms.fandom.com/wiki/Death_explosions) and [Energy](https://worms.fandom.com/wiki/Energy); the pages themselves returned HTTP 402).
 - The turn flow (`Data/scripts/stdlib.lub`): `TurnEnded` → `DoPostActivity` → `WaitUntilNoActivity` (`ObjectCount.Active`) → `Timer.StartPostActivity` → next turn. The death queue counts as activity, so the next turn waits for the last blast. `PostActivityTime` is **2400 ms** (`LOCAL.XOM`).
-- Exe timers (docs/w4m-map.md §14, all ms): a hurt worm holds an active token until `Worm.DamageComplete`, posted **2500 ms** after the damage (0x5abe94). The death queue (0x4f9b30, every 20 ms) pops the first dead worm once every other active object is done, so after every damage display. `Worm.TimeToDie` sets the **DeathThroes timer to 3000 ms** (0x5adbf0); at 0 the worm blows up, a gravestone is created (0x5a9310, no active token of its own) and the worm is unspawned. The next dead worm pops on the queue's next tick: **no wait on the grave** between deaths. A drowned worm floats **2000 ms** (`kWPS_DrownFloat`, 0x5aa222), then blows up at the surface, outside the queue.
+- Exe timers (docs/w4m/turn.md §14, all ms): a hurt worm holds an active token until `Worm.DamageComplete`, posted **2500 ms** after the damage (0x5abe94). The death queue (0x4f9b30, every 20 ms) pops the first dead worm once every other active object is done, so after every damage display. `Worm.TimeToDie` sets the **DeathThroes timer to 3000 ms** (0x5adbf0); at 0 the worm blows up, a gravestone is created (0x5a9310, no active token of its own) and the worm is unspawned. The next dead worm pops on the queue's next tick: **no wait on the grave** between deaths. A drowned worm floats **2000 ms** (`kWPS_DrownFloat`, 0x5aa222), then blows up at the surface, outside the queue.
 - The death blast (`Worm.DeathImpulse*`, `Worm.DeathLandDamageRadius`, `Worm.DeathWormDamage*`): 35 hp within 3 m, a 1.75 m crater, a strong short push, also for the drowned (docs/weapons-audit.md "Death blast").
 
 ## Measured durations (our assets)
@@ -26,19 +26,15 @@ How long the camera stays on a worm that dies, in W4M and here. 60 ticks = 1 s.
 
 ## Sequence (`sim.h` `countSpan`, `blastAt`, `dying`, `POST_ACTIVITY`)
 
-Before the first group: `Settle` waits for the shots (dropped after 30 s, `SHOT_CAP`, ours), then for every worm grounded and every object still (at most 5 s, `SETTLE_WAIT`, ours: W4M WaitUntilNoActivity has no timeout), then rolls the abductees' hp once (W4M DoPostActivity ApplyPoison, 0x5ac060; a roll of 0 kills, so that worm joins the queue). Turn flow: `docs/sim.md`.
-
-Settle count for a group of nearby worms (the first worm whose label differs from its hp and every such worm within 18 m, `COUNT_SPAN`, ours): camera travel `COUNT_TRAVEL` 42 ticks (ours), then the W4M damage display `COUNT_DAMAGE` (2500 ms, the hp label counts during it), or `COUNT_FLOAT` (2000 ms) for a drowned worm. `countBoom()` is the end of the longest one.
+Settle (`docs/sim.md`, W4M stdlib.lub): wait for no activity (no timeout), PostActivityTime 2400 ms, then ApplyDamage: every hurt worm's damage display at once (`COUNT_DAMAGE` 2500 ms, all together, no camera travel), the dead queued in worm order.
 
 | t | Event |
 |---|---|
-| `countBoom()` | every damage display is over: the first dead worm's throes start (Death5 / Death15 scene, `acting.cpp` on `dying()`; a friend nearby plays Death10) |
-| + 3.0 s (`COUNT_THROES`) | blast (`Game::DEATH_BLAST`), explosion sound and particles, death voice, LandDeath banner, gravestone |
-| + 1 tick (`COUNT_DEATH`) | next dead worm's throes, or the queue ends |
-| end of the last group | `POST_ACTIVITY` (2400 ms), then the next turn |
+| `COUNT_DAMAGE` and nothing else active | the front dead worm's throes (`dyingWorm`, Death5 / Death15 scene) |
+| + 3.0 s (`COUNT_THROES`) | blast at its feet (0x5a9400, `Game::DEATH_BLAST`), Death event, gravestone |
+| + 1 tick, once thrown worms have landed | the next dead worm's throes, or the queue ends |
+| queue over | wait for no activity, PostActivityTime, DoPostActivity (poison, crates), PostActivityTime, next turn |
 
-A drowned worm blows up at `COUNT_TRAVEL + COUNT_FLOAT`, whatever the queue does. A living worm the death blast hurt counts again in a later group (its own 2.5 s display).
-
-Before (our guesses): the throes started 45 ticks before `countBoom()`, each death then held the camera 3 s on the grave (`COUNT_DEATH` 180), the count lasted at most 1.5 s + 0.5 s linger, and the next turn started at once. Now: 3 s per death, 2.5 s per damage display, 2.4 s before the next turn.
+A drowned worm is outside the queue: it floats on its own clock (`floatStep`, DrownFloat 0x5aa130) and blows up 2000 ms after reaching its float height, even mid-turn.
 
 The sim stays deterministic: the schedule comes from `countGroup`, `countT`, `countEnd`, `timer` and the worm positions, which are all in `checksum()`.

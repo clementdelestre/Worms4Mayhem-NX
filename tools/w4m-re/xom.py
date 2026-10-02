@@ -175,7 +175,7 @@ class Xom:
     def _decode(self, i, fields, follow, depth):
         t, d = self.ctn[i - 1]
         r = {'_index': i, '_type': t}
-        if i in self.untagged:  # custom writer, no schema: raw bytes (layouts in docs/w4m-map.md, Bundles)
+        if i in self.untagged:  # custom writer, no schema: raw bytes (layouts in docs/w4m/formats.md §15)
             return dict(r, _raw=d[:256].hex(), _size=len(d), _exact=True)
         p = 3  # 3 header bytes after CTNR
         try:

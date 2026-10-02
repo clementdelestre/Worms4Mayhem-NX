@@ -6,7 +6,6 @@
 
 static constexpr float DT = Game::DT, R = Game::R;
 static constexpr float FALL_SAFE = 15, FALL_SCALE = 2;  // copy of sim.cpp's W4M fall damage
-static constexpr float WALK_OFF = 1;  // copy of sim.cpp: W4M Fall keeps the walk speed
 
 static float grav(const Game &g) { return g.gravity(); }
 static Vector3 dirOf(float yaw, float pitch) { return {cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)}; }
@@ -15,7 +14,7 @@ static float yawTo(Vector3 a, Vector3 b) { return atan2f(b.x - a.x, b.z - a.z); 
 static float angle(float a) { return remainderf(a, 2 * PI); }
 static int8_t q(float v) { return (int8_t)Clamp(roundf(v * 127), -127, 127); }
 
-// W4M AITWK.XOM AIParams.CPU1..CPU5 (docs/w4m-map.md §18); distances at 20 W4M units per game unit.
+// W4M AITWK.XOM AIParams.CPU1..CPU5 (docs/w4m/ai.md §18); distances at 20 W4M units per game unit.
 struct Level {
     float shotErr, directErr, strikeErr, exchange, secondary, threat, nearby, randomise, humans, fireDelay, nonFirstMove, collect, lowHp,
         moveFar, moveTime, memory;
@@ -61,68 +60,18 @@ static bool stepBody(const Game &g, Body &b, float &yaw) {
     return b.pos.y >= g.water;
 }
 
-// Where a knocked worm comes to rest: false if it drowns; `fall` gets the fall damage.
-static bool fling(const Game &g, Vector3 p, Vector3 v, float &fall) {
-    Body b{p, v, false};
-    float yaw = 0;
-    for (int i = 0; i < 300; i++) {
-        if (!stepBody(g, b, yaw)) return false;
-        if (b.grounded && Vector3LengthSqr(b.vel) < 0.04f) break;
-    }
-    fall = b.fall;
-    return true;
-}
-
-// Predicted result of one action of the active worm: damage, knockback (falls, drowning), chained barrels/mines/crates,
-// poison, karma and vampire, scored like W4M 0x49ed30 (see total()).
+// W4M plan scoring: 0x49f190 for a blast, 0x49ed30 for each worm it hurts. Every worm counts, self included.
 struct Outcome {
     const Game &g;
     const Level &L;
+    const std::vector<float> &rating;  // W4M target threat rating (+0x1c)
     int team, self;
-    std::vector<float> dmg;
-    std::vector<Vector3> kick;
-    std::vector<float> pois;
-    std::vector<char> hit, gone;
-    float extra = 0;
+    float s = 0;
     bool started = false;
 
-    Outcome(const Game &g, const Level &L, int me) : g(g), L(L), team(g.worms[me].team), self(me), dmg(g.worms.size()),
-        kick(g.worms.size()), pois(g.worms.size()), hit(g.worms.size()), gone(g.objects.size()) {}
+    Outcome(const Game &g, const Level &L, int me, const std::vector<float> &rating) : g(g), L(L), rating(rating), team(g.worms[me].team), self(me) {}
 
-    // share: chained blasts count WeightingExplosiveSecondaryDamage
-    void blast(Vector3 p, const Blast &b, float poison = 0, int depth = 0, float share = 1) {  // Game::explode()
-        float nearest = 100;
-        for (size_t i = 0; i < g.worms.size(); i++) {
-            const Worm &w = g.worms[i];
-            float d = Vector3Distance(w.pos, p);
-            if (w.alive && w.team != team) nearest = fminf(nearest, d);
-            int hp = Game::blastDamage(b, p, w.pos);
-            Vector3 k = Game::blastKick(b, p, w.pos);
-            bool gassed = poison > 0 && d < b.reach + R;
-            if (!w.alive || (!hp && !gassed && Vector3LengthSqr(k) == 0)) continue;
-            dmg[i] += share * (w.armour ? hp * Game::ARMOUR / 100 : hp);
-            kick[i] = kick[i] + k * (share * (w.armour ? 0.5f : 1));
-            hit[i] = 1;
-            if (gassed) pois[i] = fmaxf(pois[i], poison);
-        }
-        if (!started) { started = true; extra -= 0.05f * nearest; }  // tie-breaker: land near an enemy
-        if (L.secondary <= 0 || depth > 2) return;
-        for (size_t k = 0; k < g.objects.size(); k++) {
-            const Object &o = g.objects[k];
-            if (gone[k] || o.type == Object::Mine || Vector3Distance(o.pos, p) >= b.reach) continue;  // a mine is only pushed
-            gone[k] = 1;
-            if (o.type == Object::Barrel) blast(o.pos, Game::BARREL_BLAST, 0, depth + 1, share * L.secondary);
-            else if (o.type == Object::Crate && o.weapon >= 0) blast(o.pos, Game::CRATE_BLAST, 0, depth + 1, share * L.secondary);
-            else if (o.type == Object::Sentry) extra += o.team == team ? -15 : 15;
-            else extra -= 5;  // health crate lost
-        }
-    }
-    void strike(int i, float d, Vector3 vel) {  // melee / abduction: velocity is replaced
-        dmg[i] += d;
-        kick[i] = vel - g.worms[i].vel;
-        hit[i] = 1;
-    }
-    // W4M 0x4a9260 target value: allies (self included) are −v·K, enemies v/K, with K = (enemies / allies)^WormExchange
+    // W4M 0x4a9260 target value: allies (self included) are -v·K, enemies v/K, with K = (enemies / allies)^WormExchange
     float value(int i) const {
         const Worm &w = g.worms[i];
         int left = 0, foes = 0, friends = 0;
@@ -133,26 +82,29 @@ struct Outcome {
         bool human = w.team >= (int)g.cfg.teamSetup.size() || !g.cfg.teamSetup[w.team].cpu;
         return v / K * powf(10 / fmaxf(Vector3Distance(w.pos, g.worms[self].pos), 10), L.nearby) * (human ? L.humans : 1);
     }
-    // 2·value·d, d = hp lost or max(hp, 200) on a kill; a predicted drowning moves d toward the kill by NearbyThreat/4 (assumed blend)
-    float total() const {
-        const Worm &me = g.worms[self];
-        float s = extra, karma = 0, leech = 0;
-        for (size_t i = 0; i < g.worms.size(); i++)
-            if ((int)i != self && hit[i]) { karma += dmg[i] * 0.5f; if (g.worms[i].team != team) leech += dmg[i] * 0.5f; }
-        if (!(g.cfg.rules & RULE_KARMA)) karma = 0;
-        for (size_t i = 0; i < g.worms.size(); i++) {
-            float own = (int)i == self ? karma : 0;
-            if (!hit[i] && !own) continue;
-            const Worm &w = g.worms[i];
-            Vector3 v = w.vel + kick[i];
-            float fall = 0;
-            bool sunk = L.threat > 0 && Vector3LengthSqr(v) > 1 && !fling(g, w.pos, v, fall);
-            float lost = fminf(w.hp, dmg[i] + fall + own), kill = fmaxf(w.hp, 200);
-            float d = lost >= w.hp ? kill : sunk ? lost + fminf(1, L.threat / 4) * (kill - lost) : lost + 2 * fmaxf(0, pois[i] - w.poison);
-            s += 2 * value((int)i) * d;  // poison: worth ~2 turns on a survivor
+    // W4M 0x49ed30: d hp on worm i; armour unless melee; a lethal hit is max(hp, KillTarget 200), else the knock weight `a`
+    // pulls d toward hp by the threat rating t and scales WeightingAttack 2 by 1 + a·t
+    void hurt(int i, float d, float a, bool melee = false) {
+        const Worm &w = g.worms[i];
+        if (!w.alive) return;
+        if (w.armour && !melee) d = (float)((int)d * Game::ARMOUR / 100);
+        float attack = 2;
+        if (w.hp <= d) d = fmaxf((float)w.hp, 200);
+        else if (a != 0) {
+            const float t = rating[i];
+            attack *= 1 + t * a;
+            d = fminf((float)w.hp, d + a * t * (w.hp - d));
         }
-        if (g.cfg.rules & RULE_VAMPIRE) s -= 2 * value(self) * 0.5f * fminf(leech, fmaxf(0, 200 - me.hp));
-        return s;
+        s += d * attack * value(i);
+    }
+    // W4M 0x49f190: (1 - dist / WormDamageRadius) · WeightingExplosiveSecondaryDamage · WormDamageMagnitude (x2 doubled) per worm
+    void blast(Vector3 p, const Blast &b, float a, bool skipSelf = false) {
+        started = true;
+        if (b.reach <= 0) return;
+        for (size_t i = 0; i < g.worms.size(); i++) {
+            const float d = Vector3Distance(g.worms[i].pos, p), k = d < b.reach ? (1 - d / b.reach) * L.secondary : 0;
+            if (k > 0 && !(skipSelf && (int)i == self)) hurt((int)i, k * b.damage * (g.doubled() ? 2 : 1), a);
+        }
     }
 };
 
@@ -165,7 +117,7 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
         uint64_t now = 0;
         if (aim && (fuse += DT) > Game::HOMING_LOCK && fuse < Game::HOMING_LOCK + Game::HOMING_TIME) v = Game::homingStep(v, p, *aim);
         else v.y -= grav(g) * (child && wd.kind != Kind::Airstrike ? 1 : wd.grav) * DT;
-        if (wd.wind || (g.cfg.wormpot & WP_WIND_ALL)) v.x += wind * Game::WIND_ACCEL * DT;
+        if (g.windy(int(&wd - WEAPONS.data()))) v.x += wind * Game::WIND_ACCEL * DT, v.z += g.windZ * Game::WIND_ACCEL * DT;
         for (int k = 0, n = substeps(v); k < n; k++) {  // Game::stepShots' sub-steps
             Vector3 np = p + v * (DT / n);
             out = np;
@@ -304,10 +256,9 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     const float ws = Game::WALK_SPEED * (g.cfg.wormpot & WP_QUICK_WALK ? 2 : 1);
     if (m.vault.t) vaultStep(b.pos, m.vault, flat(m.yaw) * (float)in.walk);  // Game::step's vault
     else if (b.grounded && !b.motion.slide && in.walk && !m.jump) {  // Game::step's walk
-        Vector3 walkV = flat(m.yaw) * (in.walk / 127.0f * ws);
-        if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * DT, &m.vault)) b.vel = walkV * WALK_OFF, b.motion.air = true;
-        else if (m.vault.t) m.vault.vel = walkV;
-        else slideIfSteep(g.terrain, b.pos, b.vel, b.motion, walkV, g.cfg.wormpot);
+        Vector3 walkV = flat(m.yaw) * (in.walk / 127.0f * Game::INPUT_IMPULSE);
+        if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * DT, &m.vault)) b.vel = walkV, b.motion.air = true;
+        else if (!m.vault.t) slideIfSteep(g.terrain, b.pos, b.vel, b.motion, walkV, g.cfg.wormpot);
     }
     b.motion.input = flat(m.yaw) * (in.walk / 127.0f);
     Vector3 jv;  // Game::step's jump
@@ -316,7 +267,7 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     Vector3 push = Vector3Scale({sinf(m.yaw), 0, cosf(m.yaw)}, in.walk / 127.0f * DT);
     if (m.roped) {
         if (pressed & Input::JUMP) m.roped = false;
-        m.len = Clamp(m.len - in.aim / 127.0f * 6 * DT, 1, ropeMax);
+        m.len = Game::reel(m.len, in.aim, ropeMax);
         b.vel = Vector3Add(b.vel, Vector3Scale(push, 6));
     } else {
         m.pitch = Clamp(m.pitch + in.aim / 127.0f * 1.5f * DT, -1.2f, 1.45f);
@@ -422,46 +373,94 @@ Input Ai::race(const Game &g) {
 static constexpr int MAX_ITER = 200;  // W4M m_nMaxNumIterations, every pathfind (0x4b0ba6)
 static int octile(int dx, int dz) { dx = std::abs(dx), dz = std::abs(dz); return 10 * std::max(dx, dz) + 4 * std::min(dx, dz); }  // W4M 0x4923a9
 
-// W4M PopulatePathingNodes 0x4b2800: node spacing sqrt(Σ NodeGrid box areas / 16000), the boxes merged where they overlap (0x4ae320);
-// ours: one box per island of land above the sea (0.5 m columns, 8-connected), overlapping boxes merged
-static float nodeSpacing(const Terrain &t) {
-    const int N = Terrain::NX / 2, M = Terrain::NZ / 2, y0 = (int)ceilf(Terrain::WATER / Terrain::VOX);
-    std::vector<char> land(N * M, 0);
-    for (int z = 0; z < M; z++)
-        for (int x = 0; x < N; x++)
-            for (int y = Terrain::NY - 1; y >= y0 && !land[z * N + x]; y--) land[z * N + x] = t.d[((size_t)(2 * z) * Terrain::NY + y) * Terrain::NX + 2 * x] > 0;
-    struct Box { int x0, z0, x1, z1; };
-    std::vector<Box> boxes;
-    std::vector<int> stack;
-    for (int i = 0; i < N * M; i++) {
-        if (land[i] != 1) continue;
-        Box b{N, M, -1, -1};
-        stack = {i}, land[i] = 2;
-        while (!stack.empty()) {
-            int c = stack.back(), cx = c % N, cz = c / N;
-            stack.pop_back();
-            b = {std::min(b.x0, cx), std::min(b.z0, cz), std::max(b.x1, cx), std::max(b.z1, cz)};
-            for (int dz = -1; dz <= 1; dz++)
-                for (int dx = -1; dx <= 1; dx++) {
-                    int nx = cx + dx, nz = cz + dz;
-                    if (nx >= 0 && nz >= 0 && nx < N && nz < M && land[nz * N + nx] == 1) land[nz * N + nx] = 2, stack.push_back(nz * N + nx);
-                }
-        }
-        boxes.push_back(b);
+// W4M AISceneGraphService node grid: spacing sqrt(Σ NodeGrid box areas / 16000) (PopulatePathingNodes 0x4b2a68), one lattice
+// anchored at the boxes' min corner with nodes at origin + i·spacing, i = trunc(offset / spacing + 0.5) (0x4aeb70); a node exists
+// only inside a box (0x4ae9d0). Boxes: Terrain::blocks (W4M AddLandBlock).
+struct Grid {
+    float s = 0.5f, ox = 0, oz = 0;
+    std::vector<Vector4> boxes;
+    struct Entry { bool ok = false; float hi = -1e4f, lo = 1e4f; };  // m, relative to the start: arc heights met at that offset
+    int n[2] = {0, 0};
+    std::vector<Entry> reach[2];  // W4M m_fJumpNodes per jump type (forward, backflip), n x n by |dx|, |dz|
+    int ci(float x) const { return (int)floorf((x - ox) / s + 0.5f); }
+    int cj(float z) const { return (int)floorf((z - oz) / s + 0.5f); }
+    Vector2 at(int i, int j) const { return {ox + i * s, oz + j * s}; }
+    bool has(int i, int j) const {
+        Vector2 p = at(i, j);
+        for (const Vector4 &b : boxes) if (p.x >= b.x && p.x < b.z && p.y >= b.y && p.y < b.w) return true;
+        return boxes.empty();
     }
-    for (bool merged = true; merged;) {  // W4M's merge passes
-        merged = false;
-        for (size_t a = 0; a < boxes.size() && !merged; a++)
-            for (size_t c = a + 1; c < boxes.size() && !merged; c++) {
-                Box &p = boxes[a], &q = boxes[c];
-                if (p.x0 > q.x1 || q.x0 > p.x1 || p.z0 > q.z1 || q.z0 > p.z1) continue;
-                p = {std::min(p.x0, q.x0), std::min(p.z0, q.z0), std::max(p.x1, q.x1), std::max(p.z1, q.z1)};
-                boxes.erase(boxes.begin() + c), merged = true;
+    int64_t key(Vector3 p) const { return ((int64_t)ci(p.x) * 100003 + cj(p.z)) * 1009 + (int)floorf(p.y) + 100; }  // + ours: 1 m layer
+};
+
+// W4M 0x4af3f0, the jump reach table, in W4M units then m (20 units per m): each jump type's tweak velocity (|x| and y of
+// Worm.Jump.Forward 0.07, 0.15 / Backflip 0.04, 0.2) flies in 1 ms steps under Gravity -0.00025 until it falls at 0.3 units/ms,
+// twice: horizontal speed + 0.8 AftertouchDelta (0.015) each ms capped at AftertouchStrength 0.1, and - 0.8 AftertouchDelta
+// (uncapped). A cell whose distance either arc crosses gets the arc's height there, clamped to [lowest height, 2 x distance];
+// it is reachable when an arc crosses it going down. Cells past the back-steered arc's end get the lowest height as minimum.
+static void buildReach(Grid &gr) {
+    const double G = -0.00025, S = 0.1, D = 0.8 * 0.015, V[2][2] = {{0.07, 0.15}, {0.04, 0.2}}, s = gr.s * 20;
+    for (int t = 0; t < 2; t++) {
+        const double h = V[t][0], vy0 = V[t][1], T = (vy0 + 0.3) / -G, H = T * (vy0 + 0.5 * G * T);
+        const int N = gr.n[t] = (int)(T * (S + h) / s);
+        auto &e = gr.reach[t];
+        e.assign((size_t)N * N, {});
+        double y = 0, vy = vy0, x[2] = {0, 0}, px[2], sp[2] = {h, h}, at[2] = {0, 0}, sign[2] = {1, -1};
+        for (;;) {
+            const double yp = y;
+            y += vy, vy += G;
+            if (!(vy > -0.3)) break;
+            for (int i = 0; i < 2; i++) {
+                px[i] = x[i], x[i] += sp[i];
+                const double was = at[i];
+                at[i] += sign[i] * D, sp[i] += at[i] - was;
+                if (sp[i] > S) sp[i] = S;
             }
+            if (!(x[0] > x[1])) continue;
+            for (int i = 0; i < 2; i++) {
+                if (x[i] == px[i]) continue;
+                for (int b = 0; b < N; b++)
+                    for (int a = 0; a < N; a++) {
+                        const double r = sqrt((double)(a * a + b * b)) * s, f = (r - px[i]) / (x[i] - px[i]);
+                        if (!(f > 0 && f <= 1)) continue;
+                        Grid::Entry &c = e[(size_t)N * b + a];
+                        if (vy <= 0) c.ok = true;
+                        const double yc = fmax(fmin((1 - f) * yp + f * y, 2 * r), H) / 20;
+                        c.hi = fmaxf(c.hi, (float)yc), c.lo = fminf(c.lo, (float)yc);
+                    }
+            }
+        }
+        for (int b = 0; b < N; b++)
+            for (int a = 0; a < N; a++) if (!(x[1] > sqrt((double)(a * a + b * b)) * s)) e[(size_t)N * b + a].lo = (float)(H / 20);
     }
+}
+
+static Grid makeGrid(const Terrain &t) {
+    Grid gr;
+    gr.boxes = t.blocks;
     float area = 0;  // m², the 1/20 unit scale cancels out
-    for (const Box &b : boxes) area += (b.x1 - b.x0 + 1) * (b.z1 - b.z0 + 1) * 0.25f;
-    return fmaxf(Terrain::VOX, sqrtf(area / 16000));
+    gr.ox = gr.oz = 1e9f;
+    for (const Vector4 &b : gr.boxes) area += (b.z - b.x) * (b.w - b.y), gr.ox = fminf(gr.ox, b.x), gr.oz = fminf(gr.oz, b.y);
+    if (gr.boxes.empty()) gr.ox = gr.oz = 0, area = Terrain::NX * Terrain::NZ * Terrain::VOX * Terrain::VOX;
+    gr.s = sqrtf(area / 16000);
+    buildReach(gr);
+    return gr;
+}
+
+// W4M 0x4ade10: a node's heights from 3 x 3 rays down at ±spacing/3 around it from `from`: lo / hi = lowest / highest hit; false
+// (water, blocked) when a ray finds no land or lands in the water.
+static bool probe(const Game &g, const Grid &gr, int i, int j, float from, float &lo, float &hi) {
+    const Vector2 c = gr.at(i, j);
+    lo = 1e9f, hi = -1e9f;
+    for (int a = -1; a <= 1; a++)
+        for (int b = -1; b <= 1; b++) {
+            float y = from;
+            const float x = c.x + a * gr.s / 3, z = c.y + b * gr.s / 3;
+            while (y > g.water && !g.terrain.solid({x, y, z})) y -= Terrain::VOX / 2;
+            if (y <= g.water) return false;
+            lo = fminf(lo, y), hi = fmaxf(hi, y);
+        }
+    return true;
 }
 
 static Mover moverOf(const Game &g) {
@@ -514,12 +513,10 @@ static bool runStep(const Game &g, Mover &m, const Ai::Step &s, int &ticks) {
         if (rest && !in.walk && !in.buttons && !m.jump && !m.vault.t) { m.yaw += in.turn / 127.0f * 2.5f * DT; m.prev = in.buttons; continue; }
         Body before = m.b;
         if (!move(g, m, in, 0)) return false;
-        float h0 = Vector2Length({before.vel.x, before.vel.z}), h1 = Vector2Length({m.b.vel.x, m.b.vel.z});
-        if (s.move && !before.grounded && !m.b.grounded && h1 < h0 * 0.5f) return false;  // the arc hit a wall: not in W4M's jump reach table [assumed]
         rest = m.b.grounded && before.grounded && before.pos.x == m.b.pos.x && before.pos.y == m.b.pos.y && before.pos.z == m.b.pos.z &&
                Vector3LengthSqr(before.vel) == 0 && Vector3LengthSqr(m.b.vel) == 0;
     }
-    return r.done && m.b.fall == 0 && !r.stuck && fits(g.terrain, m.b.pos);  // W4M 0x492510: edges only to walkable nodes
+    return r.done && m.b.fall == 0 && !r.stuck && fits(g.terrain, m.b.pos);
 }
 
 // Where to stand after the shot: away from enemies (and out of their sight), the blast, mines and sentries.
@@ -540,16 +537,10 @@ static float haven(const Game &g, int team, Vector3 p, Vector3 boom) {
 }
 
 // Destination scoring (W4M ScoreAllMoveNodes, 0x4ab490) then A* to the best ones, one unit of work per call.
-static int64_t cellKey(Vector3 p, float node) {  // cell and 1 m layer
-    return ((int64_t)floorf(p.x / node) * 100003 + (int64_t)floorf(p.z / node)) * 1009 + (int)floorf(p.y) + 100;
-}
-
 struct Search {
     enum { Crate, Closer, Retreat };
-    float node = 0.5f;  // W4M node spacing (nodeSpacing)
+    std::shared_ptr<const Grid> grid;
     std::vector<int64_t> blocked;  // W4M path-failed blockages (0x490551): nodes no edge may end on
-    int cellOf(float v) const { return (int)floorf(v / node); }
-    int64_t keyOf(Vector3 p) const { return cellKey(p, node); }
     int purpose = Crate, team = 0, limit = 0;  // limit: most ticks the path may take
     Vector3 boom{}, target{};                  // Retreat: the blast to flee; Closer: the worm to approach
     std::vector<std::pair<float, Vector3>> cands;
@@ -559,16 +550,17 @@ struct Search {
     struct Node { Mover m; Ai::Step step; int parent, g, h, ticks; bool open; };
     std::vector<Node> nodes;
     std::unordered_map<int64_t, int> index;
+    std::unordered_map<int64_t, float> tops;  // layer-0 node heights met by jump arcs
     int iter = 0, best = 0, cur = -1, mv = 0;  // cur: node being expanded, mv: its next edge (move type x 8 + direction)
-    uint8_t walked = 0;                        // directions cur could walk to: a diagonal needs both of its sides
+    uint8_t walked = 0;                        // directions cur walked to: a diagonal needs both of its sides
     bool started = false;
     int h(Vector3 p) const {  // octile cells to the nearest goal
         int b = 1 << 20;
-        for (const auto &c : cands) b = std::min(b, octile(cellOf(c.second.x) - cellOf(p.x), cellOf(c.second.z) - cellOf(p.z)));
+        for (const auto &c : cands) b = std::min(b, octile(grid->ci(c.second.x) - grid->ci(p.x), grid->cj(c.second.z) - grid->cj(p.z)));
         return b;
     }
     bool goal(Vector3 p) const {
-        for (const auto &c : cands) if (cellOf(c.second.x) == cellOf(p.x) && cellOf(c.second.z) == cellOf(p.z) && fabsf(p.y - c.second.y) < 1.5f) return true;
+        for (const auto &c : cands) if (grid->ci(c.second.x) == grid->ci(p.x) && grid->cj(c.second.z) == grid->cj(p.z) && fabsf(p.y - c.second.y) < 1.5f) return true;
         return false;
     }
     float score(const Game &g, Vector3 p) const {  // Closer: W4M CAIPlanMoveCloserToTarget, nearer is better on any safe spot
@@ -576,21 +568,56 @@ struct Search {
         float s = spot(g, team, p);
         return s < -1e8f ? s : -Vector3Distance(p, target);
     }
+    float top(const Game &g, int i, int j) {  // W4M layer 0 (0x4aed70, from the box top): its highest node height, water if none
+        auto [it, fresh] = tops.try_emplace(((int64_t)i << 32) ^ (uint32_t)j, g.water);
+        float lo, hi;
+        if (fresh && grid->has(i, j) && probe(g, *grid, i, j, (Terrain::NY - 1) * Terrain::VOX, lo, hi)) it->second = hi;
+        return it->second;
+    }
+    // W4M 0x4928e1: a jump edge leaves a top-layer node for a reach-table cell whose node heights (lo, hi) give landing deltas
+    // d1 = hi' - lo, d2 = lo' - hi inside the arc's heights there; stepping back from the landing to the start (0x492c0d), each
+    // cell crossed keeps its top under the arc, interpolated by where the landing sits in that range.
+    bool jumpOk(const Game &g, int t, Vector3 from, Vector3 to) {
+        const Grid &gr = *grid;
+        const int i0 = gr.ci(from.x), j0 = gr.cj(from.z), i1 = gr.ci(to.x), j1 = gr.cj(to.z), dx = i1 - i0, dz = j1 - j0, N = gr.n[t];
+        if (std::abs(dx) >= N || std::abs(dz) >= N) return false;
+        const Grid::Entry &E = gr.reach[t][(size_t)N * std::abs(dz) + std::abs(dx)];
+        float lo0, hi0, lo1, hi1;
+        if (!E.ok || !probe(g, gr, i0, j0, from.y - R + 1, lo0, hi0) || !probe(g, gr, i1, j1, to.y - R + 1, lo1, hi1)) return false;
+        if (top(g, i0, j0) > hi0 + Terrain::VOX) return false;  // jumps only from layer 0 (0x4928d6)
+        const float d1 = hi1 - lo0, d2 = lo1 - hi0;
+        if (!(E.hi > d1 && E.lo < d1 && E.hi > d2 && E.lo < d2)) return false;
+        const float frac = E.hi > E.lo ? (E.hi - (d1 + d2) / 2) / (E.hi - E.lo) : 0, slope = dz ? (float)std::abs(dx) / std::abs(dz) : 0;
+        for (int i = i1, j = j1; i != i0 || j != j0;) {
+            if (i != i1 || j != j1) {
+                const Grid::Entry &c = gr.reach[t][(size_t)N * std::abs(j - j0) + std::abs(i - i0)];
+                if (!((1 - frac) * c.hi + frac * c.lo > top(g, i, j) - lo0)) return false;
+            }
+            if (dz && j != j0) {
+                if (slope < (float)std::abs(i - i0) / std::abs(j - j0)) i += dx <= 0 ? 1 : -1;
+                else j += dz <= 0 ? 1 : -1;
+            } else if (dx) i += dx <= 0 ? 1 : -1;
+            else break;
+        }
+        return true;
+    }
 };
 
 void Ai::startSearch(const Game &g, int purpose, Vector3 to) {
     auto s = std::make_shared<Search>();
     const Worm &w = g.worms[g.current];
-    s->purpose = purpose, s->team = w.team, s->boom = lastBoom, s->target = to, s->root = moverOf(g), s->node = node, s->blocked = blocked;
+    s->purpose = purpose, s->team = w.team, s->boom = lastBoom, s->target = to, s->root = moverOf(g), s->grid = grid, s->blocked = blocked;
     if (purpose == Search::Retreat) {  // the weapon's retreat time (W4M timer from PostLaunchDelay's end), after the 1 s pause
         const WeaponDef &wd = WEAPONS[plan.weapon];
         s->limit = g.retreatTicks(wd) + msTicks(wd.postLaunch) - 60;
     } else s->limit = (int)((thinkTimer * DT - 10) / DT);  // ForbidMoveIfWouldLeaveTimeLessThan 10 s
     if (purpose == Search::Crate) s->cands = {{0, to}}, s->scored = 1;
-    else {  // W4M scores a 21 x 21 node window around the worm (0x4ab5bc), the retreat's too [assumed: same window]
+    else {  // W4M scores the 21 x 21 nodes around the worm's (0x4ab5bc); a retreat node comes from the same window (0x4a8c60)
+        const int i0 = grid->ci(w.pos.x), j0 = grid->cj(w.pos.z);
         for (int i = -10; i <= 10; i++)
-            for (int j = -10; j <= 10; j++) if (i || j) s->cands.push_back({0, {w.pos.x + i * node, w.pos.y + 5, w.pos.z + j * node}});
-        s->here = s->score(g, w.pos) + 1;  // a gain of 1 m or one haven point [unverified threshold]
+            for (int j = -10; j <= 10; j++)
+                if ((i || j) && grid->has(i0 + i, j0 + j)) s->cands.push_back({0, {grid->at(i0 + i, j0 + j).x, w.pos.y + 5, grid->at(i0 + i, j0 + j).y}});
+        s->here = s->score(g, w.pos) + 1;  // ours: a gain of 1 m or one haven point
     }
     search = s;
     if (purpose != Search::Retreat) mode = Mode::Search;
@@ -599,6 +626,7 @@ void Ai::startSearch(const Game &g, int purpose, Vector3 to) {
 void Ai::searchStep(const Game &g) {
     static const int DX[8] = {1, 1, 0, -1, -1, -1, 0, 1}, DZ[8] = {0, 1, 1, 1, 0, -1, -1, -1};
     Search &s = *search;
+    const Grid &gr = *s.grid;
     auto done = [&](int end) {  // end: the path's last node, -1 if none
         std::vector<Step> steps;
         for (int i = end; i > 0; i = s.nodes[i].parent) steps.push_back(s.nodes[i].step);
@@ -612,6 +640,8 @@ void Ai::searchStep(const Game &g) {
         mode = Mode::Eval;
         decide(g);
     };
+    // W4M 0x494a42: a path, whole or partial, ending under 50 units (2.5 m) from the start is "too short to bother with"
+    auto far = [&](int end) { return end > 0 && Vector3Distance(s.nodes[end].m.b.pos, s.root.b.pos) >= 2.5f; };
     if (s.scored < s.cands.size()) {
         auto &c = s.cands[s.scored++];
         Vector3 hit;
@@ -628,7 +658,7 @@ void Ai::searchStep(const Game &g) {
         s.started = true, s.cur = -1, s.iter = 0, s.best = 0;
         Vector3 p = s.root.b.pos;
         s.nodes = {{s.root, {}, -1, 0, s.h(p), 0, true}};
-        s.index = {{s.keyOf(p), 0}};
+        s.index = {{gr.key(p), 0}};
         return;
     }
     if (s.cur < 0) {  // pop the open node with the lowest F = G + H (W4M 0x492d80)
@@ -636,22 +666,25 @@ void Ai::searchStep(const Game &g) {
         for (size_t i = 0; i < s.nodes.size(); i++)
             if (s.nodes[i].open && (bi < 0 || s.nodes[i].g + s.nodes[i].h < s.nodes[bi].g + s.nodes[bi].h)) bi = (int)i;
         const Vector3 p = bi < 0 ? Vector3{} : s.nodes[bi].m.b.pos;
-        if (bi >= 0 && s.goal(p)) return done(bi);
-        if (bi >= 0 && s.iter++ < MAX_ITER) s.nodes[bi].open = false, s.cur = bi, s.mv = 0, s.walked = 0;
+        if (bi >= 0 && s.goal(p)) {
+            if (far(bi)) return done(bi);
+            s.tries++, s.started = false;
+            return;
+        }
+        if (bi >= 0 && s.iter++ < MAX_ITER) {
+            s.nodes[bi].open = false, s.cur = bi, s.mv = 0, s.walked = 0;
+            if (s.nodes[bi].h < s.nodes[s.best].h) s.best = bi;  // W4M 0x490ed0: the partial path ends at the closed node of least h
+        }
     }
-    if (s.cur < 0) {  // W4M takes a partial path unless it is too short [minimum unverified]
-        const Search::Node &b = s.nodes[s.best];
-        Vector3 e = b.m.b.pos;
-        if (s.purpose != Search::Crate && s.best > 0 && octile(s.cellOf(e.x) - s.cellOf(s.root.b.pos.x), s.cellOf(e.z) - s.cellOf(s.root.b.pos.z)) >= 20 &&
-            s.score(g, e) > s.here)
-            return done(s.best);
+    if (s.cur < 0) {  // W4M takes the partial path unless it is too short
+        if (far(s.best)) return done(s.best);
         s.tries++, s.started = false;
         return;
     }
     const int bi = s.cur;
     const Search::Node n = s.nodes[bi];
     const Vector3 p = n.m.b.pos;
-    const int cx = s.cellOf(p.x), cz = s.cellOf(p.z);
+    const int cx = gr.ci(p.x), cz = gr.cj(p.z);
     const Level &L = levelOf(g, s.team);
     // one edge per unit (W4M expands a node in one go; ours runs each edge in the sim): WALK, JUMP_FORWARD, JUMP_BACKFLIP x 8 directions
     while (s.mv < 24 && ((s.mv / 8 == 1 && !L.jump) || (s.mv / 8 == 2 && !L.flip))) s.mv++;  // MovementJumpForward/BackflipAllowed
@@ -661,31 +694,33 @@ void Ai::searchStep(const Game &g) {
     const int d = mv ? s.mv % 8 : ORDER[s.mv % 8];
     s.mv++;
     if (n.ticks + 10 > s.limit) return;
-    // W4M 0x492510: a diagonal walk only if both of its sides are walkable (ours: walked from this node [assumed equivalent])
+    // W4M 0x4926f1: a diagonal walk only once walk edges were added to both of its sides from this node
     if (!mv && (d & 1) && !((s.walked >> ((d + 7) % 8) & 1) && (s.walked >> ((d + 1) % 8) & 1))) return;
-    Step st{{(cx + DX[d] + 0.5f) * s.node, p.y, (cz + DZ[d] + 0.5f) * s.node}, atan2f((float)DX[d], (float)DZ[d]), mv};
+    const Vector2 to = gr.at(cx + DX[d], cz + DZ[d]);
+    Step st{{to.x, p.y, to.y}, atan2f((float)DX[d], (float)DZ[d]), mv};
     Mover m = n.m;
     int ticks;
     if (!runStep(g, m, st, ticks)) return;
-    if (n.ticks + ticks + (int)(s.h(m.b.pos) / 10 * s.node / Game::WALK_SPEED / DT) > s.limit) return;  // can't reach a goal in time
+    if (n.ticks + ticks + (int)(s.h(m.b.pos) / 10 * gr.s / Game::WALK_SPEED / DT) > s.limit) return;  // can't reach a goal in time
     Vector3 e = m.b.pos;
-    int ex = s.cellOf(e.x), ez = s.cellOf(e.z);
+    int ex = gr.ci(e.x), ez = gr.cj(e.z);
     if (ex == cx && ez == cz) return;
+    float lo, hi;  // W4M 0x4aea60: no edge to a node outside the grid, in the water, or blocked (heights over 20 units apart, 0x4aef54)
+    if (!gr.has(ex, ez) || !probe(g, gr, ex, ez, e.y - R + 1, lo, hi) || hi - lo > 1) return;
+    if (mv && !s.jumpOk(g, mv - 1, p, e)) return;  // the jump reach table (0x4924d7)
+    if (std::find(s.blocked.begin(), s.blocked.end(), gr.key(e)) != s.blocked.end()) return;
     if (!mv) s.walked |= 1 << d;
-    if (std::find(s.blocked.begin(), s.blocked.end(), s.keyOf(e)) != s.blocked.end()) return;
     if (mv) st.to = e;  // a jump's landing, for MovementJumpError
     int cost = n.g + octile(ex - cx, ez - cz) + (mv == 1 ? 40 : mv == 2 ? 60 : 0);  // W4M 0x491fd8; jumps +40, backflips +60 (0x492008, 0x492003)
     Search::Node nn{m, st, bi, cost, s.h(e), n.ticks + ticks, true};
-    auto it = s.index.find(s.keyOf(e));
+    auto it = s.index.find(gr.key(e));
     if (it != s.index.end()) {
         Search::Node &o = s.nodes[it->second];
         if (o.open && cost < o.g) o = nn;
         return;
     }
-    s.index[s.keyOf(e)] = (int)s.nodes.size();
+    s.index[gr.key(e)] = (int)s.nodes.size();
     s.nodes.push_back(nn);
-    const Search::Node &b = s.nodes[s.best];
-    if (nn.h < b.h || (nn.h == b.h && nn.g < b.g)) s.best = (int)s.nodes.size() - 1;
 }
 
 static float noise(uint32_t &r) { r = r * 1664525u + 1013904223u; return ((r >> 8) / 16777216.0f) * 2 - 1; }
@@ -713,7 +748,7 @@ bool Ai::follow(const Game &g, Input &in) {  // false once the path is over, or 
     bool off = stepRun.stuck;  // a walk held off its node (a jump lands off it on purpose: MovementJumpError)
     pathAt++, stepRun = {};
     if (!off) return true;
-    pathFailed = true, blocked.push_back(cellKey(st.to, node)), path.clear();  // W4M "Adding path-failed blockage at"
+    pathFailed = true, blocked.push_back(grid->key(st.to)), path.clear();  // W4M "Adding path-failed blockage at"
     return false;
 }
 
@@ -737,12 +772,12 @@ void Ai::slice(const Game &g) {
     debt = std::min(debt, 2 * budget);
 }
 
-// W4M 0x4a9e90: threat around a target, probed in 8 directions at 50..200 units (0x90ebf8), weight 2/(k+2) by range:
-// water or no land 0.2, a drop over 30 units 0.05, mines 0.1 and other worms 0.05 within 100 units. Returns away from the worst.
-// ponytail: the GameLogicService object term (0x4aa229, 0.05) is not ported [unverified: which objects]
-static Vector3 awayFromThreat(const Game &g, const Worm &e) {
+// W4M 0x4a9e90: threat rating of a worm, probed in 8 directions at 50..200 units (0x90ebf8), weight 2/(k+2) by range: water or no
+// land 0.2, a drop over 30 units 0.05, and within 100 units with a linear falloff mines 0.1, oil drums 0.05 (GameLogicService
+// m_OilDrumIds, 0x4f56a0) and other worms 0.05. Returns the total capped at 1; `away` is opposite the worst direction (zero if none).
+static float threatOf(const Game &g, const Worm &e, Vector3 &away) {
     static const float RANGE[4] = {2.5f, 5, 7.5f, 10};
-    float worst = 0;
+    float worst = 0, total = 0;
     int dir = -1;
     for (int d = 0; d < 8; d++) {
         Vector3 f = flat(d * PI / 4);
@@ -752,113 +787,69 @@ static Vector3 awayFromThreat(const Game &g, const Worm &e) {
             Vector3 p = e.pos + f * RANGE[k], hit;
             if (!g.terrain.raycast({{p.x, e.pos.y + 3, p.z}, {0, -1, 0}}, 30, &hit) || hit.y < g.water) t += 0.2f * wgt;
             else if (e.pos.y - R - hit.y > 1.5f) t += 0.05f * wgt;
-            for (const Object &o : g.objects) if (o.type == Object::Mine) t += 0.1f * wgt * fmaxf(0, 1 - Vector3Distance(o.pos, p) / 5);
+            for (const Object &o : g.objects)
+                if (o.type == Object::Mine || o.type == Object::Barrel) t += (o.type == Object::Mine ? 0.1f : 0.05f) * wgt * fmaxf(0, 1 - Vector3Distance(o.pos, p) / 5);
             for (const Worm &x : g.worms) if (x.alive && &x != &e) t += 0.05f * wgt * fmaxf(0, 1 - Vector3Distance(x.pos, p) / 5);
         }
+        total += t;
         if (t > worst) worst = t, dir = d;
     }
-    return dir < 0 ? Vector3{} : flat(dir * PI / 4) * -1.0f;
+    away = dir < 0 ? Vector3{} : flat(dir * PI / 4) * -1.0f;
+    return fminf(total, 1);
 }
 
 void Ai::unit(const Game &g) {
     if (search) return searchStep(g);
-    if (!threats.empty()) {  // ProjectileSweetSpotDistance (0x4a9be0): also aim that far on a threatened worm's safe side
-        const Worm &e = g.worms[threats.back()];
-        Vector3 away = awayFromThreat(g, e);
-        if (Vector3LengthSqr(away) > 0) tpos.push_back(e.pos + away * levelOf(g, g.worms[cur(g)].team).sweet), tworm.push_back(threats.back());
+    if (!threats.empty()) {  // threat rating; ProjectileSweetSpotDistance (0x4a9be0): also aim that far on a threatened enemy's safe side
+        const int i = threats.back();
+        const Worm &e = g.worms[i];
+        Vector3 away;
+        rating[i] = threatOf(g, e, away);
+        const Level &L = levelOf(g, g.worms[g.current].team);
+        if (e.team != g.worms[g.current].team && L.sweet > 0 && Vector3LengthSqr(away) > 0) tpos.push_back(e.pos + away * L.sweet), tworm.push_back(i);
         threats.pop_back();
         return;
     }
-    if (topX >= 0 && topX < Terrain::NX) {  // Game::landTop(), one row of columns per unit: the max does not depend on the order
-        for (int z = 0; z < Terrain::NZ; z += 8)
-            for (int y = Terrain::NY - 1; y * Terrain::VOX > top; y--)
-                if (g.terrain.solid({topX * Terrain::VOX, y * Terrain::VOX, z * Terrain::VOX})) { top = y * Terrain::VOX; break; }
-        topX += 8;
-        return;
-    }
-    const int T = (int)tpos.size(), N = (int)WEAPONS.size() * T, team = g.worms[cur(g)].team;
+    const int T = (int)tpos.size(), N = (int)WEAPONS.size() * T, team = g.worms[g.current].team;
     while (stage < N && !g.usable(team, stage / T)) stage++, sub = 0;  // unusable (or scheme-delayed) weapons are skipped for free
     if (stage < N) {
         int n = evalWeapon(g, stage / T, stage % T, sub);
         if (++sub >= n) sub = 0, stage++;
     }
-    if (stage >= N) { stage = -1; selecting ? nextSelect(g) : decide(g); }
-}
-
-// W4M worm-select mode (0x4a4f2a, flag 0x9560c1): with a Worm Select in hand the CPU plans for every worm of its team and plays the best;
-// a worm with no plan stores a skipped-turn memory (0x499cac -> 0x4a68c0), and scales that worm's plans by 1 / (1 + 5 Σ effect) (0x4a57c0)
-float Ai::skipScale(int worm) const {
-    float sum = 0;
-    for (const Skip &k : skipped) if (k.worm == worm) sum += k.effect;
-    return 1 / (1 + 5 * sum);
-}
-
-void Ai::nextSelect(const Game &g) {
-    if (plan.weapon < 0 || plan.score <= 0) skipped.push_back({selWorms[selAt], 1});
-    else if (selBest < 0 || plan.rank > selRank) selRank = plan.rank, selBest = selWorms[selAt];
-    if (++selAt < selWorms.size()) return;  // stage -1: the next worm's eval
-    selecting = false, selDone = true;
-    if (selBest >= 0 && selBest != g.current) selTarget = selBest;  // pressed through Change Worm, then planned again as itself
+    if (stage >= N) { stage = -1; decide(g); }
 }
 
 // --- shot planning ---
 
-// Game::strikeStart with Game::landTop() precomputed (slice by slice in unit()): the scan costs 300k samples.
-static Vector3 strikeFrom(const Game &g, float top, const WeaponDef &wd, Vector3 tgt, Vector3 dir, Vector3 &vel) {
-    float h = top + Game::STRIKE_EXTRA, lead = Game::BOMBER_SPEED * sqrtf(2 * fmaxf(h - tgt.y, 0) / (grav(g) * wd.grav));
-    float back = lead + (wd.clusters - 1) / 2.0f * Game::STRIKE_GAP;
-    vel = dir * Game::BOMBER_SPEED;
-    return {tgt.x - dir.x * back, h, tgt.z - dir.z * back};
-}
-
+// W4M has a worm-select mode (0x4a4f2a) but only when the data key ChooseWorm.Enabled is set, which is 0 in LOCAL.XOM and
+// written nowhere: the CPU plans for its current worm only and never uses Change Worm.
 void Ai::startEval(const Game &g) {
-    const Worm &cw = g.worms[g.current];
-    int changer = owned(g, cw.team, Kind::ChangeWorm);
-    if (!selDone && !selecting && changer >= 0 && !g.shotsLeft && !walks) {
-        selWorms = {g.current};  // ours: the worms our Change Worm reaches with the ammo left, one use a step
-        for (int k = 1, n = 0, ammo = g.ammo[cw.team][changer]; k < g.perTeam; k++) {
-            int c = cw.team * g.perTeam + (g.current - cw.team * g.perTeam + k) % g.perTeam;
-            if (g.worms[c].alive && (ammo < 0 || ++n <= ammo)) selWorms.push_back(c);
-        }
-        if (selWorms.size() > 1) selecting = true, selAt = 0, selBest = -1, selRank = -1e30f;
-        else selDone = true;
-    }
-    me = selecting ? selWorms[selAt] : -1;
-    const Worm &w = g.worms[cur(g)];
+    const Worm &w = g.worms[g.current];
     const Level &L = levelOf(g, w.team);
     plan = Plan{};
     tpos.clear();
     tworm.clear();
     threats.clear();
+    rating.assign(g.worms.size(), 0);
     int nearest = -1;
     for (size_t i = 0; i < g.worms.size(); i++) {
         const Worm &e = g.worms[i];
+        if (e.alive && (L.threat != 0 || (L.sweet > 0 && e.team != w.team))) threats.push_back((int)i);  // rated by unit()
         if (!e.alive || e.team == w.team) continue;
         if (nearest < 0 || Vector3Distance(e.pos, w.pos) < Vector3Distance(g.worms[nearest].pos, w.pos)) nearest = (int)i;
         Vector3 to = e.pos - w.pos;  // also the ground just short of it: a shell there still splashes
         tpos.insert(tpos.end(), {e.pos, e.pos - Vector3Normalize({to.x, 0, to.z}) * 1.5f});
         tworm.insert(tworm.end(), {(int)i, (int)i});
-        if (L.sweet > 0) threats.push_back((int)i);  // its sweet spot is found by unit()
     }
     if (nearest < 0) return;
     plan.target = nearest;
-    if (L.secondary > 0)  // barrels/crates whose blast reaches an enemy (a blast only pushes a mine, W4M)
-        for (const Object &o : g.objects) {
-            if (o.type == Object::Sentry || o.type == Object::Mine || (o.type == Object::Crate && o.weapon < 0)) continue;
-            for (const Worm &e : g.worms)
-                if (e.alive && e.team != w.team && Vector3Distance(e.pos, o.pos) < 7) { tpos.push_back(o.pos); tworm.push_back(int(&e - g.worms.data())); break; }
-        }
     stage = sub = 0;
     thinkTimer = g.timer;
-    if (!selecting || !selAt) regress(g);
-    if (topX < 0) {  // once a turn: nothing carves the land before the shot
-        top = 0, topX = Terrain::NX;
-        for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Airstrike && g.ammo[w.team][i]) topX = 0;
-    }
+    regress(g);
 }
 
 int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
-    const int me = cur(g);
+    const int me = g.current;
     const Worm &w = g.worms[me];
     const WeaponDef &wd = WEAPONS[wi];
     const int team = w.team;
@@ -871,26 +862,21 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
     const std::string &n = wd.name;
     const float pref = n == "Prod" ? 0.3f : n == "Cluster Grenade" ? L.cluster : n == "Gas Canister" ? L.gas : wd.kind == Kind::Homing ? L.homing : 1;
     const float taste = (1 + L.randomise * ((h >> 8) / 16777216.0f * 2 - 1)) * pref * (wi == g.picked[team] ? 0.6f : 1);
+    // W4M 0x49bd60: AddScoreMove 10, + AddScoreMoveIfNotMoved 20 before the turn's first move, for a plan with a move (ours: the
+    // eval after a Closer walk) or always for a close-range explosive (0x4a2c70 forces it)
+    auto bonus = [&](bool closeRange) { return closeRange || afterCloser ? 10.0f + (walks == (afterCloser ? 1 : 0) ? 20 : 0) : 0; };
     auto consider = [&](float score, float yaw, float pitch, int charge, int target) {
         for (const Fail &f : failed)  // W4M 0x4a6590: this worm at a target that survived it, x(1 - effect / 2), another weapon 0.2 of that
             if (f.worm == me && f.target == target) score *= 1 - 0.5f * f.effect * (f.weapon == wi ? 1 : 0.2f);
-        if (selecting) score *= skipScale(me);
         float rank = score > 0 ? score * taste : score;
         if (rank > plan.rank) plan = {wi, charge, target, yaw, pitch, score, rank};
     };
     int cands = 0;
     auto pick = [&] { return sub < 0 || cands++ == sub; };  // sub >= 0: only that candidate, the rest are counted
-    auto shell = [&](Vector3 at) {
-        Outcome o(g, L, me);
-        o.blast(at, blastOf(wd, false), wd.poison);
-        if (wd.poison > 0 && wd.fuse > 0) o.blast(at, {0, Game::GAS_RADIUS - R, 0, 0, 0, 0}, wd.poison);  // gas cloud; ponytail: no wind drift
-        if (wd.clusters) {  // expected bomblet share
-            Blast c = blastOf(wd, true);
-            c.reach *= 1.5f, c.damage *= wd.clusters * 0.4f;
-            o.blast(at, c, 0, 3);
-        }
-        if (dropped(wd)) o.hit[o.self] = 0, o.dmg[o.self] = 0;  // retreat() walks clear while the fuse burns
-        return o.total();
+    auto shell = [&](Vector3 at) {  // W4M CAIPlanAttackProjectile 0x4a0540, close-range explosive 0x4a2c70 for a dropped shell
+        Outcome o(g, L, me, rating);
+        o.blast(at, blastOf(wd, false), L.threat, dropped(wd));  // ours: a dropped shell spares the thrower, retreat() walks clear
+        return o.s + bonus(dropped(wd));
     };
     for (size_t k = only < 0 ? 0 : only; k < (only < 0 ? tpos.size() : only + 1); k++) {
         const Vector3 e = tpos[k];
@@ -906,7 +892,8 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
             }
             // constant acceleration A: hit T at time t with V = (T - P - A t(t+DT)/2) / t (semi-implicit Euler)
             for (float t = 0.2f; t < 4.5f; t += 0.43f) {  // 11 arcs, as W4M samples about 11 speeds (0x4ace50)
-                Vector3 A = {wd.wind || (g.cfg.wormpot & WP_WIND_ALL) ? wind * Game::WIND_ACCEL : 0, -grav(g) * wd.grav, 0}, P = launchPoint(wd, w.pos, yawE);
+                const bool wf = g.windy(int(&wd - WEAPONS.data()));
+                Vector3 A = {wf ? wind * Game::WIND_ACCEL : 0, -grav(g) * wd.grav, wf ? g.windZ * Game::WIND_ACCEL : 0}, P = launchPoint(wd, w.pos, yawE);
                 Vector3 V = (e - P - A * (0.5f * t * (t + DT))) / t;
                 float sp = Vector3Length(V), pitch = asinf(V.y / sp), yaw = atan2f(V.x, V.z);
                 const float lo = launchSpeed(wd, 0);
@@ -931,123 +918,89 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
             }
             break;
         }
-        case Kind::Shotgun: {
+        case Kind::Shotgun: {  // W4M CAIPlanAttackDirect 0x4a0a20: one shot (bCanMoveBetweenShots) as a WormDamageRadius blast, no knock
             if (!pick()) break;
             float pitch = atan2f(to.y - (isWorm ? 0 : 0.3f), horiz);
             Vector3 d = dirOf(yawE, pitch), o = muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), hit;
             float dist = g.terrain.raycast({o, d}, 60, &hit) ? Vector3Distance(o, hit) : 60;
-            int struck = -1;
-            for (size_t i = 0; i < g.worms.size(); i++) {
-                const Worm &x = g.worms[i];
+            for (const Worm &x : g.worms) {
                 float t = Vector3DotProduct(x.pos - o, d);
-                if (x.alive && &x != &w && t > 0 && t < dist && Vector3Distance(x.pos, o + d * t) < R + 0.1f) dist = t, struck = (int)i;
+                if (x.alive && &x != &w && t > 0 && t < dist && Vector3Distance(x.pos, o + d * t) < R + 0.1f) dist = t;
             }
             if (dist < 60 && pitch > -1.2f && pitch < 1.45f) {
-                Outcome oc(g, L, me);
-                for (int s = 0; s < wd.shots; s++) {
-                    Blast b = blastOf(wd, false);
-                    if (struck >= 0) b.damage = 0;
-                    oc.blast(o + d * dist, b);
-                    if (struck >= 0) oc.dmg[struck] += wd.damage, oc.hit[struck] = 1;
-                }
-                consider(oc.total(), yawE, pitch, 0, ti);
+                Outcome oc(g, L, me, rating);
+                Blast b = blastOf(wd, false);
+                b.damage = wd.damage;
+                oc.blast(o + d * dist, b, 0);
+                consider(oc.s + bonus(false), yawE, pitch, 0, ti);
             }
             break;
         }
-        case Kind::Melee:
+        case Kind::Melee:  // W4M CAIPlanAttackMeleeActionable 0x4a2b10: the plan's target takes WormDamageMagnitude
             if (!isWorm || Vector3Distance(e, w.pos) > 3.5f) break;
             for (float dy : {-0.8f, -0.4f, 0.0f, 0.4f, 0.8f})
                 for (float pitch : {0.0f, 0.5f, 1.0f}) {
                     if (!pick()) continue;
                     Worm at = w;
                     at.yaw = yawE + dy;
-                    const float yaw = at.yaw;
-                    Vector3 v = dirOf(yaw, pitch) * wd.speed + Vector3{0, wd.bounce, 0};
-                    Outcome oc(g, L, me);
-                    for (size_t i = 0; i < g.worms.size(); i++) {
-                        const Worm &x = g.worms[i];
-                        if (x.alive && (int)i != me && meleeHits(at, x.pos, wd)) oc.strike((int)i, (int)wd.damage, v);
-                    }
-                    consider(oc.total(), yaw, pitch, 0, ti);
+                    if (!meleeHits(at, e, wd)) continue;
+                    Outcome oc(g, L, me, rating);
+                    oc.hurt(ti, wd.damage * (g.doubled() ? 2 : 1), L.threat, !wd.pins);  // armour spares ids 10..12 only (bat, prod, fire punch)
+                    consider(oc.s + bonus(false), at.yaw, pitch, 0, ti);
                 }
             break;
-        case Kind::Sheep:
-        case Kind::OldWoman: {
+        case Kind::Sheep:  // W4M CAIPlanAttackAnimal 0x4a4210: the payload's blast where the walker reaches the target
+        case Kind::OldWoman:
+        case Kind::Scouser: {
             if (!isWorm || !pick()) break;
             Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), f, e, end);
             if (Vector3Distance(p, e) < 2) consider(shell(p), yawE, w.pitch, 0, ti);
             break;
         }
-        case Kind::SuperSheep:  // and the Starburst: W4M CAIPlanAttackStarburst 0x4a43a0 adds its rider's death (0x49ed30, all its hp)
+        case Kind::SuperSheep:  // and the Starburst: W4M CAIPlanAttackStarburst 0x4a43a0 adds its rider's death (0x49ed30, all its hp, knock 1)
             if (!isWorm) break;
             for (float pitch : {0.3f, 0.9f}) {
                 if (!pick()) continue;
                 Vector3 out;
                 if (!superFly(g, wd, w.pos, yawE, pitch, e, out) || Vector3Distance(out, e) >= 2) continue;
-                Outcome o(g, L, me);
-                o.blast(out, blastOf(wd, false));
-                if (wd.name == "Starburst") o.dmg[o.self] += w.hp, o.hit[o.self] = 1;  // Worm.Vapourize
-                consider(o.total(), yawE, pitch, 0, ti);
+                Outcome o(g, L, me, rating);
+                o.blast(out, blastOf(wd, false), L.threat);
+                if (wd.name == "Starburst") o.hurt(me, (float)w.hp, 1);  // Worm.Vapourize
+                consider(o.s + bonus(false), yawE, pitch, 0, ti);
             }
             break;
         case Kind::Mine: {  // W4M CAIPlanAttackLandmine: CloseRangeExplosive 0x4a2c70, the blast scored where it is laid
             Vector3 hit;
             if (!isWorm || !pick() || !ground(g, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), hit)) break;
-            Outcome o(g, L, me);
-            o.blast(hit, Game::MINE_BLAST);
-            o.hit[o.self] = 0, o.dmg[o.self] = 0;  // as a dropped shell: retreat() walks clear
-            consider(o.total(), yawE, 0, 0, ti);
+            Outcome o(g, L, me, rating);
+            o.blast(hit, Game::MINE_BLAST, L.threat, true);  // as a dropped shell: retreat() walks clear
+            consider(o.s + bonus(true), yawE, 0, 0, ti);
             break;
         }
-        case Kind::Scouser: {  // W4M CAIPlanAttackScouser; ours follows our scouser: walks, swallows the first worm, drops it SCOUSER_FLOAT s on
-            if (!isWorm || !pick()) break;
-            Vector3 p = muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), v = flat(yawE) * wd.speed;
-            int prey = -1;
-            for (int i = 0; i * DT < wd.fuse && p.y > g.water - 2 && prey < 0; i++) {
-                walkerStep(g.terrain, p, v, grav(g));
-                for (size_t j = 0; j < g.worms.size() && prey < 0; j++)
-                    if (g.worms[j].alive && (int)j != me && Vector3Distance(p, g.worms[j].pos) <= R + 0.4f) prey = (int)j;
-            }
-            if (prey < 0) break;
-            float fall = 0, up = 1.2f * Game::SCOUSER_FLOAT;  // ponytail: the climb only, no wind drift
-            bool lives = fling(g, g.worms[prey].pos + Vector3{0, up, 0}, {0, 0, 0}, fall);
-            Outcome o(g, L, me);
-            o.strike(prey, lives ? wd.damage + fall : 1000, g.worms[prey].vel);
-            consider(o.total(), yawE, w.pitch, 0, ti);
-            break;
-        }
-        case Kind::Flood:  // W4M CAIPlanAttackFlood 0x4a3640: every target under Water.Level + Flood.Delta scores a kill (damage 1000)
+        case Kind::Flood:  // W4M CAIPlanAttackFlood 0x4a3640: every target under Water.Level + Flood.Delta scores a kill (damage 1000, no knock)
             if (k != 0 || !pick()) break;  // one plan, whatever the target
             {
-                Outcome o(g, L, me);
+                Outcome o(g, L, me, rating);
                 float level = fminf(g.water + wd.speed, Terrain::WATER + 15);
                 for (size_t i = 0; i < g.worms.size(); i++)
-                    if (g.worms[i].alive && g.worms[i].pos.y < level) o.strike((int)i, 1000, g.worms[i].vel);
-                consider(o.total(), w.yaw, w.pitch, 0, ti);
+                    if (g.worms[i].alive && g.worms[i].pos.y < level) o.hurt((int)i, 1000, 0);
+                consider(o.s + bonus(false), w.yaw, w.pitch, 0, ti);
             }
             break;
-        case Kind::Airstrike:
-        case Kind::Donkey:
+        case Kind::Airstrike:  // W4M CAIPlanAttackStrike 0x4a11d0: one blast at the target, radius BlitzDuration 2 s x GroundSpeed
+        case Kind::Donkey:     // + 2 WormDamageRadius, the payload's WormDamageMagnitude
             if (!isWorm) break;
             for (float dy : {0.0f, -0.25f, 0.25f})
                 for (float pitch : {atan2f(to.y - R - 0.1f, horiz), 1.45f}) {
                     if (!pick()) continue;
+                    const bool bomber = wd.kind == Kind::Airstrike && wd.fuse > 0;  // steered: think() drops the cows over the target
+                    if (bomber && (dy != 0 || pitch > 1.4f)) continue;
                     float yaw = yawE + dy;
-                    Vector3 tgt = reticle(g, w.pos, yaw, pitch), f = flat(yaw), out;
-                    Outcome oc(g, L, me);
-                    if (wd.kind == Kind::Airstrike && wd.fuse > 0) {  // steered bomber: think() drops the cows over the target
-                        if (dy != 0 || pitch > 1.4f) continue;
-                        for (int i = 0; i < std::min(wd.clusters, 2); i++) oc.blast(e - Vector3{0, R, 0}, blastOf(wd, true));
-                    } else if (wd.kind == Kind::Donkey) {
-                        // ponytail: scores its first impact twice, not the whole dig
-                        Vector3 v = {0, -wd.speed, 0}, p = wd.name == "Fatkins Strike" ? g.fatkinsDrop(wd, tgt, f, v) : tgt + Vector3{0, 25, 0};  // sim use()
-                        if (fly(g, wd, p, v, wind, false, out)) { oc.blast(out, blastOf(wd, false)); oc.blast(out, blastOf(wd, false)); }
-                    } else {
-                        Vector3 v, p = strikeFrom(g, top, wd, tgt, f, v);
-                        for (int i = 0; i < wd.clusters; i++)  // sim: held STRIKE_LEAD at p, then bomb i leaves i STRIKE_TICKS on
-                            if (fly(g, wd, p + v * (i * Game::STRIKE_TICKS * DT), v, wind, true, out)) oc.blast(out, blastOf(wd, true));
-                    }
-                    if (oc.started) consider(oc.total(), yaw, pitch, 0, ti);
+                    Blast b = blastOf(wd, wd.kind == Kind::Airstrike);
+                    b.reach = 2 * Game::BOMBER_SPEED + 2 * b.reach;
+                    Outcome oc(g, L, me, rating);
+                    oc.blast(bomber ? e : reticle(g, w.pos, yaw, pitch), b, L.threat);
+                    consider(oc.s + bonus(false), yaw, pitch, 0, ti);
                 }
             break;
         default: break;  // sentry, abduction, bubble, girder, teleport and utilities: W4M has no AI plan for them (no CAIPlanAttack*)
@@ -1064,8 +1017,6 @@ void Ai::regress(const Game &g) {
     recent.weapon = -1;
     for (Fail &f : failed) f.effect = same(f.target, f.at, f.hp) ? f.effect * 0.99f : 0;
     failed.erase(std::remove_if(failed.begin(), failed.end(), [](const Fail &f) { return f.effect < 0.1f; }), failed.end());
-    for (Skip &k : skipped) k.effect *= 0.9f;  // RegressSkippedTurnMemory 0x4a61b0
-    skipped.erase(std::remove_if(skipped.begin(), skipped.end(), [](const Skip &k) { return k.effect < 0.1f; }), skipped.end());
     for (Shot &s : memory) s.effect *= 0.95f;
     memory.erase(std::remove_if(memory.begin(), memory.end(), [](const Shot &s) { return s.effect < 0.1f; }), memory.end());
 }
@@ -1087,8 +1038,18 @@ void Ai::finish(const Game &g) {
     memory.push_back({w.pos, at, 1});
     if (plan.target >= 0) recent = {plan.weapon, g.current, plan.target, at, g.worms[plan.target].hp, 1};  // StorePlanAttackMemory 0x4a6360
     const float recall = 1 + L.memory * match;
-    if (k == Kind::Airstrike || k == Kind::Donkey)  // ShotErrorStrike: target offset, here sideways only
-        plan.yaw += atanf(noise() * L.strikeErr / recall / fmaxf(Vector3Distance(at, w.pos), 1));
+    strikeOff = {};
+    if (k == Kind::Airstrike || k == Kind::Donkey) {  // W4M 0x4a1b00: target + ShotErrorStrike·(2r-1) per component, no accuracy memory
+        const float ex = noise() * L.strikeErr;
+        noise();  // the y offset: bombs fall straight down
+        strikeOff = {ex, 0, noise() * L.strikeErr};
+        if (WEAPONS[plan.weapon].fuse <= 0 || k == Kind::Donkey) {  // aimed by the reticle; the steered bomber (think()) uses strikeOff
+            const bool far = plan.pitch > 1.4f;  // the reticle 30 m ahead: only the sideways part moves it
+            Vector3 t = reticle(g, w.pos, plan.yaw, plan.pitch) + strikeOff, hit;
+            plan.yaw = yawTo(w.pos, t);
+            if (!far) plan.pitch = Clamp(atan2f((ground(g, t, hit) ? hit.y : t.y) - w.pos.y, Vector2Length({t.x - w.pos.x, t.z - w.pos.z})), -1.2f, 1.45f);
+        }
+    }
     else if (k != Kind::Melee && k != Kind::Mine && k != Kind::Flood && !dropped(WEAPONS[plan.weapon])) {  // direct weapons aim statically: ShotErrorDirectNonStrafe
         float e = (k == Kind::Shotgun ? L.directErr : L.shotErr) / recall;
         Vector3 v = dirOf(plan.yaw, plan.pitch) * (powered(k) ? plan.charge / 90.0f : 1);
@@ -1108,7 +1069,8 @@ void Ai::finish(const Game &g) {
     }
 }
 
-// W4M CAIPlanMove: a crate beats the shot when it scores more; else walk closer or jetpack to a better spot, else the best shot.
+// W4M CAIPlanMove: a crate beats the shot when it scores more; else walk closer, else the best shot. W4M creates path moves only
+// from A* edges (walk, jumps: 0x4b0c3c), the super sheep (0x4a3405) and melee (0x4a2adf): never JETPACK, PARACHUTE or NINJA_ROPE.
 void Ai::decide(const Game &g) {
     const Worm &w = g.worms[g.current];
     const int team = w.team;
@@ -1132,21 +1094,6 @@ void Ai::decide(const Game &g) {
     }
     if (plan.score >= 5) return finish(g);
     if (canMove && walks < 2 && plan.target >= 0 && !closerTried) { closerTried = true; return startSearch(g, Search::Closer, g.worms[plan.target].pos); }  // CAIPlanMoveCloserToTarget
-    if (!moved && plan.target >= 0 && !w.nailed && left > 10) {  // no teleport: W4M paths never use it
-        moved = true;
-        float here = spot(g, team, w.pos) + 5, best = here;
-        int jetpack = owned(g, team, Kind::Jetpack);
-        if (jetpack >= 0) {
-            for (int a = 0; a < 16; a++)
-                for (float r : {6.0f, 12.0f, 18.0f}) {
-                    Vector3 hit;
-                    if (!g.terrain.raycast({w.pos + flat(a * PI / 8) * r + Vector3{0, 20, 0}, {0, -1, 0}}, 40, &hit)) continue;
-                    float s = spot(g, team, hit + Vector3{0, R + 0.3f, 0});
-                    if (s > best) { best = s; goal = hit + Vector3{0, R + 0.3f, 0}; }
-                }
-            if (best > here) { plan = Plan{jetpack, 0, plan.target}; plan.score = 0; walk = 600; mode = Mode::Act; return; }
-        }
-    }
     if (plan.score > 0) return finish(g);  // W4M 0x49e6d0: a negative plan is forbidden, the turn is skipped
     int skip = owned(g, team, Kind::SkipGo);
     if (skip >= 0) { plan = Plan{skip, 0, -1}; plan.yaw = w.yaw; plan.pitch = w.pitch; mode = Mode::Act; }
@@ -1174,10 +1121,6 @@ Input Ai::act(const Game &g) {
     }
     if (!select(g, plan.weapon, in)) return in;
     Kind k = WEAPONS[g.weapon].kind;
-    if (k == Kind::Jetpack) {
-        if (!g.prevButtons) { in.buttons = Input::FIRE; mode = Mode::Jet; }
-        return in;
-    }
     float dy = angle(plan.yaw - w.yaw), dp = plan.pitch - w.pitch;
     in.turn = q(dy / (2.5f * DT));
     in.aim = q(dp / (1.5f * DT));
@@ -1185,21 +1128,6 @@ Input Ai::act(const Game &g) {
     if (aimed++ < levelOf(g, w.team).fireDelay / DT) return in;  // W4M DelayBeforeFire
     if (powered(k)) { if (charged++ < plan.charge) in.buttons = Input::FIRE; }  // release fires
     else if (!g.prevButtons) in.buttons = Input::FIRE;
-    return in;
-}
-
-// Jetpack flight to `goal`: thrust to clear the terrain, drift over, brake the descent, land and switch off.
-Input Ai::jet(const Game &g) {
-    Input in;
-    const Worm &w = g.worms[g.current];
-    Vector3 d = goal - w.pos;
-    float h = sqrtf(d.x * d.x + d.z * d.z), dy = angle(atan2f(d.x, d.z) - w.yaw);
-    in.turn = q(dy / (2.5f * DT));
-    if (fabsf(dy) < 0.5f && h > 0.8f) in.walk = (int8_t)(127 * fminf(1, h / 4));
-    Vector3 hit;
-    bool low = g.terrain.raycast({w.pos + flat(w.yaw) * 2, {0, -1, 0}}, 3, &hit) || g.terrain.solid(w.pos + flat(w.yaw) * 1.5f);
-    if (g.fuel > Game::JET_DRY && ((h > 1.5f && (w.pos.y < goal.y + 3 || low)) || w.vel.y < -5)) in.buttons = Input::FIRE;
-    if (h < 1.5f || --walk <= 0) in.buttons = 0, mode = Mode::Eval, stage = -1;  // W4M: no switch-off, it lands (or falls dry)
     return in;
 }
 
@@ -1221,7 +1149,7 @@ Input Ai::think(const Game &g) {
             Kind k = WEAPONS[s.weapon].kind;
             if (k == Kind::Airstrike && WEAPONS[s.weapon].fuse > 0 && !s.child) {  // bomber: head for the target, drop with the lead
                 if (plan.target < 0 || !g.worms[plan.target].alive || (!s.prey && s.stage > 0)) continue;  // held for STRIKE_LEAD
-                Vector3 e = g.worms[plan.target].pos, land = s.pos + s.vel * (0.3f * (s.pos.y - e.y) / Game::COW_CHUTE);
+                Vector3 e = g.worms[plan.target].pos + strikeOff, land = s.pos + s.vel * (0.3f * (s.pos.y - e.y) / Game::COW_CHUTE);
                 in.turn = q(angle(yawTo(s.pos, e) - atan2f(s.vel.x, s.vel.z)) / (0.8f * DT));
                 if (Vector2Distance({land.x, land.z}, {e.x, e.z}) < 1.5f && !g.prevButtons) in.buttons = Input::FIRE;
                 continue;
@@ -1238,44 +1166,34 @@ Input Ai::think(const Game &g) {
     if (!w.alive) return in;
     if (g.phase == Phase::Retreat) return retreat(g);
     if (g.phase != Phase::Aim) return in;
-    if (g.timer > lastTimer) selDone = selecting = false, selTarget = -1, me = -1;  // a new turn (a Change Worm keeps the selection)
     if (g.timer > lastTimer || g.current != worm) {
         worm = g.current;
-        walk = walks = charged = aimed = wait = afterFire = shotsSeen = 0;
-        if (g.clock < lastClock) memory.clear(), failed.clear(), skipped.clear(), recent.weapon = -1, node = 0;  // new match
+        walks = charged = aimed = wait = afterFire = shotsSeen = 0;
+        if (g.clock < lastClock) memory.clear(), failed.clear(), recent.weapon = -1, grid.reset();  // new match
         lastClock = g.clock;
-        if (!node) node = nodeSpacing(g.terrain);
-        moved = crateTried = closerTried = pathFailed = false, repaths = 0, lastPurpose = -1, blocked.clear();
+        if (!grid) grid = std::make_shared<const Grid>(makeGrid(g.terrain));
+        crateTried = closerTried = pathFailed = afterCloser = false, repaths = 0, lastPurpose = -1, blocked.clear();
         mode = Mode::Eval;
         stage = -1;
         search.reset();
         path.clear();
         debt = 0;
         run = RopeRun{};
-        raceAt = topX = -1;
+        raceAt = -1;
         lastBoom = w.pos;
         uint32_t hp = 0;  // not g.clock: how long earlier thinks took must not change this turn's taste
         for (const Worm &x : g.worms) hp = hp * 31 + (uint32_t)x.hp;
         salt = (g.rng ^ hp * 2654435761u) + (uint32_t)g.current;
     }
     lastTimer = g.timer;
-    if (g.dropping()) return in;
     if (wait > 0) { wait--; return in; }  // W4M DelayAtStart is 0: no pause before thinking
     if (g.cfg.rules & RULE_ROPE_RACE) return race(g);
-    if (selTarget >= 0) {  // W4M WormSelect action: ours presses Change Worm until the chosen worm is current
-        int cw = owned(g, w.team, Kind::ChangeWorm);
-        if (g.current == selTarget || cw < 0 || !g.worms[selTarget].alive) { selTarget = -1; return in; }
-        if (select(g, cw, in) && !g.prevButtons) in.buttons = Input::FIRE;
-        return in;
-    }
-    if (g.jetting) return mode == Mode::Jet ? jet(g) : Input{};  // drops back down; think again once landed
+    if (g.jetting) return in;
     if (g.roped) { in.buttons = g.prevButtons ? 0 : Input::JUMP; return in; }
     switch (mode) {
     case Mode::Eval:
     case Mode::Search:
         if (!w.grounded || Vector3LengthSqr(w.vel) > 0.01f) return in;  // wait to stand still
-        if (mode == Mode::Eval && stage < 0 && !selDone)  // worm select plans for worms that are not the current one: all of them still
-            for (const Worm &x : g.worms) if (x.alive && (!x.grounded || Vector3LengthSqr(x.vel) > 0.01f)) return in;
         if (mode == Mode::Eval && stage < 0) startEval(g);
         if (mode == Mode::Eval && tpos.empty()) return in;
         slice(g);
@@ -1284,11 +1202,11 @@ Input Ai::think(const Game &g) {
         if (follow(g, in)) return in;
         if (pathFailed && repath(g)) return in;
         wait = 30, mode = Mode::Eval, stage = -1, crateTried = closerTried = false;  // W4M: 0.5 s after a path, then think again
+        afterCloser = lastPurpose == Search::Closer;
         return in;
     case Mode::Act:
         if (search) { slice(g); return in; }  // the retreat path, before firing
         return act(g);
-    case Mode::Jet: if (g.jetUsed) mode = Mode::Eval, stage = -1; return in;  // waiting for the take-off; landed short: think again
     }
     return in;
 }

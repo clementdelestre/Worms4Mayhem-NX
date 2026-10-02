@@ -102,11 +102,11 @@ For each hit below: direct contact, facing the target.
 
 **Air Strike**
 - Impact point picked in sky view; the plane crosses the view from left to right, which is oriented by turning the camera.
-- A visible bomber drops 6 bombs in a line, one every 333 ms, 2.5 m apart, centred on the target; they keep the plane's speed and fall under reduced gravity. The guides say 5.
+- A visible bomber drops 6 bombs in a line, one every 333 ms, 2.5 m apart, from 3 gaps before the target to 2 past it; they keep the plane's speed and fall under reduced gravity. The guides say 5.
 - Damage: 25 HP per bomb.
 
 **Bovine Blitz (Super Airstrike)**
-- Pick the pass point and direction, then the plane is **piloted** with the stick for 14 s.
+- Pick the pass point; the plane comes in along the view's direction, then it is **piloted** with the stick for 14 s.
 - Each fire press drops a cow, 3 at most, at least 0.8 s apart. The cows descend slowly (parachute) and explode on impact.
 - Max damage: 80 HP per cow.
 
@@ -137,7 +137,8 @@ For each hit below: direct contact, facing the target.
 
 **Old Woman**
 - She walks. She is steered with the stick and explodes on command with fire.
-- Each worm she bumps, teammates included (except the thrower), loses 5 ammo, one at a time, each from a random weapon (preferably one the thief lacks). The thrower's team gets them; an infinite stock is not touched.
+- Each worm she bumps, teammates included (except the thrower), loses 5 ammo, one at a time, each from a random weapon (preferably one the thief lacks). The thrower's team gets them; an infinite stock is not touched. After each theft she stands still for 0.8 s, then walks back the way she came.
+- Fully under water she stops and explodes 2 s later.
 - 30 s fuse.
 - Max damage: 75 HP.
 
@@ -157,13 +158,14 @@ For each hit below: direct contact, facing the target.
 
 **Jetpack**
 - Fuel is used only while thrusting: 7,500 ms (7.5 s of thrust), not the "30" of the original spec.
+- Landing ends the flight like a fall: a fast landing hurts.
 - Does not end the turn. In flight (and landed, while fuel remains), only the dynamite, mine and sheep can be taken in hand besides the jetpack, as a secondary weapon, dropped with the other trigger. Any other weapon picked ends the jetpack.
 - After the attack, retreat time starts. The worm can still fly with the remaining fuel.
 
 **Ninja Rope (grapple)**
-- First-person aim to anchor the grapple. The worm swings, and adjusts the length up to 22.5 m.
+- First-person aim to anchor the grapple. The worm swings, and reels in or out at 10 m/s, between 0.5 m and 22.5 m.
 - 5 grapple shots per turn.
-- The grapple also hooks crates, mines and barrels, and pulls them toward the worm.
+- The grapple also hooks crates, mines and barrels; they hang on the rope from the worm.
 - On the rope, only the dynamite, mine and sheep can be dropped (secondary weapon, with fire); any other weapon lets go of the rope.
 - Does not end the turn.
 
@@ -184,9 +186,9 @@ For each hit below: direct contact, facing the target.
 
 **Binoculars**: in first-person view, firing at a worm or the terrain computes the bazooka shot (no wind), shown after 4 s; uses nothing, does not end the turn.
 
-**Bubble Trouble**: a 2.1 m radius bubble placed next to the worm. Shots from outside bounce off it, a worm inside ignores outside explosions; an inside explosion pops it. It lasts 6 ends of turn.
+**Bubble Trouble**: 0.4 s after fire, a 2.1 m radius bubble is set next to the worm and drops until it meets land. Shots from outside bounce off it, bullets stop on it unless the shooter is inside, worms walk through it, a worm inside ignores outside explosions; an inside explosion pops it. It lasts 6 ends of turn. It does not end the turn, once per turn.
 
-**Icarus Potion**: cures poison and restores the starting HP. After a jump, each Jump press flaps the wings, within a 250 ms window every 500 ms; the stick steers. No fall damage in flight.
+**Icarus Potion**: cures poison and the abduction, but heals nothing. After a jump, each Jump press flaps the wings, within a 250 ms window every 500 ms; the stick steers. No fall damage in flight.
 
 **Double Damage, Crate Spy** (crates only): double explosions and hits for the rest of the turn / show the team the content of crates for the rest of the match.
 

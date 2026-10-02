@@ -15,7 +15,8 @@ From `client/` (desktop build, raylib in `third_party/raylib-nx/out/desktop`):
 | `make mission_check` | `mission_check` | `romfs/weapons.json`, `romfs/missions`, imported `assets/missions`; writes then removes `progress_check.txt` |
 | `make ui_check` | `ui_check` | `romfs/weapons.json` |
 
-`make ai_check replay_check mission_check` runs the three in one go.
+`make ai_check replay_check mission_check` runs the three in one go (in parallel). The build is incremental: objects and
+header deps in `obj/`, binaries in `obj/bin/` with `./<test>` linked to them; `make obj/bin/<test>` builds without running.
 
 Repository-level scripts in `tests/` (run from the repository root, they build the client if `W4NX` is unset):
 

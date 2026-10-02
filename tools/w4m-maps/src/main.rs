@@ -147,11 +147,56 @@ struct Cell { c: [[f32; 3]; 8], mat: u8, tex: [f32; 2] }
 // Detail entity reference with its poxel's world matrices (with / without the poxel's own scale).
 struct DetRef { ctn: usize, w: M4, wn: M4 }
 
-fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &mut Vec<Cell>, dets: &mut Vec<DetRef>, depth: u32) {
+// W4M LandFramePseudoEntity 0x46e1d0: a land frame's box is x [min EdgeOffset1.x, XSize + max EdgeOffset2.x], z likewise,
+// y [min HeightMap, YSize + max HeightMap], less CentreOffset = size / 2; AddLandBlock 0x4b22e0 takes its 8 corners' world AABB.
+fn frame_box(x: &Poxel, w: &M4) -> [f32; 4] {
+    let [sx, sy, sz] = x.size.map(|v| v as f32);
+    let n = x.size[1] + 1;
+    let edge = |l: &Vec<[f32; 2]>, i: usize, f: fn(f32, f32) -> f32, init: f32| (0..n).map(|j| l.get(j).map_or(0.0, |e| e[i])).fold(init, f);
+    let (hlo, hhi) = (x.hm.iter().copied().fold(1e6, f32::min), x.hm.iter().copied().fold(-1e6, f32::max));
+    let lo = [edge(&x.l1, 0, f32::min, 1e6) - sx / 2.0, hlo - sy / 2.0, edge(&x.l1, 1, f32::min, 1e6) - sz / 2.0];
+    let hi = [sx + edge(&x.l2, 0, f32::max, -1e6) - sx / 2.0, sy + hhi - sy / 2.0, sz + edge(&x.l2, 1, f32::max, -1e6) - sz / 2.0];
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for c in 0..8 {
+        let p = xform(w, [if c & 1 != 0 { hi[0] } else { lo[0] }, if c & 2 != 0 { hi[1] } else { lo[1] }, if c & 4 != 0 { hi[2] } else { lo[2] }]);
+        b = [b[0].min(p[0]), b[1].min(p[2]), b[2].max(p[0]), b[3].max(p[2])];
+    }
+    b
+}
+
+// W4M AddLandBlock 0x4b22e0 at 20 units per importer unit: drop a box under 250 units², else merge it into the first box it
+// overlaps with a gap under 40 units on x and z (0x4ae320); `second` runs PopulatePathingNodes' second pass (0x4b2800).
+fn add_block(blocks: &mut Vec<[f32; 4]>, b: [f32; 4]) {
+    if (b[2] - b[0]) * (b[3] - b[1]) < 250.0 / 400.0 { return; }
+    let touch = |o: &[f32; 4], b: &[f32; 4]| o[0].max(b[0]) < o[2].min(b[2]) + 2.0 && o[1].max(b[1]) < o[3].min(b[3]) + 2.0;
+    if let Some(o) = blocks.iter_mut().find(|o| touch(o, &b)) {
+        *o = [o[0].min(b[0]), o[1].min(b[1]), o[2].max(b[2]), o[3].max(b[3])];
+    } else {
+        blocks.push(b);
+    }
+}
+fn second_pass(blocks: &mut Vec<[f32; 4]>) {
+    let touch = |o: &[f32; 4], b: &[f32; 4]| o[0].max(b[0]) < o[2].min(b[2]) + 2.0 && o[1].max(b[1]) < o[3].min(b[3]) + 2.0;
+    let mut i = 0;
+    while i < blocks.len() {
+        match (i + 1..blocks.len()).find(|&k| touch(&blocks[i], &blocks[k])) {
+            Some(k) => {
+                let b = blocks.remove(k);
+                let o = &mut blocks[i];
+                *o = [o[0].min(b[0]), o[1].min(b[1]), o[2].max(b[2]), o[3].max(b[3])];
+                i = 0;
+            }
+            None => i += 1,
+        }
+    }
+}
+
+fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &mut Vec<Cell>, dets: &mut Vec<DetRef>, blocks: &mut Vec<[f32; 4]>, depth: u32) {
     let Some(x) = px.get(&k) else { return };
     if depth > 64 { return; }
     let (w, wn) = if root { (*parent, *parent) } else { (mul(parent, &local(x, true)), mul(parent, &local(x, false))) };
     let [sx, sy, sz] = x.size;
+    if !x.vox.is_empty() { add_block(blocks, frame_box(x, &w)); }
     if x.visible && x.vox.len() == sx * sy * sz {
         let layer = |l: &Vec<[f32; 2]>, j: usize| *l.get(j).unwrap_or(&[0.0, 0.0]);
         let corner = |i: usize, j: usize, kk: usize| -> [f32; 3] {
@@ -175,7 +220,7 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
         }
     }
     dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w, wn }));
-    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, depth + 1); }
+    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1); }
 }
 
 // Case-insensitive path lookup (game data uses Windows paths).
@@ -329,8 +374,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let xom = read_xom(&xb).ok_or("bad xom")?;
     let px: HashMap<usize, Poxel> = xom.ctn.iter().enumerate()
         .filter(|(_, (t, _))| t == "LandFrameStore").map(|(i, (_, d))| (i + 1, parse_poxel(d))).collect();
-    let (mut cells, mut dets) = (Vec::new(), Vec::new());
-    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, 0);
+    let (mut cells, mut dets, mut blocks) = (Vec::new(), Vec::new(), Vec::new());
 
     // level databank: material file, theme, heightmap textures (value string precedes its key)
     // LP_/SPLP_/Multi_ variants share the databank of their base level
@@ -364,6 +408,16 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
 
     let hmp = fs::read(maps.join(format!("{stem}.hmp"))).ok().filter(|b| b.len() == 50000 && b[..40000].iter().any(|&c| c != 0));
     let hval = |c: usize, r: usize| hmp.as_ref().map_or(0.0, |b| f32le(b, 4 * (r.min(99) * 100 + c.min(99))));
+    // W4M heightmap land block 0x464618: from the first to the last cell with height > 0 (cell origins), before the frames
+    if hmp.is_some() {
+        let (mut c0, mut r0, mut c1, mut r1) = (100, 100, -1i32, -1i32);
+        for r in 0..100 { for c in 0..100 { if hval(c, r) > 0.0 {
+            c0 = c0.min(c as i32); r0 = r0.min(r as i32); c1 = c1.max(c as i32); r1 = r1.max(r as i32);
+        } } }
+        if c1 >= 0 { add_block(&mut blocks, [c0 as f32 * 1.6 - HMP_EXTENT, r0 as f32 * 1.6 - HMP_EXTENT, c1 as f32 * 1.6 - HMP_EXTENT, r1 as f32 * 1.6 - HMP_EXTENT]); }
+    }
+    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, &mut blocks, 0);
+    second_pass(&mut blocks);
     // W4M world bounds of everything solid above the water (the seabed may be cropped)
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     let mut grow = |p: [f32; 3]| if p[1] > 0.0 { for i in 0..3 { lo[i] = lo[i].min(p[i]); hi[i] = hi[i].max(p[i]); } };
@@ -558,9 +612,10 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let spawns = spawn_points(&grid);
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
     let pv = mission::preview_of(data, stem).map_or(String::new(), |p| format!("  \"preview\": \"{p}\",\n"));
+    let blk: Vec<String> = blocks.iter().map(|b| format!("[{:.2},{:.2},{:.2},{:.2}]", b[0] * k + ox, b[1] * k + oz, b[2] * k + ox, b[3] * k + oz)).collect();
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
-        theme_name(&theme), palette.join(","), texs.join(","),
+        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"spawns\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
+        theme_name(&theme), palette.join(","), texs.join(","), blk.join(","),
         spawns.iter().map(|p| format!("[{:.1},{:.1},{:.1}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
         marks.join(",\n    "), objs.join(",\n    ")
     );

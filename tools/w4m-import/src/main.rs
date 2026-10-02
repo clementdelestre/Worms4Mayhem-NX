@@ -135,6 +135,7 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("held_old_woman", "weapons", &["OldWomenHeld1", "OldWomanHeld2", "OldWomanHeld3"]),
     ("turn_start", "weapons", &["HudAlert"]),
     ("tick", "weapons", &["ClockFast"]),
+    ("tick_slow", "weapons", &["ClockSlow"]),
     ("shotgun", "weapons", &["Shotgun1", "Shotgun2"]),
     ("airstrike", "weapons", &["Bomber"]),
     ("donkey", "weapons", &["DonkeyBray"]),
@@ -249,6 +250,88 @@ fn speech_categories(lsd: &str, lip: &str, subs: &[Sample]) -> HashMap<String, V
     cats
 }
 
+// WormsX.fev walk (layout: tools/w4m-re/fev.py). Speech events whose parameter is not "MultiSelect" get no value from the exe
+// (handle lookup 0x6f99a2) and stay at the minimum (fmod_event reset 0x10024640): they always play their first instance.
+// Returns "<bank>/<Category>" -> that instance's wave name.
+fn fev_fixed_lines(b: &[u8]) -> HashMap<String, String> {
+    struct R<'a> { b: &'a [u8], p: usize }
+    impl R<'_> {
+        fn u(&mut self) -> u32 { let v = u32le(self.b, self.p); self.p += 4; v }
+        fn skip(&mut self, n: usize) { self.p += n; }
+        fn s(&mut self) -> String {
+            let n = self.u() as usize;
+            let v = String::from_utf8_lossy(&self.b[self.p..self.p + n]).trim_end_matches('\0').to_string();
+            self.p += n;
+            v
+        }
+    }
+    fn cat(r: &mut R) { r.s(); r.skip(16); for _ in 0..r.u() { cat(r); } }
+    // event path -> (param names, (start, sounddef) per instance)
+    type Ev = (String, Vec<String>, Vec<(f32, u16)>);
+    fn group(r: &mut R, path: &str, out: &mut Vec<Ev>) {
+        let full = format!("{path}/{}", r.s());
+        for _ in 0..r.u() { r.s(); match r.u() { 2 => { r.s(); } _ => r.skip(4) } }
+        let (ns, ne) = (r.u(), r.u());
+        for _ in 0..ne {
+            let kind = r.u();
+            let name = r.s();
+            r.skip(16 + 0x84);
+            let inst = |r: &mut R, v: &mut Vec<(f32, u16)>| {
+                let sd = u16le(r.b, r.p);
+                v.push((f32::from_bits(u32le(r.b, r.p + 2)), sd));
+                r.skip(58);
+            };
+            let (mut params, mut insts) = (Vec::new(), Vec::new());
+            if kind == 0x10 { r.u(); inst(r, &mut insts); } else {
+                for _ in 0..r.u() {
+                    let (ni, nenv) = (u16le(r.b, r.p + 6), u16le(r.b, r.p + 8));
+                    r.skip(10);
+                    for _ in 0..ni { inst(r, &mut insts); }
+                    for _ in 0..nenv { r.u(); r.s(); r.skip(12); let n = r.u() as usize; r.skip(12 * n + 8); }
+                }
+                for _ in 0..r.u() { params.push(r.s()); r.skip(24); let n = r.u() as usize; r.skip(4 * n); }
+                r.u();
+            }
+            r.u();
+            r.s();
+            out.push((format!("{full}/{name}"), params, insts));
+        }
+        for _ in 0..ns { group(r, &full, out); }
+    }
+    let mut r = R { b, p: 16 };
+    let n = r.u() as usize;
+    r.skip(8 * n);
+    r.s();
+    for _ in 0..r.u() { r.skip(16); r.s(); }
+    cat(&mut r);
+    let mut evs = Vec::new();
+    for _ in 0..r.u() { group(&mut r, "", &mut evs); }
+    let np = r.u() as usize;
+    r.skip(70 * np);
+    let mut waves = Vec::new();
+    for _ in 0..r.u() {
+        r.s(); r.u();
+        let mut first = String::new();
+        for k in 0..r.u() {
+            r.skip(8);
+            let f = r.s();
+            r.s(); r.skip(8);
+            if k == 0 { first = f; }
+        }
+        waves.push(first);
+    }
+    let mut out = HashMap::new();
+    for (path, params, insts) in evs {
+        let Some(rest) = path.split_once("/Speech/").map(|(_, r)| r.to_string()) else { continue };
+        if insts.len() < 2 || params.iter().any(|p| p == "MultiSelect") { continue; }
+        let &(_, sd) = insts.iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+        let w = &waves[sd as usize];
+        let base = w.rsplit('/').next().unwrap_or(w);
+        out.insert(rest, base.strip_suffix(".wav").unwrap_or(base).to_string());
+    }
+    out
+}
+
 fn variant(dir: &Path, name: &str, i: usize) -> PathBuf {
     dir.join(if i == 0 { format!("{name}.ogg") } else { format!("{name}_{}.ogg", i + 1) })
 }
@@ -288,6 +371,7 @@ fn main() {
     banks.sort();
     if banks.is_empty() { eprintln!("no .fsb under {}", pc.display()); std::process::exit(1); }
 
+    let fixed = fs::read(pc.join("WormsX.fev")).map(|b| fev_fixed_lines(&b)).unwrap_or_default();
     let mut jobs = Vec::new();
     let (mut raw_files, mut raw_bytes, mut skipped) = (0, 0u64, 0);
     let mut queue = |subs: &[Sample], i: usize, out: PathBuf, jobs: &mut Vec<Job>| {
@@ -346,7 +430,9 @@ fn main() {
             let dir = out.join("voices").join(bank.strip_prefix("vo").unwrap_or(bank));
             fs::create_dir_all(&dir).unwrap();
             for (name, cat) in VOICES {
-                for (k, &i) in cats.get(*cat).into_iter().flatten().enumerate() {
+                let only = fixed.get(&format!("{bank}/{cat}")).map(|w| &w.as_bytes()[..w.len().min(29)]);
+                let lines = cats.get(*cat).into_iter().flatten().filter(|&&i| only.is_none_or(|w| subs[i].name.as_bytes().eq_ignore_ascii_case(w)));
+                for (k, &i) in lines.enumerate() {
                     queue(&subs, i, variant(&dir, name, k), &mut jobs);
                 }
             }
@@ -388,6 +474,16 @@ mod tests {
         frame[..4].copy_from_slice(&[0xFF, 0xFD, 0x90, 0x04]);
         let padded = [frame.clone(), vec![0, 0], frame.clone(), vec![0, 0]].concat();
         assert_eq!(mpeg_frames(&padded), [frame.clone(), frame].concat());
+    }
+
+    #[test]
+    fn fev_walk_finds_the_unparameterised_speech_events() {
+        // needs the user's install; the walk must reach the 14 events named in docs/w4m/audio.md §12
+        let Some(dir) = std::env::var_os("W4M_DIR") else { return };
+        let b = fs::read(Path::new(&dir).join("Data/Audio/PC/WormsX.fev")).unwrap();
+        let f = fev_fixed_lines(&b);
+        assert_eq!(f.len(), 14, "{f:?}");
+        assert!(f.contains_key("vobuild/StartTurn") && f.contains_key("voklein/NoDamageA"));
     }
 
     #[test]

@@ -38,6 +38,7 @@ tools/w4m-import/target/release/w4m-import "$W4M" client/assets   # out dir defa
 `Data/Audio/PC/*.fsb` are FMOD Ex FSB4 banks: MPEG-1/2 Layer II (mp2) except `voRussian` (PCM16).
 Speech categories come from `Data/Audio/Speech/<bank>.lsd` (category -> line hashes) and
 `speech/<bank>/LIP.txt` (hash -> line name, matched to the subsound name cut at 29 chars).
+For the 14 speech events whose parameter is not named `MultiSelect` (`WormsX.fev`, see docs/w4m/audio.md §12), only the line of the event's first instance is written: W4M never sets their parameter, so they always play it [disasm].
 
 ## What it writes
 

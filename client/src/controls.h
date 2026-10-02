@@ -36,7 +36,6 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
 void impact(Vector3 at);  // explosion: no camera move of its own (W4M)
 // W4M PiPService: the event camera while the main view stays the worm's; show 0..1 its slide on / off, full 0..1 its growth to full screen
 bool inset(Camera3D &view, float &show, float &full);
-float occluded();  // 0..1: the active worm is behind terrain or the camera is right on it (W4M shows it as an outline)
 void focus(const Vector3 *at, float radius = 0, bool crate = false);  // HUD cinematic target (hp count, crate drop), radius m kept in view; held while set each frame, nullptr or no call: released after 0.2 s
 // crate: W4M CrateTrackCamera on it instead of the framing
 void rumble(int pad, float amp, float secs);  // pad -1: nobody

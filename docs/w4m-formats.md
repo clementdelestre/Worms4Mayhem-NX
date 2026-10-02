@@ -32,7 +32,7 @@ Lattice vertex `(i, j, k)` in local voxel units: `x = e1x + (X + e2x − e1x)·i
 
 ### Heightmap placement (fitted, not found in data)
 
-Covers x, z ∈ [−80, 80] (fits poxel footprints on DoomCanyon/StormTheCastle). Height `y = 5·h − 1.5` was fitted so that poxel floors are not buried; W4M water assumed at y = 0. Both constants live at the top of `tools/w4m-maps/src/main.rs`.
+Covers x, z ∈ [−80, 80] (fits poxel footprints on DoomCanyon/StormTheCastle). Height `y = 5·h − 1.5` was fitted so that poxel floors are not buried; W4M water starts at y = 0: data key `Water.Level` defaults to 0.0 (`WEAPTWK.XOM`), and scripts move it (`SetData("Water.Level", …)`, flood, RaiseWater) [data]. Both constants live at the top of `tools/w4m-maps/src/main.rs`.
 
 ### Conversion to our grid
 

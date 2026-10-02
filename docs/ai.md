@@ -1,7 +1,7 @@
 # CPU player (ours)
 
 What `client/src/ai.h` / `ai.cpp` (`Ai`) do, with the W4M source of each rule. The W4M side (AIService, AITWK, AIPathManager) is in
-`w4m-map.md` §18 "AI (CPU worms)"; this file is about our code. Status per fact, as in sim.md:
+`docs/w4m/ai.md` §18 "AI (CPU worms)"; this file is about our code. Status per fact, as in sim.md:
 
 - **data**: a value read from the W4M files (AITWK.XOM AIParams.CPU1..CPU5, RTTI/strings);
 - **disasm**: a rule read from `WormsMayhem.exe` (VA given);
@@ -57,7 +57,7 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   (clamped -1.2..1.45) and charge (1..90 ticks) are re-derived. W4M 0x4a06c0 scales the exact launch velocity (**disasm**); ours scales the
   charge vector, since the AI charges like a player (see Timings).
 - Shotgun / Sniper Rifle (`Kind::Shotgun`): same scaling with directErr = ShotErrorDirectNonStrafe (W4M 0x4a0d90, **disasm**). No strafe mode.
-- Airstrike / donkeys: `yaw += atan(noise·strikeErr / dist)`, a sideways offset only. W4M: a target offset in units (0x4a1b00, **assumed**).
+- Airstrike / donkeys: the reticle point gets strikeErr·noise added on x and z (y drawn, unused: bombs fall straight), no accuracy memory; yaw and pitch re-aimed at it (the 30 m sky-aim candidate only turns); the steered bomber uses the offset target (`strikeOff`). W4M 0x4a1b00 (**disasm**).
 - Melee and dropped shells (`dropped()`: Dynamite, Cheap Dynamite...) get no error (**ours**).
 - Wind: every plan flies with the exact `g.wind` at every level (W4M solver 0x4ac6f0, "wind never degraded", **disasm**).
 - Repeat-shot memory (`memory`, W4M AIPlanMemory ImproveAccuracy): e /= 1 + memory·Σ match (0x4a5d00), match = effect × (1 − d_from/R) ×
@@ -69,27 +69,17 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   failure if the target has exactly the same hp and position. Each think start multiplies a failure's effect by 0.99, sets it to 0 once the
   target's hp or position changed, and drops it under 0.1 (RegressFailedMemory 0x4a5b10). A candidate of the same worm at the same target
   is scored × (1 − effect/2), × (1 − 0.1·effect) with another weapon (the effect × 0.2, 0x4a6590), before the taste (**disasm**).
-- Worm-select mode and skipped-turn memory (W4M 0x4a4f2a, flag 0x9560c1, **disasm**): with a usable Change Worm at the start of a turn
-  (no move yet, no shots pending), `startEval` plans for every worm of the team (`me`, `selWorms`): ours lists the worms our Change Worm
-  reaches with the ammo left, one use a step (W4M's Worm Select picks any worm: ours). A worm with no positive plan stores a skipped-turn
-  record (0x499cac → 0x4a68c0, effect 1); while selecting, every plan is scaled 1 / (1 + 5·Σ effect) of its worm's records (0x4989d0 →
-  0x4a57c0); each think multiplies a record by 0.9 and drops it under 0.1 (0x4a61b0). The best worm is selected (W4M WormSelect action;
-  ours presses Change Worm until it is current, `selTarget`), then planned again as the current worm. While selecting, the think waits
-  for every worm to stand still (**ours**: the plans of the other worms must not depend on the slicing).
-- Damage: hp per worm, armour → `hp × Game::ARMOUR / 100`, kick ×0.5 (ArmourLogicEntity 0x548fc0, **disasm**; melee goes through `strike()`, no armour, as W4M ids 10..12).
-- Score `s += 2 · value(i) · d` per hit worm: 2 = WeightingAttack (**data**). d = hp lost; a kill (lost ≥ hp) is `max(hp, 200)` =
-  WeightingKillTarget 200 (**data**).
-- Knockback: `fling()` runs `wormBody` up to 300 ticks with fall damage (FALL_SAFE 15, FALL_SCALE 2, copies of sim.cpp); fall hp adds to d.
-  Only when threat > 0 (**ours**).
-- Drowning: d = lost + min(1, threat/4)·(kill − lost) (W4M "may knock X into nearby threat"; exact blend **assumed**).
-- Chains (secondary > 0): barrels (`BARREL_BLAST`) and weapon crates (`CRATE_BLAST`) in reach blow up with share ×secondary, depth ≤ 2;
-  mines are only pushed (**disasm** for the field; recursion, depth and kinds **ours**). Sentry hit ±15, health crate lost −5 (**ours**).
-- Poison: a survivor adds `2 × (new poison − current)` ("about 2 turns", **ours**). Gas clouds: a second blast of `GAS_RADIUS − R`, no wind drift.
-- Clusters: one extra blast, reach ×1.5, damage ×clusters×0.4 (expected bomblet share, **ours**).
-- Karma (`RULE_KARMA`): self takes 0.5 × damage dealt to others. Vampire (`RULE_VAMPIRE`): −2·value(self)·0.5·min(leech, 200 − hp), leech =
-  0.5 × enemy damage (**ours**; no W4M AI term in §18).
-- Tie-breaker: −0.05 × distance from the first blast to the nearest enemy (**ours**).
-- Dropped shells: self damage is ignored, `retreat()` walks clear (**ours**).
+- Worm-select mode: not used; W4M enables it only with ChooseWorm.Enabled, which is never set (**data**, 0x4a4ef7).
+- Scoring (`Outcome`, W4M 0x49f190 / 0x49ed30, **disasm**): a blast gives each worm, self included, d = (1 − dist/reach)·secondary·damage
+  (×2 doubled); a melee hits only the plan target with its damage; Flood 1000 below the level; Starburst its rider's hp with knock 1.
+  Armour ×ARMOUR/100 except bat, prod, fire punch. Lethal (d ≥ hp): max(hp, 200). Else, with knock weight a (threat for blasts and
+  melee, 0 for guns and Flood): t = the worm's threat rating, d = min(hp, d + a·t·(hp − d)), weight 2·(1 + a·t). Score += d·weight·value(i).
+  Guns: one shot as a blast of the gun's reach at the hit point. Strikes: one blast at the target of reach 2 s × 7.5 m/s + 2·reach.
+  Animals (sheep, old woman, scouser): the walker's closest approach within 2 m, blast there. No knockback simulation, chains,
+  poison, karma, vampire or tie-breaker terms (W4M has none).
+- Bonus (W4M 0x49bd60): +AddScoreMove 10, +AddScoreMoveIfNotMoved 20 before the turn's first move, always for Dynamite/Landmine and
+  dropped shells (0x4a2c70 forces it); for other plans only when the plan has a move, ours: the eval right after a Closer walk.
+- Dropped shells and landmines spare the thrower (**ours**: W4M walks next to the target first, 0x4a22d0).
 
 Target value `value(i)` (W4M 0x4a9260, **disasm**):
 
@@ -132,7 +122,8 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 ## Weapons the AI never uses
 
 - Sentry Gun, Alien Abduction, Bubble Trouble, Girder, Teleport and the other utilities (Armour, Icarus, Double Damage...): no W4M plan (**data**).
-- Ninja Rope: only in `RULE_ROPE_RACE` (`race()`, a parametric swing search, **ours**); W4M NINJA_ROPE path is probably never run (**assumed**).
+- Ninja Rope: only in `RULE_ROPE_RACE` (`race()`, a parametric swing search, **ours**). W4M never creates NINJA_ROPE, JETPACK or PARACHUTE path moves (**disasm**, see docs/w4m/ai.md §18): no jetpack move either.
+- Change Worm: never (W4M worm-select mode needs ChooseWorm.Enabled, 0 in LOCAL.XOM, **data**).
 - Parachute: no use (W4M has PARACHUTE path moves, **data**). Jetpack: only as a move (below). Fuse is never changed (`fuseOf`, W4M SetWeaponFuse exists).
 - SkipGo when no positive plan and it is owned (W4M CAIPlanSkipTurn, **data**).
 
@@ -143,23 +134,22 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
    × moveFar/dist past moveFar × left/moveTime under moveTime (**data**, 0x4a72e1, 0x4a75c0). If s > plan.rank: crate search.
 3. `plan.score ≥ 5`: fire (threshold **ours**).
 4. Closer (once, walks < 2): search toward the plan's target (W4M CAIPlanMoveCloserToTarget, **data**).
-5. Jetpack (once, if owned): 16 headings × 6 / 12 / 18 m; fly if `spot()` beats here + 5 (**ours**; W4M JETPACK path move, **data**).
 6. `plan.score > 0`: fire; else SkipGo (W4M 0x49e6d0: negative plans forbidden, **disasm**). Never teleports.
 
 ## Pathing (`Search`, `searchStep`, W4M AIPathManager 0x492d80)
 
 | parameter | ours | W4M | tag |
 |---|---|---|---|
-| grid | `nodeSpacing`: sqrt(Σ box areas / 16000); one xz box per island of land above `Terrain::WATER` (0.5 m columns, 8-connected), overlapping boxes merged, once a match; key = cell x, z + 1 m y layer | sqrt(Σ NodeGrid box areas / 16000) (0x4b2a68), the grids merged where they overlap ("second merge pass", 0x4ae320), x/z + layer byte | disasm; islands as the land pieces: assumed |
-| neighbours | 8, the 4 sides first, each edge simulated with `runStep` (walk, jump, backflip); a diagonal walk only once both of its sides were walked from this node | 8, a diagonal only if both sides are walkable (0x492510) | disasm; "walked from here" for "walkable": assumed |
+| grid | `Grid`: sqrt(Σ box areas / 16000); boxes = `Terrain::blocks` (importer: W4M land frames + heightmap; our maps: island heightmap + each shape), area ≥ 0.625 m², merged under a 2 m gap; lattice at the boxes' min corner, round to nearest; nodes only in a box; key + 1 m y layer (ours) | same (0x4b22e0, 0x4ae320, 0x4aeb70, 0x4ae9d0) | disasm |
+| neighbours | 8, sides first, each simulated with `runStep`; a diagonal only once walk edges to both sides were added from this node; target node probed (3×3 rays): refused if water or heights > 1 m apart | same rule (0x4926f1, 0x4aef54); W4M tests step heights instead of a simulation (ours) | disasm |
 | G cost | octile of the real displacement, +40 jump, +60 backflip | 10 / 14, +40, +60 (0x491fd8, 0x492008, 0x492003) | disasm |
 | heuristic | octile 10·max + 4·min to the nearest goal cell | same (0x4923a9) | disasm |
 | F | G + H | G + H (0x492d80) | disasm |
-| jump edges | every direction, gated by jump / flip; an arc that hits a wall in the air (horizontal speed halved) is refused | per allowed type over a precomputed reach table (0x4924d7) | disasm; the wall test: assumed |
+| jump edges | 8 directions, simulated; the landing is kept only if the W4M reach table accepts it (`buildReach`, `jumpOk`) | edges to every valid table cell (0x4928e1), the worm aftertouches to it | disasm; our sim has no jump aftertouch, so one landing per direction and backflips (2.5 m < 4 m minimum) never pass |
 | iterations | `MAX_ITER` 200 per pathfind, every purpose; spread over frames by the budget (one node pop or one edge a unit) | 200 per pathfind (0x4b0ba6), 100 per step call (0x492e4e) | disasm |
 | time | edge refused if path ticks + h at walk speed > `limit` | "Not enough time left to follow path" | data |
 | goal | same cell, |dy| < 1.5 m | | ours |
-| partial | best node (lowest h, then g) if ≥ 20 octile from start and scores above start; crates need the full path | accepted unless too short | disasm; minimum ours |
+| partial | closed node of least h; any path ending under 2.5 m from the start is dropped | same (0x490ed0, 0x494a42) | disasm |
 | repath | a walk step held off its node (`stuck`) blocks that node (`blocked`) and pathfinds again to the same goals (`repath`); past 2 repaths the worm may not move this turn (`walks` = 3); also during the retreat | path-failed blockage, repath, "too many repaths, forbidding further movement" past 2 (0x490551 → 0x490601) | disasm |
 
 - `runStep` plays the step with the real `walkStep` / `Game::jumpTick` / `vaultStep` (vault included: the stick stays held while vaulting);

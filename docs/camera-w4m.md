@@ -17,7 +17,7 @@ Addresses are virtual addresses in `WormsMayhem.exe`, image base 0x400000.
   2. writes `Camera.Entity.TaskId`, the tracked entity;
   3. calls `SetCamera` with a mode name: `"Track"`, `"Chase"`, `"FlyCam"`, `"FallCam"`, `"GirderCam"`, `"Ninja"`, `"Shoulder"`, `"Path"`, `"Orbit"`…
 - Scripts can disable a mode with `Camera.Disable "Track"|"Blimp"|"Spectator"` and turn it back on with `Camera.Enable`.
-- **Each payload picks its camera in WEAPTWK.** `PayloadWeaponPropertiesContainer` has a camera-name string field. The field's descriptor name was not resolved; it sits just before `PayloadGraphicsResourceID`. Values (data):
+- **Each payload picks its camera in WEAPTWK.** `PayloadWeaponPropertiesContainer` field `CameraId` (§7). Values (data):
   - `PayloadTrackCamera`: Bazooka, Grenade, Cluster, Banana, Bananette, Dynamite, Holy Hand Grenade, Gas, Poison Arrow, Landmine-cluster, Factory weapons.
   - `FatkinsTrackCamera`: Fatkins.
   - `DonkeyTrackCamera`: Concrete Donkey. This name does **not** exist in CAMTWK; the Donkey code uses `DonkeyCamera` directly.
@@ -26,7 +26,10 @@ Addresses are virtual addresses in `WormsMayhem.exe`, image base 0x400000.
   - `HomingMissileFlyCamera`: Homing Missile.
   - Empty: Airstrike, Super Airstrike, Landmine, Fatkins food, Sentry payload.
 - **The container class decides the camera type** (`PayloadLogicEntity`, function 0x575320, called while the payload is alive):
-  - `TrackCameraContainer`: the payload requests a track camera (0x51bf80, priority 2) if its event point (+0x12c, the predicted first contact, §2) is off screen (0x51b3b0) **or** +0x1a8 is greater than `Camera.Track.MinEventTime` = 1000 ms. +0x1a8 is rewritten by FindFirstEvent (0x5766cb) at launch and at each bounce, so it reads as the flight time since the last event (medium confidence).
+  - `TrackCameraContainer`: the payload requests a track camera (0x51bf80, priority 2) if its event point (+0x12c, the predicted first contact, §2) is off screen (0x51b3b0) **or** +0x1a8 is greater than `Camera.Track.MinEventTime` = 1000 ms; +0x1a8 = 0 requests nothing (disasm 0x575320).
+    - +0x1a8 is the **predicted time, in ms, from now to that event**: FindFirstEvent 0x576580 sets it to −1, then to the time out of each event finder (0x575020: fuse end − launch time; water, disarm and expiry planes 0x574d90; the land sweep 0x574e90), together with the event point (0x5766cb, 0x5767d7, 0x576940, 0x576af2); a payload at rest gets the scheduler clock (0x575a39). Nothing counts it down (disasm).
+    - The test runs **once, at launch**: 0x575320 is the ParabolicPayloadLogicEntity override of vtable slot 0x74 (0x85b578), called only from 0x577530, the handler of task message 0x40 (activation, 0x578319), right after FindFirstEvent. Bounces recompute the event point (which the TrackCam reads every frame) but ask for no camera (disasm). So a shot that lands on screen in under 1 s is never tracked, whatever it does after its first bounce.
+    - Payload classes that do not override slot 0x74 use 0x57e400: track (or chase) at once, unconditionally (disasm).
   - `ChaseCameraPropertiesContainer`: chase camera starts immediately (0x51d5e0, active priority 6).
   - Fly cameras are started explicitly with `SetCamera("FlyCam")` (0x57e380), by Super Sheep, Starburst and Homing.
 
@@ -119,7 +122,7 @@ Rules (disasm unless marked otherwise). Update 0x533950 calls 0x532a50 (object, 
 5. **Between cuts:**
    - look-at: `lerp(lookAt, object, LookSpeed)` per update, while the object exists;
    - up: `lerp(up, (0,1,0), UpSpeed)`;
-   - back-off (0x533190): only when the object is at rest or moving toward the camera (look direction · velocity < 0), and closer than `MinPreferredDistance`: the camera lerps at `ZoomSpeed` toward object + MinPreferred·(camera − object)/|…|, that target clipped by 0x51b040 (the camera.cpp clip chain 0x51ae40 / 0x51af90 / 0x51ac40);
+   - back-off (0x533190): only when the object is at rest or moving toward the camera (look direction · velocity < 0), and closer than `MinPreferredDistance`: the camera lerps at `ZoomSpeed` toward object + MinPreferred·(camera − object)/|…|, that target clipped by 0x51b040 on the segment camera → target: 0x51ae40 stops it where it crosses `Water.Level`, 0x51af90 at the land hit (0x466a20, the hit point itself), 0x51ac40 where a 5-unit sphere (0x8244fc) swept by the collision manager (0x519c60 …) first touches (disasm);
    - height: y eases to at least water + `MinPosition`;
    - if the camera sphere-tests inside land (radius -30, function 0x466a20), y += 5 per update.
 6. **End.**
@@ -149,18 +152,18 @@ All four cases follow from the rules above (disasm + data):
 | NinjaCamera | Occluding | Dist 400, height ±1.57, StartYaw 1.57, ResetYaw |
 | Sheep / OldWoman / Scouser ChaseCamera | Chase | Dist 170, DefaultHeight 0.255, HeightSpeed 0.45, MinZoomDist 50, YawSpeed 0.4; Old Woman MaxHeight 1.3, MinHeight 0.25; head/tail offsets per animal |
 | HomingMissileChase / MadCowChase | Chase | Dist 170, HeightSpeed 1.4, YawSpeed 1.7 |
-| StrikeChaseCamera | Chase | Dist 300, CutOnRetreat = 1. The name is in no weapon and no exe string; it is probably unused or built at runtime (assumed) |
+| StrikeChaseCamera | Chase | Dist 300, CutOnRetreat = 1. Unused: the name is in CAMTWK only (no other Data file, Lua or WEAPTWK holds it, and the exe has no such string and no `%s` camera-name format) (data, disasm) |
 | HomingMissileFlyCamera | Fly | LagBehind 60, LookAhead 100, PosSpeed 0.05, LookSpeed 0.1, PauseDuration 1000 ms, FinalDistance 500 ("Hold the FlyCamera for a moment after the explosion") |
 | SuperSheepFly / Starburst | Fly | LagBehind 80, LookAhead 100, LookSpeed 0.2, PosRate 1.0 / 0.1, Pause 1000, Final 500 |
 | FallCamera (worm falling) | Fly | LookSpeed 0.08, PosSpeed 0.02 |
 | AlienAbduction / Donkey / MineFactory / SuperAirstrike / Flood | Simple | (PosUpdateSpeed, LookUpdateSpeed) = (1,1) / (1,0.1) / (1,0.1) / (1,0.1) / (0.01,0.01) |
-| Orbit (game over) | OrbitCam | `Camera.Orbit.Height` 450, `AdditionalRadius` 100, `Speed` 0.3. Disabled by `Script.NoOrbitCamera` = 1 (LOCAL default 0) |
+| Orbit (game over) | OrbitCam | CAMTWK `Camera.Orbit.Height` 450, `AdditionalRadius` 100, `Speed` 0.3, `IgnoreInput` 0 exist, but the exe has no `Camera.Orbit.*` string, so none is read; the real values are in §6 (data, disasm). Disabled by `Script.NoOrbitCamera` = 1 (LOCAL default 0) |
 | Blimp (free view) | Isometric | HeightAboveLand 6, StickLength 500, DefaultPitch 1.0, Zoom 0.15–2.0, MoveSpeed 250 |
-| Jetpack | JetpackCamMkII | StickLength 230, Pitch -70..60, DefaultPitch 0.5, PosUpdateSpeed 0.995. Update 0x52b4c0: no input; behind the worm's yaw, pitch += 0.01 (PitchSpeed) × (0.5 − PitchScale 4 × vy − pitch) each frame, the -70/60 clamp never binds, kept 5 units over Water.Level. Requested on take-off (0x5624b4), `Default` on landing / dry. "Jetpack Ground" (JetpackGroundCam) is created (0x522191) but never requested by name. Ours: controls.cpp `camera()` jetpack branch |
+| Jetpack | JetpackCamMkII | StickLength 230, Pitch -70..60, DefaultPitch 0.5, PosUpdateSpeed 0.995, LookUpdateSpeed 0.2, UpUpdateSpeed 0.2. Update 0x52b4c0: no input; behind the worm's yaw, pitch += 0.01 (PitchSpeed) × (0.5 − PitchScale 4 × vy − pitch) each frame, the -70/60 clamp never binds, kept 5 units over Water.Level. Requested on take-off (0x5624b4), `Default` on landing / dry. "Jetpack Ground" (JetpackGroundCam) is created (0x522191) but never requested by name. Ours: controls.cpp `camera()` jetpack branch |
 | Shake | — | `Camera.Shake.ExpDurationScale` 800, `ExpMagScale` 1, `ExpRadiusScale` 8, `Max` 0.01; earthquake magnitude 1.0, 7000 ms |
 | Worm fade | — | `Camera.WormOpaqueDist` 50, `WormTransparencyDist` 25 (the opaque distance must be greater, per an exe assert) |
 
-Occluding/Chase field units: `DefaultHeight`, `MinHeight` and `MaxHeight` look like pitch in radians (Ninja ±1.57 = ±90°). Assumed.
+Occluding/Chase field units: `DefaultHeight`, `MinHeight` and `MaxHeight` are pitch angles in radians: the placement 0x52e2f0 takes their sin and cos (§5; disasm).
 
 ## 4. Scripts (data, Lua)
 
@@ -202,16 +205,18 @@ Addresses below are disasm; values are data unless marked otherwise.
   - the position is then placed from the target point, yaw, pitch and distance (0x52e2f0) with **no smoothing**; the 0.1 of position and look-at is the drawn-view blend of §11 (PosUpdateSpeed / LookUpdateSpeed written to +0x50 / +0x4c at 0x530953 / 0x530960);
   - the look-ahead offset (+0x94) eases to its goal (+0x88) at `LookAheadSpeed` (+0x44 of the container, 0.02); it is added to the target point (+0xa4) only when distance > 75 (`LookAheadScale` 500, clamped to `MaxLkAheadDist` 25);
   - under 25, the look-at height is blended toward the camera height;
-  - camera and look-at heights are kept ≥ a minimum level + 5 (assumed: water).
-- **Fields with no reader found** in OccludingCam/DefaultCam: `TimeBeforeZoomOut`, `ZoomOffsetDist`, `UpUpdateSpeed`, `MinLookAt`, `MinPosition`. The **1000 ms "before zoom out" is therefore not used** on PC (disasm, medium).
-- **Camera distance toggle** (`Camera.ToggleDistance`): it stores kLongshot/kCloseup on the team, but the desired distance stays `DistFromObject` either way, so it has no effect on PC (disasm, medium).
+  - under 25 units of camera distance (+0xe0), look-at y = t·look-at y + (1 − t)·camera y with t = 0.5·distance / 25 (0x5308ac–0x5308e6); at 25 and beyond, nothing;
+  - camera and look-at heights are kept ≥ `Water.Level` + 5: +0x44 is the `Water.Level` handle written by the base Camera constructor (0x51b69b), read at 0x5308ec (disasm).
+- **Target point** (0x52e6e0): worm Position (+0x38) + its `ForcedCameraOffset` (WormDataContainer +0x44). While that is below `Water.Level` − `Worm.Drown.HeightOffset` (TWEAK 7), the target is held at that height and its velocity zeroed: the camera stops following a sinking worm 7 units under the surface (disasm; value data).
+- **Fields never read** in OccludingCam/DefaultCam: `TimeBeforeZoomOut`, `ZoomOffsetDist`, `UpUpdateSpeed`, `MinLookAt`, `MinPosition` (container +0x88, +0x9c, +0x94, +0x5c, +0x60). The 18 functions that fetch the `OccludingCameraPropertiesContainer` (every xref of its IsKindOf assert 0x854ad8: 0x524880 … 0x530c00) read only +0x14–0x58, +0x64–0x84, +0x8c, +0x90, +0x98, +0xa8, +0xb0; the `[esi + 0x88/0x94/0x9c]` hits there are camera fields. The **1000 ms "before zoom out" is therefore not used** on PC (disasm).
+- **Camera distance toggle** (`Camera.ToggleDistance`, DefaultCam 0x524ed4 → 0x524880): it flips the team's kLongshot/kCloseup (+0x28), then sets the camera's desired distance to `DistFromObject` (+0x30) either way, so it has no effect on PC (disasm).
 
 ### Active worm fade (`WXWormGraphicEntity` 0x5a4420)
 
 - Applies to the **active worm only**.
 - `alpha = clamp((|cam − worm| − Camera.WormTransparencyDist 25) / (Camera.WormOpaqueDist 50 − 25), 0, 1)`: invisible at 25 or less, opaque at 50 or more.
 - It depends on camera distance only, not on occlusion. In practice it hides the worm when an occlusion zoom brings the camera onto it.
-- With camera type 1 (assumed: head view), `alpha = max(0, 1 − |v|²/0.016)` instead (low confidence).
+- With the logical camera's type (+0x2c) = 1, which is HeadCam (its constructor 0x5296d0 passes 1 to the base Camera constructor 0x51b570; FlyCam 6, FallCam 7, OrbitCam 4, JetpackCamMkII 9, TrackCam 0xf, PathCam / TimedPathCam 0xe, SimpleCam 0x15, RayCam 2), `alpha = max(0, 1 − |Velocity|²/0.016)` (worm Velocity +0x50 in units/ms: invisible from 0.126 u/ms = 2.5 m/s), or 1 with no worm data (disasm 0x5a446b–0x5a44d1).
 
 ### Silhouette and outline (data: `CG/PostProcess.cg`; disasm: `PCPostProcess.cpp` 0x61e0e0)
 
@@ -240,31 +245,34 @@ The pipeline needs an FBO. It is disabled by `/NOWORMOUTLINES`.
 
 ### Game over (disasm, `GameOverLogicEntity.cpp`, 0x4ffe40–0x4ffbc1)
 
-1. Phase duration is 5000 ms, or 15000 ms when a flag from `0x5a6350` is set (assumed: a mission/challenge or replay case).
+1. Phase duration is 5000 ms, or 15000 ms when `WXomOnlinePlugInService` (+0x70, read by the getter 0x5a6350 on the instance 0x962028) is set; that flag also skips `EFMV.Start` (0x4fff8c). The service refreshes it in its Update (0x62dbea) from the online session interface (this+0x20 → vfunc 0x54 → vfunc 0x38), so it is an online-session state; which one the runtime interface reports cannot be named from the exe alone (disasm).
 2. The engine reads `MostRecentlyActiveWorm`.
    - If none: `Orbit` immediately.
    - If that worm is still alive: a **WormTrackCamera request** on it (0x51cf20).
    - Otherwise: the first live worm out of 16.
 3. Fireworks, cheering and `music/victory` play.
-4. After 1000 ms, and again at 4000 ms, if `Script.NoOrbitCamera` = 0 (LOCAL default), the camera switches to `Orbit` (0x4ff790).
+4. Update 0x4ff8d0 (every 20 ms, timer +0x28), state +0x48: state 0 waits 4000 ms, then `SetCamera("Orbit")` (0x4ff790) if `Script.NoOrbitCamera` = 0 (LOCAL default) and restarts the timer (re-sent every 4 s), else goes to state 2; state 1 shows the fireworks until +0x24 (5000 / 15000 ms) and goes to state 2; state 2 fades the music over 1000 ms, then `GameLogic.GotoFrontEnd` (disasm).
 
-**OrbitCam** (`.\OrbitCam.cpp`):
-- Centre is `Land.Center`, unless `Orbit.OverrideLookAt` is set. Radius is `Land.Radius` (or `Orbit.OverrideLandRadius`) + `Camera.Orbit.AdditionalRadius` 100.
-- Height is `Camera.Orbit.Height` 450, presumably relative to `Land.MaxHeight` or water (assumed). Speed is `Camera.Orbit.Speed` 0.3, likely rad/s (assumed).
-- The orbit is therefore around the **level**, not a worm. Worm-state strings in the code (WormMoving, Aiming, Roping, Fire…) suggest player input stops it, unless `Camera.Orbit.IgnoreInput` is set (assumed).
+**OrbitCam** (`.\OrbitCam.cpp`, vtable 0x855cac; disasm):
+- Activation 0x5310d0 sends `Input.EnableGroup` for WormAiming, WormMoving, CameraSelect, Fire, WormFirstPersonAiming, UtilityGirder, WormRoping and Flying: it re-enables input, it is not stopped by it. Nothing reads `Camera.Orbit.IgnoreInput`.
+- Look-at: `Orbit.OverrideLookAt` if set; else `Land.Center` x, z and y = max((`Land.MaxHeight` + low) / 2, low), low = `Water.Level` (+0x64) + 20.
+- Radius (+0x70): `Orbit.OverrideLandRadius` if set, else `Land.Radius` + 200 (0x5313fa).
+- Start angle (+0x6c): atan2(d.x, d.z) + π, d = look-at − position of the logical camera before (0x91e8e8, written by SetCamera 0x51e8b4); 0 if d has no x, z.
+- Update 0x5310b0: angle += dt · 0.1 (dt 0.02 s an update: 0.2 rad/s), then 0x530e30: position = (cx + sin a · R, look-at y + sin(0.8 a) · (look-at y − low), cz + cos a · R), with camera y and look-at y ≥ low. So the camera height swings around the look-at height; there is no fixed height.
+- The orbit is therefore around the **level**, not a worm. The CAMTWK `Camera.Orbit.*` values are not used (§3).
 
 ### Concrete Donkey (disasm, 0x5538a8–0x553927)
 
 - On release, the donkey logic starts **`DonkeyCamera`** directly. It is a SimpleCam, started through `0x51d760`, with PosUpdateSpeed 1 (locked) and LookUpdateSpeed 0.1.
 - Camera position = donkey (x, y − offset, z + **500**): a fixed side view from +z, about 25 m away. The look-at follows the donkey with a 0.1 lerp.
-- The `CameraId` `DonkeyTrackCamera` is never looked up, because the donkey does not go through the generic payload camera code. If it were looked up, CMS would only log "Named camera not found" (string at 0x452e07). The fallback is assumed.
+- The `CameraId` `DonkeyTrackCamera` is never looked up: the donkey starts `DonkeyCamera` itself. "Named camera not found" (0x854608, pushed at 0x51eafd / 0x51ed5d) belongs to SetCamera 0x51e4e0 and is about camera **mode** names ("Track", "Orbit"…), not CAMTWK container names (disasm).
 - The y offset is the donkey's own value, read next to `Donkey.Gravity`.
 
 ### Airstrike and Super Airstrike
 
-- Normal airstrike missiles have an empty `CameraId` (data), so the bombs request no camera. The run itself is filmed by the bomber: `BomberLogicEntity` follows the bomber mesh's `perspShape` scene camera (`Camera.FollowSceneCam`) until `Bomber.AnimsComplete` (disasm, w4m-map.md §10 "After firing: camera"; the earlier "seen from the current camera" reading was wrong).
-- Worms that get knocked away trigger WormTrackCamera as usual (deduced).
-- `StrikeChaseCamera` (CAMTWK, Chase, distance 300, CutOnRetreat) has no reference in the exe. It is probably unused (assumed).
+- Normal airstrike missiles have an empty `CameraId` (data), so the bombs request no camera. The run itself is filmed by the bomber: `BomberLogicEntity` follows the bomber mesh's `perspShape` scene camera (`Camera.FollowSceneCam`) until `Bomber.AnimsComplete` (disasm, docs/w4m/targeting.md §10 "After firing: camera"; the earlier "seen from the current camera" reading was wrong).
+- Worms that get knocked away trigger WormTrackCamera as usual: the request sits in `WXWormLogicEntity::ImpulseWorm going Ballistic` (0x5ad60b), which every impulse goes through (disasm).
+- `StrikeChaseCamera` (CAMTWK, Chase, distance 300, CutOnRetreat) is unused (§3; data, disasm).
 - Super Airstrike (cows on parachutes, `ParachutePayloadLogicEntity`) starts `SuperAirstrikeCamera`, a SimpleCam (1, 0.1): position locked, look-at smoothed (disasm 0x57a330).
 
 ### Fatkins
@@ -300,7 +308,7 @@ Units are W4M world units (20 per metre). Labels: data = read in CAMTWK/WEAPTWK/
 | Event | Camera | Placement / parameters | Source |
 |---|---|---|---|
 | Start of turn | `Camera.StartOfTurnCamera` (usually Default) | No cut if the same worm as last turn; otherwise cut onto the worm | dis 0x51ef80 |
-| Game over | WormTrackCamera on MostRecentlyActiveWorm (else first alive), then Orbit after 4 s unless Script.NoOrbitCamera | Orbit look-at: Land.Center at max((MaxHeight+W+20)/2, W+20); radius Land.Radius+200 (or OverrideLandRadius); height 450, speed 0.3. Orbit lasts 5 s (15 s with an unknown flag). Fireworks: Land.Center ± 0.5 Radius, y = MaxHeight + rand*30, rand%40 per 100 ms | dis 0x4ff8d0, OrbitCam.cpp |
+| Game over | WormTrackCamera on MostRecentlyActiveWorm (else first alive), then Orbit after 4 s unless Script.NoOrbitCamera | Orbit look-at: Land.Center at max((MaxHeight+W+20)/2, W+20); radius Land.Radius+200 (or OverrideLandRadius); camera height look-at + sin(0.8 a)·(look-at − (W+20)), 0.2 rad/s (§6). Game over lasts 5 s (15 s with the online flag, §6). Fireworks: Land.Center ± 0.5 Radius, y = MaxHeight + rand*30, rand%40 per 100 ms | dis 0x4ff8d0, OrbitCam.cpp |
 | Concrete Donkey | SimpleCam DonkeyCamera (pos 1, look 0.1) | Fixed at (tx, spawnY-500, tz+500), looks at donkey+(0,100,0); spawnY = ty + max(1500, MaxHeight+500); camera shake on bounces | dis 0x553791, data |
 | Airstrike | none (empty WEAPTWK name) | Current camera stays; blasted worms trigger their own Track | data+dis |
 | Super Airstrike | SimpleCam SuperAirstrikeCamera after the last bomb | pos = A - 200 d + 50 perp(d), d = dir from the first drop A to the last; looks at the payload | dis 0x58ae50 |
@@ -315,22 +323,20 @@ Units are W4M world units (20 per metre). Labels: data = read in CAMTWK/WEAPTWK/
 | Sheep / Old Woman / Scouser | Chase *ChaseCamera | dist 170, DefaultHeight 0.255 rad; Old Woman Min/Max height 0.25/1.3; OccHeightSpeed 0.4, OccYawSpeed 0.9 | data |
 | Ninja rope | Ninja camera on attach | dist 400, height ±1.57 | data, dis 0x57222f |
 | Girder | GirderCam | dist 325, DefaultHeight 0.6, MinZoomDist 100 | data |
-| Drowning | no dedicated camera | Worm.Drown.HeightOffset 7 keeps the camera floor above the water | dis (role assumed) |
+| Drowning | no dedicated camera | the OccludingCam target stops 7 units (Worm.Drown.HeightOffset) under Water.Level (§5); HeadCam also loads the key (0x529780) | dis 0x52e6e0 |
 | Crate drop | Track CrateTrackCamera, once per drop after Crate.DelayMillisec | dist 500, MinPreferred 200, ZoomSpeed 0.009, UpSpeed 0.2, CutWhenStartOffScreen 1 | dis 0x5cbd30, data |
 | Explosion shake | CameraShakeManager | R = 8 * ImpulseRadius, magnitude = ImpulseMagnitude * (R-d)/R, duration = 800 * ImpulseMagnitude ms, random axis vector fading linearly, total clamped to Camera.Shake.Max 0.01 | dis 0x5241c0 |
 | FlyCam end | hold | stays PauseDuration after the explosion, collision-checked | dis 0x528452 |
 
 ## 8. Open points
 
-- Whether `PayloadLogic +0x1a8` is an elapsed time or a timestamp, which matters for the 1000 ms flight rule.
 - TrackCam lateral axis: up × d = (d.z, 0, −d.x) (0x5326b9). The pairs are symmetric, so the side only changes which of a pair comes first.
-- OccludingCam: `TimeBeforeZoomOut`, `ZoomOffsetDist` and `MinPosition` seem unused on PC; check before ignoring them.
-- Game over: the condition for 15 s instead of 5 s, the height reference and units of the orbit, and when input stops it.
-- Worm fade: what logical camera index 1 is exactly.
+- Game over: which online-session state the 15 s flag reports (§6): the interface is a runtime object, so the exe alone does not name it.
+- Resolved in this pass: +0x1a8 (§1), the unused OccludingCam fields (§5), the orbit (§6), camera type 1 = HeadCam (§5).
 
 ## 9. Targeting weapons: Blimp view and reticle
 
-The full W4M analysis is in `docs/w4m-map.md` §10. In short:
+The full W4M analysis is in `docs/w4m/targeting.md` §10. In short:
 - The view is the normal **Blimp** (`IsometricCam`).
 - The reticle is **fixed at the screen centre**. The player moves the camera's focus (MoveSpeed 250 × zoom units/s) and its yaw (RotateSpeed 0.55 rad/s).
 - Each frame, a ray from the camera through the focus, against the land and then the water, gives `Airstrike.TargetPoint`.
@@ -373,16 +379,16 @@ What the client does:
   - Desktop: WASD look, arrows pan, X/Z zoom.
 - The camera is exactly the sim's: `Game::blimpEye(cursor, cursorYaw, cursorPitch)` looking at `Game::cursor`, so the reticle (`Ui::targetCursor`) is the screen centre.
   - Entry pose (0x52ad20): focus.y = max(worm.y, highest land) + 6 units, moved back so that the centre ray hits the worm.
-  - The focus stays within 4500 units (225 m) of Land.Center. Its x and z are the map centre; its y, the water height, is assumed.
+  - The focus stays within 4500 units (225 m) of `Land.Center`, a 3D distance to the whole vector: the handle at +0xd0 is `Land.Center` (constructor 0x52a518), read and compared at 0x52abd8–0x52ac06 (disasm). Ours: `Game::landCenter()`.
 - The tint is white, light blue on water, and red with no target. With no target (the ray misses land and water within 200 m, possible at low pitch), the sim refuses Fire.
-- Reticle size: HUD units, screen height / 480. HUDTWK places HUD items in a 480-unit-tall space, e.g. `HUD.AngleMeter.ScreenY` and `HUD.Powerbar.Position` y = -165, and the cursor obeys the HUD hide flag. That the cursor uses the same layer is assumed.
+- Reticle size: HUD units, screen height / 480. HUDTWK places HUD items in a 480-unit-tall space, e.g. `HUD.AngleMeter.ScreenY` and `HUD.Powerbar.Position` y = -165, and the cursor obeys the HUD hide flag (0x552241). That the cursor uses the same layer is still assumed: its mesh is instanced by XGraphicalResourceManager vfunc 0x8c (0x6f3d95, layer argument 0xff, as `HUD.PiP` at 0x635de9) and never moved (0x552cfc); which layer 0xff selects lies in the XOM scene-graph runtime, not traced.
 - **Input** (net and replays): the 4-byte `Input` is unchanged. While `Input::TARGET` (bit 64) is set:
   - `turn` yaws the Blimp at up to `BLIMP_TURN`, and the worm does not turn.
   - `walk` moves the focus forward at up to `CURSOR_SPEED` 25 m/s.
   - `aim` moves it right at the same speed. With `Input::PITCH` (bit 128) set, `aim` instead tilts the camera at up to `BLIMP_TILT` 0.495 rad/s.
   - When the player moves sideways and tilts at once, the client alternates the two on successive ticks at twice the rate.
   - The worm neither walks nor pitches.
-- `target()` is then the land or water hit of the camera ray through the focus. The airstrike runs along `strikeDir()`, the view's right vector; the sense is assumed, as in w4m-map §10.
+- `target()` is then the land or water hit of the camera ray through the focus. The airstrike runs along `strikeDir()`, the view's right vector: W4M takes `Airstrike.Direction` × `Airstrike.UpVector` (view forward × up, the right vector in the renderer's right-handed OpenGL frame), y set to 0 (0x54d931–0x54d97f, operands at 0x54d7e4 / 0x54d812), and the Bomber cursor's `Dots_Loop` slides its arrows toward +x (data). Disasm + data.
 - **Fatkins** is a Bomber payload, as in W4M (BomberLogicEntity → FatkinsStrikePayload, 0x54ddf0). `Game::fatkinsDrop` releases it 25 m up with the plane's ground speed (`Bomber.GroundSpeed` 7.5 m/s) along the strike direction, early enough to land on the target.
   - The direction is the view's right vector in the Blimp, otherwise the worm's facing.
   - The AI's prediction (ai.cpp) uses the same function.
@@ -399,7 +405,7 @@ What the client does:
   - On the payload's death the position is set to position + FinalDistance along look-at → position, clipped by land (0x51abf0), held PauseDuration.
 - **AlienAbductionCamera** position (0x547490, every frame through SimpleCam 0x531e30): (UFO.x, Land.MaxHeight, UFO.z + 200); while the abduction state (+0x44) is 2, the state set with `Worm.OverridePhysics` and the camera start (0x548578 … 0x5486ca), worm + (0, 50, 50) clipped on the worm → candidate segment (0x51af90), kept if more than 10 units from the worm.
 - **Worm-track requests during the death queue**: "Worm Dying" (0x5a7282), "Worm Displaying Damage Taken" (0x5abeec) and "ImpulseWorm going Ballistic" (0x5ad60b) all call 0x51cf20(worm). When served (0x51d3d0), a request whose priority is below the running track's (+0x2c4) is cleared, not kept (0x51d408).
-- **Homing cursor** (Bundl09): `Homing.Cursor.Mesh` = node `Inner` with 4 quads (Inner_01 top, 04 bottom: 18 × 54; 02 left, 03 right: 54 × 18; one row each of texture `maya:file7/-1` #3, exported as `fe2/homing_inner`); `Homing.Cursor.SquareMesh` = node `Outer`, locator1-4 at (∓50, ±50) carrying the bitmaps `HUD.Homing.Cursor.TL/TR/BL/BR` (0x560690). Clips: Intro_Inner, Loop_Inner, Intro_Outer, Loop_Outer, Lock_Outer, Error_Outer (keys in docs/camera.md). The LockOn tints its 4 corners each frame before the lock (0x560590 → 0x552340); after `HUD.Target.Selected` (0x560420: Lock_Outer, `weapons/LockOn`) it stays on the stored target point (0x5600e0: on the camera → target ray at 500 units, i.e. screen-constant). The Inner mesh is never tinted (HomingCursorGraphicEntity uses the base per-frame 0x552230). The size of a bitmap attached to a locator is unverified: ours is its 128 px, which makes the corners frame the ticks.
+- **Homing cursor** (Bundl09): `Homing.Cursor.Mesh` = node `Inner` with 4 quads (Inner_01 top, 04 bottom: 18 × 54; 02 left, 03 right: 54 × 18; one row each of texture `maya:file7/-1` #3, exported as `fe2/homing_inner`); `Homing.Cursor.SquareMesh` = node `Outer`, locator1-4 at (∓50, ±50) carrying the bitmaps `HUD.Homing.Cursor.TL/TR/BL/BR` (0x560690). Clips: Intro_Inner, Loop_Inner, Intro_Outer, Loop_Outer, Lock_Outer, Error_Outer (keys in docs/camera.md). The LockOn tints its 4 corners each frame before the lock (0x560590 → 0x552340); after `HUD.Target.Selected` (0x560420: Lock_Outer, `weapons/LockOn`) it stays on the stored target point (0x5600e0: on the camera → target ray at 500 units, i.e. screen-constant). The Inner mesh is never tinted (HomingCursorGraphicEntity uses the base per-frame 0x552230). The size of a bitmap attached to a locator is unverified (XOM scene-graph runtime, as the reticle layer in §9): ours is its 128 px, which makes the corners frame the ticks.
 
 ## 11. Drawn view, update rate, PiP rule, scene cameras (this pass)
 
@@ -440,7 +446,13 @@ Labels per row: **data** (CAMTWK / tweak value), **disasm** (read in the code), 
 | OrbitCam | 0.1 / 0.1 / 1 | disasm | 0x530fe8 |
 | IsometricCam (Blimp, Spectator) | `Camera.Blimp.UpdateSpeed` (0.05, asserted in (0, 1]) for all three | disasm, data | 0x52a57d–0x52a58a |
 | HeadCam | position 0.15 while the worm's physics state (+0xf0) is 0 (kWPS_Ambulatory), else 1; look 1; up 1 | disasm | 0x529024–0x529043 |
-| JetpackCamMkII | position 0 at activation (0x52b03d), then +0x50 = 0.9995·(+0x50) + 0.0005·(+0x7c) each update (+0x7c: `Camera.Jetpack.PosUpdateSpeed` 0.995, assumed); look and up never written (1) | disasm, data | 0x52b6df–0x52b6f9 |
+| JetpackCamMkII | position 0 at activation (0x52b03d), then +0x50 = 0.9995·(+0x50) + 0.0005·(+0x7c) each update; the constructor 0x52b270 reads `Camera.Jetpack.PosUpdateSpeed` 0.995 into +0x7c, `LookUpdateSpeed` 0.2 into +0x4c and `UpUpdateSpeed` 0.2 into +0x54 (0x52b2f9–0x52b336), never rewritten | disasm, data | 0x52b6df–0x52b6f9 |
+
+### 11.3b On-screen test (0x51b3b0)
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| On screen | the point times the drawn camera's view matrix (0x4d5210 vfunc 0x1c) then projection (vfunc 0x10); true when x/w and y/w are both in [−1, 1] and w > 0: the screen rectangle, not a cone. The camera is always the drawn one, whoever asks | disasm | 0x51b3b0–0x51b533 |
 
 ### 11.4 Turn start (0x51ef80)
 
@@ -453,14 +465,15 @@ Labels per row: **data** (CAMTWK / tweak value), **disasm** (read in the code), 
 
 | Item | Value / rule | Label | Source |
 |---|---|---|---|
-| Lens | the projection shape eases toward default × zoom by 0.9 / 0.1 an update (tan of the half field of view); used by the HeadCam zoom (binoculars, 0x91f31c) and the Blimp zoom (Camera.Blimp.MinZoom 0.15, MaxZoom 2, ZoomSpeed 0.99, MouseZoomSpeed 0.08) | disasm (utilities pass, not re-read here), data | 0x51e150 |
-| One lens for both | the lens is held by the CMS, not by the camera | assumed | — |
+| Lens | z = the current logical camera's zoom +0x5c (1 with none). z ≠ 1: the drawn camera's projection eases toward the CMS default projection (+0x2d0) × z, projection·0.9 + default·z·0.1 an update (tan of the half field of view); same for the camera at [0x95a100]+0x14 (default +0x2ec), copied to +0xc. z = 1 after a different z: the default projection at once, no ease back (0x51e0d0–0x51e124); z = 1 again: nothing. The last z is kept at 0x95c6e4 (0x51e2f5). Users: the HeadCam zoom (binoculars, 0x91f31c) and the Blimp zoom (Camera.Blimp.MinZoom 0.15, MaxZoom 2, ZoomSpeed 0.99, MouseZoomSpeed 0.08) | disasm, data | 0x51e06d–0x51e2f5 |
+| Default projection | CMS +0x2d0 is copied from the drawn camera at CMS init (0x520017) and restored on reset (0x520dd6). An XCamera projection is {l, r, b, t, near, far, ortho} at unit distance (0x6e1bd6); from a scene camera, r = 0.5·25.4·Aperture.x / FocalLength, t = 0.5·25.4·Aperture.y / FocalLength (0x6e1f46). Which values the in-game drawn camera starts with was not traced, so W4M's default field of view is still unknown | disasm; default assumed | 0x520017, 0x6e1f46 |
+| One lens for all | the lens is the drawn camera's projection (0x4d5210 vfunc 0x24 / 0x28), shared by every logical camera; a camera only supplies its zoom +0x5c | disasm | 0x51e143–0x51e1e9 |
 
 ### 11.6 Event camera full screen or PiP (+0x2c0)
 
 | Item | Value / rule | Label | Source |
 |---|---|---|---|
-| Track serve 0x51d3d0 (in 0x51d360) | +0x2c0 = 1; 0 if PhysicsOverride bit 0; 0 if RetreatTimeRemaining (+0x258 of the CMS, > 0) and the worm's Velocity (+0x50) ≠ 0 | disasm | 0x51d52d–0x51d58c |
+| Track serve 0x51d3d0 (in 0x51d360) | +0x2c0 = 1; 0 if PhysicsOverride bit 0; 0 if `RetreatTimeRemaining` (+0x258 of the CMS is its handle, 0x51ff68; TimerService 0x50f87e counts it while the retreat timer runs) > 0 and the worm's Velocity (+0x50) ≠ 0. A walk step sets Velocity to InputImpulse (+0x68, 0x5b1471 / 0x5b1899 via 0x546f10), the idle branch zeroes it (0x5b0ec5, 0x5b1c1b): a walking worm counts as moving | disasm | 0x51d52d–0x51d58c |
 | Chase serve 0x51d5e0 | +0x2c0 = 1; 0 only if PhysicsOverride bit 0 (no retreat test); priority 6 (+0x2c4); then PiP.SlideOn 0x51c000 | disasm | 0x51d6ce–0x51d73e |
 | Abduction / SimpleCam serve 0x51d760 | as the track serve (bit 0 at 0x51d870) | disasm | 0x51d846–0x51d879 |
 | Messages | Timer.RetreatTimedOut → 1; Camera.Cancel → 0 (when 0x5b40f0 and +0x2c1 clear); 0x523acd / 0x523af7 other cases | disasm | 0x522710 (0x523a4b–0x523afd) |

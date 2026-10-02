@@ -33,7 +33,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_radio", "Radio", 0.0, false, &[]),
     ("hold_rope", "NinjaRope.Gun", 0.0, false, &[]),
     ("supersheep", "SuperSheep", 0.9, false, &["Fly", "Run"]),
-    ("oldwoman", "Oldwoman", 1.1, true, &["Walk", "Run"]),
+    ("oldwoman", "Oldwoman", 1.1, true, &["Walk", "Run", "Steal"]),  // AnimTravel, AnimIntermediate (WEAPTWK kWeaponOldWoman)
     ("arrow", "Arrow", 0.7, false, &[]),
     ("homing", "HomingMissile.Payload", 0.8, false, &[]),
     ("dynamite", "Dynamite", 0.5, false, &[]),
@@ -62,7 +62,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("girder", "Girder", 0.0, false, &[]),  // GirderKitGraphicEntity 0x5588c0: the preview mesh (Girder.xom), raw units
     ("bubble", "BubbleTrouble.Bubble", 4.2, false, &["WXM_Bobbing", "WXM_Create", "WXM_HitBounce"]),  // Bubble.Radius 42 units: 4.2 m across; Bobbing first: Create starts at scale 0
     ("bubble_machine", "BubbleTrouble", 0.0, false, &[]),  // raw units: BubbleTroubleGraphicEntity leaves it at the bubble's base (0x54e5f0)
-    ("wings", "RedBullWings", 1.35, false, &["FlyRedBull"]),  // 27 units span
+    ("wings", "RedBullWings", 0.0, false, &["FlyRedBull"]),  // raw units: drawn at the worm's Pack_Locator (WAE 0x5953d1)
     ("superbomber", "SuperAirstrike", 4.1, false, &["OpenDoorsSource", "bombrun_end6", "bombrun_start"]),  // Bovine Blitz (SuperBomberGraphicEntity); the rest pose is nose-down, the clip starts level
     ("bomber", "BomberHelicopter", 4.1, false, &["bombrun_end", "bombrun_end2", "bombrun_end3", "bombrun_end4", "bombrun_end5", "bombrun_start", "bombrun_start2", "bombrun_start3"]),  // Airstrike (BomberGraphicEntity, table 0x91f39c)
     ("ufo", "AlienAbduction", 0.0, false, &["AbductStart", "AbductViolate+AbductLoop2", "AbductOpenDoors+AbductLoop2", "AbductLoop", "AbductLoop2", "AbductCloseBeam", "AbductEnd+AbductLoop2", "AbductFail"]),  // AlienAbductionGraphicEntity: raw units, origin on the beam axis; saucer, pods, BeamCone, CreatePoint; +AbductLoop2: BeamCone stays closed after AbductCloseBeam
@@ -170,7 +170,7 @@ const WORM_CLIPS: &[&str] = &[
     "TauntBazooka+HoldBazooka", "TauntThrown+HoldThrown", "TauntShotgun+HoldShotgun", "TauntSniper+HoldSniper", "TauntAirstrike+HoldAirstrike",
     "TauntBow+HoldBow", "TauntSentrygun+HoldSentrygun", "TauntOldWoman+HoldOldWoman", "TauntScouser+HoldScouser", "TauntSheep+HoldSheep",
     "TauntStarburst+HoldStarburst", "TauntDynamite+HoldDynamite", "TauntBat+HoldBat", "TauntFirepunch+HoldFirepunch", "TauntProd+HoldProd",
-    "TauntNMN+HoldNMN", "TauntHomingMissile+HoldHomingMissile", "TauntNinjarope+HoldNinjarope", "SwingNinjarope", "JetpackFly", "ParachuteWobble", "TelepadAppear", "BeamUpLoop",
+    "TauntNMN+HoldNMN", "TauntHomingMissile+HoldHomingMissile", "TauntNinjarope+HoldNinjarope", "SwingNinjarope", "JetpackFly", "FlyRedBull", "ParachuteWobble", "TelepadAppear", "BeamUpLoop",
     "FallDrown", "Nailed", "NailedHitFront",
     // WORMACTING.XOM scene emotes (looped) and gestures, docs/worm-reactions.md
     // emotes: face (eyebrows, eyelids, head and shoulder offsets) + its *Mouth clip (lips)
@@ -296,7 +296,7 @@ impl Xom {
 }
 
 // Animation curve key: in-weight, in-angle, out-weight, out-angle, time, value (XomView TAnimClip).
-type Key = [f32; 7];  // in-tangent x, y, out-tangent x, y, time, value; [6]: the channel's runtime flags (2 weighted, 4 static)
+type Key = [f32; 7];  // in-tangent x, y, out-tangent x, y, time, value; [6]: the channel's runtime flags (2 weighted, 4 static), pre / post infinity << 8 / << 11
 struct Clip { name: String, dur: f32, ch: HashMap<(String, u32), Vec<Key>> }
 
 // XAnimClipLibrary: key types (u32 type, object) then clips (duration, name, channels of keys).
@@ -329,7 +329,9 @@ fn clips(b: &[u8], s: &[String], p: &mut usize) -> Vec<Clip> {
             let fl4 = (if b.get(*p + 2) == Some(&0) { 0.0 } else { 4.0 }) + (if b.get(*p + 3) == Some(&0) { 0.0 } else { 2.0 });
             *p += 4;
             let ki = if expanded { k } else { *p += 2; u16le(b, *p - 2) };
-            *p += 8; // pre/post infinity
+            let inf = (u32le(b, *p) & 7) << 8 | (u32le(b, *p + 4) & 7) << 11;  // XAnimChannel Pre/PostInfinity (InfinityType)
+            *p += 8;
+            let fl4 = fl4 + inf as f32;
             let nkf = u32le(b, *p) as usize;
             *p += 4;
             let kf: Vec<Key> = (0..nkf).map(|i| { let k = fl::<6>(b, *p + 24 * i); [k[0], k[1], k[2], k[3], k[4], k[5], fl4] }).collect();
@@ -344,7 +346,36 @@ fn clips(b: &[u8], s: &[String], p: &mut usize) -> Vec<Clip> {
 // The exe's key curve (Maya engine, 0x7abb1c; keys from loader 0x7b01ec): a zero out-tangent holds the key (step), a static
 // channel keeps its first value; unweighted channels are Hermite on the tangents' slopes (0x7aa7df), weighted ones Bezier with
 // handles at key +- tangent / 3, x kept monotonic (0x7ab931, 0x7ab6f1, 0x7aa8f4).
+// Outside its keys a channel follows its infinity (0x7abb1c -> 0x7ab3d1, Maya's engine): 1 linear (the end tangent), 2 cycle,
+// 3 cycle relative (offset by the value range per cycle), 4 oscillate; 0 holds the end key
 fn eval(k: &[Key], t: f32) -> f32 {
+    let (f, n) = (k[0][6] as u32, k.len() - 1);
+    let (t0, t1, pre) = (k[0][4], k[n][4], t < k[0][4]);
+    let ty = if pre { f >> 8 & 7 } else if t > t1 { f >> 11 & 7 } else { 0 };
+    if ty == 0 { return curve(k, t); }
+    let range = t1 - t0;
+    if range == 0.0 { return k[0][5]; }
+    if ty == 1 {
+        let (e, dt) = if pre { (k[0], t0 - t) } else { (k[n], t - t1) };
+        let (tx, tyv) = if pre { (e[0], e[1]) } else { (e[2], e[3]) };
+        return if tx != 0.0 { e[5] + if pre { -dt * tyv / tx } else { dt * tyv / tx } } else { e[5] };
+    }
+    let x = (t - if pre { t0 } else { t1 }) / range;
+    let (rem, cycles) = ((x - x.trunc()).abs(), x.trunc().abs() + 1.0);
+    let ft = range * rem;
+    let odd = (cycles / 2.0).fract() != 0.0;
+    let at = match (ty, pre) {
+        (4, true) => if odd { t0 + ft } else { t1 - ft },
+        (4, false) => if odd { t1 - ft } else { t0 + ft },
+        (2 | 3, true) => t1 - ft,
+        (2 | 3, false) => t0 + ft,
+        _ => ft,
+    };
+    let v = curve(k, at);
+    if ty == 3 { v + if pre { -1.0 } else { 1.0 } * cycles * (k[n][5] - k[0][5]) } else { v }
+}
+
+fn curve(k: &[Key], t: f32) -> f32 {
     let n = k.len() - 1;
     let i = if t < k[0][4] { 0 } else { (0..n).find(|&j| k[j][4] <= t && t < k[j + 1][4]).unwrap_or(n) };
     let (a, b) = (k[i], k[(i + 1).min(n)]);
@@ -740,7 +771,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let c = [(lo[0] + hi[0]) / 2.0, if feet { lo[1] } else { (lo[1] + hi[1]) / 2.0 }, (lo[2] + hi[2]) / 2.0];
     let norm = if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
-    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate
+    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate
     // Blend: the worm's WormPoseManager control node (arm modes in Translate.x/y, head/eye mode in Rotate.y)
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();
@@ -994,6 +1025,10 @@ mod tests {
             assert!((eval(&k, 0.5) - 0.5).abs() < 1e-3 && (eval(&k, 0.25) - 0.15625).abs() < 2e-2);
             assert!(eval(&k, 0.0).abs() < 1e-3 && eval(&k, 2.0) == 1.0);
         }
+        // post-infinity cycle (2 << 11): 1.25 s past a 0..1 s curve plays it again from 0.25 s
+        let c = (2u32 << 11) as f32;
+        let k = [[1.0, 0.0, 1.0, 0.0, 0.0, 0.0, c], [1.0, 0.0, 1.0, 0.0, 1.0, 1.0, c]];
+        assert!((eval(&k, 1.25) - eval(&k, 0.25)).abs() < 1e-5 && (eval(&k, 2.5) - eval(&k, 0.5)).abs() < 1e-5);
         let m = mul(&mul(&tr([1.0, 2.0, 3.0]), &rot([0.3, -0.5, 1.2])), &sc([2.0; 3]));
         let (t, q, s) = decompose(&m);
         assert!(t == [1.0, 2.0, 3.0] && (s[0] - 2.0).abs() < 1e-5);

@@ -1,6 +1,6 @@
 # Worm reactions (W4M acting)
 
-In W4M, everything worms do outside their control comes from `Data/Tweak/WORMACTING.XOM`. This file is a bank of 142 small EFMV movies (`EFMV_MovieContainer`, docs/w4m-map.md §19).
+In W4M, everything worms do outside their control comes from `Data/Tweak/WORMACTING.XOM`. This file is a bank of 142 small EFMV movies (`EFMV_MovieContainer`, docs/w4m/acting.md §19).
 
 Each movie is named after its trigger, as `<Trigger><N><variant>`. It holds tracks. A track's name is a string of casting criteria, e.g. `Crit Special`, `Foe1 OnScreen Near1 Idle` or `Friend-1`. Each track carries events timestamped in ms:
 - `WormEmote`: facial emotion, kept until the next one, even after the movie ends;
@@ -37,7 +37,7 @@ Sources:
 | Gestures (PlayAnimation) | The gesture is a scheduler layer, not the body clip (0x59c990): the old gesture keeps min(weight, 0.9) and loses 0.1 per update, the new one is 1 − old; replaying the same clip does not restart it. `StopAnimation`: BlendTime 0 (141 of 149) does nothing, 100 or 200 ms fades it out by 20/BlendTime per update (0x59e85a, 0x59dd9c). A finished clip exits (0x59dc41). Weights are multiplied by +0x194 = (+0x194 + !flag)/2, flag = off the ground or walking (0x5a2b4f): the gesture fades when the worm moves, its clip keeps running. | `Layers::act`: poses blended (1 − w) body + w gesture, the XAnim weighted sum (below). The dying worm keeps its death gestures, with no other layer. | exe 0x59c990, 0x59da40 (0x59dc03..0x59e091) |
 | XAnim blend | Each channel is Σ weight × value of the clips (0x7ac1a0); Base is played at weight 1. Only attributes with flag 8 are divided by Σ weight (0x7acc6f), flag 0x10 takes the maximum. The flag is byte 1 of the u32 key type: the loader reads byte 0 (XOM field index: 2 Translate, 3 Rotate, 4 Scale), then 2 bytes (flags, byte 2), then byte 3 (axis) (0x7affd6..0x7b0028, 1 / 2 / 1 byte reads from XBinaryObjectIn 0x63e7ca / 0x63eb11), and AttachToNode copies these flags into the attribute (0x7ad5e2); bits 1 / 2 / 4 = object carrying the field (0x7ad53a): 0x904 scale → 0x09 (average), 0x102/0x103 translation/rotation → 0x01 (sum), 0x401 texture offset → 0x04 (sum), 0x1100 texture pick → 0x11 (maximum). A gesture is thus additive on Base, and Arm/HeadRot or Eyes at weight 1 add up. | Additive for arms, head and eyes (LR + UD on the same u channel), average for scale (w4m-models). | exe 0x7ac1a0, 0x7ad0ef, 0x7acc6f |
 | Curves | Key = in-tangent x, y, out-tangent x, y, time, value (loader 0x7b01ec). The channel's 4 bytes become flags 1 (must contribute), 8, 4 (static: first value), 2 (weighted) (0x7b0097..0x7b0115). Unweighted (every worm channel except 138, all eye and PoseBlend animation): Hermite on the tangents' y/x slopes (0x7aa7df). Weighted: Bézier with handles at key ± tangent/3, x kept monotonic (Maya's checkMonotonic/constrainInsideBounds, 0x7ab931, 0x7ab6f1, 0x7aa8f4, float epsilon 0x7aa794). Zero out-tangent = step; constant outside the keys. | `Models::curve` (client, Hermite) and `eval` (w4m-models, both). The old "weight, angle" reading was wrong: all models are re-exported. | exe 0x7abb1c, 0x7aa7df, 0x7ab931, 0x7b01ec |
-| Tint | Colour = 1 + 2·(wSick·(Sick.Colour/255 − 0.5) + wAbd·(Abducted.Colour/255 − 0.5)). Green is computed as /255·0.5, as in the exe. Sick.Colour = (120, 120, 110), Abducted.Colour = (0, 120, 255). | Multiplies the team tint. The weight rises and falls at the same rate as the head (choice). | TWEAK.XOM; exe 0x5a1bb1 |
+| Tint | Colour = 1 + 2·(wSick·(Sick.Colour/255 − 0.5) + wAbd·(Abducted.Colour/255 − 0.5)). Green is computed as /255·0.5, as in the exe. Sick.Colour = (120, 120, 110), Abducted.Colour = (0, 120, 255). | Multiplies the team tint. Each weight moves linearly to 0 or 1 by 0.05 per 20 ms update, 0.4 s end to end (exe 0x5a1afd, disasm). | TWEAK.XOM; exe 0x5a1bb1 |
 
 ## Casting (WXSceneManagerService)
 
@@ -45,17 +45,17 @@ Sources:
 - **Criteria (0x60d640, 0x60c480).** These are case-insensitive substrings followed by an `atoi`. Examples: `Seer0` counts as `See0`, and `Goodie` does not count as `Goodies`.
   - `See`, `Blind`, `InFront`: a 70° cone.
   - `Near N,R`: the nearest within 20·R units, R = 20 by default, i.e. 20 m.
-  - `-1`: the active team for Friend/Foe, and the camera for See, Near and LookAt (assumed).
+  - `-1`: the active team for Friend/Foe, and the camera for See, Near and LookAt: 0x7e resolves to [0x95a100]+8 vfunc 0x38, the render camera whose +0x10/+0x1c matrices CMS 0x51b3b0 projects with (0x59d47e, See at 0x60c78e) [disasm].
   - A sick worm plays only in a `Sick` track, and vice versa. An abducted worm plays only in an `Abducted` track.
-  - An `Idle` track refuses a worm already in a scene, unless it is bored (90 s without a physics event, assumed: 0x5a47d0) and the trigger allows it.
+  - An `Idle` track refuses a worm already in a scene, unless it is bored and the trigger allows it (0x60c756) [disasm]. Bored = WXActor +0x6e bit 4, set once graphic +0x5c reaches 90000 ms (0x5a4810); +0x5c counts real ms (+0x198 = ms/20, times 20) and kWE 13, 14, 15, 17, 19, 21 and 22 zero it and clear the bit [disasm]. Starting a scene does not. kWE 7 (a fall) instead kills the worm's scene and sets its StopAnimation blend to 200 (0x60ae60, 0x60ba40).
   - `Safe` refuses a threatened worm (`ThreatenWorm`).
 - **Choice (0x60d830).**
   - A `Payload` track takes the payload. An `Active` track takes the active worm: if either is missing, the movie is rejected.
   - A `Special` track draws from the special pool. Depending on the trigger, a failure rejects it or not.
   - Other tracks draw from the general pool. A failure rejects the movie only if the track is `Crit`.
   - The first movie that casts at least one actor is played.
-- **Priorities.** There is no numeric comparison. A new movie stops any running movie of a worm it casts (0x60b750). The track must still admit it, though: `Idle` (see above) and `Safe` filter. A movie's end frees the worm and its threat (0x60bf70). The emotion and the gaze remain.
-- **Pools per trigger (jump table 0x60e818).** This resolves an open question in w4m-map §21. Triggers 0x1e and 0x2e are Missed and Retreat.
+- **Priorities.** There is no numeric comparison. A new movie stops any running movie of a worm it casts (0x60b750). The track must still admit it, though: `Idle` (see above) and `Safe` filter. A movie's end frees the worm and its threat (0x60bf70). The emotion and the gaze remain. Playback (WormScenePlayerService 0x60b940, every 20 ms): each track fires its events in file order while `Time` ≤ the scene clock, one blocking cursor (0x60b6db), then the clock gains 20 ms; while `EFMV.Active` is 1 (here: the abduction) every running scene ends (0x60b96c) [disasm]. Ours: `play()` per 20 ms scene tick, `acting.py` keeps file order.
+- **Pools per trigger (jump table 0x60e818).** This resolves an open question in docs/w4m/README.md §21. Triggers 0x1e and 0x2e are Missed and Retreat.
 
 | Case | Triggers | Special / general pool | Options (A, B, C) |
 |---|---|---|---|
@@ -75,17 +75,17 @@ Options: A = sets the priority and clears "bored", B = a bored worm in a scene m
 
 | Trigger | W4M dispatch | Here | Status |
 |---|---|---|---|
-| TimedPayloadFive..One | The payload stops (once). The trigger depends on whole seconds left: 0 → One, 3 → Four, 4 or more → Five. Source: 0x577181. | Fused shell placed or stopped. Armed mine: choice. | done |
-| CrateDrop | 0x5c4710 | When the crate lands (assumed). A worm must be within 5 m. | done |
-| Idle, Sick, Abducted, Bored | Every 300 to 600 ms, by rotation (0x5b3534, table 0x9200dc). Examples: Idle0/10 is the active worm near a friend or foe within 20 m; Idle20/50/100 are Gunslinger or FlickBogey pairs and duels; Sick10 is a poisoned worm. | Same. The guard condition at 0x5b3280 is not decoded: it is ignored. | done |
+| TimedPayloadFive..One, GrenadeFive..One | ParabolicPayloadLogicEntity update 0x576fc0: the payload's velocity is zero, once (+0x1b4 bit 0, cleared when it is moved again, 0x5777da). The trigger depends on whole seconds to its expiry, (+0x58 − clock +0x1a0) / 1000 unsigned: 0 → One, 3 → Four, 4 or more, or no expiry (−1), → Five (0x577181). A `Grenade.Weapon` payload adds 0x27: the Grenade* rows (0x5771c0). Mines are Parabolic payloads (`CreateMine` 0x4f9630) [disasm]. | Fused shell placed or stopped (the Grenade by name); any mine at rest (idle: Five) | done |
+| CrateDrop | CrateGraphicEntity 0x5c4710, from the crate's `Create` clip (0x5c4bb1, 0x5c516e): as the crate spawns, with `WXP_CrateSpawnDropping`, `weapons/CrateSpawn` and `Comment.<Weapon/Utility/Health/Mystery>CrateSpawn`; every crate type posts trigger 0x13 with the crate actor [disasm]. A worm must be within 5 m of it. | The CrateDrop event (spawn) | done |
+| Idle, Sick, Abducted, Bored | WXWormManagerService task 0x5b3280 (returns 100: runs every 100 ms). Countdown +0x1ac starts at rand % 5000 (0x5b526f), loses 100 per run, fires at ≤ 100 (0x5b34f5), then restarts at 300 + rand % 300: 300 to 600 ms in 100 ms steps. Rotation by the 12-entry table 0x9200dc (Idle, Sick, Abducted, Bored ×3). The guard: while `EFMV.Active` (+0xe0, bound at 0x5b4cc4) is non-zero the countdown is frozen (0x5b34e4) [disasm]. Examples: Idle0/10 is the active worm near a friend or foe within 20 m; Idle20/50/100 are Gunslinger or FlickBogey pairs and duels; Sick10 is a poisoned worm. | Same; frozen during the abduction (its EFMV.Active, `abducting()`). | done |
 | Thinking | No dispatch in the PC exe: no call to 0x4d3410 with 0x2f. | Never triggered. The movies stay in `acting.txt`. The `WXP_WormThinking` particle is thus never emitted. | as W4M (dead) |
 | ItemReact | No dispatch in the PC exe (no direct call, nor ambient table 0x9200dc). | Never triggered. | as W4M (dead) |
 | StartTurn | The worm becomes active (0x5a421e). | TurnStart | done |
 | WeaponFired, Airstrike, SkipGo | 0x585e3d, Bomber 0x54d7c0, 0x588066 | Fire event | done |
 | Targeted | 100 ms in the aiming camera's field of view (mode 1, first person), then a 3000 ms cooldown per worm (0x5a2600). | First-person aim (`Controls::firstPerson`) | done |
 | Blasted | Impulse with vy > 0.1 unit/ms (§11, event 13). | Hurt worm taking off at more than 5 m/s | done |
-| BlastSplat | Hard landing after a flight (0x5a3d4d) | End of a Blasted flight | done |
-| FallSplat | No dispatch in the PC exe (no call to 0x4d3410 with 6). | Never triggered. | as W4M (dead) |
+| BlastSplat | kWE 15 hard landing (vn ≤ −0.3 units/ms) in anim state 3 (0x5a3d4d) [disasm]; a soft landing (kWE 8) sends nothing | Hard landing after a blast or a fall past 15 m/s | done |
+| FallSplat | kWE 15 hard landing (vn ≤ −0.3 units/ms) when the anim state is not 3 (blast flight): trigger 6 + RecoverBurried1 (0x5a3e75) [disasm]. State 3 comes from kWE 13/14 (blast) or 22 (falling past 0.3 units/ms), so a plain fall that lands hard has always passed 22 first. | Hard landing without a blast or a fall past 15 m/s | done |
 | FastRecover | No trigger has this name: dead movie | – | n/a |
 | Death | Start of the death convulsions (0x5a3ffb). Drowned worms skip it. | `g.dying()` except drowning. Death15/20 "Sick" for a poisoned worm. | done |
 | Poisoned | 0x5a1a89 | Poison increases | done |
@@ -96,8 +96,9 @@ Options: A = sets the priority and clears "bored", B = a bored worm in a scene m
 | Retreat | Retreat timer (0x50f44b) | Start of the Retreat phase | done |
 | Collect | 0x5cb6a9 | Collect event | done |
 | Victory | End of match | GameOver. Living losers play the Foe0 tracks (Sad, WhatWereYouThinking, SighAndShakeHead, Doh). | done |
-| Zap, Abducted | Leaving the abduction beam sets the "abducted" flag (0x547d39). It is cleared at 0x5adcf0, next to the poison cure. | Alien Abduction Fire: worms in the beam. A health crate clears it (assumed). Zap at the same moment (assumed). Abducted.Colour tint. | done |
-| Taunt*: table 0x95f1a8 filled by 0x596830 (w4m-map §12); Titter, Grenade*, WormBounce: unknown source | WAE_* on Input.TauntPressed (T key) | Taunt*: scene + WXAnimTaunt clip done; others not done |
+| Zap, Abducted | Leaving the abduction beam sets the "abducted" flag (0x547d39). `Worm.Antidote` clears it (0x5adcf0, handler 0x5ade7f); health and mystery-health crates send it on collection (CrateLogicEntity 0x5caf27, 0x5cb13a) [disasm]. UpdateAbductee 0x5a9c40 posts trigger 0x22 Zap with the worm each time it teleports, after `WXP_Abductee_Teleport` (0x5a9d65) [disasm]. | Alien Abduction Fire: worms in the beam. A health crate clears it. Zap on each teleport (`Game::zapStep`). Abducted.Colour tint. | done |
+| Taunt*: table 0x95f1a8 filled by 0x596830 (docs/w4m/audio.md §12) | WAE_* on Input.TauntPressed (T key) | Taunt*: scene + WXAnimTaunt clip | done |
+| Titter, WormBounce, Punch, FireDamage, Revenge | No sender: the 37 call sites of the `Acting.Trigger` constructor 0x4d3410 (the only writer of its vtable 0x82c3e4) push constants or the payload, taunt and ambient indices above, never these [disasm] | Never triggered | as W4M (dead) |
 
 ## Off-scene voices
 
@@ -122,7 +123,7 @@ Speeds are given in units per 20 ms frame. This unit is assumed.
 
 ## Other animations
 
-- **Ledge vault (Vaulting 0x5aca80).** The sim does it like W4M (docs/w4m-map.md §11 "Vaulting"): `Game::vault`, 15 ticks at 10 m/s (4 units per 20 ms frame) toward the target, without collision, then the exact target. Releasing the stick or pushing it backward brings the worm back to the start; during the vault, no turning or jumping. The AI plays the same state (`Mover::vault`). The renderer no longer offsets the worm and plays `Vault` as soon as `g.vault` starts (event 9). As in W4M, only guns, utilities and the CanBeFiredWhenWormMoving weapons (Dynamite, Fire Punch, Landmine, Sheep) fire during the vault; those carry the walk velocity (§11 "Vaulting") [disasm + data].
+- **Ledge vault (Vaulting 0x5aca80).** The sim does it like W4M (docs/w4m/physics.md §11 "Vaulting"): `Game::vault`, 15 ticks at 10 m/s (4 units per 20 ms frame) toward the target, without collision, then the exact target. Releasing the stick or pushing it backward brings the worm back to the start; during the vault, no turning or jumping. The AI plays the same state (`Mover::vault`). The renderer no longer offsets the worm and plays `Vault` as soon as `g.vault` starts (event 9). As in W4M, only guns, utilities and the CanBeFiredWhenWormMoving weapons (Dynamite, Fire Punch, Landmine, Sheep) fire during the vault; those carry the walk velocity (§11 "Vaulting") [disasm + data].
 - **High fall and head-first landing.**
   - **Fall.** When the fall speed exceeds 0.3 unit/ms (15 m/s, the FallDamage threshold 0x5ac3e0), W4M dispatches kWE 22 (0x5a3a60): `Skid` clip in flight, tumble mode, spin of 2π rad/s (angle += spin·0.02 per frame, 0x5a0593). kWE 22 keeps the +0x158 angle: it is 0 after a jump or a fall (0x5a01a0 resets it to 0 every frame), and the flight slope asin(vy/|v|) after an explosion (0x5a0617). The body rotates around the mesh origin (0x5a26d3), i.e. (0, 0.299, 0.352) m in worm.glb. The blast flight (Blastflight2) follows this slope too.
   - **Hard landing.** At vn ≤ −0.3, kWE 15 (0x5a3cc5) picks the recovery by angle (0x5a3dc1): before 3π/4 or after 7π/4, `RecoverFront1`; from 3π/4 to 5π/4, upside down, `RecoverBurried1` (head stuck in the ground, tail in the air, then it pulls free); from 5π/4 to 7π/4, `RecoverBack1` or `RecoverBack2` at random (0x68c0aa, here by hash).

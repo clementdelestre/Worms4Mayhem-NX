@@ -15,7 +15,9 @@ int main() {
         uint32_t tick = 1;
         for (int f = 0; f < 8 * (int)WEAPONS.size() && g.weapon != want; f++) {
             Input in;
+            in.buttons = (f % 2 ? 0 : Input::FIRE | Input::JUMP);  // A bounce while the pick is pending
             hud.input(g, in, true, 0, tick);
+            assert(!(in.buttons & (Input::FIRE | Input::JUMP)));
             for (int t = 0; t < (f * 7 + want) % 3; t++) g.step(in), tick++;  // 0..2 ticks per frame
         }
         assert(g.weapon == want);

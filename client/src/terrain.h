@@ -26,6 +26,9 @@ struct Terrain {
     Vector3 finish{};
     struct Marker { std::string name, type; Vector3 pos; };  // W4M script markers (missions): worm, target, crate, mine...
     std::vector<Marker> markers;
+    std::vector<Vector4> blocks;  // W4M AI NodeGrid boxes (x0, z0, x1, z1 in m): heightmap and land pieces, merged (AddLandBlock)
+    void addBlock(Vector4 b);     // W4M AddLandBlock 0x4b22e0: drops a box under 250 units², else merges it into the first it touches
+    void mergeBlocks();           // W4M PopulatePathingNodes' second merge pass 0x4b2800
     Color sky = {120, 170, 230, 255}, top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255};
     std::string theme;  // lowercase theme name (music/<theme>.ogg), empty for the procedural fallback
     std::string time = "day";  // map's "time": day/evening/night (Fx::theme picks the matching sky/water set)

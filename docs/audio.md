@@ -1,7 +1,7 @@
 # Audio (ours)
 
 What `client/src/audio.h` / `audio.cpp` play, and where each sound comes from. W4M side: `WormsX.fev` (FMOD Ex FEV1) decoded by
-`tools/w4m-re/fev.py` (`w4m-map.md` §12); the sample files are converted by `tools/w4m-import` (`docs/import.md`).
+`tools/w4m-re/fev.py` (`docs/w4m/audio.md` §12); the sample files are converted by `tools/w4m-import` (`docs/import.md`).
 Status: the gains, loop flags, 3D ranges and max playbacks are **data** (FEV, hand-copied into `DEFS`); the table row says when not.
 
 ## Rules
@@ -12,9 +12,12 @@ Status: the gains, loop flags, 3D ranges and max playbacks are **data** (FEV, ha
 - **Gain**: event + sound definition + category dB, × the call's volume.
 - **3D**: FMOD linear rolloff: full inside min, silent past max (20 units = 1 m), pan from the listener's right; the listener is the
   drawn camera (`Audio::listen`). 2D events ignore the position.
+- **Trigger delay**: `Def::delay` (sounddef +64/+66, data): each sound starts min + rand % (max − min) ms late (fmod_event 0x10038400,
+  disasm), queued in `Audio::update`: MissileLoop 1000, OldWomenFootsteps 120, SheepHeld 1000–3000, ScouserHeld 200–1200, OldWomanHeld 200–1600.
+- **Fade-in**: a `play` of an event with an FEV fade (`Def::fade`) ramps its volume over it (Teleport 0.35 s, RainLoop 2 s).
 - **Max playbacks**: each variant is loaded `max` times (aliases); past `max` voices playing, the oldest is cut (FMOD steal oldest).
-- **Kinds of call**: `play` (one shot), `hold` (one pass from the rising edge, cut at the falling edge: held weapons, charge
-  sounds), `loop` (replayed while on, FEV fade in / out when it has one), `equip` (W4M WeaponAccessoryEntity 0x5950c0: the weapon's
+- **Kinds of call**: `play` (one shot), `hold` (one W4M event instance from the rising edge, cut at the falling edge: held weapons,
+  charge sounds; a spawning def (`Def::spawn`, FEV "oneshot" instance) starts its next sound once the last has ended), `loop` (replayed while on, FEV fade in / out when it has one), `equip` (W4M WeaponAccessoryEntity 0x5950c0: the weapon's
   WEAPTWK EquipSfx; none for Sheep, Starburst, Fire Punch, Prod, Armour, Binoculars, Teleport, Change Worm, Skip Go; Weapon Factory
   weapons use the Bazooka's, as kWeaponFactoryWeapon).
 - **Voices**: `voices/<bank>/<line>.ogg`, one bank per team (`setTeamVoice`, picked in team setup; default team % banks), banks
@@ -23,7 +26,8 @@ Status: the gains, loop flags, 3D ranges and max playbacks are **data** (FEV, ha
   (the CC0 banks hold only fire, hurt, death, victory, jump, idle). Lines and their acting triggers: `worm-reactions.md`.
 - **Music**: `music/<track>.ogg`, the map theme or `theme` (frontend), looped but `victory`; −6 dB for theme and victory, −9 for
   arabian, wildwest, suddendeath, −12 for the others (FEV sound definition + category music); fades in over 1 s (W4M Music.FadeIn
-  0x7290b4 +0.01 a frame). The `cheer` crowd loop stops when the track changes.
+  0x7290b4 +0.01 a frame). `theme` (frontendmusic/femusic) fades out over 2 s (its FEV fade-out) when stopped or replaced. The `cheer`
+  crowd loop stops when the track changes.
 
 ## Sounds (`enum class Sfx`)
 
@@ -41,7 +45,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | Sheep | `sheep` | weapons/SheepBaa | -3 |  | 0.5–25 | 1 | weapons: SheepBaa | main.cpp `onEvent` |
 | Holy | `holy` | weapons/Hallelujah | 0 |  | 2D | 1 | weapons: Hallelujah | main.cpp `onEvent` |
 | TurnStart | `turn_start` | weapons/HudAlert | -10 |  | 2D | 1 | weapons: HudAlert | main.cpp `onEvent` |
-| Tick | `tick` | weapons/ClockFast | -2 | yes | 2D | 1 | weapons: ClockFast | main.cpp `onEvent`, main.cpp `main` |
+| Tick | `tick` | weapons/ClockFast | -2 | yes | 2D | 1 | weapons: ClockFast | main.cpp `main` (HudClockEntity 0x5efd80: loops at 5 s and under) |
 | Shotgun | `shotgun` | weapons/ShotgunFire | -5 |  | 2D | 1 | weapons: Shotgun1, Shotgun2 | main.cpp `onEvent` |
 | Airstrike | `airstrike` | weapons/Bomber | -9 | yes, fade 0.5 s | 0.5–60 | 1 | weapons: Bomber | main.cpp `onEvent`, main.cpp `drawBomber` |
 | Donkey | `donkey` | weapons/ConcreteDonkeyRelease | -1 |  | 0.5–100 | 1 | weapons: DonkeyBray | main.cpp `onEvent` |
@@ -129,8 +133,9 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | BubbleInflate | `bubble_inflate` | weapons/BubbleMachineInflate | -2 |  | 0.5–25 | 1 | weapons: BubbleMachinePlace | main.cpp `onEvent` |
 | BubbleWobble | `bubble_wobble` | weapons/BubbleMachineWobble | -2 |  | 0.5–25 | 1 | weapons: BubbleMachineWobble | main.cpp `onEvent` |
 | BubbleLoop | `bubble_loop` | weapons/BubbleMachineLoop | -22 |  | 0.5–20 | 1 | weapons: Bubble1, Bubble2, Bubble3, Bubble4, Bubble5, Bubble6 | main.cpp `drawBubbles` |
+| TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 
 Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its time envelope
 cuts it at 5 s, so it is played once; `Parachute` is the Open layer of ParachuteLoop; `Pickup` uses PickupWeapon's −11 dB for all
 three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6); `BigExplosion`'s second variant ExplosionBoxed1 is −2 dB 2D in W4M;
-`FeBookOut` has event volume 0 in W4M (silent); `BubbleLoop` plays one of Bubble1–6 per 500 ms spawn of WXP_Bubbles_Small.
+`FeBookOut` has event volume 0 in W4M (silent); `BubbleLoop` plays one of Bubble1–6 per 500 ms spawn of WXP_Bubbles_Small (FEV spawn 500..500 on a oneshot instance, fmod_event 0x1001a3ec; the emitter starts its event once, 0x5bdcf4).

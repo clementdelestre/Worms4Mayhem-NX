@@ -4,14 +4,15 @@
   fev.py [-g REGEX] [FILE]   TSV to stdout: event path, loop, volumes, 2D/3D, distances, sounds
   fev.py --json [FILE]       full parse -> $W4M_CACHE/fev.json
   fev.py --check [FILE]      self-check: parse ends at EOF, counts match the header hints
-Layout: docs/w4m-map.md section 7. Output must stay outside the repository (game data).
+Layout: docs/w4m/audio.md §7. Output must stay outside the repository (game data).
 """
 import json, math, os, re, struct, sys
 from pe import GAME, CACHE
 
 FEV = os.path.join(GAME, 'Data', 'Audio', 'PC', 'WormsX.fev')
-LOOP = {0: 'loop', 1: 'oneshot', 2: 'loop_to_end'}  # sound instance loop mode
-# sounddef play mode, raw: 3 on every 1-wave def (default), 2 on most multi-variant defs (random pick, assumed)
+LOOP = {0: 'loop', 1: 'oneshot', 2: 'loop_to_end'}  # sound instance loop mode: instance flags 0x02 / 0x04 / 0x10 (fmod_event 0x10029097)
+# sounddef play mode, raw (fmod_event.dll picker 0x10038670, docs/w4m/audio.md §12): 0/3 sequential, 1 weighted random,
+# 2 random without repeat, 4 instance shuffle, 5 programmer, 6 global shuffle, 7 global sequential
 # Event property block (0x84 bytes, same for simple and complex events): offset -> (name, fmt)
 HDR = {0x00: ('volume', 'f'), 0x04: ('pitch', 'f'), 0x08: ('pitch_rand', 'f'), 0x0c: ('vol_rand', 'f'),
        0x10: ('priority', 'I'), 0x14: ('max_playbacks', 'I'), 0x18: ('steal_priority', 'I'), 0x1c: ('mode', 'I'),

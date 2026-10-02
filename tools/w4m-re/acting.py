@@ -32,7 +32,7 @@ def main(a):
         for name, m in scenes.items():
             tracks = []
             for t in m['Track']:
-                ev = [event(e) for e in sorted(t['Event'], key=lambda e: e['Time'])]
+                ev = [event(e) for e in t['Event']]  # file order: W4M's cursor stops at the first later Time (0x60b6db)
                 tracks.append(t['Tag'].strip() + '|' + ' '.join(e for e in ev if e))
             f.write('\t'.join([name] + tracks) + '\n')
     print('%d scenes -> %s' % (len(scenes), out))

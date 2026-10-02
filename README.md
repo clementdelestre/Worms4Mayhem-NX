@@ -131,7 +131,7 @@ to that many players; cancelling it just falls back to sharing controller 1.
 | `docs/weapons-spec.md` | W4M | what each weapon does in W4M, as a player-facing spec |
 | `docs/worm-reactions.md` | both | acting scenes, animation layers, triggers |
 | `docs/audio.md` | ours | every sound: file, W4M FEV event, gain, 3D range, where it plays |
-| `docs/camera-w4m.md`, `docs/w4m-map.md`, `docs/w4m-formats.md` | W4M | camera code, exe map (classes, messages, timers), file formats |
+| `docs/camera-w4m.md`, `docs/w4m/README.md`, `docs/w4m-formats.md` | W4M | camera code, exe map (classes, messages, timers), file formats |
 | `docs/maps.md`, `docs/missions.md` | ours | map and mission JSON |
 | `docs/import.md`, `docs/nsp.md`, `tools/w4m-re/README.md` | ours | importing your W4M install, NSP packaging, RE helpers |
 

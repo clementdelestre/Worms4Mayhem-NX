@@ -1,7 +1,7 @@
 # Simulation: turn flow, input, movement (ours)
 
 What `client/src/sim.h` / `sim.cpp` (`Game`) do, with the W4M source of each rule. The W4M side (exe timers, state handlers)
-is in `w4m-map.md` §11 and §14; this file is about our code. Status per fact:
+is in `docs/w4m/physics.md` §11 and `docs/w4m/turn.md` §14; this file is about our code. Status per fact:
 
 - **data**: a value read from the W4M files (WEAPTWK, TWEAK, LOCAL, CAMTWK...);
 - **disasm**: a rule read from `WormsMayhem.exe`;
@@ -39,7 +39,7 @@ In order: bubbles age one turn end (W4M Bubble.Lifetime, data); Icarus, girder p
 DoPostActivity `SetData("DoubleDamage", 0)`, data); poison takes `poison` hp from each worm, never below 1 (W4M Worm.Poison, data);
 game over check; sudden death (below); the next team in order with a living worm (`idle` teams skipped: mission captives), its next
 worm in rotation (`nextWorm`); turn timer = `turnTime` s, hot seat = `hotSeat` s (W4M HotSeat 10 s, data); wind
-`WIND_CAP[wind] × r² × cos(2π r2)` (W4M stdlib SelectRandomWind, data; x component only: ours); the weapon in hand = `picked[team]`
+`WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10); the weapon in hand = `picked[team]`
 (the weapon held when its last turn ended) if still `usable`, else `firstWeapon()` (W4M Weapon.Create 0x565770: first usable in list
 order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall before, in `Settle` (below).
 
@@ -71,27 +71,28 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
   Prod are 0 / -1 there. Icarus Potion 500: the drink (`icarus` 3), worm frozen and no weapon change, then the cure and the
   heal (W4M RedbullUtilityLogicEntity 0x587600 → Weapon.PostLaunchDelay → 0x587750, disasm); the turn stays in `Aim`. We have no Bridge Kit (1).
 
-### Settle (`case Phase::Settle`)
+### Settle (`case Phase::Settle`): W4M stdlib.lub EndTurn, as is (data + disasm)
 
-1. Shots still flying: wait; a shot still alive 30 s into the settle (`SHOT_CAP`) is dropped, except the abduction saucer (ours: W4M has
-   no timeout).
-2. Wait until nothing is active (`Game::active()`, W4M ObjectCount.Active, the users of ActiveObjectRegistrationService 0x4d3af0,
-   disasm): a worm falling or sliding (Worm Falling / Sliding, 0x5aa996 / 0x5aaa04), a crate till it rests ("Crate Spawn" 0x5c9bd0), a
-   mine armed or moving ("Payload armed" 0x57ee73, "Rested payload on the move again" 0x5778f0), an object about to blow (drum
-   0x5d1f86), a falling sentry (0x56cdc3), the gas jet's emitter (PARTTWK WeaponGasCanJet, the only `EmitterIsOfInterest`, 1000 ms;
-   0x5be6c6; ours: a gas cloud younger than 1 s), the FlyCam hold after a homing / super sheep / starburst blast ("Hold the FlyCamera",
-   0x528457, CAMTWK PauseDuration 1000; `camHold`, checksummed). Moving crates and drums are not active (no registration). Safety only:
-   `SETTLE_WAIT` 30 s (W4M WaitUntilNoActivity has no timeout).
-3. Abductees' hp roll, once per turn (`abdRolled`, W4M DoPostActivity ApplyPoison → 0x5ac060: an unhurt abductee gets `rand % 100` hp,
-   0 kills, disasm). King rule: a dead king sets his team's hp to 0 (ours).
-4. Counts: the first worm whose label differs from its hp, and every such worm within 18 m (`COUNT_SPAN`, ours), form a group
-   (`countGroup`); camera travel, damage display, then the death queue: `docs/death-sequence.md`. A living worm a death blast hurts
-   leaves the group and counts again in a later one.
-5. No group left: `POST_ACTIVITY` 2400 ms (W4M PostActivityTime, LOCAL.XOM, data); activity during it does not stop it. At its end, as
-   stdlib CheckActivity: anything active (a worm thrown by a death blast still in the air...) goes back to step 2 (wait, count, then
-   `POST_ACTIVITY` again). Then, once per turn (`crated`, checksummed), the crate drop (W4M DoPostActivity pass 1, below); a dropped
-   crate is active until it rests, then counts and `POST_ACTIVITY` again.
-   Then weapon delays tick down for the team that just played, `picked[team]` = its weapon, `beginTurn`.
+- `timer > 0`: WaitUntilNoActivity. Shots flying or `Game::active()` (ObjectCount.Active, the users of 0x4d3af0: a worm falling or
+  sliding 0x5aa996 / 0x5aaa04, a drowned worm afloat "Worm Dying" 0x5a7190, a crate till it rests "Crate Spawn" 0x5c9bd0, an armed or
+  moving mine 0x57ee73 / 0x5778f0, a drum about to blow 0x5d1f86, a falling sentry 0x56cdc3, the FlyCam hold 0x528457). The gas
+  cloud is not active: the only `EmitterIsOfInterest` emitter, WeaponGasCanJet, sits in the effect WeaponGasCan that nothing
+  references (PARTTWK, WEAPTWK, exe strings, Lua: data). No timeout, as W4M.
+- Then `timer < 0`: PostActivityTime 2400 ms, activity or not. At its end ApplyDamage (`applyDamage`): every hurt worm's display at
+  once (`countGroup`, 2500 ms), the dead queued (`deathQueue`, AddMeToDeathQueue at energy ≤ damage, 0x5abf13). Then CheckActivity.
+- The death queue (`stepCount`, 0x4f9b30): once the displays are over and nothing else is active (thrown worms land first), the
+  front worm's throes 3000 ms, its blast at its feet (0x5a9400), the next one a tick later. A living worm the blast hurts keeps
+  that damage for the next ApplyDamage.
+- DoPostActivity pass 1 (`crated`): ApplyPoison (`applyPoison`, 0x5ac060: poison never below 1 hp; an unhurt abductee gets
+  rand % 100 hp, 0 kills; damage type 6 shows no display unless other damage is pending, 0x5abe38), ApplyDamage, DoubleDamage 0,
+  then with two teams standing (or a mission): sudden death (RoundTimeRemaining 0; `sdType` = SchemeData SuddenDeath: all to 1 hp,
+  nothing, or a draw), the water rise `waterSpeed` 0 / 4 / 8 / 16 units once it started, DropRandomCrate (0x4fab20, chance %),
+  the Wormpot crate shower; then CheckActivity. Pass 2: delays, `beginTurn` (victory check, Turn.Ended).
+- A team stands until its last worm died (its blast) or it surrendered (`surrendered`, SurrenderTeam 0x5b4d00: the Surrender utility
+  and a vital worm, RULE_KING / Wormpot Vital Worm, flag 0x100 on each team's first worm; its worms stay). The turn ends once fewer
+  than two stand (stdvs Worm_Died). Wormpot Vampire: the active team's first worm gains half of every other worm's damage at
+  ApplyDamage (0x5a9710), poison included, and half a drowning worm's energy (0x5ad7c9).
+- The round clock (`clock`) runs in the hot seat too (TimerLogicEntity 0x50f17d).
 
 ## Weapon in hand
 
@@ -118,17 +119,16 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
 
 - **Drop**: at the end of each turn, with two teams or more standing, `crateChance` % (W4M SchemeData, data); 6 tries with the Wormpot Crate Shower (W4M
   GameLogic.CrateShower 0x4fb850, disasm). The contents: health / weapon / utility by the scheme's shares (W4M CreateRandomCrate
-  0x4fa4b0, data), then a weapon by `crate_weight` inside its pool. Dropped from 15 m under a chute at ≤ 2.5 m/s (ours).
+  0x4fa4b0, data), then a weapon by `crate_weight` inside its pool. Spawned 15 m (300 units) over a random land point above water, uniform over the land box, whose column misses every worm; no chute, plain gravity; bounces v = 0.2 (vx, −vy, vz), rests under 1 m/s (CreateRandomCrate 0x4fa52a Parachute 0, 0x5c6560, 0x5c9420, 0x5c8900, disasm).
 - **Between turns** (data + disasm), as W4M: stdvs DoOncePerTurnFunctions sends GameLogic.DropRandomCrate in
   DoPostActivity's first pass, between two turns; CreateRandomCrate 0x4fa4b0 sets Crate.DelayMillisec to its argument, 0 from every
   caller (0x4fa986, 0x4fac16, CrateShower 0x4fb860), and Crate.WaitTillLanded defaults to 1 (0x4f21e9); the crate registers the active
   object "Crate Spawn" (0x5c9bd0, kept when WaitTillLanded = 1, 0x5c8049) and drops it once a bounce leaves it under 0.02 units/ms
   (0x5c8900). Then GameLogic_NoActivity → Timer.StartPostActivity (PostActivityTime 2400) → DoPostActivity's second pass → StartTurn
   (hot seat). `sim_check` `checkCrateBetweenTurns`.
-- **Landing hold**: a crate that falls in `Aim` (a mission's `drop` crate) holds the turn: no timer, no hot seat, no control
-  (`dropping()`); once it lands, `landHold` = `POST_ACTIVITY` more (the same W4M active object, then PostActivityTime; assumed for a
-  crate that drops mid-turn).
-- **Collect**: a worm within 0.75 m + `R` horizontally and 1.3 m vertically (ours). Health: + `crateHealth` hp, cures poison and the
+- **Mid-turn crate**: no hold; the clock and control run (W4M: only EndTurn waits for "Crate Spawn"; TimerLogicEntity freezes on
+  nothing else, disasm).
+- **Collect**: any worm whose sphere (10 units, 5 above its feet) meets the crate's (10 units), any time (0x5cb7e0, disasm). Health: + `crateHealth` hp, cures poison and the
   abductee flag (W4M Worm.Antidote 0x5adecd, disasm). Double Damage, Crate Spy and Armour apply at once and never enter the inventory
   (`collected()`, W4M crate collect 0x5c9800, disasm). A Super Sheep collects mission crates for its worm.
 - **Mines**: armed by any worm within 2.25 m (W4M Landmine ArmingRadius 45, data) after a 2.5 s courtesy (ArmingCourtesyTime, data);
@@ -144,21 +144,21 @@ Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `
 | function | does | source |
 |---|---|---|
 | `footing` | ground under the feet: the centre, or the W4M foot tripod (±4, −3) / (0, 5) units; one foot alone carries the worm only on ground under 60° | W4M land probe 0x91ffc8 (disasm) |
-| `walkStep` | one tick of walking: steps up to `STEP` 0.25 m (5 units) at once; a 5..20-unit ledge (`STEP_UP` 1 m) starts a **vault** when `vault` is given (the AI passes its own); a face that holds the body back is climbed onto the highest ground the front foot finds; falls with the walk speed when it walks off a ledge (returns true) | W4M UpdateWalking 0x5b1285 (disasm); WalkOffCliffVelMulti unread (`WALK_OFF` 1, assumed) |
-| `vaultStep` | the vault: 250 ms, 4 units per 20 ms (10 m/s) straight at the target, no collision test; releasing or reversing the stick puts the worm back where it started; snapped to the target at the end or when anything else moves it | W4M Vaulting 0x5aca80, ChangeState 0x5aa847 (disasm) |
+| `walkStep` | one tick of walking: steps up to `STEP` 0.25 m (5 units) at once; a 5..20-unit ledge (`STEP_UP` 1 m) starts a **vault** when `vault` is given (the AI passes its own); a face that holds the body back is climbed onto the highest ground the front foot finds; falls when it walks off a ledge (returns true), with Velocity = InputImpulse (`INPUT_IMPULSE` 2.5 m/s × stick) | W4M UpdateWalking 0x5b1285, Fall 0x5b14c7 (disasm) |
+| `vaultStep` | the vault: 250 ms, 1/5 of the way per 20 ms (0x5a59f0), no collision test; releasing or reversing the stick puts the worm back where it started; snapped to the target at the end or when anything else moves it | W4M Vaulting 0x5aca80, ChangeState 0x5aa847 (disasm) |
 | `fits` | the upper body (rods at 0.2 / 0.45 m, 7 points of radius 0.2 m) is out of land at `to`, or no deeper than at `from`: a worm already stuck may still move out | W4M Fits 0x59edf0 (disasm), our rod sampling |
 | `clearWalls` | pushes the body out of side walls by the density gradient, ≤ 0.1 m a tick | ours |
 | `flyBody` | free flight in sub-steps of ≤ VOX/2 (`substeps`), so nothing skips thin land; walls and ceilings bounce at `e` (0.3, jetpack 0.8); a landing on ground steeper than n.y 0.2 rebounds, else keeps only the tangential speed; raised out of land while it fits | W4M Rebound 0x5acea0, Ballistic (disasm); jetpack contact 0x5633e9 |
-| `wormBody` | one worm tick: grounded test, slide (below 60° and slower than 3 m/s, 10 m/s on landing: stops; else gravity along the slope and friction 0.9582 a tick), a hard landing halves \|vt\|², gravity half before and half after the move | W4M Sliding 0x5afbe0, Integrate 0x5a6e90 (disasm); SlideFriction 0.95 / 20 ms (data); Slippy / Sticky Wormpot: assumed / ours |
+| `wormBody` | one worm tick: grounded test, slide (below 60° and slower than 3 m/s, 10 m/s on landing: stops; else gravity along the slope and friction 0.9582 a tick), a hard landing halves \|vt\|², gravity half before and half after the move | W4M Sliding 0x5afbe0, Integrate 0x5a6e90 (disasm); SlideFriction 0.95 / 20 ms (data); Wormpot Slippy: each slide value halfway to its Slippy one, 35°, 5.25 / 1.75 m/s, 0.9745 (0x5d59c0); Sticky: blast impulses × 0.5 only (0x5ad1ea) (disasm) |
 | `walkerStep` | sheep, old woman, scouser on foot: steps up 0.6 m, hops at walls, whole-body roof test | ours |
 | `muzzle` | the launch point pulled back to the last free point on the segment eye → spawn | W4M 0x585a29 (disasm) |
 | `launchPoint` | the eye plus WEAPTWK LogicalLaunchZ / YOffset: dynamite 13 / −10, landmine 10 / −10, (super) sheep and Starburst 5, old woman 7, scouser 10 units, the rest 0 | data |
 | `restOn` | a payload at rest drawn `r` above the land along its normal | W4M 0x574e90 / 0x5761f0 (disasm) |
 
 Constants (sim.h / sim.cpp): gravity 12.5 m/s² (W4M Gravity −0.00025 units/ms², data; low gravity × 0.5, Low.Gravity.OnValue);
-walk 3.0625 m/s (Walk.Speed, data; Quick Walk × 2: ours); jumps: tapped or held forward (3.16, 7.91) m/s, held still: vertical 9.35 m/s,
+walk 3.0625 m/s (Walk.Speed, data; Quick Walk: VelocityScale 2, 0x5d6bc0, disasm); jumps: tapped or held forward (3.16, 7.91) m/s, held still: vertical 9.35 m/s,
 pressed twice: backflip (−1.58, 10) or forward flip (1.58, 10) (W4M 0x5a5d30 / 0x95fb88 / 0x95fb7c, data); fall damage above 15 m/s:
-trunc((v − 15) × 2) + 1 hp (W4M FallDamage 0x5ac3e0, FallDamageRatio 100, data; Max Fall: 0.7 × the threshold, × 3: ours); no fall
+trunc((v − 15) × 2) + 1 hp (W4M FallDamage 0x5ac3e0, FallDamageRatio 100, data; Max Fall: FallDamageRatio × FallingScale 2, Wormpot.lub, data; none when the scheme has fall damage off); no fall
 damage in jetpack or Icarus flight (W4M flag 0x40, disasm).
 
 ### Shots: launch and self-hit
@@ -194,4 +194,4 @@ target is refused (W4M NotClearToFire). Strikes fly along the view's right (`str
 - Moves: destination scoring then A* over a 0.5 m node grid (W4M AIPathManager 0x492d80, octile costs, jumps +40, backflips +60);
   each edge is played with `walkStep` / the jump code, vault included. Crates first when they score more (W4M CAIPlanCollectCrate),
   retreat planned with the attack. Strikes are aimed from the Blimp too; the CPU never locks a homing missile.
-- W4M side: `w4m-map.md` §18; ours in detail, with the source of each rule: `ai.md`.
+- W4M side: `docs/w4m/ai.md` §18; ours in detail, with the source of each rule: `ai.md`.

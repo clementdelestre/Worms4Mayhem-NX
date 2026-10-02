@@ -19,3 +19,4 @@ romfs/romfs
 .synced-*
 mission_check
 progress.txt
+obj/

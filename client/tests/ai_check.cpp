@@ -179,9 +179,9 @@ int main() {
         for (size_t i = 0; i < WEAPONS.size(); i++) if (fires[l][i]) printf(" %s:%d", WEAPONS[i].name.c_str(), fires[l][i]);
         printf("\n");
     }
-    int changes = 0;  // W4M worm-select mode: the CPU plans every worm of its team and switches with Worm Select
+    int changes = 0;  // W4M worm-select mode needs ChooseWorm.Enabled, 0 in LOCAL.XOM and never set: the CPU never changes worm
     for (int l = 1; l <= 5; l++) for (size_t i = 0; i < WEAPONS.size(); i++) changes += WEAPONS[i].kind == Kind::ChangeWorm ? fires[l][i] : 0;
-    assert(changes > 0);
+    assert(changes == 0);
 
     int close = 0;
     printf("point blank:");

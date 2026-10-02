@@ -19,7 +19,6 @@
 namespace {
 using V = Audio::Voice;
 constexpr float UNIT = 1 / 20.0f;  // m per W4M unit (sim.h: STEP_UP 1 m = the 20-unit worm)
-constexpr float MS = 1e-3f;
 
 // Acting.Trigger indices: W4M name table 0x9214f0
 enum Trig { PAYLOAD5, PAYLOAD4, PAYLOAD3, PAYLOAD2, PAYLOAD1, BLAST_SPLAT, FALL_SPLAT, IDLE, SICK, ABDUCTED, DAMAGE, DAMAGE_SILENT,
@@ -40,7 +39,7 @@ enum : uint32_t { CRIT = 1, FRIEND = 2, FOE = 4, SICK_T = 8, ABDUCTED_T = 0x10, 
                   LOS = 0x200000 };
 const char *const TOKENS[22] = {"crit", "friend", "foe", "sick", "abducted", "see", "blind", "near", "special", "payload", "infront",
                                 "behind", "active", "onscreen", "idle", "targeted", "interesting", "safe", "threat", "goodies", "distraction", "los"};
-constexpr int NONE = 127, CAMERA = 126, STOP = 125;  // W4M actor ids 0x7f (none), 0x7e (track -1: the camera, assumed), 0x7d
+constexpr int NONE = 127, CAMERA = 126, STOP = 125;  // W4M actor ids 0x7f (none), 0x7e (track -1: the render camera, 0x59d47e), 0x7d
 const float SEE_COS = cosf(1.22173f);            // 0x60c4a3: See / Blind / InFront cone, 70 degrees
 
 struct Ev { int ms; char op; std::string arg; int n; };
@@ -54,7 +53,7 @@ bool loaded = false;
 struct Prop { Vector3 pos; int type; bool shot; };  // W4M actor types: 2 payload / threat, 3 goodies (crate), 5 other detail
 std::vector<Prop> props;
 
-struct Run { int scene = -1; float t = 0; int cast[30]; Vector3 at[30]; std::vector<size_t> cur; };
+struct Run { int scene = -1, clk = 0; float t = 0; int cast[30]; Vector3 at[30]; std::vector<size_t> cur; };  // clk: scene clock, ms
 std::vector<Run> runs;
 
 struct Actor {
@@ -73,15 +72,15 @@ struct Actor {
     float coy = 0, coyOff = 0;                     // the emote's Coyness (+0x188, radians), the head's offset from it (+0x18c)
     bool threatened = false, abducted = false, targeted = false, onScreen = false;
     float aimMs = 0, coolMs = 0, calm = 0, sickW = 0, abdW = 0;
-    bool kicked = false, flying = false, air = false, dead = false;
+    bool kicked = false, flying = false, air = false, dead = false, slid = false, sank = false;
+    float vy = 0;
     int poison = 0, hp0 = 0;
-    Vector3 last{};
     struct Fx { std::string name; float t; } fx[3]; int nfx = 0;
 };
 std::vector<Actor> actors;
 std::vector<Vector3> rested;  // timed payloads already announced (0x577158 flag)
 int lastClock = 0, ambientIdx = 0, lastSec = -1;
-float ambientIn = 0.3f;  // Thinking, ItemReact, FallSplat, Revenge: no sender in the PC exe, never fired
+float ambientIn = 300;  // ms; Thinking, ItemReact, Revenge, Punch, FireDamage, WormBounce, Titter, Grenade*: no sender in the PC exe
 bool fired = false, maxDamage = false, anyDeath = false;
 Phase lastPhase = Phase::Aim;
 Vector3 camPos{};
@@ -233,7 +232,7 @@ bool fits(int x, const TrackDef &t, const int *cast, bool idleOk) {
         if (((t.flags & ABDUCTED_T) != 0) != a->abducted) return false;
         bool sick = G->worms[x].poison > 0;
         if (((t.flags & SICK_T) != 0) != sick && !a->abducted) return false;
-        if ((t.flags & IDLE_T) && a->run >= 0 && !(a->calm > 90 && idleOk)) return false;  // 90000 ms gate 0x5a47d0 (assumed)
+        if ((t.flags & IDLE_T) && a->run >= 0 && !(a->calm >= 90 && idleOk)) return false;  // bored: WXActor +0x6e bit 4, set at 90000 ms (0x5a4810), tested 0x60c767
     } else if (t.flags & (ON_SCREEN | TARGETED_T | ABDUCTED_T | SICK_T)) return false;
     if (t.flags & (SEE | LOS)) {
         if (!ref(t.see, &p)) return false;
@@ -281,10 +280,10 @@ void start(int scene, const int *cast) {
     for (size_t k = 0; k < s.tracks.size(); k++)  // a cast worm leaves its old scene, which ends for all (0x60b750)
         if (isWorm(cast[k]) && actors[cast[k]].run >= 0 && !(s.tracks[k].flags & (PAYLOAD | ACTIVE))) release(actors[cast[k]].run);
     Run &r = runs[slot];
-    r.scene = scene, r.t = 0, r.cur.assign(s.tracks.size(), 0);
+    r.scene = scene, r.t = 0, r.clk = 0, r.cur.assign(s.tracks.size(), 0);
     for (int k = 0; k < 30; k++) r.cast[k] = k < (int)s.tracks.size() ? cast[k] : NONE, r.at[k] = r.cast[k] != NONE ? posOf(r.cast[k]) : Vector3{};
     for (size_t k = 0; k < s.tracks.size(); k++)
-        if (isWorm(cast[k])) actors[cast[k]].run = slot, actors[cast[k]].track = (int)k, actors[cast[k]].calm = 0;  // flag A clears "bored"
+        if (isWorm(cast[k])) actors[cast[k]].run = slot, actors[cast[k]].track = (int)k;
 }
 
 // The chooser 0x60d830: the first scene whose tracks can be cast; fa unused here (priority bookkeeping), fc: a Special miss rejects
@@ -354,7 +353,7 @@ void fire(const Game &g, int trig, int subject = NONE, int payload = NONE) {
         choose(trig, NONE, active, A, B, false, true);
         break;
     case BORED:
-        for (int i = 0; i < n; i++) if (alive(i) && i != active && actors[i].calm > 90) B.push_back(i);
+        for (int i = 0; i < n; i++) if (alive(i) && i != active && actors[i].calm >= 90) B.push_back(i);  // 0x60df50: +0x6e bit 4
         shuffle(g, B, salt);
         choose(trig, NONE, active, A, B, false, true);
         break;
@@ -372,6 +371,8 @@ void fire(const Game &g, int trig, int subject = NONE, int payload = NONE) {
         shuffle(g, A, salt), shuffle(g, B, salt + 50);
         choose(trig, NONE, active, A, B, true, false);
         break;
+    case DAMAGE_SILENT: case PUNCH: case WORM_BOUNCE: case FIRE_DAMAGE: case TITTER:  // case 12 (0x60e7be): nothing is cast
+    case GRENADE5: case GRENADE4: case GRENADE3: case GRENADE2: case GRENADE1: break;
     default:  // case 4/6/7: everyone but the active worm; WeaponFired brings its payload
         pools(false, active, NONE), shuffle(g, B, salt);
         choose(trig, payload, active, A, B, trig != SKIP_GO, true);
@@ -457,7 +458,7 @@ void play(int r) {
     for (size_t k = 0; k < s.tracks.size(); k++) {
         const std::vector<Ev> &ev = s.tracks[k].ev;
         int x = run.cast[k];
-        for (; run.cur[k] < ev.size() && ev[run.cur[k]].ms <= run.t * 1000; run.cur[k]++) {
+        for (; run.cur[k] < ev.size() && ev[run.cur[k]].ms <= run.clk; run.cur[k]++) {
             if (!isWorm(x) || actors[x].run != r) continue;
             const Ev &e = ev[run.cur[k]];
             Actor &a = actors[x];
@@ -504,7 +505,6 @@ void aimAt(int i, int id, Vector3 &stored, float *yaw, float *pitch) {
     float mx = d.x * cosf(w.yaw) - d.z * sinf(w.yaw), mz = d.x * sinf(w.yaw) + d.z * cosf(w.yaw);
     *yaw = atan2f(mx, mz), *pitch = atan2f(d.y, sqrtf(mx * mx + mz * mz));
 }
-float ease(float v, float to, float dt) { return v + (to - v) * (1 - powf(0.9f, dt / 0.02f)); }  // 0.1 per 20 ms frame (0x59c106; law assumed)
 
 // 0x47a1a0, once per update: v += clamp((to - v) / (k + 1), +-max)
 float smooth(float v, float to, float k, float max) { return v + Clamp((to - v) / (k + 1), -max, max); }
@@ -589,13 +589,16 @@ void Acting::event(const Game &g, const GameEvent &e) {
         anyDeath = true;
         break;
     case GameEvent::Splash: if (e.worm >= 0) line(e.worm, V::Drown); break;
-    case GameEvent::Zap: fire(g, ZAP, e.worm); break;  // UpdateAbductee 0x5a9d69 (link to the Zap trigger assumed)
+    case GameEvent::Zap: fire(g, ZAP, e.worm); break;  // UpdateAbductee 0x5a9d65: trigger 0x22 on each teleport
     case GameEvent::Collect:
         if (e.worm < 0) break;
         fire(g, COLLECT, e.worm);
         break;
-    case GameEvent::CrateDrop: if (cur != NONE) line(cur, V::CrateDrop); break;
-    case GameEvent::CrateLand: fire(g, CRATE_DROP, NONE, addProp(e.pos, 3, false)); break;  // sender 0x5c4710 (on landing, assumed)
+    case GameEvent::CrateDrop:  // CrateGraphicEntity 0x5c4710, as the crate spawns (any type): Acting.Trigger CrateDrop, the crate as payload
+        if (cur != NONE) line(cur, V::CrateDrop);
+        for (size_t k = 0; k < g.objects.size(); k++)
+            if (g.objects[k].type == Object::Crate && Vector3Equals(g.objects[k].pos, e.pos)) { fire(g, CRATE_DROP, NONE, worms() + (int)k); break; }
+        break;
     case GameEvent::GameOver:
         for (size_t i = 0; i < actors.size(); i++)
             if (g.worms[i].alive && g.worms[i].team == g.winner) { fire(g, VICTORY, (int)i); break; }
@@ -612,7 +615,8 @@ void Acting::taunt(const Game &g, int worm, const std::string &weapon) {
         {"Bazooka", TAUNT_RANGED}, {"Cluster Grenade", TAUNT_RANGED}, {"Holy Hand Grenade", TAUNT_RANGED}, {"Banana Bomb", TAUNT_RANGED},
         {"Shotgun", TAUNT_RANGED}, {"Homing Missile", TAUNT_RANGED}, {"Sheep", TAUNT_RANGED}, {"Gas Canister", TAUNT_RANGED}, {"Old Woman", TAUNT_RANGED},
         {"Super Sheep", TAUNT_RANGED}, {"Starburst", TAUNT_RANGED}, {"Inflatable Scouser", TAUNT_RANGED},
-        {"Poison Arrow", TAUNT_RANGED}, {"Sentry Gun", TAUNT_RANGED}, {"Sniper Rifle", TAUNT_RANGED}};
+        {"Poison Arrow", TAUNT_RANGED}, {"Sentry Gun", TAUNT_RANGED}, {"Sniper Rifle", TAUNT_RANGED},
+        {"Fatkins Strike", PAYLOAD5}};  // 0x596830 leaves Fatkins at 0: TimedPayloadFive, no payload, so only the rotation moves
     if (!loaded) load();
     if (actors.size() != g.worms.size() || worm < 0) return;
     G = &g;
@@ -629,9 +633,10 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         runs.clear(), rested.clear();
         for (size_t i = 0; i < n; i++) {
             Actor &a = actors[i];
-            a.dflt = pick(g, (int)i, 1) & 0x100 ? "Frown" : "Angry", a.poison = g.worms[i].poison, a.last = g.worms[i].pos, a.hp0 = g.worms[i].hp;
+            a.dflt = pick(g, (int)i, 1) & 0x100 ? "Frown" : "Angry", a.poison = g.worms[i].poison, a.hp0 = g.worms[i].hp;
         }
         if (g.clock == 0) anyDeath = false;
+        ambientIn = (float)(pick(g, 0, 8) % 5000), ambientIdx = 0;  // 0x5b51d0: rand % 5000, rotation from 0
         lastPhase = g.phase;
     }
     lastClock = g.clock;
@@ -681,49 +686,60 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         if (a.coolMs <= 0 && a.aimMs >= 100) a.coolMs = 3000, a.targeted = true, fire(g, TARGETED, (int)i);
         else if (a.coolMs <= 0) a.targeted = false;
         // physics: blasted off (event 13, vy > 0.1 units/ms), its landing (BlastSplat 0x5a3d4d)
-        bool moved = Vector3Distance(w.pos, a.last) > 1e-3f || !w.grounded;
-        a.calm = moved ? 0 : a.calm + dt, a.last = w.pos;
+        // bored clock (graphic +0x5c, 0x5a47d0): reset by kWE 13/14 blast, 15 hard landing, 17 slide, 19 death, 21 drown, 22 fall past 0.3 units/ms
+        constexpr float HARD = 0.3f * UNIT * 1000;
+        bool ballistic = !w.grounded && !((int)i == g.current && (g.roped || g.jetting || g.chute));
+        bool fast = ballistic && w.vel.y < -HARD && a.vy >= -HARD, hard = w.grounded && a.air && a.vy <= -HARD, slide = w.motion.slide && !a.slid;
+        bool reset = a.kicked || fast || hard || slide || (g.dying() == (int)i && !a.dead) || (g.drowned((int)i) && !a.sank);
+        a.calm = reset ? 0 : fminf(a.calm + dt, 90), a.vy = w.vel.y, a.slid = w.motion.slide, a.sank = g.drowned((int)i);
+        // kWE 7 (support lost without a jump or a blast) and 17 (slide): the worm's scene stops, StopAnimation blend 200 (0x60ae60, 0x60ba40)
+        if (((!w.grounded && !a.air && !a.kicked && w.vel.y <= 0) || slide) && a.run >= 0) release(a.run), a.stopRate = 20.f / 200;
         if (!w.grounded) {
-            if (a.kicked && w.vel.y > 0.1f * UNIT * 1000 && !a.flying) a.flying = true, fire(g, BLASTED, (int)i);
-            a.air = true;
+            // kWE 13/14 and 22 put the anim in blast flight (state 4, then 3); Blasted only when taking off at vy > 0.1 units/ms (0x5a3b44)
+            if (a.kicked && !a.flying && w.vel.y > 0.1f * UNIT * 1000) fire(g, BLASTED, (int)i);
+            a.flying |= a.kicked || fast, a.air = true;
         } else if (a.air) {
-            if (a.flying) fire(g, BLAST_SPLAT, (int)i);
+            if (hard) fire(g, a.flying ? BLAST_SPLAT : FALL_SPLAT, (int)i);  // kWE 15: anim state 3 -> BlastSplat (0x5a3d4d), else FallSplat (0x5a3e75)
             a.air = a.flying = false;
         }
         a.kicked = false;
         if (g.dying() == (int)i && !a.dead && !g.drowned((int)i)) a.dead = true, fire(g, DEATH, (int)i);  // kWPS_DeathThroes (0x5a3ffb)
         if (w.poison > a.poison) fire(g, POISONED, (int)i);  // 0x5a1a89
         a.poison = w.poison;
-        // W4M Sick.Colour / Abducted.Colour weights ease in and out (rate assumed)
         a.abducted = w.abducted;  // 0x547d39 sets it as the UFO spits the worm out, poison and Worm.Antidote clear it (0x5ade00, 0x5adf13)
-        a.sickW = ease(a.sickW, w.poison > 0 ? 1.f : 0.f, dt), a.abdW = ease(a.abdW, a.abducted ? 1.f : 0.f, dt);
     }
-    // a timed payload comes to rest: TimedPayload by the whole seconds left (PayloadLogicEntity 0x577181)
+    // a Parabolic payload comes to rest, once until it moves again (0x577158 flag, cleared 0x5777da): TimedPayload by the whole seconds
+    // to its expiry (no expiry: Five), the Grenade* rows instead for Grenade.Weapon (0x577181..0x5771c0). Mines are Parabolic payloads too.
+    auto rest = [&](Vector3 p, float left, bool grenade, int prop, float moved) {  // moved: m off a known rest spot that counts as moved (ours)
+        for (Vector3 q : rested) if (Vector3Distance(q, p) < moved) return;
+        rested.push_back(p);
+        int t = left < 0 || left >= 4 ? PAYLOAD5 : PAYLOAD1 - (int)left;
+        fire(g, grenade ? GRENADE5 + (t - PAYLOAD5) : t, NONE, prop < 0 ? addProp(p, 2, true) : prop);
+    };
     for (const Projectile &s : g.shots) {
         const WeaponDef &d = WEAPONS[s.weapon];
-        if (d.kind != Kind::Shell || d.fuse <= 0 || (!dropped(d) && Vector3Length(s.vel) > 2)) continue;
-        bool seen = false;
-        for (Vector3 p : rested) seen |= Vector3Distance(p, s.pos) < 1;
-        if (seen) continue;
-        rested.push_back(s.pos);
-        int left = (int)s.fuse;
-        fire(g, left >= 4 ? PAYLOAD5 : PAYLOAD1 - left, NONE, addProp(s.pos, 2, true));
+        if (d.kind == Kind::Shell && d.fuse > 0 && (dropped(d) || Vector3Length(s.vel) <= 2)) rest(s.pos, s.fuse, d.name == "Grenade", -1, 1);
     }
-    for (size_t k = 0; k < g.objects.size(); k++) {  // an armed mine counts as a resting timed payload (assumed)
-        const Object &o = g.objects[k];
-        bool armed = o.type == Object::Mine && o.fuse >= 0 && !o.dud, seen = false;
-        for (Vector3 p : rested) seen |= Vector3Distance(p, o.pos) < 0.3f;
-        if (armed && !seen) rested.push_back(o.pos), fire(g, o.fuse >= 4 ? PAYLOAD5 : PAYLOAD1 - (int)o.fuse, NONE, worms() + (int)k);
-    }
-    // ambient triggers every 300-600 ms: Idle, Sick, Abducted, Bored (WXWormManagerService 0x5b3534, table 0x9200dc)
-    if (g.phase != Phase::GameOver && (ambientIn -= dt) <= 0) {
+    for (size_t k = 0; k < g.objects.size(); k++)
+        if (const Object &o = g.objects[k]; o.type == Object::Mine && Vector3Length(o.vel) == 0) rest(o.pos, o.fuse, false, worms() + (int)k, 0.3f);
+    // ambient triggers: Idle, Sick, Abducted, Bored (WXWormManagerService task 0x5b3280, 100 ms period, table 0x9200dc). The countdown +0x1ac
+    // loses 100 per run and fires at <= 100, then restarts at 300 + rand % 300; it is frozen while EFMV.Active (+0xe0, 0x5b34e4)
+    static float task = 0;
+    for (task += dt; task >= 0.1f; task -= 0.1f) {
+        if (g.abducting()) continue;
+        if (ambientIn > 100) { ambientIn -= 100; continue; }
         static const int CYCLE[4] = {IDLE, SICK, ABDUCTED, BORED};
         fire(g, CYCLE[ambientIdx % 4]);
         ambientIdx = (ambientIdx + 1) % 12;
-        ambientIn = (300 + pick(g, 0, 9) % 300) * MS;
+        ambientIn = 300 + (float)(pick(g, 0, 9) % 300);
     }
-    for (int r = 0; r < (int)runs.size(); r++)
-        if (runs[r].scene >= 0) runs[r].t += dt, play(r);
+    // WormScenePlayerService task 0x60b940, every 20 ms: EFMV.Active ends every scene (0x60b96c), else each track fires its events in
+    // file order while Time <= the scene clock (one blocking cursor, 0x60b6db), then the clock gains 20 ms (0x60b72b)
+    for (int r = 0; r < (int)runs.size(); r++) {
+        if (runs[r].scene >= 0 && g.abducting()) release(r);
+        if (runs[r].scene >= 0) runs[r].t += dt;
+        for (; runs[r].scene >= 0 && runs[r].t * 1000 >= runs[r].clk; runs[r].clk += 20) play(r);
+    }
     // the per-frame task queue runs on time rounded up to 20 ms (0x68d57a), the worm updates when that moved (0x5a47a0)
     static float tick = 0;
     bool step = (tick += dt) >= 0.02f;
@@ -735,6 +751,10 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         a.poseT += dt;
         // the aiming worm: weapons set Forbid Lookaround (0x59f3a0)
         if (step) lookStep(a, (int)i, (int)i == g.current && g.phase == Phase::Aim, busy[i]);
+        if (step) {  // Sick / Abducted tint weights +0x90 / +0x1ec: linear, 0.05 per update (0x5a1afd)
+            a.sickW = Clamp(a.sickW + Clamp((g.worms[i].poison > 0) - a.sickW, -0.05f, 0.05f), 0, 1);
+            a.abdW = Clamp(a.abdW + Clamp(a.abducted - a.abdW, -0.05f, 0.05f), 0, 1);
+        }
         stepFx(g, (int)i, dt);
     }
 }

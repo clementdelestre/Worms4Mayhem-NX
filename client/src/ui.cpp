@@ -49,15 +49,16 @@ const Color GOLDEN = {255, 210, 60, 255}, PANEL = {24, 74, 92, 230};  // W4M tea
 const char *RULE_LABELS[] = {"King", "Highlander", "Vampire", "Karma", "Low gravity", "Rope race", "Sudden death", nullptr};  // [7]: tr()'d
 const int RULES = 8;
 // Scheme edit page: one row per Scheme byte, in struct order. names: enum labels (min = 0).
-struct SchemeField { const char *label, *fmt; int min, max, step; const char *names[7]; };
+struct SchemeField { const char *label, *fmt; int min, max, step; const char *names[9]; };
 const SchemeField SCHEME_FIELDS[] = {
     {"Turn time", "%d s", 5, 90, 5, {}}, {"Retreat time", "%d s", 0, 10, 1, {}}, {"Hot seat time", "%d s", 0, 10, 1, {}},
     {"Round time", "%d min", 5, 60, 5, {}}, {"Worm energy", "%d", 25, 250, 25, {}}, {"Crate drops", "%d%%", 0, 100, 10, {}},
     {"Weapon crates", "%d", 0, 100, 10, {}}, {"Health crates", "%d", 0, 100, 10, {}}, {"Utility crates", "%d", 0, 100, 10, {}},
-    {"Health crate", "%d hp", 5, 100, 5, {}}, {"Mines", "%d", 0, 12, 1, {}}, {"Oil drums", "%d", 0, 12, 1, {}},
-    {"Mine fuse", nullptr, 0, 6, 1, {"0 s", "1 s", "2 s", "3 s", "4 s", "5 s", "Random"}},
-    {"Sudden death", nullptr, 0, 2, 1, {"1 HP + water", "Water rise", "1 HP"}}, {"Fall damage", nullptr, 0, 1, 1, {"Off", "On"}},
+    {"Health crate", "%d hp", 5, 100, 5, {}}, {"Mines", "%d", 0, 15, 15, {}}, {"Oil drums", "%d", 0, 10, 10, {}},  // W4M Objects: 15 mines, 10 drums
+    {"Mine fuse", nullptr, 0, 6, 1, {"0 s", "1 s", "2 s", "3 s", "4 s", "5 s", "Random", "7 s", "8 s"}},  // editor -1..5 (0x752f33), Family 8
+    {"Sudden death", nullptr, 0, 2, 1, {"1 HP", "Water only", "Draw"}}, {"Fall damage", nullptr, 0, 1, 1, {"Off", "On"}},
     {"Wind", nullptr, 0, 3, 1, {"None", "Low", "Medium", "High"}}, {"Weapons", nullptr, 0, 3, 1, {"Default", "BnG", "Crates only", "Unlimited"}},
+    {"Water rise", nullptr, 0, 3, 1, {"None", "Slow", "Medium", "Fast"}},  // FETXT.WaterNoRise / Slow / Medium / FastRise
 };
 static_assert(sizeof SCHEME_FIELDS / sizeof *SCHEME_FIELDS == sizeof(Scheme), "one row per Scheme byte");
 
@@ -1157,7 +1158,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             std::string v = !i ? (preset < 0 ? "Custom" : SCHEMES[preset].name) : "";
             if (i) {
                 const SchemeField &f = SCHEME_FIELDS[i - 1];
-                v = f.names[0] ? f.names[std::min<int>(bytes[i - 1], f.max)] : TextFormat(f.fmt, bytes[i - 1]);
+                v = f.names[0] ? f.names[bytes[i - 1] < 9 && f.names[bytes[i - 1]] ? bytes[i - 1] : f.max] : TextFormat(f.fmt, bytes[i - 1]);
             }
             if (hi) brush(r);
             text(i ? SCHEME_FIELDS[i - 1].label : "Preset", r.x + 10, r.y + 3, 22, hi ? BRIGHT : i ? CREAM : SKYBLUE);
@@ -1522,7 +1523,7 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
         in.buttons &= g.jetting ? ~Input::JUMP : ~(Input::FIRE | Input::JUMP);  // in flight FIRE is only the thrust
     }
     if (pick >= 0 && (g.held() == pick || g.shotsLeft || !g.pickable(cur.team, pick))) pick = -1;
-    if (pick >= 0) in.buttons |= Input::NEXT_WEAPON, in.aim = Input::pick(pick).aim;
+    if (pick >= 0) in.buttons = (in.buttons & ~(Input::FIRE | Input::JUMP)) | Input::NEXT_WEAPON, in.aim = Input::pick(pick).aim;  // pending pick: Controls still sees the old weapon, so a bounce press would fire it unaimed
 }
 
 // assets/ui/hud/<name>.png (or a src cell of it) scaled by s, rotated deg about pivot (src px) placed at pos
@@ -1534,26 +1535,29 @@ static bool sprite(const char *name, Vector2 pos, float s, Vector2 pivot, float 
     return true;
 }
 
-// W4M Text3DEntity (0x5fafa0): a `Text.Backing` sprite ("Name Backing.tga", hud/name_backing.png) behind the text, its middle
-// HUD.3DText.TextToBackRatio (1, 0.9) of the text's width and height, an end of BackEndWidth 0.2 (text units: assumed = 0.2 height) each side
+// W4M Text3DEntity: the `Text.Backing` sprite set ("Name Backing.tga") is 3 sprites, UV columns 0..1/6, 1/6..5/6, 5/6..1 (0x5fa9e6).
+// In text units (1 em: the FE.Font instance keeps scale 1, 0x6a6c94) the middle is TextToBackRatio (1, 0.9) of the text's advance
+// width by 1 em, each end BackEndWidth 0.2 as a half extent, so 0.4 em wide (0x5fafa0). Vertical: centred on our line box (ours).
 static void text3d(const char *t, float x, float y, float size, Color c) {
-    float w = textWidth(t, size), h = size * 0.9f, e = 0.2f * size;
+    float em = size * 50 / textFont().baseSize;  // tools/w4m-ui: 50 atlas px per em in a baseSize-px line
+    float w = textWidth(t, size), h = em * 0.9f, e = 0.4f * em;
     Texture2D b = tex("hud/name_backing");
     if (b.id) {
-        float u = b.width * 0.2f;  // ponytail: a 3-slice of the box picture; W4M picks XTexFont frames (not traced)
-        float cy = y + size / 2 - h / 2, l = x - w / 2 - e;
+        float u = b.width / 6.0f, cy = y + size / 2 - h / 2, l = x - w / 2 - e;
         DrawTexturePro(b, {0, 0, u, (float)b.height}, {l, cy, e, h}, {}, 0, WHITE);
-        DrawTexturePro(b, {u, 0, b.width - 2 * u, (float)b.height}, {l + e, cy, w, h}, {}, 0, WHITE);
-        DrawTexturePro(b, {b.width - u, 0, u, (float)b.height}, {l + e + w, cy, e, h}, {}, 0, WHITE);
+        DrawTexturePro(b, {u, 0, 4 * u, (float)b.height}, {l + e, cy, w, h}, {}, 0, WHITE);
+        DrawTexturePro(b, {5 * u, 0, u, (float)b.height}, {l + e + w, cy, e, h}, {}, 0, WHITE);
     }
     text(t, x, y, size, c, 1);
 }
 
-// PiP centre, half extents (px) and tilt (rad): HUDTWK PiP.Off/OnScreenPosition, OnScreenScale (half extents, assumed), OnScreenRotation z
+// PiP centre, half extents (px) and tilt (rad): HUDTWK PiP.Off/OnScreenPosition, OnScreenScale, OnScreenRotation z. PiPService
+// (0x635e10, 0x6360d6) multiplies position and scale by 0x4d4cc0's (0.75 aspect, clamped to 4/3..16/9; 1): x 4/3 at 16:9.
+// The scale as half extents is unverified: HUD.PiP is an XBitmapDescriptor quad built by the XOM renderer (table 0x91df5c).
 static void pipPlace(float show, float full, Vector2 &c, Vector2 &h, float &rot) {
-    const float u = 720 / 480.0f;  // HUD units: centre origin, y up, 480 high
+    const float u = 720 / 480.0f, k = Clamp(0.75f * 1280 / 720, 4 / 3.0f, 16 / 9.0f);  // HUD units: centre origin, y up, 480 high
     Vector2 on = Vector2Lerp({400, 155}, {190, 135}, show);
-    c = Vector2Lerp({640 + on.x * u, 360 - on.y * u}, {640, 360}, full), h = Vector2Lerp(Vector2Scale({120 * show, 90 * show}, u), {640, 360}, full);
+    c = Vector2Lerp({640 + on.x * k * u, 360 - on.y * u}, {640, 360}, full), h = Vector2Lerp({120 * show * k * u, 90 * show * u}, {640, 360}, full);
     rot = 0.1f * show * (1 - full);
 }
 
@@ -1699,11 +1703,11 @@ void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock) {
         };
         float o = t < 1.25f ? keys({{0, 7.258f}, {0.375f, 0.752f}, {1.25f, 0.8f}}) : keys({{1.25f, 0.8f}, {2.125f, 0.747f}, {3.332f, 0.8f}});  // Intro / Loop_Outer
         if (state >= 0 && !lock) corners(c, 50 * o, 50 * o, 0.8f * o, tint);
-        if (lock) {  // Lock_Outer 0.625 s: the corners close in on the target, then hold; Outer at its loop scale (unverified)
+        if (lock) {  // Lock_Outer 0.625 s (OnTargetSelected 0x560481, added over Loop_Outer): it keys the locators only, so Outer keeps Loop's scale
             t = float(now - lockStart);
             float x = keys({{0, 50}, {0.1666f, 9.55f}, {0.2083f, 16.45f}, {0.25f, 12.33f}, {0.2915f, 15.6f}, {0.3333f, 14.78f}});
             float y = keys({{0, 50}, {0.1666f, 9.18f}, {0.2083f, 18.27f}, {0.25f, 11.48f}, {0.2915f, 14.66f}, {0.3333f, 14.5f}});
-            corners(*lock, 0.8f * x, 0.8f * y, 0.8f * keys({{0, 0.8f}, {0.625f, 0.6f}}), WHITE);
+            corners(*lock, o * x, o * y, o * keys({{0, 0.8f}, {0.625f, 0.6f}}), WHITE);
         }
     } else if (state < 0) {
     } else if (wd.kind == Kind::Airstrike || wd.name == "Fatkins Strike") {  // Airstrike.Cursor.Mesh: 58-unit aimer, 5 x 16-unit arrows along the run
@@ -1789,7 +1793,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
     if (e.kind == GameEvent::Death && e.worm >= 0 && !announced[e.worm]) {
         const Worm &w = g.worms[e.worm];
         announced[e.worm] = 1;
-        comment(e.pos.y < g.water ? "WaterDeath" : "LandDeath", wormName(w.team, e.worm % std::max(1, g.perTeam)));
+        comment(g.drowned(e.worm) ? "WaterDeath" : "LandDeath", wormName(w.team, e.worm % std::max(1, g.perTeam)));
         bool left = false;
         for (const Worm &x : g.worms) left |= x.team == w.team && x.alive;
         if (!left && !announced[g.worms.size() + w.team]) announced[g.worms.size() + w.team] = 1, comment("TeamDeath", teamName(g.cfg, w.team).c_str());
@@ -1875,7 +1879,7 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
             const Worm &w = g.worms[i];
             HpTrack &t = hpt[i];
             long before = lroundf(t.shown);
-            float k = Clamp((g.countT - Game::COUNT_TRAVEL) / (float)g.countTicks(i), 0, 1);
+            float k = Clamp(g.countT / (float)g.countTicks(i), 0, 1);
             if (w.alive) t.from = w.counted, t.shown = w.counted + (std::max(0, w.hp) - w.counted) * k, t.poison = false, bump(i);
             ticked |= lroundf(t.shown) != before;
             Vector3 at = {w.pos.x, fmaxf(w.pos.y, g.water) + 1.2f, w.pos.z};  // drowned: the surface above it; room for the counter
@@ -1890,7 +1894,7 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
         return true;
     }
     auto pending = [&](int i) { return hpt[i].shown != hpt[i].seen; };
-    bool live = g.phase == Phase::Aim && !g.hotSeat && !g.dropping(), chain = false;  // live: the next turn's clock runs
+    bool live = g.phase == Phase::Aim && !g.hotSeat, chain = false;  // live: the next turn's clock runs
     wait -= dt;
     if (counting >= 0 && !pending(counting) && wait <= 0) counting = -1, chain = true;
     if (counting < 0 && (!live || chain)) {  // poison ticks, in hit order
@@ -1906,11 +1910,11 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     }
     if (counting < 0) {
         for (Popup &p : popups) p.live = false;
-        static size_t landed = 0;  // last falling crate: stays framed while the sim's landHold runs
+        static size_t landed = 0;  // last spawned crate: stays framed through the PostActivityTime after it rests
         const Object *crate = nullptr;
-        for (size_t i = 0; i < g.objects.size(); i++) if (g.objects[i].type == Object::Crate && g.objects[i].falling) crate = &g.objects[i], landed = i;
+        for (size_t i = 0; i < g.objects.size(); i++) if (g.objects[i].type == Object::Crate && g.objects[i].spawning) crate = &g.objects[i], landed = i;
         bool post = g.phase == Phase::Settle && g.crated && g.timer < 0;  // W4M: the PostActivityTime after the crate rests
-        if (!crate && (g.landHold > 0 || post) && landed < g.objects.size() && g.objects[landed].type == Object::Crate) crate = &g.objects[landed];
+        if (!crate && post && landed < g.objects.size() && g.objects[landed].type == Object::Crate) crate = &g.objects[landed];
         crateFocus = crate ? crateFocus - dt : 0;
         Controls::focus(crateFocus > 0 ? &crate->pos : nullptr, 0, true);
         return crateFocus > 0;

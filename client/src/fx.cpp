@@ -26,6 +26,8 @@ struct Particle {
     bool add;  // additive (fire, sparks) vs alpha (smoke, dust, debris, water)
     float stretch = 0;  // > 0: ribbon along -velocity (s of travel), size = width
     Color tail = {};  // alpha > 0: leaves a trail of additive puffs of this colour (W4M anchor particles)
+    float altN = 0, altS = 0;  // > 0: W4M IsAlternateAcceleration (0x5b7450), p = p0 + v (N - 1/(S t + 1/N)) + v.y t on y, t in ms
+    Vector3 p0{};
 };
 struct Streak { Vector3 p, dir; float len, width; unsigned char tex; };
 
@@ -227,8 +229,8 @@ void burst(Vector3 c, Color glow, unsigned char trailTex, Color trailCol) {
 }
 // W4M PARTTWK WXPF_Firework1-5 (m = units / 20). Glows (WXSprite1) additive, stars (WXSprite7) alpha. Trails additive: their
 // Bundl10 shader is alpha but the TrailSprite images have no alpha channel (black ground), so they are drawn as light.
-// Trails fly at (0, 15, 0) +-20 m/s under Mass 4.6 x Acceleration (23 m/s²). Stars and Starburst trails use W4M's alternate
-// curve r(t) = v0 (N - 1/(S t + 1/N)), approximated by drag with the same final radius and the same half-way time 1 / (S N).
+// Trails fly at (0, 15, 0) +-20 m/s under Mass 4.6 x Acceleration (23 m/s²). Stars and Starburst trails use W4M's alternate curve
+// (no gravity): v0 = ParticleVelocityRandomise x 0.01 units/ms (normalised for the stars, per axis for the trails), so r -> v0 N.
 void firework(Vector3 c, int kind) {
     auto glow = [&](int n, float size, float rand, float life, float delay, Color col) {
         for (int i = 0; i < n; i++) { float s = size + rnd(-rand, rand); add({c, {}, -delay, life, s, s, 0, 0, 0, 0, col, GLOW, true}); }
@@ -238,12 +240,13 @@ void firework(Vector3 c, int kind) {
         for (int i = 0; i < n; i++)
             add({c, {rnd(-20, 20), 15 + rnd(-20, 20), rnd(-20, 20)}, 0, life + rnd(-0.4f, 0.4f), size + rnd(-0.025f, 0.025f), 0, 0, 0, 23, 0, WHITE, t, true, 0.48f});
     };
-    auto stars = [&](int n, float radius, float life, float delay, Color col) {  // WXPF_Exploder*: N 6500, S 2e-6
-        for (int i = 0; i < n; i++) add({c, Vector3Scale(rndDir(), radius * 9), -delay, life, 0.15f, 0.15f, 0, 0, 0, 9, col, STAR, false});
+    auto alt = [&](Particle q, float n, float s) { q.altN = n, q.altS = s, q.p0 = q.p; add(q); };  // v in m/s: units/ms x 50
+    auto stars = [&](int n, float radius, float life, float delay, Color col) {  // WXPF_Exploder*: N 6500, S 2e-6; radius m = v0 N / 20
+        for (int i = 0; i < n; i++) alt({c, Vector3Scale(rndDir(), radius * 1000 / 6500), -delay, life, 0.15f, 0.15f, 0, 0, 0, 0, col, STAR, false}, 6500, 2e-6f);
     };
     auto starTrails = [&](float reach, float life) {  // WXP_StarburstTrailsA/B: 16, per-axis velocity, N 5000, S 3e-6, white
         for (int i = 0; i < 16; i++)
-            add({c, Vector3Scale({rnd(-reach, reach), rnd(-reach, reach), rnd(-reach, reach)}, 15), 0, life + rnd(-0.4f, 0.4f), 0.05f, 0, 0, 0, 0, 15, WHITE, TRAIL_B, true, 0.48f});
+            alt({c, Vector3Scale({rnd(-reach, reach), rnd(-reach, reach), rnd(-reach, reach)}, 1000 / 5000.0f), 0, life + rnd(-0.4f, 0.4f), 0.05f, 0, 0, 0, 0, 0, WHITE, TRAIL_B, true, 0.48f}, 5000, 3e-6f);
     };
     const Color FW_CYAN = {77, 255, 255, 255}, FW_ORANGE = {255, 128, 0, 255}, FW_GREEN = {0, 255, 64, 255}, STAR_COL = {255, 230, 128, 255};  // stars: white to (1, 0.8, 0)
     whiteout(0);
@@ -488,9 +491,14 @@ void update(float dt) {
         p.age += dt;
         if (p.age < 0) { i++; continue; }
         if (p.age >= p.life) { p = ps.back(); ps.pop_back(); continue; }
-        p.v = Vector3Scale(p.v, expf(-p.drag * dt));
-        p.v.y -= p.grav * dt;
-        p.p = Vector3Add(p.p, Vector3Scale(p.v, dt));
+        if (p.altN > 0) {
+            float f = p.altN - 1 / (p.altS * p.age * 1000 + 1 / p.altN);  // ms
+            p.p = Vector3Add(p.p0, Vector3Add(Vector3Scale(p.v, f / 1000), {0, p.v.y * p.age, 0}));
+        } else {
+            p.v = Vector3Scale(p.v, expf(-p.drag * dt));
+            p.v.y -= p.grav * dt;
+            p.p = Vector3Add(p.p, Vector3Scale(p.v, dt));
+        }
         p.rot += p.spin * dt;
         if (p.tail.a && rnd() < dt * 60)  // add() never reallocates (reserved MAX), so p stays valid
             add({p.p, {rnd(-0.3f, 0.3f), rnd(0, 0.3f), rnd(-0.3f, 0.3f)}, 0, rnd(0.25f, 0.41f), 0.4f, 0.05f, 0, rnd(-3, 3), -0.5f, 1, p.tail, PUFF, true});
@@ -544,7 +552,9 @@ void draw(const Camera3D &cam) {
                 Color col = p.c;
                 col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));
                 if (p.stretch > 0) {  // trail texture: u = 0 head, 1 tail
-                    Vector3 tail = Vector3Subtract(p.p, Vector3Scale(p.v, p.stretch)), w = Vector3Scale(Vector3Normalize(Vector3CrossProduct(Vector3Subtract(tail, p.p), fwd)), s);
+                    float k = p.altN > 0 ? p.altS / powf(p.altS * p.age * 1000 + 1 / p.altN, 2) : 1;  // alternate curve: f'(t)
+                    Vector3 vel = p.altN > 0 ? Vector3Add(Vector3Scale(p.v, k), {0, p.v.y, 0}) : p.v;
+                    Vector3 tail = Vector3Subtract(p.p, Vector3Scale(vel, p.stretch)), w = Vector3Scale(Vector3Normalize(Vector3CrossProduct(Vector3Subtract(tail, p.p), fwd)), s);
                     rlColor4ub(col.r, col.g, col.b, col.a);
                     rlTexCoord2f(0, 0); rlVertex3f(p.p.x + w.x, p.p.y + w.y, p.p.z + w.z);
                     rlTexCoord2f(0, 1); rlVertex3f(p.p.x - w.x, p.p.y - w.y, p.p.z - w.z);

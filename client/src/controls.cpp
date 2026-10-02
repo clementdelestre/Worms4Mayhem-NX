@@ -37,8 +37,6 @@ static uint8_t prevFire = 0;
 bool cpuTurn = false;
 static float camYaw = 0, camEl = EL0, zoom = 1, idle = 0;
 static int lastWorm = -1;
-static Vector3 lastPos{};  // the active worm last frame: walking moves it without a velocity
-static bool lastPosOk = false;
 static bool snap = false;  // new worm: swing behind it
 static float fpOut = 9;     // seconds since the first-person aim view
 static bool cut = true;     // place the camera at once (new match, in and out of first person)
@@ -50,13 +48,13 @@ static float ropeYaw = 0;
 static int ninjaIdx = 0;  // NinjaCamMkIII +0xec: next yaw offset to try, kept until one is clear
 static void resetTrack();
 static struct { bool on; float yaw, reach, idle, stick; } ch;  // the pet's ChaseCam; stick: the camera stick this frame
-struct ChaseDef { float rise, back, hi; };  // OccHeightSpeed, HeightSpeed (the way back to DefaultHeight), MaxHeight (ours: 1.2 for the animals)
-static const ChaseDef CHASE_PET = {0.4f, 0.5f, 1.2f}, CHASE_HOMING = {0.5f, 1.4f, 1.0f};  // Sheep / Old Woman / Scouser; HomingMissileChaseCamera (CAMTWK)
+struct ChaseDef { float rise, back, hi; };  // OccHeightSpeed, HeightSpeed (the way back to DefaultHeight), MaxHeight
+static const ChaseDef CHASE_PET = {0.4f, 0.45f, 1.0f}, CHASE_GRAN = {0.4f, 0.45f, 1.3f}, CHASE_HOMING = {0.5f, 1.4f, 1.0f};  // CAMTWK Sheep / Scouser, OldWoman, HomingMissile ChaseCamera
 static void chaseCam(Camera3D &cam, const Game &g, const Projectile &p, float dt, const ChaseDef &cd);
 static Vector3 focusAt{};
 static float focusR = 0;
 static float reach = 1;  // distance kept clear of a hill (fraction)
-static float overT = 0, orbitA = 0, occl = 0, petYaw = 0, petEl = 0.255f;
+static float overT = 0, orbitA = 0, petYaw = 0, petEl = 0.255f;
 
 // CMS 0x51b940: the drawn view lerps to the logical camera at its +0x50 / +0x4c / +0x54 (pos, look, up); zoom: an occluding camera
 // zooming (0x52e870), whose blended view may be retried
@@ -64,8 +62,6 @@ struct Blend { float pos = 1, look = 1, up = 1; bool zoom = false; };
 static Blend evb;              // the event camera's
 static Camera3D lg, pipView;   // the main logical camera; the PiP's drawn view
 static bool lgOk = false, cutView = true, swapView = false;  // cutView: W4M Cut flag +0x58
-
-float occluded() { return occl; }
 
 // HUDTWK PiP.*: a move of T s, accelerating over lead-in a, braking over lead-out b
 static float leadEase(float t, float T, float a, float b) {
@@ -78,7 +74,7 @@ void impact(Vector3) { sinceBoom = 0; }  // W4M: a blast moves no camera (payloa
 static float focusLeft = 0;  // a target dropped for a frame or two (between two counts, turn start) is kept: no lurch
 void focus(const Vector3 *at, float radius, bool crate) { if (at) focusOn = true, focusAt = *at, focusR = radius, focusLeft = 0.2f, focusCrate = crate; }
 
-void reset() { cut = cutView = true, lgOk = false, focusOn = false, lastWorm = -1, lastPosOk = false, fpOut = 9, tilt = 0, carry[0] = carry[1] = carry[2] = carry[3] = 0, blimpOn = false, resetTrack(); }
+void reset() { cut = cutView = true, lgOk = false, focusOn = false, lastWorm = -1, fpOut = 9, tilt = 0, carry[0] = carry[1] = carry[2] = carry[3] = 0, blimpOn = false, resetTrack(); }
 
 void load(const char *path) {
     Settings &s = settings;
@@ -332,7 +328,7 @@ Reticle reticle(const Game &g, bool chase) {
 Vector3 eye(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Subtract(w.pos, Vector3Scale(g.aimDir(w), 0.5f)); }
 
 // W4M TrackCam (docs/camera-w4m.md 2), ViewPoints in m (units / 20) around the event point (the predicted impact or landing).
-// Payload: requested when its impact point is off screen or after 1 s of flight; worm and crate: CutWhenStartOffScreen
+// Payload: asked at launch only, when its impact point is off screen or its flight to it lasts > 1 s; worm and crate: CutWhenStartOffScreen
 static const Vector3 PAYLOAD_VP[] = {{-5, 10, 15}, {5, 10, 15}, {1.25f, 2.5f, 2.5f}, {-1.25f, 2.5f, 2.5f}, {3.75f, 5, 3.75f}, {-3.75f, 5, 3.75f},
                                      {2.5f, 3.75f, -2.5f}, {-2.5f, 3.75f, -2.5f}, {2.5f, -2.5f, 3.75f}, {-2.5f, -2.5f, 3.75f}, {0, 1.5f, 0}};
 static const Vector3 FATKINS_VP[] = {{10, 5, -25}, {10, 5, 25}, {-10, 5, 25}, {-10, 5, -25}};
@@ -342,7 +338,7 @@ static const Vector3 CRATE_VP[] = {{0, 5, 15}, {0, 5, -15}, {15, 5, 0}, {-15, 5,
 struct TrackDef { const Vector3 *vp; int n; float far, pref, zoom; bool startCut; };  // Camera2ObjectDistance, MinPreferredDistance m, ZoomSpeed a CMS update
 static const TrackDef PAYLOAD_T = {PAYLOAD_VP, 11, 65, 30, 0.019f, false}, FATKINS_T = {FATKINS_VP, 4, 50, 25, 0.019f, false},
                       WORM_T = {WORM_VP, 13, 30, 10, 0.0015f, true}, CRATE_T = {CRATE_VP, 5, 25, 10, 0.009f, true};
-static struct { bool on, cutDone, force, seen, frame, dropped; int idx, prio, worm = -1, last = -1; float flight, cutAgo, rest; Vector3 e, d, obj, ov, pv; const TrackDef *def; } tk;
+static struct { bool on, cutDone, force, seen, frame, dropped, ask; int idx, prio, worm = -1, last = -1; float flight, cutAgo, rest; Vector3 e, d, obj, ov, pv; const TrackDef *def; } tk;
 static struct { int prio, worm; Vector3 e, d; float age; } pend;  // the one pending event-camera request (CMS +0x350)
 static float sinceTrack = 9, floodT = 99, lastWater = 0;
 static int lastDying = -1;
@@ -358,9 +354,15 @@ static bool tracked = false;  // an event camera had the main view last frame
 static float perFrame(float f, float dt) { return 1 - powf(1 - f, dt * 100); }
 static int updates = 1;  // CMS updates in this frame, from a 10 ms accumulator (camera())
 
+// W4M 0x51b3b0: the point projected by the drawn camera lies in front of it, inside the screen rectangle (|x|, |y| <= 1)
 static bool onScreen(const Camera3D &cam, Vector3 p) {
-    Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), to = Vector3Subtract(p, cam.position);
-    return Vector3DotProduct(f, to) > 0.8f * Vector3Length(to);
+    Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), r = Vector3CrossProduct(f, cam.up);
+    if (Vector3Length(r) < 1e-4f) return false;
+    r = Vector3Normalize(r);
+    Vector3 u = Vector3CrossProduct(r, f), to = Vector3Subtract(p, cam.position);
+    float z = Vector3DotProduct(to, f), ty = tanf(cam.fovy * 0.5f * DEG2RAD);
+    float aspect = GetScreenHeight() > 0 ? (float)GetScreenWidth() / GetScreenHeight() : 16 / 9.0f;
+    return z > 0 && fabsf(Vector3DotProduct(to, u)) <= z * ty && fabsf(Vector3DotProduct(to, r)) <= z * ty * aspect;
 }
 static bool seen(const Camera3D &cam, const Game &g, Vector3 p) {
     Vector3 to = Vector3Subtract(p, cam.position), hit;
@@ -428,14 +430,17 @@ static bool trackStep(Camera3D &cam, const Game &g, float dt) {
     cam.target = Vector3Lerp(cam.target, tk.obj, perFrame(0.1f, dt));  // LookSpeed 0.1
     Vector3 back = Vector3Subtract(cam.position, tk.obj);
     bool coming = Vector3Length(tk.ov) < 0.16f || Vector3DotProduct(Vector3Subtract(cam.target, cam.position), tk.ov) < 0;
-    if (coming && Vector3Length(back) < t.pref) {  // 0x533190: backs off an object at rest or heading at it, clipped by land
+    if (coming && Vector3Length(back) < t.pref) {  // 0x533190: backs off an object at rest or heading at it
         Vector3 want = Vector3Add(tk.obj, Vector3Scale(Vector3Normalize(back), t.pref)), w = Vector3Subtract(want, cam.position);
-        if (Vector3Length(w) > 0.01f && g.terrain.raycast({cam.position, Vector3Normalize(w)}, Vector3Length(w), &hit)) want = Vector3Lerp(cam.position, hit, 0.9f);
+        if (w.y < 0 && cam.position.y > g.water && want.y < g.water) want = Vector3Lerp(cam.position, want, (g.water - cam.position.y) / w.y);  // 0x51ae40: water
+        w = Vector3Subtract(want, cam.position);  // 0x51af90: land hit; 0x51ac40: a 5-unit sphere stops short of it
+        if (Vector3Length(w) > 0.01f && g.terrain.raycast({cam.position, Vector3Normalize(w)}, Vector3Length(w), &hit))
+            want = Vector3Subtract(hit, Vector3Scale(Vector3Normalize(w), fminf(0.25f, Vector3Distance(cam.position, hit))));
         cam.position = Vector3Lerp(cam.position, want, perFrame(t.zoom, dt));
     }
     cam.position.y = fmaxf(cam.position.y, g.water + 1);
     if (g.terrain.solid(cam.position)) cam.position.y += 0.25f * dt * 100;  // y += 5 units an update (0x533950)
-    cam.fovy = Lerp(cam.fovy, 50.0f, 1 - expf(-dt * 8));
+    cam.fovy = 50;  // the default projection: no zoom (CMS 0x51e150)
     return true;
 }
 
@@ -445,8 +450,7 @@ static void wormTrack(const Game &g, int worm, int prio, Vector3 e, Vector3 d, b
 }
 
 static void simple(Camera3D &cam, Vector3 pos, Vector3 look, float kp, float kl, float dt) {  // W4M SimpleCam: placed, drawn at (PosUpdateSpeed, LookUpdateSpeed)
-    cam.position = pos, cam.target = look, evb = {kp, kl};
-    cam.fovy = Lerp(cam.fovy, 50.0f, 1 - expf(-dt * 8));
+    cam.position = pos, cam.target = look, evb = {kp, kl}, cam.fovy = 50;
 }
 
 // framing: the death or hp-count close-up, W4M's "Worm Dying" / "Worm Displaying Damage Taken" WormTrackCamera (0x51cf20, 5)
@@ -551,7 +555,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     }
     fly.on = false;
     if (wd && !s->child && (wd->kind == Kind::Sheep || wd->kind == Kind::SuperSheep || wd->kind == Kind::OldWoman || wd->kind == Kind::Scouser || (wd->kind == Kind::Homing && wd->avoid)))
-        return chaseCam(cam, g, *s, dt, wd->kind == Kind::Homing ? CHASE_HOMING : CHASE_PET), true;  // ChaseCameraPropertiesContainer: served at once (0x51d5e0)
+        return chaseCam(cam, g, *s, dt, wd->kind == Kind::Homing ? CHASE_HOMING : wd->kind == Kind::OldWoman ? CHASE_GRAN : CHASE_PET), true;  // ChaseCameraPropertiesContainer: served at once (0x51d5e0)
     ch.on = false;
     bool fat = wd && (wd->name == "Fatkins Strike" || (customWeapon(s->weapon) && wd->kind == Kind::Airstrike && s->child));  // FatkinsTrackCamera (0x5993e0: also the Factory airstrike)
     if (wd && wd->kind == Kind::Donkey && !fat) {  // DonkeyCamera: fixed on the side (+z 500 units), look-at donkey + 100 units at 0.1/frame
@@ -572,19 +576,21 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     if (tk.flight == 0 || Vector3Distance(s->vel, tk.pv) > 1.5f) {  // launch or bounce: FindFirstEvent 0x576580 (0x574e90, sweep 0x466ae0)
         Vector3 p = s->pos, v = s->vel, hv;  // the event: its first predicted land / water contact, or where the fuse runs out
         float fuse = wd->fuse > 0 && !wd->restFuse && !s->child ? s->fuse : 1e9f;
-        for (int k = 0; k < 600 && p.y > g.water && (fuse -= Game::DT) > 0; k++) {
+        int k = 0;
+        for (; k < 600 && p.y > g.water && (fuse -= Game::DT) > 0; k++) {
             v.y -= g.gravity() * (s->child ? 1 : wd->grav) * Game::DT;
-            if (wd->wind || (g.cfg.wormpot & WP_WIND_ALL)) v.x += g.wind * Game::WIND_ACCEL * Game::DT;
+            if (g.windy(int(wd - WEAPONS.data()))) v.x += g.wind * Game::WIND_ACCEL * Game::DT, v.z += g.windZ * Game::WIND_ACCEL * Game::DT;
             Vector3 n = Vector3Add(p, Vector3Scale(v, Game::DT));
             if (g.terrain.solid(n)) break;
             p = n;
         }
         hv = {v.x, 0, v.z};
         tk.e = p, tk.d = Vector3Length(hv) > 0.1f ? Vector3Normalize(hv) : Vector3{sinf(g.worms[g.current].yaw), 0, cosf(g.worms[g.current].yaw)};
-        if (!tk.on) tk.flight = 0;  // +0x1a8: flight time since the last event
+        // 0x575320, run once at launch (task message 0x40, 0x577530): +0x1a8 = predicted ms to that event; bounces ask nothing
+        if (tk.flight == 0) tk.ask = k > 0 && (!onScreen(cam, tk.e) || k * Game::DT > 1);
     }
     tk.flight += dt, tk.obj = s->pos, tk.ov = tk.pv = s->vel;
-    if (!tk.on && tk.flight < 1 && onScreen(cam, tk.e)) return chase = false, false;  // ShoulderCamera meanwhile
+    if (!tk.on && !tk.ask) return chase = false, false;  // ShoulderCamera for the whole flight
     tk.on = true, tk.rest = 1.5f, tk.prio = 2, tk.def = fat ? &FATKINS_T : &PAYLOAD_T;
     return trackStep(cam, g, dt);
 }
@@ -633,7 +639,15 @@ static void chaseCam(Camera3D &cam, const Game &g, const Projectile &p, float dt
     cam.target = from, cam.position = Vector3Add(from, Vector3Scale(to, ch.reach));
     for (int i = 0; i < 40 && g.terrain.solid(cam.position); i++) cam.position.y += 0.25f;
     cam.position.y = fmaxf(cam.position.y, from.y + 0.5f);
-    cam.fovy = Lerp(cam.fovy, 50.0f, 1 - expf(-dt * 8));
+    cam.fovy = 50;
+}
+
+// CMS 0x51e150: the drawn camera's projection (tan of the half fov) eases to default x the logical camera's zoom +0x5c by
+// 0.9 / 0.1 an update; a zoom of 1 is the default projection at once (0x51e0d0)
+static float lensFov(float fov0, float zoom, float dt) {
+    static float lens = 1;
+    lens = zoom == 1 ? 1 : lens + (zoom - lens) * perFrame(0.1f, dt);
+    return 2 * atanf(tanf(fov0 * 0.5f * DEG2RAD) * lens) * RAD2DEG;
 }
 
 // The logical cameras: cam the main one, pipCam the event one; drawn: the view on screen last frame; b: cam's blend factors
@@ -677,12 +691,6 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         cut = false, fpOut += dt;
         return;
     }
-    // CMS 0x51e150: the lens shape (tan of the half fov) eases to default x zoom by 0.9 / 0.1 a frame; one lens for Blimp and HeadCam
-    auto lensFov = [dt](float fov0, float zoom) {
-        static float lens = 1;
-        lens += (zoom - lens) * perFrame(0.1f, dt);
-        return 2 * atanf(tanf(fov0 * 0.5f * DEG2RAD) * lens) * RAD2DEG;
-    };
     static bool inBlimp = false;
     if (!focusOn && targetView(g)) {  // W4M Blimp (IsometricCam): the sim's camera, drawn at Camera.Blimp.UpdateSpeed 0.05 (0x52a57d)
         if (!inBlimp) blimpZoom = 1;
@@ -690,7 +698,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         bool live = g.cursorOn && targeted(WEAPONS[g.weapon].kind);  // before the first TARGET tick, or a CPU: around its aim point
         Vector3 f = live ? g.cursor : Vector3Add(g.target(), {0, Game::BLIMP_LIFT, 0});
         float y = live ? g.cursorYaw : cur.yaw, p = live ? g.cursorPitch : Game::BLIMP_PITCH;
-        cam.target = f, cam.position = g.blimpEye(f, y, p), cam.fovy = lensFov(50, blimpZoom);
+        cam.target = f, cam.position = g.blimpEye(f, y, p), cam.fovy = lensFov(50, blimpZoom, dt);
         cam.up = {sinf(y) * sinf(p), cosf(p), cosf(y) * sinf(p)};  // W4M 0x52a0a0: up = R(pitch, yaw) (0, 1, 0), never along the view
         inBlimp = true, fpOut += dt, cut = false, b = {0.05f, 0.05f, 0.05f};
         return;
@@ -702,21 +710,20 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         float fov = scope ? 25.0f : fine ? 42.0f : 60.0f;
         static float head = 1;  // W4M HeadCam zoom (0x91f31c)
         bool bino = WEAPONS[g.weapon].kind == Kind::Binoculars;
-        head = bino ? g.scoutZoom(head, dt) : 1, fov = lensFov(fov, head);
-        cam.position = e, cam.target = f, b = {cur.grounded ? 0.15f : 1, 1};  // HeadCam 0x528d70: 0.15 while the worm is Ambulatory, else 1
-        cam.fovy = fpOut > 0 || bino ? fov : Lerp(cam.fovy, fov, 1 - expf(-dt * 8));
+        head = bino ? g.scoutZoom(head, dt) : 1, fov = lensFov(fov, head, dt);
+        cam.position = e, cam.target = f, b = {g.ambulatory(cur) ? 0.15f : 1, 1};  // HeadCam 0x528d70: 0.15 while the worm is Ambulatory (state 0), else 1
+        cam.fovy = fov;
         fpOut = 0, cut = false;
         return;
     }
-    bool own = (g.phase == Phase::Flying || g.phase == Phase::Retreat) && cur.alive;  // the turn is still the worm's
+    bool own = g.retreating() && cur.alive;  // W4M RetreatTimeRemaining > 0
     if (!tracked && !pip.mode) pipCam = drawn;  // TrackCam 0x5337c0 inherits the camera before
     bool ev = track(pipCam, g, chase, dt, focusOn && !focusCrate);
     pip.t += dt;
     // 0x51d360 / 0x51d760 (+0x2c0): an event camera is served full screen, unless PhysicsOverride bit 0 (set by the jetpack only, 0x56246f)
-    // or retreat time left and the worm moving; chase 0x51d5e0 tests the bit alone. Timer.RetreatTimedOut sends it full screen (0x523aaa)
-    bool walked = lastPosOk && Vector3Distance(cur.pos, lastPos) > 1e-3f;  // W4M Velocity +0x50 is set by the walk too (assumed)
-    lastPos = cur.pos, lastPosOk = true;
-    bool astir = Vector3Length(cur.vel) > 0.01f || walked;
+    // or retreat time left and the worm's Velocity non-zero (a walk step sets it to InputImpulse: 0x5b1899, Game::walkVel);
+    // chase 0x51d5e0 tests the bit alone. Timer.RetreatTimedOut sends it full screen (0x523aaa)
+    bool astir = Vector3Length(cur.vel) > 0 || Vector3Length(g.walkVel) > 0;
     if (ev && !tracked && !pip.mode && !tk.force && (g.jetting || (own && astir && !ch.on))) pip = {1, 0}, pipView = pipCam;
     if (pip.mode == 1 && (!ev || (!own && g.phase != Phase::Aim))) pip = {ev ? 3 : 2, 0};  // retreat over: PiP.GoFullScreen; the camera is done: PiP.SlideOff
     if (pip.mode == 3 && pip.t >= 0.5f) cam = pipCam, tracked = swapView = true, pip = {};  // FullScreenTime 500 ms: the PiP's view becomes the main one
@@ -733,12 +740,13 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         Vector3 e = Vector3Add(cur.pos, {-sinf(cur.yaw) * cosf(jetEl) * L, sinf(jetEl) * L, -cosf(cur.yaw) * cosf(jetEl) * L});
         e.y = fmaxf(e.y, g.water + 0.25f);  // over Water.Level + 5 units
         jetK += (0.995f - jetK) * perFrame(0.0005f, dt);  // 0x52b6df: toward PosUpdateSpeed 0.995 at 0.0005 an update
-        cam.position = e, cam.target = cur.pos, cam.fovy = 50, b = {jetK, 1};
+        cam.position = e, cam.target = cur.pos, cam.fovy = 50, b = {jetK, 0.2f, 0.2f};  // Camera.Jetpack.Look / UpUpdateSpeed (0x52b30f)
         fpOut += dt, cut = false;
         return;
     }
     jetEl = 0.5f, jetK = 0;
     Vector3 focus = focusOn ? focusAt : cur.pos, from = focus, want;
+    if (!focusOn) focus.y = from.y = fmaxf(focus.y, g.water - 0.35f);  // 0x52e6e0: the target stops at Water.Level - Worm.Drown.HeightOffset 7
     if (focusOn) chase = false;
     if (chase) from = focus = onBlast ? blast : Vector3Add(g.shots[0].pos, Vector3Scale(g.shots[0].vel, 0.1f));  // lead the shot a little
     const Worm *champ = nullptr;  // W4M game over: the winner 4 s (WormTrackCamera), then the orbit
@@ -761,12 +769,13 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     }
     Vector3 hit, to = Vector3Subtract(want, from);
     bool ninja = g.roped && !focusOn && !chase;
-    if (orbit) {  // W4M OrbitCam: Land.Center at max((top + water + 20) / 2, water + 20), radius + 200, height 450 units, 0.3 rad/s
+    if (orbit) {  // W4M OrbitCam 0x5310d0 / 0x530e30: look-at Land.Center at max((top + low) / 2, low), low = water + 20 units, radius + 200
         float top = g.terrain.colTop.empty() ? 20 : g.terrain.colTop.back() * Terrain::VOX, low = g.water + 1, mid = fmaxf((low + top) / 2, low);
-        orbitA = overT - dt <= 4 ? atan2f(cam.position.x - Terrain::NX * Terrain::VOX / 2, cam.position.z - Terrain::NZ * Terrain::VOX / 2) : orbitA + dt * 0.3f;
+        Vector3 d = Vector3Subtract(cam.target, cam.position);  // starts behind the logical view before (0x91e8e8), then 0.1 x 0.02 an update
+        orbitA = overT - dt <= 4 ? atan2f(d.x, d.z) + PI : orbitA + dt * 0.2f;
         float R = Terrain::NX * Terrain::VOX / 2 + 10;
         focus = {Terrain::NX * Terrain::VOX / 2, mid, Terrain::NZ * Terrain::VOX / 2};
-        want = {focus.x + sinf(orbitA) * R, mid + 22.5f, focus.z + cosf(orbitA) * R};
+        want = {focus.x + sinf(orbitA) * R, fmaxf(mid + sinf(0.8f * orbitA) * (mid - low), low), focus.z + cosf(orbitA) * R};
     } else if (chase) want.y = fmaxf(want.y, cur.pos.y + 4);  // donkey/airstrike dig below the surface: stay above ground
     else if (ninja) {  // NinjaCamMkIII 0x52d3c0: never zooms in (OccZoomInSpeed 0), eases back to 400 units at OccZoomOutSpeed 0.04 a frame
         reach = cut ? 1 : reach + (1 - reach) * perFrame(0.04f, dt);
@@ -788,15 +797,14 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         want = Vector3Add(from, Vector3Scale(to, reach));
     }
     cam.target = focus, cam.position = want;  // OccludingCam 0x530690 places it; the blend smooths the view
-    for (int i = 0; i < 40 && (chase || orbit) && g.terrain.solid(cam.position); i++) cam.position.y += 0.25f;  // ours (no W4M camera here): out of the land
+    if (float d = Vector3Distance(want, from); !orbit && !chase && !ninja && d < 1.25f)  // 0x5308ac: under 25 units, look toward camera height
+        cam.target.y = Lerp(want.y, cam.target.y, 0.5f * d / 1.25f);
+    if (!orbit && !chase) cam.position.y = fmaxf(cam.position.y, g.water + 0.25f), cam.target.y = fmaxf(cam.target.y, g.water + 0.25f);  // Water.Level + 5 (0x5308ff, 0x52d3c0)
+    for (int i = 0; i < 40 && chase && g.terrain.solid(cam.position); i++) cam.position.y += 0.25f;  // ours (no W4M camera here): out of the land
     Vector3 back = Vector3Subtract(cam.position, from);  // following (not flying back from afar): never behind the scenery, pulled in front of it
     if (!orbit && !chase && !ninja && Vector3Length(back) < Vector3Length(to) + 2 && occludes(g, from, cam.position, &hit, true))
         cam.position = Vector3Add(from, Vector3Scale(Vector3Normalize(back), fmaxf(0.9f * Vector3Distance(from, hit) - 0.3f, 0.6f)));
-    Vector3 eyeTo = Vector3Subtract(cur.pos, drawn.position);
-    float near = Clamp((2.5f - Vector3Length(eyeTo)) / 1.25f, 0, 1);  // W4M WormOpaqueDist 50 / WormTransparencyDist 25 units
-    bool hid = Vector3Length(eyeTo) > 0.6f && g.terrain.raycast({drawn.position, Vector3Normalize(eyeTo)}, Vector3Length(eyeTo) - 0.5f, &hit);
-    occl += (fmaxf(near, hid) - occl) * (1 - expf(-dt * 12));
-    cam.fovy = cut ? 50 : Lerp(cam.fovy, 50.0f, 1 - expf(-dt * 8));
+    cam.fovy = lensFov(50, 1, dt);
     cut = false;
 }
 

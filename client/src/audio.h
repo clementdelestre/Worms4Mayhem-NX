@@ -27,6 +27,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  BatImpact,  // weapons/BaseballBatImpact: WXP_AbdTelep_Central's EmitterSoundFX (an abductee's Zap)
                  BubbleInflate, BubbleWobble, BubbleLoop,  // W4M BubbleTroubleGraphicEntity: the bubble appears (0x54e920) / is hit (0x54e480); its machine runs
                  Throw, SecretLaunch,  // W4M weapons/Throw, weapons/SecretWeapLaunch: LaunchSfx of a Factory thrown / launched weapon (0x598fc0, 0x599167)
+                 TickSlow,  // W4M weapons/ClockSlow (HudClockEntity 0x5efd80); Tick is ClockFast
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
@@ -36,6 +37,7 @@ enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
 
 void init();
 void shutdown();
+void stopSfx();  // cut every sound effect and voice line (replay skipped, match left); music untouched
 void update();  // call once per frame: streams music
 void listen(const Camera3D &cam);  // 3D events fade with the distance to it (W4M FEV min/max) and pan
 // Gain, 3D range and max playbacks come from the W4M event table in audio.cpp; volume scales it.
@@ -43,7 +45,7 @@ void play(Sfx id, float volume = 1.0f);
 void play(Sfx id, Vector3 at);  // 3D events attenuated at `at`, 2D ones as play(id)
 void equip(const char *weapon, Vector3 at);  // W4M WeaponAccessoryEntity 0x5950c0: the weapon's EquipSfx, none for most animals and melee
 void hold(Sfx id, bool on, const Vector3 *at = nullptr);  // call every frame: one pass from the rising edge, cut at the falling edge
-void loop(Sfx id, bool on, const Vector3 *at = nullptr);  // call every frame: keeps one variant replaying while on
+void loop(Sfx id, bool on, const Vector3 *at = nullptr, float volume = 1);  // call every frame: keeps one variant replaying while on
 void voice(int team, Voice id);  // team i speaks with its bank (setTeamVoice), default i % bank count (banks = dirs under voices/)
 void voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
 int voiceBanks();

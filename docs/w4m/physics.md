@@ -1,0 +1,547 @@
+# W4M worms: physics states, collision, animation
+
+Part of the W4M map (index, tools, tags: [README.md](README.md)).
+
+## 5. Worms: physics states and ground collision
+### Physics state enum kWPS_* (data: pointer table at file off 0x50b0f4..., order)
+0 Ambulatory, 1 DetectJump, 2 Ballistic, 3 Sliding, 4 Vaulting, 5 Override, 6 Passive, 7 DeathThroes, 8 DrownFloat, 9 Undefined.
+Confidence: data (table order) + disasm (UpdateWalking writes 4 on "->Vaulting", 6 on passive; 7/8 skipped as dead).
+Stored at pData+0xF0 (pData = per-worm physics data arg passed to Update* funcs; disasm).
+
+### WXWormLogicEntity functions (disasm, via debug strings)
+- 0x5a5d30 / 0x5d59c0: read WXWorm.SlideAngle_Default/_Slippy, SlideFriction_Default/_Slippy, JumpHeight/Distance
+- 0x5a6af0 EstablishPhysicsState; 0x5aa7f0 ChangeState (logs "Worm Sliding"); 0x5aaac0 Activate (spawn placement: partial X/Y, left/right up/down probes)
+- 0x5ab3d0 CalculateGlobalControlInput; 0x5a9880 reads Worm.Walk.Speed; 0x5ac3e0 Worm.FallDamageRatio
+- 0x5acba0 Fall (->Ballistic); 0x5acea0 Rebound; 0x5ad010 ImpulseWorm; 0x5adcf0 MsgOverridePhysics; 0x5aea10 UpdateBurning
+- 0x5aecb0 UpdatePassive; 0x5afbe0 UpdateSliding (-> Ambulatory + kWE_Landed); 0x5b0da0 UpdateWalking; 0x5b1d60 Update (dispatcher)
+- 0x5c02c0 reads Worm.BounceMultiplier(Default), Worm.SlideStopVel(Default)
+- Worm.StepUpHeight and Worm.WalkOffCliffVelMulti: NOT present as strings in the PC exe (data). The walk-off Fall 0x5b14c7 passes Velocity = InputImpulse (ebp = pData+0x68), no multiplier [disasm].
+
+### Worm land probe object (WXWormLogicEntity+0x24) (disasm + data)
+- Init 0x59ef40(points, flags, edgePairs, nPoints<=16, nEdges); worm instance built in 0x59f1e0 with points 0x91ffc8 (8), edges 0x91ffc0 (3).
+- Points (x,y,z, Y up, worm-local, NOT rotated by facing as far as seen): foot tripod (4,0,-3) (-4,0,-3) (0,0,5) (0,0,0); head copies at y=20.
+- Edges: (0,4) (1,5) (2,6) = three vertical rods 20 high. The centre point (3/7) is not an edge.
+- 0x59ec70 CastRays(start, dir, ?, maxLen, mask): for each point bit in mask, ray from start+P[i] via 0x466ae0 (land ray); stores per-ray hit dist (+0x18c+4i), hit flag (+0x1cc+i), hit point (+0xc+12i), nearest index (+0x1dc, 0x7f=none), nearest dist (+0x1e0), hit count (+0x1e4). Returns hitcount>0.
+- 0x59edf0 Fits(pos): for each edge, segment pos+P[a] -> along (P[b]-P[a])*0.01, len 100 (= full rod) via 0x466ae0; any hit -> false. ONLY 3 thin vertical rods are tested: no volume, no sphere, no centre rod.
+- 0x59ec00 HitPointRel(i|0x7f=nearest) = hitPoint - P[i]; 0x59ef10/0x59eee0 material/surface ids of hit; 0x59ef90 ground normal from hit points (needs >=2 hits).
+
+### State dispatch (disasm: Update 0x5b1d60, switch on pData+0xF0, jumptable 0x5b2248)
+0 Ambulatory -> 0x5b0da0 UpdateWalking | 1 DetectJump -> 0x5aefa0 | 2 Ballistic -> 0x5af430 | 3 Sliding -> 0x5afbe0
+4 Vaulting -> 0x5aca80 | 5 Override -> 0x5ab3d0 (control input only) | 6 Passive -> 0x5b0c20 | 7 DeathThroes -> 0x5aa080 | 8 DrownFloat -> 0x5aa130 | 9 Undefined -> log.
+ChangeState = 0x5aa7f0(pData, newState). 7/8 are sticky (walking never overrides them).
+
+### Land ray primitive 0x466ae0 (disasm)
+(start, stepVec, ?, nSteps:int, flags...) marches nSteps samples of stepVec; results in globals: 0x952cf8 hit dist, 0x952cfc hit step (>nSteps = miss), 0x952d4c hit point, 0x952ce8/0x952c64 surface ids. Discrete sampling: nSteps integer samples, so features thinner than one step can be skipped [disasm].
+
+### Slide thresholds (disasm 0x5a5d30)
+0x92009c[0]=cos(SlideAngle_Default deg), [1]=cos(SlideAngle_Slippy); 0x9200a4.. Slide friction; 0x9200ac.. squared StartSlideVel/StopSlideVel (Default/Slippy). Also reads Gravity.
+0x4adda0(normal, mat) = normal.y >= cos(SlideAngle[mat]) ("WormShouldNotSlipOnLand").
+
+### UpdateWalking 0x5b0da0 algorithm (disasm; constants data)
+1. If entity+0x54==0 (not pData+0x54, see §11) -> Passive(6). If 0x5ac390 -> UpdatePassive. If no move input (0x5ab3d0 false) -> idle branch: if standing surface id (ent+0xE8, 0xFFFF=none) no longer valid -> Ballistic(2); else zero vel, facing/anim upkeep.
+2. disp = vel(pData+0x68)*20*k (k from 0x69db80, /0.004); cand = pos(pData+0x38)+disp.
+   Facing (0x5b1040-0x5b107c): if |InputImpulse| != 0, Orientation (pData+0x8c) = (0, 0x519120(InputImpulse), 0), the yaw of the camera-relative input (0x5ab3d0): an instant snap, no turn rate. The worm moves along the input, not along its old facing.
+3. Ground probe: CastRays(cand + (0,20,0), down, len 200, mask 0xF = 4 foot points). d = 20 - nearestDist = height of HIGHEST of the 4 hits relative to foot. Miss -> d about -181.
+4. d > 20: blocked, no move (return).
+5. 5 < d <= 20 (ledge higher than hardcoded 5.0 @0x8244fc = TWEAK StepUpHeight, which the exe never reads): cand = nearest hit point +0.1y; ground normal from rays; sphere resolve (0x519ed0) may replace cand; require 0x4adda0 walkable and Fits(cand); then store old pos (ent+0xEC), target (ent+0x104), timer 250 (ent+0x110), pos unchanged -> Vaulting(4) ("WormShouldNotSlipOnLand ->Vaulting").
+6. -5 <= d <= 5 (normal step, @0x5b154a): cand = nearest hit +0.1y; sphere resolve. If sphere contact: n.y < -0.1 -> blocked; n.y <= 0.8 -> cand -= 15*n, cand.y += 10, resolve again, Fits -> Vaulting ("ResolveSphericalCollisions ->Vaulting"). No contact: walkable check, then Fits(cand) retried raising y by +1.0: y..y+4 accepted, y+5 rejected (§11 push-out) -> set pos; if ground n.y < cos(SlideAngle[mat]) -> Sliding(3).
+7. d < -5 (drop/miss): cand.y = y-5, 0x51a510 sphere sweep; if contact and Fits -> place. Else Fits(cand at old y) -> Fall() 0x5acba0 (Ballistic). Else raise y by +1..+5 (y+6 rejected, §11 push-out) then place, else blocked.
+
+### Vaulting 0x5aca80 (disasm)
+See §11 "Vaulting 0x5aca80" for the full trace (start, abort, end, inputs).
+
+### Sphere resolver 0x519ed0 (CollisionManagerService, worm sphere ent+0x28) (disasm)
+Sets own bound sphere centre at pos (+radius in y unless flag), iterates contacts (fn ptr 0x95c25c). Contact 1: push out along contact normal to touching distance. Contact 2: solve 2-sphere intersection circle. Contact 3+ (jumptable 0x51a4f4 cases 2,3): give up, return the fallback/old position. Sphere-vs-sphere entities (worms, crates, drums, LandFramePseudoEntity), NOT the voxel land.
+
+### Why worms can enter scenery in corners (assessment: disasm + reasoning)
+- Body vs land = only 3 thin vertical rods (x=+-4,z=-3 and z=+5, 20 tall, Fits 0x59edf0); no centre rod, no width beyond 4-5 units, no ceiling/forward probe. A concave corner or overhang edge passing between rods is never seen.
+- Push-out is vertical-only (+1 unit, max 6 tries); no lateral push or iteration toward a free direction.
+- Ground height = MAX of 4 downward rays from 20 above; the start point can already be inside an overhang (ray starts in solid -> treated as hit at 0 -> d=20 boundary).
+- Vault target accepted from a single Fits test then interpolated with no further checks; sphere resolver gives up after 2 contacts.
+- Ray is step-sampled (integer steps), can skip thin features.
+
+## 11. Worms: physics state handlers and animation (extends §5)
+
+Tags: **data** = read from the exe or the tweaks, **disasm** = read from code, **assumed** = inferred, not verified.
+Units: the logic step is 20 ms. Velocities are in units/ms and accelerations in units/ms². A worm is 20 units tall (the land probe rods, §5). Angles are in radians.
+
+### pData = `WormDataContainer` (data: `pe.py schema '^WormDataContainer$'`)
+
+The `pData` argument that every `Update*` receives is the serialised `WormDataContainer`. The field names below come from its schema:
+
+| off | field | used as |
+|---|---|---|
+| +0x38 | Position | pos |
+| +0x50 | Velocity | ballistic or slide velocity |
+| +0x5c | Aftertouch | air-steer velocity, added to Velocity when moving but never accelerated |
+| +0x68 | InputImpulse | control input vector (`CalculateGlobalControlInput` 0x5ab3d0) |
+| +0x74 | Acceleration | gravity (+ wind), set by 0x5a6d20 |
+| +0x80 | SupportNormal | ground normal, written on landing |
+| +0x8c / +0x90 | Orientation (vec3, yaw at +0x90) | facing |
+| +0x98 | AngularVelocity | – |
+| +0xe8 | PhysicsOverride | – |
+| +0xec | Flags | bit0 = aftertouch (air control) on; 0x40 = skip the next fall damage once; 0x800 = no fall damage; 0x8040 / 0x8840 = no slide or hard-land on landing; 0x1000 = jump disabled; 0x20 = see 0x5ac390 (all disasm, meanings assumed from use) |
+| +0xf0 | PhysicsState | kWPS_* |
+| +0x114 | LogicAnimState (u32) | no gameplay writer in the exe: only the XOM default 0 (0x64cc5f). Lua sets it to 10 (countingsheep-w3d FunkySheep, helterskelter-w3d LookBaddie1-3). Its only reader, HudActiveWormArrowEntity 0x5ef6b4, skips the active-worm arrow update 0x5ee7f0 while it is 10 [disasm+data] |
+| +0x120 / +0x122 | SupportFrame / SupportVoxel | written on landing (Ballistic, Sliding) |
+| +0x124 | Active | cleared when DeathThroes / DrownFloat ends |
+| +0x12f | IsAfterTouching | – |
+| +0x130 | MovedByImpulse | tested by ImpulseWorm |
+
+Correction to the existing "UpdateWalking" text: the "no physics owner → Passive" test reads **entity** +0x54, not pData (`this` = esi at 0x5b0dd4). This flag is non-zero for the worm in control (assumed). Every other worm is put into Passive (6).
+
+Entity (WXWormLogicEntity) fields seen (disasm):
+
+- +0x20: the event sink (WXWormGraphicEntity), queue at +0x178 / +0x184.
+- +0x24: the land probe. +0x28: the collision sphere.
+- +0x44: the surface material index (0 Default, 1 Slippy).
+- +0xdc: a "force hard land" flag.
+- +0xe8: the support surface id (0xFFFF = none).
+- +0x114 / +0x118: jump timer and jump kind. +0x11c: slide time.
+- +0x120 / +0x124: slide spin and its target.
+- +0x128: death timer. +0x12c: stuck counter.
+- +0x244: the last queued event.
+
+Cached data handles (0x5a9880, data):
+
+| off | key |
+|---|---|
+| +0xa4 | DamageGraphic.Amount |
+| +0xa8 | DamageGraphic.Position |
+| +0xac | Water.Level |
+| +0xb0 | Worm.Drown.HeightOffset |
+| +0xb4 | Worm.WeaponDisableMovement |
+| +0xb8 | Worm.VelocityScale |
+| +0xd4 | Worm.Walk.Speed |
+| +0xd8 | WormPot |
+| +0xbc.. | AimMouseLR, AnalogueAimLR, Zap.* |
+
+#### Integration and gravity (disasm)
+
+- **Integrate 0x5a6e90(pData)**: `pos += (Velocity + Aftertouch)*20 + Acceleration*200`, then `Velocity += Acceleration*20`. It is an exact constant-acceleration step with dt = 20 ms. **No drag and no terminal-velocity clamp.**
+- **SetAcceleration 0x5a6d20**, called from ChangeState 0x5aa7f0 and from 0x5a9ac0:
+  - `Acceleration = (0, Gravity × Low.Gravity.Multiplier, 0)`;
+  - plus, when `WormPot.WindAffectsWorms` (+0x53) is set, `Wind.Speed × (cos Wind.Direction, 0, sin Wind.Direction) × WormPot.WindScale` (wind 0x5a6040).
+  - Values: Gravity −0.00025 (WEAPTWK); Low.Gravity.Multiplier 1.0 (LOCAL), 0.5 when low gravity is on (`Low.Gravity.OnValue`, TWEAK). Data.
+- **Air steer 0x5a6fe0**, run each Ballistic frame when Flags bit0 is set:
+  - `Aftertouch += InputImpulse × WXWorm.AftertouchDelta`;
+  - then `|Aftertouch|` is clamped to `WXWorm.AftertouchStrength`.
+  - Values 0.015 and 0.1 (TWEAK). Globals 0x95fb70 / 0x95fb74 (squared) / 0x95fb78.
+
+#### Jump launch values (loader 0x5a5d30, disasm + data)
+
+| global | value | formula | default |
+|---|---|---|---|
+| 0x95fb94 | jump vy | sqrt(−2·g·JumpHeight) | 0.15811 (H 50) |
+| 0x95fb90 | jump vx | JumpDistance / (−2·vyJump/g) | 0.063246 (D 80) |
+| 0x95fb8c / 0x95fb88 | forward-flip vy / vx | sqrt(−2·g·ForwardFlipHeight); ForwardFlipDistance / (−2·**vyJump**/g) | 0.2 / 0.031623 |
+| 0x95fb84 / 0x95fb80 | backflip vy / vx | same, with Backflip* | 0.2 / 0.031623 |
+| 0x95fb7c | vertical jump vy | sqrt(−2·g·VerticalJumpHeight) | 0.18708 (H 70) |
+
+Exe quirk (disasm, at 0x5a5f3f and 0x5a5fac): the flip horizontal speeds divide by the **normal jump's** air time (1265 ms), not the flip's own (1600 ms). Flips therefore travel about 50.6 units, not the 40 that the tweak says.
+
+`Worm.Jump.Forward/Backward/Backflip/Upward` (TWEAK vectors) are read only by AI code 0x4af3f0, not by the worm physics. `Worm.MaxSlope*`, `Worm.WalkAnimSpeedScale`, `Worm.CreepAnimSpeedScale`, `Worm.HopTest.*` and `Worm.Hop.Velocity` have no string in the exe, so they are unused (data).
+
+### Physics state handlers (disasm unless tagged)
+
+#### StartJump 0x5acd40 → DetectJump (1)
+
+- Runs at the end of every walking step.
+- If the jump button is pressed (entity +0x31 bit0) and Flags & 0x1000 is clear:
+  - QueueEvent(2 = Jump_Start);
+  - jump window = **300 ms** (+0x114 = 0x12c);
+  - kind = 2 ("held") (+0x118 = 2);
+  - state → DetectJump (1). Coming from Vaulting, the position first snaps to the vault target.
+
+#### DetectJump 0x5aefa0
+
+Each frame:
+
+- While kind is 2, releasing the button (entity +0x31 bit1 cleared) turns it into kind 0 and records the hold time.
+- A second press during the window (bit0) turns kind 0 into kind 1.
+- The window counts down by 20 ms. When it ends, the launch depends on the kind:
+
+| kind | condition | launch | event |
+|---|---|---|---|
+| 0 (tap) | – | facing × JumpVx, vy = JumpVy | 3 Jump |
+| 1 (double tap) | input·facing > 0, or input zero and entity +0x159 set | facing × FwdFlipVx, FwdFlipVy | 5 Fwdflip |
+| 1 | otherwise (back or no input) | −facing × BackflipVx, BackflipVy | 4 Backflip |
+| 2 (held all 300 ms) | input·facing > 0 | normal jump | 3 |
+| 2 | otherwise | (0, VerticalVy, 0) | 6 vertical jump |
+
+- Every launch then does: Velocity = launch, Aftertouch = 0, Flags |= 1 (air control on), state → **Ballistic (2)**.
+- A second variant runs when global 0x95a100+0x9b bit 0x40 is set and entity +0x15a == 0 (assumed: analog control). It scales the tap jump's horizontal speed by the input magnitude (quantised to 1/4) and by hold/300 ms (1/8 steps).
+
+#### Ballistic 0x5af430 (kWPS_Ballistic = 2, "flying")
+
+1. If Flags bit0 is set: read the control input, then air-steer (0x5a6fe0).
+2. Cast a parabola from pos: `CastRays(pos, Velocity+Aftertouch, Acceleration, 40 steps, mask 0xFFFF)`, i.e. all 8 probe points. Land ray 0x466ae0 marches `p(t) = p0 + v·t + ½·a·t²`, so t is in ms. A hit counts only if t ≤ **20** (this frame). The 40-step cast looks one frame ahead. Support id = 0xFFFF.
+3. **No land hit this frame** (0x5af95d):
+   - Integrate.
+   - If Velocity.y went from > −0.3 to ≤ −0.3 and no flags 0x8840 and entity +0xdc == 0: QueueEvent(22) ("now falling": tumble anim).
+   - Sphere resolve against entities (0x519ed0):
+     - **contact**: if Fits, accept the position and stuck counter −1. Then if contact n.y < 0.8: Rebound(n) + event 23 (Thud). Otherwise **land on the object**: event 8 (15 if +0xdc), state → Ambulatory, support id stored. If not Fits: stuck counter +2, Rebound + event 23.
+     - **no contact**: Fits → move, else stuck +2 + Rebound.
+     - On a Fits failure pos is restored to the pre-Integrate position and the rebound normal is normalize(old − new) (0x5afa78, 0x5afb17) [disasm].
+     - Stuck counter ≥ 20 → force land (event 8 or 15, Ambulatory) where it is, support id 0xFFFF: the idle walk branch (0x5b1a3e) only falls again for an entity support, so a worm forced to land in the air stays there until it walks [disasm]. The counter (entity +0x12c) is never reset in Ballistic; only Sliding's Landed paths clear it (0x5b05c2 / 0x5b063b) [disasm].
+4. **Land hit**:
+   - candidate = hit point − probe offset, sphere resolve, ground normal n (0x59ef90).
+   - If not Fits: stuck counter +2; at ≥ 20, force land. Otherwise clear air control and Rebound(n) with n = normalize(pos − candidate), or Velocity = −Velocity if that is zero (0x5af888), then event 23. pos is not moved.
+   - A slot narrower than the 8-unit tripod (x ±4, z −3 / +5) is caught here: a foot point hits a lip within the frame and the worm lands on it, standing on that foot; the stuck counter is not involved. A slot 8 units wide or more lets all three Fits rods in, and the worm drops in [disasm + reasoning on the probe geometry 0x91ffc8].
+   - If Fits: pos = candidate, SupportNormal = n, SupportFrame/Voxel stored.
+   - If the nearest hit is not a foot point (0x59ec50, per-point flag, assumed "foot") → Rebound + event 23.
+   - If n.y < **0.2** → Rebound + event 23 (wall).
+   - Otherwise it is a landing. With v = Velocity + Aftertouch: `vn = v·n` and `vt = v − vn·n`. When `|vt|² < vn²`, `|vt|²` is halved before the slide test.
+     - Walkable (n.y ≥ cos SlideAngle[mat]) and `|vt|² < StartSlideVel²[mat]`, or Flags & 0x8040 → **land walking**:
+       - if `vn ≤ −0.3` (hard) and entity +0x64 == 0 and no flags 0x8840: event 15 (hard land: poof + recover); otherwise event 8 (soft Land, param vn). If entity +0xdc is set, the threshold is 1000, so always 15.
+       - if `vn < −0.3`: FallDamage(vn) and Velocity = 0. Otherwise Velocity = (vt.x, 0, vt.z).
+       - state → **Ambulatory (0)**, support id stored.
+     - Otherwise (steep, or too fast) → **slide**: FallDamage if vn < −0.3, Velocity = vt, event 17, state → **Sliding (3)**.
+
+#### Vaulting 0x5aca80 (kWPS_Vaulting = 4) and its start in UpdateWalking
+
+Start, ledge path 0x5b1209-0x5b128f (5 < d <= 20 units) [disasm]:
+
+- target ent+0x104 = nearest foot hit + 0.1 y, after the sphere resolve; it must pass the walkable test 0x4adda0 and Fits.
+- ent+0xF8 = InputImpulse (pData+0x68) at that frame; ent+0xEC = pos; timer ent+0x110 = **250** (0xfa); event **9** (Vault clip); material ent+0x44.
+- pos is not moved that frame, and this path returns without StartJump.
+- The sphere-contact path 0x5b165f-0x5b1746 sets the same fields, then calls StartJump 0x5acd40 the same frame (0x5b183a): a jump pressed on that frame snaps pos to the target and goes to DetectJump.
+
+Each frame in state 4, 0x5aca80 [disasm]:
+
+1. Reads the control input (0x5ab3d0).
+2. If `input · ent+0xF8 <= 0` (stick released, or pushed against the start direction): target = old pos (ent+0xEC), ChangeState(Ambulatory). ChangeState 0x5aa847 copies the target into pos when it leaves state 4, so the worm drops back to where it started.
+3. Else timer −= 20. At ≤ 0: ChangeState(Ambulatory), and pos = target (the same copy).
+4. Else pos = (4·pos + target) / 5 (0x5a59f0(a, b, k) = (a·k + b)/(k+1), k = 4.0 at 0x858228): 1/5 of the way per 20 ms, 12 moves then the snap [disasm]. (Corrects an earlier "MoveTowards 4 units" reading.)
+
+Consequences:
+
+- A vault always lasts the full 250 ms: nothing ends it on arrival.
+- No collision test runs during the move. Land that appears in the way does not stop it [disasm: no Fits, ray or sphere call in 0x5aca80].
+- No Orientation write, no StartJump, no fire handling in the worm code: the facing is frozen and a jump press is ignored [disasm: the dispatcher 0x5b1fc0 calls 0x5aca80 only; StartJump's three callers are all in UpdateWalking].
+- Every exit from state 4 through ChangeState (blast via ImpulseWorm, death, physics override) snaps pos to the current target first [disasm 0x5aa847]. UpdateWalking's Passive switch (0x5b0df9) and StartJump (0x5acdba) do the same copy inline.
+- **Firing during the vault**: refused for most weapons. FirePressed handlers call a CanFire before firing:
+  - BaseWeaponLogicEntity 0x54a2d0 (vtable slot at 0x857b34, also Flood's 0x85919c) and PayloadWeaponLogicEntity 0x583ca0 (called from the FirePressed handler 0x586092 and from 0x586e9f) both return `PhysicsState == 0 || CanBeFiredWhenWormMoving` [disasm].
+  - That flag is BaseWeaponContainer field 0x0c at +0x79. In WEAPTWK it is 1 only for Dynamite, FirePunch, Landmine, LandmineCluster and Sheep; every other weapon, and every utility, has 0 [data].
+  - Vaulting (4), DetectJump (1), Ballistic (2), Sliding (3) and Override (5: rope, parachute, jetpack) therefore refuse every other weapon. The secondaries dropped from a tool (Dynamite, mines, Sheep) are exactly the flagged ones.
+  - GunWeaponLogicEntity's check 0x55cd30 returns 1: guns fire in any state [disasm].
+  - The jetpack's FireUtil handler 0x562270 tests `state == 0` (0x5623b4) only for PackAccessory.Trigger, the take-off [disasm]. The rope fires on Input.FireUtilPressed (handler 0x574730 → 0x573790; its Input.FirePressed handle is only subscribed, at 0x57096e) [disasm]:
+    - there is no CanFire and no `+0x79` test;
+    - `state == 0` is tested at 0x573845 only to play `global/FEError` when no "Head" target is found, at most every 500 ms (+0x13c);
+    - so the rope fires in any state, in the air included.
+  - Only the press is gated: a charge started on the ground goes on to its release [assumed: no CanFire found on FireReleased].
+- **Velocity during a vault** [disasm]:
+  - UpdateWalking sets Velocity = InputImpulse on a successful step, through 0x546f10 at 0x5b146e (drop path) and 0x5b19c8 (normal step); the idle branch zeroes it (0x5b1c1b).
+  - The vault start does not write it, and nor does 0x5aca80. So during a vault Velocity is the last walk step's velocity.
+  - The launch (0x585a1b: `state == 0`) counts the vault as off its feet: a flagged payload with IsLaunchedFromWorm (+0x1cf; 1 for Dynamite, Landmine, LandmineCluster, Sheep) inherits it at 0x585a58.
+
+Ours (sim.cpp `walkStep` / `vaultStep`, `Game::vault`; ai.cpp `Mover::vault`):
+
+- A climb above `STEP` (5 units) up to `STEP_UP` (20) starts the vault instead of the instant climb, if the target is walkable and Fits. The walkable test uses the ground normal at the target, the 0x59ef90 mean below; the toe and plain climbs share it [ours, from 0x5b11ca / 0x5b11f0].
+- 15 ticks (`msTicks(250)`), each moving 1 − 0.8^(DT/20 ms) of the way to the target, then the snap.
+- The input is the heading stick (HEADING) or the facing, times `walk`; `dot <= 0` drops it back to the start.
+- During the vault: the yaw is frozen, JUMP is ignored, `stepWorm` skips the body.
+- Leaving it otherwise: knocked or roped snaps to the target; moved by a weapon (teleport) ends it in place [ours].
+- `Game::fireable`: utilities and guns always fire; Dynamite, Fire Punch, mines and Sheep always fire; anything else needs a grounded worm, not sliding, not vaulting, no jump pending. It is asked on the press, or on the first tick of a charge [ours, from 0x54a2d0 / 0x583ca0].
+- `Vault::vel` keeps the walk velocity of the vault's start tick. A payload fired during the vault gets the carried offset and that velocity, like a worm off its feet. W4M's Velocity there is the last successful step's InputImpulse (0x5b146e / 0x5b19c8), 0 after an idle frame (0x5b1c1b); ours keeps it in `Game::walkVel` the same way [disasm]. InputImpulse = camera-relative stick × 1/20 unit/ms (2.5 m/s at full stick, 0x5ab5f3), whatever the walk speed: the step moves it × 20 × VelocityScale × Walk.Speed / 0.004 (0x5b0fb6..0x5b0fec) [disasm + data].
+- Phase change (control lost) acts as no input: back to the start.
+
+#### UpdateWalking: support, push-out and the uphill rule (disasm)
+
+- **Support**: the 4 foot rays (mask 0xF: tripod (±4, −3), (0, +5) and the centre, world axes, 0x91ffc8 [data]) are cast from 20 units above the candidate; d = 20 − nearest, i.e. the **highest** hit carries the worm. One foot on a lip is enough: walking over a slot narrower than the tripod never drops into it.
+- **Normal step push-out** (0x5b194c): Fits is tested at y, y+1, …, y+5 units. Only y..y+4 are accepted: the counter starts at 5 and a success with the counter at 0 is rejected (`test ebx, ebx; jbe` at 0x5b198b). So the step raises the worm by at most 4 units.
+- **Drop path push-out** (0x5b14e1): y+1 is added before the first test, so y+1..y+5 are accepted and y+6 is rejected.
+- **Blocked**: both failures jump to 0x5b1a21, which still calls StartJump. A blocked worm can jump.
+- **Uphill rule** (0x5b1920-0x5b1946): if `normal · (cand − pos) < 0`, the ground under the candidate must pass the walkable test 0x4adda0, else blocked. The vector is cand − pos: 0x454e00(out, a, b) computes out = a − b, and 0x5b18f0 passes (out = esp+0x4c, a = cand at esp+0x20, b = ebx = pData+0x38 = pos). The normal is the ground normal of the candidate (0x59ef90 output) [disasm]. After the move, n.y < cos SlideAngle → event 17 and Sliding (0x5b19d0).
+
+- **Ground normal 0x59ef90** [disasm]: it needs 2 or more hits (+0x1e4 > 1). It sums the land normals (re-cast 0x59eb30, normal 0x482010, normalized 0x4453c0) of the hits whose `HitPointRel` differs from the nearest hit's by at most 1 unit, i.e. the feet level with the highest one, then normalizes. So when two feet straddle a slot on its two lips, their normals average to near vertical.
+
+Ours (sim.cpp `footing`, `walkStep`):
+
+- The centre and the tripod (±0.2, −0.15) (0, +0.25) m, world axes, carry the worm. Any one hit is enough, as in W4M. This applies to the grounded test, the flight landing, the flight push-up and the walk's settle [ours, from 0x91ffc8].
+- The normal is the mean of `Terrain::normal` at the feet whose land top is within 1 unit of the highest one. The tops are measured in 1-unit steps up to 5 [ours, from 0x59ef90].
+- The walk follows W4M:
+  - the candidate is set on the highest hit within 5 units;
+  - the uphill rule `n · (cand − pos) < 0` needs a walkable n;
+  - the step push-out tries +0..+4 units; the drop path first tries a plain fall, then +1..+5;
+  - a raised worm is placed without a settle.
+  No test covers the push-out: with W4M's probe, any lip low enough to be cleared by 4 units is seen as ground and vaulted instead [ours].
+- **`fits` stays relative** ("no deeper than before"; W4M Fits 0x59edf0 is absolute). This is a voxel constraint [ours].
+  - Our land is a trilinear density field, clamped to ±0.25 m on a 0.25 m grid, so surfaces are soft.
+  - Our body test samples a 0.2 m ring at 0.7 and 0.95 m. W4M uses 3 rods of 1 m, on a worm always placed 0.1 unit above its highest hit.
+  - Land can also appear around a worm: girders, terrain edits, spawns. An absolute test then locks a worm whose upper body samples a slightly positive density.
+  - `checkWallStuck` (head wedged 0.05 m in a sloping ceiling must walk out) fails with an absolute test. The slot and map sweeps give the same counts either way (10 400 slot runs: identical; maps: 57 / 57 runs over 0.06 before the drowned runs were cut).
+  - The relative form only differs once the body is already in land. Below that it is W4M's absolute test.
+
+#### Rebound 0x5acea0 (disasm)
+
+- `v = Velocity + Aftertouch`, then Bounce 0x518f40(v, n, e = **0.3**, tangential kept ×**1.0**, min speed **0.01**):
+  - if `v·n < 0`: v = vt·1.0 − vn·0.3, and v becomes 0 when |v| < 0.01;
+  - if `v·n ≥ 0`: v = n·|v|·0.3, or 0 when |v| < 0.01.
+- Velocity = v, Aftertouch = 0, air control off.
+- If v ends at exactly (0, ≤0, 0): when n.y > 0, event 8 + state → **Sliding**; otherwise Velocity = (0, −0.01, 0) and Integrate.
+- The constants are hardcoded. `Worm.BounceMultiplier`/`Default` (0.6/0.3) are only handled in ParticleHandlerService 0x5c02c0, which switches them by WormPot Sticky/Slippy. The worm code never reads them (data: no other xref).
+
+#### FallDamage 0x5ac3e0(pData, vn) (disasm + data)
+
+- None if Flags & 0x800. If Flags & 0x8040: bit 0x40 is cleared and no damage (one-shot immunity).
+- Otherwise `damage = trunc((−0.3 − vn) × Worm.FallDamageRatio) + 1`, with Worm.FallDamageRatio = 100 (LOCAL). Then ApplyDamage 0x5ab7e0(damage, 1) and an effect via 0x4bc410(0, 100, worm pos, 500, −1, −1) (assumed: rumble or shake).
+- The threshold is |vn| > 0.3, i.e. a free fall of more than `0.3²/(2·0.00025)` = **180 units** (9 worm heights).
+- Examples: vn −0.4 (320 units) → 11 hp; vn −0.5 (500 units) → 21 hp.
+
+#### Fall 0x5acba0(pData, vel, aftertouch, airControl)
+
+Velocity = vel, Aftertouch = aftertouch, Flags bit0 = airControl, event 7, state → Ballistic.
+
+Called when:
+
+- walking off a ledge (0x5b14c7: walk velocity kept, Aftertouch 0, **air control on**). No 0.7 multiplier: the `WalkOffCliffVelMulti` string is absent;
+- the slide drops off a ledge (0x5b02dc).
+
+#### Sliding 0x5afbe0 (kWPS_Sliding = 3) (disasm + data)
+
+Per frame:
+
+1. If air control is on, read the input.
+2. Slide time +20 ms.
+3. Spin: rate +0x120 approaches target +0x124 (0x47a1a0, factor 3, max 2°/frame), and yaw += rate.
+4. **Gravity along the slope**: Velocity += (g − (g·n)·n)·20, with n = SupportNormal.
+5. Steering: with air control, v += InputImpulse × 20 ms × k, k 0.003 or 0.0005 (below).
+6. **Friction**: Velocity ×= SlideFriction[mat] **per frame** (Default 0.95, Slippy 0.999).
+7. Probe the ground under the next position: 4 foot rays, 300 steps; d = 20 − nearest.
+
+| d | action |
+|---|---|
+| d > 5 (wall or step too high) | if \|v\|² < StartSlideVel²: Landed. Else ray along v (20 steps): hit → Rebound(n), spin target = (target + 3·(n×v)) / 2, stuck +2; no hit → Landed |
+| d < −5 (drop) | v projected off the ground; if it fits → **Fall()** (Ballistic). Else Landed |
+| −5..5 | pos = hit + 0.1y, sphere resolve (a side contact → Rebound + stuck +2). Fits → move, stuck −1, SupportNormal/Frame/Voxel updated. Then if the ground is walkable (n.y ≥ cos SlideAngle) and \|v\|² < **StopSlideVel²[mat]** → Landed. Not Fits → Landed |
+
+- Stuck counter ≥ 20 → Landed (0x5b05cc), and the count is reset to 0 (0x5b063b). Every Landed path in Sliding resets it (0x5b05c2).
+- Sliding never calls UpdateWalking or StartJump: no walking and no jumping while it lasts (dispatcher 0x5b1fb6) [disasm].
+- "Landed" = `QueueEvent(kWE_Landed = 8); ChangeState(kWPS_Ambulatory)`; the debug string 0x85fb58 spells it.
+- Thresholds (0x5a5d30, data):
+
+| | Default | Slippy | global |
+|---|---|---|---|
+| SlideAngle (deg) | 60 | 10 | cos at 0x92009c / 0x9200a0 |
+| StartSlideVel | 0.2 | 0.01 | squared at 0x9200ac / 0x9200b0 |
+| StopSlideVel | 0.06 | 0.01 | squared at 0x9200b4 / 0x9200b8 |
+| SlideFriction | 0.95 | 0.999 | 0x9200a4 / 0x9200a8 |
+
+Sliding, further W4M detail (disasm):
+
+- **Entry**:
+  - Ballistic landing: `vt = v − (v·n)n`; `|vt|²` is halved when below `vn²`; walkable and below StartSlideVel² → Ambulatory, else Sliding with Velocity = vt (3D).
+  - A successful walk step onto non-walkable ground (0x5b19d0): Sliding with Velocity = InputImpulse, set just before (0x5b19c8).
+  - ImpulseWorm on the ground with `impulse·SupportNormal < 0`.
+  - The idle walk branch never starts one: a still worm on steep ground stays. ChangeState (0x5aaa0c) zeroes the slide time, the spin rate +0x120 and its target +0x124.
+- **Gravity** (0x5afd60-0x5afe26): `v.xz −= (Acceleration·n) n.xz · 20`. v.y gets nothing: only friction acts on it (×SlideFriction on all three axes, 0x5aff2d). The stop test (0x5b04c8) uses the 3D |v|².
+- **Steering**, when Flags bit0 is set (0x5afe07):
+  - The first test (0x5afe30) is `input · (Acceleration·n) n.xz`. It is > 0 when the input points up the slope, which gets 0.0005.
+  - Otherwise the second dot (0x5afe68, FPU stack decoded) is `v · (Acceleration·n) n.xz`. It is > 0 when the velocity runs up the slope, which gets 0.003; else 0.0005 [disasm]. So 0.003 is for an input that does not point uphill while the worm still moves uphill.
+  - Then `v += InputImpulse × 20 × k` (0x5afe93..0x5afeba: the ×20 is the st(3) constant); |InputImpulse| ≤ 0.05 units/ms. A zero dot (input across the slope) takes 0.0005 [disasm].
+- **Air control**, Flags bit0:
+  - set by DetectJump's launch (Flags |= 1) and by Fall() from a walk-off (0x5b14c7, airControl 1);
+  - cleared by Rebound (0x5acea0), ImpulseWorm, the slide's drop (Fall(..., 0) at 0x5b02dc) and Ballistic's not-Fits land hit (0x5af8a5).
+- **Spin**:
+  - each frame `rate += clamp((target − rate)/4, ±0.0349)` (0x47a1a0, k 3), then `yaw += rate` (Orientation +0x90);
+  - on a wall rebound (0x5b010b): `target = (target + 3·SupportNormal·(n_hit × v)) / 2`;
+  - on following the ground (0x5b0448-0x5b049b): `target −= 2·(n_new × n_old)·v` (cross product 0x454d90(out, a, b) = a × b), then SupportNormal = n_new.
+- **Probe** (0x5aff70): the 4 foot rays from cand + 20 units down, 300 steps; `cand = pos + v·20`.
+  - d > 5: a wall. Below StartSlideVel → Landed. Else one frame's ray of all 8 points along v: a hit → Rebound + spin + stuck +2; no hit → Landed.
+  - d < −5: a drop. `v −= (v·n)n`; if the body Fits at the old height → pos = (cand.x, pos.y, cand.z), Fall(v, 0, 0). Else Landed.
+  - Else: pos = highest hit + 0.1; if not Fits → Landed; stuck −1; then walkable and below StopSlideVel² → Landed.
+- A slope steeper than atan(5/4) = 51° puts the tripod's uphill foot over 5 units: a slow slide there lands (wall branch). So a slow worm stays on a 70° slope.
+
+Ours (sim.cpp `slideStep` / `wormBody` / `slideIfSteep`, `Motion`; the same in ai.cpp `move` / `stepBody`):
+
+- `Motion`, per worm and checksummed: `stuck`, `air`, `slide`, `spin`, `spinTo`, `normal`. `input` is this tick's stick, used only by Sliding.
+- `slideStep` follows each W4M step above, in W4M frames per tick (DT/20 ms) and m/s (one unit/ms is 50 m/s).
+- Details:
+  - the wall branch casts the 8 probe points (the 4 feet, and the same 1 m higher for the heads) along v over one tick, as CastRays(pos, v, 20 steps, mask 0xFFFF) at 0x5b00e0; the hit normal is the mean of the hits within 1 unit of the nearest, as 0x59ef90. Ours uses `Terrain::raycast` per point;
+  - SupportNormal is `Motion::normal` (checksummed): stored at the landing (0x5af5ba), at a walk onto steep ground (0x5b1998), and on each ground follow (0x5b04a1); gravity, steering, the drop and the spin use it;
+  - the spin's yaw sign matches ours. W4M yaw is `atan2(x, z)` (0x519120: acos(z), negated for x < 0) [disasm], our facing is (sin yaw, cos yaw), and tools/w4m-maps maps W4M x and z to our x and z without a mirror (`to_grid`) [data].
+- Sliding takes no walk and no jump. A slide that ends sets the worm Ambulatory (velocity 0); a slide drop goes Ballistic with air control off.
+- An Ambulatory worm with no velocity does nothing beyond the push-up out of land and `clearWalls` (our body's width).
+- Ballistic is unchanged apart from the stuck count. A horizontal or upward push of a standing worm goes Ballistic; a push into the ground starts Sliding.
+- The 0.40 m slot (the tripod's width) gave 30 never-ending slides. That was our earlier slide; the W4M probe's wall branch now lands those worms.
+
+Ballistic stuck count, ours:
+
+- In flight, each tick where a move does not Fit adds 2, otherwise 1 is removed. The test covers sideways, upward and now downward moves: a falling move that would sink the upper body deeper is undone and rebounds at 0.3.
+- At 20 the worm is landed where it is, velocity 0, and the count is kept.
+- The next tick it tries to fall again, the move is undone again, and it lands again. It therefore stays put until it walks, jumps or is blasted, exactly like W4M's forced Ambulatory: neither the idle walk branch (0x5b1a3e) nor Passive (0x5b0c8b) drops a worm whose support id is 0xFFFF (land). EstablishPhysicsState 0x5a6af0 is only reached from the Undefined state (0x5b201d) and the UFO flag path (0x5a9fe8) [disasm].
+- The jetpack's flight does not count, since it is not Ballistic [ours].
+
+#### Passive 0x5b0c20 (kWPS_Passive = 6) and UpdatePassive 0x5aecb0
+
+- **Passive** (worms not in control):
+  - if entity +0x54 is set again → Ambulatory + UpdateWalking;
+  - else if entity +0x64 (assumed: burning) → UpdateBurning 0x5aea10;
+  - else, if the support surface (+0xe8 → 0x5160e0) reports it moved or vanished (0x47a080) → event 7 + **Ballistic**. No integration while parked.
+- **UpdatePassive 0x5aecb0**, the turn-only mode of the active worm. UpdateWalking chooses it when 0x5ac390 is true: `Worm.WeaponDisableMovement` > 0, ArtilleryMode (+0x12a), Flags & 0x20, or game phase 14. It does:
+  - Velocity = 0;
+  - snap facing to the input (entity +0xde/+0xdf);
+  - otherwise turn: left input (+0x37) → event 10, yaw rate → +0.001 rad/ms; right (+0x38) → event 11, −0.001; none → event 12, rate 0. The rate eases with 0x47a1a0 (accel 0.0002). Yaw += rate·20·k;
+  - the support moved → event 7 + Ballistic.
+- UpdateWalking's idle branch uses the same turn code (0x5b1c7a).
+
+#### DeathThroes 0x5aa080 (7) and DrownFloat 0x5aa130 (8)
+
+- **Land death start 0x5adbf0**: unless already DrownFloat, send `Worm.LandDeath` (msg obj 0x95fc18), state → 7, event 19, timer +0x128 = **3000 ms**.
+- **DeathThroes**: no motion. Timer −20 per frame. At 0: Active = 0, death blast 0x5a9400 (`Worm.DeathWormDamageMagnitude/Radius`, `DeathImpulseMagnitude`, `DeathLandDamageRadius`), 0x5a9310, send `WXWormManager.UnspawnWorm` (0x95fbe8).
+- **Drown start 0x5ad640**: `Worm.Drowning` (0x95fc10), event 21, particle `WXP_WaterSplash`.
+- **DrownFloat**:
+  - Entered by 0x5ad640, run every frame after the state update: Position (feet) < `Water.Level − Worm.Drown.HeightOffset` (7) [disasm 0x5ad6aa]. It keeps Velocity, takes the "Worm Dying" token (0x5a7190), posts Worm.WaterDeath.
+  - target height = `Water.Level − 8.0` (hardcoded 8).
+  - Timer 0, below the target and sinking (vy < 0): v = (6·v + (0, 0.03, 0)) / 7 (0x5a59f0, k 6). Below and vy ≥ 0: 0x569fa0 moves v toward (12·v + (0, 0.03, 0)) / 13, at most 0.001 units/ms per frame. At or above the target with vy ≥ 0: timer = **2000 ms** [disasm].
+  - While the timer runs: vy = (vy − (y − target)·0.001)·0.95 (damped bob). pos += Velocity·20, no gravity.
+  - Timer end: Active = 0, 0x5a9400, `WXWormManager.UnspawnWorm`.
+
+#### ImpulseWorm 0x5ad010 (blast)
+
+- Ignored in states 7/8. Magnitude ×WormPot.StickyModeScale when StickyMode is on. Air control off.
+- On the ground with `impulse·SupportNormal < 0`: Velocity = (v + impulse) minus its normal component, state → **Sliding**, hit clip 0x5a9100.
+- Otherwise `Velocity += impulse`, state Ballistic, and the reaction depends on `d = facing · horizontal blast dir`:
+  - d < −0.5: event 14 (blown backwards) and yaw = atan2(dir) + π;
+  - −0.5 ≤ d < 0.4: event 13 with param = side (cross product) and yaw = atan2(dir);
+  - d ≥ 0.4, or a pure vertical blast: event 13 with param 0.
+- **Hit clip 0x5a9100**: from facing·dir, `HitFront` (< −0.5, or no horizontal part), `HitBack` (> 0.5), else `HitLeft` (right·dir < −0.5) / `HitRight`. With a "nailed" flag, the `Nailed*` variant. Callers: the damage messages 0x5ae320 / 0x5ae4f0 and the slide path above.
+
+### Worm animation (WXWormGraphicEntity), disasm + data
+
+#### Event queue (kWE_*)
+
+QueueEvent 0x5acb80(code, float) stores the code at entity +0x244. 0x5ac4d0 pushes code and param into the graphic entity's vectors at +0x178 / +0x184. The graphic update 0x5a4740 drains them in 0x5a3620 (jumptable 0x5a410c, index code−1).
+
+| code | sender | graphic effect (handler VA) |
+|---|---|---|
+| 1 | UpdateWalking (walk input, phase 2) | send `HeldAccessory.Hide`, +0x160 = 0 (0x5a3692) |
+| 2 | StartJump | `HeldAccessory.Hide`; one-shot **Jump_Start** (weight 1, t = 0); anim state 2 (0x5a36ed) |
+| 3, 6 | DetectJump (jump, vertical jump) | one-shot **Jump**; predicted parabola stored (+0x20c, 10000 ms); voice "Jump" (0x5a1d30); state 2 (0x5a3773) |
+| 4 | backflip | **Backflip** + voice "Jump", state 2 (0x5a37de) |
+| 5 | forward flip | **Fwdflip** + voice "Jump", state 2 (0x5a3849) |
+| 7 | Fall, Passive / OverridePhysics support loss | **Fall** at weight 0 (eases in), state 2; 0x60ae60 ends the worm's acting scene (every cast actor released, 0x60bf70) and 0x60ba40 sets the actor's StopAnimation blend (+0x50) to 200 (0x5a389c) [disasm] |
+| 8 | kWE_Landed (soft land, end of slide) | **Land** through the scheduler, weight = clamp(\|vn\|·5, 0, 1); pose reset; `WXP_Worm_Hop_Poof`; state 0 (0x5a3913) |
+| 9 | Walking → Vaulting | **Vault** one-shot (0x5a39e3) |
+| 10 / 11 / 12 | turn left / right / stop | +0x160 = −1 / +1 / 0, only for the worm in control (0x5a3a25...) |
+| 13 | ImpulseWorm (side or up) | state 4 (blast flight). If vy > 0.1, `Acting.Trigger` 0x1a Blasted with the worm (0x5a3b44) [disasm]. Clip: param > 0 → **Blastflight4**, param < 0 → **Blastflight5** (tumble mode 1, random spin of 2π·(2r)+π); param 0 → random **Blastflight2** (mode 0) or **Skid** (mode 1) (0x5a3abb) |
+| 14 | ImpulseWorm (blown backwards) | **Blastflight3**, mode 2, state 4 (0x5a3c11) |
+| 15 | hard landing | `WXP_Player_Land_Poof` (worm in control) or `WXP_Worm_Land_Poof`. If the anim state was 3 (flying): `Acting.Trigger` 5 BlastSplat (0x5a3d4d), then the recover clip by flight mode (below). Else trigger 6 FallSplat (0x5a3e75) + **RecoverBurried1**. State 5 (0x5a3cc5) [disasm] |
+| 17 | Ballistic or Walking → Sliding | WXActor (as 7), pose reset, arm-flail parameters (+0x1dc = 0.02, +0x1e0 = 30 from ground else 1). State 6 (0x5a3eaa) |
+| 18 | MsgOverridePhysics | state 1: pose manager only (rope, jetpack...) (0x5a3f64) |
+| 19 | Land death start | state 7 (= ground behaviour) + message type 0xe (0x5a3f88). The gesture comes from WORMACTING (docs/death-sequence.md) |
+| 21 | Drowning start | state 8 (0x5a401a) |
+| 22 | Ballistic, vy crosses −0.3 | **Skid** as the flight clip, tumble mode 1, spin 2π; state 4 (0x5a3a60) |
+| 23 | Rebound | sound `weapons/Thud` at the worm (PlaySound 0x604a20) (0x5a4064) |
+| 16, 20 | – | no-op |
+
+#### Clip handles (0x5a49a0, `FindClip` 0x6a0350 by name, data)
+
+| slot | clip |
+|---|---|
+| +0x94 | Walk |
+| +0x98 | WalkTail |
+| +0x9c | Jump |
+| +0xa0 | Backflip |
+| +0xa4 | Fwdflip |
+| +0xa8 | Jump_Start |
+| +0xac | AT_FB |
+| +0xb0 | AT_LR |
+| +0xb4 | Fall |
+| +0xb8 | Land |
+| +0xbc | Vault |
+| +0xc0 | TailAngle |
+| +0xc4 | TailLag |
+| +0xc8 | TipAngle |
+| +0xcc | HopLeft |
+| +0xd0 | HopRight |
+| +0xd4 | Skid |
+| +0xd8 .. +0xe4 | Blastflight2 .. Blastflight5 |
+| +0xe8 | RecoverFront1 |
+| +0xec | RecoverBurried1 |
+| +0xf0 | RecoverBack1 |
+| +0xf4 | RecoverBack2 |
+| +0xf8 | SkidArms |
+| +0xfc | Death |
+| +0x100 | FallDrown |
+| +0x104 / +0x108 / +0x10c | FPX / FPY / FPZ |
+
+Clip API, an XAnim scheduler on the entity at graphic +0x24 (disasm):
+
+| VA | call |
+|---|---|
+| 0x6a0350 | FindClip(name) |
+| 0x6a03d0 | PlayClip (scheduler slot +0x14) |
+| 0x6a04c0 | SetTimeAndWeight(clip, t, w) |
+| 0x6a0530 | SetWeight |
+| 0x6a0600 | Length (clip info +4, in seconds) |
+
+#### Anim state machine (graphic +0x174, per-frame switch 0x5a4740 → jumptable 0x5a4978)
+
+| state | handler | behaviour |
+|---|---|---|
+| 0 ground, and 7 (death) | 0x5a2a00 | Walk/WalkTail blended by horizontal speed s = \|Velocity.xz\|. Moving: phase += dt·s·0.45, wrapped to [0, 0.5); walk weight → 1. Stopped: the phase eases to the nearest rest pose (0 or 0.5), weight → 0 (rate 0.1). WalkTail weight is scaled further. WormPoseManager 0x59da40 adds the pose layers (aim arms, head and eyes: RightArmRotX/Y, HeadRotX/Y, Eyes_LR/UD, EmoteBlend, PoseBlend, strings at 0x85e1d8...) |
+| 1 override | 0x59f2d0 | pose manager only |
+| 2 one-shot | 0x5a01a0 | clip +0x1ac plays at 0.02 s per 20 ms (real time), weight → 1. At the end it **holds the last frame** and blends in **AT_FB / AT_LR**, time-scrubbed by the aftertouch input (phase = (1 − input·facing)/2 and (1 − input·right)/2, rate 0.1). No automatic chain: the next event (Land, Fall, 22...) switches the state |
+| 3 / 4 blast flight | 0x5a0460 | the flight clip (+0x1b8) loops at 0.02 s per frame. Mode 0/2: body pitch follows the velocity (atan2). Mode 1: tumble, angle += spin·0.02 per frame (wraps at 2π). State 4 snaps on its first frame, then 3 eases at max 6°/frame |
+| 5 recover | 0x5a2c90 | one-shot +0x1c8 at weight 1. At its end: state 0, clip weight 0, pose reset |
+| 6 slide | 0x5a2d70 | **SkidArms** with random arm targets (rand 0x68c07b), WXActor face calls (0x60bae0 / 0x60bb40). Velocity terms ±0.006, 2000 ms constant (not decoded) |
+| 8 drown | 0x5a06b0 | FallDrown (slot +0x100, loaded at 0x5a568b) scrubbed by clamp(vy·10, −1, 1), with pitch and roll easing back to 0 |
+
+Recover clip after a hard land from blast flight (0x5a3d64):
+
+- mode 0 → RecoverFront1;
+- mode 1 (tumble) by spin angle +0x158 (0x5a3dc1; 3π/4 at 0x85e77c, 7π/4 at 0x85e778, 5π/4 at 0x85e770): below 3π/4 or above 7π/4 → RecoverFront1; 3π/4..5π/4 (head down) → RecoverBurried1 (0x5a3e8f); 5π/4..7π/4 → random RecoverBack1/RecoverBack2 (0x5a3e0b, rand 0x68c0aa & 0x100);
+- the angle +0x158 is zeroed every frame by the one-shot (0x5a01a0) and ground (0x5a2a00) handlers, at the end of a recovery (0x5a2c90), in a slide (0x5a2d70) and by events 13/14 (0x5a3b87, 0x5a3caa). Event 22 keeps it: 0 after a jump or fall, the mode-0 flight pitch asin(vy/|v|) after a blast (0x5a0617, mode 2: π/2 − that);
+- the angles +0x150/+0x158/+0x15c go to the model node (graphic +0x24, vfunc 0x54, 0x5a26d3): the body turns about the mesh's own origin;
+- mode 2 → random RecoverBack1/2.
+
+Smoothing helper 0x569f20(&v, target, a, rate, dt): approaches the target with the step clamped to rate·dt (disasm, exact law approximate). Most anim weights use rate 0.1 per 20 ms frame, i.e. about 0.2 s for 0 → 1.
+
+WormPoseManager (0x59da40, disasm): `Blend` is an XTransform node of the worm whose clip channels drive the layers: Translate.x / .y = left / right arm mode (0x59b870), Rotate.y in degrees = head/eye mode (0x59be40), Scale.y = PoseBlend, Scale.z = EmoteBlend, Scale.x = visemes. Its smoothing helper 0x47a1a0(&v, to, k, max) is v += clamp((to − v)/(k + 1), ±max) per call. Arms, eyes and head: docs/worm-reactions.md.
+
+Bored clock (0x5a47d0) [disasm]: graphic +0x5c adds the frame's ms (+0x198 = ms / 20, times 20) until 90000 (0x15f90), where WXActor +0x6e bit 4 ("bored") is set. kWE 13, 14, 15, 17, 19, 21 and 22 zero it and clear the bit (7 does not). The bit feeds the Bored pool (0x60df50) and lets an `Idle` track take a worm already in a scene (0x60c767). kWE 7 and 17 also end the worm's scene with StopAnimation blend 200 (0x60ae60, 0x60ba40).
+
+#### Weapon clips (data: WEAPTWK `WXAnimDraw/Aim/Fire/Holding/EndFire/Taunt/TargetSelected`, fields +0x54..+0x6c of the weapon properties container)
+
+| weapon | Draw | Aim | Fire | Hold | other |
+|---|---|---|---|---|---|
+| Bazooka | DrawBazooka | AimBazooka | FireBazooka | HoldBazooka | TauntBazooka |
+| Grenade | DrawThrown | AimGrenade | FireThrown | HoldThrown | TauntThrown |
+| Cluster | DrawCluster | AimGrenade | FireCluster | HoldCluster | – |
+| Banana | DrawBanana | AimGrenade | Fire1Banana | – | – |
+| Holy | DrawGrenade | – | Fire2Grenade | – | – |
+| Gas | DrawGasgrenade | – | FireGasgrenade | – | – |
+| Homing | DrawHomingMissile | AimHomingMissile | FireHomingMissile | – | TargetSelected AimLockHomingMissile |
+| Shotgun | DrawShotgun | AimShotgun | FireShotgun | HoldShotgun | TauntShotgun |
+| Sniper | DrawSniper | AimSniper | FireSniper | HoldSniper | TauntSniper |
+| Bat | DrawBat | AimBat | Fire2Bat | HoldBat | – |
+| FirePunch | DrawFirepunch | HoldFirepunch | Fire2Firepunch | HoldFirepunch | – |
+| PoisonArrow | DrawBow | AimBow | WindupBow | HoldBow | EndFire FireBow |
+| Airstrike-like | DrawAirstrike | – | – | HoldAirstrike | TauntAirstrike |
+| Dynamite | DrawDynamite | – | FireDynamite | – | – |
+| Landmine | DrawLandmine | – | FireLandmine | – | – |
+| Sheep / SuperSheep | DrawSheep | – | FireSheep | – | – |
+| OldWoman / Scouser | DrawOldWoman / DrawScouser | Struggle | – | – | – |
+| NinjaRope | DrawNinjarope | AimBazooka | FireNinjarope | – | – |
+| Girder | DrawGirder | HoldGirder | – | HoldGirder | – |
+| Flood | DrawRainDance | HoldRainDance | FireRainDance | – | – |
+| SkipGo | DrawSkipGo | – | – | HoldSkipGo | – |
+| Surrender | DrawSurrender | – | Tantrum | HoldSurrender | – |
+| Redbull, Prod, NMN, SentryGun, Starburst, BubbleTrouble | Draw*/Fire*/Hold*/Taunt* | – | – | – | – |
+
+Other weapon clips hardcoded in the WAE_* entities (strings 0x85d2f6..0x85dc08):
+
+- JetpackFly, JetLeft/JetRight, JetpackBump, AJetpackRotLR;
+- FireParachute, ParachuteLR, ParachuteWobble;
+- FlyStarburst, FlyRedBull, LobThrown, WindupThrown, Windup, AimFP;
+- Nailed{Draw,Hold,Fire}SkipGo;
+- {Draw,Hold,Fire,Taunt}WFGun.
+
+Chaining, WAE_Standard pose update 0x58f620 [disasm]. Init (0x58c1c5..) loads each WEAPTWK clip name as a (worm clip, weapon-mesh clip, length) slot: Draw +0x54 -> (+0xe4, +0xe8, length +0xd8, clock +0xdc), Aim +0x58 -> (+0x130, +0x138), Fire +0x5c -> (+0x158, +0x160, +0x148), Holding +0x60 -> (+0x110, +0x114, +0x104, clock +0x108), EndFire +0x64 -> (+0x168, +0x16c, +0x14c), Taunt +0x68 -> (+0xf8, +0xfc, +0xec, clock +0xf0); 0x594d40 sets a slot's (time, weight). The Aim clip is scrubbed by pitch: t = WormData+0xd0 / (π/2) + 1 (+0x144).
+  - State 1 (drawn): Draw at weight 1 and t = clock while clock < length, Aim fading in at clock / length; then Draw 0, Aim 1, Holding 1 looping (clock wraps at its length). With WormData `PhysicsOverride` (+0xe8) == 8 every layer weighs 0 (meaning of 8 not traced, assumed).
+  - State 2 (taunt): Draw held at its end; w = min(1, 4 (len − t), 4 t); Taunt at w, Aim and Holding at 1 − w; at t ≥ len back to 1.
+  - State 5 (`Weapon.PlayFireAnim`): Fire at 1, Aim at 1, the rest 0, until the Fire length; then EndFire from t = 0 (state 6) with Aim at 1. State 6 ends with Aim and Holding at 0 and state 0 (holstered), or 1 for weapon id 9 (Shotgun: its second shot, no redraw).
+
+The gestures (fidget, victory, hurt reactions, death) are WORMACTING EFMV scenes (docs/worm-reactions.md), cast by WXSceneManagerService. The trigger tokens are in WXActor.cpp strings 0x869950..0x869bbc. `Worm.QueueAnim` / `Worm.ResetAnim` have name objects (0x95c804, 0x95c7fc, 0x95e940) but no subscriber: only static inits and one send (ResetAnim, 0x587f3e, SkipGo/Surrender) use them; the `-w3d` scripts send them [disasm, data]. `Worm.ScriptDrawAnim` and `Worm.SurrenderAnim` are bare strings with no name object. All four do nothing on PC.

@@ -161,6 +161,11 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
                 c[((size_t)z * Y + y) * X + x] = v;
             }
         }
+    // W4M heightmap land block (0x464618): from the first to the last cell with height > 0, cell origins
+    int x0 = X, z0 = Z, x1 = -1, z1 = -1;
+    for (int z = 0; z < Z; z++)
+        for (int x = 0; x < X; x++) if (hc[z * X + x] > 0) x0 = std::min(x0, x), z0 = std::min(z0, z), x1 = std::max(x1, x), z1 = std::max(z1, z);
+    if (x1 >= 0) addBlock({x0 * step, z0 * step, x1 * step, z1 * step});
     // d starts at air; cells entirely below/above the noise band of their 4 columns are solid/air without sampling
     for (int z = 0; z < Z - 1; z++)
         for (int y = 0; y < Y - 1; y++)
@@ -180,7 +185,7 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
 }
 
 bool Terrain::load(const std::string &map, unsigned seed) {
-    spawns.clear(), objects.clear(), objModels.clear(), markers.clear();
+    spawns.clear(), objects.clear(), objModels.clear(), markers.clear(), blocks.clear();
     hasFinish = false;
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -234,6 +239,10 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         Vector3 c = vec(sh["pos"], {cx, 8, cz});
         float yaw = sh["yaw"].f(0) * DEG2RAD, cy = cosf(yaw), sy = sinf(yaw);
         bool sub = sh["subtract"].is();
+        if (!sub) {  // a land piece: its box is a W4M land frame block (LandFramePseudoEntity 0x46f6c9)
+            float bx = yaw ? sqrtf(f.ext.x * f.ext.x + f.ext.z * f.ext.z) : f.ext.x, bz = yaw ? bx : f.ext.z;
+            addBlock({c.x - bx, c.z - bz, c.x + bx, c.z + bz});
+        }
         // AABB grown by the clamp range: voxels outside it cannot change
         float ex = (yaw ? sqrtf(f.ext.x * f.ext.x + f.ext.z * f.ext.z) : f.ext.x) + 0.5f, ez = yaw ? ex : f.ext.z + 0.5f;
         paint(*this, {c.x - ex, c.y - f.ext.y - 0.5f, c.z - ez}, {c.x + ex, c.y + f.ext.y + 0.5f, c.z + ez}, [&](Vector3 p, signed char &v) {
@@ -250,6 +259,8 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     }
     if (j["finish"].type == Json::Arr) hasFinish = true, finish = vec(j["finish"], {cx, 8, cz});
     for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz})});
+    for (const Json &b : j["blocks"].arr) blocks.push_back({b[0].f(), b[1].f(), b[2].f(), b[3].f()});  // imported: already merged
+    mergeBlocks();
     const Json &ob = j["objects"];
     for (size_t i = 0; i < ob.size(); i++) {
         const Json &o = ob[i], &b = o["basis"];
@@ -293,11 +304,37 @@ bool Terrain::loadVoxels(const std::string &path) {
     return ok;
 }
 
+// Thresholds at 20 W4M units per m: area 250 units² (0x4b24c5), merge when the gap is under 40 units on x and z (0x4ae3aa).
+void Terrain::addBlock(Vector4 b) {
+    if ((b.z - b.x) * (b.w - b.y) < 250.0f / 400) return;
+    for (Vector4 &o : blocks)
+        if (fmaxf(o.x, b.x) < fminf(o.z, b.z) + 2 && fmaxf(o.y, b.y) < fminf(o.w, b.w) + 2) {
+            o = {fminf(o.x, b.x), fminf(o.y, b.y), fmaxf(o.z, b.z), fmaxf(o.w, b.w)};
+            return;
+        }
+    blocks.push_back(b);
+}
+
+void Terrain::mergeBlocks() {
+    for (size_t i = 0; i < blocks.size(); i++)
+        for (size_t k = i + 1; k < blocks.size(); k++) {
+            Vector4 &o = blocks[i], b = blocks[k];
+            if (fmaxf(o.x, b.x) < fminf(o.z, b.z) + 2 && fmaxf(o.y, b.y) < fminf(o.w, b.w) + 2) {
+                o = {fminf(o.x, b.x), fminf(o.y, b.y), fmaxf(o.z, b.z), fmaxf(o.w, b.w)};
+                blocks.erase(blocks.begin() + k);
+                i = (size_t)-1;  // W4M restarts the pass after every merge
+                break;
+            }
+        }
+}
+
 void Terrain::generate(unsigned seed) {
-    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear();
+    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear();
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
+    addBlock({cx - 15, cz + 7, cx - 1, cz + 9}), addBlock({cx + 7.5f, cz - 8.5f, cx + 12.5f, cz - 3.5f});  // the two prefabs' boxes
+    mergeBlocks();
     // ponytail: two hard-coded prefabs; real maps will place theme prefabs from a map file
     paint(*this, {cx - 8 - 7.5f, 8.5f, cz + 6.5f}, {cx - 8 + 7.5f, 19.5f, cz + 9.5f}, [&](Vector3 p, signed char &v) {
         v = std::max(v, qd(-sdBox(p, {cx - 8, 14, cz + 8}, {7, 5, 1})));
