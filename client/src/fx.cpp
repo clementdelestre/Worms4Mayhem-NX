@@ -395,6 +395,38 @@ void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet)
     add({Vector3Add(p, Vector3Scale(rndDir(), size0 * 0.25f)), Vector3Add(v, Vector3Scale(rndDir(), 0.5f)), 0, life, size0, size1, 0, rnd(-2, 2), 0, 2, jet ? Color{255, 200, 140, 255} : Color{255, 110, 30, 255}, (unsigned char)(jet ? JET : TOON), true});
 }
 
+// W4M AlienAbductionGraphicEntity (PARTTWK; g = s since the warp gate opened, < 0 closed; 20 units per metre, all cyan (0.5, 0.9, 1) WXSprite1 glows): WXP_AlienWarpGate at the gate, WXP_BeamStartParts
+// at the saucer's nozzle from 4.975 s, WXP_AlienBeamup at the beam from 7.791 s, WXP_Alien_ABD_Grnd_Effect (0.4, 0.7, 0.9) under it while it lifts.
+void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, float g, int stage, float u, float dt) {
+    static float acc[9];
+    auto every = [&](int k, float period, bool on) {
+        int n = 0;
+        if (!on) return acc[k] = 0, 0;
+        for (acc[k] += dt; acc[k] >= period; acc[k] -= period) n++;
+        return n;
+    };
+    const Color C = {128, 230, 255, 255}, G = {102, 179, 230, 255};
+    auto glow = [&](Vector3 p, Vector3 v, float life, float size, Color c, unsigned char t = GLOW) { add({p, v, 0, life, size, size, 0, rnd(-1, 1), 0, 0, c, t, true}); };
+    auto near = [&](Vector3 c, float rx, float ry, float rz) { return Vector3Add(c, {rnd(-rx, rx), rnd(-ry, ry), rnd(-rz, rz)}); };
+    if (g >= 0 && g < 0.05f) glow(gate, {}, 4, 15, C), glow(gate, {}, 3, 12, C);  // WXP_WarpGateGlow_A (300 units); the 2 s of rays follow
+    for (int n = every(0, 0.04f, g >= 0 && g < 2); n > 0; n--) glow(gate, Vector3Scale(rndDir(), 2.25f), 1.6f, 4.5f, C);  // Warpgate_Rayouts: 25 over 2 s
+    for (int n = every(1, 0.4f, g >= 0 && g < 2); n > 0; n--) glow(gate, {}, 3.5f, 9, {C.r, C.g, C.b, 140});  // Raystars: tall rays (40 x 600 units), approximated
+    if (g >= 3.7f && g < 3.7f + dt + 0.001f) glow(gate, {}, 0.6f, 40, {C.r, C.g, C.b, 150});  // WarpGateEndFlash: 1300 units shrinking
+    bool lead = e >= 4.975f && e < 8.475f;
+    for (int n = every(2, 0.05f, lead); n > 0; n--) glow(nozzle, {}, 0.15f, rnd(1.5f, 2.25f), C);  // BeamStartGlo
+    for (int n = every(3, 0.2f, lead); n > 0; n--) glow(nozzle, {}, 0.8f, 2.5f, C, STAR);  // BeamStartStars (3 -> 50 units)
+    for (int n = every(4, 0.35f, lead); n > 0; n--) glow(nozzle, {}, 4, rnd(1.75f, 2.25f), {C.r, C.g, C.b, 120});  // BeamBuildup
+    bool beam = e >= 7.791f && stage < 2;
+    for (int n = every(5, 1 / 60.f, beam); n > 0; n--) glow(at, {}, 0.05f, 1.5f, C), glow(at, {}, 0.05f, rnd(2.5f, 4), C);  // RootGlow, Mainglow
+    for (int n = every(6, 0.5f, beam); n > 0; n--) glow(near(Vector3Add(at, {0, -3.75f, 0}), 0, 2.5f, 0), {}, 2, rnd(2.5f, 4), {C.r, C.g, C.b, 128});  // CentralBeam
+    for (int n = every(7, 0.06f, beam); n > 0; n--) glow(near(Vector3Add(at, {0, -7.5f, 0}), 0.5f, 2.5f, 0.5f), {0, 0.75f, 0}, 1, 0.3f, C, SPARK);  // RisingStars
+    for (int n = every(8, 0.25f, stage == 1 && u < 3); n > 0; n--) {  // Grnd_Effect: glows, thin glows and rising specks
+        glow(near(Vector3Add(ground, {0, 0.25f, 0}), 1.5f, 0.2f, 1.5f), {}, 2, 1.5f, {G.r, G.g, G.b, 64});
+        glow(near(Vector3Add(ground, {0, 1, 0}), 0.5f, 2, 0.5f), {}, 2, 2, {G.r, G.g, G.b, 64});
+        glow(near(Vector3Add(ground, {0, 0.6f, 0}), 1.5f, 0.2f, 1.5f), {0, 0.5f, 0}, 2, 0.1f, G, SPARK);
+    }
+}
+
 void update(float dt) {
     shake *= expf(-dt * 6);
     // W4M 0x4ffa56, per 20 ms tick after the 4 s wait: at most one per 100 ms, chance 1/40, WXPF_Firework<1 + rand % 5>,

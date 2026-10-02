@@ -214,11 +214,19 @@ void clearWalls(const Terrain &t, Vector3 &pos) {
 
 int substeps(Vector3 vel) { return 1 + (int)(Vector3Length(vel) * Game::DT / (Terrain::VOX / 2)); }
 
+Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw, Vector3 dir) {
+    float z = dropped(d) ? 13 : d.kind == Kind::Mine ? 10 : d.kind == Kind::Sheep || d.kind == Kind::SuperSheep ? 5 : d.kind == Kind::OldWoman ? 7 : d.kind == Kind::Scouser ? 10 : -1;
+    if (z < 0 || (d.kind == Kind::SuperSheep && !d.walks)) return Vector3Add(pos, Vector3Scale(dir, 1.2f));
+    float y = dropped(d) || d.kind == Kind::Mine ? -10 : 0;
+    return {pos.x + sinf(yaw) * z / 20, pos.y - Game::R + (15 + y) / 20, pos.z + cosf(yaw) * z / 20};  // 20 units = 1 m
+}
+
 Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn) {
-    Vector3 p = {pos.x, pos.y - Game::R + 0.75f, pos.z}, d = Vector3Subtract(spawn, p);
+    const Vector3 eye = {pos.x, pos.y - Game::R + 0.75f, pos.z}, d = Vector3Subtract(spawn, eye);
+    Vector3 p = eye;
     int n = 1 + (int)(Vector3Length(d) / (Terrain::VOX / 2));
     for (int k = 1; k <= n; k++) {
-        Vector3 q = Vector3Add(p, Vector3Scale(d, (float)k / n));
+        Vector3 q = Vector3Add(eye, Vector3Scale(d, (float)k / n));
         if (t.solid(q)) return p;
         p = q;
     }
@@ -350,7 +358,7 @@ void Game::start(const GameConfig &c) {
             }
     countGroup.clear(), countT = countEnd = 0, landHold = 0;
     girderOn = false, girderWait = girders = 0, bubbles.clear(), icarus = flapAt = 0, drift = {}, doubleDamage = false;
-    roped = jetting = jetUsed = chute = false, fuel = boost = 0;
+    roped = jetting = jetUsed = chute = false, fuel = boost = 0, secondary = -1;
     spy.assign(teams, 0), scout = Scout{};
 
     ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0));
@@ -464,11 +472,11 @@ void Game::beginTurn(int team) {
                 float r = rand01();
                 wind = WIND_CAP[std::min<int>(sc.wind, 3)] * r * r * cosf(rand01() * 2 * PI);
             }
-            roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = boost = 0;
+            roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = boost = 0, secondary = -1;
             for (Object &o : objects) o.hooked = false;
             shotsLeft = ropeShots = 0;
             weapon = picked[t];
-            if (!usable(t, weapon)) nextWeapon(t);
+            if (!usable(t, weapon)) firstWeapon(t);  // W4M 0x565770 keeps it while 0x50d900 says it is usable
             for (int n = cfg.wormpot & WP_CRATE_SHOWER ? 6 : 1; n > 0; n--)  // W4M GameLogic.CrateShower 0x4fb850: 6 crates
                 if (!(cfg.rules & RULE_ROPE_RACE) && clock && rand01() * 100 < sc.crateChance && addObject(Object::Crate, 15))  // clock: none before the first turn
                     emit(GameEvent::CrateDrop, objects.back().pos);
@@ -478,18 +486,35 @@ void Game::beginTurn(int team) {
     }
 }
 
-bool Game::selectable(int team, int wi) const {
-    bool chuting = chute && current < (int)worms.size() && !worms[current].grounded, hook = false;
+bool Game::toolOut() const {
+    bool hook = false;
     for (const Object &o : objects) hook |= o.hooked;
-    if (!roped && !hook && !jetting && !chuting) return usable(team, wi);
-    Kind k = WEAPONS[wi].kind, tool = jetting ? Kind::Jetpack : chuting ? Kind::Parachute : Kind::Rope;
-    return k == tool || (usable(team, wi) && toolDrop(WEAPONS[wi]));  // the tool in use stays selectable, its ammo spent
+    return roped || hook || jetting || (chute && current < (int)worms.size() && !worms[current].grounded);
 }
 
+bool Game::selectable(int team, int wi) const {
+    if (!toolOut()) return usable(team, wi);
+    return wi == weapon || (usable(team, wi) && toolDrop(WEAPONS[wi]));  // the tool in hand stays, its ammo spent
+}
+
+void Game::firstWeapon(int team) {
+    for (int pass = 0; pass < 2; pass++)  // none: ours falls back to Skip Go / Surrender (W4M kWeaponUndefined)
+        for (size_t k = 0; k < WEAPONS.size(); k++)
+            if (usable(team, (int)k) && (pass || (WEAPONS[k].kind != Kind::SkipGo && WEAPONS[k].kind != Kind::Surrender))) {
+                weapon = (int)k, secondary = -1, jetUsed = false;
+                return;
+            }
+}
+
+// W4M WeaponSelected 0x565d30: with a tool out a toolDrop() becomes the secondary (0x566310), the tool stays in hand
 void Game::nextWeapon(int team) {
+    bool tool = toolOut();
     for (int i = 1; i <= (int)WEAPONS.size(); i++) {
-        int k = (weapon + i) % WEAPONS.size();
-        if (selectable(team, k)) { weapon = k, jetUsed = jetUsed && jetting; return; }  // a new jetpack on the ground (new W4M entity)
+        int k = (held() + i) % WEAPONS.size();
+        if (!selectable(team, k)) continue;
+        if (tool) secondary = k == weapon ? -1 : k;
+        else weapon = k, secondary = -1, jetUsed = false;  // a new jetpack on the ground (new W4M entity)
+        return;
     }
 }
 
@@ -687,11 +712,12 @@ void Game::use(Worm &w) {
     emit(GameEvent::Fire, w.pos, current, weapon);
     switch (wd.kind) {
     case Kind::Shell:
-        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(dir, 1.2f))), Vector3Scale(dir, launchSpeed(wd, power)), weapon, fuseOf(wd), false, 1});
+        shots.push_back({muzzle(terrain, w.pos, launchPoint(wd, w.pos, w.yaw, dir)), dropped(wd) ? Vector3Scale(f, wd.speed) : Vector3Scale(dir, launchSpeed(wd, power)),
+                         weapon, fuseOf(wd), false, 1});  // dropped: W4M BasePower along the facing, not aimed
         phase = Phase::Flying;
         break;
     case Kind::Sheep:
-        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(f, 0.9f))), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
+        shots.push_back({muzzle(terrain, w.pos, launchPoint(wd, w.pos, w.yaw, dir)), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
         phase = Phase::Flying;
         break;
     case Kind::Airstrike:
@@ -757,7 +783,7 @@ void Game::use(Worm &w) {
     case Kind::Teleport: w.pos = Vector3Add(tgt, {0, R + 0.3f, 0}); w.vel = {0, 0, 0}; break;
     case Kind::SuperSheep:
         if (wd.walks) {
-            shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(f, 0.9f))), Vector3Scale(f, SHEEP_STEP), weapon, SHEEP_WALK, false, 1});
+            shots.push_back({muzzle(terrain, w.pos, launchPoint(wd, w.pos, w.yaw, dir)), Vector3Scale(f, SHEEP_STEP), weapon, SHEEP_WALK, false, 1});
             phase = Phase::Flying;
             break;
         }
@@ -768,11 +794,11 @@ void Game::use(Worm &w) {
         phase = Phase::Flying;
         break;
     case Kind::OldWoman:
-        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(f, 0.9f))), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
+        shots.push_back({muzzle(terrain, w.pos, launchPoint(wd, w.pos, w.yaw, dir)), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
         phase = Phase::Flying;
         break;
     case Kind::Scouser:
-        shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.4f), {0, 0.6f, 0}))), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
+        shots.push_back({muzzle(terrain, w.pos, launchPoint(wd, w.pos, w.yaw, dir)), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
         phase = Phase::Flying;
         break;
     case Kind::Melee:
@@ -786,16 +812,15 @@ void Game::use(Worm &w) {
         phase = Phase::Flying;
         break;
     case Kind::Mine:
-        objects.push_back({Object::Mine, muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.7f), {0, 0.3f, 0}))), {0, 0, 0}, -1, -1, false, false, -1, -1, false, MINE_COURTESY});
+        objects.push_back({Object::Mine, muzzle(terrain, w.pos, launchPoint(wd, w.pos, w.yaw, dir)), {0, 0, 0}, -1, -1, false, false, -1, -1, false, MINE_COURTESY});
         phase = Phase::Flying;
         break;
     case Kind::Sentry:
         objects.push_back({Object::Sentry, muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.3f), {0, 0.3f, 0}))), {0, 0, 0}, weapon, -1, false, false, w.team});
         phase = Phase::Flying;
         break;
-    case Kind::Abduction:
-        for (Worm &o : worms)
-            if (o.alive && Vector3Distance(o.pos, tgt) < wd.radius) { hurt(o, o.hp / 2); o.vel = {0, wd.speed, 0}; o.grounded = false; }  // W4M: half its health
+    case Kind::Abduction:  // the UFO arrives (AbductStart), then the beam lifts; stepShots runs the rest
+        shots.push_back({{tgt.x, landTop() + ABD_RISE, tgt.z}, {0, 0, 0}, weapon, ABD_ARRIVE, false, 1, tgt});
         phase = Phase::Flying;
         break;
     case Kind::Flood: water = fminf(water + wd.speed, Terrain::WATER + 15); phase = Phase::Flying; break;
@@ -1001,6 +1026,20 @@ void Game::stepShots(const Input &in, bool detonate) {
         bool boom = false, timed = wd.fuse > 0 && !s.child;
         Vector3 np;
         bool bomber = wd.kind == Kind::Airstrike && !s.child;  // the plane; fuse > 0: the steered Bovine Blitz
+        if (wd.kind == Kind::Abduction) {  // stage 0 arriving, 1 beaming up, 2 leaving
+            if ((s.fuse -= DT) < DT / 2) {
+                if (s.stage == 2) { shots.erase(shots.begin() + i); continue; }
+                if (s.stage++ == 0)
+                    for (Worm &o : worms)
+                        if (o.alive && Vector3Distance(o.pos, s.aim) < wd.radius) {  // half its health; ours: rises ballistically to the saucer
+                            hurt(o, o.hp / 2);
+                            o.vel = {0, fmaxf(wd.speed, sqrtf(2 * gravity() * fmaxf(s.pos.y - o.pos.y, 0))), 0}, o.grounded = false;
+                        }
+                s.fuse = s.stage == 1 ? ABD_STAY : ABD_LEAVE;
+            }
+            i++;
+            continue;
+        }
         if (wd.kind == Kind::Donkey && wd.clusters > 0 && s.stage > 0) { s.stage--, i++; continue; }  // Fatkins: in the bomber until its DropBomb
         bool walker = !s.child && (wd.kind == Kind::Sheep || wd.kind == Kind::OldWoman || (wd.kind == Kind::Scouser && !s.stage) ||
                                    (wd.kind == Kind::SuperSheep && wd.walks && !s.stage));
@@ -1222,10 +1261,15 @@ void Game::step(const Input &in) {
             if ((pressed & Input::NEXT_WEAPON) && !shotsLeft) nextWeapon(w.team);
             if (WEAPONS[weapon].userFuse) fuses[w.team] = std::clamp(fuses[w.team] + !!(pressed & Input::FUSE_UP) - !!(pressed & Input::FUSE_DOWN), 1, 5);
             bool spare = jetUsed && WEAPONS[weapon].kind == Kind::Jetpack;  // takes off again without ammo
-            if (armed && ((ammo[w.team][weapon] && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(WEAPONS[weapon].kind))) {
+            bool drop2 = secondary >= 0 && (pressed & (jetting ? Input::JUMP : Input::FIRE)) && usable(w.team, secondary) && !w.nailed;
+            if (drop2) {  // W4M UtilityFire group 0x4e1d50: Fire.Second fires the secondary, the tool stays in hand
+                int tool = weapon;
+                weapon = secondary, secondary = -1, power = 0;
+                use(w);
+                weapon = tool;
+            } else if (armed && ((ammo[w.team][weapon] && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(WEAPONS[weapon].kind))) {
                 Vector3 h;
-                if (jetting) { if (pressed & Input::JUMP) power = 0, use(w); }  // W4M UtilityFire group 0x4e1d50: Fire.Second drops it
-                else if (!powered(WEAPONS[weapon].kind)) { if ((pressed & Input::FIRE) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
+                if (!powered(WEAPONS[weapon].kind)) { if ((pressed & Input::FIRE) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
                 else if (aimCursor && targeted(WEAPONS[weapon].kind)) {  // homing in the Blimp, W4M state 1: FIRE takes its target, no charge
                     if ((pressed & Input::FIRE) && !locked && cursorOn && blimpHit(&h)) locked = true, lockAt = h;
                 } else {
@@ -1236,6 +1280,7 @@ void Game::step(const Input &in) {
         }
     }
 
+    if (secondary >= 0 && !toolOut()) weapon = secondary, secondary = -1, jetUsed = false;  // W4M 0x565920: the tool is gone, the secondary in hand
     if (icarus && (WEAPONS[weapon].kind != Kind::Icarus || !w.alive)) icarus = 0, drift = {};  // a weapon change deletes it (0x587540)
     if (icarus == 1 && !w.grounded) icarus = 2, flapAt = clock + FLAP_WAIT, drift = {};  // took off: PackAccessory.Wield
     else if (icarus == 2 && w.grounded) icarus = 1;  // landed: the wings fold
@@ -1509,6 +1554,7 @@ uint32_t Game::checksum() const {
     for (const Gas &c : gas) mix(&c, sizeof c);
     mix(&girderOn, 1), mix(&girders, sizeof girders), mix(&girderWait, sizeof girderWait);
     if (girderOn) mix(&girder, sizeof girder), mix(&girderFrom, sizeof girderFrom), mix(&cursorYaw, sizeof cursorYaw);
+    if (secondary >= 0) mix(&secondary, sizeof secondary);
     if (jetting || jetUsed) mix(&jetting, 1), mix(&jetUsed, 1), mix(&fuel, sizeof fuel), mix(&boost, sizeof boost);  // no jetpack: old replays' sums hold
     for (const Bubble &b : bubbles) mix(&b, sizeof b);
     mix(&icarus, sizeof icarus), mix(&flapAt, sizeof flapAt), mix(&drift, sizeof drift), mix(&doubleDamage, 1), mix(spy.data(), spy.size());

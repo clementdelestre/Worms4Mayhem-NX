@@ -8,7 +8,7 @@
   {"name": "Holy Hand Grenade", "kind": "shell", "post_launch": 500, "gravity": 0.6, "radius": 6.46, "reach": 9.35, "damage": 80, "push": 22.5, "push_reach": 7.5, "push_depth": 3, "speed": 31.65, "min_speed": 5, "fuse": 2, "bounce": 0.2, "rest_fuse": true, "count": 1, "crate_weight": 1},
   {"name": "Homing Missile", "kind": "homing", "gravity": 0, "radius": 3.45, "reach": 4.9, "damage": 50, "push": 11, "push_reach": 5, "push_depth": 2.25, "speed": 32.5, "min_speed": 17.5, "count": 2, "crate_weight": 5},
   {"name": "Poison Arrow", "kind": "shell", "gravity": 0.6, "radius": 0, "reach": 1.4, "damage": 25, "push": 0, "speed": 31.65, "min_speed": 5, "poison": 10, "wind": true, "count": 3, "crate_weight": 6},
-  {"name": "Dynamite", "kind": "shell", "retreat": 5000, "radius": 3.925, "reach": 5.775, "damage": 75, "push": 17.5, "push_reach": 6.5, "push_depth": 2.25, "speed": 3, "fuse": 7, "bounce": 0.1, "count": 1, "crate_weight": 5},
+  {"name": "Dynamite", "kind": "shell", "retreat": 5000, "radius": 3.925, "reach": 5.775, "damage": 75, "push": 17.5, "push_reach": 6.5, "push_depth": 2.25, "speed": 0.5, "fuse": 7, "bounce": 0.1, "count": 1, "crate_weight": 5},
   {"name": "Gas Canister", "kind": "shell", "post_launch": 500, "gravity": 0.6, "radius": 0, "reach": 0, "damage": 0, "push": 0, "speed": 31.65, "min_speed": 5, "fuse": 5, "bounce": 0.4, "poison": 10, "count": 1, "crate_weight": 4},
   {"name": "Landmine", "kind": "mine", "retreat": 5000, "count": 2, "crate_weight": 5},
   {"name": "Sheep", "kind": "sheep", "radius": 4.675, "reach": 5.84, "damage": 75, "push": 16, "push_reach": 6.5, "push_depth": 2.25, "speed": 4, "fuse": 8, "count": 2, "crate_weight": 6},

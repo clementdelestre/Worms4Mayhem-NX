@@ -84,6 +84,9 @@ bool fits(const Terrain &t, Vector3 from, Vector3 to);  // the upper body at `to
 int substeps(Vector3 vel);
 // W4M 0x585a29 launches from the worm's eye (feet + Worm.EyeLevelOffset 15 units): spawn, pulled back to the last free point eye → spawn
 Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn);
+// W4M LogicalLaunchZ/YOffset from the eye (WEAPTWK): dynamite 13/-10, landmine 10/-10, sheep 5, old woman 7, scouser 10 units;
+// the others: ours, ahead along the aim (impact payloads would hit their own worm from the eye: W4M's exclusion not traced)
+Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw, Vector3 dir);
 // W4M payloads touch land by their centre point (0x574e90); at rest the mesh is drawn r along the land normal (0x5761f0)
 Vector3 restOn(const Terrain &t, Vector3 p, float r);
 float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e = 0.3f);  // worm body, walls bounce at e (W4M Rebound 0x5acea0: 0.3); returns the landing speed
@@ -237,6 +240,8 @@ struct Game {
     static constexpr int STRIKE_TICKS = 20;    // one bomb every BlitzDuration / NumBombs = 333 ms
     static constexpr int STRIKE_LEAD = 240;    // W4M Bomber: the first DropBomb waits for the 4 s bombrun_start clip (0x54db75)
     static constexpr float STRIKE_EXTRA = 7;  // Bomber.ExtraHeight 140 units
+    // W4M AlienAbductionLogicEntity clip lengths (0x546d00): AbductStart, AbductViolate + AbductOpenDoors, AbductEnd; ABD_RISE = Abduction.ExtraHeight 220 units
+    static constexpr float ABD_ARRIVE = 8.333f, ABD_STAY = 6.917f, ABD_LEAVE = 3.25f, ABD_RISE = 11;
     static constexpr float BOMBER_HEIGHT = 15, BOMBER_LEAD = 20, BOMBER_GAP = 0.8f, COW_CHUTE = 5;  // m, m, s (SuperBomber.DelayBetweenBombs), m/s
     // W4M Concrete Donkey 0x553370: 220 units/s^4 fall curve, 0.75 s back to the apex, 85 ms held after a smash, LifeTime 8000 ms
     static constexpr float DONKEY_CURVE = 11, DONKEY_HANG = 0.75f, DONKEY_LIFE = 8;
@@ -276,6 +281,12 @@ struct Game {
     std::vector<std::vector<int>> delays;  // [team][weapon]: own turns left before it unlocks (W4M InventoryN.WeaponDelays)
     bool usable(int team, int wi) const { return ammo[team][wi] && !delays[team][wi]; }
     bool selectable(int team, int wi) const;  // usable, and with a movement tool out only the tool itself or a toolDrop()
+    bool abducting() const { for (const Projectile &s : shots) if (WEAPONS[s.weapon].kind == Kind::Abduction) return true; return false; }  // W4M EFMV.Active (0x548d0b): labels off
+    bool toolOut() const;  // rope (or hooked object), jetpack in flight, open parachute in the air: W4M utility mode +0x8d
+    // W4M m_eSecondaryWeapon (+0x98, flag +0x8c): a toolDrop() held besides the tool, dropped by Fire.Second; -1 none
+    int secondary = -1;
+    int held() const { return secondary >= 0 ? secondary : weapon; }  // what NEXT_WEAPON and the panel step
+    void firstWeapon(int team);  // W4M Weapon.Create 0x565770: the first usable item, Skip Go / Surrender skipped
     int shotsLeft = 0;
     int ropeShots = 0;  // rope launches this turn
     Phase phase = Phase::Aim;

@@ -1504,7 +1504,7 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     if (!local || g.phase != Phase::Aim) { open = false, target = -1, swallow = true; return; }
     int n = (int)WEAPONS.size(), cols = PANEL_COLS;
     using S = Audio::Sfx;
-    if (pressed(pad, {X}, {KEY_Q})) open = !open, cursor = g.weapon, Audio::play(open ? S::FePopupIn : S::FePopupOut);
+    if (pressed(pad, {X}, {KEY_Q})) open = !open, cursor = g.held(), Audio::play(open ? S::FePopupIn : S::FePopupOut);
     if (open) {
         int dx = pressed(pad, {RIGHT}, {KEY_RIGHT}) - pressed(pad, {LEFT}, {KEY_LEFT});
         int dy = pressed(pad, {DOWN}, {KEY_DOWN}) - pressed(pad, {UP}, {KEY_UP});
@@ -1514,20 +1514,20 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
         cursor = slots.empty() ? 0 : slots[clampWrap(at + dx + dy * cols, (int)slots.size())];
         if (cursor != was) Audio::play(S::FeHighlight);
         if (pressed(pad, {A}, {KEY_SPACE, KEY_ENTER})) {
-            if (g.selectable(cur.team, cursor)) select(cursor), Audio::play(S::FeClick);
+            if (g.selectable(cur.team, cursor)) select(cursor), Audio::play(S::FeClick);  // a tool out: steps the secondary
             else Audio::play(S::FeError);
         }
         if (pressed(pad, {B}, {KEY_BACKSPACE})) open = false, swallow = true, Audio::play(S::FeCancel);
-        in = Input{};
+        in = Input{}, in.buttons = g.jetting ? held & Input::FIRE : 0;  // the jetpack keeps the thrust it had (ours)
     }
     if (swallow) {
         if (!(held & (Input::FIRE | Input::JUMP))) swallow = false;
-        in.buttons &= ~(Input::FIRE | Input::JUMP);
+        in.buttons &= g.jetting ? ~Input::JUMP : ~(Input::FIRE | Input::JUMP);  // in flight FIRE is only the thrust
     }
     if (target >= 0) {
-        if (pressedOn >= 0 && g.weapon != pressedOn) pressedOn = -1, releasedAt = tick;
-        if (g.weapon == target || ++tries > 8 * n) target = -1;
-        else if (pressedOn < 0 && tick > releasedAt) pressedOn = g.weapon;
+        if (pressedOn >= 0 && g.held() != pressedOn) pressedOn = -1, releasedAt = tick;
+        if (g.held() == target || ++tries > 8 * n) target = -1;
+        else if (pressedOn < 0 && tick > releasedAt) pressedOn = g.held();
         in.buttons &= ~Input::NEXT_WEAPON;
         if (target >= 0 && pressedOn >= 0) in.buttons |= Input::NEXT_WEAPON;  // edge-triggered in the sim
     }
@@ -1936,8 +1936,8 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             Vector2 sp = GetWorldToScreen(top, cam);
             text(o.weapon < 0 ? tr("Text.Health", "Health", "Santé") : WEAPONS[o.weapon].name.c_str(), sp.x, sp.y, Clamp(170 / dist, 12, 22), WHITE, 1);
         }
-    // W4M worm labels: name over hp, team colour, black outline (hidden during the ready screen)
-    if (!ready) for (const Worm &w : g.worms) {
+    // W4M worm labels: name over hp, team colour, black outline; hidden on the ready screen, with the weapon panel open or a UFO out (0x5fd4e0)
+    if (!ready && !open && !g.abducting()) for (const Worm &w : g.worms) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
         if (!w.alive) continue;  // blown up, or drowned: W4M shows no label afloat
         Vector3 top = Vector3Add(w.pos, {0, 1.1f, 0});
@@ -2020,6 +2020,15 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
     text(weaponName(wd), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
     if (wd.userFuse) text(TextFormat("%s %ds", tr("FETXT.Fuse", "Fuse", "Mèche"), (int)g.fuseOf(wd)), wp.x - 54, wp.y + 16, 22, GOLDEN, 2);  // d-pad up/down
+    if (g.secondary >= 0) {  // W4M SecondaryWeaponGraphicEntity 0x5f82f0: dynamite / landmine / sheep icon under the tool's
+        const WeaponDef &sd = WEAPONS[g.secondary];
+        int sa = g.ammo[cur.team][g.secondary];
+        Vector2 sp2 = {wp.x, wp.y + 140};
+        if (!sprite("secondback", sp2, 0.34f, {128, 128})) DrawCircleV(sp2, 30, {0, 119, 155, 230});
+        if (!image(iconOf(sd), {sp2.x - 23, sp2.y - 23, 46, 46}, WHITE)) text(sd.name.substr(0, 4).c_str(), sp2.x, sp2.y - 10, 18, WHITE, 1);
+        digits(sa < 0 ? "~" : TextFormat("%d", sa), sp2.x, sp2.y + 30, 28, 1);
+        text(weaponName(sd), sp2.x - 40, sp2.y - 10, 20, WHITE, 2);
+    }
     // turn timer (bottom right): turn seconds, round clock below
     bool retreat = g.phase == Phase::Flying || g.phase == Phase::Retreat;  // W4M: the retreat clock runs from the launch
     int left = aiming && g.hotSeat ? g.hotSeat : aiming ? g.timer : retreat ? std::min(g.timer, g.retreatTicks(WEAPONS[g.weapon])) : 0, secs = (left + 59) / 60;
@@ -2077,6 +2086,8 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         hints({{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}});
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
         hints({{"ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
+    else if (mine && !quiet && g.secondary >= 0)  // W4M SecondaryWeaponHelpEntity: WXFE.HelpDropConsole, FETXT.Control.Secondry + FETXT.Drop
+        hints({{g.jetting ? "ZL" : "A", g.jetting ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
         hints({{"A", "Space", WEAPONS[g.weapon].kind == Kind::Homing ? "Lock target" : "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
                {"Up/Down", "Z/X", "Zoom"}, {"B", "Enter/E", "Leave"}});

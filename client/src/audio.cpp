@@ -1,3 +1,4 @@
+#include <cstring>
 #include "audio.h"
 #include "raylib.h"
 #include "raymath.h"
@@ -30,7 +31,10 @@ const char *SFX_NAMES[] = {
     "fe_prev_in", "fe_prev_out", "fe_bounce", "fe_slide", "fe_net", "fe_custom", "fe_soundvid", "fe_controller", "fe_factory",
     "fe_book_in", "fe_book_out", "fe_grenade", "fe_wormpot", "wormpot_spin", "wormpot_stop",
     "holy_boom", "holy_held",
-    "bomb_whistle", "cow_fall", "lock_on",
+    "bomb_whistle", "cow_fall", "power_rocket", "power_homing", "power_bow",
+    "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
+    "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
+    "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m-map.md §12): the event of each file, its gain in dB
@@ -108,7 +112,28 @@ const Def DEFS[] = {
     {"weapons/HolyGrenadeHeld", -10, true, 0.5f, 25, 1},
     {"weapons/BombWhistle", -14, false, 0.5f, 40, 6},
     {"weapons/CowFall", -6, false, 0.5f, 25, 2},
+    {"weapons/RocketPowerUp", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
+    {"weapons/HomingMissilePowerUp", -6, false, 0.5f, 25, 1},
+    {"weapons/BowCreak", -2, false, 0.5f, 25, 1},
+    {"weapons/AirEquip", -12, false, 0.5f, 500, 1},  // the Equip events: 3D linear 1..10000 units, sound definition -12 dB
+    {"weapons/BazookaEquip", -12, false, 0.5f, 500, 1},
+    {"weapons/BubbleEquip", -12, false, 0.5f, 500, 1},
+    {"weapons/DefaultEquip", -12, false, 0.5f, 500, 1},
+    {"weapons/PotionEquip", -11, false, 0, 0, 1},  // event -9 dB, 2D
+    {"weapons/ScouserArm", -7, false, 0.5f, 25, 1},
+    {"weapons/ShotgunEquip", -12, false, 0.5f, 500, 1},
+    {"weapons/SniperEquip", -12, false, 0.5f, 500, 1},
+    {"weapons/UmbrellaOpen", -12, false, 0, 0, 1},  // 2D
+    {"weapons/SheepHeld", -9.2f, false, 0.5f, 25, 1},  // 3D log 10..500 units
+    {"weapons/SentryGunHeld", -8, true, 0.5f, 20, 1, 0.35f},
+    {"weapons/ScouserHeld", 0, false, 0.5f, 60, 1},  // variants weighted 100/300/100 in the FEV, uniform here
+    {"weapons/OldWomanHeld", -7, false, 0.5f, 60, 1},
     {"weapons/LockOn", 0, false, 0, 0, 1},  // sample TargetAquired, 2D
+    {"weapons/AlienUfoAppearing", 0, false, 0.5f, 100, 1},  // the UFO events: 3D linear 10..2000 units; TakeOff 2D
+    {"weapons/AlienUfoActive", 0, false, 0.5f, 100, 1},
+    {"weapons/AlienUfoBeamLoop", 0, true, 0.5f, 100, 1, 0.5f},
+    {"weapons/AlienUfoEngineLoop", 0, true, 0.5f, 100, 1, 0.5f},
+    {"weapons/AlienUFOTakeOff", 0, false, 0, 0, 1},
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -274,6 +299,32 @@ static void play(Sfx id, float volume, const Vector3 *at) {
 }
 void play(Sfx id, float volume) { play(id, volume, nullptr); }
 void play(Sfx id, Vector3 at) { play(id, 1, &at); }
+
+void equip(const char *w, Vector3 at) {
+    struct E { const char *name; Sfx id; };  // WEAPTWK EquipSfx by weapon; Sheep, Starburst, Fire Punch, Prod, Armour, Binoculars, Teleport, Change Worm, Skip Go have none
+    static const E T[] = {
+        {"Bazooka", Sfx::EquipBazooka}, {"Homing Missile", Sfx::EquipBazooka}, {"Sentry Gun", Sfx::EquipBazooka},
+        {"Airstrike", Sfx::EquipAir}, {"Super Airstrike", Sfx::EquipAir}, {"Fatkins Strike", Sfx::EquipAir}, {"Concrete Donkey", Sfx::EquipAir}, {"Alien Abduction", Sfx::EquipAir},
+        {"Flood", Sfx::EquipUmbrella}, {"Inflatable Scouser", Sfx::EquipScouser}, {"Shotgun", Sfx::EquipShotgun}, {"Sniper Rifle", Sfx::EquipSniper},
+        {"Bubble Trouble", Sfx::EquipBubble}, {"Icarus Potion", Sfx::EquipPotion},
+        {"Grenade", Sfx::EquipDefault}, {"Cluster Grenade", Sfx::EquipDefault}, {"Banana Bomb", Sfx::EquipDefault}, {"Holy Hand Grenade", Sfx::EquipDefault},
+        {"Poison Arrow", Sfx::EquipDefault}, {"Dynamite", Sfx::EquipDefault}, {"Gas Canister", Sfx::EquipDefault}, {"Landmine", Sfx::EquipDefault},
+        {"Old Woman", Sfx::EquipDefault}, {"Baseball Bat", Sfx::EquipDefault}, {"Tail Nail", Sfx::EquipDefault}, {"Ninja Rope", Sfx::EquipDefault},
+        {"Jetpack", Sfx::EquipDefault}, {"Parachute", Sfx::EquipDefault}, {"Girder", Sfx::EquipDefault}, {"Surrender", Sfx::EquipDefault},
+    };
+    for (const E &e : T) if (!strcmp(w, e.name)) return play(e.id, at);
+}
+
+void hold(Sfx id, bool on, const Vector3 *at) {
+    static bool was[(int)Sfx::Count];
+    const Def &d = DEFS[(int)id];
+    if (on && !was[(int)id]) play(id, 1, at);
+    for (Slot &k : sfx[(int)id].slot) {
+        if (!on) StopSound(k.s);
+        else if (IsSoundPlaying(k.s)) place(k.s, d, powf(10, d.db / 20), at);
+    }
+    was[(int)id] = on;
+}
 
 void loop(Sfx id, bool on, const Vector3 *at) {
     Variants &v = sfx[(int)id];

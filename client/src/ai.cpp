@@ -204,7 +204,7 @@ static void steer(const Game &g, Vector3 p, Vector3 v, Vector3 e, Input &in) {
 
 // Planned super sheep flight under the autopilot; false if it is lost.
 static bool superFly(const Game &g, const WeaponDef &wd, Vector3 pos, float yaw, float pitch, Vector3 e, Vector3 &out) {
-    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = muzzle(g.terrain, pos, wd.walks ? pos + flat(yaw) * 0.9f : pos + d * 1.2f), v = d * wd.speed;
+    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = muzzle(g.terrain, pos, launchPoint(wd, pos, yaw, d)), v = d * wd.speed;
     for (float t = wd.fuse; t > 0; t -= DT) {  // walks: takes off at once (think() presses FIRE)
         Input in;
         steer(g, p, v, e, in);
@@ -776,7 +776,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
         case Kind::Shell:
             if (dropped(wd) && pick()) {  // also set it down at the feet, facing the target
                 Vector3 d = dirOf(yawE, 0), out;
-                if (fly(g, wd, muzzle(g.terrain, w.pos, w.pos + d * 1.2f), d * launchSpeed(wd, 0), wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE, d)), d * wd.speed, wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
             }
             // constant acceleration A: hit T at time t with V = (T - P - A t(t+DT)/2) / t (semi-implicit Euler)
             for (float t = 0.2f; t < 4.5f; t += 0.43f) {  // 11 arcs, as W4M samples about 11 speeds (0x4ace50)
@@ -851,7 +851,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
         case Kind::Sheep:
         case Kind::OldWoman: {
             if (!isWorm || !pick()) break;
-            Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, muzzle(g.terrain, w.pos, w.pos + f * 0.9f), f, e, end);
+            Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE, f)), f, e, end);
             if (Vector3Distance(p, e) < 2) consider(shell(p), yawE, w.pitch, 0, ti);
             break;
         }

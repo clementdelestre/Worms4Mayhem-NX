@@ -83,7 +83,7 @@ struct Hud {
     // local: a human here plays the current turn; tick: ticks simulated so far
     void input(const Game &g, Input &in, bool local, int pad, uint32_t tick);
     void draw(const Game &g, const Camera3D &cam, uint32_t tick);
-    int shown(const Game &g) const { return target >= 0 ? target : g.weapon; }  // the pick while NEXT_WEAPON steps toward it
+    int shown(const Game &g) const { return target >= 0 && !g.toolOut() ? target : g.weapon; }  // the pick while NEXT_WEAPON steps toward it; a tool stays in hand
     void select(int weapon) { target = weapon, tries = 0, pressedOn = -1, releasedAt = 0, open = false, swallow = true; }
 
 private:

@@ -650,6 +650,26 @@ static void checkEventCameras() {
         float d = Vector3Distance(cam.position, w.pos);
         assert(wide ? d < 5 : d > 8);
     }
+    {  // the worm backs up against a wall: the ShoulderCamera zooms in to it at once (it never rises or turns: OccHeightSpeed /
+       // OccYawSpeed 0), and the worm fades (WormOpaqueDist 50 / WormTransparencyDist 25 units)
+        Game g;
+        g.start({25, 2, 1, "", 0});
+        Worm &w = g.worms[g.current];
+        w.pos = {20, 55, 30}, w.yaw = 0, w.grounded = true, w.vel = {0, 0, 0};
+        for (int z = 40; z < 78; z++)  // z 10..19.5 m, 2.5 m over the worm: the camera spot ends inside it
+            for (int y = 0; y < 230; y++)
+                for (int x = 40; x < 120; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = 127;
+        Controls::reset();
+        Camera3D cam = {{20, 57, 21.5f}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
+        for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        float top = cam.position.y - w.pos.y;
+        for (int t = 0; t < 240; t++) {
+            w.pos.z = fmaxf(20.2f, w.pos.z - 0.05f);
+            Controls::camera(cam, g, false, false, false, Game::DT);
+            assert(cam.position.y - w.pos.y < top + 0.3f && !g.terrain.solid(cam.position));
+        }
+        assert(Vector3Distance(cam.position, w.pos) < 2 && Controls::occluded() > 0.5f);
+    }
     for (int inside : {0, 1}) {  // NinjaCamMkIII: a hill between never zooms it in; inside land it swings to the first clear yaw offset
         Game g;
         g.start({25, 2, 1, "", 0});
@@ -957,7 +977,7 @@ static void floorAndWall(Game &g, float wall) {
 }
 
 // W4M launches from the eye (0x585a29): a worm against a thin wall blows its bazooka up on its own side, a shotgun hits the near face,
-// dropped dynamite rests on the land (centre contact, mesh drawn its depth over it: 0x574e90, 0x5761f0).
+// dropped dynamite rests on the land just ahead (centre contact, mesh drawn its depth over it: 0x574e90, 0x5761f0).
 static void checkLaunchAtWall() {
     for (int gun : {0, 1}) {
         Game g;
@@ -991,8 +1011,9 @@ static void checkLaunchAtWall() {
     for (int t = 0; t < 120; t++) g.step(Input{});
     assert(g.shots.size() == 1);
     Vector3 p = g.shots[0].pos, drawn = restOn(g.terrain, p, 0.25f);
-    printf("dynamite at rest: centre %.3f m, mesh bottom %.3f m over the floor\n", p.y - 50, drawn.y - 0.25f - 50);
+    printf("dynamite at rest: %.2f m ahead, centre %.3f m, mesh bottom %.3f m over the floor\n", p.x - w.pos.x, p.y - 50, drawn.y - 0.25f - 50);
     assert(p.y >= 50 && drawn.y - 0.25f > 49.97f && drawn.y - 0.25f < 50.05f);
+    assert(p.x - w.pos.x > 0.6f && p.x - w.pos.x < 0.8f && fabsf(p.z - w.pos.z) < 0.05f);  // W4M: 13 units ahead, 5 up, 0.01 units/ms: 0.75 m
 }
 
 // W4M payloads (0x57ea40): wind adds Wind.Speed to the acceleration; the homing missile has no gravity and homes only in stage 2.
@@ -1046,6 +1067,22 @@ static void checkJumps() {
     assert(fabsf(along) < 0.01f && up > 9 && up < 9.4f);  // held: vertical jump
     up = leave(false, true, 127, along);
     assert(along > 3 && up < 8);  // held with the stick forward: a normal jump
+
+    Game f;  // a double press: one backflip, one Jump event, nothing re-armed on landing
+    f.start({31, 2, 1, "", 0});
+    settle(f);
+    Worm &b = f.worms[f.current];
+    int jumps = 0, launches = 0;
+    bool was = true;
+    for (int t = 0; t < 240; t++) {
+        Input in;
+        in.buttons = t == 0 || t == 2 ? Input::JUMP : 0;
+        f.step(in);
+        for (const GameEvent &e : f.events) jumps += e.kind == GameEvent::Jump;
+        if (was && !b.grounded && b.vel.y > 5) launches++, assert(Vector3DotProduct(b.vel, facing(b)) < -1.5f);  // not a slide off a ledge
+        was = b.grounded;
+    }
+    assert(jumps == 1 && launches == 1 && !f.jumpDelay);
 }
 
 // Dynamite: the worm walks away while the fuse burns, can't fire again, and the blast ends the turn.
@@ -1377,13 +1414,13 @@ static void checkToolWeapons() {
         if (rope) g.roped = true, g.anchor = {20, 58, 20}, g.ropeLen = 3, g.ropeMax = 25;
         else g.jetting = g.jetUsed = true, g.fuel = 6, g.thrust = 20;
         a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = false;
-        g.weapon = weaponNamed(rope ? "Shotgun" : "Dynamite");
-        g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
+        g.weapon = weaponNamed(tool), g.secondary = weaponNamed("Dynamite");  // W4M m_eSecondaryWeapon beside the tool
+        int dyn = g.secondary;
+        g.ammo[a.team][dyn] = 1, g.delays[a.team][dyn] = 0;
         Input fire;
         fire.buttons = rope ? Input::FIRE : Input::JUMP;  // W4M Fire.Second drops from the jetpack, FIRE thrusts
         g.step(fire);
-        if (rope) { g.step(Input{}); g.step(fire); }  // both shotgun shots
-        assert(g.phase != Phase::Aim && (rope ? g.roped : g.jetting) && g.ammo[a.team][g.weapon] == 0);
+        assert(g.phase != Phase::Aim && (rope ? g.roped : g.jetting) && g.ammo[a.team][dyn] == 0 && g.secondary < 0 && g.weapon == weaponNamed(tool));
         assert((g.phase == Phase::Flying || g.phase == Phase::Retreat) && (rope ? g.roped : g.jetting));
         if (!rope) {  // the dynamite still burning
             Input thrust;
@@ -1478,14 +1515,71 @@ static void checkJetpack() {
         next.buttons = k % 2 ? 0 : Input::NEXT_WEAPON;
         next.buttons |= Input::FIRE;
         g.step(next);
-        const WeaponDef &d = WEAPONS[g.weapon];
-        assert(d.kind == Kind::Jetpack || d.name == "Dynamite" || d.name == "Landmine" || d.name == "Sheep");
+        assert(g.jetting && g.weapon == jp);  // the jetpack stays in hand
+        assert(g.secondary < 0 || WEAPONS[g.secondary].name == "Dynamite" || WEAPONS[g.secondary].name == "Landmine" || WEAPONS[g.secondary].name == "Sheep");
     }
     Game c = g;
     c.fuel += 1;
     assert(c.checksum() != g.checksum());
     Ai cpu;  // the CPU has no switch-off either: in flight off its plan it just stops thrusting
     for (int k = 0; k < 5; k++) assert(!(cpu.think(g).buttons & (Input::JUMP | Input::FIRE)));
+}
+
+// End to end, the Switch path: take off, step to the dynamite (it becomes the secondary), thrust on, ZL (JUMP) lays it, still flying;
+// a secondary left when the tool ends becomes the weapon in hand (W4M 0x565920).
+static void checkJetpackSecondary() {
+    Game g;
+    g.start({29, 2, 1, "", 0});
+    Worm &a = g.worms[g.current];
+    g.hotSeat = 0, g.wind = 0;
+    int jp = weaponNamed("Jetpack"), dyn = weaponNamed("Dynamite");
+    g.weapon = jp, g.ammo[a.team][jp] = 1, g.ammo[a.team][dyn] = 2;
+    g.delays[a.team][jp] = g.delays[a.team][dyn] = 0;
+    a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = false;
+    Input fire, next, drop;
+    fire.buttons = Input::FIRE, next.buttons = Input::FIRE | Input::NEXT_WEAPON, drop.buttons = Input::FIRE | Input::JUMP;
+    g.step(fire);
+    assert(g.jetting);
+    for (int k = 0; k < 4 * (int)WEAPONS.size() && g.secondary != dyn; k++) g.step(k % 2 ? fire : next);
+    assert(g.secondary == dyn && g.weapon == jp && g.jetting && g.held() == dyn);
+    float vy = a.vel.y, fuel = g.fuel;
+    g.step(fire);
+    assert(a.vel.y > vy - 12.5f * Game::DT + 1e-3f && g.fuel < fuel);  // still thrusts
+    size_t shots = g.shots.size();
+    g.step(drop);
+    assert(g.shots.size() == shots + 1 && WEAPONS[g.shots.back().weapon].name == "Dynamite" && g.ammo[a.team][dyn] == 1);
+    assert(g.jetting && g.weapon == jp && g.secondary < 0 && g.phase != Phase::Aim);  // the attack is made, the flight goes on
+    Game h;  // dry with the dynamite still held: it comes to hand
+    h.start({29, 2, 1, "", 0});
+    Worm &b = h.worms[h.current];
+    h.hotSeat = 0, h.weapon = jp, h.ammo[b.team][jp] = 1, h.ammo[b.team][dyn] = 1, h.delays[b.team][jp] = h.delays[b.team][dyn] = 0;
+    b.pos = {20, 55, 20}, b.vel = {0, 0, 0}, b.grounded = false;
+    h.step(fire);
+    h.secondary = dyn, h.fuel = 0.01f;
+    h.step(fire);
+    assert(!h.jetting && h.weapon == dyn && h.secondary < 0);
+}
+
+// W4M Weapon.Create 0x565770: a turn starts on the team's last weapon if still usable (0x50d900), else on the FIRST usable one
+// of the list, Skip Go and Surrender skipped (0x5657bb).
+static void checkFirstWeapon() {
+    Game g;
+    g.start({29, 2, 1, "", 0});
+    int t = g.worms[g.current].team, other = 1 - t;
+    for (size_t k = 0; k < WEAPONS.size(); k++) g.ammo[other][k] = 0, g.delays[other][k] = 0;
+    int skip = weaponNamed("Skip Go"), b = weaponNamed("Baseball Bat"), s = weaponNamed("Shotgun");
+    g.ammo[other][skip] = -1, g.ammo[other][b] = 1, g.ammo[other][s] = 1;
+    assert(s < b);  // list order decides, not the cycle from the old weapon
+    g.picked[other] = b + 1 < (int)WEAPONS.size() ? b + 1 : 0;
+    g.hotSeat = 0, g.weapon = skip, g.ammo[t][skip] = -1, g.delays[t][skip] = 0;
+    Input fire;
+    fire.buttons = Input::FIRE;
+    g.step(fire);
+    for (int k = 0; k < 60 * 60 && g.worms[g.current].team == t; k++) g.step(Input{});
+    assert(g.worms[g.current].team == other && g.weapon == s);
+    g.ammo[other][s] = g.ammo[other][b] = 0;
+    g.firstWeapon(other);
+    assert(g.weapon == skip);  // nothing else left
 }
 
 // W4M Alien Abduction: worms under the UFO lose half their health and are lifted.
@@ -1501,7 +1595,13 @@ static void checkAbduction() {
     Input fire;
     fire.buttons = Input::FIRE;
     g.step(fire);
-    assert(v.hp == 45 && v.vel.y > 0);
+    assert(v.hp == 90 && v.vel.y == 0 && g.abducting() && g.shots.size() == 1);  // the UFO is still arriving (AbductStart)
+    int t = 0;
+    for (; t < 60 * 10 && v.hp == 90; t++) g.step(Input{});
+    assert(fabsf(t - Game::ABD_ARRIVE * 60) < 3 && v.hp == 45 && v.vel.y > 0 && g.shots[0].stage == 1);
+    float apex = v.pos.y;
+    for (int k = 0; k < 60 * 20 && g.abducting(); k++) g.step(Input{}), apex = fmaxf(apex, v.pos.y);
+    assert(!g.abducting() && apex > g.landTop());  // beamed up to the saucer, which then leaves (AbductViolate + OpenDoors, AbductEnd)
 }
 
 // W4M Super Sheep: walks, FIRE takes off (25 s flight), FIRE again blows it up.
@@ -2236,6 +2336,8 @@ int main() {
     checkRetreatInFlight();
     checkToolWeapons();
     checkJetpack();
+    checkJetpackSecondary();
+    checkFirstWeapon();
     checkAbduction();
     checkSuperSheep();
     checkOldWoman();

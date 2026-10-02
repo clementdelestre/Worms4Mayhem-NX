@@ -31,6 +31,7 @@ struct Entry {
     int head = -1, hat = -1;
     std::vector<uint64_t> owns;  // per clip: the face bones it moves itself, which an emote layer leaves to it
     Models::Layers lay{}; bool layered = false;  // the Layers of the last skin()
+    std::vector<int> glow;  // materials drawn as additive light (W4M shader surfaces)
 };
 std::map<std::string, Entry> models;
 
@@ -233,6 +234,7 @@ void add(Job &j) {
     }
     owners(e);
     std::string name = GetFileNameWithoutExt(j.path.c_str());
+    if (name == "ufo") e.glow = {2};  // BeamConeShape's noise image (raylib material 0 is the default)
     if (strstr(j.path.c_str(), "/hats/")) hatNames.push_back(name);
     models[name] = e;
 }
@@ -409,10 +411,40 @@ static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation 
 static Shader over{};
 void Models::shade(Shader s) { over = s; }
 
-static void drawModel(Model &m, Vector3 pos, Color tint) {
+static void drawModel(Entry &e, Vector3 pos, Color tint) {
+    Model &m = e.m;
     Shader keep = m.materials[0].shader;
     for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = over;
-    DrawModel(m, pos, 1, tint);
+    if (e.glow.empty()) DrawModel(m, pos, 1, tint);
+    else {  // the glow materials after the solid ones, additive and unlit (BeamCone's WarpgateShader: the grey noise as cyan light)
+        Matrix xf = MatrixMultiply(m.transform, MatrixTranslate(pos.x, pos.y, pos.z));
+        for (int i = 0; i < m.meshCount; i++) {
+            int mi = m.meshMaterial[i];
+            if (std::find(e.glow.begin(), e.glow.end(), mi) != e.glow.end()) continue;
+            Material mat = m.materials[mi];
+            mat.maps[MATERIAL_MAP_DIFFUSE].color = {(unsigned char)(mat.maps[MATERIAL_MAP_DIFFUSE].color.r * tint.r / 255), (unsigned char)(mat.maps[MATERIAL_MAP_DIFFUSE].color.g * tint.g / 255),
+                                                    (unsigned char)(mat.maps[MATERIAL_MAP_DIFFUSE].color.b * tint.b / 255), (unsigned char)(mat.maps[MATERIAL_MAP_DIFFUSE].color.a * tint.a / 255)};
+            if (mat.shader.locs && mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS] != -1 && m.boneMatrices) {
+                rlEnableShader(mat.shader.id);
+                rlSetUniformMatrices(mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS], m.boneMatrices, m.skeleton.boneCount);
+            }
+            DrawMesh(m.meshes[i], mat, xf);
+        }
+        rlDrawRenderBatchActive();
+        BeginBlendMode(BLEND_ADDITIVE);
+        rlDisableDepthMask(), rlDisableBackfaceCulling();
+        for (int i = 0; i < m.meshCount; i++) {
+            int mi = m.meshMaterial[i];
+            if (std::find(e.glow.begin(), e.glow.end(), mi) == e.glow.end()) continue;
+            Material mat = m.materials[mi];
+            mat.shader = {rlGetShaderIdDefault(), rlGetShaderLocsDefault()};
+            mat.maps[MATERIAL_MAP_DIFFUSE].color = {(unsigned char)(70 * tint.r / 255), (unsigned char)(200 * tint.g / 255), (unsigned char)(255 * tint.b / 255), (unsigned char)(50 * tint.a / 255)};
+            DrawMesh(m.meshes[i], mat, xf);
+        }
+        rlDrawRenderBatchActive();
+        EndBlendMode();
+        rlEnableDepthMask(), rlEnableBackfaceCulling();
+    }
     for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = keep;
 }
 
@@ -437,7 +469,7 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
         e.posed = a, e.frame = f, e.aimed = nullptr, e.aimFrame = -1, e.layered = false;
     }
     e.m.transform = m;
-    drawModel(e.m, {0, 0, 0}, tint);
+    drawModel(e, {0, 0, 0}, tint);
     return true;
 }
 
@@ -459,6 +491,6 @@ bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color t
         if (lay) e.lay = *ly;
     }
     e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
-    drawModel(e.m, pos, tint);
+    drawModel(e, pos, tint);
     return true;
 }

@@ -63,6 +63,8 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("wings", "RedBullWings", 1.35, false, &["FlyRedBull"]),  // 27 units span
     ("superbomber", "SuperAirstrike", 4.1, false, &["OpenDoorsSource", "bombrun_end6", "bombrun_start"]),  // Bovine Blitz (SuperBomberGraphicEntity); the rest pose is nose-down, the clip starts level
     ("bomber", "BomberHelicopter", 4.1, false, &["bombrun_end", "bombrun_end2", "bombrun_end3", "bombrun_end4", "bombrun_end5", "bombrun_start", "bombrun_start2", "bombrun_start3"]),  // Airstrike (BomberGraphicEntity, table 0x91f39c)
+    ("ufo", "AlienAbduction", 0.0, false, &["AbductStart", "AbductViolate", "AbductOpenDoors", "AbductLoop", "AbductLoop2", "AbductCloseBeam", "AbductEnd", "AbductFail"]),  // AlienAbductionGraphicEntity: raw units, origin on the beam axis; saucer, pods, BeamCone, CreatePoint
+    ("warpgate", "AbductionWarpGate", 0.0, false, &["WXM_DefSource"]),  // the portal the UFO arrives and leaves through
     ("cow", "Cow.Payload", 0.0, false, &["Hang", "Skydive"]),  // ParachutePayloadGraphicEntity: Crate.Chute at its "Parachute" node
     ("grave0", "Grave.Cross", 0.9, true, &[]),
     ("grave1", "Grave.Worm", 0.9, true, &[]),
@@ -691,7 +693,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let c = [(lo[0] + hi[0]) / 2.0, if feet { lo[1] } else { (lo[1] + hi[1]) / 2.0 }, (lo[2] + hi[2]) / 2.0];
     let norm = if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
-    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Parachute", "trail1", "trail2", "persp", "smokelocator"];  // trail*: Bomber.EffectName; persp: its scene camera
+    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();
     let skin_all = |w: &[M4]| { let mut m = s.skinning(x, w); m.extend(sockets.iter().map(|&(g, _)| w[g])); m };

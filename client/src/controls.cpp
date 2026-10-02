@@ -51,7 +51,7 @@ static int ninjaIdx = 0;  // NinjaCamMkIII +0xec: next yaw offset to try, kept u
 static void resetTrack();
 static Vector3 focusAt{};
 static float focusR = 0;
-static float reach = 1, lift = 0;  // distance kept clear of a hill (fraction), rise over scenery on the way (m)
+static float reach = 1;  // distance kept clear of a hill (fraction)
 static float overT = 0, orbitA = 0, occl = 0, petYaw = 0, petEl = 0.255f;
 
 float occluded() { return occl; }
@@ -576,7 +576,10 @@ static bool occludes(const Game &g, Vector3 from, Vector3 to, Vector3 *hit, bool
     r = Vector3Length(r) < 0.01f ? Vector3{1, 0, 0} : Vector3Normalize(r);
     Vector3 u = Vector3CrossProduct(r, f);
     int n = 1, blocked = 1;
-    auto ray = [&](Vector3 o) { n++, blocked += g.terrain.raycast({Vector3Add(from, o), f}, L + 0.5f, &h); };  // OcclusionSize 10
+    auto ray = [&](Vector3 o) {  // from the point to the camera, that end pushed out by OcclusionSize 10
+        Vector3 p = Vector3Add(from, o), e = Vector3Subtract(Vector3Add(to, Vector3Scale(f, 0.5f)), p);
+        n++, blocked += g.terrain.raycast({p, Vector3Normalize(e)}, Vector3Length(e), &h);
+    };
     for (Vector3 o : {r, Vector3Negate(r), u, Vector3Negate(u)}) ray(Vector3Scale(o, 2.75f));
     for (int i = 0; inner && i < 5; i++) {
         float a = (9 + 40.5f * i) * DEG2RAD;
@@ -724,17 +727,13 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
         bool hidden = occludes(g, from, want, &hit, !pet);
         float r = hidden ? fmaxf(0.9f * Vector3Distance(from, hit) - 0.3f, pet ? 2.5f : 0.6f) / Vector3Length(to) : 1;  // chase MinZoomDist 50 units
         petEl = !pet ? 0.255f : hidden ? fminf(petEl + 0.4f * dt, 1.2f) : petEl + (0.255f - petEl) * (1 - expf(-dt * 0.5f));  // OccHeightSpeed 0.4: rises, never under
+        if (r < reach && !pet) kp = 1;  // OccZoomInSpeed 1: the zoom-in is a snap
         reach = cut || r < reach ? r : reach + (r - reach) * (1 - expf(-dt * 1.2f));
         want = Vector3Add(from, Vector3Scale(to, reach));
     }
     cam.target = Vector3Lerp(cam.target, focus, kt);
-    Vector3 left = Vector3Subtract(want, cam.position);  // scenery on the way: rise over it, slower across
-    bool blocked = !cut && g.terrain.raycast({cam.position, Vector3Normalize(left)}, Vector3Length(left), &hit);
-    lift = cut ? 0 : blocked ? fminf(lift + 20 * dt, 30) : fmaxf(lift - 10 * dt, 0);
-    float kh = blocked ? kp * Clamp((Vector3Distance(cam.position, hit) - 2) / Vector3Length(left), 0, 1) : kp;  // halts 2 m short until risen
-    float y = Lerp(cam.position.y, want.y + lift, kp);
-    cam.position = {Lerp(cam.position.x, want.x, kh), blocked ? fmaxf(y, cam.position.y) : y, Lerp(cam.position.z, want.z, kh)};
-    if (g.terrain.solid(cam.position)) cam.position.y += 15 * dt;  // W4M TrackCam: inside land, up 5 units a frame
+    cam.position = Vector3Lerp(cam.position, want, kp);
+    if ((chase || orbit) && g.terrain.solid(cam.position)) cam.position.y += 15 * dt;  // ours (no W4M camera here): out of the land
     if (pet) cam.position.y = fmaxf(cam.position.y, from.y + 0.5f);
     Vector3 back = Vector3Subtract(cam.position, from);  // following (not flying back from afar): never behind the scenery, pulled in front of it
     if (!orbit && !chase && !ninja && Vector3Length(back) < Vector3Length(to) + 2 && occludes(g, from, cam.position, &hit, !pet))

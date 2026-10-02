@@ -19,7 +19,11 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  WormpotSpin, WormpotStop,
                  HolyBoom, HolyHeld,  // W4M HolyGrenadeEx / HolyGrenadeHeld
                  BombWhistle, CowFall,  // W4M LaunchSfx of the air strike bombs and the Bovine Blitz cows
+                 PowerRocket, PowerHoming, PowerBow,  // W4M PowerbarMeterEntity 0x5f5c70: the charge sound, by weapon type
+                 EquipAir, EquipBazooka, EquipBubble, EquipDefault, EquipPotion, EquipScouser, EquipShotgun, EquipSniper, EquipUmbrella,  // W4M EquipSfx
+                 HeldSheep, HeldSentry, HeldScouser, HeldOldWoman,  // W4M HoldLoopSfx: SheepHeld (oneshot), SentryGunHeld (loop), ScouserHeld, OldWomanHeld
                  LockOn,  // W4M weapons/LockOn: the homing target is taken (0x560420)
+                 UfoAppearing, UfoActive, UfoBeamLoop, UfoEngine, UfoTakeOff,  // W4M AlienAbductionGraphicEntity's weapons/AlienUfo* (BeamStart is Abduction)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
@@ -34,6 +38,8 @@ void listen(const Camera3D &cam);  // 3D events fade with the distance to it (W4
 // Gain, 3D range and max playbacks come from the W4M event table in audio.cpp; volume scales it.
 void play(Sfx id, float volume = 1.0f);
 void play(Sfx id, Vector3 at);  // 3D events attenuated at `at`, 2D ones as play(id)
+void equip(const char *weapon, Vector3 at);  // W4M WeaponAccessoryEntity 0x5950c0: the weapon's EquipSfx, none for most animals and melee
+void hold(Sfx id, bool on, const Vector3 *at = nullptr);  // call every frame: one pass from the rising edge, cut at the falling edge
 void loop(Sfx id, bool on, const Vector3 *at = nullptr);  // call every frame: keeps one variant replaying while on
 void voice(int team, Voice id);  // team i speaks with its bank (setTeamVoice), default i % bank count (banks = dirs under voices/)
 void voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
