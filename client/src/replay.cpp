@@ -5,7 +5,7 @@
 #include <ctime>
 #include <utility>
 
-// .w4r: "W4R1", config (Start message layout minus owners), u32 final checksum, u32 ticks, 4 bytes per tick.
+// .w4r: "W4R2", config (Start message layout minus owners), u32 final checksum, u32 ticks, 5 bytes per tick (W4R1: 4, no flags).
 namespace {
 struct Out {
     std::string b;
@@ -27,7 +27,7 @@ struct In {
 
 bool Recording::save(const std::string &path) const {
     Out o;
-    o.b = "W4R1";
+    o.b = "W4R2";
     o.u32(cfg.seed), o.u8(cfg.teams), o.u8(cfg.wormsPerTeam), o.str(cfg.map), o.u32(cfg.rules);
     o.u8((uint8_t)cfg.teamSetup.size());
     for (const auto &t : cfg.teamSetup) o.str(t.name), o.u8(t.cpu), o.u8(t.voice), o.u8(t.hat);
@@ -39,10 +39,10 @@ bool Recording::save(const std::string &path) const {
         o.str(d.name), o.u8((uint8_t)d.kind);
         for (float f : {d.radius, d.damage, d.speed, d.fuse, d.bounce, d.cradius, d.cdamage, d.poison}) o.f32(f);
         for (int v : {d.count, d.clusters, d.shots, d.weight}) o.u32((uint32_t)v);
-        o.u8(d.wind), o.str(d.model), o.str(d.icon);
+        o.u8(d.wind | d.avoid << 1), o.str(d.model), o.str(d.icon);
     }
     o.u32(checksum), o.u32((uint32_t)inputs.size());
-    for (const Input &i : inputs) o.u8(i.turn), o.u8(i.walk), o.u8(i.aim), o.u8(i.buttons);
+    for (const Input &i : inputs) o.u8(i.turn), o.u8(i.walk), o.u8(i.aim), o.u8(i.buttons), o.u8(i.flags);
     FILE *f = fopen(path.c_str(), "wb");
     if (!f) return false;
     bool ok = fwrite(o.b.data(), 1, o.b.size(), f) == o.b.size();
@@ -56,7 +56,8 @@ bool Recording::load(const std::string &path) {
     char buf[65536];
     for (size_t n; (n = fread(buf, 1, sizeof buf, f));) b.append(buf, n);
     fclose(f);
-    if (b.compare(0, 4, "W4R1")) return false;
+    int per = !b.compare(0, 4, "W4R2") ? 5 : !b.compare(0, 4, "W4R1") ? 4 : 0;
+    if (!per) return false;
     In r{b, 4};
     cfg = GameConfig{};
     cfg.seed = r.u32(), cfg.teams = r.u8(), cfg.wormsPerTeam = r.u8(), cfg.map = r.str(), cfg.rules = r.u32();
@@ -72,14 +73,15 @@ bool Recording::load(const std::string &path) {
         w.name = r.str(), w.kind = (Kind)std::min<int>(r.u8(), (int)Kind::ChangeWorm);
         for (float *f : {&w.radius, &w.damage, &w.speed, &w.fuse, &w.bounce, &w.cradius, &w.cdamage, &w.poison}) *f = r.f32();
         for (int *v : {&w.count, &w.clusters, &w.shots, &w.weight}) *v = (int32_t)r.u32();
-        w.wind = r.u8(), w.model = r.str(), w.icon = r.str();
+        { uint8_t fl = r.u8(); w.wind = fl & 1, w.avoid = fl & 2; }
+        w.model = r.str(), w.icon = r.str();
         cfg.custom.push_back(w);
     }
     checksum = r.u32();
     uint32_t n = r.u32();
-    if (!r.ok || cfg.teams < 2 || cfg.teams > 4 || (b.size() - r.p) / 4 < n) return false;
+    if (!r.ok || cfg.teams < 2 || cfg.teams > 4 || (b.size() - r.p) / per < n) return false;
     inputs.resize(n);
-    for (Input &i : inputs) i.turn = (int8_t)r.u8(), i.walk = (int8_t)r.u8(), i.aim = (int8_t)r.u8(), i.buttons = r.u8();
+    for (Input &i : inputs) i.turn = (int8_t)r.u8(), i.walk = (int8_t)r.u8(), i.aim = (int8_t)r.u8(), i.buttons = r.u8(), i.flags = per > 4 ? r.u8() : 0;
     return true;
 }
 

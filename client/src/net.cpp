@@ -182,7 +182,8 @@ void Net::handle(const uint8_t *p, size_t n) {
             w.kind = (Kind)std::min<int>(r.u8(), (int)Kind::ChangeWorm);
             for (float *f : {&w.radius, &w.damage, &w.speed, &w.fuse, &w.bounce, &w.cradius, &w.cdamage, &w.poison}) *f = r.f32();
             for (int *v : {&w.count, &w.clusters, &w.shots, &w.weight}) *v = (int32_t)r.u32();
-            w.wind = r.u8();
+            uint8_t fl = r.u8();  // bit 0 wind, bit 1 HomingAvoidLand (older peers read a set byte as wind)
+            w.wind = fl & 1, w.avoid = fl & 2;
             w.model = r.str();
             w.icon = r.str();
             if (r.ok) cfg.custom.push_back(w);
@@ -215,7 +216,7 @@ void Net::handle(const uint8_t *p, size_t n) {
 void Net::flushInputs() {
     W w(INPUTS);
     w.u32(batchTick).u8(batch.size());
-    for (const Input &i : batch) w.u8(i.turn).u8(i.walk).u8(i.aim).u8(i.buttons);
+    for (const Input &i : batch) w.input(i);
     send(w.done());
     batch.clear();
     batchAge = 0;
@@ -250,7 +251,7 @@ void Net::start(const GameConfig &c, const std::vector<uint32_t> &own) {
         w.str(d.name.c_str()).u8((uint8_t)d.kind);
         for (float f : {d.radius, d.damage, d.speed, d.fuse, d.bounce, d.cradius, d.cdamage, d.poison}) w.f32(f);
         for (int v : {d.count, d.clusters, d.shots, d.weight}) w.u32((uint32_t)v);
-        w.u8(d.wind).str(d.model.c_str()).str(d.icon.c_str());
+        w.u8(d.wind | d.avoid << 1).str(d.model.c_str()).str(d.icon.c_str());
     }
     send(w.done());
 }

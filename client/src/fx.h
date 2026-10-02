@@ -19,9 +19,10 @@ void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, b
 void wingTrail(Vector3 p);  // one puff of W4M WXP_PlaneWingTrails (Bomber.EffectName)
 void ariel(Vector3 p);  // W4M WXP_AirstrikeArielA: the air strike bomb's one-off puff at its launch
 void dud(Vector3 p);  // mine fizzled: W4M ExpiryFx WXP_Wep_MineDudEffect
+void soap(Vector3 p);  // one W4M WXP_Bubbles_Small soap bubble, from the Bubble Trouble machine
 void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet);
 void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble);  // upright W4M "?" (WXSprite22) or bubble (WXSprite23)  // additive W4M jetfire (jet) or toonfire sprite
-void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, float g, int stage, float u, float dt);  // Alien Abduction: e s into the sequence, g into the warp gate, u into the stage
+void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, float g, int stage, float dt);  // Alien Abduction: e s into the sequence (its beam cues), g into the warp gate; stage: Game::ABD_*
 void update(float dt);
 Color fog();  // horizon colour: clear colour and terrain/water fog
 void drawSky(const Camera3D &cam);  // first thing inside BeginMode3D

@@ -60,10 +60,17 @@ std::vector<Run> runs;
 struct Actor {
     int run = -1, track = -1;
     const char *dflt = "Angry";  // 0x5a595d: Angry or Frown, by a coin flip
-    std::string emote, gesture;  // emote "": dflt
-    float gt = 0;
-    int look = NONE; Vector3 lookAt{};  // WormGestureAt (arms) not done: its acting weights are undecoded
-    float yaw = 0, pitch = 0;
+    std::string emote;  // "": dflt
+    // acting clips (WormPoseManager +0xf4 new / +0xf8 old), weights +0xfc / +0x100, fade-out per update +0x104, ground factor +0x194
+    struct Gest { std::string clip; float t = 0, w = 0; } act[2];
+    float actS = 1, stopRate = 0;
+    int look = NONE, gest = NONE; Vector3 lookAt{}, gestAt{};
+    // WormPoseManager (0x59da40), radians: head (+0x134/8), eyes (+0x154/8), gesture (+0x160/+0x15c); old: their snapshot (0x59bb90)
+    struct Pose { float hy = 0, hp = 0, ey = 0, ep = 0, gy = 0, gp = 0; } cur, old;
+    float headY = 0, headP = 0;                    // head target (+0x128 / +0x130)
+    float poseT = 1, headW = 1, eyeW = 1, lookW = 1;  // PoseBlend time (s), head and eye weights (+0x48 / +0x4c), Forbid Lookaround (+0x198)
+    float eyeMove = 10, eyeOld = 10, mode = 0;     // PermittedEyeMovement now / before (+0x16c / +0x170; degrees, default 10), head mode
+    float coy = 0, coyOff = 0;                     // the emote's Coyness (+0x188, radians), the head's offset from it (+0x18c)
     bool threatened = false, abducted = false, targeted = false, onScreen = false;
     float aimMs = 0, coolMs = 0, calm = 0, sickW = 0, abdW = 0;
     bool kicked = false, flying = false, air = false, dead = false;
@@ -428,6 +435,20 @@ void stepFx(const Game &g, int i, float dt) {
     }
 }
 
+// PoseBlend: Blend.Scale.y keys, played at 1 / BlendTime (0.3 s, every WORMACTING emote) from a new look or gesture target
+float poseA(const Actor &a) {
+    static const float K[3][6] = {{1, 0, 1, 0, 0, 0}, {0.70703125f, 0.70703125f, 0.70703125f, 0.70703125f, 0.75f, 1}, {1, 0, 1, 0, 1, 1}};
+    return Models::curve(K, 3, a.poseT / 0.3f);
+}
+
+// A new look or gesture target: the layers cross-fade from where they are (0x59bb90)
+void snap(Actor &a) {
+    float *o = &a.old.hy, *c = &a.cur.hy, A = poseA(a);
+    for (int k = 0; k < 6; k++) o[k] += A * (c[k] - o[k]);
+    a.eyeOld += A * (a.eyeMove - a.eyeOld);
+    a.poseT = 0;
+}
+
 // Track k of run r: its events up to the run's clock (WormScenePlayerService 0x60b1b0)
 void play(int r) {
     Run &run = runs[r];
@@ -446,11 +467,23 @@ void play(int r) {
                 else if (n < 30 && run.cast[n] != NONE) *id = run.cast[n], *at = run.at[n];
             };
             switch (e.op) {
-            case 'e': a.emote = e.arg == "Default" ? "" : e.arg; break;
-            case 'p': if (has(e.arg)) a.gesture = e.arg, a.gt = 0; break;  // unknown names (ShakeFist, CoverHead...) play nothing
-            case 'x': a.gesture.clear(); break;
+            case 'e': {  // name[,PermittedEyeMovement[,Coyness]]
+                float eye = 0, coy = 0;
+                std::string em = e.arg.substr(0, e.arg.find(','));
+                if (em.size() < e.arg.size()) sscanf(e.arg.c_str() + em.size(), ",%f,%f", &eye, &coy);
+                a.emote = em == "Default" ? "" : em, a.eyeOld = a.eyeMove, a.eyeMove = eye, a.coy = coy * DEG2RAD;  // 0x59e7e6
+                break;
+            }
+            case 'p':  // 0x59c990: the playing gesture becomes the old one (weight at most 0.9), the same clip is not restarted
+                if (has(e.arg) && e.arg != a.act[0].clip) a.act[1] = a.act[0], a.act[1].w = fminf(a.act[0].w, 0.9f), a.act[0] = {e.arg, 0, 1 - a.act[1].w}, a.stopRate = 0;
+                break;  // unknown names (ShakeFist, CoverHead...) play nothing
+            case 'x': if (e.n > 0) a.stopRate = 20.f / e.n; break;  // BlendTime ms; 0 (141 of 149) does nothing (0x59e85a)
             case 's': say(x, e.arg); break;
-            case 'l': target(e.n, &a.look, &a.lookAt); break;
+            case 'l': snap(a), target(e.n, &a.look, &a.lookAt);
+                if (a.look == STOP) a.headY = a.headP = a.cur.ey = a.cur.ep = 0;  // 0x59e92b
+                else a.coyOff = a.coy;  // 0x59ea23: the sign follows the head's turn, which the exe measures as 0: always +
+                break;
+            case 'g': snap(a), target(e.n, &a.gest, &a.gestAt); break;
             case 't': a.threatened = e.n != 0; break;
             case 'f': particle(x, e.arg); break;
             }
@@ -472,6 +505,44 @@ void aimAt(int i, int id, Vector3 &stored, float *yaw, float *pitch) {
     *yaw = atan2f(mx, mz), *pitch = atan2f(d.y, sqrtf(mx * mx + mz * mz));
 }
 float ease(float v, float to, float dt) { return v + (to - v) * (1 - powf(0.9f, dt / 0.02f)); }  // 0.1 per 20 ms frame (0x59c106; law assumed)
+
+// 0x47a1a0, once per update: v += clamp((to - v) / (k + 1), +-max)
+float smooth(float v, float to, float k, float max) { return v + Clamp((to - v) / (k + 1), -max, max); }
+
+// 0x59bd80: past lo (around the Coyness offset) the head target takes the eyes' lead, fully from hi (soft in between)
+void lead(float *eye, float lo, float hi, float *head, float coy) {
+    float r = *eye - coy, ex = r > lo ? r - lo : r < -lo ? r + lo : 0, w = hi - lo;
+    float m = ex * (w > 0 ? fminf(1, ex * ex / (w * w)) : 1);
+    *head += m, *eye -= m;
+}
+
+// The head target stops at [lo, hi]; the eyes take the rest, up to eyeMax (0x59c282)
+void limit(float *head, float *eye, float lo, float hi, float eyeMax) {
+    if (*head > hi) *eye = fminf(*eye + *head - hi, eyeMax), *head = hi;
+    if (*head < lo) *eye = fmaxf(*eye + *head - lo, -eyeMax), *head = lo;
+}
+
+// One WormPoseManager update (0x59da40, once per 20 ms tick, at most once per frame): acting weights, look (0x59be40),
+// gesture (0x59c3e0), head ease (0x59b450)
+void lookStep(Actor &a, int i, bool forbid, bool busy) {
+    a.actS = (a.actS + !busy) / 2, a.lookW = (a.lookW + !forbid) / 2;  // +0x194 (off the ground or walking: 0), +0x198
+    for (Actor::Gest &c : a.act)
+        if (!c.clip.empty() && c.t >= Models::clipLength("worm", c.clip.c_str())) c = {};  // a finished clip drops out (0x59dc41)
+    a.act[1].w = fmaxf(0, a.act[1].w - 0.1f);
+    if (a.stopRate > 0 && (a.act[0].w -= a.stopRate) <= 0) a.act[0] = {}, a.stopRate = 0;  // StopAnimation's fade (0x59dd9c)
+    else if (a.stopRate <= 0 && !a.act[0].clip.empty()) a.act[0].w = 1 - a.act[1].w;
+    float m = Clamp(a.mode, 0, 2), y, p;  // Blend.Rotate.y: 0 head and eyes, 1 eyes only, 2 neither
+    a.headW = smooth(a.headW, m < 1 ? 1 - m : 0, 1, 0.1f), a.eyeW = smooth(a.eyeW, m < 1 ? 1 : 2 - m, 1, 0.1f);
+    aimAt(i, a.look, a.lookAt, &y, &p);
+    float E = (a.eyeOld + poseA(a) * (a.eyeMove - a.eyeOld)) * DEG2RAD, H = a.headW;
+    y -= a.headY, p -= a.headP;
+    lead(&y, 0.6f * E, E, &a.headY, a.coyOff), lead(&p, 0.6f * E, E, &a.headP, 0);  // pitch Coyness +0x190 stays 0
+    limit(&a.headP, &p, -0.785f * H, 1.222f * H, 1.047f);  // pitch -45..+70 degrees, as in the exe (HeadRotX itself stops at +45)
+    limit(&a.headY, &y, -1.047f * H, 1.047f * H, 1.222f);
+    a.cur.ey = y, a.cur.ep = p;
+    aimAt(i, a.gest, a.gestAt, &a.cur.gy, &a.cur.gp);  // instant: only the PoseBlend fade smooths a retarget
+    a.cur.hy = smooth(a.cur.hy, a.headY, 2, 0.5236f), a.cur.hp = smooth(a.cur.hp, a.headP, 2, 0.5236f);
+}
 }  // namespace
 
 void Acting::event(const Game &g, const GameEvent &e) {
@@ -491,12 +562,6 @@ void Acting::event(const Game &g, const GameEvent &e) {
         const WeaponDef &d = WEAPONS[e.weapon];
         Kind k = d.kind;
         if (k == Kind::SkipGo || k == Kind::Surrender) { fire(g, SKIP_GO, e.worm); break; }
-        if (k == Kind::Abduction) {  // AlienAbductionLogicEntity 0x547d39 flags the worms it spits out; Zap (0x5a9d69, link assumed)
-            Vector3 t = g.target();
-            for (size_t i = 0; i < actors.size(); i++)
-                if (g.worms[i].alive && Vector3Distance(g.worms[i].pos, t) < d.radius) actors[i].abducted = true, fire(g, ZAP, (int)i);
-            break;
-        }
         if (utility(k) || k == Kind::Flood) break;
         fired = true;
         if (k == Kind::Airstrike || k == Kind::Donkey) { fire(g, AIRSTRIKE, e.worm); break; }  // Bomber 0x54d7c0
@@ -524,9 +589,9 @@ void Acting::event(const Game &g, const GameEvent &e) {
         anyDeath = true;
         break;
     case GameEvent::Splash: if (e.worm >= 0) line(e.worm, V::Drown); break;
+    case GameEvent::Zap: fire(g, ZAP, e.worm); break;  // UpdateAbductee 0x5a9d69 (link to the Zap trigger assumed)
     case GameEvent::Collect:
         if (e.worm < 0) break;
-        if (e.weapon < 0) actors[e.worm].abducted = false;  // a health crate cures it, as poison (0x5adcf0, assumed)
         fire(g, COLLECT, e.worm);
         break;
     case GameEvent::CrateDrop: if (cur != NONE) line(cur, V::CrateDrop); break;
@@ -537,6 +602,22 @@ void Acting::event(const Game &g, const GameEvent &e) {
         break;
     default: break;
     }
+}
+
+void Acting::taunt(const Game &g, int worm, const std::string &weapon) {
+    static const std::pair<const char *, int> T[] = {
+        {"Grenade", TAUNT_MELEE}, {"Dynamite", TAUNT_MELEE}, {"Landmine", TAUNT_MELEE}, {"Baseball Bat", TAUNT_MELEE}, {"Prod", TAUNT_MELEE},
+        {"Fire Punch", TAUNT_MELEE}, {"Tail Nail", TAUNT_MELEE},
+        {"Airstrike", TAUNT_STRIKE}, {"Flood", TAUNT_STRIKE}, {"Concrete Donkey", TAUNT_STRIKE}, {"Alien Abduction", TAUNT_STRIKE}, {"Super Airstrike", TAUNT_STRIKE},
+        {"Bazooka", TAUNT_RANGED}, {"Cluster Grenade", TAUNT_RANGED}, {"Holy Hand Grenade", TAUNT_RANGED}, {"Banana Bomb", TAUNT_RANGED},
+        {"Shotgun", TAUNT_RANGED}, {"Homing Missile", TAUNT_RANGED}, {"Sheep", TAUNT_RANGED}, {"Gas Canister", TAUNT_RANGED}, {"Old Woman", TAUNT_RANGED},
+        {"Super Sheep", TAUNT_RANGED}, {"Starburst", TAUNT_RANGED}, {"Inflatable Scouser", TAUNT_RANGED},
+        {"Poison Arrow", TAUNT_RANGED}, {"Sentry Gun", TAUNT_RANGED}, {"Sniper Rifle", TAUNT_RANGED}};
+    if (!loaded) load();
+    if (actors.size() != g.worms.size() || worm < 0) return;
+    G = &g;
+    refreshProps(g);
+    for (const auto &e : T) if (weapon == e.first) return fire(g, e.second, worm);
 }
 
 void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, const Camera3D &cam) {
@@ -590,7 +671,7 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
     for (size_t i = 0; i < n; i++) {
         const Worm &w = g.worms[i];
         Actor &a = actors[i];
-        if (!w.alive) { if (a.run >= 0) release(a.run); a.gesture.clear(); continue; }
+        if (!w.alive) { if (a.run >= 0) release(a.run); a.act[0] = a.act[1] = {}; continue; }
         Vector2 s = GetWorldToScreen(w.pos, cam);  // OnScreen: in the view frustum (0x5a2420)
         a.onScreen = Vector3DotProduct(Vector3Subtract(w.pos, cam.position), Vector3Subtract(cam.target, cam.position)) > 0 && s.x >= 0 &&
                      s.y >= 0 && s.x < GetScreenWidth() && s.y < GetScreenHeight();
@@ -614,6 +695,7 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         if (w.poison > a.poison) fire(g, POISONED, (int)i);  // 0x5a1a89
         a.poison = w.poison;
         // W4M Sick.Colour / Abducted.Colour weights ease in and out (rate assumed)
+        a.abducted = w.abducted;  // 0x547d39 sets it as the UFO spits the worm out, poison and Worm.Antidote clear it (0x5ade00, 0x5adf13)
         a.sickW = ease(a.sickW, w.poison > 0 ? 1.f : 0.f, dt), a.abdW = ease(a.abdW, a.abducted ? 1.f : 0.f, dt);
     }
     // a timed payload comes to rest: TimedPayload by the whole seconds left (PayloadLogicEntity 0x577181)
@@ -642,14 +724,17 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
     }
     for (int r = 0; r < (int)runs.size(); r++)
         if (runs[r].scene >= 0) runs[r].t += dt, play(r);
+    // the per-frame task queue runs on time rounded up to 20 ms (0x68d57a), the worm updates when that moved (0x5a47a0)
+    static float tick = 0;
+    bool step = (tick += dt) >= 0.02f;
+    if (step) tick = fmodf(tick, 0.02f);
     for (size_t i = 0; i < n; i++) {
         Actor &a = actors[i];
         if (!g.worms[i].alive) continue;
-        if (!a.gesture.empty() && !busy[i] && (a.gt += dt) >= Models::clipLength("worm", a.gesture.c_str())) a.gesture.clear();
-        float y, p;
-        aimAt((int)i, a.look, a.lookAt, &y, &p);
-        // HeadRotY keys +-1.047 rad; HeadRotX 1.22 down .. 0.785 up
-        a.yaw = ease(a.yaw, Clamp(y, -1.047f, 1.047f), dt), a.pitch = ease(a.pitch, Clamp(p, -1.22f, 0.785f), dt);
+        for (Actor::Gest &c : a.act) c.t += dt;  // XAnim clips run in real time, whatever their weight
+        a.poseT += dt;
+        // the aiming worm: weapons set Forbid Lookaround (0x59f3a0)
+        if (step) lookStep(a, (int)i, (int)i == g.current && g.phase == Phase::Aim, busy[i]);
         stepFx(g, (int)i, dt);
     }
 }
@@ -666,13 +751,21 @@ const char *Acting::clip(const Game &g, int i, float clock, float *t, bool *loop
     if (ly) {
         *ly = {};
         ly->face = face ? (has(face) ? face : nullptr) : e.c_str(), ly->faceT = clock + i * 1.3f;
-        bool aiming = i == g.current && g.phase == Phase::Aim;  // the player's worm keeps its own head
-        if (!aiming) ly->lookYaw = a.yaw, ly->lookPitch = a.pitch;
+        float A = poseA(a);
+        auto at = [&](float o, float c) { return o + A * (c - o); };  // A new + (1 - A) old
+        ly->lookYaw = a.lookW * at(a.old.hy, a.cur.hy), ly->lookPitch = a.lookW * at(a.old.hp, a.cur.hp);
+        ly->gestYaw = a.lookW * at(a.old.gy, a.cur.gy), ly->gestPitch = a.lookW * at(a.old.gp, a.cur.gp);
+        ly->eyeYaw = a.eyeW * at(a.old.ey, a.cur.ey), ly->eyePitch = a.eyeW * at(a.old.ep, a.cur.ep);
+        for (int k = 0; k < 2; k++)  // gesture weight x ground factor (0x59dcac)
+            if (!a.act[k].clip.empty()) ly->act[k] = a.act[k].clip.c_str(), ly->actT[k] = a.act[k].t, ly->actW[k] = a.actS * a.act[k].w;
     }
-    if (!a.gesture.empty()) return *t = a.gt, *loop = false, a.gesture.c_str();
     if (face) return nullptr;
     *t = clock + i * 1.3f, *loop = true;
     return e.c_str();
+}
+
+void Acting::headMode(int i, float deg) {
+    if (i >= 0 && i < (int)actors.size()) actors[i].mode = deg;
 }
 
 Color Acting::tint(int i, Color c) {

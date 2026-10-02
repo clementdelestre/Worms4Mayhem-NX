@@ -889,7 +889,7 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
         if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, online ? 1 : 2, 4);
         else if (sscanf(line, "worms %d", &a) == 1) cfg.wormsPerTeam = Clamp(a, 1, 4);
         else if (sscanf(line, "rules %d", &a) == 1) cfg.rules = (uint32_t)a;
-        else if (sscanf(line, "wormpot %d", &a) == 1) cfg.wormpot = (uint32_t)a & ((1u << WORMPOT_REELS[3]) - 1);
+        else if (sscanf(line, "wormpot %d", &a) == 1) cfg.wormpot = wormpotSlots((uint32_t)a);
         else if (!strncmp(line, "scheme ", 7)) {
             char *p = line + 7;
             for (size_t i = 0; i < sizeof(Scheme); i++) {
@@ -1250,7 +1250,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             value(300 + r, {690, 372 + r * 24.0f, 548, 23}, RULE_LABELS[r] ? RULE_LABELS[r] : tr("RULE.NoDelays", "No weapon delays (test)", "Sans délai d'armes (test)"),
                   cfg.rules & (1u << r) ? "ON" : "off", 22);
         int pots = 0, pot = 0;
-        for (int b = 0; b < WORMPOT_REELS[3]; b++) if (cfg.wormpot & (1u << b)) pots++, pot = b;
+        for (int b = 0; b < WORMPOT_COUNT; b++) if (cfg.wormpot & (1u << b)) pots++, pot = b;
         value(350, {690, 372 + RULES * 24.0f, 548, 23}, "Wormpot", !pots ? "None" : pots == 1 ? WORMPOT_MODES[pot].name : TextFormat("%d modes", pots), 22);
         Rectangle go = {860, 608, 390, 70};
         panel(go, ids[row] == 400);
@@ -1297,16 +1297,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
 // ---------------------------------------------------------------- wormpot & weapon factory
 
 namespace {
-int reelSize(int r) { return WORMPOT_REELS[r + 1] - WORMPOT_REELS[r]; }
-int reelMode(uint32_t wp, int r) {  // -1 = empty reel
-    for (int b = WORMPOT_REELS[r]; b < WORMPOT_REELS[r + 1]; b++) if (wp & (1u << b)) return b - WORMPOT_REELS[r];
-    return -1;
-}
-void setReel(uint32_t &wp, int r, int m) {
-    for (int b = WORMPOT_REELS[r]; b < WORMPOT_REELS[r + 1]; b++) wp &= ~(1u << b);
-    if (m >= 0) wp |= 1u << (WORMPOT_REELS[r] + m);
-}
-const char *modeName(int r, int m) { return m < 0 ? "- Empty Reel -" : WORMPOT_MODES[WORMPOT_REELS[r] + m].name; }
+int reelSize(int r) { return (int)WORMPOT_REEL[r].size(); }
+int reelMode(uint32_t wp, int r) { return wormpotReel(wp, r); }
+void setReel(uint32_t &wp, int r, int m) { wormpotPick(wp, r, m); }
+const char *modeName(int r, int m) { return m < 0 ? "- Empty Reel -" : WORMPOT_MODES[WORMPOT_REEL[r][m]].name; }
 
 // centred, word-wrapped to width w
 void wrapped(const char *s, float cx, float y, float w, float size, Color c) {
@@ -1380,7 +1374,7 @@ void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, floa
         DrawRectangleRoundedLinesEx(box, 0.12f, 6, r == reel ? 5 : 2, r == reel ? GOLDEN : GRAY);
     }
     int m = reelMode(cfg.wormpot, reel);
-    wrapped(m < 0 ? "No wormpot mode selected on this reel." : WORMPOT_MODES[WORMPOT_REELS[reel] + m].help, 640, 500, 900, 24, WHITE);
+    wrapped(m < 0 ? "No wormpot mode selected on this reel." : WORMPOT_MODES[WORMPOT_REEL[reel][m]].help, 640, 500, 900, 24, WHITE);
     text(spinning ? "Spinning..." : "Spin those reels!", 640, 600, 30, GOLDEN, 1);
     hints({{"D-pad", "Left/Right", "Reel"}, {"D-pad", "Up/Down", "Nudge"}, {"X", "S", "Spin"}, {"Y", "R", "Reset"}, {"B", "Esc", "Back"}});
     if ((back || ok) && !spinning) screen = Setup;
@@ -1442,7 +1436,7 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
         break;
     case 2: w.model = SHOT_MODELS[clampWrap(indexOf(SHOT_MODELS, w.model) + dx, (int)(sizeof SHOT_MODELS / sizeof *SHOT_MODELS))]; break;
     case 3: w.icon = ICONS[clampWrap(indexOf(ICONS, w.icon) + dx, (int)(sizeof ICONS / sizeof *ICONS))]; break;
-    case 4: w.wind = !w.wind; break;
+    case 4: (launch == 3 ? w.avoid : w.wind) ^= 1; break;  // Homing: HomingAvoidLand instead of wind (a W4M Factory homing missile ignores wind)
     default: {
         const Num &k = nums[facRow - 5];
         if (k.f == &w.fuse && launch != 1) break;  // only grenades have a fuse
@@ -1452,7 +1446,7 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
     }
     }
     if (ok && facRow == 0) edit(w.name, "Weapon name");
-    if (ok && facRow == 4) w.wind = !w.wind;
+    if (ok && facRow == 4) (launch == 3 ? w.avoid : w.wind) ^= 1;
 
     heading("Weapon Factory", 640, 14, 48);
     popup({200, 80, 640, 600});
@@ -1465,12 +1459,12 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
         Rectangle r = {216, 92 + i * 38.0f, 608, 34};
         bool hi = i == facRow;
         std::string v;
-        const char *label = i == 0 ? "Name" : i == 1 ? "Launch" : i == 2 ? "Model" : i == 3 ? "Icon" : i == 4 ? "Wind" : nums[i - 5].label;
+        const char *label = i == 0 ? "Name" : i == 1 ? "Launch" : i == 2 ? "Model" : i == 3 ? "Icon" : i == 4 ? (launch == 3 ? "Avoid land" : "Wind") : nums[i - 5].label;
         if (i == 0) v = w.name + (typing && fmodf(t, 1) < 0.5f ? "_" : "");
         else if (i == 1) v = LAUNCH[launch];
         else if (i == 2) v = w.model;
         else if (i == 3) v = w.icon;
-        else if (i == 4) v = w.wind ? "Affected" : "Not affected";
+        else if (i == 4) v = launch == 3 ? (w.avoid ? "Yes" : "No") : w.wind ? "Affected" : "Not affected";
         else {
             const Num &k = nums[i - 5];
             v = k.f == &w.fuse && launch != 1 ? "Impact" : k.i == &w.count && w.count < 0 ? "Infinite" : k.f ? TextFormat(k.fmt, *k.f) : TextFormat(k.fmt, *k.i);
@@ -1501,36 +1495,34 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     mine = local;
     // swallow: a button still held from a menu (START at tick 0) or another turn must not fire or jump
     if (tick == 0) swallow = true;
-    if (!local || g.phase != Phase::Aim) { open = false, target = -1, swallow = true; return; }
-    int n = (int)WEAPONS.size(), cols = PANEL_COLS;
+    if (!local || g.phase != Phase::Aim) { open = false, pick = -1, swallow = true; return; }
+    int cols = PANEL_COLS;
     using S = Audio::Sfx;
     if (pressed(pad, {X}, {KEY_Q})) open = !open, cursor = g.held(), Audio::play(open ? S::FePopupIn : S::FePopupOut);
     if (open) {
         int dx = pressed(pad, {RIGHT}, {KEY_RIGHT}) - pressed(pad, {LEFT}, {KEY_LEFT});
-        int dy = pressed(pad, {DOWN}, {KEY_DOWN}) - pressed(pad, {UP}, {KEY_UP});
+        bool fwd = g.jetting && ((pad >= 0 && IsGamepadButtonDown(pad, UP)) || IsKeyDown(KEY_W));  // Jetpack.Forward, InGame group
+        int dy = pressed(pad, {DOWN}, {KEY_DOWN}) - (pressed(pad, {UP}, {KEY_UP}) && !(fwd && pad >= 0 && IsGamepadButtonDown(pad, UP)));
         int was = cursor;
         std::vector<int> slots = panelSlots();
         int at = int(std::find(slots.begin(), slots.end(), cursor) - slots.begin()) % std::max<int>(1, (int)slots.size());
         cursor = slots.empty() ? 0 : slots[clampWrap(at + dx + dy * cols, (int)slots.size())];
         if (cursor != was) Audio::play(S::FeHighlight);
         if (pressed(pad, {A}, {KEY_SPACE, KEY_ENTER})) {
-            if (g.selectable(cur.team, cursor)) select(cursor), Audio::play(S::FeClick);  // a tool out: steps the secondary
+            if (g.pickable(cur.team, cursor)) select(cursor), Audio::play(S::FeClick);  // a tool out: a payload is its secondary, else it ends
             else Audio::play(S::FeError);
         }
         if (pressed(pad, {B}, {KEY_BACKSPACE})) open = false, swallow = true, Audio::play(S::FeCancel);
-        in = Input{}, in.buttons = g.jetting ? held & Input::FIRE : 0;  // the jetpack keeps the thrust it had (ours)
+        // W4M 0x602ea0 disables only WormMoving (stick, jump; 0x506fa0 posts their releases): UtilityFire and InGame stay live.
+        // W4M navigates with the stick (Menu group): the D-pad up stays Jetpack.Forward. Landed: A would also be FIRE, so no takeoff
+        in = Input{}, in.buttons = g.jetting ? held & (Input::FIRE | Input::JUMP) : g.jetLanded() ? held & Input::PITCH : 0, in.walk = fwd ? 127 : 0;
     }
     if (swallow) {
         if (!(held & (Input::FIRE | Input::JUMP))) swallow = false;
         in.buttons &= g.jetting ? ~Input::JUMP : ~(Input::FIRE | Input::JUMP);  // in flight FIRE is only the thrust
     }
-    if (target >= 0) {
-        if (pressedOn >= 0 && g.held() != pressedOn) pressedOn = -1, releasedAt = tick;
-        if (g.held() == target || ++tries > 8 * n) target = -1;
-        else if (pressedOn < 0 && tick > releasedAt) pressedOn = g.held();
-        in.buttons &= ~Input::NEXT_WEAPON;
-        if (target >= 0 && pressedOn >= 0) in.buttons |= Input::NEXT_WEAPON;  // edge-triggered in the sim
-    }
+    if (pick >= 0 && (g.held() == pick || g.shotsLeft || !g.pickable(cur.team, pick))) pick = -1;
+    if (pick >= 0) in.buttons |= Input::NEXT_WEAPON, in.aim = Input::pick(pick).aim;
 }
 
 // assets/ui/hud/<name>.png (or a src cell of it) scaled by s, rotated deg about pivot (src px) placed at pos
@@ -1540,6 +1532,21 @@ static bool sprite(const char *name, Vector2 pos, float s, Vector2 pivot, float 
     if (!src.width) src = {0, 0, (float)t.width, (float)t.height};
     DrawTexturePro(t, src, {pos.x, pos.y, src.width * s, src.height * s}, {pivot.x * s, pivot.y * s}, deg, tint);
     return true;
+}
+
+// W4M Text3DEntity (0x5fafa0): a `Text.Backing` sprite ("Name Backing.tga", hud/name_backing.png) behind the text, its middle
+// HUD.3DText.TextToBackRatio (1, 0.9) of the text's width and height, an end of BackEndWidth 0.2 (text units: assumed = 0.2 height) each side
+static void text3d(const char *t, float x, float y, float size, Color c) {
+    float w = textWidth(t, size), h = size * 0.9f, e = 0.2f * size;
+    Texture2D b = tex("hud/name_backing");
+    if (b.id) {
+        float u = b.width * 0.2f;  // ponytail: a 3-slice of the box picture; W4M picks XTexFont frames (not traced)
+        float cy = y + size / 2 - h / 2, l = x - w / 2 - e;
+        DrawTexturePro(b, {0, 0, u, (float)b.height}, {l, cy, e, h}, {}, 0, WHITE);
+        DrawTexturePro(b, {u, 0, b.width - 2 * u, (float)b.height}, {l + e, cy, w, h}, {}, 0, WHITE);
+        DrawTexturePro(b, {b.width - u, 0, u, (float)b.height}, {l + e + w, cy, e, h}, {}, 0, WHITE);
+    }
+    text(t, x, y, size, c, 1);
 }
 
 // PiP centre, half extents (px) and tilt (rad): HUDTWK PiP.Off/OnScreenPosition, OnScreenScale (half extents, assumed), OnScreenRotation z
@@ -1902,7 +1909,8 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
         static size_t landed = 0;  // last falling crate: stays framed while the sim's landHold runs
         const Object *crate = nullptr;
         for (size_t i = 0; i < g.objects.size(); i++) if (g.objects[i].type == Object::Crate && g.objects[i].falling) crate = &g.objects[i], landed = i;
-        if (!crate && g.landHold > 0 && landed < g.objects.size() && g.objects[landed].type == Object::Crate) crate = &g.objects[landed];
+        bool post = g.phase == Phase::Settle && g.crated && g.timer < 0;  // W4M: the PostActivityTime after the crate rests
+        if (!crate && (g.landHold > 0 || post) && landed < g.objects.size() && g.objects[landed].type == Object::Crate) crate = &g.objects[landed];
         crateFocus = crate ? crateFocus - dt : 0;
         Controls::focus(crateFocus > 0 ? &crate->pos : nullptr, 0, true);
         return crateFocus > 0;
@@ -1934,9 +1942,19 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
             if (o.type != Object::Crate || dist < 0.5f) continue;
             Vector2 sp = GetWorldToScreen(top, cam);
-            text(o.weapon < 0 ? tr("Text.Health", "Health", "Santé") : WEAPONS[o.weapon].name.c_str(), sp.x, sp.y, Clamp(170 / dist, 12, 22), WHITE, 1);
+            text3d(o.weapon < 0 ? tr("Text.Health", "Health", "Santé") : WEAPONS[o.weapon].name.c_str(), sp.x, sp.y, Clamp(170 / dist, 12, 22), WHITE);  // CrateGraphicEntity's Text3D
         }
-    // W4M worm labels: name over hp, team colour, black outline; hidden on the ready screen, with the weapon panel open or a UFO out (0x5fd4e0)
+    Vector3 camUp = Vector3Normalize(Vector3CrossProduct(Vector3CrossProduct(fwd, cam.up), fwd));
+    if (!ready) for (const Projectile &s : g.shots) {  // W4M 0x57b1e0: ceil(fuse left) in FE.Font, white, while 0 < left <= 5 s
+        const WeaponDef &d = WEAPONS[s.weapon];
+        Vector3 top = Vector3Add(s.pos, Vector3Scale(camUp, d.fuseHeight));  // the offset along the view's up (0x47a120)
+        float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd), u = dist * 20;
+        if (!d.fuseShown || s.child || s.fuse <= 0 || s.fuse > 5 || dist < 0.5f) continue;
+        float k = u < 80 ? 1 : u <= 200 ? u / 80 : u / 200;  // Text3D 0x5fad80: HUD.3DText.MinScalingDist 80, MaxScalingDist 200
+        Vector2 sp = GetWorldToScreen(top, cam), sp2 = GetWorldToScreen(Vector3Add(top, Vector3Scale(camUp, d.fuseSize * k)), cam);
+        text3d(TextFormat("%d", (int)ceilf(s.fuse - 0.001f)), sp.x, sp.y, Vector2Distance(sp, sp2), WHITE);
+    }
+    // W4M worm labels: name over hp, team colour, on a Text.Backing; hidden on the ready screen, with the weapon panel open or a UFO out (0x5fd4e0)
     if (!ready && !open && !g.abducting()) for (const Worm &w : g.worms) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
         if (!w.alive) continue;  // blown up, or drowned: W4M shows no label afloat
@@ -1953,9 +1971,9 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float s = Clamp(170 / dist, 12, 24);
         Color c = TEAM_COLORS[w.team % 4];
         const Color POISON = {120, 220, 60, 255};
-        text(TextFormat("%d", hp), sp.x, sp.y - s, s, i == counting && hpt[i].poison ? POISON : c, 1);
-        text(wormName(w.team, k), sp.x, sp.y - s * 2, s, c, 1);
-        if (&w == &cur && g.jetting) text(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), sp.x, sp.y - s * 3.2f, s * 1.3f, WHITE, 1);  // W4M 0x5626e0: (2 ms + 500) / 1000
+        text3d(TextFormat("%d", hp), sp.x, sp.y - s, s, i == counting && hpt[i].poison ? POISON : c);  // WormHealthNameEntity 0x5fdb70: Text3Ds
+        text3d(wormName(w.team, k), sp.x, sp.y - s * 2, s, c);
+        if (&w == &cur && g.jetting) text3d(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), sp.x, sp.y - s * 3.2f, s * 1.3f, WHITE);  // JetpackUtility's Text3D  // W4M 0x5626e0: (2 ms + 500) / 1000
         for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
             if (p.worm != i) continue;
             float a = Clamp(1 - (p.age - 0.5f) / 0.5f, 0, 1), pop = 1 + 0.25f * fmaxf(0, 1 - p.punch / 0.08f) + 0.3f * sinf(fminf(p.age / 0.25f, 1) * PI);
@@ -2087,7 +2105,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
         hints({{"ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
     else if (mine && !quiet && g.secondary >= 0)  // W4M SecondaryWeaponHelpEntity: WXFE.HelpDropConsole, FETXT.Control.Secondry + FETXT.Drop
-        hints({{g.jetting ? "ZL" : "A", g.jetting ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
+        hints({{g.jetting || g.jetLanded() ? "ZL" : "A", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
         hints({{"A", "Space", WEAPONS[g.weapon].kind == Kind::Homing ? "Lock target" : "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
                {"Up/Down", "Z/X", "Zoom"}, {"B", "Enter/E", "Leave"}});
@@ -2107,7 +2125,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         Rectangle c = {pr.x + 30 + (k % cols) * cell, pr.y + 80 + (k / cols) * cell, cell - 8, cell - 8};
         int a = g.ammo[cur.team][i], late = g.delays[cur.team][i];
         if (late) a = 0;  // W4M FETXT.HTPSubtopic4: a delayed weapon is dimmed, its number the turns left
-        bool lit = a && g.selectable(cur.team, i);  // a movement tool out: only what it can drop
+        bool lit = a && g.pickable(cur.team, i);
         if (i == cursor && !nine("fe/buttonbig_highlight", c, 64, 0.25f)) DrawRectangleRoundedLinesEx(c, 0.2f, 4, 4, GOLDEN);
         Rectangle ic = {c.x + 8, c.y + 8, c.width - 16, c.height - 16};
         if (!image(iconOf(WEAPONS[i]), ic, lit ? WHITE : Fade(GRAY, 0.5f))) {

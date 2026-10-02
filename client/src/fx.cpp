@@ -14,7 +14,7 @@ namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, TEX_COUNT };  // also the draw order within a blend pass
+enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, TEX_COUNT };  // also the draw order within a blend pass
 const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_005", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
 const int MAX = 1024;
 
@@ -145,6 +145,7 @@ void load() {
     tex[RING] = LoadTextureFromImage(ring);
     tex[JET] = loadTex("hud", "jetfire", true), tex[TOON] = loadTex("hud", "toonfire", true), tex[CROSS] = loadTex("hud", "wxp_sprite_006", true);
     tex[QUESTION] = loadTex("hud", "wxp_sprite_022", true), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", true);  // W4M Particle.WXSprite22/23
+    tex[SOAP] = loadTex("hud", "wxp_sprite_011", true);  // Particle.WXSprite11, the soap bubbles
     UnloadImage(ring);
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
@@ -257,7 +258,54 @@ void firework(Vector3 c, int kind) {
 }
 }  // namespace
 
+// W4M PARTTWK (20 units per metre; tall sprites as glow columns): WXP_Poof_VLarge, WXP_Abductee_Teleport, WXP_AbdDamageInd
+static void abductee(const GameEvent &e) {
+    auto glow = [&](Vector3 p, Vector3 v, float delay, float life, float s0, float s1, Color c, unsigned char t = GLOW) { add({p, v, -delay, life, s0, s1, 0, rnd(-1, 1), 0, 2, c, t, true}); };
+    auto column = [&](float y0, float h, float w, float life, Color c) { for (float y = y0; y < y0 + h; y += w) glow(Vector3Add(e.pos, {0, y, 0}), {}, 0, life, w, w * 0.5f, c); };
+    if (e.kind == GameEvent::Poof)  // 20 white to grey puffs, 0.7 +- 0.3 s
+        for (int i = 0; i < 20; i++) {
+            Vector3 d = rndDir();
+            add({Vector3Add(e.pos, {0, 0.15f, 0}), {d.x * 3, rnd(0, 1), d.z * 3}, 0, rnd(0.4f, 1), 0.3f, 0.05f, 0, rnd(-8, 8), -0.5f, 3, {(unsigned char)rnd(80, 255), 0, 0, 230}, PUFF, false});
+            ps.back().c.g = ps.back().c.b = ps.back().c.r;
+        }
+    if (e.kind == GameEvent::Zap) {  // AbdTelep_Central (3 x 45 units), Stars / Stars2 (WXSprite26), Glow (3 x 90 units, alpha 0.1), GloTall (40 x 250 units)
+        for (int i = 0; i < 3; i++) glow(e.pos, {}, 0, rnd(0.6f, 1.8f), rnd(1.75f, 2.75f), 0, {153, 255, 153, 255});
+        for (int i = 0; i < 13; i++) glow(e.pos, Vector3Scale(rndDir(), rnd(1, 4)), i < 8 ? 0.02f : 0, rnd(0.5f, 1.1f), rnd(0.08f, 0.15f), 0.02f, {128, 255, 128, 255}, SPARK);
+        for (int i = 0; i < 3; i++) glow(Vector3Add(e.pos, Vector3Scale(rndDir(), 0.25f)), {}, 0, 0.8f, 4.5f, 0, {51, 255, 0, 26});
+        column(0, 12.5f, 2, 0.35f, {102, 255, 102, 77});
+    }
+    if (e.kind == GameEvent::AbdDamage) {  // Abd_DamageRand: 2 beams 10 x 600 units centred 300 units up, randomised 500; AbdDamageSputt: 30 +- 60 unit flickers for 0.5 s
+        for (int i = 0; i < 2; i++) column(rnd(-12.5f, 12.5f), 30, 0.6f, 0.6f, {26, 255, 26, 77});
+        for (int i = 0; i < 5; i++) glow(e.pos, {}, i * 0.1f, 0.1f, rnd(1.5f, 4.5f), 0, {51, 230, 51, 255});
+    }
+}
+
+// W4M WXP_BubbleMachineExpire at the machine (0x54e6a0). Poof / ExpBubb: 10 thrown ~8 units out (AlternateAcceleration
+// N 6500, S 2e-6: a drag); Plume / BubbPlum: 7 and 14 rising 0.25 m/s, accelerating up (Mass < 0), 2 +- 0.6 s.
+static void bubblePop(Vector3 p) {
+    for (int i = 0; i < 20; i++) {
+        bool soap = i >= 10;
+        Vector3 d = soap ? rndDir() : Vector3Normalize({rnd(-1, 1), 0.15f, rnd(-1, 1)});
+        Color c = soap ? WHITE : ColorLerp({102, 102, 102, 255}, {255, 153, 128, 255}, rnd());
+        add({p, Vector3Scale(d, soap ? 6.3f : 5.2f), 0, rnd(1.0f, 1.4f), 0.15f, 0, 0, 0, 0, 13, c, (unsigned char)(soap ? SOAP : PUFF), false});
+    }
+    for (int i = 0; i < 21; i++) {
+        bool soap = i >= 7;
+        Vector3 o = {rnd(-0.075f, 0.075f), 0.05f + rnd(-0.05f, 0.05f), rnd(-0.075f, 0.075f)};
+        Color c = soap ? WHITE : ColorLerp({230, 204, 153, 255}, {255, 102, 153, 255}, rnd());
+        add({Vector3Add(p, o), {0, 0.25f, 0}, soap ? -0.2f : 0, rnd(1.4f, 2.6f), rnd(0.05f, 0.15f), 0, 0, 0, -0.5f, 0, c, (unsigned char)(soap ? SOAP : PUFF), false});
+    }
+}
+
+// W4M WXP_Bubbles_Small (machine node "bubble", one per 320 +- 100 ms): 4 +- 2 units, 1.8 +- 0.3 s, rising 0.25 m/s, up 0.625 m/s2
+void soap(Vector3 p) {
+    add({Vector3Add(p, {rnd(-0.3f, 0.3f), rnd(0, 0.1f), rnd(-0.3f, 0.3f)}), {rnd(-0.25f, 0.25f), 0.25f, rnd(-0.25f, 0.25f)}, 0, rnd(1.5f, 2.1f), rnd(0.1f, 0.3f), 0.15f, 0, 0,
+         -0.625f, 0, WHITE, SOAP, false});
+}
+
 void event(const GameEvent &e, Color dirt) {
+    abductee(e);
+    if (e.kind == GameEvent::BubblePop) bubblePop(e.pos);
     bool big = e.kind == GameEvent::BigBoom;
     if (e.kind == GameEvent::Boom || big) {
         float r = big ? 5.5f : 2.5f;
@@ -397,7 +445,7 @@ void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet)
 
 // W4M AlienAbductionGraphicEntity (PARTTWK; g = s since the warp gate opened, < 0 closed; 20 units per metre, all cyan (0.5, 0.9, 1) WXSprite1 glows): WXP_AlienWarpGate at the gate, WXP_BeamStartParts
 // at the saucer's nozzle from 4.975 s, WXP_AlienBeamup at the beam from 7.791 s, WXP_Alien_ABD_Grnd_Effect (0.4, 0.7, 0.9) under it while it lifts.
-void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, float g, int stage, float u, float dt) {
+void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, float g, int stage, float dt) {
     static float acc[9];
     auto every = [&](int k, float period, bool on) {
         int n = 0;
@@ -416,11 +464,11 @@ void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, floa
     for (int n = every(2, 0.05f, lead); n > 0; n--) glow(nozzle, {}, 0.15f, rnd(1.5f, 2.25f), C);  // BeamStartGlo
     for (int n = every(3, 0.2f, lead); n > 0; n--) glow(nozzle, {}, 0.8f, 2.5f, C, STAR);  // BeamStartStars (3 -> 50 units)
     for (int n = every(4, 0.35f, lead); n > 0; n--) glow(nozzle, {}, 4, rnd(1.75f, 2.25f), {C.r, C.g, C.b, 120});  // BeamBuildup
-    bool beam = e >= 7.791f && stage < 2;
+    bool beam = e >= 7.791f && stage < Game::ABD_HOLDING;  // AbductCloseBeam stops it (0x5461e0)
     for (int n = every(5, 1 / 60.f, beam); n > 0; n--) glow(at, {}, 0.05f, 1.5f, C), glow(at, {}, 0.05f, rnd(2.5f, 4), C);  // RootGlow, Mainglow
     for (int n = every(6, 0.5f, beam); n > 0; n--) glow(near(Vector3Add(at, {0, -3.75f, 0}), 0, 2.5f, 0), {}, 2, rnd(2.5f, 4), {C.r, C.g, C.b, 128});  // CentralBeam
     for (int n = every(7, 0.06f, beam); n > 0; n--) glow(near(Vector3Add(at, {0, -7.5f, 0}), 0.5f, 2.5f, 0.5f), {0, 0.75f, 0}, 1, 0.3f, C, SPARK);  // RisingStars
-    for (int n = every(8, 0.25f, stage == 1 && u < 3); n > 0; n--) {  // Grnd_Effect: glows, thin glows and rising specks
+    for (int n = every(8, 0.25f, stage == Game::ABD_LIFTING); n > 0; n--) {  // Grnd_Effect: glows, thin glows and rising specks
         glow(near(Vector3Add(ground, {0, 0.25f, 0}), 1.5f, 0.2f, 1.5f), {}, 2, 1.5f, {G.r, G.g, G.b, 64});
         glow(near(Vector3Add(ground, {0, 1, 0}), 0.5f, 2, 0.5f), {}, 2, 2, {G.r, G.g, G.b, 64});
         glow(near(Vector3Add(ground, {0, 0.6f, 0}), 1.5f, 0.2f, 1.5f), {0, 0.5f, 0}, 2, 0.1f, G, SPARK);

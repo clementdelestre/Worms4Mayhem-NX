@@ -71,11 +71,11 @@ void LanHost::roomState() {
 void LanHost::replay(uint32_t id) {
     if (start.empty()) return;
     send(id, start);
-    send(id, W(REPLAY).u32((uint32_t)(log.size() / 4)).done());
-    for (size_t i = 0; i < log.size(); i += 255 * 4) {
-        size_t n = std::min<size_t>(255 * 4, log.size() - i);
+    send(id, W(REPLAY).u32((uint32_t)(log.size() / INPUT_BYTES)).done());
+    for (size_t i = 0; i < log.size(); i += 255 * INPUT_BYTES) {
+        size_t n = std::min<size_t>(255 * INPUT_BYTES, log.size() - i);
         W w(INPUTS);
-        w.u32((uint32_t)(i / 4)).u8((uint8_t)(n / 4)).b.append(log, i, n);
+        w.u32((uint32_t)(i / INPUT_BYTES)).u8((uint8_t)(n / INPUT_BYTES)).b.append(log, i, n);
         send(id, w.done());
     }
 }
@@ -139,14 +139,14 @@ bool LanHost::handle(uint32_t id, const uint8_t *p, size_t n) {
     case INPUTS: {
         uint32_t first = r.u32();
         size_t k = r.u8();
-        const uint8_t *inputs = r.take(k * 4);
+        const uint8_t *inputs = r.take(k * INPUT_BYTES);
         if (!r.ok || !in || start.empty()) return false;
-        if (first != log.size() / 4) {  // two clients played the same ticks: the log wins, resync the loser
-            send(id, error(("Inputs tick " + std::to_string(first) + " != expected " + std::to_string(log.size() / 4)).c_str()));
+        if (first != log.size() / INPUT_BYTES) {  // two clients played the same ticks: the log wins, resync the loser
+            send(id, error(("Inputs tick " + std::to_string(first) + " != expected " + std::to_string(log.size() / INPUT_BYTES)).c_str()));
             replay(id);
             break;
         }
-        log.append((const char *)inputs, k * 4);
+        log.append((const char *)inputs, k * INPUT_BYTES);
         W w(INPUTS);
         w.b.append((const char *)p + 1, n - 1);
         broadcast(w.done(), id);

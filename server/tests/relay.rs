@@ -42,7 +42,7 @@ async fn server() -> String {
 
 fn inputs(first: u32, n: u8) -> W {
     let mut w = W::new(INPUTS).u32(first).u8(n);
-    for i in 0..n { w = w.bytes(&[i, 1, 2, 3]); }
+    for i in 0..n { w = w.bytes(&[i, 1, 2, 3, 0]); }
     w
 }
 
@@ -77,7 +77,7 @@ async fn full_match() {
     a.expect(ERROR).await;
     assert_eq!(a.expect(START).await, sa, "rejected sender is resynced");
     assert_eq!(R(&a.expect(REPLAY).await).u32(), Some(6));
-    assert_eq!(a.expect(INPUTS).await.len(), 5 + 6 * 4);
+    assert_eq!(a.expect(INPUTS).await.len(), 5 + 6 * INPUT_BYTES);
 
     a.send(W::new(TURN_END).u32(6).u32(0xabc)).await;
     b.send(W::new(TURN_END).u32(6).u32(0xabc)).await;
@@ -97,7 +97,7 @@ async fn full_match() {
     assert_eq!(R(&b.expect(REPLAY).await).u32(), Some(6));
     let f = b.expect(INPUTS).await;
     assert_eq!(&f[..5], &[0, 0, 0, 0, 6]);
-    assert_eq!(f.len(), 5 + 6 * 4);
+    assert_eq!(f.len(), 5 + 6 * INPUT_BYTES);
 
     b.send(W::new(CHAT).str("hi")).await;
     let c = a.expect(CHAT).await;

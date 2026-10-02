@@ -22,7 +22,7 @@ Single player content is `missions/<id>.json`: bundled ones (CC0, ours) in `romf
 | `kind` | `mission` (Missions tab) or `challenge` (Challenges tab). `campaign` groups and orders the list (default `Worms4NX`). |
 | `preview` | `assets/ui/<preview>.png`, default: the map's level picture. `par`: W4M target time in s (shown only). |
 | `scheme` | preset name (default `Standard`), then `turn_time` (s, 0 = endless turn), `retreat_time`, `hot_seat`, `wind` 0..3, `crate_chance` %, `fall_damage`, `round_time` (min, default 60: the round clock shown in the HUD), `mines`, `barrels` (random ones, default 0). |
-| `teams[]` | 1..4 teams: `cpu` 0..3 (AI level), `idle` (never takes a turn: captives, practice dummies), `weapons` {name: ammo, -1 = infinite} (omitted = scheme default), `worms[]` {`name`, `hp`, `pos`}. |
+| `teams[]` | 1..4 teams: `cpu` 0 = human, 1..5 = AI level (W4M CPU1..CPU5, clamped in `mission.cpp`), `idle` (never takes a turn: captives, practice dummies), `weapons` {name: ammo, -1 = infinite} (omitted = scheme default), `worms[]` {`name`, `hp`, `pos`}. |
 | `pos` | `[x, y, z]` metres, or the name of a map marker (map JSON `markers`, imported from W4M). Worms are dropped onto the ground below; explicit object positions too (`drop`, default true for `[x,y,z]`), marker ones stay where the marker is. |
 | `objects[]` | `crate` (`weapon` name or `health`), `target`, `mine`, `barrel`. Crates and targets are pinned (no gravity); crates can't be blown up; a Super Sheep collects them. |
 | `sequence` | crates / targets appear one at a time, in file order (W4M challenges). |

@@ -46,13 +46,13 @@ void main() {
 }
 )";
 
-Shader shader(const char *vs, const char *fs) {
+Shader shader(const char *vs, const char *fs, bool lit) {
     bool es = rlGetVersion() == RL_OPENGL_ES_20 || rlGetVersion() == RL_OPENGL_ES_30;
     std::string v = es ? "#version 100\n" : "#version 330\n#define attribute in\n#define varying out\n";
     std::string f = es ? "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
                        : "#version 330\n#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n";
     Shader s = LoadShaderFromMemory((v + vs).c_str(), (f + fs).c_str());
-    if (s.id != rlGetShaderIdDefault()) shaders.push_back({s, false});
+    if (lit && s.id != rlGetShaderIdDefault()) shaders.push_back({s, false});
     return s;
 }
 

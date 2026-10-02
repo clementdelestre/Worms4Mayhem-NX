@@ -113,6 +113,8 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("holy_boom", "weapons", &["HolyGrenadeEx"]),
     ("holy_held", "weapons", &["HolyGrenadeHeld"]),
     ("bomb_whistle", "weapons", &["BombWhistle"]),
+    ("throw", "weapons", &["Throw"]),
+    ("secret_launch", "weapons", &["SecretWeapLaunch"]),
     ("cow_fall", "weapons", &["CowFall", "CowFall2", "CowFall3"]),
     ("lock_on", "weapons", &["TargetAquired"]),
     ("power_rocket", "weapons", &["RocketPowerUp"]),
@@ -156,6 +158,10 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("ufo_beam", "weapons", &["AlienUFOBeamLoop"]),
     ("ufo_engine", "weapons", &["AlienUFOEngine"]),
     ("ufo_takeoff", "weapons", &["AlienUFOTakeOff"]),
+    ("bat_impact", "weapons", &["BaseballBatImpact"]),  // WXP_AbdTelep_Central's EmitterSoundFX
+    ("bubble_inflate", "weapons", &["BubbleMachinePlace"]),  // weapons/BubbleMachineInflate
+    ("bubble_wobble", "weapons", &["BubbleMachineWobble"]),
+    ("bubble_loop", "weapons", &["Bubble1", "Bubble2", "Bubble3", "Bubble4", "Bubble5", "Bubble6"]),  // weapons/BubbleMachineLoop
     ("flood", "weapons", &["RainLoopAmb"]),
     ("parachute", "weapons", &["ParachuteOpen"]),
     ("mine_beep", "weapons", &["MineArmLoop"]),

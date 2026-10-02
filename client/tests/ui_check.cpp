@@ -1,5 +1,5 @@
-// Weapon panel: the NEXT_WEAPON presses it emits must land on the picked weapon whatever the ticks per frame.
-// From client/: g++ -std=c++17 -I../third_party/raylib-nx/src tests/ui_check.cpp $(ls src/*.cpp | grep -v main) -o ui_check <raylib libs> && ./ui_check
+// Weapon panel: its direct pick (Input::pick) must land on the weapon whatever the ticks per frame.
+// From client/: make ui_check
 #include "../src/ui.h"
 #include <cassert>
 #include <cstdio>
@@ -10,7 +10,7 @@ int main() {
         Game g;
         g.start({7, 2, 2, "", 0});
         Ui::Hud hud;
-        if (!g.ammo[g.worms[g.current].team][want]) continue;
+        if (!g.usable(g.worms[g.current].team, want)) continue;  // a delayed weapon is refused (FETXT.HTPSubtopic4)
         hud.select(want);
         uint32_t tick = 1;
         for (int f = 0; f < 8 * (int)WEAPONS.size() && g.weapon != want; f++) {

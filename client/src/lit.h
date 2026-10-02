@@ -9,7 +9,7 @@ struct Light {
 };
 extern Light sun;  // set by Terrain::load from the map's "light"
 extern const char *MVS;  // the model vertex shader: other passes reuse it so their depths match
-Shader shader(const char *vs, const char *fs);  // GLSL 100 source, macro-wrapped for 330; refreshed by frame()
+Shader shader(const char *vs, const char *fs, bool lit = true);  // GLSL 100 source, macro-wrapped for 330; lit: refreshed by frame()
 // Textured, alpha-tested, two-sided lambert + rim. worm: W4M's fixed worm light, else the map light.
 Shader modelShader(bool worm);
 void frame(Vector3 cam);  // push sun + camera to every Lit shader

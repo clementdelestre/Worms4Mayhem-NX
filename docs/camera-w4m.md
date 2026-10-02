@@ -30,6 +30,8 @@ Addresses are virtual addresses in `WormsMayhem.exe`, image base 0x400000.
   - `ChaseCameraPropertiesContainer`: chase camera starts immediately (0x51d5e0, active priority 6).
   - Fly cameras are started explicitly with `SetCamera("FlyCam")` (0x57e380), by Super Sheep, Starburst and Homing.
 
+- **Drawn view, update rate, Cut flag, PhysicsOverride**: see §11.
+
 ### Event-camera priority queue (disasm, CMS +0x350..0x374)
 
 One request is pending at a time: priority, camera name, task id, event position and velocity. A new request replaces it only if its priority is higher.
@@ -112,14 +114,14 @@ Rules (disasm unless marked otherwise). Update 0x533950 calls 0x532a50 (object, 
    - clear segment from the candidate to the event point.
 4. **Search order.**
    - Index +0xbc starts at 0 at activation and **persists**; it is never reset after a cut.
-   - At most 2 candidates per frame; a refused one advances the index (mod count), an accepted one does not.
+   - At most 2 candidates per update (two updates every 20 ms, §11); a refused one advances the index (mod count), an accepted one does not.
    - Accepted: if it is the index of the last cut (+0x70, −1 at activation), **no cut**; otherwise a hard cut (position = candidate, look-at = object, up = (0,1,0)), cut timer reset.
 5. **Between cuts:**
-   - look-at: `lerp(lookAt, object, LookSpeed)` per frame, while the object exists;
+   - look-at: `lerp(lookAt, object, LookSpeed)` per update, while the object exists;
    - up: `lerp(up, (0,1,0), UpSpeed)`;
    - back-off (0x533190): only when the object is at rest or moving toward the camera (look direction · velocity < 0), and closer than `MinPreferredDistance`: the camera lerps at `ZoomSpeed` toward object + MinPreferred·(camera − object)/|…|, that target clipped by 0x51b040 (the camera.cpp clip chain 0x51ae40 / 0x51af90 / 0x51ac40);
    - height: y eases to at least water + `MinPosition`;
-   - if the camera sphere-tests inside land (radius -30, function 0x466a20), y += 5 per frame.
+   - if the camera sphere-tests inside land (radius -30, function 0x466a20), y += 5 per update.
 6. **End.**
    - Payload or crate: when the tracked entity disappears (explosion), the camera **freezes and keeps looking at the last point** for `Camera.Track.RestTime` = 1500 ms (vtable +7, 0x5334b0). The TrackCam is then finished.
    - Worm: also finishes when it is at rest (velocity = 0) + 1500 ms.
@@ -195,11 +197,10 @@ Addresses below are disasm; values are data unless marked otherwise.
 - **Zooming back out:**
   - When not occluded, 5 rays are cast out to the desired distance + 4. Target distance = clear distance − 4, at most 170.
   - If that comes out under 75 while the player is idle, pitch is nudged by ±0.1 toward the clear side.
-- **Smoothing** (0x530690), with fixed per-frame lerp factors, not scaled by dt:
-  - zoom in at `OccZoomInSpeed` 1.0, i.e. an instant snap;
-  - zoom out at `OccZoomOutSpeed` 0.02 per frame;
-  - position and look-at at 0.1;
-  - look-ahead (`LookAheadScale` 500, clamped to `MaxLkAheadDist` 25) only when distance > 75;
+- **Update** (0x530690), with fixed per-update lerp factors, not scaled by dt (two updates every 20 ms, §11):
+  - the distance (+0xe0) eases to the desired one (+0xe4): zoom in at `OccZoomInSpeed` 1.0, i.e. an instant snap; zoom out at `OccZoomOutSpeed` 0.02 an update;
+  - the position is then placed from the target point, yaw, pitch and distance (0x52e2f0) with **no smoothing**; the 0.1 of position and look-at is the drawn-view blend of §11 (PosUpdateSpeed / LookUpdateSpeed written to +0x50 / +0x4c at 0x530953 / 0x530960);
+  - the look-ahead offset (+0x94) eases to its goal (+0x88) at `LookAheadSpeed` (+0x44 of the container, 0.02); it is added to the target point (+0xa4) only when distance > 75 (`LookAheadScale` 500, clamped to `MaxLkAheadDist` 25);
   - under 25, the look-at height is blended toward the camera height;
   - camera and look-at heights are kept ≥ a minimum level + 5 (assumed: water).
 - **Fields with no reader found** in OccludingCam/DefaultCam: `TimeBeforeZoomOut`, `ZoomOffsetDist`, `UpUpdateSpeed`, `MinLookAt`, `MinPosition`. The **1000 ms "before zoom out" is therefore not used** on PC (disasm, medium).
@@ -261,7 +262,7 @@ The pipeline needs an FBO. It is disabled by `/NOWORMOUTLINES`.
 
 ### Airstrike and Super Airstrike
 
-- Normal airstrike missiles have an empty `CameraId` (data), so the bombs request no camera. The strike is seen from the current camera.
+- Normal airstrike missiles have an empty `CameraId` (data), so the bombs request no camera. The run itself is filmed by the bomber: `BomberLogicEntity` follows the bomber mesh's `perspShape` scene camera (`Camera.FollowSceneCam`) until `Bomber.AnimsComplete` (disasm, w4m-map.md §10 "After firing: camera"; the earlier "seen from the current camera" reading was wrong).
 - Worms that get knocked away trigger WormTrackCamera as usual (deduced).
 - `StrikeChaseCamera` (CAMTWK, Chase, distance 300, CutOnRetreat) has no reference in the exe. It is probably unused (assumed).
 - Super Airstrike (cows on parachutes, `ParachutePayloadLogicEntity`) starts `SuperAirstrikeCamera`, a SimpleCam (1, 0.1): position locked, look-at smoothed (disasm 0x57a330).
@@ -390,7 +391,7 @@ What the client does:
 ## 10. NinjaCamMkIII, FlyCam fields, abduction close shot, homing cursor (disasm, this pass)
 
 - **NinjaCamMkIII** (vtable 0x855a18) overrides OccludingCam slots 9 and 10.
-  - Slot 9, 0x52d720, replaces the occlusion test: if there has been no camera input for 60 ms (0x51b540) and the camera spot is in land (0x52d140: land segments of 5 units from it along +z, +x and +y), 0x52d250 tries the yaw offsets of table 0x91eaf0 (±π/8, ±2π/8 … ±7π/8, then zeros), 8 a frame, at the same pitch and `DistFromObject`; the first clear one becomes the yaw and position, and the index (+0xec) resets. It is never reset otherwise.
+  - Slot 9, 0x52d720, replaces the occlusion test: if there has been no camera input for 60 ms (0x51b540) and the camera spot is in land (0x52d140: land segments of 5 units from it along +z, +x and +y), 0x52d250 tries the yaw offsets of table 0x91eaf0 (±π/8, ±2π/8 … ±7π/8, then zeros), 8 an update, at the same pitch and `DistFromObject`; the first clear one becomes the yaw and position, and the index (+0xec) resets. It is never reset otherwise.
   - Slot 10, 0x52d3c0: distance = d·(1 − OccZoomOutSpeed) + DistFromObject·OccZoomOutSpeed each frame (0.04), position and look-at heights ≥ water + 5. There is no zoom-in at all (`OccZoomInSpeed` 0).
 - **FlyCam fields** (0x527a90 copies the container into the camera): UpSpeed → +0x54 (the up-vector lerp), LookSpeed → +0x4c, PosSpeed → +0x78, PosRate → +0x7c, LagBehind → +0x6c, LookAhead → +0x68, MinPosition → +0x70, MinLookAt → +0x74, FinalDistance → +0x80, PauseDuration → +0x8c, Cut → +0x58; the position lerp +0x50 starts at 0.
   - Update 0x528240: `+0x50 = +0x50·(1 − PosRate) + PosSpeed·PosRate` every frame, so PosRate is how fast the position factor reaches PosSpeed (homing 0.01, Starburst 0.1, Super Sheep 1).
@@ -399,4 +400,95 @@ What the client does:
 - **AlienAbductionCamera** position (0x547490, every frame through SimpleCam 0x531e30): (UFO.x, Land.MaxHeight, UFO.z + 200); while the abduction state (+0x44) is 2, the state set with `Worm.OverridePhysics` and the camera start (0x548578 … 0x5486ca), worm + (0, 50, 50) clipped on the worm → candidate segment (0x51af90), kept if more than 10 units from the worm.
 - **Worm-track requests during the death queue**: "Worm Dying" (0x5a7282), "Worm Displaying Damage Taken" (0x5abeec) and "ImpulseWorm going Ballistic" (0x5ad60b) all call 0x51cf20(worm). When served (0x51d3d0), a request whose priority is below the running track's (+0x2c4) is cleared, not kept (0x51d408).
 - **Homing cursor** (Bundl09): `Homing.Cursor.Mesh` = node `Inner` with 4 quads (Inner_01 top, 04 bottom: 18 × 54; 02 left, 03 right: 54 × 18; one row each of texture `maya:file7/-1` #3, exported as `fe2/homing_inner`); `Homing.Cursor.SquareMesh` = node `Outer`, locator1-4 at (∓50, ±50) carrying the bitmaps `HUD.Homing.Cursor.TL/TR/BL/BR` (0x560690). Clips: Intro_Inner, Loop_Inner, Intro_Outer, Loop_Outer, Lock_Outer, Error_Outer (keys in docs/camera.md). The LockOn tints its 4 corners each frame before the lock (0x560590 → 0x552340); after `HUD.Target.Selected` (0x560420: Lock_Outer, `weapons/LockOn`) it stays on the stored target point (0x5600e0: on the camera → target ray at 500 units, i.e. screen-constant). The Inner mesh is never tinted (HomingCursorGraphicEntity uses the base per-frame 0x552230). The size of a bitmap attached to a locator is unverified: ours is its 128 px, which makes the corners frame the ticks.
+
+## 11. Drawn view, update rate, PiP rule, scene cameras (this pass)
+
+Labels per row: **data** (CAMTWK / tweak value), **disasm** (read in the code), **assumed** (inferred, not verified).
+
+### 11.1 Update rate
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| Who runs the camera manager | `ZCamUpdateFudgeService` (a LogicEntity, vtable 0x8561c0): its update (vtable +0x18, 0x533c90) calls the CMS update 0x51da00 **twice** | disasm | 0x533ca3, 0x533cab |
+| How often | the update returns 20 (the CMS update returns 0x14 too, 0x51e3e6): the frame task queue (0x68d91f, vtable +0x18 per due task, the return value is the delay to its next run) runs it again 20 ms later; the queue is fed the time rounded up to a multiple of 20 ms (0x68d57a / 0x68d5b1, from 0x68d4d4), so at most one run per 20 ms | disasm | 0x68d91f, 0x68d57a |
+| Consequence | every per-update factor below (blend, lens, camera internal lerps) is applied 100 times a second | disasm | — |
+| dt given to each camera | 0.02 s (`fld 0.02` before each camera vtable +4 call) | disasm | 0x51da9a, 0x51dafd, 0x51db1b |
+
+### 11.2 Drawn view (CMS 0x51da00 → 0x51b940)
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| Blend | the render camera goes from its last position / look-at / up to the logical camera's by the camera's factors +0x50 / +0x4c / +0x54: drawn = drawn·(1 − k) + logical·k | disasm | 0x51b940 |
+| Cut flag | camera +0x58 (byte): set, the render camera takes the logical view as is and the flag is cleared ("Cutting Current Camera") | disasm | 0x51dc8d, 0x51dcba |
+| Cut flag writers | base Camera constructor 0 (0x51b654); turn start (0x51f22e, below); FlyCam's `Cut` field (0x527af4; every FlyCam container has Cut 0, data); nothing else | disasm, data | xref +0x58 |
+| PiP camera | the PiP's render camera (CMS +0x2b0) is blended the same way (0x51df61), with its own Cut flag (0x51df4a) | disasm | 0x51df36–0x51df7c |
+| Scene camera (FollowSceneCam) | displayed type 0x14 / 0x10 skip the blend (0x51db3d); after it the render camera starts from the scene view | disasm | 0x51db3d |
+| Retry loop | the blended view is passed to camera vtable +0x18; true: if not within 0.001 of the logical position, the factors are raised by their own value (capped at 1) and the blend recomputed, up to 20 times; after 20 failures the outputs are not written, so the logical view is used | disasm | 0x51bc4d–0x51bccd |
+| vtable +0x18 | 0x52e870 for OccludingCam, DefaultCam, ChaseCam, GirderCam, NinjaCamMkIII; 0x51ab90 (returns false) for Camera, FlyCam, FallCam, SimpleCam, TrackCam, OrbitCam, IsometricCam, HeadCam, JetpackCamMkII | disasm | vtables +0x18 |
+| 0x52e870 | false when |distance +0xe0 − desired +0xe4| ≤ 1 unit (so never during a zoom-in, which snaps); else with A = blended position, B = blended look-at, h = (sin yaw, 0, cos yaw) of the camera yaw +0xd4, r = normalise((B − A) × h): true if either diagonal of the square A ± OcclusionSize·h ± OcclusionSize·r (OcclusionSize +0x78 of the container, 10 units) has land (0x466a20 segment tests) | disasm (symbolic x87 trace) | 0x52e870–0x52ed62 |
+
+### 11.3 Factors per camera (+0x50 position, +0x4c look-at, +0x54 up)
+
+| Camera | Factors | Label | Source |
+|---|---|---|---|
+| Camera (constructor; kept by TrackCam) | 1 / 1 / 1 | disasm | 0x51b65a |
+| OccludingCam family (Shoulder, Girder, Chase cameras) | PosUpdateSpeed / LookUpdateSpeed / 1, written every update; all CAMTWK occluding containers have 0.1 / 0.1 (UpUpdateSpeed 1, not read) | disasm, data | 0x530953, 0x530960, 0x53096b |
+| NinjaCamMkIII | PosUpdateSpeed / LookUpdateSpeed / 1 (NinjaCamera 0.1 / 0.1) | disasm, data | 0x52d563, 0x52d56c |
+| SimpleCam | container +0x14 / +0x18 = PosUpdateSpeed / LookUpdateSpeed; up stays 1. AlienAbduction 1 / 1, Donkey 1 / 0.1, MineFactory 1 / 0.1, SuperAirstrike 1 / 0.1, Flood 0.01 / 0.01 | disasm, data | 0x53205b, 0x532067 |
+| FlyCam | up = UpSpeed (+0x2c), look = LookSpeed (+0x1c), position 0 at activation, then +0x50 = +0x50·(1 − PosRate) + PosSpeed·PosRate each update | disasm, data | 0x527aad, 0x527ab3, 0x5282fb |
+| FallCam | LookSpeed / PosSpeed / 1 (FallCamera 0.08 / 0.02) | disasm, data | 0x5277d0, 0x5277de |
+| OrbitCam | 0.1 / 0.1 / 1 | disasm | 0x530fe8 |
+| IsometricCam (Blimp, Spectator) | `Camera.Blimp.UpdateSpeed` (0.05, asserted in (0, 1]) for all three | disasm, data | 0x52a57d–0x52a58a |
+| HeadCam | position 0.15 while the worm's physics state (+0xf0) is 0 (kWPS_Ambulatory), else 1; look 1; up 1 | disasm | 0x529024–0x529043 |
+| JetpackCamMkII | position 0 at activation (0x52b03d), then +0x50 = 0.9995·(+0x50) + 0.0005·(+0x7c) each update (+0x7c: `Camera.Jetpack.PosUpdateSpeed` 0.995, assumed); look and up never written (1) | disasm, data | 0x52b6df–0x52b6f9 |
+
+### 11.4 Turn start (0x51ef80)
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| Cut flag at turn start | set unless the new active worm's position is on screen (0x51b3b0) and the segment from the render camera to it is clear of land (0x51abf0) | disasm | 0x51f149–0x51f22e |
+| 0x51abf0 | returns true when the land segment test 0x466a20 finds nothing (clear) | disasm | 0x51ac21–0x51ac2d |
+
+### 11.5 Lens (CMS 0x51e150, inside 0x51da00)
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| Lens | the projection shape eases toward default × zoom by 0.9 / 0.1 an update (tan of the half field of view); used by the HeadCam zoom (binoculars, 0x91f31c) and the Blimp zoom (Camera.Blimp.MinZoom 0.15, MaxZoom 2, ZoomSpeed 0.99, MouseZoomSpeed 0.08) | disasm (utilities pass, not re-read here), data | 0x51e150 |
+| One lens for both | the lens is held by the CMS, not by the camera | assumed | — |
+
+### 11.6 Event camera full screen or PiP (+0x2c0)
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| Track serve 0x51d3d0 (in 0x51d360) | +0x2c0 = 1; 0 if PhysicsOverride bit 0; 0 if RetreatTimeRemaining (+0x258 of the CMS, > 0) and the worm's Velocity (+0x50) ≠ 0 | disasm | 0x51d52d–0x51d58c |
+| Chase serve 0x51d5e0 | +0x2c0 = 1; 0 only if PhysicsOverride bit 0 (no retreat test); priority 6 (+0x2c4); then PiP.SlideOn 0x51c000 | disasm | 0x51d6ce–0x51d73e |
+| Abduction / SimpleCam serve 0x51d760 | as the track serve (bit 0 at 0x51d870) | disasm | 0x51d846–0x51d879 |
+| Messages | Timer.RetreatTimedOut → 1; Camera.Cancel → 0 (when 0x5b40f0 and +0x2c1 clear); 0x523acd / 0x523af7 other cases | disasm | 0x522710 (0x523a4b–0x523afd) |
+| PhysicsOverride | WormDataContainer +0xe8 (u32, schema field 17); `Worm.OverridePhysics` (value, mask): a positive mask is ORed (0x5ae0d4), a complement ANDed (0x5ae115) | disasm | 0x5adcf0 |
+| Bit 0 (1) | jetpack: set on take-off (JetpackUtilityLogicEntity 0x562270, 0x56246f), cleared (−2) at 0x5629d4, 0x562ffc, 0x56329a, 0x563b91 | disasm | — |
+| Bit 1 (2) | parachute: set 0x579182, cleared (−3) 0x5788d9, 0x578e75 | disasm | ParachuteLogicEntity |
+| Bit 2 (4) | Starburst: StarburstLogicEntity 0x588580 (reached from its handler 0x588c10) | disasm | 0x5885b6 |
+| Bit 3 (8) | ninja rope: set 0x573e55, cleared (−9) 0x572703, 0x5736aa, 0x5739c7 | disasm | NinjaRopeUtilityLogicEntity |
+| Bit 4 (0x10) | walking payload: set 0x593292, cleared (−0x11) 0x5929ac | disasm | WalkingPayloadLogicEntity, PayloadLogicEntity |
+| Bit 5 (0x20) | melee (Fire Punch…): set 0x568356 / 0x569e1b, cleared (−0x21) 0x569898 / 0x569d7c | disasm | MeleeWeaponLogicEntity |
+| Bit 6 (0x40) | crate / telepad / GameLogic: set 0x4f770e, 0x5cab7f, 0x5d33e1; cleared (−0x41) 0x4f7785, 0x5d45b3 | disasm | — |
+| Bit 7 (0x80) | alien abduction: set 0x54860e, cleared (0xffffff7f) 0x547ba9 | disasm | AlienAbductionLogicEntity |
+| Worm (−0xc) | 0x5ab343 ANDs with ~0xb: clears bits 0, 1 and 3 | disasm | WXWormLogicEntity |
+| Only bit 0 reaches the camera | the three serves test `+0xe8 & 1` only | disasm | 0x51d558, 0x51d6f8, 0x51d870 |
+
+### 11.7 Super Airstrike (Bovine Blitz) steered flight
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| Scene camera | SuperBomberLogicEntity init 0x58a7f0 finds `perspShape` in the bomber mesh (Bomber.Mesh) and sends Camera.FollowSceneCam (0x58ace6) | disasm | — |
+| Flight | on Bomber.AnimsComplete, 0x58b4e0 enables input group "Flying", sends EFMV.End, reads SuperBomber.InitialDelay / TotalBombRunTime, plays `OpenDoorsSource` on the graphic entity (0x5893a0) and creates the SuperBomber cursor; the scene camera is still followed | disasm | 0x58b4e0 |
+| End | 0x58b050 (from 0x58b410): disables "Flying", sends Camera.StopFollowingSceneCam (0x58b0e2), Parachute.Kill, EFMV.Start, plays `bombrun_end6` | disasm | — |
+| persp node in OpenDoorsSource | fixed at (0.029, 0.529, 0.46) m in the bomber, looking straight down (−y): inside the bomb bay, through the opening doors | data (glb keys) | client/assets/models/superbomber.glb |
+
+### 11.8 Other findings of this pass
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| DefaultCam activation 0x52da00 | resets, sets the yaw from the target's facing, runs one update (vtable +0x28 = 0x530690); copies nothing from the camera before and sets no Cut flag | disasm | 0x52da00 |
+| AlienAbductionCamera clip | 0x547490: candidate = worm + 10 + (0, 50, 50) units, clipped by 0x51af90 (land only: 0x466a20, CollisionManagerService / Landscape), kept if > 10 units from the worm; no test against the saucer | disasm | 0x547490, 0x51af90 |
 

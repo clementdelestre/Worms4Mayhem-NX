@@ -10,7 +10,8 @@ enum : uint8_t {
     HELLO = 0x01, WELCOME, ERROR_, LIST_ROOMS = 0x10, ROOM_LIST, CREATE_ROOM, JOIN_ROOM, ROOM_STATE, LEAVE,
     START = 0x20, INPUTS, TURN_END, DESYNC, REPLAY, CHAT = 0x30, PING, PONG,
 };
-static const uint16_t VERSION = 2;  // 2: Input bit 8 is HEADING (absolute walk yaw)
+static const uint16_t VERSION = 1;  // bump on any wire or sim change once a server is deployed
+static const size_t INPUT_BYTES = 5;  // Input on the wire and in replays: turn, walk, aim, buttons, flags
 
 struct W {
     std::string b;
@@ -21,6 +22,7 @@ struct W {
     W &u64(uint64_t v) { return u32(v).u32(v >> 32); }
     W &str(const char *s) { size_t n = strnlen(s, 255); u8(n); b.append(s, n); return *this; }
     W &f32(float f) { uint32_t v; memcpy(&v, &f, 4); return u32(v); }
+    W &input(const Input &i) { return u8(i.turn).u8(i.walk).u8(i.aim).u8(i.buttons).u8(i.flags); }
     std::string done() { size_t n = b.size() - 2; b[0] = n; b[1] = n >> 8; return b; }
 };
 
@@ -38,6 +40,6 @@ struct R {
     uint64_t u64() { uint64_t lo = u32(); return lo | (uint64_t)u32() << 32; }
     std::string str() { size_t n = u8(); if ((size_t)(e - p) < n) { ok = false; return {}; } return std::string((const char *)take(n), n); }
     float f32() { uint32_t v = u32(); float f; memcpy(&f, &v, 4); return f; }
-    Input input() { Input in; in.turn = u8(); in.walk = u8(); in.aim = u8(); in.buttons = u8(); return in; }
+    Input input() { Input in; in.turn = u8(); in.walk = u8(); in.aim = u8(); in.buttons = u8(); in.flags = u8(); return in; }
 };
 }  // namespace wire

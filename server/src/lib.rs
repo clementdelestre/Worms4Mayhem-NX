@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 1;
 pub const HELLO: u8 = 0x01;
 pub const WELCOME: u8 = 0x02;
 pub const ERROR: u8 = 0x03;
@@ -19,6 +19,8 @@ pub const ROOM_STATE: u8 = 0x14;
 pub const LEAVE: u8 = 0x15;
 pub const START: u8 = 0x20;
 pub const INPUTS: u8 = 0x21;
+/// Bytes per Input: turn, walk, aim, buttons, flags.
+pub const INPUT_BYTES: usize = 5;
 pub const TURN_END: u8 = 0x22;
 pub const DESYNC: u8 = 0x23;
 pub const REPLAY: u8 = 0x24;
@@ -81,7 +83,7 @@ struct Room {
     host: u32,
     players: Vec<u32>,
     start: Option<Vec<u8>>, // Start frame as broadcast, replayed on reconnect
-    log: Vec<u8>,           // 4 bytes per tick
+    log: Vec<u8>,           // INPUT_BYTES per tick
     sums: HashMap<u32, u32>,
 }
 
@@ -150,9 +152,9 @@ impl State {
         let r = &self.rooms[&rid];
         let Some(start) = &r.start else { return };
         self.send(id, start);
-        self.send(id, &W::new(REPLAY).u32((r.log.len() / 4) as u32).done());
-        for (i, chunk) in r.log.chunks(255 * 4).enumerate() {
-            let f = W::new(INPUTS).u32(i as u32 * 255).u8((chunk.len() / 4) as u8).bytes(chunk).done();
+        self.send(id, &W::new(REPLAY).u32((r.log.len() / INPUT_BYTES) as u32).done());
+        for (i, chunk) in r.log.chunks(255 * INPUT_BYTES).enumerate() {
+            let f = W::new(INPUTS).u32(i as u32 * 255).u8((chunk.len() / INPUT_BYTES) as u8).bytes(chunk).done();
             self.send(id, &f);
         }
     }
@@ -212,12 +214,12 @@ impl State {
             INPUTS => {
                 let rid = room?;
                 let (first, n) = (r.u32()?, r.u8()? as usize);
-                let inputs = r.take(n * 4)?;
+                let inputs = r.take(n * INPUT_BYTES)?;
                 let rm = self.rooms.get_mut(&rid)?;
                 rm.start.as_ref()?;
-                if first as usize != rm.log.len() / 4 {
+                if first as usize != rm.log.len() / INPUT_BYTES {
                     // two clients played the same ticks (owner back while proxied): the log wins, resync the loser
-                    let e = format!("Inputs tick {first} != expected {}", rm.log.len() / 4);
+                    let e = format!("Inputs tick {first} != expected {}", rm.log.len() / INPUT_BYTES);
                     self.send(id, &error(&e));
                     self.replay(id, rid);
                     return Some(());

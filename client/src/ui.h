@@ -67,8 +67,7 @@ private:
     void factoryEdit(int dx, int dy, bool ok, bool back, bool typing, float t);
 };
 
-// In-game HUD and W4M weapon panel (X / Q). The panel selects by holding NEXT_WEAPON until the weapon changes, then
-// releasing for at least one tick, until game.weapon matches: the sim and the network only ever see plain inputs.
+// In-game HUD and W4M weapon panel (X / Q). A pick goes out as Input::pick() until game.held() shows it (a frame may run no tick).
 // First-person aim reticle at screen point c, per weapon like W4M; scope: sniper vignette + cross.
 void reticle(const WeaponDef &wd, Vector2 c, bool scope);
 // W4M Blimp-view reticle at the screen centre: Bomber cursor (arrows = the run, left to right) or Targeting cursor.
@@ -83,14 +82,11 @@ struct Hud {
     // local: a human here plays the current turn; tick: ticks simulated so far
     void input(const Game &g, Input &in, bool local, int pad, uint32_t tick);
     void draw(const Game &g, const Camera3D &cam, uint32_t tick);
-    int shown(const Game &g) const { return target >= 0 && !g.toolOut() ? target : g.weapon; }  // the pick while NEXT_WEAPON steps toward it; a tool stays in hand
-    void select(int weapon) { target = weapon, tries = 0, pressedOn = -1, releasedAt = 0, open = false, swallow = true; }
+    void select(int weapon) { pick = weapon, open = false, swallow = true; }
 
 private:
-    int cursor = 0, target = -1, tries = 0;
+    int cursor = 0, pick = -1;  // pick: sent until it lands
     bool swallow = true;  // a held A (weapon pick, menu START) must not fire
-    int pressedOn = -1;       // weapon when the current press began, -1 = releasing
-    uint32_t releasedAt = 0;  // tick when the release began
     int introWorm = -1;       // turn-start name banner (CPU/remote): current worm and the tick it became current
     uint32_t introStart = 0;
     // W4M hp count: labels/bars show `shown`, which ticks toward the sim's counted hp (Settle: timed by the sim)

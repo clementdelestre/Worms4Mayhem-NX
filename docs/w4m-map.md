@@ -510,12 +510,12 @@ ChangeState = 0x5aa7f0(pData, newState). 7/8 are sticky (walking never overrides
    Facing (0x5b1040-0x5b107c): if |InputImpulse| != 0, Orientation (pData+0x8c) = (0, 0x519120(InputImpulse), 0), the yaw of the camera-relative input (0x5ab3d0): an instant snap, no turn rate. The worm moves along the input, not along its old facing.
 3. Ground probe: CastRays(cand + (0,20,0), down, len 200, mask 0xF = 4 foot points). d = 20 - nearestDist = height of HIGHEST of the 4 hits relative to foot. Miss -> d about -181.
 4. d > 20: blocked, no move (return).
-5. 5 < d <= 20 (ledge higher than hardcoded 5.0 @0x8244fc = TWEAK StepUpHeight, which the exe never reads): cand = nearest hit point +0.1y; ground normal from rays; sphere resolve (0x519ed0) may replace cand; require 0x4adda0 walkable and Fits(cand); then set pos, store old pos (ent+0xEC), target (ent+0x104), timer 250 (ent+0x110) -> Vaulting(4) ("WormShouldNotSlipOnLand ->Vaulting").
-6. -5 <= d <= 5 (normal step, @0x5b154a): cand = nearest hit +0.1y; sphere resolve. If sphere contact: n.y < -0.1 -> blocked; n.y <= 0.8 -> cand -= 15*n, cand.y += 10, resolve again, Fits -> Vaulting ("ResolveSphericalCollisions ->Vaulting"). No contact: walkable check, then Fits(cand) retried raising y by +1.0, up to 6 tries -> set pos; if ground n.y < cos(SlideAngle[mat]) -> Sliding(3).
-7. d < -5 (drop/miss): cand.y = y-5, 0x51a510 sphere sweep; if contact and Fits -> place. Else Fits(cand at old y) -> Fall() 0x5acba0 (Ballistic). Else raise y +1.0 up to 6 tries then place, else blocked.
+5. 5 < d <= 20 (ledge higher than hardcoded 5.0 @0x8244fc = TWEAK StepUpHeight, which the exe never reads): cand = nearest hit point +0.1y; ground normal from rays; sphere resolve (0x519ed0) may replace cand; require 0x4adda0 walkable and Fits(cand); then store old pos (ent+0xEC), target (ent+0x104), timer 250 (ent+0x110), pos unchanged -> Vaulting(4) ("WormShouldNotSlipOnLand ->Vaulting").
+6. -5 <= d <= 5 (normal step, @0x5b154a): cand = nearest hit +0.1y; sphere resolve. If sphere contact: n.y < -0.1 -> blocked; n.y <= 0.8 -> cand -= 15*n, cand.y += 10, resolve again, Fits -> Vaulting ("ResolveSphericalCollisions ->Vaulting"). No contact: walkable check, then Fits(cand) retried raising y by +1.0: y..y+4 accepted, y+5 rejected (§11 push-out) -> set pos; if ground n.y < cos(SlideAngle[mat]) -> Sliding(3).
+7. d < -5 (drop/miss): cand.y = y-5, 0x51a510 sphere sweep; if contact and Fits -> place. Else Fits(cand at old y) -> Fall() 0x5acba0 (Ballistic). Else raise y by +1..+5 (y+6 rejected, §11 push-out) then place, else blocked.
 
 ### Vaulting 0x5aca80 (disasm)
-If input dot old vel (ent+0xF8) <= 0 -> target=old pos, back to Ambulatory. Else timer -= 20; timer<=0 -> pos = target (snap), Ambulatory. Else pos MoveTowards(target, 4.0/frame) via 0x5a59f0. No collision test during the vault move.
+See §11 "Vaulting 0x5aca80" for the full trace (start, abort, end, inputs).
 
 ### Sphere resolver 0x519ed0 (CollisionManagerService, worm sphere ent+0x28) (disasm)
 Sets own bound sphere centre at pos (+radius in y unless flag), iterates contacts (fn ptr 0x95c25c). Contact 1: push out along contact normal to touching distance. Contact 2: solve 2-sphere intersection circle. Contact 3+ (jumptable 0x51a4f4 cases 2,3): give up, return the fallback/old position. Sphere-vs-sphere entities (worms, crates, drums, LandFramePseudoEntity), NOT the voxel land.
@@ -1217,10 +1217,12 @@ Each frame:
    - Sphere resolve against entities (0x519ed0):
      - **contact**: if Fits, accept the position and stuck counter −1. Then if contact n.y < 0.8: Rebound(n) + event 23 (Thud). Otherwise **land on the object**: event 8 (15 if +0xdc), state → Ambulatory, support id stored. If not Fits: stuck counter +2, Rebound + event 23.
      - **no contact**: Fits → move, else stuck +2 + Rebound.
-     - Stuck counter ≥ 20 → force land (event 8 or 15, Ambulatory).
+     - On a Fits failure pos is restored to the pre-Integrate position and the rebound normal is normalize(old − new) (0x5afa78, 0x5afb17) [disasm].
+     - Stuck counter ≥ 20 → force land (event 8 or 15, Ambulatory) where it is, support id 0xFFFF: the idle walk branch (0x5b1a3e) only falls again for an entity support, so a worm forced to land in the air stays there until it walks [disasm]. The counter (entity +0x12c) is never reset in Ballistic; only Sliding's Landed paths clear it (0x5b05c2 / 0x5b063b) [disasm].
 4. **Land hit**:
    - candidate = hit point − probe offset, sphere resolve, ground normal n (0x59ef90).
-   - If not Fits: stuck counter +2; at ≥ 20, force land. Otherwise clear air control and Rebound(n), or Velocity = −Velocity if n is degenerate, then event 23.
+   - If not Fits: stuck counter +2; at ≥ 20, force land. Otherwise clear air control and Rebound(n) with n = normalize(pos − candidate), or Velocity = −Velocity if that is zero (0x5af888), then event 23. pos is not moved.
+   - A slot narrower than the 8-unit tripod (x ±4, z −3 / +5) is caught here: a foot point hits a lip within the frame and the worm lands on it, standing on that foot; the stuck counter is not involved. A slot 8 units wide or more lets all three Fits rods in, and the worm drops in [disasm + reasoning on the probe geometry 0x91ffc8].
    - If Fits: pos = candidate, SupportNormal = n, SupportFrame/Voxel stored.
    - If the nearest hit is not a foot point (0x59ec50, per-point flag, assumed "foot") → Rebound + event 23.
    - If n.y < **0.2** → Rebound + event 23 (wall).
@@ -1230,6 +1232,81 @@ Each frame:
        - if `vn < −0.3`: FallDamage(vn) and Velocity = 0. Otherwise Velocity = (vt.x, 0, vt.z).
        - state → **Ambulatory (0)**, support id stored.
      - Otherwise (steep, or too fast) → **slide**: FallDamage if vn < −0.3, Velocity = vt, event 17, state → **Sliding (3)**.
+
+#### Vaulting 0x5aca80 (kWPS_Vaulting = 4) and its start in UpdateWalking
+
+Start, ledge path 0x5b1209-0x5b128f (5 < d <= 20 units) [disasm]:
+
+- target ent+0x104 = nearest foot hit + 0.1 y, after the sphere resolve; it must pass the walkable test 0x4adda0 and Fits.
+- ent+0xF8 = InputImpulse (pData+0x68) at that frame; ent+0xEC = pos; timer ent+0x110 = **250** (0xfa); event **9** (Vault clip); material ent+0x44.
+- pos is not moved that frame, and this path returns without StartJump.
+- The sphere-contact path 0x5b165f-0x5b1746 sets the same fields, then calls StartJump 0x5acd40 the same frame (0x5b183a): a jump pressed on that frame snaps pos to the target and goes to DetectJump.
+
+Each frame in state 4, 0x5aca80 [disasm]:
+
+1. Reads the control input (0x5ab3d0).
+2. If `input · ent+0xF8 <= 0` (stick released, or pushed against the start direction): target = old pos (ent+0xEC), ChangeState(Ambulatory). ChangeState 0x5aa847 copies the target into pos when it leaves state 4, so the worm drops back to where it started.
+3. Else timer −= 20. At ≤ 0: ChangeState(Ambulatory), and pos = target (the same copy).
+4. Else pos = MoveTowards(pos, target, **4.0** units) (0x5a59f0, constant 0x858228) [data + disasm].
+
+Consequences:
+
+- A vault always lasts the full 250 ms: nothing ends it on arrival.
+- No collision test runs during the move. Land that appears in the way does not stop it [disasm: no Fits, ray or sphere call in 0x5aca80].
+- No Orientation write, no StartJump, no fire handling in the worm code: the facing is frozen and a jump press is ignored [disasm: the dispatcher 0x5b1fc0 calls 0x5aca80 only; StartJump's three callers are all in UpdateWalking].
+- Every exit from state 4 through ChangeState (blast via ImpulseWorm, death, physics override) snaps pos to the current target first [disasm 0x5aa847]. UpdateWalking's Passive switch (0x5b0df9) and StartJump (0x5acdba) do the same copy inline.
+- **Firing during the vault**: refused for most weapons. FirePressed handlers call a CanFire before firing:
+  - BaseWeaponLogicEntity 0x54a2d0 (vtable slot at 0x857b34, also Flood's 0x85919c) and PayloadWeaponLogicEntity 0x583ca0 (called from the FirePressed handler 0x586092 and from 0x586e9f) both return `PhysicsState == 0 || CanBeFiredWhenWormMoving` [disasm].
+  - That flag is BaseWeaponContainer field 0x0c at +0x79. In WEAPTWK it is 1 only for Dynamite, FirePunch, Landmine, LandmineCluster and Sheep; every other weapon, and every utility, has 0 [data].
+  - Vaulting (4), DetectJump (1), Ballistic (2), Sliding (3) and Override (5: rope, parachute, jetpack) therefore refuse every other weapon. The secondaries dropped from a tool (Dynamite, mines, Sheep) are exactly the flagged ones.
+  - GunWeaponLogicEntity's check 0x55cd30 returns 1: guns fire in any state [disasm].
+  - The jetpack's FireUtil handler 0x562270 tests `state == 0` (0x5623b4) only for PackAccessory.Trigger, the take-off [disasm]. The rope fires on Input.FireUtilPressed (handler 0x574730 → 0x573790; its Input.FirePressed handle is only subscribed, at 0x57096e) [disasm]:
+    - there is no CanFire and no `+0x79` test;
+    - `state == 0` is tested at 0x573845 only to play `global/FEError` when no "Head" target is found, at most every 500 ms (+0x13c);
+    - so the rope fires in any state, in the air included.
+  - Only the press is gated: a charge started on the ground goes on to its release [assumed: no CanFire found on FireReleased].
+- **Velocity during a vault** [disasm]:
+  - UpdateWalking sets Velocity = InputImpulse on a successful step, through 0x546f10 at 0x5b146e (drop path) and 0x5b19c8 (normal step); the idle branch zeroes it (0x5b1c1b).
+  - The vault start does not write it, and nor does 0x5aca80. So during a vault Velocity is the last walk step's velocity.
+  - The launch (0x585a1b: `state == 0`) counts the vault as off its feet: a flagged payload with IsLaunchedFromWorm (+0x1cf; 1 for Dynamite, Landmine, LandmineCluster, Sheep) inherits it at 0x585a58.
+
+Ours (sim.cpp `walkStep` / `vaultStep`, `Game::vault`; ai.cpp `Mover::vault`):
+
+- A climb above `STEP` (5 units) up to `STEP_UP` (20) starts the vault instead of the instant climb, if the target is walkable and Fits. The walkable test uses the ground normal at the target, the 0x59ef90 mean below; the toe and plain climbs share it [ours, from 0x5b11ca / 0x5b11f0].
+- 15 ticks (`msTicks(250)`) at 10 m/s (4 units per 20 ms) toward the target, then the snap.
+- The input is the heading stick (HEADING) or the facing, times `walk`; `dot <= 0` drops it back to the start.
+- During the vault: the yaw is frozen, JUMP is ignored, `stepWorm` skips the body.
+- Leaving it otherwise: knocked or roped snaps to the target; moved by a weapon (teleport) ends it in place [ours].
+- `Game::fireable`: utilities and guns always fire; Dynamite, Fire Punch, mines and Sheep always fire; anything else needs a grounded worm, not sliding, not vaulting, no jump pending. It is asked on the press, or on the first tick of a charge [ours, from 0x54a2d0 / 0x583ca0].
+- `Vault::vel` keeps the walk velocity of the vault's start tick. A payload fired during the vault gets the carried offset and that velocity, like a worm off its feet. The game also takes it from that tick, while W4M takes it from the step before [assumed equivalent].
+- Phase change (control lost) acts as no input: back to the start.
+
+#### UpdateWalking: support, push-out and the uphill rule (disasm)
+
+- **Support**: the 4 foot rays (mask 0xF: tripod (±4, −3), (0, +5) and the centre, world axes, 0x91ffc8 [data]) are cast from 20 units above the candidate; d = 20 − nearest, i.e. the **highest** hit carries the worm. One foot on a lip is enough: walking over a slot narrower than the tripod never drops into it.
+- **Normal step push-out** (0x5b194c): Fits is tested at y, y+1, …, y+5 units. Only y..y+4 are accepted: the counter starts at 5 and a success with the counter at 0 is rejected (`test ebx, ebx; jbe` at 0x5b198b). So the step raises the worm by at most 4 units.
+- **Drop path push-out** (0x5b14e1): y+1 is added before the first test, so y+1..y+5 are accepted and y+6 is rejected.
+- **Blocked**: both failures jump to 0x5b1a21, which still calls StartJump. A blocked worm can jump.
+- **Uphill rule** (0x5b1920-0x5b1946): if `normal · (cand − pos) < 0`, the ground under the candidate must pass the walkable test 0x4adda0, else blocked. The vector is cand − pos: 0x454e00(out, a, b) computes out = a − b, and 0x5b18f0 passes (out = esp+0x4c, a = cand at esp+0x20, b = ebx = pData+0x38 = pos). The normal is the ground normal of the candidate (0x59ef90 output) [disasm]. After the move, n.y < cos SlideAngle → event 17 and Sliding (0x5b19d0).
+
+- **Ground normal 0x59ef90** [disasm]: it needs 2 or more hits (+0x1e4 > 1). It sums the land normals (re-cast 0x59eb30, normal 0x482010, normalized 0x4453c0) of the hits whose `HitPointRel` differs from the nearest hit's by at most 1 unit, i.e. the feet level with the highest one, then normalizes. So when two feet straddle a slot on its two lips, their normals average to near vertical.
+
+Ours (sim.cpp `footing`, `walkStep`):
+
+- The centre and the tripod (±0.2, −0.15) (0, +0.25) m, world axes, carry the worm. Any one hit is enough, as in W4M. This applies to the grounded test, the flight landing, the flight push-up and the walk's settle [ours, from 0x91ffc8].
+- The normal is the mean of `Terrain::normal` at the feet whose land top is within 1 unit of the highest one. The tops are measured in 1-unit steps up to 5 [ours, from 0x59ef90].
+- The walk follows W4M:
+  - the candidate is set on the highest hit within 5 units;
+  - the uphill rule `n · (cand − pos) < 0` needs a walkable n;
+  - the step push-out tries +0..+4 units; the drop path first tries a plain fall, then +1..+5;
+  - a raised worm is placed without a settle.
+  No test covers the push-out: with W4M's probe, any lip low enough to be cleared by 4 units is seen as ground and vaulted instead [ours].
+- **`fits` stays relative** ("no deeper than before"; W4M Fits 0x59edf0 is absolute). This is a voxel constraint [ours].
+  - Our land is a trilinear density field, clamped to ±0.25 m on a 0.25 m grid, so surfaces are soft.
+  - Our body test samples a 0.2 m ring at 0.7 and 0.95 m. W4M uses 3 rods of 1 m, on a worm always placed 0.1 unit above its highest hit.
+  - Land can also appear around a worm: girders, terrain edits, spawns. An absolute test then locks a worm whose upper body samples a slightly positive density.
+  - `checkWallStuck` (head wedged 0.05 m in a sloping ceiling must walk out) fails with an absolute test. The slot and map sweeps give the same counts either way (10 400 slot runs: identical; maps: 57 / 57 runs over 0.06 before the drowned runs were cut).
+  - The relative form only differs once the body is already in land. Below that it is W4M's absolute test.
 
 #### Rebound 0x5acea0 (disasm)
 
@@ -1274,7 +1351,8 @@ Per frame:
 | d < −5 (drop) | v projected off the ground; if it fits → **Fall()** (Ballistic). Else Landed |
 | −5..5 | pos = hit + 0.1y, sphere resolve (a side contact → Rebound + stuck +2). Fits → move, stuck −1, SupportNormal/Frame/Voxel updated. Then if the ground is walkable (n.y ≥ cos SlideAngle) and \|v\|² < **StopSlideVel²[mat]** → Landed. Not Fits → Landed |
 
-- Stuck counter ≥ 20 → Landed.
+- Stuck counter ≥ 20 → Landed (0x5b05cc), and the count is reset to 0 (0x5b063b). Every Landed path in Sliding resets it (0x5b05c2).
+- Sliding never calls UpdateWalking or StartJump: no walking and no jumping while it lasts (dispatcher 0x5b1fb6) [disasm].
 - "Landed" = `QueueEvent(kWE_Landed = 8); ChangeState(kWPS_Ambulatory)`; the debug string 0x85fb58 spells it.
 - Thresholds (0x5a5d30, data):
 
@@ -1284,6 +1362,51 @@ Per frame:
 | StartSlideVel | 0.2 | 0.01 | squared at 0x9200ac / 0x9200b0 |
 | StopSlideVel | 0.06 | 0.01 | squared at 0x9200b4 / 0x9200b8 |
 | SlideFriction | 0.95 | 0.999 | 0x9200a4 / 0x9200a8 |
+
+Sliding, further W4M detail (disasm):
+
+- **Entry**:
+  - Ballistic landing: `vt = v − (v·n)n`; `|vt|²` is halved when below `vn²`; walkable and below StartSlideVel² → Ambulatory, else Sliding with Velocity = vt (3D).
+  - A successful walk step onto non-walkable ground (0x5b19d0): Sliding with Velocity = InputImpulse, set just before (0x5b19c8).
+  - ImpulseWorm on the ground with `impulse·SupportNormal < 0`.
+  - The idle walk branch never starts one: a still worm on steep ground stays. ChangeState (0x5aaa0c) zeroes the slide time, the spin rate +0x120 and its target +0x124.
+- **Gravity** (0x5afd60-0x5afe26): `v.xz −= (Acceleration·n) n.xz · 20`. v.y gets nothing: only friction acts on it (×SlideFriction on all three axes, 0x5aff2d). The stop test (0x5b04c8) uses the 3D |v|².
+- **Steering**, when Flags bit0 is set (0x5afe07):
+  - The first test (0x5afe30) is `input · (Acceleration·n) n.xz`. It is > 0 when the input points up the slope, which gets 0.0005.
+  - Otherwise the second dot (0x5afe68, FPU stack decoded) is `v · (Acceleration·n) n.xz`. It is > 0 when the velocity runs up the slope, which gets 0.003; else 0.0005 [disasm]. So 0.003 is for an input that does not point uphill while the worm still moves uphill.
+  - Then `v += input × k` (0x5afeba).
+- **Air control**, Flags bit0:
+  - set by DetectJump's launch (Flags |= 1) and by Fall() from a walk-off (0x5b14c7, airControl 1);
+  - cleared by Rebound (0x5acea0), ImpulseWorm, the slide's drop (Fall(..., 0) at 0x5b02dc) and Ballistic's not-Fits land hit (0x5af8a5).
+- **Spin**:
+  - each frame `rate += clamp((target − rate)/4, ±0.0349)` (0x47a1a0, k 3), then `yaw += rate` (Orientation +0x90);
+  - on a wall rebound (0x5b010b): `target = (target + 3·SupportNormal·(n_hit × v)) / 2`;
+  - on following the ground (0x5b0448-0x5b049b): `target −= 2·(n_new × n_old)·v` (cross product 0x454d90(out, a, b) = a × b), then SupportNormal = n_new.
+- **Probe** (0x5aff70): the 4 foot rays from cand + 20 units down, 300 steps; `cand = pos + v·20`.
+  - d > 5: a wall. Below StartSlideVel → Landed. Else one frame's ray of all 8 points along v: a hit → Rebound + spin + stuck +2; no hit → Landed.
+  - d < −5: a drop. `v −= (v·n)n`; if the body Fits at the old height → pos = (cand.x, pos.y, cand.z), Fall(v, 0, 0). Else Landed.
+  - Else: pos = highest hit + 0.1; if not Fits → Landed; stuck −1; then walkable and below StopSlideVel² → Landed.
+- A slope steeper than atan(5/4) = 51° puts the tripod's uphill foot over 5 units: a slow slide there lands (wall branch). So a slow worm stays on a 70° slope.
+
+Ours (sim.cpp `slideStep` / `wormBody` / `slideIfSteep`, `Motion`; the same in ai.cpp `move` / `stepBody`):
+
+- `Motion`, per worm and checksummed: `stuck`, `air`, `slide`, `spin`, `spinTo`, `normal`. `input` is this tick's stick, used only by Sliding.
+- `slideStep` follows each W4M step above, in W4M frames per tick (DT/20 ms) and m/s (one unit/ms is 50 m/s).
+- Details:
+  - the wall branch casts the 8 probe points (the 4 feet, and the same 1 m higher for the heads) along v over one tick, as CastRays(pos, v, 20 steps, mask 0xFFFF) at 0x5b00e0; the hit normal is the mean of the hits within 1 unit of the nearest, as 0x59ef90. Ours uses `Terrain::raycast` per point;
+  - SupportNormal is `Motion::normal` (checksummed): stored at the landing (0x5af5ba), at a walk onto steep ground (0x5b1998), and on each ground follow (0x5b04a1); gravity, steering, the drop and the spin use it;
+  - the spin's yaw sign matches ours. W4M yaw is `atan2(x, z)` (0x519120: acos(z), negated for x < 0) [disasm], our facing is (sin yaw, cos yaw), and tools/w4m-maps maps W4M x and z to our x and z without a mirror (`to_grid`) [data].
+- Sliding takes no walk and no jump. A slide that ends sets the worm Ambulatory (velocity 0); a slide drop goes Ballistic with air control off.
+- An Ambulatory worm with no velocity does nothing beyond the push-up out of land and `clearWalls` (our body's width).
+- Ballistic is unchanged apart from the stuck count. A horizontal or upward push of a standing worm goes Ballistic; a push into the ground starts Sliding.
+- The 0.40 m slot (the tripod's width) gave 30 never-ending slides. That was our earlier slide; the W4M probe's wall branch now lands those worms.
+
+Ballistic stuck count, ours:
+
+- In flight, each tick where a move does not Fit adds 2, otherwise 1 is removed. The test covers sideways, upward and now downward moves: a falling move that would sink the upper body deeper is undone and rebounds at 0.3.
+- At 20 the worm is landed where it is, velocity 0, and the count is kept.
+- The next tick it tries to fall again, the move is undone again, and it lands again. It therefore stays put until it walks, jumps or is blasted, exactly like W4M's forced Ambulatory: neither the idle walk branch (0x5b1a3e) nor Passive (0x5b0c8b) drops a worm whose support id is 0xFFFF (land). EstablishPhysicsState 0x5a6af0 is only reached from the Undefined state (0x5b201d) and the UFO flag path (0x5a9fe8) [disasm].
+- The jetpack's flight does not count, since it is not Ballistic [ours].
 
 #### Passive 0x5b0c20 (kWPS_Passive = 6) and UpdatePassive 0x5aecb0
 
@@ -1410,6 +1533,8 @@ Recover clip after a hard land from blast flight (0x5a3d64):
 
 Smoothing helper 0x569f20(&v, target, a, rate, dt): approaches the target with the step clamped to rate·dt (disasm, exact law approximate). Most anim weights use rate 0.1 per 20 ms frame, i.e. about 0.2 s for 0 → 1.
 
+WormPoseManager (0x59da40, disasm): `Blend` is an XTransform node of the worm whose clip channels drive the layers: Translate.x / .y = left / right arm mode (0x59b870), Rotate.y in degrees = head/eye mode (0x59be40), Scale.y = PoseBlend, Scale.z = EmoteBlend, Scale.x = visemes. Its smoothing helper 0x47a1a0(&v, to, k, max) is v += clamp((to − v)/(k + 1), ±max) per call. Arms, eyes and head: docs/worm-reactions.md.
+
 Acting gate (0x5a47d0, assumed): graphic +0x5c counts ms since the last physical event. Events 7/13/14/15/17/19/21/22 reset it and clear WXActor flag +0x6e bit 4. At 90000 ms (0x15f90) the bit is set again (assumed: idle or bored acting allowed).
 
 #### Weapon clips (data: WEAPTWK `WXAnimDraw/Aim/Fire/Holding/EndFire/Taunt/TargetSelected`, fields +0x54..+0x6c of the weapon properties container)
@@ -1467,7 +1592,7 @@ All integers are LE u32 unless noted. `str` = u32 length (NUL included) + bytes.
   - Complex body: u32 nlayers, layers {u16 flags, i16 priority, i16 param index (-1 = none), u16 ninstances, u16 nenvelopes, instances, envelopes}, u32 nparams, params {str name, f velocity (units/s), f min, f max, u32 flags (3), u32, u32, u32 nsustain, f sustain[n]}, u32 (0).
   - Sound instance (58 bytes): u16 sounddef index, f start and f length on the layer's parameter axis (0..1), u32 start mode, **u32 loop mode (0 = loop, 1 = oneshot, 2 = loop and play to end)**, i32 loop count (-1), 4 u32 (0), f volume (1.0), 2 f (-1 on complex events, 0 on simple ones), 2 u32 (2, 2) [data: every "*Loop" event, the music tracks and the ambiences have mode 0, music/Victory has 1].
   - Envelope: i32 parent (-1, or the index of the envelope that shares the DSP), str DSP name ("" = built-in, "FMOD Highpass"), u32 DSP parameter index, u32 flags (0x0C = volume, 0x04 = DSP parameter, 0x14 = pitch?), u32, u32 npoints, points {f x (0..1 across the parameter range), f y (0..1), u32 shape}, 2 u32.
-- Sounddef property sets: u32 count=35, each 70 bytes: u32 play mode, u32 spawn min ms, u32 spawn max ms, u32 max spawned, f volume (linear), ..., f at +52 (randomisation?), u16 trigger delay min/max ms at +64/+66 [play mode values: 3 on every 1-waveform def, 2 on most multi-waveform defs (random pick), 0/1/6 rare; enum not confirmed].
+- Sounddef property sets: u32 count=35, each 70 bytes: u32 play mode, u32 spawn min ms, u32 spawn max ms, u32 max spawned, f volume (linear), ..., f at +52 (randomisation?), u16 trigger delay min/max ms at +64/+66  [play mode values: 3 on every 1-waveform def, 2 on most multi-waveform defs (random pick), 0/1/6 rare; enum not confirmed].
 - Sounddefs: u32 count=3995, {str "/folder/name", u32 property-set index, u32 nwaveforms, waveforms {u32 type (always 0 = wave), u32 weight (100), str "file.wav", str bank, u32 sample index in the bank's FSB, u32 length ms}}.
 - Reverbs: u32 count=1 ("Default"), str name + 132 bytes (I3DL2-like, not decoded). Then a "comp" chunk (u32 size=0x18, "comp", u32 0x10, "sett", 2 f 1.0) that runs to EOF.
 - **Looping comes only from the FEV**: no sample in weapons/frontendsfx/global/ambient/mu*.fsb has an FSB loop flag (all mode 0x40200) [data]. The FEV instance loop mode alone decides loop vs oneshot.
@@ -1493,7 +1618,18 @@ Full per-event table (2620 rows): `fev.py`, filter with `-g REGEX`.
 - **Music.FadeIn**: FlowControlService posts it on "Switching to in game", after GameLogic.GameLoadComplete (0x4ee6bb). FrontEndService (HM 0x72b541) sets +0x17c; its update 0x7290b4 (returns 0, so it runs every frame) then adds 0.01 to the music volume +0x180 until it reaches `Audio.Vol.Music` (+0x160, DEFSAVE default 0.6) and applies it to the music instance +0x14c. That is 60 frames, 1 s at 60 fps. Category volumes are set from the options with mgr vtbl+0x44 (1 = +0x164, 2 = +0x160).
 - **GameOverLogicEntity** 0x4ffbd0: starts `music/victory` (0x4fff4b) and `cheer/cheer` (0x4fff6a) together when the match is won; state 2 fades the sounds over 1000 ms before GameLogic.GotoFrontEnd.
 - **Charge sound**: PowerbarMeterEntity (0x5f6310) on `Weapon.PoweringUpStart` calls 0x5f5c70, which creates one oneshot event by the active worm's weapon type (+0xf4): 0xd `weapons/HomingMissilePowerUp`, 0x1a `weapons/BowCreak`, else `weapons/RocketPowerUp` (all -6/-2/-6 dB, 3D linear), starts it (vtbl+0x10) and re-places it at the worm + 0.7 each update (0x5f6590). It is stopped and released (vtbl+0x14, +8) once the powering flag clears (LaunchPayload, Delete, Binocular messages, 0x5f6541). No parameter, no loop: clips of 1.0 to 1.75 s against a 1.5 s charge [disasm; the 0x1a = bow type is assumed from the event name]. 
-**EquipSfx**: WeaponAccessoryEntity 0x5950c0 (BaseWeaponContainer +0x74), called by every WAE_* class on `Accessory.Init` (weapon wielded: selection, turn start) and `Input.TauntPressed`, fire and forget at `WeaponLocator`, at most once per 9000 ms per entity (+0xd4); the HoldLoopSfx (+0x70, SheepHeld, SentryGunHeld, ScouserHeld, OldWomanHeld) starts there too [disasm]. Values per weapon: WEAPTWK; events AirEquip, BazookaEquip, BubbleEquip, DefaultEquip, ShotgunEquip, SniperEquip -12 dB 3D, PotionEquip -11 2D, ScouserArm -7, UmbrellaOpen -12 2D. Ours: weapon in hand or worm change in Aim (main.cpp), 9 s per worm; HoldLoopSfx wired (SentryGunHeld loops, the others are FEV oneshots); taunt replay not wired.
+**EquipSfx**: WeaponAccessoryEntity 0x5950c0 (BaseWeaponContainer +0x74), called by every WAE_* class on `Accessory.Init` (weapon wielded: selection, turn start) and `Input.TauntPressed`, fire and forget at `WeaponLocator`, at most once per 9000 ms per entity (+0xd4); the HoldLoopSfx (+0x70, SheepHeld, SentryGunHeld, ScouserHeld, OldWomanHeld) starts there too [disasm]. Values per weapon: WEAPTWK; events AirEquip, BazookaEquip, BubbleEquip, DefaultEquip, ShotgunEquip, SniperEquip -12 dB 3D, PotionEquip -11 2D, ScouserArm -7, UmbrellaOpen -12 2D. Ours: weapon in hand or worm change in Aim (main.cpp), 9 s per worm; HoldLoopSfx wired (SentryGunHeld loops, the others are FEV oneshots); T (taunt): see "Weights, play mode and taunt" below.
+### Weights, play mode and taunt (sounddefs, EquipSfx, Input.TauntPressed)
+- **Weights [data]**: `fev.py --json`, `sounddefs[i].waves[j].weight`, read for every event of `DEFS`. All 100 (OldWomanMutter 20 x5, not in `DEFS`) except **ScouserHeld 100/300/100**. Ours: `Def::w` in `audio.cpp`. Weights only count in the random modes (1, 2); ScouserHeld is mode 0, so they do not apply there [disasm, below].
+- **Play mode: where it is read [disasm, fmod_event.dll]**: the first u32 of the 70-byte sounddef property set goes through setter 0x100384d0 into **bits 4..6 of the property word** (ctor 0x10038320: default 3); getter 0x10038490. The loader is 0x1002b510. The wave picker is **0x10038670** (n = wave count at +0x14, weights at [+0x28]+4+0x18*i, last wave +0x1c, state +0x18/+0x20/+0x24); its caller 0x10027fd4 sends mode 5 to 0x10027e10 (programmer-selected) and everything else to the picker.
+- **Decoded values [disasm]**: 0 and 3 = sequential, index = (instance state + 1) % n, state at event-instance +0x40 (mode 3 resets it to -1 when the event starts at 0x1001cdcd, so it begins at wave 0; mode 0 copies the property word +0x1c at creation at 0x1001e1f4, 0 in every FEV def, so it begins at wave 1); 1 = weighted random (`rand() % sum(weights)`, cumulative walk); 2 = weighted random, and when it equals the previous pick (sounddef state +0x1c, -1 at start) it takes the next index; 4 = per-instance shuffle (list at instance +0x44, cursor +0x48); 5 = programmer selected; 6 = global shuffle (list +0x24, cursor +0x20, reshuffle 0x10038870 when spent, never starts with the last wave played); 7 = global sequential (+0x18, -1 at start). `rand` here is the CRT one.
+- **Names [assumed]**: FMOD Designer 4 names these modes Sequential, Random, Random (no repeat), Shuffle, Programmer selected, "event restart" variants; the numeric-to-name mapping above is from the code, the names are my reading. Data values: 3 on 3965 one-wave defs plus Foley_Splash, 2 on the 23 multi-wave defs (ExplosionRegular, SplashHeavy, ShotgunFire, Teleport, WingFlap, OldWomenFootsteps, Thud, CowFall, BubbleMachineLoop ...) and BombWhistle, 0 on OldWomanHeld / OldWomanMutter / ScouserHeld, 1 on ScouserJump, 6 on GrenadeImpact1 (our "bounce"); 4, 5, 7 are unused in the FEV.
+- **Ours**: `Def::mode` (default 1) and `pick()` in `audio.cpp`: mode 2 rows (the ones above) keep a global last-pick, GrenadeBounce is a global shuffle, OldWomanHeld and ScouserHeld are mode 0 (always wave 2, because W4M creates a fresh event instance per play [assumed: a held sound could instead be re-triggered inside one instance]). Not reproduced: the sounddef **trigger delay** u16 min/max at +64/+66 [data] (ScouserHeld 200..1200 ms, OldWomanHeld 200..1600, SheepHeld 1000..3000, OldWomenFootsteps 120, MissileLoop 1000) and the spawn fields (BubbleMachineLoop 500 ms, held sounds 0..1).
+- **Taunt key [data]**: `Input.TauntPressed` = DefInputMapping (LOCAL.XOM `InputEventMappingContainer` #1340, `FETXT.Control.Taunt`): keyboard `Key` 20 (DIK_T), no joypad entry among the 81 mappings.
+- **WAE_* state machine [disasm]** (HM 0x58c060 is WAE_Standard; the other classes 0x58d0a0, 0x58e6c0, 0x5901c0, 0x595ed0 have the same shape; state at +0xb0; the pose update is 0x58f620, jump table 0x58fe38): **0** holstered (set by `Weapon.ActivateAccessory` and `Worm.CleanUpOnDeactivate`, 0x58c4d3); **1** drawn (`Accessory.Init` plays EquipSfx and sets 1, 0x58c28e); **2** taunting; **5** fire anim (`Weapon.PlayFireAnim` sets 5 and +0xc5 = 1, which blocks the taunt). `Input.TauntPressed` needs +0xc5 == 0 and [WormData+0xf0] == 0 (meaning not traced): in state 0 it replays the EquipSfx (same 9 s limit) and goes to 1; in state 1, if the weapon has a taunt clip (+0xf4), it goes to 2, zeroes the clip clock (+0xf0) and posts `Acting.Trigger` (ctor 0x4d3410, subject 0x7f) with table 0x95f1a8[weapon id] (skipped when >= 0x30).
+- **Taunt clip [disasm + data]**: in state 2 (0x58f910 onward) the weapon animator plays `WXAnimTaunt` (+0xf8/+0xfc) at clock +0xf0, which advances by the frame time, while the other layers (draw, hold, aim) are blended out with weight 4 x (length - t) and back in; at clock >= +0xec (= `m_fTauntWeaponLoopTime`, the clip length, asserted != 0) the state returns to 1 (0x58fb1f). **So the Acting scene and the clip combine: both start on the same press.** WXAnimTaunt by weapon [data, WEAPTWK]: Bazooka TauntBazooka; Grenade, ClusterGrenade, BananaBomb, HolyHand, GasCanister, Landmine, ClusterBomb TauntThrown; Dynamite TauntDynamite; Airstrike, SuperAirstrike, ConcreteDonkey, AlienAbduction, Fatkins TauntAirstrike; Flood TauntRainDance; Homing TauntHomingMissile; Shotgun TauntShotgun; Sniper TauntSniper; Bat TauntBat; FirePunch TauntFirepunch; Prod TauntProd; NoMoreNails TauntNMN; PoisonArrow TauntBow; OldWoman TauntOldWoman; Scouser TauntScouser; Sheep, SuperSheep TauntSheep; Starburst TauntStarburst; SentryGun TauntSentrygun; NinjaRope TauntNinjarope; Redbull TauntRedbull; BubbleTrouble TauntBT; Surrender TauntSurrender; empty: Girder, Jetpack, Parachute, SkipGo, Armour, Binoculars, Teleport, ChangeWorm.
+- **Table 0x95f1a8 [disasm]**: filled by 0x596830, 4-byte entries by weapon id: 35 TauntMelee, 36 TauntRanged, 37 TauntStrike, 48 none. Melee: Grenade, Dynamite, Landmine, BaseballBat, Prod, FirePunch, NoMoreNails. Strike: Airstrike, Flood, ConcreteDonkey, AlienAbduction, SuperAirstrike. Ranged: Bazooka, ClusterGrenade, HolyHandGrenade, BananaBomb, Shotgun, HomingMissile, Sheep, GasCanister, OldWoman, SuperSheep, Starburst, FactoryWeapon, Scouser, PoisonArrow, SentryGun, SniperRifle. None: NinjaRope, Parachute, Jetpack, SkipGo, Surrender, Redbull, BubbleTrouble. Not written (BSS 0 = TimedPayloadFive, behaviour unknown): Fatkins, ClusterBomb, Bananette, Girder, ChangeWorm.
+- **Ours**: T in Aim (`main.cpp`) = state 1 -> 2: `Acting::taunt` (acting.cpp, the table above by our weapon names) plus the `Taunt*` clip as the worm's one-shot act with the held mesh, until the clip ends (T is ignored meanwhile). `tools/w4m-models` now exports the 18 clips `Taunt*+Hold*` (`TauntStarburst` is not in the worm bundle; RainDance, Redbull and BT have no imported Hold clip, so those weapons only get the Acting scene). State 0 (T replays EquipSfx) and state 5 (taunt blocked after PlayFireAnim) are not modelled as states: after a shot our phase leaves Aim, and a weapon change runs Init (EquipSfx, 9 s per worm) in the same frame, so state 0 never receives a key press in our flow. Regenerate `worm.glb` with `w4m-models` after pulling to get the clips.
 - **HudAlert**: ActiveWormHudInfoEntity 0x5d79db, fire and forget, when the active-worm panel slides in.
 - **ClockFast / ClockSlow**: HudClockEntity init 0x5f0f75 / 0x5f0f86 creates both instances (+0xcc / +0xc8), and no HudClockEntity code reads them again: no start found, so the turn clock looks silent on PC [disasm; a start through another path is not excluded].
 - Priority (+0x10) only matters when FMOD runs out of voices: 64 on `frontendsfx/click` and every `Speech/*/Sneeze`, 128 elsewhere.
@@ -1579,6 +1715,13 @@ Tags: **data** = WEAPTWK.XOM or tables stored in the exe; **disasm** = traced co
   - **SuperBomber 0x58ae50** spawns ParachutePayloadLogicEntity (vt 0x85be14, HM 0x57a8a0).
   - **Detonate** (Payload slot 20, 0x580f10): if `NumBomblets +0x1a0 > 0`, it creates ClusterGeneratorLogicEntity (vt 0x8588f0, HM 0x551950). That entity's 0x5519d0 spawns **ParabolicPayloadLogicEntity** bomblets. The bomblet container comes from `BombletWeaponName`: assumed, not traced.
   - `GameLogicService::CreateMine` 0x4f9630 (and 0x4f9c40) creates level mines as Parabolic with kWeaponLandmine.
+
+#### Launch point and self-hit exclusion (disasm, data)
+- **Payload start** (factory 0x585a29..0x585c35): `IsLaunchedFromWorm` gives pos = worm logical pos (+0x38) + (sin yaw × `LogicalLaunchZOffset`, `Worm.EyeLevelOffset` 15 + `LogicalLaunchYOffset`, cos yaw × Z). Nothing is added along the aim: Bazooka, Grenade, Homing Missile, Poison Arrow, Banana, Cluster, Holy, Gas leave from the eye (Z = Y = 0); Dynamite 13/-10, Landmine 10/-10, Sheep/SuperSheep/Starburst 5/0, OldWoman 7/0, Scouser 10/0 (WEAPTWK). A worm that is not Ambulatory (state +0xf0 != 0) and moving adds its velocity to the launch and starts 30 units ahead along that velocity (0x585bc5). `Weapon.GraphicalLaunchLocation` - pos is only a draw offset (0x57de20).
+- **Payload collider** (Payload start 0x582200): collider sphere at +0x28, radius `Radius` +0xe0, flags `ColliderFlags`|8, mask 0x3c37 (0x519c80). It then sweeps one 20 ms frame along its velocity (0x5824b3 → 0x519db0 → 0x516c80) and stores the owner id (`[rec+0x18]`) of **every collider it touches** in the vector +0x11c.
+- **Each update** (0x581dc0, called from Parabolic 0x576fc0, Payload 0x5827c0, Walking 0x593580/0x593b30, 0x5887b0): the same 20 ms sweep; a contact whose id is in +0x11c is skipped (0x581ec0 → 0x581f7c), any other is the hit (time 0x95c28c, id, flags). The vector is then **replaced** by this frame's contacts (0x581fe1..0x582009). So the shooter, overlapped at launch, is ignored until a frame where the payload no longer touches it; it can be hit again after that. No arming delay or distance test is involved (StartsArmed 1, ArmingCourtesyTime 0 for every impact payload; the courtesy time is the mine's worm trigger).
+- **Sweep primitive**: 0x516c80 / 0x517e20 store the own collider index (0x91e800) and an exclude owner id (0x91e804); the per-collider tests 0x516350 / 0x5164b0 / 0x517630 skip that index, colliders whose flags `[rec+0x14]` miss the mask (0x95c294), and colliders whose `[rec+0x18]` equals the exclude id. Payload sweeps pass id -2 (none). Land rays from payloads (0x57dca0, 0x5750d0) pass mask 0: land only.
+- **Guns** (GunWeaponLogicEntity fire 0x55df90): start = worm pos + (0, EyeLevelOffset + `LogicalLaunchYOffset`, 0) + `LogicalPositionOffset` ⊙ aim (all 0 for Shotgun and Sniper: the eye). The land ray (0x55e353, `Range` 9999 steps of 1 unit) is land only; the worm sweep (0x55e3c2 → 0x519dd0) passes the active worm's id (0x5b27e0: `ActiveWormIndex` → logical worm +0x14) as the exclude id, so the shooter is never hit by its own bullet; a land hit sends an ExplosionMessage (0x55e5da: WormDamageMagnitude, WormDamageRadius) that can hurt it. That the worm collider's owner id is the logical worm's +0x14 is assumed (the payload registers its own +0x14 the same way, 0x58248b).
 
 #### Per-container summary (data + disasm above)
 
@@ -1751,6 +1894,22 @@ Who starts which phase:
 - Mines: `Mine.MinFuse/MaxFuse` in ms; the scheme MineFuse is in s.
 - Game-wide (0x4fa2c0) [disasm]: `FCS.QuitAttractMode` when game time >= 300000 ms with flag `*(0x95a298)+0x160` bit 1 set (the attract demo, assumed). `GameLogic.QuitGame` once at 14,400,000 ms (4 h).
 
+
+### Abductee hp roll, abduction sight ray, Weapon Factory templates (found while aligning abduction and factory weapons)
+- **Order of the roll** [disasm + data]: stdlib.lub `DoPostActivity` (once per turn, gated by `done_once_per_turn_functions`) sends `GameLogic.Turn.Ended`, `Worm.ApplyPoison`, `GameLogic.AboutToApplyDamage`, `GameLogic.ApplyDamage`, then `CheckActivity` again. The worm handler 0x5b07c0 maps `Worm.ApplyPoison` to 0x5ac060 and `GameLogic.ApplyDamage` to 0x5abc50. So the roll comes before the damage is applied and before any death is decided.
+- **ApplyPoison 0x5ac060** [disasm]: with poison (`[data+0x10c]` > 0) it calls 0x5ab7e0(type 6) with damage = poison if hp > poison, else hp - 1 (unless state 7), so poison never kills. Without poison and with flag 0x400 (abductee): if worm `+0xdd` is set it takes `r = rand() >> 16) % 100` (0x68c015) and calls 0x5ab7e0(hp - r, 6), spawns `WXP_AbdDamageInd`; then it sets `+0xdd = 1`. 0x5ab7e0 clears `+0xdd` (and sets `+0xdc`) on every damage call, so "unhurt since the last roll" is `+0xdd`; the first roll after SpitOut only arms it (`+0xdd` was cleared by the half-hp damage).
+- **0 is not floored** [disasm]: type 6 skips the clamp (0x5abb6f) and adds the delta to the damage array at `[data+0x118]`; `r > hp` is a negative delta (a heal to r). 0x5abc50 sums the array (+ `[data+0xcc]`): hp (`+0x11e`, u16) <= total kills (0x5abfb4 -> 0x5a70e0 + `GameLogic.AddMeToDeathQueue`), otherwise hp -= total. So r = 0 leaves 0 hp and the worm dies; there is no minimum of 1.
+- **Candidate list 0x5488e0** [disasm]: for the 16 worm slots: skip if `+0x124` (Active) is 0; xz distance squared (the y delta is zeroed) vs `Abduction.AreaOfEffect`; skip if worm flags `+0xec` & 0x8 (in a bubble: 0x5ae544 -> 0x5a61e0 'Bubble not found') [disasm] or & 0x20 (nailed [disasm]: DirtBallLogicEntity 0x5ce320 does `flags |= 0x30` on the victim, 0x5ce2d0 ends the nail when 0x20 is gone, 0x5ae60e clears it on a blast; 0x8 is set at 0x54f4d3 and cleared at 0x54f3f2 / 0x54f602 in BubbleTroubleLogicEntity); then 0x466a20(saucer pos, 1, worm - saucer, 0). The result in eax is ignored: the code tests the global byte 0x952c31 (set to 1 by 0x466880 when the sweep records a contact, cleared at the start by 0x4661a0). A hit adds the worm via 0x548240 with the 3D distance squared as the sort key (nearest first).
+- **What that ray tests** [disasm; flag meaning assumed]: 0x466a20 -> 0x4661a0 -> 0x466880 -> 0x517e20 sweeps the segment against the **collider spheres** (callbacks 0x516350 / 0x5164b0 / 0x517630), not the voxel land: arguments mask = 1, exclude owner id = 0. The worm entity registers its collider with flags 1 (0x5a9bb3: `push 1; call 0x519d30`), so the ray hits worm spheres. The segment ends at the target's own feet, so the target's sphere (centre one radius above the feet, the segment enters it just before its end) is hit: the filter is true for every live worm that passes the xz test. The worm collider (0x5a9ac0, 0x5a9bb3..0x5a9c0a) is flags 1, mask 0x811, owner = logical entity id `+0x14` (0x519d50), radius 10 units centred 5 units above the feet, so the segment end is inside it and the exclude id 0 matches nothing unless an entity id is 0 (assumed not) [disasm]. The camera notes that call 0x466a20 "land only" (mask 0) are a different call: this one is mask 1.
+- **Weapon Factory templates** [data + disasm]: 0x599990 loads `kWeaponFactoryHoming` when the factory definition's homing byte (`+0x68`) is set, else `kWeaponFactoryWeapon`, and 0x5983f0 then fills the payload from the player's definition (thrown: weapon type 4, AimThrown / DrawThrown / FireThrown, weapons/Throw; launched: type 2, AimBazooka / HoldWFGun / DrawWFGun / FireWFGun / TauntWFGun, weapons/SecretWeapLaunch; airstrike: type 0xa, HoldAirstrike / DrawAirstrike / FireAirstrike, weapons/BombWhistle, camera FatkinsTrackCamera at 0x5993e0). The fields it never writes come from the template (WEAPTWK): `kWeaponFactoryWeapon` PostLaunchDelay 500, LaunchDelay 0, RetreatTimeOverride -1, Radius 5, CameraId PayloadTrackCamera, LaunchSfx weapons/RocketRelease, DetonationSfx global/ExplosionRegular, EquipSfx weapons/BazookaEquip, DisplayName Text.kWeaponBazooka, CanBeFiredWhenWormMoving 0; `kWeaponFactoryHoming` the same but PostLaunchDelay 0, CameraId HomingMissileFlyCamera, DisplayName Text.kWeaponHomingMissile, LaunchSfx weapons/RocketRelease; `kWeaponFactoryCluster` (sub-payload) PostLaunchDelay 0, Radius 4, EquipSfx weapons/DefaultEquip.
+- **Factory byte +0x69 = HomingAvoidLand** [data: schema WeaponFactoryContainer: 03 Homing +0x68, 04 HomingAvoidLand +0x69, 05 EffectedByWind +0x6a, 06 FireOnGround +0x6b, 07 Poison +0x6c, 16 ProjectilePowersUp +0x6d]. 0x598d32: set -> homing props AvoidsLand (+0x20c) 1, Vertical / ForwardLandAvoidanceDistance (+0x1fc / +0x200) 100, Vertical / ForwardLandAvoidanceForce (+0x204 / +0x208) 0.009, Stage2Duration (+0x1ec) 30000, Stage3Duration (+0x1f0) 1000, MaxHomingSpeed (+0x1f4) 0.25, LifeTime (+0x150) 30000, DetonatesOnExpiry (+0x1d8) 1, camera HomingMissileChaseCamera (CAMTWK Chase: Dist 170, DefaultHeight 0.255, HeightSpeed 1.4, MinHeight 0.1, MaxHeight 1); clear -> AvoidsLand 0 and HomingMissileFlyCamera [disasm]. The avoidance step is HomingPayloadLogicEntity 0x5611b0, called by the stage-2 update 0x561730 right after the homing step 0x560eb0 when `AvoidsLand` and not arrived (+0x178) [disasm]:
+  - distance to the target < 5 units: +0x178 = 1 and nothing more, ever; distance < ForwardLandAvoidanceDistance: nothing;
+  - the probe is vtable +0x58 = 0x57dca0 (HomingPayloadLogicEntity vtable 0x859e7c, slot 22) [disasm]: `0x466ae0(start, step vector, ..., 20 steps)`, a hit when the hit step is <= 20, outputs the hit point (0x952d4c) and normal (0x952d64); the step vector is the whole distance / 20, so the probe is a land segment of that distance, mask 0 (land only);
+  - up probe (0, +VerticalDistance, 0), down probe (0, -VerticalDistance, 0), `low` = down hit or y < water level + 5 units, forward probe = velocity direction x ForwardDistance;
+  - only if the forward probe hits: force f = (0, y, 0) with y = +VerticalForce when nothing is above, -VerticalForce when the up probe hits and `low` is false, 0 when both hit; then f -= normalise(hit - pos) x ForwardForce; vel += f x 20 (ms per tick);
+  - always, after that: vel = normalise(vel) x min(|vel|, MaxHomingSpeed).
+  Ours [ours]: `Game::avoidLand`, ray casts on our voxel land instead of the 20-step sampling (the hit point is the surface, not the first sample inside it), forces 0.009 units/ms^2 x 20 ms = 9 m/s per tick, 100 units = 5 m, `Projectile::stage` = arrived.
+- **Factory LaunchSfx** [data + disasm]: weapons/Throw is a 3D linear 10..500 unit oneshot, weapons/SecretWeapLaunch a 2D oneshot, both 0 dB in the `weapons` bank (WormsX.fev, `fev.py -g 'Throw|SecretWeap'`); set into the payload's LaunchSfx (+0xb0) by 0x5983f0 for thrown (0x598fc0) and launched (0x599167).
 
 ## 15. Bundles (`Bundl*.xom`)
 
@@ -2209,6 +2368,11 @@ Values shared by all 5 levels:
   - Repeat shots get more accurate (MemoryImproveAccuracy*).
   - Plans that match a failed plan are scored down.
   - The skip-turn score is ×1/(1+5·Σ previous skips) (0x4a57c0).
+  - Detail [disasm]: think start 0x49af70 runs CheckPlanResult 0x4a6ab0 (the last attack, c_pMostRecentPlanMemory 0x956114 {effect, weapon, worm 0x90ea60, target, its pos +0x38, its hp +0x11e}, is a failure if the target kept hp and pos), RegressFailedMemory 0x4a5b10 (×0.99, 0 once the target changed), RegressImproveAccuracyMemory 0x4a6080 (×0.95), RegressSkippedTurnMemory 0x4a61b0 (×0.9); records under 0.1 are deleted. A plan of the same worm at a failed target: score ×(1 − 0.5·f), f = effect, ×0.2 with another weapon (0x4a6590). Accuracy match (0x4a5640): effect·(1 − d_shooter/R)·(1 − d_target/R), both < MatchRadius R, all records. Skip records (0x4a68c0) are stored, and the 1/(1+5Σ) scale applied (0x4989d0), only in worm-select mode (0x9560c1, set at 0x4a4f6b).
+  - Strafe [disasm]: ShotErrorDirect is read only by CAIPlanAttackDirectActionable slot 11 (0x4a0d70); Shotgun and Sniper override it with ShotErrorDirectNonStrafe (0x4a0d90). StrafeTowards needs plan flag 0x200 (0x49ebed), set by no plan constructor: both strafe fields are dead.
+  - Flood [disasm 0x4a3640]: each target below Water.Level + Flood.Delta scores 0x49ed30(target, 0, 1000). Starburst [0x4a43a0]: adds 0x49ed30(active worm, its hp) to the animal score. Close-range explosive (Dynamite, Landmine, CheapDynamite*) [0x4a2c70]: the weapon's blast at the worm, ×Pref, ×PrefWeaponMelee, ×0.05 for a best-miss. Animal [0x4a4210]: the blast at the target + a land term, ×Pref, ×PrefWeaponAnimal, ×plan+0x58.
+  - Node grid [disasm 0x4b2800]: total area = Σ (max.x − min.x)(max.z − min.z) of the NodeGrid boxes; spacing = sqrt(area / 16000).
+  - Node grids are merged where they overlap (0x4ae320, "After second merge pass have N node grids"). Repath [disasm 0x490551]: a failed path action adds a path-failed blockage at its node and pathfinds again; past 2 repaths (+0x28 > 2) 0x9560f8 is set ("forbidding further movement"). Move → retreat pairs (0x4a8c60) come from the same 21 × 21 × 2 window. Active objects (ObjectCount.Active): the 32 callers of ActiveObjectRegistrationService 0x4d3af0, listed in docs/sim.md "Settle".
 
 ### Movement [data + disasm]
 

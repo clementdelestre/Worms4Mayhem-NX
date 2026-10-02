@@ -24,6 +24,9 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  HeldSheep, HeldSentry, HeldScouser, HeldOldWoman,  // W4M HoldLoopSfx: SheepHeld (oneshot), SentryGunHeld (loop), ScouserHeld, OldWomanHeld
                  LockOn,  // W4M weapons/LockOn: the homing target is taken (0x560420)
                  UfoAppearing, UfoActive, UfoBeamLoop, UfoEngine, UfoTakeOff,  // W4M AlienAbductionGraphicEntity's weapons/AlienUfo* (BeamStart is Abduction)
+                 BatImpact,  // weapons/BaseballBatImpact: WXP_AbdTelep_Central's EmitterSoundFX (an abductee's Zap)
+                 BubbleInflate, BubbleWobble, BubbleLoop,  // W4M BubbleTroubleGraphicEntity: the bubble appears (0x54e920) / is hit (0x54e480); its machine runs
+                 Throw, SecretLaunch,  // W4M weapons/Throw, weapons/SecretWeapLaunch: LaunchSfx of a Factory thrown / launched weapon (0x598fc0, 0x599167)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,

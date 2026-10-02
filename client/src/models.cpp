@@ -28,7 +28,10 @@ struct Entry {
     std::vector<Matrix> invBind;
     std::vector<int> arm;  // per bone: its shoulder bone, -1 off the arms (the glb skeleton is flat: matched by name)
     std::vector<uint8_t> face;  // per bone: 1 lips, eyelid or eyebrow (W4M emote bones), 2 turns with the head
-    int head = -1, hat = -1;
+    int head = -1, hat = -1, sh[2] = {-1, -1}, mainB = -1, blend = -1;  // sh: right, left shoulder
+    const ModelAnimation *base = nullptr;
+    std::vector<int> pupil;  // meshes of the pupils (the eyes' layer W4M's Eyes_LR/UD offset), left eye first
+    std::vector<std::vector<float>> uv0; float eyeUV[3] = {};  // their rest texcoords; the offsets now in their VBOs
     std::vector<uint64_t> owns;  // per clip: the face bones it moves itself, which an emote layer leaves to it
     Models::Layers lay{}; bool layered = false;  // the Layers of the last skin()
     std::vector<int> glow;  // materials drawn as additive light (W4M shader surfaces)
@@ -231,10 +234,21 @@ void add(Job &j) {
         e.face.push_back(face ? 3 : !strcmp(n, "head_bone") || !strcmp(n, "HatLocator") ? 2 : 0);  // XBone names: <group>_bone
         if (!strcmp(n, "head_bone")) e.head = b;
         if (!strcmp(n, "HatLocator")) e.hat = b;
+        if (!strncmp(n, "shoulder_", 9)) e.sh[left] = b;
+        if (!strcmp(n, "main_bone")) e.mainB = b;
+        if (!strcmp(n, "Blend")) e.blend = b;
     }
     owners(e);
+    for (int i = 0; i < e.count; i++) if (!strcmp(e.anims[i].name, "Base")) e.base = &e.anims[i];
     std::string name = GetFileNameWithoutExt(j.path.c_str());
     if (name == "ufo") e.glow = {2};  // BeamConeShape's noise image (raylib material 0 is the default)
+    for (int i = 0; name == "worm" && i < e.m.meshCount; i++) {  // glb material 1: boggy*eye, whose shadercolor2 the Eyes clips key
+        const Mesh &me = e.m.meshes[i];
+        if (e.m.meshMaterial[i] != 2 || !me.texcoords) continue;
+        bool left = me.vertices[0] > 0;  // the worm's left is +x
+        e.uv0.emplace(left ? e.uv0.begin() : e.uv0.end(), me.texcoords, me.texcoords + 2 * me.vertexCount);
+        e.pupil.insert(left ? e.pupil.begin() : e.pupil.end(), i);
+    }
     if (strstr(j.path.c_str(), "/hats/")) hatNames.push_back(name);
     models[name] = e;
 }
@@ -285,6 +299,8 @@ Model Models::take(const char *path) {
     return m;
 }
 
+static Shader scroll{};  // drawModel's beam pass
+
 void Models::unload() {
     for (auto &[name, e] : models) {
         UnloadModelAnimations(e.anims, e.count);
@@ -292,6 +308,7 @@ void Models::unload() {
     }
     models.clear();
     hatNames.clear();
+    if (scroll.id) UnloadShader(scroll), scroll = {};
     if (shader.id) UnloadShader(shader);
 }
 
@@ -326,10 +343,39 @@ static const ModelAnimation *clipFrame(const Entry &e, const char *clip, float t
 }
 
 // Model-space matrix of bone b; aim (frame af): an arm bone keeps its offset from its shoulder, which takes aim's pose
-static Matrix bone(const Entry &e, const ModelAnimation &a, int f, int b, const ModelAnimation *aim, int af) {
+static Matrix bone(const Entry &e, const Transform *p, int b, const ModelAnimation *aim, int af) {
     int s = aim && b < (int)e.arm.size() ? e.arm[b] : -1;
-    if (s < 0 || s >= (int)aim->boneCount) return trs(a.keyframePoses[f][b]);
-    return MatrixMultiply(MatrixMultiply(trs(a.keyframePoses[f][b]), MatrixInvert(trs(a.keyframePoses[f][s]))), trs(aim->keyframePoses[af][s]));
+    if (s < 0 || s >= (int)aim->boneCount) return trs(p[b]);
+    return MatrixMultiply(MatrixMultiply(trs(p[b]), MatrixInvert(trs(p[s]))), trs(aim->keyframePoses[af][s]));
+}
+
+// The body clip at frame f under the acting gesture layers: XAnim sums w x value per channel (0x7ac1a0) and Base carries
+// weight 1, so a gesture at weight w is (1 - w) body + w gesture, scale averaged likewise (attribute flag 8, 0x7acc6f)
+static const Transform *layered(const Entry &e, const ModelAnimation &a, int f, const Models::Layers *ly) {
+    const ModelAnimation *c[2] = {};
+    int cf[2] = {}, n = (int)a.boneCount;
+    float w[2] = {};
+    for (int k = 0; ly && k < 2; k++)
+        if (ly->act[k] && ly->actW[k] > 0 && (c[k] = clipFrame(e, ly->act[k], ly->actT[k], false, &cf[k], false)) && (int)c[k]->boneCount >= n) w[k] = ly->actW[k];
+    if (!w[0] && !w[1]) return a.keyframePoses[f];
+    static std::vector<Transform> out;
+    out.resize(n);
+    float wb = fmaxf(0, 1 - w[0] - w[1]);
+    for (int b = 0; b < n; b++) {
+        Transform t = a.keyframePoses[f][b];
+        Vector3 p = Vector3Scale(t.translation, wb), sc = Vector3Scale(t.scale, wb);
+        Quaternion q = QuaternionScale(t.rotation, wb);
+        for (int k = 0; k < 2; k++) {
+            if (!w[k]) continue;
+            const Transform &u = c[k]->keyframePoses[cf[k]][b];
+            Quaternion r = u.rotation;
+            if (r.x * t.rotation.x + r.y * t.rotation.y + r.z * t.rotation.z + r.w * t.rotation.w < 0) r = QuaternionScale(r, -1);
+            p = Vector3Add(p, Vector3Scale(u.translation, w[k])), sc = Vector3Add(sc, Vector3Scale(u.scale, w[k]));
+            q = QuaternionAdd(q, QuaternionScale(r, w[k]));
+        }
+        out[b] = {p, QuaternionNormalize(q), sc};
+    }
+    return out.data();
 }
 
 // About pivot p: rotate by yaw about y, after pitch about x (frame axes x, y)
@@ -338,11 +384,28 @@ static Matrix turn(Vector3 p, Vector3 x, Vector3 y, float yaw, float pitch) {
     return MatrixMultiply(MatrixMultiply(MatrixTranslate(-p.x, -p.y, -p.z), r), MatrixTranslate(p.x, p.y, p.z));
 }
 
+// Clip a's Blend node at frame f minus Base's: Translate.x, .y (units) and Rotate.y (degrees, unsigned)
+static bool blendOf(const Entry &e, const Transform *p, int n, float out[3]) {
+    if (e.blend < 0 || e.mainB < 0 || !e.base || e.blend >= n || e.blend >= (int)e.base->boneCount) return false;
+    auto rel = [&](const Transform *c) { return MatrixMultiply(trs(c[e.blend]), MatrixInvert(trs(c[e.mainB]))); };
+    Matrix r = rel(p), r0 = rel(e.base->keyframePoses[0]), d = MatrixMultiply(r, MatrixInvert(r0));
+    out[0] = r.m12 - r0.m12, out[1] = r.m13 - r0.m13;
+    out[2] = atan2f(sqrtf(fabsf(d.m8 * d.m2)), d.m10) * RAD2DEG;  // the bind's scale skews d: |sin| from both off-diagonals
+    return true;
+}
+
+// 0x59b870: an arm follows the GestureAt target with weight c, the head with d; its Blend mode x is 0 (target), 1 (neither), -1 or 2 (head)
+static void armWeights(float x, float *c, float *d) {
+    *c = x >= 1 || x < -1 ? 0 : 1 - fabsf(x);
+    *d = x >= 1 ? x - 1 : x >= 0 ? 0 : x >= -1 ? -x : x + 2;
+}
+
 // Every bone's model-space matrix, with the W4M pose layers over the clip
 static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af, const Models::Layers *ly, std::vector<Matrix> &out) {
     int n = std::min(e.m.skeleton.boneCount, a.boneCount);
     out.resize(n);
-    for (int b = 0; b < n; b++) out[b] = bone(e, a, f, b, aim, af);
+    const Transform *src = layered(e, a, f, ly);
+    for (int b = 0; b < n; b++) out[b] = bone(e, src, b, aim, af);
     if (!ly || e.head < 0 || e.head >= n || e.hat < 0 || e.hat >= n) return;
     int ff;
     const ModelAnimation *em = ly->face ? clipFrame(e, ly->face, ly->faceT, true, &ff, false) : nullptr;
@@ -355,10 +418,52 @@ static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnim
     // the head's frame is HatLocator's, whose origin sits (0, 14, -1) units off the head joint (w4m-models --list)
     Matrix w = out[e.hat];
     Vector3 x = Vector3Normalize({w.m0, w.m1, w.m2}), y = Vector3Normalize({w.m4, w.m5, w.m6});
-    if (ly->lookYaw || ly->lookPitch) {
-        Matrix r = turn(Vector3Transform({0, -14, 1}, w), x, y, ly->lookYaw, ly->lookPitch);
+    float hy = Clamp(ly->lookYaw, -1.047f, 1.047f), hp = Clamp(ly->lookPitch, -1.22f, 0.785f);  // HeadRotY/X keys' ends
+    if (hy || hp) {
+        Matrix r = turn(Vector3Transform({0, -14, 1}, w), x, y, hy, hp);
         for (int b = 0; b < n; b++) if (e.face[b] & 2) out[b] = MatrixMultiply(out[b], r);
     }
+    // Left/RightArmRotY/X turn the shoulder about main's y then x axes, +-90 degrees at the clips' ends (fitted on the clips)
+    float m[3];
+    if (e.mainB < 0 || e.mainB >= n || !blendOf(e, src, n, m)) return;
+    Matrix mb = out[e.mainB];
+    Vector3 mx = Vector3Normalize({mb.m0, mb.m1, mb.m2}), my = Vector3Normalize({mb.m4, mb.m5, mb.m6});
+    for (int s = 0; s < 2; s++) {
+        float c, d;
+        armWeights(m[s ? 0 : 1], &c, &d);  // Translate.x is the left arm's
+        float ry = Clamp(c * ly->gestYaw + d * ly->lookYaw, -PI / 2, PI / 2), rx = Clamp(c * ly->gestPitch + d * ly->lookPitch, -PI / 2, PI / 2);
+        if (e.sh[s] < 0 || e.sh[s] >= n || (!ry && !rx)) continue;
+        Matrix r = turn(Vector3Transform({0, 0.9679f, 0.1689f}, out[e.sh[s]]), mx, my, ry, rx);  // the shoulder joint in the bind space
+        for (int b = 0; b < n; b++) if (b < (int)e.arm.size() && e.arm[b] == e.sh[s]) out[b] = MatrixMultiply(out[b], r);
+    }
+}
+
+// The exe's key curve for unweighted channels (every Eyes / PoseBlend one): Hermite on the tangents' slopes (0x7abb1c, 0x7aa7df),
+// a zero out-tangent holds the key, constant outside the keys
+float Models::curve(const float (*k)[6], int n, float t) {
+    int i = 0;
+    while (i < n - 1 && t >= k[i + 1][4]) i++;
+    const float *a = k[i], *b = k[std::min(i + 1, n - 1)];
+    if (t < k[0][4] || i == n - 1 || a[4] == b[4] || (!a[2] && !a[3])) return t < k[0][4] ? k[0][5] : a[5];
+    auto slope = [](float x, float y) { return x ? y / x : 5.72958e6f; };
+    float dx = b[4] - a[4], dy = b[5] - a[5], m0 = slope(a[2], a[3]), m1 = slope(b[0], b[1]), u = t - a[4];
+    float c3 = (m0 * dx + m1 * dx - 2 * dy) / (dx * dx * dx), c2 = (3 * dy - 2 * m0 * dx - m1 * dx) / (dx * dx);
+    return ((c3 * u + c2) * u + m0) * u + a[5];
+}
+
+// Eyes_LR / Eyes_UD shadercolor2 keys (in x, y, out x, y, time, value) at clip time 0..2 (1 = ahead): the pupils' offsets
+static void eyeOffsets(const Models::Layers *ly, float uv[3]) {  // left u, right u, v
+    static const float LR_L[3][6] = {{0, 0, 0.9995117f, -0.019989014f, 0, 0.019989014f}, {0.9995117f, -0.019989014f, 0.89404297f, -0.44702148f, 1, 0},
+                                     {0.89404297f, -0.44702148f, 0, 0, 2, -0.5f}};
+    static const float LR_R[3][6] = {{0, 0, 0.89404297f, 0.44702148f, 0, -0.5f}, {0.89404297f, 0.44702148f, 0.9995117f, 0.019989014f, 1, 0},
+                                     {0.9995117f, 0.019989014f, 0, 0, 2, 0.019989014f}};
+    static const float UD_U[5][6] = {{0.9838867f, 0.17712402f, 0.9838867f, 0.17712402f, 0, -0.08996582f}, {1, 0, 1, 0, 0.5f, 0}, {1, 0, 1, 0, 1, 0},
+                                     {1, 0, 1, 0, 1.7080078f, 0}, {0.98535156f, -0.16894531f, 0.98535156f, -0.16894531f, 2, -0.049987793f}};
+    static const float UD_V[3][6] = {{0.92822266f, 0.3713379f, 0.92822266f, 0.3713379f, 0, -0.39990234f},
+                                     {0.93310547f, 0.35913086f, 0.93310547f, 0.35913086f, 1, 0}, {0.9375f, 0.34692383f, 0.9375f, 0.34692383f, 2, 0.36987305f}};
+    float lr = ly ? 1 + ly->eyeYaw / (PI / 2) : 1, ud = ly ? 1 - ly->eyePitch / (PI / 2) : 1;  // 0x59b752; the keys hold past 0 and 2
+    float u = Models::curve(UD_U, 5, ud);  // both clips key the u channel: XAnim adds them (attribute flags 0x04)
+    uv[0] = Models::curve(LR_L, 3, lr) + u, uv[1] = Models::curve(LR_R, 3, lr) + u, uv[2] = Models::curve(UD_V, 3, ud);
 }
 
 bool Models::joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim, float aimT, const Layers *ly) {
@@ -370,7 +475,7 @@ bool Models::joint(const char *name, const char *joint, const char *clip, float 
     int n = (int)e.m.skeleton.boneCount;
     while (b < n && strcmp(e.m.skeleton.bones[b].name, joint)) b++;
     if (!a || b == n || b >= (int)a->boneCount) return false;
-    if (!ly) return *out = bone(e, *a, f, b, am, af), true;
+    if (!ly) return *out = bone(e, a->keyframePoses[f], b, am, af), true;
     static std::vector<Matrix> p;
     pose(e, *a, f, am, af, ly, p);
     *out = p[b];
@@ -409,6 +514,21 @@ static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation 
 }
 
 static Shader over{};
+// W4M BeamConeShape_WarpgateShader_1 (key 0x1000401): its v offset runs 0 to -1 every 1.166 s in every Abduct* clip (axis not verified)
+static const char *SCROLL_VS = R"(
+attribute vec3 vertexPosition;
+attribute vec2 vertexTexCoord;
+uniform mat4 mvp;
+uniform vec2 shift;
+varying vec2 uv;
+void main() { uv = vertexTexCoord + shift; gl_Position = mvp * vec4(vertexPosition, 1.0); }
+)";
+static const char *SCROLL_FS = R"(
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+varying vec2 uv;
+void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse; }
+)";
 void Models::shade(Shader s) { over = s; }
 
 static void drawModel(Entry &e, Vector3 pos, Color tint) {
@@ -437,7 +557,10 @@ static void drawModel(Entry &e, Vector3 pos, Color tint) {
             int mi = m.meshMaterial[i];
             if (std::find(e.glow.begin(), e.glow.end(), mi) == e.glow.end()) continue;
             Material mat = m.materials[mi];
-            mat.shader = {rlGetShaderIdDefault(), rlGetShaderLocsDefault()};
+            if (!scroll.id) scroll = Lit::shader(SCROLL_VS, SCROLL_FS, false);
+            Vector2 shift = {0, -fmodf((float)GetTime(), 1.166f) / 1.166f};
+            SetShaderValue(scroll, GetShaderLocation(scroll, "shift"), &shift, SHADER_UNIFORM_VEC2);
+            mat.shader = scroll;
             mat.maps[MATERIAL_MAP_DIFFUSE].color = {(unsigned char)(70 * tint.r / 255), (unsigned char)(200 * tint.g / 255), (unsigned char)(255 * tint.b / 255), (unsigned char)(50 * tint.a / 255)};
             DrawMesh(m.meshes[i], mat, xf);
         }
@@ -474,7 +597,31 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
 }
 
 static bool same(const Models::Layers &a, const Models::Layers &b) {
-    return a.face == b.face && (int)(a.faceT * 60) == (int)(b.faceT * 60) && a.lookYaw == b.lookYaw && a.lookPitch == b.lookPitch;
+    return a.face == b.face && (int)(a.faceT * 60) == (int)(b.faceT * 60) && a.lookYaw == b.lookYaw && a.lookPitch == b.lookPitch &&
+           a.gestYaw == b.gestYaw && a.gestPitch == b.gestPitch && a.act[0] == b.act[0] && a.act[1] == b.act[1] && a.actW[0] == b.actW[0] &&
+           a.actW[1] == b.actW[1] && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) && (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60);
+}
+
+bool Models::blend(const char *name, const char *clip, float t, bool loop, const Layers *ly, Vector3 *out) {
+    auto it = models.find(name);
+    int f;
+    const ModelAnimation *a = it == models.end() ? nullptr : clipFrame(it->second, clip, t, loop, &f);
+    float m[3];
+    if (!a || !blendOf(it->second, layered(it->second, *a, f, ly), (int)a->boneCount, m)) return false;
+    return *out = {m[0], m[1], m[2]}, true;
+}
+
+// The pupils' texcoords offset (W4M shadercolor2 as a texture translation), uploaded when they change
+static void eyes(Entry &e, const Models::Layers *ly) {
+    float uv[3];
+    eyeOffsets(ly, uv);
+    if (e.pupil.size() != 2 || !memcmp(uv, e.eyeUV, sizeof uv)) return;
+    memcpy(e.eyeUV, uv, sizeof uv);
+    for (int k = 0; k < 2; k++) {
+        Mesh &me = e.m.meshes[e.pupil[k]];
+        for (int v = 0; v < me.vertexCount; v++) me.texcoords[2 * v] = e.uv0[k][2 * v] + uv[k], me.texcoords[2 * v + 1] = e.uv0[k][2 * v + 1] + uv[2];
+        rlUpdateVertexBuffer(me.vboId[SHADER_LOC_VERTEX_TEXCOORD01], me.texcoords, me.vertexCount * 2 * sizeof(float), 0);
+    }
 }
 
 bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers *ly) {
@@ -490,6 +637,7 @@ bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color t
         e.posed = a, e.frame = f, e.aimed = am, e.aimFrame = af, e.layered = lay;
         if (lay) e.lay = *ly;
     }
+    eyes(e, ly);
     e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
     drawModel(e, pos, tint);
     return true;

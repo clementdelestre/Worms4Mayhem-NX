@@ -8,12 +8,19 @@ void prepare();               // worker thread: reads, decodes and samples every
 bool upload(double until);    // main thread, until GetTime() reaches until: GPU uploads; true while models are pending
 Model take(const char *path);  // a frontend/ model prepare() decoded (else loaded now); the caller unloads it
 void unload();
-// W4M WormPoseManager layers over the body clip: the emote on the face bones the clip leaves still (WormEmote) and the
-// head turned (HeadRotY/HeadRotX: WormLookAt). Angles in radians.
+// W4M WormPoseManager layers over the body clip: the emote on the face bones the clip leaves still (WormEmote), the head
+// (HeadRotY/X: WormLookAt), the shoulders (Left/RightArmRotY/X: WormGestureAt or the head, by the clip's Blend node) and the
+// pupils (Eyes_LR/UD). Angles in radians, + = to the worm's left / up; draw() applies the clips' own limits.
 struct Layers {
     const char *face = nullptr; float faceT = 0;  // looped emote clip
-    float lookYaw = 0, lookPitch = 0;               // + = to the worm's left / up
+    float lookYaw = 0, lookPitch = 0;               // head
+    float gestYaw = 0, gestPitch = 0;               // GestureAt target
+    float eyeYaw = 0, eyePitch = 0;                 // pupils, relative to the head
+    const char *act[2] = {}; float actT[2] = {}, actW[2] = {};  // acting gestures (new, old) over the body clip at weight actW
 };
+// W4M "Blend" node of the clip at t (under ly's gestures), relative to Base: x / y = left / right arm mode, z = head mode (degrees)
+bool blend(const char *name, const char *clip, float t, bool loop, const Layers *ly, Vector3 *out);
+float curve(const float (*keys)[6], int n, float t);  // W4M unweighted key curve; keys: in-tangent x, y, out-tangent x, y, time, value
 // Model faces +z: yaw turns it about +y, pitch raises the nose. clip: animation name, t in seconds.
 // aim: the arms (shoulder subtrees) re-aimed by that clip at aimT, as W4M layers its shoulder-only Aim* clips over Fire* ones.
 bool draw(const char *name, Vector3 pos, float yaw, float pitch = 0, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true,

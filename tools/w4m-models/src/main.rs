@@ -59,11 +59,13 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_chute", "Worm.Chute", 0.0, false, &["ParachuteWobble", "FireParachute", "ParachuteLR"]),  // WAE_Parachute 0x58f180
     ("crate_chute", "Crate.Chute", 0.0, false, &["Open", "Fall", "Close"]),
     ("hold_hammer", "TailNail", 0.0, false, &[]),
-    ("bubble", "BubbleTrouble.Bubble", 4.2, false, &[]),  // Bubble.Radius 42 units: 4.2 m across; static (its 3 bones only bob it)
+    ("girder", "Girder", 0.0, false, &[]),  // GirderKitGraphicEntity 0x5588c0: the preview mesh (Girder.xom), raw units
+    ("bubble", "BubbleTrouble.Bubble", 4.2, false, &["WXM_Bobbing", "WXM_Create", "WXM_HitBounce"]),  // Bubble.Radius 42 units: 4.2 m across; Bobbing first: Create starts at scale 0
+    ("bubble_machine", "BubbleTrouble", 0.0, false, &[]),  // raw units: BubbleTroubleGraphicEntity leaves it at the bubble's base (0x54e5f0)
     ("wings", "RedBullWings", 1.35, false, &["FlyRedBull"]),  // 27 units span
     ("superbomber", "SuperAirstrike", 4.1, false, &["OpenDoorsSource", "bombrun_end6", "bombrun_start"]),  // Bovine Blitz (SuperBomberGraphicEntity); the rest pose is nose-down, the clip starts level
     ("bomber", "BomberHelicopter", 4.1, false, &["bombrun_end", "bombrun_end2", "bombrun_end3", "bombrun_end4", "bombrun_end5", "bombrun_start", "bombrun_start2", "bombrun_start3"]),  // Airstrike (BomberGraphicEntity, table 0x91f39c)
-    ("ufo", "AlienAbduction", 0.0, false, &["AbductStart", "AbductViolate", "AbductOpenDoors", "AbductLoop", "AbductLoop2", "AbductCloseBeam", "AbductEnd", "AbductFail"]),  // AlienAbductionGraphicEntity: raw units, origin on the beam axis; saucer, pods, BeamCone, CreatePoint
+    ("ufo", "AlienAbduction", 0.0, false, &["AbductStart", "AbductViolate+AbductLoop2", "AbductOpenDoors+AbductLoop2", "AbductLoop", "AbductLoop2", "AbductCloseBeam", "AbductEnd+AbductLoop2", "AbductFail"]),  // AlienAbductionGraphicEntity: raw units, origin on the beam axis; saucer, pods, BeamCone, CreatePoint; +AbductLoop2: BeamCone stays closed after AbductCloseBeam
     ("warpgate", "AbductionWarpGate", 0.0, false, &["WXM_DefSource"]),  // the portal the UFO arrives and leaves through
     ("cow", "Cow.Payload", 0.0, false, &["Hang", "Skydive"]),  // ParachutePayloadGraphicEntity: Crate.Chute at its "Parachute" node
     ("grave0", "Grave.Cross", 0.9, true, &[]),
@@ -163,7 +165,12 @@ const WORM_CLIPS: &[&str] = &[
     "FireBazooka+HoldBazooka", "FireThrown+HoldThrown", "FireBow+HoldBow", "FireDynamite+HoldDynamite", "FireShotgun+HoldShotgun",
     "FireSniper+HoldSniper", "FireHomingMissile+HoldHomingMissile", "FireSheep+HoldSheep", "FireOldWoman+HoldOldWoman",
     "FireScouser+HoldScouser", "FireLandmine+HoldLandmine", "FireSentrygun+HoldSentrygun", "Fire2Bat+HoldBat", "FireProd+HoldProd",
-    "Fire2Firepunch+HoldFirepunch", "HoldNMN", "FireNMN", "TauntSurrender+HoldSurrender", "SwingNinjarope", "JetpackFly", "ParachuteWobble", "TelepadAppear",
+    "Fire2Firepunch+HoldFirepunch", "HoldNMN", "FireNMN", "TauntSurrender+HoldSurrender",
+    // WEAPTWK WXAnimTaunt (WAE_* state 2, played over the Hold pose)
+    "TauntBazooka+HoldBazooka", "TauntThrown+HoldThrown", "TauntShotgun+HoldShotgun", "TauntSniper+HoldSniper", "TauntAirstrike+HoldAirstrike",
+    "TauntBow+HoldBow", "TauntSentrygun+HoldSentrygun", "TauntOldWoman+HoldOldWoman", "TauntScouser+HoldScouser", "TauntSheep+HoldSheep",
+    "TauntStarburst+HoldStarburst", "TauntDynamite+HoldDynamite", "TauntBat+HoldBat", "TauntFirepunch+HoldFirepunch", "TauntProd+HoldProd",
+    "TauntNMN+HoldNMN", "TauntHomingMissile+HoldHomingMissile", "TauntNinjarope+HoldNinjarope", "SwingNinjarope", "JetpackFly", "ParachuteWobble", "TelepadAppear", "BeamUpLoop",
     "FallDrown", "Nailed", "NailedHitFront",
     // WORMACTING.XOM scene emotes (looped) and gestures, docs/worm-reactions.md
     // emotes: face (eyebrows, eyelids, head and shoulder offsets) + its *Mouth clip (lips)
@@ -289,7 +296,7 @@ impl Xom {
 }
 
 // Animation curve key: in-weight, in-angle, out-weight, out-angle, time, value (XomView TAnimClip).
-type Key = [f32; 6];
+type Key = [f32; 7];  // in-tangent x, y, out-tangent x, y, time, value; [6]: the channel's runtime flags (2 weighted, 4 static)
 struct Clip { name: String, dur: f32, ch: HashMap<(String, u32), Vec<Key>> }
 
 // XAnimClipLibrary: key types (u32 type, object) then clips (duration, name, channels of keys).
@@ -318,12 +325,14 @@ fn clips(b: &[u8], s: &[String], p: &mut usize) -> Vec<Clip> {
         let mut ch = HashMap::new();
         for k in 0..n {
             if u16le(b, *p) == 256 { *p += 16; continue; }
-            *p += 4; // flags: must contribute, weighted, static, linear
+            // the exe reads the 4 bytes as runtime flags 1 (must contribute), 8, 4 (static), 2 (weighted) (0x7b0097..0x7b0115)
+            let fl4 = (if b.get(*p + 2) == Some(&0) { 0.0 } else { 4.0 }) + (if b.get(*p + 3) == Some(&0) { 0.0 } else { 2.0 });
+            *p += 4;
             let ki = if expanded { k } else { *p += 2; u16le(b, *p - 2) };
             *p += 8; // pre/post infinity
             let nkf = u32le(b, *p) as usize;
             *p += 4;
-            let kf: Vec<Key> = (0..nkf).map(|i| fl::<6>(b, *p + 24 * i)).collect();
+            let kf: Vec<Key> = (0..nkf).map(|i| { let k = fl::<6>(b, *p + 24 * i); [k[0], k[1], k[2], k[3], k[4], k[5], fl4] }).collect();
             *p += 24 * nkf;
             if let Some(key) = keys.get(ki) { ch.insert(key.clone(), kf); }
         }
@@ -332,14 +341,30 @@ fn clips(b: &[u8], s: &[String], p: &mut usize) -> Vec<Clip> {
     out
 }
 
-// Bezier segment between keys, solved for time by bisection (XomView GenAnimFrame/findBezier).
+// The exe's key curve (Maya engine, 0x7abb1c; keys from loader 0x7b01ec): a zero out-tangent holds the key (step), a static
+// channel keeps its first value; unweighted channels are Hermite on the tangents' slopes (0x7aa7df), weighted ones Bezier with
+// handles at key +- tangent / 3, x kept monotonic (0x7ab931, 0x7ab6f1, 0x7aa8f4).
 fn eval(k: &[Key], t: f32) -> f32 {
     let n = k.len() - 1;
     let i = if t < k[0][4] { 0 } else { (0..n).find(|&j| k[j][4] <= t && t < k[j + 1][4]).unwrap_or(n) };
     let (a, b) = (k[i], k[(i + 1).min(n)]);
-    if t < k[0][4] || i == n || a[4] == b[4] { return a[5]; }
-    let (x1, y1) = (a[4] + (b[4] - a[4]) * a[3].cos() * a[2] / 3.0, a[5] + (b[5] - a[5]) * a[3].sin() * a[2] / 3.0);
-    let (x2, y2) = (b[4] - (b[4] - a[4]) * b[1].cos() * b[0] / 3.0, b[5] - (b[5] - a[5]) * b[1].sin() * b[0] / 3.0);
+    if k[0][6] as u32 & 4 != 0 { return k[0][5]; }
+    if t < k[0][4] || i == n || a[4] == b[4] || (a[2] == 0.0 && a[3] == 0.0) { return a[5]; }
+    let dx = b[4] - a[4];
+    if k[0][6] as u32 & 2 == 0 {
+        let slope = |x: f32, y: f32| if x != 0.0 { y / x } else { 5.72958e6 };  // vertical: the exe's big slope (0x8b58b0)
+        let (m0, m1, dy, s) = (slope(a[2], a[3]), slope(b[0], b[1]), b[5] - a[5], t - a[4]);
+        let c3 = (m0 * dx + m1 * dx - 2.0 * dy) / (dx * dx * dx);
+        let c2 = (3.0 * dy - 2.0 * m0 * dx - m1 * dx) / (dx * dx);
+        return ((c3 * s + c2) * s + m0) * s + a[5];
+    }
+    let (o1, o2) = ((a[2] / 3.0) / dx, 1.0 - (b[0] / 3.0) / dx);
+    let (mut u1, mut u2) = (o1.max(0.0), o2.min(1.0));
+    if u1 > 1.0 || u2 < 0.0 { monotonic(&mut u1, &mut u2); }
+    let (mut y1, mut y2) = (a[5] + a[3] / 3.0, b[5] - b[1] / 3.0);
+    if u1 != o1 && o1 != 0.0 { y1 = a[5] + (y1 - a[5]) * u1 / o1; }  // the handle keeps its slope (0x7aba16)
+    if u2 != o2 && o2 != 1.0 { y2 = b[5] - (b[5] - y2) * (1.0 - u2) / (1.0 - o2); }
+    let (x1, x2) = (a[4] + u1 * dx, a[4] + u2 * dx);
     let bz = |u: f32, p0: f32, p1: f32, p2: f32, p3: f32| {
         let v = 1.0 - u;
         v * v * v * p0 + 3.0 * u * v * v * p1 + 3.0 * u * u * v * p2 + u * u * u * p3
@@ -349,10 +374,32 @@ fn eval(k: &[Key], t: f32) -> f32 {
     for _ in 0..30 {
         u = (lo + hi) / 2.0;
         let x = bz(u, a[4], x1, x2, b[4]);
-        if (x - t).abs() < 1e-4 { break; }
+        if (x - t).abs() < 1e-6 { break; }
         if x > t { hi = u; } else { lo = u; }
     }
     bz(u, a[5], y1, y2, b[5])
+}
+
+// checkMonotonic / constrainInsideBounds (0x7ab6f1, 0x7aa8f4): handle fractions u1, u2 of the segment, x(u) kept increasing
+fn monotonic(u1: &mut f32, u2: &mut f32) {
+    let eps = f32::EPSILON;
+    let mut x2 = (1.0 - *u2).max(0.0);
+    *u1 = u1.max(0.0);
+    if (*u1 > 1.0 || x2 > 1.0) && *u1 * (*u1 - 2.0 + x2) + x2 * (x2 - 2.0) + 1.0 + eps > 0.0 {
+        if *u1 + eps < 4.0 / 3.0 {
+            let (bt, ct) = (*u1 - 2.0, *u1 - 1.0);
+            let d = (bt * bt - 4.0 * ct * ct).max(0.0).sqrt();
+            let t = (d - bt) * 0.5;
+            if x2 + eps > t { x2 = t - eps; } else {
+                let t = (-bt - d) * 0.5;
+                if x2 < t + eps { x2 = t + eps; }
+            }
+        } else {
+            *u1 = 4.0 / 3.0 - eps;
+            x2 = 1.0 / 3.0 - eps;
+        }
+    }
+    *u2 = 1.0 - x2;
 }
 
 type M4 = [[f32; 4]; 4];
@@ -693,7 +740,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let c = [(lo[0] + hi[0]) / 2.0, if feet { lo[1] } else { (lo[1] + hi[1]) / 2.0 }, (lo[2] + hi[2]) / 2.0];
     let norm = if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
-    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate
+    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate
+    // Blend: the worm's WormPoseManager control node (arm modes in Translate.x/y, head/eye mode in Rotate.y)
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();
     let skin_all = |w: &[M4]| { let mut m = s.skinning(x, w); m.extend(sockets.iter().map(|&(g, _)| w[g])); m };
@@ -941,9 +989,11 @@ mod tests {
     #[test]
     fn bezier_and_decompose() {
         // flat tangents: a 0 -> 1 ease through 0.5, held after the last key
-        let k = [[1.0, 0.0, 1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 1.0, 0.0, 1.0, 1.0]];
-        assert!((eval(&k, 0.5) - 0.5).abs() < 1e-3);
-        assert!(eval(&k, 0.0).abs() < 1e-3 && eval(&k, 2.0) == 1.0);
+        for w in [0.0, 2.0] {  // Hermite (smoothstep) and weighted Bezier agree at the middle
+            let k = [[1.0, 0.0, 1.0, 0.0, 0.0, 0.0, w], [1.0, 0.0, 1.0, 0.0, 1.0, 1.0, w]];
+            assert!((eval(&k, 0.5) - 0.5).abs() < 1e-3 && (eval(&k, 0.25) - 0.15625).abs() < 2e-2);
+            assert!(eval(&k, 0.0).abs() < 1e-3 && eval(&k, 2.0) == 1.0);
+        }
         let m = mul(&mul(&tr([1.0, 2.0, 3.0]), &rot([0.3, -0.5, 1.2])), &sc([2.0; 3]));
         let (t, q, s) = decompose(&m);
         assert!(t == [1.0, 2.0, 3.0] && (s[0] - 2.0).abs() < 1e-5);

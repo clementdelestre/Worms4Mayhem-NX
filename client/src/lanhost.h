@@ -18,7 +18,7 @@ private:
     int lfd = -1, ufd = -1, port = 0;
     uint32_t next = 0, session = 0, host = 0;
     double beaconAt = 0;
-    std::string name, start, log;  // start: Start frame as broadcast; log: 4 bytes per tick
+    std::string name, start, log;  // start: Start frame as broadcast; log: wire::INPUT_BYTES per tick
     std::vector<uint32_t> room;    // players in slot order
     std::map<uint32_t, uint32_t> sums;
     std::map<int, Conn> conns;

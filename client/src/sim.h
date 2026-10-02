@@ -8,15 +8,19 @@
 // Quantized per-tick input of the active player: the only thing sent over the network.
 struct Input {
     int8_t turn = 0, walk = 0, aim = 0;
-    uint8_t buttons = 0;
+    uint8_t buttons = 0, flags = 0;
+    enum : uint8_t { CAMERA = 1 };  // flags: a camera key this tick (W4M InGame group: its SomeInputFrom ends the hot seat)
     enum : uint8_t { FIRE = 1, JUMP = 2, NEXT_WEAPON = 4, HEADING = 8, FUSE_UP = 16, FUSE_DOWN = 32, TARGET = 64, PITCH = 128 };  // HEADING: turn is the wanted yaw, PI * turn / 128 (W4M walk)
     // FUSE_UP/DOWN: W4M FuseUp, the timer of user-fuse weapons (WeaponDef::userFuse) in 1 s steps
     // TARGET: W4M Blimp view; turn yaws the camera, walk / aim move its focus (Game::cursor) forward / right, the worm stays put.
     // PITCH (with TARGET): this tick's aim tilts the camera instead of moving it sideways (the client alternates the two)
+    // NEXT_WEAPON: aim 0 steps to the next weapon (on the press); aim != 0 picks weapon (uint8_t)aim - 1 (W4M direct select), aim unused
+    static Input pick(int weapon) { Input in; in.buttons = NEXT_WEAPON, in.aim = (int8_t)(uint8_t)(weapon + 1); return in; }
 };
 
 // Shell covers bazooka/grenades/clusters; speed = rope length or jetpack thrust, fuse = sheep timeout or jetpack fuel.
 // Melee: speed = knock along the aim, bounce = upward knock, fuse = attacker's leap. Sentry: radius = range, fuse = reload.
+// Abduction: radius = W4M Abduction.AreaOfEffect (xz), speed = NormalSpeed, m/s.
 // Airstrike with fuse > 0: W4M controlled bomber (Bovine Blitz), flies fuse s at speed, FIRE drops one of `clusters` payloads.
 enum class Kind : uint8_t { Shell, Sheep, Airstrike, Donkey, Shotgun, Rope, Jetpack, Teleport,
                             SuperSheep, OldWoman, Melee, Homing, Mine, Scouser, Sentry, Abduction, Flood,
@@ -43,12 +47,15 @@ struct WeaponDef {
     bool userFuse = false;    // "user_fuse": the thrower picks 1..5 s (W4M grenade, cluster, banana), fuse = default
     bool restFuse = false;    // "rest_fuse": the fuse only burns once the shell has stopped (W4M Holy Hand Grenade)
     bool pins = false;        // "pins": a melee that nails its victim in the ground (W4M Tail Nail)
+    bool fuseShown = false;   // "fuse_shown": W4M IsFuseDisplayed, the last 5 s float over the shot (0x57b1e0)
+    float fuseHeight = 0.5f, fuseSize = 0.25f;  // "fuse_height", "fuse_size": W4M FuseTimerGraphicOffset + Radius, FuseTimerScale (0: HUD.3DText.Scale 5), m
     bool walks = false;       // "walks": a super sheep that walks first, FIRE takes off (W4M "launch, transform and detonate")
     // W4M WEAPTWK WormDamageRadius, ImpulseMagnitude, ImpulseRadius, -ImpulseOffset in m, m/s; -1: derived from radius
     float blast[4] = {-1, -1, -1, -1}, cblast[4] = {-1, -1, -1, -1};  // "reach", "push", "push_reach", "push_depth"; cluster_*
     float lift = 0;  // "lift": W4M payload Radius, the blast centre above the point that hit the ground (donkey 3.6 m)
     float grav = 1;  // "gravity": share of Gravity; W4M IsLowGravity = Gravity.Slow 0.6, IsAffectedByGravity 0 = 0
     float base = -1;  // "min_speed": W4M BasePower in m/s, speed = BasePower + MaxPower; -1: 0.15 x speed
+    bool avoid = false;  // "avoid_land": W4M Factory HomingAvoidLand (+0x69): the homing missile steers off land, 30 s life, 12.5 m/s, detonates on expiry, ChaseCamera
     int retreat = -1, postLaunch = 0;  // "retreat", "post_launch": W4M RetreatTimeOverride (-1: the scheme's LandTime), PostLaunchDelay, ms
 };
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
@@ -63,8 +70,12 @@ inline bool toolDrop(const WeaponDef &d) { return dropped(d) || d.kind == Kind::
 extern std::vector<WeaponDef> WEAPONS;  // built-in fallback until loadWeapons() succeeds, then + GameConfig::custom
 bool loadWeapons(const char *path);
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out);  // same JSON as weapons.json
+bool customWeapon(int i);  // a Weapon Factory weapon (appended after the loaded table at start())
 bool saveCustomWeapons(const char *path, const std::vector<WeaponDef> &list);
 
+// W4M worm physics state beside Velocity: stuck count (entity +0x12c), air control (Flags bit0), Sliding (state 3) and its
+// spin rate / target (+0x120 / +0x124, rad per 20 ms), SupportNormal (pData +0x80). input: this tick's stick, not state
+struct Motion { int stuck = 0; bool air = false, slide = false; float spin = 0, spinTo = 0; Vector3 normal{0, 1, 0}, input{}; };
 struct Worm {
     Vector3 pos, vel;
     float yaw, pitch;
@@ -74,24 +85,34 @@ struct Worm {
     int counted = 0;  // hp its label shows: Settle counts it toward hp, nearby worms together (W4M)
     bool nailed = false;  // Tail Nail: can't walk, jump or use tools, animals, melee; blasting the ground frees it
     bool armour = false;  // W4M Armour: blasts hurt it ARMOUR %, knock it back half as far (rest of its life); bullets ignore it
+    // W4M WormData flag 0x400 (spat out by the UFO, cleared by poison or a health crate): zap = ticks to the next Zap, calm = hp at the last turn start (-1 unarmed)
+    bool abducted = false;
+    int zap = -1, calm = -1;
+    Motion motion;
 };
 bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd);  // p inside a's melee hit box (shared with the AI)
+// W4M Vaulting 0x5aca80: t ticks left (0 = walking), dir = the input when it began
+struct Vault { Vector3 from{}, to{}, dir{}, vel{}; int t = 0; };  // vel: the walk velocity, W4M Velocity during the vault
 // Ground walk and wall clearance, shared with the AI's prediction. walkStep: true when it walked off a ledge.
-bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist);
+// A 5..20-unit ledge starts *vault (pos unchanged) when given, else it is climbed at once.
+bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault = nullptr);
+void vaultStep(Vector3 &pos, Vault &v, Vector3 input);  // one vault tick
 void clearWalls(const Terrain &t, Vector3 &pos);
 bool fits(const Terrain &t, Vector3 from, Vector3 to);  // the upper body at `to` is out of land, or no deeper than at `from`
 // Free flight, shared with the AI: a tick's move cut into sub-steps of at most VOX/2, so nothing skips thin land.
 int substeps(Vector3 vel);
 // W4M 0x585a29 launches from the worm's eye (feet + Worm.EyeLevelOffset 15 units): spawn, pulled back to the last free point eye → spawn
 Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn);
-// W4M LogicalLaunchZ/YOffset from the eye (WEAPTWK): dynamite 13/-10, landmine 10/-10, sheep 5, old woman 7, scouser 10 units;
-// the others: ours, ahead along the aim (impact payloads would hit their own worm from the eye: W4M's exclusion not traced)
-Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw, Vector3 dir);
+// W4M LogicalLaunchZ/YOffset from the eye (WEAPTWK): dynamite 13/-10, landmine 10/-10, (super) sheep, starburst 5, old woman 7, scouser 10 units, the rest 0
+Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw);
 // W4M payloads touch land by their centre point (0x574e90); at rest the mesh is drawn r along the land normal (0x5761f0)
 Vector3 restOn(const Terrain &t, Vector3 p, float r);
-float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e = 0.3f);  // worm body, walls bounce at e (W4M Rebound 0x5acea0: 0.3); returns the landing speed
+// Worm body, walls bounce at e (W4M Rebound 0x5acea0: 0.3); returns the landing speed. *contact: 1 a move did not Fit, 2 a wall
+float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e = 0.3f, int *contact = nullptr);
 // One worm tick (ground slide, fall, flight), shared with the AI; returns the landing speed, 0 if none.
-float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, float gravity, uint32_t wormpot, float e = 0.3f);
+float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float gravity, uint32_t wormpot, float e = 0.3f);
+// W4M UpdateWalking 0x5b19d0: a step onto ground past SlideAngle starts Sliding with the walk velocity
+void slideIfSteep(const Terrain &t, Vector3 pos, Vector3 &vel, Motion &m, Vector3 walk, uint32_t wormpot);
 void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity);  // sheep, old woman, scouser on foot
 
 struct Projectile {
@@ -103,6 +124,7 @@ struct Projectile {
     Vector3 aim{};  // homing target
     int stage = 0;   // walks-first super sheep: 1 once airborne; scouser: 1 once inflated
     int prey = -1;   // scouser: the worm it carries; old woman: the last worm she robbed
+    uint64_t touching = ~0ull;  // W4M 0x582200 / 0x581dc0: last tick's contacts (worm bits, 63 = target) are not hits; all of them on the first tick
 };
 
 // Battlefield object. Crate: weapon = contents (-1 = health). Mine: fuse < 0 idle, else counting down.
@@ -124,7 +146,7 @@ struct Object {
 // Things that happened this tick, for audio/fx; not part of the checksum. worm/weapon = -1 when not applicable.
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
-                          Launch } kind;  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)
+                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop } kind;  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)
     Vector3 pos;
     int worm, weapon;
 };
@@ -154,16 +176,21 @@ struct Scheme {
     enum : uint8_t { FUSE_RANDOM = 6, SD_BOTH = 0, SD_WATER, SD_ONE_HP, SET_DEFAULT = 0, SET_BNG, SET_CRATES, SET_UNLIMITED };
 };
 static_assert(sizeof(Scheme) == 17, "Scheme must stay plain bytes");
-// W4M Wormpot modes (FETXT.WPotName.*), one bit each; bits [first, last) of WORMPOT_REELS form one slot reel.
+// W4M Wormpot modes (FETXT.WPotName.*), one bit each; bits 20 + 4 r: reel r's pick (0 empty, else WORMPOT_REEL[r] index + 1).
 enum Wormpot : uint32_t {
     WP_DOUBLE_DAMAGE = 1, WP_SUPER_EXPLOSIVES = 2, WP_SUPER_ANIMALS = 4, WP_WIND_ALL = 8, WP_WORMS_DROWN = 16,
     WP_QUICK_WALK = 32, WP_SLIPPY = 64, WP_STICKY = 128, WP_LOW_GRAVITY = 256, WP_NO_JUMPING = 512, WP_MAX_FALL = 1024,
     WP_CRATE_SHOWER = 2048, WP_CRATE_DROPS = 4096, WP_MAX_HEALTH = 8192, WP_GOLIATH = 16384, WP_ONE_SHOT = 32768,
     WP_VAMPIRE = 65536, WP_VITAL_WORM = 131072, WP_MULTI_GIRDER = 262144,  // MULTI_GIRDER: W4M WormPot GirdersDontEndTurn
+    WP_NO_BOMBING = 524288,  // W4M WormPot.NoParachuteDrops (+0x4c): no secondary weapon under a movement tool (0x5662f6)
 };
 struct WormpotMode { const char *name, *help; };
-extern const WormpotMode WORMPOT_MODES[19];  // [bit index]
-extern const int WORMPOT_REELS[4];          // reel r = bits WORMPOT_REELS[r] .. WORMPOT_REELS[r + 1] - 1
+extern const WormpotMode WORMPOT_MODES[20];  // [bit index]
+constexpr int WORMPOT_COUNT = 20;
+extern const std::vector<int> WORMPOT_REEL[3];  // W4M reel lists 0x8ac960 / 0x8ac9c8 / 0x8aca28 (shared modes), our bits
+int wormpotReel(uint32_t wp, int r);             // reel r's index in WORMPOT_REEL[r], -1 empty
+void wormpotPick(uint32_t &wp, int r, int m);    // sets reel r; the mode bits become the union of the three picks
+uint32_t wormpotSlots(uint32_t wp);              // a saved value without picks: each mode goes on the first reel free for it
 struct SchemePreset { const char *name; Scheme s; const char *delays; };  // delays: "Weapon N|..." (W4M SchemeData Delay), "*" = Weapon Factory
 extern const std::vector<SchemePreset> SCHEMES;  // [0] = Standard; values from W4M Data/Tweak/LOCAL.XOM
 struct GameConfig {
@@ -197,11 +224,12 @@ struct Game {
     // W4M HomingPayload 0x560aa0: Stage1 1250 ms straight, Stage2 4000 ms homing, Stage3 5000 ms straight, then it expires; no gravity (IsAffectedByGravity 0)
     static constexpr float HOMING_LOCK = 1.25f, HOMING_TIME = 4, HOMING_LIFE = 10.25f, HOMING_ACCEL = 97.5f, HOMING_MAX = 29.5f;
     // W4M 0x560eb0 (stage 2 only, 0x5617c3): v += dir x HomingAcceleration 0.00195 units/ms², |v| <= MaxHomingSpeed 0.59 units/ms
-    static Vector3 homingStep(Vector3 v, Vector3 p, Vector3 aim) {
+    static float homingTime(const WeaponDef &d) { return d.avoid ? 30 : HOMING_TIME; }  // Factory HomingAvoidLand: Stage2Duration 30000 (0x598d97), LifeTime 30000
+    static Vector3 homingStep(Vector3 v, Vector3 p, Vector3 aim, float max = HOMING_MAX) {
         Vector3 d = {aim.x - p.x, aim.y - p.y, aim.z - p.z};
         float l = sqrtf(d.x * d.x + d.y * d.y + d.z * d.z), k = l > 0 ? HOMING_ACCEL * DT / l : 0;
         v = {v.x + d.x * k, v.y + d.y * k, v.z + d.z * k};
-        float s = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z), c = s > HOMING_MAX ? HOMING_MAX / s : 1;
+        float s = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z), c = s > max ? max / s : 1;
         return {v.x * c, v.y * c, v.z * c};
     }
     static constexpr float WIND_ACCEL = 4.25f;  // W4M payload accel += Wind.Speed (0x57eb18, IsAffectedByWind); Wind.MaxSpeed 8.5e-5 units/ms²
@@ -240,8 +268,22 @@ struct Game {
     static constexpr int STRIKE_TICKS = 20;    // one bomb every BlitzDuration / NumBombs = 333 ms
     static constexpr int STRIKE_LEAD = 240;    // W4M Bomber: the first DropBomb waits for the 4 s bombrun_start clip (0x54db75)
     static constexpr float STRIKE_EXTRA = 7;  // Bomber.ExtraHeight 140 units
-    // W4M AlienAbductionLogicEntity clip lengths (0x546d00): AbductStart, AbductViolate + AbductOpenDoors, AbductEnd; ABD_RISE = Abduction.ExtraHeight 220 units
-    static constexpr float ABD_ARRIVE = 8.333f, ABD_STAY = 6.917f, ABD_LEAVE = 3.25f, ABD_RISE = 11;
+    // W4M AlienAbductionLogicEntity states 1-6 (0x548710) as Projectile::stage; times from its clip table 0x546d00, HOLD = CloseBeam + Violate + OpenDoors - 250 ms
+    enum : int { ABD_ARRIVING, ABD_LIFTING, ABD_HOLDING, ABD_SPITTING, ABD_LEAVING, ABD_FAILING };
+    static constexpr float ABD_ARRIVE = 8.333f, ABD_HOLD = 8.956f, ABD_SPIT = 2.1f, ABD_LEAVE = 3.25f, ABD_FAIL = 9.833f, ABD_RISE = 11;  // RISE: ExtraHeight 220 units
+    // WEAPTWK Abduction.*: AverageHeight 700 and MaxSpeed 3.4 units per 20 ms tick (speed = NormalSpeed), DistanceBetweenWorms 50; in 5 units it is aboard; spat at 0.28 units/ms
+    static constexpr float ABD_AVG = 35, ABD_MAX = 8.5f, ABD_GAP = 2.5f, ABD_IN = 0.25f, ABD_OUT = 14;
+    static constexpr int ZAP_FIRST = 1800, ZAP_MIN = 60, ZAP_SPAN = 180;  // W4M UpdateAbductee 0x5a9c40: 30 s, then Worm.Zap.MinTime 1000 .. MaxTime 4000 ms
+    static constexpr float ZAP_XZ = 15, ZAP_Y = 15;                       // Worm.Zap.XZRange / YRange 300 units
+    struct Abductee { int worm; uint8_t st; Vector3 from; };  // its waiting / moving lists in launch order: st 0 waiting, 1 rising, 2 aboard
+    std::vector<Abductee> abductees;
+    bool abdRolled = false;  // the abductees' hp roll of this turn's DoPostActivity is done
+    bool crated = false;     // this turn's DoOncePerTurnFunctions (crate drop) is done
+    int camHold = 0;         // W4M FlyCam's "Hold the FlyCamera" active object: PauseDuration after its shot's blast
+    bool active() const;     // W4M ObjectCount.Active > 0 (ActiveObjectRegistrationService 0x4d3af0 users), shots aside
+    int abdCam = -1;  // its m_uCameraWorm (+0x74): the first worm lifted, the AlienAbductionCamera's
+    bool aboard(int wi) const { for (const Abductee &a : abductees) if (a.worm == wi && a.st) return true; return false; }  // Worm.OverridePhysics
+    const Projectile *ufo() const { for (const Projectile &s : shots) if (WEAPONS[s.weapon].kind == Kind::Abduction) return &s; return nullptr; }
     static constexpr float BOMBER_HEIGHT = 15, BOMBER_LEAD = 20, BOMBER_GAP = 0.8f, COW_CHUTE = 5;  // m, m, s (SuperBomber.DelayBetweenBombs), m/s
     // W4M Concrete Donkey 0x553370: 220 units/s^4 fall curve, 0.75 s back to the apex, 85 ms held after a smash, LifeTime 8000 ms
     static constexpr float DONKEY_CURVE = 11, DONKEY_HANG = 0.75f, DONKEY_LIFE = 8;
@@ -263,6 +305,8 @@ struct Game {
     int clock = 0;      // ticks played (hot seat excluded): sudden death after cfg.scheme.roundTime
     int hotSeat = 0;    // ticks left before the turn clock starts
     int jumpDelay = 0;  // jump pending: ticks left of the W4M window
+    Vault vault;        // the active worm's ledge vault
+    Vector3 steerIn{};  // this tick's stick for the active worm's slide (transient)
     uint8_t jumpKind = 0;  // W4M DetectJump kind: 0 tapped, 1 pressed twice, 2 held
     bool selfHurt = false;  // the active worm took damage: its turn ends (W4M)
     float power = 0, wind = 0;
@@ -280,8 +324,10 @@ struct Game {
     std::vector<int> fuses;  // per team: seconds set for userFuse weapons (W4M default 3)
     std::vector<std::vector<int>> delays;  // [team][weapon]: own turns left before it unlocks (W4M InventoryN.WeaponDelays)
     bool usable(int team, int wi) const { return ammo[team][wi] && !delays[team][wi]; }
+    bool jetLanded() const { return jetUsed && !jetting && WEAPONS[weapon].kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x563252: entity kept
+    bool pickable(int team, int wi) const { return wi == weapon || usable(team, wi); }  // a direct pick (pick()) is legal
     bool selectable(int team, int wi) const;  // usable, and with a movement tool out only the tool itself or a toolDrop()
-    bool abducting() const { for (const Projectile &s : shots) if (WEAPONS[s.weapon].kind == Kind::Abduction) return true; return false; }  // W4M EFMV.Active (0x548d0b): labels off
+    bool abducting() const { return ufo(); }  // W4M EFMV.Active (0x548d0b): labels off
     bool toolOut() const;  // rope (or hooked object), jetpack in flight, open parachute in the air: W4M utility mode +0x8d
     // W4M m_eSecondaryWeapon (+0x98, flag +0x8c): a toolDrop() held besides the tool, dropped by Fire.Second; -1 none
     int secondary = -1;
@@ -299,23 +345,24 @@ struct Game {
     // W4M GirderKitLogicEntity 0x55ada0: a preview 2 m ahead at eye level, 0.3 m steps camera-relative, each axis within
     // Weapon.Girder.MaxDistance 300 units of the worm; FIRE welds GirderSmall.xom (4 x 2 x 4 voxels of 1 m, profile 2,1,1,2)
     static constexpr float GIRDER_STEP = 0.3f, GIRDER_RANGE = 15, GIRDER_CAM = 16.25f, GIRDER_CAM_PITCH = 0.6f, GIRDER_YAW = 0.4f;
-    static constexpr int GIRDER_TICKS = 5, GIRDER_MAX = 45;  // a step per 4 updates of 20 ms (unverified); Girder.TotalNumberPlaced < 45
+    static constexpr int GIRDER_TICKS = 5, GIRDER_MAX = 45;  // 0x55ada0: a step per 4 updates of 20 ms (ret 0x14), 80 ms; Girder.TotalNumberPlaced < 45
     bool girderOn = false;  // preview up: GirderCam follows it, TARGET's walk / aim step it, PITCH's aim raises it
     Vector3 girder{}, girderFrom{};  // preview centre, the worm's position when it appeared
     int girderWait = 0, girders = 0;  // ticks to the next step, placed
-    void stepGirder(const Input &in, uint8_t pressed);  // yaw in 45 degree steps (FUSE_UP / DOWN), ticks to the next step, placed
+    void stepGirder(const Input &in, uint8_t pressed);  // axis-aligned like W4M PC (no rotation); PITCH raises / lowers, ticks to the next step, placed
     int girderFits(Vector3 c) const;  // W4M 0x5590e0: probe box edges clear of land, 4 spheres clear of worms and objects
     // W4M BubbleTroubleLogicEntity 0x54f6e0: a falling shell around its spot; shots from outside bounce off, worms inside
     // ignore blasts centred outside Radius 42 units; Lifetime 6 turn ends; any blast inside pops it
     static constexpr float BUBBLE_R = 2.1f, BUBBLE_UP = 1.75f, BUBBLE_SHELL = 2.52f, BUBBLE_IN = 1.52f;  // Radius, OffsetY, Radius x 1.2, - 20
-    struct Bubble { Vector3 pos, vel; int life; };  // pos: its base; centre BUBBLE_UP higher
+    struct Bubble { Vector3 pos, vel; int life; float yaw = 0; int age = 0, hit = -1; };  // pos: its base; centre BUBBLE_UP higher; age, hit: ticks (clips)
     std::vector<Bubble> bubbles;
+    void bubbleHit(Bubble &b) { if (b.age >= 90) b.hit = b.age, emit(GameEvent::BubbleHit, b.pos); }  // 0x54e480: not during WXM_Create (1.5 s)
     bool shielded(const Worm &w, Vector3 blast) const;  // in a bubble the blast is outside of
     // W4M RedbullUtilityLogicEntity 0x587390: after a jump, JUMP flaps up at FlapVelocity 0.15 u/ms in a 250 ms window every
     // 500 ms (Weapon.Redbull.MinTime / TimeLength); a flap zeroes the horizontal speed, the stick steers (WXWorm.Aftertouch*)
     static constexpr float FLAP = 7.5f, AFTERTOUCH = 0.75f, AFTERTOUCH_MAX = 5;
     static constexpr int FLAP_WAIT = 15, FLAP_BEAT = 30;
-    int icarus = 0;  // 0 off, 1 drunk (on the ground), 2 flying; flapAt: tick the next window opens
+    int icarus = 0;  // 0 off, 1 drunk (on the ground), 2 flying, 3 drinking until flapAt; flapAt: tick the next window opens
     int flapAt = 0;
     Vector3 drift{};  // aftertouch velocity, kept across flaps
     bool doubleDamage = false;  // W4M SetData("DoubleDamage", 1) from a crate: every blast and hit this turn x2
@@ -326,6 +373,7 @@ struct Game {
     Scout scout;
     static constexpr int SCOUT_TICKS = 240;
     bool scoutSolve(Vector3 at, float &power, float &pitch) const;
+    float scoutZoom(float z, float dt) const;  // W4M HeadCam zoom 0x91f31c after dt s, from z (camera only)
     MissionRun run;
     // Settle count, per group of nearby hurt worms: camera travel, the W4M damage display (hp counts 40 hp/s, at most 1.5 s),
     // then the death queue: 3 s of throes per dead worm, blast, next one. Then PostActivityTime. docs/death-sequence.md
@@ -335,7 +383,7 @@ struct Game {
     static constexpr int COUNT_FLOAT = msTicks(2000);      // W4M kWPS_DrownFloat timer (0x5aa222)
     static constexpr int COUNT_DEATH = 1;                // W4M: the next death pops on the queue's next tick (0x4f9b30), no grave wait
     static constexpr int POST_ACTIVITY = msTicks(2400);    // W4M PostActivityTime (LOCAL.XOM) once nothing is active
-    static constexpr int SETTLE_WAIT = 300, SHOT_CAP = 30 * 60;  // ours: give up on moving worms / objects after 5 s, on a shot after 30 s
+    static constexpr int SETTLE_WAIT = 30 * 60, SHOT_CAP = 30 * 60;  // safety only (W4M waits forever): give up on activity after 30 s, on a shot after 30 s
     static constexpr float COUNT_SPAN = 18;  // m from the group's first worm
     std::vector<int> countGroup;  // worms counting in Settle; countT: ticks into the group's count
     int countT = 0, countEnd = 0;  // countEnd: countSpan() when the group formed; death blasts must not move the queue
@@ -385,9 +433,10 @@ struct Game {
     float landTop() const;  // Land.MaxHeight: a column every 2 m
     Vector3 landCenter() const;
     Vector3 strikeDir() const { return {-cosf(cursorYaw), 0, sinf(cursorYaw)}; }  // the view's right: bombers cross the screen
-    int landHold = 0;  // ticks the turn still waits once a dropped crate has landed
+    int landHold = 0;  // ticks the turn still waits once a dropped crate has landed (W4M PostActivityTime)
     int retreatTicks(const WeaponDef &d) const { return msTicks(d.retreat >= 0 ? d.retreat : cfg.scheme.retreatTime * 1000); }
     bool steered() const;     // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
+    bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)
     bool retreating() const;  // Flying / Retreat and the worm may move: W4M timer started (0x549bb0), no FlyCam holding WormMoving
     bool dropping() const { if (landHold > 0) return true; for (const Object &o : objects) if (o.type == Object::Crate && o.falling) return true; return false; }  // crate under its chute
     float fuseOf(const WeaponDef &wd) const { return wd.userFuse ? fuses[worms[current].team] : wd.fuse; }
@@ -396,9 +445,13 @@ private:
     float rand01();
     void beginTurn(int team);
     void nextWeapon(int team);
+    void pick(int team, int k);  // W4M WeaponSelected 0x565d30
     void use(Worm &w);
     void emit(GameEvent::Kind k, Vector3 p, int worm = -1, int weapon = -1) { events.push_back({k, p, worm, weapon}); }
     void stepWorm(Worm &w);
+    void avoidLand(Projectile &s);  // HomingAvoidLand steering (W4M 0x5611b0)
+    bool stepUfo(Projectile &s);  // false once it has left
+    void zapStep(Worm &w);
     void drown(Worm &w);
     void stepRope(Worm &w);
     void stepShots(const Input &in, bool detonate);

@@ -39,7 +39,8 @@ static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint
         maxTick = std::max(maxTick, ms);
         turn += ms;
         g.step(in);
-        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Fire && e.worm >= 0) fires[g.worms[e.worm].team ? l1 : l0][e.weapon]++;
+        bool fire = false;  // a 0 s retreat (strikes, old woman) goes from Aim to Settle in one tick: count the Fire event
+        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Fire && e.worm >= 0) fires[g.worms[e.worm].team ? l1 : l0][e.weapon]++, fire = true;
         if (prev == Phase::Settle && g.phase != Phase::Settle) {  // turn boundary
             if (r.turns) r.damage += before - enemyHp();
             maxTurn = std::max(maxTurn, turn);
@@ -48,7 +49,7 @@ static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint
             before = enemyHp();
             r.turns++;
         }
-        if (prev == Phase::Aim && g.phase != Phase::Aim && g.phase != Phase::Settle) r.fired++;
+        if (prev == Phase::Aim && g.phase != Phase::Aim && (g.phase != Phase::Settle || fire)) r.fired++;
         prev = g.phase;
     }
     r.sum = g.checksum();
@@ -76,7 +77,6 @@ static void blimpView() {
         for (int t = 0; t < 60 * 60 * 8 && g.phase != Phase::GameOver; t++) {
             g.step(ai.think(g));
             int sim = g.weapon;
-            if (ai.picking >= 0) g.weapon = ai.picking;  // main.cpp: the view follows the CPU's pick
             Controls::cpuTurn = ai.striking();
             bool v = Controls::targetView(g);
             stale += Controls::targetHeld(g) && !v;
@@ -179,6 +179,9 @@ int main() {
         for (size_t i = 0; i < WEAPONS.size(); i++) if (fires[l][i]) printf(" %s:%d", WEAPONS[i].name.c_str(), fires[l][i]);
         printf("\n");
     }
+    int changes = 0;  // W4M worm-select mode: the CPU plans every worm of its team and switches with Worm Select
+    for (int l = 1; l <= 5; l++) for (size_t i = 0; i < WEAPONS.size(); i++) changes += WEAPONS[i].kind == Kind::ChangeWorm ? fires[l][i] : 0;
+    assert(changes > 0);
 
     int close = 0;
     printf("point blank:");
@@ -205,7 +208,7 @@ int main() {
     printf("single weapon, 8 turns, dmg/turn:");
     for (size_t k = 0; k < WEAPONS.size(); k++) {
         Kind kd = WEAPONS[k].kind;
-        if (kd == Kind::Rope || kd == Kind::Jetpack || kd == Kind::Teleport || kd == Kind::Parachute || kd >= Kind::Flood || kd == Kind::Mine || kd == Kind::Scouser) continue;
+        if (kd == Kind::Rope || kd == Kind::Jetpack || kd == Kind::Teleport || kd == Kind::Parachute || kd > Kind::Flood) continue;  // Landmine, Scouser, Flood: W4M AI plans too
         int d = 0, turns = 0;
         for (const char *map : {"", "arabian"}) { Result x = match(map, 31, 5, 5, 0, true, (int)k, 8); d += x.damage; turns += x.turns; }
         printf(" %s %.1f", WEAPONS[k].name.c_str(), (float)d / turns);

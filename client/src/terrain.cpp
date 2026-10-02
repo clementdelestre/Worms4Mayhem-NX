@@ -388,7 +388,16 @@ void Terrain::weld(Vector3 c, Vector3 half) {
 }
 
 bool Terrain::raycast(Ray r, float maxDist, Vector3 *hit) const {
-    for (float t = 0; t < maxDist; t += VOX * 0.5f) {
+    // march only inside the grid (+1 voxel, sample's reach): a far or infinite ray would otherwise spin for seconds
+    const float step = VOX * 0.5f, o[3] = {r.position.x, r.position.y, r.position.z}, dv[3] = {r.direction.x, r.direction.y, r.direction.z},
+                hi[3] = {(NX + 1) * VOX, (NY + 1) * VOX, (NZ + 1) * VOX};
+    float t0 = 0, t1 = maxDist;
+    for (int i = 0; i < 3; i++) {
+        if (dv[i] == 0) { if (o[i] < -VOX || o[i] > hi[i]) return false; continue; }
+        float a = (-VOX - o[i]) / dv[i], b = (hi[i] - o[i]) / dv[i];
+        t0 = fmaxf(t0, fminf(a, b)), t1 = fminf(t1, fmaxf(a, b));
+    }
+    for (float t = ceilf(t0 / step) * step; t < maxDist && t <= t1; t += step) {
         Vector3 p = Vector3Add(r.position, Vector3Scale(r.direction, t));
         if (solid(p)) { *hit = p; return true; }
     }

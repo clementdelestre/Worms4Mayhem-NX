@@ -42,9 +42,10 @@ static int owned(const Game &g, int team, Kind k) {
     return -1;
 }
 
-static bool touches(const Game &g, Vector3 p) {
-    for (const Worm &w : g.worms) if (w.alive && Vector3Distance(p, w.pos) < R + 0.3f) return true;
-    return false;
+static uint64_t touches(const Game &g, Vector3 p) {  // Game::stepShots' contact bits
+    uint64_t m = 0;
+    for (size_t k = 0; k < g.worms.size() && k < 63; k++) if (g.worms[k].alive && Vector3Distance(p, g.worms[k].pos) < R + 0.3f) m |= 1ull << k;
+    return m;
 }
 
 static bool outside(const Game &g, Vector3 p) {
@@ -53,9 +54,9 @@ static bool outside(const Game &g, Vector3 p) {
 }
 
 // Copy of Game::stepWorm without hp; false once drowned.
-struct Body { Vector3 pos, vel; bool grounded; float fall = 0; };
-static bool stepBody(const Game &g, Body &b) {
-    float speed = wormBody(g.terrain, b.pos, b.vel, b.grounded, grav(g), g.cfg.wormpot);
+struct Body { Vector3 pos, vel; bool grounded; float fall = 0; Motion motion{}; };
+static bool stepBody(const Game &g, Body &b, float &yaw) {
+    float speed = wormBody(g.terrain, b.pos, b.vel, b.grounded, b.motion, yaw, grav(g), g.cfg.wormpot);
     if (speed > FALL_SAFE && g.cfg.scheme.fallDamage) b.fall += (int)((speed - FALL_SAFE) * FALL_SCALE) + 1;
     return b.pos.y >= g.water;
 }
@@ -63,8 +64,9 @@ static bool stepBody(const Game &g, Body &b) {
 // Where a knocked worm comes to rest: false if it drowns; `fall` gets the fall damage.
 static bool fling(const Game &g, Vector3 p, Vector3 v, float &fall) {
     Body b{p, v, false};
+    float yaw = 0;
     for (int i = 0; i < 300; i++) {
-        if (!stepBody(g, b)) return false;
+        if (!stepBody(g, b, yaw)) return false;
         if (b.grounded && Vector3LengthSqr(b.vel) < 0.04f) break;
     }
     fall = b.fall;
@@ -84,7 +86,7 @@ struct Outcome {
     float extra = 0;
     bool started = false;
 
-    Outcome(const Game &g, const Level &L) : g(g), L(L), team(g.worms[g.current].team), self(g.current), dmg(g.worms.size()),
+    Outcome(const Game &g, const Level &L, int me) : g(g), L(L), team(g.worms[me].team), self(me), dmg(g.worms.size()),
         kick(g.worms.size()), pois(g.worms.size()), hit(g.worms.size()), gone(g.objects.size()) {}
 
     // share: chained blasts count WeightingExplosiveSecondaryDamage
@@ -158,7 +160,9 @@ struct Outcome {
 static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float wind, bool child, Vector3 &out, const Vector3 *aim = nullptr) {
     bool impact = child || wd.fuse == 0;
     float fuse = aim ? 0 : g.fuseOf(wd);  // the team's current fuse: the AI never changes it
+    uint64_t touching = ~0ull;
     for (int i = 0; i < 600; i++) {
+        uint64_t now = 0;
         if (aim && (fuse += DT) > Game::HOMING_LOCK && fuse < Game::HOMING_LOCK + Game::HOMING_TIME) v = Game::homingStep(v, p, *aim);
         else v.y -= grav(g) * (child && wd.kind != Kind::Airstrike ? 1 : wd.grav) * DT;
         if (wd.wind || (g.cfg.wormpot & WP_WIND_ALL)) v.x += wind * Game::WIND_ACCEL * DT;
@@ -171,8 +175,11 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
                 break;
             }
             p = np;
-            if (impact && wd.kind != Kind::Donkey && touches(g, np)) return true;
+            uint64_t m = touches(g, np);
+            now |= m;
+            if (impact && wd.kind != Kind::Donkey && (m & ~touching)) return true;
         }
+        touching = now;
         if (!impact && (!wd.restFuse || fuse < wd.fuse || Vector3Length(v) < 1) && (fuse -= DT) < DT / 2) return true;
         if (outside(g, p)) return false;
     }
@@ -204,7 +211,8 @@ static void steer(const Game &g, Vector3 p, Vector3 v, Vector3 e, Input &in) {
 
 // Planned super sheep flight under the autopilot; false if it is lost.
 static bool superFly(const Game &g, const WeaponDef &wd, Vector3 pos, float yaw, float pitch, Vector3 e, Vector3 &out) {
-    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = muzzle(g.terrain, pos, launchPoint(wd, pos, yaw, d)), v = d * wd.speed;
+    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = muzzle(g.terrain, pos, launchPoint(wd, pos, yaw)), v = d * wd.speed;
+    uint64_t touching = ~0ull;
     for (float t = wd.fuse; t > 0; t -= DT) {  // walks: takes off at once (think() presses FIRE)
         Input in;
         steer(g, p, v, e, in);
@@ -213,10 +221,14 @@ static bool superFly(const Game &g, const WeaponDef &wd, Vector3 pos, float yaw,
         float pt = Clamp(asinf(Clamp(v.y / fmaxf(Vector3Length(v), 0.01f), -1, 1)) + in.aim / 127.0f * 1.5f * DT, -1.4f, 1.4f);
         v = dirOf(yw, pt) * wd.speed;
         if (det) { out = p; return true; }
+        uint64_t now = 0;
         for (int k = 0, n = substeps(v); k < n; k++) {  // Game::stepShots' sub-steps
             out = p = p + v * (DT / n);
-            if (g.terrain.solid(out) || touches(g, out)) return true;
+            uint64_t m = touches(g, out);
+            now |= m;
+            if (g.terrain.solid(out) || (m & ~touching)) return true;
         }
+        touching = now;
         if (outside(g, p)) return false;
     }
     return true;
@@ -261,7 +273,7 @@ static bool ground(const Game &g, Vector3 p, Vector3 &hit) {
 
 // --- rope race: exact copy of Game::step for the active worm, driven by a parametric swing policy ---
 
-struct Mover { Body b; float yaw, pitch; bool roped; Vector3 anchor; float len; uint8_t prev; int jump = 0; uint8_t kind = 0; };
+struct Mover { Body b; float yaw, pitch; bool roped; Vector3 anchor; float len; uint8_t prev; int jump = 0; uint8_t kind = 0; Vault vault{}; };
 
 static bool stepRope(const Game &g, Mover &m) {
     Body &b = m.b;
@@ -288,14 +300,19 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     m.prev = in.buttons;
     Body &b = m.b;
     bool tool = m.roped;
-    m.yaw += in.turn / 127.0f * 2.5f * DT;
+    if (!m.vault.t) m.yaw += in.turn / 127.0f * 2.5f * DT;
     const float ws = Game::WALK_SPEED * (g.cfg.wormpot & WP_QUICK_WALK ? 2 : 1);
-    if (b.grounded && in.walk && !m.jump) {
-        if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * DT)) b.vel = flat(m.yaw) * (in.walk / 127.0f * ws * WALK_OFF);
+    if (m.vault.t) vaultStep(b.pos, m.vault, flat(m.yaw) * (float)in.walk);  // Game::step's vault
+    else if (b.grounded && !b.motion.slide && in.walk && !m.jump) {  // Game::step's walk
+        Vector3 walkV = flat(m.yaw) * (in.walk / 127.0f * ws);
+        if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * DT, &m.vault)) b.vel = walkV * WALK_OFF, b.motion.air = true;
+        else if (m.vault.t) m.vault.vel = walkV;
+        else slideIfSteep(g.terrain, b.pos, b.vel, b.motion, walkV, g.cfg.wormpot);
     }
+    b.motion.input = flat(m.yaw) * (in.walk / 127.0f);
     Vector3 jv;  // Game::step's jump
-    if ((pressed & Input::JUMP) && !m.jump && b.grounded && !tool && !(g.cfg.wormpot & WP_NO_JUMPING)) m.jump = Game::JUMP_WINDOW, m.kind = 2;
-    else if (m.jump && Game::jumpTick(m.jump, m.kind, in.buttons, pressed, in.walk, m.yaw, jv) && b.grounded) b.vel = jv, b.grounded = false;
+    if ((pressed & Input::JUMP) && !m.jump && !m.vault.t && b.grounded && !b.motion.slide && !tool && !(g.cfg.wormpot & WP_NO_JUMPING)) m.jump = Game::JUMP_WINDOW, m.kind = 2;
+    else if (m.jump && Game::jumpTick(m.jump, m.kind, in.buttons, pressed, in.walk, m.yaw, jv) && b.grounded) b.vel = jv, b.grounded = false, b.motion.air = true;
     Vector3 push = Vector3Scale({sinf(m.yaw), 0, cosf(m.yaw)}, in.walk / 127.0f * DT);
     if (m.roped) {
         if (pressed & Input::JUMP) m.roped = false;
@@ -308,13 +325,16 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
             m.roped = true; m.anchor = hit; m.len = Vector3Distance(b.pos, hit); b.grounded = false;
         }
     }
-    return m.roped ? stepRope(g, m) : stepBody(g, b);
+    if (m.vault.t && (m.roped || Vector3LengthSqr(b.vel) > 0)) b.pos = m.vault.to, m.vault.t = 0;
+    if (m.roped) b.motion.slide = false;
+    return m.roped ? stepRope(g, m) : m.vault.t ? true : stepBody(g, b, m.yaw);
 }
 
 // Aim, fire the rope, swing pushing forward for `release` ticks, let go and fly until landing.
 static Input ropePolicy(const Mover &m, Vector3 finish, const Ai::RopePlan &p, Ai::RopeRun &r) {
     Input in;
     r.t++;
+    if (p.release < -1) { r.done = r.t >= 60; return in; }  // stay
     if (p.release < 0) {
         in.turn = q(angle(yawTo(m.b.pos, finish) - m.yaw) / (2.5f * DT));
         in.walk = 127;
@@ -345,7 +365,7 @@ Input Ai::race(const Game &g) {
     const Worm &w = g.worms[g.current];
     const float ropeMax = WEAPONS[g.weapon].speed;
     Vector3 fin = g.raceFinish;
-    Mover now{{w.pos, w.vel, w.grounded}, w.yaw, w.pitch, g.roped, g.anchor, g.ropeLen, g.prevButtons, g.jumpDelay, g.jumpKind};
+    Mover now{{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, g.roped, g.anchor, g.ropeLen, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault};
     if (run.done) {
         // spread over frames: standing it waits; in the air it plans from where it will be once the choice is made
         const bool rest = w.grounded && !g.roped && Vector3LengthSqr(w.vel) < 1e-4f;
@@ -353,13 +373,15 @@ Input Ai::race(const Game &g) {
         Mover from = now;
         for (int k = 0; k < raceWait; k++) move(g, from, Input{}, ropeMax);
         const float fy = yawTo(from.b.pos, fin);
+        const bool shots = g.ropeShots < Game::ROPE_SHOTS;  // W4M Ninja.NumShots: with none left, walk or stay
         std::vector<RopePlan> cands = {{0, 0, -1}};
+        if (!shots) cands.push_back({0, 0, -2});
         for (float dy : {-0.2f, 0.0f, 0.2f})
-            for (float pitch : {0.7f, 1.0f, 1.3f})
-                for (int rel : {8, 20, 40, 65, 95, 125}) cands.push_back({fy + dy, pitch, rel});
+            for (float pitch : {0.7f, 0.85f, 1.0f, 1.15f, 1.3f})
+                for (int rel : {8, 20, 40, 65, 95, 125}) if (shots) cands.push_back({fy + dy, pitch, rel});
         for (Vector3 o : {Vector3{0, 0, 0}, {1.5f, 1, 0}, {-1.5f, 1, 0}, {0, 1, 1.5f}, {0, 1, -1.5f}, {0, 3, 0}}) {  // climb: hook by the finish, reel in
             Vector3 to = fin + o - from.b.pos;
-            for (int rel : {40, 90}) cands.push_back({atan2f(to.x, to.z), fminf(atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z)), 1.45f), rel, true});
+            for (int rel : {40, 90}) if (shots) cands.push_back({atan2f(to.x, to.z), fminf(atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z)), 1.45f), rel, true});
         }
         const unsigned long s0 = Terrain::samples;
         for (; raceAt < (int)cands.size() && ((!rest && !raceWait) || (long)(Terrain::samples - s0) < budget); raceAt++) {
@@ -369,12 +391,13 @@ Input Ai::race(const Game &g) {
             r.done = false;
             float s = 0;
             int i = 0;
-            for (; i < 400 && i < raceTimer - 1 && !r.done && s == 0; i++) {
+            bool hooked = false;
+            for (; i < 400 && i < raceTimer - 1 && !r.done && s == 0; i++, hooked |= m.roped) {
                 if (!move(g, m, ropePolicy(m, fin, c, r), ropeMax)) s = -1e20f;
                 else if (Vector3Distance(m.b.pos, fin) < 2) s = 1e6f - i;
             }
             // then fall freely: the turn ended (rope dropped) or a new swing may still save a bad landing
-            bool over = i >= raceTimer - 1, rescue = !over && !m.b.grounded;
+            bool over = i >= raceTimer - 1, rescue = !over && !m.b.grounded && g.ropeShots + hooked < Game::ROPE_SHOTS;  // a rescue needs a shot left
             float d = Vector3Distance(m.b.pos, fin), hy = m.b.pos.y;
             if (over) m.roped = false;
             for (int k = 0; k < 300 && s == 0 && !m.b.grounded; k++) {
@@ -382,6 +405,7 @@ Input Ai::race(const Game &g) {
                 else if (Vector3Distance(m.b.pos, fin) < 2) s = 1e6f - i - k;
             }
             if (s == 0) s = -Vector3Distance(m.b.pos, fin) - m.b.fall * 0.3f;
+            if (c.release >= 0 && !hooked) s = fminf(s, -1e19f);  // a miss only spends a rope shot
             if (s > raceBest) { raceBest = s; rope = c; }
         }
         if (raceWait > 0) { raceWait--; return Input{}; }
@@ -395,23 +419,63 @@ Input Ai::race(const Game &g) {
 
 // --- paths: W4M AIPathManager A* (0x492d80) over a node grid; each edge is played with the sim's own walk and jump code ---
 
-static constexpr float NODE = 0.5f;   // node spacing; W4M: sqrt(land area / 16000) (0x4b2a68), fixed here [unverified fit]
-static constexpr int MAX_ITER = 200;  // W4M m_nMaxNumIterations cap (0x4b0ba6); ours: retreat 40 (2 s of path), crate 100 (within 18 m)
-static int cellOf(float v) { return (int)floorf(v / NODE); }
+static constexpr int MAX_ITER = 200;  // W4M m_nMaxNumIterations, every pathfind (0x4b0ba6)
 static int octile(int dx, int dz) { dx = std::abs(dx), dz = std::abs(dz); return 10 * std::max(dx, dz) + 4 * std::min(dx, dz); }  // W4M 0x4923a9
-static int64_t keyOf(Vector3 p) { return ((int64_t)cellOf(p.x) * 100003 + cellOf(p.z)) * 1009 + (int)floorf(p.y) + 100; }  // cell and 1 m layer
+
+// W4M PopulatePathingNodes 0x4b2800: node spacing sqrt(Σ NodeGrid box areas / 16000), the boxes merged where they overlap (0x4ae320);
+// ours: one box per island of land above the sea (0.5 m columns, 8-connected), overlapping boxes merged
+static float nodeSpacing(const Terrain &t) {
+    const int N = Terrain::NX / 2, M = Terrain::NZ / 2, y0 = (int)ceilf(Terrain::WATER / Terrain::VOX);
+    std::vector<char> land(N * M, 0);
+    for (int z = 0; z < M; z++)
+        for (int x = 0; x < N; x++)
+            for (int y = Terrain::NY - 1; y >= y0 && !land[z * N + x]; y--) land[z * N + x] = t.d[((size_t)(2 * z) * Terrain::NY + y) * Terrain::NX + 2 * x] > 0;
+    struct Box { int x0, z0, x1, z1; };
+    std::vector<Box> boxes;
+    std::vector<int> stack;
+    for (int i = 0; i < N * M; i++) {
+        if (land[i] != 1) continue;
+        Box b{N, M, -1, -1};
+        stack = {i}, land[i] = 2;
+        while (!stack.empty()) {
+            int c = stack.back(), cx = c % N, cz = c / N;
+            stack.pop_back();
+            b = {std::min(b.x0, cx), std::min(b.z0, cz), std::max(b.x1, cx), std::max(b.z1, cz)};
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = cx + dx, nz = cz + dz;
+                    if (nx >= 0 && nz >= 0 && nx < N && nz < M && land[nz * N + nx] == 1) land[nz * N + nx] = 2, stack.push_back(nz * N + nx);
+                }
+        }
+        boxes.push_back(b);
+    }
+    for (bool merged = true; merged;) {  // W4M's merge passes
+        merged = false;
+        for (size_t a = 0; a < boxes.size() && !merged; a++)
+            for (size_t c = a + 1; c < boxes.size() && !merged; c++) {
+                Box &p = boxes[a], &q = boxes[c];
+                if (p.x0 > q.x1 || q.x0 > p.x1 || p.z0 > q.z1 || q.z0 > p.z1) continue;
+                p = {std::min(p.x0, q.x0), std::min(p.z0, q.z0), std::max(p.x1, q.x1), std::max(p.z1, q.z1)};
+                boxes.erase(boxes.begin() + c), merged = true;
+            }
+    }
+    float area = 0;  // m², the 1/20 unit scale cancels out
+    for (const Box &b : boxes) area += (b.x1 - b.x0 + 1) * (b.z1 - b.z0 + 1) * 0.25f;
+    return fmaxf(Terrain::VOX, sqrtf(area / 16000));
+}
 
 static Mover moverOf(const Game &g) {
     const Worm &w = g.worms[g.current];
-    return {{w.pos, w.vel, w.grounded}, w.yaw, w.pitch, false, {}, 0, g.prevButtons, g.jumpDelay, g.jumpKind};
+    return {{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, false, {}, 0, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault};
 }
 
 // A player's inputs for one path step; r.done once the worm stands still after it.
 static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::StepRun &r) {
     Input in;
     r.t++;
-    const bool still = m.b.grounded && Vector3LengthSqr(m.b.vel) < 1e-4f && !m.jump;
+    const bool still = m.b.grounded && Vector3LengthSqr(m.b.vel) < 1e-4f && !m.jump && !m.vault.t;
     if (r.air) { r.done = still || r.t > 400; return in; }
+    if (m.vault.t) { in.walk = 127; return in; }  // releasing the stick would drop it back (W4M Vaulting)
     if (s.move == 0) {
         Vector3 d = s.to - m.b.pos;
         float h = sqrtf(d.x * d.x + d.z * d.z), dy = angle(atan2f(d.x, d.z) - m.yaw), ws = Game::WALK_SPEED * (g.cfg.wormpot & WP_QUICK_WALK ? 2 : 1);
@@ -447,9 +511,11 @@ static bool runStep(const Game &g, Mover &m, const Ai::Step &s, int &ticks) {
     bool rest = false;  // the last tick left a still worm unchanged: turning on the spot can skip stepBody
     for (ticks = 0; ticks < 600 && !r.done; ticks++) {
         Input in = stepInput(g, m, s, r);
-        if (rest && !in.walk && !in.buttons && !m.jump) { m.yaw += in.turn / 127.0f * 2.5f * DT; m.prev = in.buttons; continue; }
+        if (rest && !in.walk && !in.buttons && !m.jump && !m.vault.t) { m.yaw += in.turn / 127.0f * 2.5f * DT; m.prev = in.buttons; continue; }
         Body before = m.b;
         if (!move(g, m, in, 0)) return false;
+        float h0 = Vector2Length({before.vel.x, before.vel.z}), h1 = Vector2Length({m.b.vel.x, m.b.vel.z});
+        if (s.move && !before.grounded && !m.b.grounded && h1 < h0 * 0.5f) return false;  // the arc hit a wall: not in W4M's jump reach table [assumed]
         rest = m.b.grounded && before.grounded && before.pos.x == m.b.pos.x && before.pos.y == m.b.pos.y && before.pos.z == m.b.pos.z &&
                Vector3LengthSqr(before.vel) == 0 && Vector3LengthSqr(m.b.vel) == 0;
     }
@@ -474,8 +540,16 @@ static float haven(const Game &g, int team, Vector3 p, Vector3 boom) {
 }
 
 // Destination scoring (W4M ScoreAllMoveNodes, 0x4ab490) then A* to the best ones, one unit of work per call.
+static int64_t cellKey(Vector3 p, float node) {  // cell and 1 m layer
+    return ((int64_t)floorf(p.x / node) * 100003 + (int64_t)floorf(p.z / node)) * 1009 + (int)floorf(p.y) + 100;
+}
+
 struct Search {
     enum { Crate, Closer, Retreat };
+    float node = 0.5f;  // W4M node spacing (nodeSpacing)
+    std::vector<int64_t> blocked;  // W4M path-failed blockages (0x490551): nodes no edge may end on
+    int cellOf(float v) const { return (int)floorf(v / node); }
+    int64_t keyOf(Vector3 p) const { return cellKey(p, node); }
     int purpose = Crate, team = 0, limit = 0;  // limit: most ticks the path may take
     Vector3 boom{}, target{};                  // Retreat: the blast to flee; Closer: the worm to approach
     std::vector<std::pair<float, Vector3>> cands;
@@ -486,7 +560,7 @@ struct Search {
     std::vector<Node> nodes;
     std::unordered_map<int64_t, int> index;
     int iter = 0, best = 0, cur = -1, mv = 0;  // cur: node being expanded, mv: its next edge (move type x 8 + direction)
-    uint8_t walked = 0;                        // directions cur could walk to: no jump is tried there
+    uint8_t walked = 0;                        // directions cur could walk to: a diagonal needs both of its sides
     bool started = false;
     int h(Vector3 p) const {  // octile cells to the nearest goal
         int b = 1 << 20;
@@ -507,16 +581,15 @@ struct Search {
 void Ai::startSearch(const Game &g, int purpose, Vector3 to) {
     auto s = std::make_shared<Search>();
     const Worm &w = g.worms[g.current];
-    s->purpose = purpose, s->team = w.team, s->boom = lastBoom, s->target = to, s->root = moverOf(g);
+    s->purpose = purpose, s->team = w.team, s->boom = lastBoom, s->target = to, s->root = moverOf(g), s->node = node, s->blocked = blocked;
     if (purpose == Search::Retreat) {  // the weapon's retreat time (W4M timer from PostLaunchDelay's end), after the 1 s pause
         const WeaponDef &wd = WEAPONS[plan.weapon];
         s->limit = g.retreatTicks(wd) + msTicks(wd.postLaunch) - 60;
     } else s->limit = (int)((thinkTimer * DT - 10) / DT);  // ForbidMoveIfWouldLeaveTimeLessThan 10 s
     if (purpose == Search::Crate) s->cands = {{0, to}}, s->scored = 1;
-    else {  // W4M scores a 21 x 21 node window around the worm (0x4ab5bc); the retreat looks within its reach [unverified]
-        int r = purpose == Search::Retreat ? 4 : 10;
-        for (int i = -r; i <= r; i++)
-            for (int j = -r; j <= r; j++) if (i || j) s->cands.push_back({0, {w.pos.x + i, w.pos.y + 5, w.pos.z + j}});
+    else {  // W4M scores a 21 x 21 node window around the worm (0x4ab5bc), the retreat's too [assumed: same window]
+        for (int i = -10; i <= 10; i++)
+            for (int j = -10; j <= 10; j++) if (i || j) s->cands.push_back({0, {w.pos.x + i * node, w.pos.y + 5, w.pos.z + j * node}});
         s->here = s->score(g, w.pos) + 1;  // a gain of 1 m or one haven point [unverified threshold]
     }
     search = s;
@@ -531,6 +604,7 @@ void Ai::searchStep(const Game &g) {
         for (int i = end; i > 0; i = s.nodes[i].parent) steps.push_back(s.nodes[i].step);
         std::reverse(steps.begin(), steps.end());
         int purpose = s.purpose;
+        if (end > 0) lastPurpose = purpose, lastGoals = s.cands, lastTarget = s.target;  // for a repath
         search.reset();
         if (end > 0) takePath(g, std::move(steps));
         if (purpose == Search::Retreat) return;
@@ -545,7 +619,7 @@ void Ai::searchStep(const Game &g) {
         if (s.scored == s.cands.size()) {
             std::stable_sort(s.cands.begin(), s.cands.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
             while (!s.cands.empty() && s.cands.back().first <= s.here) s.cands.pop_back();
-            if (s.cands.size() > 3) s.cands.resize(3);  // ponytail: one A* toward the best three; W4M repaths around path-failed blockages
+            if (s.cands.size() > 3) s.cands.resize(3);  // ponytail: one A* toward the best three [ours]
         }
         return;
     }
@@ -554,21 +628,21 @@ void Ai::searchStep(const Game &g) {
         s.started = true, s.cur = -1, s.iter = 0, s.best = 0;
         Vector3 p = s.root.b.pos;
         s.nodes = {{s.root, {}, -1, 0, s.h(p), 0, true}};
-        s.index = {{keyOf(p), 0}};
+        s.index = {{s.keyOf(p), 0}};
         return;
     }
-    if (s.cur < 0) {  // pop the open node with the lowest F; ponytail: weighted F = G + 2H (W4M: G + H) cuts the edges simulated
+    if (s.cur < 0) {  // pop the open node with the lowest F = G + H (W4M 0x492d80)
         int bi = -1;
         for (size_t i = 0; i < s.nodes.size(); i++)
-            if (s.nodes[i].open && (bi < 0 || s.nodes[i].g + 2 * s.nodes[i].h < s.nodes[bi].g + 2 * s.nodes[bi].h)) bi = (int)i;
+            if (s.nodes[i].open && (bi < 0 || s.nodes[i].g + s.nodes[i].h < s.nodes[bi].g + s.nodes[bi].h)) bi = (int)i;
         const Vector3 p = bi < 0 ? Vector3{} : s.nodes[bi].m.b.pos;
         if (bi >= 0 && s.goal(p)) return done(bi);
-        if (bi >= 0 && s.iter++ < (s.purpose == Search::Retreat ? 40 : s.purpose == Search::Crate ? 100 : MAX_ITER)) s.nodes[bi].open = false, s.cur = bi, s.mv = 0, s.walked = 0;
+        if (bi >= 0 && s.iter++ < MAX_ITER) s.nodes[bi].open = false, s.cur = bi, s.mv = 0, s.walked = 0;
     }
     if (s.cur < 0) {  // W4M takes a partial path unless it is too short [minimum unverified]
         const Search::Node &b = s.nodes[s.best];
         Vector3 e = b.m.b.pos;
-        if (s.purpose != Search::Crate && s.best > 0 && octile(cellOf(e.x) - cellOf(s.root.b.pos.x), cellOf(e.z) - cellOf(s.root.b.pos.z)) >= 20 &&
+        if (s.purpose != Search::Crate && s.best > 0 && octile(s.cellOf(e.x) - s.cellOf(s.root.b.pos.x), s.cellOf(e.z) - s.cellOf(s.root.b.pos.z)) >= 20 &&
             s.score(g, e) > s.here)
             return done(s.best);
         s.tries++, s.started = false;
@@ -577,33 +651,38 @@ void Ai::searchStep(const Game &g) {
     const int bi = s.cur;
     const Search::Node n = s.nodes[bi];
     const Vector3 p = n.m.b.pos;
-    const int cx = cellOf(p.x), cz = cellOf(p.z);
+    const int cx = s.cellOf(p.x), cz = s.cellOf(p.z);
     const Level &L = levelOf(g, s.team);
     // one edge per unit (W4M expands a node in one go; ours runs each edge in the sim): WALK, JUMP_FORWARD, JUMP_BACKFLIP x 8 directions
     while (s.mv < 24 && ((s.mv / 8 == 1 && !L.jump) || (s.mv / 8 == 2 && !L.flip))) s.mv++;  // MovementJumpForward/BackflipAllowed
     if (s.mv >= 24) { s.cur = -1; return; }
+    static const int ORDER[8] = {0, 2, 4, 6, 1, 3, 5, 7};  // the sides of a diagonal first
     const uint8_t mv = (uint8_t)(s.mv / 8);
-    const int d = s.mv++ % 8;
-    if ((mv && (s.walked >> d & 1)) || n.ticks + 10 > s.limit) return;  // ponytail: jumps only where walking fails; W4M tries both
-    Step st{{(cx + DX[d] + 0.5f) * NODE, p.y, (cz + DZ[d] + 0.5f) * NODE}, atan2f((float)DX[d], (float)DZ[d]), mv};
+    const int d = mv ? s.mv % 8 : ORDER[s.mv % 8];
+    s.mv++;
+    if (n.ticks + 10 > s.limit) return;
+    // W4M 0x492510: a diagonal walk only if both of its sides are walkable (ours: walked from this node [assumed equivalent])
+    if (!mv && (d & 1) && !((s.walked >> ((d + 7) % 8) & 1) && (s.walked >> ((d + 1) % 8) & 1))) return;
+    Step st{{(cx + DX[d] + 0.5f) * s.node, p.y, (cz + DZ[d] + 0.5f) * s.node}, atan2f((float)DX[d], (float)DZ[d]), mv};
     Mover m = n.m;
     int ticks;
     if (!runStep(g, m, st, ticks)) return;
-    if (n.ticks + ticks + (int)(s.h(m.b.pos) / 10 * NODE / Game::WALK_SPEED / DT) > s.limit) return;  // can't reach a goal in time
+    if (n.ticks + ticks + (int)(s.h(m.b.pos) / 10 * s.node / Game::WALK_SPEED / DT) > s.limit) return;  // can't reach a goal in time
     Vector3 e = m.b.pos;
-    int ex = cellOf(e.x), ez = cellOf(e.z);
+    int ex = s.cellOf(e.x), ez = s.cellOf(e.z);
     if (ex == cx && ez == cz) return;
     if (!mv) s.walked |= 1 << d;
+    if (std::find(s.blocked.begin(), s.blocked.end(), s.keyOf(e)) != s.blocked.end()) return;
     if (mv) st.to = e;  // a jump's landing, for MovementJumpError
     int cost = n.g + octile(ex - cx, ez - cz) + (mv == 1 ? 40 : mv == 2 ? 60 : 0);  // W4M 0x491fd8; jumps +40, backflips +60 (0x492008, 0x492003)
     Search::Node nn{m, st, bi, cost, s.h(e), n.ticks + ticks, true};
-    auto it = s.index.find(keyOf(e));
+    auto it = s.index.find(s.keyOf(e));
     if (it != s.index.end()) {
         Search::Node &o = s.nodes[it->second];
         if (o.open && cost < o.g) o = nn;
         return;
     }
-    s.index[keyOf(e)] = (int)s.nodes.size();
+    s.index[s.keyOf(e)] = (int)s.nodes.size();
     s.nodes.push_back(nn);
     const Search::Node &b = s.nodes[s.best];
     if (nn.h < b.h || (nn.h == b.h && nn.g < b.g)) s.best = (int)s.nodes.size() - 1;
@@ -626,17 +705,31 @@ void Ai::takePath(const Game &g, std::vector<Step> &&p) {
     stepRun = {};
 }
 
-bool Ai::follow(const Game &g, Input &in) {  // false once the path is over
+bool Ai::follow(const Game &g, Input &in) {  // false once the path is over, or failed (pathFailed)
     if (pathAt >= path.size()) return false;
     in = stepInput(g, moverOf(g), path[pathAt], stepRun);
-    if (stepRun.done) pathAt++, stepRun = {};
+    if (!stepRun.done) return true;
+    const Step &st = path[pathAt];
+    bool off = stepRun.stuck;  // a walk held off its node (a jump lands off it on purpose: MovementJumpError)
+    pathAt++, stepRun = {};
+    if (!off) return true;
+    pathFailed = true, blocked.push_back(cellKey(st.to, node)), path.clear();  // W4M "Adding path-failed blockage at"
+    return false;
+}
+
+// W4M AIPathAction 0x490551: on a failed step, block its node and pathfind again to the same goal; past 2 repaths, no more movement
+bool Ai::repath(const Game &g) {
+    pathFailed = false;
+    if (++repaths > 2 || lastPurpose < 0) { walks = 3; return false; }  // "Has already done too many repaths, forbidding further movement"
+    startSearch(g, lastPurpose, lastTarget);
+    search->cands = lastGoals, search->scored = lastGoals.size();
     return true;
 }
 
 // W4M 0x49b210: think while under the frame's budget; an overrun carries to the next frames (at most one frame's worth).
 void Ai::slice(const Game &g) {
     debt = std::max(0L, debt - budget);
-    while (debt < budget && (search || (mode == Mode::Eval && g.phase == Phase::Aim))) {
+    while (debt < budget && (search || (mode == Mode::Eval && g.phase == Phase::Aim && stage >= 0))) {  // stage < 0: think() starts the next eval
         unsigned long s0 = Terrain::samples;
         unit(g);
         debt += (long)(Terrain::samples - s0) + 100;
@@ -672,7 +765,7 @@ void Ai::unit(const Game &g) {
     if (!threats.empty()) {  // ProjectileSweetSpotDistance (0x4a9be0): also aim that far on a threatened worm's safe side
         const Worm &e = g.worms[threats.back()];
         Vector3 away = awayFromThreat(g, e);
-        if (Vector3LengthSqr(away) > 0) tpos.push_back(e.pos + away * levelOf(g, g.worms[g.current].team).sweet), tworm.push_back(threats.back());
+        if (Vector3LengthSqr(away) > 0) tpos.push_back(e.pos + away * levelOf(g, g.worms[cur(g)].team).sweet), tworm.push_back(threats.back());
         threats.pop_back();
         return;
     }
@@ -683,13 +776,29 @@ void Ai::unit(const Game &g) {
         topX += 8;
         return;
     }
-    const int T = (int)tpos.size(), N = (int)WEAPONS.size() * T, team = g.worms[g.current].team;
+    const int T = (int)tpos.size(), N = (int)WEAPONS.size() * T, team = g.worms[cur(g)].team;
     while (stage < N && !g.usable(team, stage / T)) stage++, sub = 0;  // unusable (or scheme-delayed) weapons are skipped for free
     if (stage < N) {
         int n = evalWeapon(g, stage / T, stage % T, sub);
         if (++sub >= n) sub = 0, stage++;
     }
-    if (stage >= N) { stage = -1; decide(g); }
+    if (stage >= N) { stage = -1; selecting ? nextSelect(g) : decide(g); }
+}
+
+// W4M worm-select mode (0x4a4f2a, flag 0x9560c1): with a Worm Select in hand the CPU plans for every worm of its team and plays the best;
+// a worm with no plan stores a skipped-turn memory (0x499cac -> 0x4a68c0), and scales that worm's plans by 1 / (1 + 5 Σ effect) (0x4a57c0)
+float Ai::skipScale(int worm) const {
+    float sum = 0;
+    for (const Skip &k : skipped) if (k.worm == worm) sum += k.effect;
+    return 1 / (1 + 5 * sum);
+}
+
+void Ai::nextSelect(const Game &g) {
+    if (plan.weapon < 0 || plan.score <= 0) skipped.push_back({selWorms[selAt], 1});
+    else if (selBest < 0 || plan.rank > selRank) selRank = plan.rank, selBest = selWorms[selAt];
+    if (++selAt < selWorms.size()) return;  // stage -1: the next worm's eval
+    selecting = false, selDone = true;
+    if (selBest >= 0 && selBest != g.current) selTarget = selBest;  // pressed through Change Worm, then planned again as itself
 }
 
 // --- shot planning ---
@@ -703,7 +812,19 @@ static Vector3 strikeFrom(const Game &g, float top, const WeaponDef &wd, Vector3
 }
 
 void Ai::startEval(const Game &g) {
-    const Worm &w = g.worms[g.current];
+    const Worm &cw = g.worms[g.current];
+    int changer = owned(g, cw.team, Kind::ChangeWorm);
+    if (!selDone && !selecting && changer >= 0 && !g.shotsLeft && !walks) {
+        selWorms = {g.current};  // ours: the worms our Change Worm reaches with the ammo left, one use a step
+        for (int k = 1, n = 0, ammo = g.ammo[cw.team][changer]; k < g.perTeam; k++) {
+            int c = cw.team * g.perTeam + (g.current - cw.team * g.perTeam + k) % g.perTeam;
+            if (g.worms[c].alive && (ammo < 0 || ++n <= ammo)) selWorms.push_back(c);
+        }
+        if (selWorms.size() > 1) selecting = true, selAt = 0, selBest = -1, selRank = -1e30f;
+        else selDone = true;
+    }
+    me = selecting ? selWorms[selAt] : -1;
+    const Worm &w = g.worms[cur(g)];
     const Level &L = levelOf(g, w.team);
     plan = Plan{};
     tpos.clear();
@@ -729,6 +850,7 @@ void Ai::startEval(const Game &g) {
         }
     stage = sub = 0;
     thinkTimer = g.timer;
+    if (!selecting || !selAt) regress(g);
     if (topX < 0) {  // once a turn: nothing carves the land before the shot
         top = 0, topX = Terrain::NX;
         for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Airstrike && g.ammo[w.team][i]) topX = 0;
@@ -736,7 +858,8 @@ void Ai::startEval(const Game &g) {
 }
 
 int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
-    const Worm &w = g.worms[g.current];
+    const int me = cur(g);
+    const Worm &w = g.worms[me];
     const WeaponDef &wd = WEAPONS[wi];
     const int team = w.team;
     const Level &L = levelOf(g, team);
@@ -749,13 +872,16 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
     const float pref = n == "Prod" ? 0.3f : n == "Cluster Grenade" ? L.cluster : n == "Gas Canister" ? L.gas : wd.kind == Kind::Homing ? L.homing : 1;
     const float taste = (1 + L.randomise * ((h >> 8) / 16777216.0f * 2 - 1)) * pref * (wi == g.picked[team] ? 0.6f : 1);
     auto consider = [&](float score, float yaw, float pitch, int charge, int target) {
+        for (const Fail &f : failed)  // W4M 0x4a6590: this worm at a target that survived it, x(1 - effect / 2), another weapon 0.2 of that
+            if (f.worm == me && f.target == target) score *= 1 - 0.5f * f.effect * (f.weapon == wi ? 1 : 0.2f);
+        if (selecting) score *= skipScale(me);
         float rank = score > 0 ? score * taste : score;
         if (rank > plan.rank) plan = {wi, charge, target, yaw, pitch, score, rank};
     };
     int cands = 0;
     auto pick = [&] { return sub < 0 || cands++ == sub; };  // sub >= 0: only that candidate, the rest are counted
     auto shell = [&](Vector3 at) {
-        Outcome o(g, L);
+        Outcome o(g, L, me);
         o.blast(at, blastOf(wd, false), wd.poison);
         if (wd.poison > 0 && wd.fuse > 0) o.blast(at, {0, Game::GAS_RADIUS - R, 0, 0, 0, 0}, wd.poison);  // gas cloud; ponytail: no wind drift
         if (wd.clusters) {  // expected bomblet share
@@ -776,15 +902,12 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
         case Kind::Shell:
             if (dropped(wd) && pick()) {  // also set it down at the feet, facing the target
                 Vector3 d = dirOf(yawE, 0), out;
-                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE, d)), d * wd.speed, wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), d * wd.speed, wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
             }
             // constant acceleration A: hit T at time t with V = (T - P - A t(t+DT)/2) / t (semi-implicit Euler)
             for (float t = 0.2f; t < 4.5f; t += 0.43f) {  // 11 arcs, as W4M samples about 11 speeds (0x4ace50)
-                Vector3 A = {wd.wind || (g.cfg.wormpot & WP_WIND_ALL) ? wind * Game::WIND_ACCEL : 0, -grav(g) * wd.grav, 0}, P = w.pos, V{};
-                for (int it = 0; it < 2; it++) {
-                    V = (e - P - A * (0.5f * t * (t + DT))) / t;
-                    P = w.pos + Vector3Normalize(V) * 1.2f;
-                }
+                Vector3 A = {wd.wind || (g.cfg.wormpot & WP_WIND_ALL) ? wind * Game::WIND_ACCEL : 0, -grav(g) * wd.grav, 0}, P = launchPoint(wd, w.pos, yawE);
+                Vector3 V = (e - P - A * (0.5f * t * (t + DT))) / t;
                 float sp = Vector3Length(V), pitch = asinf(V.y / sp), yaw = atan2f(V.x, V.z);
                 const float lo = launchSpeed(wd, 0);
                 if (sp > wd.speed || sp < lo || pitch < -1.2f || pitch > 1.45f || !pick()) continue;
@@ -792,7 +915,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                 float pw = 0;
                 for (int j = 0; j < n; j++) pw = fminf(1, pw + DT / 1.5f);
                 Vector3 d = dirOf(yaw, pitch), out;
-                if (fly(g, wd, muzzle(g.terrain, w.pos, w.pos + d * 1.2f), d * launchSpeed(wd, pw), wind, false, out)) consider(shell(out), yaw, pitch, n, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, P), d * launchSpeed(wd, pw), wind, false, out)) consider(shell(out), yaw, pitch, n, ti);
             }
             break;
         case Kind::Homing: {
@@ -804,14 +927,14 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                 if (!pick()) continue;
                 float pw = 0;
                 for (int j = 0; j < n; j++) pw = fminf(1, pw + DT / 1.5f);
-                if (fly(g, wd, muzzle(g.terrain, w.pos, w.pos + d * 1.2f), d * launchSpeed(wd, pw), wind, false, out, &tgt)) consider(shell(out), yawE, pitch, n, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), d * launchSpeed(wd, pw), wind, false, out, &tgt)) consider(shell(out), yawE, pitch, n, ti);
             }
             break;
         }
         case Kind::Shotgun: {
             if (!pick()) break;
             float pitch = atan2f(to.y - (isWorm ? 0 : 0.3f), horiz);
-            Vector3 d = dirOf(yawE, pitch), o = muzzle(g.terrain, w.pos, w.pos + d * 0.6f), hit;
+            Vector3 d = dirOf(yawE, pitch), o = muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), hit;
             float dist = g.terrain.raycast({o, d}, 60, &hit) ? Vector3Distance(o, hit) : 60;
             int struck = -1;
             for (size_t i = 0; i < g.worms.size(); i++) {
@@ -820,7 +943,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                 if (x.alive && &x != &w && t > 0 && t < dist && Vector3Distance(x.pos, o + d * t) < R + 0.1f) dist = t, struck = (int)i;
             }
             if (dist < 60 && pitch > -1.2f && pitch < 1.45f) {
-                Outcome oc(g, L);
+                Outcome oc(g, L, me);
                 for (int s = 0; s < wd.shots; s++) {
                     Blast b = blastOf(wd, false);
                     if (struck >= 0) b.damage = 0;
@@ -840,10 +963,10 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                     at.yaw = yawE + dy;
                     const float yaw = at.yaw;
                     Vector3 v = dirOf(yaw, pitch) * wd.speed + Vector3{0, wd.bounce, 0};
-                    Outcome oc(g, L);
+                    Outcome oc(g, L, me);
                     for (size_t i = 0; i < g.worms.size(); i++) {
                         const Worm &x = g.worms[i];
-                        if (x.alive && (int)i != g.current && meleeHits(at, x.pos, wd)) oc.strike((int)i, (int)wd.damage, v);
+                        if (x.alive && (int)i != me && meleeHits(at, x.pos, wd)) oc.strike((int)i, (int)wd.damage, v);
                     }
                     consider(oc.total(), yaw, pitch, 0, ti);
                 }
@@ -851,16 +974,56 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
         case Kind::Sheep:
         case Kind::OldWoman: {
             if (!isWorm || !pick()) break;
-            Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE, f)), f, e, end);
+            Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), f, e, end);
             if (Vector3Distance(p, e) < 2) consider(shell(p), yawE, w.pitch, 0, ti);
             break;
         }
-        case Kind::SuperSheep:
-            if (!isWorm || wd.name == "Starburst") break;  // W4M: the Starburst vapourises its rider
+        case Kind::SuperSheep:  // and the Starburst: W4M CAIPlanAttackStarburst 0x4a43a0 adds its rider's death (0x49ed30, all its hp)
+            if (!isWorm) break;
             for (float pitch : {0.3f, 0.9f}) {
                 if (!pick()) continue;
                 Vector3 out;
-                if (superFly(g, wd, w.pos, yawE, pitch, e, out) && Vector3Distance(out, e) < 2) consider(shell(out), yawE, pitch, 0, ti);
+                if (!superFly(g, wd, w.pos, yawE, pitch, e, out) || Vector3Distance(out, e) >= 2) continue;
+                Outcome o(g, L, me);
+                o.blast(out, blastOf(wd, false));
+                if (wd.name == "Starburst") o.dmg[o.self] += w.hp, o.hit[o.self] = 1;  // Worm.Vapourize
+                consider(o.total(), yawE, pitch, 0, ti);
+            }
+            break;
+        case Kind::Mine: {  // W4M CAIPlanAttackLandmine: CloseRangeExplosive 0x4a2c70, the blast scored where it is laid
+            Vector3 hit;
+            if (!isWorm || !pick() || !ground(g, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), hit)) break;
+            Outcome o(g, L, me);
+            o.blast(hit, Game::MINE_BLAST);
+            o.hit[o.self] = 0, o.dmg[o.self] = 0;  // as a dropped shell: retreat() walks clear
+            consider(o.total(), yawE, 0, 0, ti);
+            break;
+        }
+        case Kind::Scouser: {  // W4M CAIPlanAttackScouser; ours follows our scouser: walks, swallows the first worm, drops it SCOUSER_FLOAT s on
+            if (!isWorm || !pick()) break;
+            Vector3 p = muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), v = flat(yawE) * wd.speed;
+            int prey = -1;
+            for (int i = 0; i * DT < wd.fuse && p.y > g.water - 2 && prey < 0; i++) {
+                walkerStep(g.terrain, p, v, grav(g));
+                for (size_t j = 0; j < g.worms.size() && prey < 0; j++)
+                    if (g.worms[j].alive && (int)j != me && Vector3Distance(p, g.worms[j].pos) <= R + 0.4f) prey = (int)j;
+            }
+            if (prey < 0) break;
+            float fall = 0, up = 1.2f * Game::SCOUSER_FLOAT;  // ponytail: the climb only, no wind drift
+            bool lives = fling(g, g.worms[prey].pos + Vector3{0, up, 0}, {0, 0, 0}, fall);
+            Outcome o(g, L, me);
+            o.strike(prey, lives ? wd.damage + fall : 1000, g.worms[prey].vel);
+            consider(o.total(), yawE, w.pitch, 0, ti);
+            break;
+        }
+        case Kind::Flood:  // W4M CAIPlanAttackFlood 0x4a3640: every target under Water.Level + Flood.Delta scores a kill (damage 1000)
+            if (k != 0 || !pick()) break;  // one plan, whatever the target
+            {
+                Outcome o(g, L, me);
+                float level = fminf(g.water + wd.speed, Terrain::WATER + 15);
+                for (size_t i = 0; i < g.worms.size(); i++)
+                    if (g.worms[i].alive && g.worms[i].pos.y < level) o.strike((int)i, 1000, g.worms[i].vel);
+                consider(o.total(), w.yaw, w.pitch, 0, ti);
             }
             break;
         case Kind::Airstrike:
@@ -871,7 +1034,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                     if (!pick()) continue;
                     float yaw = yawE + dy;
                     Vector3 tgt = reticle(g, w.pos, yaw, pitch), f = flat(yaw), out;
-                    Outcome oc(g, L);
+                    Outcome oc(g, L, me);
                     if (wd.kind == Kind::Airstrike && wd.fuse > 0) {  // steered bomber: think() drops the cows over the target
                         if (dy != 0 || pitch > 1.4f) continue;
                         for (int i = 0; i < std::min(wd.clusters, 2); i++) oc.blast(e - Vector3{0, R, 0}, blastOf(wd, true));
@@ -887,14 +1050,28 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                     if (oc.started) consider(oc.total(), yaw, pitch, 0, ti);
                 }
             break;
-        default: break;  // mine, scouser, flood, sentry, abduction and utilities: W4M has no AI plan for them
+        default: break;  // sentry, abduction, bubble, girder, teleport and utilities: W4M has no AI plan for them (no CAIPlanAttack*)
         }
     }
     return cands;
 }
 
+// W4M think start 0x49af70: CheckPlanResult 0x4a6ab0 (the last attack failed if its target kept its hp and place), then
+// RegressFailedMemory 0x4a5b10 (x0.99, 0 once the target changed) and RegressImproveAccuracyMemory 0x4a6080 (x0.95); < 0.1 is dropped
+void Ai::regress(const Game &g) {
+    auto same = [&](int t, Vector3 at, int hp) { const Worm &x = g.worms[t]; return x.hp == hp && x.pos.x == at.x && x.pos.y == at.y && x.pos.z == at.z; };
+    if (recent.weapon >= 0 && same(recent.target, recent.at, recent.hp)) failed.push_back(recent);
+    recent.weapon = -1;
+    for (Fail &f : failed) f.effect = same(f.target, f.at, f.hp) ? f.effect * 0.99f : 0;
+    failed.erase(std::remove_if(failed.begin(), failed.end(), [](const Fail &f) { return f.effect < 0.1f; }), failed.end());
+    for (Skip &k : skipped) k.effect *= 0.9f;  // RegressSkippedTurnMemory 0x4a61b0
+    skipped.erase(std::remove_if(skipped.begin(), skipped.end(), [](const Skip &k) { return k.effect < 0.1f; }), skipped.end());
+    for (Shot &s : memory) s.effect *= 0.95f;
+    memory.erase(std::remove_if(memory.begin(), memory.end(), [](const Shot &s) { return s.effect < 0.1f; }), memory.end());
+}
+
 // Shot is ready: W4M 0x4a4580 scales each launch-velocity component by 1 ± ShotError (game-derived seed: same state, same shot),
-// divided by 1 + MemoryImproveAccuracyEffect · earlier shots from about here at about this target (MatchRadius 200 units).
+// divided by 1 + MemoryImproveAccuracyEffect · the match with earlier shots (0x4a5d00).
 void Ai::finish(const Game &g) {
     const Worm &w = g.worms[g.current];
     const Level &L = levelOf(g, w.team);
@@ -902,14 +1079,17 @@ void Ai::finish(const Game &g) {
     uint32_t r = (salt ^ (uint32_t)g.shotsLeft * 2654435761u) + (uint32_t)walks * 40503u;  // turn-start state: not the think's length
     auto noise = [&] { r = r * 1664525u + 1013904223u; return ((r >> 8) / 16777216.0f) * 2 - 1; };
     Vector3 at = plan.target >= 0 ? g.worms[plan.target].pos : w.pos;
-    int matches = 0;
-    for (const Shot &s : memory) matches += s.team == w.team && Vector3Distance(s.from, w.pos) < 10 && Vector3Distance(s.at, at) < 10;
-    if (memory.size() >= 64) memory.erase(memory.begin());
-    memory.push_back({w.team, w.pos, at});
-    const float recall = 1 + L.memory * matches;
+    float match = 0;  // W4M 0x4a5640: effect x (1 - d_from / R)(1 - d_at / R) within MatchRadius R 200 units, any worm's records
+    for (const Shot &s : memory) {
+        float a = Vector3Distance(s.from, w.pos), b = Vector3Distance(s.at, at);
+        if (a < 10 && b < 10) match += s.effect * (1 - a / 10) * (1 - b / 10);
+    }
+    memory.push_back({w.pos, at, 1});
+    if (plan.target >= 0) recent = {plan.weapon, g.current, plan.target, at, g.worms[plan.target].hp, 1};  // StorePlanAttackMemory 0x4a6360
+    const float recall = 1 + L.memory * match;
     if (k == Kind::Airstrike || k == Kind::Donkey)  // ShotErrorStrike: target offset, here sideways only
         plan.yaw += atanf(noise() * L.strikeErr / recall / fmaxf(Vector3Distance(at, w.pos), 1));
-    else if (k != Kind::Melee && !dropped(WEAPONS[plan.weapon])) {  // direct weapons aim statically: ShotErrorDirectNonStrafe
+    else if (k != Kind::Melee && k != Kind::Mine && k != Kind::Flood && !dropped(WEAPONS[plan.weapon])) {  // direct weapons aim statically: ShotErrorDirectNonStrafe
         float e = (k == Kind::Shotgun ? L.directErr : L.shotErr) / recall;
         Vector3 v = dirOf(plan.yaw, plan.pitch) * (powered(k) ? plan.charge / 90.0f : 1);
         v = {v.x * (1 + e * noise()), v.y * (1 + e * noise()), v.z * (1 + e * noise())};
@@ -921,7 +1101,7 @@ void Ai::finish(const Game &g) {
     mode = Mode::Act;
     charged = aimed = 0;
     if (!g.shotsLeft && !w.nailed) {  // W4M plans the retreat with the attack ("move to ..., retreat to ..."), from the firing pose
-        lastBoom = dropped(WEAPONS[plan.weapon]) || plan.target < 0 ? w.pos : g.worms[plan.target].pos;
+        lastBoom = dropped(WEAPONS[plan.weapon]) || k == Kind::Mine || plan.target < 0 ? w.pos : g.worms[plan.target].pos;
         path.clear();
         startSearch(g, Search::Retreat, {});
         search->root.yaw = plan.yaw;
@@ -972,10 +1152,9 @@ void Ai::decide(const Game &g) {
     if (skip >= 0) { plan = Plan{skip, 0, -1}; plan.yaw = w.yaw; plan.pitch = w.pitch; mode = Mode::Act; }
 }
 
-static bool select(const Game &g, int wi, Input &in, int &picking) {
+static bool select(const Game &g, int wi, Input &in) {  // W4M: the CPU picks its weapon directly
     if (g.weapon == wi || g.shotsLeft) return true;
-    picking = wi;
-    in.buttons = g.prevButtons ? 0 : Input::NEXT_WEAPON;
+    in = Input::pick(wi);
     return false;
 }
 
@@ -993,7 +1172,7 @@ Input Ai::act(const Game &g) {
         else { finish(g); }
         return in;
     }
-    if (!select(g, plan.weapon, in, picking)) return in;
+    if (!select(g, plan.weapon, in)) return in;
     Kind k = WEAPONS[g.weapon].kind;
     if (k == Kind::Jetpack) {
         if (!g.prevButtons) { in.buttons = Input::FIRE; mode = Mode::Jet; }
@@ -1027,13 +1206,13 @@ Input Ai::jet(const Game &g) {
 // Retreat: the path planned with the shot, after the 1 s pause (0x49e6d0), while the shot flies too (W4M).
 Input Ai::retreat(const Game &g) {
     Input in;
-    if (++afterFire >= 60 && g.retreating()) follow(g, in);
+    if (search) { slice(g); return in; }  // a repath in progress
+    if (++afterFire >= 60 && g.retreating() && !follow(g, in) && pathFailed) repath(g);
     return in;
 }
 
 Input Ai::think(const Game &g) {
     Input in;
-    picking = -1;
     const Worm &w = g.worms[g.current];
     for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) lastBoom = e.pos;
     if (g.phase == Phase::Flying || (g.phase == Phase::Settle && !g.shots.empty())) {  // sheep: detonate next to an enemy; super sheep: autopilot
@@ -1059,12 +1238,14 @@ Input Ai::think(const Game &g) {
     if (!w.alive) return in;
     if (g.phase == Phase::Retreat) return retreat(g);
     if (g.phase != Phase::Aim) return in;
+    if (g.timer > lastTimer) selDone = selecting = false, selTarget = -1, me = -1;  // a new turn (a Change Worm keeps the selection)
     if (g.timer > lastTimer || g.current != worm) {
         worm = g.current;
         walk = walks = charged = aimed = wait = afterFire = shotsSeen = 0;
-        if (g.clock < lastClock) memory.clear();  // new match
+        if (g.clock < lastClock) memory.clear(), failed.clear(), skipped.clear(), recent.weapon = -1, node = 0;  // new match
         lastClock = g.clock;
-        moved = crateTried = closerTried = false;
+        if (!node) node = nodeSpacing(g.terrain);
+        moved = crateTried = closerTried = pathFailed = false, repaths = 0, lastPurpose = -1, blocked.clear();
         mode = Mode::Eval;
         stage = -1;
         search.reset();
@@ -1081,18 +1262,27 @@ Input Ai::think(const Game &g) {
     if (g.dropping()) return in;
     if (wait > 0) { wait--; return in; }  // W4M DelayAtStart is 0: no pause before thinking
     if (g.cfg.rules & RULE_ROPE_RACE) return race(g);
+    if (selTarget >= 0) {  // W4M WormSelect action: ours presses Change Worm until the chosen worm is current
+        int cw = owned(g, w.team, Kind::ChangeWorm);
+        if (g.current == selTarget || cw < 0 || !g.worms[selTarget].alive) { selTarget = -1; return in; }
+        if (select(g, cw, in) && !g.prevButtons) in.buttons = Input::FIRE;
+        return in;
+    }
     if (g.jetting) return mode == Mode::Jet ? jet(g) : Input{};  // drops back down; think again once landed
     if (g.roped) { in.buttons = g.prevButtons ? 0 : Input::JUMP; return in; }
     switch (mode) {
     case Mode::Eval:
     case Mode::Search:
         if (!w.grounded || Vector3LengthSqr(w.vel) > 0.01f) return in;  // wait to stand still
+        if (mode == Mode::Eval && stage < 0 && !selDone)  // worm select plans for worms that are not the current one: all of them still
+            for (const Worm &x : g.worms) if (x.alive && (!x.grounded || Vector3LengthSqr(x.vel) > 0.01f)) return in;
         if (mode == Mode::Eval && stage < 0) startEval(g);
         if (mode == Mode::Eval && tpos.empty()) return in;
         slice(g);
         return in;
     case Mode::Walk:
         if (follow(g, in)) return in;
+        if (pathFailed && repath(g)) return in;
         wait = 30, mode = Mode::Eval, stage = -1, crateTried = closerTried = false;  // W4M: 0.5 s after a path, then think again
         return in;
     case Mode::Act:

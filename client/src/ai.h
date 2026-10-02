@@ -7,11 +7,10 @@
 // Planning is a state machine sliced over frames by a work budget (W4M 80 cost units per frame); the plan never depends on the slicing.
 struct Ai {
     Input think(const Game &g);
-    int picking = -1;  // weapon NEXT_WEAPON steps toward this tick: shown instead of the ones on the way
     bool striking() const { return mode == Mode::Act && plan.weapon >= 0 && targeted(WEAPONS[plan.weapon].kind) && WEAPONS[plan.weapon].kind != Kind::Homing; }  // seen from the Blimp; its homing never locks
 
     struct Plan { int weapon = -1, charge = 0, target = -1; float yaw = 0, pitch = 0, score = -1e9f, rank = -1e9f; };  // rank: score + taste
-    struct RopePlan { float yaw = 0, pitch = 0; int release = -1; bool reel = false; };  // release < 0: walk toward the finish
+    struct RopePlan { float yaw = 0, pitch = 0; int release = -1; bool reel = false; };  // release -1: walk toward the finish, -2: stay
     struct RopeRun { int t = 0, held = 0, after = -1; bool fired = false, done = true; };
     struct Step { Vector3 to; float yaw = 0; uint8_t move = 0; };  // W4M path move: 0 WALK to `to`, 1 JUMP_FORWARD, 2 JUMP_BACKFLIP along yaw
     struct StepRun { int t = 0; bool air = false, done = false, stuck = false; };  // stuck: a walk held off its node
@@ -26,6 +25,23 @@ private:
     int sub = 0, thinkTimer = 0;  // sub: candidate of the (weapon, target) pair; thinkTimer: g.timer when the think began
     long debt = 0;                // work done ahead of the per-frame budget
     float top = 0;                // Game::landTop(), scanned up to column topX
+    float node = 0;               // W4M path node spacing for this match (0: not computed)
+    std::vector<int64_t> blocked;  // this turn's path-failed nodes
+    int repaths = 0, lastPurpose = -1;
+    bool pathFailed = false;
+    std::vector<std::pair<float, Vector3>> lastGoals;  // the last search's goals, for a repath
+    Vector3 lastTarget{};
+    bool repath(const Game &g);
+    struct Skip { int worm; float effect; };
+    std::vector<Skip> skipped;  // W4M skipped-turn memory (worm-select mode)
+    bool selecting = false, selDone = false;  // W4M worm-select mode: planning every worm of the team, done this turn
+    std::vector<int> selWorms;
+    size_t selAt = 0;
+    int selBest = -1, selTarget = -1, me = -1;  // me: the worm being planned (-1: the current one)
+    float selRank = 0;
+    int cur(const Game &g) const { return me >= 0 ? me : g.current; }
+    float skipScale(int worm) const;
+    void nextSelect(const Game &g);
     int topX = -1;                // -1: not scanned this turn
     bool moved = false, crateTried = false, closerTried = false;
     Vector3 goal{}, lastBoom{};
@@ -36,8 +52,12 @@ private:
     std::vector<Vector3> tpos;  // targets: enemy worms, then barrels/mines next to enemies
     std::vector<int> tworm;     // worm aimed at (nearest enemy for object targets)
     std::vector<int> threats;   // enemies whose sweet spot is still to be found
-    struct Shot { int team; Vector3 from, at; };
-    std::vector<Shot> memory;  // this match's shots: repeats get more accurate (W4M AIPlanMemory)
+    struct Shot { Vector3 from, at; float effect; };
+    std::vector<Shot> memory;  // W4M AIPlanMemory ImproveAccuracy records: repeats get more accurate
+    struct Fail { int weapon, worm, target; Vector3 at; int hp; float effect; };
+    std::vector<Fail> failed;  // W4M AIPlanMemory failed plans: the target neither moved nor lost hp
+    Fail recent{-1};           // the last attack, checked at the next think (CheckPlanResult)
+    void regress(const Game &g);
     RopePlan rope;
     RopeRun run;
     int raceAt = -1, raceTimer = 0, raceWait = 0;  // rope race: next candidate, turn time left when the run starts, ticks until then

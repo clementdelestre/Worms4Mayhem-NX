@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -34,28 +35,30 @@ const char *SFX_NAMES[] = {
     "bomb_whistle", "cow_fall", "power_rocket", "power_homing", "power_bow",
     "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
     "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
-    "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff",
+    "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m-map.md §12): the event of each file, its gain in dB
 // (event + sound definition + category), loop, 3D linear rolloff min..max in m (20 units/m; 0 = 2D), max playbacks.
-struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; };  // fade: FEV fade in/out, s
+struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; };  // fade: FEV fade in/out, s; w: FEV wave weights, null = equal; mode: FEV sounddef play mode (see pick)
+// every other multi-wave def has equal weights in the FEV (100 each, 20 on OldWomanMutter)
+const int W_SCOUSER_HELD[] = {100, 300, 100};
 const Def DEFS[] = {
-    {"global/ExplosionRegular", -3, false, 0.5f, 50, 4},
+    {"global/ExplosionRegular", -3, false, 0.5f, 50, 4, 0, nullptr, 2},
     {"weapons/ExplosionLarge", -12, false, 0.5f, 40, 1},  // its 2nd variant is ExplosionBoxed1 (W4M -2 dB, 2D)
     {"weapons/RocketRelease", -6, false, 0, 0, 1},
-    {"weapons/GrenadeBounce", -2, false, 0.5f, 60, 1},
-    {"weapons/SplashHeavy", 0, false, 0.5f, 70, 2},
+    {"weapons/GrenadeBounce", -2, false, 0.5f, 60, 1, 0, nullptr, 6},
+    {"weapons/SplashHeavy", 0, false, 0.5f, 70, 2, 0, nullptr, 2},
     {"(none: CC0 jump)", 0, false, 0, 0, 1},
     {"weapons/SheepBaa", -3, false, 0.5f, 25, 1},
     {"weapons/Hallelujah", 0, false, 0, 0, 1},
     {"weapons/HudAlert", -10, false, 0, 0, 1},
     {"weapons/ClockFast", -2, true, 0, 0, 1},
-    {"weapons/ShotgunFire", -5, false, 0, 0, 1},
+    {"weapons/ShotgunFire", -5, false, 0, 0, 1, 0, nullptr, 2},
     {"weapons/Bomber", -9, true, 0.5f, 60, 1, 0.5f},
     {"weapons/ConcreteDonkeyRelease", -1, false, 0.5f, 100, 1},
     {"weapons/NinjaRopeFire", 0, false, 0.5f, 25, 1},
-    {"weapons/Teleport", -8, false, 0.5f, 25, 1},
+    {"weapons/Teleport", -8, false, 0.5f, 25, 1, 0, nullptr, 2},
     {"weapons/BaseballBarSwing", 0, false, 0, 0, 1},
     {"weapons/FirePunch", -6, false, 0.5f, 25, 1},
     {"weapons/Prod", -4, false, 0, 0, 1},
@@ -74,9 +77,9 @@ const Def DEFS[] = {
     {"weapons/MineArmLoop", 0, true, 5, 25, 1},
     {"weapons/CrateSpawn", -4, false, 0.5f, 60, 1},
     {"weapons/PickupWeapon", -11, false, 0.5f, 25, 1},  // PickupUtil -11, PickupHealthCrate -6
-    {"weapons/WingFlap", -3, false, 0.5f, 25, 1},
-    {"weapons/OldWomenFootsteps", -6, false, 0.5f, 60, 1},
-    {"weapons/Thud", 0, false, 0.5f, 25, 2},
+    {"weapons/WingFlap", -3, false, 0.5f, 25, 1, 0, nullptr, 2},
+    {"weapons/OldWomenFootsteps", -6, false, 0.5f, 60, 1, 0, nullptr, 2},
+    {"weapons/Thud", 0, false, 0.5f, 25, 2, 0, nullptr, 2},
     {"global/click3", 0, false, 0, 0, 1},
     {"weapons/CrateImpactHealth", -2, false, 0.5f, 60, 1},
     {"weapons/CrateImpactWeapon", -2, false, 0.5f, 60, 1},
@@ -111,7 +114,7 @@ const Def DEFS[] = {
     {"weapons/HolyGrenadeExplosion", -1, false, 0, 0, 1},
     {"weapons/HolyGrenadeHeld", -10, true, 0.5f, 25, 1},
     {"weapons/BombWhistle", -14, false, 0.5f, 40, 6},
-    {"weapons/CowFall", -6, false, 0.5f, 25, 2},
+    {"weapons/CowFall", -6, false, 0.5f, 25, 2, 0, nullptr, 2},
     {"weapons/RocketPowerUp", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
     {"weapons/HomingMissilePowerUp", -6, false, 0.5f, 25, 1},
     {"weapons/BowCreak", -2, false, 0.5f, 25, 1},
@@ -126,14 +129,20 @@ const Def DEFS[] = {
     {"weapons/UmbrellaOpen", -12, false, 0, 0, 1},  // 2D
     {"weapons/SheepHeld", -9.2f, false, 0.5f, 25, 1},  // 3D log 10..500 units
     {"weapons/SentryGunHeld", -8, true, 0.5f, 20, 1, 0.35f},
-    {"weapons/ScouserHeld", 0, false, 0.5f, 60, 1},  // variants weighted 100/300/100 in the FEV, uniform here
-    {"weapons/OldWomanHeld", -7, false, 0.5f, 60, 1},
+    {"weapons/ScouserHeld", 0, false, 0.5f, 60, 1, 0, W_SCOUSER_HELD, 0},
+    {"weapons/OldWomanHeld", -7, false, 0.5f, 60, 1, 0, nullptr, 0},
     {"weapons/LockOn", 0, false, 0, 0, 1},  // sample TargetAquired, 2D
     {"weapons/AlienUfoAppearing", 0, false, 0.5f, 100, 1},  // the UFO events: 3D linear 10..2000 units; TakeOff 2D
     {"weapons/AlienUfoActive", 0, false, 0.5f, 100, 1},
     {"weapons/AlienUfoBeamLoop", 0, true, 0.5f, 100, 1, 0.5f},
     {"weapons/AlienUfoEngineLoop", 0, true, 0.5f, 100, 1, 0.5f},
     {"weapons/AlienUFOTakeOff", 0, false, 0, 0, 1},
+    {"weapons/BaseballBatImpact", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
+    {"weapons/BubbleMachineInflate", -2, false, 0.5f, 25, 1},  // sample BubbleMachinePlace; both 3D linear 10..500 units
+    {"weapons/BubbleMachineWobble", -2, false, 0.5f, 25, 1},
+    {"weapons/BubbleMachineLoop", -22, false, 0.5f, 20, 1, 0, nullptr, 2},  // 3D linear 10..400 units; one of Bubble1-6 per 500 ms spawn
+    {"weapons/Throw", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
+    {"weapons/SecretWeapLaunch", 0, false, 0, 0, 1},  // 2D
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -214,10 +223,42 @@ void place(Sound s, const Def &d, float gain, const Vector3 *at) {
     SetSoundVolume(s, gain), SetSoundPan(s, pan);
 }
 
+// FMOD sounddef play mode (fmod_event.dll selector 0x10038670): 0 and 3 sequential per event instance (from wave 1 / wave 0),
+// 1 weighted random, 2 random without repeating the last wave, 4 per-instance shuffle, 6 global shuffle (7 global sequential: unused).
+int pick(int n, const Def &d) {
+    struct State { int last = 0, cur = 0; std::vector<int> perm; };  // last: previous wave + 1, 0 = none
+    static std::map<const Def *, State> state;  // keyed by Def: SPEECH defs live outside DEFS
+    if (n < 2) return 0;
+    State &st = state[&d];
+    int &last = st.last, &cur = st.cur;
+    std::vector<int> &perm = st.perm;
+    auto wt = [&](int i) { return d.w ? d.w[i] : 1; };  // d.w has one weight per variant
+    if (d.mode == 0) return 1 % n;  // a fresh instance starts at index 0 and steps once
+    if (d.mode == 3) return 0;
+    if (d.mode == 6) {  // exe shuffle 0x10038870: reshuffle when spent, never starting with the last wave played
+        if (perm.size() != (size_t)n || cur + 1 >= n) {
+            int prev = perm.size() == (size_t)n ? perm[n - 1] : -1;
+            perm.resize(n);
+            for (int i = 0; i < n; i++) perm[i] = i;
+            for (int i = 0; i < n; i++) std::swap(perm[i], perm[i + GetRandomValue(0, n - 1 - i)]);
+            if (perm[0] == prev) std::swap(perm[0], perm[1 + GetRandomValue(0, n - 2)]);
+            cur = 0;
+        } else cur++;
+        return perm[cur];
+    }
+    int k = 0, tot = 0;
+    for (int i = 0; i < n; i++) tot += wt(i);
+    for (int r = GetRandomValue(0, tot - 1); k < n - 1 && (r -= wt(k)) >= 0; k++) {}
+    if (d.mode == 2 && k + 1 == last) k = (k + 1) % n;
+    last = k + 1;
+    return k;
+}
+
 // past maxpb playing voices the oldest is cut (FMOD max playbacks behaviour 1, steal oldest)
 void playRandom(Variants &v, const Def &d, float volume, const Vector3 *at) {
     if (!v.n) return;
-    int k = GetRandomValue(0, v.n - 1), busy = 0;
+    int k = pick(v.n, d);
+    int busy = 0;
     Slot *oldest = nullptr, *free = nullptr;
     for (Slot &x : v.slot)
         if (IsSoundPlaying(x.s)) busy++, oldest = !oldest || x.born < oldest->born ? &x : oldest;

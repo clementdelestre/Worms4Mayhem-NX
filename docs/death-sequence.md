@@ -26,7 +26,9 @@ How long the camera stays on a worm that dies, in W4M and here. 60 ticks = 1 s.
 
 ## Sequence (`sim.h` `countSpan`, `blastAt`, `dying`, `POST_ACTIVITY`)
 
-Settle count for a group of nearby worms: camera travel `COUNT_TRAVEL` 42 ticks (ours), then the W4M damage display `COUNT_DAMAGE` (2500 ms, the hp label counts during it), or `COUNT_FLOAT` (2000 ms) for a drowned worm. `countBoom()` is the end of the longest one.
+Before the first group: `Settle` waits for the shots (dropped after 30 s, `SHOT_CAP`, ours), then for every worm grounded and every object still (at most 5 s, `SETTLE_WAIT`, ours: W4M WaitUntilNoActivity has no timeout), then rolls the abductees' hp once (W4M DoPostActivity ApplyPoison, 0x5ac060; a roll of 0 kills, so that worm joins the queue). Turn flow: `docs/sim.md`.
+
+Settle count for a group of nearby worms (the first worm whose label differs from its hp and every such worm within 18 m, `COUNT_SPAN`, ours): camera travel `COUNT_TRAVEL` 42 ticks (ours), then the W4M damage display `COUNT_DAMAGE` (2500 ms, the hp label counts during it), or `COUNT_FLOAT` (2000 ms) for a drowned worm. `countBoom()` is the end of the longest one.
 
 | t | Event |
 |---|---|
