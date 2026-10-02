@@ -14,6 +14,7 @@ Confidence tags:
 - **data**: read in a game file (exe strings, tweaks, scripts, banks).
 - **disasm**: deduced from the code.
 - **assumed**: inferred, not verified.
+- **user-requested** (our docs): behaviour the user asked for explicitly, kept even where W4M may differ; retested on request, never "fixed".
 
 Attributing a function to a class is reliable when the function comes from a vtable. When it was inferred from the nearest `.cpp` assert string, it can be wrong near file boundaries.
 

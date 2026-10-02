@@ -1,0 +1,36 @@
+#!/bin/bash
+# Symbol index for agents (Universal Ctags): find code and doc sections by name, then read only those lines.
+#   tools/sym NAME        exact symbol: Game::step, step, WeaponDef, Phase, checkVault, "§11" or a doc heading word
+#   tools/sym -p PREFIX   symbols starting with PREFIX (Game::jet, check, Sfx)
+#   tools/sym -f FILE [-a] outline of FILE: line, kind, name (-a: with struct members / enumerators)
+#   tools/sym -g REGEX    grep the symbol names (case-insensitive)
+# Output: file:line  kind  name  [scope] signature   -> then Read FILE with offset=line-5, limit=40
+# The index (.tags, gitignored) rebuilds itself when a source is newer; ~1 s.
+set -eo pipefail
+cd "$(dirname "$0")/.."
+T=.tags
+SRC=(client/src client/tests server/src tools/w4m-re tools/w4m-import/src tools/w4m-models/src tools/w4m-maps/src tools/w4m-ui docs PROTOCOL.md)
+CTAGS=$(command -v ctags || echo ~/.local/bin/ctags)
+if [ ! -s $T ] || [ -n "$(find "${SRC[@]}" -newer $T \( -name '*.cpp' -o -name '*.h' -o -name '*.rs' -o -name '*.py' -o -name '*.md' \) -print -quit 2>/dev/null)" ]; then
+    "$CTAGS" -R -f $T --excmd=number --extras=+q --fields=+nKSZ --fields=-P \
+        --languages=C++,Rust,Python,Markdown --langmap=C++:+.h --kinds-C++=-l-D-Z --kinds-Python=-l -I PI \
+        --exclude=target --exclude='*.lock' "${SRC[@]}" 2>/dev/null
+fi
+# name file line;" kind line:N [scope:x] [signature:...]
+fmt() { awk -F'\t' -v all="$1" -v dedup="$2" '$1 !~ /^!_/ {
+    k = $4; sc = ""; sig = ""
+    for (i = 5; i <= NF; i++) { if ($i ~ /^signature:/) sig = substr($i, 11); else if ($i ~ /^(scope|class|struct|namespace|enum|function|impl|module|section|chapter|subsection):/) sc = $i }
+    if (!all && (k == "enumerator" || k == "member" || k == "field")) next
+    if (dedup && sc != "" && $1 !~ /::|\./ && $2 !~ /\.md$/) next  # keep Game::step, drop the bare duplicate
+    if ($2 ~ /\.md$/) sc = ""  # heading paths are noise
+    l = $3; sub(/;".*/, "", l)
+    printf "%s:%s\t%s\t%s%s%s\n", $2, l, k, $1, (sig != "" ? sig : ""), (sc != "" ? "\t[" sc "]" : "")
+}'; }
+case "${1:-}" in
+    -f) grep -P "\t\Q$2\E\t" $T | grep -v '::' | sort -t$'\t' -k3,3n | fmt "${3:-}" | sort -t: -k2,2n ;;
+    -p) awk -F'\t' -v p="$2" 'index($1, p) == 1' $T | fmt 1 1 | head -60 ;;
+    -g) awk -F'\t' -v r="$2" 'BEGIN{IGNORECASE=1} $1 ~ r' $T | fmt 1 1 | head -60 ;;
+    -a) grep -P "^\Q$2\E\t" $T | fmt 1 ;;
+    ""|-h) sed -n '2,8p' "$0" ;;
+    *) out=$(grep -P "^\Q$1\E\t" $T | fmt 1); [ -n "$out" ] && echo "$out" || { echo "no exact match; prefix:"; awk -F'\t' -v p="$1" 'index($1, p) == 1' $T | fmt 1 | head -20; } ;;
+esac

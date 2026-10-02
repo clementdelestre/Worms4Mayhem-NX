@@ -49,6 +49,9 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
   NetworkSpectator and ControllerRemoved. So the Blimp view key does not end it (our `TARGET`), movement, aim, jump, fire, fuse, panel and
   worm select do. The AI ends it too (`SomeInputFrom` "WormMoving", 0x4b4f10). W4M's InGame group (camera rotate / zoom keys, 0x4e1610) ends it
   too: `Controls::read` sets `Input::flags` `CAMERA` for the follow camera's keys, and any `flags` ends the hot seat.
+  The press that cancels it is consumed ([user-requested], 2026-10-03; `Game::step`: buttons but TARGET / NEXT_WEAPON dropped that tick, held
+  button not a new press). Not a deviation to remove: kept on request, to retest against W4M. W4M 0x50fce0 only cancels the hot seat; whether
+  the same key also reaches the worm is not shown by the disasm.
   `Game::clock` (sudden death) does not count hot-seat ticks.
 - **Sudden death** (rule 64): once `clock` reaches `roundTime` minutes, every worm drops to 1 hp (`SD_BOTH`, `SD_ONE_HP`), and with
   `SD_BOTH` / `SD_WATER` the water rises 1.25 m per turn up to +15 m (W4M Water.RiseAmount 25 units, data).

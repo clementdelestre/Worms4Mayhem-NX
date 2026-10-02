@@ -4,6 +4,7 @@ Fan remake of Worms 4: Mayhem for Nintendo Switch homebrew (Atmosphère), with a
 No Team17 asset is shipped: bundled sounds are CC0 (see `client/romfs/CREDITS.md`), the original
 meshes, animations, sounds, voices, maps, missions, menu art and acting scenes are converted from your own W4M install by the
 `tools/w4m-*` importers into `client/assets/` (gitignored, never committed; `docs/import.md`).
+`tools/sym NAME` / `-p prefix` / `-g regex` / `-f file`: symbol index (Universal Ctags) over the code and the doc headings, `file:line` to read.
 
 ## Layout
 - `client/` C++17 + [raylib-nx](https://github.com/luizpestana/raylib-nx) game: voxel destructible terrain, deterministic lockstep sim, local and online play.

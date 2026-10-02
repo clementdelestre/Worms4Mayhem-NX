@@ -1711,7 +1711,7 @@ void Game::step(const Input &raw) {
     Input in = raw;
     int chosen = (in.buttons & Input::NEXT_WEAPON) && in.aim ? (uint8_t)in.aim - 1 : -1;
     if (chosen >= 0) in.aim = 0;
-    // ours: the press that cancels the hot seat (W4M 0x50fce0, SomeInputFrom) is only that, never a shot, jump or view change
+    // user-requested (2026-10-03, retest vs W4M later): the press that cancels the hot seat (W4M 0x50fce0) is never a shot, jump or view change
     uint8_t keep = Input::TARGET | Input::NEXT_WEAPON;
     if (phase == Phase::Aim && hotSeat > 0 && (in.buttons & ~keep)) hotSeat = 0, in.buttons &= keep;
     uint8_t pressed = in.buttons & ~prevButtons;

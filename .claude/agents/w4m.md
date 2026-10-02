@@ -22,7 +22,7 @@ The user wants it identical to the real W4M. Report to the coordinator in French
 - Only an item proven impossible (with why) may stay open.
 
 ## Docs
-- English. Tag every fact data / disasm / assumed / ours. W4M side in `docs/w4m/<domain>.md`; our side in the topic doc
+- English. Tag every fact data / disasm / assumed / ours / user-requested. Never "fix" a user-requested item (the user asked for it; it is retested on request only). W4M side in `docs/w4m/<domain>.md`; our side in the topic doc
   (camera.md, sim.md, ai.md, audio.md, weapons-audit.md, worm-reactions.md...).
 - Code comments: one line, two max, only the non-obvious why. No narration of past bugs.
 
@@ -38,8 +38,11 @@ The user wants it identical to the real W4M. Report to the coordinator in French
 ## Speed and tokens
 - First action: invoke the `caveman` skill. All your intermediate text and the final report are caveman-terse (the final report in
   terse French, max 25 lines: closed items with source, open items with why, files touched). No narration between tool calls.
-- Locate before reading: `grep -n` / `rg -n` the symbol or address, then read only ±40 lines (`Read` with offset/limit or
-  `sed -n`). Never read a whole big file (sim.cpp, ui.cpp, main.cpp, ai.cpp, controls.cpp, any docs/w4m file).
+- Locate with the symbol index, never by reading: `tools/sym NAME` (exact: `Game::step`, `WeaponDef`, `checkVault`),
+  `tools/sym -p Game::jet` (prefix), `tools/sym -g regex` (names, incl. doc headings and the addresses in them), `tools/sym -f FILE`
+  (outline with line numbers, `-a` adds members). It covers client, tests, server, tools and every doc heading (`docs/w4m/*`).
+  Then read only that spot: `Read` with offset = line - 5, limit = 40 (more only if the body runs on). Plain `grep -n` for
+  text inside bodies. Never read a whole big file (sim.cpp, ui.cpp, main.cpp, ai.cpp, controls.cpp, any docs/w4m file).
 - Before any disassembly, grep `docs/w4m/` for the address or name: it may already be decoded. Save long tool dumps to your
   scratchpad and grep them; never print a full disasm or log into the conversation (`| head`, `| tail`, `| grep`).
 - Quiet builds and tests: `make -s ... 2>&1 | tail -20`; on failure, grep the assert line, not the whole log.

@@ -21,7 +21,7 @@ static void checkDiffuse() {
 
 static uint32_t run(std::vector<bool> &used) {
     Game g;
-    g.start({42, 3, 2, "", 0});
+    g.start({42, 3, 2, "", 0}), g.hotSeat = 0;
     int turn = -1, tick = 0, want = 0;
     Phase prev = Phase::Settle;
     for (int t = 0; t < 60 * 600 && g.phase != Phase::GameOver; t++, tick++) {
@@ -52,7 +52,7 @@ static uint32_t runRules(uint32_t rules, uint32_t seed, const Scheme &scheme = S
     GameConfig c{seed, 2, 2, "", rules};
     c.scheme = scheme;
     c.wormpot = wormpot;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     for (int t = 0; t < 60 * 200 && g.phase != Phase::GameOver; t++) {
         int tick = t % 300;
         Input in;
@@ -81,7 +81,7 @@ static void endSettle(Game &g) {
 
 static void checkKing() {
     Game g;
-    g.start({1, 2, 2, "", RULE_KING});
+    g.start({1, 2, 2, "", RULE_KING}), g.hotSeat = 0;
     g.worms[0].hp = 0;  // worm 0 of team 0 is the king
     std::vector<int> died;
     g.phase = Phase::Settle, g.timer = 1;
@@ -97,7 +97,7 @@ static void checkKing() {
 // W4M death queue: dead worms of one count blow up one after another.
 static void checkDeathQueue() {
     Game g;
-    g.start({1, 3, 1, "", 0});
+    g.start({1, 3, 1, "", 0}), g.hotSeat = 0;
     for (int i = 0; i < 2; i++) g.worms[i].hp = 0, g.worms[i].pos = Vector3Add(g.worms[2].pos, {6.0f * i + 6, 0, 0});  // out of each other's blast
     std::vector<int> at;
     g.phase = Phase::Settle, g.timer = 1;
@@ -114,7 +114,7 @@ static void settle(Game &g);
 // on it, then blows up there on its own clock, the turn going on
 static void checkDrownFloat() {
     Game g;
-    g.start({1, 2, 2, "", 0});
+    g.start({1, 2, 2, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     int vi = (g.current + 2) % 4;  // a team mate of nobody playing: its team still stands
@@ -139,7 +139,7 @@ static void checkPostActivity() {
     GameConfig c{1, 2, 1, "", 0};
     c.scheme.crateChance = 0;  // DoPostActivity's DropRandomCrate would wait for the crate
     Game g;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     settle(g);  // EndTurn: nothing active, StartPostActivity at once
     g.phase = Phase::Settle, g.timer = 1;
     int t = 0;
@@ -150,7 +150,7 @@ static void checkPostActivity() {
 // Injects a cluster explosion directly into shots[] rather than going through use(), to isolate the damage rule.
 static void checkKarma() {
     Game g;
-    g.start({5, 2, 1, "", RULE_KARMA});
+    g.start({5, 2, 1, "", RULE_KARMA}), g.hotSeat = 0;
     int attacker = g.current, victim = 1 - attacker;
     g.shots = {{g.worms[victim].pos, {0, 0, 0}, clusterWeapon(), 0, true, 1}};
     for (Projectile &s : g.shots) s.touching = 0;  // already in flight
@@ -161,7 +161,7 @@ static void checkKarma() {
 
 static void checkVampire() {
     Game g;
-    g.start({6, 2, 1, "", RULE_VAMPIRE});
+    g.start({6, 2, 1, "", RULE_VAMPIRE}), g.hotSeat = 0;
     int attacker = g.current, victim = 1 - attacker;
     g.shots = {{g.worms[victim].pos, {0, 0, 0}, clusterWeapon(), 0, true, 1}};
     for (Projectile &s : g.shots) s.touching = 0;  // already in flight
@@ -186,7 +186,7 @@ static void checkSuddenDeath() {
     Game g;
     GameConfig c{11, 2, 2, "", RULE_SUDDEN_DEATH};
     c.scheme.sdType = Scheme::SD_ONE_HP;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     g.clock = g.cfg.scheme.roundTime * 3600;  // round time is up: the next turn flips sudden death
     float before = g.water;
     endSettle(g);
@@ -197,7 +197,7 @@ static void checkSuddenDeath() {
 
 static void checkRopeRace() {
     Game g;
-    g.start({7, 2, 1, "", RULE_ROPE_RACE});
+    g.start({7, 2, 1, "", RULE_ROPE_RACE}), g.hotSeat = 0;
     int team = g.worms[g.current].team;
     g.worms[g.current].pos = g.raceFinish;
     g.step(Input{});
@@ -208,7 +208,7 @@ static void checkRopeRace() {
 
 static void checkHighlander() {
     Game g;
-    g.start({13, 2, 1, "", RULE_HIGHLANDER});
+    g.start({13, 2, 1, "", RULE_HIGHLANDER}), g.hotSeat = 0;
     int wi = clusterWeapon();
     g.ammo[0][wi] = 0, g.delays[0][wi] = 0;
     g.ammo[1][wi] = 2, g.delays[1][wi] = 0;
@@ -223,7 +223,7 @@ static void checkHighlander() {
 
 static void checkObjects() {
     Game g;
-    g.start({17, 2, 1, "", 0});
+    g.start({17, 2, 1, "", 0}), g.hotSeat = 0;
     assert(!g.objects.empty());
     int wi = 0, team = g.worms[g.current].team;
     while (WEAPONS[wi].count < 0) wi++;  // a finite weapon, so the +1 shows
@@ -260,7 +260,7 @@ static int weaponNamed(const char *n) {
 // One scripted turn per weapon (charge, release, steer, detonate): its Fire event must show up.
 static uint32_t fireEach(int wi, bool &fired, const GameConfig *cfg = nullptr) {
     Game g;
-    g.start(cfg ? *cfg : GameConfig{99u + wi, 2, 2, "", 0});
+    g.start(cfg ? *cfg : GameConfig{99u + wi, 2, 2, "", 0}), g.hotSeat = 0;
     g.ammo[g.worms[g.current].team][wi] = 1, g.delays[g.worms[g.current].team][wi] = 0;  // not about the scheme delays
     g.weapon = wi;
     fired = false;
@@ -278,7 +278,7 @@ static uint32_t fireEach(int wi, bool &fired, const GameConfig *cfg = nullptr) {
 
 static void checkPoison() {
     Game g;
-    g.start({21, 2, 1, "", 0});
+    g.start({21, 2, 1, "", 0}), g.hotSeat = 0;
     int victim = 1 - g.current, hp = g.worms[victim].hp;
     g.shots = {{g.worms[victim].pos, {0, 0, 0}, weaponNamed("Poison Arrow"), 0, false, 1}};
     for (Projectile &s : g.shots) s.touching = 0;  // already in flight
@@ -296,7 +296,7 @@ static void settle(Game &g);
 // Victim placed `ahead` m in front of the settled attacker, `up` m higher; returns the victim after the swing.
 static Worm melee(const char *weapon, float ahead, float up = 0) {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     v.pos = Vector3Add(a.pos, {sinf(a.yaw) * ahead, up, cosf(a.yaw) * ahead});
@@ -325,7 +325,7 @@ static void checkMelee() {
 // A worm hit by a gun takes the weapon's full damage, not a blast falloff.
 static void checkShotgun() {
     Game g;
-    g.start({25, 2, 1, "", 0});
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     a.pos = {10, 55, 10}, v.pos = {10.4f, 55, 20};  // open sky, off-centre hit
     a.yaw = 0, a.pitch = 0;
@@ -339,7 +339,7 @@ static void checkShotgun() {
 // Homing missile: flies off along the aim, then dives onto the reticle point.
 static void checkHoming() {
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     g.hotSeat = 0;
     a.pos = {20, 55, 20}, a.yaw = 0, a.pitch = 0, a.grounded = true;  // open sky: the reticle falls on the ground 30 m ahead
@@ -358,7 +358,7 @@ static void checkHoming() {
 // W4M: each team gets back the weapon it last had in hand, or the next one with ammo.
 static void checkTeamWeapon() {
     Game g;
-    g.start({39, 2, 1, "", 0});
+    g.start({39, 2, 1, "", 0}), g.hotSeat = 0;
     int t0 = g.worms[g.current].team, bat = weaponNamed("Baseball Bat"), sheep = weaponNamed("Sheep");
     auto endTurn = [&] { endSettle(g); };
     g.weapon = sheep;
@@ -382,7 +382,7 @@ static void checkCrateWalk() {
         GameConfig c{31, 2, 1, "", 0};
         c.scheme.crateChance = c.scheme.mines = c.scheme.barrels = 0;
         Game g;
-        g.start(c);
+        g.start(c), g.hotSeat = 0;
         settle(g);
         Worm &a = g.worms[g.current];
         Vector3 hit, p = Vector3Add(a.pos, {sinf(a.yaw) * 3, 4, cosf(a.yaw) * 3});
@@ -403,7 +403,7 @@ static void checkCrateWalk() {
 
 static void checkSniper() {
     Game g;
-    g.start({25, 2, 1, "", 0});
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     a.pos = {10, 55, 10}, v.pos = {10, 55, 30};  // open sky, 20 m apart
     a.yaw = 0, a.pitch = 0;
@@ -417,7 +417,7 @@ static void checkSniper() {
 // Sniper at a worm just over a crest, aimed like a player: target moved to the scope camera's screen centre.
 static void checkScopeCrest() {
     Game g;
-    g.start({25, 2, 1, "", 0});
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     a.pos = {10, 55, 10}, v.pos = {10, 55, 30};
     for (int z = 100; z <= 104; z++)  // lip at z 25..26 topping out 0.2 m under the worm-to-worm line
@@ -436,7 +436,7 @@ static void checkScopeCrest() {
 
 static void checkSentry() {
     Game g;
-    g.start({27, 2, 1, "", 0});
+    g.start({27, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &w = g.worms[g.current];
     w.pos = {10, 55, 10};
     Object sentry = {Object::Sentry, {10, 55, 14}, {0, 0, 0}, weaponNamed("Sentry Gun"), -1, false, false, 1 - w.team};
@@ -448,9 +448,8 @@ static void checkSentry() {
 // W4M SheepChaseCamera: behind and above the sheep (it rises when the land hides it), never under it.
 static void checkSheepCamera() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
-    g.hotSeat = 0;
     g.weapon = weaponNamed("Sheep");
     Controls::reset();
     Camera3D cam = {{0, 30, 0}, g.worms[g.current].pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
@@ -477,7 +476,7 @@ static void checkEventCameras() {
     };
     {  // a worm knocked ballistic off screen: WormTrackCamera cut, then kept in view
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         g.phase = Phase::Retreat, g.timer = g.retreatTicks(WEAPONS[g.weapon]);
@@ -495,7 +494,7 @@ static void checkEventCameras() {
     }
     {  // CrateTrackCamera: starts off screen, cut to a crate ViewPoint (15-25 m)
         Game g;
-        g.start({43, 2, 1, "", 0});
+        g.start({43, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         Worm &w = g.worms[g.current];
@@ -514,7 +513,7 @@ static void checkEventCameras() {
     }
     {  // PiP (0x51d360 +0x2c0): served while the worm moves with retreat time left, it stays the inset; the retreat over, it grows full screen
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         Worm &a = g.worms[g.current];
@@ -538,7 +537,7 @@ static void checkEventCameras() {
     }
     {  // no PiP once the turn is over, and no return to the shooter between the shot's camera and the count (W4M: straight to it)
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         Worm &a = g.worms[g.current];
@@ -557,7 +556,7 @@ static void checkEventCameras() {
     }
     for (int k : {0, 1, 2}) {  // +0x2c0: a sheep's ChaseCam (0x51d5e0) stays full screen while the worm walks, PiP while jetting (bit 0); a still roped worm: full screen
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         Worm &a = g.worms[g.current];
@@ -578,7 +577,7 @@ static void checkEventCameras() {
     }
     {  // an event camera done: the view eases back to the worm at PosUpdateSpeed 0.1 a frame (CMS 0x51b940), no cut
         Game g;
-        g.start({43, 2, 1, "", 0});
+        g.start({43, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         Worm &w = g.worms[g.current];
@@ -596,7 +595,7 @@ static void checkEventCameras() {
     }
     for (int lost : {0, 1}) {  // PayloadTrackCamera 0x532460: no cut while the shell stays in clear view; else ViewPoints around its predicted impact
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         Worm &a = g.worms[g.current];
@@ -631,7 +630,7 @@ static void checkEventCameras() {
     }
     {  // a drowned worm in view: no cut while it floats, at its blast or in the RestTime after (W4M 0x51d3b3 drop); the view keeps its yaw
         Game g;
-        g.start({1, 2, 1, "", 0});
+        g.start({1, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &d = g.worms[0];
         d.pos = {d.pos.x, g.water - 0.5f, d.pos.z}, d.vel = {0, 0, 0}, d.grounded = false;
         for (int k = 0; k < 400 && g.terrain.solid({d.pos.x, d.pos.y - 1.5f, d.pos.z}); k++) d.pos.x += 0.1f;  // open sea
@@ -660,7 +659,7 @@ static void checkEventCameras() {
     }
     {  // game over: the winner from a worm ViewPoint, in clear view
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         g.phase = Phase::GameOver, g.winner = g.worms[g.current].team;
@@ -673,7 +672,7 @@ static void checkEventCameras() {
     }
     {  // homing missile: FlyCam behind it, once its position factor has eased in (PosRate 0.01: ~2 s); ~14 m back at MaxHomingSpeed
         Game g;
-        g.start({29, 2, 1, "", 0});
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &a = g.worms[g.current];
         g.hotSeat = 0;
         a.pos = {20, 55, 20}, a.yaw = 0, a.pitch = 0, a.grounded = true;
@@ -695,7 +694,7 @@ static void checkEventCameras() {
     }
     for (int wide : {0, 1}) {  // occlusion: a thin post on the centre ray leaves the camera out, a wall zooms it in at once
         Game g;
-        g.start({25, 2, 1, "", 0});
+        g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &w = g.worms[g.current];
         w.pos = {20, 55, 20}, w.yaw = 0, w.grounded = true, w.vel = {0, 0, 0};
         for (int z = 60; z <= 62; z++)
@@ -709,7 +708,7 @@ static void checkEventCameras() {
     }
     {  // a wall behind the worm, then gone: zoomed in, then back out at OccZoomOutSpeed through the blend and its retries (0x52e870)
         Game g;
-        g.start({25, 2, 1, "", 0});
+        g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &w = g.worms[g.current];
         w.pos = {20, 55, 20}, w.yaw = 0, w.grounded = true, w.vel = {0, 0, 0};
         auto wall = [&](int v) {
@@ -730,7 +729,7 @@ static void checkEventCameras() {
     {  // the worm backs up against a wall: the ShoulderCamera zooms in to it at once (it never rises or turns: OccHeightSpeed /
        // OccYawSpeed 0), and the worm fades (WormOpaqueDist 50 / WormTransparencyDist 25 units)
         Game g;
-        g.start({25, 2, 1, "", 0});
+        g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &w = g.worms[g.current];
         w.pos = {20, 55, 30}, w.yaw = 0, w.grounded = true, w.vel = {0, 0, 0};
         for (int z = 40; z < 78; z++)  // z 10..19.5 m, 2.5 m over the worm: the camera spot ends inside it
@@ -749,7 +748,7 @@ static void checkEventCameras() {
     }
     for (int inside : {0, 1}) {  // NinjaCamMkIII: a hill between never zooms it in; inside land it swings to the first clear yaw offset
         Game g;
-        g.start({25, 2, 1, "", 0});
+        g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &w = g.worms[g.current];
         w.pos = {40, 55, 40}, w.yaw = 0, w.grounded = false, w.vel = {0, 0, 0};
         g.roped = true, g.anchor = {40, 60, 40}, g.ropeLen = 5;
@@ -765,7 +764,7 @@ static void checkEventCameras() {
     }
     for (int sea : {0, 1}) {  // W4M CMS 0x51d408: the death / hp-count framing (5) gives way to a thrown worm landing ashore (5), not to one lost at sea (3)
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         g.phase = Phase::Retreat, g.timer = g.retreatTicks(WEAPONS[g.weapon]);
@@ -787,7 +786,7 @@ static void checkEventCameras() {
     }
     {  // AlienAbductionCamera 0x547490: worm + 10 + (0, 50, 50) units while the beam lifts it, then the fixed shot above the UFO once it is spat out
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         Worm &a = g.worms[g.current], &w = g.worms[1 - g.current];
@@ -814,7 +813,7 @@ static void checkEventCameras() {
     }
     {  // homing: FIRE in the Blimp takes the target (W4M state 1, no launch), then the launcher is aimed and powered; it homes on that point
         Game g;
-        g.start({29, 2, 1, "", 0});
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &a = g.worms[g.current];
         g.hotSeat = 0;
         g.weapon = weaponNamed("Homing Missile");
@@ -837,7 +836,7 @@ static void checkEventCameras() {
     {  // victory fireworks in the OrbitCam frame: ours (camera target +-10 m, 5-10 m up); W4M's own box (Land.Center +-0.5 Radius) leaves the
        // frame when the orbit swings low (0x530e30), so it is not asserted
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         g.phase = Phase::GameOver, g.winner = g.worms[g.current].team;
@@ -860,7 +859,8 @@ static void checkEventCameras() {
 }
 
 static void settle(Game &g) {
-    for (int t = 0; t < 120; t++) g.step(Input{});  // land; empty input keeps the hot seat running
+    for (int t = 0; t < 120; t++) g.step(Input{});  // land
+    g.hotSeat = 0;  // the first press would only cancel it
 }
 
 // W4M Worm.Death*: the dead worm's blast takes up to 35 hp off its neighbours, throws them, digs 1.75 m; they count it after.
@@ -868,7 +868,7 @@ static void checkDeathBlast() {
     const Blast &k = Game::DEATH_BLAST;
     assert(Game::blastDamage(k, {}, {0.8f, 0, 0}) == 35 && Game::blastDamage(k, {}, {2.5f, 0, 0}) == 14 && Game::blastDamage(k, {}, {3.6f, 0, 0}) == 0);
     Game g;
-    g.start({23, 2, 2, "", 0});
+    g.start({23, 2, 2, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &d = g.worms[0], &n = g.worms[2];
     n.pos = Vector3Add(d.pos, {0.8f, 0, 0}), n.vel = {0, 0, 0};
@@ -901,7 +901,7 @@ static void checkWallClearance() {
         return worst <= 0;
     };
     Game g;
-    g.start({33, 2, 1, "", 0});
+    g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
     room(g);
     Worm &w = g.worms[g.current];
     w.pos = {12, 50.5f, 12}, w.vel = {}, w.yaw = -3 * PI / 4;  // facing the corner
@@ -912,7 +912,7 @@ static void checkWallClearance() {
     assert(w.pos.x < 10.6f && w.pos.z < 10.6f && clear(g, w));  // reached the corner, body outside both walls
 
     Game f;
-    f.start({33, 2, 1, "", 0});
+    f.start({33, 2, 1, "", 0}), f.hotSeat = 0;
     room(f);
     Worm &d = f.worms[f.current];
     d.pos = {10.05f, 53, 13}, d.vel = {-2, 0, 0};  // falls against the wall
@@ -925,7 +925,7 @@ static void checkWallClearance() {
 static void checkWalkW4M() {
     auto walk = [](auto sdf, int ticks, float yaw = PI / 2, Vector3 from = {9, 50.5f, 12}) {
         Game g;
-        g.start({33, 2, 1, "", 0});
+        g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
         for (int z = 16; z < 80; z++)
             for (int y = 176; y < 248; y++)
                 for (int x = 16; x < 176; x++)
@@ -958,7 +958,7 @@ static void checkWalkW4M() {
 // keeps it going, letting go drops it back, jump is ignored and nothing in the way stops it.
 static void checkVault() {
     auto arena = [](Game &g) {  // floor y 50, a 0.8 m ledge from x 12
-        g.start({33, 2, 1, "", 0});
+        g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
         for (int z = 16; z < 80; z++)
             for (int y = 176; y < 248; y++)
                 for (int x = 16; x < 176; x++) {
@@ -1030,7 +1030,7 @@ static void checkVault() {
 // and the stuck count that lands a worm whose fall does not Fit (0x5af821).
 static void checkW4MWalkRules() {
     auto arena = [](Game &g, auto sdf, int y0 = 176, int y1 = 248) {
-        g.start({33, 2, 1, "", 0});
+        g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
         for (int z = 16; z < 80; z++)
             for (int y = y0; y < y1; y++)
                 for (int x = 16; x < 176; x++)
@@ -1079,7 +1079,7 @@ static void checkW4MWalkRules() {
 // narrower than the 8-unit stance, and walking takes the highest foot (UpdateWalking); a wider slot lets the Fits rods in.
 static void checkNarrowSlot() {
     auto arena = [](Game &g, float w, bool diag) {  // floor y 50, a slot w wide and 1.5 m deep through (40, 40)
-        g.start({33, 2, 1, "", 0});
+        g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
         for (int z = 120; z < 200; z++)
             for (int y = 176; y < 210; y++)
                 for (int x = 120; x < 200; x++) {
@@ -1118,7 +1118,7 @@ static int8_t headingOf(float yaw) { return (int8_t)(lroundf(remainderf(yaw, 2 *
 // W4M 0x5b107c: walking sets the facing to the stick direction at once, a quarter, half or three-quarter turn alike.
 static void checkHeading() {
     Game g;
-    g.start({33, 2, 1, "", 0});
+    g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &w = g.worms[g.current];
@@ -1151,7 +1151,7 @@ static void checkWallStuck() {
         return worst;
     };
     Game g;  // ledge x < 12 at y 50, floor y 46, face rising from x 13.5 with normal (-0.97, 0.24)
-    g.start({33, 2, 1, "", 0});
+    g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
     arena(g, [](Vector3 p) { return fmaxf(fmaxf(fminf(50 - p.y, 12 - p.x), 46 - p.y), 0.97f * (p.x - 13.5f) - 0.24f * (p.y - 46)); });
     Worm &w = g.worms[g.current];
     w.pos = {10.5f, 50.5f, 12}, w.vel = {}, w.yaw = 0;
@@ -1162,7 +1162,7 @@ static void checkWallStuck() {
     assert(w.pos.x < at.x - 0.5f);
 
     Game c;  // ceiling sloping down from y 51.2 at x 12; the head starts 0.05 m in it
-    c.start({33, 2, 1, "", 0});
+    c.start({33, 2, 1, "", 0}), c.hotSeat = 0;
     arena(c, [](Vector3 p) { return fmaxf(50 - p.y, fminf((p.y - 51.2f + (p.x - 12) * 0.6f) * 0.857f, 54 - p.y)); });
     Worm &u = c.worms[c.current];
     u.pos = {12.5f, 50.5f, 12}, u.vel = {}, u.yaw = PI / 2;
@@ -1175,7 +1175,7 @@ static void checkWallStuck() {
 static void checkJumpTrajectory() {
     auto jump = [](bool flip, uint32_t rules, float &h, float &d, int &air) {
         Game g;
-        g.start({33, 2, 1, "", rules});
+        g.start({33, 2, 1, "", rules}), g.hotSeat = 0;
         for (int z = 16; z < 80; z++)  // flat floor at y 50
             for (int y = 176; y < 248; y++)
                 for (int x = 16; x < 300; x++)
@@ -1222,7 +1222,7 @@ static void floorAndWall(Game &g, float wall) {
 static void checkLaunchAtWall() {
     for (int gun : {0, 1}) {
         Game g;
-        g.start({33, 2, 1, "", 0});
+        g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
         floorAndWall(g, 20.5f);
         Worm &w = g.worms[g.current];
         w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = PI / 2, w.pitch = 0;
@@ -1240,7 +1240,7 @@ static void checkLaunchAtWall() {
         assert(boom > 19.5f && boom < 20.5f);  // the worm's side of the slab
     }
     Game g;
-    g.start({33, 2, 1, "", 0});
+    g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
     floorAndWall(g, 0);
     Worm &w = g.worms[g.current];
     w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = PI / 2, w.pitch = 0;
@@ -1262,7 +1262,7 @@ static void checkLaunchAtWall() {
 static void checkPointBlankDown() {
     for (int gun : {0, 1}) {
         Game g;
-        g.start({33, 2, 1, "", 0});
+        g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
         floorAndWall(g, 0);
         Worm &w = g.worms[g.current];
         w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = PI / 2, w.pitch = -1.2f;
@@ -1286,7 +1286,7 @@ static void checkPointBlankDown() {
 // W4M payloads (0x57ea40): wind adds Wind.Speed to the acceleration; the homing missile has no gravity and homes only in stage 2.
 static void checkPayloadForces() {
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     g.wind = 1, g.phase = Phase::Flying;
     int baz = weaponNamed("Bazooka"), hom = weaponNamed("Homing Missile");
     g.shots = {{{20, 70, 20}, {0, 0, 0}, baz, 0, false, 1}, {{30, 70, 20}, {0, 0, 10}, hom, 0, false, 1, {30, 70, -100}}};
@@ -1300,7 +1300,7 @@ static void checkPayloadForces() {
 
 static void checkJumps() {
     Game g;
-    g.start({31, 2, 1, "", 0});
+    g.start({31, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &w = g.worms[g.current];
     assert(w.grounded && g.phase == Phase::Aim);
@@ -1314,7 +1314,7 @@ static void checkJumps() {
     // W4M DetectJump: every kind leaves when the 300 ms window ends; the stick at that moment picks the variant
     auto leave = [&](bool twice, bool held, int8_t walk, float &along) {
         Game f;
-        f.start({31, 2, 1, "", 0});
+        f.start({31, 2, 1, "", 0}), f.hotSeat = 0;
         settle(f);
         Worm &b = f.worms[f.current];
         Input in;
@@ -1337,7 +1337,7 @@ static void checkJumps() {
     assert(along > 3 && up < 8);  // held with the stick forward: a normal jump
 
     Game f;  // a double press: one backflip, one Jump event, nothing re-armed on landing
-    f.start({31, 2, 1, "", 0});
+    f.start({31, 2, 1, "", 0}), f.hotSeat = 0;
     settle(f);
     Worm &b = f.worms[f.current];
     int jumps = 0, launches = 0;
@@ -1356,7 +1356,7 @@ static void checkJumps() {
 // Dynamite: the worm walks away while the fuse burns, can't fire again, and the blast ends the turn.
 static void checkDynamite() {
     Game g;
-    g.start({37, 2, 1, "", 0});
+    g.start({37, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     int first = g.current, dyn = weaponNamed("Dynamite");
@@ -1387,7 +1387,7 @@ static void checkDynamite() {
 // A shot leaving the map flies on (Flying, camera on it) until it falls into the sea with a splash.
 static void checkOffMapShot() {
     Game g;
-    g.start({41, 2, 1, "", 0});
+    g.start({41, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current];
     const float W = Terrain::NX * Terrain::VOX;
     a.pos = {W - 2, 40, W / 2}, a.vel = {0, 0, 0}, a.yaw = PI / 2, a.pitch = 0.6f;  // edge, aiming out
@@ -1411,7 +1411,7 @@ static void checkOffMapShot() {
 // W4M: a crate falling mid-turn holds nothing: the turn clock runs and the worm walks (only EndTurn waits for its "Crate Spawn")
 static void checkCrateHold() {
     Game g;
-    g.start({43, 2, 1, "", 0});
+    g.start({43, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &w = g.worms[g.current];
@@ -1430,7 +1430,7 @@ static void checkCrateBetweenTurns() {
     GameConfig c{43, 2, 1, "", 0};
     c.scheme.crateChance = 100, c.scheme.mines = c.scheme.barrels = 0;
     Game g;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0, g.timer = 1;
     int first = g.current, landed = -1, t = 0;
@@ -1449,7 +1449,7 @@ static void checkCrateBetweenTurns() {
 // W4M: the turn ends as soon as the active worm takes damage, without retreat time.
 static void checkSelfHurtEndsTurn() {
     Game g;
-    g.start({33, 2, 1, "", 0});
+    g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.shots = {{g.worms[g.current].pos, {0, 0, 0}, clusterWeapon(), 0, true, 1}};
     for (Projectile &s : g.shots) s.touching = 0;  // already in flight
@@ -1461,7 +1461,7 @@ static void checkSelfHurtEndsTurn() {
 static void checkWipeEndsMatch() {
     for (int draw = 0; draw < 2; draw++) {
         Game g;
-        g.start({39, 2, 1, "", 0});
+        g.start({39, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         int me = g.worms[g.current].team;
         g.weapon = weaponNamed("Shotgun"), g.shotsLeft = 1;
@@ -1505,7 +1505,7 @@ static void checkHotSeat() {
 // W4M SkipgoUtilityLogicEntity: PostLaunchDelay 3 s, worm frozen, then a 0 s retreat ends the turn.
 static void checkSkipGo() {
     Game g;
-    g.start({35, 2, 1, "", 0});
+    g.start({35, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &w = g.worms[g.current];
@@ -1532,7 +1532,7 @@ static void checkScheme() {
     c.scheme.weapons = Scheme::SET_BNG;
     c.scheme.turnTime = 20;
     Game g;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     for (const Worm &w : g.worms) assert(w.hp == 150);
     assert(g.objects.empty() && g.timer == 20 * 60);
     for (size_t i = 0; i < WEAPONS.size(); i++) {
@@ -1541,7 +1541,7 @@ static void checkScheme() {
         if (WEAPONS[i].name == "Bazooka") assert(g.ammo[0][i] == -1);
     }
     c.scheme.fallDamage = 0;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     Worm &w = g.worms[0];
     w.pos.y += 15;  // long drop
     w.vel = {0, 0, 0};
@@ -1554,7 +1554,7 @@ static int hitHp(uint32_t wormpot) {  // victim hp after a cluster bomblet lands
     Game g;
     GameConfig c{6, 2, 1, "", 0};
     c.wormpot = wormpot;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     int victim = 1 - g.current;
     g.shots = {{g.worms[victim].pos, {0, 0, 0}, clusterWeapon(), 0, true, 1}};
     for (Projectile &s : g.shots) s.touching = 0;  // already in flight
@@ -1566,7 +1566,7 @@ static float walked(uint32_t wormpot) {
     Game g;
     GameConfig c{31, 2, 1, "", 0};
     c.wormpot = wormpot;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     settle(g);
     Vector3 p = g.worms[g.current].pos;
     Input in;
@@ -1584,16 +1584,16 @@ static void checkWormpot() {
     GameConfig c{41, 2, 3, "", 0};
     c.wormpot = WP_GOLIATH | WP_CRATE_DROPS | WP_VITAL_WORM | WP_LOW_GRAVITY;
     Game g;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     assert(g.worms[0].hp == 200 && g.worms[1].hp == 50 && (g.cfg.rules & RULE_KING) && (g.cfg.rules & RULE_LOW_GRAVITY));
     for (size_t i = 0; i < WEAPONS.size(); i++)
         if (WEAPONS[i].kind != Kind::SkipGo && WEAPONS[i].kind != Kind::Surrender) assert(g.ammo[0][i] == 0);
     c.wormpot = WP_ONE_SHOT;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     for (const Worm &w : g.worms) assert(w.hp == 1);
 
     c.wormpot = WP_NO_JUMPING;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     settle(g);
     Input jump;
     jump.buttons = Input::JUMP;
@@ -1625,18 +1625,18 @@ static void checkCustomWeapons() {
     GameConfig c{51, 2, 2, "", 0};
     c.custom = list;
     Game g;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     assert(WEAPONS.size() == base + 2 && WEAPONS[base].name == "Test Lobber" && g.ammo[0][base] == 2);
     assert(customWeapon((int)base) && !customWeapon((int)base - 1));
     assert(WEAPONS[base].postLaunch == 500 && WEAPONS[base + 1].postLaunch == 500 && WEAPONS[base].retreat == -1);  // kWeaponFactoryWeapon
     c.custom[1].kind = Kind::Homing;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     assert(WEAPONS[base + 1].postLaunch == 0);  // kWeaponFactoryHoming
     {  // HomingAvoidLand (0x5611b0): heading at the ground 3 m away, the forward probe hits and the missile is pushed up, within MaxHomingSpeed 0.25
         float vy[2];
         for (int avoid = 0; avoid < 2; avoid++) {
             c.custom[1].kind = Kind::Homing, c.custom[1].avoid = avoid, c.custom[1].fuse = 0, c.custom[1].speed = 12;
-            g.start(c);
+            g.start(c), g.hotSeat = 0;
             Vector3 hit, p = g.worms[0].pos, tgt = Vector3Add(p, {30, 0, 0});
             assert(g.terrain.raycast({Vector3Add(p, {0, 20, 0}), {0, -1, 0}}, 40, &hit));
             g.shots = {{Vector3Add(hit, {0, 3, 0}), {0, -10, 0}, (int)base + 1, 2.0f, false, 1, tgt}};
@@ -1647,7 +1647,7 @@ static void checkCustomWeapons() {
         assert(vy[1] > vy[0] + 5);
     }
     c.custom[1].kind = Kind::Airstrike, c.custom[1].avoid = false;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     uint32_t with = g.checksum();
     for (size_t i = base; i < WEAPONS.size(); i++) {
         bool fired, again;
@@ -1657,14 +1657,14 @@ static void checkCustomWeapons() {
     }
     c.custom.clear();
     c.seed = 51;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     assert(WEAPONS.size() == base && g.checksum() != with);
 }
 
 // W4M FuseUp: the grenade family's fuse is set on the d-pad (1..5 s) and is exact to the tick; other weapons ignore it.
 static int fuseTicks(int presses, uint8_t key, const char *weapon, int *choir = nullptr) {
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current];
     g.hotSeat = 0;
     g.weapon = weaponNamed(weapon);
@@ -1692,7 +1692,7 @@ static void checkFuse() {
     int choir = -1, holy = fuseTicks(3, Input::FUSE_DOWN, "Holy Hand Grenade", &choir);
     assert(choir > 0 && holy - choir + 1 == 2 * 60);  // W4M: comes to rest, Hallelujah, blast 2 s later; no fuse to set
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     g.hotSeat = 0;
     g.weapon = weaponNamed("Bazooka");
     Input in;
@@ -1704,7 +1704,7 @@ static void checkFuse() {
 // W4M "Will auto activate if selected": a long fall with the parachute in hand opens it, no fall damage, drifts downwind.
 static void checkParachute() {
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current];
     g.hotSeat = 0, g.wind = 1;
     int chute = weaponNamed("Parachute");
@@ -1721,7 +1721,7 @@ static void checkParachute() {
 // flying; Timer_RetreatTimedOut ends the turn, which waits for the shell. Its TrackCam is served at launch (0x577530), the worm still: full screen.
 static void checkRetreatInFlight() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0, g.wind = 0;
     Worm &a = g.worms[g.current];
@@ -1764,7 +1764,7 @@ static void checkRetreatInFlight() {
 static void checkToolWeapons() {
     for (const char *tool : {"Ninja Rope", "Jetpack"}) {
         Game g;
-        g.start({29, 2, 1, "", 0});
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &a = g.worms[g.current];
         g.hotSeat = 0;
         bool rope = tool[0] == 'N';
@@ -1795,7 +1795,7 @@ static void checkToolWeapons() {
 // while thrusting and runs dry at 20 ms; no button ends it, landing does; the ammo goes once, a landed jetpack takes off again.
 static void checkJetpack() {
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current];
     g.hotSeat = 0, g.wind = 0;
     const float DT = Game::DT, G = 12.5f, n = DT / 0.02f;
@@ -1886,7 +1886,7 @@ static void checkJetpack() {
 // a secondary left when the tool ends becomes the weapon in hand (W4M 0x565920).
 static void checkJetpackSecondary() {
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current];
     g.hotSeat = 0, g.wind = 0;
     int jp = weaponNamed("Jetpack"), dyn = weaponNamed("Dynamite");
@@ -1907,7 +1907,7 @@ static void checkJetpackSecondary() {
     assert(g.shots.size() == shots + 1 && WEAPONS[g.shots.back().weapon].name == "Dynamite" && g.ammo[a.team][dyn] == 1);
     assert(g.jetting && g.weapon == jp && g.secondary < 0 && g.phase != Phase::Aim);  // the attack is made, the flight goes on
     Game h;  // dry with the dynamite still held: it comes to hand
-    h.start({29, 2, 1, "", 0});
+    h.start({29, 2, 1, "", 0}), h.hotSeat = 0;
     Worm &b = h.worms[h.current];
     h.hotSeat = 0, h.weapon = jp, h.ammo[b.team][jp] = 1, h.ammo[b.team][dyn] = 1, h.delays[b.team][jp] = h.delays[b.team][dyn] = 0;
     b.pos = {20, 55, 20}, b.vel = {0, 0, 0}, b.grounded = false;
@@ -1926,7 +1926,7 @@ static void checkToolGaps() {
     auto fly = [&](Game &g, uint32_t wp) -> Worm & {
         GameConfig c{29, 2, 1, "", 0};
         c.wormpot = wp;
-        g.start(c);
+        g.start(c), g.hotSeat = 0;
         Worm &a = g.worms[g.current];
         g.hotSeat = 0, g.wind = 0, g.weapon = jp, g.ammo[a.team][jp] = 1, g.ammo[a.team][dyn] = 2;
         g.delays[a.team][jp] = g.delays[a.team][dyn] = 0;
@@ -2028,7 +2028,7 @@ static void checkToolGaps() {
         assert(!g.jetting && g.weapon == baz && g.secondary < 0);  // anything else ends the tool (0x565650)
         assert(Controls::tick(Input::pick(baz)).aim == Input::pick(baz).aim);  // the client keeps the pick in the aim byte
         Game h;
-        h.start({29, 2, 1, "", 0});
+        h.start({29, 2, 1, "", 0}), h.hotSeat = 0;
         int was = h.weapon;
         h.step(pr(Input::NEXT_WEAPON));
         assert(h.weapon != was);  // old inputs: a plain step
@@ -2036,7 +2036,7 @@ static void checkToolGaps() {
     {  // 6. girder: legs along x at the z ends (BitArray3D 3 + x + 4 z), steps every 80 ms, the active worm counts in the probes
         static_assert(Game::GIRDER_TICKS == (80 * 60 + 500) / 1000, "4 updates of 20 ms");
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         g.hotSeat = 0;
         Worm &a = g.worms[g.current];
@@ -2063,7 +2063,7 @@ static void checkToolGaps() {
 // of the list, Skip Go and Surrender skipped (0x5657bb).
 static void checkFirstWeapon() {
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     int t = g.worms[g.current].team, other = 1 - t;
     for (size_t k = 0; k < WEAPONS.size(); k++) g.ammo[other][k] = 0, g.delays[other][k] = 0;
     int skip = weaponNamed("Skip Go"), b = weaponNamed("Baseball Bat"), s = weaponNamed("Shotgun");
@@ -2084,7 +2084,7 @@ static void checkFirstWeapon() {
 // W4M AlienAbductionLogicEntity: the UFO lifts every worm in reach, nearest first, holds them, then spits them out 2.1 s apart at half health.
 static void checkAbduction() {
     Game g;
-    g.start({29, 2, 2, "", 0});
+    g.start({29, 2, 2, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current];
     std::vector<int> foes;
     for (int i = 0; i < (int)g.worms.size(); i++) if (g.worms[i].team != a.team) foes.push_back(i); else if (i != g.current) g.worms[i].pos = {70, 40, 70};
@@ -2126,7 +2126,7 @@ static void checkAbduction() {
     assert(fabsf(t - (Game::ABD_SPIT + Game::ABD_LEAVE) * 60) < 3 && g.abductees.empty());  // the next SpitOutWorm finds nobody: AbductEnd
     // an abductee unhurt between two turn starts gets random health; a Zap while it moves (UpdateAbductee)
     Game h;
-    h.start({29, 2, 1, "", 0});
+    h.start({29, 2, 1, "", 0}), h.hotSeat = 0;
     Worm &v = h.worms[1 - h.current];
     v.abducted = true, v.zap = Game::ZAP_FIRST;
     int turns = 0, hp = v.hp;
@@ -2161,7 +2161,7 @@ static void checkAbduction() {
     assert(zap && Vector3Distance(was, v.pos) > 0.1f && v.zap >= Game::ZAP_MIN);
     // nobody in reach: AbductFail, then it leaves
     Game f;
-    f.start({29, 2, 1, "", 0});
+    f.start({29, 2, 1, "", 0}), f.hotSeat = 0;
     Worm &b = f.worms[f.current];
     f.hotSeat = 0, b.pos = {20, 55, 20}, b.yaw = 0, b.pitch = 0, b.grounded = true;  // standing: W4M CanFire
     f.worms[1 - f.current].pos = {70, 40, 70};
@@ -2174,7 +2174,7 @@ static void checkAbduction() {
     // W4M 0x5488e0 skips a worm with flag 0x20 (nailed) or 0x8 (in a bubble): the same victim, nailed, is out of reach
     for (int nailed = 0; nailed < 2; nailed++) {
         Game n;
-        n.start({29, 2, 1, "", 0});
+        n.start({29, 2, 1, "", 0}), n.hotSeat = 0;
         Worm &c = n.worms[n.current], &vv = n.worms[1 - n.current];
         n.hotSeat = 0, c.pos = {20, 55, 20}, c.yaw = 0, c.pitch = 0, c.grounded = true;  // standing: W4M CanFire
         n.weapon = weaponNamed("Alien Abduction");
@@ -2190,7 +2190,7 @@ static void checkAbduction() {
 // W4M Super Sheep: walks, FIRE takes off (25 s flight), FIRE again blows it up.
 static void checkSuperSheep() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2212,7 +2212,7 @@ static void checkSuperSheep() {
 // W4M Old Woman: steered, FIRE explodes, each enemy she bumps loses 1-8 of a weapon to her team.
 static void checkOldWoman() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     int wi = weaponNamed("Old Woman"), baz = weaponNamed("Bazooka");
@@ -2237,7 +2237,7 @@ static void checkOldWoman() {
 // W4M Concrete Donkey: smashes on down, every 0.75 s, until its 8 s LifeTime or the water.
 static void checkDonkey() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     int wi = weaponNamed("Concrete Donkey"), booms = 0;
     g.phase = Phase::Flying, g.timer = 1200;
@@ -2253,7 +2253,7 @@ static void checkDonkey() {
 // W4M Mine.DudProbability: about one mine in ten fizzles and stays inert.
 static void checkMineDuds() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     g.objects.clear();
     int duds = 0;
     for (int k = 0; k < 400; k++) {
@@ -2271,7 +2271,7 @@ static void checkMineDuds() {
 // W4M payload Explosion handler: a blast only pushes a mine, up and away; it does not arm it.
 static void checkMineBlast() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     Vector3 at = g.worms[0].pos;
     for (Worm &w : g.worms) w.pos.x += 30;
@@ -2285,7 +2285,7 @@ static void checkMineBlast() {
 // W4M ArmingRadius 45 units: a worm blown past a mine 2 m off arms it; a laid mine ignores worms for ArmingCourtesyTime.
 static void checkMineFlyby() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &v = g.worms[1 - g.current];
     g.objects = {{Object::Mine, {5, 60, 5}, {0, 0, 0}, -1, -1, false, false}};
@@ -2303,7 +2303,7 @@ static void checkMineFlyby() {
 // W4M Ninja.NumShots: 5 launches a turn; the hook catches a crate, reels it in and out, jump lets it go.
 static void checkRopeShots() {
     Game g;
-    g.start({29, 2, 1, "", 0});
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &a = g.worms[g.current];
     g.hotSeat = 0;
     a.pos = {20, 55, 20}, a.yaw = 0, a.pitch = 0, a.vel = {0, 0, 0};
@@ -2329,7 +2329,7 @@ static void checkRopeShots() {
 // W4M Inflatable Scouser: swallows a worm, floats it up, pops and drops it.
 static void checkScouser() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &v = g.worms[1 - g.current];
     int wi = weaponNamed("Inflatable Scouser"), hp = v.hp;
@@ -2348,7 +2348,7 @@ static void checkScouser() {
 // W4M WXP_GasCloud: the canister leaves an 8 s cloud that poisons every worm within 5 m.
 static void checkGasCloud() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &v = g.worms[1 - g.current];
     int wi = weaponNamed("Gas Canister");
@@ -2367,7 +2367,7 @@ static void checkGasCloud() {
 // W4M Bovine Blitz (IsControlledBomber, NumStrikeBombs 3): a steered plane, FIRE drops a cow, 0.8 s apart.
 static void checkBomber() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2398,7 +2398,7 @@ static void checkBomber() {
 // W4M Bomber: the plane drops its NumBombs one after another (BlitzDuration / NumBombs apart), never all at once.
 static void checkAirstrike() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2433,7 +2433,7 @@ static void checkAirstrike() {
 // W4M Blimp targeting: TARGET inputs yaw and move the camera focus (not the worm); the strike lands at the view's centre.
 static void checkTargetCursor() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2478,7 +2478,7 @@ static void checkReticles() {
     for (size_t wi = 0; wi < WEAPONS.size(); wi++) {
         const WeaponDef &wd = WEAPONS[wi];
         Game g;
-        g.start({23, 2, 1, "", (uint32_t)RULE_NO_DELAYS});
+        g.start({23, 2, 1, "", (uint32_t)RULE_NO_DELAYS}), g.hotSeat = 0;
         settle(g);
         g.hotSeat = 0;
         g.weapon = (int)wi, g.ammo[g.worms[g.current].team][wi] = 9;
@@ -2511,7 +2511,7 @@ static void checkNoDelays() {
             Game g;
             GameConfig c{5, 2, 1, "", rules};
             c.scheme = p.s;
-            g.start(c);
+            g.start(c), g.hotSeat = 0;
             int n = 0;
             for (const auto &d : g.delays) for (int v : d) n += v > 0;
             assert(rules ? n == 0 : n > 0);
@@ -2524,7 +2524,7 @@ static void checkNoDelays() {
 // W4M Fatkins is a Bomber payload: it leaves the plane flying the strike direction and lands on the target.
 static void checkFatkins() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2551,7 +2551,7 @@ static void checkTailNail() {
     Worm v = melee("Tail Nail", 1);
     assert(v.nailed && v.hp == 85 && Vector3Length(v.vel) == 0);
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2578,7 +2578,7 @@ static void checkArmour() {
     GameConfig c{23, 2, 1, "", 0};
     c.scheme.mines = c.scheme.barrels = 0;  // nothing else in the blasts
     Game g;
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
@@ -2604,7 +2604,7 @@ static void checkGirder() {
         Game g;
         GameConfig c{23, 2, 1, "", 0};
         c.wormpot = wp;
-        g.start(c);
+        g.start(c), g.hotSeat = 0;
         settle(g);
         g.hotSeat = 0;
         Worm &a = g.worms[g.current];
@@ -2632,7 +2632,7 @@ static void checkGirder() {
     }
     // the replay undo log puts the voxels back, the girder material included
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     std::vector<std::pair<int, signed char>> log;
     Vector3 c = {40, 30, 40};
     g.terrain.undo = &log;
@@ -2648,7 +2648,7 @@ static void checkGirder() {
 // W4M Binoculars: FIRE on an enemy solves a bazooka shot (no ammo, the turn goes on); the solution hits.
 static void checkBinoculars() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
@@ -2674,7 +2674,7 @@ static void checkBinoculars() {
 // W4M Change Worm (WormSelectLogicEntity 0x59a6c0): the first change spends one, more changes are free until a move.
 static void checkChangeWorm() {
     Game g;
-    g.start({23, 2, 3, "", 0});
+    g.start({23, 2, 3, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     const int team = g.worms[g.current].team, ci = weaponNamed("Change Worm"), first = g.current;
@@ -2692,7 +2692,7 @@ static void checkChangeWorm() {
 // W4M Bubble Trouble: shots from outside bounce off or burst on the shell, a worm inside is untouched; 6 turn ends.
 static void checkBubble() {
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2729,7 +2729,7 @@ static void checkIcarus() {
     Game g;
     GameConfig c{23, 2, 1, "", 0};
     c.scheme = SCHEMES[0].s;  // W4M Standard: Redbull Delay 2
-    g.start(c);
+    g.start(c), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2767,7 +2767,7 @@ static void checkIcarus() {
 static void checkCollectedUtilities() {
     auto blastHp = [](bool dd) {
         Game g;
-        g.start({23, 2, 1, "", 0});
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         g.hotSeat = 0;
         Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
@@ -2791,7 +2791,7 @@ static void checkCollectedUtilities() {
     int one = blastHp(false), two = blastHp(true);
     assert(one > 0 && two >= 2 * one - 1);
     Game g;
-    g.start({23, 2, 1, "", 0});
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &a = g.worms[g.current];
     g.objects.push_back(Object{Object::Crate, a.pos, {0, 0, 0}, weaponNamed("Crate Spy"), -1, false, false});
@@ -2803,13 +2803,13 @@ static void checkCollectedUtilities() {
     Game d;  // W4M 0x4f4df0: the ending team's Inventory%d.WeaponDelays count down; custom schemes have none
     GameConfig dc{23, 2, 1, "", 0};
     dc.scheme = SCHEMES[0].s;
-    d.start(dc);
+    d.start(dc), d.hotSeat = 0;
     int t0 = d.worms[d.current].team, bi = weaponNamed("Binoculars"), ab = weaponNamed("Banana Bomb");
     assert(d.delays[t0][bi] == 2 && d.delays[t0][ab] == 8 && d.delays[t0][weaponNamed("Bazooka")] == 0);
     endSettle(d);
     assert(d.delays[t0][bi] == 1 && d.delays[1 - t0][bi] == 2);
     dc.scheme.turnTime++;
-    d.start(dc);
+    d.start(dc), d.hotSeat = 0;
     assert(d.delays[t0][ab] == 0);
 }
 
@@ -2817,7 +2817,7 @@ static void checkCollectedUtilities() {
 static void checkTunnelling() {
     auto arena = [](auto sdf) {
         Game g;
-        g.start({33, 2, 1, "", 0});
+        g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
         for (int z = 16; z < 80; z++)
             for (int y = 100; y < 250; y++)
                 for (int x = 16; x < 200; x++)
