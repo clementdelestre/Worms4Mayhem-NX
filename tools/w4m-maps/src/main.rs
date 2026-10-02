@@ -13,6 +13,7 @@ const NZ: usize = 320;
 const VOX: f32 = 0.25;
 const BAND: f32 = 1.0; // exact distances are stored within 1 voxel of the surface (all surface nets reads)
 const Q: f32 = 254.0; // engine density quantization (int8 = metres * Q)
+const GIRDER_MAT: usize = 61; // theme material of W4M girders (GirderSmall/Large.xom), always exported
 const TEX_REPEAT: f32 = 4.0; // W4M units per texture repeat (poxel texture vectors are 0.25)
 const WATER: f32 = 3.0; // our water height (m); W4M water assumed at y = 0
 const HMP_EXTENT: f32 = 80.0; // .hmp covers [-80, 80] in x and z
@@ -522,7 +523,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     fs::create_dir_all(out_dir.join("tex")).map_err(|e| e.to_string())?;
     let mut texs = Vec::new();
     for (m, pair) in names.iter().enumerate() {
-        let f = pair.clone().map(|n| n.filter(|_| used[m + 1]).map(|n| {
+        let f = pair.clone().map(|n| n.filter(|_| used[m + 1] || m == GIRDER_MAT).map(|n| {
             if written.insert(n.clone()) { let _ = fs::write(out_dir.join(format!("tex/{n}.qoi")), qoi(&tex[&n])); }
             format!("\"tex/{n}.qoi\"")
         }).unwrap_or("null".into()));
@@ -556,8 +557,9 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     }
     let spawns = spawn_points(&grid);
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
+    let pv = mission::preview_of(data, stem).map_or(String::new(), |p| format!("  \"preview\": \"{p}\",\n"));
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"spawns\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","),
         spawns.iter().map(|p| format!("[{:.1},{:.1},{:.1}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
         marks.join(",\n    "), objs.join(",\n    ")

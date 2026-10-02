@@ -13,6 +13,7 @@
 static constexpr int CX = Terrain::NX / Terrain::CS, CY = Terrain::NY / Terrain::CS, CZ = Terrain::NZ / Terrain::CS;
 static constexpr size_t TOTAL = (size_t)Terrain::NX * Terrain::NY * Terrain::NZ;
 static size_t idx(int x, int y, int z) { return ((size_t)z * Terrain::NY + y) * Terrain::NX + x; }
+static constexpr unsigned char HARD = 62;  // girder voxels: W4M theme material 61 (GirderSmall.xom), 1-based like mats
 
 // Quantize keeping the sign exact: solid iff v > 0.
 static signed char qd(float v) {
@@ -138,6 +139,7 @@ template <class F> static void paint(Terrain &t, Vector3 lo, Vector3 hi, F f) {
 void Terrain::reset(signed char fill) {
     unload();
     d.assign(TOTAL, fill);
+    steel.clear();
     parts.assign(CX * CY * CZ, {});
     dirty.assign(CX * CY * CZ, true);
     colTop.clear();
@@ -312,6 +314,7 @@ float Terrain::at(int x, int y, int z) const {
 }
 
 float Terrain::sample(Vector3 p) const {
+    samples++;
     float x = p.x / VOX, y = p.y / VOX, z = p.z / VOX;
     int ix = (int)floorf(x), iy = (int)floorf(y), iz = (int)floorf(z);
     float fx = x - ix, fy = y - iy, fz = z - iz, r = 0;
@@ -357,6 +360,31 @@ void Terrain::carve(Vector3 c, float radius) {
         for (int y = std::max(0, lo[1] - 1) / CS; y <= std::min(NY - 1, hi[1] + 1) / CS; y++)
             for (int x = std::max(0, lo[0] - 1) / CS; x <= std::min(NX - 1, hi[0] + 1) / CS; x++)
                 dirty[(z * CY + y) * CX + x] = true;
+}
+
+void Terrain::weld(Vector3 c, Vector3 half) {
+    if (steel.empty()) steel.assign(TOTAL, false);
+    float reach = Vector3Length(half) + 0.5f;
+    int lo[3], hi[3];
+    float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX, NY, NZ};
+    for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)((cc[a] - reach) / VOX)), hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + reach) / VOX) + 1);
+    for (int z = lo[2]; z <= hi[2]; z++)
+        for (int y = lo[1]; y <= hi[1]; y++)
+            for (int x = lo[0]; x <= hi[0]; x++) {
+                Vector3 l = {x * VOX - c.x, y * VOX - c.y, z * VOX - c.z};
+                float sd = sdBox(l, {0, 0, 0}, half);
+                size_t i = idx(x, y, z);
+                signed char nv = std::max(d[i], qd(-sd));
+                if (undo && nv != d[i]) undo->emplace_back((int)i, d[i]);
+                d[i] = nv;
+                if (sd < 0 && !steel[i]) {
+                    if (undo) undo->emplace_back(-1 - (int)i, 0);
+                    steel[i] = true;
+                }
+            }
+    for (int z = std::max(0, lo[2] - 1) / CS; z <= std::min(NZ - 1, hi[2] + 1) / CS; z++)
+        for (int y = std::max(0, lo[1] - 1) / CS; y <= std::min(NY - 1, hi[1] + 1) / CS; y++)
+            for (int x = std::max(0, lo[0] - 1) / CS; x <= std::min(NX - 1, hi[0] + 1) / CS; x++) dirty[(z * CY + y) * CX + x] = true;
 }
 
 bool Terrain::raycast(Ray r, float maxDist, Vector3 *hit) const {
@@ -413,7 +441,7 @@ void Terrain::buildChunk(int ci) {
                 int x = x0 - 1 + i, y = y0 - 1 + j, z = z0 - 1 + k;
                 bool in = x >= 0 && y >= 0 && z >= 0 && x < NX && y < NY && z < NZ;
                 c[n] = in ? d[idx(x, y, z)] * (1 / Q) : -1;
-                mt[n] = in && !mats.empty() ? mats[idx(x, y, z)] : 0;
+                mt[n] = !in ? 0 : isSteel(idx(x, y, z)) ? HARD : !mats.empty() ? mats[idx(x, y, z)] : 0;
                 r |= (uint64_t)(c[n] > 0) << i;
             }
         }
@@ -468,7 +496,8 @@ void Terrain::buildChunk(int ci) {
             b.col.insert(b.col.end(), {(unsigned char)(ao * 255), (unsigned char)(vis * 255), 0, 255});
             return b.vid[n] = (int)b.pos.size() / 3 - 1;
         }
-        Color base = m >= 0 && m < (int)palTop.size() ? (nr.y > 0.7f ? palTop[m] : palSide[m]) : p.y < WATER + 0.8f ? beach : nr.y > 0.7f ? top : side;
+        Color base = m >= 0 && m < (int)palTop.size() ? (nr.y > 0.7f ? palTop[m] : palSide[m]) : m == HARD - 1 ? Color{150, 150, 160, 255}  // untextured steel
+                   : p.y < WATER + 0.8f ? beach : nr.y > 0.7f ? top : side;
         Vector3 l = Vector3Add(sun.ambient, Vector3Scale(sun.diffuse, fmaxf(0, Vector3DotProduct(nr, light)) * vis));
         auto ch = [&](unsigned char c, float k) { return (unsigned char)fminf(255, c * k * ao); };
         b.col.insert(b.col.end(), {ch(base.r, l.x), ch(base.g, l.y), ch(base.b, l.z), 255});

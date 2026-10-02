@@ -43,6 +43,8 @@ Assets to a real Switch: start an FTP server on it (sphaira or ftpd), then `tool
 | Aim | right stick (single Joy-Con: hold L + stick) | W / S |
 | Fire (hold = power) | A | Space |
 | Jump / let go of rope | B | Enter |
+| Strikes (airstrike, donkey, Fatkins, Bovine Blitz, abduction, homing): sky view | A (or hold L) | Space / E |
+| Sky view: fire (homing: lock) / leave / look / pan / zoom | A / B / left stick / right stick / D-pad ↑↓ | Space / Enter or E / WASD / arrows / Z X |
 | Weapon panel | X (B closes) | Q (Backspace closes) |
 | Next weapon | Y / R | Tab |
 | Camera orbit / zoom | right stick ←→ / ZL ZR | A D / Z X |

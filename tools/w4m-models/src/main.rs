@@ -56,7 +56,13 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_sentry", "SentryGun", 0.0, false, &[]),
     ("hold_flag", "SurrenderFlag", 0.0, false, &[]),
     ("hold_jetpack", "Jetpack", 0.0, false, &[]),
-    ("hold_chute", "Worm.Chute", 0.0, false, &[]),
+    ("hold_chute", "Worm.Chute", 0.0, false, &["ParachuteWobble", "FireParachute", "ParachuteLR"]),  // WAE_Parachute 0x58f180
+    ("crate_chute", "Crate.Chute", 0.0, false, &["Open", "Fall", "Close"]),
+    ("hold_hammer", "TailNail", 0.0, false, &[]),
+    ("bubble", "BubbleTrouble.Bubble", 4.2, false, &[]),  // Bubble.Radius 42 units: 4.2 m across; static (its 3 bones only bob it)
+    ("wings", "RedBullWings", 1.35, false, &["FlyRedBull"]),  // 27 units span
+    ("superbomber", "SuperAirstrike", 4.1, false, &["OpenDoorsSource"]),  // Bovine Blitz (SuperBomberGraphicEntity); the rest pose is nose-down, the clip starts level
+    ("cow", "Cow.Payload", 0.0, false, &["Hang", "Skydive"]),  // ParachutePayloadGraphicEntity: Crate.Chute at its "Parachute" node
     ("grave0", "Grave.Cross", 0.9, true, &[]),
     ("grave1", "Grave.Worm", 0.9, true, &[]),
     ("grave2", "Grave.Obelisk", 0.9, true, &[]),
@@ -154,13 +160,22 @@ const WORM_CLIPS: &[&str] = &[
     "FireBazooka+HoldBazooka", "FireThrown+HoldThrown", "FireBow+HoldBow", "FireDynamite+HoldDynamite", "FireShotgun+HoldShotgun",
     "FireSniper+HoldSniper", "FireHomingMissile+HoldHomingMissile", "FireSheep+HoldSheep", "FireOldWoman+HoldOldWoman",
     "FireScouser+HoldScouser", "FireLandmine+HoldLandmine", "FireSentrygun+HoldSentrygun", "Fire2Bat+HoldBat", "FireProd+HoldProd",
-    "Fire2Firepunch+HoldFirepunch", "TauntSurrender+HoldSurrender", "SwingNinjarope", "JetpackFly", "ParachuteWobble", "TelepadAppear",
-    "FallDrown",
+    "Fire2Firepunch+HoldFirepunch", "HoldNMN", "FireNMN", "TauntSurrender+HoldSurrender", "SwingNinjarope", "JetpackFly", "ParachuteWobble", "TelepadAppear",
+    "FallDrown", "Nailed", "NailedHitFront",
     // WORMACTING.XOM scene emotes (looped) and gestures, docs/worm-reactions.md
-    "Scared", "Terror", "Nervous", "CowerEmote", "CantLook", "Sad", "Ill",
+    // emotes: face (eyebrows, eyelids, head and shoulder offsets) + its *Mouth clip (lips)
+    "Scared+ScaredMouth", "Terror+TerrorMouth", "Nervous+NervousMouth", "CowerEmote+CowerEmoteMouth", "CantLook+CantLookMouth",
+    "Sad+SadMouth", "Ill+IllMouth", "Happy+HappyMouth", "Angry+AngryMouth", "Frown+FrownMouth", "Grumpy+GrumpyMouth",
+    "Normal+NormalMouth", "Disgust+DisgustMouth", "Interested+InterestedMouth", "Curious+CuriousMouth",
+    "Patronising+PatronisingMouth", "EvilGrin+EvilGrinMouth", "Awestruck+AwestruckMouth", "Daft+DaftMouth", "Daft2+Daft2Mouth",
+    "Incredulity+IncredulityMouth", "Sneer", "Search",
     "Startled", "Shriek", "Cover_Head", "Gasp", "Blow", "Disbelief", "Pray", "Shake_Fist", "Titter", "Chuckle", "PointAndLaugh",
     "Wipe_Brow", "ShakeHead", "Indicate", "Watch_Distant", "Cheer", "Thumbs_Up", "Salute", "ClaspHands", "ClutchChest", "Doh",
     "SighAndShakeHead", "WhatWereYouThinking", "SeeImpact", "Vomit", "Sneeze", "Yawn2", "Bored", "Taunt1", "BringItOn",
+    "LiveLongAndProsper", "Point@8", "YouLookBad", "Chuckle2", "ThumbBlank", "Taunt2", "Taunt3", "WaveAndPoint", "Guilty",
+    "PolishEyebrow", "CountFingers", "FakeShotgun", "Gunslinger1", "Gunslinger2", "FlickBogey", "Tantrum", "Sneeze2", "Puzzled",
+    "Thinking", "Nod", "WiggleBrows", "Cower", "SadSigh",
+    "Vault", "ParachuteLR",
 ];
 const FPS: f32 = 30.0;
 
@@ -540,6 +555,7 @@ impl Scene {
     // Bone skinning matrices: world of the bone's group times its inverse bind (pose) matrix.
     fn skinning(&self, x: &Xom, worlds: &[M4]) -> Vec<M4> {
         self.bones.iter().map(|&(b, g)| {
+            if b == 0 { return worlds[g]; }
             let f = fl::<16>(x.d(b), 3);
             let pose: M4 = std::array::from_fn(|r| std::array::from_fn(|c| f[c * 4 + r]));
             mul(&worlds[g], &pose)
@@ -633,19 +649,30 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     p += 2;
     let graph = vi(d, &mut p);
     sc_.walk(x, graph, None, 0);
-    let s = sc_;
+    let mut s = sc_;
     if s.parts.is_empty() { return None; }
+    // rigid meshes with wanted clips (crate chute): one pseudo-bone per node group, bone 0 = identity pose
+    if !wanted.is_empty() && s.lib != 0 && s.parts.iter().all(|p| p.skin.is_empty() && p.group.is_some()) {
+        for i in 0..s.parts.len() {
+            let g = s.parts[i].group.unwrap();
+            let j = s.bones.iter().position(|b| b.0 == 0 && b.1 == g).unwrap_or_else(|| { s.bones.push((0, g)); s.bones.len() - 1 });
+            s.parts[i].skin = vec![([j as u8, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]); s.parts[i].pos.len()];
+        }
+    }
     let lib = if s.lib != 0 { clips(x.d(s.lib), &x.s, &mut 0) } else { vec![] };
     let base = lib.iter().find(|c| c.name == "Base");
     let animated = s.parts.iter().any(|p| !p.skin.is_empty()) && !lib.is_empty();
-    // "A+B": clip A layered over B (channels A lacks come from B, then Base)
-    let chosen: Vec<Vec<&Clip>> = if !animated { vec![] } else {
-        wanted.iter().map(|n| n.split('+').filter_map(|n| lib.iter().find(|c| c.name == n)).collect::<Vec<_>>()).filter(|l| !l.is_empty()).collect()
+    // "A+B": clip A layered over B (channels A lacks come from B, then Base); "A@s": only A's first s seconds
+    let chosen: Vec<(Vec<&Clip>, f32)> = if !animated { vec![] } else {
+        wanted.iter().map(|n| {
+            let (n, cap) = n.split_once('@').map_or((*n, f32::MAX), |(n, c)| (n, c.parse().unwrap_or(f32::MAX)));
+            (n.split('+').filter_map(|n| lib.iter().find(|c| c.name == n)).collect::<Vec<_>>(), cap)
+        }).filter(|l| !l.0.is_empty()).collect()
     };
     let animated = animated && !chosen.is_empty();
 
     // rest pose (first chosen clip at t = 0, else the stored transforms): baked vertices, normalisation box
-    let rest = s.worlds(&s.locals(x, chosen.first().map(|c| (&c[..], base, 0.0))));
+    let rest = s.worlds(&s.locals(x, chosen.first().map(|c| (&c.0[..], base, 0.0))));
     let skin_rest = s.skinning(x, &rest);
     let place = |pt: &Part, v: [f32; 3], w: f32, i: usize| -> [f32; 3] {
         if pt.skin.is_empty() { return pt.group.map_or(v, |g| apply(&rest[g], v, w)); }
@@ -661,7 +688,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let c = [(lo[0] + hi[0]) / 2.0, if feet { lo[1] } else { (lo[1] + hi[1]) / 2.0 }, (lo[2] + hi[2]) / 2.0];
     let norm = if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
-    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator"];
+    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Parachute"];
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();
     let skin_all = |w: &[M4]| { let mut m = s.skinning(x, w); m.extend(sockets.iter().map(|&(g, _)| w[g])); m };
@@ -744,6 +771,10 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
                 nodes.push(format!("{{\"name\":\"{name}\",\"translation\":{t:?},\"rotation\":{r:?},\"scale\":{sc:?}}}"));
                 continue;
             }
+            if s.bones[bi].0 == 0 {
+                nodes.push(format!("{{\"name\":\"rigid{bi}\",\"translation\":{t:?},\"rotation\":{r:?},\"scale\":{sc:?}}}"));
+                continue;
+            }
             // XBone: 2 matrices, affine string, set, bounds + mode, name
             let (d, mut q) = (x.d(s.bones[bi].0), 3 + 128);
             vi(d, &mut q);
@@ -756,10 +787,12 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let a_ibm = g.floats(&ibm, "MAT4", nb, false);
         let joints: Vec<String> = (1..=nb).map(|i| i.to_string()).collect();
         let mut anims = Vec::new();
-        for layers in &chosen {
+        let mut t0 = None;
+        for (layers, cap) in &chosen {
             let c = layers[0];
-            let frames = ((c.dur * FPS).ceil() as usize).max(1) + 1;
-            let times: Vec<f32> = (0..frames).map(|f| (f as f32 / FPS).min(c.dur)).collect();
+            let dur = c.dur.min(*cap);
+            let frames = ((dur * FPS).ceil() as usize).max(1) + 1;
+            let times: Vec<f32> = (0..frames).map(|f| (f as f32 / FPS).min(dur)).collect();
             let a_t = g.floats(&times, "SCALAR", frames, true);
             let mut tv = vec![Vec::new(); nb];
             let mut rv = vec![Vec::new(); nb];
@@ -780,13 +813,16 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             let (mut samplers, mut channels) = (Vec::new(), Vec::new());
             for b in 0..nb {
                 for (path, v, ty) in [("translation", &tv[b], "VEC3"), ("rotation", &rv[b], "VEC4"), ("scale", &sv[b], "VEC3")] {
-                    let a = g.floats(v, ty, frames, false);
+                    // a channel that never moves keeps one key (raylib holds it); bone 0's translation stays full so the clip keeps its length
+                    let k = v.len() / frames;
+                    let still = (b, path) != (0, "translation") && v.chunks(k).all(|f| f.iter().zip(&v[..k]).all(|(a, b)| (a - b).abs() < 1e-5));
+                    let (a, input) = if still { (g.floats(&v[..k], ty, 1, false), *t0.get_or_insert_with(|| g.floats(&[0.0], "SCALAR", 1, true))) } else { (g.floats(v, ty, frames, false), a_t) };
                     channels.push(format!("{{\"sampler\":{},\"target\":{{\"node\":{},\"path\":\"{path}\"}}}}", samplers.len(), b + 1));
-                    samplers.push(format!("{{\"input\":{a_t},\"output\":{a},\"interpolation\":\"LINEAR\"}}"));
+                    samplers.push(format!("{{\"input\":{input},\"output\":{a},\"interpolation\":\"LINEAR\"}}"));
                 }
             }
             anims.push(format!("{{\"name\":\"{}\",\"samplers\":[{}],\"channels\":[{}]}}", c.name, samplers.join(","), channels.join(",")));
-            clip_names.push(format!("{} {:.2}s", c.name, c.dur));
+            clip_names.push(format!("{} {:.2}s", c.name, dur));
         }
         extra = format!(",\"skins\":[{{\"joints\":[{}],\"inverseBindMatrices\":{a_ibm}}}],\"animations\":[{}]", joints.join(","), anims.join(","));
     }
@@ -836,11 +872,28 @@ fn main() {
             p += 2;
             s.walk(&x, vi(x.d(i), &mut p), None, 0);
             if s.lib != 0 { println!("  clips: {}", clips(x.d(s.lib), &x.s, &mut 0).iter().map(|c| format!("{} {:.2}s", c.name, c.dur)).collect::<Vec<_>>().join(", ")); }
+            if let Ok(c) = std::env::var("W4M_CHANNELS") {  // debug: the channels (node, key type) each clip matching c animates
+                for k in clips(x.d(s.lib), &x.s, &mut 0).iter().filter(|k| k.name.contains(&c)) {
+                    let mut ch: Vec<_> = k.ch.keys().map(|(n, t)| format!("{n}:{t:x}")).collect();
+                    ch.sort();
+                    println!("  {}: {}", k.name, ch.join(" "));
+                    if std::env::var("W4M_KEYS").is_ok() { for (key, kf) in &k.ch { println!("    {key:?} {:?}", kf.iter().map(|f| (f[4], f[5])).collect::<Vec<_>>()); } }
+                    if std::env::var("W4M_KEYS").is_ok() {  // debug: (time s, value) keys of each channel
+                        let mut ks: Vec<_> = k.ch.iter().collect();
+                        ks.sort_by(|a, b| a.0.cmp(b.0));
+                        for ((n, t), kf) in ks { println!("    {n}:{t:x} {:?}", kf.iter().map(|q| (q[4], q[5])).collect::<Vec<_>>()); }
+                    }
+                }
+            }
             if std::env::var("W4M_GROUPS").is_ok_and(|v| v == name) {
                 let rest = s.worlds(&s.locals(&x, None));
                 for (gi, g) in s.groups.iter().enumerate() {
                     let n: usize = s.parts.iter().filter(|p| p.group == Some(gi)).map(|p| p.idx.len() / 3).sum();
                     println!("  {} [{}] tris {n} at {:?}", g.path, x.t(g.xf), [rest[gi][0][3], rest[gi][1][3], rest[gi][2][3]].map(|v| v.round()));
+                }
+                for pt in &s.parts {  // debug: local vertices, uvs and image of each part; W4M_IMG_DIR: the images as png
+                    println!("  part img {} pos {:?} uv {:?} rgba {:?}", pt.img, pt.pos, pt.uv, pt.rgba.first());
+                    if let (Ok(d), Some((w, h, rgba))) = (std::env::var("W4M_IMG_DIR"), image(&x, pt.img)) { fs::write(format!("{d}/img{}.png", pt.img), png(w, h, &rgba)).ok(); }
                 }
             }
         }

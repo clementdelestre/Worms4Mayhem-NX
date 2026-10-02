@@ -40,6 +40,7 @@ def dump(path):
 
 
 def main(a):
+    if a[:1] in (['-h'], ['--help']): return print(__doc__)
     out_dir, grep = os.path.join(CACHE, 'tweaks'), None
     if a[:1] == ['-o']: out_dir, a = a[1], a[2:]
     if a[:1] == ['-g']: grep, a = re.compile(a[1]), a[2:]

@@ -325,3 +325,72 @@ Units are W4M world units (20 per metre). Labels: data = read in CAMTWK/WEAPTWK/
 - OccludingCam: `TimeBeforeZoomOut`, `ZoomOffsetDist` and `MinPosition` seem unused on PC; check before ignoring them.
 - Game over: the condition for 15 s instead of 5 s, the height reference and units of the orbit, and when input stops it.
 - Worm fade: what logical camera index 1 is exactly.
+
+## 9. Targeting weapons: Blimp view and reticle
+
+The full W4M analysis is in `docs/w4m-map.md` §10. In short:
+- The view is the normal **Blimp** (`IsometricCam`).
+- The reticle is **fixed at the screen centre**. The player moves the camera's focus (MoveSpeed 250 × zoom units/s) and its yaw (RotateSpeed 0.55 rad/s).
+- Each frame, a ray from the camera through the focus, against the land and then the water, gives `Airstrike.TargetPoint`.
+- Bombers fly along the camera's horizontal right vector, so they cross the screen.
+- The cursors:
+  - **Bomber** (Airstrike, Super Airstrike, Fatkins): `Airstrike.Cursor.Mesh`.
+  - **Targeting** (Donkey, Alien Abduction): `Targeting.Cursor.Mesh`.
+  - **Homing**: its own cursor.
+- Tint: white when the target is valid, light blue (98,168,255) on water, red with no target.
+
+Cursor meshes and clips (Bundl09, read with a debug pass of `w4m-models`). Keys are (time s, value); channels 0x102 / 0x103 / 0x104 are translate / rotate / scale.
+- **Targeting** (Donkey, Abduction):
+  - A 100 × 100-unit plane, 3 × 3 vertices, `Target.tga`.
+  - `Target_Intro` 0.42 s: scale 0 → 0.75 and z rotation -4.36 → 0 rad (it spins in). `Target_Loop` 3.33 s: one full turn. Its displayed size is therefore 75 units.
+  - The shadow, `Targeting.Cursor.Shadow`, sits at the `Target_Shadow` node (2, -2), tint 0x645e2b02.
+  - There is no column and no line toward the ground. The reticle is screen-space; it is neither projected onto the land nor oriented by its normal (`Airstrike.UpVector` is the camera's up vector).
+- **Bomber** (Airstrike, Fatkins):
+  - The `Aimer_Null` aimer is 58 units (`Airstrike_Outer.tga`). In `Airstrike_Intro` 0.67 s it pops in vertically and turns from 1.57 rad to 0. `Cursor_Loop` 0.83 s pulses its scale 0.80 ↔ 0.777.
+  - Five arrows (`Airstrike.Cursor.Dot`), 16 units × 0.8, at x = -76, -45.6, -15.2, 15.2, 45.6.
+  - `Dots_Loop` 0.42 s slides each arrow +30.4 units along +x (screen right). The first one grows from 0 and the last one shrinks to 0. The run therefore reads from left to right.
+
+What the client does:
+- `targeted(Kind)` (sim.h) covers Airstrike (both kinds), Donkey (Concrete Donkey and Fatkins), Abduction, Teleport and Homing. Homing (IsTargeting + IsHoming + Aimed + Powered): FIRE in the Blimp sets `Game::locked` / `lockAt` (W4M `Payload.Target`, state 1 → 0), then the view goes back to the normal aim (W4M `Weapon.CreateAimingCursor`) and the launcher is aimed and powered as usual; the press that locked does not charge. The missile homes on `lockAt`. Teleport is not a W4M weapon (its cursor is dead code there); it gets the Targeting cursor.
+- **Entering the Blimp**: W4M `Input.BlimpView` is a toggle (DefaultCam 0x524e00 in, IsometricCam 0x529c00 out). Its defaults are "E" on PC (`FETXT.Control.Blimp`, LOCAL) and joypad button 3, i.e. Y on the 360 pad (DEFSAVE `Joypad.Input.BlimpView`, Type 2 Key 3).
+  - Our mapping is a deliberate deviation, at the user's request.
+  - With a targeted weapon in hand, **A / ZR / Space** enter the Blimp. That press is swallowed until it is released, so it does not fire.
+  - **Holding L** also shows the Blimp, until L is released. The L+R performance overlay is disabled while in the Blimp, and a locked homing missile keeps L + stick aiming for a single Joy-Con.
+  - In the Blimp, **A** fires (homing: locks the target) and **B / Enter** leave without jumping. **E** toggles, as in W4M.
+  - The toggle is client state (`Controls::targetView`). It is dropped as soon as no targeted weapon is in hand or the turn ends.
+  - Fire never launches outside the Blimp (0x583a10). In the Blimp, a press with no target plays `FeError` in place of W4M's `weapons/Gong` (not imported).
+  - Hints, as in `BlimpHelpEntity` / `WXFE.HelpBlimpConsole` (Look, Pan, Zoom in / out): "Fire / Lock target", "Look", "Pan", "Zoom" and "Leave" in the view. Outside it: "Sky view: target" and "Hold: sky view".
+- **The CPU** uses the Blimp only while its plan executes a strike, as in W4M, which calls `SetCamera("Blimp")` from `AIActionSetStrikeTarget::ApplyActionInner` (0x4b4c70) and `AIStrike.SeekTarget` (0x4b5a90). That is `Ai::striking()`: mode Act with a targeted plan weapon. It is not shown during instant replays or match playback. The team's reselected weapon alone no longer opens the view: it used to bring up the reticle at random moments. `ai_check` tests this.
+- **Controls**, as in HelpBlimpConsole (Movement = Look, Camera = Pan):
+  - Left stick: yaw (RotateSpeed 0.55·s) and pitch (PitchSpeed 0.45·s, clamp [0, π/2]), with s = 0.9 + 0.1·zoom. Right stick: pan at 250·zoom u/s. D-pad up / down: zoom 0.15–2 (FOV only, client-side).
+  - Desktop: WASD look, arrows pan, X/Z zoom.
+- The camera is exactly the sim's: `Game::blimpEye(cursor, cursorYaw, cursorPitch)` looking at `Game::cursor`, so the reticle (`Ui::targetCursor`) is the screen centre.
+  - Entry pose (0x52ad20): focus.y = max(worm.y, highest land) + 6 units, moved back so that the centre ray hits the worm.
+  - The focus stays within 4500 units (225 m) of Land.Center. Its x and z are the map centre; its y, the water height, is assumed.
+- The tint is white, light blue on water, and red with no target. With no target (the ray misses land and water within 200 m, possible at low pitch), the sim refuses Fire.
+- Reticle size: HUD units, screen height / 480. HUDTWK places HUD items in a 480-unit-tall space, e.g. `HUD.AngleMeter.ScreenY` and `HUD.Powerbar.Position` y = -165, and the cursor obeys the HUD hide flag. That the cursor uses the same layer is assumed.
+- **Input** (net and replays): the 4-byte `Input` is unchanged. While `Input::TARGET` (bit 64) is set:
+  - `turn` yaws the Blimp at up to `BLIMP_TURN`, and the worm does not turn.
+  - `walk` moves the focus forward at up to `CURSOR_SPEED` 25 m/s.
+  - `aim` moves it right at the same speed. With `Input::PITCH` (bit 128) set, `aim` instead tilts the camera at up to `BLIMP_TILT` 0.495 rad/s.
+  - When the player moves sideways and tilts at once, the client alternates the two on successive ticks at twice the rate.
+  - The worm neither walks nor pitches.
+- `target()` is then the land or water hit of the camera ray through the focus. The airstrike runs along `strikeDir()`, the view's right vector; the sense is assumed, as in w4m-map §10.
+- **Fatkins** is a Bomber payload, as in W4M (BomberLogicEntity → FatkinsStrikePayload, 0x54ddf0). `Game::fatkinsDrop` releases it 25 m up with the plane's ground speed (`Bomber.GroundSpeed` 7.5 m/s) along the strike direction, early enough to land on the target.
+  - The direction is the view's right vector in the Blimp, otherwise the worm's facing.
+  - The AI's prediction (ai.cpp) uses the same function.
+- The state (`cursorOn`, `cursor`, `cursorYaw`, `cursorPitch`) is reset at each turn. The checksum mixes it only while `cursorOn` is set, so old replays and the CPU, which never sends TARGET, are unchanged; the one exception is Fatkins, whose path changed for every user. The CPU's view centres the Blimp on its own aim point (the W4M AI uses the Blimp too).
+
+## 10. NinjaCamMkIII, FlyCam fields, abduction close shot, homing cursor (disasm, this pass)
+
+- **NinjaCamMkIII** (vtable 0x855a18) overrides OccludingCam slots 9 and 10.
+  - Slot 9, 0x52d720, replaces the occlusion test: if there has been no camera input for 60 ms (0x51b540) and the camera spot is in land (0x52d140: land segments of 5 units from it along +z, +x and +y), 0x52d250 tries the yaw offsets of table 0x91eaf0 (±π/8, ±2π/8 … ±7π/8, then zeros), 8 a frame, at the same pitch and `DistFromObject`; the first clear one becomes the yaw and position, and the index (+0xec) resets. It is never reset otherwise.
+  - Slot 10, 0x52d3c0: distance = d·(1 − OccZoomOutSpeed) + DistFromObject·OccZoomOutSpeed each frame (0.04), position and look-at heights ≥ water + 5. There is no zoom-in at all (`OccZoomInSpeed` 0).
+- **FlyCam fields** (0x527a90 copies the container into the camera): UpSpeed → +0x54 (the up-vector lerp), LookSpeed → +0x4c, PosSpeed → +0x78, PosRate → +0x7c, LagBehind → +0x6c, LookAhead → +0x68, MinPosition → +0x70, MinLookAt → +0x74, FinalDistance → +0x80, PauseDuration → +0x8c, Cut → +0x58; the position lerp +0x50 starts at 0.
+  - Update 0x528240: `+0x50 = +0x50·(1 − PosRate) + PosSpeed·PosRate` every frame, so PosRate is how fast the position factor reaches PosSpeed (homing 0.01, Starburst 0.1, Super Sheep 1).
+  - 0x527b00: up = the payload's local up axis (its transform's second column), position = payload − LagBehind along its forward axis, look-at = payload + LookAhead; a land hit between look-at and position pulls the position 10 units in front of it. UpSpeed is therefore the rate at which the camera rolls with the payload.
+  - On the payload's death the position is set to position + FinalDistance along look-at → position, clipped by land (0x51abf0), held PauseDuration.
+- **AlienAbductionCamera** position (0x547490, every frame through SimpleCam 0x531e30): (UFO.x, Land.MaxHeight, UFO.z + 200); while the abduction state (+0x44) is 2, the state set with `Worm.OverridePhysics` and the camera start (0x548578 … 0x5486ca), worm + (0, 50, 50) clipped on the worm → candidate segment (0x51af90), kept if more than 10 units from the worm.
+- **Worm-track requests during the death queue**: "Worm Dying" (0x5a7282), "Worm Displaying Damage Taken" (0x5abeec) and "ImpulseWorm going Ballistic" (0x5ad60b) all call 0x51cf20(worm). When served (0x51d3d0), a request whose priority is below the running track's (+0x2c4) is cleared, not kept (0x51d408).
+- **Homing cursor** (Bundl09): `Homing.Cursor.Mesh` = node `Inner` with 4 quads (Inner_01 top, 04 bottom: 18 × 54; 02 left, 03 right: 54 × 18; one row each of texture `maya:file7/-1` #3, exported as `fe2/homing_inner`); `Homing.Cursor.SquareMesh` = node `Outer`, locator1-4 at (∓50, ±50) carrying the bitmaps `HUD.Homing.Cursor.TL/TR/BL/BR` (0x560690). Clips: Intro_Inner, Loop_Inner, Intro_Outer, Loop_Outer, Lock_Outer, Error_Outer (keys in docs/camera.md). The LockOn tints its 4 corners each frame before the lock (0x560590 → 0x552340); after `HUD.Target.Selected` (0x560420: Lock_Outer, `weapons/LockOn`) it stays on the stored target point (0x5600e0: on the camera → target ray at 500 units, i.e. screen-constant). The Inner mesh is never tinted (HomingCursorGraphicEntity uses the base per-frame 0x552230). The size of a bitmap attached to a locator is unverified: ours is its 128 px, which makes the corners frame the ticks.
+

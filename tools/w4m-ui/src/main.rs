@@ -23,6 +23,7 @@ const FE2: &[(&str, &str, usize, &str)] = &[
     ("Bundl06", "maya:paint_bits/-1", 0, "art_myworms"), // brushes + paint (Mes Worms)
     ("Bundl474", "Nav Normal.tga", 0, "nav_normal"),     // 2x2: grenade, tick, back arrow, cross
     ("Bundl05", "maya:file8/-1", 0, "loading_worm"),    // loading screen's round worm (LoadingIcon)
+    ("Bundl09", "maya:file7/-1", 3, "homing_inner"),    // Homing.Cursor.Mesh: its 4 brush ticks, one per row
 ];
 // Frontend strings -> lang/<code>.txt ("key<TAB>value", \n = newline): (code, Data/Language/PC files)
 const LANGS: &[(&str, &[&str])] = &[("en", &["EngFE.xom", "English.xom", "EngLoading.xom"]), ("fr", &["FreFE.xom", "French.xom", "FreLoading.xom"])];

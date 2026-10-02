@@ -27,8 +27,34 @@ struct Entry {
     Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr, *aimed = nullptr; int frame = -1, aimFrame = -1;
     std::vector<Matrix> invBind;
     std::vector<int> arm;  // per bone: its shoulder bone, -1 off the arms (the glb skeleton is flat: matched by name)
+    std::vector<uint8_t> face;  // per bone: 1 lips, eyelid or eyebrow (W4M emote bones), 2 turns with the head
+    int head = -1, hat = -1;
+    std::vector<uint64_t> owns;  // per clip: the face bones it moves itself, which an emote layer leaves to it
+    Models::Layers lay{}; bool layered = false;  // the Layers of the last skin()
 };
 std::map<std::string, Entry> models;
+
+// Per clip, the face bones whose offset from the head differs from Base's: W4M channels a gesture animates win over the emote's
+void owners(Entry &e) {
+    const ModelAnimation *base = nullptr;
+    for (int i = 0; i < e.count; i++) if (!strcmp(e.anims[i].name, "Base")) base = &e.anims[i];
+    e.owns.assign(e.count, 0);
+    int h = e.head, n = std::min((int)e.face.size(), 64);
+    if (!base || h < 0) return;
+    auto rel = [&](const ModelAnimation &a, int f, int b) { return MatrixMultiply(trs(a.keyframePoses[f][b]), MatrixInvert(trs(a.keyframePoses[f][h]))); };
+    for (int i = 0; i < e.count; i++) {
+        const ModelAnimation &a = e.anims[i];
+        for (int b = 0; b < n && b < (int)a.boneCount && h < (int)a.boneCount; b++) {
+            if (!(e.face[b] & 1)) continue;
+            Matrix r0 = rel(*base, 0, b);
+            for (int f = 0; f < a.keyframeCount && !(e.owns[i] >> b & 1); f += 4) {
+                Matrix r = rel(a, f, b);
+                const float *p = &r.m0, *q = &r0.m0;
+                for (int k = 0; k < 16; k++) if (fabsf(p[k] - q[k]) > 2e-3f) { e.owns[i] |= 1ull << b; break; }
+            }
+        }
+    }
+}
 std::vector<std::string> hatNames;
 Shader shader{};
 
@@ -199,7 +225,13 @@ void add(Job &j) {
         for (const char *p : {"wrist_", "pinky", "index", "fore", "thumb_"}) hand |= !strncmp(n, p, strlen(p));
         if (!strncmp(n, "shoulder_", 9)) s[left] = b;
         e.arm.push_back(!strncmp(n, "shoulder_", 9) || hand ? s[left] : -1);  // bones follow their shoulder in the file
+        bool face = false;
+        for (const char *p : {"upperlip", "bottomlip", "mouthmiddle", "eyetop", "eyebrow"}) face |= !strncmp(n, p, strlen(p));
+        e.face.push_back(face ? 3 : !strcmp(n, "head_bone") || !strcmp(n, "HatLocator") ? 2 : 0);  // XBone names: <group>_bone
+        if (!strcmp(n, "head_bone")) e.head = b;
+        if (!strcmp(n, "HatLocator")) e.hat = b;
     }
+    owners(e);
     std::string name = GetFileNameWithoutExt(j.path.c_str());
     if (strstr(j.path.c_str(), "/hats/")) hatNames.push_back(name);
     models[name] = e;
@@ -294,7 +326,36 @@ static Matrix bone(const Entry &e, const ModelAnimation &a, int f, int b, const 
     return MatrixMultiply(MatrixMultiply(trs(a.keyframePoses[f][b]), MatrixInvert(trs(a.keyframePoses[f][s]))), trs(aim->keyframePoses[af][s]));
 }
 
-bool Models::joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim, float aimT) {
+// About pivot p: rotate by yaw about y, after pitch about x (frame axes x, y)
+static Matrix turn(Vector3 p, Vector3 x, Vector3 y, float yaw, float pitch) {
+    Matrix r = MatrixMultiply(MatrixRotate(x, -pitch), MatrixRotate(y, yaw));  // + pitch raises the face (checked on animshot)
+    return MatrixMultiply(MatrixMultiply(MatrixTranslate(-p.x, -p.y, -p.z), r), MatrixTranslate(p.x, p.y, p.z));
+}
+
+// Every bone's model-space matrix, with the W4M pose layers over the clip
+static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af, const Models::Layers *ly, std::vector<Matrix> &out) {
+    int n = std::min(e.m.skeleton.boneCount, a.boneCount);
+    out.resize(n);
+    for (int b = 0; b < n; b++) out[b] = bone(e, a, f, b, aim, af);
+    if (!ly || e.head < 0 || e.head >= n || e.hat < 0 || e.hat >= n) return;
+    int ff;
+    const ModelAnimation *em = ly->face ? clipFrame(e, ly->face, ly->faceT, true, &ff, false) : nullptr;
+    if (em && em != &a && (int)em->boneCount >= n) {
+        Matrix toHead = MatrixMultiply(MatrixInvert(trs(em->keyframePoses[ff][e.head])), out[e.head]);
+        uint64_t own = e.owns[&a - e.anims];
+        for (int b = 0; b < n && b < 64; b++)
+            if ((e.face[b] & 1) && !(own >> b & 1)) out[b] = MatrixMultiply(trs(em->keyframePoses[ff][b]), toHead);
+    }
+    // the head's frame is HatLocator's, whose origin sits (0, 14, -1) units off the head joint (w4m-models --list)
+    Matrix w = out[e.hat];
+    Vector3 x = Vector3Normalize({w.m0, w.m1, w.m2}), y = Vector3Normalize({w.m4, w.m5, w.m6});
+    if (ly->lookYaw || ly->lookPitch) {
+        Matrix r = turn(Vector3Transform({0, -14, 1}, w), x, y, ly->lookYaw, ly->lookPitch);
+        for (int b = 0; b < n; b++) if (e.face[b] & 2) out[b] = MatrixMultiply(out[b], r);
+    }
+}
+
+bool Models::joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim, float aimT, const Layers *ly) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     const Entry &e = it->second;
@@ -303,18 +364,21 @@ bool Models::joint(const char *name, const char *joint, const char *clip, float 
     int n = (int)e.m.skeleton.boneCount;
     while (b < n && strcmp(e.m.skeleton.bones[b].name, joint)) b++;
     if (!a || b == n || b >= (int)a->boneCount) return false;
-    *out = bone(e, *a, f, b, am, af);
+    if (!ly) return *out = bone(e, *a, f, b, am, af), true;
+    static std::vector<Matrix> p;
+    pose(e, *a, f, am, af, ly, p);
+    *out = p[b];
     return true;
 }
 
 // UpdateModelAnimation() equivalent at an integer frame; raylib inverts a bone matrix per vertex for the normals
-static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af) {
+static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af, const Models::Layers *ly) {
     Model &m = e.m;
-    int n = std::min(m.skeleton.boneCount, a.boneCount);
-    static std::vector<Matrix> nm;
+    static std::vector<Matrix> nm, p;
     nm.resize(m.skeleton.boneCount);
-    for (int b = 0; b < n; b++) {
-        m.boneMatrices[b] = MatrixMultiply(e.invBind[b], bone(e, a, f, b, aim, af));
+    pose(e, a, f, aim, af, ly, p);
+    for (int b = 0; b < (int)p.size(); b++) {
+        m.boneMatrices[b] = MatrixMultiply(e.invBind[b], p[b]);
         nm[b] = MatrixTranspose(MatrixInvert(m.boneMatrices[b]));
     }
     for (int i = 0; i < m.meshCount; i++) {
@@ -365,15 +429,19 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
     Entry &e = it->second;
     int f;
     if (const ModelAnimation *a = clip ? clipFrame(e, clip, t, true, &f, false) : nullptr) {
-        if ((a != e.posed || f != e.frame || e.aimed) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, nullptr, -1);
-        e.posed = a, e.frame = f, e.aimed = nullptr, e.aimFrame = -1;
+        if ((a != e.posed || f != e.frame || e.aimed || e.layered) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, nullptr, -1, nullptr);
+        e.posed = a, e.frame = f, e.aimed = nullptr, e.aimFrame = -1, e.layered = false;
     }
     e.m.transform = m;
     drawModel(e.m, {0, 0, 0}, tint);
     return true;
 }
 
-bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT) {
+static bool same(const Models::Layers &a, const Models::Layers &b) {
+    return a.face == b.face && (int)(a.faceT * 60) == (int)(b.faceT * 60) && a.lookYaw == b.lookYaw && a.lookPitch == b.lookPitch;
+}
+
+bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers *ly) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     Entry &e = it->second;
@@ -381,8 +449,10 @@ bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color t
     int f, af = -1;
     const ModelAnimation *am = aim ? clipFrame(e, aim, aimT, false, &af, false) : nullptr;
     if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f)) {
-        if ((a != e.posed || f != e.frame || am != e.aimed || af != e.aimFrame) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, am, af);
-        e.posed = a, e.frame = f, e.aimed = am, e.aimFrame = af;
+        bool lay = ly != nullptr, moved = lay != e.layered || (lay && !same(*ly, e.lay));
+        if ((a != e.posed || f != e.frame || am != e.aimed || af != e.aimFrame || moved) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, am, af, ly);
+        e.posed = a, e.frame = f, e.aimed = am, e.aimFrame = af, e.layered = lay;
+        if (lay) e.lay = *ly;
     }
     e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
     drawModel(e.m, pos, tint);

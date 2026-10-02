@@ -16,6 +16,8 @@ struct Terrain {
     std::vector<bool> dirty;
     std::vector<std::pair<int, std::vector<Part>>> pending;  // rebuilt chunks held back until the dirty set is done
     std::vector<std::pair<int, signed char>> *undo = nullptr;  // when set, carve() logs (voxel, old density) here
+    // girder voxels (W4M kUtilityGirder): ordinary land meshed with theme material 61; empty until a weld()
+    std::vector<bool> steel;  // undo logs a voxel turning steel as (-1 - voxel, 0)
     Material mat{};  // loaded on first remesh, so the sim runs without a GL context
 
     // Filled by load(): fixed spawn points (team-major order), optional race finish, theme palette.
@@ -46,9 +48,12 @@ struct Terrain {
     void generate(unsigned seed);
     float at(int x, int y, int z) const;
     float sample(Vector3 p) const;  // trilinear density
+    static inline thread_local unsigned long samples = 0;  // sample() calls: the AI's deterministic measure of its own work
     bool solid(Vector3 p) const { return sample(p) > 0; }
     Vector3 normal(Vector3 p) const;
     void carve(Vector3 c, float radius);
+    void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
+    bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
     void decodeTextures();  // CPU only (worker thread): moves the PNG decode out of remesh
     void remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call

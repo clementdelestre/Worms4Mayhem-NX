@@ -48,6 +48,20 @@ fn language(data: &Path) -> HashMap<String, String> {
 
 struct Level { name: String, brief: String, preview: String, file: String, script: String, kind: u32, index: u32, par: u32 }
 
+// Frontend_Image of a level file (WXFE_LevelDetails; the struct's `script` field holds Level_FileName): the versus entry (kind 0) wins, "LP_"/"SPLP_" loading variants share their base level's.
+pub fn preview_of(data: &Path, stem: &str) -> Option<String> {
+    static L: std::sync::OnceLock<Vec<Level>> = std::sync::OnceLock::new();
+    let lv = L.get_or_init(|| levels(data));
+    let low = stem.to_lowercase();
+    let base = low.strip_prefix("splp_").or_else(|| low.strip_prefix("lp_")).unwrap_or(&low);
+    let of = |n: &str| {
+        let m: Vec<&Level> = lv.iter().filter(|l| l.script.to_lowercase() == n && !l.preview.is_empty()).collect();
+        let l = m.iter().find(|l| l.kind == 0).or(m.first())?;
+        Some(l.preview.to_lowercase().trim_end_matches(".tga").replace(' ', "_"))
+    };
+    of(&low).or_else(|| of(base))
+}
+
 fn levels(data: &Path) -> Vec<Level> {
     let Some(x) = find_ci(&data.join("Tweak"), "SCRIPTS.XOM").and_then(|p| fs::read(p).ok()).and_then(|b| read_xom(&b)) else { return Vec::new() };
     x.ctn.iter().filter(|c| c.0 == "WXFE_LevelDetails").map(|(_, d)| {

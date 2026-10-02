@@ -2,8 +2,9 @@
 """WormsMayhem.exe (PE32) helpers: sections, VA <-> offset, strings, RTTI, schema records.
 
 CLI: pe.py sections | str REGEX | va2off VA | off2va OFF | words VA [N] | rtti REGEX | schema [CLASS_REGEX]
+     | msg REGEX|VA (message handle objects <-> names)
 """
-import os, re, struct, sys, pickle
+import os, re, signal, struct, sys, pickle
 
 GAME = os.environ.get('W4M_DIR', os.path.expanduser(
     '~/snap/steam/common/.local/share/Steam/steamapps/common/WormsXHD'))
@@ -219,6 +220,25 @@ class PE:
         pickle.dump(((st.st_size, st.st_mtime, 5), out), open(cache, 'wb'))
         return out
 
+    def msgnames(self):
+        """{message handle object VA: name}, from `push name; mov ecx, obj; call 0x68bb9f` (one name may own several objects)."""
+        if hasattr(self, '_msg'): return self._msg
+        t = self.sec('.text'); out = {}
+        for m in re.finditer(rb'\x68(....)\xb9(....)\xe8(....)', self.b[t[3]:t[3] + t[4]], re.S):
+            s, obj, rel = struct.unpack('<IIi', m.group(1) + m.group(2) + m.group(3))
+            if t[1] + m.end() + rel == 0x68bb9f and (n := self.cstr(s)): out[obj] = n
+        self._msg = out
+        return out
+
+    def enum_values(self, rec):
+        """(enum name, [value names]) for an enum field record: rec+0xc -> {name, 0, NUL-terminated name list}."""
+        d = self.u32(rec + 0xc); out = []
+        if not self.v2f(d) or not self.cstr(self.u32(d)): return None, []
+        lst = self.u32(d + 8)
+        while self.v2f(lst) and (n := self.u32(lst)) and (s := self.cstr(n)) and len(out) < 256:
+            out.append(s); lst += 4
+        return self.cstr(self.u32(d)), out
+
     def fields(self, cls):
         """Serialised fields of cls and its bases, file order (most derived class first)."""
         sch, out = self.schema(), []
@@ -240,6 +260,7 @@ def main(a):
     elif a[0] == 'words':
         va = int(a[1], 16)
         for i in range(int(a[2]) if len(a) > 2 else 16):
+            if p.v2f(va + 4 * i) is None: print('%08x (no file data: uninitialised)' % (va + 4 * i)); break
             w = p.u32(va + 4 * i); s = p.cstr(w, 80)
             print('%08x %08x %s' % (va + 4 * i, w, repr(s) if s else '(%s)' % p.section_of(w) if p.section_of(w) else ''))
     elif a[0] == 'rtti':
@@ -255,9 +276,18 @@ def main(a):
             print(c)
             for site, n, t, off, fl, va, i in f:
                 print('  %02x %-34s %-8s +0x%03x %s rec %08x push %08x' % (i, n, t + '[]' * (fl & 1), off, '~' if fl & 4 else ' ', va, site))
+                if t == 'enum' and (e := p.enum_values(va))[0]: print('     %s: %s' % (e[0], ' '.join('%d=%s' % x for x in enumerate(e[1]))))
+    elif a[0] == 'msg':
+        m = p.msgnames()
+        if re.fullmatch(r'0x[0-9a-fA-F]+', a[1]): print(m.get(int(a[1], 16), 'not a message handle'))
+        else:
+            r = re.compile(a[1])
+            for va, n in sorted(m.items(), key=lambda x: (x[1], x[0])):
+                if r.search(n): print('%08x %s' % (va, n))
     else:
         print(__doc__)
 
 
 if __name__ == '__main__':
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     main(sys.argv[1:])

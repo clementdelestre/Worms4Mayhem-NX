@@ -24,6 +24,11 @@
 #else
 #define DATA_DIR "./"
 #endif
+#ifdef __SWITCH__
+#define ROMFS_DIR "romfs:/"
+#else
+#define ROMFS_DIR "./romfs/"
+#endif
 
 namespace Ui {
 
@@ -164,15 +169,31 @@ std::string lower(std::string s) {
     return s;
 }
 
-// W4M level preview for a map file name (imported maps keep W4M names, bundled ones map to a theme picture)
+// Level picture: the map's "preview" (W4M Frontend_Image, set by w4m-maps), else its theme's picture, else nolevel
 std::string preview(const std::string &m) {
-    static const std::map<std::string, std::string> ALIAS = {{"", "random_camelot"}, {"jurassic", "level_prehistoric"}, {"construction", "level_building"}};
-    std::string l = lower(m);
-    auto a = ALIAS.find(l);
-    if (a != ALIAS.end()) l = a->second;
-    for (const char *pre : {"", "multi_", "level_", "story_"})
-        if (tex(std::string("levels/") + pre + l).id) return std::string("levels/") + pre + l;
-    return "levels/nolevel";
+    static std::map<std::string, std::string> cache;
+    auto c = cache.find(m);
+    if (c != cache.end()) return c->second;
+    static const std::map<std::string, std::string> THEME = {
+        {"arabian", "level_arabian"}, {"camelot", "level_camelot"}, {"construction", "level_building"}, {"jurassic", "level_prehistoric"}, {"wildwest", "level_wildwest"}};
+    std::string pv = m.empty() ? "random_camelot" : "";
+    for (const char *dir : {DATA_DIR "assets/maps/", ROMFS_DIR "maps/"}) {
+        if (!pv.empty() || m.empty()) break;
+        FILE *f = fopen((dir + m + ".json").c_str(), "rb");
+        if (!f) continue;
+        char head[400] = {};
+        size_t n = fread(head, 1, sizeof head - 1, f);
+        fclose(f);
+        head[n] = 0;
+        auto field = [&](const char *key) {
+            const char *k = strstr(head, key);
+            const char *e = k ? strchr(k + strlen(key), '"') : nullptr;
+            return e ? std::string(k + strlen(key), e) : std::string();
+        };
+        pv = field("\"preview\": \"");
+        if (pv.empty() || !tex("levels/" + pv).id) pv = THEME.count(field("\"theme\": \"")) ? THEME.at(field("\"theme\": \"")) : "";
+    }
+    return cache[m] = tex("levels/" + pv).id ? "levels/" + pv : "levels/nolevel";
 }
 
 // "EscapeFromTreeRex" -> "Escape From Tree Rex", "Alien-w3d" -> "Alien (W3D)"
@@ -194,10 +215,21 @@ std::string weaponIcon(const std::string &n) {
     std::string k;
     for (char c : n) if (isalnum((unsigned char)c)) k += (char)tolower((unsigned char)c);
     static const std::map<std::string, std::string> ALIAS = {
-        {"holyhandgrenade", "hollyhandgrenade"}, {"fatkinsstrike", "fatkinstrike"}, {"flood", "raindance"}, {"changeworm", "wormselect"}};
+        {"holyhandgrenade", "hollyhandgrenade"}, {"fatkinsstrike", "fatkinstrike"}, {"flood", "raindance"}, {"changeworm", "wormselect"}, {"bubbletrouble", "bubbletrubble"}};
     auto a = ALIAS.find(k);
     if (a != ALIAS.end()) k = a->second;
+    if (k == "armour") return "hud/hud_shield";  // W4M has no HUD/Weapons icon for kUtilityArmour; HUD.Armour = "HUD Shield.tga"
     return "weapons/" + k;
+}
+
+// W4M WEAPTWK DisplayName: the language's Text.kWeapon* / Text.kUtility* text ("Super Airstrike" -> Bovine Blitz), else our name
+const char *weaponName(const WeaponDef &w) {
+    static const std::map<std::string, std::string> ALIAS = {{"TailNail", "NoMoreNails"}, {"FatkinsStrike", "Fatkins"}, {"InflatableScouser", "Scouser"}};
+    std::string k;
+    for (char c : w.name) if (c != ' ') k += c;
+    if (auto a = ALIAS.find(k); a != ALIAS.end()) k = a->second;
+    const char *s = tr(("Text.kWeapon" + k).c_str(), nullptr);
+    return s ? s : tr(("Text.kUtility" + k).c_str(), w.name.c_str());
 }
 
 int clampWrap(int v, int n) { return n ? ((v % n) + n) % n : 0; }
@@ -466,7 +498,9 @@ static bool keyGlyphs() {
 #endif
 }
 
+static bool menuPage = false;  // menu pages show no button bar (W4M); the in-game HUD keeps its hints
 void hints(std::initializer_list<Hint> h) {
+    if (menuPage) return;
     const float G = 22, S = 19;
     bool keys = keyGlyphs();
     auto pick = [&](const Hint &x) { return keys ? x.key : x.pad ? x.pad : x.key; };
@@ -494,10 +528,10 @@ void controls(bool game) {
                                    {160, -112, 6}, {45, -70, 14}, {150, -69, 20}, {116, -35, 20}, {184, -35, 20}, {150, -1, 20}, {75, 35, 40}};  // x, y, radius
     struct Call { int part; float ly; const char *label, *key; };
     static const Call GAME[] = {
-        {ZL, 232, "Hold: precise aim", "RMB"}, {L, 276, "L + stick: aim\n(single Joy-Con)", nullptr}, {MIN, 356, "Hold: controls", "F1"},
+        {ZL, 232, "Hold: precise aim", "RMB"}, {L, 276, "L + stick: aim (single Joy-Con)\nHold: sky view (strikes)", nullptr}, {MIN, 356, "Hold: controls", "F1"},
         {LS, 414, "Move (camera-relative)\nAim mode: walk / turn", "Arrows"}, {DPAD, 488, "Zoom in / out\nWeapon panel cursor", "X/Z"},
         {ZR, 232, "Fire", "Space"}, {R, 270, "Next weapon", "Tab"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"},
-        {BY, 380, "Next weapon", "Tab"}, {BA, 440, "Fire (hold = power)", "Space"}, {BB, 482, "Jump (twice = backflip)", "Enter"},
+        {BY, 380, "Next weapon", "Tab"}, {BA, 440, "Fire (hold = power)\nStrikes: sky view, then fire", "Space/E"}, {BB, 482, "Jump (twice = backflip)\nSky view: leave", "Enter"},
         {RS, 530, "Camera orbit\nAim mode: aim (+ gyro)", "A/D/W/S"}};
     static const Call MENU[] = {
         {MIN, 330, "Tap: controllers (setup)\nHold: controls", "F1"}, {LS, 414, "Move", "Arrows"}, {DPAD, 488, "Move / change value", "Arrows"},
@@ -639,17 +673,15 @@ static void menuEntry(const char *label, float cx, float cy, float size, float d
 
 // Bottom torn paper strip: scrolling ticker, version; back: bobbing back arrow (submenus)
 static void paperStrip(float t, bool back) {
-    const float y = 598;  // paper band y + 16 .. y + 80; the black bar below it holds the button hints
+    const float y = 652;  // paper band y + 16 .. y + 80, flush with the bottom edge
     Texture2D p = tex("fe2/paper_strip");
-    DrawRectangle(0, (int)y + 80, 1280, 60, BLACK);
     if (p.id) for (float x = 0; x < 1280; x += 255) DrawTexturePro(p, {0, 0, 256, 128}, {x, y, 256, 128}, {}, 0, WHITE);
     else DrawRectangle(0, y + 16, 1280, 64, {246, 243, 232, 255}), DrawRectangle(0, y + 12, 1280, 4, BLACK);
     const char *tick = tr("WXFE.TickerTapeDefault", "Worms4NX - fan-made homebrew                    ");
-    float w = textWidth(tick, 34) + 160;
-    for (float x = -fmodf(t * 90, w); x < 1280; x += w) text(tick, x, y + 30, 34, INK);
-    text("Ver# " W4NX_VERSION, 1268, 698, 14, GRAY, 2);
+    float w = textWidth(tick, 38) + 160;
+    for (float x = -fmodf(t * 90, w); x < 1280; x += w) text(tick, roundf(x), y + 28, 38, INK);  // whole pixels: no shimmer while it scrolls
     if (!back) return;
-    Rectangle d = {16, y - 26 + 5 * sinf(t * 3), 96, 96};
+    Rectangle d = {16, 572 + 5 * sinf(t * 3), 96, 96};
     Texture2D a = tex("fe2/nav_normal");
     if (a.id) DrawTexturePro(a, {0, a.height / 2.0f, a.width / 2.0f, a.height / 2.0f}, d, {}, 0, WHITE);
     else tri({d.x + 14, d.y + 52}, {d.x + 60, d.y + 22}, {d.x + 60, d.y + 82}, ORANGE);
@@ -683,6 +715,11 @@ static void subPanel(const char *title, const char *art, float t, float p) {
     rlPopMatrix();
 }
 
+#ifdef __SWITCH__
+static const int MAIN_ITEMS = 5;  // console games leave through HOME, no Quit entry
+#else
+static const int MAIN_ITEMS = 6;
+#endif
 // W4M layouts: staggered, tilted, one size per entry
 static const MenuItem MAIN_MENU[] = {
     {"FETXT.LocalGame", "Local Game", "Partie locale", 905, 150, 62, -3},
@@ -817,7 +854,7 @@ static const char *padStyle(int pad) {
 static void netTeams(GameConfig &cfg, int dx) {
     cfg.teamSetup[0].cpu = 0;
     for (size_t k = 1; k < cfg.teamSetup.size(); k++)
-        if (!cfg.teamSetup[k].cpu) cfg.teamSetup[k].cpu = dx < 0 ? 3 : 1;
+        if (!cfg.teamSetup[k].cpu) cfg.teamSetup[k].cpu = dx < 0 ? 5 : 1;
 }
 
 bool Frontend::edit(std::string &s, const char *hint) {
@@ -866,7 +903,7 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
             if (it != maps.end()) mapSel = int(it - maps.begin());
         } else if (sscanf(line, "team %d %d %d %63s %n", &a, &b, &c, s, &n) == 4 && a >= 0 && a < 4) {
             GameConfig::Team &t = cfg.teamSetup[a];
-            t.cpu = (uint8_t)Clamp(b, 0, 3);
+            t.cpu = (uint8_t)Clamp(b, 0, 5);
             t.hat = (uint8_t)Clamp(c, 0, hats);
             for (int v = 0; v < Audio::voiceBanks(); v++) if (!strcmp(Audio::voiceBankName(v), s)) t.voice = (uint8_t)v;
             snprintf(nm, sizeof nm, "%s", line + n);
@@ -890,6 +927,7 @@ void Frontend::saveSetup(const GameConfig &cfg) const {
 }
 
 Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name) {
+    menuPage = true;
     if (!loaded) loadSetup(cfg, maps);
     if (cfg.teamSetup.size() < 4) cfg.teamSetup.resize(4);
     Action act = None;
@@ -922,9 +960,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (fmodf(t, 1.2f) < 0.8f)
             text(keyGlyphs() ? tr(nullptr, "Press Enter to start", "Appuyez sur Entrée") : tr(nullptr, "Press A to start", "Appuyez sur A"), 640, 560, 44, BRIGHT, 1);
         text(tr(nullptr, "Worms4NX - fan-made homebrew", "Worms4NX - homebrew de fan"), 640, 648, 20, CREAM, 1);
-        hints({{"A", "Enter", tr(nullptr, "Start", "Commencer")}, {"+", "Esc", tr("Lang.Quit", "Quit", "Quitter")}});
+#ifdef __SWITCH__
+        if (ok) screen = Main;
+#else
         if (ok) screen = Main;
         else if (P({PLUS}, {KEY_ESCAPE})) act = Quit;
+#endif
         break;
     }
     case Main:
@@ -933,7 +974,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         float a = from == Title ? easeOut((t - entered) / 0.4f) : 1;  // the title's logo glides to its menu spot
         float up = leaving >= 0 ? easeOut((t - leaving) / LEAVE) : from == Title ? 0 : 1 - easeOut((t - entered) / 0.35f);  // to / from a submenu
         logo(Lerp(640, 330, a), Lerp(90, 40, a) - up * 300, Lerp(760, 560, a), -6 * a);
-        menu(MAIN_MENU, 6, mainRow, confirm ? 0 : dy, t, !confirm);
+        menu(MAIN_MENU, MAIN_ITEMS, mainRow, confirm ? 0 : dy, t, !confirm);
         rlPushMatrix();
         rlTranslatef(0, (1 - a) * 110, 0);
         paperStrip(t, false);
@@ -956,12 +997,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
                 text(i ? tr("FETXT.Yes", "Yes", "Oui") : tr("FETXT.No", "No", "Non"), 0, -sz / 2, sz, hi ? WHITE : Color{150, 205, 238, 255}, 1);
                 rlPopMatrix();
             }
-            hints({{"A", "Enter", tr(nullptr, "Select", "Sélectionner")}, {"B", "Esc", tr(nullptr, "Back", "Retour")}});
             if (back || (ok && !r)) screen = Main;
             else if (ok) act = Quit;
             break;
         }
-        hints({{"A", "Enter", tr(nullptr, "Select", "Sélectionner")}, {"B", "Esc", tr(nullptr, "Back", "Retour")}});
         if (back) screen = Title;
         if (ok) {
             Screen to[] = {Local, Network, MyWorms, Main, HelpOpts, Confirm};
@@ -1000,7 +1039,6 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         GameConfig::Team &tm = cfg.teamSetup[k];
         if (f == 0 && ok) edit(tm.name, "Team name");
         if (f == 1 && dx && nb) tm.voice = (uint8_t)clampWrap(tm.voice + dx, nb), Audio::setTeamVoice(k, tm.voice);
-        if (f == 1 && (dx || ok) && nb) Audio::voice(k, Audio::Voice::Idle);
         if (f == 2 && dx && hats) tm.hat = (uint8_t)clampWrap(tm.hat + dx, hats + 1);
         subPanel(tr("FETXTH.MYWORMS", "MY WORMS", "MES WORMS"), "fe2/art_myworms", t, subIn(t));
         for (int i = 0; i < 4; i++) {
@@ -1143,12 +1181,11 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             int k = (id - 100) / 4;
             switch ((id - 100) % 4) {
             case 0: if (ok) edit(tm.name, "Team name"); break;
-            case 1: if (dx || ok) tm.cpu = (uint8_t)clampWrap(tm.cpu + (dx ? dx : 1), 4); break;
+            case 1: if (dx || ok) tm.cpu = (uint8_t)clampWrap(tm.cpu + (dx ? dx : 1), 6); break;
             case 2:
                 if ((dx || ok) && nb) {
                     tm.voice = (uint8_t)clampWrap(tm.voice + (dx ? dx : 0), nb);
                     Audio::setTeamVoice(k, tm.voice);
-                    Audio::voice(k, Audio::Voice::Idle);
                 }
                 break;
             case 3: if (dx && hats) tm.hat = (uint8_t)clampWrap(tm.hat + dx, hats + 1); break;
@@ -1172,7 +1209,9 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             text(TextFormat(hi ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + (r.height - size) / 2, size, ink(hi), 2);
         };
         value(0, {40, 86, 600, 40}, "Teams", online ? TextFormat("You + %d CPU", cfg.teams - 1) : TextFormat("%d", cfg.teams), 28);
-        static const char *CTRL[] = {"Human", "CPU 1", "CPU 2", "CPU 3"};
+        const char *CTRL[] = {tr("FETXT.HumanPlayer", "Human Player", "Joueur humain"), tr("FETXT.CPU1", "CPU Level 1", "I.A. Niveau 1"),
+                              tr("FETXT.CPU2", "CPU Level 2", "I.A. Niveau 2"), tr("FETXT.CPU3", "CPU Level 3", "I.A. Niveau 3"),
+                              tr("FETXT.CPU4", "CPU Level 4", "I.A. Niveau 4"), tr("FETXT.CPU5", "CPU Level 5", "I.A. Niveau 5")};
         for (int k = 0; k < cfg.teams; k++) {
             GameConfig::Team &tm = cfg.teamSetup[k];
             Rectangle card = {40, 134 + k * 134.0f, 600, 126};
@@ -1307,8 +1346,9 @@ void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, floa
     if (dy && !spinning) setReel(cfg.wormpot, reel, clampWrap(reelMode(cfg.wormpot, reel) + 1 + dy, reelSize(reel) + 1) - 1);
     if (!spinning && P({X}, {KEY_S})) {
         for (int r = 0; r < 3; r++) spinEnd[r] = t + 1 + 0.6f * r, spinTo[r] = GetRandomValue(-1, reelSize(r) - 1);
-        Audio::play(Audio::Sfx::WormpotSpin);
+        spinning = true;
     }
+    Audio::loop(Audio::Sfx::WormpotSpin, spinning);  // W4M WormPotLoop loops until the last reel stops
     if (!spinning && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) cfg.wormpot = 0;
 
     heading("Wormpot", 640, 14, 48);
@@ -1443,6 +1483,13 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
 
 // ---------------------------------------------------------------- HUD
 
+// weapon panel slots: W4M crate-only effects (Double Damage, Crate Spy, Armour) are never in the inventory
+static std::vector<int> panelSlots() {
+    std::vector<int> v;
+    for (size_t i = 0; i < WEAPONS.size(); i++) if (!collected(WEAPONS[i].kind)) v.push_back((int)i);
+    return v;
+}
+
 void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
     const uint8_t held = in.buttons;  // before the panel blanks `in`: the swallow must wait for a real release
@@ -1458,10 +1505,12 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
         int dx = pressed(pad, {RIGHT}, {KEY_RIGHT}) - pressed(pad, {LEFT}, {KEY_LEFT});
         int dy = pressed(pad, {DOWN}, {KEY_DOWN}) - pressed(pad, {UP}, {KEY_UP});
         int was = cursor;
-        cursor = clampWrap(cursor + dx + dy * cols, n);
+        std::vector<int> slots = panelSlots();
+        int at = int(std::find(slots.begin(), slots.end(), cursor) - slots.begin()) % std::max<int>(1, (int)slots.size());
+        cursor = slots.empty() ? 0 : slots[clampWrap(at + dx + dy * cols, (int)slots.size())];
         if (cursor != was) Audio::play(S::FeHighlight);
         if (pressed(pad, {A}, {KEY_SPACE, KEY_ENTER})) {
-            if (g.ammo[cur.team][cursor]) select(cursor), Audio::play(S::FeClick);
+            if (g.usable(cur.team, cursor)) select(cursor), Audio::play(S::FeClick);
             else Audio::play(S::FeError);
         }
         if (pressed(pad, {B}, {KEY_BACKSPACE})) open = false, swallow = true, Audio::play(S::FeCancel);
@@ -1568,6 +1617,69 @@ static void healthBar(int team, float x, float y, float w, float h, float frac) 
     }
 }
 
+// W4M Bomber / Targeting cursor (Bundl09 meshes and clips) at the screen centre, in HUD units: screen height / 480
+// (HUDTWK places the HUD in that space, e.g. AngleMeter.ScreenY -165); the cursor honours the HUD's hide flag.
+void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock) {
+    static double last = -1, start = 0, lockLast = -1, lockStart = 0;
+    double now = GetTime();
+    if (state >= 0 && now - last > 0.2) start = now;  // Show: the intro from t = 0
+    if (lock && now - lockLast > 0.2) lockStart = now;  // HUD.Target.Selected: Lock_Outer from t = 0
+    if (state >= 0) last = now;
+    if (lock) lockLast = now;
+    float t = float(now - start), u = GetScreenHeight() / 480.0f;
+    Vector2 c = {GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f};
+    Color tint = state == 1 ? Color{98, 168, 255, 255} : state == 2 ? Color{215, 32, 0, 255} : WHITE;  // 0x552340: valid, water, none
+    auto keys = [&](std::initializer_list<Vector2> k) {  // (time, value) keys, linear, held past both ends
+        Vector2 a = *k.begin();
+        for (Vector2 b : k) { if (t <= b.x) return b.x > a.x ? Lerp(a.y, b.y, (t - a.x) / (b.x - a.x)) : b.y; a = b; }
+        return a.y;
+    };
+    auto quad = [&](const char *name, Vector2 at, float sx, float sy, float rad, Color col) {  // rad: mesh z rotation, counter-clockwise
+        Texture2D x = tex(std::string("hud/") + name);
+        if (x.id) DrawTexturePro(x, {0, 0, (float)x.width, (float)x.height}, {at.x, at.y, sx * u, sy * u}, {sx * u / 2, sy * u / 2}, -rad * RAD2DEG, col);
+    };
+    if (wd.kind == Kind::Homing) {  // Homing.Cursor.Mesh (4 brush ticks) inside Homing.Cursor.SquareMesh (4 corners, HomingLockOnGraphicEntity)
+        Texture2D in = tex("fe2/homing_inner");
+        float p = keys({{0, 84.5f}, {1.25f, 65}});  // Intro_Inner 1.25 s, then Loop_Inner / Loop_Outer 2.08 s
+        if (t >= 1.25f) t = 1.25f + fmodf(t - 1.25f, 2.082f);
+        float s = t < 1.25f ? keys({{0, 6.043f}, {1.166f, 0.8f}}) : keys({{1.25f, 0.8f}, {2.5f, 0.757f}, {3.332f, 0.8f}});
+        for (int i = 0; state >= 0 && in.id && i < 4; i++) {  // Inner_01 top, 04 bottom (18 x 54 units), 02 left, 03 right (54 x 18); one texture row each
+            const Vector2 D[4] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+            const int ROW[4] = {3, 2, 1, 0};
+            Rectangle src = {0, ROW[i] * in.height / 4.0f, (float)in.width, in.height / 4.0f};
+            Vector2 at = {c.x + D[i].x * p * s * u, c.y + D[i].y * p * s * u};
+            DrawTexturePro(in, src, {at.x, at.y, 54 * s * u, 18 * s * u}, {27 * s * u, 9 * s * u}, i < 2 ? -90 : 0, WHITE);  // the Inner mesh is never tinted
+        }
+        auto corners = [&](Vector2 o, float x, float y, float k, Color col) {  // locators 1-4 at (-+x, +-y); bitmaps 128 units x k
+            const char *N[4] = {"homing_tl", "homing_tr", "homing_bl", "homing_br"};
+            for (int i = 0; i < 4; i++) quad(N[i], {o.x + (i % 2 ? x : -x) * u, o.y + (i / 2 ? y : -y) * u}, 128 * k, 128 * k, 0, col);
+        };
+        float o = t < 1.25f ? keys({{0, 7.258f}, {0.375f, 0.752f}, {1.25f, 0.8f}}) : keys({{1.25f, 0.8f}, {2.125f, 0.747f}, {3.332f, 0.8f}});  // Intro / Loop_Outer
+        if (state >= 0 && !lock) corners(c, 50 * o, 50 * o, 0.8f * o, tint);
+        if (lock) {  // Lock_Outer 0.625 s: the corners close in on the target, then hold; Outer at its loop scale (unverified)
+            t = float(now - lockStart);
+            float x = keys({{0, 50}, {0.1666f, 9.55f}, {0.2083f, 16.45f}, {0.25f, 12.33f}, {0.2915f, 15.6f}, {0.3333f, 14.78f}});
+            float y = keys({{0, 50}, {0.1666f, 9.18f}, {0.2083f, 18.27f}, {0.25f, 11.48f}, {0.2915f, 14.66f}, {0.3333f, 14.5f}});
+            corners(*lock, 0.8f * x, 0.8f * y, 0.8f * keys({{0, 0.8f}, {0.625f, 0.6f}}), WHITE);
+        }
+    } else if (state < 0) {
+    } else if (wd.kind == Kind::Airstrike || wd.name == "Fatkins Strike") {  // Airstrike.Cursor.Mesh: 58-unit aimer, 5 x 16-unit arrows along the run
+        float sy = keys({{0, 0}, {0.25f, 0.917f}, {0.333f, 0.789f}, {0.54f, 0.777f}, {0.667f, 0.8f}}), sx = keys({{0.4165f, 0.789f}, {0.54f, 0.777f}, {0.667f, 0.8f}});
+        if (t > 0.667f) sx = sy = 0.7885f + 0.0115f * cosf(2 * PI * (t - 0.667f) / 0.833f);  // Cursor_Loop
+        quad("airstrike_outer", c, 58 * sx, 58 * sy, keys({{0, 1.57f}, {0.29f, -0.186f}, {0.5f, 0.057f}, {0.667f, 0}}), tint);
+        float run = t < 0.667f ? t / 0.667f : fmodf((t - 0.667f) / 0.4165f, 1);  // Airstrike_Intro, then Dots_Loop: one 30-unit step
+        for (int i = 0; i < 5; i++) {
+            float s = t < 0.667f ? 0.8f * Clamp((t - 0.042f - 0.083f * i) / 0.125f, 0, 1) * (i == 4 ? Clamp((0.667f - t) / 0.167f, 0, 1) : 1)
+                                 : i == 0 ? 0.8f * run : i == 4 ? 0.8f * (1 - run) : 0.8f;
+            quad("dot", {c.x + (-76 + 30.4f * (i + run)) * u, c.y}, 16 * s, 16 * s, 0, tint);
+        }
+    } else {  // Targeting.Cursor.Mesh: 100 units, scale 0.75, spins in, then a turn per 3.33 s; Targeting.Cursor.Shadow at (2, -2)
+        float s = keys({{0, 0}, {0.4165f, 0.75f}}), rot = t < 0.4165f ? keys({{0, -4.363f}, {0.4165f, 0}}) : 2 * PI * fmodf((t - 0.4165f) / 3.332f, 1);
+        quad("target", {c.x + 2 * u, c.y + 2 * u}, 100 * s, 100 * s, rot, {2, 43, 94, 100});  // tint 0x645e2b02
+        quad("target", c, 100 * s, 100 * s, rot, tint);
+    }
+}
+
 // Top-left compass centred on the active worm, up = camera forward: worm dots, crates, mines, aim target.
 static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
     const float R = 54, RANGE = 40;  // px, metres
@@ -1649,9 +1761,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
         const char *who = wormName(w.team, e.worm % std::max(1, g.perTeam));
         if (e.weapon < 0) banners.push_back(TextFormat("%s : +%d", who, (int)g.cfg.scheme.crateHealth));
         else if (e.weapon < (int)WEAPONS.size()) {
-            std::string key = "Text.kWeapon" + WEAPONS[e.weapon].name;
-            key.erase(std::remove(key.begin(), key.end(), ' '), key.end());
-            banners.push_back(TextFormat("%s : %s", who, tr(key.c_str(), WEAPONS[e.weapon].name.c_str())));
+            banners.push_back(TextFormat("%s : %s", who, weaponName(WEAPONS[e.weapon])));
         }
     }
 }
@@ -1728,10 +1838,11 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
             Vector3 at = {w.pos.x, fmaxf(w.pos.y, g.water) + 1.2f, w.pos.z};  // drowned: the surface above it; room for the counter
             lo = Vector3Min(lo, at), hi = Vector3Max(hi, at);
         }
-        if (ticked && tickGap <= 0) Audio::play(Audio::Sfx::HpTick, 0.5f), tickGap = 0.06f;
+        if (ticked && tickGap <= 0) Audio::play(Audio::Sfx::HpTick), tickGap = 0.06f;
         Vector3 c = Vector3Lerp(lo, hi, 0.5f);
-        if (int d = g.dying(); d >= 0) c = {g.worms[d].pos.x, fmaxf(g.worms[d].pos.y, g.water) + 0.6f, g.worms[d].pos.z}, lo = hi;  // close on each blast
-        Controls::focus(&c, Vector3Distance(lo, hi) / 2);
+        float r = Vector3Distance(lo, hi) / 2;
+        if (int d = g.dying(); d >= 0) c = {g.worms[d].pos.x, fmaxf(g.worms[d].pos.y, g.water) + 0.6f, g.worms[d].pos.z}, r = fmaxf(r, 2);  // each blast, at the count's distance
+        Controls::focus(&c, r);
         counting = -1;
         return true;
     }
@@ -1757,7 +1868,7 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
         for (size_t i = 0; i < g.objects.size(); i++) if (g.objects[i].type == Object::Crate && g.objects[i].falling) crate = &g.objects[i], landed = i;
         if (!crate && g.landHold > 0 && landed < g.objects.size() && g.objects[landed].type == Object::Crate) crate = &g.objects[landed];
         crateFocus = crate ? crateFocus - dt : 0;
-        Controls::focus(crateFocus > 0 ? &crate->pos : nullptr);
+        Controls::focus(crateFocus > 0 ? &crate->pos : nullptr, 0, true);
         return crateFocus > 0;
     }
     HpTrack &t = hpt[counting];
@@ -1769,17 +1880,26 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     t.shown = fabsf(d) <= step ? t.seen : t.shown + copysignf(step, d);
     bump(counting);
     if (t.shown == t.seen) wait = 0.5f;  // linger on the final value
-    if (lroundf(t.shown) != before && tickGap <= 0) Audio::play(Audio::Sfx::HpTick, 0.5f), tickGap = 0.06f;
+    if (lroundf(t.shown) != before && tickGap <= 0) Audio::play(Audio::Sfx::HpTick), tickGap = 0.06f;
     return true;
 }
 
 void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
+    menuPage = false;
     const Worm &cur = g.worms[g.current];
     bool turnStart = g.current != introWorm;
     if (turnStart) introWorm = g.current, introStart = tick;  // turn changed: (re)start the name-banner clock
     bool cinematic = trackHp(g, turnStart, tick);
     bool ready = mine && g.phase == Phase::Aim && g.hotSeat > 0 && !cinematic;  // local human's hot seat: W4M full-screen ready pause
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+    if (!ready && cur.team < (int)g.spy.size() && g.spy[cur.team])  // W4M Crate Spy (CrateGraphicEntity 0x5c5270): contents over every crate
+        for (const Object &o : g.objects) {
+            Vector3 top = Vector3Add(o.pos, {0, 0.9f, 0});
+            float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
+            if (o.type != Object::Crate || dist < 0.5f) continue;
+            Vector2 sp = GetWorldToScreen(top, cam);
+            text(o.weapon < 0 ? tr("Text.Health", "Health", "Santé") : WEAPONS[o.weapon].name.c_str(), sp.x, sp.y, Clamp(170 / dist, 12, 22), WHITE, 1);
+        }
     // W4M worm labels: name over hp, team colour, black outline (hidden during the ready screen)
     if (!ready) for (const Worm &w : g.worms) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
@@ -1856,7 +1976,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (!sprite("secondback", wp, 0.5f, {128, 128})) DrawCircleV(wp, 44, {0, 119, 155, 230});
     if (!image(iconOf(wd), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
     digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
-    text(wd.name.c_str(), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
+    text(weaponName(wd), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
     if (wd.userFuse) text(TextFormat("%s %ds", tr("FETXT.Fuse", "Fuse", "Mèche"), (int)g.fuseOf(wd)), wp.x - 54, wp.y + 16, 22, GOLDEN, 2);  // d-pad up/down
     // turn timer (bottom right): turn seconds, round clock below
     int left = aiming && g.hotSeat ? g.hotSeat : aiming || g.phase == Phase::Retreat ? g.timer : 0, secs = (left + 59) / 60;
@@ -1880,7 +2000,11 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)
     Vector2 pb = {22, 520};
-    float ps = 0.62f, pf = Clamp(g.power, 0, 1);
+    float ps = 0.62f, pf = Clamp(g.power, 0, 1), aimAt = cur.pitch;
+    if (g.scout.t >= 0 && g.scout.ok) {  // W4M Binoculars state 3: the bar sweeps 2.7 s, converges by 4 s, then SetPowerBar / SetAimAngle
+        float t = g.scout.t / 60.0f, k = Clamp((t - 2.7f) / 1.3f, 0, 1), sweep = 0.5f + 0.5f * sinf(t * 6);
+        pf = Lerp(sweep, g.scout.power, k), aimAt = Lerp(sinf(t * 4) * 0.8f, g.scout.pitch, k);
+    }
     if (sprite("powerbar_off", pb, ps, {80, 30})) {
         float top = 215 - (215 - 41) * pf;
         if (pf > 0) sprite("powerbar_on", {pb.x, pb.y + (top - 30) * ps}, ps, {80, 0}, 0, WHITE, {0, top, 256, 256 - top});
@@ -1889,11 +2013,11 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         DrawRectangleRounded({pb.x + 4, pb.y + 4 + 112 * (1 - pf), 32, 112 * pf}, 0.3f, 4, ColorLerp(YELLOW, RED, pf));
     }
     Vector2 ap = {102, 590};  // arc pivot: flat edge centre
-    float deg = -cur.pitch * RAD2DEG;
+    float deg = -aimAt * RAD2DEG;
     if (sprite("angle_back", ap, 0.6f, {70, 130})) sprite("angle_head", ap, 0.55f, {16, 32}, deg);
     else {
         DrawCircleSector(ap, 58, -90, 90, 16, {0, 104, 138, 210});
-        DrawLineEx(ap, {ap.x + cosf(-cur.pitch) * 56, ap.y + sinf(-cur.pitch) * 56}, 4, GOLDEN);
+        DrawLineEx(ap, {ap.x + cosf(-aimAt) * 56, ap.y + sinf(-aimAt) * 56}, 4, GOLDEN);
         DrawCircleV(ap, 7, MAROON);
     }
     // state hints
@@ -1904,18 +2028,29 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / fmaxf(wd.fuse, 0.01f), 0, 1));
     }
     if (open) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
+    else if (mine && !quiet && g.girderOn && g.phase == Phase::Aim)  // W4M HelpText.kUtilityGirder0: Movement, GirderRaise / Lower, Fire
+        hints({{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}});
+    else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
+        hints({{"ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
+    else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
+        hints({{"A", "Space", WEAPONS[g.weapon].kind == Kind::Homing ? "Lock target" : "Fire"}, {"LS", "WASD", "Look"}, {"RS", "Arrows", "Pan"},
+               {"Up/Down", "Z/X", "Zoom"}, {"B", "Enter/E", "Leave"}});
+    else if (mine && !quiet && Controls::targetHeld(g)) hints({{"A", "Space/E", "Sky view: target"}, {"L", nullptr, "Hold: sky view"}});  // "Define the path using [Blimp]"
     else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});
     if (!open) return;
 
     // weapon panel
-    int n = (int)WEAPONS.size(), cols = PANEL_COLS, rows = (n + cols - 1) / cols;
+    std::vector<int> slots = panelSlots();
+    int n = (int)slots.size(), cols = PANEL_COLS, rows = (n + cols - 1) / cols;
     float cell = 92, pw = cols * cell + 60, ph = rows * cell + 150;
     Rectangle pr = {640 - pw / 2, 360 - ph / 2, pw, ph};
     popup(pr);
     text("WEAPONS", 640, pr.y + 24, 40, GOLDEN, 1);
-    for (int i = 0; i < n; i++) {
-        Rectangle c = {pr.x + 30 + (i % cols) * cell, pr.y + 80 + (i / cols) * cell, cell - 8, cell - 8};
-        int a = g.ammo[cur.team][i];
+    for (int k = 0; k < n; k++) {
+        int i = slots[k];
+        Rectangle c = {pr.x + 30 + (k % cols) * cell, pr.y + 80 + (k / cols) * cell, cell - 8, cell - 8};
+        int a = g.ammo[cur.team][i], late = g.delays[cur.team][i];
+        if (late) a = 0;  // W4M FETXT.HTPSubtopic4: a delayed weapon is dimmed, its number the turns left
         if (i == cursor && !nine("fe/buttonbig_highlight", c, 64, 0.25f)) DrawRectangleRoundedLinesEx(c, 0.2f, 4, 4, GOLDEN);
         Rectangle ic = {c.x + 8, c.y + 8, c.width - 16, c.height - 16};
         if (!image(iconOf(WEAPONS[i]), ic, a ? WHITE : Fade(GRAY, 0.5f))) {
@@ -1923,10 +2058,11 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             text(WEAPONS[i].name.substr(0, 4).c_str(), ic.x + ic.width / 2, ic.y + ic.height / 2 - 10, 20, a ? WHITE : GRAY, 1);
         }
         if (a > 0) text(TextFormat("%d", a), c.x + c.width - 6, c.y + c.height - 26, 22, WHITE, 2);
+        if (late) text(TextFormat("%d", late), c.x + c.width / 2, c.y + c.height / 2 - 20, 40, GOLDEN, 1);
     }
     const WeaponDef &sel = WEAPONS[cursor];
     int sa = g.ammo[cur.team][cursor];
-    text(TextFormat("%s  %s", sel.name.c_str(), sa < 0 ? "(infinite)" : TextFormat("x%d", sa)), 640, pr.y + ph - 58, 30, sa ? WHITE : GRAY, 1);
+    text(TextFormat("%s  %s", weaponName(sel), sa < 0 ? "(infinite)" : TextFormat("x%d", sa)), 640, pr.y + ph - 58, 30, sa ? WHITE : GRAY, 1);
 }
 
 // ---------------------------------------------------------------- pause
@@ -1950,6 +2086,7 @@ Pause::Action Pause::update() {
 }
 
 void Pause::draw(bool online) const {
+    menuPage = true;
     if (!open) return;
     if (help) {
         controls(true);
@@ -1968,6 +2105,7 @@ void Pause::draw(bool online) const {
 // ---------------------------------------------------------------- replays
 
 int replayList(const std::vector<std::string> &files, int &sel, bool &instant) {
+    menuPage = true;
     int n = (int)files.size(), first = std::max(0, std::min(sel - 4, n - 9));
     sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
     if (P({X}, {KEY_Y})) instant = !instant;
@@ -2071,6 +2209,7 @@ static float paragraph(const std::string &s, float x, float y, float w, float si
 }
 
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p) {
+    menuPage = true;
     static const char *TABS[2] = {"Missions", "Challenges"};
     static double seen = -1;  // last frame shown: a gap means the list just opened (W4M's story book)
     if (GetTime() - seen > 0.5) Audio::play(Audio::Sfx::FeBookIn);

@@ -117,8 +117,10 @@ void Snapshot::restore(Game &live) {
     Terrain &t = live.terrain;
     constexpr int CS = Terrain::CS, CX = Terrain::NX / CS, CY = Terrain::NY / CS;
     for (auto it = log.rbegin(); it != log.rend(); ++it) {  // newest first: the oldest value of a voxel wins
-        t.d[it->first] = it->second;
-        int x = it->first % Terrain::NX, y = it->first / Terrain::NX % Terrain::NY, z = it->first / (Terrain::NX * Terrain::NY);
+        int v = it->first < 0 ? -1 - it->first : it->first;  // negative: a voxel a girder made steel
+        if (it->first < 0) t.steel[v] = false;
+        else t.d[v] = it->second;
+        int x = v % Terrain::NX, y = v / Terrain::NX % Terrain::NY, z = v / (Terrain::NX * Terrain::NY);
         for (int dz = -1; dz <= 1; dz++)  // chunk cells sample one voxel past their bounds
             for (int dy = -1; dy <= 1; dy++)
                 for (int dx = -1; dx <= 1; dx++) {

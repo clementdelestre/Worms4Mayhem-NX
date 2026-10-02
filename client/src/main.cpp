@@ -75,43 +75,44 @@ static void onEvent(const Game &g, const GameEvent &e) {
     using Audio::Sfx;
     using Audio::Voice;
     int team = e.worm >= 0 ? g.worms[e.worm].team : 0;
+    if (e.kind == GameEvent::GameOver) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
     Fx::event(e, g.terrain.side);
     switch (e.kind) {
-    case GameEvent::Boom: Audio::play(Sfx::Explosion); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
-    case GameEvent::BigBoom: Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion), holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
-    case GameEvent::Hallelujah: Audio::play(Sfx::Holy), holyNext = true; break;
+    case GameEvent::Boom: Audio::play(Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    case GameEvent::BigBoom: Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion, e.pos), holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    case GameEvent::Hallelujah: Audio::play(Sfx::Holy, e.pos), holyNext = true; break;
     case GameEvent::Fire: {
         const WeaponDef &d = WEAPONS[e.weapon];
         Kind k = d.kind;
         static const Sfx FIRE_SFX[] = {Sfx::Fire, Sfx::Sheep, Sfx::Airstrike, Sfx::Donkey, Sfx::Shotgun, Sfx::Rope, Sfx::Fire, Sfx::Teleport,
                                        Sfx::SuperSheepFire, Sfx::OldWomanFire, Sfx::Bounce, Sfx::Homing, Sfx::Tick, Sfx::ScouserFire, Sfx::SentryFire,
                                        Sfx::Abduction, Sfx::Flood, Sfx::Parachute, Sfx::TurnStart, Sfx::TurnStart, Sfx::TurnStart};  // by Kind
-        Sfx s = FIRE_SFX[(int)k];
+        Sfx s = (size_t)k < sizeof FIRE_SFX / sizeof *FIRE_SFX ? FIRE_SFX[(int)k] : Sfx::TurnStart;  // later Kinds: none of their own yet
         // a few Kinds cover several named weapons with distinct W4M sounds; pick by name like heldModel() does
         if (k == Kind::Shell) s = d.name == "Poison Arrow" ? Sfx::Bow : d.name == "Dynamite" ? Sfx::Dynamite : d.name == "Gas Canister" ? Sfx::Gas : s;
         else if (k == Kind::Melee) s = d.name == "Baseball Bat" ? Sfx::BatSwing : d.name == "Prod" ? Sfx::Prod : Sfx::FirePunch;
         else if (k == Kind::Shotgun && d.name == "Sniper Rifle") s = Sfx::Sniper;
         else if (k == Kind::Sentry && e.worm >= 0) s = Sfx::SentryPlace;  // placing vs. the turret's own shots (worm -1)
-        Audio::play(s);
+        Audio::play(s, e.pos);
         bool tool = utility(k) || k == Kind::SkipGo;
-        if (e.worm >= 0 && !tool) Audio::voice(team, Voice::Fire);  // worm -1: sentry gun shot
+        if (e.worm >= 0 && !tool) Audio::voice(team, WEAPONS[e.weapon].name == "Fire Punch" ? Voice::Punch : Voice::Fire, e.pos);  // worm -1: sentry gun; MeleeWeaponLogicEntity 0x568270: kMeleeFirepunch says Punch
         break;
     }
-    case GameEvent::Bounce: Audio::play(Sfx::Bounce, 0.6f); break;
-    case GameEvent::Splash: Audio::play(Sfx::Splash); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking
-    case GameEvent::Death: Audio::voice(team, Voice::Death); break;
-    case GameEvent::Hurt: Audio::voice(team, Voice::Hurt); break;
-    case GameEvent::Jump: Audio::play(Sfx::Jump); Audio::voice(team, Voice::Jump); break;
-    case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); Audio::voice(team, Voice::Idle); break;
-    case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, 0.5f); break;
+    case GameEvent::Bounce: Audio::play(Sfx::Bounce, e.pos); break;
+    case GameEvent::Launch: Audio::play(WEAPONS[e.weapon].fuse > 0 ? Sfx::CowFall : Sfx::BombWhistle, e.pos); break;  // WEAPTWK LaunchSfx
+    case GameEvent::Splash: Audio::play(Sfx::Splash, e.pos); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking
+    case GameEvent::Death: Audio::voice(team, Voice::Death, e.pos); break;
+    case GameEvent::Hurt: Audio::voice(team, Voice::Hurt, e.pos); break;
+    case GameEvent::Jump: Audio::play(Sfx::Jump, e.pos); Audio::voice(team, Voice::Jump, e.pos); break;
+    case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); Audio::voice(team, Voice::Idle, e.pos); break;
+    case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, e.pos); break;
     case GameEvent::CrateLand:
-        Audio::play(e.weapon < 0 ? Sfx::CrateImpactHealth : utility(WEAPONS[e.weapon].kind) ? Sfx::CrateImpactUtil : Sfx::CrateImpactWeapon, 0.7f);
+        Audio::play(e.weapon < 0 ? Sfx::CrateImpactHealth : utility(WEAPONS[e.weapon].kind) ? Sfx::CrateImpactUtil : Sfx::CrateImpactWeapon, e.pos);
         break;
-    case GameEvent::Collect: Audio::play(Sfx::Pickup, 0.7f); break;
-    case GameEvent::MineArm: Audio::play(Sfx::MineBeep); break;
+    case GameEvent::Collect: Audio::play(Sfx::Pickup, e.pos); break;
+    case GameEvent::MineArm: break;  // MineArmLoop: looped below while a mine ticks
     case GameEvent::GameOver:
-        Audio::music(true, "victory");
-        Audio::play(Sfx::Cheer, 0.6f);
+        Audio::music(true, "victory");  // the crowd (cheer/cheer) loops below while the match is over
         if (g.winner >= 0) Audio::voice(g.winner, Voice::Victory);
         break;
     }
@@ -133,7 +134,7 @@ static const char *heldModel(const WeaponDef &d, const char **clip) {
     case Kind::SuperSheep: *clip = n == "Starburst" ? "HoldStarburst" : "HoldBazooka"; return n == "Starburst" ? "hold_starburst" : "hold_supersheep";
     case Kind::OldWoman: *clip = "HoldOldWoman"; return "hold_oldwoman";
     case Kind::Scouser: *clip = "HoldScouser"; return "hold_scouser";
-    case Kind::Melee: *clip = n == "Baseball Bat" ? "HoldBat" : n == "Prod" ? "HoldProd" : "HoldFirepunch"; return n == "Baseball Bat" ? "hold_bat" : "";  // "": hands only
+    case Kind::Melee: *clip = n == "Baseball Bat" ? "HoldBat" : n == "Prod" ? "HoldProd" : n == "Tail Nail" ? "HoldNMN" : "HoldFirepunch"; return n == "Baseball Bat" ? "hold_bat" : n == "Tail Nail" ? "hold_hammer" : "";  // "": hands only
     case Kind::Mine: *clip = "HoldLandmine"; return "hold_landmine";
     case Kind::Sentry: *clip = "HoldSentrygun"; return "hold_sentry";
     case Kind::Surrender: *clip = "HoldSurrender"; return "hold_flag";
@@ -155,7 +156,7 @@ static const char *fireClip(const WeaponDef &d, bool *keep) {
         return n == "Dynamite" ? "FireDynamite" : d.fuse > 0 ? "FireThrown" : "FireBazooka";
     case Kind::Shotgun: return n == "Sniper Rifle" ? "FireSniper" : "FireShotgun";
     case Kind::Homing: return "FireHomingMissile";
-    case Kind::Melee: return n == "Baseball Bat" ? "Fire2Bat" : n == "Prod" ? "FireProd" : "Fire2Firepunch";
+    case Kind::Melee: return n == "Baseball Bat" ? "Fire2Bat" : n == "Prod" ? "FireProd" : n == "Tail Nail" ? "FireNMN" : "Fire2Firepunch";
     case Kind::Airstrike: case Kind::Donkey: case Kind::Abduction: case Kind::Flood: return "HoldAirstrike";  // talks into the radio
     case Kind::Surrender: return "TauntSurrender";
     default: break;
@@ -174,7 +175,8 @@ static const char *fireClip(const WeaponDef &d, bool *keep) {
 // Render-only gait state: the sim walks worms by moving pos (vel stays 0), so the cycle follows position deltas.
 // act: one-shot clip started by a sim event (weapon use, flinch, drowning), held: item kept at the WeaponLocator meanwhile.
 struct WormAnim {
-    Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, flip = false;
+    Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, flip = false, nailed = false;
+    Vector3 vault{}; float vaultT = 9, chute = -1, lr = 0;  // vault: drawn lag behind a ledge climb; chute: s open, lr: WXWorm.ParachuteLR
     struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr; } act;  // aim: Aim* clip layered on the arms
 };
 static std::vector<WormAnim> wormAnims;
@@ -187,12 +189,13 @@ static void animEvent(const Game &g, const GameEvent &e) {
     bool keep;
     if (e.kind == GameEvent::Fire && WEAPONS[e.weapon].kind == Kind::Teleport) a = {"TelepadAppear", 1.5f};  // its first half is invisible
     else if (e.kind == GameEvent::Fire) h = heldModel(WEAPONS[e.weapon], &c), a = {fireClip(WEAPONS[e.weapon], &keep), 0, keep ? h : nullptr, c && c[0] == 'A' ? c : nullptr};
-    else if (e.kind == GameEvent::Hurt && !a.clip) a = {"Hit_Front"};
+    else if (e.kind == GameEvent::Hurt && !a.clip) a = {g.worms[e.worm].nailed ? "NailedHitFront" : "Hit_Front"};  // W4M 0x5a9100: Nailed* variant
     else if (e.kind == GameEvent::Splash) a = {"FallDrown"};
+    if (a.clip && !strcmp(a.clip, "FireNMN")) a.t = 0.7f;  // the sim hits at once: start at the hammer's downswing
 }
 
 // Once per frame, for every worm: walk phase advances with distance walked, footsteps on the cycle beat, landing thud.
-static void animateWorms(const Game &g, float dt) {
+static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
     wormAnims.resize(g.worms.size());
     const float L = fmaxf(Models::clipLength("worm", "Walk"), 0.1f);
     for (size_t i = 0; i < g.worms.size(); i++) {
@@ -202,6 +205,18 @@ static void animateWorms(const Game &g, float dt) {
         float dist = sqrtf(d.x * d.x + d.z * d.z), turn = fabsf(remainderf(w.yaw - a.yaw, 2 * PI));
         if (!a.init || dist > 2) { WormAnim::Act act = a.act; a = WormAnim{}, a.act = act, a.init = true, dist = turn = 0; }  // spawn, teleport, replay rewind
         a.pos = w.pos, a.yaw = w.yaw;
+        // W4M Vaulting 0x5aca80: onto a 5..20-unit ledge at 4 units per 20 ms frame, at most 250 ms; the sim climbs at once
+        if (w.grounded && a.air == 0 && d.y > Game::STEP && d.y <= Game::STEP_UP + 0.05f && dist < 1) a.vault = Vector3Add(a.vault, d), a.vaultT = 0;
+        a.vaultT += dt;
+        float left = Vector3Length(a.vault);
+        a.vault = a.vaultT > 0.25f || left <= 10 * dt ? Vector3{} : Vector3Scale(a.vault, 1 - 10 * dt / left);
+        // WXWorm.ParachuteLR (ParachuteLogicEntity 0x578b77): (3 lr + target) / 4 per frame, target +-0.75 drifting sideways
+        bool chute = (int)i == g.current && g.chute && !w.grounded;
+        float side = w.vel.x * cosf(w.yaw) - w.vel.z * sinf(w.yaw);  // + toward the model's +x (sign vs W4M unverified)
+        a.chute = chute ? fmaxf(a.chute, 0) + dt : -1;
+        a.lr += ((fabsf(side) > 0.5f ? copysignf(0.75f, side) : 0) - a.lr) * (1 - powf(0.75f, dt / 0.02f));  // 0.01 units/ms
+        if (w.nailed && !a.nailed) a.act = {"Nailed"};  // W4M DirtBallLogicEntity 0x5ce320 queues it on the victim
+        a.nailed = w.nailed;
         if (WormAnim::Act &c = a.act; c.clip) {
             bool air = !w.grounded && fabsf(w.vel.y) > 1, leap = !strcmp(c.clip, "Fire2Firepunch"), drown = !strcmp(c.clip, "FallDrown");
             c.t += dt;
@@ -214,7 +229,7 @@ static void animateWorms(const Game &g, float dt) {
             a.air += dt, a.fallV = fminf(a.fallV, w.vel.y), a.walk = 0, a.moving = false;
             continue;
         }
-        if (a.air > 0.2f && a.fallV < -4 && w.alive) a.land = 0, Audio::play(Audio::Sfx::Land, fminf(-a.fallV / 20, 0.5f));
+        if (a.air > 0.2f && a.fallV < -4 && w.alive) a.land = 0, Audio::play(Audio::Sfx::Land, w.pos);
         a.air = a.fallV = 0, a.land += dt;
         float step = dist + turn * 0.6f;  // turning in place shuffles at half the walk pace
         a.still = step > 1e-4f ? 0 : a.still + dt;
@@ -225,12 +240,12 @@ static void animateWorms(const Game &g, float dt) {
         bool beat = floorf((a.walk - B) / L) > floorf((before - B) / L);
         a.walk = fmodf(a.walk, L);
         bool self = (int)i == g.current && (g.phase == Phase::Aim || g.phase == Phase::Retreat) && Vector3Length(w.vel) < 0.3f;  // not sliding
-        if (a.moving && beat && self) Audio::play(Audio::Sfx::Step, 0.3f);
+        if (a.moving && beat && self) Audio::play(Audio::Sfx::Step, w.pos);
     }
     static std::vector<uint8_t> busy;
     busy.assign(g.worms.size(), 0);
     for (size_t i = 0; i < g.worms.size(); i++) busy[i] = wormAnims[i].moving || wormAnims[i].air > 0 || wormAnims[i].act.clip;
-    Acting::update(g, dt, busy);
+    Acting::update(g, dt, busy, cam);
 }
 
 // W4M jetpack/parachute meshes sit on the worm's root in raw units; WORM_K: worm.glb's export scale (tools/w4m-models).
@@ -239,6 +254,7 @@ static Matrix rootMatrix(const Worm &w, Vector3 raw) {
     return MatrixMultiply(MatrixMultiply(MatrixTranslate(raw.x, raw.y, raw.z), MatrixScale(WORM_K, WORM_K, WORM_K)),
                           MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(w.pos.x, w.pos.y - Game::R, w.pos.z)));
 }
+static const float CHUTE_K = 0.045f;  // crate_chute.glb is in raw W4M units: 20 units = the 0.9 m crate
 static const Vector3 JETPACK_AT = {0, 12, 3};  // pack origin on the worm's back, its sticks in the JetpackFly hands
 
 // Once per frame: jetpack exhaust (full jets while fuel burns) and the Fire Punch's flaming fist.
@@ -275,31 +291,37 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     WormAnim a = i < (int)wormAnims.size() ? wormAnims[i] : WormAnim{};
     float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
     const char *clip = "Base", *held = nullptr, *aim = nullptr;
-    bool loop = true;
+    bool loop = true, actLoop = true;
     bool tool = i == g.current && (g.roped || g.jetting || (g.chute && a.air > 0));
+    Models::Layers lay;  // W4M pose layers: emote face, LookAt head, GestureAt arms
+    float actT = 0;
+    const char *acted = fp ? nullptr : Acting::clip(g, i, clock, &actT, &actLoop, &lay);
+    const Models::Layers *ly = fp || !w.alive || w.hp <= 0 ? nullptr : &lay;  // dead or dying: the clip alone
     float drown = Models::clipLength("worm", "FallDrown");  // dead and still drawn: drowned, afloat until Settle pops it
     if (!w.alive) clip = "FallDrown", t = a.act.clip ? fminf(a.act.t, drown) : drown, loop = false;
     else if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
-    else if (tool) clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteWobble", held = g.roped ? "hold_rope" : nullptr;
+    else if (tool) clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteLR", held = g.roped ? "hold_rope" : nullptr;
+    if (tool && !g.roped && !g.jetting) t = 1 - a.lr, loop = false;  // WAE_Parachute 0x58f2b4: ParachuteLR at 1 - lr, on worm and canopy
     else if (bool air = a.air > 0.15f || w.vel.y > 2; air && speed > 4) clip = "Blastflight2";  // knocked flying (short drops keep the pose)
     else if (air) {
         clip = a.flip ? "Backflip" : w.vel.y > 0 ? "Jump" : "Fall";
         if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
-    } else if (a.moving || a.walk > 0) clip = "Walk", t = a.walk;
+    } else if (a.vaultT < Models::clipLength("worm", "Vault")) clip = "Vault", t = a.vaultT, loop = false;  // kWE 9: Walking -> Vaulting
+    else if (a.moving || a.walk > 0) clip = "Walk", t = a.walk;
     else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0 && !(i == g.current && g.phase == Phase::Aim)) clip = "Land", t = a.land, loop = false;
-    else if (const char *c = fp ? nullptr : Acting::clip(g, i, clock, &t, &loop)) clip = c;  // W4M acting: gestures, emotes
+    else if (acted) clip = acted, t = actT, loop = actLoop;  // W4M acting: gestures, emotes
     else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up
     else if (g.phase == Phase::GameOver && w.team == g.winner) clip = "Victorious_Grin";
     else if (i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && (held = heldModel(WEAPONS[g.weapon], &clip))) {
         if (clip[0] == 'A') t = (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", clip), loop = false;  // sim pitch range [-1.2, 1.45]
     } else if (w.hp < 25) clip = "Wounded";
-    Color tint = ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f);
-    Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
+    Color tint = Acting::tint(i, ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f));
+    Vector3 p = Vector3Subtract({w.pos.x, w.pos.y - Game::R, w.pos.z}, a.vault);
     if (!w.alive) p.y = g.water - FLOAT_DEPTH - 1.2f * t / 0.3f * expf(1 - t / 0.3f) + 0.05f * sinf(clock * 3);  // dips 1.2 m, bobs back up
     float aimT = aim ? (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", aim) : 0;
-    if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop, aim, aimT)) return false;
+    if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, 0, tint, clip, t, loop, aim, aimT, ly)) return false;
     Matrix m;
-    if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT)) {
+    if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly)) {
         m = MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z)));
         if (fp) {  // the aim clip's hand orientation, moved to the bottom right of the view
             Vector3 f = Vector3Normalize(Vector3Subtract(fp->target, fp->position)), r = Vector3Normalize(Vector3CrossProduct(f, {0, 1, 0})), u = Vector3CrossProduct(r, f);
@@ -311,15 +333,67 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
         }
         Models::draw(held, m);
     }
-    if (tool && !fp && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE, g.jetting ? nullptr : clip, t);  // the canopy's own ParachuteWobble
+    bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
+    if (tool && !fp && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE, g.jetting ? nullptr : opening ? "FireParachute" : clip, opening ? a.chute : t);
     int hat = !fp && w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
     const char *hatN = tool && !fp && g.jetting ? "jetpack" : hat ? Models::hatName(hat - 1) : nullptr;  // W4M's jetpack helmet
-    if (hatN && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT))
+    if (hatN && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
         Models::draw(hatN, MatrixMultiply(m, MatrixMultiply(MatrixRotateY(w.yaw), MatrixTranslate(p.x, p.y, p.z))));
     return true;
 }
 
+// W4M Crate.Chute: Open on the drop then Fall while descending, Close on landing (render-only state, by object index).
+static void crateChute(const Object &o, size_t i, float dt) {
+    static std::vector<std::pair<float, float>> st;  // {time since the drop, time since landing or -1}
+    if (st.size() <= i) st.resize(i + 1, {0, -1});
+    auto &[fall, shut] = st[i];
+    if (o.falling) fall += dt, shut = 0;
+    else if (shut >= 0) shut += dt;
+    if (o.falling || (shut >= 0 && shut < Models::clipLength("crate_chute", "Close"))) {
+        float open = Models::clipLength("crate_chute", "Open");
+        bool opening = o.falling && fall < open;
+        Models::draw("crate_chute", MatrixMultiply(MatrixScale(CHUTE_K, CHUTE_K, CHUTE_K), MatrixTranslate(o.pos.x, o.pos.y, o.pos.z)), WHITE,
+                     !o.falling ? "Close" : opening ? "Open" : "Fall", !o.falling ? shut : opening ? fall : fall - open);
+    } else if (!o.falling && shut >= 0) fall = 0, shut = -1;
+}
+
+// W4M mine ExpiryFx: a dud mine with none within 1 m last frame has just fizzled (render-only, no sim event).
+static void dudFx(const std::vector<Object> &objs) {
+    static std::vector<Vector3> was;
+    std::vector<Vector3> now;
+    for (const Object &o : objs) {
+        if (o.type != Object::Mine || !o.dud) continue;
+        bool old = false;
+        for (Vector3 p : was) old |= Vector3Distance(p, o.pos) < 1;
+        if (!old) Fx::dud(o.pos);
+        now.push_back(o.pos);
+    }
+    was.swap(now);
+}
+
 // Dead worms leave a random W4M gravestone, dropped onto whatever terrain is left below (render only).
+// Girder preview (GirderSmall.xom's deck and legs, see-through, red where it can't go) and Bubble Trouble shells.
+static void drawUtilities(const Game &g) {
+    if (g.girderOn && g.phase == Phase::Aim) {
+        Color c = g.girderFits(g.girder) ? Color{255, 60, 60, 110} : Color{200, 215, 235, 110};  // unverified: GirderKitGraphicEntity not traced
+        rlPushMatrix();
+        rlTranslatef(g.girder.x, g.girder.y, g.girder.z);
+        DrawCube({0, 0.5f, 0}, 4, 1, 4, c);
+        for (float sx : {-1.5f, 1.5f}) DrawCube({sx, -0.5f, 0}, 1, 1, 4, c);
+        DrawCubeWires({0, 0, 0}, 4, 2, 4, Fade(WHITE, 0.6f));
+        rlPopMatrix();
+    }
+    for (const Game::Bubble &b : g.bubbles) {  // ponytail: a sphere; bubble.glb is right-sized but needs W4M's soap-film shader (its texture is not a UV skin)
+        Vector3 c = Vector3Add(b.pos, {0, Game::BUBBLE_UP, 0});
+        DrawSphereEx(c, Game::BUBBLE_R, 16, 16, {150, 210, 255, 50});
+        DrawSphereWires(c, Game::BUBBLE_R, 8, 12, {200, 235, 255, 90});
+    }
+    if (g.icarus == 2) {  // W4M RedBullWings (PackAccessory.Wield) on the flying worm's back; unverified mount point
+        const Worm &w = g.worms[g.current];
+        Models::draw("wings", Vector3Add(w.pos, {-sinf(w.yaw) * 0.25f, 0.2f, -cosf(w.yaw) * 0.25f}), w.yaw, 0, WHITE, "FlyRedBull", (float)GetTime());
+    }
+}
+
 static void drawGrave(const Game &g, const Worm &w) {
     if (w.pos.y < g.water) return;  // drowned
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
@@ -328,12 +402,30 @@ static void drawGrave(const Game &g, const Worm &w) {
     Models::draw(TextFormat("grave%u", (h >> 16) % 4), p, w.yaw);
 }
 
+// Bovine Blitz, W4M SuperBomberGraphicEntity (the SuperAirstrike chopper, banked into its turns) and
+// ParachutePayloadGraphicEntity (Cow.Payload "Hang" with Crate.Chute "Fall" at its Parachute node, both in raw units).
+static bool drawBovine(const Projectile &s, float clock) {
+    const float K = 0.05f;  // 20 W4M units per metre
+    float yaw = atan2f(s.vel.x, s.vel.z);
+    if (!s.child) {
+        static float last = yaw, bank = 0;
+        float rate = remainderf(yaw - last, 2 * PI) / fmaxf(GetFrameTime(), 1e-3f);
+        last = yaw, bank = Lerp(bank, Clamp(rate * 0.8f, -0.6f, 0.6f), 0.1f);
+        return Models::draw("superbomber", MatrixMultiply(MatrixMultiply(MatrixRotateZ(-bank), MatrixRotateY(yaw)), MatrixTranslate(s.pos.x, s.pos.y, s.pos.z)), WHITE, "OpenDoorsSource", 0);
+    }
+    Matrix cow = MatrixMultiply(MatrixMultiply(MatrixScale(K, K, K), MatrixRotateY(yaw)), MatrixTranslate(s.pos.x, s.pos.y, s.pos.z)), j;
+    if (!Models::draw("cow", cow, WHITE, "Hang", clock)) return false;
+    if (Models::joint("cow", "Parachute", "Hang", clock, true, &j)) Models::draw("crate_chute", MatrixMultiply(j, cow), WHITE, "Fall", clock);
+    return true;
+}
+
 // Shells point along their velocity; fused throwables (grenades) tumble instead.
 static bool drawShot(const Projectile &s, float clock) {
     const WeaponDef &d = WEAPONS[s.weapon];
     const std::string &n = d.name;
     if (s.child && d.kind == Kind::SuperSheep) return true;  // starburst stars: particles only (Fx::trail)
     if (!s.child && d.kind == Kind::Airstrike && d.fuse <= 0) return true;  // air strike plane: no mesh, only its bombs show
+    if (d.kind == Kind::Airstrike && d.fuse > 0 && drawBovine(s, clock)) return true;
     const char *m = n == "Fatkins Strike" ? "fatkins" : n == "Starburst" ? "starburst" : n == "Poison Arrow" ? "arrow" : n == "Dynamite" ? "dynamite"
                   : n == "Gas Canister" ? "gas" : d.kind == Kind::SuperSheep ? "supersheep" : d.kind == Kind::OldWoman ? "oldwoman"
                   : d.kind == Kind::Homing ? "homing" : d.kind == Kind::Scouser ? "scouser"
@@ -346,6 +438,7 @@ static bool drawShot(const Projectile &s, float clock) {
     if (d.kind == Kind::OldWoman) return Models::draw(m, {s.pos.x, s.pos.y - 0.3f, s.pos.z}, yaw, 0, WHITE, "Walk", clock);
     if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
     if (d.kind == Kind::Scouser) return Models::draw(m, s.pos, clock * 0.7f);
+    if (dropped(d)) return Models::draw(m, s.pos, 0);  // set down standing, it doesn't tumble
     if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, s.pos, clock * 6, clock * 4);
     return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h));
 }
@@ -402,6 +495,10 @@ int main(int argc, char **argv) {
     if (argc > 2 && !strcmp(argv[1], "--animshot") && (argv[2][0] < '0' || argv[2][0] > '9')) {
         float L = Models::clipLength("worm", argv[2]);
         Camera3D c = {{0, 0.4f, 11}, {0, 0.4f, 0}, {0, 1, 0}, 30, CAMERA_PERSPECTIVE};
+        Models::Layers ly;  // W4NX_LAYERS="<face clip> lookYaw lookPitch": acting layers on every pose
+        static char face[64] = "";
+        bool layered = getenv("W4NX_LAYERS") && sscanf(getenv("W4NX_LAYERS"), "%63s %f %f", face, &ly.lookYaw, &ly.lookPitch) >= 1;
+        ly.face = strcmp(face, "-") ? face : nullptr;
         BeginDrawing();
         ClearBackground(SKYBLUE);
         Lit::frame(c.position);
@@ -411,7 +508,7 @@ int main(int argc, char **argv) {
             Matrix m;
             const char *aim = argc > 5 ? argv[4] : nullptr;
             float aimT = argc > 5 ? atof(argv[5]) : 0;
-            Models::draw("worm", p, PI / 2, 0, WHITE, argv[2], L * k / 7, false, aim, aimT);
+            Models::draw("worm", p, getenv("W4NX_YAW") ? (float)atof(getenv("W4NX_YAW")) : PI / 2, 0, WHITE, argv[2], L * k / 7, false, aim, aimT, layered ? &ly : nullptr);
             if (argc > 3 && Models::joint("worm", "WeaponLocator", argv[2], L * k / 7, false, &m, aim, aimT))
                 Models::draw(argv[3], MatrixMultiply(m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))));
         }
@@ -456,6 +553,10 @@ int main(int argc, char **argv) {
     // --aimseq <weapon> [map]: aim mode from frame 40 to 90, aimseq_NNN.png around the entry and the exit
     bool aimSeq = shot && argc > 2 && !strcmp(argv[1], "--aimseq");
     bool animShot = shot && argc > 2 && !strcmp(argv[1], "--animshot");
+    // --utilshot <weapon name> [map]: that weapon in hand from the start (one unit), a girder preview stepped ahead and up
+    const char *utilShot = shot && argc > 2 && !strcmp(argv[1], "--utilshot") ? argv[2] : nullptr;
+    uint8_t prevShotJump = 0;
+    if (utilShot && !strcmp(utilShot, "Binoculars")) Controls::forceAim = 1;
     if (aimShot) Controls::forceAim = argc > 4 && !strcmp(argv[4], "fine") ? 2 : 1;
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
@@ -496,6 +597,8 @@ int main(int argc, char **argv) {
         UnloadFileText(flag);
     }
     if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time); }
+    for (size_t i = 0; utilShot && i < WEAPONS.size(); i++)
+        if (WEAPONS[i].name == utilShot) game.ammo[game.worms[game.current].team][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
 
     Camera3D cam = {{40, 30, 0}, {40, 8, 40}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
     float acc = 0, clock = 0, reconnectAt = 0;
@@ -938,7 +1041,6 @@ int main(int argc, char **argv) {
                                      640, 160 + (int)i * 40, 30, (int)i == roomSel ? YELLOW : WHITE);
                 }
                 if (net.rooms.empty()) drawTextCentered("No rooms yet", 640, 200, 30, LIGHTGRAY);
-                Ui::hints({{"A", "Enter", "Join"}, {"X", "C", "Create room"}, {"Y", "R", "Refresh"}, {"B", "Esc", "Back"}});
                 drawTextCentered(status.c_str(), 640, 660, 22, ORANGE);
             }
             if (Ui::helpHeld()) Ui::controls(false);
@@ -996,11 +1098,31 @@ int main(int argc, char **argv) {
         if (aimSeq) Controls::forceAim = frame >= 40 && frame < 90;
         int simWeapon = game.weapon;
         game.weapon = cpu(cur.team) && ai.picking >= 0 ? ai.picking : hud.shown(game);  // panel or CPU pick: controls and the view skip the weapons stepped through on the way
-        Input pin = Controls::read(game, pad, aimShot || aimSeq || (padTurn && !cpu(cur.team)), dt);
+        Controls::cpuTurn = cpu(cur.team) && ai.striking() && !playing && irEnd < 0;  // the CPU's own Blimp: only for a planned strike
+        Input pin = Controls::read(game, pad, aimShot || aimSeq || utilShot || (padTurn && !cpu(cur.team)), dt);
+        if (Controls::fireRefused()) Audio::play(Audio::Sfx::FeError);  // W4M Weapon.NotClearToFire plays weapons/Gong
+        static bool wasLocked = false;  // HomingLockOnGraphicEntity::OnTargetSelected 0x560420
+        if (game.locked && !wasLocked) Audio::play(Audio::Sfx::LockOn);
+        wasLocked = game.locked;
         game.weapon = simWeapon;
         int late = animShot ? 2 * shotWeapon : 0;  // animshot: fire once the weapon cycling is over
         Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, shotWeapon, !aimShot && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
-        if (aimSeq && frame > 40 && frame < 80) in.aim = 127;  // look up: the exit starts from the sky
+        if (aimSeq && frame > 40 && frame < 80) in.aim = 127;
+        if (utilShot && game.girderOn && frame < 38) in.buttons |= Input::TARGET | (frame % 2 ? Input::PITCH : 0), in.walk = 127, in.aim = frame % 2 ? 127 : 0;
+        if (utilShot && WEAPONS[game.weapon].kind == Kind::Icarus && frame > 100)  // jump, then flap on each window
+            in = Input{}, in.walk = 60, in.buttons = (game.icarus == 1 && frame % 30 == 0) || (game.icarus == 2 && game.clock >= game.flapAt && !(prevShotJump & Input::JUMP)) ? Input::JUMP : 0;
+        prevShotJump = in.buttons;
+        if (utilShot && WEAPONS[game.weapon].kind == Kind::Binoculars) {  // look at the nearest enemy, then FIRE once
+            in = Input{}, in.buttons = frame == 40 ? Input::FIRE : 0;
+            for (const Worm &e : game.worms)
+                if (frame == 2 && e.alive && e.team != cur.team) {
+                    Vector3 d = Vector3Subtract(e.pos, cur.pos);
+                    game.worms[game.current].yaw = atan2f(d.x, d.z), game.worms[game.current].pitch = asinf(d.y / Vector3Length(d));
+                    break;
+                }
+        }  // look up: the exit starts from the sky
+        if (aimShot && Controls::targetView(game) && frame > 30)  // Blimp: pan, yaw, then tilt down
+            in.buttons |= Input::TARGET | (frame >= 45 ? Input::PITCH : 0), in.walk = frame < 45 ? 127 : 0, in.turn = frame < 45 ? 40 : 0, in.aim = frame >= 45 ? -60 : 0;
         if (irSwallow) {
             if (in.buttons & (Input::FIRE | Input::JUMP)) in.buttons &= ~(Input::FIRE | Input::JUMP);
             else irSwallow = false;
@@ -1085,16 +1207,22 @@ int main(int argc, char **argv) {
         // camera (controls.cpp): free orbit, first person in aim mode, chasing the projectile, sniper scope
         simWeapon = game.weapon, game.weapon = cpu(game.worms[game.current].team) && ai.picking >= 0 ? ai.picking : hud.shown(game);  // render only, restored after EndDrawing
         const WeaponDef &wd = WEAPONS[game.weapon];
-        static int drawn = -1;  // weapon in hand: the holy grenade hums when drawn (W4M HolyGrenadeHeld)
-        if (game.phase != Phase::Aim) drawn = -1;
-        else if (game.weapon != drawn && (drawn = game.weapon, wd.name == "Holy Hand Grenade")) Audio::play(Audio::Sfx::HolyHeld, 0.7f);
+        // W4M FEV loops: FuseLoop until the stick blows, MineArmLoop while a mine ticks, HolyGrenadeHeld in hand, the crowd at the end
+        const Vector3 *stick = nullptr, *mine = nullptr;
+        for (const Projectile &s : game.shots) if (WEAPONS[s.weapon].name == "Dynamite") stick = &s.pos;
+        for (const Object &o : game.objects) if (o.type == Object::Mine && o.fuse >= 0 && !o.dead) mine = &o.pos;
+        Audio::loop(Audio::Sfx::Dynamite, stick && !pause.open, stick);
+        Audio::loop(Audio::Sfx::MineBeep, mine && !pause.open, mine);
+        Audio::loop(Audio::Sfx::HolyHeld, game.phase == Phase::Aim && cur.alive && wd.name == "Holy Hand Grenade" && !pause.open, &cur.pos);
+        Audio::loop(Audio::Sfx::Cheer, game.phase == Phase::GameOver);
         bool chase = game.phase == Phase::Flying && !game.shots.empty();
         bool scope = !chase && game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && wd.name == "Sniper Rifle" && Controls::aiming();  // L / ZL held
         bool fp = scope || (!chase && Controls::firstPerson(game));  // W4M first-person aim
-        if ((IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) &&
+        if ((!Controls::targetView(game) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) &&  // L held: Blimp
              (IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))) || IsKeyPressed(KEY_F3))
             perfOn = (perfOn + 1) % 3;
         Controls::camera(cam, game, chase, scope, !pause.open && !hud.open && !(playing && freeCam), dt);
+        Audio::listen(cam);
         bool inside = Vector3Distance(cam.position, cur.pos) < 1.2f;  // the aim camera has flown into the worm
         hud.fp = fp || Controls::sinceFirstPerson() < 0.3f;
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
@@ -1134,10 +1262,10 @@ int main(int argc, char **argv) {
         lap(T_TERRAIN);
         game.terrain.drawObjects(view.position);
         lap(T_DECOR);
-        animateWorms(game, dt);
+        animateWorms(game, dt, view);
         toolFx(game, dt);
         Xray::begin();
-        bool blimp = playing && freeCam;  // W4M outlines every live worm in the blimp view (camera-w4m.md section 5)
+        bool blimp = (playing && freeCam) || Controls::targetView(game) || (wd.kind == Kind::Binoculars && Controls::firstPerson(game));  // W4M outlines every live worm in the blimp view and binoculars (camera-w4m.md section 5)
         for (const Worm &w : game.worms) {
             if (!w.alive && w.counted <= 0) { drawGrave(game, w); continue; }
             if ((inside && &w == &cur) || !Models::visible(w.pos, 2)) continue;
@@ -1158,14 +1286,7 @@ int main(int argc, char **argv) {
                 DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
         }
         if (game.roped) DrawLine3D(game.anchor, cur.pos, BROWN);
-        if (game.phase == Phase::Aim && cur.alive && !game.roped && !game.jetting && !hud.fp && !inside) {
-            if (wd.kind == Kind::Airstrike || wd.kind == Kind::Donkey || wd.kind == Kind::Teleport || wd.kind == Kind::Homing || wd.kind == Kind::Abduction) {
-                Vector3 t = game.target();
-                DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 1.2f, {1, 0, 0}, 90, RED);
-                DrawCircle3D(Vector3Add(t, {0, 0.1f, 0}), 0.4f, {1, 0, 0}, 90, RED);
-                DrawLine3D(t, Vector3Add(t, {0, 6, 0}), RED);
-            }
-        }
+        drawUtilities(game);
         for (const Projectile &s : game.shots) {
             const WeaponDef &d = WEAPONS[s.weapon];
             if (drawShot(s, clock)) continue;
@@ -1181,10 +1302,12 @@ int main(int argc, char **argv) {
                 DrawSphere(s.pos, s.child ? 0.15f : 0.2f, s.child ? ORANGE : d.radius >= 5 ? GOLD : d.clusters ? YELLOW : d.fuse > 0 ? DARKGREEN : DARKGRAY);
             }
         }
+        dudFx(game.objects);
         for (const Object &o : game.objects) {
             const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry"
                           : o.type == Object::Target ? "target" : o.weapon < 0 ? "crate_health"
                           : utility(WEAPONS[o.weapon].kind) && Models::has("crate_utility") ? "crate_utility" : "crate_weapon";
+            if (o.type == Object::Crate) crateChute(o, &o - game.objects.data(), pause.open ? 0 : dt);
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute
             if (!Models::draw(m, o.pos, (&o - game.objects.data()) * 1.3f)) {
                 if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
@@ -1198,11 +1321,6 @@ int main(int argc, char **argv) {
                 else DrawCube(o.pos, 0.8f, 0.8f, 0.8f, o.weapon < 0 ? RAYWHITE : BROWN);
             }
             if (o.type == Object::Mine && o.fuse >= 0 && fmodf(clock, 0.3f) < 0.15f) DrawSphere(Vector3Add(o.pos, {0, 0.15f, 0}), 0.08f, RED);
-            if (o.falling) {
-                Vector3 top = Vector3Add(o.pos, {0, 2.2f, 0});
-                DrawCylinderEx(top, Vector3Add(top, {0, 0.5f, 0}), 1.1f, 0.3f, 10, o.weapon < 0 ? RED : ORANGE);
-                for (float a : {0.8f, 2.4f, 3.9f, 5.5f}) DrawLine3D(Vector3Add(o.pos, {0, 0.4f, 0}), Vector3Add(top, {cosf(a) * 1.1f, 0, sinf(a) * 1.1f}), LIGHTGRAY);
-            }
         }
         if (game.cfg.mission)  // reach objectives: a gold beacon
             for (const MissionSpec::Goal &g : game.cfg.mission->objectives) {
@@ -1238,6 +1356,14 @@ int main(int argc, char **argv) {
         }
 
         if (fp) Ui::reticle(wd, GetWorldToScreen(Controls::aimPoint(game), view), scope);  // W4M per-weapon aim reticle
+        bool locked = game.locked && wd.kind == Kind::Homing && game.phase == Phase::Aim && cur.alive;  // HomingLockOnGraphicEntity: on the target until the shot
+        Vector2 lockAt = GetWorldToScreen(game.lockAt, view);
+        locked &= Vector3DotProduct(Vector3Subtract(game.lockAt, view.position), Vector3Subtract(view.target, view.position)) > 0;
+        if (!fp && Controls::targetView(game)) {
+            Vector3 h;
+            bool hit = !game.cursorOn || game.blimpHit(&h);
+            Ui::targetCursor(wd, !hit ? 2 : game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr);
+        } else if (locked) Ui::targetCursor(wd, -1, &lockAt);
         hud.quiet = pause.open || playing || irEnd >= 0;  // those draw their own hints
         hud.draw(game, view, tick);
         if (const MissionSpec *ms = game.cfg.mission; ms && game.phase != Phase::GameOver) Ui::missionHud(game, *ms);

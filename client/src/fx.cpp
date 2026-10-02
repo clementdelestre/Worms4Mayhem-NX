@@ -14,7 +14,7 @@ namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, TEX_COUNT };  // also the draw order within a blend pass
+enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, TEX_COUNT };  // also the draw order within a blend pass
 const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_005", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
 const int MAX = 1024;
 
@@ -34,7 +34,9 @@ std::vector<Particle> ps;
 std::vector<Streak> streaks;
 struct Seen { Vector3 p; int weapon; bool child; };
 std::vector<Seen> seen, seenPrev;  // live shots of this / the previous frame: which weapon blew up where
-float show = 0, nextBurst = 0;  // victory fireworks
+float show = 0, tickAcc = 0, sinceLast = 0;  // victory fireworks: s left of W4M GameOverLogicEntity's 4 s wait + 5 s show
+Vector3 stageC{};  // Land.Center, Land.Radius, Land.MaxHeight of the match that ended
+float stageR = 0, stageTop = 0;
 Vector3 camAt{};
 Texture2D skyTex{}, waterTex[3]{};
 Shader skySh{}, waterSh{};
@@ -142,6 +144,7 @@ void load() {
         }
     tex[RING] = LoadTextureFromImage(ring);
     tex[JET] = loadTex("hud", "jetfire", true), tex[TOON] = loadTex("hud", "toonfire", true), tex[CROSS] = loadTex("hud", "wxp_sprite_006", true);
+    tex[QUESTION] = loadTex("hud", "wxp_sprite_022", true), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", true);  // W4M Particle.WXSprite22/23
     UnloadImage(ring);
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
@@ -191,6 +194,7 @@ void unload() {
     MemFree(skyMat.maps), MemFree(waterMat.maps);
 }
 
+void fireworks(Vector3 centre, float radius, float top) { stageC = centre, stageR = radius, stageTop = top, tickAcc = 0; }
 void clear() { ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), shake = show = 0; }
 
 Color fog() { return fogCol; }
@@ -219,6 +223,37 @@ void burst(Vector3 c, Color glow, unsigned char trailTex, Color trailCol) {
         add({c, Vector3Scale(rndDir(), rnd(6, 10)), 0, rnd(1.2f, 1.75f), 0.5f, 0.2f, 0, 0, 4, 1.2f, trailCol, trailTex, true, 0.18f});
     for (int i = 0; i < 20; i++)  // WXP_StarB_ManyGlows: crackle 0.4 s later, within 5 m
         add({Vector3Add(c, Vector3Scale(rndDir(), rnd(1, 5))), {}, -rnd(0.4f, 0.9f), 0.8f, 1.3f, 0.2f, 0, 0, 0, 0, {glow.r, glow.g, glow.b, 220}, GLOW, true});
+}
+// W4M PARTTWK WXPF_Firework1-5 (m = units / 20). Glows (WXSprite1) additive, stars (WXSprite7) alpha. Trails additive: their
+// Bundl10 shader is alpha but the TrailSprite images have no alpha channel (black ground), so they are drawn as light.
+// Trails fly at (0, 15, 0) +-20 m/s under Mass 4.6 x Acceleration (23 m/s²). Stars and Starburst trails use W4M's alternate
+// curve r(t) = v0 (N - 1/(S t + 1/N)), approximated by drag with the same final radius and the same half-way time 1 / (S N).
+void firework(Vector3 c, int kind) {
+    auto glow = [&](int n, float size, float rand, float life, float delay, Color col) {
+        for (int i = 0; i < n; i++) { float s = size + rnd(-rand, rand); add({c, {}, -delay, life, s, s, 0, 0, 0, 0, col, GLOW, true}); }
+    };
+    auto whiteout = [&](float delay) { add({c, {}, -delay, 0.08f, 20, 20, 0, 0, 0, 0, {255, 255, 255, 26}, GLOW, true}); };  // 400 units, alpha 0.1
+    auto trails = [&](int n, unsigned char t, float size, float life) {  // WXPF_*Trails*: kTrail ribbons, size +-0.5 units, life +-400 ms
+        for (int i = 0; i < n; i++)
+            add({c, {rnd(-20, 20), 15 + rnd(-20, 20), rnd(-20, 20)}, 0, life + rnd(-0.4f, 0.4f), size + rnd(-0.025f, 0.025f), 0, 0, 0, 23, 0, WHITE, t, true, 0.48f});
+    };
+    auto stars = [&](int n, float radius, float life, float delay, Color col) {  // WXPF_Exploder*: N 6500, S 2e-6
+        for (int i = 0; i < n; i++) add({c, Vector3Scale(rndDir(), radius * 9), -delay, life, 0.15f, 0.15f, 0, 0, 0, 9, col, STAR, false});
+    };
+    auto starTrails = [&](float reach, float life) {  // WXP_StarburstTrailsA/B: 16, per-axis velocity, N 5000, S 3e-6, white
+        for (int i = 0; i < 16; i++)
+            add({c, Vector3Scale({rnd(-reach, reach), rnd(-reach, reach), rnd(-reach, reach)}, 15), 0, life + rnd(-0.4f, 0.4f), 0.05f, 0, 0, 0, 0, 15, WHITE, TRAIL_B, true, 0.48f});
+    };
+    const Color FW_CYAN = {77, 255, 255, 255}, FW_ORANGE = {255, 128, 0, 255}, FW_GREEN = {0, 255, 64, 255}, STAR_COL = {255, 230, 128, 255};  // stars: white to (1, 0.8, 0)
+    whiteout(0);
+    if (kind == 0) glow(2, 1.5f, 0, 0.8f, 0, FW_CYAN), glow(1, 6, 0, 1.8f, 0.005f, FW_CYAN), starTrails(12.5f, 1.2f), starTrails(17.5f, 1.75f), trails(12, TRAIL_B, 0.1f, 1.6f);
+    else if (kind == 3) glow(2, 1.5f, 0, 0.8f, 0, FW_GREEN), glow(1, 6, 0, 1.8f, 0.005f, FW_GREEN), stars(50, 26, 1.5f, 0, {255, 255, 128, 255});
+    else {
+        glow(2, 1.5f, 0, 0.8f, 0, FW_ORANGE), glow(1, 6, 0, 1.8f, 0.005f, FW_ORANGE);
+        if (kind == 1) trails(24, TRAIL_R, 0.2f, 1.6f), stars(30, 13, 0.8f, 0, STAR_COL);
+        if (kind == 2) stars(30, 13, 0.8f, 0, STAR_COL), stars(50, 19.5f, 1.5f, 0.25f, STAR_COL), glow(2, 10, 2.5f, 1.8f, 0.25f, FW_ORANGE), whiteout(0.25f);
+        if (kind == 4) trails(72, TRAIL_R, 0.1f, 3);
+    }
 }
 }  // namespace
 
@@ -294,7 +329,7 @@ void event(const GameEvent &e, Color dirt) {
         add({e.pos, {}, 0, 0.9f, 1, 5, 0, 0, 0, 0, {255, 255, 255, 170}, RING, false});
         for (int i = 0; i < 8; i++)
             add({e.pos, {rnd(-1, 1), rnd(1, 4), rnd(-1, 1)}, 0, rnd(0.8f, 1.3f), 0.8f, 2.2f, 0, rnd(-1, 1), 2, 1.5f, {235, 245, 255, 170}, PUFF, false});  // spray
-    } else if (e.kind == GameEvent::GameOver) show = 8, nextBurst = 0.3f;  // W4M GameOverLogicEntity: WXPF_Firework1-5
+    } else if (e.kind == GameEvent::GameOver) show = 9;  // W4M GameOverLogicEntity 0x4ff8d0: WXPF_Firework1-5
 }
 
 void trail(const Projectile &s, float dt) {
@@ -327,18 +362,32 @@ void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, b
     add({p, v, 0, life, size0, size1, 0, rnd(-1, 1), fire ? -1.0f : -0.3f, 0.6f, c, (unsigned char)(fire ? FIRE : PUFF), fire});
 }
 
+void dud(Vector3 p) {
+    auto lilac = [](float t) { return ColorLerp({242, 230, 255, 220}, {128, 110, 145, 220}, t); };  // ParticleColor ramps of both emitters
+    for (int i = 0; i < 20; i++) {  // WXP_MineDudPoof: 20 puffs blown out flat (normalised xz velocity), 1.2 +-0.2 s, shrinking
+        float a = rnd(0, 2 * PI), v = rnd(1.5f, 3);
+        add({p, {cosf(a) * v, rnd(0, 0.3f), sinf(a) * v}, 0, rnd(1.0f, 1.4f), 0.6f, 0.05f, 0, rnd(-8, 8), -0.5f, 3, lilac(rnd()), PUFF, false});
+    }
+    for (int i = 0; i < 10; i++)  // WXP_MineDud: one wisp per 100 ms for 1 s, rising, 2 +-0.6 s
+        add({Vector3Add(p, {rnd(-0.08f, 0.08f), rnd(0, 0.1f), rnd(-0.08f, 0.08f)}), {rnd(-0.1f, 0.1f), rnd(0.8f, 1.2f), rnd(-0.1f, 0.1f)}, -0.1f * i, rnd(1.4f, 2.6f), 0.5f, 0.2f, 0,
+             rnd(-4, 4), -0.1f, 0.5f, lilac(rnd(0, 0.6f)), PUFF, false});
+}
+
+void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble) {
+    if ((int)ps.size() < MAX) ps.push_back({p, v, 0, life, size0, size1, 0, 0, grav, 0, c, (unsigned char)(bubble ? BUBBLE : QUESTION), false});
+}
+
 void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet) {
     add({Vector3Add(p, Vector3Scale(rndDir(), size0 * 0.25f)), Vector3Add(v, Vector3Scale(rndDir(), 0.5f)), 0, life, size0, size1, 0, rnd(-2, 2), 0, 2, jet ? Color{255, 200, 140, 255} : Color{255, 110, 30, 255}, (unsigned char)(jet ? JET : TOON), true});
 }
 
 void update(float dt) {
     shake *= expf(-dt * 6);
-    if (show > 0 && (nextBurst -= dt) <= 0) {
-        static const Color COLS[] = {{77, 255, 255, 255}, {255, 128, 0, 255}, {0, 255, 64, 255}, {255, 220, 80, 255}};
-        Color c = COLS[(int)rnd(0, 3.99f)];
-        burst(Vector3Add(camAt, {rnd(-10, 10), rnd(5, 10), rnd(-10, 10)}), c, TRAIL_W, c);
-        nextBurst = rnd(0.4f, 0.9f);
-    }
+    // W4M 0x4ffa56, per 20 ms tick after the 4 s wait: at most one per 100 ms, chance 1/40, WXPF_Firework<1 + rand % 5>,
+    // at Land.Center +- Radius / 2 in x and z, Land.MaxHeight + rand x 30 units
+    for (tickAcc += show > 0 && show < 5 ? dt : 0, sinceLast += dt; tickAcc >= 0.02f; tickAcc -= 0.02f)
+        if (sinceLast >= 0.1f && rnd() * 40 < 1)
+            sinceLast = 0, firework({stageC.x + (rnd() - 0.5f) * stageR, stageTop + rnd() * 1.5f, stageC.z + (rnd() - 0.5f) * stageR}, (int)rnd(0, 4.99f));
     show -= dt;
     for (size_t i = 0; i < ps.size();) {
         Particle &p = ps[i];

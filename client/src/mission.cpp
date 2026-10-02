@@ -51,7 +51,7 @@ bool loadMission(const std::string &path, MissionSpec &m) {
     m.sequence = j["sequence"].is(), m.placeObjects = j["place_objects"].is();
     for (const Json &t : j["teams"].arr) {
         MissionSpec::TeamSpec ts;
-        ts.name = t["name"].s(), ts.cpu = (uint8_t)Clamp(t["cpu"].f(0), 0, 3), ts.idle = t["idle"].is();
+        ts.name = t["name"].s(), ts.cpu = (uint8_t)Clamp(t["cpu"].f(0), 0, 5), ts.idle = t["idle"].is();
         ts.weaponsSet = t["weapons"].type == Json::Obj;
         for (auto &kv : t["weapons"].obj) ts.weapons.push_back({kv.first, (int)kv.second.f(0)});
         for (const Json &w : t["worms"].arr) ts.worms.push_back({w["name"].s(), (int)Clamp(w["hp"].f(s.health), 1, 999), place(w["pos"])});

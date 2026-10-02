@@ -1,4 +1,5 @@
 #pragma once
+#include "raylib.h"
 
 // Sound effects and voice lines. Missing asset files are silently skipped, never fatal.
 // Each sound may have variants (name.ogg, name_2.ogg, ...); one is picked at random per play.
@@ -17,18 +18,25 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  FeBounce, FeSlide, FeNet, FeCustom, FeSoundVid, FeController, FeFactory, FeBookIn, FeBookOut, FeGrenade, FeWormpot,
                  WormpotSpin, WormpotStop,
                  HolyBoom, HolyHeld,  // W4M HolyGrenadeEx / HolyGrenadeHeld
+                 BombWhistle, CowFall,  // W4M LaunchSfx of the air strike bombs and the Bovine Blitz cows
+                 LockOn,  // W4M weapons/LockOn: the homing target is taken (0x560420)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
                    Startled, Grenade, Shriek, Gasp, ShakeFist, Titter, Disbelief, Incoming, Missed, Mistake, Traitor, Damage,
                    FirstBlood, EnemyDeath, SadSigh, Yawn, Sneeze, ClutchChest, Nooo, Bounce, Taunt, Waiting, ShortOnTime, SkipGo,
-                   Collect, CrateDrop, Drown, Count };
+                   Collect, CrateDrop, Drown, Revenge, Punch, DamageB, NoDamageA, NoDamageB, MaxDamage, PointAndLaugh, Count };
 
 void init();
 void shutdown();
 void update();  // call once per frame: streams music
+void listen(const Camera3D &cam);  // 3D events fade with the distance to it (W4M FEV min/max) and pan
+// Gain, 3D range and max playbacks come from the W4M event table in audio.cpp; volume scales it.
 void play(Sfx id, float volume = 1.0f);
+void play(Sfx id, Vector3 at);  // 3D events attenuated at `at`, 2D ones as play(id)
+void loop(Sfx id, bool on, const Vector3 *at = nullptr);  // call every frame: keeps one variant replaying while on
 void voice(int team, Voice id);  // team i speaks with its bank (setTeamVoice), default i % bank count (banks = dirs under voices/)
+void voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
 int voiceBanks();
 const char *voiceBankName(int bank);  // folder name, "" if out of range
 void setTeamVoice(int team, int bank);

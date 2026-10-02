@@ -3,7 +3,7 @@
 
 usage: disasm.py VA [--before N] [--after N]
   default: the whole function containing VA; --before/--after: N instructions around VA instead.
-Annotates strings, .rdata f32/f64 constants, call targets (<fn 0x...> + assert .cpp name). '>' marks VA.
+Annotates message handles (msg Name), XOM class descriptors (class Name), strings, .rdata f32/f64 constants, call targets (<fn 0x...> + assert .cpp name). '>' marks VA.
 """
 import argparse, bisect, re
 from capstone import Cs, CS_ARCH_X86, CS_MODE_32
@@ -33,8 +33,12 @@ def note(p, i, cpp):
             if i.mnemonic == 'call': out.append('<fn 0x%x>%s' % (v, ' ' + cpp[v] if v in cpp else ''))
         elif m.group(1) and p.section_of(v) == '.rdata':
             out.append('%g' % (p.f32(v) if m.group(1) == 'dword' else p.f64(v)))
+        elif v in p.msgnames():
+            out.append('msg ' + p.msgnames()[v])
         elif (s := p.cstr(v)) is not None:
             out.append(repr(s))
+        elif p.section_of(v) == '.rdata' and p.v2f(v + 0x14) and (s := p.cstr(p.u32(v + 0x10))) and re.fullmatch(r'\w+', s):
+            out.append('class ' + s)  # XOM class descriptor: 16-byte GUID, then name pointer
     return '  ; ' + ' '.join(out) if out else ''
 
 
@@ -57,7 +61,7 @@ def main():
         ins.append(i)
         if window:
             if after is None and i.address + i.size > a.va: after = len(ins) - 1
-            if after is not None and len(ins) > after + (a.after or 0): break
+            if after is not None and len(ins) > after + (a.after or 0) or i.address + i.size >= end: break
         elif i.address + i.size >= end or i.mnemonic == 'ret' and p.b[p.v2f(i.address + i.size)] == 0xcc and i.address >= a.va:
             break
     if window: ins = ins[max(0, (after or 0) - (a.before or 0)):]

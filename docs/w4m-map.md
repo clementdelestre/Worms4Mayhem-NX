@@ -26,6 +26,9 @@ Attributing a function to a class is reliable when the function comes from a vta
 | serialised fields of a class | `pe.py schema CLASS_RE` |
 | annotated dwords (tables, records) | `pe.py words VA N` |
 | who references a string / VA | `xref.py [--callers] 'Land.Center'` or `xref.py 0x5aa7f0` |
+| who uses struct field +OFF | `xref.py --field 0x210 [--in FUNC_VA...]` |
+| message handle <-> name | `pe.py msg 0x97a7c0`, `pe.py msg '^FE\.ChangeMenu$'` (one handle per source unit) |
+| FMOD event parameters (loop, volume, 3D) | `fev.py -g '^weapons/Fuse'`, `fev.py --json` |
 | disassemble a function | `disasm.py VA` (`--before N --after N` for a window) |
 | XOM containers | `xom.py list FILE [TYPE_RE]`, `xom.py dump FILE NAME\|#IDX` |
 | all tweaks as JSON | `tweak.py` (to `~/.cache/w4m-re/tweaks/`), `tweak.py -g REGEX` |
@@ -79,7 +82,7 @@ Python access: `import scan; d = scan.index()` gives `d['calls'][target]`, `d['r
 | 0x970b94 | Container (varint ref) |
 | 0x96e9xx / 0x96ebxx | vec2/vec3/vec4, colours (RGB8 0x96e970, RGBA8 0x96e988, float RGB/RGBA 0x96e910/0x96e928), matrices 0x96ecb8 (4x3) / 0x96ecd0 (4x4) |
 
-**Coverage.** `xom.py check` decodes every container to its exact end in all 38 `Tweak/*.XOM`, the level databanks and the language files. The only exception is one `WXFE_SoftwareKeyBoardData` in `PERSIST.XOM`. Bundles still need `tools/w4m-models`, because splitting them on `CTNR` is wrong.
+**Coverage.** `xom.py check` decodes every container to its exact end in all 38 `Tweak/*.XOM` (`PERSIST.XOM` included), the level databanks, the language files and all 475 `Bundl*.xom`. Bundles contain untagged containers and optional fields, which `xom.py` handles by walking containers in type order (§15); their geometry and animations are still extracted by `tools/w4m-models`.
 
 ## 2. Services, logic entities and messages
 Source: `WormsMayhem.exe` (PE32, base 0x400000), RTTI + objdump. Confidence: data / disasm / assumed.
@@ -408,7 +411,7 @@ BaseWeaponLogicEntity: slot 11 EndFireWeapon 0x54a0e0, slot 12 BeginFireWeapon 0
 Entity constructors (vtable writers): Payload 0x57e660, Parabolic 0x5754d0, Jumping 0x5644e0, Walking 0x591e30, Homing 0x560820, Flying 0x557060, Starburst 0x588a20, Donkey 0x553000, Fatkins 0x554a80, Parachute 0x57a3d0, PayloadWeapon 0x582bb0, GunWeapon 0x55c960, MeleeWeapon 0x567490, BaseWeapon 0x549cf0. Creators registered by static init (refs in 0x7e5xxx-0x7eaxxx), i.e. instantiated by class name through a task/class factory.
 
 ### 4. Per-weapon table
-Container class/camera/damage: data. Payload logic class: **assumed** from container class + naming (Payload->Parabolic; Jumping->JumpingPayload; Homing->HomingPayload; Flying->Flying, Starburst->StarburstLogicEntity; Donkey->DonkeyLogicEntity; Fatkins->FatkinsStrikePayload; OldWoman/Scouser->WalkingPayload (StealInventory = Scouser); Airstrike/SuperAirstrike via Bomber/SuperBomberLogicEntity; Gun->GunWeaponLogicEntity; Melee->MeleeWeaponLogicEntity; SentryGun->NewSentryGun*).
+Container class/camera/damage: data. Payload logic class: **traced**, chosen by weapon id then by container *name*, not by container class (see §13). Corrections to the earlier assumption: SuperSheep launches as a Jumping payload and becomes Flying on fire-press; StealInventory (value 1) is OldWoman, FloatAway (2) is Scouser; AdjustableBounceWeaponLogicEntity is never created.
 WeaponType enum values seen: 0 sentry payload, 1 utility, 2 aimed launcher/gun, 3 homing, 4 thrown, 5 placed/melee, 6 placed (landmine/flood/sentry), 8 animal, 9 walker, 10 strike. Meaning of values: assumed.
 Units: damage = HP; radii = world units; LifeTime ms (-1 = none, 0 = n/a); Impulse unitless.
 
@@ -502,7 +505,7 @@ ChangeState = 0x5aa7f0(pData, newState). 7/8 are sticky (walking never overrides
 0x4adda0(normal, mat) = normal.y >= cos(SlideAngle[mat]) ("WormShouldNotSlipOnLand").
 
 ### UpdateWalking 0x5b0da0 algorithm (disasm; constants data)
-1. If pData+0x54==0 (no physics owner?) -> Passive(6). If 0x5ac390 -> UpdatePassive. If no move input (0x5ab3d0 false) -> idle branch: if standing surface id (ent+0xE8, 0xFFFF=none) no longer valid -> Ballistic(2); else zero vel, facing/anim upkeep.
+1. If entity+0x54==0 (not pData+0x54, see §11) -> Passive(6). If 0x5ac390 -> UpdatePassive. If no move input (0x5ab3d0 false) -> idle branch: if standing surface id (ent+0xE8, 0xFFFF=none) no longer valid -> Ballistic(2); else zero vel, facing/anim upkeep.
 2. disp = vel(pData+0x68)*20*k (k from 0x69db80, /0.004); cand = pos(pData+0x38)+disp.
 3. Ground probe: CastRays(cand + (0,20,0), down, len 200, mask 0xF = 4 foot points). d = 20 - nearestDist = height of HIGHEST of the 4 hits relative to foot. Miss -> d about -181.
 4. d > 20: blocked, no move (return).
@@ -576,14 +579,14 @@ Commentary (lib_Comment, lib_Display{Failure,Success,SuddenDeath}Comment: Commen
   - 0x9213fc: GameLogic.Timer0..9 (script timers).
   - 0x921428: GameLogic.PauseGame, "Camera.Disable,Track". 0x921434: GameLogic.ArtilleryMode, TeamCount.
   - 0x921440: Lua function names known to engine: TurnStarted, TurnEnded, SetWind, DoOncePerTurnFunctions, SetWormpotModes, lib_QuickSetupMultiplayerWormsAndTeams, Worm_Damaged_Current (role assumed: hooks engine may call / network-filtered).
-- Message IDs: per-TU static objects, init funcs 0x7dxxxx-0x7fxxxx = `push "Name"; mov ecx,G; call 0x68bb9f` (register). Dispatcher compares msg against G via 0x68bcce. Rebuild the name -> handle -> users table with `xref.py` (section 10).
+- Message IDs: per-TU static objects, init funcs 0x7dxxxx-0x7fxxxx = `push "Name"; mov ecx,G; call 0x68bb9f` (register). Dispatcher compares msg against G via 0x68bcce. Name of a handle: `pe.py msg 0xVA`; all handles of a name: `pe.py msg '^Name$'` (section 20).
 
 ### 6. Exe: who handles what [disasm, class names from assert strings]
 - TimerLogicEntity (.\TimerLogicEntity.cpp): 0x50f980 HandleMessage (Timer.StartGame/StartTurn/EndTurn/StartHotSeatTimer/StartPostActivity/StartRetreatTimer/EndRetreatTimer; asserts iRoundTime in {0,-1}..10000?, iTurnTime<=10000 -> times in game units checked vs. ms/??; strings "TimerLogicEntity MsgStartTurn", "hot seat canceled", Turn.Boring, Turn.PayloadFired). 0x50f100 tick: posts Timer.HotSeatTimedOut ("hot seat timed out"), Timer.TurnTimedOut, Timer.PostActivityTimedOut, Timer.RetreatTimedOut. 0x50f4e0 binds data keys to members: RoundTime, TurnTime, HotSeatTime(+0x7c), PostActivityTime(+0x80), RetreatTime(+0x84), RoundTimeRemaining, TurnTimeRemaining, HotSeatTimeRemaining, PostActivityTimeRemaining, RetreatTimeRemaining, ClockDisplayMode, ElapsedRoundTime.
 - Defaults (Data/Tweak/LOCAL.XOM, XIntResourceDetails, ms) [data]: TurnTime 45000, RoundTime 1800000, HotSeatTime 10000, PostActivityTime 2400, DefaultRetreatTime 3000, RetreatTime 0. stdvs overrides from scheme (DefaultRetreatTime<-LandTime, HotSeatTime<-HotSeat, TurnTime, RoundTime). Challenges set RetreatTime/DefaultRetreatTime/PostActivityTime 0; Wormpot NoRetreatTime -> DefaultRetreatTime=RetreatTime=0.
 - Retreat time per weapon [disasm]: on fire, weapon logic entities do r=GetData("DefaultRetreatTime"); if props.RetreatTimeOverride (i32 @+0x50 in weapon properties, schema field #0x10) >= 0 then r=override; SetData("RetreatTime", r). Seen in GunWeaponLogicEntity 0x55cff0, MeleeWeaponLogicEntity 0x568860, NewSentrygunWeaponLogicEntity 0x56e6d0, PayloadWeaponLogicEntity 0x582d70; AI planner 0x4a1cf0 reads DefaultRetreatTime. FloodLogicEntity 0x555580 / FloodWeaponLogicEntity 0x555d30 and 0x588160/0x58ba00 write RetreatTime directly. Timer.StartRetreatTimer senders: TUs at 0x5210b0, 0x549bb0 + several weapon TUs (msgobjs 0x95c6ac,0x95d04c,0x95d964,0x95e094,0x95ea20). Front-end option "NoRetreatTime" (FE.WP.NoRetreatTime, 0x5d5830).
 - GameLogicService (.\GameLogicService.cpp): 0x4fdc90 HandleMessage (WormSelect.WeaponSelected/OptionSelected, GameLogic.AddMeToDeathQueue, Worm.Died, GameLogic.GunWaiting, Turn.Started/Ended, MsgActivateSuddenDeath, MsgTurnEnded, inventory, telepads, briefing box); 0x4f7d80 = subscribe/init (wind, mines, SuddenDamageMode, WormPot, GoodShotDamageThreshold, MaxRandomCrates). 0x4fb880 HandleEndOfGame (Win/Draw -> GameOver menus, rounds, stockpile, mission/challenge records).
-- Death queue [disasm]: AddMeToDeathQueue handler 0x4fac70 pushes worm id onto vector at GameLogicService+0x1fc. Tick 0x4fa2c0 calls 0x4f9b30 every frame: if queue non-empty and (ActiveObjectRegistrationService count (0x4d3960) == queue size, OR timer @+0x210 expired, OR flag+0x1b1 set and count <= size+2): clear flag, pop FRONT id, post Worm.TimeToDie to that entity. One worm per pass -> deaths are sequential (each dying worm is an active object until done). Flag +0x1b1 set by message GameLogic.GunWaiting (gun weapons waiting for input tolerate 2 extra active objects) [assumed meaning].
+- Death queue [disasm]: AddMeToDeathQueue handler 0x4fac70 pushes worm id onto vector at GameLogicService+0x1fc. Tick 0x4fa2c0 calls 0x4f9b30 every frame: if queue non-empty and (ActiveObjectRegistrationService count (0x4d3960) == queue size, OR `GameLogic.SuddenDamageMode` (+0x210 is that key's handle, default 0, never written: there is no timeout, see §14), OR flag+0x1b1 set and count <= size+2): clear flag, pop FRONT id, post Worm.TimeToDie to that entity. One worm per pass -> deaths are sequential (each dying worm is an active object until done). Flag +0x1b1 set by message GameLogic.GunWaiting (gun weapons waiting for input tolerate 2 extra active objects) [assumed meaning].
 - Senders: WXWormLogicEntity 0x5abc50 (damage-display routine "Worm Displaying Damage Taken", DamageGraphic.Offset) posts AddMeToDeathQueue(worm id) [assumed: when energy <=0 after damage shown]. 0x5ab7e0 (take damage) posts Worm.Damaged / Worm.Damaged.Current, sets Turn.Boring/Mistake/FriendlyDamage/EnemyDamage, DamagedWorm.Id, DamageTypeTaken, uses DoubleDamage, MostRecentlyActiveWorm. 0x5b07c0 worm HandleMessage: Worm.TimeToDie (death sequence, see docs/death-sequence.md), GameLogic.ApplyDamage, Worm.ApplyPoison, Land.NewShape. 0x5a6970 Cleanup: DeadWorm.Id, posts Worm.Died. Net.Client.TimeToDie: 0x5f5220 (net replication).
 - WXWormManagerService (.\WXWormManagerService.cpp): 0x5b5e70 HandleMessage: SpawnWorm, RespawnWorm, ActivateNextWorm (worm selection), ReinitialiseWorms, EndTurn, SelectNextWorm, UnspawnWorm, ApplyDamage; 0x5b37c0 subscribe (Water.Level).
 - ActiveObjectRegistrationService 0x4d37a0 (Unregister): posts GameLogic.NoActivity when count hits 0; "ObjectCount.Active" read by AIService 0x4b3390, 0x4d3cb0 and GunWeaponLogicEntity.
@@ -605,6 +608,7 @@ Commentary (lib_Comment, lib_Display{Failure,Success,SuddenDeath}Comment: Commen
 Parsed with throwaway scripts (not kept); layout below is enough to redo it.
 
 ### WormsX.fev (FEV1, ver 0x00400000, 1.3 MB) [data]
+Superseded by the full layout in §12 (`fev.py`); kept for the bank and group notes.
 - Header: "FEV1", u32 ver, 2 u32 sizes, u32 n=0x21 then n (id,value) memory hint pairs; project name "WormsX".
 - Bank table: u32 count=117; each = u32 loadmode, u32 maxstreams, 8-byte hash, u32 len + name. loadmode 128 (stream?) for ambient, Cheer, frontendmusic, mu*; 256 (decompress-into-memory?) for the rest [data; mode meaning assumed].
 - 11 banks listed but NOT on disk: Outtake* (DestructAndServe, Dialog, DinerMight, GhostHillGraveyard, Introduction, RecordingBooth, ScreenTest, TheLandThatWormsForgot, TinCanWally, JoustAboutIt, MineAllMine) [data].
@@ -705,9 +709,12 @@ Implication (assumed): worms are drawn after land/water/details into OutlinedWor
   |---|---|---|---|
   | EmitterType | ParticleTypeEnum | kNormal 0, kSnow 1, kRain 2, kTrail 3 | 0:838 1:2 2:4 3:30 |
   | ParticleRenderScene | ParticleSceneEnum | kPS_Default 0, kPS_Scene1..5 = 1..5 (-> bins Particle1..5 23-27, assumed; Default bin unknown) | 0:713 1:101 2:14 3:24 4:7 5:15 |
-  | ParticleLandCollideType | LandCollideEnum | kLC_None 0, kLC_Bounce 1, kLC_Expire 2, kLC_StopMoving 3, kLC_StopMovingAndAttach 4 (order assumed) | 0:666 1:202 2:2 3:4 |
+  | ParticleLandCollideType | LandCollideEnum | kLC_None 0, kLC_Bounce 1, kLC_Expire 2, kLC_StopMoving 3, kLC_StopMovingAndAttach 4 (order data: `pe.py schema` enum list) | 0:666 1:202 2:2 3:4 |
   | ParticleCollisionWormType | WormCollideEnum | kWC_Standard, kWC_Expire, kWC_Lightside, kWC_Darkside (+ WormCollideResponseEnum kWC_Default/StealInventory/FloatAway) | 0:794 1:76 2:2 3:2 |
 - Stats: MeshSet non-empty 149; NumColors 0..5; spiral 55; wind 51; underwater 8; attached-to-land 5; attractor never active; chained ParticleFX 98, ExpireFX 11, SoundFX 152. Top sprite sets: none(182), Particle.WXSprite4 (176), WXSprite1 (85), WhitePuff (50), ElectricSpark (37), WXSprite7 (29).
+- **Particle maths** (Particle.cpp, CParticle vtable 0x860734) [disasm]: t = particle age in ms. Setup 0x5b98e0 (r uniform in [0,1)): v0 = (V + (2r−1)·Vrand)·0.01 units/ms (V is per 100 ms; IsNormalised: unit vector × (V.x + Vrand.x)); a = (A + (2r−1)·Arand)·1e-4 units/ms². Position 0x5b7450: p = p0 + v0·t + 0.5·Mass·(a + wind)·t² (Mass scales the acceleration; wind only with IsEffectedByWind). IsAlternateAcceleration: no gravity, p = p0 + v0·(N − 1/(S·t + 1/N)) (N, S = AlternateAccelerationN/S), plus v0.y·t on y. Size 0x5b6f40: fade-in, then S until SizeVelocityDelay, then linear to S·FinalSizeScale, or with FinalSizeScale 0 and SizeVelocity < 0 a linear shrink to 0 at end of life. Alpha 0x5b7660: AlphaVelocity < 0 = linear fade to 0 at end of life (magnitude ignored). Colour 0x5b77c0: NumColors 0 white, 1 Color[0], 2 lerp over life, ≥3 piecewise by ColorBand. Emitter: SpawnFreq = period in ms (0 = one burst), StartDelay ms, pool capped by MaxParticles. kTrail (3) makes one TrailGraphicEntity ribbon per particle (0x5c2580, 24 divisions, "A,B" sprite set = ribbon texture, head sprite [assumed]).
+- **Sprite set blends** (Bundl10: descriptor → XGroup → XShape → shader render states) [data]: WXSprite1 and Whiteout additive (SrcAlpha, One; #1232); WXSprite4/5/7/26/30 and Fade alpha (#1231); TrailSprite_B/R/W alpha (#1230), but those images have no alpha channel (black ground).
+- **Victory fireworks** (GameOverLogicEntity update 0x4ff8d0, every 20 ms) [disasm]: 4000 ms after the end, the orbit camera starts (0x4ff790; Script.NoOrbitCamera skips the fireworks). Then, for 5000 ms (15000 when 0x5a6350), each tick fires with chance 1/40 (one per 800 ms on average) `WXPF_Firework<1 + rand%5>` at x, z = Land.Center ± Land.Radius/2, y = Land.MaxHeight + r·30 units (0x5c1410). Any input ends the show. Compositions (PARTTWK): 1 cyan glows + StarburstTrailsA/B + BlueTrails_2; 2 orange glows + 2×RedTrails_1 + Exploder_1; 3 orange glows + Exploder_1/2 + delayed 10 m glows + delayed whiteout; 4 green glows + ExploderGreen (GreenTrail1 child puffs); 5 orange glows + 4×RedTrailsLong. Each also has WXPF_Whiteout (400×300 units, alpha 0.1, 80 ms). Ours: `client/src/fx.cpp` `firework()`, placed the same way (Land.Radius = half the map width, as the orbit camera).
 - Classes (rtti, td / vtable): ParticleHandlerService td 009202f8 vt 008612dc (Service; functions 005bfde0 [kill-all-emitters msg], 005c0080, 005c02c0, 005c09d0, 005c0d30, 005c0fd0 + more; creation 004eba10 "Create CLSID_ParticleHandlerService"; IsParticleEffectLogical callers 0057fcc0, 005a1fd0; kInvalidEmitterHandle). ParticleEmitterBase vt 00860870; ParticleEmitterEffectEntity vt 00860a6c/00860a84 (fns 005ba740..005bb350); ParticleEmitterGraphicEntity vt 00860db0 (005bd310, 005bd960); ParticleEmitterLogicEntity vt 00860fc4/00860fdc (005be0a0..005beb70); SnowParticleEmitterEntity vt 00820534; CParticle vt 00860734 (Particle.cpp 005b6f00..005b73d0); CParticleLandCollider vt 00861424, CParticleAttachedLandCollider vt 008607bc (005c1d50, 005c1e20, 005c2040); ParticleClass<T> template (ParticleClassInterface vt 00860810); ParticleColliderEmitterContainer vt 00877158; ParticleEmitterContainer vt 0087502c; EffectDetailsContainer vt 008772e4; ParticleMeshNamesContainer vt 00877300; XParticleSet vt 0088f058.
 
 ### 4. Water / sky / shadow / landscape classes (rtti td, vtable; fns = refs to source-file string)
@@ -858,9 +865,1496 @@ Empty (178 B header only): 01, 35, 51-56, 62-67, 158, 167-171, 243, 249-251, 287
 Factory.*/Gloves.*/Glasses/Mustache/Grave(partly): **not imported by any repo tool**.
 
 ### Gaps (not handled anywhere in repo)
-EFMV/*/LIP.txt, Audio/EFMV/*.lsd, FMV/*.wmv, Frontend/Gallery, WormsX.fev (doc only), *.csh, AITWK/HUDTWK/LVLSETUP/DEFSAVE/STATS/WORMATTACHMENTS, EFMV_* containers in level XOMs, Factory/Glasses/Mustache/Gloves bundles.
+EFMV/*/LIP.txt, Audio/EFMV/*.lsd, FMV/*.wmv, Frontend/Gallery, *.csh, HUDTWK/LVLSETUP/DEFSAVE/STATS/WORMATTACHMENTS, EFMV_* containers in level XOMs, Factory/Glasses/Mustache/Gloves bundles. Documented but not imported: WormsX.fev (§12, `fev.py`), AITWK (§18), EFMV/WORMACTING (§19).
 
-## 10. How to search (Comment chercher)
+## 10. Tactical view and targeting cursor (Airstrike, Donkey, Homing...)
+
+Confidence: **data** (tweak/text/strings), **disasm**, **assumed**. VAs in `WormsMayhem.exe`, base 0x400000. Units: W4M world units; logic tick = 20 ms.
+
+### Summary
+
+- There is **no dedicated targeting camera** and **no free 2D cursor in world space**. The targeting view is the ordinary **Blimp camera** (`IsometricCam`, logical view 3). The player enters it with the Blimp key. The cursor is a reticle fixed at the **screen centre**. The player moves the camera, not the cursor (disasm + data).
+- Each frame, the camera manager casts a ray from the camera position through its look-at point, against the land, the water plane and worms. The hit point is the target. This writes `Airstrike.TargetPoint`, `Airstrike.Direction`, `Airstrike.UpVector`, `Airstrike.HasTarget` and `Airstrike.WaterTarget` (disasm).
+- On Fire, the weapon copies `Airstrike.TargetPoint` into `Payload.Target` and broadcasts `HUD.Target.Selected`. The airstrike's direction is the camera's horizontal right vector, so the planes fly across the screen. There is no separate left/right choice (disasm).
+- In-game help text (data, English.xom): "Incoming! Define the path using [Blimp] and launch using [Fire]" (Airstrike / Super Airstrike); "Fat men can fly! Define the path using [Blimp]…" (Fatkins); "Find your target using [Blimp], aim the launcher then [Fire] to power up" (Homing); "Target the area using [Blimp] and call in E.T. with [Fire]" (Alien Abduction). `FETXT.Control.Blimp` = "E" for both keyboard and joypad (LOCAL).
+
+### Weapons that use it (data, WEAPTWK)
+
+| weapon | IsTargeting | IsBomber | IsControlledBomber | IsHoming | other | CameraId | LaunchDelay | cursor |
+|---|---|---|---|---|---|---|---|---|
+| kWeaponAirstrike | 1 | 1 | 0 | 0 | EndTurnImmediate 1 | (none) | 200 | Bomber |
+| kWeaponSuperAirstrike (Cow.Payload, NumStrikeBombs 3) | 1 | 1 | 1 | 0 | EndTurnImmediate 1 | (none) | 200 | Bomber, then SuperBomber |
+| kWeaponFatkins (NumStrikeBombs 1) | 1 | 1 | 0 | 0 | | FatkinsTrackCamera | 200 | Bomber |
+| kWeaponConcreteDonkey | 1 | 0 | 0 | 0 | | DonkeyTrackCamera (not in CAMTWK; code uses `DonkeyCamera`) | 200 | Targeting |
+| kWeaponHomingMissile / kWeaponFactoryHoming | 1 | 0 | 0 | 1 | Aimed + Powered, WXAnimTargetSelected `AimLockHomingMissile` | HomingMissileFlyCamera | 0 | Homing + LockOn |
+| kUtilityTeleport | BaseWeaponContainer, no targeting flags | | | | | | 0 | (dead code, see below) |
+
+The cursor is chosen in `PayloadWeaponLogicEntity` init, 0x582d70 (from 0x583017). If IsTargetingWeapon (+0x1c9): weapon state `this+0x38` = 1 (targeting), then IsHoming (+0x1cd) gives Homing, else IsBomberWeapon (+0x1cb) gives Bomber, else Targeting (disasm).
+
+### Camera: Blimp (IsometricCam, vtable 0x855440, `.\IsometricCam.cpp`)
+
+**Logical view ids (disasm).** They come from the Camera base ctor `0x51b570(name, type)`; the type is stored at camera +0x2c.
+
+| id | camera |
+|---|---|
+| 1 | Head |
+| 2 | Default (DefaultCam) and RayCam |
+| **3** | **Blimp** |
+| 4 | Orbit |
+| 6 | FlyCam |
+| 7 | FallCam |
+| 9 | Jetpack |
+| 0xe | Path, TimedPath |
+| 0x11 | Ninja |
+| 0x13 | Spectator |
+| 0x15 | Simple (0x531c60, used by Donkey) |
+
+`CMS::GetCurrentView 0x51cea0` returns 0x10 while a scene camera is followed, 0x14 while CMS+0x2b4 is set, 0x13 for spectator, else the current camera's +0x2c.
+
+**Entering and leaving (disasm).**
+- Entering: `DefaultCam::PseudoHandleMessage 0x524e00`, on `Input.BlimpViewPressed`, calls `SetCamera("Blimp")` (0x524e82).
+- Leaving: Blimp's own handler 0x529c00 (vtable slot 5), on `Input.BlimpViewPressed` again, calls `SetCamera("Default")` (toggle).
+- The weapon panel (`WXWeaponPanelLogicEntity` 0x602ea0, at 0x6037bb) injects `Input.BlimpViewPressed` when it opens in Blimp view, which leaves Blimp.
+- No code enters Blimp automatically for a human player. The AI calls `SetCamera("Blimp")` itself: 0x4b4c99, 0x4b5b89.
+- Scripts can block Blimp with `Camera.Disable "Blimp"`. WormpotService does so at 0x5d6fea.
+
+**Activate (0x529910).**
+- `Input.EnableGroup` "Fire" and "CameraSelect".
+- `Input.DisableGroup` "WormFirstPersonAiming", "WormAiming", "WormMoving", "WormRoping", "Flying".
+- In view 3, it shows a HUD helper (0x61fe90, vtable slot 6); Deactivate (0x529bd0) hides it. The Blimp help lists come from `WXFE.HelpBlimpPC/Console` (data).
+
+**Entry pose (vtable slot 4, 0x52ad20; disasm).**
+- Reference point: the tracked entity's position (entity +0x38..0x40), or the previous camera position. Yaw comes from entity +0x90 or from the previous view direction (acos, mirrored to pi minus the angle when z < 0).
+- pitch = `Camera.Blimp.DefaultPitch` (1.0 rad).
+- focus.y = max(ref.y, `Land.MaxHeight`) + `HeightAboveLand` (6).
+- The focus is moved back horizontally by d = (focus.y - ref.y) / tan(pitch): focus.x = ref.x - sin(yaw)·d, focus.z = ref.z - cos(yaw)·d. The ray through the focus therefore hits the reference point at screen centre.
+- zoom = 1.
+
+**Camera position (0x52a0a0).** position = focus + R(pitch, yaw, 0)·(0, 0, -`StickLength` 500). The look-at is the focus point. The up vector is R·(global up at 0x91ea50). The assert `m_TargetLookAt != m_TargetPosition` (disasm).
+
+**Per-tick update (0x52af40, then 0x52a5e0; dt = 0.02 s constant at 0x854604, passed by CMS 0x51da9a; disasm).** Input is the CMS struct at +0x210:
+
+| bit / field | from message |
+|---|---|
+| byte 0: 0x01 | Left |
+| byte 0: 0x02 | Right |
+| byte 0: 0x04 | Forward |
+| byte 0: 0x08 | Back |
+| byte 0: 0x10 | RotateLeft |
+| byte 0: 0x20 | RotateRight |
+| byte 0: 0x40 | RotateUp |
+| byte 0: 0x80 | RotateDown |
+| byte 1: 0x02 | MouseMiddle held |
+| +0x08 / +0x0c | mouse dx / dy accumulators |
+| +0x10 | wheel |
+| +0x19 | ZoomIn held |
+| +0x1a | ZoomOut held |
+
+These are set by CMS HandleMessage 0x522710, from `Camera.*Pressed/Released`, `Camera.MouseMoved`, `Camera.MouseZoom`, `Camera.MouseMiddle*` and `Camera.ZoomIn/Out*` (0x522e77..0x523381).
+
+| quantity | rule | tweak (CAMTWK, data) |
+|---|---|---|
+| zoom (camera +0x5c) | ZoomIn: z *= ZoomSpeed; ZoomOut: z /= ZoomSpeed; z -= MouseZoomSpeed·wheel; clamp [MinZoom, MaxZoom] | ZoomSpeed 0.99, MouseZoomSpeed 0.08, MinZoom 0.15, MaxZoom 2.0 |
+| s (rotation speed scale) | 0.9 + 0.1·zoom | |
+| yaw (+0x68) | RotateLeft -= RotateSpeed·dt·s, RotateRight +=; with middle mouse: yaw -= MouseYawSpeed·dx | RotateSpeed 0.55 rad/s, MouseYawSpeed 0.001 |
+| pitch (+0x64) | RotateDown += PitchSpeed·dt·s, RotateUp -=; with middle mouse: pitch -= MousePitchSpeed·dy; **clamp [0, pi/2]** | PitchSpeed 0.45, MousePitchSpeed 0.001 |
+| focus (+0x78), forward/back | ± f·MoveSpeed·dt·zoom, f = (sin yaw, 0, cos yaw) (Back adds, Forward subtracts) | MoveSpeed 250 u/s |
+| focus, strafe | ± right·MoveSpeed·dt·zoom, right ⟂ f in the horizontal plane | |
+| focus, mouse pan (middle mouse not held) | focus -= f·MouseYSpeed·dy; focus += right·MouseXSpeed·dx; no dt, no zoom factor | MouseXSpeed 1.5, MouseYSpeed 1.5 |
+| bounds | if \|focus - Land.Center\| > 4500, focus = Land.Center + normalize(focus - Land.Center)·4500 (3D sphere; constant 4500 at 0x8556a0) | |
+| focus.y | not changed by movement: it keeps the entry height (disasm: f.y is an explicit 0·k; right = f × global up at 0x91ea50, horizontal if that up is (0,1,0), assumed) | |
+
+- Zoom does not change StickLength. The camera's +0x5c factor is applied to the graphical projection in CMS 0x51da00 (0x51e071; FOV scale, assumed).
+- Unused or unclear: `Camera.Blimp.UpdateSpeed` 0.05 (asserted 0 < x <= 1, not used in this update), `MouseWheelSpeed` 0.1 (+0xac, not used here).
+- `Camera.Manual.*` (FastScale/Move/Rotate/Time.Speed = 100) belong to the debug ManualCam, not to targeting (assumed).
+- `Airstrike.MaxDistance` 1500 (WEAPTWK) is bound to CMS+0x22c but only released, never read (0x520409): unused (disasm).
+
+### Target computation: `CMS::UpdateTargetInfo 0x51c910(bool ninja, bool teleport)` (disasm)
+
+**Triggers.**
+- `Airstrike.UpdateInfo` calls it with (0,0) at 0x522990.
+- `NinjaRope.UpdateTargettingInfo` calls it with (1,0) at 0x5229c9.
+- `Teleport.UpdateTargettingInfo` calls it with (0,1) at 0x522a02.
+- Each cursor sends one of these every frame through `0x5523c0`. `PayloadWeaponLogicEntity` sends one again on Fire (0x583a4a).
+
+**Steps.**
+1. Take the current logical camera (`CMS+0x2a0[CMS+0x28c]`): position at +0x04, look-at at +0x10, up at +0x1c. dir = normalize(lookAt - position), i.e. through the screen centre.
+2. Ray length: ninja = `Ninja.MaxLength` - 10; otherwise `Land.Radius + max(Land.Radius, |pos - Land.Center|)`.
+3. `Camera::RayTarget 0x51b150`: a 1000-step sweep against the land (0x466ae0, step = ray·0.001), giving the hit point and normal. If not ninja, it also intersects the plane y = `Water.Level`. If that crossing comes earlier (step index in (0, 1000] and before the land hit), the hit is the water point, normal = (0,1,0) and `Airstrike.WaterTarget` = 1; otherwise WaterTarget = 0.
+4. Teleport only: rejected when hit normal.y < 0 (0x51cb0e).
+5. Not ninja: a ray against worms (0x519dd0 on the collider at CMS+0x284, 1000 steps). If it hits a worm closer than the land, or the land was missed, and `Airstrike.IsWormValidTarget` != 0 (LOCAL default 0), the target is the worm hit point with normal (0,1,0) (0x51cc55).
+6. Rejected when the horizontal (xz) distance camera → target exceeds 8 · `Land.Radius` (8.0 at 0x8544a0).
+7. Writes `Airstrike.Direction` = dir (the camera view direction), `Airstrike.TargetPoint` = hit, `Airstrike.UpVector` = camera up, `Airstrike.HasTarget` = valid. HasTarget is forced to 1 on AI turns (`[0x959abc]` 0x4b3340).
+
+The target's y is therefore the land, water or worm ray hit under the screen centre.
+
+**CMS members**, data resources bound in the CMS ctor 0x51f740 (the `lea` comes before each name):
+
+| offset | resource |
+|---|---|
+| +0x22c | Airstrike.MaxDistance |
+| +0x230 | Camera.Shake.Magnitude |
+| +0x234 | Land.Radius |
+| +0x238 | Land.Center |
+| +0x23c | Airstrike.HasTarget |
+| +0x240 | Airstrike.Direction |
+| +0x244 | Airstrike.TargetPoint |
+| +0x248 | Airstrike.IsWormValidTarget |
+| +0x24c | Ninja.MaxLength |
+| +0x250 | Water.Level |
+| +0x254 | Camera.LastTrackCam |
+| +0x258 | RetreatTimeRemaining |
+
+The Camera base ctor 0x51b570 binds `Airstrike.WaterTarget` (+0x48) and `Water.Level` (+0x44).
+
+### Cursor (disasm; resource names are data strings)
+
+`Weapon.Create*Cursor` messages are handled by GraphicalSpawningService 0x5009d0. Each class is created from a GUID record whose name sits at +0x10.
+
+| message | class (vtable) | init | mesh / bitmap (file) | anim nodes |
+|---|---|---|---|---|
+| Weapon.CreateTargetingCursor (Donkey) | TargetingCursorGraphicEntity (0x8675cc) | 0x5f9a60 | `Targeting.Cursor.Mesh` (Target.xom), `Targeting.Cursor.Bitmap` (Target.tga), shadow mesh `Targeting.Cursor.Shadow` attached at node `Target_Shadow`, tint 0x645e2b02 | root `Target`; `Target_Intro`, `Target_Loop`, `Target_Error` |
+| Weapon.CreateNinjaCursor | same class, +0x78 = 1 (0x500bb8) | | | |
+| Weapon.CreateTeleportCursor | same class, +0x79 = 1 (0x500c04) | | | |
+| Weapon.CreateBomberCursor (Airstrike, Super Airstrike, Fatkins) | BomberCursorGraphicEntity (0x857f0c) | 0x54c1f0 | `Airstrike.Cursor.Mesh` (AirstrikeCursor.xom), `Airstrike.Cursor.Bitmap` (Airstrike_Outer.tga), 5 × `Airstrike.Cursor.Dot` at `Dot_Null_01..05` (table 0x91f34c) | root `Aimer_Null`; `Airstrike_Intro`, `Cursor_Loop`, `Cursor_Error`; `Dots_Loop` starts at the end of the intro (0x54c380) |
+| Weapon.CreateHomingCursor | HomingCursorGraphicEntity (0x859c84) + HomingLockOnGraphicEntity (0x859d3c) | | `Homing.Cursor.Mesh` (HomingAimerAim.xom), `Homing.Cursor.SquareMesh` (HomingAimerLock.xom); HUD corners `HUD.Homing.Cursor.TL/TR/BL/BR` (Homing TL/TR/BL/BR.tga) | on select: `Lock_Outer` + sound `weapons/LockOn` (0x560420) |
+| Weapon.CreateSuperBomberCursor (from SuperBomberLogicEntity 0x58b4e0, during the flight) | SuperBomberCursorGraphicEntity (0x8674f4) | | `SuperBomber.Cursor.Mesh` (SASCursor.xom), `SuperBomber.Cursor.Bitmap`, `SuperBomber.Cursor.Shadow` | |
+
+**Teleport.** `Weapon.CreateTeleportCursor` (handle 0x95e160, declared in the NinjaRope unit) has no sender anywhere in the exe, and Teleport is missing from the weapon enum at 0x90c920. Teleport targeting is therefore dead code in W4M PC (disasm).
+
+**Base `CursorGraphicEntity` (vtable 0x858aac) members:**
+
+| offset | meaning |
+|---|---|
+| +0x20 | mesh node, placed at the origin (0x96e878) at init |
+| +0x24 | bitmap node, attached under the mesh at the anim-root node |
+| +0x48 | Airstrike.HasTarget |
+| +0x54 / +0x58 / +0x5c / +0x60 | anim names: root, intro, loop, error |
+| +0x64 | intro length (0x5525c0) |
+| +0x68 | visible |
+| +0x70 | Airstrike.WaterTarget |
+
+It subscribes to `Weapon.NotClearToFire`, `Camera.LogicalModeChanged`, `Weapon.DeleteCursor`, `HUD.Target.Selected` and `Binocular.*` (0x551e20).
+
+**Per frame (Targeting cursor slot 6 0x5f9c90, Bomber 0x54c4a0, LockOn 0x560590):**
+1. hasTarget = `0x5523c0(ninja, teleport)`.
+2. Tint from 0x552340:
+
+   | state | value | RGB |
+   |---|---|---|
+   | no target | 0xff0020d7 | (215,32,0) red |
+   | water target | 0xffffa862 | (98,168,255) light blue |
+   | valid | 0xffffffff | white |
+
+   The RGB triples assume memory bytes R,G,B,A; the alpha byte at +3 is confirmed by 0x69f660. The Bomber cursor tints its 5 dots the same way.
+3. Visible only when the view is 1 (Head) or 3 (Blimp) (slot 13 0x551fa0 / slot 14 0x552da0), and when the HUD flag `[0x96d030]+0x3c` / 0x7063f5 does not hide it.
+
+**Other slots.**
+- Show (slot 11, 0x5524a0): plays the intro from t=0, then queues the loop at the intro length. Hide: slot 12, 0x5525a0.
+- `Camera.LogicalModeChanged` with param 1 in a cursor view re-runs Hide + Show (0x552a0e). The Targeting override 0x5f9d10 does this only for the ninja variant.
+- `Weapon.NotClearToFire` (slot 20, 0x552630): plays sound `weapons/Gong`, then the error anim, then the loop again.
+
+**Cursor position.** The cursor code never moves the mesh after init. The reticle is therefore screen-centre, drawn in a camera-attached or HUD layer (assumed; the render layer was not traced). Not the same thing: `HUD.TargetingCursor` + `TargetingCursor.Scale` 16 (LOCAL) belong to WeaponCursorGraphicEntity 0x5fb9c0, the aiming reticle (not checked).
+
+### Confirm and hand-off (disasm)
+
+**`PayloadWeaponLogicEntity::HandleMessage 0x586040`, on `Input.FirePressed`, in state 1:**
+1. `0x583a10`: sends `Airstrike.UpdateInfo` and reads `Airstrike.HasTarget`. It fails if there is no target, **or if the current view is 2 (Default)**: the player must be in Blimp (or Head).
+2. On success: `Payload.Target` := `Airstrike.TargetPoint`, then broadcast `HUD.Target.Selected`. HUD.Target.Selected has 12 handle copies; cursors, worm and HUD listen to it.
+3. On failure: `Weapon.NotClearToFire`.
+4. After success, state = 0.
+   - Not homing: `Weapon.DeleteCursor`.
+   - Aimed (homing): `Weapon.CreateAimingCursor`, then normal aiming and powering.
+   - Not aimed: state = 2, then launch via 0x583160.
+   - Powered: creates the class at 0x85c9e8 and sets state 2.
+
+**Data keys consumed later:**
+- `BomberLogicEntity` init 0x54d720 reads `Airstrike.Direction`, `Airstrike.TargetPoint`, `Airstrike.UpVector`, `Bomber.GroundSpeed` 0.15, `Bomber.BlitzDuration` 2000, `Bomber.NumBombs` 6, and writes `Bomber.Direction`.
+- `DonkeyLogicEntity` init 0x553700 reads `Airstrike.TargetPoint`, `Donkey.ExtraHeight` 500, `Donkey.MinHeight` 1500, `Land.MaxHeight`.
+- `SuperBomberLogicEntity` 0x58a7f0 reads `Airstrike.Direction`, `TargetPoint`, `UpVector`.
+- `HomingPayloadLogicEntity::Initialize` 0x560bf0 reads `Payload.Target`.
+
+**Airstrike direction.**
+- dir = cross(`Airstrike.Direction`, `Airstrike.UpVector`) with y forced to 0, then normalised (0x54d931..0x54d97f). This is the camera's horizontal right vector: the bombers cross the screen from one side to the other. The operand order, and so the left-to-right sense, is assumed.
+- There is no left/right key. The player picks the direction by yawing the Blimp camera.
+- Start = target - dir · (GroundSpeed · BlitzDuration · 0.5) = 150 units before the target (0x54d9c2..0x54da0e, disasm; the operand roles are assumed).
+- Super Airstrike starts from `Airstrike.Direction` rotated by pi/2 (0x58aa76, assumed), then is steered with `Fly.Yaw.Left/Right`. Fire drops the cows. EFMV.Start/End are used.
+
+**AI path.** IsometricCam 0x529eb0, while `AIStrike.SeekTarget`: copies `AIStrike.TargetPoint` / `AIStrike.Direction` into `Airstrike.TargetPoint`, `Payload.Target` and `Airstrike.Direction`; sets HasTarget = 1, WaterTarget = 0, SeekTarget = 0; then posts a message (the AI equivalent of Fire).
+
+### After firing: camera (disasm)
+
+| weapon | camera |
+|---|---|
+| Airstrike / Fatkins | `BomberLogicEntity` takes the scene camera `perspShape` from the bomber mesh and sends `Camera.FollowSceneCam`. CMS first calls `SetCamera("Default")` (0x522ad7), which leaves Blimp, then follows the scene camera (view 0x14 / 0x10). On `Bomber.AnimsComplete` it sends `Camera.StopFollowingSceneCam`, and CMS goes back to the current logical camera, Default (0x522b60). |
+| Super Airstrike | same scene-cam follow (0x58ace6); `SuperAirstrikeCamera` (Simple, PosUpdateSpeed 1, LookUpdateSpeed 0.1, data) is set at 0x57a330. |
+| Concrete Donkey | `0x51d760("DonkeyCamera", donkeyTaskId)` creates a SimpleCam (view 0x15) that tracks the donkey (DonkeyCamera: PosUpdateSpeed 1, LookUpdateSpeed 0.1, data). The camera point is stored at +0x188 (z + 500). |
+| Homing | normal aiming in the player's current view, then `HomingMissileFlyCamera` on launch. |
+
+Next turn: `GameLogic.Turn.Started` → 0x51ef80 → `Camera.StartOfTurnCamera` ("Default", LOCAL / scripts).
+
+
+## 11. Worms: physics state handlers and animation (extends §5)
+
+Tags: **data** = read from the exe or the tweaks, **disasm** = read from code, **assumed** = inferred, not verified.
+Units: the logic step is 20 ms. Velocities are in units/ms and accelerations in units/ms². A worm is 20 units tall (the land probe rods, §5). Angles are in radians.
+
+### pData = `WormDataContainer` (data: `pe.py schema '^WormDataContainer$'`)
+
+The `pData` argument that every `Update*` receives is the serialised `WormDataContainer`. The field names below come from its schema:
+
+| off | field | used as |
+|---|---|---|
+| +0x38 | Position | pos |
+| +0x50 | Velocity | ballistic or slide velocity |
+| +0x5c | Aftertouch | air-steer velocity, added to Velocity when moving but never accelerated |
+| +0x68 | InputImpulse | control input vector (`CalculateGlobalControlInput` 0x5ab3d0) |
+| +0x74 | Acceleration | gravity (+ wind), set by 0x5a6d20 |
+| +0x80 | SupportNormal | ground normal, written on landing |
+| +0x8c / +0x90 | Orientation (vec3, yaw at +0x90) | facing |
+| +0x98 | AngularVelocity | – |
+| +0xe8 | PhysicsOverride | – |
+| +0xec | Flags | bit0 = aftertouch (air control) on; 0x40 = skip the next fall damage once; 0x800 = no fall damage; 0x8040 / 0x8840 = no slide or hard-land on landing; 0x1000 = jump disabled; 0x20 = see 0x5ac390 (all disasm, meanings assumed from use) |
+| +0xf0 | PhysicsState | kWPS_* |
+| +0x114 | LogicAnimState (u32) | no gameplay writer in the exe: only the XOM default 0 (0x64cc5f). Lua sets it to 10 (countingsheep-w3d FunkySheep, helterskelter-w3d LookBaddie1-3). Its only reader, HudActiveWormArrowEntity 0x5ef6b4, skips the active-worm arrow update 0x5ee7f0 while it is 10 [disasm+data] |
+| +0x120 / +0x122 | SupportFrame / SupportVoxel | written on landing (Ballistic, Sliding) |
+| +0x124 | Active | cleared when DeathThroes / DrownFloat ends |
+| +0x12f | IsAfterTouching | – |
+| +0x130 | MovedByImpulse | tested by ImpulseWorm |
+
+Correction to the existing "UpdateWalking" text: the "no physics owner → Passive" test reads **entity** +0x54, not pData (`this` = esi at 0x5b0dd4). This flag is non-zero for the worm in control (assumed). Every other worm is put into Passive (6).
+
+Entity (WXWormLogicEntity) fields seen (disasm):
+
+- +0x20: the event sink (WXWormGraphicEntity), queue at +0x178 / +0x184.
+- +0x24: the land probe. +0x28: the collision sphere.
+- +0x44: the surface material index (0 Default, 1 Slippy).
+- +0xdc: a "force hard land" flag.
+- +0xe8: the support surface id (0xFFFF = none).
+- +0x114 / +0x118: jump timer and jump kind. +0x11c: slide time.
+- +0x120 / +0x124: slide spin and its target.
+- +0x128: death timer. +0x12c: stuck counter.
+- +0x244: the last queued event.
+
+Cached data handles (0x5a9880, data):
+
+| off | key |
+|---|---|
+| +0xa4 | DamageGraphic.Amount |
+| +0xa8 | DamageGraphic.Position |
+| +0xac | Water.Level |
+| +0xb0 | Worm.Drown.HeightOffset |
+| +0xb4 | Worm.WeaponDisableMovement |
+| +0xb8 | Worm.VelocityScale |
+| +0xd4 | Worm.Walk.Speed |
+| +0xd8 | WormPot |
+| +0xbc.. | AimMouseLR, AnalogueAimLR, Zap.* |
+
+#### Integration and gravity (disasm)
+
+- **Integrate 0x5a6e90(pData)**: `pos += (Velocity + Aftertouch)*20 + Acceleration*200`, then `Velocity += Acceleration*20`. It is an exact constant-acceleration step with dt = 20 ms. **No drag and no terminal-velocity clamp.**
+- **SetAcceleration 0x5a6d20**, called from ChangeState 0x5aa7f0 and from 0x5a9ac0:
+  - `Acceleration = (0, Gravity × Low.Gravity.Multiplier, 0)`;
+  - plus, when `WormPot.WindAffectsWorms` (+0x53) is set, `Wind.Speed × (cos Wind.Direction, 0, sin Wind.Direction) × WormPot.WindScale` (wind 0x5a6040).
+  - Values: Gravity −0.00025 (WEAPTWK); Low.Gravity.Multiplier 1.0 (LOCAL), 0.5 when low gravity is on (`Low.Gravity.OnValue`, TWEAK). Data.
+- **Air steer 0x5a6fe0**, run each Ballistic frame when Flags bit0 is set:
+  - `Aftertouch += InputImpulse × WXWorm.AftertouchDelta`;
+  - then `|Aftertouch|` is clamped to `WXWorm.AftertouchStrength`.
+  - Values 0.015 and 0.1 (TWEAK). Globals 0x95fb70 / 0x95fb74 (squared) / 0x95fb78.
+
+#### Jump launch values (loader 0x5a5d30, disasm + data)
+
+| global | value | formula | default |
+|---|---|---|---|
+| 0x95fb94 | jump vy | sqrt(−2·g·JumpHeight) | 0.15811 (H 50) |
+| 0x95fb90 | jump vx | JumpDistance / (−2·vyJump/g) | 0.063246 (D 80) |
+| 0x95fb8c / 0x95fb88 | forward-flip vy / vx | sqrt(−2·g·ForwardFlipHeight); ForwardFlipDistance / (−2·**vyJump**/g) | 0.2 / 0.031623 |
+| 0x95fb84 / 0x95fb80 | backflip vy / vx | same, with Backflip* | 0.2 / 0.031623 |
+| 0x95fb7c | vertical jump vy | sqrt(−2·g·VerticalJumpHeight) | 0.18708 (H 70) |
+
+Exe quirk (disasm, at 0x5a5f3f and 0x5a5fac): the flip horizontal speeds divide by the **normal jump's** air time (1265 ms), not the flip's own (1600 ms). Flips therefore travel about 50.6 units, not the 40 that the tweak says.
+
+`Worm.Jump.Forward/Backward/Backflip/Upward` (TWEAK vectors) are read only by AI code 0x4af3f0, not by the worm physics. `Worm.MaxSlope*`, `Worm.WalkAnimSpeedScale`, `Worm.CreepAnimSpeedScale`, `Worm.HopTest.*` and `Worm.Hop.Velocity` have no string in the exe, so they are unused (data).
+
+### Physics state handlers (disasm unless tagged)
+
+#### StartJump 0x5acd40 → DetectJump (1)
+
+- Runs at the end of every walking step.
+- If the jump button is pressed (entity +0x31 bit0) and Flags & 0x1000 is clear:
+  - QueueEvent(2 = Jump_Start);
+  - jump window = **300 ms** (+0x114 = 0x12c);
+  - kind = 2 ("held") (+0x118 = 2);
+  - state → DetectJump (1). Coming from Vaulting, the position first snaps to the vault target.
+
+#### DetectJump 0x5aefa0
+
+Each frame:
+
+- While kind is 2, releasing the button (entity +0x31 bit1 cleared) turns it into kind 0 and records the hold time.
+- A second press during the window (bit0) turns kind 0 into kind 1.
+- The window counts down by 20 ms. When it ends, the launch depends on the kind:
+
+| kind | condition | launch | event |
+|---|---|---|---|
+| 0 (tap) | – | facing × JumpVx, vy = JumpVy | 3 Jump |
+| 1 (double tap) | input·facing > 0, or input zero and entity +0x159 set | facing × FwdFlipVx, FwdFlipVy | 5 Fwdflip |
+| 1 | otherwise (back or no input) | −facing × BackflipVx, BackflipVy | 4 Backflip |
+| 2 (held all 300 ms) | input·facing > 0 | normal jump | 3 |
+| 2 | otherwise | (0, VerticalVy, 0) | 6 vertical jump |
+
+- Every launch then does: Velocity = launch, Aftertouch = 0, Flags |= 1 (air control on), state → **Ballistic (2)**.
+- A second variant runs when global 0x95a100+0x9b bit 0x40 is set and entity +0x15a == 0 (assumed: analog control). It scales the tap jump's horizontal speed by the input magnitude (quantised to 1/4) and by hold/300 ms (1/8 steps).
+
+#### Ballistic 0x5af430 (kWPS_Ballistic = 2, "flying")
+
+1. If Flags bit0 is set: read the control input, then air-steer (0x5a6fe0).
+2. Cast a parabola from pos: `CastRays(pos, Velocity+Aftertouch, Acceleration, 40 steps, mask 0xFFFF)`, i.e. all 8 probe points. Land ray 0x466ae0 marches `p(t) = p0 + v·t + ½·a·t²`, so t is in ms. A hit counts only if t ≤ **20** (this frame). The 40-step cast looks one frame ahead. Support id = 0xFFFF.
+3. **No land hit this frame** (0x5af95d):
+   - Integrate.
+   - If Velocity.y went from > −0.3 to ≤ −0.3 and no flags 0x8840 and entity +0xdc == 0: QueueEvent(22) ("now falling": tumble anim).
+   - Sphere resolve against entities (0x519ed0):
+     - **contact**: if Fits, accept the position and stuck counter −1. Then if contact n.y < 0.8: Rebound(n) + event 23 (Thud). Otherwise **land on the object**: event 8 (15 if +0xdc), state → Ambulatory, support id stored. If not Fits: stuck counter +2, Rebound + event 23.
+     - **no contact**: Fits → move, else stuck +2 + Rebound.
+     - Stuck counter ≥ 20 → force land (event 8 or 15, Ambulatory).
+4. **Land hit**:
+   - candidate = hit point − probe offset, sphere resolve, ground normal n (0x59ef90).
+   - If not Fits: stuck counter +2; at ≥ 20, force land. Otherwise clear air control and Rebound(n), or Velocity = −Velocity if n is degenerate, then event 23.
+   - If Fits: pos = candidate, SupportNormal = n, SupportFrame/Voxel stored.
+   - If the nearest hit is not a foot point (0x59ec50, per-point flag, assumed "foot") → Rebound + event 23.
+   - If n.y < **0.2** → Rebound + event 23 (wall).
+   - Otherwise it is a landing. With v = Velocity + Aftertouch: `vn = v·n` and `vt = v − vn·n`. When `|vt|² < vn²`, `|vt|²` is halved before the slide test.
+     - Walkable (n.y ≥ cos SlideAngle[mat]) and `|vt|² < StartSlideVel²[mat]`, or Flags & 0x8040 → **land walking**:
+       - if `vn ≤ −0.3` (hard) and entity +0x64 == 0 and no flags 0x8840: event 15 (hard land: poof + recover); otherwise event 8 (soft Land, param vn). If entity +0xdc is set, the threshold is 1000, so always 15.
+       - if `vn < −0.3`: FallDamage(vn) and Velocity = 0. Otherwise Velocity = (vt.x, 0, vt.z).
+       - state → **Ambulatory (0)**, support id stored.
+     - Otherwise (steep, or too fast) → **slide**: FallDamage if vn < −0.3, Velocity = vt, event 17, state → **Sliding (3)**.
+
+#### Rebound 0x5acea0 (disasm)
+
+- `v = Velocity + Aftertouch`, then Bounce 0x518f40(v, n, e = **0.3**, tangential kept ×**1.0**, min speed **0.01**):
+  - if `v·n < 0`: v = vt·1.0 − vn·0.3, and v becomes 0 when |v| < 0.01;
+  - if `v·n ≥ 0`: v = n·|v|·0.3, or 0 when |v| < 0.01.
+- Velocity = v, Aftertouch = 0, air control off.
+- If v ends at exactly (0, ≤0, 0): when n.y > 0, event 8 + state → **Sliding**; otherwise Velocity = (0, −0.01, 0) and Integrate.
+- The constants are hardcoded. `Worm.BounceMultiplier`/`Default` (0.6/0.3) are only handled in ParticleHandlerService 0x5c02c0, which switches them by WormPot Sticky/Slippy. The worm code never reads them (data: no other xref).
+
+#### FallDamage 0x5ac3e0(pData, vn) (disasm + data)
+
+- None if Flags & 0x800. If Flags & 0x8040: bit 0x40 is cleared and no damage (one-shot immunity).
+- Otherwise `damage = trunc((−0.3 − vn) × Worm.FallDamageRatio) + 1`, with Worm.FallDamageRatio = 100 (LOCAL). Then ApplyDamage 0x5ab7e0(damage, 1) and an effect via 0x4bc410(0, 100, worm pos, 500, −1, −1) (assumed: rumble or shake).
+- The threshold is |vn| > 0.3, i.e. a free fall of more than `0.3²/(2·0.00025)` = **180 units** (9 worm heights).
+- Examples: vn −0.4 (320 units) → 11 hp; vn −0.5 (500 units) → 21 hp.
+
+#### Fall 0x5acba0(pData, vel, aftertouch, airControl)
+
+Velocity = vel, Aftertouch = aftertouch, Flags bit0 = airControl, event 7, state → Ballistic.
+
+Called when:
+
+- walking off a ledge (0x5b14c7: walk velocity kept, Aftertouch 0, **air control on**). No 0.7 multiplier: the `WalkOffCliffVelMulti` string is absent;
+- the slide drops off a ledge (0x5b02dc).
+
+#### Sliding 0x5afbe0 (kWPS_Sliding = 3) (disasm + data)
+
+Per frame:
+
+1. If air control is on, read the input.
+2. Slide time +20 ms.
+3. Spin: rate +0x120 approaches target +0x124 (0x47a1a0, factor 3, max 2°/frame), and yaw += rate.
+4. **Gravity along the slope**: Velocity += (g − (g·n)·n)·20, with n = SupportNormal.
+5. Steering: with air control, input pushes ×0.003 when it points along the motion, else ×0.0005.
+6. **Friction**: Velocity ×= SlideFriction[mat] **per frame** (Default 0.95, Slippy 0.999).
+7. Probe the ground under the next position: 4 foot rays, 300 steps; d = 20 − nearest.
+
+| d | action |
+|---|---|
+| d > 5 (wall or step too high) | if \|v\|² < StartSlideVel²: Landed. Else ray along v (20 steps): hit → Rebound(n), spin target = (target + 3·(n×v)) / 2, stuck +2; no hit → Landed |
+| d < −5 (drop) | v projected off the ground; if it fits → **Fall()** (Ballistic). Else Landed |
+| −5..5 | pos = hit + 0.1y, sphere resolve (a side contact → Rebound + stuck +2). Fits → move, stuck −1, SupportNormal/Frame/Voxel updated. Then if the ground is walkable (n.y ≥ cos SlideAngle) and \|v\|² < **StopSlideVel²[mat]** → Landed. Not Fits → Landed |
+
+- Stuck counter ≥ 20 → Landed.
+- "Landed" = `QueueEvent(kWE_Landed = 8); ChangeState(kWPS_Ambulatory)`; the debug string 0x85fb58 spells it.
+- Thresholds (0x5a5d30, data):
+
+| | Default | Slippy | global |
+|---|---|---|---|
+| SlideAngle (deg) | 60 | 10 | cos at 0x92009c / 0x9200a0 |
+| StartSlideVel | 0.2 | 0.01 | squared at 0x9200ac / 0x9200b0 |
+| StopSlideVel | 0.06 | 0.01 | squared at 0x9200b4 / 0x9200b8 |
+| SlideFriction | 0.95 | 0.999 | 0x9200a4 / 0x9200a8 |
+
+#### Passive 0x5b0c20 (kWPS_Passive = 6) and UpdatePassive 0x5aecb0
+
+- **Passive** (worms not in control):
+  - if entity +0x54 is set again → Ambulatory + UpdateWalking;
+  - else if entity +0x64 (assumed: burning) → UpdateBurning 0x5aea10;
+  - else, if the support surface (+0xe8 → 0x5160e0) reports it moved or vanished (0x47a080) → event 7 + **Ballistic**. No integration while parked.
+- **UpdatePassive 0x5aecb0**, the turn-only mode of the active worm. UpdateWalking chooses it when 0x5ac390 is true: `Worm.WeaponDisableMovement` > 0, ArtilleryMode (+0x12a), Flags & 0x20, or game phase 14. It does:
+  - Velocity = 0;
+  - snap facing to the input (entity +0xde/+0xdf);
+  - otherwise turn: left input (+0x37) → event 10, yaw rate → +0.001 rad/ms; right (+0x38) → event 11, −0.001; none → event 12, rate 0. The rate eases with 0x47a1a0 (accel 0.0002). Yaw += rate·20·k;
+  - the support moved → event 7 + Ballistic.
+- UpdateWalking's idle branch uses the same turn code (0x5b1c7a).
+
+#### DeathThroes 0x5aa080 (7) and DrownFloat 0x5aa130 (8)
+
+- **Land death start 0x5adbf0**: unless already DrownFloat, send `Worm.LandDeath` (msg obj 0x95fc18), state → 7, event 19, timer +0x128 = **3000 ms**.
+- **DeathThroes**: no motion. Timer −20 per frame. At 0: Active = 0, death blast 0x5a9400 (`Worm.DeathWormDamageMagnitude/Radius`, `DeathImpulseMagnitude`, `DeathLandDamageRadius`), 0x5a9310, send `WXWormManager.UnspawnWorm` (0x95fbe8).
+- **Drown start 0x5ad640**: `Worm.Drowning` (0x95fc10), event 21, particle `WXP_WaterSplash`.
+- **DrownFloat**:
+  - target height = `Water.Level − 8.0` (hardcoded 8; `Worm.Drown.HeightOffset` = 7 is cached at +0xb0 but not used here).
+  - Below the target: velocity steered toward rising (0x5a59f0 / 0x569fa0 with 0.03, 12, 0.001; the exact law is not decoded). On reaching the surface with vy ≤ 0: timer = **2000 ms**.
+  - While the timer runs: vy = (vy − (y − target)·0.001)·0.95 (damped bob). pos += Velocity·20, no gravity.
+  - Timer end: Active = 0, 0x5a9400, `WXWormManager.UnspawnWorm`.
+
+#### ImpulseWorm 0x5ad010 (blast)
+
+- Ignored in states 7/8. Magnitude ×WormPot.StickyModeScale when StickyMode is on. Air control off.
+- On the ground with `impulse·SupportNormal < 0`: Velocity = (v + impulse) minus its normal component, state → **Sliding**, hit clip 0x5a9100.
+- Otherwise `Velocity += impulse`, state Ballistic, and the reaction depends on `d = facing · horizontal blast dir`:
+  - d < −0.5: event 14 (blown backwards) and yaw = atan2(dir) + π;
+  - −0.5 ≤ d < 0.4: event 13 with param = side (cross product) and yaw = atan2(dir);
+  - d ≥ 0.4, or a pure vertical blast: event 13 with param 0.
+- **Hit clip 0x5a9100**: from facing·dir, `HitFront` (< −0.5, or no horizontal part), `HitBack` (> 0.5), else `HitLeft` (right·dir < −0.5) / `HitRight`. With a "nailed" flag, the `Nailed*` variant. Callers: the damage messages 0x5ae320 / 0x5ae4f0 and the slide path above.
+
+### Worm animation (WXWormGraphicEntity), disasm + data
+
+#### Event queue (kWE_*)
+
+QueueEvent 0x5acb80(code, float) stores the code at entity +0x244. 0x5ac4d0 pushes code and param into the graphic entity's vectors at +0x178 / +0x184. The graphic update 0x5a4740 drains them in 0x5a3620 (jumptable 0x5a410c, index code−1).
+
+| code | sender | graphic effect (handler VA) |
+|---|---|---|
+| 1 | UpdateWalking (walk input, phase 2) | send `HeldAccessory.Hide`, +0x160 = 0 (0x5a3692) |
+| 2 | StartJump | `HeldAccessory.Hide`; one-shot **Jump_Start** (weight 1, t = 0); anim state 2 (0x5a36ed) |
+| 3, 6 | DetectJump (jump, vertical jump) | one-shot **Jump**; predicted parabola stored (+0x20c, 10000 ms); voice "Jump" (0x5a1d30); state 2 (0x5a3773) |
+| 4 | backflip | **Backflip** + voice "Jump", state 2 (0x5a37de) |
+| 5 | forward flip | **Fwdflip** + voice "Jump", state 2 (0x5a3849) |
+| 7 | Fall, Passive / OverridePhysics support loss | **Fall** at weight 0 (eases in), state 2; WXActor calls 0x60ae60 and 0x60ba40(200) (assumed: face or look, 200 ms) (0x5a389c) |
+| 8 | kWE_Landed (soft land, end of slide) | **Land** through the scheduler, weight = clamp(\|vn\|·5, 0, 1); pose reset; `WXP_Worm_Hop_Poof`; state 0 (0x5a3913) |
+| 9 | Walking → Vaulting | **Vault** one-shot (0x5a39e3) |
+| 10 / 11 / 12 | turn left / right / stop | +0x160 = −1 / +1 / 0, only for the worm in control (0x5a3a25...) |
+| 13 | ImpulseWorm (side or up) | state 4 (blast flight). If vy > 0.1 a message type 0x1a (assumed: "Blasted" acting). Clip: param > 0 → **Blastflight4**, param < 0 → **Blastflight5** (tumble mode 1, random spin of 2π·(2r)+π); param 0 → random **Blastflight2** (mode 0) or **Skid** (mode 1) (0x5a3abb) |
+| 14 | ImpulseWorm (blown backwards) | **Blastflight3**, mode 2, state 4 (0x5a3c11) |
+| 15 | hard landing | `WXP_Player_Land_Poof` (worm in control) or `WXP_Worm_Land_Poof`. If the anim state was 3 (flying): message type 5, then the recover clip by flight mode (below). Else message type 6 + **RecoverBurried1**. State 5 (0x5a3cc5) |
+| 17 | Ballistic or Walking → Sliding | WXActor (as 7), pose reset, arm-flail parameters (+0x1dc = 0.02, +0x1e0 = 30 from ground else 1). State 6 (0x5a3eaa) |
+| 18 | MsgOverridePhysics | state 1: pose manager only (rope, jetpack...) (0x5a3f64) |
+| 19 | Land death start | state 7 (= ground behaviour) + message type 0xe (0x5a3f88). The gesture comes from WORMACTING (docs/death-sequence.md) |
+| 21 | Drowning start | state 8 (0x5a401a) |
+| 22 | Ballistic, vy crosses −0.3 | **Skid** as the flight clip, tumble mode 1, spin 2π; state 4 (0x5a3a60) |
+| 23 | Rebound | sound `weapons/Thud` at the worm (PlaySound 0x604a20) (0x5a4064) |
+| 16, 20 | – | no-op |
+
+#### Clip handles (0x5a49a0, `FindClip` 0x6a0350 by name, data)
+
+| slot | clip |
+|---|---|
+| +0x94 | Walk |
+| +0x98 | WalkTail |
+| +0x9c | Jump |
+| +0xa0 | Backflip |
+| +0xa4 | Fwdflip |
+| +0xa8 | Jump_Start |
+| +0xac | AT_FB |
+| +0xb0 | AT_LR |
+| +0xb4 | Fall |
+| +0xb8 | Land |
+| +0xbc | Vault |
+| +0xc0 | TailAngle |
+| +0xc4 | TailLag |
+| +0xc8 | TipAngle |
+| +0xcc | HopLeft |
+| +0xd0 | HopRight |
+| +0xd4 | Skid |
+| +0xd8 .. +0xe4 | Blastflight2 .. Blastflight5 |
+| +0xe8 | RecoverFront1 |
+| +0xec | RecoverBurried1 |
+| +0xf0 | RecoverBack1 |
+| +0xf4 | RecoverBack2 |
+| +0xf8 | SkidArms |
+| +0xfc | Death |
+| +0x100 | FallDrown |
+| +0x104 / +0x108 / +0x10c | FPX / FPY / FPZ |
+
+Clip API, an XAnim scheduler on the entity at graphic +0x24 (disasm):
+
+| VA | call |
+|---|---|
+| 0x6a0350 | FindClip(name) |
+| 0x6a03d0 | PlayClip (scheduler slot +0x14) |
+| 0x6a04c0 | SetTimeAndWeight(clip, t, w) |
+| 0x6a0530 | SetWeight |
+| 0x6a0600 | Length (clip info +4, in seconds) |
+
+#### Anim state machine (graphic +0x174, per-frame switch 0x5a4740 → jumptable 0x5a4978)
+
+| state | handler | behaviour |
+|---|---|---|
+| 0 ground, and 7 (death) | 0x5a2a00 | Walk/WalkTail blended by horizontal speed s = \|Velocity.xz\|. Moving: phase += dt·s·0.45, wrapped to [0, 0.5); walk weight → 1. Stopped: the phase eases to the nearest rest pose (0 or 0.5), weight → 0 (rate 0.1). WalkTail weight is scaled further. WormPoseManager 0x59da40 adds the pose layers (aim arms, head and eyes: RightArmRotX/Y, HeadRotX/Y, Eyes_LR/UD, EmoteBlend, PoseBlend, strings at 0x85e1d8...) |
+| 1 override | 0x59f2d0 | pose manager only |
+| 2 one-shot | 0x5a01a0 | clip +0x1ac plays at 0.02 s per 20 ms (real time), weight → 1. At the end it **holds the last frame** and blends in **AT_FB / AT_LR**, time-scrubbed by the aftertouch input (phase = (1 − input·facing)/2 and (1 − input·right)/2, rate 0.1). No automatic chain: the next event (Land, Fall, 22...) switches the state |
+| 3 / 4 blast flight | 0x5a0460 | the flight clip (+0x1b8) loops at 0.02 s per frame. Mode 0/2: body pitch follows the velocity (atan2). Mode 1: tumble, angle += spin·0.02 per frame (wraps at 2π). State 4 snaps on its first frame, then 3 eases at max 6°/frame |
+| 5 recover | 0x5a2c90 | one-shot +0x1c8 at weight 1. At its end: state 0, clip weight 0, pose reset |
+| 6 slide | 0x5a2d70 | **SkidArms** with random arm targets (rand 0x68c07b), WXActor face calls (0x60bae0 / 0x60bb40). Velocity terms ±0.006, 2000 ms constant (not decoded) |
+| 8 drown | 0x5a06b0 | FallDrown (assumed slot +0x100) scrubbed by clamp(vy·10, −1, 1), with pitch and roll easing back to 0 |
+
+Recover clip after a hard land from blast flight (0x5a3d64):
+
+- mode 0 → RecoverFront1;
+- mode 1 (tumble) by spin angle +0x158: inside (3π/4, 7π/4) → RecoverFront1; > 5π/4 → RecoverBurried1; otherwise random RecoverBack1/RecoverBack2;
+- mode 2 → random RecoverBack1/2.
+
+Smoothing helper 0x569f20(&v, target, a, rate, dt): approaches the target with the step clamped to rate·dt (disasm, exact law approximate). Most anim weights use rate 0.1 per 20 ms frame, i.e. about 0.2 s for 0 → 1.
+
+Acting gate (0x5a47d0, assumed): graphic +0x5c counts ms since the last physical event. Events 7/13/14/15/17/19/21/22 reset it and clear WXActor flag +0x6e bit 4. At 90000 ms (0x15f90) the bit is set again (assumed: idle or bored acting allowed).
+
+#### Weapon clips (data: WEAPTWK `WXAnimDraw/Aim/Fire/Holding/EndFire/Taunt/TargetSelected`, fields +0x54..+0x6c of the weapon properties container)
+
+| weapon | Draw | Aim | Fire | Hold | other |
+|---|---|---|---|---|---|
+| Bazooka | DrawBazooka | AimBazooka | FireBazooka | HoldBazooka | TauntBazooka |
+| Grenade | DrawThrown | AimGrenade | FireThrown | HoldThrown | TauntThrown |
+| Cluster | DrawCluster | AimGrenade | FireCluster | HoldCluster | – |
+| Banana | DrawBanana | AimGrenade | Fire1Banana | – | – |
+| Holy | DrawGrenade | – | Fire2Grenade | – | – |
+| Gas | DrawGasgrenade | – | FireGasgrenade | – | – |
+| Homing | DrawHomingMissile | AimHomingMissile | FireHomingMissile | – | TargetSelected AimLockHomingMissile |
+| Shotgun | DrawShotgun | AimShotgun | FireShotgun | HoldShotgun | TauntShotgun |
+| Sniper | DrawSniper | AimSniper | FireSniper | HoldSniper | TauntSniper |
+| Bat | DrawBat | AimBat | Fire2Bat | HoldBat | – |
+| FirePunch | DrawFirepunch | HoldFirepunch | Fire2Firepunch | HoldFirepunch | – |
+| PoisonArrow | DrawBow | AimBow | WindupBow | HoldBow | EndFire FireBow |
+| Airstrike-like | DrawAirstrike | – | – | HoldAirstrike | TauntAirstrike |
+| Dynamite | DrawDynamite | – | FireDynamite | – | – |
+| Landmine | DrawLandmine | – | FireLandmine | – | – |
+| Sheep / SuperSheep | DrawSheep | – | FireSheep | – | – |
+| OldWoman / Scouser | DrawOldWoman / DrawScouser | Struggle | – | – | – |
+| NinjaRope | DrawNinjarope | AimBazooka | FireNinjarope | – | – |
+| Girder | DrawGirder | HoldGirder | – | HoldGirder | – |
+| Flood | DrawRainDance | HoldRainDance | FireRainDance | – | – |
+| SkipGo | DrawSkipGo | – | – | HoldSkipGo | – |
+| Surrender | DrawSurrender | – | Tantrum | HoldSurrender | – |
+| Redbull, Prod, NMN, SentryGun, Starburst, BubbleTrouble | Draw*/Fire*/Hold*/Taunt* | – | – | – | – |
+
+Other weapon clips hardcoded in the WAE_* entities (strings 0x85d2f6..0x85dc08):
+
+- JetpackFly, JetLeft/JetRight, JetpackBump, AJetpackRotLR;
+- FireParachute, ParachuteLR, ParachuteWobble;
+- FlyStarburst, FlyRedBull, LobThrown, WindupThrown, Windup, AimFP;
+- Nailed{Draw,Hold,Fire}SkipGo;
+- {Draw,Hold,Fire,Taunt}WFGun.
+
+The chaining (Draw → Hold/Aim → Fire → EndFire, Taunt after an idle loop, `m_fTauntWeaponLoopTime` in 0x58d0a0 / 0x58de60 / 0x58f620) is **assumed** from the names; not traced.
+
+The gestures (fidget, victory, hurt reactions, death) are WORMACTING EFMV scenes (docs/worm-reactions.md), cast by WXSceneManagerService. The trigger tokens are in WXActor.cpp strings 0x869950..0x869bbc. The exe also queues `Worm.QueueAnim`, `Worm.ResetAnim`, `Worm.ScriptDrawAnim` and `Worm.SurrenderAnim` (message names, not traced).
+
+
+## 12. Audio: WormsX.fev per-event data (extends §7)
+
+### WormsX.fev (FEV1, ver 0x00400000, 1.3 MB): full layout, `tools/w4m-re/fev.py` [data: parses to EOF, all header counts match]
+All integers are LE u32 unless noted. `str` = u32 length (NUL included) + bytes.
+- Header: "FEV1", ver, 2 u32 (sizes?), u32 n=0x21, then n (id, value) pairs. These are object counts, verified: 1 banks=117, 2 categories=12, 3 groups=127, 5 params=1011, 6 envelopes=12, 7 envelope points=36, 8 sound instances=4127, 9 complex layers=1048, 10 simple events=1574, 11 complex events=1046, 13 waveforms=4058, 17 sounddefs=3995. Then `str` project "WormsX".
+- Banks: count, then {loadmode, maxstreams, u64 hash, str name}.
+- Categories (recursive, root "master"): {str name, f32 volume (linear gain), f32 pitch, u32, u32, u32 nchildren, children}. Tree: master/{music 0.501 (-6 dB), Speech/{EFMVDialogue, Speechbanks}, Custom, AmbientEffect, SpotEffect/{EFMVFoley, Weapons, Frontend, Global}}. Every category other than music is 1.0.
+- Event groups: u32 nroot (=1, "Master"), group = {str name, u32 nprops, props {str name, u32 type (0 int, 1 float, 2 str), value}, u32 nsubgroups, u32 nevents, **events first, then subgroups**}. Group user props are only "LipSync" (EFMV groups).
+- Event: u32 kind (0x10 simple, 0x08 complex), str name, 16-byte GUID, 0x84-byte property block (below), body, u32 ncat (=1), str category path (e.g. "SpotEffect/Weapons").
+  - Property block [data = value ranges and names agree; field names follow FMOD Designer, assumed]: +00 f volume (linear), +04 f pitch [assumed], +08 f pitch randomisation [assumed], +0C f volume randomisation [assumed], +10 priority (128; 64 on frontendsfx/click and every Speech/*/Sneeze), +14 max playbacks (1; 4 on ExplosionRegular/Boxed, BombWhistle, CowFall, FireLoop, SteamLoop, TeleportLoop...), +18 = 10000 always (steal priority?), +1C FMOD_MODE (0x08 = 2D, 0x10 = 3D, 0x100000 = log rolloff, 0x200000 = linear rolloff, 0x80000 = world-relative, 0x40000000 = ignore geometry), +20 f 3D min distance, +24 f 3D max distance, +28 flags (0x80000 on all Speech and 36 weapons; meaning unknown), +2C..+54 floats (cone 360/360/1.0 at +4C/+50/+54), +58 max-playbacks behaviour (1; 3 on ExplosionRegular, TeleportLoop, Thud), +5C/+7C f (1.0; 0.25 or 0.2 on the explosions, unknown), +6C fade-in ms, +70 fade-out ms.
+  - Simple body: u32 1 + one sound instance.
+  - Complex body: u32 nlayers, layers {u16 flags, i16 priority, i16 param index (-1 = none), u16 ninstances, u16 nenvelopes, instances, envelopes}, u32 nparams, params {str name, f velocity (units/s), f min, f max, u32 flags (3), u32, u32, u32 nsustain, f sustain[n]}, u32 (0).
+  - Sound instance (58 bytes): u16 sounddef index, f start and f length on the layer's parameter axis (0..1), u32 start mode, **u32 loop mode (0 = loop, 1 = oneshot, 2 = loop and play to end)**, i32 loop count (-1), 4 u32 (0), f volume (1.0), 2 f (-1 on complex events, 0 on simple ones), 2 u32 (2, 2) [data: every "*Loop" event, the music tracks and the ambiences have mode 0, music/Victory has 1].
+  - Envelope: i32 parent (-1, or the index of the envelope that shares the DSP), str DSP name ("" = built-in, "FMOD Highpass"), u32 DSP parameter index, u32 flags (0x0C = volume, 0x04 = DSP parameter, 0x14 = pitch?), u32, u32 npoints, points {f x (0..1 across the parameter range), f y (0..1), u32 shape}, 2 u32.
+- Sounddef property sets: u32 count=35, each 70 bytes: u32 play mode, u32 spawn min ms, u32 spawn max ms, u32 max spawned, f volume (linear), ..., f at +52 (randomisation?), u16 trigger delay min/max ms at +64/+66 [play mode values: 3 on every 1-waveform def, 2 on most multi-waveform defs (random pick), 0/1/6 rare; enum not confirmed].
+- Sounddefs: u32 count=3995, {str "/folder/name", u32 property-set index, u32 nwaveforms, waveforms {u32 type (always 0 = wave), u32 weight (100), str "file.wav", str bank, u32 sample index in the bank's FSB, u32 length ms}}.
+- Reverbs: u32 count=1 ("Default"), str name + 132 bytes (I3DL2-like, not decoded). Then a "comp" chunk (u32 size=0x18, "comp", u32 0x10, "sett", 2 f 1.0) that runs to EOF.
+- **Looping comes only from the FEV**: no sample in weapons/frontendsfx/global/ambient/mu*.fsb has an FSB loop flag (all mode 0x40200) [data]. The FEV instance loop mode alone decides loop vs oneshot.
+- Loudness = event volume × sounddef-property volume × category gain (music = -6 dB) [composition assumed; FMOD multiplies]. The exe's fire-and-forget call (0x604a80) passes an extra 1.0 volume.
+- Speech: 1333 events, 3D linear 10..1000. 998 are complex, with a parameter "MultiSelect" 0..N and N instances that split the axis evenly (instance k covers [k/N, (k+1)/N]), one per spoken variant. At event creation the exe looks up the "MultiSelect" parameter handle (0x6f99a2, `getParameter`) and stores it [disasm; where the value gets set was not traced]. 14 speech events name the parameter differently: "MultiStart" on StartTurn of vobuild/voprofe/vocave/voscot/voscous/vothief/vobarre, "MultSelect" on vocowbo/StartTurn, and "param00"/"param01" on a few Victory/WeaponFired/ShortOnTime/NoDamageA. They get no handle and probably always play the variant at 0 [assumed].
+- 33 events have no sound instance at all (silent on PC): weapons/{BomberEngine, BubbleMachineHeld, OldLadyLoop, PlasmaBombLoop, TractorLoop, Windmill, ChurchBell, Cow, Chicken, Goat, Horse, Monkey, TRexRoar, zombie, ...}. Run `fev.py | awk -F'\t' '$3=="silent"'` for the list.
+- Sample sharing: WildWest{Day,Night} ambience uses the Arabian{Day,Night} samples, CamelotNight uses PrehistoricNight, and SheepFly uses ParachuteLoop.
+
+#### Looping events (all non-speech; EFMV has 6 more: Foley_FuseBurn, Foley_JukeBoxTune, Foley_TMLoop, Foley_WaterLap, Foley_LabLoop, Foley_WaterLap2)
+weapons: AlienUfoBeamLoop, AlienUfoEngineLoop, Bomber, ClockFast, ClockSlow, ElecArc, ElectricArching, FireLoop, FliesLoop, FloodRainLoop (rain loop plus a oneshot Thunder delayed 1.5 s; Time param 0..15, the rain fades to 0 between 8 and 12 s), **FuseLoop (sounddef /weapons/Fuse, -4 dB, 3D linear 10..500)**, HolyGrenadeHeld, HoseIntoWater, JetPack, JetpackTakeoff, MineArmLoop, MineMachineOperate, MissileLoop (Time 0..10, volume envelope cuts at 5.03 s), ParachuteLoop (loop plus oneshot Open/Close, param Cycle 0..5), RainLoop, SentryGun (loop plus oneshot End, Cycle), SentryGunHeld, SheepFly, SheepRunLoop, SmallFlames, StarburstRocket, SteamLoop, TapIntoWater, TeleportLoop, TimeMachinePiece, Wind (WindMedium plus WindHeavy, both looping, crossfaded by WindStrength 0..1: silent below 0.3). Also frontendsfx/WormPotLoop, frontendmusic/{FrontendDay, femusic}, **cheer/cheer (loops, -12.9 dB)**, all 10 ambient/*/Ambience, and every music/* track except **music/Victory (oneshot)**. WildWest and Prehistoric use "loop and play to end". GasLoop and BinocularsLoop are **oneshot** despite their names.
+
+#### Volumes worth knowing (event × sounddef dB; category 0 dB except music)
+FuseLoop -4, FireLoop -10, SteamLoop -15, TeleportLoop -12, Bomber -9, HolyGrenadeHeld -10, SentryGunHeld -8, ExplosionRegular -3 (3 variants, maxpb 4), ExplosionLarge -12, cheer -12.9, RainLoop -6, music tracks -9..-12 in total (sounddef -3/-6 plus category -6), ambience -3 (Building -9, Camelot/Prehistoric night -12). The full list is in the table below.
+
+
+Full per-event table (2620 rows): `fev.py`, filter with `-g REGEX`.
+
+### Exe side: parameters, fades, who starts what [disasm unless tagged]
+- `0x604a20(event, &inst)` only creates the instance; the caller starts it through the instance vtable. `0x604a80` creates and starts (fire and forget).
+- **MultiSelect** (speech variant): XSoundInstance (vtable 0x89a344) stores the handle (0x6f99a2, +0x1C). Its play slot 0x6fde90 reads the range 0..N, sets v = N·(LCG(rand()) & 0xFFFF)/65536, clamped to [0.01, N−0.01], then `setValue` (import thunk 0x6fe5ee) and starts: a uniform variant on every play, no anti-repeat.
+- **WindStrength**: WindMeterEntity 0x5fc5a0 creates the `weapons/Wind` loop (0x5fce81) and, on every meter update (0x5fc6e0), sets p = 0.95·p + 0.05·(`Wind.Speed` / `Wind.MaxSpeed`) (ratio at 0x5fbfd0) through XSoundInstance+0x54 (0x6fe460).
+- **Time** and **Cycle** are never set by the exe ("Time" only appears in XOM schema records, "Cycle" has no string). FMOD moves them by the FEV parameter velocity: FloodRainLoop 0.0667 × range 15, MissileLoop 0.1 × 10, Cycle 0.2 × 5 (with a sustain point): 1 unit per second each [data; velocity = share of the range per second assumed].
+- **Music.FadeIn**: FlowControlService posts it on "Switching to in game", after GameLogic.GameLoadComplete (0x4ee6bb). FrontEndService (HM 0x72b541) sets +0x17c; its update 0x7290b4 (returns 0, so it runs every frame) then adds 0.01 to the music volume +0x180 until it reaches `Audio.Vol.Music` (+0x160, DEFSAVE default 0.6) and applies it to the music instance +0x14c. That is 60 frames, 1 s at 60 fps. Category volumes are set from the options with mgr vtbl+0x44 (1 = +0x164, 2 = +0x160).
+- **GameOverLogicEntity** 0x4ffbd0: starts `music/victory` (0x4fff4b) and `cheer/cheer` (0x4fff6a) together when the match is won; state 2 fades the sounds over 1000 ms before GameLogic.GotoFrontEnd.
+- **HudAlert**: ActiveWormHudInfoEntity 0x5d79db, fire and forget, when the active-worm panel slides in.
+- **ClockFast / ClockSlow**: HudClockEntity init 0x5f0f75 / 0x5f0f86 creates both instances (+0xcc / +0xc8), and no HudClockEntity code reads them again: no start found, so the turn clock looks silent on PC [disasm; a start through another path is not excluded].
+- Priority (+0x10) only matters when FMOD runs out of voices: 64 on `frontendsfx/click` and every `Speech/*/Sneeze`, 128 elsewhere.
+
+### Our use (`client/src/audio.cpp`)
+- `DEFS`: one row per `Audio::Sfx`, the W4M event its file comes from (`tools/w4m-import` `SFX`), its gain (event + sound definition + category dB), loop, 3D linear min..max in m (20 units/m) and max playbacks. 3D events fade linearly with the distance to the camera (`Audio::listen`) and pan; 2D events ignore it. Past max playbacks the oldest voice is cut. `SPEECH` / `SPEECH_SOFT` for the voices, `TRACKS` for the music.
+- Looped while their state lasts (`Audio::loop`, called every frame): FuseLoop, MineArmLoop, HolyGrenadeHeld, cheer/cheer, WormPotLoop. Bomber, SentryGun, SentryGunHeld, RainLoop and ClockFast are loops in the FEV but our events only know their start, so they play one pass of the clip.
+- Not reproduced: the 350/500/2000 ms event fades, the femusic 2 s fade-out, priorities.
+
+
+## 13. Weapons: logic class dispatch and enum fields (extends §4)
+
+### Weapon -> logic class dispatch (traced)
+
+Tags: **data** = WEAPTWK.XOM or tables stored in the exe; **disasm** = traced code; **assumed** = inference.
+"HM" = HandleMessage (vtable slot 7, `vt+0x1c`). The engine is message-driven: id 0x40 (task start) runs the class init/subscribe function, and later work happens in HM on subscribed or timed messages. For payloads, slot 18 is the motion step, slot 20 Detonate, slot 24 fire-press and slot 28 collision.
+
+#### Object creation primitive (disasm)
+- `0x639b83(classDesc)` = XOM CreateObject. It gets the XOMMO singleton (`0x639b1d`) and calls its `vtbl+0x50`.
+- `classDesc` (.rdata) layout: 16-byte GUID, `+0x10` class name ptr, `+0x14` (size<<16), `+0x18` self ptr.
+- To find every creation site of a class, find its descriptor (the dword at `+0x18` equals its own VA), then find `push desc; call 0x639b83`. `0x585330` copies the GUID to the stack first, so its sites appear as `mov reg,[desc]`.
+
+#### Stage 1: weapon id -> weapon logic entity (disasm)
+- **`LogicalWeaponManagerService::WeaponSelected` 0x565d30.** It reads the weapon id from `WormData+0xf4`, where id = WeaponNameEnum index (table 0x90c920). The switch is at **0x565ecc**: `id-5`, `ja` -> default, then byte table **0x566644** and jump table **0x5665f8** (63 cases).
+- Each case calls 0x565650 (drops the previous weapon logic), creates the class and stores it in a manager slot (`+0x24` payload weapon, `+0x28` gun, `+0x2c` melee, `+0x30`..`+0x68` utilities). It then calls `0x55c830(name)` or `BaseWeaponLogicEntity::SetWeapon 0x54a200(name)`, and attaches the child task (0x4711a0 or 0x68dde8).
+
+| weapon ids (enum value) | case VA | logic class | vtable | HM |
+|---|---|---|---|---|
+| Shotgun 9, SniperRifle 28 | 0x565f09 | GunWeaponLogicEntity | 0x8599fc | 0x55db30 |
+| BaseballBat 10, Prod 11, FirePunch 12, NoMoreNails 25 | 0x565f52 | MeleeWeaponLogicEntity | 0x85a82c | 0x569930 |
+| Flood 14 | 0x566157 | FloodWeaponLogicEntity | 0x859164 | 0x556010 |
+| WeaponFactoryWeapon 21 | 0x56625c | WeaponFactoryLogicEntity (its start 0x599f50 creates a PayloadWeaponLogicEntity) | 0x85dab0 | 0x59a060 |
+| AlienAbduction 22 | 0x566275 | AlienAbductionLauncherLogicEntity (creates AlienAbductionLogicEntity at 0x546b87) | 0x857574 | 0x546b20 |
+| SentryGun 27 | 0x56628e | NewSentrygunWeaponLogicEntity (creates NewSentryGunLogicEntity at 0x56e870) | 0x85ae6c | 0x56eb40 |
+| Girder 34 | 0x566192 | GirderKitLogicEntity | 0x8596ac | 0x55bac0 |
+| NinjaRope 35 | 0x56603c | NinjaRopeUtilityLogicEntity | 0x85b07c | 0x574730 |
+| Parachute 36 | 0x5660a5 | ParachuteLogicEntity | 0x85bc34 | 0x579810 |
+| Jetpack 37 | 0x565f9b | JetpackUtilityLogicEntity | 0x85a07c | 0x563f00 |
+| SkipGo 38 | 0x56610e | SkipgoUtilityLogicEntity | 0x85ccfc | 0x588160 |
+| Surrender 39 | 0x5661cc | SurrenderLogicEntity | 0x85d1cc | 0x58bae0 |
+| ChangeWorm 40 | 0x5661a8 | WormSelectLogicEntity | 0x85df14 | 0x59a5f0 |
+| Redbull 41 | 0x5661e2 | RedbullUtilityLogicEntity | 0x85cb24 | 0x587dc0 |
+| BubbleTrouble 42 | 0x5662b9 | BubbleTroubleUtilityLogicEntity (creates BubbleTroubleLogicEntity at 0x5501da) | 0x858698 | 0x550a80 |
+| Binoculars 43 | 0x5662d2 | BinocularsUtilityLogicEntity | 0x857d98 | 0x54bfe0 |
+| Dynamite 5, Landmine 8, Sheep 15 | 0x5662eb | PayloadWeaponLogicEntity. When manager flag `+0x8d` is set, it disables control group `Fire`, enables `UtilityFire` (Input.DisableGroup / Input.EnableGroup) and sets global 0x95c36c=1. Meaning (drop with the utility key while walking) assumed | 0x85c6bc | 0x586040 |
+| default: ids 0-4, 6, 7, 13, 16-20, 23, 24, 26, 29-33, 44-66 | 0x56642a | looks up the container by name (0x50b8b0) and asserts BaseWeaponContainer. If it IsKindOf PayloadWeaponPropertiesContainer (0x9688e0), creates **PayloadWeaponLogicEntity**; otherwise `assert(false)` at 0x5664ec | 0x85c6bc | 0x586040 |
+| kWeaponUndefined 67 | 0x565ee6 | none (clears the current weapon) | - | - |
+
+- Enum ids 44-47 (DoubleDamage, CrateShower, CrateSpy, Armour) have BaseWeaponContainers, so this path would assert on them. They must be applied elsewhere. ArmourLogicEntity and LowGravityLogicEntity have no `0x639b83` creation site. (disasm; where they are applied is not traced)
+- kUtilityTeleport and kUtilityBridgeKit have WEAPTWK containers but no WeaponNameEnum value. (data)
+- AimedWeaponLogicEntity is created once at game setup, in 0x4eba10 next to LogicalWeaponManagerService and WXWeaponPanel. It is not created per weapon. (disasm)
+
+#### Stage 2: PayloadWeaponLogicEntity children and payload class (disasm)
+- **Start 0x582d70** (reached from HM 0x586040 -> 0x5837a0) reads the PayloadWeaponPropertiesContainer:
+  - `IsAimedWeapon +0x1e0`: checks Min/MaxAimAngle against ±pi/2 and publishes `Weapon.MinAimAngle` / `Weapon.MaxAimAngle`. If not targeting, it also publishes `Weapon.ParabolicRetical` (from `UseParabolicRetical +0x1d5`).
+  - `HasAdjustableFuse +0x1d0`: creates AdjustableFuseWeaponLogicEntity (vt 0x857058, HM 0x543ad0).
+  - `HasAdjustableHerd +0x1d2`: creates AdjustableHerdWeaponLogicEntity (vt 0x8570c8, HM 0x5441e0). It asserts that the two flags are not both set.
+  - `HasAdjustableBounce +0x1d1`: never read here. AdjustableBounceWeaponLogicEntity (0x856fe8) has **no creation site**, so the ClusterGrenade/Grenade flag is dead. (disasm: negative search)
+  - `IsTargetingWeapon +0x1c9`: sets `this+0x38=1` and sends `Weapon.CreateHomingCursor` (if `IsHoming +0x1cd`), else `Weapon.CreateBomberCursor` (if `IsBomberWeapon +0x1cb`), else `Weapon.CreateTargetingCursor`.
+  - Otherwise, `IsPoweredWeapon +0x1c8` creates PoweredWeaponLogicEntity (vt 0x85ca78, HM 0x586e40).
+- **LaunchPayload 0x585e90** (called from HM 0x586040). If `IsBomberWeapon +0x1cb`, it calls 0x5838a0: `IsControlledBomber +0x1ca` ? **SuperBomberLogicEntity** (vt 0x85d048, HM 0x58b660) : **BomberLogicEntity** (vt 0x858240, HM 0x54e1a0). Otherwise it calls the **payload factory 0x585330**.
+- **Payload factory 0x585330** picks the payload class by **string compare on the container name** (`vtbl+0x18`), not by WeaponType:
+
+| container name | payload logic class | vtable | HM | branch VA |
+|---|---|---|---|---|
+| kWeaponConcreteDonkey | DonkeyLogicEntity | 0x858b6c | 0x553cc0 | 0x5853c8 |
+| kWeaponHomingMissile, kWeaponHomingPidgeon, kWeaponFactoryHoming | HomingPayloadLogicEntity | 0x859e7c | 0x5616d0 | 0x5856e7 |
+| kWeaponMadCow, kWeaponOldWoman, kWeaponScouser | WalkingPayloadLogicEntity | 0x85d6dc | 0x592ad0 | 0x5856be |
+| kWeaponSheep, **kWeaponSuperSheep** | JumpingPayloadLogicEntity | 0x85a364 | 0x564680 | 0x585695 |
+| kWeaponStarburst | StarburstLogicEntity | 0x85ce04 | 0x5890e0 | 0x5855f1 |
+| kWeaponPoisonArrow | PoisonArrowLogicEntity | 0x85c934 | 0x586600 | 0x58564d |
+| anything else | ParabolicPayloadLogicEntity | 0x85b504 | 0x577f40 | 0x585679 |
+
+- After creation, the factory computes the launch vector:
+  - `IsAimedWeapon` -> aim angle, `IsDirectionalWeapon +0x1cc` -> facing.
+  - `IsPoweredWeapon`: speed = `BasePower +0x110 + ShotPower * MaxPower +0x114`.
+  - AI path: uses `AI.LaunchVelocity`.
+  - `IsLaunchedFromWorm +0x1cf`: applies `Worm.EyeLevelOffset`.
+  - `HasAdjustableFuse`: fuse handling.
+- Secondary spawns (disasm):
+  - **SuperSheep take-off**: Payload slot 24 (`Input.FirePressed`, 0x581a60) detonates if `DetonatesOnFirePress +0x1dc`. Otherwise, if the container class is exactly FlyingPayloadWeaponPropertiesContainer (0x9689e8), it spawns **FlyingPayloadLogicEntity** (vt 0x859424, HM 0x558250). Sheep (flag 1) explodes and SuperSheep (Flying container) flies.
+  - **Bomber drop 0x54ddf0**: container kWeaponFatkins -> **FatkinsStrikePayloadLogicEntity** (vt 0x858f1c, HM 0x554cd0), else ParabolicPayloadLogicEntity. It also compares `kWeaponDoctorsStrike` (a cut weapon).
+  - **SuperBomber 0x58ae50** spawns ParachutePayloadLogicEntity (vt 0x85be14, HM 0x57a8a0).
+  - **Detonate** (Payload slot 20, 0x580f10): if `NumBomblets +0x1a0 > 0`, it creates ClusterGeneratorLogicEntity (vt 0x8588f0, HM 0x551950). That entity's 0x5519d0 spawns **ParabolicPayloadLogicEntity** bomblets. The bomblet container comes from `BombletWeaponName`: assumed, not traced.
+  - `GameLogicService::CreateMine` 0x4f9630 (and 0x4f9c40) creates level mines as Parabolic with kWeaponLandmine.
+
+#### Per-container summary (data + disasm above)
+
+| container | WeaponType (data) | weapon logic | payload logic |
+|---|---|---|---|
+| kWeaponBazooka, Grenade, ClusterGrenade, HolyHandGrenade, BananaBomb, GasCanister | 2/4 | PayloadWeapon (+Powered; +AdjFuse for Grenade/Cluster/Banana) | Parabolic |
+| kWeaponDynamite, kWeaponLandmine | 5/6 | PayloadWeapon (UtilityFire case) | Parabolic |
+| kWeaponSheep | 8 | PayloadWeapon (UtilityFire case) | Jumping |
+| kWeaponSuperSheep | 8 | PayloadWeapon | Jumping, then Flying on fire |
+| kWeaponStarburst | 8 | PayloadWeapon | Starburst |
+| kWeaponHomingMissile, kWeaponFactoryHoming | 3 | PayloadWeapon (+HomingCursor) | Homing |
+| kWeaponOldWoman, kWeaponScouser | 9 | PayloadWeapon | Walking |
+| kWeaponConcreteDonkey | 10 | PayloadWeapon (+TargetingCursor) | Donkey |
+| kWeaponAirstrike | 10 | PayloadWeapon (+BomberCursor) | Bomber -> Parabolic bombs |
+| kWeaponFatkins | 10 | PayloadWeapon (+BomberCursor) | Bomber -> FatkinsStrikePayload |
+| kWeaponSuperAirstrike | 10 | PayloadWeapon | SuperBomber -> ParachutePayload |
+| kWeaponPoisonArrow | 2 | PayloadWeapon (+Powered) | PoisonArrow |
+| kWeaponFactoryWeapon | 2 | WeaponFactoryLogicEntity -> PayloadWeapon | Parabolic |
+| kWeaponClusterBomb, Bananette, LandmineBomblet, FactoryCluster | 4 | none (sub-payloads) | Parabolic via ClusterGenerator (assumed link by BombletWeaponName) |
+| kWeaponLandmineCluster | 6 | none | swapped in by Landmine Detonate when DetonationType = Clusters (0x581258) |
+| kWeaponFatkinsFood, kWeaponSentryGunPayload | 10/0 | none | not traced |
+| kWeaponShotgun, SniperRifle / melee x4 / utilities | 2 / 5 / 1 | see Stage 1 | none |
+
+Doc corrections (disasm):
+- The payload class is chosen by container **name** (0x585330), not by container class.
+- SuperSheep is launched as **Jumping**.
+- **StealInventory belongs to OldWoman** (WormCollideResponse=1). Scouser is 2 = FloatAway, which uses its second mesh `InflatedScouser`. The previous "StealInventory = Scouser" note was wrong.
+
+### WEAPTWK enum fields: values and readers
+
+There is no `FireType` or `DetonationType` field. The enum-typed fields are `WeaponType`, `MeleeType`, `DetonateMultiEffect` and `WormCollideResponse`; `OrientationOption` and `ColliderFlags` are u32. Each field record's `+0xc` points to an enum descriptor `{name, 0, values[]}`, and a value = its index in that list. This is data: MeleeType values 1-4 match the names. Records also hold runtime-filled getter/setter pointers at `+0x18`/`+0x20`, e.g. WeaponType get 0x527970 / set 0x630f10. Game code inlines the reads, so callers of those getters only point back to the schema.
+
+| field (+off) | enum table | values (data) | readers / branches (disasm) |
+|---|---|---|---|
+| WeaponType (Base +0x34) | WeaponTypeEnum 0x90ca44 | 0 kNoType, 1 kUtility, 2 kProjectile, 3 kTargetted, 4 kThrown, 5 kMelee, 6 kEnvironment, 7 kHitscan, 8 kAnimal, 9 kControlled, 10 kStrike, 11 kMovement | Only inline read found: **0x5973e6**, WeaponAccessoryEntity, on the kWeaponFactoryWeapon container. `==4 kThrown` selects accessory handler 0x595ed0 (the "Base" locator); anything else selects WAE_Standard 0x5901c0. No switch on WeaponType exists in the logic, which dispatches by id (0x565ecc) and by name (0x585330). The data values are mostly descriptive: Shotgun/Sniper are 2, not 7, and Dynamite is 5. (negative result from register tracking: medium) |
+| DetonateMultiEffect (Payload +0x154) | DetonationTypeEnum 0x90c8f0 | 0 kDT_Random, 1 kDT_Normal, 2 kDT_Fire, 3 kDT_Clusters, 4 kDT_BigPush | See the Detonate breakdown below |
+| WormCollideResponse (Payload +0x158) | WormCollideResponseEnum 0x90ca94 | 0 kWC_Default, 1 kWC_StealInventory, 2 kWC_FloatAway | **0x5931bd** in the WalkingPayload worm-collision handler 0x5930d0 (reached only when `DetonatesOnWormImpact`=0): 0 -> 0x5933ee (default); 1 -> 0x593368: StealInventory 0x592d30, state 3, `Payload.PlayIntermediateAnim`; 2 -> 0x5931f7: state 4, `Worm.OverridePhysics`, `Payload.ChangeToSecondMesh`. Any other value asserts "Unknown worm collision response type" |
+| MeleeType (Melee +0x98) | MeleeWeaponEnum 0x90c914 | 0 kNoMeleeType, 1 kMeleeBaseballBat, 2 kMeleeFirepunch, 3 kMeleeProd, 4 kMeleeTailNail | Melee fire 0x568180: **0x568247** `==2` makes the worm say `Punch`, else `WeaponFired` (Worm.Say). **0x568329** `==4` sends `Worm.OverridePhysics` set 0x20. End 0x569b00 at **0x569d4e** `==4` sends `Worm.OverridePhysics` clear 0x20 (-0x21). NoMoreNails = 4 = tail nail |
+| OrientationOption (Payload +0x128, u32) | none | 0-3 seen (data: 0 Dynamite/walkers, 1 grenades, 2 bazooka/homing/sheep) | Logic start 0x582200 at **0x5825dd**: `==3` sets spin = SpinSpeed×0.08 ×(1±0.33 rand), else orientation from velocity (0x57f900). Graphic update 0x57c890 switch at **0x57ca2e** (table 0x57cab8): 0 sets angle `+0x3c`=0; 1 copies `+0x30`; 2 adds spin×dt to `+0x3c`; 3 adds spin×dt to `+0x3c` and `+0x44`. Meanings (fixed / follow / spin / tumble) assumed |
+| ColliderFlags (Payload +0xcc, u32) | none | 0 or 128 (walkers/animals) | no inline reader found (not traced) |
+
+#### DetonateMultiEffect handling (disasm)
+
+The type is read in Detonate (0x580f10) and in Explode (0x57f140):
+
+- **Store and Landmine override.** 0x5810b6 copies the value to `entity+0x14c`. If the container is `kWeaponLandmine`, scheme value `Mine.DetonationType` overrides it: -1 maps to Random, 0 keeps the container value, 1-4 force that type, and a value greater than 4 asserts.
+- **Random.** Random is resolved only for kWeaponLandmine, as `(rand & 3) + 1`, at 0x5811bf.
+- **Clusters (3).** The payload swaps its properties to `kWeaponLandmineCluster` (0x581236).
+- **Fire (2).** The explosion FX is `WXP_Napalm` instead of `DetonationFx` (0x5813c4).
+- **BigPush (4).** Explode 0x57f140 at **0x57f1c6** scales ImpulseRadius and ImpulseMagnitude ×2.0, and WormDamageRadius, LandDamageRadius and WormDamageMagnitude ×0.3. Every term is also multiplied by `rand%MaxPowerUp+1` (1 when MaxPowerUp is 0).
+- **Explosion-kind argument.** Explode passes a kind value to ExplosionMessage 0x518ce0: 2 when the name starts with `kWeaponCluster`, 4 when it starts with `kWeaponFactory`, 3 when DetonationType is Clusters (0x57f35e), and 0 otherwise.
+
+
+### Utilities: Armour, DoubleDamage, CrateSpy, CrateShower, LowGravity [disasm unless tagged]
+Crate pickup 0x5c9800 switches on crate type − 0x22 (byte table 0x5c99ac): 44 DoubleDamage, 45 CrateShower, 46 CrateSpy, 47 Armour.
+- **Armour**: `Armour.Collected` (0x5c991e); the worm handler 0x5ae1ea sets `WormData.Flags` (+0xEC) |= 0x80, never cleared (rest of the worm's life). Only the explosion handler 0x5ae4f0 tests it: damage = trunc(dmg × `Shield.DamageScale` 0.25) (0x5ae71c–0x5ae77e) and impulse × 0.5 (0x5ae96f–0x5ae98e), both skipped for explosion kind 5. `Damage.Impulse` (0x5ae320: bullets and other direct hits), poison (0x5ac060), fall damage (0x5ac3e0) and Vapourize ignore it. `Armour.ProtectionPercentage` 25 is read only by the AI damage estimate (0x548fc0, from AIPlanAttack 0x49ed30). ArmourLogicEntity (vtable 0x8579d0) only shows the shield on its worm's turns (0x549210 / 0x549270).
+- **DoubleDamage**: data key `DoubleDamage` = 1 (0x5c9854) + `DoubleDamage.Activated`; reset by stdlib.lub `DoPostActivity`, so it lasts the rest of the turn; Wormpot.lub sets it every turn [data]. ExplosionMessage ctor 0x518da5 doubles WormDamageMagnitude, ImpulseMagnitude, WormDamageRadius, LandDamageRadius and ImpulseRadius; DamageImpulseMessage ctor 0x518cbf doubles damage and impulse; 0x5abb63 doubles the per-damage cap (75, 150 with a Wormpot flag). Fall damage and poison are not doubled. Order: doubled first, then the armour trunc(× 0.25).
+- **CrateSpy**: 0x5c8b20 sets `TeamData.IsCrateSpyActive` (+0x73) for the active team, never reset. CrateGraphicEntity 0x5c5270 then shows a Text3DEntity of the contents 15 units above every crate whose type is not 1 or 3, during that team's turns and on the local / owning client only (0x4d3ed0 / 0x708fdc).
+- **CrateShower**: `GameLogic.CrateShower` 0x4fb820 calls CreateRandomCrate 0x4fa4b0 **6 times** (loop at 0x4fb850), track camera on the first only. Wormpot.lub sends it every turn in its crate-shower mode [data].
+- **LowGravity**: LowGravityLogicEntity on `Input.FirePressed` (0x5672f0 → 0x567140) sets `Low.Gravity.Multiplier` = `Low.Gravity.OnValue` **0.5** (TWEAK); the mystery crate (0x5cad2a) and Wormpot (0x5d7353) do the same. `GameLogic.Turn.Ended` (0x4fe7a2 → 0x4f24f0) puts back `Low.Gravity.GameDefault` 1.0: the utility lasts one turn. The multiplier scales all gravity (worms 0x5a6d20, payloads 0x582200, crates, parachute, rope, melee, bomber, oil drums); IsLowGravity payloads use `Gravity.Slow` −0.00015 instead of `Gravity` −0.00025, then × the multiplier.
+
+
+## 14. Turn timing: units, timers, death pacing (extends §6)
+
+Tags: [data] = XOM/.lub values, [disasm] = exe code read, [assumed] = inference.
+
+### Units and clock
+- Every turn-phase timer counts **game milliseconds**. `TimerLogicEntity` Update (vtable 0x851fc4, slot 6, 0x50f100) subtracts 10 from each running "...Remaining" key and returns 10. The task's return value is the delay before its next call, so the timer runs at 100 Hz. [disasm]
+- Rates of other tasks: worm Update 0x5b1d60 returns the time left to the next multiple of 20 ms (50 Hz, aligned). GameLogicService Update 0x4fa2c0 returns 20. Game time in ms is at `*(0x96d030)+0x38` (delayed posts use it, see Worm.DamageComplete below). [disasm]
+- The scheme fields are copied to the data keys unchanged (no ×1000 and no ÷60). stdvs `SetupScheme`: `HotSeatTime=HotSeat`, `TurnTime`, `RoundTime`, `DefaultRetreatTime=LandTime`. The front end compares `Q.LRet` directly with `SchemeData+0x154` (0x74ca3a) and `Q.Hot` with `+0x160`. [data+disasm]
+- The front end shows `ms/1000` as "%d" (turn, retreat) and the round time as "%01d:%02d" (0x753673, 0x75373a, 0x75398a). [disasm]
+
+### SchemeData timing fields (`pe.py schema '^SchemeData$'`, i32)
+| field | off | unit | meaning |
+|---|---|---|---|
+| RoundTime | +0x120 | ms | round clock. 0 = sudden death at start (stdvs Initialise). -1 is allowed by the assert (no round clock) |
+| TurnTime | +0x124 | ms | turn clock. 0 = no clock. The assert requires 0 or more than 10000 |
+| LandTime | +0x154 | ms | **retreat time** after the shot (`DefaultRetreatTime`). Editor label `FETXT.RetreatTime`, message `Scheme^LandR^` |
+| RopeTime | +0x158 | ms | rope retreat (assumed from the editor keyword `RopeR`/`Q.RRet`). It has a value cycle at 0x753762, but no `Scheme^RopeR^` message exists and no .lub reads it, so it is never applied |
+| HotSeat | +0x160 | ms | the "get ready" countdown before the turn clock. The PC editor cannot change it |
+| HelpPanelDelay | +0x16c | ms | values 0/1000/3000/5000 |
+| MineFuse | +0x168 | **s** | lib_help: `Mine.Min/MaxFuse = MineFuse*1000`; -1 = random 0..5000 ms |
+| DisplayTime | +0x150 | bool | `HUD.Clock.DisplayRoundTime` |
+| SuddenDeath | +0x148 | enum | 0 = all worms to 1 hp, 1 = commentary only, 2 = draw |
+| WaterSpeed | +0x14c | enum | 0..3 select `Water.RiseSpeed.{0,Slow 4,Medium 8,Fast 16}` (Water.Level units, added once per turn end) |
+| RandomCrateChancePerTurn | +0x12c | % | read by `GameLogic.DropRandomCrate` (assumed) |
+
+Built-in schemes (LOCAL.XOM `SchemeData`, 19 of them) [data]: TurnTime 30000/45000/60000/90000. RoundTime 600000..2700000. HotSeat 10000, except Ranked 5000. LandTime 0 (Pro, Strategy, Mystery), 3000 (KitchenSink, MultiDestruction, QuickGame, QuickGameDemo, WXD.DefaultSchemeData), 5000 (most), 6000 (Ranked), 8000 (Family). RopeTime 5000 (0 Bng, 10000 Mystery). LVLSETUP `GM.SchemeData` (live copy): 1800000 / 60000 / 10000 / LandTime 3000.
+
+Editor value cycles ("+" direction; "-" is the reverse) [disasm 0x7525ac]:
+- Turn 15→20→30→45→60→90→15 s.
+- LandR (retreat) 0→3→5→10→0 s.
+- Round 5→10→15→20→25→30 min, then 0 if `Q.SDeath`<2, else back to 5.
+
+### Data-key defaults (LOCAL.XOM, ms) [data]
+TurnTime 45000, RoundTime 1800000, HotSeatTime 10000, **PostActivityTime 2400**, DefaultRetreatTime 3000, RetreatTime 0, GameLogic.SuddenDamageMode 0. Other keys:
+- `Game.RoundTime` / `GS.Default.RoundTime` = 900: online lobby, seconds [assumed].
+- `CommentaryPanel.Delay` 1200, `GameToFrontEndDelayTime` 3000.
+- `Camera.Track.RestTime` 1500, `Camera.Track.MinEventTime` 1000 (CAMTWK).
+
+Overrides in the scripts [data, lua.py]:
+- Challenges: HotSeatTime/RetreatTime/DefaultRetreatTime 0, PostActivityTime 0 or 10 (10 = one timer tick).
+- Wormpot NoRetreatTime: retreat 0.
+- Missions: TurnTime 25000..99000.
+
+### TimerLogicEntity (0x50f100 tick, 0x50f980 HandleMessage) [disasm]
+Members:
+- data-key handles: +0x74 RoundTime, +0x78 TurnTime, +0x7c HotSeatTime, +0x80 PostActivityTime, +0x84 RetreatTime.
+- remaining times: +0x88 Round, +0x8c Turn, +0x90 HotSeat, +0x94 PostActivity, +0x98 Retreat (all "...Remaining").
+- other keys: +0x9c ElapsedRoundTime, +0xa0 ClockDisplayMode (1 hot seat, 2 turn, 0 post-activity or retreat).
+- flags: +0x69 game paused, +0x6a turn, +0x6b round, +0x6c hot seat, +0x6d post-activity, +0x6e retreat, +0x6f round paused, +0x70 turn paused.
+
+Each tick:
+1. If paused (+0x69), do nothing.
+2. ElapsedRoundTime += 10, and the round timer counts down, unless the round is paused, or the camera service (`*0x95c370`, current camera +0x2c) is in mode 0xe [mode meaning not identified]. When the round timer goes below 0 it is set to 0 and **Timer.GameTimedOut** is posted. stdvs `Timer_GameTimedOut` is empty: sudden death is only checked at turn end (`CheckSuddenDeath`: RoundTimeRemaining==0).
+3. Only one of these phases is ticked, in this priority: hot seat → post-activity → turn → retreat.
+   - **Hot seat**: posts Timer.HotSeatTimedOut. Any `Input.SomeInputFrom` cancels it at once ("hot seat canceled"), which also posts HotSeatTimedOut.
+   - **Post-activity**: posts Timer.PostActivityTimedOut.
+   - **Turn**: frozen while TurnTime is paused, in camera mode 0xe, or while byte 0x95d9fc is set (GunWeaponLogicEntity 0x55ed10 sets it while a multi-shot gun is firing). Posts Timer.TurnTimedOut.
+   - **Retreat**: when the remaining time reaches 4000..4009 ms it posts `Acting.Trigger(0x2e, 0x7f)` (enum name not resolved). Posts Timer.RetreatTimedOut.
+
+Messages:
+- StartGame: Round = RoundTime; the round runs if RoundTime>0.
+- StartTurn: Turn = TurnTime; the turn runs if >0.
+- EndTurn: stops the turn and the hot seat.
+- StartHotSeatTimer: if HotSeatTime>0, starts it and spawns an object by class GUID 0x86633c (HotSeatTimeGraphicEntity, assumed); otherwise posts HotSeatTimedOut at once.
+- StartPostActivity: if `Turn.Boring`>0 and `Turn.PayloadFired`>0, posts `Acting.Trigger(0x1e,0x7f)`. Then PA = PostActivityTime; if it is 0 or less, PostActivityTimedOut is posted at once.
+- StartRetreatTimer: Retreat = **RetreatTime** (not DefaultRetreatTime); if it is 0 or less, RetreatTimedOut is posted at once.
+- EndRetreatTimer, and also `GameLogic.Turn.Started`: stop the retreat.
+- GameLogic.DoubleTurnTime (0x50f020): turn remaining ×2, capped at 99000.
+- Round/TurnTime.Pause and .Resume: set the pause flags.
+
+Who starts which phase:
+- On firing, BaseWeaponLogicEntity 0x549ad0 posts **Timer.EndTurn** (the turn clock stops) and Weapon.DisableWeaponChange.
+- When the weapon is done, 0x549bb0 posts Weapon.Delete, **Timer.StartRetreatTimer**, Weapon.Fired. Before that, the weapons set `RetreatTime = DefaultRetreatTime` or the `RetreatTimeOverride` (section 6.6).
+- CameraManagerService 0x5210b0 also posts StartRetreatTimer [role not traced].
+- The Lua side (section 6.1): RetreatTimedOut → EndTurn → wait for `ObjectCount.Active==0` → StartPostActivity → after 2400 ms, PostActivityTimedOut → ApplyDamage → settle → DoPostActivity.
+
+### Death queue and death pacing (correction to 6.6: +0x210 is not a timer) [disasm]
+- `GameLogicService+0x210` is the handle of the data key **GameLogic.SuddenDamageMode** (bound at 0x4f8c15). Its default in LOCAL.XOM is 0. No .lub sets it, and the exe only binds and releases it (0x4f3e27, 0x4f3f08), so it is always 0 [assumed: debug-only].
+- 0x4f9b30 runs every 20 ms. It pops the front worm when one of these holds:
+  - active-object count == queue size;
+  - SuddenDamageMode != 0;
+  - GunWaiting, and count <= size + 2.
+  
+  There is **no timeout**.
+- Active tokens held by a worm, each released or replaced per slot (`0x4d3af0` Register(name, file, line, slot*)):
+  - Damage display 0x5abc50 takes slot +0x60 ("Worm Displaying Damage Taken") and posts **Worm.DamageComplete at now + 2500 ms** (0x5abe94). DamageComplete (0x5b09b7) releases slot +0x60.
+  - If damage >= energy: 0x5a70e0 sets energy to 0, takes slot +0x5c "Worm Waiting To Die", then the worm posts `GameLogic.AddMeToDeathQueue`.
+  - So the first death waits for every damage display (2.5 s) and every other active object to finish.
+- Worm.TimeToDie (0x5adbf0; ignored if the state is already DrownFloat 8):
+  - posts **Worm.LandDeath** (the CommentService banner, 0x5e41e0);
+  - ChangeState 7 DeathThroes, animation id 0x13;
+  - 0x5a7190: slot +0x5c becomes "Worm Dying", stats, the camera tracks the worm (0x51cf20, WormTrackCamera); a flag 0x100 worm posts SurrenderTeamById;
+  - **throes timer +0x128 = 3000 ms**.
+- DeathThroes update 0x5aa080: -20 per worm tick. At 0 or below:
+  - explosion 0x5a9400 (`Worm.DeathWormDamage*`, `DeathImpulse*`, `DeathLandDamageRadius`, ExplosionMessage);
+  - 0x5a9310 (spawns something at +20 height: gravestone, assumed);
+  - **WXWormManager.UnspawnWorm**.
+- DrownFloat 0x5aa130 uses the same timer: it sets 2000 ms when a float/height test passes (0x5aa222; read as "reached the surface", assumed), then -20 per tick, then the same blast and Unspawn.
+- **Delay between successive deaths** = 3000 ms of throes + unspawn/cleanup. The next pop waits until the dying worm's token is gone, because count == size + 1 while it is dying. There is no other gap.
+- **End-of-turn settle**: EndTurn waits for `ObjectCount.Active==0`, which includes damage displays (2.5 s) and dying worms (3 s each). Then PostActivityTime 2400 ms, then ApplyDamage (poison), which can start a new settle and death round.
+
+### Other per-turn timers [data unless noted]
+- Sudden death: checked once per turn end, in `DoOncePerTurnFunctions` (stdvs). Once it has started, `Water.Level += Water.RiseSpeed.Current` (4/8/16) every turn end, preceded by `GameLogic.AboutToWaterRise`.
+- Crates: one `GameLogic.DropRandomCrate` per turn end. `Crate.DelayMillisec` 0, `Crate.WaitTillLanded` 1, `Crate.Parachute` 1.
+- Mines: `Mine.MinFuse/MaxFuse` in ms; the scheme MineFuse is in s.
+- Game-wide (0x4fa2c0) [disasm]: `FCS.QuitAttractMode` when game time >= 300000 ms with flag `*(0x95a298)+0x160` bit 1 set (the attract demo, assumed). `GameLogic.QuitGame` once at 14,400,000 ms (4 h).
+
+
+## 15. Bundles (`Bundl*.xom`)
+
+475 files, 627.5 MB, all `MOIK`. Verified over all 475: a sequential type-order walk (below) ends exactly at EOF in every file. [data]
+
+### 1. Header, type table, strings [data]
+- 64 B header: `MOIK`, `u32 @4` = `00 00 00 02` (version, same in all bundles), `u32 @24` type count, `@28` container count (equals the sum of type counts in all 475), `@32` root container index (1-based). The root is always an `XGraphSet` (the resource directory, see 3).
+- Type records, 64 B each: `TYPE`, `u32 @8` instance count, GUID @16, name @32 (31 chars + NUL). Types with count 0 are abstract bases (`XNode`, `XGeometry`, `XCoordSet`...).
+- `GUID` (16 B), `SCHM` (`u32 1`, 12 B), then `STRS`: `u32 count, u32 bytes, count x u32 offsets, blob`. String 0 is `""`.
+- Containers follow, grouped by type, in type-table order (not always "descriptors first": in 46-50/57-61/68-92 `XGraphSet` comes after `WXTemplateSet`; in Bundl09 after `PC_LandFrame`).
+
+### 2. Container encoding: why splitting on `CTNR` fails [data]
+- Schema classes: `CTNR` + 3 bytes + fields in `pe.py schema` order (derived class first). Header byte 0 is `00` (most), `01` (root `XInteriorNode`, most `XIndexedTriangleSet`, ~3.4k others), `08` or `04` (a few hundred); bytes 1-2 always `00 00`. Meaning unknown. [data]
+- Untagged (no `CTNR`, no 3-byte header), custom serialisation: every `X*Descriptor`, `XGraphSet`, `XAnimClipLibrary` (1222 + 1582 + 92 + 49 + 1 + 1 descriptors, 1697 graph sets, 310 clip libraries). Splitting on `CTNR` merges them into the previous tagged container, so every later index is shifted. This is the main failure. [data]
+- Schema fields with flag `0x20` (struct offset 0) are absent from bundle data: `XTextureStage` `FourCC` / `MaxMipMapLevel` / `Matrix` (all 3207 `XOglTextureMap`), `XFortsExportedData.BPVictoryLocation` (824/869), `XMultiTexFontPage` `CharCoords/CharSizes/CharKern*`. So flag 0x20 means "field added in a later version, optional". It is the same rule as `SchemeData.AssistedShotSettings`. [data + schema]
+- Decoding with the full field list can read into the next container and still land on a `CTNR` (seen in `XFortsExportedData`, where empty arrays are 1 byte each). The correct end is the variant that lands on the *nearest* following `CTNR`. [data]
+- No tagged payload in the shipped bundles contains the bytes `CTNR`. Schema end == next `CTNR` for every tagged container, so the problem is only the untagged containers and the variant choice. [data]
+- Type objects `pe.py` leaves as hex: `0x96ece8` = bounding sphere (4 f32: centre, radius), `0x96ed00` = bounding box (6 f32), `0x96e9e8` = 2 f32 (tex coords), `0x96eb08` = 3 f32 (normals). [data: exact ends]
+
+### 3. Untagged formats [data; field names from schema where they match, else assumed]
+| type | layout |
+|---|---|
+| `XMeshDescriptor` | varint name, **u16 bundle number**, varint ref -> `XGraphSet` (scene), 2 bytes (`08 00` 655, `00 00` 314, `08 02` 211, `01 00` 36...; meaning unknown) |
+| `XBitmapDescriptor` | name, u16 bundle, ref -> `XTexFont` (sprite: image + UV rects), u16 w, u16 h (`80 00 80 00` = 128x128 ...) |
+| `XSpriteSetDescriptor` | name, u16 bundle, ref -> `XGroup` |
+| `XCustomDescriptor` | name, u16 bundle, 2 bytes (`01 00` 46, `00 00` 3) |
+| `XTextDescriptor` | name, u16 bundle, ref graph, u16 glyph count k, 2 B, k x 6 B char map (FE.Font, Bundl03) |
+| `XNullDescriptor` | name (`NULL`), u16 bundle (Bundl04 only) |
+| `XGraphSet` | varint n, n x (16-byte role GUID, varint ref, varint name) |
+| `XAnimClipLibrary` | see 5 |
+- The u16 bundle number equals the file number in all 4,947 descriptors. The engine builds the path with `sprintf(fmt, id)`: `AppDataService` 0x4d7aa0 calls resource-manager vtbl+0x60 with `"Bundles/"`, `"Bundl%.2d.xom"` (the library default is `"Bundl%03d.xom"`, set by 0x6acd00 / 0x6af930). Formatting sites: 0x6ae4cf, 0x6ae6dc, 0x6b017f (`movzx word id; push fmt; call 0x63882d`). [disasm]
+- No index file exists outside the bundles: no non-bundle XOM holds descriptors. Name -> bundle comes from each bundle's own descriptors. [data; the runtime lookup was not traced]
+- **XGraphSet role GUIDs** (first 4 bytes) -> target and name, counts over all bundles:
+  `99cc436e` resource directory (root set; refs to descriptors, name = resource name) 2947; `6ae6dbe4` scene root (`XInteriorNode` "world" 1090, `WXTemplateSet` "Templates" 111, `PC_LandFrame`) 1222; `5ce9bd39` `XAnimClipLibrary` 310; `bb62fcf6` `XExpandedAnimInfo` 259; `ffd7103d` `XAnimInfo` 31; `edc28fc5` `XCollisionData` ("Collision Data" 1097 / "Phantom Collision Data" 1080); `5f3094db` `XDetailObjectsData`; `e1d7ef28` `XFortsExportedData`; `9c59206c` `XXomInfoNode` (Maya export info: computer, user, .mb path, date); `ebf58e96` `XPathFinderData`; `9e84c023` `XPositionData`.
+- A mesh descriptor -> its graph set -> scene root + clip library + collision. This is the chain `w4m-models` follows.
+
+### 4. Classes present (instances, files) [data]
+Scene: `XGroup` 5405, `XInteriorNode` 1106, `XShape` 2003, `XTransform` 1931, `XJointTransform` 1639, `XBone` 1639, `XSkin` 89, `XSkinShape` 145, `XBinModifier` 57, `XChildSelector` 19, `XMatrix` 194, `XSceneCamera` 5. Geometry: `XIndexedTriangleSet`/`XIndexSet`/`XTexCoord2fSet` 2029, `XCoord3fSet` 2025, `XNormal3fSet` 1317, `XColor4ubSet` 665, `XConstColorSet` 44, `XPaletteWeightSet` 137, `XCollisionGeometry` 1083, `XCollisionData` 2177. Material: `XSimpleShader` 1611, `XOglTextureMap` 3208, `XImage` 3110, `XMaterial` 368, `XLightingEnable` 418, `XBlendModeGL` 196, `XZBufferWriteEnable` 157, `XAlphaTest` 110, `XCullFace` 109, `XDepthTest` 105, `XTexturePlacement2D` 40, `XEnvironmentMapShader` 2. 2D: `XTexFont` 1674 (sprite = image + rects, despite the name), `XMultiTexFont`/`XMultiTexFontPage` 1/31 (Bundl03), `XBillboardSpriteSet` 89, `XPlaneAlignedSpriteSet` 3. Anim: `XAnimClipLibrary` 310 (117 files), `XExpandedAnimInfo` 259 (u32 flags), `XAnimInfo` 31 (2 bools: animated alpha/colour). Export metadata: `XFortsExportedData` / `XDetailObjectsData` 869 (empty in practice), `XXomInfoNode` 146 + `XExportAttributeString` 584. Landscape, in 35 files (24-45: theme / custom detail banks): `LandFrameStore` 24711, `DetailEntityStore` 7133, `WXLumpConnector` 2278, `WXLumpBoundBox` 1160, `WXTemplate` 816, `WXTemplateSet` 111, `XPathFinderData` 228, `XPositionData` 212. `PC_LandChunk` 7 / `PC_LandFrame` 5 (Bundl09: girder / exported landscape graphs).
+
+### 5. Animation (`XAnimClipLibrary`, untagged) [data; layout as in w4m-models, stats over all 310 libraries / 1066 clips / 20112 channels]
+- varint name (the Maya source path, e.g. `Grenade.xom`), u32 key-type count, key types (u32 type, varint string = node path `a|b|c`), u32 clip count. Per clip: f32 duration (s), varint name, then **always** u32 channel count + per channel u16 key-type index. The 0x100/0x101 "one channel per key type" form handled by w4m-models never occurs. The u16 `0x100` "skip 16 bytes" case never occurs either.
+- Channel: 4 flag bytes (`01 01 00 00` 15748, `01 01 01 00` 3745, `01 01 00 01` 574, `01 01 01 01` 45; read as must-contribute, weighted, static, linear), 8 B pre/post infinity (u32 each: `0` constant 19218, `2,2` 888 (cycle assumed), `2,0` 6), u32 key count, keys of 6 f32 `(in-weight, in-angle, out-weight, out-angle, time, value)`: Maya-style Bezier tangents, angle in radians.
+- Time in seconds. Most common key spacings: 2.0, 0.5, 1/12, **1/24**, 0.25, 1.0, 1/8, so authored at 24 fps (Maya film). In 721 channels the last key is past the clip duration (sampling clamps).
+- Key types (low 24 bits; top byte = axis 0/1/2): `0x103` rotate (euler radians, XYZ, applied Rz·Ry·Rx) 1348, `0x102` translate 940, `0x904` scale 805, `0x104` scale (other variant) 105, `0x401` texture offset 58, `0x1100` texture switch (`XChildSelector`) 19, `0x200` axis 3 (44; unknown, maybe visibility / colour alpha), `0x403` (1; unknown, texture). No quaternion or compressed keys: everything is f32 curves. [data; 0x200/0x403 meaning assumed]
+- Rotation encoding: per-axis euler curves on `XJointTransform.Rotate` / `XTransform.Rotate`. The joint matrix is T · R(JointOrientation) · R(Rotate) · R(RotateAxis) · S, as in w4m-models. [data + w4m-models]
+
+### 6. Model containers [data, w4m-models + schema]
+The scene graph, geometry, skin and image layouts in `docs/w4m-formats.md` ("Meshes, skeletons and animations") match the exe schema field for field. Schema names: `XIndexedTriangleSet` = IndexSet, Flags, PrimitiveCount, Coord/Normal/Color/TexCoord/Weight sets, BoundBox (6 f32), BoundMode, VertexShader. `XShape` = Flags, Shader, Geometry, SortKey, Parameters[], Pre/PostRenderFunc, Bounds, BoundMode, Name. `XImage` = Name, Width, Height, MipLevels, Flags (u16 each), Strides[], Offsets[], Format, Data[], Palette. `XPaletteWeightSet` = Indices u8[], WeightCount u16, Weight f32[]. `XBone` = PoseMatrix, Transform (4x4), Affine, then XInteriorNode. Uncompressed: f32 positions/normals/UVs, u16 triangle lists. Only `XImage` formats 9/10/11 are DXT-compressed.
+
+### 7. Bundle index
+See "Bundles numbering" above (unchanged). Additions from this pass [data]:
+- Every bundle names its own resources in its root `XGraphSet` (`99cc436e` entries). `xom.py list Bundles/BundlNN.xom 'Descriptor'` now lists them.
+- 24-45 (theme/custom detail banks) are full landscape XOMs (`LandFrameStore` etc.), not only detail meshes.
+- Hand/glove meshes are named in the exe as Maya source files (`HandWorms.xom`, `HandAlienBreedP.xom`, `HandDLC*`...: `P` = paired/alt variant, assumed). They match `Gloves.*` in 315-352.
+
+### 8. Relation to `tools/w4m-models`
+- Handles: untagged descriptors / graph sets / clip libraries (its `exact()` = the table in 3), schema-sized types up to the next `CTNR`, scene walk (`XGraphSet` -> `XInteriorNode`/`XGroup`/`XSkin`/`XBinModifier`), `XShape`/`XSkinShape`, `XIndexedTriangleSet` + sets, palette weights, `XSimpleShader` first stage -> `XImage` formats 0/1/2, joint/transform/matrix cores, `XChildSelector` (first child only), clips with Bezier eval, 30 fps resampling.
+- Skips or ignores: DXT images (9/10/11), `XMaterial` colours, render states (blend / alpha test / cull / z), stages after the first, `XTexturePlacement2D` / `0x401` UV animation (parsed as a key type but not exported), `0x1100` texture switching (first child only), `0x200` / `0x403` keys, pre/post infinity (always clamps; cycle `2` ignored), the channel flags, `XCollisionGeometry` / `XCollisionData`, `XBillboardSpriteSet` / `XPlaneAlignedSpriteSet`, `XSceneCamera`, `XEnvironmentMapShader`, `XAnimInfo` / `XExpandedAnimInfo`, and the descriptor trailing bytes.
+- Dead code: the `0x100`/`0x101` channel form and the u16 `0x100` skip (never in data, harmless).
+- `exact()` reads `XBitmapDescriptor` as v,+2,v,+4 and `XTextDescriptor` as v,+1,v,v,...; the second only works because the u16 bundle id 3 has a zero high byte. Read it as name, u16, ref, u16 k.
+
+
+## 16. Network (online multiplayer)
+
+Tags: [data] = strings, RTTI, schema or imports; [disasm] = confirmed in code; [assumed] = inferred, not verified. Times are logical milliseconds (`TaskManager::GetLogicalTime()` = `[[0x96d030]+0x38]`).
+
+### Summary
+
+- Transport: Steam P2P (`ISteamNetworking`) under Team17's **XomOnline** layer. Discovery and lobbies use Steam matchmaking. There is no GameSpy SDK; only a GameSpy-shaped legacy `GameBrowser` remains.
+- Topology: client/server. The Steam lobby owner hosts a `XomOnlineServer` and every peer is a `XomOnlineClient`. Traffic travels on named channels (`group~topic`), and game traffic uses `$simchannel$`. Host migration is supported.
+- Sync model: **deterministic input-message lockstep with delayed playback**. Every machine runs the full simulation. Only the machine of the player in play generates gameplay input messages. Those messages are timestamped with a future logical time, run locally at that time, and sent to the others, which replay them at the same logical time. Remote machines are throttled so they stay behind the active player's "lead time". At end of turn, a state checksum is compared and any mismatch aborts the game. No world state is replicated.
+
+### Transport layer
+
+- Imports [data]:
+  - `steam_api.dll`: SteamNetworking, SteamMatchmaking, SteamFriends, SteamUser, SteamUserStats, SteamHTTP, SteamApps, SteamUtils, SteamRemoteStorage, plus Register/UnregisterCallback and CallResult.
+  - `WSOCK32.dll` by ordinal: socket, bind, listen, accept, connect, send, recv, sendto, recvfrom, select, setsockopt, ioctlsocket, gethostname, gethostbyname, WSAStartup and others.
+  - `WS2_32.dll`: WSASend, WSARecv, WSACreateEvent, WSAGetOverlappedResult.
+- `IXConnection` implementations [data]:
+  - `XSteamConnection` (vt 0x8aefec): P2P, with callback `P2PSessionConnectFail_t`. Its fail reasons are logged as "STEAM CONNECT FAIL - remote user has different app ID / doesn't own / no steam connection / not accepting".
+  - `XSteamListener` (vt 0x8aeb9c): accepts `P2PSessionRequest_t` ("GOT THE MAGIC OnP2PSessionRequest").
+  - `XSteamLocalLoopbackConnection` (vt 0x8af27c): the host's own client.
+  - `XTcpConnection` (vt 0x8ae79c).
+  - `XListener` (vt 0x89a27c).
+- Addresses [data]: `XIp4Address` (`%d.%d.%d.%d:%d`) and `XSteamAddress` (vt 0x8af110). `XSteamManager` vt is 0x8ae34c.
+- XomOnline `g_Config` @0x98adf8 [disasm, ctor 0x40369b]:
+  - +0: port 1024, formatted as `0.0.0.0:%d` by the server listen code at 0x404b85.
+  - +4 and +8: 500 and 500.
+  - +0xc: listener class `XSteamListener` (class 0x8ae8e4).
+  - +0x10: connection class `XSteamConnection` (class 0x8aebf8).
+  - +0x18: 1000.
+  - So on PC the "1024" is a port carried over XomOnline on Steam P2P, not a real UDP/TCP port [assumed].
+- `XTcpConnection` is used by a debug "Team17 telnet server V0.1" on `0.0.0.0:23` (0x692db1) [data/disasm]. `XUdpPacketPort` (vt 0x8af4f0, broadcast/recvfrom) is only created through the class factory, and no PC call site was found [assumed: unused or LAN legacy].
+- `/ENABLEPORTFORWARDING` logs "Universal Plug + Play port forwarding enabled." [data]. The Steam invite command line is `+connect_lobby` [data].
+- XomOnlineMachine (one per peer link, `XomOnlineMachineImpl.cpp`) [data+disasm]:
+  - Handshake states: UpdateConnect -> WaitName -> WaitKey -> WaitTag. The application tag must match ("XomOnline Default Application V1.0", otherwise "application tags don't match").
+  - Commands: `XOMONLINEMACHINE_COMMAND_BEAT` (heartbeat) and `_CLOSE`.
+  - Timeouts come from the machine config @0x98aeb0 (ctor 0x407c62): connect 10000 and 20000 ms (+0xc/+0x10, used at 0x408c0c), send-flush 250 ms (+0x14), 1000 (+0x18), heartbeat interval 1000 ms (+0x1c, 0x408b01/0x408962), and receive idle timeout 15000 ms (+0x20, deadline reset at 0x40894f on every receive).
+  - Expiry gives "timed out-Machine1..5" and `HRESULT 0x80210001` (UpdateOpen 0x40803c).
+  - Packets: header with a "big header" variant, `kPacketSizeLimit`, and a send store flushed with partial sends allowed.
+- XomOnlineServer/Client [data]: commands `XOMONLINE_SERVERCLIENT_CMDADDCHANNEL/CMDREMCHANNEL` and `XOMONLINE_CLIENTSERVER_REQADDCHANNEL/REQREMCHANNEL`. Peers are identified by tag<->id pairs (id < 256). Clients route packets "from %d to %d" through the server. A channel has `SendToOwner` and `SendToGroup`.
+
+### Online object model (XomOnline, Steam backend)
+
+| class | vtable | role |
+|---|---|---|
+| `XomOnlinePlugInDriver` | 0x8bce3c | Top-level online state machine: title, sign-in, online main, QuickMatch, OptiMatch, RankedMatch, CreateLobby, Lobby, HostMigration. Error injection. Host migration 500 ms after the host is lost (0x409c57) [disasm] |
+| `WXomOnlinePlugInService` | 0x86e15c | Game-side bridge (UI messages `xo.*`, `WXNET.Check*`, `Net.RankedMatchSetup`, `Net.PostWinMatchScreen`) |
+| `steam_XomOnlineMatchImpl` (`XomOnlineMatch`) | 0x8bda2c | Creates or publishes the Steam lobby (`"%s's lobby"`). Lobby data keys: `player_limit` (<=4), `is_ranked`, `preview_data`, `host_name`, `Rank_Higher`, `Rank_Lower`, `xo.public_open/filled`, `xo.private_open/filled` |
+| `steam_XomOnlineFinderImpl` (`XomOnlineFinder`) | 0x8bdfec | `RequestLobbyList` with filters (`LobbyMatchList_t`); JoinInviteMatch |
+| `steam_XomOnlineSessionImpl` (`XomOnlineSession`) | 0x8bd504 | Enters the lobby (`LobbyEnter_t`). The lobby owner is the server ("local match, creating server"); others start a client. Opens channel `session`. Max 4 lobby members. CheckViability ("Session no longer viable") |
+| `XomOnlineServer` / `XomOnlineClient` / `XomOnlineMachine` / `XomOnlineChannel` | 0x8bac94 / 0x8bb2fc / 0x8bb8ec / 0x8bdc94 | Transport described above |
+| `steam_XomOnlinePlayer/PlayerSet/Gamer` | 0x8ba1b4 / 0x8be374 / 0x8bd69c | Players and their join/leave state machines |
+| `steam_XomOnlineHostMigrationImpl` | 0x8be658 | New lobby owner becomes host ("migration started, becoming new host (%s)") |
+| `SteamLobby` (entity, `WXSteamLobby.cpp`) | 0x8b72b0 | Callbacks LobbyChatUpdate, LobbyDataUpdate, PersonaStateChange; "AUTO SET PLAYERS READY" |
+| `WXSteamLobbyBrowser` (service) | 0x8b73f8 | `GameLobbyJoinRequested_t` (Steam overlay invite), enters lobby |
+| `PCPlatformManager` | 0x86d388 | `GameLobbyJoinRequested_t` ("Going to Online Lobby from out-of-game invite") |
+| `GameBrowser` (`GameBrowserImpl.cpp`) | - | GameSpy-style legacy: `GS.*` messages, keys `gamever authresponse privateip publicip firewall hostport openstaging`, data resource `Net.ServerPort` (+0x20). `GS*` containers are GSRoom, GSPlayer, GSNetworkGame, GSTeam and others [data]; its PC use is [assumed] marginal |
+| `NetService` (`NetService_Xbox.cpp`, shared with Xbox) | 0x89b3ec, ctor 0x705bce, instance `[0x979ddc]` | Game-level networking (below) |
+| `NetThrottle` | 0x89b1fc, Update 0x7082ca | Time throttling of remote simulation |
+| `ReplayMessageStoreService` | 0x8569ac, Update 0x542f00 | Timestamped message store: send/receive/replay of input |
+| `NetNameStorageService` | 0x89d3f4 | Player-details lookups |
+| `SteamVoiceService` | 0x8696fc | Push-to-talk; carried by `NetSteamVoice*Msg` |
+| `NetworkDebugService` | 0x8565d4 | `Net_%s.log` |
+| `SpectatorMasterLogicEntity` / `SpectatorCam` | 0x851e28 / 0x855ddc | Spectator input ("NetSpectatorInput enabled") |
+| `NetworkIndicatorEntity` | 0x866c88 | HUD lag/busy indicator (`Net.Busy`, `Net.NetworkBusy`) |
+
+### Net messages (`BaseNetMsg`, XOM-serialised with `NetStream.cpp`)
+
+`NetService` ctor 0x705bce registers the classes with `NetStream::RegisterClass` 0x70daf0, at most 256 classes. The registration index is the class id written on the wire [disasm; the wire id is assumed].
+
+| idx | class | fields (schema) | use |
+|---|---|---|---|
+| - | `BaseNetMsg` | MsgId u16 | base |
+| 0 | `StringNetMsg` | Text | generic |
+| 1 | `ClientGameLoadCompleteMsg` | - | client finished loading the level |
+| 2 | `ClientFeLoadCompleteMsg` | - | client back in the frontend |
+| 3 | `BuggerOffMsg` | - | kick |
+| 4 | `ClientMsg` | DispatchTime u32 | base of timed messages |
+| 5-10 | `NetStored{,String,Int,TwoInt,Float,TwoFloat}MessageArray` | Msg u32[], Time u32[], plus Text[] / Value1[] / Value2[] | **batched input messages with logical timestamps** |
+| 11 | `ClientTimeSyncMsg` | (DispatchTime) | active player's clock, every 1000 ms; -1 at end of turn, -2 at end of game |
+| 12 | `GameDataSetupMsg` | SchemeData ref, LevelName, LevelSeed, LogicalSeed | host -> all before load (0x70ad51 "sending level seed / logical seed") |
+| 13 | `GameStateValidationMsg` | WormIndex, SourceOfValidation, Random, WormCheck[] (`WormDataChecksums`), TaskVerificationString, Alliance/Team/Worm inventory checksums, camera checksums and floats, RoundTime, HotSeattime, TurnTime | desync check |
+| 14-18 | `ClientToClientMsg` (DestClient), `AllianceMsg`, `GlobalChat`, `GlobalAnonChat`, `GlobalActionChat` | SourceClient, Content | chat |
+| 19-21 | `NetSteamVoiceData/Start/EndMsg` | VoiceData u8[] | voice |
+| 22 | `LobbyDataChangeMsg` | LevelTheme, LevelName, LevelSeed | host changed the landscape in the lobby |
+| 23-24 | `PlayerChat`, `AllianceChat` | SourceClient, Content | chat |
+| 25 | `WormDataChecksums` | per worm: Energy/Pending/Initial/Current, Pos/Rot/Vel/LastColNorm checksums, SlopeAngle, WeaponAng, WeaponFuse, Weapon, Team, Poison, AfterTouch, GunWobble | element of validation |
+| 26 | `ClientSurrenderMsg` | SurrenderingPlayerIndex | surrender (`Team.Surrender`) |
+| 27 | `ClientReplayRoundMsg` | Reason | "NetClient returning to frontend - Replay round" |
+| 28 | `TeamMessage` | Nick, Team ref, Action enum, Alliance, WormCount, Handicap, InvertX/Y/YFP, Sanctioned | lobby team add/remove/update |
+| 29 | `ClientRemoveMsg` | ClientNick | player removed |
+| 30-32 | `ClientSavedMapMsg`, `ClientHasDlcMsg` (DlcOwned), `ClientHasReadForRank` | | map, DLC and ranked handshakes |
+| 33 | `HostInfoMsg` | HostNick | after connecting or migrating |
+| 34 | `LatestMessagesMsg` | latest time per stored list (6 u32) | host migration resync |
+| unreg. | `GameStartMsg`, `GameStateValidationHashMsg` (SourceOfValidation, Hash0-3), `PlayerMessage` (Nick, Player, Action), `BrowserWelcomeMessage` (Host, Level, Theme, TimeOfDay, LogicalSeed, Wormpot1-3, UniqueId), `BrowserReadyStateMessage` (Nick, IsReady), `AvatarMetadataMsg` | | GameBrowser path or unused [assumed] |
+
+Other team/lobby containers: `NetworkTeamData : StoredTeamData` (+WormCount, Alliance) and `NetworkGame` (State enum, Timeout).
+
+### Game-message IDs used by NetService
+
+The IDs are globals at 0x979de0-0x979f18, filled by the ctor at 0x7f7d30 [disasm]:
+
+| global | message |
+|---|---|
+| de0 | GameLogic.Win |
+| de8 | GameLogic.Draw |
+| df0 | GameLogic.GameLoadComplete |
+| df8 | GameLogic.Turn.Started |
+| e00 | GameLogic.Turn.Ended |
+| e08 | GameLogic.EndTurn |
+| e10 | Net.BeginGame |
+| e18 | Net.Close |
+| e20 | Net.DisableAllInput |
+| e28 | Net.AddPlayer |
+| e30 | Net.RemovePlayer |
+| e38 | Net.RoundEnded |
+| e40 | Net.PostWinMatchScreen |
+| e48 | Net.RankedWinMatchScreen |
+| e50 | GS.AddTeam |
+| e58 | Net.LocalSelectTeam |
+| e60 | Net.Lobby.PlayerSelected |
+| e68 | Net.Lobby.ViewPlayerDetails |
+| e70 | Net.Lobby.KickPlayer |
+| e88 | GameLogic.StartGame |
+| e98 | GameLogic.EndTurn.Immediate |
+| ea0 | Net.ConnectOkay |
+| ea8 | Net.ConnectFailed |
+| eb0 | Net.Stalled |
+| eb8 | Net.ShutdownComplete |
+| ec0 | Team.Surrender |
+| ed8 | Net.NetworkBusy |
+| f10 | Net.AllPlayersLoaded |
+| f18 | Net.AllRankedPlayersHaveRead |
+
+`NetService::ProcessMessage` (0x70b943) dispatches on these IDs [disasm]:
+
+| message | handler |
+|---|---|
+| GameLoadComplete | 0x70786b (logs "Logical Rand at beginning of game") |
+| Turn.Started | 0x709827 |
+| Turn.Ended | 0x707bc5 (sends the -1 time sync) |
+| Net.BeginGame | 0x70933a |
+| Net.Close | 0x707b42 |
+| GS.AddTeam | 0x7074b7 |
+| LocalSelectTeam | 0x7072c5 |
+
+Other string-only messages: `Net.CreateServer`, `Net.ConnectToServer`, `Net.RequestHostConnect`, `Net.ClientConnected/Disconnected`, `Net.ConnectionTimer`, `Net.CullDisconnectedPlayers`, `Net.RoundEndedInError`, `Net.WaitingForPlayers`, `Net.SessionViable`, `Net.ClientAbortGame`, `Net.CloseClient`, `Net.Client.TimeToDie`, `Trigger.Net.Host/Join` (SamStartupService autostart) [data].
+
+### Lobby flow (host/join)
+
+- Frontend menus `WXNET.*` [data]:
+  - Navigation menus: MainMenu, GameList, GameLobby, HostGame, CustomCreate, Optimatch, QuickGameResults, OptiGameResults, Invitation, SignInSignOut.
+  - In-match screens: PreRound, WinRound, WinMatch, DrawMatch.
+  - Lobby UI resources: `WXNET.Lobby.Player%d.Name/Team`, `WXNET.Team%d.Ready`, `WXNET.Lobby.Timer`, `WXNET.LobbyFull`, `WXNET.Lobby.InviteFriends`, `WXNET.GamePassword`.
+  - Popup prefix `WXNETP.*`. Templates live in `MENUTWKXNET`.
+- Host [data, order from strings]: QuickMatch finds no match -> host screen, or CreateGame -> `XomOnlineMatch` creates the Steam lobby -> the session (lobby owner) creates the `XomOnlineServer` on port 1024 and its own loopback client.
+- Join [data]: the Finder lists lobbies or an invite arrives -> JoinLobby -> client connects over Steam P2P to the owner -> machine handshake -> channels.
+- In the lobby [data]:
+  - Teams: `TeamMessage` (add/remove, alliance, handicap).
+  - Landscape: `LobbyDataChangeMsg`.
+  - Others: chat, ready flags, kick (`Net.Lobby.KickPlayer` -> `BuggerOffMsg`, with the `WXFEP.ViewKick` popup), `HostInfoMsg`, and DLC/map checks (`WXNET.CheckScheme/CheckPlayers/CheckWormpot`).
+- Start sequence (NetService state strings) [data]:
+  1. "initialised and waiting for contact player".
+  2. "Sim channel open, waiting for game start" (`$simchannel$`).
+  3. Host: "all players connected, sending team and scheme data" -> `GameDataSetupMsg` (scheme, level, LevelSeed, LogicalSeed).
+  4. "game about to start, waiting for final connections" -> session set non-joinable -> `Net.BeginGame`.
+  5. Each client loads and sends `ClientGameLoadCompleteMsg`.
+  6. "all players' games have loaded, zabingo!" -> `Net.AllPlayersLoaded` -> play.
+  7. After Win/Draw: "waiting for unload" -> "all players unloaded, now waiting for game start" (next round).
+- Random seed: the host's LogicalSeed seeds the shared logical RNG and LevelSeed seeds land generation [data]. Both are sent in `GameDataSetupMsg`.
+
+### In-game synchronisation (lockstep of input messages)
+
+- Recording [disasm]:
+  1. `InputTranslationService` send helper 0x5056b0 (typed variants 0x5057a0 and others) drops the message when 0x505270 says so. That happens at logical time 0, or for two specific IDs (`[0x95b2f8]`, `[0x95b300]`) when NetService exists and 0x708fdc refuses them. It dispatches immediately when 0x505410 says so: offline, local-only messages, or "SendMessagesImmediately ... while paused in an online game".
+  2. Every other message goes to `ReplayMessageStoreService::Schedule` 0x542740 with `tTime = (now/20+1)*20`, the next 20 ms boundary.
+  3. Schedule rounds `tTime` up to 10 ms and asserts `tTime >= now` and `tTime - now < 30000`.
+- Transmission [disasm]: the store Update 0x542f00 handles the six lists (plain, string, int, two-int, float, two-float). Each pass dispatches due messages locally (warning "A message is being sent too late: Scheduled/Actual time" 0x53ef50), keeps `m_FullTurn_*` copies, and 0x5403a0 batches new entries into `NetStored*MessageArray` and sends them through `NetService::SendMessage` 0x70621d.
+- Remote playback [assumed from structure]: the receiver inserts the arrays into the same store and dispatches each message when its own logical time reaches `Time[i]`, so all machines run the same messages at the same tick.
+- Time sync and throttle [disasm]:
+  - While the local player is in play, NetService 0x707155 sends a `ClientTimeSyncMsg` every 1000 ms (`[0x947468]`). With a debug flag it also sends a `GameStateValidationMsg`.
+  - `NetThrottle::SetLeadTime` 0x70594b stores the lead time at +0x24. A value of -1 means end of turn ("others run till end of turn") and -2 means end of game.
+  - `NetThrottle::Update` 0x7082ca, when the lead time is valid and the local player is not in play:
+    - It pauses when `local + 2000 > lead` (`[0x94746c]`, "PANIC, game paused") and unpauses when `local + 3000 < lead` (`[0x947470]`, "RELAX").
+    - Otherwise it sets the sim speed to `clamp((lead - local)/5000, 0.3, 3)` (`[0x947474]`), smoothed as `0.95*old + 0.05*new`.
+    - "local player now in play" or -1/-2 means full speed.
+  - In practice spectators run about 2-5 s behind the active player.
+- Who simulates: every peer runs the full deterministic sim. Only the current player's peer produces gameplay input. `Net.DisableAllInput`, sent by Lua `stdlib.lub` DoPostActivity at end of turn, stops net input and starts end-of-turn validation [data+disasm].
+- Desync detection [data]:
+  - "Send End Of Turn Validation Request @", then "doing end of turn validation message at time": `GameStateValidationMsg` (RNG `Random`, per-worm checksums, inventories, camera, timers) or `GameStateValidationHashMsg` (4 x u32).
+  - The receiver queues the message until its own time matches ("Have a queued validation message with time ..., but current time is").
+  - Results:
+    - Success logs "End of Turn Validation OK."
+    - Mismatch: `Net.Error.TurnEndValFailed`.
+    - Time mismatch: `Net.Error.InvalidValTimestamp`.
+    - Missing message: `Net.Error.MissingTurnEndVal`, tolerated if the player surrendered.
+    - "NETW**K TIMES NOT IN SYNC" at 0x709134.
+  - Duplicate validation messages are discarded.
+
+### Timeouts, disconnects, migration
+
+- NetService abort handler 0x70864c ("returning to frontend - Game ABORTED (HR=...)") maps HRESULTs to messages [disasm]:
+
+  | HRESULT | message |
+  |---|---|
+  | 0x802100c9 | `Net.Connect` |
+  | 0x802100cd | `Net.RemovedFromSession` |
+  | 0x8021012c | `Net.OutOfSynch` |
+  | 0x8021012d | `Net.NotViable` |
+  | 0x8021012e | `Net.ExcessiveLag` |
+
+  XomOnlineMachine socket down or timeout is 0x80210001.
+- UI errors [data]: `xo.txtErrConnectTimeout*`, `xo.txtErrKicked*`, `xo.txtErrIncompatibleNat*`, `xo.txtErrNoSlots*`, `xo.txtHostMigration*`, `GS.Error.HostTimeOut`, `GS.Error.Add/Remove/RequestTeamsTimeout`.
+- Host migration [data]:
+  1. Host lost -> "Host Migration detected, pausing activities" and "Discarding latest messages in case they are incomplete".
+  2. The new host (new Steam lobby owner) re-sends `LatestMessagesMsg`, "Resending all input messages from current turn" (0x70a0f9 -> 0x5408a0 re-sends the `m_FullTurn_*` lists), and "Resending End of Turn time sync and game state validation message".
+  3. "Host Migration complete, resuming".
+  4. If the host left during its own turn, its teams surrender ("surrendering non local teams"). Host lost in the lobby aborts the session.
+- Surrender [data]: `Team.Surrender` -> `ClientSurrenderMsg`, and `SurrenderPlayerInTurn` when the current player is gone.
+
+
+## 17. Frontend (`WXFE_*`): menus, screen state machine
+
+(tags: [data] = read from tweak/exe data, [disasm] = read from code, [assumed] = inferred)
+
+### Data sources
+- Menus are pure data: `WXFE_MenuDescription` trees in the menu tweak databanks [data]. The databank name table at 0x91e15c (.data) lists, for PC: `MenuTwk`, `Persist`, `PersistPC`, `PersistNet`, `MenuTwkX`, `MenuTwkX2`, `MenuTwkXSteve`, `MenuTwkXInGame`, `MenuTwkXNet`, `MenuTwkXPCCommon`, `MenuTwkXPCEuro` (labels "Menu Tweak X", "Menu Tweak PC Only", "Menu Tweak Online", "Persistant"...) [data]. XBOX/PS2/PS3 files are not loaded by the PC exe [assumed: absent from the table].
+- Resource naming [data]: `WXFE.<Menu>` = full-screen menu, `WXFEP.<Name>` = popup, `WXNET.*` / `WXNETP.*` = network menus/popups, `<Menu>List` = `WXFE_ListBoxContents` the menu's list control binds to by `GameDataId`.
+
+### Classes (RTTI, vtables)
+Two parallel hierarchies: serialised `*Desc` containers (XOM, data) and runtime `*Entity` tasks built from them [data: RTTI].
+- Desc: `WXFE_BaseItemDesc` (0x87cc30: ItemName, EnableId, ControllerId, ChildrenItems) < `WXFE_BaseGfxItemDesc` (0x87cc98: Position/Scale/Orientation, Anim_Incoming/Outgoing (enum), Anim_Spot, Audio_Incoming/Outgoing (enum), Audio_Spot, Delay_Incoming/Outgoing (u32), FontSizeOverride, LayerOffset, LOCKED) < `WXFE_BaseInputItemDesc` (0x87ceac: ToolTipId, Navigate_Left/Right/Up/Down (item names), Anim_Activated/Highlighted, Audio_Activated/Highlighted).
+- Screens: `WXFE_MenuDescription` (0x87cd54, base GfxItemDesc): BorderType, BorderAutoSize, BorderEdgeSize, Messages_BeforeMenuDisplayed / AfterMenuDisplayed / MenuGoingAway / CancelPressed / AcceptPressed, DefaultSelectedItem, FullScreenColour -> runtime `WXFE_MenuEntity` (vt 0x8aa6e4, +0x20 0x8aa684) < `WXFE_BaseMenu` (0x8add84) < `WXFE_BaseGfxItem` (0x8a9bdc) < `WXFE_BaseItem` (0x8aa10c).
+- Input widgets (`WXFE_BaseNavItem` 0x8adcec, navigable): `WXFE_ButtonEntity` (MenuButtonDesc: ResourceName text, Messages_Highlighted/Selected, Border_*, SquareButton, OnRelease, colours), `WXFE_ListControlEntity` (ListControlDesc: GameDataId -> `WXFE_ListBoxContents`, AutoScroll, LoopContents, SortContents, arrows), `WXFE_DetailButtonEntity` (ListDetailDesc: ListDataId + Index = one row of a list shown as a big button; the `DETAIL *` items of every submenu), `WXFE_TextBoxEntity` (TextBoxDesc: font, TextGameDataId, AutoScroll*, colours), `WXFE_TextEditBoxEntity` (TextEditBoxDesc: MaxTextWidthChars/Pixels, PassWord, NumbersOnly, InvalidChars, SoftwareKeyboardTitleID), `WXFE_ButtonHelpEntity` (ButtonHelpDesc = TextBox: `Hint_Select` / `Hint_Back`), `WXFE_HowToPlayTextBoxEntity`, `WXFE_SoftwareKeyboardEntity`, `WXFE_InputEntity` (InputDesc: raw Messages_Selected/Cancel/Left/Right/Up/Down), `WXFE_LandscapeEntity` (LandscapeBoxDesc: generated landscape preview), `WXFE_GalleryThumbEntity`, `WXFE_FlagObjectEntity`, `WXFE_TrophyEntity` / `WXFE_TrophyCabinetEntity`, `WXFE_WormpotControlEntity`, `WXFE_BriefingEntity` [data: RTTI+schema].
+- Display-only (`WXFE_BaseGfxItem`): `WXFE_MeshObjectEntity` (MeshObjectDesc: MeshName + Anim_In/Spot/Out/Looping_Mesh clip names, Audio_*_Mesh, Delay_In/Out_Mesh, Waiting* placeholder), `WXFE_MeshObjectParticleEntity` (+EffectNames/LocatorNames/SpawnDelay/SpawnLoopTime), `WXFE_ImageViewEntity` (ImageId, WaitTime), `WXFE_TextScrollerEntity` / `WXFE_NewsFeedScrollerEntity` (ScrollingTextDesc: Speed, Wrap, ScrollForward, AlwaysScroll; the ticker), `WXFE_TitleControlEntity` (TitleControlDesc: TextResourceID, TextAnim), `WXFE_WormEntity` / `WXFE_ShopControlEntity`, `WXFE_PlayerRepresentationObjectEntity`, `WXFE_GalleryImageEntity`, `WXFE_GetControllerInputEntity`, `WXFE_WeaponFactoryMeshEntity`, `WXFE_ListBoxElementsEntity` [data].
+- List rows: `WXFE_ListBoxContents` (Rows[], TotalRows, VirtualOffset/Enabled, CallBack) -> `WXFE_ListBoxRows` (Border_*, Anim_Highlight/Clicked, Messages_Selected/RightClick/Highlighted/Left/Right, RowHeight, GapBetweenItems, Decorative, Sort/Index/Enable, Columns[]) -> columns `WXFE_StringColumns` (Text key, Font, FontSize, Width(%), Justification, colours, TextAnim), `WXFE_StringTableColumns` (+CallBack), `WXFE_FlashString*Columns` (FlashOn/FlashOff), `WXFE_IconColumns` / `WXFE_HighlightIconColumns`, `WXFE_MeshColumns` / `WXFE_MeshAttachmentColumns`, `WXFE_PowerColumns` (slider-like bar: PowerNumber, Style kPCS_Normal/Grow/...ZeroDisable), `WXFE_TallyColumns` (TallyNumber icons), `WXFE_GapColumns` (GapWidth, kGAP_Normal/Dots/Line). Runtime row items: `WXFE_Item_Strings/StringTable/FlashStrings/FlashStringTable/Icon/IconHighlight/Meshs/MeshsAttachment/PowerBar/Tally/Gap` (vt 0x8ae028 family) [data]. There is no dedicated slider class: option values are list rows with Messages_Left/Right and a PowerColumns/StringColumns value [data; "slider = PowerColumns row" assumed].
+- Borders (pure code, no XOM): `WXFE_Border` (0x89f43c) + 50 subclasses: Nav (Back/Cross/Tick/Start/ArrowLeft/ArrowRight x Normal/Highlight/Disabled), Button (S/B x Normal/Highlight/Disabled), Text (Normal/Highlight/Disabled/Edit/Active), List (Blue/Orange), Mem, Paper (Normal/Shadow), GfxPaper, NamePlate, Charcoal, Armoury, Bubble, ComPanel; selected by `WXFE_BorderTypeEnum` (table 0x90f1c0: kMT_NoBorder 0, FrameBorder, BasicBorder, ArmouryBorder, Blue/OrangeListBorder, Text{Normal,Disabled,Edit,Highlight,Active,Charcoal}Border, ButtonSmall/Big{Normal,Disabled,Highlight}, Nav{Start,Tick,Back,Cross}{Normal,Disabled,Highlight}, NavArrowLeft/Right{Norm,Highlight,Disabled}, BubbleBorder(NoPointer), PaperBorder, BorderNamePlate, ComPanelBorder, Paper{Normal,Shadow}Border, Memory*, ComPanelBorderTrans, kMT_LAST) [data].
+- Services: `FrontEndService` (vt 0x89f8c0, ctor 0x726367, singleton 0x97a600, HandleMessage 0x72a3e9 (id 0x40 -> subscribe 0x729ac9, id 0x42 -> shutdown 0x7293dd), CreateNewMenu 0x726bbe, AnimDivide 0x728a47), `PopUpService` (0x89f61c, HM 0x7259ad), `WXFE_DataSetupService` (0x8a626c, `WXMsg.SetupData/Request/ControllerSetup`), `AutoRepeatService` (0x8a7148, menu key repeat), `InGameMenuBackgroundService` (0x8270e4, LoadBack*.tga behind in-game menus), `NewsFeedService` (ticker `WXFE.TickerTape`, default `WXFE.TickerTapeDefault`) [disasm/data].
+
+### Enums (name tables in .data, index = value) [data]
+- `WXFE_ControlAnimsEnum` (0x90f290): 0 None, 1 Click, 2 Click_Error, 3 Highlight, 4 In_BigBounce, 5 In_Flipy, 6 In_Next, 7 In_Prev, 8 In_ScaleHitXY, 9 In_ScaleY, 10 In_SlideX, 11 In_Speech, 12 In_SpringX, 13 In_SpringXY, 14 In_TitleUnderline, 15 In_ToolTip, 16 Out_Next, 17 Out_Prev, 18 Out_ScaleX, 19 Out_ScaleXY, 20 Out_ScaleY, 21 Out_Speech, 22 Out_TitleUnderline, 23 Out_ToolTip, 24 Reset, 25 Title_Scroll, 26 Wide_Highlight, 27 In_Chat, 28 Out_Chat.
+- `WXFE_ControlAudioEnum` (0x90f318): 0 None, Cancel, Click, Click2, Click3, Error, Grenade, Highlight, In_BigBounce, In_Book, In_Controller, In_CrateDice, In_Custom, In_Net, In_Next, In_Prev, In_ScaleHitXY, In_ScaleY, In_SlideX, In_SoundVid, In_Speech, In_SpringX, In_WeaponFactory, In_WormPot, Out_Book, Out_Next, Out_Prev, Out_Scale, Out_ScaleXY, Out_ScaleY, Typewriter, WormPot_{Button,HandlePull,Intro,Nudge,Outro,Spin_Loop,Spin_Start,Spin_Stop}, Page_Turn, Typewriter_Delete (event table 0x8a98e8..0x8a9bb0, already in the audio section).
+- `WXFE_GradientColours` (0x90f3d0, text colours: kGC_Header_Orange, SubHeader_Blue, TextBox_Yellow, List_Lable_Blue, List_Data_Orange, Button_Yellow, PopUp_*, Disabled_Grey...), `WXFE_BackgroundColours` (0x90f18c), `WXFE_TextAnimationEnum` (kTA_None, LargeWobble, SmallWobble, TitleRandom, MediumWobble), `EdgeJustificationEnum` (9 anchors TopLeft..BottomRight), `WXFE_PositionalEnum` (Top/Middle/Bottom), `GapTypeEnum`, `PowerColumnStyleEnum`, `WXFE_LevelTypeEnum`, `WXFE_LevelThemeTypeEnum`, `WXFE_UnlockResourceTypeEnum`, `WXFE_UnlockableStateEnum` (Hidden/Purchasable/Unlocked).
+
+### Item animations and their durations [disasm + data]
+- `0x754a90` (WXFE_BaseGfxItem.cpp) maps `kANIM_n` to a clip name of the shared clip library `WXFrontend.Anim` (Bundl10; string 0x8a5e9c, loaded at 0x75548f and 4 other sites): Click->`click`, Click_Error->`click_error`, Highlight->`highlight`, Wide_Highlight->`highlight2`, In_*/Out_* -> lowercase names, Reset->`reset`, Title_Scroll->`title_scroll`; None -> no clip. Jump table 0x754b88 [disasm].
+- Clip lengths (Bundl10 `WXFrontend.Anim`, read with `w4m-models --list`) [data]: click 0.12 s, click_error 0.75, highlight 0.75, highlight2 0.75, in_bigbounce 1.58, in_chat 0.62, in_flipy 2.92, in_next 0.29, in_prev 0.46, in_scalehitxy 0.29, in_scaley 0.25, in_slidex 0.62, in_speech 0.62, in_springx 0.25, in_springxy 0.21, in_titleunderline 1.04, in_tooltip 1.04, out_chat 0.62, out_next 0.42, out_prev 0.38, out_scalex 0.25, out_scalexy 0.25, out_scaley 0.21, out_speech 0.29, out_titleunderline 0.96, out_tooltip 0.21, title_scroll 8.33, reset 0.
+- Usage in PC menu data (all PC databanks): Anim_Incoming mostly In_SlideX (463 items: list rows/details), In_ScaleY (271), In_SpringXY (136), In_TitleUnderline (59), In_Prev (41, the back nav button), In_Flipy (16, logos); Anim_Outgoing mostly None (1908), Out_ScaleY (192), Out_ScaleXY (92), Out_TitleUnderline (50), Out_Prev (37). Highlight = Highlight (buttons) / Wide_Highlight (list rows); Activated/Clicked = Click [data].
+- `Delay_Incoming` is a per-item stagger in ms [unit assumed]: the main menu children start at 300; submenu detail rows cascade 300, 350, 400, 450, 500, 550 (`WXFE.LocalGame` DETAIL QuickGame..Challenges); `Delay_Outgoing` is 0 everywhere [data].
+- Menu-specific mesh clips (MeshObjectDesc Anim_In_Mesh/Out/Looping, durations from the bundles) [data]: `WX.Mesh.Title` Intro_Title 11.67 / Loop_Title 11.67 / Outro_Title 0.04; `WX.Mesh.SinglePlayer(Worms)` SinglePlayer_Intro 0.75 + Noise_Loop 0.50; `WX.Mesh.NetOptions` Intro_Internet 0.75; `WX.Mesh.CustomiseOptions` Intro_Custom 2.00; `WX.Mesh.ControllerOptions`/`JoystickOptions` Intro_Controller 0.83; `WX.Mesh.SoundVideo` SoundVid_Intro 0.75 / SoundVid_Outro 0.58; `WX.Mesh.StoryBook` Intro_Book 1.12; `WX.Mesh.ItemShop` Intro1Source1/Outro 0.96; `WX.Mesh.WFactory` In_All 1.38 / Out_All 0.54 (+ per-part clips); `WX.Mesh.Dice` CrateDice_Intro 0.83 / Outro 0.38; `FE.LoadingIcon` / `FE.SavingIcon` Rotate 1.17; `TransitionMesh` Circle_In / Circle_Out 1.00 (in-game, not menus) [data].
+- `Delay_Incoming` / `Delay_Outgoing` are ms: `0x755a78` (incoming) and `0x755b34` (outgoing) divide desc+0x60 / +0x64 by 1000.0 into item+0x64 before starting the clip of desc+0x48 / +0x4c (`0x754a90` -> `0x755686`) and the sound of desc+0x54 / +0x58 (`0x754bfc`, channel 4 in / 5 out). On incoming, an animated item is first moved to (50000, 50000, 0) (off-screen) until its delay expires [disasm]. If global `0x97a608` == -1 incoming anims are skipped (it is reset to 0, or set from a leading digit, by every `FE.ChangeMenu`) [disasm; when it is -1 unknown].
+
+### Screen list and menu tree (PC data) [data]
+Boot: `Default.cfg` `/STARTMENU:WXFE.MainMenu`, `/GAMEOVERMENU:WXFE.MainMenu`. Each entry below = `WXFE_MenuDescription` resource -> (where it goes). `DETAIL x` = `ListDetailDesc` row of the menu's `*List`; `NAV Prev`/`NAV Start`/`NAV OK` = `MenuButtonDesc` nav buttons (Border kMT_Nav*).
+- `WXFE.MainMenu` (MENUTWKXPCCOMMON; children: Title Mesh `WX.Mesh.Title` + 8 `WXP_FE_*` effects, Logo `WXFE.Vs` (In_Flipy, 300 ms), ToolTip mesh, ticker, BuildNumber, Hint_Select/Back; Cancel -> popup `WXFEP.ConfirmFEQuit`). Its list is a separate menu `WXFE.MainMenuMenu` (one ListControl `MainMenuList` -> `WXFE.MainMenuList`, In_ScaleY 400 ms). Rows (Wide_Highlight / Click, RowHeight 35, gap 2): `FETXT.LocalGame` -> `WXFE.LocalGame`; `xo.txtXboxLive` (Enable `Steam.Online`) -> `PM.HandleAccess.OnlineMulti` -> popup `WXFEP.SelectTeam` (online) -> `WXNET.MainMenu`; `FETXT.MyWorms` -> `WXFE.MyWorms`; `FETXT.Leaderboards` (Steam.Online) -> `WXFE.LeaderBoards`; `FETXT.Achievements` -> `Xb360Live.ShowAchievementsUI`; `FETXT.Help&Options` -> `WXFE.Options`; `FETXT.DownloadContent` (Steam.Online) -> `PM.ViewMarketplace`; `Lang.Quit` -> `WXFEP.ConfirmFEQuit`.
+- `WXFE.LocalGame` (mesh `WX.Mesh.SinglePlayer` + `SinglePlayerWorms`; Cancel/NAV Prev -> `WXFE.MainMenu`): QuickGame -> popup `WXFEP.QuickGame` (1-4 players -> `WXMsg.StartGame$QuickStartHvC/HvH/HvHvH/HvHvHvH`); Tutorial / Story / Worms3DCampaign / Challenges -> popup `WXFEP.SelectTeam` -> `WXFE.Tutorial` / `WXFE.Story` / `WXFE.W3DStory` / `WXFE.Challenges` (each: level browser, NAV Start -> `WXMsg.StartGame$Tutorial/Story/Challenge`, Cancel -> `WXFE.LocalGame`); Versus -> popup `WXFEP.SelectMultiType` (Deathmatch/ClassicForts -> `WXFE.CreateAGame`, Destruction -> `WXFE.CreateAGameDest`, StatueDefend/Survivor -> `WXFE.CreateAGameSD`, GameRules -> `WXFEP.MultiTypeHelp1`). CreateAGame*: team slots (`WXFEP.InsertTeam`), scheme (`WXFEP.SelectScheme`), landscape (`WXFEP.SelectLandscape2`), `WXFE.Wormpot`, NAV Start -> `WXMsg.StartGame$Multiplayer`.
+- `WXFE.MyWorms` (Cancel -> PreviousMenu): Customise -> `WXFE.Customise` (Edit/Delete Team, Weapon, Settings, Landscape popups -> `WXFE.TeamOptions` / `WXFE.WeaponFactory1` / `WXFE.SchemeBuilderBase`), ItemShop -> `WXFE.ItemShop`, Gallery -> `WXFE.GalleryThumbnailView` (-> `WXFE.Gallery`). `WXFE.TrophyCabinet` also lives here.
+- `WXFE.Options` (Cancel -> `WXFE.MainMenu`): ControllerSetup -> `WXFE.ControlOptions` (pages `WXFE.ControlsPC1..6`), JoypadControllerSetup -> `WXFE.ControlOptions_Joypad` (`ControlsJoypad1..6`), SoundOptions -> `WXFE.SoundAndVideo`, Language -> popup `WXFEP.SelectLanguage` (-> `WXFE.ChangingLanguage` -> `WXFE.MainMenu`), HowToPlay -> `WXFE.HowToPlay` (6 popups `WXFEP.H2Play_*`, `WXFE.HowToPlayDetails`), Movies -> popup `WXFEP.SelectMovie` -> `WXFE.MoviePlayer`. `WXFE.Credits` (In_Split, plays the credits movie).
+- Match flow: `WXFE.PreStart` (sends `WXMsg.StartGame$NOW` after display), loading `WXFE.LoadingScreenPC`, between rounds `WXFE.WinRound` -> `WXFE.PreRound` (NAV OK -> `StartGame$NextRound`), end `WXFE.WinMatch` (Cancel -> `FCS.LeaveWinMatchScreen`), `WXFE.WinMission/WinTutorial/WinChallenge/WinW3D*/WinAward/WinAll*`, `WXFE.ResultsScreen2/3/4Player`. In-game: popup `WXFEP.Pause` (Continue / SaveSeed / Quit -> `WXFEP.ConfirmQuit`), `WXFE.OptionsInGame` (PERSISTPC), `WXFEP.MissionBriefing`, `WXFEP.WeaponHelp`, `WXFEP.ChatPopup`.
+- Network (`WXNET.*`, MENUTWKXNET/PCCOMMON): `WXNET.MainMenu` (QuickMatch, RankedMatch, Optimatch, Host Game; Cancel -> `xo.msgReqTitleMainScreen`), `WXNET.HostGame`, `WXNET.Optimatch`, `WXNET.GameLobby`, `WXNET.PCCustomCreate`, `WXNET.PreRound/WinRound/WinMatch/DrawMatch`.
+- Counts (PC databank set, later files override same names): 225 `WXFE_MenuDescription` resources = 72 `WXFE.*` screens, 116 `WXFEP.*` popups, 13 `WXNET.*`, 15 `WXNETB.*` (network option pickers), 6 `WXNETP.*`, 3 debug/PS2 leftovers. Full dump recipe below.
+
+### Screen state machine [disasm]
+- Message syntax (sent by `0x75a89f` -> `0x75a5bf`, WXFE_BaseItem.cpp, max 20 per list): `Name$arg` string payload, `Name#n` int, `Name%f` float (assumed from the separator set "$#%^" at 0x8aa330), `Name^a^b` two strings; plain `Name` = no payload. A leading list entry `Before` / `After` is a marker, not a message (see below).
+- `FE.ChangeMenu$<res>` (FrontEndService HM 0x72a3e9, branch 0x72a586): `WXFE.MainMenu` may be substituted by an override name (global 0x95a100 +0x48, or the online plug-in's current screen); optional 1-2 leading digits are stripped into globals 0x97a608 / 0x97a610; the name is stored as "requested" (+0x4c), pushed on the MenuStack (`0x4ba780`), logged "ChangeMenu", then `0x726bbe` (CreateNewMenu): if top-of-stack != current (+0x48), resolve the resource (`0x50b760`), assert it is a `WXFE_MenuDescription` ("Failed to load menu!" otherwise), build a `WXFE_MenuEntity` (`0x726317`, class 0x8aa644), give it layer `0x97a61c` (+10 per open popup), store it at +0x50, record the name as current unless a popup is open (`0x97a614` = popup count), then broadcast `FE.HighlightItem` and flush `FE.ShowQueuedErrors`.
+- The old screen is not deleted by the service: every live `WXFE_MenuEntity` also listens to `FE.ChangeMenu` (HM 0x760797); if the target name is not its own (+0xb8) it calls GoAway (`0x77dcaf`, WXFE_BaseMenu.cpp) which sends `Messages_MenuGoingAway` (immediately if the list starts with `Before`, else after the outgoing anims), marks itself leaving (+0xa9), recursively GoAway()s its children, and each child plays its `Anim_Outgoing` after `Delay_Outgoing`. `FE.KillMenu` / `WXMsg.KillMenuNamed` = same path with kill=1 (no outgoing anim, `0x758ce6`). So old outgoing and new incoming overlap in time; nothing waits for the old screen [disasm; overlap inferred from code paths].
+- `FE.PreviousMenu` (0x72ad93): pops the MenuStack twice (current, then previous) and re-sends `FE.ChangeMenu$<previous>` unless it equals the requested name (so the previous entry is pushed back). `FE.PopMenu` (0x72ae4f): pops once and makes the new top the current name without rebuilding. `FE.KillCurrentMenu`, `FE.ResetMenu`, `WXMsg.KillMenuNamed` also handled [disasm].
+- MenuStack (MenuStack.cpp, object at FlowControlService +0x120, `m_pMenuStack` = FES +0x12c): vector of 0x53-byte name strings. Push `0x4ba780`: if the name is already in the stack, everything above it is dropped (no duplicate; going "forward" to an ancestor = going back); else append. Pop `0x4ba570`, Top `0x4ba5c0`, Clear `0x4ba750`, SetCheckPoint `0x4ba5f0` (records depth < 100), RestoreCheckPoint `0x4ba630` (truncate to it). FlowControlService (0x4ef180, 0x4eba10, 0x4eeb80) and GameLogicService end-of-game (0x4fb880) use the checkpoint to return to the right menu after a match [disasm].
+- Popups (PopUpService HM 0x7259ad): `WXMsg.CreatePopUp$<res>` -> `0x7257ab`: stack of up to 20 names (+0xd4, stride 8, count +0x17c); the previous popup gets `WXMsg.HideMenu` (except `WXFEP.ChatPopup`), the first popup switches input context to "Menu" when in game, layer `0x97a61c` += 10, popup count `0x97a614`++, then it is opened with a normal `FE.ChangeMenu$<res>` (so a popup is a menu entity drawn above the current screen, not recorded as current). `CreatePopUpCheckTrial` adds the trial/upsell check. `WXMsg.KillPopUp` (top) / `KillPopUpNamed$<res>` -> `0x72517e`: `WXMsg.HideMenu` + `WXMsg.KillMenuNamed`, pop, layer -= 10, `WXMsg.ShowMenu` the popup below, restore input context; `WXMsg.KillAllPopUp` -> `0x7253b5`. Popup data uses `Messages_MenuGoingAway = WXMsg.PlaySample$click3` and Cancel = `WXMsg.KillPopUpNamed$<self>` [disasm+data].
+- Background "divide" (`WXMsg.AnimDivide$<clip>`, handler 0x728a47): FrontEndService owns `WX.Mesh.BlueDivide` (Bundl10 `Blue Divide.xom`, the curved blue panel) and plays clips on it via `0x7289c0` (speed 1.0, sets busy +0x38). Requests In_Curve / In_Split / Reset; if the other shape is shown it first plays Out_Curve / Out_Split and queues the request (+0x30) until the clip ends. Clip lengths: In_Curve, Out_Curve, In_Split, Out_Split 0.83 s each, Reset 0.04 s [disasm+data]. Data usage: submenus `In_Curve`, main menu / PreStart / ChangingLanguage `Reset`, match results & PreRound & Credits `In_Split`.
+- `WXMsg.ScrewMenu` (FlowControlService 0x4f06b8 -> 0x4ed570): until the "press fire" flag 0x910b10 is set, the title shows `FETXT.PressFire` (font `FE.Font`) and removes `MainMenuList` / `MainMenuListTrial` with `WXMsg.RemoveItem` (title "press start" stage) [disasm, partial].
+
+### Input and navigation [disasm]
+- Menu entity input (`0x75f8da`, WXFE_MenuEntity): mouse (`Input.MouseMoved`, `Left/RightMousePressed/Released`, `MouseWheelUp/Down`) and `Input.Menu.Left/Right/Up/Down(+.Release)`, `Select`/`SelectReleased`, `AltSelect`, `Cancel`, `PageUp/Down`, `Home/End`, `Caps`, `Delete`, `AcceptKeys`, `Input.KeyTyped`, `Input.Menu.ForceSelect`, `Input.Start/Stop`. The highlighted item gets the input first (vfunc +0x18; returns 1 = not consumed). Unconsumed Left/Right/Up/Down highlight the item named by the current item's `Navigate_Left/Right/Up/Down` (desc +0x78/+0x7c/+0x80/+0x84, via `0x77dd43`): navigation is an explicit data graph, no spatial search. Unconsumed Cancel sends the menu's `Messages_CancelPressed` (desc +0x88). Select fires the item's `Messages_Selected` (`OnRelease` buttons fire on SelectReleased) [disasm; Select path assumed by symmetry].
+- `AutoRepeatService` (HM 0x74bcc9, tick 0x74b8d8): fixed 20 ms steps (elapsed ms clamped to 100). Per direction {held, counter, period}: press sets counter = period = 23; each step counter--, a repeat `Input.Menu.<dir>` is sent when counter < 5 (first repeat after 19 steps = 380 ms). Each repeat reloads counter = period and decrements period down to 8 (then alternates 7/8): intervals 380, 360, 340 ... ~80/60 ms. `*.Release` clears; `FE.ControllerLost` resets [disasm].
+- Highlight feedback: Anim_Highlighted (`highlight`/`highlight2` 0.75 s) + Audio_Highlighted (`global/Highlight`); select: Anim_Activated `click` 0.12 s + Audio_Activated (`frontendsfx/Click`, `global/Click2/3`) [data].
+
+### Transition timings summary
+- Screen change = old items' Anim_Outgoing (mostly None or 0.21-0.25 s scale-outs, title underline 0.96 s) in parallel with new items' Anim_Incoming after their Delay_Incoming stagger (typ. 300 ms base, +50 ms per row; rows In_SlideX 0.62 s, tooltip/headers In_ScaleY 0.25 s, title In_TitleUnderline 1.04 s, back button In_Prev 0.46 s), plus the BlueDivide clip 0.83 s if the shape changes (Out then In = 1.66 s). A typical submenu entrance is therefore fully settled after ~0.55 s (last row delay) + 0.62 s = ~1.2 s [data; arithmetic].
+
+
+## 18. AI (CPU worms)
+
+Tags: **data** = read from strings, RTTI or decoded XOM; **disasm** = read in code; **assumed** = inferred. VAs are for WormsMayhem.exe (base 0x400000). "units" means W4M world units.
+
+### Classes and source units [data: RTTI and .cpp strings]
+
+- **AIService** (vtable 0x825cf8, HandleMessage 0x4b4260, subscribe 0x4b3390, setup 0x4b3820). It waits for three things before thinking: `AISceneGraphService` has updated the map, the active worm is ready, and `ObjectCount.Active` has dropped to 0. Then it runs a think and executes the queued actions. Messages: `GameLogic.AITurn.Started`, `AI.ExecuteActions`, `AI.PerformDefaultAITurn`, `AI.WeaponsDontEndTurn` (no retreat).
+- **AISceneGraphService** (vtable 0x825a7c): builds the pathing node grid (`AI.PopulatePathingNodes`, `Land.NewShape`), adds jump nodes (`Worm.Jump.Forward`, `Worm.Jump.Backflip`, `WXWorm.AftertouchDelta`/`Strength`) and adds blockages where a path failed. A* lives in AIPathManager.cpp. The `iterations` and `m_nMaxNumIterations` asserts suggest a bounded A* [assumed].
+- **CAIPlan tree** (AIPlan*.cpp). A think spawns many plans, scores them, refines them over several frames ("Thinking took N frames", "ScoreAllMoveNodes slice"), then queues the actions of the best plan.
+  - `CAIPlanSeed`, `CAIPlanSkipTurn`, `CAIPlanDefense`.
+  - `CAIPlanMove` → `CollectSomething`/`CollectCrate`, `DoRandomSmallMove`, `MoveCloserToSomething`/`MoveCloserToTarget`.
+  - `CAIPlanAttack` → `WithMoveAndRetreat` → `Projectile` / `Direct` / `Strike`, plus `CloseRange`, `Animal`, `Special` and `Flood`.
+- **Attack plan per weapon** (`Cannot use kWeaponX` strings). These are the weapons the AI can use:
+  - projectile: Bazooka, Grenade, ClusterGrenade, BananaBomb, HolyHandGrenade, PoisonArrow, GasCanister, HomingMissile (targeted)
+  - direct: Shotgun, SniperRifle
+  - strike: Airstrike, ConcreteDonkey, SuperAirstrike, Fatkins
+  - melee: BaseballBat, Prod, FirePunch
+  - close-range explosive: Dynamite, Landmine, and CheapDynamite{Grenade, ClusterGrenade, BananaBomb}, i.e. those weapons dropped at the AI's feet
+  - animal: Sheep, OldWoman, Scouser, SuperSheep, Starburst
+  - Flood
+  - SkipGo (`CAIPlanSkipTurn`; scripts must give the AI infinite SkipGo)
+  - The only plan without a named weapon is `CAIPlanAttackSpecial` [assumed: its use is unknown].
+  - No plan class exists for Girder, BridgeKit, Teleport, LowGravity, Redbull, SentryGun, BubbleTrouble, NoMoreNails, AlienAbduction or Pipe.
+- **AITurnAction subclasses**, queued by `Queue Action: ...` (AIPlan.cpp) and run by AITurnEntity: Delay 0x497120, SetWeapon, SetAimAngle 0x4965d0, SetLaunchVelocity 0x495a60 (`AI.LaunchVelocity`), SetWeaponFuse 0x496ab0, SetWeaponTarget 0x495d80, SetStrikeDirection, SetWormOrientation, FireWeapon 0x496860 (sends `c_MsgFireReleased`), Path 0x496c90, StrafeTowards 0x4974d0, DetonateWhenGoingAwayFrom 0x4977e0, MoveForwardTillInMeleeRange, WaitForSuperAirstrikeReady, WormSelect, Rethink 0x499830, SetCamera.
+- **Path move types** (AIPathAction strings): WALK, with three on-fail policies (keep trying / skip to next move / rethink forbidding the move), JUMP_FORWARD, JUMP_BACKFLIP, JUMP_UP, JUMP_UP_NO_AFTERTOUCH, JETPACK, PARACHUTE_START, PARACHUTE, NINJA_ROPE, SUPER_SHEEP, DELAY. AIActionPath has log strings for super sheep, parachute, jetpack and jump, but none for rope. NINJA_ROPE is probably never executed [assumed]. Repath happens on failure, with a limit ("too many repaths, forbidding further movement").
+
+### AITWK.XOM [data: xom.py / tweak.py]
+
+- 24 `AIParametersContainer` with 111 fields (`pe.py schema AIParametersContainer`): `AIParams.CPU1`..`CPU5`, `CPUTest`, `Worm00`..`Worm17`. All `Worm*` are equal to `CPUTest`. TwkEdVer = 124.
+- There are **5 CPU levels**. AIService 0x4b3820 loops over worm slots 0..15. For each one it reads the team's CPU level (team byte +0x74; 0 = human; assert `uCPULevel <= 5`), then copies `AIParams.CPU<level>` into that worm's `AIParams.WormNN` slot (DRM::GetWormAIParameters 0x50c440) [disasm].
+- The command line flag `/ALLAIPLAYERS` (0x4da163) sets 0x959ac4, which turns human teams into CPU5 [disasm].
+- At think start (0x4a4920), the params of the thinking worm go into the global `c_pAIParameters` 0x9560f4. The worm position goes into 0x9560fc [disasm].
+
+Values that differ between levels (CPU1 / CPU2 / CPU3 / CPU4 / CPU5). Every Pref* not listed is 1.0.
+
+| field | 1 | 2 | 3 | 4 | 5 | meaning, with read site [disasm unless noted] |
+|---|---|---|---|---|---|---|
+| ShotErrorProjectile | 0.3 | 0.2 | 0.1 | 0.05 | 0 | 0x4a06c0: each launch-velocity component is scaled by 1+e·(2r−1) (0x4a4580). This covers angle and power together |
+| ShotErrorDirect | 0.3 | 0.2 | 0.1 | 0.05 | 0 | 0x4a0d70: direct weapons (shotgun/sniper), strafe mode |
+| ShotErrorDirectNonStrafe | 0.05 | 0.02 | 0.01 | 0.005 | 0 | 0x4a0d90 |
+| StrafeProgressiveErrorScale | 0.99 | 0.98 | 0.96 | 0.95 | 0.9 | passed to StrafeTowards. The error shrinks by this factor per step [assumed] |
+| ShotErrorStrike | 20 | 10 | 5 | 5 | 0 | 0x4a1b00: strike target offset, in units [assumed] |
+| ConsidersStrikeThrustDirection | 0 | 0 | 1 | 1 | 1 | 0x4a13a0: chooses the strike direction |
+| WeightStrikeSecondaryTarget | 0 | 0.3 | 5 | 1 | 1 | 0x4a19ea: multiplies the value of other worms hit by a strike |
+| WeightingWormVital | 1 | 1.5 | 3 | 5 | 1000 | 0x4a92c7: base value of a target with worm flag 0x100 (+0xec), otherwise 1 |
+| WeightingWormExchange | 0.05 | 0.1 | 0.1 | 0.5 | 0.5 | 0x4a9b20: K = (nEnemy/nAlly)^x. Enemy value /K, ally value −K× |
+| WeightingExplosiveSecondaryDamage | 0 | 0.5 | 0.5 | 0.8 | 1 | explosion score for barrels and chain reactions (0x49fe90, 0x4a0540, ...) |
+| WeightingExplosiveNearbyThreat | 0 | 1 | 1 | 2 | 4 | likewise, for knocking a worm into a threat (water, mine) |
+| WeightingPreferNearbyTargets | 1.5 | 1 | 0.5 | 0.1 | 0 | 0x4a93bb: value ×(200/max(d,200))^x |
+| WeightingPlanScoreRandomise | 0.2 | 0.2 | 0.1 | 0.2 | 0 | 0x498a0a: plan score ×(1+x·(2r−1)) |
+| WeightingPreferAttackHumans | 0.8 | 1 | 1 | 1.2 | 1.8 | 0x4a956b: positive values of human-controlled targets ×x |
+| ProjectileSweetSpotDistance | 0 | 5 | 5 | 10 | 5 | 0x4a9be0: projectile aim point = target + d·x when the target's threat rating (+0x1c) > 0; d (+0x20) is the unit vector away from its worst threat (0x4a9e90), so the blast pushes it toward water, a drop or mines [disasm] |
+| DelayBeforeFire | 0.5 | 0.5 | 0.5 | 0.5 | 0.2 | s, after aiming and before fire (0x49eb8b) |
+| DelayBeforeNonFirstMove | 2 | 0 | 0 | 0 | 0 | s, before a move after a rethink (0x4983ef) |
+| AddScoreCollectSomething | 1000 | 5000 | 20000 | 30000 | 60000 | crate plan base score (0x4a72e1, 0x4a7d38) |
+| LikeToCollectHealthWhenHealthBelow | 25 | 25 | 25 | 25 | 50 | hp threshold for "Score increased due to worm having low health" |
+| ReduceMoveScoreFurtherThan | 100 | 200 | 100 | 100 | 100 | 0x4a75c0: move score ×R/d when d > R |
+| ReduceMoveScoreIfTimeLeftLessThan | 40 | 30 | 30 | 20 | 20 | move score ×t/T when turn time left t < T |
+| MemoryImproveAccuracyEffect | 0.2 | 1 | 1 | 1.5 | 1 | 0x4a5d00: error /(1+x·Σmatch) for a repeat of a previous shot (MatchRadius 200) |
+| MovementJumpForwardAllowed | 0 | 1 | 1 | 1 | 1 | pathing (0x492210) |
+| MovementJumpBackflipAllowed | 0 | 0 | 0 | 1 | 1 | pathing (0x492210) |
+| MovementJumpError | 0 | 0.2 | 0.1 | 0.05 | 0 | 0x496c90: error on path jumps ("worm's jump error =") |
+| JetpackAboutToCrossLineLookAhead | 1 | 2 | 3 | 4 | 5 | read in worm code 0x5a8780: jetpack look-ahead |
+| MortarMaximumAimAngleAllowed | 0.5 | 0.5 | 1 | 1.6 | 1.6 | **no read found** |
+| PrefClusterGrenade | 1 | 1 | 1 | 0.8 | 0.3 | |
+| PrefGasCanister | 1 | 1 | 1 | 0.5 | 0.5 | |
+| PrefHomingMissile | 0.9 | 0.9 | 0.9 | 0.8 | 0.7 | |
+| PrefProd | 0.3 | 0.3 | 0.3 | 0.3 | 0.3 | (1.0 in CPUTest) |
+
+Values shared by all 5 levels:
+
+- Target value: ThisWormValue 1 (read per *target* worm, so scripts can weight a target), WormHealth 0.04, WormPoisoned 0.08, LastInTeam 2, WormNearbyWorms 0.02, WormMilesAway 0.1, WeightingAttack 2, WeightingKillTarget 200, WeightingPunchThroughLand 10.
+- Multiple use and variety: MultipleUse 1.5, BestMissShotMultipleUse 1, PreferVariety 0.4.
+- Delays: DelayAtStart 0, DelayBeforeFirstMove 0.
+- Distances: StrikeSweetSpotDistance 2 (0x4a1423), ClusterDistanceAboveTarget 10, MaximumDistanceTargetConsidered 1e5.
+- Movement: AddScoreMoveIfNotMoved 20, AddScoreMove 10, RandomSmallMoveRange 100, ForbidMoveIfWouldLeaveTimeLessThan 10 (s).
+- Crates: WeightCollect{Weapon, Health, Utility} 1, WeightCollectHealthWhenPoisoned 3, AllowCollectNormalCrate 1, AttractorZoneRadius 50, MemoryImproveAccuracyMatchRadius 200.
+- Fields with no read found [disasm, by scanning every load of 0x9560f4]: AddScoreTeleport 1, WeightTeleport{Defensive, Offensive}Pos 1, WeightRetreatDefensivePos 1, WeightRetreatOffensivePos 0, MortarMaximumAimAngleAllowed.
+- CPUTest (= Worm*) differs from the levels: KillTarget 4, DelayAtStart 3, DelayBeforeFire 1, DelayBeforeFirstMove 2, AddScoreMoveIfNotMoved 10000. It is a scripted/debug profile, and the worm slots are overwritten from `CPU<level>` at load.
+
+### Turn flow and timings [disasm 0x49e6d0, 0x4983a0]
+
+1. The think runs over several frames. Its frame count is stored in 0x9560b4.
+2. If the plan has a move before firing: Delay(DelayBeforeFirstMove, or NonFirstMove after a rethink, minus the think time), then Path, then Delay 0.5 s.
+   Otherwise, on the turn's first action: Delay(DelayAtStart − think time).
+3. SetWeapon, then optional fuse/target/launch velocity/orientation/aim angle, then Delay(**DelayBeforeFire**), then FireWeapon. Strafe weapons add StrafeTowards (StrafeProgressiveErrorScale). Some weapons add DetonateWhenGoingAwayFrom.
+4. Delay 1.0 s, camera "Default", then the retreat Path. There is no retreat if `AI.WeaponsDontEndTurn` is set, or if the move should not end the turn.
+5. If no good plan is found, the AI skips the turn. It never skips when locked to a multi-shot weapon: in that case it fires again. Plans with a negative score are forbidden.
+
+### Shot evaluation [disasm]
+
+- **Launch is exact velocity.** The plan stores a launch vector and SetLaunchVelocity writes `AI.LaunchVelocity`. The AI does not charge the power bar.
+- **Ballistic solver** 0x4ace50 (AIPlanUtilities). The speed range is [BasePower, BasePower+MaxPower] of the payload's `PayloadWeaponPropertiesContainer` (+0x110/+0x114, loaded by 0x4acbc0).
+  - Acceleration = gravity (if `IsAffectedByGravity`: `Gravity`, or `Gravity.Slow` if `IsLowGravity`, times `Low.Gravity.Multiplier`) + full wind (if `IsAffectedByWind`: `Wind.Direction`/`Wind.Speed` → (sin, 0, cos)·speed, 0x4ac6f0).
+  - **About 11 speeds** are sampled between two fractions of the range (step = range/10). For each one, `TargetParabola` 0x519a40 solves the exact flight time for the arc to the target (two roots, `fTimeSquared1/2`).
+  - Each arc is checked against the land as 2 segments (0x4aca20). The error is the distance from the collision point to the target. The lowest squared error wins.
+- **Bouncing payloads**: BounceToRest 0x4ad770. It iteratively rescales the launch speed (fScaleSpeed, fGuessStep), simulates the bounces (0x4ad580, `Bounce.MinSpeed`, water = `Water.Level` − 100) and keeps the better rest-point error.
+- **Wind is never degraded by difficulty.** The only inaccuracy is the post-hoc ShotError.
+- **"Best miss" plans**: when the target cannot be hit, the AI spawns a plan that aims at the collision point to dig through land ("Shot will punch through land in N shots", WeightingPunchThroughLand, BestMissShotMultipleUse). This is not done on indestructible land.
+- **Damage score** 0x49ed30:
+  - Damage passes through armour (ArmourLogicEntity 0x548fc0), except for weapon ids 10–12, which are melee.
+  - Score = WeightingAttack × target value × d. Here d = damage, or max(hp, WeightingKillTarget) if the hit is lethal ("should kill with damage alone").
+  - A non-lethal hit with a knock-into-threat rating moves d toward the kill value ("may knock X into nearby threat") [disasm/assumed exact blend].
+  - Explosive plans add the secondary/threat terms (the WeightingExplosive* fields).
+- **Target value** 0x4a9260:
+  - v = (Vital if flagged, else 1) × (1 + 0.04·hp), then v += max(0.1, 1 − 0.08·poison).
+  - Enemy: v/K. Ally, including the thinking worm's own team: −v·K, where K is the WormExchange ratio. This is the friendly-fire and self-damage penalty.
+  - Then: ×LastInTeam when that side has 1 worm left, ×nearby factor, ×the target's own ThisWormValue, ×PreferAttackHumans when the target is human.
+  - Targets inside an "AI affecting trigger" are removed (ForbidShotsWhenMightAffectAITrigger).
+- **Weapon choice** 0x49c060: plan score ×Pref(weapon) (GetWeaponPref 0x66364d switches on weapon enum 1–29 and 34–42), then ×max(0, 1 − PreferVariety·match with recent plans) (memory 0x4a5720).
+  - Weapon availability comes from the inventory plus `Inventory%d.WeaponDelays` (PopulateWeaponsAvailibleArray) [data].
+  - Prefs for BridgeKit, LowGravity, Teleport and Pipe are not in the switch, so no plan uses them.
+- **Memory** (AIPlanMemory.cpp):
+  - Repeat shots get more accurate (MemoryImproveAccuracy*).
+  - Plans that match a failed plan are scored down.
+  - The skip-turn score is ×1/(1+5·Σ previous skips) (0x4a57c0).
+
+### Movement [data + disasm]
+
+- **Path A\*** (AIPathManager) [disasm]: 2-D node grid (x, z int16 + a layer byte), 8 walk neighbours (a diagonal only if both sides are walkable, 0x492510), G cost 10 orthogonal / 14 diagonal, heuristic octile 10·max + 4·min (0x4923a9, 0x491fd8). Jump edges per allowed type (+0xc04c from MovementJumpForward/BackflipAllowed, 0x4924d7) over a precomputed reach table, cost +40 forward jump, +60 backflip (0x492008, 0x492003). At most 200 iterations per pathfind (0x4b0ba6), 100 per step call (0x492e4e); partial paths are accepted unless too short.
+- **Node spacing**: sqrt(land area / 16000) (0x4b2a68). **Move nodes**: a 21 × 21 window × 2 layers around the worm, scored by 0x4aa6a0 two columns per think step ("ScoreAllMoveNodes slice", 0x4ab490).
+- **Think budget** 0x49b210: each frame the cost counter 0x9560b0 drops by 80 and think steps run while it is under 80 (a counter above 80 after the drop is reset to 160). Costs: pathfind 100 (0x494365), attack plan 100 (0x49b4b9, 0x49e01b), position score 10 (0x4aa6a9).
+- **Target threat** 0x4a9e90: 8 directions × probes at 50/100/150/200 units (0x90ebf8), weight 2/(k+2); water or no land 0.2, a drop over 30 units 0.05, mines 0.1·(100−d)/100, GameLogicService objects 0.05, other targets 0.05; total capped at 1 (+0x1c), worst direction negated into +0x20.
+- **MovementJumpError** 0x496f24: for each jump move of the path (types 3..5) the displacement to its landing is scaled per component by 1 + e·(2r−1) (0x4a4580) before the move is queued.
+
+- Movement plans (`CAIPlanMove*`) score: crate collection (AddScoreCollectSomething × type weight; health ×3 when poisoned or below the hp threshold; `Imaginary`/`Attractor` detail objects come from scripts), moving closer to a target, and a random small move (range 100).
+- An attack with a move gets +AddScoreMove, plus +AddScoreMoveIfNotMoved if the worm has not moved yet (0x49bd60).
+- Moves are refused when they would leave less than 10 s of turn time ("Not enough time left to follow path").
+- Paths are A* over the node grid and can include walk, jump forward and backflip (gated per level), jetpack, parachute and super sheep. **No teleport, girder or rope moves were found.**
+- After firing, the AI retreats along a path: move→retreat node pairs ("Move node found: move to ..., retreat to ...").
+
+### Actionable for client/src/ai.cpp
+
+1. **5 levels, not 3.** `levelOf` clamps to 3. Map the front end to CPU1..CPU5 and drive the behaviour from the AITWK values above (one small table) instead of the `level == 1/2/3` branches.
+2. **Aim error model.** W4M scales each launch-velocity component by 1±e (e = 0.3/0.2/0.1/0.05/0) and also uses it for direct weapons. Today level 1 is ±0.05 rad / ±5 % and level 3 is 0. W4M CPU1 is much sloppier, while CPU5 is perfect.
+3. **Wind**: W4M uses the exact wind at every level. Drop the "level 1 half-guesses the wind" hack and let ShotError carry the inaccuracy.
+4. **Repeat-shot accuracy memory**: error /(1+Effect·matches) when shooting again from about the same spot at the same target. This is missing today.
+5. **Scoring weights.** Kill bonus = max(hp, 200)×2 (WeightingAttack) vs today's +30. Team losses: negative value × exchange ratio (nEnemy/nAlly)^0.05..0.5 vs today's fixed ×2. ×2 when the target is the last of its team. Prefer human targets (0.8..1.8).
+6. **Randomness and variety**: multiplicative plan noise ±20 % (CPU3 ±10 %, CPU5 0) and score ×(1 − 0.4·recentMatch). Today the taste is additive (±12/10/5) and there is −8 for the last weapon.
+7. **Per-weapon prefs**: Prod 0.3, Homing 0.9→0.7, Cluster 0.8/0.3 and Gas 0.5 at CPU4/5. No AI use of teleport, girder, bridge, low gravity, sentry, bubble, NoMoreNails, abduction or pipe. Today level 3 teleports and evaluates Sentry and Abduction.
+8. **Timings**: DelayBeforeFire 0.5 s (CPU5 0.2 s), a 0.5 s pause after a pre-fire move, and 1.0 s after firing before the retreat. Today there is one fixed 20-tick pause.
+9. **Crates dominate** at higher levels (base 1000→60000). Health crates count ×3 when poisoned or below 25 hp (50 at CPU5). Move score falls off beyond 100 units and when the turn time left is under 20–40 s. Moves are forbidden under 10 s.
+10. **Jumps in paths**: no forward jump at CPU1, backflip only at CPU4+, plus the jump error. Today the AI jumps whenever it is stuck, at every level.
+
+
+## 19. EFMV cutscenes, acting scenes, FMV
+
+EFMV is the in-engine cutscene system. One timeline format covers three uses:
+1. scripted level movies (Intro/Midtro/Outro...), played by `EFMVMovieLogicEntity`;
+2. the 142 bystander "acting" scenes in `Tweak/WORMACTING.XOM`, cast and played by `WXSceneManagerService` + `WormScenePlayerService`;
+3. the outtake levels (`OUTTAKE*.XOM`), which are ordinary level movies.
+
+The `.wmv` files are separate. `MoviePlayerService` plays them full screen.
+
+### Data model [data: pe.py schema, xom.py; all 495 level movies and 142 acting scenes decode exactly]
+- `EFMV_MovieContainer` {Tag, Track ref[]}. `EFMV_TrackContainer` {Tag, Event ref[]}. Every event derives from `EFMV_BaseEventContainer` {Tag str (editor label), **Time u32 = ms from movie start**, Critical bool}.
+- The movie name is the `XContainerResourceDetails` key, e.g. TINCANWALLY has `GoldCut`, `Intro`, `Midtro`, `Outro`. Events inside a track are **not stored in time order**. The player keeps one cursor per track and still fires them all, because it fires every event with `Time <= now` [disasm 0x526cb0]. Ordering the events by Time is assumed to be safe.
+- 106 level files hold 495 movies. The most common names are Outro 59, Midtro 38, Intro 21, `EFMV.Intro` 21 (tutorials/challenges), `EFMV.Intro_Dialogue`, `EFMV.Failure`, `EFMV.Success_*` and `Pointless_cut`. `ANIMTEST.XOM` and `MOVIETEST.XOM` are dev tests. `Tweak/LOCAL.XOM` has a `TestActing` movie (actor `STANDIN A`).
+- Worm events derive from `EFMV_WormBaseEventContainer` (no fields of its own). They act on the **track's cast actor**: one track = one cast member, and the track's index in `Track[]` = cast-member index.
+
+| Event (fields after Tag/Time/Critical) | Effect [disasm 0x5257b0 / 0x60b1b0 unless noted] |
+|---|---|
+| CastActor {ActorName} | binds the track to the actor with that exact name (`FindActor` 0x60c190, `strcmp`; not found = 0x7f, and the track's worm events are then dropped). Ignored when the scene was pre-cast (acting scenes, flag at this+0x318) |
+| WormEmote {Emote, PermittedEyeMovement, BlendTime s, Coyness, AllowBlink} | facial emote on the actor (actor+0x58/0x54/0x5c, blink = bit 2 of +0x6d) |
+| PlayAnimation {Animation} / StopAnimation {BlendTime} | worm clip name (actor+0x4c) / stop with a blend (+0x50). BlendTime is 200/500 in levels and 0.3 in emotes; the unit is mixed, assumed ms vs s |
+| WormLookAt / WormGestureAt {TargetCastMember i8} | look at / point at another track's actor. Target = own track: stop looking (0x7d). Target < 0: special target 0x7e (assumed: the camera / the event focus) |
+| TriggerSpeech {Speech, FullVolume, Duration ms} | `*Name` = level EFMV sample `EFMV/<Level>/<Name>` (schema help string 0x8810f0). A plain name = a speech category of the actor's own voice bank (`FriendlyDeath`, `Startled`...). Duration = line length, used for the matching Comment |
+| SpawnAccessory / SpawnParticle {ResourceId, AttachmentPoint}, ClearAccessory | attach a hat or prop / a particle to a bone. ClearAccessory = "CLEAR" |
+| ThreatenWorm {Threatened} | flag at actor+0x6e bit 0 |
+| CutCamera {Position, LookAt} | cut to two locator names |
+| PathCamera {PositionKnotList, LookAtKnotList (comma lists of locators), Loop*, *Steps u32, *Tension, DrawDebugDots} | `Camera.Path.*` data + `Camera.Path.Start`. The movie waits for `Camera.Path.Stopped` before it ends |
+| TimedPathCamera {same, *Steps = comma string per segment} | `Camera.TimedPath.*`. The default step is 500 [disasm 0x637b50]. Steps x 10 ms matches the gaps between camera events in TinCanWally (500,500 = 10 s) [assumed] |
+| ShakeCamera {Duration ms, Magnitude} | `Camera.Shake.Length/Magnitude` |
+| Comment {Comment = text id, Duration ms} | subtitle line via `CommentaryPanel.Comment` / `.Delay`, e.g. `M.Wild.Tin.EFMV.3a`. The ids are in the language files |
+| FailureComment {Duration} | random `Miss.Generic.Lose1-5` text |
+| TriggerSoundEffect {EffectName, Location, Looping, Duration} | Foley/Amb event of the level EFMV bank, placed at a locator. Only one looping SFX at a time (assert) |
+| CreateEmitter {EmitterName, Location, Locator, UserId} / DeleteEmitter {UserId} | particle FX at a locator (`Particle.Name/DetailObject/Locator`) |
+| CreateExplosion {Location, WormDamage*, Impulse*, LandDamageRadius, ParticleEffect, ImpulseOffset} | a real explosion (`Explosion.*` data, 0x4f9970); it is always Critical |
+| SpawnWorm {WormId, DataId} / UnspawnWorm {WormId}, SelectWorm, SelectWeapon | manage gameplay worms (`Worm.Respawn`, `WXWormManager.UnspawnWorm`, `Weapon.Selected`) |
+| RaiseWater {Delta} | `Water.Level` += Delta |
+| CreateBorders / DeleteBorders | letterbox: `EfmvBorderEntity`, TWEAK `EFMV.BorderHeight` 50, `BorderOnTime` 0, `BorderOffTime` 500 |
+| CreateBriefingBox {MessageId[]}, CreateWXBriefingBox {Type, TextId, Image} | tutorial briefing dialog (`WXD.BriefingText` / `WXD.BriefingImage`) |
+| Stop | when a briefing dialog is up: pause (this+0x30, AppDataService 0x4d7690) until `Game.BriefingDialogOkPressed`. Used on "Pause Movie" tracks |
+| Joypad{Button,Stick}, Create/Animate/DeleteCustomHudGraphic, AnimateDetail {FourCC, AnimName}, SetPointLightColor, DeleteLandframe {Code} | tutorial input demos, HUD overlays, detail-object clips (`Detail.AnimName`), lights, land-frame removal |
+
+- Critical events by type: DeleteBorders 364/371, CreateExplosion 143/143, DeleteEmitter 73/73, DeleteLandframe 31/46, SpawnWorm 21/21, RaiseWater 4/4 [data]. They are exactly the events that must still happen when the movie is skipped.
+
+### Speech, lip-sync, sound banks [data + disasm]
+- AudioService loads the bank `EFMV/<Level>` per level, plus `Story.`/`Tutorial.`/`Challenge.`/`Deathmatch.` prefixes (0x604760, 0x606480). It also loads the lip file `EFMV/<Level>/LIP` = install-root `EFMV/<Level>/LIP.txt`. Its rows are `frame,VISEME,<none>` at **about 30 fps**: the last frame x 33 ms matches TriggerSpeech.Duration, e.g. 50 frames vs 1797 ms [data].
+- `Data/Audio/EFMV/<Level>.lsd` maps `EFMV/<Level>/<Line>` to the line hash, which is also the LIP.txt `#hash`. The speaker comes from the line name `<Level>_<Role>_NN`, not from the bank.
+- `EFMV/Failures/Failures_Narrator_01-05` (0x8673d4) is a shared failure bank.
+- AudioService sets fade values on `EFMV.Play` (0 / 500) and on `EFMV.Terminated` (2000 / 0) [disasm 0x606fc4; assumed music duck in/out, ms].
+
+### Playback: EFMVMovieLogicEntity [disasm]
+- vtable 0x854c30, `.cpp` 0x854bfc, HandleMessage 0x5272f0, tick 0x526ec0 (returns 10 = task period ms).
+- **Start** (0x526f70, on create):
+  - subscribes Input.QuitEFMV, Game.BriefingDialogOkPressed, Camera.Path.Stopped, Camera.TimedPath.Stopped, Edit.StopEFMV, Game.BriefingDialogNowOn;
+  - sends `xo.msgInterruptsOff` ("EFMV player disables network interrupts");
+  - enables input group 5 `EFMVMovie`;
+  - sets `EFMV.Active`=1;
+  - looks up `EFMV.MovieName` in the level databank (assert "Couldn't find EFMV clip");
+  - reads `ActiveWormIndex`, builds the per-track cursors (+0x28) and registers the active object "EFMV Movie playing", which holds the turn;
+  - `EFMV.StartTime` > 0 seeks, editor only (assert start service == "EDIT", 0x526dc0).
+- **Step** 0x526cb0: for each track, fire the events with `Time <= now`, then `now += 10` ms. It returns true when every track is done. The tick kills the entity once all tracks are done, no camera path is running (+0x32) and no briefing is up (+0x31).
+- **Shutdown** 0x525540:
+  - frees the cursors and disables input group 5;
+  - sets `EFMV.Active`=0 and clears CommentService (0x5dff70);
+  - sends `EFMV.Terminated`, then `xo.msgInterruptsOn`;
+  - drops the active object, so the turn can go on;
+  - camera back to `Default` (CameraManagerService 0x51e4e0).
+- Lua receives `EFMV.Terminated` as the callback `EFMV_Terminated` (table 0x921368) and branches on `GetData("EFMV.MovieName")`.
+- **Skip**: `Input.QuitEFMV` is ignored when `EFMV.Unskipable` != 0. Otherwise 0x526d90 loops `step(skip=1)` to the end, firing **only Critical events**, then kills the entity, so `EFMV.Terminated` still fires. `Edit.StopEFMV` does the same. The skip is disabled when the online flag at [0x95b5e8]+0x2c == 1 [assumed: network game].
+- Only one movie at a time: `EFMV.Play` while `EFMV.Active` asserts (GameLogicService 0x4ff21d). GameLogicService spawns the entity by class GUID 0x854ba8.
+
+### Triggering from Lua [data: lua.py --all]
+- `SetData("EFMV.MovieName", "<name>")` + `SendMessage("EFMV.Play")`: 126 sends, 254 MovieName uses. The tutorials wrap this in `kPlayEFMV`.
+- `SetData("EFMV.Unskipable", 1/0)` around dialogue movies (tutorials: Intro skippable, `Intro_Dialogue` not).
+- End of mission: `SetData("EFMV.GameOverMovie", "Outro")` before `GameLogic.Mission.Success`. At game over GameLogicService (0x4fb880 -> 0x4f52c0) copies GameOverMovie into MovieName and spawns the player, unless `EFMV.GameOverMovie.Off` = 1. `lib_Deathmatch*TurnEnded` uses `"Outro"`.
+- Typical chains: Initialise -> Intro. `EFMV_Terminated(Intro)` -> `Worm.DieQuietly` on the extra actors (TinCanWally kills Dummy worms 2 and 3), then `StartFirstTurn`. A gameplay event -> Midtro (+ respawns) -> ...
+- `EFMV.Start` / `EFMV.End` (86 / 94 sends) are a different, older mechanism: W3D-style scripted camera scenes in the `-w3d` levels. A few W4M scripts send `EFMV.End` too. Weapons send them as well (SuperBomber, AlienAbduction, ParachutePayload). They toggle borders and input; there is no timeline.
+
+### Role assignment in level movies [disasm 0x5a58c0 + data]
+- Each worm's graphic entity registers two actors with WXSceneManagerService: `WORM<n>` (type 1) and `WORM<n>TARGET` (type 5). n = the worm slot of `lib_SetupWorm(n, "<WormData>")` (= `Worm.Data<nn>`). Each actor also gets a default emote `Angry` (or `Frown` with an option flag), eye movement 10 and blend 0.3.
+- So a movie's `CastActor WORM<n>` is a fixed slot, not a team or role. Example: TinCanWally slot 0 = Player, slot 1 = CPU (Wally), slots 2-3 = Dummy1/2, slots 4-7 = Bad1-4 (respawned before Midtro), slot 8 = Player2 (Outro).
+- Other actors: type 2 = Payload (PayloadLogicEntity) / MineFactory / THREAT detail, type 3 = Crate / GOODIES detail, type 4 = DISTRACT detail, type 5 = any other detail object. Detail objects are registered under their name (`Prop1`..`Prop11`, `Look1`, `OverHere`...: CastActor targets used for LookAt/GestureAt) [disasm 0x5cd1d5]. The frontend registers `FrontendWorm%d`, `Actor %d%d`, `Mouse Actor%d`.
+- Actor table: 100 `WXActor` (0x74 bytes) at SceneManager+0x84 (instance 0x961870). Name at +4, speech +8, accessory +0xc/+0x14, anim +0x4c, worm index +0x6c, flags +0x6d/+0x6e. The worm graphic entity polls the actor [assumed].
+
+### Acting scenes (WORMACTING) [disasm WXSceneManagerService, `.cpp` 0x869c0c]
+- At load (0x60e100), each movie is filed under every trigger name from table 0x9214f0 that its name contains (case-insensitive substring, 0x5040e0). There are 48 triggers:
+
+  TimedPayloadFive..One, BlastSplat, FallSplat, Idle, Sick, Abducted, DamageInflicted, DamageSilent, Boring, Mistake, Death, Collect, ShortOnTime, SkipGo, Punch, CrateDrop, WeaponFired, FirstBlood, MaxDamage, StartTurn, Waiting, Airstrike, Blasted, WormBounce, FireDamage, Revenge, Missed, Victory, Targeted, Poisoned, Zap, TauntMelee, TauntRanged, TauntStrike, Titter, GrenadeFive..One, ItemReact, Bored, Retreat, Thinking.
+
+  N = `atoi(name + len(trigger))`, i.e. the digits after the trigger name (Death**5**a, Idle**100**a).
+- Each trigger's list is **sorted by N, highest first** (0x60d5e0). After a trigger fires, 0x60c410 rotates the head of each equal-N group, so the a/b/c variants play round-robin.
+- Track tags are criteria (0x60d640): a case-insensitive search for 22 tokens (table 0x921498, bit = 1 << index). The table order fixes the bit values:
+
+  Crit, Friend*N*, Foe*N*, Sick, Abducted, See*N*, Blind*N*, Near*N*[,*R*], Special, Payload, InFront*N*, Behind*N*, Active, OnScreen, Idle, Targeted, Interesting, Safe, Threat, Goodies, Distraction, LOS*N*.
+
+  Each track record is 12 bytes: the flags, then bytes for Friend/Foe -> loyalty track, See/LOS -> see track, Near -> near track (radius R, **default 20** when there is no `,R`), Blind -> blind track, InFront/Behind -> relative track. *N* = another track's index; -1 appears in the data, meaning assumed: the active worm.
+- `Enemy` (used in data) and `Onscreen` (lowercase, which still matches `OnScreen`) are not separate tokens.
+- `Acting.Trigger` (`ActingTriggerMsg`, ctor 0x4d3410) carries {trigger index +8, subject actor +0xc}. Senders: GameLogicService 0x4fb880 and weapon/payload entities 0x50f100, 0x54d720, 0x576fc0... Handler 0x60e2e0 switches on the trigger (jump table 0x60e818). It builds candidate actor pools (for example within 10000 units), shuffles them (0x60c390, Fisher-Yates with RNG 0x68c0aa while the sync flag 0x922ab5 is cleared, so this is presentation randomness), then calls the chooser.
+- Chooser 0x60d830: scenes are tried in list order, and the cast list holds 30 slots (kMaxActorsInScene), all set to 0x7f first.
+  - A `Payload` track takes the payload actor and an `Active` track takes the trigger subject; the scene is rejected if that actor is absent.
+  - The other tracks take the first pool actor that passes the criteria (0x60c480: loyalty, see, near, blind, relative...).
+  - A `Crit` track that cannot be cast rejects the scene; other tracks stay empty.
+  - The first scene that passes is played (0x60b750 / 0x60b090, log "Chosen Scene:"), and every cast actor gets the scene's priority (actor+0x68).
+- Scene timelines then run through the same per-track event code as level movies (WormScenePlayerService 0x60b1b0, with a scene slot instead of slot 0).
+
+### FMV (.wmv) [data + disasm MoviePlayerService, `.cpp` 0x869380, PlayMovie 0x6097d0]
+- The table at 0x9210b8 has 20-byte records {name, kMovie id, path, w, h}:
+  - Team17 = 1 (`Logos\Team17NTSC.wmv`, 1280x720);
+  - MeetTheProfessor 3, Camelot 4, WildWest 5, Arabian 6, Jurassic 7, Upsell 8 (file missing on PC), Welcome 9;
+  - OuttakeRecordingBooth_01-16 = 10-25;
+  - OuttakeDestructAndServe, GhostHillGraveyard, JoustAboutIt, MineAllMine, TheLandThatWormsForgot, TinCanWally = 26-31;
+  - the others are 640x480.
+- The video renders to the texture `VideoImage0`. `Input.QuitMovie.Pressed` skips it, and `FE.MoviePlayingComplete` is sent at the end.
+- When they play:
+  - boot logos (`FE.PlayTeam17Movie`, `FE.PlayPublisherMovie`, `FE.PlayLegalScreenMovie`);
+  - story movies (`WXMsg.PlayStoryMovie` / `DoStoryMovieThenMenu`, data `WXD.StoryMovie` = Welcome / MeetTheProfessor / theme name). GameLogicService reads `WXD.StoryMovie` at game end when `GameOver.GameType` == "Story" [assumed: theme unlock -> movie];
+  - credits: `WXMsg.PlayCreditsMovie` plays `PERSIST.XOM` `CreditsFMVList` (16 outtake names, in that order);
+  - the Upsell (trial);
+  - the frontend movie list `WXFEP.SelectMovieList`.
+- Subtitles for the story movies only: `PERSIST.XOM` `FMVSubTiles` `FMV_Welcome/Jurassic/Arabian/WildWest/Camelot/MeetTheProf` {FMV enum kFMVSTF_*, TextLines -> `FMVTextLine` {TextID `FETXT.WM1`..., TimeOffset ms}}, drawn through `CText.MovieText`.
+- The `Outtake*.wmv` names match the `OUTTAKE*.XOM` levels and `Outtake*.lub` scripts, which play an EFMV called `Outtake`/`Outtake2` [assumed: the wmv files are recordings of those].
+- `Data/Intro_EFMV` (AppDataService 0x4d6e59) does not exist on PC [data].
+
+### Open
+- How each trigger builds its candidate pools (jump table 0x60e818, helpers 0x60dd20/0x60df50/0x60dee0/0x60e050); what 0x7e (LookAt -1) means; the unit of the Near radius; how PathCamera Steps are timed (not opened: CameraManagerService PathCam 0x855d1c); whether a briefing pause also stops `step()`.
+
+## 20. How to search (Comment chercher)
 
 | Question | Recipe |
 |---|---|
@@ -874,12 +2368,31 @@ EFMV/*/LIP.txt, Audio/EFMV/*.lsd, FMV/*.wmv, Frontend/Gallery, WormsX.fev (doc o
 | What does a .lub do? | `lua.py FILE.lub` for the functions and constants, `--code` for the pseudo-code. |
 | Value of tweak T | `tweak.py -g '^Camera\.Orbit'`. Full JSON in `~/.cache/w4m-re/tweaks/`. |
 | An FMOD event | Event path strings `group/event` in the exe (`pe.py str '^weapons/'`). `PlaySound` is 0x604a20 (§7). |
+| Does an event loop, at what volume? | `fev.py -g '^weapons/FuseLoop$'`: column `loop` (loop / oneshot / loop_to_end / silent). Gain = 10^((vol_dB + sd_vol_dB + cat_dB)/20). FSB sample: `fev.py --json`, `sounddefs[i].waves[j]` = {bank, index, ms} (§12). |
+| Name of a message handle in disasm | `disasm.py` prints `msg Name` on handle operands; otherwise `pe.py msg 0xVA`. All handles of one name: `pe.py msg '^Name$'`, then `xref.py` on each. |
+| Who reads or writes struct field +OFF | `xref.py --field 0xOFF --in FUNC...`. For a class, list its functions from `pe.py rtti` vtables. To name the field, match offsets with `pe.py schema` (pData of a worm = `WormDataContainer`, §11). For members bound to data keys, read `lea reg,[this+OFF]` followed by the key-name push in the ctor (CMS 0x51f740, GLS 0x4f7d80). |
+| Enum field values | `pe.py schema CLASS` prints the value names under enum fields (record +0xc -> descriptor -> name list). Example: WeaponType 4 = kThrown. |
+| Which class a factory creates | `disasm.py` prints `class Name` on the descriptor pushed before `call 0x639b83` (XOM CreateObject). For switches: `pe.py words` on the byte table and the jump table (`movzx eax, byte [eax+B]; jmp [eax*4+J]`), §13. |
+| FPU compare branches | after `fcom; fnstsw ax`: `test ah,5; jp` jumps when st0 >= src; `test ah,0x41; je` when st0 > src; `test ah,1; jne` when st0 < src; `test ah,0x44; jp` when not equal. |
+| Worm anim event -> clip | callers of QueueEvent 0x5acb80 (last `push imm` = event code), consumer 0x5a3620 jump table 0x5a410c, clip slots registered at 0x5a49a0 (§11). |
+| Which camera / target for targeting weapons | Blimp = `IsometricCam` (view 3); target ray `CMS::UpdateTargetInfo` 0x51c910 writes `Airstrike.*`; cursors from `Weapon.Create*Cursor` in 0x5009d0 (§10). |
+| Scheme and timer values | `xom.py list Tweak/LOCAL.XOM Scheme`, then `xom.py dump Tweak/LOCAL.XOM '#N'`; timers in TimerLogicEntity 0x50f980 (§14). |
+| Bundle contents | `xom.py list Bundles/BundlNN.xom Descriptor` (the descriptor u16 is the bundle number); `xom.py check` is exact on all bundles (§15). Geometry and clips: `tools/w4m-models`. |
+| Net message fields and wire order | `pe.py schema 'Msg$\|MessageArray'`; registration order: `push 0x88xxxx` before each `call 0x70daf0` in 0x705bce (§16). |
+| Menu tree | `tweak.py`, then load the PC menu databanks in exe order (§17) and walk `ChildrenItems` and `Messages_*` (`FE.ChangeMenu$X`, `WXMsg.CreatePopUp$X`). Clip lengths: `w4m-models --list Data/Bundles/Bundl10.xom`. |
+| AI parameter reads | refs to the global 0x9560f4, then `[reg+disp]` against `pe.py schema AIParametersContainer` (§18). |
+| A level cutscene | `xom.py list <Level>.xom EFMV`, Movie -> Track -> Event refs; Lua: `lua.py --all 'EFMV'` (§19). |
 
-## 11. Not covered
+## 21. Not covered
 
-- **Worms:** the slide, ballistic and passive physics handlers were not opened. Acting and animation states (`WXActor`, `WormLogicAnimState`) are only touched.
-- **Audio:** the per-event layer data in `WormsX.fev` is not decoded; events are tied to banks by name.
-- **Rendering:** the enum value order of ParticleRenderScene, LandCollide and WormCollide is assumed. Bloom and blur classes have no PC shader.
-- **Turn and death queue:** the units of the scheme's `LandTime` / `HotSeat`, and the death-queue timeout (+0x210).
-- **Bundles:** `Bundl*.xom` are not decoded by `xom.py`.
-- **Not explored:** network/online, frontend menus (`WXFE_*`), AI internals (`AIService`, AITWK fields are decodable with `xom.py`), EFMV cutscene playback.
+- **Worms (§11):** the easing of DrownFloat and of helper 0x569f20; the slide-arms math; the weapon clip chaining Draw -> Hold/Aim -> Fire -> Taunt is assumed from names.
+- **Audio (§12):** the property-block fields +04/+08/+0C (pitch, pitch and volume randomisation) are named from FMOD Designer's order; some other fields, the sound-definition play-mode enum and the reverb block are unknown. Whether something else starts the HudClockEntity ClockFast/ClockSlow instances.
+- **Weapons (§13):** what crate types 1 and 3 are (hidden from CrateSpy); what spawns kWeaponFatkinsFood and kWeaponSentryGunPayload; readers of ColliderFlags. WeaponType has a single reader found (0x5973e6).
+- **Turn (§14):** acting trigger ids 0x1e and 0x2e are Missed and Retreat (name table 0x9214f0, docs/worm-reactions.md); camera mode 0xe, which freezes the turn clock, is not identified; RopeTime looks unused.
+- **Tactical (§10):** the render layer of the screen-centre reticle, and the left/right sense of the airstrike direction.
+- **Bundles (§15):** the 3 bytes after `CTNR`, the trailing bytes of `XMeshDescriptor` / `XCustomDescriptor`, key types 0x200 and 0x403, and the "cycle" channel setting.
+- **Network (§16):** the wire class id is assumed to be the registration order; the replay of received input messages is inferred from the structure, not traced.
+- **Frontend (§17):** the per-frame update of menu entities; the `WXMsg.ScrewMenu` title stage; the Select path is assumed by symmetry with Cancel.
+- **AI (§18):** some AITWK fields have no reader (MortarMaximumAimAngleAllowed, AddScoreTeleport, WeightTeleport*, WeightRetreat*).
+- **EFMV (§19):** acting pools per trigger (jump table 0x60e818) and the Near radius (20·R units, squared at 0x60c4d0) are now in docs/worm-reactions.md; the `TargetCastMember -1` target (0x7e, position from [0x95a100]+8 vfunc 0x38) is assumed to be the camera; the PathCamera step timing; the audio fades on `EFMV.Play` / `EFMV.Terminated`.
+- **Rendering (§8):** the enum value orders are now read from the exe (`pe.py schema`); which render bin `kPS_Default` maps to is still unknown. Bloom and blur classes have no PC shader.

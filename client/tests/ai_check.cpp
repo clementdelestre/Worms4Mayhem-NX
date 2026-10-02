@@ -1,12 +1,13 @@
-// AI vs AI: matches deal damage and finish, replay bit-identically, level 3 beats level 1, rope race reaches the finish.
+// AI vs AI: matches deal damage and finish, replay bit-identically, CPU5 beats CPU1, rope race reaches the finish.
 // Run from client/ (romfs maps). Prints weapon usage, damage per turn and planning cost.
 #include "../src/ai.h"
+#include "../src/controls.h"
 #include "raymath.h"
 #include <cassert>
 #include <chrono>
 #include <cstdio>
 
-static std::vector<int> fires[4];  // [level][weapon], all matches
+static std::vector<int> fires[6];  // [level][weapon], all matches
 static double maxTick = 0, maxTurn = 0;
 
 struct Result { uint32_t sum; int turns, fired, damage, winner; bool over, reached; };
@@ -60,6 +61,39 @@ static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint
     return r;
 }
 
+// The CPU's turn shows the Blimp view only while its plan fires a targeted weapon, never because the team's
+// last weapon (reselected at turn start) is one, nor during an instant replay of it.
+static void blimpView() {
+    int strikes = 0, stale = 0;
+    for (uint32_t seed = 1; seed <= 4; seed++) {
+        Game g;
+        GameConfig c{seed, 2, 2, "", 0};
+        c.teamSetup = {{"CPU", 3}, {"CPU", 3}};
+        g.start(c);
+        for (auto &a : g.ammo) for (size_t k = 0; k < a.size(); k++) if (targeted(WEAPONS[k].kind) && WEAPONS[k].kind != Kind::Teleport) a[k] = 9;
+        Ai ai;
+        bool shown = false;
+        for (int t = 0; t < 60 * 60 * 8 && g.phase != Phase::GameOver; t++) {
+            g.step(ai.think(g));
+            int sim = g.weapon;
+            if (ai.picking >= 0) g.weapon = ai.picking;  // main.cpp: the view follows the CPU's pick
+            Controls::cpuTurn = ai.striking();
+            bool v = Controls::targetView(g);
+            stale += Controls::targetHeld(g) && !v;
+            shown |= v;
+            g.weapon = sim;
+            for (const GameEvent &e : g.events)
+                if (e.kind == GameEvent::Fire && e.worm >= 0) {
+                    assert(!shown || targeted(WEAPONS[e.weapon].kind));
+                    strikes += shown;
+                }
+            if (g.phase != Phase::Aim) shown = false;
+        }
+    }
+    printf("blimp view: %d CPU strikes seen from it, %d ticks a targeted weapon was held without a strike planned\n", strikes, stale);
+    assert(strikes > 0);
+}
+
 // Enemy right next to the active CPU worm: the weapon it fires first.
 static int pointBlank(uint32_t seed, uint8_t level) {
     Game g;
@@ -78,45 +112,65 @@ static int pointBlank(uint32_t seed, uint8_t level) {
     return -1;
 }
 
+// The first shots of a match with a given planning budget: the plan must not depend on how the think is sliced.
+struct Fired { int weapon; Vector3 pos; float yaw, pitch; };
+static std::vector<Fired> shots(const char *map, uint32_t seed, uint8_t level, long budget) {
+    Game g;
+    GameConfig c{seed, 2, 3, map, 0};
+    c.teamSetup = {{"CPU", level}, {"CPU", level}};
+    g.start(c);
+    Ai ai;
+    ai.budget = budget;
+    std::vector<Fired> out;
+    for (int t = 0; t < 60 * 60 * 20 && out.size() < 6 && g.phase != Phase::GameOver; t++) {
+        g.step(ai.think(g));
+        for (const GameEvent &e : g.events)
+            if (e.kind == GameEvent::Fire && e.worm >= 0) out.push_back({e.weapon, g.worms[e.worm].pos, g.worms[e.worm].yaw, g.worms[e.worm].pitch});
+    }
+    return out;
+}
+
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
     for (auto &f : fires) f.assign(WEAPONS.size(), 0);
+    blimpView();
     const char *maps[] = {"", "arabian", "wildwest", "camelot", "jurassic", "construction"};
     int over = 0, n = 0;
     for (const char *map : maps)
-        for (uint8_t level : {1, 2, 3}) {
+        for (uint8_t level : {1, 2, 3, 4, 5}) {
             Result a = match(map, 7 + level, level, level);
             assert(a.damage > 0 && a.fired > 0);
             over += a.over;
             n++;
         }
     assert(over * 4 >= n * 3);  // most matches finish
-    for (int l = 1; l <= 3; l++) {
+    for (int l = 1; l <= 5; l++) {
         printf("level %d:", l);
         for (size_t i = 0; i < WEAPONS.size(); i++) if (fires[l][i]) printf(" %s:%d", WEAPONS[i].name.c_str(), fires[l][i]);
         printf("\n");
     }
 
-    int melee = 0, close = 0;
+    int close = 0;
     printf("point blank:");
     for (uint32_t seed = 1; seed <= 12; seed++) {
-        int wi = pointBlank(seed, 1 + seed % 3);
+        int wi = pointBlank(seed, 1 + seed % 5);
         printf(" %s", wi < 0 ? "-" : WEAPONS[wi].name.c_str());
-        melee += wi >= 0 && WEAPONS[wi].kind == Kind::Melee;
-        close += wi >= 0 && (WEAPONS[wi].kind == Kind::Melee || WEAPONS[wi].kind == Kind::Shotgun);
+        close += wi >= 0 && (WEAPONS[wi].kind == Kind::Melee || WEAPONS[wi].kind == Kind::Shotgun || dropped(WEAPONS[wi]));
     }
     printf("\n");
-    assert(melee >= 3 && close >= 10);  // adjacent enemy: melee or a gun, not a blast that hurts the shooter
+    // adjacent enemy: melee, a gun or dynamite set down before the retreat, not a blast that hurts the shooter.
+    // No melee quota: W4M scores damage linearly with no point-blank bonus, so 75 hp dynamite outranks a 30 hp bat.
+    assert(close >= 10);
 
     int wins = 0, games = 0;
     for (const char *map : maps)
         for (uint32_t seed : {21u, 22u}) {
-            Result a = match(map, seed, 3, 1, 0, true), b = match(map, seed, 1, 3, 0, true);
+            Result a = match(map, seed, 5, 1, 0, true), b = match(map, seed, 1, 5, 0, true);
             wins += (a.winner == 0) + (b.winner == 1);
             games += 2;
         }
-    printf("level 3 vs level 1: %d/%d wins\n", wins, games);
+    printf("CPU5 vs CPU1: %d/%d wins\n", wins, games);
     assert(wins * 3 >= games * 2);
 
     printf("single weapon, 8 turns, dmg/turn:");
@@ -124,7 +178,7 @@ int main() {
         Kind kd = WEAPONS[k].kind;
         if (kd == Kind::Rope || kd == Kind::Jetpack || kd == Kind::Teleport || kd == Kind::Parachute || kd >= Kind::Flood || kd == Kind::Mine || kd == Kind::Scouser) continue;
         int d = 0, turns = 0;
-        for (const char *map : {"", "arabian"}) { Result x = match(map, 31, 3, 3, 0, true, (int)k, 8); d += x.damage; turns += x.turns; }
+        for (const char *map : {"", "arabian"}) { Result x = match(map, 31, 5, 5, 0, true, (int)k, 8); d += x.damage; turns += x.turns; }
         printf(" %s %.1f", WEAPONS[k].name.c_str(), (float)d / turns);
     }
     printf("\n");
@@ -138,8 +192,14 @@ int main() {
     }
 
     printf("planning cost: max %.2f ms per tick, %.2f ms per turn\n", maxTick, maxTurn);
+    for (const char *map : {"arabian", "jurassic"}) {  // sliced vs all in one tick: same shots
+        auto a = shots(map, 3, 5, Ai{}.budget), b = shots(map, 3, 5, 1L << 40);
+        assert(a.size() == b.size());
+        for (size_t i = 0; i < a.size(); i++)
+            assert(a[i].weapon == b[i].weapon && Vector3Distance(a[i].pos, b[i].pos) < 1e-4f && fabsf(a[i].yaw - b[i].yaw) < 1e-4f && fabsf(a[i].pitch - b[i].pitch) < 1e-4f);
+    }
     maxTick = maxTurn = 0;
-    for (uint8_t level : {1, 3}) assert(match("ropetrack", 5, level, level, RULE_ROPE_RACE).reached);
+    for (uint8_t level : {1, 5}) assert(match("ropetrack", 5, level, level, RULE_ROPE_RACE).reached);
     Result a = match("", 99, 2, 2, RULE_KARMA | RULE_VAMPIRE), b = match("", 99, 2, 2, RULE_KARMA | RULE_VAMPIRE);
     assert(a.sum == b.sum);
     printf("rope race cost: max %.2f ms per tick, %.2f ms per turn\n", maxTick, maxTurn);

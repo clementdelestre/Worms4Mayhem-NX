@@ -71,6 +71,8 @@ private:
 // releasing for at least one tick, until game.weapon matches: the sim and the network only ever see plain inputs.
 // First-person aim reticle at screen point c, per weapon like W4M; scope: sniper vignette + cross.
 void reticle(const WeaponDef &wd, Vector2 c, bool scope);
+// W4M Blimp-view reticle at the screen centre: Bomber cursor (arrows = the run, left to right) or Targeting cursor.
+void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock = nullptr);  // state: 0 valid, 1 water, 2 no target, -1 none (out of the Blimp); lock: homing marker
 struct Hud {
     bool open = false, mine = false;  // mine: a human here plays the current turn
     bool quiet = false;               // no bottom hints this frame

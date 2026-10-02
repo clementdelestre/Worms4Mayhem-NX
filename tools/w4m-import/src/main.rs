@@ -112,6 +112,9 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("holy", "weapons", &["Hallelujah"]),
     ("holy_boom", "weapons", &["HolyGrenadeEx"]),
     ("holy_held", "weapons", &["HolyGrenadeHeld"]),
+    ("bomb_whistle", "weapons", &["BombWhistle"]),
+    ("cow_fall", "weapons", &["CowFall", "CowFall2", "CowFall3"]),
+    ("lock_on", "weapons", &["TargetAquired"]),
     ("turn_start", "weapons", &["HudAlert"]),
     ("tick", "weapons", &["ClockFast"]),
     ("shotgun", "weapons", &["Shotgun1", "Shotgun2"]),
@@ -185,6 +188,8 @@ const VOICES: &[(&str, &str)] = &[
     ("sadsigh", "SadSigh"), ("yawn", "Yawn"), ("sneeze", "Sneeze"), ("clutchchest", "ClutchChest"), ("nooo", "Nooo"),
     ("bounce", "WormBounce"), ("taunt", "Taunt"), ("waiting", "Waiting"), ("shortontime", "ShortOnTime"), ("skipgo", "SkipGo"),
     ("collect", "Collect"), ("cratedrop", "CrateDrop"), ("drown", "ShallowDrown"),
+    ("revenge", "Revenge"), ("punch", "Punch"), ("damageb", "DamageInflictedB"), ("nodamagea", "NoDamageA"), ("nodamageb", "NoDamageB"),
+    ("maxdamage", "MaxDamage"), ("pointandlaugh", "PointAndLaugh"),
 ];
 // W4M music bank -> our file; map themes use their docs/maps.md name
 const MUSIC: &[(&str, &str)] = &[
