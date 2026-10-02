@@ -46,7 +46,8 @@ const char *APPLET = "-";  // controller applet glyph, Switch only
 const char *APPLET = nullptr;
 #endif
 const Color GOLDEN = {255, 210, 60, 255}, PANEL = {24, 74, 92, 230};  // W4M teal paper
-const char *RULE_LABELS[] = {"King", "Highlander", "Vampire", "Karma", "Low gravity", "Rope race", "Sudden death"};
+const char *RULE_LABELS[] = {"King", "Highlander", "Vampire", "Karma", "Low gravity", "Rope race", "Sudden death", nullptr};  // [7]: tr()'d
+const int RULES = 8;
 // Scheme edit page: one row per Scheme byte, in struct order. names: enum labels (min = 0).
 struct SchemeField { const char *label, *fmt; int min, max, step; const char *names[7]; };
 const SchemeField SCHEME_FIELDS[] = {
@@ -1171,7 +1172,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         std::vector<int> ids = {0};
         for (int k = 0; k < cfg.teams; k++) for (int f = 0; f < 4; f++) ids.push_back(100 + k * 4 + f);
         ids.push_back(200), ids.push_back(201), ids.push_back(299);
-        for (int r = 0; r < 7; r++) ids.push_back(300 + r);
+        for (int r = 0; r < RULES; r++) ids.push_back(300 + r);
         ids.push_back(350);
         ids.push_back(400);
         row = clampWrap(row + dy, (int)ids.size());
@@ -1243,13 +1244,14 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         text(TextFormat("%d / %d", mapSel + 1, (int)maps.size()), 930, 176, 20, LIGHTGRAY);
         value(200, {920, 230, 330, 40}, "Worms", TextFormat("%d", cfg.wormsPerTeam), 28);
         text(online ? "+1 team per console that joins" : "One controller per team,\nor share one", 930, 280, 18, LIGHTGRAY);
-        popup({672, 330, 584, 262});
+        popup({672, 330, 584, 270});
         value(299, {690, 342, 548, 28}, "Scheme", preset < 0 ? "Custom" : SCHEMES[preset].name, 22);
-        for (int r = 0; r < 7; r++)
-            value(300 + r, {690, 372 + r * 27.0f, 548, 26}, RULE_LABELS[r], cfg.rules & (1u << r) ? "ON" : "off", 22);
+        for (int r = 0; r < RULES; r++)
+            value(300 + r, {690, 372 + r * 24.0f, 548, 23}, RULE_LABELS[r] ? RULE_LABELS[r] : tr("RULE.NoDelays", "No weapon delays (test)", "Sans délai d'armes (test)"),
+                  cfg.rules & (1u << r) ? "ON" : "off", 22);
         int pots = 0, pot = 0;
         for (int b = 0; b < WORMPOT_REELS[3]; b++) if (cfg.wormpot & (1u << b)) pots++, pot = b;
-        value(350, {690, 372 + 7 * 27.0f, 548, 26}, "Wormpot", !pots ? "None" : pots == 1 ? WORMPOT_MODES[pot].name : TextFormat("%d modes", pots), 22);
+        value(350, {690, 372 + RULES * 24.0f, 548, 23}, "Wormpot", !pots ? "None" : pots == 1 ? WORMPOT_MODES[pot].name : TextFormat("%d modes", pots), 22);
         Rectangle go = {860, 608, 390, 70};
         panel(go, ids[row] == 400);
         text(online ? lan ? "FIND GAMES" : "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ink(ids[row] == 400), 1);
@@ -1961,13 +1963,13 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (g.cfg.rules & RULE_ROPE_RACE) text(TextFormat("Race %ds", tick / 60), 640, 80, 26, GOLDEN, 1);
     if (g.suddenDeath && banners.empty()) text("SUDDEN DEATH!", 640, 46, 26, GOLDEN, 1);  // crate drops: commentary banner
 
-    radar(g, {124, 112}, fwd, aiming && mine);
+    radar(g, {124, 112}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
     // wind: arrow along the wind on screen, length by strength; distance to the aim target
     Vector2 wc = {58, 236};
     float wind = g.wind, ws = fabsf(wind);
     if (!sprite(ws < 0.01f ? "wind_backdisabled" : "wind_back", wc, 0.72f, {64, 64})) DrawCircleV(wc, 30, {0, 104, 138, 220});
     if (ws >= 0.01f) {
-        Vector2 f = Vector2Normalize({fwd.x, fwd.z}), v = {-wind * f.y, -wind * f.x};
+        Vector2 f = Vector2Normalize({fwd.x + cam.up.x, fwd.z + cam.up.z}), v = {-wind * f.y, -wind * f.x};
         float deg = atan2f(v.y, v.x) * RAD2DEG, l = 0.12f + 0.12f * Clamp(ws / 1.5f, 0, 1);
         if (!sprite("wormlocarrow", wc, l, {64, 64}, deg - 90, {255, 170, 30, 255})) DrawLineEx(wc, Vector2Add(wc, Vector2Scale(Vector2Normalize(v), 24)), 5, ORANGE);
     }
@@ -2037,7 +2039,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
         hints({{"ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
-        hints({{"A", "Space", WEAPONS[g.weapon].kind == Kind::Homing ? "Lock target" : "Fire"}, {"LS", "WASD", "Look"}, {"RS", "Arrows", "Pan"},
+        hints({{"A", "Space", WEAPONS[g.weapon].kind == Kind::Homing ? "Lock target" : "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
                {"Up/Down", "Z/X", "Zoom"}, {"B", "Enter/E", "Leave"}});
     else if (mine && !quiet && Controls::targetHeld(g)) hints({{"A", "Space/E", "Sky view: target"}, {"L", nullptr, "Hold: sky view"}});  // "Define the path using [Blimp]"
     else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});

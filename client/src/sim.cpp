@@ -318,7 +318,7 @@ void Game::start(const GameConfig &c) {
     fuses.assign(teams, 3);
     delays.assign(teams, std::vector<int>(WEAPONS.size()));
     for (const SchemePreset &p : SCHEMES)  // a W4M preset brings its SchemeData delays; custom schemes have none (WXD.DefaultSchemeData)
-        if (!memcmp(&p.s, &cfg.scheme, sizeof(Scheme)))
+        if (!(cfg.rules & RULE_NO_DELAYS) && !memcmp(&p.s, &cfg.scheme, sizeof(Scheme)))
             for (const char *q = p.delays; *q;) {
                 const char *e = strchr(q, '|'), *end = e ? e : q + strlen(q), *sp = end;
                 while (sp > q && sp[-1] != ' ') sp--;

@@ -181,8 +181,8 @@ Input read(const Game &g, int pad, bool live, float dt) {
         Vector2 m = ls, c = rs;
         if (kb) m.x += IsKeyDown(KEY_RIGHT) - IsKeyDown(KEY_LEFT), m.y += IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN), c.x += IsKeyDown(KEY_D) - IsKeyDown(KEY_A), c.y += IsKeyDown(KEY_W) - IsKeyDown(KEY_S);
         walk = Clamp(m.y, -1, 1), aim = Clamp(m.x, -1, 1) * SIM_AIM, turn = -Clamp(c.x, -1, 1) * SIM_TURN, pitch = Clamp(c.y, -1, 1);
-    } else if (tv) {  // W4M Blimp 0x52a5e0 (HelpBlimpConsole): left stick / A D W S look (yaw, pitch), right stick / arrows pan at 250 x zoom u/s
-        Vector2 m = rs, l = {-ls.x, ls.y};
+    } else if (tv) {  // W4M Blimp 0x52a5e0: left stick / arrows pan at 250 x zoom u/s, right stick / A D W S look (yaw, pitch).
+        Vector2 m = ls, l = {-rs.x, rs.y};  // user's choice: W4M HelpBlimpConsole has the sticks the other way round
         if (kb) m.x += IsKeyDown(KEY_RIGHT) - IsKeyDown(KEY_LEFT), m.y += IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN), l.x += IsKeyDown(KEY_A) - IsKeyDown(KEY_D), l.y += IsKeyDown(KEY_W) - IsKeyDown(KEY_S);
         float pan = blimpZoom * 12.5f / Game::CURSOR_SPEED, s = 0.9f + 0.1f * blimpZoom;
         walk = Clamp(m.y, -1, 1) * pan, aim = Clamp(m.x, -1, 1) * pan * SIM_AIM, turn = Clamp(l.x, -1, 1) * 0.55f * s / Game::BLIMP_TURN * SIM_TURN;
@@ -598,11 +598,13 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
         blimpZoom = Clamp(blimpZoom * expf(-zin * 0.5f * dt) - 0.08f * wheel, 0.15f, 2);  // ZoomSpeed 0.99 / 20 ms, MouseZoomSpeed 0.08
         bool live = g.cursorOn && targeted(WEAPONS[g.weapon].kind);  // before the first TARGET tick, or a CPU: around its aim point
         Vector3 f = live ? g.cursor : Vector3Add(g.target(), {0, Game::BLIMP_LIFT, 0});
-        cam.target = f, cam.position = live ? g.blimpEye(f, g.cursorYaw, g.cursorPitch) : g.blimpEye(f, cur.yaw), cam.fovy = 50 * blimpZoom;
+        float y = live ? g.cursorYaw : cur.yaw, p = live ? g.cursorPitch : Game::BLIMP_PITCH;
+        cam.target = f, cam.position = g.blimpEye(f, y, p), cam.fovy = 50 * blimpZoom;
+        cam.up = {sinf(y) * sinf(p), cosf(p), cosf(y) * sinf(p)};  // W4M 0x52a0a0: up = R(pitch, yaw) (0, 1, 0), never along the view
         inBlimp = true, fpOut += dt, cut = false;
         return;
     }
-    inBlimp = false;
+    inBlimp = false, cam.up = {0, 1, 0};
 
     if (!focusOn && (firstPerson(g) || scope)) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
         Vector3 e = eye(g), f = Vector3Add(e, Vector3Scale(g.aimDir(cur), AIM_FOCUS));

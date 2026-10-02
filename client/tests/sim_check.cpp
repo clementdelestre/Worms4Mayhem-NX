@@ -1579,6 +1579,24 @@ static void checkTargetCursor() {
     assert(!g.shots.empty() && fabsf(Vector3DotProduct(Vector3Normalize({g.shots[0].vel.x, 0, g.shots[0].vel.z}), s) - 1) < 1e-3f);
 }
 
+// RULE_NO_DELAYS (test): a preset's SchemeData weapon delays are dropped; without it they apply.
+static void checkNoDelays() {
+    for (const SchemePreset &p : SCHEMES) {
+        if (!*p.delays) continue;
+        for (uint32_t rules : {0u, (uint32_t)RULE_NO_DELAYS}) {
+            Game g;
+            GameConfig c{5, 2, 1, "", rules};
+            c.scheme = p.s;
+            g.start(c);
+            int n = 0;
+            for (const auto &d : g.delays) for (int v : d) n += v > 0;
+            assert(rules ? n == 0 : n > 0);
+        }
+        return;
+    }
+    assert(!"no preset with weapon delays");
+}
+
 // W4M Fatkins is a Bomber payload: it leaves the plane flying the strike direction and lands on the target.
 static void checkFatkins() {
     Game g;
@@ -1993,6 +2011,7 @@ int main() {
     checkAirstrike();
     checkTargetCursor();
     checkFatkins();
+    checkNoDelays();
     checkTailNail();
     checkArmour();
     checkGirder();

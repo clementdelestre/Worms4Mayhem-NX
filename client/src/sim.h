@@ -133,6 +133,7 @@ enum Rule : uint32_t {
     RULE_LOW_GRAVITY = 16,
     RULE_ROPE_RACE = 32,  // rope only, first to reach the map's finish wins
     RULE_SUDDEN_DEATH = 64,  // once the scheme's round time is up (see Scheme::sdType)
+    RULE_NO_DELAYS = 128,    // test: the scheme's weapon delays (W4M SchemeData) are ignored
 };
 // W4M "Game Style". All bytes, no padding: sent and checksummed as raw bytes, so only ever append fields.
 struct Scheme {
