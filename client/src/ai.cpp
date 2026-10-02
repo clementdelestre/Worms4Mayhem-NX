@@ -508,9 +508,9 @@ void Ai::startSearch(const Game &g, int purpose, Vector3 to) {
     auto s = std::make_shared<Search>();
     const Worm &w = g.worms[g.current];
     s->purpose = purpose, s->team = w.team, s->boom = lastBoom, s->target = to, s->root = moverOf(g);
-    if (purpose == Search::Retreat) {  // the dynamite's fuse, else the retreat time, after the 1 s pause
+    if (purpose == Search::Retreat) {  // the weapon's retreat time (W4M timer from PostLaunchDelay's end), after the 1 s pause
         const WeaponDef &wd = WEAPONS[plan.weapon];
-        s->limit = (dropped(wd) ? (int)(g.fuseOf(wd) / DT) : g.cfg.scheme.retreatTime * 60) - 60;
+        s->limit = g.retreatTicks(wd) + msTicks(wd.postLaunch) - 60;
     } else s->limit = (int)((thinkTimer * DT - 10) / DT);  // ForbidMoveIfWouldLeaveTimeLessThan 10 s
     if (purpose == Search::Crate) s->cands = {{0, to}}, s->scored = 1;
     else {  // W4M scores a 21 x 21 node window around the worm (0x4ab5bc); the retreat looks within its reach [unverified]
@@ -881,7 +881,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                         if (fly(g, wd, p, v, wind, false, out)) { oc.blast(out, blastOf(wd, false)); oc.blast(out, blastOf(wd, false)); }
                     } else {
                         Vector3 v, p = strikeFrom(g, top, wd, tgt, f, v);
-                        for (int i = 0; i < wd.clusters; i++)  // sim: bomb i leaves the plane i STRIKE_TICKS on, at its speed
+                        for (int i = 0; i < wd.clusters; i++)  // sim: held STRIKE_LEAD at p, then bomb i leaves i STRIKE_TICKS on
                             if (fly(g, wd, p + v * (i * Game::STRIKE_TICKS * DT), v, wind, true, out)) oc.blast(out, blastOf(wd, true));
                     }
                     if (oc.started) consider(oc.total(), yaw, pitch, 0, ti);
@@ -1024,10 +1024,10 @@ Input Ai::jet(const Game &g) {
     return in;
 }
 
-// Retreat: the path planned with the shot, after the 1 s pause (0x49e6d0).
+// Retreat: the path planned with the shot, after the 1 s pause (0x49e6d0), while the shot flies too (W4M).
 Input Ai::retreat(const Game &g) {
     Input in;
-    if (++afterFire >= 60) follow(g, in);
+    if (++afterFire >= 60 && g.retreating()) follow(g, in);
     return in;
 }
 
@@ -1036,11 +1036,12 @@ Input Ai::think(const Game &g) {
     picking = -1;
     const Worm &w = g.worms[g.current];
     for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) lastBoom = e.pos;
-    if (g.phase == Phase::Flying) {  // sheep: detonate next to an enemy; super sheep: autopilot
+    if (g.phase == Phase::Flying || (g.phase == Phase::Settle && !g.shots.empty())) {  // sheep: detonate next to an enemy; super sheep: autopilot
+        if (g.phase == Phase::Flying && w.alive) in = retreat(g);
         for (const Projectile &s : g.shots) {
             Kind k = WEAPONS[s.weapon].kind;
             if (k == Kind::Airstrike && WEAPONS[s.weapon].fuse > 0 && !s.child) {  // bomber: head for the target, drop with the lead
-                if (plan.target < 0 || !g.worms[plan.target].alive) continue;
+                if (plan.target < 0 || !g.worms[plan.target].alive || (!s.prey && s.stage > 0)) continue;  // held for STRIKE_LEAD
                 Vector3 e = g.worms[plan.target].pos, land = s.pos + s.vel * (0.3f * (s.pos.y - e.y) / Game::COW_CHUTE);
                 in.turn = q(angle(yawTo(s.pos, e) - atan2f(s.vel.x, s.vel.z)) / (0.8f * DT));
                 if (Vector2Distance({land.x, land.z}, {e.x, e.z}) < 1.5f && !g.prevButtons) in.buttons = Input::FIRE;
@@ -1056,7 +1057,6 @@ Input Ai::think(const Game &g) {
     }
     if (g.phase == Phase::Settle) mode = Mode::Eval;  // the turn is over: striking() must not show last turn's plan
     if (!w.alive) return in;
-    if (g.phase == Phase::Retreat && !g.shots.empty()) lastBoom = g.shots[0].pos;  // dynamite burning: flee it
     if (g.phase == Phase::Retreat) return retreat(g);
     if (g.phase != Phase::Aim) return in;
     if (g.timer > lastTimer || g.current != worm) {

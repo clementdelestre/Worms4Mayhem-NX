@@ -1542,6 +1542,38 @@ static bool sprite(const char *name, Vector2 pos, float s, Vector2 pivot, float 
     return true;
 }
 
+// PiP centre, half extents (px) and tilt (rad): HUDTWK PiP.Off/OnScreenPosition, OnScreenScale (half extents, assumed), OnScreenRotation z
+static void pipPlace(float show, float full, Vector2 &c, Vector2 &h, float &rot) {
+    const float u = 720 / 480.0f;  // HUD units: centre origin, y up, 480 high
+    Vector2 on = Vector2Lerp({400, 155}, {190, 135}, show);
+    c = Vector2Lerp({640 + on.x * u, 360 - on.y * u}, {640, 360}, full), h = Vector2Lerp(Vector2Scale({120 * show, 90 * show}, u), {640, 360}, full);
+    rot = 0.1f * show * (1 - full);
+}
+
+void pipInset(const RenderTexture2D &scene, float show, float full) {
+    Vector2 c, h;
+    float rot;
+    pipPlace(show, full, c, h, rot);
+    if (h.x < 1) return;
+    rlPushMatrix();
+    rlTranslatef(c.x, c.y, 0);
+    rlRotatef(-rot * RAD2DEG, 0, 0, 1);
+    DrawTexturePro(scene.texture, {0, 0, (float)scene.texture.width, -(float)scene.texture.height}, {-h.x, -h.y, 2 * h.x, 2 * h.y}, {}, 0, WHITE);
+    Texture2D b = tex("fe/speech_popup");  // WXFE.Speech.Border.Edge, the bubble border (kMT_BubbleBorderNoPointer)
+    float t = 14 * (1 - full) * show + 1, k = t * 1.6f, x0 = -h.x - t / 2, y0 = -h.y - t / 2, x1 = h.x + t / 2, y1 = h.y + t / 2;
+    if (b.id) {
+        DrawTexturePro(b, {150, 5, 240, 30}, {x0 + k, y0, x1 - x0 - 2 * k, t}, {}, 0, WHITE);
+        DrawTexturePro(b, {150, 5, 240, -30}, {x0 + k, y1 - t, x1 - x0 - 2 * k, t}, {}, 0, WHITE);
+        DrawTexturePro(b, {9, 10, 22, 230}, {x0, y0 + k, t, y1 - y0 - 2 * k}, {}, 0, WHITE);
+        DrawTexturePro(b, {9, 10, -22, 230}, {x1 - t, y0 + k, t, y1 - y0 - 2 * k}, {}, 0, WHITE);
+        DrawTexturePro(b, {127, 80, 40, 40}, {x0, y0, k, k}, {}, 0, WHITE);
+        DrawTexturePro(b, {247, 80, 40, 40}, {x1 - k, y0, k, k}, {}, 0, WHITE);
+        DrawTexturePro(b, {127, 208, 40, 40}, {x0, y1 - k, k, k}, {}, 0, WHITE);
+        DrawTexturePro(b, {247, 208, 40, 40}, {x1 - k, y1 - k, k, k}, {}, 0, WHITE);
+    } else DrawRectangleLinesEx({x0, y0, x1 - x0, y1 - y0}, t, BLACK);
+    rlPopMatrix();
+}
+
 void reticle(const WeaponDef &wd, Vector2 c, bool scope) {
     if (scope) {  // sniper sight: navy all around a round view, dark tapered cross with three ovals per arm
         const Color NAVY = {6, 18, 36, 255};
@@ -1912,6 +1944,12 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
         if (dist < 0.5f || (fp && &w == &cur) || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // first person: inside it
         Vector2 sp = GetWorldToScreen(top, cam);
+        if (pipShow > 0) {  // not over the PiP
+            Vector2 pc, ph;
+            float rot;
+            pipPlace(pipShow, pipFull, pc, ph, rot);
+            if (fabsf(sp.x - pc.x) < ph.x + 30 && fabsf(sp.y - pc.y) < ph.y + 30) continue;
+        }
         float s = Clamp(170 / dist, 12, 24);
         Color c = TEAM_COLORS[w.team % 4];
         const Color POISON = {120, 220, 60, 255};
@@ -1976,21 +2014,22 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (aiming) digits(TextFormat("%02dm", (int)roundf(Vector3Distance(cur.pos, g.target()))), 96, 216, 40, 0);
     // current weapon (top right) + ammo
     int ammo = g.ammo[cur.team][g.weapon];
-    Vector2 wp = {1176, 92};
+    Vector2 wp = {1176, 92 - (300 - 174) * 1.5f * pipShow * (1 - pipFull)};  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
     if (!sprite("secondback", wp, 0.5f, {128, 128})) DrawCircleV(wp, 44, {0, 119, 155, 230});
     if (!image(iconOf(wd), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
     digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
     text(weaponName(wd), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
     if (wd.userFuse) text(TextFormat("%s %ds", tr("FETXT.Fuse", "Fuse", "Mèche"), (int)g.fuseOf(wd)), wp.x - 54, wp.y + 16, 22, GOLDEN, 2);  // d-pad up/down
     // turn timer (bottom right): turn seconds, round clock below
-    int left = aiming && g.hotSeat ? g.hotSeat : aiming || g.phase == Phase::Retreat ? g.timer : 0, secs = (left + 59) / 60;
+    bool retreat = g.phase == Phase::Flying || g.phase == Phase::Retreat;  // W4M: the retreat clock runs from the launch
+    int left = aiming && g.hotSeat ? g.hotSeat : aiming ? g.timer : retreat ? std::min(g.timer, g.retreatTicks(WEAPONS[g.weapon])) : 0, secs = (left + 59) / 60;
     Vector2 tp = {1180, 612};
-    bool urgent = (secs <= 5 && aiming && !g.hotSeat) || g.phase == Phase::Retreat;
+    bool urgent = (secs <= 5 && aiming && !g.hotSeat) || retreat;
     if (!sprite("timer_back", tp, 0.62f, {128, 128}, 0, urgent && tick / 15 % 2 ? Color{255, 120, 120, 255} : WHITE)) DrawCircleV(tp, 54, {0, 119, 155, 230});
-    if (g.phase != Phase::Retreat || g.shots.empty()) digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);  // W4M: the dynamite fuse is hidden
+    digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);
     int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
     digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
-    if (g.phase == Phase::Retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
+    if (retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
     // team health (bottom centre, above the hints)
     static const char *FLAGS[4] = {"flags/custom_cool", "flags/custom_police", "flags/custom_genie", "flags/custom_crown"};
     int maxHp = std::max(1, (int)g.cfg.scheme.health) * std::max(1, g.perTeam);

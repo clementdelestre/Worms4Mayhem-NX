@@ -72,11 +72,14 @@ private:
 // First-person aim reticle at screen point c, per weapon like W4M; scope: sniper vignette + cross.
 void reticle(const WeaponDef &wd, Vector2 c, bool scope);
 // W4M Blimp-view reticle at the screen centre: Bomber cursor (arrows = the run, left to right) or Targeting cursor.
-void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock = nullptr);  // state: 0 valid, 1 water, 2 no target, -1 none (out of the Blimp); lock: homing marker
+void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock = nullptr);
+// W4M PiP (HUDTWK PiP.*, WXFE_Border_Bubble): the event camera's picture in its tilted inset; show / full as Controls::inset
+void pipInset(const RenderTexture2D &scene, float show, float full);  // state: 0 valid, 1 water, 2 no target, -1 none (out of the Blimp); lock: homing marker
 struct Hud {
     bool open = false, mine = false;  // mine: a human here plays the current turn
     bool quiet = false;               // no bottom hints this frame
     bool fp = false;                  // first-person aim, or just left it: no label on the current worm
+    float pipShow = 0, pipFull = 0;   // Controls::inset: labels stay off the PiP, ActWormInfo moves to its PosPiP
     // local: a human here plays the current turn; tick: ticks simulated so far
     void input(const Game &g, Input &in, bool local, int pad, uint32_t tick);
     void draw(const Game &g, const Camera3D &cam, uint32_t tick);

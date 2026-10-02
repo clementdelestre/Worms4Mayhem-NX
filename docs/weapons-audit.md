@@ -196,7 +196,7 @@ Not changed, noted: `NumBomblets` is 4 for kWeaponClusterGrenade (we keep 5, Wik
 ## Engine changes from this audit
 
 - `Object::hooked` (checksummed, cleared in `beginTurn`), `GameEvent::Launch`, `Game::strikeStart` / `landTop`, `STRIKE_FALL` / `STRIKE_EXTRA`.
-- `Input::FUSE_UP` and `FUSE_DOWN` are bits 16 and 32. Bit 8 is `ABOUT_FACE`. The 4-byte input format is unchanged.
+- `Input::FUSE_UP` and `FUSE_DOWN` are bits 16 and 32. Bit 8 is `HEADING` (`turn` is then the wanted yaw, π·turn/128; it replaced `ABOUT_FACE`). The 4-byte input format is unchanged.
 - `Game::fuses` holds the fuse per team and is checksummed.
 - `WeaponDef` gains `user_fuse` and `rest_fuse`.
 - The d-pad sets the fuse only while a user-fuse weapon is in hand; otherwise it still zooms the camera. On a keyboard the keys are `=` and `-`. The HUD shows "Fuse N s" under the weapon name.

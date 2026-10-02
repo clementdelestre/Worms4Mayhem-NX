@@ -47,7 +47,7 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
             {"bounce", &w.bounce}, {"cluster_radius", &w.cradius}, {"cluster_damage", &w.cdamage}, {"poison", &w.poison},
             {"reach", &w.blast[0]}, {"push", &w.blast[1]}, {"push_reach", &w.blast[2]}, {"push_depth", &w.blast[3]},
             {"cluster_reach", &w.cblast[0]}, {"cluster_push", &w.cblast[1]}, {"cluster_push_reach", &w.cblast[2]}, {"cluster_push_depth", &w.cblast[3]}, {"lift", &w.lift}, {"gravity", &w.grav}, {"min_speed", &w.base}};
-        const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}, {"crate_weight", &w.weight}};
+        const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}, {"crate_weight", &w.weight}, {"retreat", &w.retreat}, {"post_launch", &w.postLaunch}};
         std::string key, sv;
         while (str(key) && eat(':')) {
             float num = 0;
@@ -179,10 +179,24 @@ bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist) {
         if (up > Game::STEP && up < Game::STEP_UP - 0.05f && !t.solid({toe.x, pos.y + up + 0.05f + R, toe.z}) &&
             t.normal({toe.x, pos.y - R + up, toe.z}).y >= SLIDE_NY) np = toe, climb = up + 0.05f;
     }
-    if (climb <= Game::STEP_UP && !t.solid({np.x, pos.y + climb + R, np.z})) { np.y += climb; pos = np; }
+    np.y += climb;
+    if (climb <= Game::STEP_UP && fits(t, pos, np)) pos = np;
     int i = 0;
     for (; i < 12 && !t.solid({pos.x, pos.y - R - 0.05f, pos.z}); i++) pos.y -= 0.05f;
     return i == 12;
+}
+
+// Deepest density in the upper body: the W4M Fits 0x59edf0 rods (+-4 / -3 and 0 / +5 units, ~0.2 m) above our 0.7 m of plain steps.
+static float body(const Terrain &t, Vector3 p) {
+    float worst = -1;
+    for (float h : {0.2f, 0.45f})
+        for (int k = 0; k < 7; k++) worst = fmaxf(worst, t.sample({p.x + (k ? 0.2f * cosf(k * PI / 3) : 0), p.y + h, p.z + (k ? 0.2f * sinf(k * PI / 3) : 0)}));
+    return worst;
+}
+
+bool fits(const Terrain &t, Vector3 from, Vector3 to) {  // W4M tests Fits before each move; a body already in land may still move out
+    float d = body(t, to);
+    return d <= 0 || d <= body(t, from);
 }
 
 void clearWalls(const Terrain &t, Vector3 &pos) {
@@ -222,13 +236,20 @@ float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e) {
     float landing = 0;
     for (int k = 0, n = substeps(vel); k < n; k++) {
         Vector3 np = Vector3Add(pos, Vector3Scale(vel, Game::DT / n));
-        if (t.solid({np.x, pos.y, np.z})) { vel.x *= -e, vel.z *= -e; np.x = pos.x; np.z = pos.z; }  // wall normal taken along v
-        if (vel.y > 0 && t.solid({np.x, np.y + R, np.z})) { vel.y *= -e; np.y = pos.y; }
-        pos = np;
-        for (int i = 0; i < 20 && t.solid({pos.x, pos.y - R, pos.z}); i++) {
-            pos.y += 0.05f;
-            if (vel.y < 0) landing = -vel.y, vel.y = 0;
+        if (t.solid({np.x, pos.y, np.z}) || !fits(t, pos, {np.x, pos.y, np.z})) { vel.x *= -e, vel.z *= -e; np.x = pos.x; np.z = pos.z; }  // wall normal taken along v
+        if (vel.y > 0 && (t.solid({np.x, np.y + R, np.z}) || !fits(t, {np.x, pos.y, np.z}, np))) { vel.y *= -e; np.y = pos.y; }
+        Vector3 foot = {np.x, np.y - R, np.z};
+        if (vel.y < 0 && t.solid(foot)) {  // W4M Ballistic land hit: Rebound 0x5acea0 below n.y 0.2, else the landing keeps only vt
+            Vector3 fn = t.normal(foot);
+            float vn = Vector3DotProduct(vel, fn);
+            bool wall = fn.y < 0.2f;
+            landing = -vel.y;
+            if (vn < 0) vel = Vector3Subtract(vel, Vector3Scale(fn, vn * (wall ? 1 + e : 1)));
+            else vel.y = 0;
+            if (!wall) vel.y = fminf(vel.y, 0);
         }
+        for (int i = 0; i < 20 && t.solid({np.x, np.y - R, np.z}) && fits(t, np, {np.x, np.y + 0.05f, np.z}); i++) np.y += 0.05f;  // W4M: raised while it Fits
+        pos = np;
     }
     return landing;
 }
@@ -667,8 +688,7 @@ void Game::use(Worm &w) {
     switch (wd.kind) {
     case Kind::Shell:
         shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(dir, 1.2f))), Vector3Scale(dir, launchSpeed(wd, power)), weapon, fuseOf(wd), false, 1});
-        if (dropped(wd)) phase = Phase::Retreat, timer = 1;  // W4M: walk away while the fuse burns, the blast ends the turn
-        else phase = Phase::Flying;
+        phase = Phase::Flying;
         break;
     case Kind::Sheep:
         shots.push_back({muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Scale(f, 0.9f))), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
@@ -676,16 +696,16 @@ void Game::use(Worm &w) {
         break;
     case Kind::Airstrike:
         if (cursorOn && targeted(wd.kind)) f = strikeDir();  // W4M 0x54d931: cross(Airstrike.Direction, UpVector), flat
-        if (wd.fuse > 0) shots.push_back({Vector3Add(tgt, {-f.x * BOMBER_LEAD, BOMBER_HEIGHT, -f.z * BOMBER_LEAD}), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1, {}, 0, 0});
+        if (wd.fuse > 0) shots.push_back({Vector3Add(tgt, {-f.x * BOMBER_LEAD, BOMBER_HEIGHT, -f.z * BOMBER_LEAD}), Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1, {}, STRIKE_LEAD, 0});
         else {  // W4M Bomber: a run along the worm's facing, one bomb every STRIKE_TICKS
             Vector3 v, p = strikeStart(wd, tgt, f, v);
-            shots.push_back({p, v, weapon, 0, false, 1, {}, 0, 0});
+            shots.push_back({p, v, weapon, 0, false, 1, {}, STRIKE_LEAD, 0});
         }
         phase = Phase::Flying;
         break;
     case Kind::Donkey: {
         Vector3 v = {0, -wd.speed, 0}, p = wd.name == "Fatkins Strike" ? fatkinsDrop(wd, tgt, cursorOn ? strikeDir() : f, v) : Vector3Add(tgt, {0, 25, 0});
-        shots.push_back({p, v, weapon, 0, false, wd.clusters > 0 ? wd.clusters : 1 << 30, {0, p.y, 0}});  // 0: smashes until LifeTime or the water
+        shots.push_back({p, v, weapon, 0, false, wd.clusters > 0 ? wd.clusters : 1 << 30, {0, p.y, 0}, wd.name == "Fatkins Strike" ? STRIKE_LEAD : 0});  // 0: smashes until LifeTime or the water
     }
         phase = Phase::Flying;
         break;
@@ -837,6 +857,21 @@ void Game::drown(Worm &w) {
     emit(GameEvent::Splash, w.pos, int(&w - worms.data()));  // Death once Settle has counted it to 0
 }
 
+bool Game::steered() const {
+    for (const Projectile &s : shots) {
+        const WeaponDef &d = WEAPONS[s.weapon];
+        if (!s.child && (d.kind == Kind::OldWoman || d.kind == Kind::SuperSheep || (d.kind == Kind::Scouser && !s.stage) || (d.kind == Kind::Airstrike && d.fuse > 0))) return true;
+    }
+    return false;
+}
+
+// W4M: Worm.WeaponDisableMovement from the fire to PostLaunchDelay's end; FlyCam (homing, super sheep) disables WormMoving
+bool Game::retreating() const {
+    if ((phase != Phase::Flying && phase != Phase::Retreat) || timer > retreatTicks(WEAPONS[weapon])) return false;
+    for (const Projectile &s : shots) if (!s.child && WEAPONS[s.weapon].kind == Kind::Homing) return false;
+    return !steered();  // ours: the stick steers the shot, not the worm
+}
+
 Object *Game::hooked() {
     for (Object &o : objects) if (o.hooked) return &o;
     return nullptr;
@@ -966,6 +1001,7 @@ void Game::stepShots(const Input &in, bool detonate) {
         bool boom = false, timed = wd.fuse > 0 && !s.child;
         Vector3 np;
         bool bomber = wd.kind == Kind::Airstrike && !s.child;  // the plane; fuse > 0: the steered Bovine Blitz
+        if (wd.kind == Kind::Donkey && wd.clusters > 0 && s.stage > 0) { s.stage--, i++; continue; }  // Fatkins: in the bomber until its DropBomb
         bool walker = !s.child && (wd.kind == Kind::Sheep || wd.kind == Kind::OldWoman || (wd.kind == Kind::Scouser && !s.stage) ||
                                    (wd.kind == Kind::SuperSheep && wd.walks && !s.stage));
         if (walker) {
@@ -982,7 +1018,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (detonate && wd.kind == Kind::SuperSheep) {  // takes off: the flight gets its own lifetime
                 s.stage = 1, s.fuse = wd.fuse;
                 s.vel = Vector3Scale(Vector3Normalize({s.vel.x, Vector2Length({s.vel.x, s.vel.z}) * tanf(SHEEP_TAKEOFF), s.vel.z}), wd.speed);
-                timer = std::max(timer, (int)(wd.fuse * 60) + 60);
+                if (phase == Phase::Settle) timer = std::max(timer, SETTLE_WAIT + (int)(wd.fuse * 60) + 60);
             }
             for (Worm &v : worms) {
                 int vi = int(&v - worms.data());
@@ -1006,14 +1042,17 @@ void Game::stepShots(const Input &in, bool detonate) {
             }
             np = s.pos;
         } else if (bomber && wd.fuse <= 0) {  // air strike plane: s.prey bombs dropped, s.stage ticks to the next
+            bool lead = !s.prey && s.stage > 0;  // held at the first drop point while bombrun_start plays
             if (s.stage > 0) s.stage--;
             else spawned.push_back({s.pos, s.vel, s.weapon, 0, true, 1}), s.prey++, s.stage = STRIKE_TICKS - 1, emit(GameEvent::Launch, s.pos, -1, s.weapon);
-            np = s.pos = Vector3Add(s.pos, Vector3Scale(s.vel, DT));
+            np = s.pos = lead ? s.pos : Vector3Add(s.pos, Vector3Scale(s.vel, DT));
             boom = s.prey >= wd.clusters;
         } else if (bomber) {  // banks on the stick; s.prey: payloads dropped, s.stage: ticks to the next drop
-            float yaw = atan2f(s.vel.x, s.vel.z) + in.turn / 127.0f * 0.8f * DT;
+            bool lead = !s.prey && s.stage > 0;  // W4M SuperBomber: the run starts once bombrun_start has played (0x58b4e0)
+            float yaw = atan2f(s.vel.x, s.vel.z) + (lead ? 0 : in.turn / 127.0f * 0.8f * DT);
             s.vel = {sinf(yaw) * wd.speed, 0, cosf(yaw) * wd.speed};
-            np = s.pos = Vector3Add(s.pos, Vector3Scale(s.vel, DT));
+            np = s.pos = lead ? s.pos : Vector3Add(s.pos, Vector3Scale(s.vel, DT));
+            timed = timed && !lead;
             if (s.stage > 0) s.stage--;
             else if (detonate && s.prey < wd.clusters)
                 spawned.push_back({Vector3Add(s.pos, {0, -1, 0}), Vector3Scale(s.vel, 0.3f), s.weapon, 0, true, 1}), s.prey++, s.stage = (int)(BOMBER_GAP * 60),
@@ -1100,16 +1139,17 @@ void Game::step(const Input &in) {
     uint8_t pressed = in.buttons & ~prevButtons;
     prevButtons = in.buttons;
     Worm &w = worms[current];
-    bool detonate = phase == Phase::Flying && (pressed & Input::FIRE), tool = roped || jetting || hooked();
+    bool detonate = phase != Phase::Aim && (pressed & Input::FIRE), tool = roped || jetting || hooked();
     bool drop = phase == Phase::Aim && dropping();  // W4M: the turn waits for the dropped crate to land
     if (landHold > 0) landHold--;
     Phase before = phase;
 
     if (phase == Phase::Aim && hotSeat > 0 && !drop) hotSeat = in.turn || in.walk || in.aim || (in.buttons & ~Input::TARGET) ? 0 : hotSeat - 1;
     bool aimCursor = phase == Phase::Aim && (in.buttons & Input::TARGET) && !tool;  // walk and aim drive the cursor, whatever the weapon
-    if (w.alive && !drop && (phase == Phase::Aim || phase == Phase::Retreat)) {
-        if (!aimCursor) w.yaw += Clamp(in.turn / 127.0f * 2.5f, jetting ? -JET_TURN : -2.5f, jetting ? JET_TURN : 2.5f) * DT;  // W4M 0x561e40
-        if ((pressed & Input::ABOUT_FACE) && !jetting) w.yaw += PI;
+    if (w.alive && !drop && (phase == Phase::Aim || retreating())) {
+        bool head = in.buttons & Input::HEADING;  // W4M 0x5b107c: walking sets Orientation to the input at once; the jetpack turns at 0x561e40's rate
+        float rate = head ? remainderf(in.turn * PI / 128 - w.yaw, 2 * PI) / DT : in.turn / 127.0f * 2.5f, lim = jetting ? JET_TURN : head ? PI / DT : 2.5f;
+        if (!aimCursor) w.yaw += Clamp(rate, -lim, lim) * DT;
         if (aimCursor && targeted(WEAPONS[weapon].kind)) {  // W4M IsometricCam 0x52a5e0
             if (!cursorOn) cursorYaw = w.yaw, cursorPitch = BLIMP_PITCH, cursor = blimpFocus(w.pos, w.yaw), cursorOn = true;
             cursorYaw += in.turn / 127.0f * BLIMP_TURN * DT;
@@ -1216,10 +1256,11 @@ void Game::step(const Input &in) {
     }
     if (scout.t >= 0) scout.t = WEAPONS[weapon].kind == Kind::Binoculars && phase == Phase::Aim ? scout.t + 1 : -1;  // LeaveBinocularsVision
     // W4M: the parachute in hand opens by itself on a long fall (past a jump's landing speed)
-    if (!chute && !tool && w.alive && !w.grounded && w.vel.y < -FALL_SAFE * 0.8f && (phase == Phase::Aim || phase == Phase::Retreat) &&
+    if (!chute && !tool && w.alive && !w.grounded && w.vel.y < -FALL_SAFE * 0.8f && (phase == Phase::Aim || retreating()) &&
         WEAPONS[weapon].kind == Kind::Parachute && ammo[w.team][weapon])
         use(w);
-    if (before != phase && phase == Phase::Flying) timer = 20 * 60;  // only a stuck shot outlasts this
+    // W4M 0x5833a0 / 0x54a0e0: PostLaunchDelay, then StartRetreatTimer (RetreatTimeOverride or DefaultRetreatTime), the shot still flying
+    if (before != phase && phase == Phase::Flying) timer = msTicks(WEAPONS[weapon].postLaunch) + retreatTicks(WEAPONS[weapon]);
     if (chute && !w.grounded && w.vel.y < -2.5f) w.vel.y = -2.5f;  // below FALL_SAFE: no fall damage
     if (chute && !w.grounded) w.vel.x += (wind * 2 - w.vel.x) * DT;  // drifts downwind, up to 2 m/s per wind unit
     for (Worm &x : worms)
@@ -1273,12 +1314,18 @@ void Game::step(const Input &in) {
         if (!w.alive || selfHurt || over || (!hotSeat && !drop && --timer <= 0)) { phase = Phase::Settle; timer = 300; roped = jetting = chute = false; }
         break;
     case Phase::Flying:
-        if (shots.empty() || --timer <= 0) { shots.clear(); phase = Phase::Retreat; timer = msTicks(cfg.scheme.retreatTime * 1000); }
-        break;
-    case Phase::Retreat:
-        if (shots.empty() && (!w.alive || selfHurt || over || --timer <= 0)) { phase = Phase::Settle; timer = 300; jumpDelay = 0; roped = jetting = chute = false; }
+        if (shots.empty()) phase = Phase::Retreat;
+        [[fallthrough]];
+    case Phase::Retreat:  // W4M Timer_RetreatTimedOut / Worm_Damaged_Current -> EndTurn, which waits for the shots (ObjectCount.Active)
+        if (!w.alive || selfHurt || over || --timer <= 0) {
+            phase = Phase::Settle, timer = SETTLE_WAIT + (shots.empty() ? 0 : SHOT_CAP), jumpDelay = 0, roped = jetting = chute = false;
+        }
         break;
     case Phase::Settle: {
+        if (!shots.empty()) {  // ours: a shot still flying SHOT_CAP into the settle is dropped
+            if (--timer <= SETTLE_WAIT) shots.clear();
+            break;
+        }
         bool still = shots.empty();
         for (const Worm &x : worms) still = still && (!x.alive || x.grounded);
         for (const Object &o : objects) still = still && o.fuse < 0 && Vector3LengthSqr(o.vel) < 0.01f;

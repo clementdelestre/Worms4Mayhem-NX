@@ -10,7 +10,7 @@ enum : uint8_t {
     HELLO = 0x01, WELCOME, ERROR_, LIST_ROOMS = 0x10, ROOM_LIST, CREATE_ROOM, JOIN_ROOM, ROOM_STATE, LEAVE,
     START = 0x20, INPUTS, TURN_END, DESYNC, REPLAY, CHAT = 0x30, PING, PONG,
 };
-static const uint16_t VERSION = 1;
+static const uint16_t VERSION = 2;  // 2: Input bit 8 is HEADING (absolute walk yaw)
 
 struct W {
     std::string b;

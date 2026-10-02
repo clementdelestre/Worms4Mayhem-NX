@@ -16,7 +16,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("bananette", "Bananette", 0.35, false, &[]),
     ("holy", "HolyHandGrenade", 0.6, false, &[]),
     ("sheep", "Sheep", 0.8, false, &["Run", "Jump"]),
-    ("airstrike", "Airstrike.Payload", 1.0, false, &[]),
+    ("airstrike", "Airstrike.Payload", 1.2, false, &["Spin"]),  // 24 units at 20 per metre; WEAPTWK AnimTravel
     ("donkey", "Donkey", 1.6, false, &[]),
     ("crate_health", "Crate.Health", 0.9, false, &[]),
     ("crate_weapon", "Crate.Weapon", 0.9, false, &[]),
@@ -61,7 +61,8 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_hammer", "TailNail", 0.0, false, &[]),
     ("bubble", "BubbleTrouble.Bubble", 4.2, false, &[]),  // Bubble.Radius 42 units: 4.2 m across; static (its 3 bones only bob it)
     ("wings", "RedBullWings", 1.35, false, &["FlyRedBull"]),  // 27 units span
-    ("superbomber", "SuperAirstrike", 4.1, false, &["OpenDoorsSource"]),  // Bovine Blitz (SuperBomberGraphicEntity); the rest pose is nose-down, the clip starts level
+    ("superbomber", "SuperAirstrike", 4.1, false, &["OpenDoorsSource", "bombrun_end6", "bombrun_start"]),  // Bovine Blitz (SuperBomberGraphicEntity); the rest pose is nose-down, the clip starts level
+    ("bomber", "BomberHelicopter", 4.1, false, &["bombrun_end", "bombrun_end2", "bombrun_end3", "bombrun_end4", "bombrun_end5", "bombrun_start", "bombrun_start2", "bombrun_start3"]),  // Airstrike (BomberGraphicEntity, table 0x91f39c)
     ("cow", "Cow.Payload", 0.0, false, &["Hang", "Skydive"]),  // ParachutePayloadGraphicEntity: Crate.Chute at its "Parachute" node
     ("grave0", "Grave.Cross", 0.9, true, &[]),
     ("grave1", "Grave.Worm", 0.9, true, &[]),
@@ -176,6 +177,8 @@ const WORM_CLIPS: &[&str] = &[
     "PolishEyebrow", "CountFingers", "FakeShotgun", "Gunslinger1", "Gunslinger2", "FlickBogey", "Tantrum", "Sneeze2", "Puzzled",
     "Thinking", "Nod", "WiggleBrows", "Cower", "SadSigh",
     "Vault", "ParachuteLR",
+    // kWE 22 fast-fall tumble and the kWE 15 hard-landing recoveries (0x5a3a60, 0x5a3d64)
+    "Skid", "RecoverFront1", "RecoverBurried1", "RecoverBack1", "RecoverBack2",
 ];
 const FPS: f32 = 30.0;
 
@@ -688,7 +691,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let c = [(lo[0] + hi[0]) / 2.0, if feet { lo[1] } else { (lo[1] + hi[1]) / 2.0 }, (lo[2] + hi[2]) / 2.0];
     let norm = if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
-    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Parachute"];
+    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Parachute", "trail1", "trail2", "persp", "smokelocator"];  // trail*: Bomber.EffectName; persp: its scene camera
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();
     let skin_all = |w: &[M4]| { let mut m = s.skinning(x, w); m.extend(sockets.iter().map(|&(g, _)| w[g])); m };

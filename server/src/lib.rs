@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 pub const HELLO: u8 = 0x01;
 pub const WELCOME: u8 = 0x02;
 pub const ERROR: u8 = 0x03;

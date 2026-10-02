@@ -16,6 +16,8 @@ void event(const GameEvent &e, Color dirt);
 void fireworks(Vector3 centre, float radius, float top);  // W4M Land.Center, Land.Radius, Land.MaxHeight for the victory show
 void trail(const Projectile &s, float dt);  // call once per frame per live projectile
 void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire = false);  // one ambient particle (rises, slows down)
+void wingTrail(Vector3 p);  // one puff of W4M WXP_PlaneWingTrails (Bomber.EffectName)
+void ariel(Vector3 p);  // W4M WXP_AirstrikeArielA: the air strike bomb's one-off puff at its launch
 void dud(Vector3 p);  // mine fizzled: W4M ExpiryFx WXP_Wep_MineDudEffect
 void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet);
 void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble);  // upright W4M "?" (WXSprite22) or bubble (WXSprite23)  // additive W4M jetfire (jet) or toonfire sprite

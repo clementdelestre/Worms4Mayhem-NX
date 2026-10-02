@@ -21,7 +21,11 @@ bool targetHeld(const Game &g);          // a targeted() weapon in hand, Aim pha
 bool targetView(const Game &g);          // W4M Blimp view (toggled with E / d-pad right): the camera drives the aim
 bool fireRefused();                      // this frame's Fire press was dropped: outside the Blimp view
 extern bool cpuTurn;                     // set by main: a CPU plays the turn
-bool firstPerson(const Game &g);         // aim mode seen from the worm's eyes (target-marker weapons stay third person)
+bool aimed(const WeaponDef &wd);         // W4M IsAimedWeapon / Ninja / Binoculars cursor: the weapon has a first-person aim reticle
+bool firstPerson(const Game &g);         // aim mode seen from the worm's eyes, aimed() weapons only
+bool scoped(const Game &g);              // sniper rifle in aim mode: the scope view
+enum class Reticle { None, Aim, Blimp, Lock };  // Aim: Ui::reticle; Blimp: Ui::targetCursor; Lock: the homing lock-on mark
+Reticle reticle(const Game &g, bool chase);  // the one place deciding which reticle or cursor is on screen
 float sinceFirstPerson();                 // seconds since the first-person aim view, 0 in it
 extern int forceAim;                     // capture mode: 1 aim, 2 fine aim
 Vector3 eye(const Game &g);              // first-person aim camera position
@@ -29,7 +33,9 @@ Vector3 aimPoint(const Game &g);         // far point of the active worm's shot 
 // Free orbit while moving, over the shoulder in aim mode, chasing a shot, through the sniper scope.
 void reset();  // new match: camera cut behind the first worm, aim state cleared
 void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt);
-void impact(Vector3 at);  // explosion: the camera holds on it ~1 s once no shot is left to chase
+void impact(Vector3 at);  // explosion: no camera move of its own (W4M)
+// W4M PiPService: the event camera while the main view stays the worm's; show 0..1 its slide on / off, full 0..1 its growth to full screen
+bool inset(Camera3D &view, float &show, float &full);
 float occluded();  // 0..1: the active worm is behind terrain or the camera is right on it (W4M shows it as an outline)
 void focus(const Vector3 *at, float radius = 0, bool crate = false);  // HUD cinematic target (hp count, crate drop), radius m kept in view; held while set each frame, nullptr or no call: released after 0.2 s
 // crate: W4M CrateTrackCamera on it instead of the framing

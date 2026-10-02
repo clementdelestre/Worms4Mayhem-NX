@@ -575,7 +575,11 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         else fire(g, DAMAGE);
         fired = false;
     }
-    if (lastPhase != Phase::Retreat && g.phase == Phase::Retreat && cur != NONE) fire(g, RETREAT, cur);  // TimerLogicEntity 0x50f44b
+    // TimerLogicEntity 0x50f44b: RetreatTimeRemaining passing 4000 ms
+    static bool late = false;
+    bool now = (g.phase == Phase::Flying || g.phase == Phase::Retreat) && g.retreatTicks(WEAPONS[g.weapon]) > msTicks(4000) && g.timer <= msTicks(4000);
+    if (now && !late && cur != NONE) fire(g, RETREAT, cur);
+    late = now;
     lastPhase = g.phase;
 
     // HudClockEntity 0x5f0185: the displayed seconds reach 5 (ShortOnTime) or 15 (Waiting)

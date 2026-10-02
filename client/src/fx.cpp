@@ -346,6 +346,7 @@ void trail(const Projectile &s, float dt) {
                  s.child ? Color{180, 245, 255, 255} : Color{255, 200, 60, 255}, (unsigned char)(s.child ? STAR : PUFF), true});
         return;
     }
+    if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0) return;  // WEAPTWK: no TrailBitmap; its ArielFx is a one-off (ariel())
     bool rocket = (d.kind == Kind::Shell && d.fuse <= 0 && d.name != "Poison Arrow") || d.kind == Kind::Homing || (d.kind == Kind::Airstrike && s.child) || d.kind == Kind::SuperSheep;
     float v = Vector3Length(s.vel);
     if (!rocket || v < 0.5f) return;
@@ -360,6 +361,19 @@ void trail(const Projectile &s, float dt) {
 
 void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire) {
     add({p, v, 0, life, size0, size1, 0, rnd(-1, 1), fire ? -1.0f : -0.3f, 0.6f, c, (unsigned char)(fire ? FIRE : PUFF), fire});
+}
+
+// WXP_PlaneWingTrails. W4M scales ParticleVelocity and SizeVelocity by 0.01 per ms (0x5b97d0): drift 0..0.2 m/s,
+// 4 +-0.75 units shrinking 0.5 m/s, so gone in ~0.4 s, well before ParticleLife 2 s.
+void wingTrail(Vector3 p) {
+    float s = rnd(0.1625f, 0.2375f);
+    add({p, {rnd(0, 0.2f), rnd(-0.1f, 0.1f), rnd(0, 0.2f)}, 0, 0.04f + s / 0.5f, s, 0, 0, rnd(-1, 1), 0, 0, {200, 205, 190, 255}, PUFF, false});
+}
+
+// WXP_AirstrikeArielA: EmitterLifeTime 1 ms, so one burst of its MaxParticles 10 (0x5bbfa0); 0.08 m/s, shrinking 0.5 m/s.
+void ariel(Vector3 p) {
+    for (int i = 0; i < 10; i++)
+        add({p, Vector3Scale(rndDir(), 0.08f), 0, 0.4f, 0.2f, 0, 0, rnd(-8, 8) * 0.06f, 0, 0, ColorLerp({51, 51, 77, 220}, {128, 115, 140, 220}, rnd()), PUFF, false});
 }
 
 void dud(Vector3 p) {

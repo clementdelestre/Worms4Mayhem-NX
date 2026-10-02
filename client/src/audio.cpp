@@ -35,7 +35,7 @@ const char *SFX_NAMES[] = {
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m-map.md §12): the event of each file, its gain in dB
 // (event + sound definition + category), loop, 3D linear rolloff min..max in m (20 units/m; 0 = 2D), max playbacks.
-struct Def { const char *event; float db; bool loop; float min, max; int maxpb; };
+struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; };  // fade: FEV fade in/out, s
 const Def DEFS[] = {
     {"global/ExplosionRegular", -3, false, 0.5f, 50, 4},
     {"weapons/ExplosionLarge", -12, false, 0.5f, 40, 1},  // its 2nd variant is ExplosionBoxed1 (W4M -2 dB, 2D)
@@ -48,7 +48,7 @@ const Def DEFS[] = {
     {"weapons/HudAlert", -10, false, 0, 0, 1},
     {"weapons/ClockFast", -2, true, 0, 0, 1},
     {"weapons/ShotgunFire", -5, false, 0, 0, 1},
-    {"weapons/Bomber", -9, true, 0.5f, 60, 1},
+    {"weapons/Bomber", -9, true, 0.5f, 60, 1, 0.5f},
     {"weapons/ConcreteDonkeyRelease", -1, false, 0.5f, 100, 1},
     {"weapons/NinjaRopeFire", 0, false, 0.5f, 25, 1},
     {"weapons/Teleport", -8, false, 0.5f, 25, 1},
@@ -278,9 +278,14 @@ void play(Sfx id, Vector3 at) { play(id, 1, &at); }
 void loop(Sfx id, bool on, const Vector3 *at) {
     Variants &v = sfx[(int)id];
     const Def &d = DEFS[(int)id];
-    if (!on) { for (Slot &k : v.slot) StopSound(k.s); return; }
-    for (Slot &k : v.slot) if (IsSoundPlaying(k.s)) return place(k.s, d, powf(10, d.db / 20), at);
-    playRandom(v, d, 1, at);
+    static float level[(int)Sfx::Count];
+    static Vector3 last[(int)Sfx::Count];  // where a fading-out loop was last placed
+    float &g = level[(int)id];
+    if (at) last[(int)id] = *at;
+    g = d.fade > 0 ? Clamp(g + (on ? 1 : -1) * GetFrameTime() / d.fade, 0, 1) : on;
+    if (g <= 0) { for (Slot &k : v.slot) StopSound(k.s); return; }
+    for (Slot &k : v.slot) if (IsSoundPlaying(k.s)) return place(k.s, d, g * powf(10, d.db / 20), &last[(int)id]);
+    if (on) playRandom(v, d, g, &last[(int)id]);
 }
 
 // banks load lazily (~30 decoded upfront would cost ~300 MB); preloadVoices() moves the hitch to match start
