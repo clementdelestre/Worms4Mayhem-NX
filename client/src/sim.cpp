@@ -1693,7 +1693,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             float super = s.child ? 1 : superScale(wd);  // the child containers are SuperClusters' (not modelled)
             Blast b = blastOf(wd, s.child);
             b.damage *= super, b.push *= super, b.crater *= super;
-            explode(Vector3Add(np, {0, s.child ? 0 : wd.lift, 0}), b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : s.child ? 2 : wd.clusters > 0 ? 3 : 0);  // ExplosionMessage kind, weapons.md
+            explode(Vector3Add(np, {0, s.child ? 0 : wd.lift, 0}), b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0);  // kind by container name prefix kWeaponCluster/Factory (0x57f32c); mine Clusters (3) not modelled
             bool fly = !s.child && ((wd.kind == Kind::Homing && !wd.avoid) || (wd.kind == Kind::SuperSheep && (wd.name == "Starburst" ? wd.fuse - s.fuse >= 3.5f : !wd.walks || s.stage)));
             if (fly) camHold = msTicks(1000);  // the FlyCam's: CAMTWK PauseDuration 1000 (homing, super sheep, starburst)
             if (wd.name == "Starburst" && worms[current].alive) hurt(worms[current], worms[current].hp);  // W4M Worm.Vapourize 0x5885f0: its rider
