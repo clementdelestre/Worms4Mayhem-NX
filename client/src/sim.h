@@ -477,6 +477,7 @@ private:
     void stepShots(const Input &in, bool detonate);
     void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0);
     void steal(const Worm &victim);  // old woman ammo theft
+    void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies
     bool dropPoint(Object::Type t, Vector3 &out);
     bool addObject(Object::Type t, float lift);

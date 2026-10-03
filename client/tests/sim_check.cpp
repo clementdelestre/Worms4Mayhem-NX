@@ -429,6 +429,7 @@ static void checkSniper() {
     in.buttons = Input::FIRE;
     g.step(in);
     assert(v.hp <= 100 - (int)WEAPONS[g.weapon].damage + 1);
+    assert(!v.grounded && v.vel.z > 0.8f * WEAPONS[g.weapon].blast[1]);  // knocked along the shot (WEAPTWK ImpulseMagnitude 0.1 u/ms)
 }
 
 // Sniper at a worm just over a crest, aimed like a player: target moved to the scope camera's screen centre.

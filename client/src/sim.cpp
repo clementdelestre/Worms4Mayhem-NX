@@ -1110,6 +1110,7 @@ void Game::use(Worm &w) {
         if (struck) b.damage = 0;
         if (dist < 60) explode(Vector3Add(r.position, Vector3Scale(dir, dist)), b);
         if (struck) hurt(*struck, (int)wd.damage);  // W4M Damage.Impulse 0x5ae320 ignores armour
+        if (struck) impulse(*struck, Vector3Scale(dir, wd.blast[1]));  // WEAPTWK ImpulseDirection (18,0,0), not normal: along the shot, ImpulseMagnitude
         if (--shotsLeft == 0) phase = Phase::Flying;
         break;
     }
@@ -1154,7 +1155,7 @@ void Game::use(Worm &w) {
             if (!o.alive || &o == &w || !meleeHits(w, o.pos, wd)) continue;
             hurt(o, (int)wd.damage);
             if (wd.pins) o.nailed = true, o.vel = {0, 0, 0}, o.pos.y -= 0.35f;  // sunk to the waist
-            else o.vel = Vector3Scale(Vector3Add(Vector3Scale(dir, wd.speed), {0, wd.bounce, 0}), doubled() ? 2 : 1);  // DamageImpulseMessage 0x518cbf
+            else impulse(o, Vector3Add(Vector3Scale(dir, wd.speed), {0, wd.bounce, 0}));
         }
         if (wd.fuse > 0) { w.vel.y = wd.fuse; w.grounded = false; }
         phase = Phase::Flying;
@@ -1327,6 +1328,11 @@ void Game::stepRope(Worm &w) {
         w.pos = np;
     }
     if (underwater(w)) drown(w);
+}
+
+// W4M DamageImpulseMessage 0x518cbf: a direct hit (gun, melee) sets the worm's velocity, doubled under Double Damage, and launches it
+void Game::impulse(Worm &o, Vector3 v) {
+    o.vel = Vector3Scale(v, doubled() ? 2 : 1), o.grounded = false;
 }
 
 void Game::hurt(Worm &w, int dmg, bool blast, int type) {
