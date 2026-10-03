@@ -369,7 +369,7 @@ What the client does:
   - Fire never launches outside the Blimp (0x583a10). In the Blimp, a press with no target plays `FeError` in place of W4M's `weapons/Gong` (not imported).
   - Hints, as in `BlimpHelpEntity` / `WXFE.HelpBlimpConsole` (Look, Pan, Zoom in / out): "Fire / Lock target", "Look", "Pan", "Zoom" and "Leave" in the view. Outside it: "Sky view: target" and "Hold: sky view".
 - **The CPU** uses the Blimp only while its plan executes a strike, as in W4M, which calls `SetCamera("Blimp")` from `AIActionSetStrikeTarget::ApplyActionInner` (0x4b4c70) and `AIStrike.SeekTarget` (0x4b5a90). That is `Ai::striking()`: mode Act with a targeted plan weapon. It is not shown during instant replays or match playback. The team's reselected weapon alone no longer opens the view: it used to bring up the reticle at random moments. `ai_check` tests this.
-- **Controls**. Deliberate deviation, the user's choice: the sticks are the other way round from W4M HelpBlimpConsole (Movement = Look, Camera = Pan).
+- **Controls**. [user-requested] Deliberate deviation: the sticks are the other way round from W4M HelpBlimpConsole (Movement = Look, Camera = Pan).
   - Left stick: pan at 250·zoom u/s. Right stick: yaw (RotateSpeed 0.55·s) and pitch (PitchSpeed 0.45·s), with s = 0.9 + 0.1·zoom. D-pad up / down: zoom 0.15–2 (FOV only, client-side).
 - **Pitch range** [0, π/2], as in W4M (0x52a5e0). Pitch 0 is a horizontal view and π/2 looks straight down: the camera sits at focus + R(pitch, yaw)·(0, 0, -StickLength), with DefaultPitch 1 tilted down (0x52a0a0), and our `blimpEye` uses the same convention.
   - The camera's up vector is R(pitch, yaw)·(0, 1, 0) (W4M 0x52a0a0).
@@ -505,3 +505,9 @@ Labels per row: **data** (CAMTWK / tweak value), **disasm** (read in the code), 
 | DefaultCam activation 0x52da00 | resets, sets the yaw from the target's facing, runs one update (vtable +0x28 = 0x530690); copies nothing from the camera before and sets no Cut flag | disasm | 0x52da00 |
 | AlienAbductionCamera clip | 0x547490: candidate = worm + 10 + (0, 50, 50) units, clipped by 0x51af90 (land only: 0x466a20, CollisionManagerService / Landscape), kept if > 10 units from the worm; no test against the saucer | disasm | 0x547490, 0x51af90 |
 
+
+### 11.9 Scene camera roll (`persp` node up)
+
+Roll of the `persp` node's up about the view axis, sampled over every clip: 0° everywhere except `bomber/bombrun_end4` (-126° to -9°),
+`bomber/bombrun_end3` (up to +19°) and `superbomber/OpenDoorsSource` (±9°, banking) (data, model transforms). Whether W4M's
+`FollowSceneCam` applies the node's up as is: not traced (assumed yes); `bombrun_end4` is the one place a large roll can come from.

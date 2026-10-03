@@ -82,7 +82,7 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
   cloud is not active: the only `EmitterIsOfInterest` emitter, WeaponGasCanJet, sits in the effect WeaponGasCan that nothing
   references (PARTTWK, WEAPTWK, exe strings, Lua: data). No timeout, as W4M.
 - Then `timer < 0`: PostActivityTime 2400 ms, activity or not. At its end ApplyDamage (`applyDamage`): every hurt worm's display at
-  once (`countGroup`, 2500 ms), the dead queued (`deathQueue`, AddMeToDeathQueue at energy ≤ damage, 0x5abf13). Then CheckActivity.
+  once (`countGroup`, 2500 ms; [observed in W4M by the user, 2026-10-03] X sends `Input::SKIP_COUNT`, which ends the display at once, deaths still queue; the client then opens the weapon panel at the next Aim if the local player owns it (client UI state only, `Hud::reopen`); in Aim X skips the HUD poison count and the panel opens, the ready screen never hides an open panel), the dead queued (`deathQueue`, AddMeToDeathQueue at energy ≤ damage, 0x5abf13). Then CheckActivity.
 - The death queue (`stepCount`, 0x4f9b30): once the displays are over and nothing else is active (thrown worms land first), the
   front worm's throes 3000 ms, its blast at its feet (0x5a9400), the next one a tick later. A living worm the blast hurts keeps
   that damage for the next ApplyDamage.
@@ -176,13 +176,13 @@ damage in jetpack or Icarus flight (W4M flag 0x40, disasm).
 
 ## Blimp view and cursor (`TARGET`)
 
-`targeted()` weapons (airstrike, Bovine Blitz, donkeys, abduction, teleport, homing) aim from the W4M Blimp view (IsometricCam
+`targeted()` weapons (airstrike, Bovine Blitz, donkeys, abduction, teleport; not homing) aim from the W4M Blimp view (IsometricCam
 0x52a5e0, disasm). The first `TARGET` tick of the turn places `Game::cursor` (`blimpFocus`: above all land, its centre ray on the aim
 point), then `turn` yaws it at 0.605 rad/s, `walk` / `aim` move it at 25 m/s at full stick (client-scaled by its zoom: W4M MoveSpeed
 250 u/s × MaxZoom 2), `PITCH` + `aim` tilts it at 0.495 rad/s (0..π/2), and it stays within 225 m of `landCenter()` (W4M 4500 units
 of Land.Center, data). The target is the land, then the water, under the camera ray (`blimpHit`, W4M CMS 0x51c910); FIRE without a
-target is refused (W4M NotClearToFire). Strikes fly along the view's right (`strikeDir`). Homing: FIRE in the Blimp only locks
-(`locked`, `lockAt`), then it is aimed and charged as usual (W4M 0x583a10). Constants: `BLIMP_*` in sim.h; camera side: camera.md.
+target is refused (W4M NotClearToFire). Strikes fly along the view's right (`strikeDir`). Homing (observed: aimed from the worm, no Blimp): FIRE
+in the first-person aim takes the aim ray's target (`locked`, `lockAt = target()`, W4M 0x583a10 accepts any view but Default), then a new press charges. Constants: `BLIMP_*` in sim.h; camera side: camera.md.
 
 ## CPU player (`Ai`, ai.h / ai.cpp)
 
@@ -196,5 +196,6 @@ target is refused (W4M NotClearToFire). Strikes fly along the view's right (`str
   chained barrels / crates, poison, karma and vampire (W4M 0x49ed30, 0x4a9260 target values).
 - Moves: destination scoring then A* over a 0.5 m node grid (W4M AIPathManager 0x492d80, octile costs, jumps +40, backflips +60);
   each edge is played with `walkStep` / the jump code, vault included. Crates first when they score more (W4M CAIPlanCollectCrate),
-  retreat planned with the attack. Strikes are aimed from the Blimp too; the CPU never locks a homing missile.
+  retreat planned with the attack. Strikes are aimed from the Blimp too; a homing missile is locked (one FIRE press, then released) and charged from the worm, like a human.
 - W4M side: `docs/w4m/ai.md` §18; ours in detail, with the source of each rule: `ai.md`.
+- Jetpack after a secondary drop: the turn enters the retreat (the dropped weapon's RetreatTime, `Game::launched`); the jetpack stays usable through it, a landed one takes off again with FIRE while fuel lasts [observed in W4M by the user, 2026-10-03].

@@ -1169,10 +1169,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         break;
     }
     case Setup: {
-        // focus order: teams count, 4 fields per visible team, worms, map, rules, start
+        // focus order: teams count, 4 fields per visible team, map, worms, rules, start
         std::vector<int> ids = {0};
         for (int k = 0; k < cfg.teams; k++) for (int f = 0; f < 4; f++) ids.push_back(100 + k * 4 + f);
-        ids.push_back(200), ids.push_back(201), ids.push_back(299);
+        ids.push_back(201), ids.push_back(200), ids.push_back(299);  // screen order: map above worms
         for (int r = 0; r < RULES; r++) ids.push_back(300 + r);
         ids.push_back(350);
         ids.push_back(400);
@@ -1496,10 +1496,18 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     mine = local;
     // swallow: a button still held from a menu (START at tick 0) or another turn must not fire or jump
     if (tick == 0) swallow = true;
-    if (!local || g.phase != Phase::Aim) { open = false, pick = -1, swallow = true; return; }
+    bool x = local && (forceX || pressed(pad, {X}, {KEY_Q}));
+    if (x && g.phase == Phase::Settle && !g.countGroup.empty()) in.flags |= Input::SKIP_COUNT, reopen = true;  // observed in W4M by the user, 2026-10-03: the menu key stops the count
+    if (x && counting >= 0) skipHp = true;
+    if (!local || g.phase != Phase::Aim) {
+        open = false, pick = -1, swallow = true;
+        if (g.phase != Phase::Settle) reopen = false;
+        return;
+    }
+    if (reopen) reopen = false, x = !open;
     int cols = PANEL_COLS;
     using S = Audio::Sfx;
-    if (pressed(pad, {X}, {KEY_Q})) open = !open, cursor = g.held(), Audio::play(open ? S::FePopupIn : S::FePopupOut);
+    if (x) open = !open, cursor = g.held(), Audio::play(open ? S::FePopupIn : S::FePopupOut);
     if (open) {
         int dx = pressed(pad, {RIGHT}, {KEY_RIGHT}) - pressed(pad, {LEFT}, {KEY_LEFT});
         bool fwd = g.jetting && ((pad >= 0 && IsGamepadButtonDown(pad, UP)) || IsKeyDown(KEY_W));  // Jetpack.Forward, InGame group
@@ -1520,7 +1528,7 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     }
     if (swallow) {
         if (!(held & (Input::FIRE | Input::JUMP))) swallow = false;
-        in.buttons &= g.jetting ? ~Input::JUMP : ~(Input::FIRE | Input::JUMP);  // in flight FIRE is only the thrust
+        if (!g.jetting) in.buttons &= ~(Input::FIRE | Input::JUMP);  // in flight FIRE is the thrust and JUMP is ZL (Fire.Second), never a leftover press
     }
     if (pick >= 0 && (g.held() == pick || g.shotsLeft || !g.pickable(cur.team, pick))) pick = -1;
     if (pick >= 0) in.buttons = (in.buttons & ~(Input::FIRE | Input::JUMP)) | Input::NEXT_WEAPON, in.aim = Input::pick(pick).aim;  // pending pick: Controls still sees the old weapon, so a bounce press would fire it unaimed
@@ -1535,20 +1543,12 @@ static bool sprite(const char *name, Vector2 pos, float s, Vector2 pivot, float 
     return true;
 }
 
-// W4M Text3DEntity: the `Text.Backing` sprite set ("Name Backing.tga") is 3 sprites, UV columns 0..1/6, 1/6..5/6, 5/6..1 (0x5fa9e6).
-// In text units (1 em: the FE.Font instance keeps scale 1, 0x6a6c94) the middle is TextToBackRatio (1, 0.9) of the text's advance
-// width by 1 em, each end BackEndWidth 0.2 as a half extent, so 0.4 em wide (0x5fafa0). Vertical: centred on our line box (ours).
+// W4M Text3DEntity draws a "Name Backing.tga" frame behind the text (docs/w4m/render.md); (x, y) is the text centre.
 static void text3d(const char *t, float x, float y, float size, Color c) {
-    float em = size * 50 / textFont().baseSize;  // tools/w4m-ui: 50 atlas px per em in a baseSize-px line
-    float w = textWidth(t, size), h = em * 0.9f, e = 0.4f * em;
-    Texture2D b = tex("hud/name_backing");
-    if (b.id) {
-        float u = b.width / 6.0f, cy = y + size / 2 - h / 2, l = x - w / 2 - e;
-        DrawTexturePro(b, {0, 0, u, (float)b.height}, {l, cy, e, h}, {}, 0, WHITE);
-        DrawTexturePro(b, {u, 0, 4 * u, (float)b.height}, {l + e, cy, w, h}, {}, 0, WHITE);
-        DrawTexturePro(b, {5 * u, 0, u, (float)b.height}, {l + e + w, cy, e, h}, {}, 0, WHITE);
-    }
-    text(t, x, y, size, c, 1);
+    // user-requested (2026-10-03): no W4M Name Backing frame, a drop shadow instead
+    float d = fmaxf(1, size / 14);
+    text(t, x + d, y - size / 2 + d, size, {0, 0, 0, (unsigned char)(c.a * 0.6f)}, 1);
+    text(t, x, y - size / 2, size, c, 1);
 }
 
 // PiP centre, half extents (px) and tilt (rad): HUDTWK PiP.Off/OnScreenPosition, OnScreenScale, OnScreenRotation z. PiPService
@@ -1666,7 +1666,7 @@ static void healthBar(int team, float x, float y, float w, float h, float frac) 
 
 // W4M Bomber / Targeting cursor (Bundl09 meshes and clips) at the screen centre, in HUD units: screen height / 480
 // (HUDTWK places the HUD in that space, e.g. AngleMeter.ScreenY -165); the cursor honours the HUD's hide flag.
-void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock) {
+void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock, const Vector2 *at) {
     static double last = -1, start = 0, lockLast = -1, lockStart = 0;
     double now = GetTime();
     if (state >= 0 && now - last > 0.2) start = now;  // Show: the intro from t = 0
@@ -1674,7 +1674,7 @@ void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock) {
     if (state >= 0) last = now;
     if (lock) lockLast = now;
     float t = float(now - start), u = GetScreenHeight() / 480.0f;
-    Vector2 c = {GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f};
+    Vector2 c = at ? *at : Vector2{GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f};
     Color tint = state == 1 ? Color{98, 168, 255, 255} : state == 2 ? Color{215, 32, 0, 255} : WHITE;  // 0x552340: valid, water, none
     auto keys = [&](std::initializer_list<Vector2> k) {  // (time, value) keys, linear, held past both ends
         Vector2 a = *k.begin();
@@ -1873,7 +1873,6 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     for (Popup &p : popups) p.live &= p.worm == counting || std::count(grp.begin(), grp.end(), p.worm);
     tickGap -= dt;
     if (!grp.empty()) {  // the sim times this count: same on every client
-        Vector3 lo = {1e9f, 1e9f, 1e9f}, hi = Vector3Scale(lo, -1);
         bool ticked = false;
         for (int i : grp) {
             const Worm &w = g.worms[i];
@@ -1882,12 +1881,11 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
             float k = Clamp(g.countT / (float)g.countTicks(i), 0, 1);
             if (w.alive) t.from = w.counted, t.shown = w.counted + (std::max(0, w.hp) - w.counted) * k, t.poison = false, bump(i);
             ticked |= lroundf(t.shown) != before;
-            Vector3 at = {w.pos.x, fmaxf(w.pos.y, g.water) + 1.2f, w.pos.z};  // drowned: the surface above it; room for the counter
-            lo = Vector3Min(lo, at), hi = Vector3Max(hi, at);
         }
         if (ticked && tickGap <= 0) Audio::play(Audio::Sfx::HpTick), tickGap = 0.06f;
-        Vector3 c = Vector3Lerp(lo, hi, 0.5f);
-        float r = Vector3Distance(lo, hi) / 2;
+        const Worm &fw = g.worms[g.countFocus()];
+        Vector3 c = {fw.pos.x, fmaxf(fw.pos.y, g.water) + 1.2f, fw.pos.z};
+        float r = 0;
         if (int d = g.dying(); d >= 0) c = {g.worms[d].pos.x, fmaxf(g.worms[d].pos.y, g.water) + 0.6f, g.worms[d].pos.z}, r = fmaxf(r, 2);  // each blast, at the count's distance
         Controls::focus(&c, r);
         counting = -1;
@@ -1903,8 +1901,9 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
         if (counting >= 0) hpt[counting].from = hpt[counting].shown, wait = 0.7f;  // camera travel
     }
     // A, or a local human's turn going live: no more camera, labels jump to their values (CPU/remote turns let it finish)
-    bool skip = (live && (mine || counting < 0)) || ((counting >= 0 || crateFocus > 0) && pressed(-1, {GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_SPACE}));
+    bool skip = skipHp || (live && (mine || counting < 0)) || ((counting >= 0 || crateFocus > 0) && pressed(-1, {GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_SPACE}));
     if (skip) {
+        skipHp = false;
         for (HpTrack &t : hpt) t.shown = t.seen;
         counting = -1, crateFocus = 0;
     }
@@ -1932,13 +1931,16 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     return true;
 }
 
+// An open panel is always drawn: the ready screen yields to it.
+bool Hud::readyScreen(const Game &g, bool cinematic) const { return mine && g.phase == Phase::Aim && g.hotSeat > 0 && !cinematic && !open; }
+
 void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     menuPage = false;
     const Worm &cur = g.worms[g.current];
     bool turnStart = g.current != introWorm;
     if (turnStart) introWorm = g.current, introStart = tick;  // turn changed: (re)start the name-banner clock
     bool cinematic = trackHp(g, turnStart, tick);
-    bool ready = mine && g.phase == Phase::Aim && g.hotSeat > 0 && !cinematic;  // local human's hot seat: W4M full-screen ready pause
+    bool ready = readyScreen(g, cinematic);  // local human's hot seat: W4M full-screen ready pause
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
     if (!ready && cur.team < (int)g.spy.size() && g.spy[cur.team])  // W4M Crate Spy (CrateGraphicEntity 0x5c5270): contents over every crate
         for (const Object &o : g.objects) {
@@ -1975,9 +1977,9 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float s = Clamp(170 / dist, 12, 24);
         Color c = TEAM_COLORS[w.team % 4];
         const Color POISON = {120, 220, 60, 255};
-        text3d(TextFormat("%d", hp), sp.x, sp.y - s, s, i == counting && hpt[i].poison ? POISON : c);  // WormHealthNameEntity 0x5fdb70: Text3Ds
-        text3d(wormName(w.team, k), sp.x, sp.y - s * 2, s, c);
-        if (&w == &cur && g.jetting) text3d(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), sp.x, sp.y - s * 3.2f, s * 1.3f, WHITE);  // JetpackUtility's Text3D  // W4M 0x5626e0: (2 ms + 500) / 1000
+        text3d(TextFormat("%d", hp), sp.x, sp.y - s / 2, s, i == counting && hpt[i].poison ? POISON : c);  // WormHealthNameEntity 0x5fdb70: Text3Ds
+        text3d(wormName(w.team, k), sp.x, sp.y - s * 1.5f, s, c);
+        if (&w == &cur && g.jetting) text3d(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), sp.x, sp.y - s * 3.2f + s * 0.65f, s * 1.3f, WHITE);  // JetpackUtility's Text3D  // W4M 0x5626e0: (2 ms + 500) / 1000
         for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
             if (p.worm != i) continue;
             float a = Clamp(1 - (p.age - 0.5f) / 0.5f, 0, 1), pop = 1 + 0.25f * fmaxf(0, 1 - p.punch / 0.08f) + 0.3f * sinf(fminf(p.age / 0.25f, 1) * PI);
@@ -2111,7 +2113,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     else if (mine && !quiet && g.secondary >= 0)  // W4M SecondaryWeaponHelpEntity: WXFE.HelpDropConsole, FETXT.Control.Secondry + FETXT.Drop
         hints({{g.jetting || g.jetLanded() ? "ZL" : "A", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
-        hints({{"A", "Space", WEAPONS[g.weapon].kind == Kind::Homing ? "Lock target" : "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
+        hints({{"A", "Space", "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
                {"Up/Down", "Z/X", "Zoom"}, {"B", "Enter/E", "Leave"}});
     else if (mine && !quiet && Controls::targetHeld(g)) hints({{"A", "Space/E", "Sky view: target"}, {"L", nullptr, "Hold: sky view"}});  // "Define the path using [Blimp]"
     else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});

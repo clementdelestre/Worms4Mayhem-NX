@@ -166,7 +166,8 @@ Input read(const Game &g, int pad, bool live, float dt) {
     const bool kb = true;
 #endif
     bool lHeld = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1), zl = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) || (kb && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
-    bool held = targetHeld(g);
+    bool held = targetHeld(g), homing = WEAPONS[g.weapon].kind == Kind::Homing;
+    bool fpHoming = homing && (lHeld || zl);  // Homing: L / right mouse = first person, where A locks
     // W4M Input.BlimpViewPressed toggles Blimp / Default (E). Here also: A / ZR / Space enter it (that press does not fire),
     // B / Enter leave it (no jump), and holding L shows it until released.
     static bool swallowFire = false, swallowJump = false, viaL = false, wasL = false;
@@ -177,9 +178,10 @@ Input read(const Game &g, int pad, bool live, float dt) {
     else if (live) {
         if (forceAim) blimpOn = true;
         else if (kb && IsKeyPressed(KEY_E)) blimpOn = !blimpOn, viaL = false;
-        else if (!blimpOn && held && fireDown && !(prevFire & Input::FIRE)) blimpOn = swallowFire = true;
+        else if (!blimpOn && held && !fpHoming && !(homing && g.locked) && fireDown && !(prevFire & Input::FIRE)) blimpOn = swallowFire = true;
         else if (blimpOn && jumpDown && !(prevFire & Input::JUMP)) blimpOn = viaL = false, swallowJump = true;
-        if (held && lHeld && !wasL && !blimpOn) blimpOn = viaL = true;
+        if (held && !homing && lHeld && !wasL && !blimpOn) blimpOn = viaL = true;
+        if (homing && blimpOn && lHeld && !wasL) blimpOn = viaL = false;  // W4M: L leaves the Blimp for the first-person aim (lock kept)
         if (viaL && !lHeld) blimpOn = viaL = false;
     }
     wasL = lHeld, blimpLive = live;
@@ -217,8 +219,8 @@ Input read(const Game &g, int pad, bool live, float dt) {
             turn += gy.x, aim += gy.y;
         }
 #endif
-    } else if (g.phase != Phase::Aim && g.steered()) {  // steering a shot (super sheep): direct
-        turn = -ls.x * SIM_TURN, walk = ls.y, aim = rs.y * SIM_AIM * inv;
+    } else if (g.phase != Phase::Aim && g.steered()) {  // steering a shot: left stick only, pitch too (user-requested)
+        turn = -ls.x * SIM_TURN, walk = ls.y, aim = ls.y * SIM_AIM * inv;
     } else {  // W4M 0x5ab3d0: stick and arrows give a camera-relative direction, the worm faces it (Game::step)
         if (kb) ls.x += IsKeyDown(KEY_RIGHT) - IsKeyDown(KEY_LEFT), ls.y += IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN);
         float m = fminf(Vector2Length(ls), 1);
@@ -251,7 +253,8 @@ Input read(const Game &g, int pad, bool live, float dt) {
     Vector3 hit;
     refusedNow = tv && fireDown && !(prevFire & Input::FIRE) && g.cursorOn && !g.blimpHit(&hit);  // W4M NotClearToFire: no target
     prevFire = (fireDown ? Input::FIRE : 0) | (jumpDown ? Input::JUMP : 0);
-    if (swallowFire || (live && held && !tv)) in.buttons &= ~Input::FIRE;  // W4M 0x583a10: no launch outside the Blimp view
+    bool fpFire = homing && (aimMode || g.locked);  // Homing: first person or already locked, FIRE passes
+    if (swallowFire || (live && held && !tv && !fpFire)) in.buttons &= ~Input::FIRE;  // W4M 0x583a10: no launch outside the Blimp view
     if (g.jetting) { if (zl || (kb && IsKeyDown(KEY_BACKSPACE))) in.buttons |= Input::JUMP; }  // W4M Fire.Second (LT, Backspace): drop; no jump
     else if (jumpDown && !tv && !swallowJump) in.buttons |= Input::JUMP;
     if (g.jetLanded() && g.secondary >= 0 && !tv && !gk && (zl || (kb && IsKeyDown(KEY_BACKSPACE)))) in.buttons |= Input::PITCH;  // Fire.Second landed
@@ -290,10 +293,10 @@ bool aiming() { return aimMode; }
 
 static bool blimpable(const Game &g) {
     const Worm &w = g.worms[g.current];
-    return g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting && targeted(WEAPONS[g.weapon].kind) && !(WEAPONS[g.weapon].kind == Kind::Homing && g.locked);
-}  // W4M 0x583a10: a locked homing goes back to the aiming cursor (CreateAimingCursor), aimed and powered as usual
+    return g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting && blimped(WEAPONS[g.weapon].kind);
+}
 bool targetHeld(const Game &g) { return blimpable(g); }
-bool targetView(const Game &g) {  // the CPU aims from the Blimp too (W4M AI), not its homing: it never locks
+bool targetView(const Game &g) {  // the CPU aims from the Blimp too (W4M AI)
     return blimpable(g) && (blimpLive ? blimpOn : (cpuTurn && WEAPONS[g.weapon].kind != Kind::Homing) || g.blimp);
 }
 bool fireRefused() { return refusedNow; }
@@ -695,7 +698,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     if (!focusOn && targetView(g)) {  // W4M Blimp (IsometricCam): the sim's camera, drawn at Camera.Blimp.UpdateSpeed 0.05 (0x52a57d)
         if (!inBlimp) blimpZoom = 1;
         blimpZoom = Clamp(blimpZoom * expf(-zin * 0.5f * dt) - 0.08f * wheel, 0.15f, 2);  // ZoomSpeed 0.99 / 20 ms, MouseZoomSpeed 0.08
-        bool live = g.cursorOn && targeted(WEAPONS[g.weapon].kind);  // before the first TARGET tick, or a CPU: around its aim point
+        bool live = g.cursorOn && blimped(WEAPONS[g.weapon].kind);  // before the first TARGET tick, or a CPU: around its aim point
         Vector3 f = live ? g.cursor : Vector3Add(g.target(), {0, Game::BLIMP_LIFT, 0});
         float y = live ? g.cursorYaw : cur.yaw, p = live ? g.cursorPitch : Game::BLIMP_PITCH;
         cam.target = f, cam.position = g.blimpEye(f, y, p), cam.fovy = lensFov(50, blimpZoom, dt);
@@ -837,6 +840,17 @@ static void present(Camera3D &v, const Camera3D &l, const Blend &b, const Game &
     v = l;
 }
 
+// Drawn up: near a vertical view a (0,1,0) up makes the heading the roll, so it tips toward the heading as the Blimp's does (0x52a0a0)
+static void level(Camera3D &c) {
+    static Vector3 head = {0, 0, 1};
+    Vector3 f = Vector3Normalize(Vector3Subtract(c.target, c.position));
+    if (!(f.x == f.x && f.y == f.y && f.z == f.z) || !(c.up.x == c.up.x && c.up.y == c.up.y && c.up.z == c.up.z)) { c.up = {0, 1, 0}; return; }
+    if (Vector3 h = {f.x, 0, f.z}; Vector3Length(h) > 1e-3f) head = Vector3Normalize(h);
+    float t = Clamp((fabsf(f.y) - 0.94f) / 0.05f, 0, 1);
+    Vector3 u = Vector3Lerp(c.up, Vector3Scale(head, f.y < 0 ? 1.0f : -1.0f), t * t * (3 - 2 * t));
+    c.up = Vector3Length(u) > 0.01f ? Vector3Normalize(u) : Vector3{0, 1, 0};
+}
+
 void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt) {
     static float acc = 0;
     acc += dt, updates = (int)(acc / 0.01f), acc -= updates * 0.01f;
@@ -848,6 +862,8 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     if (cutView) cam = lg, cutView = false;
     else present(cam, lg, b, g, dt);
     if (pip.mode) present(pipView, pipCam, evb, g, dt);
+    level(cam);
+    if (pip.mode) level(pipView);
 }
 
 Vector3 aimPoint(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Add(w.pos, Vector3Scale(g.aimDir(w), AIM_FOCUS)); }

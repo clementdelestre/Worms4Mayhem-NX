@@ -79,3 +79,11 @@ Implication (assumed): worms are drawn after land/water/details into OutlinedWor
 | (heightmap shadowing) | - | "Shadowing heightmap..." in 00478780, 00482bd0 |
 | XOglShaderManager, XOglContext, XOglRenderSurface, XOglTextureMap, XRenderManagerImpl<OpenGLImpl> | 008b3f10, 008b3654, 008b3fc4, 00892058, 00897a1c | GL backend |
 | XBloomShape, XFocusBlurShape, XBlurEffect | -, -, 0088eb0c | exist in XOM scene graph; no matching CG shader (assumed unused on PC) |
+
+## Text3DEntity backing (Name Backing.tga)
+
+- [disasm 0x5fa860, 0x5fb4f0, 0x5fb6b0] Two 3-sprite sets are built per Text3D: `Text.Backing` and `Text.BackingBlimp`, both the same `Name Backing.tga` (Bundl09 descriptors differ only in a flag word, 0xf vs 0xd). Their colour is set once to (1, 1, 1) (0x5fa9ab, vtable +0x58) and no code path retints them: no team colour, no tweak colour, no per-frame alpha. `Text3DEntity::Render` (0x5fb4f0) only places them and sets visibility. The text colour (0x5fb640, 0x5fa680) is separate: the backing is never team coloured.
+- [disasm 0x5fb6b0, 0x5fb4f0] `Text.Backing` is shown unless `0x51d8e0` (game state == 3) holds, then `Text.BackingBlimp` replaces it. Same texture, so the look is identical; what state 3 is was not traced [assumed irrelevant].
+- [data] The exported `hud/name_backing.png` is correct: 128 x 128 RGBA, alpha is real (border opaque black, interior teal about (0, 107, 144) at alpha ~140, outer rows transparent). The translucent dark-edged teal plate is therefore the W4M look, drawn with the plain alpha blend [ours: blend mode not in the sprite set data we decode].
+- [disasm 0x57b1e0] The fuse countdown is a Text3DEntity (`esi+0x6c`) like the others, so it has the backing; its world position is the payload + (0, FuseTimerGraphicOffset + Radius, 0) through 0x47a120, and the Text3D is centred on that point.
+- [ours] `text3d()` (ui.cpp) now takes the centre of the plate and text as (x, y). Before, y was the top of our line box, which put the fuse number, crate-spy text and fuel half a line too low. Worm labels keep their previous placement (offsets in `Hud::draw` are ours; WormHealthNameEntity 0x5fdb70 uses font `HUD.FontAnim`, not `FE.Font`: not matched here).

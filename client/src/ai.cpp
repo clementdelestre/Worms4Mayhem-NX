@@ -1126,7 +1126,8 @@ Input Ai::act(const Game &g) {
     in.aim = q(dp / (1.5f * DT));
     if (fabsf(dy) > 2e-3f || fabsf(dp) > 2e-3f) return in;
     if (aimed++ < levelOf(g, w.team).fireDelay / DT) return in;  // W4M DelayBeforeFire
-    if (powered(k)) { if (charged++ < plan.charge) in.buttons = Input::FIRE; }  // release fires
+    if (k == Kind::Homing && !g.locked) { if (!g.prevButtons) in.buttons = Input::FIRE; return in; }  // the lock press, released before the charge
+    if (powered(k)) { if (k == Kind::Homing && !charged && g.prevButtons) return in; if (charged++ < plan.charge) in.buttons = Input::FIRE; }  // release fires
     else if (!g.prevButtons) in.buttons = Input::FIRE;
     return in;
 }

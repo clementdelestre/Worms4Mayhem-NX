@@ -692,6 +692,7 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
                             s.stage > 0 ? (msTicks(800) - s.stage) * Game::DT : clock, s.stage <= 0);
     if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
     if (d.kind == Kind::Scouser) return Models::draw(m, s.pos, clock * 0.7f);
+    if (n == "Starburst") return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h) - PI / 2);  // its mesh points +Y, not +Z
     if (dropped(d)) return Models::draw(m, restOn(t, s.pos, Models::bottom(m)), 0);  // set down standing, it doesn't tumble
     if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, Vector3Length(s.vel) < 1 ? restOn(t, s.pos, Models::bottom(m)) : s.pos, clock * 6, clock * 4);
     return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h));
@@ -1418,7 +1419,13 @@ int main(int argc, char **argv) {
                 if (irTick == (uint32_t)irEnd) irFinish();
             }
         } else if (!online) {
-            for (acc += pause.open ? 0 : dt; acc >= Game::DT; acc -= Game::DT) stepOnce(!shot && cpu(game.worms[game.current].team) ? ai.think(game) : local());
+            // user-requested (2026-10-03): any local key press skips a CPU's hot seat ("Ready")
+            bool skipReady = !shot && game.hotSeat > 0 && cpu(game.worms[game.current].team) && (GetGamepadButtonPressed() || GetKeyPressed());
+            for (acc += pause.open ? 0 : dt; acc >= Game::DT; acc -= Game::DT) {
+                Input in = !shot && cpu(game.worms[game.current].team) ? ai.think(game) : local();
+                if (skipReady) in.flags |= Input::CAMERA, skipReady = false;  // any flag ends the hot seat (Game::step)
+                stepOnce(in);
+            }
         } else {
             // remote/replayed inputs first, then ours when we own the active team; otherwise wait
             acc = netbot ? Game::DT * botSpeed : fminf(acc + dt, Game::DT * 4);
@@ -1697,7 +1704,10 @@ int main(int argc, char **argv) {
         // HomingLockOnGraphicEntity: on the target until the shot, when in front of the camera
         Vector2 lockAt = GetWorldToScreen(game.lockAt, view);
         bool locked = game.locked && wd.kind == Kind::Homing && Vector3DotProduct(Vector3Subtract(game.lockAt, view.position), Vector3Subtract(view.target, view.position)) > 0;
-        if (ret == Controls::Reticle::Aim) Ui::reticle(wd, GetWorldToScreen(Controls::aimPoint(game), view), scope);  // W4M per-weapon aim reticle
+        if (ret == Controls::Reticle::Aim && wd.kind == Kind::Homing) {  // W4M Homing.Cursor in the aim view (observed), not the shell reticle
+            Vector2 at = GetWorldToScreen(Controls::aimPoint(game), view);
+            Ui::targetCursor(wd, game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr, &at);
+        } else if (ret == Controls::Reticle::Aim) Ui::reticle(wd, GetWorldToScreen(Controls::aimPoint(game), view), scope);  // W4M per-weapon aim reticle
         else if (ret == Controls::Reticle::Blimp) {
             Vector3 h;
             bool hit = !game.cursorOn || game.blimpHit(&h);

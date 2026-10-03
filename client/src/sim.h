@@ -9,7 +9,7 @@
 struct Input {
     int8_t turn = 0, walk = 0, aim = 0;
     uint8_t buttons = 0, flags = 0;
-    enum : uint8_t { CAMERA = 1 };  // flags: a camera key this tick (W4M InGame group: its SomeInputFrom ends the hot seat)
+    enum : uint8_t { CAMERA = 1, SKIP_COUNT = 2 };  // flags: a camera key this tick (W4M InGame group: its SomeInputFrom ends the hot seat); SKIP_COUNT: observed in W4M by the user 2026-10-03, ends the damage display
     enum : uint8_t { FIRE = 1, JUMP = 2, NEXT_WEAPON = 4, HEADING = 8, FUSE_UP = 16, FUSE_DOWN = 32, TARGET = 64, PITCH = 128 };  // HEADING: turn is the wanted yaw, PI * turn / 128 (W4M walk)
     // FUSE_UP/DOWN: W4M FuseUp, the timer of user-fuse weapons (WeaponDef::userFuse) in 1 s steps
     // TARGET: W4M Blimp view; turn yaws the camera, walk / aim move its focus (Game::cursor) forward / right, the worm stays put.
@@ -27,7 +27,8 @@ enum class Kind : uint8_t { Shell, Sheep, Airstrike, Donkey, Shotgun, Rope, Jetp
                             Parachute, SkipGo, Surrender, ChangeWorm, Armour,
                             Girder, Binoculars, Bubble, Icarus, DoubleDamage, CrateSpy };  // W4M utilities 34, 43, 42, 41, 44, 46
 inline bool collected(Kind k) { return k == Kind::DoubleDamage || k == Kind::CrateSpy || k == Kind::Armour; }  // W4M crate collect 0x5c9800 (44, 46, 47): applied at once, never in the inventory
-inline bool targeted(Kind k) { return k == Kind::Airstrike || k == Kind::Donkey || k == Kind::Abduction || k == Kind::Teleport || k == Kind::Homing; }  // W4M IsTargetingWeapon: blimp view
+inline bool targeted(Kind k) { return k == Kind::Airstrike || k == Kind::Donkey || k == Kind::Abduction || k == Kind::Teleport; }  // W4M IsTargetingWeapon seen from the Blimp (Homing: see blimped)
+inline bool blimped(Kind k) { return targeted(k) || k == Kind::Homing; }  // seen from the Blimp: also Homing, which locks from there or from the aim view (0x583a10, user-requested A / ZR mapping)
 inline bool powered(Kind k) { return k == Kind::Shell || k == Kind::Homing; }  // hold FIRE to charge, release to fire
 inline bool utility(Kind k) { return k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::ChangeWorm || k == Kind::Armour ||
                                     k >= Kind::Girder; }  // utility-crate pool
@@ -345,6 +346,7 @@ struct Game {
     bool toolOut() const;  // rope (or hooked object), jetpack in flight, open parachute in the air: W4M utility mode +0x8d
     // W4M m_eSecondaryWeapon (+0x98, flag +0x8c): a toolDrop() held besides the tool, dropped by Fire.Second; -1 none
     int secondary = -1;
+    int launched = -1;  // the weapon use() last fired (a dropped secondary, not the tool kept in hand): its retreat times the turn
     int held() const { return secondary >= 0 ? secondary : weapon; }  // what NEXT_WEAPON and the panel step
     void firstWeapon(int team);  // W4M Weapon.Create 0x565770: the first usable item, Skip Go / Surrender skipped
     int shotsLeft = 0;
@@ -401,6 +403,8 @@ struct Game {
     std::vector<int> countGroup;  // worms whose damage display runs; countT: ticks since that ApplyDamage
     std::vector<int> deathQueue;  // W4M GameLogicService+0x1fc: the dead, in ApplyDamage order
     int countT = 0, dyingWorm = -1, throes = 0;  // the worm in kWPS_DeathThroes, ticks left
+    // W4M: each hurt worm asks WormTrackCamera at ApplyDamage (0x5abeec), equal priority; one pending, served 200 ms apart (0x51d3d0)
+    int countFocus() const { return countGroup.empty() ? -1 : countGroup[std::min<size_t>(countGroup.size() - 1, (size_t)(countT * DT / 0.2f))]; }
     int countTicks(int i) const { return std::min(90, std::max(1, std::abs(std::max(0, worms[i].hp) - worms[i].counted) * 3 / 2)); }
     bool drowned(int i) const { return worms[i].drowned; }
     int dying() const {  // the dying worm the camera shows: in its throes, else afloat (W4M "Worm Dying" 0x5a7190)
@@ -425,7 +429,7 @@ struct Game {
     bool blimp = false;     // the last tick had TARGET with a targeted weapon: the player is in the Blimp view
     Vector3 cursor{};       // the camera's focus: the reticle is the land behind it on the camera ray
     float cursorYaw = 0, cursorPitch = BLIMP_PITCH;
-    bool locked = false;  // homing target picked: FIRE in the Blimp (W4M 0x583a10 Payload.Target), then aimed and powered as usual
+    bool locked = false;  // homing target picked: FIRE on the aim ray (W4M 0x583a10 Payload.Target, any view but Default), then powered as usual
     Vector3 lockAt{};
     Vector3 blimpFocus(Vector3 ref, float yaw) const;  // W4M entry pose: above all land, its centre ray on ref
     Vector3 blimpEye(Vector3 focus, float yaw, float pitch = BLIMP_PITCH) const;

@@ -99,10 +99,13 @@ hold − diagram), main.cpp (perf overlay, replays). Switch names; keyboard in t
 | Next weapon / weapon panel | Y or R / X (D-pad moves, A picks, B or X closes) | Tab / Q (arrows, Enter, Backspace or Q) |
 | Fuse 1–5 s (grenade, cluster, banana) | D-pad ↑ ↓ | = / − |
 | Camera orbit / zoom | right stick / D-pad ↑ ↓ | A D / Z X, mouse wheel |
-| Targeted weapons (airstrike, Bovine Blitz, Fatkins, donkey, abduction, teleport, homing): sky view | A or ZR (that press does not fire), or hold L | Space or E (toggle) |
-| Sky view: fire (homing: lock the target) / leave / pan / look / zoom | A / B / left stick / right stick / D-pad ↑ ↓ | Space / Enter or E / arrows / W A S D / Z X, wheel |
+| Targeted weapons (airstrike, Bovine Blitz, Fatkins, donkey, abduction, teleport): sky view | A or ZR (that press does not fire), or hold L | Space or E (toggle) |
+| Homing missile: first-person aim, lock (first press), charge and fire (next press) | hold L, then A / ZR | hold right mouse, then Space |
+| Homing missile: sky view (A / ZR here enters it, no lock), lock on the cursor, then L to aim and fire in first person (lock kept) | A or ZR, not in first person; then A / ZR; then hold L | E (toggle) |
+| Sky view: fire (homing: lock the cursor point, then charge and fire) / leave / pan / look / zoom | A / B / left stick / right stick / D-pad ↑ ↓ | Space / Enter or E / arrows / W A S D / Z X, wheel |
 | Rope | stick swings, right stick reels, A fires the held secondary, B lets go | arrows, W S, Space, Enter |
 | Jetpack: take off and thrust / steer / forward thrust / drop the secondary (dynamite, mine, sheep) | hold A or ZR / left stick / D-pad ↑ / ZL (in flight and once landed) | hold Space / arrows / W / Backspace |
+| Steered shot (Super Sheep, Bovine Blitz, Old Woman, Scouser): steer / detonate | left stick (left right: turn, up down: pitch) / A | left right arrows, W S / Space |
 | Girder preview: move / raise, lower, turn the view / place | left stick / right stick / A | arrows / W S, A D / Space |
 | Binoculars: look / pick a target | ZL / A | right mouse button / Space |
 | Taunt with the weapon in hand (client only: acting scene + taunt clip; W4M Input.TauntPressed, no joypad binding) | — | T |

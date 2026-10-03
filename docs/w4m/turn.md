@@ -168,6 +168,7 @@ Who starts which phase:
   
   There is **no timeout**.
 - Active tokens held by a worm, each released or replaced per slot (`0x4d3af0` Register(name, file, line, slot*)):
+  - Every hurt worm's display routine 0x5abc50 calls the CMS worm-track request 0x51cf20(worm) at 0x5abeec, all at the ApplyDamage instant [disasm]: one WormTrackCamera request per worm, not a group request. Served ≥ 200 ms apart (0x51d3d0, docs/camera-w4m.md §1). Whether the later same-priority requests wait in the pending slot (visit each worm in turn) or are lost behind the first: assumed the former (the slot is empty once the first is served); not traced in the CMS message loop.
   - Damage display 0x5abc50 takes slot +0x60 ("Worm Displaying Damage Taken") and posts **Worm.DamageComplete at now + 2500 ms** (0x5abe94). DamageComplete (0x5b09b7) releases slot +0x60.
   - If damage >= energy: 0x5a70e0 sets energy to 0, takes slot +0x5c "Worm Waiting To Die", then the worm posts `GameLogic.AddMeToDeathQueue`.
   - So the first death waits for every damage display (2.5 s) and every other active object to finish.

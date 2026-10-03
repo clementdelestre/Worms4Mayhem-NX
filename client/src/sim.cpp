@@ -523,7 +523,7 @@ void Game::start(const GameConfig &c) {
             }
     countGroup.clear(), deathQueue.clear(), countT = throes = camHold = 0, dyingWorm = -1, crated = false;
     girderOn = false, girderWait = girders = 0, bubbles.clear(), bubbleAt = -1, icarus = flapAt = 0, drift = {}, doubleDamage = changing = false;
-    roped = jetting = jetUsed = chute = false, fuel = boost = 0, secondary = -1;
+    roped = jetting = jetUsed = chute = false, fuel = boost = 0, secondary = launched = -1;
     spy.assign(teams, 0), scout = Scout{};
 
     ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0));
@@ -640,7 +640,7 @@ void Game::beginTurn(int team) {
                 float r = rand01(), sp = WIND_CAP[std::min<int>(sc.wind, 3)] * r * r, dir = rand01() * 2 * 3.14f;
                 wind = sp * cosf(dir), windZ = sp * sinf(dir);
             }
-            roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = boost = 0, secondary = -1;
+            roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = boost = 0, secondary = launched = -1;
             for (Object &o : objects) o.hooked = false;
             shotsLeft = ropeShots = 0;
             weapon = picked[t];
@@ -1013,7 +1013,7 @@ Vector3 Game::blimpFocus(Vector3 ref, float yaw) const {
 Vector3 Game::target() const {
     const Worm &w = worms[current];
     Vector3 hit, dir = aimDir(w);
-    if (cursorOn && targeted(WEAPONS[weapon].kind)) return blimpHit(&hit), hit;
+    if (WEAPONS[weapon].kind == Kind::Homing ? blimp : cursorOn && targeted(WEAPONS[weapon].kind)) return blimpHit(&hit), hit;  // Homing: the cursor only while in the Blimp
     if (terrain.raycast({Vector3Add(w.pos, dir), dir}, 60, &hit)) return hit;
     Vector3 far = {w.pos.x + sinf(w.yaw) * 30, (Terrain::NY - 1) * Terrain::VOX, w.pos.z + cosf(w.yaw) * 30};
     if (terrain.raycast({far, {0, -1, 0}}, Terrain::NY * Terrain::VOX, &hit)) return hit;
@@ -1021,6 +1021,7 @@ Vector3 Game::target() const {
 }
 
 void Game::use(Worm &w) {
+    launched = weapon;
     const WeaponDef &wd = WEAPONS[weapon];
     int &n = ammo[w.team][weapon];
     if (wd.kind == Kind::Rope && ropeShots >= ROPE_SHOTS) return;
@@ -1296,7 +1297,7 @@ bool Game::steered() const {
 
 // W4M: Worm.WeaponDisableMovement from the fire to PostLaunchDelay's end; FlyCam (homing, super sheep) disables WormMoving
 bool Game::retreating() const {
-    if ((phase != Phase::Flying && phase != Phase::Retreat) || timer > retreatTicks(WEAPONS[weapon])) return false;
+    if ((phase != Phase::Flying && phase != Phase::Retreat) || timer > retreatTicks(WEAPONS[launched >= 0 ? launched : weapon])) return false;
     for (const Projectile &s : shots) if (!s.child && WEAPONS[s.weapon].kind == Kind::Homing) return false;
     return !steered();  // ours: the stick steers the shot, not the worm
 }
@@ -1728,7 +1729,7 @@ void Game::step(const Input &raw) {
         bool head = in.buttons & Input::HEADING;  // W4M 0x5b107c: walking sets Orientation to the input at once; the jetpack turns at 0x561e40's rate
         float rate = head ? remainderf(in.turn * PI / 128 - w.yaw, 2 * PI) / DT : in.turn / 127.0f * 2.5f, lim = jetting ? JET_TURN : head ? PI / DT : 2.5f;
         if (!aimCursor && !vault.t) w.yaw += Clamp(rate, -lim, lim) * DT;  // W4M Vaulting keeps the Orientation
-        if (aimCursor && targeted(WEAPONS[weapon].kind)) {  // W4M IsometricCam 0x52a5e0
+        if (aimCursor && blimped(WEAPONS[weapon].kind)) {  // W4M IsometricCam 0x52a5e0
             if (!cursorOn) cursorYaw = w.yaw, cursorPitch = BLIMP_PITCH, cursor = blimpFocus(w.pos, w.yaw), cursorOn = true;
             cursorYaw += in.turn / 127.0f * BLIMP_TURN * DT;
             bool tilt = in.buttons & Input::PITCH;
@@ -1742,7 +1743,7 @@ void Game::step(const Input &raw) {
                 if (Vector3Length(off) > BLIMP_RANGE) cursor = Vector3Add(c, Vector3Scale(Vector3Normalize(off), BLIMP_RANGE));
             }
         }
-        blimp = aimCursor && targeted(WEAPONS[weapon].kind);
+        blimp = aimCursor && blimped(WEAPONS[weapon].kind);
         if (phase == Phase::Aim && WEAPONS[weapon].kind == Kind::Girder) {
             if (!girderOn)  // W4M Update state 0: eye level (Worm.EyeLevelOffset 15 units), 40 units ahead
                 girderOn = true, girderFrom = w.pos, cursorYaw = w.yaw, girderWait = 0,
@@ -1774,6 +1775,11 @@ void Game::step(const Input &raw) {
         if (vault.t) vaultStep(w.pos, vault, {});  // control gone: no input, back to the old pos
     }
     // rope and jetpack outlast the attack: still steered while the shot flies and during the retreat
+    // observed in W4M (user, 2026-10-03): after the secondary drop a landed jetpack takes off again during the retreat while fuel lasts
+    if (w.alive && (phase == Phase::Flying || phase == Phase::Retreat) && jetLanded() && (pressed & Input::FIRE)) {
+        jetting = tool = true, thrust = WEAPONS[weapon].speed, boost = 0;
+        emit(GameEvent::Fire, w.pos, current, weapon);
+    }
     if (w.alive && (phase == Phase::Aim || (tool && (phase == Phase::Flying || phase == Phase::Retreat)))) {
         Vector3 push = Vector3Scale({sinf(w.yaw), 0, cosf(w.yaw)}, in.walk / 127.0f * DT);
         bool armed = phase == Phase::Aim && !utility(WEAPONS[weapon].kind);  // a weapon in hand: FIRE and the aim axis are its own
@@ -1827,8 +1833,11 @@ void Game::step(const Input &raw) {
                 Vector3 h;
                 // W4M CanFire is asked on Input.FirePressed only (0x586092); a charge started goes on to its release
                 if (!powered(WEAPONS[weapon].kind)) { if ((pressed & Input::FIRE) && fireable(w) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
-                else if (aimCursor && targeted(WEAPONS[weapon].kind)) {  // homing in the Blimp, W4M state 1: FIRE takes its target, no charge
-                    if ((pressed & Input::FIRE) && fireable(w) && !locked && cursorOn && blimpHit(&h)) locked = true, lockAt = h;
+                else if (WEAPONS[weapon].kind == Kind::Homing && !locked) {  // W4M state 1: FIRE takes the aim ray's target, no charge
+                    if ((pressed & Input::FIRE) && fireable(w)) {  // from the Blimp the cursor point, else the aim ray
+                        if (!aimCursor) locked = true, lockAt = target();
+                        else if (cursorOn && blimpHit(&h)) locked = true, lockAt = h;
+                    }
                 } else {
                     if ((in.buttons & Input::FIRE) && (power > 0 || ((pressed & Input::FIRE) && fireable(w)))) power = fminf(1, power + DT / 1.5f);
                     if (power > 0 && (!(in.buttons & Input::FIRE) || power >= 1)) use(w);
@@ -1875,7 +1884,7 @@ void Game::step(const Input &raw) {
         WEAPONS[weapon].kind == Kind::Parachute && ammo[w.team][weapon])
         use(w);
     // W4M 0x5833a0 / 0x54a0e0: PostLaunchDelay, then StartRetreatTimer (RetreatTimeOverride or DefaultRetreatTime), the shot still flying
-    if (before != phase && phase == Phase::Flying) timer = msTicks(WEAPONS[weapon].postLaunch) + retreatTicks(WEAPONS[weapon]);
+    if (before != phase && phase == Phase::Flying) timer = msTicks(WEAPONS[launched >= 0 ? launched : weapon].postLaunch) + retreatTicks(WEAPONS[launched >= 0 ? launched : weapon]);
     if (chute && !w.grounded && w.vel.y < -2.5f) w.vel.y = -2.5f;  // below FALL_SAFE: no fall damage
     if (chute && !w.grounded) w.vel.x += (wind * 2 - w.vel.x) * DT, w.vel.z += (windZ * 2 - w.vel.z) * DT;  // drifts downwind, up to 2 m/s per wind unit
     if (vault.t && Vector3Distance(w.pos, vault.to) > Vector3Distance(vault.from, vault.to) + 0.01f) vault.t = 0;  // moved by a weapon
@@ -1946,6 +1955,7 @@ void Game::step(const Input &raw) {
         if (!w.alive || selfHurt || over || --timer <= 0) phase = Phase::Settle, timer = 1, jumpDelay = 0, roped = jetting = chute = false;
         break;
     case Phase::Settle:  // stdlib.lub EndTurn: timer > 0 WaitUntilNoActivity, < 0 PostActivityTime; no timeout, as W4M
+        if (in.flags & Input::SKIP_COUNT) countT = std::max(countT, COUNT_DAMAGE);  // observed in W4M by the user, 2026-10-03: X ends the display, deaths follow as usual
         if (!countGroup.empty() || !deathQueue.empty() || dyingWorm >= 0) stepCount();  // displays and dying worms are active objects
         else if (timer < 0) {
             if (++timer < 0) break;
@@ -2087,6 +2097,7 @@ uint32_t Game::checksum() const {
     mix(&girderOn, 1), mix(&girders, sizeof girders), mix(&girderWait, sizeof girderWait);
     if (girderOn) mix(&girder, sizeof girder), mix(&girderFrom, sizeof girderFrom), mix(&cursorYaw, sizeof cursorYaw);
     if (secondary >= 0) mix(&secondary, sizeof secondary);
+    if (launched >= 0) mix(&launched, sizeof launched);
     if (jetting || jetUsed) mix(&jetting, 1), mix(&jetUsed, 1), mix(&fuel, sizeof fuel), mix(&boost, sizeof boost);  // no jetpack: old replays' sums hold
     for (const Bubble &b : bubbles) mix(&b, sizeof b);
     mix(&bubbleAt, sizeof bubbleAt);

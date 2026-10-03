@@ -108,6 +108,21 @@ static void checkDeathQueue() {
     assert(at.size() == 2 && at[1] - at[0] == 1 + Game::COUNT_THROES);  // the next pops on the queue's next tick (0x4f9b30)
 }
 
+// Two far-apart hurt worms: the camera visits each in ApplyDamage order, 200 ms apart, never their empty midpoint.
+static void checkCountCamera() {
+    Game g;
+    g.start({21, 2, 2, "", 0}), g.hotSeat = 0;
+    g.countGroup = {1, 2};
+    g.countT = 0;
+    assert(g.countFocus() == 1);
+    g.countT = 11;
+    assert(g.countFocus() == 1);
+    g.countT = 13;
+    assert(g.countFocus() == 2);
+    g.countT = 500;
+    assert(g.countFocus() == 2);
+}
+
 static void settle(Game &g);
 
 // W4M DrownFloat 0x5aa130: no hp count; the worm sinks, comes back up to 8 units under its feet, bobs 2000 ms with the camera
@@ -347,6 +362,7 @@ static void checkHoming() {
     g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
     Input in;
     in.buttons = Input::FIRE;
+    for (Input i : {in, Input{}}) g.step(i), a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true;  // the first press locks the aim ray's target
     for (int t = 0; t < 89; t++) g.step(in), a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true;  // held standing: W4M CanFire
     v.pos = Vector3Add(g.target(), {0, Game::R + 0.05f, 0}), v.vel = {0, 0, 0};
     g.step(in);  // full charge fires
@@ -491,6 +507,32 @@ static void checkEventCameras() {
             g.step(Input{});
         }
         assert(n > 20 && seen > n * 8 / 10);
+    }
+    {  // drawn up never rolls the view: no degenerate (view ∥ up) frame entering, in and leaving a straight-down Blimp, nor in a crate's fall
+        Game g;
+        g.start({43, 2, 1, "", 0}), g.hotSeat = 0;
+        settle(g);
+        Controls::reset();
+        Worm &a = g.worms[g.current];
+        g.weapon = weaponNamed("Airstrike");
+        g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
+        Camera3D cam = away();
+        auto sane = [&] {
+            Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+            assert(cam.up.y >= -1e-3f && Vector3Length(Vector3CrossProduct(f, cam.up)) > 0.2f);  // roll 0 for every W4M camera but the scene ones (data: bombrun_end4 rolls)
+        };
+        Input in;
+        in.buttons = Input::TARGET;
+        for (int t = 0; t < 400; t++) {
+            if (t == 200) in = Input{};
+            if (t < 200) in.aim = -127;
+            g.step(in), Controls::camera(cam, g, false, false, false, Game::DT), sane();
+        }
+        g.objects.push_back({Object::Crate, Vector3Add(a.pos, {0, 40, 0}), {0, 0, 0}, -1, -1, true, false});
+        for (int t = 0; t < 200; t++) {
+            g.objects.back().pos.y -= 0.2f;
+            Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, false, Game::DT), sane();
+        }
     }
     {  // CrateTrackCamera: starts off screen, cut to a crate ViewPoint (15-25 m)
         Game g;
@@ -681,6 +723,7 @@ static void checkEventCameras() {
         Controls::reset();
         Input in;
         in.buttons = Input::FIRE;
+        for (Input i : {in, Input{}}) g.step(i), a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true;  // the first press locks the target
         for (int t = 0; t < 90; t++) g.step(in), a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true;  // held as if standing: W4M CanFire needs state 0
         Camera3D cam = {{20, 58, 10}, a.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
         int checked = 0;
@@ -811,7 +854,7 @@ static void checkEventCameras() {
         }
         assert(close > 20 && fixed > 30);
     }
-    {  // homing: FIRE in the Blimp takes the target (W4M state 1, no launch), then the launcher is aimed and powered; it homes on that point
+    {  // homing: FIRE takes the target on the worm's aim ray (W4M state 1, no launch, no TARGET input), then it is powered; it homes on that point
         Game g;
         g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &a = g.worms[g.current];
@@ -819,19 +862,37 @@ static void checkEventCameras() {
         g.weapon = weaponNamed("Homing Missile");
         g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
         auto hold = [&] { a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true; };  // standing: W4M CanFire
-        Input in;
-        in.buttons = Input::TARGET;
-        for (int t = 0; t < 5; t++) hold(), g.step(in);
-        Vector3 h;
-        assert(g.cursorOn && !g.locked && Controls::targetHeld(g) && g.blimpHit(&h));
-        in.buttons = Input::TARGET | Input::FIRE;
-        hold(), g.step(in), g.step(in);
-        assert(g.locked && Vector3Distance(g.lockAt, h) < 0.01f && g.shots.empty() && g.power == 0 && !Controls::targetHeld(g));
         hold(), g.step(Input{});
+        assert(!g.locked && !g.blimp);
+        Vector3 h = g.target();
+        Input in;
         in.buttons = Input::FIRE;
+        hold(), g.step(in), g.step(in);
+        assert(g.locked && Vector3Distance(g.lockAt, h) < 0.01f && g.shots.empty() && g.power == 0 && !g.cursorOn);
+        hold(), g.step(Input{});
         for (int t = 0; t < 30 && g.shots.empty(); t++) hold(), g.step(in);
         hold(), g.step(Input{});
         assert(g.shots.size() == 1 && Vector3Distance(g.shots[0].aim, g.lockAt) < 1e-3f);
+    }
+    {  // homing from the Blimp: the entering press (Controls swallows FIRE) locks nothing; with TARGET, FIRE locks the cursor point, no launch
+        Game g;
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+        Worm &a = g.worms[g.current];
+        g.hotSeat = 0;
+        g.weapon = weaponNamed("Homing Missile");
+        g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
+        auto hold = [&] { a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true; };
+        Input t;
+        t.buttons = Input::TARGET;
+        hold(), g.step(t);
+        assert(g.blimp && g.cursorOn && !g.locked && Controls::targetHeld(g));
+        Vector3 h;
+        assert(g.blimpHit(&h));
+        t.buttons = Input::TARGET | Input::FIRE;
+        hold(), g.step(t), g.step(t);
+        assert(g.locked && Vector3Distance(g.lockAt, h) < 0.01f && g.shots.empty() && g.power == 0);
+        hold(), g.step(Input{});  // back to the aim view: the cursor no longer steers target()
+        assert(!g.blimp && Vector3Distance(g.target(), h) > 0.01f);
     }
     {  // victory fireworks in the OrbitCam frame: ours (camera target +-10 m, 5-10 m up); W4M's own box (Land.Center +-0.5 Radius) leaves the
        // frame when the orbit swings low (0x530e30), so it is not asserted
@@ -1903,9 +1964,31 @@ static void checkJetpackSecondary() {
     g.step(fire);
     assert(a.vel.y > vy - 12.5f * Game::DT + 1e-3f && g.fuel < fuel);  // still thrusts
     size_t shots = g.shots.size();
+    const Game h0 = g;
+    g.cfg.scheme.retreatTime = 0;  // the jetpack has no own RetreatTime: it takes the scheme's
     g.step(drop);
     assert(g.shots.size() == shots + 1 && WEAPONS[g.shots.back().weapon].name == "Dynamite" && g.ammo[a.team][dyn] == 1);
+    {  // W4M 0x585a58 / 0x585bc5: dropped off its feet, it starts 30 units (1.5 m) ahead along the worm's velocity and inherits it
+        Game f = h0;
+        Worm &c = f.worms[f.current];
+        c.vel = {3, 0, 4};
+        const Vector3 v0 = c.vel;
+        f.step(drop);
+        const auto &sh = f.shots.back();
+        const Vector3 off = Vector3Subtract(sh.pos, launchPoint(WEAPONS[dyn], c.pos, c.yaw));
+        const Vector3 want = Vector3Add(v0, Vector3Scale({sinf(c.yaw), 0, cosf(c.yaw)}, WEAPONS[dyn].speed));
+        assert(fabsf(Vector3Length(off) - 1.5f) < 0.05f && Vector3Distance(sh.vel, want) < 0.3f);  // 1.5 m, velocity inherited + BasePower along the facing
+    }
     assert(g.jetting && g.weapon == jp && g.secondary < 0 && g.phase != Phase::Aim);  // the attack is made, the flight goes on
+    assert(g.timer >= g.retreatTicks(WEAPONS[dyn]) - 1);  // the dynamite's retreat, not the jetpack's (scheme retreat 0 ended the turn at once)
+    {  // landed during the retreat, the jetpack takes off again while fuel lasts (W4M, observed)
+        Game l = g;
+        l.step(Input{});
+        l.jetting = false, l.worms[l.current].grounded = true;
+        assert(l.jetLanded() && (l.phase == Phase::Flying || l.phase == Phase::Retreat));
+        l.step(fire);
+        assert(l.jetting);
+    }
     Game h;  // dry with the dynamite still held: it comes to hand
     h.start({29, 2, 1, "", 0}), h.hotSeat = 0;
     Worm &b = h.worms[h.current];
@@ -2484,7 +2567,7 @@ static void checkReticles() {
         g.weapon = (int)wi, g.ammo[g.worms[g.current].team][wi] = 9;
         Controls::reset(), Controls::forceAim = 1;  // ZL held
         Controls::read(g, 0, true, Game::DT);
-        Controls::Reticle want = targeted(wd.kind) ? Controls::Reticle::Blimp : Controls::aimed(wd) ? Controls::Reticle::Aim : Controls::Reticle::None;
+        Controls::Reticle want = blimped(wd.kind) ? Controls::Reticle::Blimp : Controls::aimed(wd) ? Controls::Reticle::Aim : Controls::Reticle::None;
         Controls::Reticle r = Controls::reticle(g, false);
         if (r != want) printf("reticle: %s in aim mode shows %d, want %d\n", wd.name.c_str(), (int)r, (int)want), bad++;
         Controls::reset(), Controls::forceAim = 0;
@@ -2909,6 +2992,16 @@ static void checkRopeReel() {
 }
 
 int main() {
+    checkCountCamera();
+    {  // user-requested: SKIP_COUNT ends the damage display at once; hp final
+        Game g;
+        g.start({21, 2, 2, "", 0}), g.hotSeat = 0;
+        g.phase = Phase::Settle, g.timer = 1, g.worms[1].counted = g.worms[1].hp + 10, g.countGroup = {1}, g.countT = 0;
+        Input in;
+        in.flags = Input::SKIP_COUNT;
+        g.step(in);
+        assert(g.countGroup.empty() && g.worms[1].counted == std::max(0, g.worms[1].hp));
+    }
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<bool> used(WEAPONS.size()), again(WEAPONS.size());
     assert(run(used) == run(again));

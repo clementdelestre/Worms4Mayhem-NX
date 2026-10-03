@@ -30,6 +30,7 @@ The active player's per-tick input is the only game data on the wire; replays (`
 | `FUSE_UP` 16 / `FUSE_DOWN` 32 | press | ±1 s on the team's fuse (1..5 s, default 3) for `user_fuse` weapons (W4M FuseUp, data); kept per team in `Game::fuses` |
 | `TARGET` 64 | flag | Blimp view (W4M IsometricCam 0x52a5e0): `turn` / `walk` / `aim` drive `Game::cursor` and the worm stays put; also the girder preview mode |
 | `PITCH` 128 | flag | with `TARGET`: this tick's `aim` tilts the Blimp camera (or raises the girder) instead of moving sideways; the client alternates the two on every other tick at twice the rate when both are held. Without `TARGET`, on a landed jetpack holding a secondary: lay it (W4M Fire.Second) |
+| `flags`: `SKIP_COUNT` 2 | flag | the local active player pressed X while the Settle damage count ran (observed in W4M by the user, 2026-10-03); the sim ends the display at once, deaths follow as usual |
 | `flags`: `CAMERA` 1 | flag | the active player used a follow-camera key this tick (right stick, d-pad zoom, A D X Z, wheel; `Controls::read`); the sim only reads it to end the hot seat (W4M InGame group `Camera.*`, 0x4e1610, disasm) |
 
 `Game::step` takes `pressed = buttons & ~prevButtons` for the edge-triggered bits; `prevButtons` is in the checksum. A hot seat

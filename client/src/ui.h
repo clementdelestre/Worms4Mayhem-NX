@@ -71,10 +71,15 @@ private:
 // First-person aim reticle at screen point c, per weapon like W4M; scope: sniper vignette + cross.
 void reticle(const WeaponDef &wd, Vector2 c, bool scope);
 // W4M Blimp-view reticle at the screen centre: Bomber cursor (arrows = the run, left to right) or Targeting cursor.
-void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock = nullptr);
+void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock = nullptr, const Vector2 *at = nullptr);  // at: centre, default screen centre
 // W4M PiP (HUDTWK PiP.*, WXFE_Border_Bubble): the event camera's picture in its tilted inset; show / full as Controls::inset
 void pipInset(const RenderTexture2D &scene, float show, float full);  // state: 0 valid, 1 water, 2 no target, -1 none (out of the Blimp); lock: homing marker
 struct Hud {
+    bool skipHp = false;  // X pressed during the count (user-requested)
+    int counting = -1;  // worm whose label is counting, camera on it; wait: camera travel / linger seconds
+    bool reopen = false;  // X skipped the Settle count: the next local Aim opens the panel
+    bool forceX = false;  // tests: X pressed
+    bool readyScreen(const Game &g, bool cinematic) const;
     bool open = false, mine = false;  // mine: a human here plays the current turn
     bool quiet = false;               // no bottom hints this frame
     bool fp = false;                  // first-person aim, or just left it: no label on the current worm
@@ -95,7 +100,6 @@ private:
     std::vector<HpTrack> hpt;
     std::vector<Popup> popups;
     std::vector<int> order;  // worms with a count to play, in first-hit order
-    int counting = -1;  // worm whose label is counting, camera on it; wait: camera travel / linger seconds
     float wait = 0, tickGap = 0;
     uint32_t hpTick = 0;
     int hpClock = 0;

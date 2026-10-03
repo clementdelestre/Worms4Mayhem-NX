@@ -24,6 +24,8 @@ The user wants it identical to the real W4M. Report to the coordinator in French
 ## Docs
 - English. Tag every fact data / disasm / assumed / ours / user-requested. Never "fix" a user-requested item (the user asked for it; it is retested on request only). W4M side in `docs/w4m/<domain>.md`; our side in the topic doc
   (camera.md, sim.md, ai.md, audio.md, weapons-audit.md, worm-reactions.md...).
+- Document as you learn, not at the end: each verified W4M fact (address, field, value, behaviour) goes into `docs/w4m/<domain>.md`
+  right away, tagged, even if outside your task. Unsure → tag it assumed with what is missing. Never leave knowledge only in the report.
 - Code comments: one line, two max, only the non-obvious why. No narration of past bugs.
 
 ## Build and tests

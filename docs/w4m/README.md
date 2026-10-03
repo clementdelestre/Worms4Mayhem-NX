@@ -14,7 +14,18 @@ Confidence tags:
 - **data**: read in a game file (exe strings, tweaks, scripts, banks).
 - **disasm**: deduced from the code.
 - **assumed**: inferred, not verified.
+- **observed**: seen by the user in the real game; outranks an unconfirmed disasm reading.
 - **user-requested** (our docs): behaviour the user asked for explicitly, kept even where W4M may differ; retested on request, never "fixed".
+
+User-requested behaviours (kept on purpose; retest only when the user asks):
+- Blimp view: A / ZR enter it (that press does not fire), B leaves it (no jump), holding L shows it until released; sticks swapped vs
+  W4M HelpBlimpConsole (docs/camera-w4m.md, Controls).
+- Hot seat: the button press that cancels it is consumed, never a shot, jump or view change (docs/sim.md, 2026-10-03).
+- Steered shots (Super Sheep, Bovine Blitz, Old Woman, Scouser): the left stick does it all, yaw and pitch; the right stick no longer pitches (2026-10-03).
+- Rule 128 "No delays": test rule ignoring the preset's weapon delays (PROTOCOL.md, Start rules).
+- 3D texts (worm names and HP, fuse countdown, Crate Spy, jetpack fuel): no "Name Backing" frame as W4M, a drop shadow instead (2026-10-03).
+- A local key press skips a CPU's hot seat ("Ready") in offline games (main.cpp, 2026-10-03).
+- Network protocol stays version 1 until a server is deployed (PROTOCOL.md).
 
 Attributing a function to a class is reliable when the function comes from a vtable. When it was inferred from the nearest `.cpp` assert string, it can be wrong near file boundaries.
 

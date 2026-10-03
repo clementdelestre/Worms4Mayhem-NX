@@ -11,6 +11,7 @@ Confidence: **data** (tweak/text/strings), **disasm**, **assumed**. VAs in `Worm
 - There is **no dedicated targeting camera** and **no free 2D cursor in world space**. The targeting view is the ordinary **Blimp camera** (`IsometricCam`, logical view 3). The player enters it with the Blimp key. The cursor is a reticle fixed at the **screen centre**. The player moves the camera, not the cursor (disasm + data).
 - Each frame, the camera manager casts a ray from the camera position through its look-at point, against the land, the water plane and worms. The hit point is the target. This writes `Airstrike.TargetPoint`, `Airstrike.Direction`, `Airstrike.UpVector`, `Airstrike.HasTarget` and `Airstrike.WaterTarget` (disasm).
 - On Fire, the weapon copies `Airstrike.TargetPoint` into `Payload.Target` and broadcasts `HUD.Target.Selected`. The airstrike's direction is the camera's horizontal right vector, so the planes fly across the screen. There is no separate left/right choice (disasm).
+- **Homing Missile: the target is set from the Blimp view or from the first-person aim view (observed + disasm).** `0x583a10` (Fire in state 1) only fails with no target or when the current logical camera type (`[CMS+0x2a0][CMS+0x28c]+0x2c`, 0x583a8f..0x583ad8) is 2 (Default), so HeadCam (type 1) and Blimp both lock; `UpdateTargetInfo 0x51c910` takes the ray of the *current* camera (aim ray in Head, cursor in Blimp). The Homing cursor is visible in both (slots 13/14). Ours: the same lock (`Game::locked`, `lockAt`) from either view, a new press charges (docs/sim.md). Switch buttons: hold L = first person, A / ZR outside it = Blimp (that press does not lock), A / ZR in either view locks then charges; keyboard E toggles the Blimp, right mouse = first person (ours, Switch mapping; W4M PC: E / aim key).
 - In-game help text (data, English.xom): "Incoming! Define the path using [Blimp] and launch using [Fire]" (Airstrike / Super Airstrike); "Fat men can fly! Define the path using [Blimp]…" (Fatkins); "Find your target using [Blimp], aim the launcher then [Fire] to power up" (Homing); "Target the area using [Blimp] and call in E.T. with [Fire]" (Alien Abduction). `FETXT.Control.Blimp` = "E" for both keyboard and joypad (LOCAL).
 
 ### Weapons that use it (data, WEAPTWK)
@@ -194,7 +195,7 @@ It subscribes to `Weapon.NotClearToFire`, `Camera.LogicalModeChanged`, `Weapon.D
 ### Confirm and hand-off (disasm)
 
 **`PayloadWeaponLogicEntity::HandleMessage 0x586040`, on `Input.FirePressed`, in state 1:**
-1. `0x583a10`: sends `Airstrike.UpdateInfo` and reads `Airstrike.HasTarget`. It fails if there is no target, **or if the current view is 2 (Default)**: the player must be in Blimp (or Head).
+1. `0x583a10`: sends `Airstrike.UpdateInfo` and reads `Airstrike.HasTarget`. It fails if there is no target, **or if the current view is 2 (Default)**: the player must be in Blimp or Head (first-person aim); Homing is observed to use the aim (Head) view.
 2. On success: `Payload.Target` := `Airstrike.TargetPoint`, then broadcast `HUD.Target.Selected`. HUD.Target.Selected has 12 handle copies; cursors, worm and HUD listen to it.
 3. On failure: `Weapon.NotClearToFire`.
 4. After success, state = 0.
@@ -224,6 +225,6 @@ It subscribes to `Weapon.NotClearToFire`, `Camera.LogicalModeChanged`, `Weapon.D
 | Airstrike / Fatkins | `BomberLogicEntity` takes the scene camera `perspShape` from the bomber mesh and sends `Camera.FollowSceneCam`. CMS first calls `SetCamera("Default")` (0x522ad7), which leaves Blimp, then follows the scene camera (view 0x14 / 0x10). On `Bomber.AnimsComplete` it sends `Camera.StopFollowingSceneCam`, and CMS goes back to the current logical camera, Default (0x522b60). |
 | Super Airstrike | same scene-cam follow (0x58ace6); `SuperAirstrikeCamera` (Simple, PosUpdateSpeed 1, LookUpdateSpeed 0.1, data) is set at 0x57a330. |
 | Concrete Donkey | `0x51d760("DonkeyCamera", donkeyTaskId)` creates a SimpleCam (view 0x15) that tracks the donkey (DonkeyCamera: PosUpdateSpeed 1, LookUpdateSpeed 0.1, data). The camera point is stored at +0x188 (z + 500). |
-| Homing | normal aiming in the player's current view, then `HomingMissileFlyCamera` on launch. |
+| Homing | target taken in the aim view (observed), then normal aiming in the player's current view, then `HomingMissileFlyCamera` on launch. |
 
 Next turn: `GameLogic.Turn.Started` → 0x51ef80 → `Camera.StartOfTurnCamera` ("Default", LOCAL / scripts).
