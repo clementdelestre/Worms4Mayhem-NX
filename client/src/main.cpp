@@ -1495,19 +1495,20 @@ int main(int argc, char **argv) {
         const Vector3 *stick = nullptr, *mine = nullptr;
         for (const Projectile &s : game.shots) if (WEAPONS[s.weapon].name == "Dynamite") stick = &s.pos;
         for (const Object &o : game.objects) if (o.type == Object::Mine && o.fuse >= 0 && !o.dead) mine = &o.pos;
-        Audio::loop(Audio::Sfx::Dynamite, stick && !pause.open, stick);
-        Audio::loop(Audio::Sfx::MineBeep, mine && !pause.open, mine);
-        Audio::loop(Audio::Sfx::HolyHeld, game.phase == Phase::Aim && cur.alive && wd.name == "Holy Hand Grenade" && !pause.open, &cur.pos);
-        Audio::loop(Audio::Sfx::Cheer, game.phase == Phase::GameOver);
+        const bool onMatch = screen == Screen::Play;  // the exit above may have left it this frame: stopSfx must stick
+        Audio::loop(Audio::Sfx::Dynamite, onMatch && stick && !pause.open, stick);
+        Audio::loop(Audio::Sfx::MineBeep, onMatch && mine && !pause.open, mine);
+        Audio::loop(Audio::Sfx::HolyHeld, onMatch && game.phase == Phase::Aim && cur.alive && wd.name == "Holy Hand Grenade" && !pause.open, &cur.pos);
+        Audio::loop(Audio::Sfx::Cheer, onMatch && game.phase == Phase::GameOver);
         // W4M PowerbarMeterEntity 0x5f5c70: PoweringUpStart plays the type's sound on the worm, cut at the launch (0x1a = kWeaponPoisonArrow, table 0x90c920)
         const WeaponDef &sw = WEAPONS[game.weapon];
-        bool charging = game.phase == Phase::Aim && cur.alive && game.power > 0 && powered(sw.kind) && !pause.open;
+        bool charging = onMatch && game.phase == Phase::Aim && cur.alive && game.power > 0 && powered(sw.kind) && !pause.open;
         Audio::hold(Audio::Sfx::PowerRocket, charging && sw.kind == Kind::Shell && sw.name != "Poison Arrow", &cur.pos);
         Audio::hold(Audio::Sfx::PowerHoming, charging && sw.kind == Kind::Homing, &cur.pos);
         // Accessory.Init = the weapon shown in hand (game.weapon): EquipSfx at most once per 9 s per worm (+0xd4)
         static int equipW = -1, equipWorm = -1;
         static double equipAt[256];
-        bool aiming = game.phase == Phase::Aim && cur.alive, hand = aiming && !pause.open;
+        bool aiming = onMatch && game.phase == Phase::Aim && cur.alive, hand = aiming && !pause.open;
         if (aiming && (game.weapon != equipW || game.current != equipWorm) && (unsigned)game.current < 256 && GetTime() > equipAt[game.current] + 9)
             Audio::equip(customWeapon(game.weapon) ? "Bazooka" : wd.name.c_str(), cur.pos), equipAt[game.current] = GetTime();
         equipW = aiming ? game.weapon : -1, equipWorm = aiming ? game.current : -1;

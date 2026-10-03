@@ -876,6 +876,43 @@ static void checkEventCameras() {
         hold(), g.step(Input{});
         assert(g.shots.size() == 1 && Vector3Distance(g.shots[0].aim, g.lockAt) < 1e-3f);
     }
+    {  // homing launch speed follows the charge: W4M BasePower + ShotPower * MaxPower, 17.5 m/s empty to 32.5 full
+        float v[2];
+        for (int full = 0; full < 2; full++) {
+            Game g;
+            g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+            Worm &a = g.worms[g.current];
+            g.weapon = weaponNamed("Homing Missile");
+            g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
+            auto hold = [&] { a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true; };
+            Input in;
+            in.buttons = Input::FIRE;
+            hold(), g.step(Input{}), hold(), g.step(in), hold(), g.step(Input{});
+            assert(g.locked);
+            for (int t = 0; t < (full ? 200 : 1) && g.shots.empty(); t++) hold(), g.step(in);
+            hold(), g.step(Input{});
+            assert(g.shots.size() == 1);
+            v[full] = Vector3Length(g.shots[0].vel);
+        }
+        assert(v[0] > 17 && v[0] < 19.5f && fabsf(v[1] - 32.5f) < 0.1f);
+    }
+    {  // Starburst (W4M Detonate 0x588dd0): one blast on the target, no clusters, then Worm.Vapourize kills the rider
+        Game g;
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+        Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+        int sb = weaponNamed("Starburst"), hp = v.hp;
+        a.pos = {20, 55, 20}, v.pos = {60, 55, 60}, v.vel = {0, 0, 0};
+        a.grounded = true, a.yaw = 0, a.pitch = 0, g.weapon = sb;
+        g.ammo[a.team][sb] = 1, g.delays[a.team][sb] = 0;
+        Input fire;
+        fire.buttons = Input::FIRE;
+        g.step(fire), g.step(Input{});
+        assert(g.shots.size() == 1 && g.shots[0].touching != 0 && !g.shots[0].child);  // launched beside the rider: no blast at the launch
+        g.shots.clear(), g.step(Input{});
+        g.shots.push_back({Vector3Add(v.pos, {0, Game::R + 1, 0}), {0, -3, 0}, sb, 30, false, 1});
+        for (int t = 0; t < 600 && !g.shots.empty(); t++) g.step(Input{});
+        assert(g.shots.empty() && v.hp < hp && a.hp <= 0);
+    }
     {  // homing from the Blimp: the entering press (Controls swallows FIRE) locks nothing; with TARGET, FIRE locks the cursor point, no launch
         Game g;
         g.start({29, 2, 1, "", 0}), g.hotSeat = 0;

@@ -1140,6 +1140,8 @@ void Game::use(Worm &w) {
     case Kind::Homing:
         shots.push_back({from, Vector3Add(carry, Vector3Scale(dir, wd.kind == Kind::Homing ? launchSpeed(wd, power) : wd.speed)), weapon, wd.fuse, false, 1,
                          wd.kind == Kind::Homing && locked ? lockAt : tgt});
+        for (size_t k = 0; k < worms.size() && k < 63; k++)  // already inside a worm at launch (its rider): not a fresh contact
+            if (worms[k].alive && Vector3Distance(from, worms[k].pos) < R + 0.3f) shots.back().touching |= 1ull << k;
         phase = Phase::Flying;
         break;
     case Kind::OldWoman:
