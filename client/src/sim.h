@@ -82,6 +82,7 @@ struct Worm {
     float yaw, pitch;
     int hp, team;
     bool alive, grounded;
+    int dealt[5] = {};  // damage taken per type since the last ApplyDamage (cap 75, 0x5ababb)
     int poison = 0;  // hp lost at each turn start, never below 1
     int counted = 0;  // hp its label shows: Settle counts it toward hp, nearby worms together (W4M)
     bool nailed = false;  // Tail Nail: can't walk, jump or use tools, animals, melee; blasting the ground frees it
@@ -474,9 +475,9 @@ private:
     bool underwater(const Worm &w) const;
     void stepRope(Worm &w);
     void stepShots(const Input &in, bool detonate);
-    void explode(Vector3 p, const Blast &b, float poison = 0);
+    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0);
     void steal(const Worm &victim);  // old woman ammo theft
-    void hurt(Worm &w, int dmg, bool blast = false);  // vampire/karma/highlander for the active worm; blast: armour applies
+    void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies
     bool dropPoint(Object::Type t, Vector3 &out);
     bool addObject(Object::Type t, float lift);
     void stepObjects();

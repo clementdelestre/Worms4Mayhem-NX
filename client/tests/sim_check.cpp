@@ -1,5 +1,6 @@
 // Determinism check: two games fed the same seed and inputs must stay bit-identical.
 // Each turn selects the next weapon in the table and uses it, so the whole arsenal gets exercised.
+#define private public  // the cap test calls hurt() directly
 #include "../src/sim.h"
 #include "../src/controls.h"
 #include "../src/ai.h"
@@ -3001,6 +3002,17 @@ int main() {
         in.flags = Input::SKIP_COUNT;
         g.step(in);
         assert(g.countGroup.empty() && g.worms[1].counted == std::max(0, g.worms[1].hp));
+    }
+    {  // 0x5ab7e0: damage types 2..4 cap at 75 per worm per ApplyDamage (doubled with DoubleDamage), type 0 uncapped
+        Game g;
+        g.start({21, 2, 2, "", 0});
+        Worm &w = g.worms[1];
+        w.hp = 500;
+        g.hurt(w, 60, false, 2), g.hurt(w, 60, false, 2), g.hurt(w, 60, false, 3), g.hurt(w, 200, false, 0);
+        assert(w.hp == 500 - 75 - 60 - 200);
+        g.applyDamage();
+        g.hurt(w, 60, false, 2);
+        assert(w.hp == 500 - 75 - 60 - 200 - 60);
     }
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<bool> used(WEAPONS.size()), again(WEAPONS.size());

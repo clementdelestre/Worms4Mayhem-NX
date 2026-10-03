@@ -879,6 +879,7 @@ void Game::surrender(int team) { if (team < (int)surrendered.size()) surrendered
 // GameLogic.ApplyDamage: every hurt worm shows its damage at once (0x5abc50); its energy <= the damage queues it to die (0x5abfb4).
 // Vampire Wormpot (0x5a9710): the active worm, if its team's vampire, gains half of each other worm's damage, in worm order.
 void Game::applyDamage(const std::vector<int> *type6) {
+    for (Worm &x : worms) std::fill(x.dealt, x.dealt + 5, 0);
     countGroup.clear(), countT = 0;
     const Worm *vamp = (cfg.wormpot & WP_VAMPIRE) && current % perTeam == 0 ? &worms[current] : nullptr;
     for (Worm &x : worms) {
@@ -1328,9 +1329,10 @@ void Game::stepRope(Worm &w) {
     if (underwater(w)) drown(w);
 }
 
-void Game::hurt(Worm &w, int dmg, bool blast) {
+void Game::hurt(Worm &w, int dmg, bool blast, int type) {
     if (doubled()) dmg *= 2;  // W4M 0x518da5 doubles the message first,
     if (blast && w.armour) dmg = dmg * ARMOUR / 100;  // then the worm's Shield.DamageScale (explosions only)
+    if (type >= 2 && type <= 4) dmg = std::max(0, std::min(dmg, 75 * (doubled() ? 2 : 1) - w.dealt[type])), w.dealt[type] += dmg;  // 0x5ab7e0 cap per type and ApplyDamage (0x5ababb)
     if (dmg <= 0 || (cfg.wormpot & WP_WORMS_DROWN)) return;
     w.hp -= dmg;
     int wi = int(&w - worms.data());
@@ -1398,7 +1400,7 @@ Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
     return d < b.pushReach && d > 1e-4f ? Vector3Scale(to, b.push * 1.2f * (b.pushReach - d) / b.pushReach / d) : Vector3{0, 0, 0};
 }
 
-void Game::explode(Vector3 p, const Blast &b0, float poison) {
+void Game::explode(Vector3 p, const Blast &b0, float poison, int type) {
     Blast b = b0;  // W4M ExplosionMessage 0x518d80: DoubleDamage doubles the radii and the impulse too (hurt() doubles the damage)
     if (doubled()) b.crater *= 2, b.reach *= 2, b.push *= 2, b.pushReach *= 2;
     for (Bubble &bb : bubbles) bb.rest = 0;  // 0x54effa: any Explosion lets it fall again
@@ -1417,7 +1419,7 @@ void Game::explode(Vector3 p, const Blast &b0, float poison) {
         Vector3 kick = blastKick(b, p, w.pos);
         if (!dmg && poison <= 0 && Vector3LengthSqr(kick) == 0) continue;
         if (w.nailed && Vector3Distance(w.pos, p) < b.crater + R) w.nailed = false;  // the ground around it is gone
-        if (dmg) hurt(w, dmg, true);
+        if (dmg) hurt(w, dmg, true, type);
         if (poison > 0 && Vector3Distance(w.pos, p) < b.reach + R && !(cfg.wormpot & WP_WORMS_DROWN)) w.poison = std::max(w.poison, (int)poison), w.abducted = false;  // Worm.Poison clears 0x400 (0x5addd1)
         if (w.nailed) continue;
         w.vel = Vector3Add(w.vel, Vector3Scale(kick, (cfg.wormpot & WP_STICKY ? 0.5f : 1) * (w.armour ? 0.5f : 1)));  // W4M shield: half
@@ -1691,7 +1693,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             float super = s.child ? 1 : superScale(wd);  // the child containers are SuperClusters' (not modelled)
             Blast b = blastOf(wd, s.child);
             b.damage *= super, b.push *= super, b.crater *= super;
-            explode(Vector3Add(np, {0, s.child ? 0 : wd.lift, 0}), b, s.child ? 0 : wd.poison);
+            explode(Vector3Add(np, {0, s.child ? 0 : wd.lift, 0}), b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : s.child ? 2 : wd.clusters > 0 ? 3 : 0);  // ExplosionMessage kind, weapons.md
             bool fly = !s.child && ((wd.kind == Kind::Homing && !wd.avoid) || (wd.kind == Kind::SuperSheep && (wd.name == "Starburst" ? wd.fuse - s.fuse >= 3.5f : !wd.walks || s.stage)));
             if (fly) camHold = msTicks(1000);  // the FlyCam's: CAMTWK PauseDuration 1000 (homing, super sheep, starburst)
             if (wd.name == "Starburst" && worms[current].alive) hurt(worms[current], worms[current].hp);  // W4M Worm.Vapourize 0x5885f0: its rider
