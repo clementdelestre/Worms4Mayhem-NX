@@ -126,3 +126,6 @@ target ease, so a view swept through the vertical (Blimp looking down, a falling
 that rolled 90° / 180°. W4M's handling there is not traced. Scene cameras (`persp`) are set after it and keep their node up.
 
 HP count of several worms [disasm, 0x5abeec / 0x51d3d0]: the camera visits each hurt worm in turn (`Game::countFocus`, 200 ms apart), as W4M's one request per worm. The former group-centre framing was ours: the midpoint of far-apart worms was often in clear view, so the request was dropped and the view stayed on the player's worm.
+
+## Aim view FOV and worm hiding [ours, follows camera-w4m.md]
+- Aim, fine aim and scope all use the CMS default projection (50), times the HeadCam zoom [disasm 0x51e150]; the HeadCam zoom is the player's (zoom keys, D-pad up / down), CAMTWK Camera.Head.MinZoom 0.05 .. MaxZoom 1 [data], kept through the turn, reset when the turn leaves Aim (user-requested; W4M keeps it in a global never reset that we found), rate as the Blimp's [assumed]; binoculars keep their scout zoom. The current worm is hidden once the aim camera is inside it (1.2 m) [ours]: the HeadCam alpha 0x5a446b, max(0, 1 - |v|^2/0.016), read as the worm alpha left it drawn in front of the scope (2026-10-03); what it fades is not traced.

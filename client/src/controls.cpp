@@ -694,6 +694,9 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         cut = false, fpOut += dt;
         return;
     }
+    // W4M HeadCam zoom (0x91f31c, .data 1.0): CAMTWK Camera.Head.MinZoom 0.05 .. MaxZoom 1, the player's zoom keys; kept through the turn
+    static float head = 1;
+    if (g.phase != Phase::Aim) head = 1;
     static bool inBlimp = false;
     if (!focusOn && targetView(g)) {  // W4M Blimp (IsometricCam): the sim's camera, drawn at Camera.Blimp.UpdateSpeed 0.05 (0x52a57d)
         if (!inBlimp) blimpZoom = 1;
@@ -710,10 +713,10 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
 
     if (!focusOn && (firstPerson(g) || scope)) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
         Vector3 e = eye(g), f = Vector3Add(e, Vector3Scale(g.aimDir(cur), AIM_FOCUS));
-        float fov = scope ? 25.0f : fine ? 42.0f : 60.0f;
-        static float head = 1;  // W4M HeadCam zoom (0x91f31c)
+        float fov = 50;  // CMS default projection x the HeadCam zoom
         bool bino = WEAPONS[g.weapon].kind == Kind::Binoculars;
-        head = bino ? g.scoutZoom(head, dt) : 1, fov = lensFov(fov, head, dt);
+        head = bino ? g.scoutZoom(head, dt) : Clamp(head * expf(-zin * 0.5f * dt) - 0.08f * wheel, 0.05f, 1);  // rate as the Blimp's (assumed)
+        fov = lensFov(fov, head, dt);
         cam.position = e, cam.target = f, b = {g.ambulatory(cur) ? 0.15f : 1, 1};  // HeadCam 0x528d70: 0.15 while the worm is Ambulatory (state 0), else 1
         cam.fovy = fov;
         fpOut = 0, cut = false;

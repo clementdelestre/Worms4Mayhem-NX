@@ -339,7 +339,7 @@ void fire(const Game &g, int trig, int subject = NONE, int payload = NONE) {
     case PAYLOAD5: case PAYLOAD4: case PAYLOAD3: case PAYLOAD2: case PAYLOAD1: case CRATE_DROP: {  // threatened: within 100 units (0x60e392, squared 10000)
         Vector3 p = posOf(payload);
         for (int i = 0; i < n; i++)
-            if (alive(i) && i != active) (Vector3Distance(feet(g.worms[i]), p) < 100 * UNIT ? A : B).push_back(i);
+            if (alive(i)) (Vector3Distance(feet(g.worms[i]), p) < 100 * UNIT ? A : B).push_back(i);
         shuffle(g, A, salt), shuffle(g, B, salt + 50);
         while (!A.empty() && choose(trig, payload, active, A, B, true, true)) {}
         break;

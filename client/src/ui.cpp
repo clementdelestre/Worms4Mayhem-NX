@@ -2115,6 +2115,8 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
         hints({{"A", "Space", "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
                {"Up/Down", "Z/X", "Zoom"}, {"B", "Enter/E", "Leave"}});
+    else if (mine && !quiet && g.phase == Phase::Aim && (Controls::firstPerson(g) || Controls::scoped(g)))  // HeadCam: FETXT.Control.ZoomIn / ZoomOut
+        hints({{"A", "Space", "Fire"}, {"Up/Down", "Wheel", "Zoom"}});
     else if (mine && !quiet && Controls::targetHeld(g)) hints({{"A", "Space/E", "Sky view: target"}, {"L", nullptr, "Hold: sky view"}});  // "Define the path using [Blimp]"
     else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});
     if (!open) return;

@@ -139,3 +139,6 @@ Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` 
 cuts it at 5 s, so it is played once; `Parachute` is the Open layer of ParachuteLoop; `Pickup` uses PickupWeapon's −11 dB for all
 three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6); `BigExplosion`'s second variant ExplosionBoxed1 is −2 dB 2D in W4M;
 `FeBookOut` has event volume 0 in W4M (silent); `BubbleLoop` plays one of Bubble1–6 per 500 ms spawn of WXP_Bubbles_Small (FEV spawn 500..500 on a oneshot instance, fmod_event 0x1001a3ec; the emitter starts its event once, 0x5bdcf4).
+
+## Voice lines [ours, per the coordinator]
+- A line is dropped while any line of the same voice bank still plays: no queue, no gap (`voice()` in audio.cpp).

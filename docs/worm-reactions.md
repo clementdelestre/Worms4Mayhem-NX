@@ -59,7 +59,7 @@ Sources:
 
 | Case | Triggers | Special / general pool | Options (A, B, C) |
 |---|---|---|---|
-| 0 | TimedPayload*, CrateDrop | worms within 100 units (5 m) of the payload / the others. Movies chain as long as threatened worms remain. | 1, 1, 1 |
+| 0 | TimedPayload*, CrateDrop | worms within 100 units (5 m) of the payload / the others. The active worm is not excluded [ours, applied in code]. Movies chain as long as threatened worms remain. | 1, 1, 1 |
 | 1 | BlastSplat, FallSplat, Death, Collect, Blasted, Poisoned, Zap | [subject] / all but the subject and the active worm | 1, 1, 1 |
 | 2 | Idle, Sick, Abducted, ItemReact, Thinking | – / all actors (objects included) but the active worm | 0, 0, 1 |
 | 3, 8, 9 | DamageInflicted, FirstBlood, MaxDamage (Revenge) | worms hurt this turn / the others. Then DamageSilent for each other hurt worm. | 0, 0, 1 then 1, 1, 1 |

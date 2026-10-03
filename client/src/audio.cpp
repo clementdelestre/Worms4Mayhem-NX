@@ -459,6 +459,8 @@ static void voice(int team, Voice id, const Vector3 *at) {
     if (banks.empty()) return;
     Bank &b = bankOf(team);
     const Def &d = id == Voice::SadSigh || id == Voice::Yawn ? SPEECH_SOFT : SPEECH;
+    for (Variants &v : b.lines)  // a new line is dropped while the bank's voice is still speaking (no queue, no gap)
+        for (Slot &x : v.slot) if (IsSoundPlaying(x.s)) return;
     for (int hop = 0; hop < 4 && !b.lines[(int)id].n; hop++) id = FALLBACK[(int)id];
     playRandom(b.lines[(int)id], d, 1, at);
 }
