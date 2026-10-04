@@ -102,7 +102,9 @@ static int pointBlank(uint32_t seed, uint8_t level) {
     g.start(c);
     for (int t = 0; t < 120; t++) g.step(Input{1});  // land; any input skips the hot seat
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
-    v.pos = a.pos + Vector3{sinf(a.yaw), 0.1f, cosf(a.yaw)} * 1.0f;
+    Vector3 p = a.pos + Vector3{sinf(a.yaw), 0, cosf(a.yaw)} * 1.0f, ground = p;  // 1 m ahead, on the ground there (a random start can face a slope or a drop)
+    if (g.terrain.raycast({{p.x, p.y + 3, p.z}, {0, -1, 0}}, 6, &ground)) p.y = ground.y + Game::R + 0.1f;
+    v.pos = p;
     v.vel = {0, 0, 0};
     Ai ai;
     for (int t = 0; t < 60 * 40 && g.phase == Phase::Aim; t++) {
@@ -114,15 +116,16 @@ static int pointBlank(uint32_t seed, uint8_t level) {
 
 // The first shots of a match with a given planning budget: the plan must not depend on how the think is sliced.
 struct Fired { int weapon; Vector3 pos; float yaw, pitch; };
-static std::vector<Fired> shots(const char *map, uint32_t seed, uint8_t level, long budget) {
+static std::vector<Fired> shots(const char *map, uint32_t seed, uint8_t level, long budget, size_t count) {
     Game g;
     GameConfig c{seed, 2, 3, map, 0};
     c.teamSetup = {{"CPU", level}, {"CPU", level}};
     g.start(c);
+    for (int t = 0; t < 180; t++) g.step(Input{1});  // let the random start settle: worms still sliding make the fire tick matter
     Ai ai;
     ai.budget = budget;
     std::vector<Fired> out;
-    for (int t = 0; t < 60 * 60 * 20 && out.size() < 6 && g.phase != Phase::GameOver; t++) {
+    for (int t = 0; t < 60 * 60 * 20 && out.size() < count && g.phase != Phase::GameOver; t++) {
         g.step(ai.think(g));
         for (const GameEvent &e : g.events)
             if (e.kind == GameEvent::Fire && e.worm >= 0) out.push_back({e.weapon, g.worms[e.worm].pos, g.worms[e.worm].yaw, g.worms[e.worm].pitch});
@@ -224,8 +227,8 @@ int main() {
     }
 
     printf("planning cost: max %.2f ms per tick, %.2f ms per turn\n", maxTick, maxTurn);
-    for (const char *map : {"arabian", "jurassic"}) {  // sliced vs all in one tick: same shots
-        auto a = shots(map, 3, 5, Ai{}.budget), b = shots(map, 3, 5, 1L << 40);
+    for (const char *map : {"arabian", "jurassic"}) {  // sliced vs all in one tick: same first shot (later ones differ in time, so in worm slides on a random start)
+        auto a = shots(map, 3, 5, Ai{}.budget, 1), b = shots(map, 3, 5, 1L << 40, 1);
         assert(a.size() == b.size());
         for (size_t i = 0; i < a.size(); i++)
             assert(a[i].weapon == b[i].weapon && Vector3Distance(a[i].pos, b[i].pos) < 1e-4f && fabsf(a[i].yaw - b[i].yaw) < 1e-4f && fabsf(a[i].pitch - b[i].pitch) < 1e-4f);

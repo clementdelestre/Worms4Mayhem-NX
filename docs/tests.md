@@ -49,7 +49,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkHighlander` | Highlander: the killer's team inherits the victim's weapon. |
 | `checkObjects` | Crates heal and add ammo; barrels chain only within reach. |
 | `fireEach` | One scripted turn per weapon (charge, release, steer, detonate): its Fire event shows up. |
-| `checkPoison` | Poison is applied by the hit and ticks off at the next turn start. |
+| `checkPoison` | Poison Arrow: a worm hit gives the gas cloud and poison with no damage or knock; land stops it, the cloud comes 2 s later; poison ticks off at the next turn start. |
 | `checkMelee` | Fire Punch and the other melee weapons: reach, height, behind, knock-back, W4M 0-damage push. |
 | `checkShotgun` | A gun hit takes the weapon's full damage, not a blast falloff. |
 | `checkHoming` | Homing missile flies along the aim, then dives onto the reticle point. |

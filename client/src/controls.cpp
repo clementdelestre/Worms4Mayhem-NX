@@ -459,7 +459,7 @@ static bool trackStep(Camera3D &cam, const Game &g, float dt) {
 
 static void wormTrack(const Game &g, int worm, int prio, Vector3 e, Vector3 d, bool force) {
     tk = {}, tk.on = true, tk.def = &WORM_T, tk.worm = worm, tk.prio = prio, tk.e = e, tk.d = d, tk.force = force, tk.rest = 1.5f;
-    fly.on = false, abd.worm = -1;
+    fly.on = ch.on = false, abd.worm = -1;  // a new event camera replaces the chase / fly one (0x51d3d0)
 }
 
 static void simple(Camera3D &cam, Vector3 pos, Vector3 look, float kp, float kl, float dt) {  // W4M SimpleCam: placed, drawn at (PosUpdateSpeed, LookUpdateSpeed)
@@ -493,6 +493,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
             for (const Worm &w : g.worms) if (Vector3Distance(w.pos, focusAt) < 2.5f && (!n || Vector3Distance(w.pos, focusAt) < Vector3Distance(n->pos, focusAt))) n = &w;
             Vector3 f = Vector3Subtract(cam.target, cam.position);
             f.y = 0;
+            fly.on = ch.on = false;
             tk = {}, tk.on = tk.frame = true, tk.def = &WORM_T, tk.prio = 5, tk.e = focusAt;  // event direction: the worm's facing (group: the view's)
             tk.d = n ? Vector3{sinf(n->yaw), 0, cosf(n->yaw)} : Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};
             tk.dropped = seen(cam, g, focusAt), tk.rest = 1.5f, sinceTrack = 0;  // 0x51d3b3 (4 / 6): already in clear view, no track, no cut
@@ -506,6 +507,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         if (tk.def != &CRATE_T) {
             Vector3 f = Vector3Subtract(cam.target, cam.position);
             f.y = 0;
+            fly.on = ch.on = false;
             tk = {}, tk.on = true, tk.def = &CRATE_T, tk.prio = 1, tk.d = Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};  // ours: no crate facing
             tk.e = focusAt;
             while (tk.e.y > g.water && !g.terrain.solid({tk.e.x, tk.e.y - 0.25f, tk.e.z})) tk.e.y -= 0.25f;
@@ -561,19 +563,17 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
             Vector3 b = Vector3Normalize(Vector3Subtract(cam.position, cam.target)), hit;
             fly.end = g.terrain.raycast({cam.position, b}, 25, &hit) ? Vector3Subtract(hit, Vector3Scale(b, 0.5f)) : Vector3Add(cam.position, Vector3Scale(b, 25));
         }
-        if ((fly.hold -= dt) > 0) return cam.position = fly.end, evb = {fly.kp, fly.kl}, true;
+        fly.hold = fmaxf(fly.hold - dt, 0);  // the hold only keeps the turn waiting: FlyCam has no Finished (slot 7 = 0x49b8f0) and stops updating
+        return cam.position = fly.end, evb = {fly.kp, fly.kl}, true;  // until another event camera or the next turn
     }
     fly.on = false;
     if (wd && !s->child && (wd->kind == Kind::Sheep || wd->kind == Kind::SuperSheep || wd->kind == Kind::OldWoman || wd->kind == Kind::Scouser || (wd->kind == Kind::Homing && wd->avoid)))
         return chaseCam(cam, g, *s, dt, wd->kind == Kind::Homing ? CHASE_HOMING : wd->kind == Kind::OldWoman ? CHASE_GRAN : CHASE_PET), true;  // ChaseCameraPropertiesContainer: served at once (0x51d5e0)
+    if (ch.on && !s && g.phase != Phase::Aim) return evb = {0.1f, 0.1f, 1, false}, true;  // ChaseCam: no Finished (0x49b8f0), a gone target is skipped (0x5245e0): frozen
     ch.on = false;
     bool fat = wd && (wd->name == "Fatkins Strike" || (customWeapon(s->weapon) && wd->kind == Kind::Airstrike && s->child));  // FatkinsTrackCamera (0x5993e0: also the Factory airstrike)
-    if (wd && wd->kind == Kind::Donkey && !fat) {  // DonkeyCamera: fixed on the side (+z 500 units), look-at donkey + 100 units at 0.1/frame
-        if (!tk.on) {
-            Vector3 c = Vector3Add(s->pos, {0, 0, 25}), hit, a;
-            for (int k = 0; k < 30 && (g.terrain.solid(c) || (a = Vector3Subtract(s->pos, c), g.terrain.raycast({c, Vector3Normalize(a)}, Vector3Length(a), &hit))); k++) c.y += 1;
-            cam.position = c, cam.target = s->pos, cam.up = {0, 1, 0}, tk.on = tk.cutDone = true;
-        }
+    if (wd && wd->kind == Kind::Donkey && !fat) {  // DonkeyCamera: fixed at the spawn point - Donkey.ExtraHeight on y, + 500 units on z (0x5538d8), look-at donkey + 100 units at 0.1/frame
+        if (!tk.on) cam.position = Vector3Add(s->pos, {0, -Game::DONKEY_EXTRA, 25}), cam.target = s->pos, cam.up = {0, 1, 0}, tk.on = tk.cutDone = true;
         tk.obj = Vector3Add(s->pos, {0, 5, 0}), tk.rest = 1.5f;
         cam.target = tk.obj, evb = {1, 0.1f};
         return true;

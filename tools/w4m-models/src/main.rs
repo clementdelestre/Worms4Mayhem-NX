@@ -17,7 +17,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("holy", "HolyHandGrenade", 0.6, false, &[]),
     ("sheep", "Sheep", 0.8, false, &["Run", "Jump"]),
     ("airstrike", "Airstrike.Payload", 1.2, false, &["Spin"]),  // 24 units at 20 per metre; WEAPTWK AnimTravel
-    ("donkey", "Donkey", 1.6, false, &[]),
+    ("donkey", "Donkey", 10.02, false, &[]),  // 167 units tall x WEAPTWK Scale 1.2 at 20 per metre
     ("crate_health", "Crate.Health", 0.9, false, &[]),
     ("crate_weapon", "Crate.Weapon", 0.9, false, &[]),
     ("crate_utility", "Crate.Utility", 0.9, false, &[]),
@@ -34,11 +34,11 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_rope", "NinjaRope.Gun", 0.0, false, &[]),
     ("supersheep", "SuperSheep", 0.9, false, &["Fly", "Run"]),
     ("oldwoman", "Oldwoman", 1.1, true, &["Walk", "Run", "Steal"]),  // AnimTravel, AnimIntermediate (WEAPTWK kWeaponOldWoman)
-    ("arrow", "Arrow", 0.7, false, &[]),
+    ("arrow", "Arrow", 0.7, false, &["Hit"]),  // WEAPTWK AnimImpact, played once the arrow is stuck
     ("homing", "HomingMissile.Payload", 0.8, false, &[]),
     ("dynamite", "Dynamite", 0.5, false, &[]),
     ("gas", "GasCanister", 0.5, false, &[]),
-    ("starburst", "Starburst", 0.8, false, &[]),
+    ("starburst", "Starburst", 0.8, false, &[]),  // Weapon Factory shot model only
     ("fatkins", "Fatkins.Fatboy", 2.2, false, &[]),
     ("scouser", "InflatedScouser", 1.4, false, &[]),
     ("sentry", "SentryGun", 1.0, false, &[]),
@@ -49,7 +49,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_dynamite", "Dynamite", 0.0, false, &[]),
     ("hold_gas", "GasCanister", 0.0, false, &[]),
     ("hold_landmine", "Landmine", 0.0, false, &[]),
-    ("hold_starburst", "Starburst", 0.0, false, &[]),
+    ("hold_starburst", "Starburst", 0.0, false, &["FireStarburst"]),  // WAE_Starburst 0x5917d0: the pack accessory at Pack_Locator, raw units; FireStarburst burns the fuse
     ("hold_supersheep", "SuperSheep", 0.0, false, &[]),
     ("hold_oldwoman", "Oldwoman", 0.0, false, &[]),
     ("hold_scouser", "Scouser", 0.0, false, &[]),
@@ -844,6 +844,11 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
 
     // joints: flat nodes holding the full skinning matrix (inverse bind = identity), so no shear-prone hierarchy
     let mut nodes = vec![format!("{{\"name\":\"mesh\",\"mesh\":0{}}}", if animated { ",\"skin\":0" } else { "" })];
+    // WEAPTWK FxLocator (bazookarocket, homingmissile): where the ArielFx emitters sit on a static payload, in the baked model's space
+    for (gi, _) in s.groups.iter().enumerate().filter(|(_, g)| !animated && matches!(g.path.as_str(), "bazookarocket" | "homingmissile")) {
+        let t = apply(&norm, apply(&rest[gi], [0.0; 3], 1.0), 1.0);
+        nodes.push(format!("{{\"name\":\"FxLocator\",\"translation\":{t:?}}}"));
+    }
     let mut extra = String::new();
     let mut clip_names = Vec::new();
     if animated {

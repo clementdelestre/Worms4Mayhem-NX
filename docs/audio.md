@@ -56,7 +56,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | Prod | `prod` | weapons/Prod | -4 |  | 2D | 1 | weapons: Prod | main.cpp `onEvent` |
 | Sniper | `sniper` | weapons/SniperRifleFire | -3 |  | 2D | 1 | weapons: SniperFire | main.cpp `onEvent` |
 | Bow | `bow` | weapons/BowRelease | 0 |  | 0.5–60 | 1 | weapons: BomTwang | main.cpp `onEvent` |
-| Homing | `homing` | weapons/MissileLoop | 0 |  | 5–75 | 1 | weapons: MissileWhistle | main.cpp `onEvent` |
+| Homing | `homing` | weapons/MissileLoop | 0 |  | 5–75 | 1 | weapons: MissileWhistle | main.cpp `main` (`Audio::hold` on the live Bazooka / Homing shot, see Notes) |
 | OldWomanFire | `old_woman` | weapons/OldWomenLaunch | 0 |  | 0.5–60 | 1 | weapons: OldWomanLaunch, OldWomanMutter1, OldWomanMutter2, OldWomanMutter3, OldWomanMutter4, OldWomanMutter5 | main.cpp `onEvent` |
 | ScouserFire | `scouser` | weapons/ScouserLaunch | 0 |  | 0.5–60 | 1 | weapons: ScouserLaunch, ScouserJump1, ScouserJump2, ScouserJump3 | main.cpp `onEvent` |
 | SentryPlace | `sentry_place` | weapons/SentryGunHeld | -8 | yes | 0.5–20 | 1 | weapons: SentryGunHeld | main.cpp `onEvent` |
@@ -130,13 +130,15 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | UfoEngine | `ufo_engine` | weapons/AlienUfoEngineLoop | 0 | yes, fade 0.5 s | 0.5–100 | 1 | weapons: AlienUFOEngine | main.cpp `updateUfo` |
 | UfoTakeOff | `ufo_takeoff` | weapons/AlienUFOTakeOff | 0 |  | 2D | 1 | weapons: AlienUFOTakeOff | main.cpp `updateUfo` |
 | BatImpact | `bat_impact` | weapons/BaseballBatImpact | 0 |  | 0.5–25 | 1 | weapons: BaseballBatImpact | main.cpp `onEvent` |
+| BowImpact | `bow_impact` | weapons/BowImpact | 0 |  | 0.5–100 | 1 | weapons: BowImpact | main.cpp `onEvent` (`GameEvent::Arm`: the Poison Arrow's ArmSfxLoop, on every impact) |
+| ExplosionBoxed | `explosion_boxed` | weapons/ExplosionBoxed | -2 |  | 2D | 4 | weapons: ExplosionBoxed1 | main.cpp `onEvent` (the arrow's Boom: DetonationSfx is empty, WXP_ExploArrow_RingDk's EmitterSoundFX) |
 | BubbleInflate | `bubble_inflate` | weapons/BubbleMachineInflate | -2 |  | 0.5–25 | 1 | weapons: BubbleMachinePlace | main.cpp `onEvent` |
 | BubbleWobble | `bubble_wobble` | weapons/BubbleMachineWobble | -2 |  | 0.5–25 | 1 | weapons: BubbleMachineWobble | main.cpp `onEvent` |
 | BubbleLoop | `bubble_loop` | weapons/BubbleMachineLoop | -22 |  | 0.5–20 | 1 | weapons: Bubble1, Bubble2, Bubble3, Bubble4, Bubble5, Bubble6 | main.cpp `drawBubbles` |
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 
-Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its time envelope
-cuts it at 5 s, so it is played once; `Parachute` is the Open layer of ParachuteLoop; `Pickup` uses PickupWeapon's −11 dB for all
+Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its Time envelope
+ends it at 5.03 s, so it is one pass of the 5.85 s clip [ours]: started with a 1 s trigger delay when a Bazooka or Homing Missile shot exists, placed on the shot every frame, stopped at 5.03 s of flight or when the shot is gone (no 500 ms fade-out, the blast covers it); the Fire event plays RocketRelease (2D, -6 dB) for both [data + disasm, docs/w4m/audio.md "MissileLoop owners"]; `Parachute` is the Open layer of ParachuteLoop; `Pickup` uses PickupWeapon's −11 dB for all
 three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6); `BigExplosion`'s second variant ExplosionBoxed1 is −2 dB 2D in W4M;
 `FeBookOut` has event volume 0 in W4M (silent); `BubbleLoop` plays one of Bubble1–6 per 500 ms spawn of WXP_Bubbles_Small (FEV spawn 500..500 on a oneshot instance, fmod_event 0x1001a3ec; the emitter starts its event once, 0x5bdcf4).
 

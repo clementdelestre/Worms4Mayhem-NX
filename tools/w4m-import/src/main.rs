@@ -159,6 +159,9 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("ufo_beam", "weapons", &["AlienUFOBeamLoop"]),
     ("ufo_engine", "weapons", &["AlienUFOEngine"]),
     ("ufo_takeoff", "weapons", &["AlienUFOTakeOff"]),
+    ("bow_impact", "weapons", &["BowImpact"]),
+    ("donkey_impact", "weapons", &["ConcreteDonkeyImpact", "ConcreteDonkeyImpact2", "ConcreteDonkeyImpact3"]),
+    ("explosion_boxed", "weapons", &["ExplosionBoxed1"]),  // WXP_ExploArrow_RingDk
     ("bat_impact", "weapons", &["BaseballBatImpact"]),  // WXP_AbdTelep_Central's EmitterSoundFX
     ("bubble_inflate", "weapons", &["BubbleMachinePlace"]),  // weapons/BubbleMachineInflate
     ("bubble_wobble", "weapons", &["BubbleMachineWobble"]),

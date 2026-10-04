@@ -31,6 +31,7 @@ void pollStick();  // once per frame, before any pressed()
 // Bottom button hints. pad: "A" "B" "X" "Y" "+" "-" "L" "R" "ZL"...; key: shown on desktop without a controller.
 struct Hint { const char *pad, *key, *label; };
 void hints(std::initializer_list<Hint> h);
+void hints(const std::vector<Hint> &h);
 void controls(bool game);  // full-screen controller diagram: match or menu controls
 bool helpHeld();            // - (desktop F1) held past 0.35 s: show controls()
 extern bool forceHelp;      // --ui help captures

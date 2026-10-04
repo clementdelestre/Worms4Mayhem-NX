@@ -28,6 +28,8 @@ struct Entry {
     std::vector<Matrix> invBind;
     std::vector<int> arm;  // per bone: its shoulder bone, -1 off the arms (the glb skeleton is flat: matched by name)
     std::vector<uint8_t> face;  // per bone: 1 lips, eyelid or eyebrow (W4M emote bones), 2 turns with the head
+    bool hasFx = false;
+    Vector3 fx{};
     int head = -1, hat = -1, sh[2] = {-1, -1}, mainB = -1, blend = -1;  // sh: right, left shoulder
     const ModelAnimation *base = nullptr;
     std::vector<int> pupil;  // meshes of the pupils (the eyes' layer W4M's Eyes_LR/UD offset), left eye first
@@ -72,6 +74,8 @@ struct Job {
     int count = 0;
     Model m{};
     int next = -1;  // albedo to upload next, -1 before LoadModel()
+    bool hasFx = false;
+    Vector3 fx{};  // translation of the glb's FxLocator node (WEAPTWK FxLocator: the ArielFx emitters' origin), model space
 };
 std::mutex mu;
 std::deque<Job> jobs;
@@ -182,6 +186,9 @@ Job prepare(const char *path) {
         view(g->accessors[i].buffer_view), view(g->accessors[i].sparse.indices_buffer_view), view(g->accessors[i].sparse.values_buffer_view);
     for (size_t i = 0; i < g->images_count; i++) view(g->images[i].buffer_view);  // still parsed
     bool skinned = g->skins_count > 0;
+    for (size_t i = 0; i < g->nodes_count; i++)
+        if (g->nodes[i].name && !strcmp(g->nodes[i].name, "FxLocator") && g->nodes[i].has_translation)
+            j.hasFx = true, j.fx = {g->nodes[i].translation[0], g->nodes[i].translation[1], g->nodes[i].translation[2]};
     cgltf_free(g);
     auto [js, end] = json(j);
     const char *tag = "\"baseColorTexture\"";
@@ -221,7 +228,7 @@ void add(Job &j) {
     if (strstr(j.path.c_str(), "/frontend/")) return (void)(spare[j.path] = e.m);  // FrontBg's scene, freed by FrontBg
     for (int k = 0; k < e.m.materialCount; k++)
         if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
-    e.anims = j.anims, e.count = j.count;
+    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx;
     for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
     for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
         const char *n = e.m.skeleton.bones[b].name;
@@ -321,6 +328,10 @@ static const ModelAnimation *find(const Entry &e, const char *clip) {
 }
 
 bool Models::has(const char *name) { return models.count(name) > 0; }
+bool Models::fxLocator(const char *name, Vector3 *out) {
+    auto it = models.find(name);
+    return it != models.end() && it->second.hasFx && (*out = it->second.fx, true);
+}
 float Models::bottom(const char *name) {
     auto it = models.find(name);
     return it == models.end() ? 0 : -GetModelBoundingBox(it->second.m).min.y;

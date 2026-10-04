@@ -27,6 +27,7 @@ bool draw(const char *name, Vector3 pos, float yaw, float pitch = 0, Color tint 
           const char *aim = nullptr, float aimT = 0, const Layers *ly = nullptr);
 float clipLength(const char *name, const char *clip);  // seconds, 0 if absent
 bool has(const char *name);
+bool fxLocator(const char *name, Vector3 *out);  // WEAPTWK FxLocator node of a payload model (model space, metres); false if absent
 float bottom(const char *name);  // depth of the mesh below its origin, 0 if missing
 // Model-space matrix of a joint (e.g. "WeaponLocator") in that clip pose; false if missing.
 bool joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim = nullptr, float aimT = 0,

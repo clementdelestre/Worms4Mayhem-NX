@@ -1,4 +1,5 @@
 #include "fx.h"
+#include "models.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <cmath>
@@ -14,7 +15,7 @@ namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, TEX_COUNT };  // also the draw order within a blend pass
+enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, MIST, TEX_COUNT };  // also the draw order within a blend pass
 const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_005", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
 const int MAX = 1024;
 
@@ -28,14 +29,32 @@ struct Particle {
     Color tail = {};  // alpha > 0: leaves a trail of additive puffs of this colour (W4M anchor particles)
     float altN = 0, altS = 0;  // > 0: W4M IsAlternateAcceleration (0x5b7450), p = p0 + v (N - 1/(S t + 1/N)) + v.y t on y, t in ms
     Vector3 p0{};
-    bool flame = false;  // colour from W4M's WXP_StarBurstRocketFlames ramp by age
+    unsigned char ramp = 0;  // > 0: PARTTWK ParticleColor / ColorBand ramp (RAMPS) by age, constant alpha, size S fade-in / delay / shrink to 0
+    float fadeIn = 0, delay = 0;  // ParticleSizeFadeIn / ParticleSizeVelocityDelay, s
+    float alpha = 1;  // ParticleAlpha of a ramp particle
+    bool fadeA = false;  // ParticleAlphaVelocity < 0: linear fade to 0 at the end of life
+    Vector3 acc{};  // m/s², on top of grav (ParticleMass x (ParticleAcceleration + wind))
 };
+// ParticleColorBand 0x5b77c0: edge[i] = end of segment c[i] -> c[i+1]; the last segment runs to 1
+struct Ramp { int n; Color c[5]; float edge[5]; };
+const Ramp RAMPS[] = {
+    {},
+    {5, {{255, 255, 255, 255}, {255, 204, 0, 255}, {255, 153, 77, 255}, {204, 128, 0, 255}, {26, 0, 0, 255}}, {0, 0.1f, 0.15f, 0.3f, 1}},  // WXP_StarBurstRocketFlames
+    {5, {{255, 255, 255, 255}, {255, 204, 0, 255}, {230, 153, 77, 255}, {128, 77, 0, 255}, {26, 0, 0, 255}}, {0, 0.1f, 0.15f, 0.3f, 1}},  // WXP_BazookaTrail_Main
+    {2, {{230, 242, 255, 255}, {179, 204, 255, 255}}, {0, 1}},  // WXP_BazookaTrail_Puffs
+    {4, {{255, 255, 255, 255}, {191, 230, 255, 255}, {179, 191, 255, 255}, {255, 255, 255, 255}}, {0, 0.1f, 0.2f, 1}},  // WXP_HomingMissileSmoke
+    {1, {{0, 128, 255, 255}}, {0, 1}},  // WXP_HomingMissileGlow
+    {1, {{255, 255, 255, 255}}, {0, 1}},  // WeaponBazookaPuff
+    {2, {{255, 255, 255, 255}, {140, 140, 140, 255}}, {0, 1}},  // WXP_DonkeySpritePuffLG / Horiz
+    {2, {{242, 255, 255, 255}, {153, 204, 255, 255}}, {0, 1}},  // WXP_CrateSpawnLGRings
+};
+enum RampId { R_NONE, R_STARBURST, R_BAZ_MAIN, R_BAZ_PUFF, R_HOM_SMOKE, R_HOM_GLOW, R_MIST, R_DONKEY_PUFF, R_DONKEY_RING };
 struct Streak { Vector3 p, dir; float len, width; unsigned char tex; };
 
 Texture2D tex[TEX_COUNT];
 std::vector<Particle> ps;
 std::vector<Streak> streaks;
-struct Seen { Vector3 p; int weapon; bool child; };
+struct Seen { Vector3 p; int weapon; bool child; float age; };  // age: s since the rocket's emitters started
 std::vector<Seen> seen, seenPrev;  // live shots of this / the previous frame: which weapon blew up where
 float show = 0, tickAcc = 0, sinceLast = 0;  // victory fireworks: s left of W4M GameOverLogicEntity's 4 s wait + 5 s show
 Vector3 stageC{};  // Land.Center, Land.Radius, Land.MaxHeight of the match that ended
@@ -149,6 +168,7 @@ void load() {
     tex[JET] = loadTex("hud", "jetfire", true), tex[TOON] = loadTex("hud", "toonfire", true), tex[CROSS] = loadTex("hud", "wxp_sprite_006", true);
     tex[QUESTION] = loadTex("hud", "wxp_sprite_022", true), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", true);  // W4M Particle.WXSprite22/23
     tex[SOAP] = loadTex("hud", "wxp_sprite_011", true);  // Particle.WXSprite11, the soap bubbles
+    tex[MIST] = loadTex("hud", "mist_puff", true);  // Particle.MistPuff (Mist_Puff.tga)
     UnloadImage(ring);
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
@@ -307,11 +327,33 @@ void soap(Vector3 p) {
          -0.625f, 0, WHITE, SOAP, false});
 }
 
+// W4M PARTTWK, one burst each (EmitterLifeTime 1 ms): n sprites, life 2 +- 0.3 s, 1.75 m shrinking to 0, spin +- 8 deg x 10/s, IsAlternateAcceleration N / S;
+// ParticleVelocityIsNormalised: unit(V + (2r-1) Vrand) x (V.x + Vrand.x) x 0.01 units/ms = x 0.5 m/s
+static void alt(Vector3 p, Vector3 dir, float speed, float life, float size, float spin, float rot, RampId r, float n) {
+    Particle q = {p, Vector3Scale(Vector3Normalize(dir), speed * 0.5f), 0, life, size / 20, 0, rot, spin, 0, 0, WHITE, PUFF, false};
+    q.ramp = r, q.altN = n, q.altS = 2e-6f, q.p0 = p;
+    add(q);
+}
+
+// WXP_Wep_Donkey = WXP_DonkeyStrikeBounce (mesh WXPMesh7) + WXP_DonkeySpritePuffLG (40, V (0, 2, 0) +- (1.3, 4, 1.3)) + WXP_DonkeySpritePuffHoriz (20, V (0, .2, 0) +- (2.2, 0, 2.2)), 20 units above the point
+static void donkeyDust(Vector3 pos) {
+    Vector3 p = Vector3Add(pos, {0, 1, 0});
+    for (int i = 0; i < 40; i++) alt(p, {rnd(-1, 1) * 1.3f, 2 + rnd(-1, 1) * 4, rnd(-1, 1) * 1.3f}, 1.3f, 2 + rnd(-0.3f, 0.3f), 35, rnd(-8, 8) * DEG2RAD * 10, 0, R_DONKEY_PUFF, 6500);
+    for (int i = 0; i < 20; i++) alt(p, {rnd(-1, 1) * 2.2f, 0.2f, rnd(-1, 1) * 2.2f}, 2.2f, 2 + rnd(-0.3f, 0.3f), 35, rnd(-8, 8) * DEG2RAD * 10, 0, R_DONKEY_PUFF, 6500);
+}
+
+void donkeyAriel(Vector3 at) {  // WXP_CrateSpawnLGRings: 30 sprites, 22 units, life 1.2 +- 0.5 s, V +- (1.5, 0, 1.5), random orientation, spin +- 15 deg x 10/s
+    for (int i = 0; i < 30; i++) alt(at, {rnd(-1, 1) * 1.5f, 0, rnd(-1, 1) * 1.5f}, 1.5f, 1.2f + rnd(-0.5f, 0.5f), 22, rnd(-15, 15) * DEG2RAD * 10, rnd(0, 360) * DEG2RAD, R_DONKEY_RING, 6000);
+}
+
 void event(const GameEvent &e, Color dirt) {
     abductee(e);
     if (e.kind == GameEvent::BubblePop) bubblePop(e.pos);
     bool big = e.kind == GameEvent::BigBoom;
-    if (e.kind == GameEvent::Boom || big) {
+    if ((e.kind == GameEvent::Boom || big) && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0) {
+        shake = fmaxf(shake, 0.6f);  // the Explode ExplosionMessage shakes the camera as any blast; its only effect is DetonationFx
+        donkeyDust(e.pos);
+    } else if (e.kind == GameEvent::Boom || big) {
         float r = big ? 5.5f : 2.5f;
         const Seen *s = shotAt(e.pos);
         bool holy = is(s, "Holy Hand Grenade");  // WXP_Holy_HG_Explosion = WXP_ExplosionX_Large with a gold ring, white cloud and crosses
@@ -384,9 +426,12 @@ void event(const GameEvent &e, Color dirt) {
     } else if (e.kind == GameEvent::GameOver) show = 9;  // W4M GameOverLogicEntity 0x4ff8d0: WXPF_Firework1-5
 }
 
-void trail(const Projectile &s, float dt) {
+void trail(const Projectile &s, float dt, Vector3 wind) {
     const WeaponDef &d = WEAPONS[s.weapon];
-    seen.push_back({s.pos, s.weapon, s.child});
+    float age = 0, best = 9;  // emitter clock: carried from the same shot of the previous frame
+    for (const Seen &q : seenPrev)
+        if (q.weapon == s.weapon && q.child == s.child && Vector3DistanceSqr(q.p, s.pos) < best) best = Vector3DistanceSqr(q.p, s.pos), age = q.age + dt;
+    seen.push_back({s.pos, s.weapon, s.child, age});
     if (d.name == "Holy Hand Grenade" && rnd() < dt * 16)  // WXP_HolyHG_Trails: crosses left floating behind
         add({s.pos, {rnd(-0.2f, 0.2f), rnd(0.1f, 0.4f), rnd(-0.2f, 0.2f)}, 0, rnd(1.8f, 2.2f), 0.35f, 0.05f, 0, rnd(-1, 1), -0.1f, 1, {255, 240, 200, 230}, CROSS, false});
     if (d.name == "Starburst") {  // rocket: WXP_Wep_StarburstRocket flames + orange glow; stars: blue trail + cyan glow
@@ -394,27 +439,61 @@ void trail(const Projectile &s, float dt) {
         add({s.pos, {}, 0, 0.06f, s.child ? 0.9f : 0.75f, 0.6f, 0, 0, 0, 0, s.child ? Color{120, 230, 255, 255} : Color{255, 77, 0, 255}, GLOW, true});
         if (s.child && v > 0.5f) streaks.push_back({s.pos, Vector3Scale(s.vel, -1 / v), fminf(v * 0.15f, 2.5f), 0.3f, TRAIL_B});
         int alive = 0;
-        for (const Particle &q : ps) alive += q.flame;
+        for (const Particle &q : ps) alive += q.ramp == R_STARBURST;
         if (dt > 0)  // WXP_StarBurstRocketFlames: SpawnFreq 1 ms < frame, so one batch of NumSpawn 2 per update; pool MaxParticles 200
             for (int i = 0; i < 2 && alive++ < 200; i++) {
                 float sz = rnd(2.5f, 5.5f) / 20;
                 Particle q = {s.pos, {rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f)}, 0, rnd(0.3f, 0.7f), sz, 0, 0, rnd(-1, 1), 0, 0, WHITE, PUFF, false};
-                q.flame = true;
+                q.ramp = R_STARBURST;
                 add(q);
             }
         return;
     }
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0) return;  // WEAPTWK: no TrailBitmap; its ArielFx is a one-off (ariel())
-    bool rocket = (d.kind == Kind::Shell && d.fuse <= 0 && d.name != "Poison Arrow") || d.kind == Kind::Homing || (d.kind == Kind::Airstrike && s.child) || d.kind == Kind::SuperSheep;
-    float v = Vector3Length(s.vel);
-    if (!rocket || v < 0.5f) return;
-    Vector3 back = Vector3Scale(s.vel, -1 / v);
-    streaks.push_back({s.pos, back, fminf(v * 0.1f, 3.5f), 0.35f, (unsigned char)(d.kind == Kind::Homing ? TRAIL_B : TRAIL_R)});
-    if (rnd() < dt * 40) {  // ~40 puffs/s, independent of frame rate
-        unsigned char g = (unsigned char)rnd(170, 220);
-        Vector3 p = Vector3Add(s.pos, Vector3Scale(back, 0.4f));
-        add({p, {rnd(-0.2f, 0.2f), rnd(0.2f, 0.6f), rnd(-0.2f, 0.2f)}, 0, rnd(0.8f, 1.3f), 0.35f, 1.3f, 0, rnd(-1, 1), -0.3f, 1, {g, g, g, 150}, PUFF, false});
+    // ArielFx emitters: Bazooka WXP_BazookaTrailPack (Main + Puffs), Homing Missile WXP_HomingMissileTrail (Smoke + Glow), Factory bazooka WeaponBazooka (MistPuff)
+    bool homing = d.kind == Kind::Homing;
+    if (!homing && !(d.kind == Kind::Shell && d.fuse <= 0 && d.name != "Poison Arrow")) return;
+    if (homing && customWeapon(s.weapon)) return;  // Factory homing WeaponHomingTail: sprite set Particle.Additive4 exists in no bundle
+    // emitters sit at the payload model's FxLocator (WEAPTWK: bazookarocket / homingmissile), posed as drawShot poses the model
+    Vector3 fx{};
+    Models::fxLocator(homing ? "homing" : "bazooka", &fx);
+    float hv = sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z);
+    Vector3 tail = Vector3Add(s.pos, Vector3Transform(fx, MatrixMultiply(MatrixRotateX(-atan2f(s.vel.y, hv)), MatrixRotateY(atan2f(s.vel.x, s.vel.z)))));
+    // batches due this frame: one per SpawnFreq (a 20 ms logic tick at most, 0x5bab20) while age < EmitterLifeTime
+    auto batches = [&](float freq, float life) {
+        auto n = [&](float t) { return t < 0 ? 0 : (int)(fminf(t, life) / freq) + (t < life); };
+        return n(age) - n(age - dt);
+    };
+    auto count = [&](RampId r) { int n = 0; for (const Particle &q : ps) n += q.ramp == r; return n; };
+    // orientation: ParticleOrientation +- Randomise, spin: OrientationVelocityRandomise, both degrees (0x5b6c90 / 0x5b6d50), the spin x 0.01 per ms
+    auto emit = [&](RampId r, int cap, int num, float life0, float lifeR, float size, float sizeR, float vel, float velR, float fadeIn, float delay, bool additive, Tex t,
+                    float rot = 30, float rotR = 20, float spinR = 30) {
+        int alive = count(r);
+        for (int i = 0; i < num && alive++ < cap; i++) {
+            float sz = (size + rnd(-sizeR, sizeR)) / 20, life = life0 + rnd(-lifeR, lifeR);
+            Vector3 v = {(vel + rnd(-velR, velR)) * 0.5f, (vel + rnd(-velR, velR)) * 0.5f, (vel + rnd(-velR, velR)) * 0.5f};  // V x 0.01 units/ms
+            Particle q = {tail, v, 0, life, sz, 0, (rot + rnd(-rotR, rotR)) * DEG2RAD, rnd(-spinR, spinR) * DEG2RAD * 10, 0, 0, WHITE, (unsigned char)t, additive};
+            q.ramp = r, q.fadeIn = fadeIn, q.delay = delay;
+            add(q);
+        }
+    };
+    if (dt <= 0) return;
+    if (homing) {
+        for (int i = batches(0.02f, 20); i > 0; i--) emit(R_HOM_GLOW, 10, 1, 0.08f, 0, 12, 5, 0, 0, 0, 0, true, GLOW, 0, 360, 0);
+        for (int i = batches(0.02f, 50); i > 0; i--) emit(R_HOM_SMOKE, 50, 2, 0.4f, 0.03f, 2.5f, 1.5f, 0.2f, 0.5f, 0.04f, 0, false, PUFF);
+        return;
     }
+    if (customWeapon(s.weapon)) {  // WeaponBazookaPuff: one MistPuff per update (SpawnFreq 0), 200 ms, rising with Mass 2 x (0.2 + wind)
+        for (int i = batches(0.02f, 65.535f), alive = count(R_MIST); i > 0 && alive++ < 20; i--) {
+            Particle q = {tail, {}, 0, 0.2f, 7.0f / 20, 0, rnd(-2 * PI, 2 * PI), rnd(-30, 30) * DEG2RAD * 10, -2.0f, 0, WHITE, MIST, false};
+            q.ramp = R_MIST, q.delay = 0.3f, q.alpha = 0.5f, q.fadeA = true;
+            q.acc = {wind.x * 8.5f, 0, wind.z * 8.5f};  // Wind.MaxSpeed 8.5e-5 units/ms² = 4.25 m/s², x Mass 2
+            add(q);
+        }
+        return;
+    }
+    for (int i = batches(0.02f, 12); i > 0; i--) emit(R_BAZ_MAIN, 150, 1, 2, 0.2f, 4, 1.5f, 0.2f, 0.2f, 0.1f, 0.04f, false, PUFF);
+    for (int i = batches(0.12f, 2.5f); i > 0; i--) emit(R_BAZ_PUFF, 100, 4, 1, 0.2f, 9.5f, 1.5f, 0.2f, 0.2f, 0.1f, 0.3f, false, PUFF);
 }
 
 void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire) {
@@ -502,7 +581,7 @@ void update(float dt) {
             float f = p.altN - 1 / (p.altS * p.age * 1000 + 1 / p.altN);  // ms
             p.p = Vector3Add(p.p0, Vector3Add(Vector3Scale(p.v, f / 1000), {0, p.v.y * p.age, 0}));
         } else {
-            p.v = Vector3Scale(p.v, expf(-p.drag * dt));
+            p.v = Vector3Scale(Vector3Add(p.v, Vector3Scale(p.acc, dt)), expf(-p.drag * dt));
             p.v.y -= p.grav * dt;
             p.p = Vector3Add(p.p, Vector3Scale(p.v, dt));
         }
@@ -554,17 +633,20 @@ void draw(const Camera3D &cam) {
             for (const Particle &p : ps) {
                 if (p.tex != t || p.add != (bool)add || p.age < 0) continue;
                 if (!any) rlSetTexture(tex[t].id), rlBegin(RL_QUADS), any = true;
-                float k = p.age / p.life, s = Lerp(p.size0, p.size1, k) * 0.5f, c = cosf(p.rot) * s, sn = sinf(p.rot) * s;
+                float k = p.age / p.life, s = Lerp(p.size0, p.size1, k) * 0.5f;
+                if (p.ramp)  // ParticleSize 0x5b6f40: linear fade-in, S until the delay, then linear to 0 at end of life
+                    s = p.size0 * 0.5f * fminf(1, p.fadeIn > 0 ? p.age / p.fadeIn : 1) * (p.age <= p.delay ? 1 : 1 - (p.age - p.delay) / (p.life - p.delay));
+                float c = cosf(p.rot) * s, sn = sinf(p.rot) * s;
                 Vector3 r = Vector3Add(Vector3Scale(right, c), Vector3Scale(up, sn)), u = Vector3Subtract(Vector3Scale(up, c), Vector3Scale(right, sn));
                 Color col = p.c;
-                if (p.flame) {
-                    static const Color R[] = {{255, 255, 255, 255}, {255, 204, 0, 255}, {255, 153, 77, 255}, {204, 128, 0, 255}, {26, 0, 0, 255}};
-                    static const float B[] = {0, 0.1f, 0.15f, 0.3f, 1};  // ParticleColorBand 0x5b77c0: end time of each segment
+                if (p.ramp) {
+                    const Ramp &R = RAMPS[p.ramp];
                     int i = 0;
-                    while (i < 3 && k > B[i + 1]) i++;
-                    col = ColorLerp(R[i], R[i + 1], (k - B[i]) / (B[i + 1] - B[i]));
-                }
-                if (!p.flame) col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));  // flame: AlphaVelocity 0, constant alpha
+                    while (i < R.n - 2 && k > R.edge[i + 1]) i++;
+                    if (R.n > 1) col = ColorLerp(R.c[i], R.c[i + 1], (k - R.edge[i]) / (R.edge[i + 1] - R.edge[i]));
+                    else col = R.c[0];
+                    col.a = (unsigned char)(255 * p.alpha * (p.fadeA ? 1 - k : 1));
+                } else col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));
                 if (p.stretch > 0) {  // trail texture: u = 0 head, 1 tail
                     float k = p.altN > 0 ? p.altS / powf(p.altS * p.age * 1000 + 1 / p.altN, 2) : 1;  // alternate curve: f'(t)
                     Vector3 vel = p.altN > 0 ? Vector3Add(Vector3Scale(p.v, k), {0, p.v.y, 0}) : p.v;

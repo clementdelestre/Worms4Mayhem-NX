@@ -83,6 +83,7 @@ static void drawTextCentered(const char *t, int x, int y, int size, Color c) {
 
 static void animEvent(const Game &g, const GameEvent &e);
 
+static bool donkeyBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0; }  // its DetonationFx and sound, not a bang
 static bool holyNext = false;  // the blast after the Hallelujah is the holy grenade's own
 static void onEvent(const Game &g, const GameEvent &e) {
     animEvent(g, e);
@@ -94,14 +95,15 @@ static void onEvent(const Game &g, const GameEvent &e) {
     if (e.kind == GameEvent::GameOver) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
     Fx::event(e, g.terrain.side);
     switch (e.kind) {
-    case GameEvent::Boom: Audio::play(Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
-    case GameEvent::BigBoom: Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion, e.pos), holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    case GameEvent::Boom: Audio::play(donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    case GameEvent::BigBoom: if (donkeyBlast(e)) { Audio::play(Sfx::DonkeyImpact, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break; }
+        Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion, e.pos), holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
     case GameEvent::Hallelujah: Audio::play(Sfx::Holy, e.pos), holyNext = true; break;
     case GameEvent::Fire: {
         const WeaponDef &d = WEAPONS[e.weapon];
         Kind k = d.kind;
         static const Sfx FIRE_SFX[] = {Sfx::Fire, Sfx::Sheep, Sfx::Airstrike, Sfx::Donkey, Sfx::Shotgun, Sfx::Rope, Sfx::Fire, Sfx::Teleport,
-                                       Sfx::SuperSheepFire, Sfx::OldWomanFire, Sfx::Bounce, Sfx::Homing, Sfx::Tick, Sfx::ScouserFire, Sfx::SentryFire,
+                                       Sfx::SuperSheepFire, Sfx::OldWomanFire, Sfx::Bounce, Sfx::Fire, Sfx::Tick, Sfx::ScouserFire, Sfx::SentryFire,
                                        Sfx::Abduction, Sfx::Flood, Sfx::Parachute, Sfx::TurnStart, Sfx::TurnStart, Sfx::TurnStart};  // by Kind
         Sfx s = (size_t)k < sizeof FIRE_SFX / sizeof *FIRE_SFX ? FIRE_SFX[(int)k] : Sfx::TurnStart;  // later Kinds: none of their own yet
         // a few Kinds cover several named weapons with distinct W4M sounds; pick by name like heldModel() does
@@ -116,7 +118,12 @@ static void onEvent(const Game &g, const GameEvent &e) {
         break;
     }
     case GameEvent::Bounce: Audio::play(Sfx::Bounce, e.pos); break;
+    case GameEvent::Arm: Audio::play(Sfx::BowImpact, e.pos); break;
     case GameEvent::Launch:  // WEAPTWK LaunchSfx; the bomb's ArielFx
+        if (WEAPONS[e.weapon].kind == Kind::Donkey) {  // ArielFx WXP_CrateSpawnLARGE at its locator Donkey_L (0, -93, 0) units x Scale 1.2 [scale on the locator assumed]; EmitterSoundFX weapons/Cratespawn
+            Audio::play(Sfx::CrateLand, e.pos), Fx::donkeyAriel(Vector3Add(e.pos, {0, -93 * 1.2f / 20, 0}));
+            break;
+        }
         Audio::play(WEAPONS[e.weapon].fuse > 0 ? Sfx::CowFall : Sfx::BombWhistle, e.pos);
         if (WEAPONS[e.weapon].fuse <= 0) Fx::ariel(e.pos);
         break;
@@ -370,7 +377,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     else if (st == 1) clip = "BeamUpLoop";  // rising in the beam, weapon hidden (HeldAccessory.Hide)
     else if (rk) {  // riding it (observed): FireStarburst while the fuse burns 3.5 s, then FlyStarburst, the rocket held overhead
         float el = WEAPONS[rk->weapon].fuse - rk->fuse;
-        clip = el < 3.5f ? "FireStarburst" : "FlyStarburst", t = el < 3.5f ? el : el - 3.5f, held = "hold_starburst";
+        clip = el < 3.5f ? "FireStarburst" : "FlyStarburst", t = el < 3.5f ? el : el - 3.5f;
     } else if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
     else if (fp && aimNow && aimPose()) {  // view-model: the aim pose whatever the body does (turning in place plays Walk)
     } else if (tool) {
@@ -416,6 +423,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     }
     bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
     if (tool && !fp && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE, g.jetting ? nullptr : opening ? "FireParachute" : clip, opening ? a.chute : t);
+    if (rk && !fp && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly)) Models::draw("hold_starburst", MatrixMultiply(m, root), WHITE, "FireStarburst", rk->fuse < WEAPONS[rk->weapon].fuse - 3.5f ? 3.5f : WEAPONS[rk->weapon].fuse - rk->fuse);  // WAE_Starburst 0x5917d0
     if (i == g.current && g.icarus == 2 && !fp && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly))  // WAE 0x5953d1
         Models::draw("wings", MatrixMultiply(m, root), WHITE, "FlyRedBull", t);
     int hat = !fp && w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
@@ -680,31 +688,32 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     const WeaponDef &d = WEAPONS[s.weapon];
     const std::string &n = d.name;
     if (s.child && d.kind == Kind::SuperSheep) return true;  // starburst stars: particles only (Fx::trail)
-    if (n == "Starburst") return true;  // the rocket is held by the shooter riding it (drawWorm)
+    if (n == "Starburst") return true;  // the rider mounts it on its Pack_Locator (drawWorm)
     if (!s.child && d.kind == Kind::Airstrike) return true;  // the plane: drawBomber()
     if (d.kind == Kind::Abduction) return true;  // the saucer: drawUfo()
     if (n == "Fatkins Strike" && s.stage > 0) return true;  // still in the bomber
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0)
         return Models::draw("airstrike", s.pos, atan2f(s.vel.x, s.vel.z), atan2f(s.vel.y, sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z)), WHITE, "Spin", clock);  // AnimTravel
     if (d.kind == Kind::Airstrike && d.fuse > 0 && drawBovine(s, clock)) return true;
-    const char *m = n == "Fatkins Strike" ? "fatkins" : n == "Starburst" ? "starburst" : n == "Poison Arrow" ? "arrow" : n == "Dynamite" ? "dynamite"
+    const char *m = n == "Fatkins Strike" ? "fatkins" : n == "Poison Arrow" ? "arrow" : n == "Dynamite" ? "dynamite"
                   : n == "Gas Canister" ? "gas" : d.kind == Kind::SuperSheep ? "supersheep" : d.kind == Kind::OldWoman ? "oldwoman"
                   : d.kind == Kind::Homing ? "homing" : d.kind == Kind::Scouser ? "scouser"
                   : d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
                   : n == "Cluster Grenade" ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? "banana"  // W4M bananettes reuse the BananaBomb mesh
                   : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
     if (!d.model.empty()) m = d.model.c_str();  // Weapon Factory
-    float h = sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z), yaw = atan2f(s.vel.x, s.vel.z);
+    Vector3 v = d.stick > 0 && s.stage ? s.aim : s.vel;  // a stuck arrow keeps the heading it hit with
+    float h = sqrtf(v.x * v.x + v.z * v.z), yaw = atan2f(v.x, v.z);
     if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, s.pos, yaw, 0, WHITE, "Run", clock);
     if (d.kind == Kind::OldWoman)  // AnimIntermediate "Steal" while she stands after a theft (Payload.PlayIntermediateAnim 0x5933c2)
         return Models::draw(m, {s.pos.x, s.pos.y - 0.3f, s.pos.z}, yaw, 0, WHITE, s.stage > 0 ? "Steal" : "Walk",
                             s.stage > 0 ? (msTicks(800) - s.stage) * Game::DT : clock, s.stage <= 0);
     if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
     if (d.kind == Kind::Scouser) return Models::draw(m, s.pos, clock * 0.7f);
-    if (n == "Starburst") return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h) - PI / 2);  // its mesh points +Y, not +Z
     if (dropped(d)) return Models::draw(m, restOn(t, s.pos, Models::bottom(m)), 0);  // set down standing, it doesn't tumble
     if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, Vector3Length(s.vel) < 1 ? restOn(t, s.pos, Models::bottom(m)) : s.pos, clock * 6, clock * 4);
-    return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h));
+    if (d.stick > 0 && s.stage) return Models::draw(m, s.pos, yaw, atan2f(v.y, h), WHITE, "Hit", d.stick - s.fuse, false);  // AnimImpact, played once on Payload.Impact
+    return Models::draw(m, s.pos, yaw, atan2f(v.y, h));
 }
 
 enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading };
@@ -825,7 +834,7 @@ int main(int argc, char **argv) {
     // --utilshot <weapon name> [map]: that weapon in hand from the start (one unit), a girder preview stepped ahead and up
     const char *utilShot = shot && argc > 2 && !strcmp(argv[1], "--utilshot") ? argv[2] : nullptr;
     uint8_t prevShotJump = 0;
-    if (utilShot && !strcmp(utilShot, "Binoculars")) Controls::forceAim = 1;
+    if (utilShot && (!strcmp(utilShot, "Binoculars") || strstr(utilShot, "Homing"))) Controls::forceAim = 1;
     if (aimShot) Controls::forceAim = argc > 4 && !strcmp(argv[4], "fine") ? 2 : 1;
     // W4NX_BENCH=<frames> [W4NX_LOCK=1] with --aimshot: that view, still from frame 60 (homing: locked), timed as --bench
     int aimBench = aimShot && getenv("W4NX_BENCH") ? atoi(getenv("W4NX_BENCH")) : 0;
@@ -869,7 +878,13 @@ int main(int argc, char **argv) {
         if (sscanf(flag, "%63s", m) == 1) shotMap = m;
         UnloadFileText(flag);
     }
-    if (shot) { game.start({1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u}); game.terrain.remesh(); Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time); }
+    if (shot) {
+        GameConfig sc = {1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u};
+        if (utilShot) loadCustomWeapons(DATA_DIR "custom_weapons.json", sc.custom);  // --utilshot <Factory weapon name>
+        game.start(sc);
+        game.terrain.remesh();
+        Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);
+    }
     for (size_t i = 0; (utilShot || aimBench) && i < WEAPONS.size(); i++)
         if ((utilShot && WEAPONS[i].name == utilShot) || (aimBench && (int)i == shotWeapon)) game.ammo[game.worms[game.current].team][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
 
@@ -1065,6 +1080,7 @@ int main(int argc, char **argv) {
     if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready") || !strcmp(uiShot, "loading"))) {
         startMatch({1234, 2, 2, argc > 3 ? argv[3] : flagMap, 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
         if (strcmp(uiShot, "ready")) game.hotSeat = 0;  // every shot but "ready" skips the hot-seat pause
+        for (size_t i = 0; argc > 4 && i < WEAPONS.size(); i++) if (WEAPONS[i].name == argv[4]) game.weapon = (int)i;  // --ui hud <map> <weapon>
         hud.open = !strcmp(uiShot, "panel");
         pause.open = !strcmp(uiShot, "pause");
     } else if (uiShot) {
@@ -1394,6 +1410,11 @@ int main(int argc, char **argv) {
                     break;
                 }
         }
+        if (utilShot && WEAPONS[game.weapon].kind == Kind::Homing && frame >= 60) {  // target view, lock on, then launch
+            in = Input{};
+            if (Controls::targetView(game)) in.buttons = Input::TARGET | (frame == 61 ? Input::FIRE : 0);
+            else if (game.locked) in.buttons = frame % 2 ? Input::FIRE : 0;
+        }
         if (utilShot && WEAPONS[game.weapon].kind == Kind::Binoculars) {  // look at the nearest enemy, then FIRE once
             in = Input{}, in.buttons = frame == 40 ? Input::FIRE : 0;
             for (const Worm &e : game.worms)
@@ -1506,6 +1527,13 @@ int main(int argc, char **argv) {
         for (const Object &o : game.objects) if (o.type == Object::Mine && o.fuse >= 0 && !o.dead) mine = &o.pos;
         const bool onMatch = screen == Screen::Play;  // the exit above may have left it this frame: stopSfx must stick
         Audio::loop(Audio::Sfx::Dynamite, onMatch && stick && !pause.open, stick);
+        // MissileLoop: Bazooka WEAPTWK LoopSfx, Homing via WXP_HomingMissileGlow's EmitterSoundFX; follows the shot, 1 s trigger delay, Time envelope ends at 5.03 s
+        static float rocketAge = 0;
+        const Vector3 *rocket = nullptr;
+        for (const Projectile &s : game.shots)
+            if (!s.child && !customWeapon(s.weapon) && (WEAPONS[s.weapon].name == "Bazooka" || WEAPONS[s.weapon].kind == Kind::Homing)) rocket = &s.pos;
+        rocketAge = rocket ? rocketAge + GetFrameTime() : 0;
+        Audio::hold(Audio::Sfx::Homing, onMatch && rocket && rocketAge < 5.029f && !pause.open, rocket);
         Audio::loop(Audio::Sfx::MineBeep, onMatch && mine && !pause.open, mine);
         Audio::loop(Audio::Sfx::HolyHeld, onMatch && game.phase == Phase::Aim && cur.alive && wd.name == "Holy Hand Grenade" && !pause.open, &cur.pos);
         Audio::loop(Audio::Sfx::Cheer, onMatch && game.phase == Phase::GameOver);
@@ -1694,7 +1722,7 @@ int main(int argc, char **argv) {
         Fx::drawWater(view, game.water, clock);
         lap(T_SKY);
         float fxDt = pause.open ? 0 : dt;
-        for (const Projectile &s : game.shots) Fx::trail(s, fxDt);
+        for (const Projectile &s : game.shots) Fx::trail(s, fxDt, {game.wind, 0, game.windZ});
         for (const Game::Gas &c : game.gas)  // W4M WXP_GasCloudDelayed: green puffs over the cloud, ~4 a second
             if (fxDt > 0 && GetRandomValue(0, 14) == 0)
                 Fx::puff(Vector3Add(c.pos, {GetRandomValue(-40, 40) / 10.0f, GetRandomValue(0, 15) / 10.0f, GetRandomValue(-40, 40) / 10.0f}), {game.wind, 0.2f, game.windZ}, 5, 2, 3.5f, {120, 200, 60, 110});

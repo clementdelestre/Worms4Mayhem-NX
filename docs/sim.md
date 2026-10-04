@@ -73,6 +73,10 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
   (W4M sets RetreatTime 0, 0x588160). Every value matches `tweak.py` WEAPTWK; Homing, Poison Arrow, Sheep, Super Sheep, Fire Punch and
   Prod are 0 / -1 there. Icarus Potion 500: the drink (`icarus` 3), worm frozen and no weapon change, then the cure and the
   heal (W4M RedbullUtilityLogicEntity 0x587600 → Weapon.PostLaunchDelay → 0x587750, disasm); the turn stays in `Aim`. We have no Bridge Kit (1).
+- Poison Arrow (`stick` 2 in weapons.json, W4M PreDetonationTime; docs/w4m/weapons.md "Poison Arrow"): a worm contact detonates it at once, a land
+  contact stops it (`Projectile::stage` 1, heading kept in `aim`, `fuse` counting down) and it detonates 2 s later; the detonation has no damage, knock
+  or crater and puts down the gas cloud (`Game::gas`), which poisons. `GameEvent::Arm` is the impact (ArmSfxLoop BowImpact). Not modelled: water skim, a
+  Land.NewShape under the stuck arrow [ours].
 
 ### Settle (`case Phase::Settle`): W4M stdlib.lub EndTurn, as is (data + disasm)
 
@@ -120,6 +124,8 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
 
 ## Crates and objects (`addObject`, `stepObjects`)
 
+- **Start placement** [ours, W4M docs/w4m/turn.md "Start placement"]: `Game::placeWorm` per worm in team order (1000 random ground points above water + 1.5 m [assumed: the AI-grid walkable test], sphere 10 units free of placed worms, highest of 3, fallback Land.Center +-2.5 m at Land.MaxHeight + 0.5 m), then `addObject` mines and drums via `dropPoint` (100 tries, sphere radius + 5 units clear of worms and objects, none created on failure). Map `spawns` no longer exist (ours, removed). Deterministic from `rng`; sim_check `checkPlacement` asserts it over 6 maps x 30 seeds.
+
 - **Drop**: at the end of each turn, with two teams or more standing, `crateChance` % (W4M SchemeData, data); 6 tries with the Wormpot Crate Shower (W4M
   GameLogic.CrateShower 0x4fb850, disasm). The contents: health / weapon / utility by the scheme's shares (W4M CreateRandomCrate
   0x4fa4b0, data), then a weapon by `crate_weight` inside its pool. Spawned 15 m (300 units) over a random land point above water, uniform over the land box, whose column misses every worm; no chute, plain gravity; bounces v = 0.2 (vx, −vy, vz), rests under 1 m/s (CreateRandomCrate 0x4fa52a Parachute 0, 0x5c6560, 0x5c9420, 0x5c8900, disasm).
@@ -151,7 +157,8 @@ Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `
 | `vaultStep` | the vault: 250 ms, 1/5 of the way per 20 ms (0x5a59f0), no collision test; releasing or reversing the stick puts the worm back where it started; snapped to the target at the end or when anything else moves it | W4M Vaulting 0x5aca80, ChangeState 0x5aa847 (disasm) |
 | `fits` | the upper body (rods at 0.2 / 0.45 m, 7 points of radius 0.2 m) is out of land at `to`, or no deeper than at `from`: a worm already stuck may still move out | W4M Fits 0x59edf0 (disasm), our rod sampling |
 | `clearWalls` | pushes the body out of side walls by the density gradient, ≤ 0.1 m a tick | ours |
-| `flyBody` | free flight in sub-steps of ≤ VOX/2 (`substeps`), so nothing skips thin land; walls and ceilings bounce at `e` (0.3, jetpack 0.8); a landing on ground steeper than n.y 0.2 rebounds, else keeps only the tangential speed; raised out of land while it fits | W4M Rebound 0x5acea0, Ballistic (disasm); jetpack contact 0x5633e9 |
+| `flyBody` | free flight in sub-steps of ≤ VOX/2 (`substeps`), so nothing skips thin land; walls and ceilings bounce at `e` (0.3); a landing on ground steeper than n.y 0.2 rebounds, else keeps only the tangential speed; raised out of land while it fits | W4M Rebound 0x5acea0, Ballistic (disasm); jetpack contact 0x5633e9 |
+| `jetBody` | the jetpack's own collider, one tick: the 4 feet and 4 heads (PROBE, heads 1 m up) are raycast along v; the earliest hit wins, a foot on a tie; a foot with the 3 rods clear lands the pack (v minus its normal part) whatever the normal, a head or blocked rods bounce v −= 1.8 (v·n) n; hits with v·n > −0.01 m/s are ignored. Ours, with the reasons: the rods are `Terrain::raycast` segments starting half a voxel above the feet, not `fits` (its 0.2 m ring is as wide as the foot offsets, so a foot on a wall always read as blocked, and its soft surface makes a foot on the ground sample solid); the stop is a 4-step bisection of the last 0.125 m raycast step; the −0.01 margin stops a worm sliding on land from landing at once. A landing hands over to `wormBody` once (slide or Ballistic, damage ignored) | W4M 0x59ec70, 0x59f1e0, 0x59edf0, 0x562f72, 0x5630dc (disasm) |
 | `wormBody` | one worm tick: grounded test, slide (below 60° and slower than 3 m/s, 10 m/s on landing: stops; else gravity along the slope and friction 0.9582 a tick), a hard landing halves \|vt\|², gravity half before and half after the move | W4M Sliding 0x5afbe0, Integrate 0x5a6e90 (disasm); SlideFriction 0.95 / 20 ms (data); Wormpot Slippy: each slide value halfway to its Slippy one, 35°, 5.25 / 1.75 m/s, 0.9745 (0x5d59c0); Sticky: blast impulses × 0.5 only (0x5ad1ea) (disasm) |
 | `walkerStep` | sheep, old woman, scouser on foot: steps up 0.6 m, hops at walls, whole-body roof test | ours |
 | `muzzle` | the launch point pulled back to the last free point on the segment eye → spawn | W4M 0x585a29 (disasm) |
@@ -162,7 +169,7 @@ Constants (sim.h / sim.cpp): gravity 12.5 m/s² (W4M Gravity −0.00025 units/ms
 walk 3.0625 m/s (Walk.Speed, data; Quick Walk: VelocityScale 2, 0x5d6bc0, disasm); jumps: tapped or held forward (3.16, 7.91) m/s, held still: vertical 9.35 m/s,
 pressed twice: backflip (−1.58, 10) or forward flip (1.58, 10) (W4M 0x5a5d30 / 0x95fb88 / 0x95fb7c, data); fall damage above 15 m/s:
 trunc((v − 15) × 2) + 1 hp (W4M FallDamage 0x5ac3e0, FallDamageRatio 100, data; Max Fall: FallDamageRatio × FallingScale 2, Wormpot.lub, data; none when the scheme has fall damage off); no fall
-damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); a jetpack landing (0x563252) keeps its velocity and the Ballistic FallDamage applies as for any fall (docs/w4m/physics.md FallDamage); the fall also rumbles the worm's pad: Heavy 100/255 for 500 ms (0x4bc410, disasm; GameEvent::Fall).
+damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack landing: a foot touching land lands the pack minus its normal speed (W4M 0x562f72, disasm), so `stepWorm` skips `land()` while `jet`; a dry pack falls and hurts as any fall (docs/w4m/physics.md FallDamage); the fall also rumbles the worm's pad: Heavy 100/255 for 500 ms (0x4bc410, disasm; GameEvent::Fall).
 
 ### Shots: launch and self-hit
 

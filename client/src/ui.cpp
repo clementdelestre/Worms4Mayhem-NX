@@ -501,7 +501,8 @@ static bool keyGlyphs() {
 }
 
 static bool menuPage = false;  // menu pages show no button bar (W4M); the in-game HUD keeps its hints
-void hints(std::initializer_list<Hint> h) {
+void hints(std::initializer_list<Hint> h) { hints(std::vector<Hint>(h)); }
+void hints(const std::vector<Hint> &h) {
     if (menuPage) return;
     const float G = 22, S = 19;
     bool keys = keyGlyphs();
@@ -519,6 +520,33 @@ void hints(std::initializer_list<Hint> h) {
     }
 }
 
+
+// Per-weapon button legend. W4M HelpText.kWeapon* / kUtility* list Fire, 1stPerson, Blimp, FuseUp, Movement; our own words (FETXT has no short labels).
+static std::vector<Hint> weaponHints(const WeaponDef &wd) {
+    struct Row { Kind kind; const char *en, *fr; bool steer; };
+    static const Row ROWS[] = {
+        {Kind::Shell, "Charge", "Charger", 0}, {Kind::Sheep, "Launch / detonate", "Lancer / exploser", 0}, {Kind::Airstrike, "Launch", "Lancer", 0},
+        {Kind::Donkey, "Drop", "Lâcher", 0}, {Kind::Shotgun, "Fire", "Tirer", 0}, {Kind::Rope, "Attach / detach", "Accrocher / lâcher", 0},
+        {Kind::Jetpack, "Thrust", "Poussée", 1}, {Kind::Teleport, "Teleport", "Téléporter", 0}, {Kind::SuperSheep, "Launch / detonate", "Lancer / exploser", 1},
+        {Kind::OldWoman, "Launch / detonate", "Lancer / exploser", 1}, {Kind::Melee, "Strike", "Frapper", 0}, {Kind::Homing, "Charge", "Charger", 0},
+        {Kind::Mine, "Drop", "Lâcher", 0}, {Kind::Scouser, "Launch", "Lancer", 1}, {Kind::Sentry, "Place", "Poser", 0}, {Kind::Abduction, "Abduct", "Enlever", 0},
+        {Kind::Flood, "Flood", "Inonder", 0}, {Kind::Parachute, "Open", "Ouvrir", 1}, {Kind::SkipGo, "Skip turn", "Passer son tour", 0},
+        {Kind::Surrender, "Surrender", "Abandonner", 0}, {Kind::ChangeWorm, "Next worm", "Ver suivant", 0}, {Kind::Bubble, "Deploy", "Déployer", 0},
+        {Kind::Icarus, "Drink", "Boire", 0}};
+    std::vector<Hint> h;
+    for (const Row &r : ROWS) {
+        if (r.kind != wd.kind) continue;
+        bool drop = dropped(wd);  // dynamite: a Shell, dropped
+        if (blimped(wd.kind)) h.push_back({"Y", "E", tr(nullptr, "Sky view", "Vue du ciel")});
+        if (Controls::aimed(wd)) h.push_back({"ZL", "RMB", tr(nullptr, "Aim", "Viser")});
+        if (wd.userFuse) h.push_back({"D-pad", "=/-", tr("FETXT.Fuse", "Fuse", "Mèche")});
+        if (wd.kind == Kind::Rope) h.push_back({"RS", "WASD", tr(nullptr, "Length", "Longueur")});
+        if (r.steer) h.push_back({"LS", "Arrows", tr(nullptr, "Steer", "Diriger")});
+        if (wd.name == "Sniper Rifle") h.push_back({"L/R", "Z/X", tr(nullptr, "Zoom", "Zoom")});
+        h.push_back({"A/ZR", "Space", drop ? tr("FETXT.Drop", "Drop", "Lâcher") : tr(nullptr, r.en, r.fr)});
+    }
+    return h;
+}
 
 // both windings: rlgl culls back faces
 static void tri(Vector2 a, Vector2 b, Vector2 c, Color col) { DrawTriangle(a, b, c, col), DrawTriangle(a, c, b, col); }
@@ -2115,7 +2143,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
                {"L/R", "Z/X", "Zoom"}, {"B/Y", "Enter/E", "Leave"}});
     else if (mine && !quiet && g.phase == Phase::Aim && (Controls::firstPerson(g) || Controls::scoped(g)))  // HeadCam: FETXT.Control.ZoomIn / ZoomOut
         hints({{"A", "Space", "Fire"}, {"L/R", "Wheel", "Zoom"}});
-    else if (mine && !quiet && Controls::targetHeld(g)) hints({{"Y", "E", "Sky view: target"}});  // "Define the path using [Blimp]"
+    else if (mine && !quiet && aiming) hints(weaponHints(wd));
     else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});
     if (!open) return;
 

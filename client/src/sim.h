@@ -53,7 +53,8 @@ struct WeaponDef {
     bool walks = false;       // "walks": a super sheep that walks first, FIRE takes off (W4M "launch, transform and detonate")
     // W4M WEAPTWK WormDamageRadius, ImpulseMagnitude, ImpulseRadius, -ImpulseOffset in m, m/s; -1: derived from radius
     float blast[4] = {-1, -1, -1, -1}, cblast[4] = {-1, -1, -1, -1};  // "reach", "push", "push_reach", "push_depth"; cluster_*
-    float lift = 0;  // "lift": W4M payload Radius, the blast centre above the point that hit the ground (donkey 3.6 m)
+    float stick = 0;  // "stick": W4M PreDetonationTime s: ArmOnImpact + all bounce damping 0, a land hit stops it and it detonates that long after (worm hit: at once)
+    float lift = 0;  // "lift": W4M payload Radius = its collider sphere (donkey 3.6 m): the centre rests that far above the ground it hit
     float grav = 1;  // "gravity": share of Gravity; W4M IsLowGravity = Gravity.Slow 0.6, IsAffectedByGravity 0 = 0
     float base = -1;  // "min_speed": W4M BasePower in m/s, speed = BasePower + MaxPower; -1: 0.15 x speed
     bool avoid = false;  // "avoid_land": W4M Factory HomingAvoidLand (+0x69): the homing missile steers off land, 30 s life, 12.5 m/s, detonates on expiry, ChaseCamera
@@ -114,6 +115,7 @@ Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw);
 Vector3 restOn(const Terrain &t, Vector3 p, float r);
 // Worm body, walls bounce at e (W4M Rebound 0x5acea0: 0.3); returns the landing speed. *contact: 1 a move did not Fit, 2 a wall
 float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e = 0.3f, int *contact = nullptr);
+bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g);  // W4M jetpack collider, one tick: true when a foot landed the pack
 // One worm tick (ground slide, fall, flight), shared with the AI; returns the landing speed, 0 if none.
 float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float gravity, uint32_t wormpot, float e = 0.3f);
 // W4M UpdateWalking 0x5b19d0: a step onto ground past SlideAngle starts Sliding with the walk velocity
@@ -154,7 +156,7 @@ struct Object {
 // Things that happened this tick, for audio/fx; not part of the checksum. worm/weapon = -1 when not applicable.
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
-                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall } kind;  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)
+                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm } kind;  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)
     Vector3 pos;
     int worm, weapon;
 };
@@ -302,6 +304,7 @@ struct Game {
     static constexpr float BOMBER_HEIGHT = 15, BOMBER_LEAD = 20, BOMBER_GAP = 0.8f, COW_CHUTE = 5;  // m, m, s (SuperBomber.DelayBetweenBombs), m/s
     // W4M Concrete Donkey 0x553370: 220 units/s^4 fall curve, 0.75 s back to the apex, 85 ms held after a smash, LifeTime 8000 ms
     static constexpr float DONKEY_CURVE = 11, DONKEY_HANG = 0.75f, DONKEY_LIFE = 8;
+    static constexpr float DONKEY_MIN_HEIGHT = 75, DONKEY_EXTRA = 25;  // Donkey.MinHeight 1500, Donkey.ExtraHeight 500 units: it starts target + max(MinHeight, Land.MaxHeight + ExtraHeight) up (0x553700)
     static constexpr int DONKEY_HOLD = 5;
     static constexpr float GAS_LIFE = 8, GAS_RADIUS = 5;  // W4M WXP_GasCloud: one 8 s particle, collision radius 100 units
 
@@ -340,7 +343,7 @@ struct Game {
     std::vector<int> fuses;  // per team: seconds set for userFuse weapons (W4M default 3)
     std::vector<std::vector<int>> delays;  // [team][weapon]: own turns left before it unlocks (W4M InventoryN.WeaponDelays)
     bool usable(int team, int wi) const { return ammo[team][wi] && !delays[team][wi]; }
-    bool jetLanded() const { return jetUsed && !jetting && WEAPONS[weapon].kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x563252: entity kept
+    bool jetLanded() const { return jetUsed && !jetting && WEAPONS[weapon].kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x562f72: entity kept
     bool pickable(int team, int wi) const { return wi == weapon || usable(team, wi); }  // a direct pick (pick()) is legal
     bool selectable(int team, int wi) const;  // usable, and with a movement tool out only the tool itself or a toolDrop()
     bool abducting() const { return ufo(); }  // W4M EFMV.Active (0x548d0b): labels off
@@ -471,14 +474,16 @@ private:
     bool stepUfo(Projectile &s);  // false once it has left
     void zapStep(Worm &w);
     void drown(Worm &w);
+    void vapourize(Worm &w);
     float superScale(const WeaponDef &wd) const;
     bool underwater(const Worm &w) const;
     void stepRope(Worm &w);
     void stepShots(const Input &in, bool detonate);
-    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0);
+    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1);  // weapon: carried by the Boom event (the donkey's blast has its own effects)
     void steal(const Worm &victim);  // old woman ammo theft
     void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies
+    Vector3 placeWorm();
     bool dropPoint(Object::Type t, Vector3 &out);
     bool addObject(Object::Type t, float lift);
     void stepObjects();

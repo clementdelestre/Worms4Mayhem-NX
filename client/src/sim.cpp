@@ -46,7 +46,7 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
         const struct { const char *k; float *v; } floats[] = {{"radius", &w.radius}, {"damage", &w.damage}, {"speed", &w.speed}, {"fuse", &w.fuse},
             {"bounce", &w.bounce}, {"cluster_radius", &w.cradius}, {"cluster_damage", &w.cdamage}, {"poison", &w.poison},
             {"reach", &w.blast[0]}, {"push", &w.blast[1]}, {"push_reach", &w.blast[2]}, {"push_depth", &w.blast[3]},
-            {"cluster_reach", &w.cblast[0]}, {"cluster_push", &w.cblast[1]}, {"cluster_push_reach", &w.cblast[2]}, {"cluster_push_depth", &w.cblast[3]}, {"lift", &w.lift}, {"gravity", &w.grav}, {"min_speed", &w.base}, {"fuse_height", &w.fuseHeight}, {"fuse_size", &w.fuseSize}};
+            {"cluster_reach", &w.cblast[0]}, {"cluster_push", &w.cblast[1]}, {"cluster_push_reach", &w.cblast[2]}, {"cluster_push_depth", &w.cblast[3]}, {"lift", &w.lift}, {"stick", &w.stick}, {"gravity", &w.grav}, {"min_speed", &w.base}, {"fuse_height", &w.fuseHeight}, {"fuse_size", &w.fuseSize}};
         const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}, {"crate_weight", &w.weight}, {"retreat", &w.retreat}, {"post_launch", &w.postLaunch}};
         std::string key, sv;
         while (str(key) && eat(':')) {
@@ -339,6 +339,41 @@ float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e, int *contac
 
 static const Vector2 PROBE[4] = {{0, 0}, {0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};  // W4M 0x91ffc8: centre and foot tripod, world axes
 
+// W4M jetpack collider 0x59ec70 over one tick: the 4 feet and 4 heads (20 units up) swept along v, earliest hit wins and a foot wins a tie;
+// a foot with the rods clear (Fits) lands the pack with v -= (v.n) n, whatever the normal, a head bounces v -= 1.8 (v.n) n (0x5630dc)
+bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g) {
+    const float DT = Game::DT, l = Vector3Length(vel) * DT;
+    vel.y -= g * DT / 2;
+    int at = -1;
+    float best = l;
+    Vector3 n{}, dir = l > 1e-6f ? Vector3Normalize(vel) : Vector3{0, -1, 0};
+    for (int i = 0; i < 8 && l > 1e-6f; i++) {
+        Vector2 o = PROBE[i % 4];
+        Vector3 a = {pos.x + o.x, pos.y - Game::R + (i < 4 ? 0 : 1.0f), pos.z + o.y}, hit;
+        if (!t.raycast({a, dir}, best, &hit)) continue;
+        Vector3 hn = t.normal(hit);
+        float d = Vector3Distance(hit, a);
+        if (Vector3DotProduct(vel, hn) < -0.01f && d < best) best = d, at = i, n = hn;  // strict: the lower index, a foot, keeps a tie
+    }
+    bool landed = false;
+    if (at >= 0) {
+        Vector2 o = PROBE[at % 4];
+        Vector3 a = {pos.x + o.x, pos.y - Game::R + (at < 4 ? 0 : 1.0f), pos.z + o.y};
+        float lo = fmaxf(best - Terrain::VOX / 2, 0), hi = best;
+        for (int k = 0; k < 4; k++) (t.solid(Vector3Add(a, Vector3Scale(dir, (lo + hi) / 2))) ? hi : lo) = (lo + hi) / 2;  // the surface between the last empty sample and the hit
+        pos = Vector3Add(pos, Vector3Scale(dir, lo));
+        landed = at < 4;
+        for (int i = 1; i < 4 && landed; i++) {  // W4M Fits 0x59edf0: the 3 rods (PROBE 1..3, 1 m) clear of land
+            Vector3 hit, a = {pos.x + PROBE[i].x, pos.y - Game::R + Terrain::VOX / 2, pos.z + PROBE[i].y};  // from half a voxel up: a foot on the surface samples its soft edge
+            landed = !t.raycast({a, {0, 1, 0}}, 1.0f - Terrain::VOX / 2, &hit);
+        }
+        vel = Vector3Subtract(vel, Vector3Scale(n, Vector3DotProduct(vel, n) * (landed ? 1 : 1 + Game::JET_BOUNCE)));
+    } else pos = Vector3Add(pos, Vector3Scale(vel, DT));
+    vel.y -= g * DT / 2;
+    clearWalls(t, pos);
+    return landed;
+}
+
 // W4M 0x59ec70 down the 4 foot rays from 20 units above: the highest land, in units over the feet; -99 when none down to -5
 static int probe(const Terrain &t, Vector3 feet) {
     int best = -99;
@@ -550,20 +585,9 @@ void Game::start(const GameConfig &c) {
     for (int t = 0; t < teams; t++)
         for (int k = 0; k < per; k++) {
             Worm w = {{cx, (Terrain::NY - 1) * Terrain::VOX, cz}, {0, 0, 0}, 0, 0.3f, std::max(1, (int)cfg.scheme.health), t, true, false};
-            size_t slot = t * per + k;
-            if (slot < terrain.spawns.size()) {
-                w.pos = terrain.spawns[slot];
-                w.yaw = atan2f(cx - w.pos.x, cz - w.pos.z);
-            }
-            for (int tries = 0; slot >= terrain.spawns.size() && tries < 200; tries++) {
-                float a = rand01() * 2 * PI, r = 4 + rand01() * 20;
-                Vector3 hit, top = {cx + cosf(a) * r, (Terrain::NY - 1) * Terrain::VOX, cz + sinf(a) * r};
-                if (terrain.raycast({top, {0, -1, 0}}, Terrain::NY * Terrain::VOX, &hit) && hit.y > water + 1.5f) {
-                    w.pos = {hit.x, hit.y + R + 0.3f, hit.z};
-                    w.yaw = atan2f(cx - hit.x, cz - hit.z);
-                    break;
-                }
-            }
+            Vector3 c = placeWorm();
+            w.pos = {c.x, c.y + R - 5 * 0.05f, c.z};
+            w.yaw = atan2f(cx - c.x, cz - c.z);
             if (cfg.wormpot & WP_GOLIATH) w.hp = k ? 50 : 50 * (per + 1);  // SetDavidAndGolithHealth(100 n, n): Davids 100 n / 2n, the first the rest
             worms.push_back(w);
         }
@@ -694,6 +718,26 @@ void Game::nextWeapon(int team) {
 
 // Mine: W4M kWeaponLandmine Radius 3 units, the mesh drawn that far over the land (0x5761f0); the others: our meshes' half heights
 static float halfHeight(Object::Type t) { return t == Object::Mine ? 0.15f : t == Object::Barrel || t == Object::Sentry ? 0.5f : 0.45f; }
+
+// W4M PlaceWormAtSpawnPoint (0x5b4180, Spawn "spawn"): up to 1000 random ground points, 10 units up; a point whose sphere (10 units)
+// is free of worms counts, the highest of 3 counted wins; none: Land.Center +-50 units at Land.MaxHeight + 10 units. Returns the sphere centre.
+Vector3 Game::placeWorm() {
+    const float U = 0.05f, top = landTop();
+    Vector3 best = {Terrain::NX * Terrain::VOX / 2 + (rand01() - 0.5f) * 100 * U, top + 10 * U, Terrain::NZ * Terrain::VOX / 2 + (rand01() - 0.5f) * 100 * U};
+    float bestY = -10000;
+    int found = 0;
+    for (int tries = 0; tries < 1000 && found < 3; tries++) {
+        Vector3 hit, from = {rand01() * Terrain::NX * Terrain::VOX, top, rand01() * Terrain::NZ * Terrain::VOX};  // assumed: our ground test for the AI walkable cell (0x4ae810)
+        if (!terrain.raycast({from, {0, -1, 0}}, top + 1, &hit) || hit.y < water + 1.5f) continue;
+        Vector3 c = {hit.x, hit.y + 10 * U, hit.z};
+        bool clear = true;
+        for (const Worm &o : worms) clear = clear && Vector3Distance({o.pos.x, o.pos.y - R + 5 * U, o.pos.z}, c) >= 20 * U;
+        if (!clear) continue;
+        found++;
+        if (c.y >= bestY) bestY = c.y, best = c;
+    }
+    return best;
+}
 
 // W4M random spot (crates 0x5c6560, mines and drums 0x4f26b0): x, z uniform over the land's box, a ray down from its top to land
 // above Water.Level, 100 tries. A crate's column must miss every worm sphere (10 units, 5 above the feet); a mine or drum
@@ -1078,8 +1122,9 @@ void Game::use(Worm &w) {
         phase = Phase::Flying;
         break;
     case Kind::Donkey: {
-        Vector3 v = {0, -wd.speed, 0}, p = wd.name == "Fatkins Strike" ? fatkinsDrop(wd, tgt, cursorOn ? strikeDir() : f, v) : Vector3Add(tgt, {0, 25, 0});
+        Vector3 v = {0, -wd.speed, 0}, p = wd.name == "Fatkins Strike" ? fatkinsDrop(wd, tgt, cursorOn ? strikeDir() : f, v) : Vector3Add(tgt, {0, fmaxf(DONKEY_MIN_HEIGHT, landTop() + DONKEY_EXTRA), 0});
         shots.push_back({p, v, weapon, 0, false, wd.clusters > 0 ? wd.clusters : 1 << 30, {0, p.y, 0}, wd.name == "Fatkins Strike" ? STRIKE_LEAD : 0});  // 0: smashes until LifeTime or the water
+        if (wd.clusters == 0) emit(GameEvent::Launch, p, -1, weapon);  // ArielFx WXP_CrateSpawnLARGE where it appears
     }
         phase = Phase::Flying;
         break;
@@ -1240,8 +1285,7 @@ void Game::stepWorm(Worm &w) {
     if (vault.t && &w == &worms[current]) return;  // W4M: no Ballistic while Vaulting
     auto land = [&](float speed) {  // fall damage
 
-        bool winged = icarus == 2 && &w == &worms[current];  // W4M Redbull sets flag 0x40 each flight frame (0x587446); the jetpack does not:
-        // its landing (0x563252) clears Worm.OverridePhysics and the worm lands Ballistic with the pack's velocity
+        bool winged = icarus == 2 && &w == &worms[current];  // W4M Redbull sets flag 0x40 each flight frame (0x587446)
         if (speed > FALL_SAFE && cfg.scheme.fallDamage && !(cfg.wormpot & WP_WORMS_DROWN) && !winged) {  // no fall damage: flag 0x8000 (SetNoFallDamage)
             // Wormpot Max Fall: Worm.FallDamageRatio x FallingScale 2 (Wormpot.lub), the 0.3 threshold unchanged
             int dmg = (int)((speed - FALL_SAFE) * FALL_SCALE * (cfg.wormpot & WP_MAX_FALL ? 2 : 1)) + 1, wi = int(&w - worms.data());
@@ -1251,9 +1295,20 @@ void Game::stepWorm(Worm &w) {
     bool jet = jetting && &w == &worms[current];  // W4M jetpack contact 0x5633e9: walls and ceilings bounce at 0.8; it lands itself, no Ballistic
     w.motion.input = &w == &worms[current] ? steerIn : Vector3{};
     int stuck = w.motion.stuck;  // the jetpack's own flight is not Ballistic: it keeps no stuck count
-    land(wormBody(terrain, w.pos, w.vel, w.grounded, w.motion, w.yaw, gravity(), cfg.wormpot, jet ? JET_BOUNCE : 0.3f));
+    float hit = 0;
+    auto settle = [&](float e) { return wormBody(terrain, w.pos, w.vel, w.grounded, w.motion, w.yaw, gravity(), cfg.wormpot, e); };
+    if (!jet) hit = settle(0.3f);
+    else if (w.grounded = false, jetBody(terrain, w.pos, w.vel, gravity())) jetting = false, settle(0.3f);  // landed: no fall speed left, only the shared settling
+    if (!jet) land(hit);  // W4M 0x562f72: a foot touching land lands the pack with v -= (v.n) n, so Ballistic sees no fall speed
     if (jet) w.motion.stuck = stuck;
     if (underwater(w)) drown(w);
+}
+
+// W4M Worm.Vapourize 0x5885f0 (Starburst rider): removed at once (UnspawnWorm path 0x5ac160), no throes, no death blast, no damage display
+void Game::vapourize(Worm &w) {
+    int wi = int(&w - worms.data());
+    if ((cfg.rules & RULE_KING) && wi % perTeam == 0) surrender(w.team);
+    w.alive = false, w.hp = w.counted = 0, w.vel = {0, 0, 0};
 }
 
 // W4M 0x5ad640, each frame: its Position (the feet) under Water.Level - Worm.Drown.HeightOffset (7 units) -> kWPS_DrownFloat with
@@ -1408,7 +1463,7 @@ Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
     return d < b.pushReach && d > 1e-4f ? Vector3Scale(to, b.push * 1.2f * (b.pushReach - d) / b.pushReach / d) : Vector3{0, 0, 0};
 }
 
-void Game::explode(Vector3 p, const Blast &b0, float poison, int type) {
+void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapon) {
     Blast b = b0;  // W4M ExplosionMessage 0x518d80: DoubleDamage doubles the radii and the impulse too (hurt() doubles the damage)
     if (doubled()) b.crater *= 2, b.reach *= 2, b.push *= 2, b.pushReach *= 2;
     for (Bubble &bb : bubbles) bb.rest = 0;  // 0x54effa: any Explosion lets it fall again
@@ -1420,7 +1475,7 @@ void Game::explode(Vector3 p, const Blast &b0, float poison, int type) {
         i++;
     }
     if (b.crater > 0) terrain.carve(p, b.crater);
-    emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, p);
+    emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, p, -1, weapon);
     for (Worm &w : worms) {
         if (!w.alive || int(&w - worms.data()) == dyingWorm || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
         int dmg = blastDamage(b, p, w.pos);
@@ -1550,16 +1605,20 @@ void Game::stepShots(const Input &in, bool detonate) {
         }
         return false;
     };
-    auto touches = [&](Vector3 p) {  // contact bits: worm index, 63 = a target
+    auto touches = [&](Vector3 p, float r = R + 0.3f) {  // contact bits: worm index, 63 = a target
         uint64_t m = 0;
-        for (size_t k = 0; k < worms.size() && k < 63; k++) if (worms[k].alive && Vector3Distance(p, worms[k].pos) < R + 0.3f) m |= 1ull << k;
+        for (size_t k = 0; k < worms.size() && k < 63; k++) if (worms[k].alive && Vector3Distance(p, worms[k].pos) < r) m |= 1ull << k;
         for (const Object &o : objects) if (o.type == Object::Target && Vector3Distance(p, o.pos) < 0.7f) m |= 1ull << 63;
         return m;
+    };
+    auto stick = [&](Projectile &s) {  // 0x586650: ArmOnImpact arms it, bounce damping 0 stops it; 0x575fb0 schedules Payload.Detonate PreDetonationTime later
+        s.aim = Vector3Normalize(s.vel), s.vel = {}, s.stage = 1, s.fuse = WEAPONS[s.weapon].stick;
+        emit(GameEvent::Arm, s.pos, -1, s.weapon);
     };
     for (size_t i = 0; i < shots.size();) {
         Projectile &s = shots[i];
         const WeaponDef &wd = WEAPONS[s.weapon];
-        bool boom = false, timed = wd.fuse > 0 && !s.child;
+        bool boom = false, lifeEnd = false, stuck = wd.stick > 0 && s.stage && !s.child, timed = (wd.fuse > 0 || stuck) && !s.child;
         Vector3 np;
         bool bomber = wd.kind == Kind::Airstrike && !s.child;  // the plane; fuse > 0: the steered Bovine Blitz
         if (wd.kind == Kind::Abduction) {
@@ -1646,13 +1705,24 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (!s.stage) {
                 float t = s.fuse - s.aim.x;
                 s.vel = {0, (s.aim.y - DONKEY_CURVE * t * t * t * t - s.pos.y) / DT, 0};
-                for (int k = 0, n = substeps(s.vel); k < n; k++) {
+                uint64_t now = 0;
+                for (int k = 0, n = substeps(s.vel); k < n; k++) {  // the collider is a sphere of Radius (0x582200): any contact is a smash
                     np = Vector3Add(s.pos, Vector3Scale(s.vel, DT / n));
-                    if (terrain.solid(np)) { boom = true, s.stage = DONKEY_HOLD; break; }
+                    Vector3 sn;
+                    if (shell(s.pos, np, &sn)) { s.pos = np, s.stage = DONKEY_HOLD; break; }  // a bubble (flags 0x3000): held, no blast (0x553be6)
+                    // ours: point samples of the sphere's lower half in the voxel terrain, only while falling (a rise never hits what it left)
+                    static const Vector3 DIR[] = {{0, -1, 0}, {0.7f, -0.7f, 0}, {-0.7f, -0.7f, 0}, {0, -0.7f, 0.7f}, {0, -0.7f, -0.7f}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}};
+                    bool land = false;
+                    for (const Vector3 &d : DIR) land = land || (s.vel.y < 0 && terrain.solid(Vector3Add(np, Vector3Scale(d, wd.lift))));
+                    now |= touches(np, wd.lift + R);
+                    if (land || (now & ~s.touching)) { boom = true, s.stage = DONKEY_HOLD; break; }
                     s.pos = np;
                 }
+                s.touching = now;
             }
-            if (s.fuse >= DONKEY_LIFE - DT / 2) boom = true, s.hits = 1;  // LifeTime 8000, DetonatesOnExpiry
+            if (!boom && s.fuse >= DONKEY_LIFE - DT / 2) boom = lifeEnd = true, s.hits = 1;  // LifeTime 8000, DetonatesOnExpiry
+        } else if (stuck) {  // in the land, waiting out PreDetonationTime
+            np = s.pos;
         } else {
             bool homing = wd.kind == Kind::Homing && (s.fuse += DT) > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd);  // fuse: flight time
             if (homing) {  // 0x561730: the step, then the avoidance
@@ -1668,11 +1738,13 @@ void Game::stepShots(const Input &in, bool detonate) {
                 np = Vector3Add(s.pos, Vector3Scale(s.vel, DT / n));
                 Vector3 sn;
                 if (shell(s.pos, np, &sn)) {  // the land bounce response (vtable +0x80), Bubble.Hit
+                    if (impact && wd.stick > 0) { stick(s); break; }
                     if (impact) { boom = true; break; }
                     s.vel = Vector3Scale(Vector3Reflect(s.vel, sn), wd.bounce);
                     break;
                 }
                 if (terrain.solid(np)) {
+                    if (impact && wd.stick > 0) { stick(s); break; }
                     if (impact) { boom = true; break; }
                     s.vel = Vector3Scale(Vector3Reflect(s.vel, terrain.normal(np)), wd.bounce);
                     if (Vector3Length(s.vel) > 2) emit(GameEvent::Bounce, np, -1, s.weapon);
@@ -1698,14 +1770,19 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (s.prey >= 0 && worms[s.prey].alive) hurt(worms[s.prey], (int)(wd.damage * superScale(wd)));
         } else if (boom) {
             s.pos = np;
+            if (wd.stick > 0 && !stuck) emit(GameEvent::Arm, np, -1, s.weapon);  // a worm hit: armed by the impact, detonated in the same call (0x586520)
             float super = s.child ? 1 : superScale(wd);  // the child containers are SuperClusters' (not modelled)
+            if (wd.name == "Starburst" && worms[current].alive) vapourize(worms[current]);  // before the blast so it is not pushed
             Blast b = blastOf(wd, s.child);
             b.damage *= super, b.push *= super, b.crater *= super;
-            explode(Vector3Add(np, {0, s.child ? 0 : wd.lift, 0}), b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0);  // kind by container name prefix kWeaponCluster/Factory (0x57f32c); mine Clusters (3) not modelled
+            Vector3 at = Vector3Add(np, {0, s.child ? 0 : wd.lift, 0});
+            bool smash = wd.kind == Kind::Donkey && wd.clusters == 0;
+            if (smash && !lifeEnd) terrain.carve(np, wd.lift * (doubled() ? 2 : 1)), at = Vector3Subtract(np, {0, wd.lift, 0});  // 0x553970: a land-only blast of Radius at the centre, then Explode Radius below it
+            else if (smash) at = np;  // expiry: Detonate at the entity
+            explode(at, b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0, smash || wd.stick > 0 ? s.weapon : -1);  // kind by container name prefix kWeaponCluster/Factory (0x57f32c); mine Clusters (3) not modelled
             bool fly = !s.child && ((wd.kind == Kind::Homing && !wd.avoid) || (wd.kind == Kind::SuperSheep && (wd.name == "Starburst" ? wd.fuse - s.fuse >= 3.5f : !wd.walks || s.stage)));
             if (fly) camHold = msTicks(1000);  // the FlyCam's: CAMTWK PauseDuration 1000 (homing, super sheep, starburst)
-            if (wd.name == "Starburst" && worms[current].alive) hurt(worms[current], worms[current].hp);  // W4M Worm.Vapourize 0x5885f0: its rider
-            if (!s.child && wd.poison > 0 && wd.fuse > 0) gas.push_back({np, GAS_LIFE, wd.poison});  // timed poison shell: the gas canister
+            if (!s.child && wd.poison > 0 && (wd.fuse > 0 || wd.stick > 0)) gas.push_back({np, GAS_LIFE, wd.poison});  // timed poison shell: the gas canister
             if (!s.child && wd.kind != Kind::Airstrike && wd.kind != Kind::Donkey)
                 for (int k = 0; k < wd.clusters; k++)
                     spawned.push_back({Vector3Add(np, {0, 0.5f, 0}), {(rand01() - 0.5f) * 8, 6 + rand01() * 5, (rand01() - 0.5f) * 8}, s.weapon, 0, true, 1});
@@ -1806,7 +1883,7 @@ void Game::step(const Input &raw) {
             if (!armed) ropeLen = reel(ropeLen, in.aim, ropeMax);
         } else if (jetting) {  // W4M 0x562810 every 20 ms, here per tick; FIRE held = FireUtil, whatever the hand holds
             bool burn = in.buttons & Input::FIRE;
-            if ((w.grounded && !burn) || (burn && fuel <= JET_DRY)) jetting = false;  // landed (0x563252), or dry (0x562990): it falls
+            if ((w.grounded && !burn) || (burn && fuel <= JET_DRY)) jetting = false;  // landed (0x562f72), or dry (0x562990): it falls
             else {
                 const float n = DT / 0.02f, h = fmaxf(w.pos.y - water, 0);  // W4M steps per tick; height over Water.Level
                 Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, a = {0, 0, 0};
@@ -2131,7 +2208,7 @@ uint32_t Game::checksum() const {
         mix(&wd.count, 3 * sizeof(int));
         mix(&wd.wind, sizeof wd.wind);
         mix(&wd.weight, sizeof wd.weight);
-        mix(&wd.poison, sizeof wd.poison), mix(wd.blast, sizeof wd.blast), mix(wd.cblast, sizeof wd.cblast), mix(&wd.lift, sizeof wd.lift), mix(&wd.grav, sizeof wd.grav), mix(&wd.base, sizeof wd.base);
+        mix(&wd.poison, sizeof wd.poison), mix(wd.blast, sizeof wd.blast), mix(wd.cblast, sizeof wd.cblast), mix(&wd.lift, sizeof wd.lift), mix(&wd.stick, sizeof wd.stick), mix(&wd.grav, sizeof wd.grav), mix(&wd.base, sizeof wd.base);
         if (wd.avoid) mix(&wd.avoid, 1);
         mix(&wd.userFuse, sizeof wd.userFuse), mix(&wd.restFuse, sizeof wd.restFuse), mix(&wd.walks, 1), mix(&wd.pins, 1);
     }

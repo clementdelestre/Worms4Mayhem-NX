@@ -292,19 +292,45 @@ static uint32_t fireEach(int wi, bool &fired, const GameConfig *cfg = nullptr) {
     return g.checksum();
 }
 
+static void settle(Game &g);
+
+// W4M Poison Arrow (WEAPTWK): WormImpactDamage 25 is read by no code, ExplosionMessage radii 0, DetonatesOnWormImpact 1 / OnLandImpact 0,
+// ArmOnImpact 1, PreDetonationTime 2000: a worm hit detonates at once into the gas cloud; land stops it, the cloud comes 2 s later. No damage, no knock.
 static void checkPoison() {
     Game g;
     g.start({21, 2, 1, "", 0}), g.hotSeat = 0;
-    int victim = 1 - g.current, hp = g.worms[victim].hp;
-    g.shots = {{g.worms[victim].pos, {0, 0, 0}, weaponNamed("Poison Arrow"), 0, false, 1}};
+    settle(g);
+    int victim = 1 - g.current, hp = g.worms[victim].hp, wi = weaponNamed("Poison Arrow");
+    Worm &v = g.worms[victim];
+    Vector3 v0 = v.vel;
+    g.phase = Phase::Flying, g.timer = 600;
+    g.shots = {{v.pos, {0, 0, 0}, wi, 0, false, 1}};
     for (Projectile &s : g.shots) s.touching = 0;  // already in flight
     g.step(Input{});
-    assert(g.worms[victim].poison > 0 && g.worms[victim].hp < hp);
+    assert(g.shots.empty() && g.gas.size() == 1 && v.poison == (int)WEAPONS[wi].poison);  // the hit worm is in the cloud
+    assert(v.hp == hp && Vector3Distance(v.vel, v0) < 1e-3f);                                // no direct damage, no knock-back
+    g.gas.clear(), v.poison = 0;
+    Vector3 hit, from = Vector3Add(v.pos, {12, 20, 0});  // land: stops (damping 0), then PreDetonationTime
+    assert(g.terrain.raycast({from, {0, -1, 0}}, 80, &hit));
+    g.shots = {{Vector3Add(hit, {0, 1, 0}), {0, -20, 0}, wi, 0, false, 1}};
+    g.shots[0].touching = 0;
+    bool armed = false;
+    for (int t = 0; t < 60 && !(g.shots.empty() && !armed); t++) {
+        g.step(Input{});
+        for (const GameEvent &e : g.events) armed = armed || e.kind == GameEvent::Arm;
+        if (armed) break;
+    }
+    assert(armed && g.shots.size() == 1 && g.shots[0].stage == 1 && Vector3Length(g.shots[0].vel) == 0 && g.gas.empty());
+    for (int t = 0; t < msTicks(2000) - 2; t++) g.step(Input{});
+    assert(g.shots.size() == 1 && g.gas.empty());  // 2 s on, not before
+    for (int t = 0; t < 4; t++) g.step(Input{});
+    assert(g.shots.empty() && g.gas.size() == 1 && g.worms[victim].hp == hp);
+    v.poison = 0;
+    g.shots = {{v.pos, {0, 0, 0}, wi, 0, false, 1}};
+    g.shots[0].touching = 0, g.gas.clear(), g.step(Input{});
     g.phase = Phase::Settle, g.timer = 300;
-    while (g.countGroup.empty()) g.step(Input{});  // knocked back: landed, its fall counted too
-    hp = g.worms[victim].hp;
     while (g.phase == Phase::Settle) g.step(Input{});
-    assert(g.worms[victim].hp == hp - g.worms[victim].poison);  // DoPostActivity's ApplyPoison, before the next turn
+    assert(g.worms[victim].hp == hp - (int)WEAPONS[wi].poison);  // DoPostActivity's ApplyPoison, before the next turn
 }
 
 static void settle(Game &g);
@@ -482,6 +508,14 @@ static void checkSheepCamera() {
         if (chase && t > 30) assert(cam.position.y > g.shots[0].pos.y), checked++;
     }
     assert(checked > 60);
+    for (int t = 0; t < 60 * 40 && !g.shots.empty(); t++) g.step(Input{}), Controls::camera(cam, g, !g.shots.empty(), false, false, Game::DT);
+    assert(g.shots.empty() && g.phase != Phase::Aim);
+    Controls::camera(cam, g, false, false, false, Game::DT);
+    Vector3 frozen = cam.position;  // ChaseCam has no Finished (vtable slot 7 = 0x49b8f0): it stays until another event or the next turn
+    for (int t = 0; t < 30 && g.phase != Phase::Aim; t++) {  // the drawn view only settles onto it (0.1 an update), it does not go back to the worm
+        g.step(Input{}), Controls::camera(cam, g, false, false, false, Game::DT);
+        assert(g.phase == Phase::Aim || Vector3Distance(cam.position, frozen) < 1);
+    }
 }
 
 // W4M event cameras (docs/camera.md): worm, crate and winner TrackCams cut next to their target, homing FlyCam stays behind
@@ -952,7 +986,7 @@ static void checkEventCameras() {
             for (const Projectile &s : g.shots) kids += s.child && s.weapon == sb;
             for (const GameEvent &e : g.events) booms += (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom);
         }
-        assert(g.shots.empty() && v.hp < hp && a.hp <= 0 && kids == 0 && booms == 1);
+        assert(g.shots.empty() && v.hp < hp && !a.alive && a.hp == 0 && Vector3Length(a.vel) == 0 && kids == 0 && booms == 1);  // vapourized: no knock, gone
     }
     {  // homing from the Blimp: the entering press (Controls swallows FIRE) locks nothing; with TARGET, FIRE locks the cursor point, no launch
         Game g;
@@ -2019,7 +2053,7 @@ static void checkJetpack() {
     a.vel = {0, -25, 0};
     for (int k = 0; k < 600 && g.jetting; k++) g.step(none);
     assert(!g.jetting && a.grounded && a.hp == hp);  // landing ends it; no fall damage under the jetpack
-    {  // W4M 0x563252: a floor contact lands the pack with its velocity unchanged, the worm's Ballistic FallDamage (0x5ac3e0) follows: a fast landing hurts as a plain fall
+    {  // W4M 0x562f72: a land contact under the feet lands the pack minus the normal speed, so no FallDamage; without the pack it hurts
         int loss[2];
         for (int jet = 1; jet >= 0; jet--) {
             Game h = g;
@@ -2030,10 +2064,25 @@ static void checkJetpack() {
             assert(b.grounded && b.pos.y < ground.y + 2);  // landed, not bounced at 0.8 (walls and ceilings only)
             loss[jet] = was - b.hp;
         }
-        assert(loss[1] > 0 && loss[1] == loss[0]);
+        assert(loss[1] == 0 && loss[0] > 0);
+    }
+    {  // W4M 0x562f72 / 0x5630dc: a foot against a wall lands the pack (v minus its normal part), a head alone bounces it at 1.8
+        Terrain t = g.terrain;
+        const float fy = 55 - Game::R;
+        t.weld({40, fy + 0.5f, 20}, {0.5f, 1, 3});  // a face from the feet to above the heads
+        Vector3 p = {38, 55, 20}, v = {10, 0, 0};
+        bool landed = false;
+        for (int k = 0; k < 40 && !landed; k++) landed = jetBody(t, p, v, 0);
+        assert(landed && fabsf(v.x) < 1e-3f);  // foot and head hit the same face: the foot wins the tie
+        Terrain u = g.terrain;
+        u.weld({40, fy + 2.0f, 20}, {0.5f, 1.4f, 3});  // from 0.6 m over the feet: only the heads meet it
+        p = {38, 55, 20}, v = {10, 0, 0};
+        for (int k = 0; k < 40 && v.x > 0; k++) assert(!jetBody(u, p, v, 0));
+        assert(v.x < -7.5f && v.x > -8.5f);  // 1.8 x (v.n) n: 10 -> -8
     }
     // with it out, the hand only takes what it drops (W4M 0x565d30 case 0)
     for (const char *w : {"Bazooka", "Shotgun", "Dynamite", "Landmine", "Sheep", "Teleport"}) g.ammo[a.team][weaponNamed(w)] = 1;
+    a.pos.y += 10, a.vel = {0, 0, 0}, a.grounded = false;  // off the steep slope it landed on: a foot contact lands the pack again
     g.step(fire);
     assert(g.jetting);
     for (int k = 0; k < 2 * (int)WEAPONS.size(); k++) {
@@ -2108,7 +2157,7 @@ static void checkJetpackSecondary() {
     assert(!h.jetting && h.weapon == dyn && h.secondary < 0);
 }
 
-// Tool gaps closed against W4M: landing keeps the secondary (0x563252), the panel keeps UtilityFire (0x602ea0), D-pad
+// Tool gaps closed against W4M: landing keeps the secondary (0x562f72), the panel keeps UtilityFire (0x602ea0), D-pad
 // forward (Jetpack.Forward), the HeadCam zoom (0x54b6c0), Wormpot No Bombing (0x5662f6), the girder legs and probes.
 static void checkToolGaps() {
     auto pr = [](uint8_t b) { Input in; in.buttons = b; return in; };
@@ -2381,7 +2430,7 @@ static void checkAbduction() {
 // W4M Super Sheep: walks, FIRE takes off (25 s flight), FIRE again blows it up.
 static void checkSuperSheep() {
     Game g;
-    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    g.start({26, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -2425,20 +2474,37 @@ static void checkOldWoman() {
     assert(g.shots.empty());
 }
 
-// W4M Concrete Donkey: smashes on down, every 0.75 s, until its 8 s LifeTime or the water.
+// W4M Concrete Donkey: starts max(75 m, Land.MaxHeight + 25 m) up, smashes on every landing (the blast Radius below the sphere centre,
+// 80 damage out of the WEAPTWK blast) every 1.5 s + 85 ms until its 8 s LifeTime, whose Detonate blasts at the entity.
 static void checkDonkey() {
     Game g;
     g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
-    int wi = weaponNamed("Concrete Donkey"), booms = 0;
+    int wi = weaponNamed("Concrete Donkey");
+    const WeaponDef &wd = WEAPONS[wi];
+    assert(wd.damage == 80 && wd.lift == 3.6f && wd.clusters == 0);
+    Blast b = blastOf(wd, false);
+    assert(g.blastDamage(b, {0, 0, 0}, {0, 0, 0}) == 80 && g.blastDamage(b, {0, 0, 0}, {b.reach + 1, 0, 0}) == 0);
+    g.worms[0].pos = {5, 40, 5};
     g.phase = Phase::Flying, g.timer = 1200;
-    g.shots = {{{40, 40, 40}, {0, -WEAPONS[wi].speed, 0}, wi, 0, false, 1 << 30, {0, 40, 0}}};
-    for (Projectile &s : g.shots) s.touching = 0;  // already in flight
-    for (int t = 0; t < (int)(Game::DONKEY_LIFE * 60) + 1 && !g.shots.empty(); t++) {
+    Vector3 tgt = {40, g.terrain.raycast({{40, 200, 40}, {0, -1, 0}}, 400, &tgt) ? tgt.y : 0, 40};
+    g.shots = {{{40, tgt.y + fmaxf(Game::DONKEY_MIN_HEIGHT, g.landTop() + Game::DONKEY_EXTRA), 40}, {0, -wd.speed, 0}, wi, 0, false, 1 << 30, {0, tgt.y + 100, 0}}};
+    g.shots[0].aim = {0, g.shots[0].pos.y, 0};
+    std::vector<float> at;
+    float lastY = 0;
+    for (int t = 0; t < (int)(Game::DONKEY_LIFE * 60) + 2 && !g.shots.empty(); t++) {
         g.step(Input{});
-        for (const GameEvent &e : g.events) booms += e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom;
+        for (const GameEvent &e : g.events)
+            if ((e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) && e.weapon == wi) {  // a death blast has none
+                at.push_back(t / 60.f), lastY = e.pos.y;
+                if (at.size() == 1) assert(!g.shots.empty() && fabsf(e.pos.y - (g.shots[0].pos.y - wd.lift)) < 1e-3f);  // Explode at the centre - Radius
+            }
     }
-    assert(g.shots.empty() && booms > 3);
+    (void)lastY;
+    assert(g.shots.empty());
+    assert(at.size() >= 5 && at.size() <= 7);  // the fall (1.6 s), a smash per 1.6 to 2 s, then the LifeTime blast
+    for (size_t k = 1; k + 1 < at.size(); k++) assert(at[k] - at[k - 1] > 1.58f && at[k] - at[k - 1] < 2.2f);  // 1.585 s, plus the fall into the crater of the last smash
+    assert(fabsf(at.back() - Game::DONKEY_LIFE) < 0.1f);
 }
 
 // W4M Mine.DudProbability: about one mine in ten fizzles and stays inert.
@@ -2589,7 +2655,7 @@ static void checkBomber() {
 // W4M Bomber: the plane drops its NumBombs one after another (BlitzDuration / NumBombs apart), never all at once.
 static void checkAirstrike() {
     Game g;
-    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    g.start({31, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
@@ -3099,7 +3165,36 @@ static void checkRopeReel() {
     assert(Game::reel(22.5f - step * 0.5f, -127, 22.5f) == 22.5f && Game::reel(5, 0, 22.5f) == 5);
 }
 
+// W4M 0x5b4180 / 0x4f26b0: worms are placed first, then a mine or drum its sphere (radius + 5 units) clear of every worm collider (10 units) and object
+static void checkPlacement() {
+    const char *maps[] = {"", "Alien-w3d", "Accuracy", "ArabiaTest", "AssaultAndDefend", "BuildingSiteSaboteurs"};
+    int checked = 0;
+    for (const char *m : maps)
+        for (uint32_t seed = 1; seed <= 30; seed++) {
+            Game g;
+            GameConfig c{seed, 3, 3, m, 0};
+            c.scheme.mines = 15, c.scheme.barrels = 10;
+            g.start(c);
+            for (size_t i = 0; i < g.worms.size(); i++)
+                for (size_t j = 0; j < i; j++) {  // 0x5b4180: sphere 10 units; the no-point fallback (Land.MaxHeight + 10 units) is unchecked there too
+                    bool fallback = fabsf(g.worms[i].pos.y - (g.landTop() + 0.5f + Game::R - 0.25f)) < 1e-3f;
+                    assert(fallback || Vector3Distance(g.worms[i].pos, g.worms[j].pos) >= 1.0f - 0.01f);
+                }
+            for (const Object &o : g.objects) {
+                float r = o.type == Object::Mine ? 0.15f : 0.45f;
+                if (o.type != Object::Mine && o.type != Object::Barrel) continue;
+                for (const Worm &w : g.worms) {
+                    Vector3 cw = {w.pos.x, w.pos.y - Game::R + 0.25f, w.pos.z};
+                    assert(Vector3Distance(cw, o.pos) >= 0.5f + r + 0.25f - 0.1f);
+                    checked++;
+                }
+            }
+        }
+    assert(checked > 0);
+}
+
 int main() {
+    checkPlacement();
     checkCountCamera();
     {  // user-requested: SKIP_COUNT ends the damage display at once; hp final
         Game g;

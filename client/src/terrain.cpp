@@ -185,7 +185,7 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
 }
 
 bool Terrain::load(const std::string &map, unsigned seed) {
-    spawns.clear(), objects.clear(), objModels.clear(), markers.clear(), blocks.clear();
+    objects.clear(), objModels.clear(), markers.clear(), blocks.clear();
     hasFinish = false;
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -251,12 +251,6 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         });
     }
 
-    // spawns are dropped onto the ground below the given point
-    const Json &sp = j["spawns"];
-    for (size_t i = 0; i < sp.size(); i++) {
-        Vector3 p = vec(sp[i], {cx, (NY - 1) * VOX, cz}), hit;
-        spawns.push_back(raycast({p, {0, -1, 0}}, p.y, &hit) ? Vector3{hit.x, hit.y + 0.8f, hit.z} : p);
-    }
     if (j["finish"].type == Json::Arr) hasFinish = true, finish = vec(j["finish"], {cx, 8, cz});
     for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz})});
     for (const Json &b : j["blocks"].arr) blocks.push_back({b[0].f(), b[1].f(), b[2].f(), b[3].f()});  // imported: already merged

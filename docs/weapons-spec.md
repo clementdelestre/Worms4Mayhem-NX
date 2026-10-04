@@ -32,9 +32,8 @@ Common rules:
 
 **Poison Arrow**
 - First-person bow aim. Affected by wind.
-- Impact damage: 25 HP (`WormImpactDamage`, the only weapon that has one; no explosion).
-- The target is poisoned and loses 10 HP per turn, never dropping below 1 HP.
-- Poison does not spread to other worms. Only a health crate cures it.
+- No impact damage and no knock-back: `WormImpactDamage` (25) is never read by W4M's code (docs/w4m/weapons.md "Poison Arrow").
+- A worm hit detonates the arrow at once; land stops it and it detonates 2 s later. Either way it puts down the Gas Canister's cloud (5 m, 8 s): every worm in it is poisoned, 10 HP per turn, never below 1 HP. Only a health crate cures it.
 
 ## 2. Grenades and explosives
 

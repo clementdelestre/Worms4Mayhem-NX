@@ -609,14 +609,12 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         objs.push(format!("{{\"model\":\"{lib}\",\"pos\":[{:.2},{:.2},{:.2}],\"basis\":[{}]}}", pos[0], pos[1], pos[2], b.join(",")));
         used_libs.insert(lib);
     }
-    let spawns = spawn_points(&grid);
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
     let pv = mission::preview_of(data, stem).map_or(String::new(), |p| format!("  \"preview\": \"{p}\",\n"));
     let blk: Vec<String> = blocks.iter().map(|b| format!("[{:.2},{:.2},{:.2},{:.2}]", b[0] * k + ox, b[1] * k + oz, b[2] * k + ox, b[3] * k + oz)).collect();
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"spawns\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","), blk.join(","),
-        spawns.iter().map(|p| format!("[{:.1},{:.1},{:.1}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
         marks.join(",\n    "), objs.join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
@@ -667,33 +665,6 @@ fn decor(bundles: &Path, dir: &Path, libs: &HashSet<String>) {
     let mut missing: Vec<_> = todo.into_iter().collect();
     missing.sort();
     println!("{} detail meshes, missing: {missing:?}", libs.len() - missing.len());
-}
-
-// 16 spread-out open-sky standing spots above the water: farthest-point sampling from the centre.
-fn spawn_points(grid: &[u8]) -> Vec<[f32; 3]> {
-    let mut cand = Vec::new();
-    for z in (4..NZ - 4).step_by(6) {
-        for x in (4..NX - 4).step_by(6) {
-            let Some(y) = (0..NY).rev().find(|&y| grid[(z * NY + y) * NX + x] != 0) else { continue };
-            // neighbours 0.5 m away within +-0.5 m, 2.5 m of headroom
-            let flat = [(2, 0), (0, 2), (NX - 2, 0), (0, NZ - 2)].iter().all(|&(dx, dz)| {
-                let (xx, zz) = ((x + dx) % NX, (z + dz) % NZ);
-                (y.saturating_sub(2)..=(y + 2).min(NY - 1)).any(|yy| grid[(zz * NY + yy) * NX + xx] != 0)
-                    && (y + 3..(y + 10).min(NY)).all(|yy| grid[(zz * NY + yy) * NX + xx] == 0)
-            });
-            if flat && (y + 1) as f32 * VOX > WATER + 1.5 && y + 10 < NY { cand.push([x as f32 * VOX, (y + 6) as f32 * VOX, z as f32 * VOX]); }
-        }
-    }
-    let d2 = |a: &[f32; 3], b: &[f32; 3]| (a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2);
-    let centre = [NX as f32 * VOX / 2.0, 0.0, NZ as f32 * VOX / 2.0];
-    let mut out: Vec<[f32; 3]> = Vec::new();
-    while out.len() < 16 && out.len() < cand.len() {
-        let far = |c: &[f32; 3]| if out.is_empty() { -d2(c, &centre) } else { out.iter().map(|o| d2(c, o)).fold(f32::MAX, f32::min) };
-        let best = cand.iter().copied().max_by(|a, b| far(a).total_cmp(&far(b))).unwrap();
-        if !out.is_empty() && far(&best) < 1.0 { break; }
-        out.push(best);
-    }
-    out
 }
 
 // Land lighting per "THEME.TIME" from Data/Tweak/TWEAK.XOM (WaterPlaneTweaks, see docs), as a JSON object.

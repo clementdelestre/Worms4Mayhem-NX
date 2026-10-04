@@ -13,7 +13,6 @@ World: 80 x 64 x 80 m (x, y up, z), voxels of 0.25 m (320 x 256 x 320 grid, int8
     {"type": "cylinder", "pos": [30, 17, 30], "radius": 2.2, "height": 10},
     {"type": "box", "pos": [40, 14, 30], "size": [3.5, 4, 3], "subtract": true}
   ],
-  "spawns": [[18, 30, 40], [62, 30, 40]],
   "finish": [74, 13, 40]
 }
 ```
@@ -33,7 +32,6 @@ World: 80 x 64 x 80 m (x, y up, z), voxels of 0.25 m (320 x 256 x 320 grid, int8
 | `palette` | `[[r,g,b, r,g,b], …]`: top (flat) and side colour per voxel material (fallback when there are no textures). |
 | `textures` | `[[top, side, topRepeat, sideRepeat], …]` aligned with `palette`: texture files (QOI/PNG, relative to the maps dir, `null` = none) and metres per texture repeat. Rendered with a triplanar shader (top texture on up-facing surfaces). |
 | `shapes` | applied in order: union, or carve with `"subtract": true` (tunnels, caves, moats). |
-| `spawns` | worm start points, team-major order (team 0 worms first). Each is dropped straight down onto the first solid ground below it, so `y` can be the sky. Missing slots get random spawns. Keep them above water. |
 | `finish` | rope race goal (exact point, not dropped). |
 | `markers` | W4M script markers (imported): `[{"name": "Targ1", "type": "target", "pos": [x, y, z]}, …]`, type `worm`, `target`, `crate`, `mine`, `oildrum`, `trigger`, `telepad`. Missions refer to them by name (`docs/missions.md`). |
 | `objects` | decor without collision (imported W4M detail objects): `[{"model": "camelot18", "pos": [x, y, z], "basis": [9 floats]}, …]`. `model` = `models/decor/<model>.glb` (missing => skipped), `pos` = model origin, `basis` = row-major 3x3 rotation * scale. Removed when an explosion reaches it or the ground 0.3 m under its base (`Terrain::carve`, deterministic); drawn by `Terrain::drawObjects`, culled beyond ~35 m + 40 x size. |

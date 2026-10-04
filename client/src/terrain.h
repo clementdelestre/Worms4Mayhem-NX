@@ -21,7 +21,6 @@ struct Terrain {
     Material mat{};  // loaded on first remesh, so the sim runs without a GL context
 
     // Filled by load(): fixed spawn points (team-major order), optional race finish, theme palette.
-    std::vector<Vector3> spawns;
     bool hasFinish = false;
     Vector3 finish{};
     struct Marker { std::string name, type; Vector3 pos; };  // W4M script markers (missions): worm, target, crate, mine...

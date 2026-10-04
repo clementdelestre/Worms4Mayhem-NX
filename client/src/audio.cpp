@@ -36,7 +36,7 @@ const char *SFX_NAMES[] = {
     "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
     "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
-    "tick_slow",
+    "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m/audio.md §12): the event of each file, its gain in dB
@@ -67,7 +67,7 @@ const Def DEFS[] = {
     {"weapons/Prod", -4, false, 0, 0, 1},
     {"weapons/SniperRifleFire", -3, false, 0, 0, 1},
     {"weapons/BowRelease", 0, false, 0.5f, 60, 1},
-    {"weapons/MissileLoop", 0, false, 5, 75, 1, 0, nullptr, 1, {1000, 1000}},  // loops, but its Time envelope cuts it at 5 s: one pass of the clip
+    {"weapons/MissileLoop", 0, false, 5, 75, 1, 0, nullptr, 1, {1000, 1000}},  // FEV loop; the 5.03 s Time envelope is applied by the caller (Bazooka / Homing shot), one pass of the 5.85 s clip
     {"weapons/OldWomenLaunch", 0, false, 0.5f, 60, 1},
     {"weapons/ScouserLaunch", 0, false, 0.5f, 60, 1},
     {"weapons/SentryGunHeld", -8, true, 0.5f, 20, 1},
@@ -147,6 +147,9 @@ const Def DEFS[] = {
     {"weapons/Throw", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
     {"weapons/SecretWeapLaunch", 0, false, 0, 0, 1},  // 2D
     {"weapons/ClockSlow", -2, true, 0, 0, 1},
+    {"weapons/BowImpact", 0, false, 0.5f, 100, 1},  // 3D linear 10..2000 units
+    {"weapons/ExplosionBoxed", -2, false, 0, 0, 4},  // 2D
+    {"weapons/ConcreteDonkeyImpact", 0, false, 0, 0, 1, 0, nullptr, 2},  // 2D, 3 waves
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
