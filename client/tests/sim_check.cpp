@@ -455,7 +455,43 @@ static void checkSniper() {
     in.buttons = Input::FIRE;
     g.step(in);
     assert(v.hp <= 100 - (int)WEAPONS[g.weapon].damage + 1);
-    assert(!v.grounded && v.vel.z > 0.8f * WEAPONS[g.weapon].blast[1]);  // knocked along the shot (WEAPTWK ImpulseMagnitude 0.1 u/ms)
+    // W4M 0x55ea22: an ExplosionMessage whose push centre sits (2dx, 2, 2dz) units behind the worm: 0.1 u/ms x 1.2 x (40 - 2.83) / 40 = 5.58 m/s along (0, 1, 1) / sqrt 2
+    assert(!v.grounded && fabsf(v.vel.z - 3.94f) < 0.15f && fabsf(v.vel.y - 3.94f) < 0.4f && fabsf(v.vel.x) < 0.01f);
+    bool boom = false;
+    for (const GameEvent &e : g.events) boom |= e.kind == GameEvent::Boom && e.weapon == g.weapon;  // drawn as WXP_ShotgunBlast (fx.cpp), not a BigBoom
+    for (const GameEvent &e : g.events) assert(e.kind != GameEvent::BigBoom);
+    assert(boom);
+}
+
+// W4M gun hit on land (0x55d8c0 clears one voxel, 0x55e5da LandDamageRadius 0): only the hit cell changes, never a blast crater.
+static void floorAndWall(Game &g, float wall);
+static void checkGunLand() {
+    for (const char *name : {"Shotgun", "Sniper Rifle"}) {
+        Game g;
+        g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
+        floorAndWall(g, 0);
+        Worm &w = g.worms[g.current];
+        w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = PI / 2, w.pitch = -0.6f;
+        g.weapon = weaponNamed(name);
+        for (int t = 0; t < 30; t++) g.step(Input{});
+        std::vector<signed char> before = g.terrain.d;
+        Input fire;
+        fire.buttons = Input::FIRE;
+        g.step(fire);
+        Vector3 hit = {};
+        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom) hit = e.pos;
+        assert(hit.y > 49 && hit.y < 51.5f);
+        int n = 0;
+        float far = 0;
+        for (size_t i = 0; i < before.size(); i++)
+            if (before[i] != g.terrain.d[i]) {
+                Vector3 p = {(float)(i % Terrain::NX) * Terrain::VOX, (float)(i / Terrain::NX % Terrain::NY) * Terrain::VOX, (float)(i / Terrain::NX / Terrain::NY) * Terrain::VOX};
+                n++, far = fmaxf(far, Vector3Distance(p, hit));
+            }
+        printf("%s on land: %d voxels changed, farthest %.2f m from the hit\n", name, n, far);
+        fflush(stdout);
+        assert(n > 0 && n < 200 && far < 1.4f);  // the hit cell (ours: 0.5 m sphere), not the old 0.4 / 0.8 m craters' reach
+    }
 }
 
 // Sniper at a worm just over a crest, aimed like a player: target moved to the scope camera's screen centre.
@@ -1394,6 +1430,39 @@ static void floorAndWall(Game &g, float wall) {
 
 // W4M launches from the eye (0x585a29): a worm against a thin wall blows its bazooka up on its own side, a shotgun hits the near face,
 // dropped dynamite rests on the land just ahead (centre contact, mesh drawn its depth over it: 0x574e90, 0x5761f0).
+// W4M LogicalLaunchZOffset (Landmine 10 / Dynamite 13 / Sheep 5 units): a grounded worm sets a dropped weapon down ahead along
+// its facing, on the flat and up a slope, never behind it.
+static void checkDroppedInFront() {
+    for (int slope : {0, 1})
+        for (const char *name : {"Landmine", "Dynamite"}) {
+            Game g;
+            g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
+            floorAndWall(g, 0);
+            if (slope)
+                for (int z = 16; z < 80; z++)
+                    for (int y = 176; y < 248; y++)
+                        for (int x = 16; x < 300; x++)
+                            g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] =
+                                (signed char)Clamp((50 + 0.5f * (z * Terrain::VOX - 12) - y * Terrain::VOX) * Terrain::Q, -64, 64);
+            Worm &w = g.worms[g.current];
+            w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = 0, w.pitch = 0;
+            g.hotSeat = 0, g.weapon = weaponNamed(name);
+            for (int t = 0; t < 30; t++) g.step(Input{});
+            Vector3 at = w.pos;
+            size_t no = g.objects.size(), ns = g.shots.size();
+            Input fire;
+            fire.buttons = Input::FIRE;
+            float z = at.z;
+            for (int t = 0; t < 200; t++) {
+                g.step(t < 40 ? fire : Input{});
+                if (g.objects.size() > no) z = g.objects.back().pos.z;
+                else if (g.shots.size() > ns) z = g.shots.back().pos.z;
+            }
+            printf("%s on slope %d: rests at dz %.3f\n", name, slope, z - at.z);
+            assert(z - at.z > 0.3f);
+        }
+}
+
 static void checkLaunchAtWall() {
     for (int gun : {0, 1}) {
         Game g;
@@ -1909,6 +1978,43 @@ static void checkParachute() {
 
 // W4M PayloadWeapon 0x5833a0 -> 0x549bb0: PostLaunchDelay after the launch, movement back and StartRetreatTimer, the shell still
 // flying; Timer_RetreatTimedOut ends the turn, which waits for the shell. Its TrackCam is served at launch (0x577530), the worm still: full screen.
+// PayloadTrackCamera (docs/camera-w4m.md 11.6): a shot whose first contact is more than 1 s away is served full screen from its
+// launch and followed, from the shoulder view or the first-person aim, on a turn that follows an event camera
+static void checkPayloadFollow() {
+    for (const char *name : {"Grenade", "Cluster Grenade", "Banana Bomb", "Holy Hand Grenade", "Bazooka"}) for (int aim : {0, 1}) {
+        Game g;
+        g.start({23, 2, 2, "", 0}), g.hotSeat = 0;
+        settle(g);
+        g.wind = 0;
+        Controls::reset();
+        Camera3D cam = {{0, 60, 0}, g.worms[g.current].pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
+        for (int turn = 0; turn < 2; turn++) {
+            Worm &a = g.worms[g.current];
+            g.weapon = weaponNamed(name);
+            g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0, a.pitch = 0.7f;
+            Controls::forceAim = aim;
+            for (int t = 0; t < 120; t++) Controls::camera(cam, g, false, false, true, Game::DT), g.step(Controls::read(g, 0, true, Game::DT));
+            for (int t = 0; t < 120 && g.shots.empty(); t++) {
+                Input in = Controls::read(g, 0, true, Game::DT);
+                in.buttons |= Input::FIRE;
+                g.step(in);
+                Controls::camera(cam, g, !g.shots.empty() && g.phase != Phase::Aim, false, true, Game::DT);
+            }
+            assert(!g.shots.empty());
+            float tail = 1e9f;
+            for (int t = 0; t < 60 * 6 && !g.shots.empty() && g.phase == Phase::Flying; t++) {
+                Controls::camera(cam, g, true, false, true, Game::DT);
+                if (t > 60) tail = fminf(tail, Vector3Distance(cam.target, g.shots[0].pos));
+                g.step(Controls::read(g, 0, true, Game::DT));
+            }
+            assert(tail < 6);  // the look-at is on the shot, not on the worm
+            Controls::forceAim = 0;
+            for (int t = 0; t < 30; t++) g.step(Input{});
+            g.phase = Phase::Aim, g.shots.clear(), g.power = 0, g.timer = 2000;
+        }
+    }
+}
+
 static void checkRetreatInFlight() {
     Game g;
     g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
@@ -2273,6 +2379,21 @@ static void checkToolGaps() {
         h.step(pr(Input::NEXT_WEAPON));
         assert(h.weapon != was);  // old inputs: a plain step
     }
+    for (const char *tool : {"Ninja Rope", "Parachute"})  // rope and open parachute: a Sheep pick is the secondary, a Bazooka pick ends the tool
+        for (const char *pk : {"Sheep", "Bazooka"}) {
+            Game g;
+            g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+            Worm &a = g.worms[g.current];
+            bool rope = tool[0] == 'N';
+            a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = false;
+            if (rope) g.roped = true, g.anchor = {20, 58, 20}, g.ropeLen = 3, g.ropeMax = 25;
+            else g.chute = true;
+            int pw = weaponNamed(pk);
+            g.weapon = weaponNamed(tool), g.ammo[a.team][pw] = 1, g.delays[a.team][pw] = 0;
+            g.step(Input::pick(pw));
+            if (toolDrop(WEAPONS[pw])) assert((rope ? g.roped : g.chute) && g.weapon == weaponNamed(tool) && g.secondary == pw);
+            else assert(!g.roped && !g.chute && g.weapon == pw && g.secondary < 0);
+        }
     {  // 6. girder: legs along x at the z ends (BitArray3D 3 + x + 4 z), steps every 80 ms, the active worm counts in the probes
         static_assert(Game::GIRDER_TICKS == (80 * 60 + 500) / 1000, "4 updates of 20 ms");
         Game g;
@@ -2443,6 +2564,11 @@ static void checkSuperSheep() {
     assert(g.shots.size() == 1 && g.shots[0].stage == 0 && Vector3Length(g.shots[0].vel) < WEAPONS[g.weapon].speed);
     g.step(fire);
     assert(g.shots[0].stage == 1 && g.shots[0].vel.y > 0 && g.shots[0].fuse > WEAPONS[g.weapon].fuse - 0.1f && !g.retreating());  // FlyCam: no WormMoving
+    Input steer;  // the left stick through Controls::tick: yaw and pitch change the heading
+    steer.turn = 100, steer.aim = 100;
+    Vector3 v0 = g.shots[0].vel;
+    for (int t = 0; t < 10; t++) g.step(steer);
+    assert(fabsf(atan2f(g.shots[0].vel.x, g.shots[0].vel.z) - atan2f(v0.x, v0.z)) > 0.1f && g.shots[0].vel.y > v0.y + 0.1f);
     for (int t = 0; t < 60 * 6 && g.phase == Phase::Flying; t++) g.step(Input{});
     assert(g.phase == Phase::Settle && g.shots.size() == 1);  // the retreat ran out mid-flight: the turn waits, still steered
     g.step(fire);
@@ -3248,6 +3374,7 @@ int main() {
     checkPoison();
     checkMelee();
     checkSniper();
+    checkGunLand();
     checkScopeCrest();
     checkCrateWalk();
     checkShotgun();
@@ -3259,6 +3386,7 @@ int main() {
     checkJumpTrajectory();
     checkPayloadForces();
     checkLaunchAtWall();
+    checkDroppedInFront();
     checkPointBlankDown();
     checkWallClearance();
     checkWalkW4M();
@@ -3281,6 +3409,7 @@ int main() {
     checkFuse();
     checkParachute();
     checkRetreatInFlight();
+    checkPayloadFollow();
     checkToolWeapons();
     checkJetpack();
     checkJetpackSecondary();

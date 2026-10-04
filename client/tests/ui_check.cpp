@@ -48,6 +48,30 @@ int main() {
         assert(g.secondary < 0 && g.ammo[a.team][dyn] == 1);
         for (int f = 0; f < 150; f++) frame(Input::FIRE), assert(g.jetting);
     }
+    for (const char *pk : {"Sheep", "Landmine", "Bazooka"}) {  // panel pick under the jetpack: toolDrop() = secondary, else the tool ends (0x565d30)
+        Game g;
+        g.start({29, 2, 1, "", 0});
+        g.hotSeat = 0;
+        int jp = -1, pw = -1;
+        for (int i = 0; i < (int)WEAPONS.size(); i++) jp = WEAPONS[i].name == "Jetpack" ? i : jp, pw = WEAPONS[i].name == pk ? i : pw;
+        Worm &a = g.worms[g.current];
+        g.weapon = jp, g.ammo[a.team][jp] = 1, g.ammo[a.team][pw] = 2, g.delays[a.team][jp] = g.delays[a.team][pw] = 0;
+        Ui::Hud hud;
+        uint32_t tick = 1;
+        auto frame = [&](uint8_t b) {
+            Input in;
+            in.buttons = b;
+            hud.input(g, in, true, 0, tick++);
+            g.step(in);
+        };
+        for (int f = 0; f < 3; f++) frame(0);
+        for (int f = 0; f < 60 && !g.jetting; f++) frame(Input::FIRE);
+        assert(g.jetting);
+        hud.select(pw);
+        for (int f = 0; f < 10; f++) frame(Input::FIRE);
+        if (toolDrop(WEAPONS[pw])) assert(g.jetting && g.weapon == jp && g.secondary == pw);
+        else assert(!g.jetting && g.weapon == pw && g.secondary < 0);
+    }
     {  // user-requested: X during the count ends it; an open panel is never hidden by the ready screen
         Game g;
         g.start({7, 2, 2, "", 0});

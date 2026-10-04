@@ -1134,28 +1134,32 @@ void Game::use(Worm &w) {
         Vector3 hit;
         float dist = terrain.raycast(r, 60, &hit) ? Vector3Distance(r.position, hit) : 60;
         Worm *struck = nullptr;
+        bool onLand = true;
         for (Worm &o : worms) {
             float t = Vector3DotProduct(Vector3Subtract(o.pos, r.position), dir);
-            if (o.alive && &o != &w && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < R + 0.1f) dist = t, struck = &o;
+            if (o.alive && &o != &w && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < R + 0.1f) dist = t, struck = &o, onLand = false;
         }
         for (const Object &o : objects) {
             float t = Vector3DotProduct(Vector3Subtract(o.pos, r.position), dir);
-            if (o.type == Object::Target && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < 0.6f) dist = t, struck = nullptr;
+            if (o.type == Object::Target && t > 0 && t < dist && Vector3Distance(o.pos, Vector3Add(r.position, Vector3Scale(dir, t))) < 0.6f) dist = t, struck = nullptr, onLand = false;
         }
         for (const Bubble &bb : bubbles) {  // W4M gun mask 0x1c3f has the shell's 0x1000, not the 0x2000 it takes with the shooter inside
             Vector3 c = Vector3Subtract(Vector3Add(bb.pos, {0, BUBBLE_UP, 0}), r.position);
             float t = Vector3DotProduct(c, dir), h = Vector3LengthSqr(c) - t * t;
             if (Vector3Length(c) > BUBBLE_SHELL && h < BUBBLE_SHELL * BUBBLE_SHELL && t > 0) {
                 float hit = t - sqrtf(BUBBLE_SHELL * BUBBLE_SHELL - h);
-                if (hit < dist) dist = hit, struck = nullptr;
+                if (hit < dist) dist = hit, struck = nullptr, onLand = false;
             }
         }
-        // a worm hit takes the full damage (W4M gun), the blast only digs and pushes
+        // W4M 0x55e5da / 0x55ea22: one ExplosionMessage per hit (LandDamageRadius 0: no crater), damage centred on the worm or the land hit, push centre 2 units
+        // behind the worm (and 2 low) / 1 unit behind the land hit; the worm's own damage and impulse come from that message
         Blast b = blastOf(wd, false);
-        if (struck) b.damage = 0;
-        if (dist < 60) explode(Vector3Add(r.position, Vector3Scale(dir, dist)), b);
-        if (struck) hurt(*struck, (int)wd.damage);  // W4M Damage.Impulse 0x5ae320 ignores armour
-        if (struck) impulse(*struck, Vector3Scale(dir, wd.blast[1]));  // WEAPTWK ImpulseDirection (18,0,0), not normal: along the shot, ImpulseMagnitude
+        Vector3 at = Vector3Add(r.position, Vector3Scale(dir, dist));
+        if (struck) b.pushOff = {-dir.x * 0.1f, -0.1f, -dir.z * 0.1f}, at = struck->pos;
+        else b.pushOff = Vector3Scale(dir, -0.05f);
+        // ours: W4M clears the hit land voxel (0x55d8c0, Land.ClearVoxel, LandDamageMagnitude 25 >= 15); the importer keeps no cell grid, so a 0.5 m sphere 0.5 m deep stands in
+        if (onLand && dist < 60) terrain.carve(Vector3Add(at, Vector3Scale(dir, 0.5f)), 0.5f);
+        if (dist < 60) explode(at, b, 0, 0, weapon);
         if (--shotsLeft == 0) phase = Phase::Flying;
         break;
     }
@@ -1458,7 +1462,7 @@ int Game::blastDamage(const Blast &b, Vector3 p, Vector3 w) {
 
 // away from a point pushDepth under the blast, so worms beside it fly up; 1.2x the magnitude at that point
 Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
-    Vector3 to = Vector3Subtract(w, {p.x, p.y - b.pushDepth, p.z});
+    Vector3 to = Vector3Subtract(w, {p.x + b.pushOff.x, p.y - b.pushDepth + b.pushOff.y, p.z + b.pushOff.z});
     float d = Vector3Length(to);
     return d < b.pushReach && d > 1e-4f ? Vector3Scale(to, b.push * 1.2f * (b.pushReach - d) / b.pushReach / d) : Vector3{0, 0, 0};
 }

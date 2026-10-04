@@ -2136,6 +2136,13 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         hints({{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}});
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
         hints({{"ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
+    else if (mine && !quiet && !aiming && std::any_of(g.shots.begin(), g.shots.end(), [](const Projectile &s) { return !s.child && WEAPONS[s.weapon].kind == Kind::SuperSheep; })) {
+        bool walking = false;  // ours: no W4M legend; the press is Payload.Input.FirePressed (docs/w4m/weapons.md §13): walk, take off, detonate
+        for (const Projectile &s : g.shots) walking |= !s.child && WEAPONS[s.weapon].kind == Kind::SuperSheep && WEAPONS[s.weapon].walks && !s.stage;
+        std::vector<Hint> h = {{"A/ZR", "Space", walking ? tr(nullptr, "Take off", "Décoller") : tr(nullptr, "Detonate", "Exploser")}};
+        if (!walking) h.push_back({"LS", "Arrows", tr(nullptr, "Steer", "Diriger")});
+        hints(h);
+    }
     else if (mine && !quiet && g.secondary >= 0)  // W4M SecondaryWeaponHelpEntity: WXFE.HelpDropConsole, FETXT.Control.Secondry + FETXT.Drop
         hints({{g.jetting || g.jetLanded() ? "B" : "A", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out

@@ -61,7 +61,7 @@ struct WeaponDef {
     int retreat = -1, postLaunch = 0;  // "retreat", "post_launch": W4M RetreatTimeOverride (-1: the scheme's LandTime), PostLaunchDelay, ms
 };
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
-struct Blast { float crater, reach, damage, push, pushReach, pushDepth; };
+struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns)
 Blast blastOf(const WeaponDef &d, bool child);
 // Set down at the worm's feet (dynamite): the worm retreats while the fuse burns.
 // W4M IsPoweredWeapon: BasePower + ShotPower x MaxPower, ShotPower 0..1 over Tweaks.MaxPowerUpTime 1500 ms

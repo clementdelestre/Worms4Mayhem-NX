@@ -179,11 +179,13 @@ Source: `xom.py dump Tweak/WEAPTWK.XOM kWeaponX` (field names from the exe schem
 | Bovine Blitz cow (kWeaponSuperAirstrike) | 4.59 | 6.3 | 80 | 15 | 6.5 | 3 | 3 / 6 / 80 |
 | Fatkins Strike (lift 1.25) | 5.79 | 7.25 | 75 | 30 | 10 | 1.5 | 4.5 / 9 / 75 |
 | Concrete Donkey (lift 3.6) | 5.525 | 8.6 | 80 | 23 | 8.5 | 3 | 3 / 6 / 80 |
-| Shotgun pellet (gun) | ours 0.8 (`bCanDamageLand`) | 1.5 | 25 | 6.5 | 2 | 0 | 0.8 / 1.6 / 25 |
-| Sniper bullet (gun) | ours 0.4 | 1 | 40 | 5 | 2 | 0 | 0.4 / 0.8 / 40 |
+| Shotgun pellet (gun) | **0** (one hit voxel is cleared, see below) | 1.5 | 25 | 6.5 | 2 | 0 (push centre 0.14 m behind the worm) | 0 / 1.5 / 25 |
+| Sniper bullet (gun) | **0** (one hit voxel is cleared, see below) | 1 | 40 | 5 | 2 | 0 (push centre 0.14 m behind the worm) | 0 / 1 / 40 |
 | Oil drum (`OilDrum.*`) | 2.25 | 3.75 | 55 | 20 | 3.75 | **0.45** (9 units under the drum, 0x5d13ce; was assumed 2) | 4 / 8 / 50 |
 | Weapon crate (`Crate.*`) | 3 | 3.5 | 60 | 9 | 2.5 | **0.5** (crate radius 10 x Crate.Scale 1, 0x5c5879; was assumed 2) | 3 / 6 / 35 |
 | **Dead worm** (`Worm.Death*`) | 1.75 | 3 | 35 | 30 | 2.25 | 0.5 | 0.8 crater, no damage, no push |
+
+Gun hits (Shotgun, Sniper Rifle; sim.cpp `Kind::Shotgun`, data and disasm: docs/w4m/weapons.md "Hit handling"): one ExplosionMessage per hit with LandDamageRadius 0 (no crater), the worm hurt and pushed by it (damage centre = the worm, push centre 2 units behind and 2 low: a level sniper shot launches the victim at 5.6 m/s along (0, 1, 1)/sqrt 2, was a flat 5 m/s along the shot); `Blast::pushOff` carries that centre. Land hits clear one voxel [data]; **ours**: the importer keeps no cell grid (scale k <= 1), so a 0.5 m sphere centred 0.5 m past the hit stands in. The hit FX is WXP_ShotgunBlast (fx.cpp `gunBlast`, small grey puffs) with the ShotgunFire sound, no explosion sprites. The AI's gun estimate (ai.cpp) still uses a plain blast at the hit point [ours, not updated].
 
 Blimp range: `Land.Center` is the middle of the land's bounding box (LandscapeLogicEntity 0x4720c0); ours: floor to `landTop()` (`Game::landCenter`, was the water level, marked assumed).
 

@@ -342,6 +342,19 @@ static void donkeyDust(Vector3 pos) {
     for (int i = 0; i < 20; i++) alt(p, {rnd(-1, 1) * 2.2f, 0.2f, rnd(-1, 1) * 2.2f}, 2.2f, 2 + rnd(-0.3f, 0.3f), 35, rnd(-8, 8) * DEG2RAD * 10, 0, R_DONKEY_PUFF, 6500);
 }
 
+// W4M WXP_ShotgunBlast = WXP_ShotgunBlastHit (10 puffs, 3 units, 1.2 +- 0.2 s, speed 0.2) + WXP_ShotgunBlastHitTrails (10, 1 unit, 0.4 +- 0.1 s, speed 0.3);
+// V (0, .02, 0) +- (.2 | .3, .05 | .1, .2 | .3), grey-lilac (.95, .9, 1) to (.5, .45, .55), spin +- 8 deg x 10/s, drag N 6500
+static void gunBlast(Vector3 p) {
+    for (int i = 0; i < 20; i++) {
+        float k = i < 10 ? 1 : 1.5f;
+        Vector3 d = {rnd(-1, 1) * 0.2f * k, 0.02f + rnd(-1, 1) * 0.05f * k, rnd(-1, 1) * 0.2f * k};
+        Particle q = {p, Vector3Scale(Vector3Normalize(d), 0.2f * k * 0.5f), 0, (i < 10 ? 1.2f : 0.4f) + rnd(-0.2f, 0.2f) * (i < 10 ? 1 : 0.5f), (i < 10 ? 3.f : 1.f) / 20, 0, 0,
+                      rnd(-8, 8) * DEG2RAD * 10, 0, 0, ColorLerp({242, 230, 255, 255}, {128, 115, 140, 255}, rnd()), PUFF, false};
+        q.altN = 6500, q.altS = 2e-6f, q.p0 = p;
+        add(q);
+    }
+}
+
 void donkeyAriel(Vector3 at) {  // WXP_CrateSpawnLGRings: 30 sprites, 22 units, life 1.2 +- 0.5 s, V +- (1.5, 0, 1.5), random orientation, spin +- 15 deg x 10/s
     for (int i = 0; i < 30; i++) alt(at, {rnd(-1, 1) * 1.5f, 0, rnd(-1, 1) * 1.5f}, 1.5f, 1.2f + rnd(-0.5f, 0.5f), 22, rnd(-15, 15) * DEG2RAD * 10, rnd(0, 360) * DEG2RAD, R_DONKEY_RING, 6000);
 }
@@ -353,6 +366,9 @@ void event(const GameEvent &e, Color dirt) {
     if ((e.kind == GameEvent::Boom || big) && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0) {
         shake = fmaxf(shake, 0.6f);  // the Explode ExplosionMessage shakes the camera as any blast; its only effect is DetonationFx
         donkeyDust(e.pos);
+    } else if (e.kind == GameEvent::Boom && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun) {
+        shake = fmaxf(shake, 0.18f);  // the gun's ExplosionMessage shakes the camera like any blast; its only visual is WormCollisionFX / LandCollisionFX
+        gunBlast(e.pos);
     } else if (e.kind == GameEvent::Boom || big) {
         float r = big ? 5.5f : 2.5f;
         const Seen *s = shotAt(e.pos);

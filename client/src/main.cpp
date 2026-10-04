@@ -83,6 +83,7 @@ static void drawTextCentered(const char *t, int x, int y, int size, Color c) {
 
 static void animEvent(const Game &g, const GameEvent &e);
 
+static bool gunBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun; }  // EmitterSoundFX weapons/ShotgunFire of WXP_ShotgunBlastHit, no bang
 static bool donkeyBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0; }  // its DetonationFx and sound, not a bang
 static bool holyNext = false;  // the blast after the Hallelujah is the holy grenade's own
 static void onEvent(const Game &g, const GameEvent &e) {
@@ -95,7 +96,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
     if (e.kind == GameEvent::GameOver) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
     Fx::event(e, g.terrain.side);
     switch (e.kind) {
-    case GameEvent::Boom: Audio::play(donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    case GameEvent::Boom: Audio::play(gunBlast(e) ? Sfx::Shotgun : donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
     case GameEvent::BigBoom: if (donkeyBlast(e)) { Audio::play(Sfx::DonkeyImpact, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break; }
         Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion, e.pos), holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
     case GameEvent::Hallelujah: Audio::play(Sfx::Holy, e.pos), holyNext = true; break;
