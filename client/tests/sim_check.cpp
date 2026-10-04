@@ -896,7 +896,7 @@ static void checkEventCameras() {
         }
         assert(v[0] > 17 && v[0] < 19.5f && fabsf(v[1] - 32.5f) < 0.1f);
     }
-    {  // Starburst (W4M Detonate 0x588dd0): blast on the target, star rockets fly out and explode (observed), then Worm.Vapourize kills the rider
+    {  // Starburst (W4M Detonate 0x588dd0): one blast, then Worm.Vapourize kills the rider
         Game g;
         g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
@@ -918,7 +918,7 @@ static void checkEventCameras() {
             for (const Projectile &s : g.shots) kids += s.child && s.weapon == sb;
             for (const GameEvent &e : g.events) booms += (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom);
         }
-        assert(g.shots.empty() && v.hp < hp && a.hp <= 0 && kids > 0 && booms >= 3);
+        assert(g.shots.empty() && v.hp < hp && a.hp <= 0 && kids == 0 && booms == 1);
     }
     {  // homing from the Blimp: the entering press (Controls swallows FIRE) locks nothing; with TARGET, FIRE locks the cursor point, no launch
         Game g;

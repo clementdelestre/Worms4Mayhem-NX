@@ -53,7 +53,7 @@ PayloadLogicEntity vtable slots (0x85c194; slot: fn - meaning, evidence):
 | 7 | 0x582860 | HandleMessage (slot 7 of every LogicEntity, §2 "Common vtable layout") [disasm] | all |
 | 18 | 0x57ea40 | physics step (assert m_vAcceleration.y<=0) | Walk, Starburst |
 | 19 | 0x580830 | bounce/skim response (asserts fMaxPitch, vSkimDamping) | Starburst, Donkey |
-| **20** | **0x580f10** | **Detonate** ("PayloadLogicEntity::Detonate pos=", reads DetonationSfx, DetonateMultiEffect, NumBomblets) | Walk 0x592830, Starburst 0x588dd0 (then `Worm.Vapourize` 0x5885f0 and Timer.EndTurn 0x5889a0; disasm: rider vapourized, user unsure 2026-10-04; observed: star rockets fly out and each explodes, source not found in WEAPTWK; worm clips FireStarburst / FlyStarburst, observed ride) |
+| **20** | **0x580f10** | **Detonate** ("PayloadLogicEntity::Detonate pos=", reads DetonationSfx, DetonateMultiEffect, NumBomblets) | Walk 0x592830, Starburst 0x588dd0 (then `Worm.Vapourize` 0x5885f0 and Timer.EndTurn 0x5889a0; disasm: rider vapourized, user unsure 2026-10-04; blast FX WXP_StarburstExplosion [data]; worm clips FireStarburst / FlyStarburst, observed ride) |
 | 21 | 0x581740 | removal without a blast: 0x57fcc0, `Payload.Disarm`, `NinjaRope.Kill` when hooked, self-delete 0x68b927 [disasm] | Starburst |
 | 24 | 0x581a60 | fire-press / expiration check (reads DetonatesOnFirePress, assert m_tTimeOfExpiration) | Flying 0x558020, Starburst |
 | 26/27 | 0x57e0a0 / 0x61ff60 | 26: one tick of Velocity += Acceleration × 20 ms (asserts it is not rising while accelerating up); 27: empty in the base (`ret 4`), the per-tick hook Homing/Flying/Starburst/Donkey override [disasm] | |

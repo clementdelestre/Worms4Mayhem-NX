@@ -28,6 +28,7 @@ struct Particle {
     Color tail = {};  // alpha > 0: leaves a trail of additive puffs of this colour (W4M anchor particles)
     float altN = 0, altS = 0;  // > 0: W4M IsAlternateAcceleration (0x5b7450), p = p0 + v (N - 1/(S t + 1/N)) + v.y t on y, t in ms
     Vector3 p0{};
+    bool flame = false;  // colour from W4M's WXP_StarBurstRocketFlames ramp by age
 };
 struct Streak { Vector3 p, dir; float len, width; unsigned char tex; };
 
@@ -392,9 +393,12 @@ void trail(const Projectile &s, float dt) {
         float v = Vector3Length(s.vel);
         add({s.pos, {}, 0, 0.06f, s.child ? 0.9f : 0.75f, 0.6f, 0, 0, 0, 0, s.child ? Color{120, 230, 255, 255} : Color{255, 77, 0, 255}, GLOW, true});
         if (s.child && v > 0.5f) streaks.push_back({s.pos, Vector3Scale(s.vel, -1 / v), fminf(v * 0.15f, 2.5f), 0.3f, TRAIL_B});
-        if (rnd() < dt * (s.child ? 20 : 60))
-            add({s.pos, {rnd(-0.3f, 0.3f), rnd(-0.3f, 0.3f), rnd(-0.3f, 0.3f)}, 0, rnd(0.3f, 0.7f), s.child ? 0.2f : 0.4f, 0.05f, 0, rnd(-3, 3), s.child ? 3.0f : 0.0f, 1,
-                 s.child ? Color{180, 245, 255, 255} : Color{255, 200, 60, 255}, (unsigned char)(s.child ? STAR : PUFF), true});
+        if (rnd() < dt * 120) {  // WXP_StarBurstRocketFlames: WXSprite4 (alpha), life 500 +-200 ms, size 4 +-1.5 units shrinking, ramp white-yellow-orange-brown
+            float sz = rnd(2.5f, 5.5f) / 20;
+            Particle q = {s.pos, {rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f)}, 0, rnd(0.3f, 0.7f), sz, 0, 0, rnd(-1, 1), 0, 0, WHITE, PUFF, false};
+            q.flame = true;
+            add(q);
+        }
         return;
     }
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0) return;  // WEAPTWK: no TrailBitmap; its ArielFx is a one-off (ariel())
@@ -550,6 +554,13 @@ void draw(const Camera3D &cam) {
                 float k = p.age / p.life, s = Lerp(p.size0, p.size1, k) * 0.5f, c = cosf(p.rot) * s, sn = sinf(p.rot) * s;
                 Vector3 r = Vector3Add(Vector3Scale(right, c), Vector3Scale(up, sn)), u = Vector3Subtract(Vector3Scale(up, c), Vector3Scale(right, sn));
                 Color col = p.c;
+                if (p.flame) {
+                    static const Color R[] = {{255, 255, 255, 255}, {255, 204, 0, 255}, {255, 153, 77, 255}, {204, 128, 0, 255}, {26, 0, 0, 255}};
+                    static const float B[] = {0, 0.1f, 0.25f, 0.55f, 1};
+                    int i = 0;
+                    while (i < 3 && k > B[i + 1]) i++;
+                    col = ColorLerp(R[i], R[i + 1], (k - B[i]) / (B[i + 1] - B[i]));
+                }
                 col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));
                 if (p.stretch > 0) {  // trail texture: u = 0 head, 1 tail
                     float k = p.altN > 0 ? p.altS / powf(p.altS * p.age * 1000 + 1 / p.altN, 2) : 1;  // alternate curve: f'(t)
