@@ -154,7 +154,7 @@ struct Object {
 // Things that happened this tick, for audio/fx; not part of the checksum. worm/weapon = -1 when not applicable.
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
-                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop } kind;  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)
+                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall } kind;  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)
     Vector3 pos;
     int worm, weapon;
 };

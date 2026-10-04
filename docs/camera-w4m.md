@@ -127,7 +127,7 @@ Rules (disasm unless marked otherwise). Update 0x533950 calls 0x532a50 (object, 
    - if the camera sphere-tests inside land (radius -30, function 0x466a20), y += 5 per update.
 6. **End.**
    - Payload or crate: when the tracked entity disappears (explosion), the camera **freezes and keeps looking at the last point** for `Camera.Track.RestTime` = 1500 ms (vtable +7, 0x5334b0). The TrackCam is then finished.
-   - Worm: also finishes when it is at rest (velocity = 0) + 1500 ms.
+   - Worm: also finishes 1500 ms after its activity tokens are all released: WXWormLogicEntity +0x54, +0x58 and +0x5c ("Worm Waiting To Die" / "Worm Dying") null, latched once (0x532e87–0x532ec2; the damage display slot +0x60 is not tested). A dying or drowning worm keeps +0x5c until its blast and unspawn, so its track lasts through the blast, then RestTime (disasm).
    - The object's look-at stops updating once it is more than 40 below water level (sinking).
 
 ### Why the Holy Hand Grenade is sometimes filmed from far and high, sometimes close
@@ -286,6 +286,8 @@ The pipeline needs an FBO. It is disabled by `/NOWORMOUTLINES`.
 - The UFO animation carries its own scene camera (`perspShape`, `Camera.FollowSceneCam`).
 - `AlienAbductionCamera` is a SimpleCam (1, 1), fully locked to that scene camera, aimed at the abducted worm `m_uCameraWorm`.
 - At the end comes `StopFollowingSceneCam` (0x547e1c, 0x5486ca).
+- Scene camera framing (data, Bundl09 `AlienAbduction` clips, raw units round the beam axis, saucer body about y 10–50): AbductStart ends at persp (82.5, 21.8, 232) looking (−0.23, 0.14, −0.96), 247 units off the saucer at its height, 8° up, so with the 51.2° lens (§11.8b) the beam shows down to about 75 units under it, not to the ground 220 units below; AbductCloseBeam / Violate / OpenDoors from (26, −67.5, 94) looking 46° up at it; AbductLoop2 from (77, 285, 64) looking down (−0.98). The camera keys are smooth (no shake).
+- The saucer itself moves (data): AbductLoop / AbductLoop2 bob it ±2.8 units (5.6 units peak to peak) with a 0.67 s period; AbductCloseBeam drops it about 45 units; AbductViolate jolts it about 60 units within 0.1 s. With the camera still, that is the shaking seen on screen. The model has no scale of its own: 20 units a metre like the world (no `Abduction.*` scale; WEAPTWK has only AreaOfEffect, AverageHeight, DistanceBetweenWorms, ExtraHeight, MaxHeight, MaxSpeed, NormalSpeed).
 
 ### Worm-track priority, 3 vs 5 (disasm, 0x51cf20)
 
@@ -362,15 +364,15 @@ What the client does:
 - `targeted(Kind)` (sim.h) covers Airstrike (both kinds), Donkey (Concrete Donkey and Fatkins), Abduction, Teleport and Homing. Homing (IsTargeting + IsHoming + Aimed + Powered): FIRE in the Blimp sets `Game::locked` / `lockAt` (W4M `Payload.Target`, state 1 → 0), then the view goes back to the normal aim (W4M `Weapon.CreateAimingCursor`) and the launcher is aimed and powered as usual; the press that locked does not charge. The missile homes on `lockAt`. Teleport is not a W4M weapon (its cursor is dead code there); it gets the Targeting cursor.
 - **Entering the Blimp**: W4M `Input.BlimpView` is a toggle (DefaultCam 0x524e00 in, IsometricCam 0x529c00 out). Its defaults are "E" on PC (`FETXT.Control.Blimp`, LOCAL) and joypad button 3, i.e. Y on the 360 pad (DEFSAVE `Joypad.Input.BlimpView`, Type 2 Key 3).
   - Our mapping is a deliberate deviation, at the user's request.
-  - With a targeted weapon in hand, **A / ZR / Space** enter the Blimp. That press is swallowed until it is released, so it does not fire.
-  - **Holding L** also shows the Blimp, until L is released. The L+R performance overlay is disabled while in the Blimp, and a locked homing missile keeps L + stick aiming for a single Joy-Con.
-  - In the Blimp, **A** fires (homing: locks the target) and **B / Enter** leave without jumping. **E** toggles, as in W4M.
+  - [user-requested 2026-10-04] With a targeted weapon in hand, **Y** toggles the Blimp on the pad (the same button as W4M's 360-pad default); on the keyboard **Space** also enters it, swallowed until released so it does not fire. Hold L, and A / ZR as entry, are gone.
+  - **ZL** leaves the Blimp for the first-person aim of a homing missile (lock kept). A single Joy-Con aims with ZL + stick. The perf overlay is hold - for 1.5 s.
+  - In the Blimp, **A** fires (homing: locks the target) and **B / Enter** (or Y) leave without jumping. **E** toggles, as in W4M. L / R zoom out / in.
   - The toggle is client state (`Controls::targetView`). It is dropped as soon as no targeted weapon is in hand or the turn ends.
   - Fire never launches outside the Blimp (0x583a10). In the Blimp, a press with no target plays `FeError` in place of W4M's `weapons/Gong` (not imported).
   - Hints, as in `BlimpHelpEntity` / `WXFE.HelpBlimpConsole` (Look, Pan, Zoom in / out): "Fire / Lock target", "Look", "Pan", "Zoom" and "Leave" in the view. Outside it: "Sky view: target" and "Hold: sky view".
 - **The CPU** uses the Blimp only while its plan executes a strike, as in W4M, which calls `SetCamera("Blimp")` from `AIActionSetStrikeTarget::ApplyActionInner` (0x4b4c70) and `AIStrike.SeekTarget` (0x4b5a90). That is `Ai::striking()`: mode Act with a targeted plan weapon. It is not shown during instant replays or match playback. The team's reselected weapon alone no longer opens the view: it used to bring up the reticle at random moments. `ai_check` tests this.
 - **Controls**. [user-requested] Deliberate deviation: the sticks are the other way round from W4M HelpBlimpConsole (Movement = Look, Camera = Pan).
-  - Left stick: pan at 250·zoom u/s. Right stick: yaw (RotateSpeed 0.55·s) and pitch (PitchSpeed 0.45·s), with s = 0.9 + 0.1·zoom. D-pad up / down: zoom 0.15–2 (FOV only, client-side).
+  - Left stick: pan at 250·zoom u/s. Right stick: yaw (RotateSpeed 0.55·s) and pitch (PitchSpeed 0.45·s), with s = 0.9 + 0.1·zoom. L / R: zoom 0.15–2 (user-requested pad mapping) (FOV only, client-side).
 - **Pitch range** [0, π/2], as in W4M (0x52a5e0). Pitch 0 is a horizontal view and π/2 looks straight down: the camera sits at focus + R(pitch, yaw)·(0, 0, -StickLength), with DefaultPitch 1 tilted down (0x52a0a0), and our `blimpEye` uses the same convention.
   - The camera's up vector is R(pitch, yaw)·(0, 1, 0) (W4M 0x52a0a0).
   - A fixed (0, 1, 0) up made the view matrix degenerate when looking straight down, and the screen filled with the fog colour (the "yellow screen").
@@ -404,6 +406,7 @@ What the client does:
   - 0x527b00: up = the payload's local up axis (its transform's second column), position = payload − LagBehind along its forward axis, look-at = payload + LookAhead; a land hit between look-at and position pulls the position 10 units in front of it. UpSpeed is therefore the rate at which the camera rolls with the payload.
   - On the payload's death the position is set to position + FinalDistance along look-at → position, clipped by land (0x51abf0), held PauseDuration.
 - **AlienAbductionCamera** position (0x547490, every frame through SimpleCam 0x531e30): (UFO.x, Land.MaxHeight, UFO.z + 200); while the abduction state (+0x44) is 2, the state set with `Worm.OverridePhysics` and the camera start (0x548578 … 0x5486ca), worm + (0, 50, 50) clipped on the worm → candidate segment (0x51af90), kept if more than 10 units from the worm.
+- **"Worm Dying" 0x5a7190** (slot +0x5c, then the 0x51cf20 request) is called by Worm.TimeToDie (0x5adcb6) and by the drowning check 0x5ad640 (0x5ad83d, 0x5ad8bc) before ChangeState 8 DrownFloat: a drowned worm gets the same request at the moment it drowns; under Water.Level it is requested at its own position, priority 5 (6 in clear view, dropped) (disasm 0x51d037, 0x51d2cb).
 - **Worm-track requests during the death queue**: "Worm Dying" (0x5a7282), "Worm Displaying Damage Taken" (0x5abeec) and "ImpulseWorm going Ballistic" (0x5ad60b) all call 0x51cf20(worm). When served (0x51d3d0), a request whose priority is below the running track's (+0x2c4) is cleared, not kept (0x51d408).
 - **Homing cursor** (Bundl09): `Homing.Cursor.Mesh` = node `Inner` with 4 quads (Inner_01 top, 04 bottom: 18 × 54; 02 left, 03 right: 54 × 18; one row each of texture `maya:file7/-1` #3, exported as `fe2/homing_inner`); `Homing.Cursor.SquareMesh` = node `Outer`, locator1-4 at (∓50, ±50) carrying the bitmaps `HUD.Homing.Cursor.TL/TR/BL/BR` (0x560690). Clips: Intro_Inner, Loop_Inner, Intro_Outer, Loop_Outer, Lock_Outer, Error_Outer (keys in docs/camera.md). The LockOn tints its 4 corners each frame before the lock (0x560590 → 0x552340); after `HUD.Target.Selected` (0x560420: Lock_Outer, `weapons/LockOn`) it stays on the stored target point (0x5600e0: on the camera → target ray at 500 units, i.e. screen-constant). The Inner mesh is never tinted (HomingCursorGraphicEntity uses the base per-frame 0x552230). The size of a bitmap attached to a locator is unverified (XOM scene-graph runtime, as the reticle layer in §9): ours is its 128 px, which makes the corners frame the ticks.
 
@@ -489,6 +492,23 @@ Labels per row: **data** (CAMTWK / tweak value), **disasm** (read in the code), 
 | Worm (−0xc) | 0x5ab343 ANDs with ~0xb: clears bits 0, 1 and 3 | disasm | WXWormLogicEntity |
 | Only bit 0 reaches the camera | the three serves test `+0xe8 & 1` only | disasm | 0x51d558, 0x51d6f8, 0x51d870 |
 
+### 11.6b PiP lifecycle (audit; what promotes a PiP view to full screen)
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| CMS flags | +0x2c0 event camera is the displayed (main) one; +0x2c2 PiP up; +0x2c8 PiP.GoFullScreen sent; +0x2c9 PiP.GoneFullScreen received; +0x2ca PiP.SlideOn sent; +0x2ac event camera, +0x2b0 PiP render camera, +0x2b4 non-zero blocks both cameras (set / cleared by 0x522710) | disasm | 0x51c000, 0x51c0b0, 0x51c160, 0x51dfa8 |
+| What +0x2c0 does | the displayed camera type 0x51cea0 (and the "type 3" test 0x51d8f0) is the event camera's (+0x2ac, type at +0x2c) when +0x2c0 ≠ 0, else the default camera 0x4b3cc0: +0x2c0 = 0 leaves the event camera in the PiP only | disasm | 0x51cef8–0x51cf10, 0x51d916–0x51d936 |
+| PiP render camera | 0x51c6e0 returns +0x2b0 while +0x2c2 and +0x2c9 = 0 (GoneFullScreen not yet received), else the logical camera | disasm | 0x51c7b0–0x51c7df |
+| SlideOn 0x51c000 | only if [0x95fb04] ≠ 0 (PiP enabled), +0x2c2 = 0 and +0x2ca = 0; sets +0x2c2 = 1, +0x2c8 = +0x2c9 = 0, +0x2ca = 1. Every serve calls it: a serve while the PiP is up sends nothing and just rewrites +0x2c0 | disasm | 0x51c016–0x51c097, 0x51d512 |
+| Serve is re-decided at each serve | the +0x2c0 rule of §11.6 (jetpack bit, RetreatTimeRemaining > 0 and Velocity ≠ 0) runs at every serve, not once per PiP: a later event camera served with the worm still gets +0x2c0 = 1 while the PiP of the first is still up | disasm | 0x51d52d–0x51d58c |
+| Velocity (+0x50) | "ballistic or slide velocity" (docs/w4m/physics.md §+0x50); a walk step writes InputImpulse, the idle branch zeroes it. So a worm that falls, slides or is knocked back counts as moving, not only a walking one | data (physics.md), disasm | 0x51d577–0x51d58c (length via 0x4513b0) |
+| SlideOff 0x51c0b0 | sent when +0x2c2, [0x95fb04] ≠ 0, +0x2c8 = +0x2c9 = 0 and the PiP camera's vfunc 0x1c returns true (checked at each update after the PiP camera's blend, 0x51df74–0x51df7c); clears +0x2c8 / 2c9 / 2ca. What vfunc 0x1c answers (camera done) is assumed, not traced | disasm; meaning assumed | 0x51df69–0x51df7c |
+| GoFullScreen 0x51c160 | sends PiP.GoFullScreen once (+0x2c8 = 1). Only two callers: 0x51dbc0, when the main logical camera is type 6 (FlyCam) and PiPService::IsHidden 0x635960 is false (states 1, 2, 4, 5 of the table 0x635994; 0 and 3 hidden); and 0x51e3a6, at the end of the update, when +0x2c2 and +0x2c8 = 0 and +0x2b4 = 0 and [0x95fb04] = 0 (PiP disabled). The two other xrefs of the message handle (0x7e3885, 0x8073c0) are static tables | disasm | 0x51db88–0x51dbc5, 0x51e382–0x51e3a6 |
+| End of the promotion | when +0x2c2, +0x2c8 and +0x2c9 are all set (GoneFullScreen received) the CMS resets +0x2c2 / 2c8 / 2c9 and the priority +0x2c4, and sends PiP.Hide: the PiP's view is now the main one | disasm | 0x51dfa8–0x51e02f |
+| Timer.RetreatTimedOut | sets +0x2c0 = 1 and nothing else: no GoFullScreen, no PiP message (0x523a96–0x523ac8). The animated grow of an inset at the end of the retreat is therefore not produced by this message; no sender of GoFullScreen runs at the retreat's end (the FlyCam case above is the only state trigger) | disasm | 0x522710 |
+| PiPService data | HUDTWK: ShowTime 0.5, ShowLeadIn 0, ShowLeadOut 0.1, FullScreenTime 0.5, FullScreenLeadIn / Out 0.1; OnScreen Position (190, 135), Rotation z 0.1, Scale (120, 90); OffScreen Position (400, 155), Scale 0; HUD.ActWormInfo.PosPiP (253, 300), HUD.HPreview.PositionPiP (252, 0). The service constructor 0x635d40 builds the HUD.PiP bitmap and a WXFE_Border; the state machine (the handlers of the five messages, state at +0x20, set to 1 at 0x6361a5; the per-frame scale 0x636935) is not traced to its transitions | data, disasm | 0x635d40, 0x636ab0, 0x6361a5 |
+| Open (not proven) | what makes the real game grow a PiP shot to full screen when the shot is not a FlyCam: the CMS never sends GoFullScreen for it (above). Candidates not checked: a handler of the PiPService state machine reading the CMS, or the PiP being replaced by a second serve (+0x2c0 = 1) while the first one is still up | assumed | — |
+
 ### 11.7 Super Airstrike (Bovine Blitz) steered flight
 
 | Item | Value / rule | Label | Source |
@@ -505,6 +525,15 @@ Labels per row: **data** (CAMTWK / tweak value), **disasm** (read in the code), 
 | DefaultCam activation 0x52da00 | resets, sets the yaw from the target's facing, runs one update (vtable +0x28 = 0x530690); copies nothing from the camera before and sets no Cut flag | disasm | 0x52da00 |
 | AlienAbductionCamera clip | 0x547490: candidate = worm + 10 + (0, 50, 50) units, clipped by 0x51af90 (land only: 0x466a20, CollisionManagerService / Landscape), kept if > 10 units from the worm; no test against the saucer | disasm | 0x547490, 0x51af90 |
 
+
+### 11.8b View basis and up (disasm)
+
+| Item | Value / rule | Label | Source |
+|---|---|---|---|
+| View basis | XCamera (+0x120 position, +0x12c look-at, +0x138 up): f = normalise(look-at − position); up' = up − f(up·f); if \|up'\| < 1e-6, (0, 1, 0) − f·f.y; still < 1e-6, (0, 0, 1) − f·f.z; normalised. So the camera's up is only a hint: no roll while it is (0, 1, 0), and a straight-down view takes world z as its up | disasm | 0x6e1d6c |
+| Logical up | (0, 1, 0) from the base constructor; written otherwise only by IsometricCam (R·(0, 1, 0), 0x52a0a0), FlyCam (the payload's up axis, 0x527b00), TrackCam (inherited at 0x5337c0, (0, 1, 0) at a hard cut, eased to (0, 1, 0) at UpSpeed 0x533b25) and the scene cameras | disasm | 0x51b647, 0x533b25 |
+| Shake | CMS 0x51c680 → CameraShakeManager 0x523e60 adds the summed shake offset to position, look-at and (×2) up after the blend, so a shake tilts the view | disasm | 0x523fdf–0x52405a |
+| Scene camera lens | 0x6e1f46: half extents = Aperture × 25.4 × 0.5 / FocalLength (x and y); every perspShape in Bundl09: FocalLength 25.0217, Aperture (1.26, 0.94488), NearClip 5, FarClip 50000 → 51.2° vertical, 65.2° horizontal | disasm, data | 0x6e1f46 |
 
 ### 11.9 Scene camera roll (`persp` node up)
 

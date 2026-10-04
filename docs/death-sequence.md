@@ -35,6 +35,8 @@ Settle (`docs/sim.md`, W4M stdlib.lub): wait for no activity (no timeout), PostA
 | + 1 tick, once thrown worms have landed | the next dead worm's throes, or the queue ends |
 | queue over | wait for no activity, PostActivityTime, DoPostActivity (poison, crates), PostActivityTime, next turn |
 
+Camera: each dying worm asks a WormTrackCamera at the start of its throes or at its drowning (W4M "Worm Dying" 0x5a7190, from 0x5adcb6 and 0x5ad83d) [disasm]; the track lasts through its blast, then RestTime 1.5 s (docs/camera.md "Death queue, drowning, hp count").
+
 A drowned worm is outside the queue: it floats on its own clock (`floatStep`, DrownFloat 0x5aa130) and blows up 2000 ms after reaching its float height, even mid-turn.
 
 The sim stays deterministic: the schedule comes from `countGroup`, `countT`, `countEnd`, `timer` and the worm positions, which are all in `checksum()`.

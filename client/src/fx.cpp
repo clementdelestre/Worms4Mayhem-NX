@@ -393,12 +393,15 @@ void trail(const Projectile &s, float dt) {
         float v = Vector3Length(s.vel);
         add({s.pos, {}, 0, 0.06f, s.child ? 0.9f : 0.75f, 0.6f, 0, 0, 0, 0, s.child ? Color{120, 230, 255, 255} : Color{255, 77, 0, 255}, GLOW, true});
         if (s.child && v > 0.5f) streaks.push_back({s.pos, Vector3Scale(s.vel, -1 / v), fminf(v * 0.15f, 2.5f), 0.3f, TRAIL_B});
-        if (rnd() < dt * 120) {  // WXP_StarBurstRocketFlames: WXSprite4 (alpha), life 500 +-200 ms, size 4 +-1.5 units shrinking, ramp white-yellow-orange-brown
-            float sz = rnd(2.5f, 5.5f) / 20;
-            Particle q = {s.pos, {rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f)}, 0, rnd(0.3f, 0.7f), sz, 0, 0, rnd(-1, 1), 0, 0, WHITE, PUFF, false};
-            q.flame = true;
-            add(q);
-        }
+        int alive = 0;
+        for (const Particle &q : ps) alive += q.flame;
+        if (dt > 0)  // WXP_StarBurstRocketFlames: SpawnFreq 1 ms < frame, so one batch of NumSpawn 2 per update; pool MaxParticles 200
+            for (int i = 0; i < 2 && alive++ < 200; i++) {
+                float sz = rnd(2.5f, 5.5f) / 20;
+                Particle q = {s.pos, {rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f)}, 0, rnd(0.3f, 0.7f), sz, 0, 0, rnd(-1, 1), 0, 0, WHITE, PUFF, false};
+                q.flame = true;
+                add(q);
+            }
         return;
     }
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0) return;  // WEAPTWK: no TrailBitmap; its ArielFx is a one-off (ariel())
@@ -556,12 +559,12 @@ void draw(const Camera3D &cam) {
                 Color col = p.c;
                 if (p.flame) {
                     static const Color R[] = {{255, 255, 255, 255}, {255, 204, 0, 255}, {255, 153, 77, 255}, {204, 128, 0, 255}, {26, 0, 0, 255}};
-                    static const float B[] = {0, 0.1f, 0.25f, 0.55f, 1};
+                    static const float B[] = {0, 0.1f, 0.15f, 0.3f, 1};  // ParticleColorBand 0x5b77c0: end time of each segment
                     int i = 0;
                     while (i < 3 && k > B[i + 1]) i++;
                     col = ColorLerp(R[i], R[i + 1], (k - B[i]) / (B[i + 1] - B[i]));
                 }
-                col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));
+                if (!p.flame) col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));  // flame: AlphaVelocity 0, constant alpha
                 if (p.stretch > 0) {  // trail texture: u = 0 head, 1 tail
                     float k = p.altN > 0 ? p.altS / powf(p.altS * p.age * 1000 + 1 / p.altN, 2) : 1;  // alternate curve: f'(t)
                     Vector3 vel = p.altN > 0 ? Vector3Add(Vector3Scale(p.v, k), {0, p.v.y, 0}) : p.v;

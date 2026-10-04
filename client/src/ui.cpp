@@ -530,10 +530,10 @@ void controls(bool game) {
                                    {160, -112, 6}, {45, -70, 14}, {150, -69, 20}, {116, -35, 20}, {184, -35, 20}, {150, -1, 20}, {75, 35, 40}};  // x, y, radius
     struct Call { int part; float ly; const char *label, *key; };
     static const Call GAME[] = {
-        {ZL, 222, "Hold: precise aim\nJetpack: drop", "RMB"}, {L, 276, "L + stick: aim (single Joy-Con)\nHold: sky view (strikes)", nullptr}, {MIN, 356, "Hold: controls", "F1"},
-        {LS, 414, "Move (camera-relative)\nAim mode: walk / turn", "Arrows"}, {DPAD, 488, "Zoom in / out\nWeapon panel cursor", "X/Z"},
-        {ZR, 232, "Fire", "Space"}, {R, 270, "Next weapon", "Tab"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"},
-        {BY, 380, "Next weapon", "Tab"}, {BA, 440, "Fire (hold = power)\nStrikes: sky view, then fire", "Space/E"}, {BB, 482, "Jump (twice = backflip)\nSky view: leave", "Enter"},
+        {ZL, 222, "Hold: first-person aim (precise)\nZL + stick: aim (single Joy-Con)", "RMB"}, {L, 276, "Zoom out (every view)", "Z"}, {MIN, 356, "Hold: controls", "F1"},
+        {LS, 414, "Move (camera-relative)\nAim mode: walk / turn", "Arrows"}, {DPAD, 488, "Left / right: previous / next weapon\nUp / down: fuse time, jetpack forward", "Tab"},
+        {ZR, 232, "Fire", "Space"}, {R, 270, "Zoom in (every view)", "X"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"},
+        {BY, 380, "Toggle the sky view\n(strikes, homing)", "E"}, {BA, 440, "Fire (hold = power)\nSky view: fire / lock", "Space"}, {BB, 482, "Jump (twice = backflip)\nJetpack: drop; sky view: leave", "Enter"},
         {RS, 530, "Camera orbit\nAim mode: aim (+ gyro)", "A/D/W/S"}};
     static const Call MENU[] = {
         {MIN, 330, "Tap: controllers (setup)\nHold: controls", "F1"}, {LS, 414, "Move", "Arrows"}, {DPAD, 488, "Move / change value", "Arrows"},
@@ -608,9 +608,9 @@ void controls(bool game) {
         }
     }
     if (game) text(keys ? "Hold right mouse button: aim with the mouse  -  F3: performance overlay"
-                        : "Aim mode: hold ZL, or while charging (A)  -  L + R: performance overlay", 640, 640, 22, LIGHTGRAY, 1);
+                        : "Aim mode: hold ZL, or while charging (A)  -  Hold -: controls, longer: performance overlay", 640, 640, 22, LIGHTGRAY, 1);
     if (game) text(keys ? "Jetpack: Space thrusts, arrows steer, Backspace drops dynamite / mine / sheep"  // W4M UtilityFire group
-                        : "Jetpack: A / ZR thrust, left stick steers, ZL drops dynamite / mine / sheep", 640, 666, 22, LIGHTGRAY, 1);
+                        : "Jetpack: A / ZR thrust, left stick steers, B drops dynamite / mine / sheep", 640, 666, 22, LIGHTGRAY, 1);
     else text("Each screen lists its other buttons at the bottom", 640, 640, 22, LIGHTGRAY, 1);
 }
 
@@ -1491,7 +1491,7 @@ static std::vector<int> panelSlots() {
 
 void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
-    const uint8_t held = in.buttons;  // before the panel blanks `in`: the swallow must wait for a real release
+    const uint8_t held = in.buttons, drop = held & Input::TARGET ? 0 : Input::PITCH;  // before the panel blanks `in`: the swallow must wait for a real release
     if (cur.team < (int)g.cfg.teamSetup.size() && g.cfg.teamSetup[cur.team].cpu) local = false;
     mine = local;
     // swallow: a button still held from a menu (START at tick 0) or another turn must not fire or jump
@@ -1524,11 +1524,11 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
         if (pressed(pad, {B}, {KEY_BACKSPACE})) open = false, swallow = true, Audio::play(S::FeCancel);
         // W4M 0x602ea0 disables only WormMoving (stick, jump; 0x506fa0 posts their releases): UtilityFire and InGame stay live.
         // W4M navigates with the stick (Menu group): the D-pad up stays Jetpack.Forward. Landed: A would also be FIRE, so no takeoff
-        in = Input{}, in.buttons = g.jetting ? held & (Input::FIRE | Input::JUMP) : g.jetLanded() ? held & Input::PITCH : 0, in.walk = fwd ? 127 : 0;
+        in = Input{}, in.buttons = g.jetting ? held & Input::FIRE : 0, in.walk = fwd ? 127 : 0;  // B closes the panel: it must not drop the secondary
     }
     if (swallow) {
-        if (!(held & (Input::FIRE | Input::JUMP))) swallow = false;
-        if (!g.jetting) in.buttons &= ~(Input::FIRE | Input::JUMP);  // in flight FIRE is the thrust and JUMP is ZL (Fire.Second), never a leftover press
+        if (!(held & (g.jetting ? Input::JUMP : Input::FIRE | Input::JUMP | drop))) swallow = false;
+        in.buttons &= ~(g.jetting ? Input::JUMP : Input::FIRE | Input::JUMP | drop);  // in flight FIRE is the thrust; JUMP / PITCH are B (Fire.Second), never a leftover press
     }
     if (pick >= 0 && (g.held() == pick || g.shotsLeft || !g.pickable(cur.team, pick))) pick = -1;
     if (pick >= 0) in.buttons = (in.buttons & ~(Input::FIRE | Input::JUMP)) | Input::NEXT_WEAPON, in.aim = Input::pick(pick).aim;  // pending pick: Controls still sees the old weapon, so a bounce press would fire it unaimed
@@ -1885,9 +1885,7 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
         if (ticked && tickGap <= 0) Audio::play(Audio::Sfx::HpTick), tickGap = 0.06f;
         const Worm &fw = g.worms[g.countFocus()];
         Vector3 c = {fw.pos.x, fmaxf(fw.pos.y, g.water) + 1.2f, fw.pos.z};
-        float r = 0;
-        if (int d = g.dying(); d >= 0) c = {g.worms[d].pos.x, fmaxf(g.worms[d].pos.y, g.water) + 0.6f, g.worms[d].pos.z}, r = fmaxf(r, 2);  // each blast, at the count's distance
-        Controls::focus(&c, r);
+        Controls::focus(&c);
         counting = -1;
         return true;
     }
@@ -2100,7 +2098,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (g.shotsLeft) text(TextFormat("%d shot(s) left", g.shotsLeft), 190, 600, 22, WHITE);
     if (g.roped) text("Rope: stick swings, aim = length, jump releases", 190, 600, 22, WHITE);
     if (g.jetting) {
-        text(keyGlyphs() ? "Jetpack: Space thrust, arrows steer, Backspace drop" : "Jetpack: A/ZR thrust, stick steers, ZL drop", 190, 600, 22, WHITE);  // HelpText.kUtilityJetpack0
+        text(keyGlyphs() ? "Jetpack: Space thrust, arrows steer, Backspace drop" : "Jetpack: A/ZR thrust, stick steers, B drop", 190, 600, 22, WHITE);  // HelpText.kUtilityJetpack0
         float full = 0.01f;  // the hand may hold what it drops
         for (const WeaponDef &d : WEAPONS) if (d.kind == Kind::Jetpack) full = fmaxf(full, d.fuse);
         healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / full, 0, 1));
@@ -2111,13 +2109,13 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
         hints({{"ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
     else if (mine && !quiet && g.secondary >= 0)  // W4M SecondaryWeaponHelpEntity: WXFE.HelpDropConsole, FETXT.Control.Secondry + FETXT.Drop
-        hints({{g.jetting || g.jetLanded() ? "ZL" : "A", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
+        hints({{g.jetting || g.jetLanded() ? "B" : "A", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
         hints({{"A", "Space", "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
-               {"Up/Down", "Z/X", "Zoom"}, {"B", "Enter/E", "Leave"}});
+               {"L/R", "Z/X", "Zoom"}, {"B/Y", "Enter/E", "Leave"}});
     else if (mine && !quiet && g.phase == Phase::Aim && (Controls::firstPerson(g) || Controls::scoped(g)))  // HeadCam: FETXT.Control.ZoomIn / ZoomOut
-        hints({{"A", "Space", "Fire"}, {"Up/Down", "Wheel", "Zoom"}});
-    else if (mine && !quiet && Controls::targetHeld(g)) hints({{"A", "Space/E", "Sky view: target"}, {"L", nullptr, "Hold: sky view"}});  // "Define the path using [Blimp]"
+        hints({{"A", "Space", "Fire"}, {"L/R", "Wheel", "Zoom"}});
+    else if (mine && !quiet && Controls::targetHeld(g)) hints({{"Y", "E", "Sky view: target"}});  // "Define the path using [Blimp]"
     else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});
     if (!open) return;
 

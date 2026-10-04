@@ -18,8 +18,10 @@ Confidence tags:
 - **user-requested** (our docs): behaviour the user asked for explicitly, kept even where W4M may differ; retested on request, never "fixed".
 
 User-requested behaviours (kept on purpose; retest only when the user asks):
-- Blimp view: A / ZR enter it (that press does not fire), B leaves it (no jump), holding L shows it until released; sticks swapped vs
-  W4M HelpBlimpConsole (docs/camera-w4m.md, Controls).
+- Switch pad layout (2026-10-04): Y toggles the Blimp / sky view (A / ZR in it fire or lock; B leaves it, no jump), ZL held = first-person
+  aim (+ fine aim), L / R = zoom out / in in every view, D-pad left / right = previous / next weapon, D-pad up / down = fuse time and
+  jetpack forward, B drops the jetpack secondary, hold - long = perf overlay; Blimp sticks swapped vs W4M HelpBlimpConsole
+  (README controls table, docs/camera-w4m.md, Controls).
 - Hot seat: the button press that cancels it is consumed, never a shot, jump or view change (docs/sim.md, 2026-10-03).
 - Steered shots (Super Sheep, Bovine Blitz, Old Woman, Scouser): the left stick does it all, yaw and pitch; the right stick no longer pitches (2026-10-03).
 - Rule 128 "No delays": test rule ignoring the preset's weapon delays (PROTOCOL.md, Start rules).

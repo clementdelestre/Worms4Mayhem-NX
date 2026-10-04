@@ -165,28 +165,27 @@ Input read(const Game &g, int pad, bool live, float dt) {
 #else
     const bool kb = true;
 #endif
-    bool lHeld = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1), zl = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) || (kb && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
+    bool zl = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) || (kb && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
     bool held = targetHeld(g), homing = WEAPONS[g.weapon].kind == Kind::Homing;
-    bool fpHoming = homing && (lHeld || zl);  // Homing: L / right mouse = first person, where A locks
-    // W4M Input.BlimpViewPressed toggles Blimp / Default (E). Here also: A / ZR / Space enter it (that press does not fire),
-    // B / Enter leave it (no jump), and holding L shows it until released.
-    static bool swallowFire = false, swallowJump = false, viaL = false, wasL = false;
+    bool fpHoming = homing && zl;  // Homing: ZL / right mouse = first person, where A locks
+    // W4M Input.BlimpViewPressed toggles Blimp / Default (E; user-requested: Y on the pad, 2026-10-04). Keyboard Space also enters it
+    // (that press does not fire); B / Enter leave it (no jump).
+    static bool swallowFire = false, swallowJump = false, wasZl = false, wasY = false, wasDp = false;
     bool fireDown = down(pad, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT) || down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2) || (kb && IsKeyDown(KEY_SPACE));
     bool jumpDown = down(pad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN) || (kb && IsKeyDown(KEY_ENTER));
     swallowFire &= fireDown, swallowJump &= jumpDown;
-    if (!blimpable(g)) blimpOn = viaL = false;
+    bool yDown = down(pad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT), kbFire = kb && IsKeyDown(KEY_SPACE);
+    if (!blimpable(g)) blimpOn = false;
     else if (live) {
         if (forceAim) blimpOn = true;
-        else if (kb && IsKeyPressed(KEY_E)) blimpOn = !blimpOn, viaL = false;
-        else if (!blimpOn && held && !fpHoming && !(homing && g.locked) && fireDown && !(prevFire & Input::FIRE)) blimpOn = swallowFire = true;
-        else if (blimpOn && jumpDown && !(prevFire & Input::JUMP)) blimpOn = viaL = false, swallowJump = true;
-        if (held && !homing && lHeld && !wasL && !blimpOn) blimpOn = viaL = true;
-        if (homing && blimpOn && lHeld && !wasL) blimpOn = viaL = false;  // W4M: L leaves the Blimp for the first-person aim (lock kept)
-        if (viaL && !lHeld) blimpOn = viaL = false;
+        else if ((kb && IsKeyPressed(KEY_E)) || (yDown && !wasY)) blimpOn = !blimpOn;
+        else if (!blimpOn && held && !fpHoming && !(homing && g.locked) && kbFire && !(prevFire & Input::FIRE)) blimpOn = swallowFire = true;
+        else if (blimpOn && jumpDown && !(prevFire & Input::JUMP)) blimpOn = false, swallowJump = true;
+        if (homing && blimpOn && zl && !wasZl) blimpOn = false;  // W4M: ZL leaves the Blimp for the first-person aim (lock kept)
     }
-    wasL = lHeld, blimpLive = live;
+    wasY = yDown, wasZl = zl, blimpLive = live;
     bool canAim = live && g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting, tv = live && blimpable(g) && blimpOn;
-    aimMode = canAim && (forceAim || zl || lHeld || (g.power > 0 && aimed(WEAPONS[g.weapon])));  // a dynamite press charges, it does not aim
+    aimMode = canAim && (forceAim || zl || (g.power > 0 && aimed(WEAPONS[g.weapon])));  // a dynamite press charges, it does not aim
     fine = aimMode && (zl || forceAim == 2);
     Vector2 ls = stick(pad, GAMEPAD_AXIS_LEFT_X), rs = stick(pad, GAMEPAD_AXIS_RIGHT_X);
     float turn = 0, walk = 0, aim = 0, inv = settings.invertAim ? -1 : 1;  // rad/s, walk share, rad/s
@@ -206,10 +205,11 @@ Input read(const Game &g, int pad, bool live, float dt) {
         pitch = Clamp(l.y, -1, 1) * 0.45f * s / Game::BLIMP_TILT;
     } else if (aimMode) {
         Vector2 a = rs;
-        if (lHeld && !rs.x && !rs.y) a = ls, ls = {0, 0};  // L + stick: single Joy-Con
+        bool solo = zl && !rs.x && !rs.y && !forceAim;  // ZL + left stick: single Joy-Con, no fine aim
+        if (solo) a = ls, ls = {0, 0};
         a = Vector2Scale(a, Lerp(1, Vector2Length(a), AIM_CURVE));
         tilt = Vector2Length(a) > 0.98f ? tilt + dt : 0;
-        float k = settings.aim * (fine ? FINE : 1) * Lerp(1, RAMP_MAX, Clamp((tilt - RAMP_DELAY) / RAMP_TIME, 0, 1));
+        float k = settings.aim * (fine && !solo ? FINE : 1) * Lerp(1, RAMP_MAX, Clamp((tilt - RAMP_DELAY) / RAMP_TIME, 0, 1));
         turn = -a.x * AIM_YAW * k - ls.x * AIM_TURN;
         aim = a.y * AIM_PITCH * k * inv;
         walk = ls.y;
@@ -255,18 +255,23 @@ Input read(const Game &g, int pad, bool live, float dt) {
     prevFire = (fireDown ? Input::FIRE : 0) | (jumpDown ? Input::JUMP : 0);
     bool fpFire = homing && (aimMode || g.locked);  // Homing: first person or already locked, FIRE passes
     if (swallowFire || (live && held && !tv && !fpFire)) in.buttons &= ~Input::FIRE;  // W4M 0x583a10: no launch outside the Blimp view
-    if (g.jetting) { if (zl || (kb && IsKeyDown(KEY_BACKSPACE))) in.buttons |= Input::JUMP; }  // W4M Fire.Second (LT, Backspace): drop; no jump
+    bool padB = down(pad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN), dropKey = (kb && IsKeyDown(KEY_BACKSPACE)), landedDrop = g.jetLanded() && g.secondary >= 0 && !tv && !gk;
+    if (g.jetting) { if (padB || dropKey) in.buttons |= Input::JUMP; }  // W4M Fire.Second (user-requested: B on the pad, 2026-10-04): drop; no jump
+    else if (landedDrop) { if (padB || dropKey) in.buttons |= Input::PITCH; }  // Fire.Second landed: B drops, it does not jump
     else if (jumpDown && !tv && !swallowJump) in.buttons |= Input::JUMP;
-    if (g.jetLanded() && g.secondary >= 0 && !tv && !gk && (zl || (kb && IsKeyDown(KEY_BACKSPACE)))) in.buttons |= Input::PITCH;  // Fire.Second landed
-    bool r = down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) && !lHeld;  // L+R: perf overlay
-    if (r || down(pad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT) || (kb && IsKeyDown(KEY_TAB))) in.buttons |= Input::NEXT_WEAPON;
-    if (fuseKeys(g)) {  // W4M FuseUp on the d-pad (camera zoom otherwise)
+    bool dpL = down(pad, GAMEPAD_BUTTON_LEFT_FACE_LEFT), dpR = down(pad, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
+    if (dpR || (kb && IsKeyDown(KEY_TAB))) in.buttons |= Input::NEXT_WEAPON;
+    else if (dpL && !wasDp && g.phase == Phase::Aim && !g.shotsLeft)  // previous weapon: the sim's direct pick of the selectable one before
+        for (int i = 1, n = (int)WEAPONS.size(); i <= n; i++)
+            if (int k = ((g.held() - i) % n + n) % n; g.selectable(w.team, k)) { in.buttons |= Input::NEXT_WEAPON, in.aim = Input::pick(k).aim; break; }
+    wasDp = dpL;
+    if (fuseKeys(g)) {  // W4M FuseUp on the d-pad
         if (down(pad, GAMEPAD_BUTTON_LEFT_FACE_UP) || (kb && IsKeyDown(KEY_EQUAL))) in.buttons |= Input::FUSE_UP;
         if (down(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN) || (kb && IsKeyDown(KEY_MINUS))) in.buttons |= Input::FUSE_DOWN;
     }
-    // the follow camera's keys (W4M InGame group Camera.*, 0x4e1610): right stick, d-pad zoom, A D X Z, wheel
+    // the follow camera's keys (W4M InGame group Camera.*, 0x4e1610): right stick, L / R zoom, A D X Z, wheel
     bool camKeys = (!aimMode && !g.roped && !g.steered() && (rs.x || rs.y)) ||
-                   (!fuseKeys(g) && !g.jetting && (down(pad, GAMEPAD_BUTTON_LEFT_FACE_UP) || down(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN))) ||
+                   (down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1)) ||
                    (kb && (IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_X) || IsKeyDown(KEY_Z) || GetMouseWheelMove()));
     if (live && !tv && !gk && camKeys) in.flags |= Input::CAMERA;
     return in;
@@ -338,14 +343,14 @@ static const Vector3 FATKINS_VP[] = {{10, 5, -25}, {10, 5, 25}, {-10, 5, 25}, {-
 static const Vector3 WORM_VP[] = {{3.5f, 4, 10}, {-3.5f, 1.5f, 9}, {-2.5f, 3, 10}, {2.5f, 2.5f, 11.5f}, {1, 3, 15}, {0.5f, 1, 5}, {-0.5f, 1.5f, 5},
                                   {-1.5f, 6, 10}, {0.5f, 1.25f, 4}, {0.5f, 4, -10}, {-1.5f, 3, -9}, {0.5f, 1, -4}, {0, 4, 0}};
 static const Vector3 CRATE_VP[] = {{0, 5, 15}, {0, 5, -15}, {15, 5, 0}, {-15, 5, 0}, {0, 25, 2.5f}};
-struct TrackDef { const Vector3 *vp; int n; float far, pref, zoom; bool startCut; };  // Camera2ObjectDistance, MinPreferredDistance m, ZoomSpeed a CMS update
-static const TrackDef PAYLOAD_T = {PAYLOAD_VP, 11, 65, 30, 0.019f, false}, FATKINS_T = {FATKINS_VP, 4, 50, 25, 0.019f, false},
-                      WORM_T = {WORM_VP, 13, 30, 10, 0.0015f, true}, CRATE_T = {CRATE_VP, 5, 25, 10, 0.009f, true};
-static struct { bool on, cutDone, force, seen, frame, dropped, ask; int idx, prio, worm = -1, last = -1; float flight, cutAgo, rest; Vector3 e, d, obj, ov, pv; const TrackDef *def; } tk;
+struct TrackDef { const Vector3 *vp; int n; float far, pref, zoom, up; bool startCut; };  // Camera2ObjectDistance, MinPreferredDistance m, ZoomSpeed, UpSpeed a CMS update
+static const TrackDef PAYLOAD_T = {PAYLOAD_VP, 11, 65, 30, 0.019f, 0.8f, false}, FATKINS_T = {FATKINS_VP, 4, 50, 25, 0.019f, 0.8f, false},
+                      WORM_T = {WORM_VP, 13, 30, 10, 0.0015f, 0.8f, true}, CRATE_T = {CRATE_VP, 5, 25, 10, 0.009f, 0.2f, true};
+static struct { bool on, cutDone, force, seen, frame, dropped, ask, done; int idx, prio, worm = -1, last = -1; float flight, cutAgo, rest; Vector3 e, d, obj, ov, pv; const TrackDef *def; } tk;
 static struct { int prio, worm; Vector3 e, d; float age; } pend;  // the one pending event-camera request (CMS +0x350)
 static float sinceTrack = 9, floodT = 99, lastWater = 0;
-static int lastDying = -1;
 static std::vector<Vector3> lastVel;
+static std::vector<char> wasDying;
 static struct { int worm = -1; Vector3 pos; float rest; bool lift; } abd;  // AlienAbductionCamera; lift: its state 2
 static struct { int n, of; Vector3 a, b, v, look; float rest; } sa;  // SuperAirstrikeCamera: drops seen of `of`, first / last drop, bomber heading
 static struct { bool on; float hold, kp; Vector3 end; float kl; } fly;  // FlyCam, then its PauseDuration hold
@@ -359,7 +364,7 @@ static int updates = 1;  // CMS updates in this frame, from a 10 ms accumulator 
 
 // W4M 0x51b3b0: the point projected by the drawn camera lies in front of it, inside the screen rectangle (|x|, |y| <= 1)
 static bool onScreen(const Camera3D &cam, Vector3 p) {
-    Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), r = Vector3CrossProduct(f, cam.up);
+    Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), r = Vector3CrossProduct(f, viewUp(cam));
     if (Vector3Length(r) < 1e-4f) return false;
     r = Vector3Normalize(r);
     Vector3 u = Vector3CrossProduct(r, f), to = Vector3Subtract(p, cam.position);
@@ -376,7 +381,7 @@ static bool seen(const Camera3D &cam, const Game &g, Vector3 p) {
 // dropped when it and that point are already in view. Also arms the abduction and flood cameras.
 static void watch(const Game &g, const Camera3D &cam, float dt) {
     sinceTrack += dt, sinceBoom += dt, floodT += dt, pend.age += dt;
-    if (lastVel.size() != g.worms.size()) lastVel.assign(g.worms.size(), {}), lastWater = g.water;  // new match
+    if (lastVel.size() != g.worms.size()) lastVel.assign(g.worms.size(), {}), wasDying.assign(g.worms.size(), 0), lastWater = g.water;  // new match
     if (g.water > lastWater + 0.5f && WEAPONS[g.weapon].kind == Kind::Flood) floodT = 0;
     lastWater = g.water;
     // AlienAbductionCamera on m_uCameraWorm while it rises (0x5486c9) and once it is spat out (0x547e1c); 0x547490: at (UFO x, Land.MaxHeight, UFO z + 200 units)
@@ -386,6 +391,10 @@ static void watch(const Game &g, const Camera3D &cam, float dt) {
     }
     for (size_t i = 0; i < g.worms.size(); i++) {
         const Worm &w = g.worms[i];
+        bool dying = (int)i == g.dyingWorm || (w.drowned && w.counted > 0);  // "Worm Dying" 0x5a7190: Worm.TimeToDie 0x5adcb6, drowning 0x5ad83d
+        if (dying && !wasDying[i] && g.phase != Phase::GameOver && !seen(cam, g, w.pos) && (5 > pend.prio || pend.age > 1))  // 0x51cf20: at itself, 5 (6 in clear view: dropped)
+            pend = {5, (int)i, w.pos, Vector3Length({w.vel.x, 0, w.vel.z}) > 0.1f ? Vector3Normalize({w.vel.x, 0, w.vel.z}) : Vector3{sinf(w.yaw), 0, cosf(w.yaw)}, 0};
+        wasDying[i] = dying;
         Vector3 was = lastVel[i];
         lastVel[i] = w.vel;
         if (!w.alive || g.phase == Phase::GameOver || Vector3Length(w.vel) < Vector3Length(was) + 3 || w.vel.y <= 0 || ((int)i == g.current && sinceBoom > 0.2f)) continue;
@@ -427,10 +436,11 @@ static bool trackStep(Camera3D &cam, const Game &g, float dt) {
         if (c.y < g.water + 1 || g.terrain.solid(c) || side(c) * side(cam.position) < -1e-5f || g.terrain.raycast({c, Vector3Normalize(a)}, Vector3Length(a) - 0.5f, &hit) ||
             (Vector3Length(b) > 0.5f && g.terrain.raycast({c, Vector3Normalize(b)}, Vector3Length(b) - 0.5f, &hit)))
             continue;
-        if (tk.idx != tk.last) cam.position = c, cam.target = tk.obj, tk.cutAgo = 0, tk.last = tk.idx, tk.cutDone = true;  // hard cut; the same ViewPoint: none
+        if (tk.idx != tk.last) cam.position = c, cam.target = tk.obj, cam.up = {0, 1, 0}, tk.cutAgo = 0, tk.last = tk.idx, tk.cutDone = true;  // hard cut; the same ViewPoint: none
         break;
     }
     cam.target = Vector3Lerp(cam.target, tk.obj, perFrame(0.1f, dt));  // LookSpeed 0.1
+    cam.up = Vector3Lerp(cam.up, {0, 1, 0}, perFrame(t.up, dt));  // the inherited up eases back (0x533b25)
     Vector3 back = Vector3Subtract(cam.position, tk.obj);
     bool coming = Vector3Length(tk.ov) < 0.16f || Vector3DotProduct(Vector3Subtract(cam.target, cam.position), tk.ov) < 0;
     if (coming && Vector3Length(back) < t.pref) {  // 0x533190: backs off an object at rest or heading at it
@@ -453,16 +463,12 @@ static void wormTrack(const Game &g, int worm, int prio, Vector3 e, Vector3 d, b
 }
 
 static void simple(Camera3D &cam, Vector3 pos, Vector3 look, float kp, float kl, float dt) {  // W4M SimpleCam: placed, drawn at (PosUpdateSpeed, LookUpdateSpeed)
-    cam.position = pos, cam.target = look, evb = {kp, kl}, cam.fovy = 50;
+    cam.position = pos, cam.target = look, cam.up = {0, 1, 0}, evb = {kp, kl}, cam.fovy = 50;  // a new camera: up (0, 1, 0) (0x51b570)
 }
 
 // framing: the death or hp-count close-up, W4M's "Worm Dying" / "Worm Displaying Damage Taken" WormTrackCamera (0x51cf20, 5)
 static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool framing) {
     evb = {};  // TrackCam, the base Camera: drawn as placed
-    if (int d = g.dying(); d != lastDying) {  // a new death asks at 5: over a running worm track (5 or 3) after 200 ms
-        lastDying = d;
-        if (framing && d >= 0 && tk.worm >= 0 && tk.worm != d && sinceTrack > 0.2f) tk = {}, sinceTrack = 0;
-    }
     int run = tk.on && (tk.worm >= 0 || !framing) ? tk.prio : framing ? 5 : 0;  // 0x51d408: a lower request is dropped
     if (framing && pend.prio && pend.prio < run) pend.prio = 0;
     if (overT > 0 && !g.cfg.mission) {  // game over: WormTrackCamera on the winner (current worm first), cut at once, until the orbit
@@ -474,10 +480,11 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         wormTrack(g, pend.worm, pend.prio, pend.e, pend.d, false), sinceTrack = 0, pend.prio = 0;
     if (tk.on && tk.worm >= 0) {  // WormTrackCamera: until the worm rests 1.5 s
         const Worm &w = g.worms[tk.worm];
-        bool still = !w.alive || (w.grounded && Vector3Length(w.vel) < 0.1f);
-        if ((still && (tk.rest -= dt) <= 0) || (g.phase == Phase::Aim && !tk.force)) return tk = {}, false;
-        if (w.pos.y > g.water - 2) tk.obj = Vector3Add(w.pos, {0, 0.5f, 0});  // sinking: stops following
-        tk.ov = w.vel;
+        bool gone = !w.alive && !(w.drowned && w.counted > 0) && tk.worm != g.dyingWorm;  // unspawned after its blast: frozen (0x533a61)
+        tk.done |= gone || (w.alive && w.hp > 0 && w.grounded && Vector3Length(w.vel) < 0.1f);  // no activity token left (0x532e94)
+        if ((tk.done && (tk.rest -= dt) <= 0) || (g.phase == Phase::Aim && !tk.force)) return tk = {}, false;  // then RestTime 1500 ms
+        if (!gone && w.pos.y > g.water - 2) tk.obj = Vector3Add(w.pos, {0, 0.5f, 0}), tk.ov = w.vel;  // sinking: stops following
+        tk.dropped |= gone;
         return trackStep(cam, g, dt);
     }
     if (framing) {  // W4M "Worm Dying" / "Worm Displaying Damage Taken": a WormTrackCamera request at 5 on the counted worm
@@ -565,7 +572,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         if (!tk.on) {
             Vector3 c = Vector3Add(s->pos, {0, 0, 25}), hit, a;
             for (int k = 0; k < 30 && (g.terrain.solid(c) || (a = Vector3Subtract(s->pos, c), g.terrain.raycast({c, Vector3Normalize(a)}, Vector3Length(a), &hit))); k++) c.y += 1;
-            cam.position = c, cam.target = s->pos, tk.on = tk.cutDone = true;
+            cam.position = c, cam.target = s->pos, cam.up = {0, 1, 0}, tk.on = tk.cutDone = true;
         }
         tk.obj = Vector3Add(s->pos, {0, 5, 0}), tk.rest = 1.5f;
         cam.target = tk.obj, evb = {1, 0.1f};
@@ -598,7 +605,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     return trackStep(cam, g, dt);
 }
 
-static void resetTrack() { tk = {}, pip = {}, ch = {}, tracked = false, pend = {}, abd.worm = lastDying = -1, sa = {}, fly.on = false, floodT = sinceTrack = sinceBoom = 99, lastVel.clear(); }
+static void resetTrack() { tk = {}, pip = {}, ch = {}, tracked = false, pend = {}, abd.worm = -1, sa = {}, fly.on = false, floodT = sinceTrack = sinceBoom = 99, lastVel.clear(); }
 
 // W4M OccludingCam test (0x52efa0): the centre ray to the camera blocked, and with it >= 90 % of the 10 rays (centre and
 // +-55 units right / up, 5 inner points on a 41.25-unit arc, 9..171 deg); chase cameras: all 5 front rays. hit: the centre's
@@ -639,7 +646,7 @@ static void chaseCam(Camera3D &cam, const Game &g, const Projectile &p, float dt
     petEl = hidden ? fminf(petEl + cd.rise * dt, cd.hi) : petEl + (EL0 - petEl) * (1 - expf(-dt * cd.back));
     ch.reach = r < ch.reach ? r : ch.reach + (r - ch.reach) * perFrame(0.02f, dt);
     evb = {0.1f, 0.1f, 1, fabsf(r - ch.reach) * back > 0.05f};  // ChaseCamera Pos / LookUpdateSpeed
-    cam.target = from, cam.position = Vector3Add(from, Vector3Scale(to, ch.reach));
+    cam.target = from, cam.position = Vector3Add(from, Vector3Scale(to, ch.reach)), cam.up = {0, 1, 0};
     for (int i = 0; i < 40 && g.terrain.solid(cam.position); i++) cam.position.y += 0.25f;
     cam.position.y = fmaxf(cam.position.y, from.y + 0.5f);
     cam.fovy = 50;
@@ -667,7 +674,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     chase = chase || onBlast;
     Vector2 rs = input && !aimMode ? stick(pad, GAMEPAD_AXIS_RIGHT_X) : Vector2{0, 0};
     if (g.roped || g.jetting || g.steered()) rs.y = 0;  // reels the rope, aims from the jetpack, steers the shot
-    float zin = !fuseKeys(g) * !g.jetting * input * (down(pad, GAMEPAD_BUTTON_LEFT_FACE_UP) - down(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN)), wheel = 0;
+    float zin = input * (down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) - down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1)), wheel = 0;  // R in, L out (user-requested)
 #ifndef __SWITCH__
     if (input) rs.x += IsKeyDown(KEY_D) - IsKeyDown(KEY_A), zin += IsKeyDown(KEY_X) - IsKeyDown(KEY_Z), wheel = GetMouseWheelMove();
 #endif
@@ -843,15 +850,12 @@ static void present(Camera3D &v, const Camera3D &l, const Blend &b, const Game &
     v = l;
 }
 
-// Drawn up: near a vertical view a (0,1,0) up makes the heading the roll, so it tips toward the heading as the Blimp's does (0x52a0a0)
-static void level(Camera3D &c) {
-    static Vector3 head = {0, 0, 1};
+// XCamera 0x6e1d6c: the view's up is the camera's up made square to the view; parallel to it, world y, then world z
+Vector3 viewUp(const Camera3D &c) {
     Vector3 f = Vector3Normalize(Vector3Subtract(c.target, c.position));
-    if (!(f.x == f.x && f.y == f.y && f.z == f.z) || !(c.up.x == c.up.x && c.up.y == c.up.y && c.up.z == c.up.z)) { c.up = {0, 1, 0}; return; }
-    if (Vector3 h = {f.x, 0, f.z}; Vector3Length(h) > 1e-3f) head = Vector3Normalize(h);
-    float t = Clamp((fabsf(f.y) - 0.94f) / 0.05f, 0, 1);
-    Vector3 u = Vector3Lerp(c.up, Vector3Scale(head, f.y < 0 ? 1.0f : -1.0f), t * t * (3 - 2 * t));
-    c.up = Vector3Length(u) > 0.01f ? Vector3Normalize(u) : Vector3{0, 1, 0};
+    for (Vector3 u : {c.up, Vector3{0, 1, 0}, Vector3{0, 0, 1}})
+        if (Vector3 p = Vector3Subtract(u, Vector3Scale(f, Vector3DotProduct(u, f))); Vector3Length(p) >= 1e-6f) return Vector3Normalize(p);
+    return {0, 1, 0};
 }
 
 void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt) {
@@ -865,8 +869,6 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     if (cutView) cam = lg, cutView = false;
     else present(cam, lg, b, g, dt);
     if (pip.mode) present(pipView, pipCam, evb, g, dt);
-    level(cam);
-    if (pip.mode) level(pipView);
 }
 
 Vector3 aimPoint(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Add(w.pos, Vector3Scale(g.aimDir(w), AIM_FOCUS)); }
@@ -896,7 +898,7 @@ void update(float dt) {
 }
 
 bool inset(Camera3D &view, float &show, float &full) {
-    view = pipView;
+    view = pipView, view.up = viewUp(view);
     show = pip.mode == 1 ? leadEase(pip.t, 0.5f, 0, 0.1f) : pip.mode == 2 ? 1 - leadEase(pip.t, 0.5f, 0, 0.1f) : 1;  // ShowTime, ShowLeadIn / Out
     full = pip.mode == 3 ? leadEase(pip.t, 0.5f, 0.1f, 0.1f) : 0;  // FullScreenTime, FullScreenLeadIn / Out
     return pip.mode;

@@ -162,7 +162,7 @@ Constants (sim.h / sim.cpp): gravity 12.5 m/s² (W4M Gravity −0.00025 units/ms
 walk 3.0625 m/s (Walk.Speed, data; Quick Walk: VelocityScale 2, 0x5d6bc0, disasm); jumps: tapped or held forward (3.16, 7.91) m/s, held still: vertical 9.35 m/s,
 pressed twice: backflip (−1.58, 10) or forward flip (1.58, 10) (W4M 0x5a5d30 / 0x95fb88 / 0x95fb7c, data); fall damage above 15 m/s:
 trunc((v − 15) × 2) + 1 hp (W4M FallDamage 0x5ac3e0, FallDamageRatio 100, data; Max Fall: FallDamageRatio × FallingScale 2, Wormpot.lub, data; none when the scheme has fall damage off); no fall
-damage in jetpack or Icarus flight (W4M flag 0x40, disasm).
+damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); a jetpack landing (0x563252) keeps its velocity and the Ballistic FallDamage applies as for any fall (docs/w4m/physics.md FallDamage); the fall also rumbles the worm's pad: Heavy 100/255 for 500 ms (0x4bc410, disasm; GameEvent::Fall).
 
 ### Shots: launch and self-hit
 

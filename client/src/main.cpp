@@ -572,6 +572,9 @@ static void updateBomber(const Game &g, float dt) {
     if (f.model && f.t >= Models::clipLength(f.model, f.clip)) f.model = nullptr;
 }
 
+// perspShape lens (Bundl09 XSceneCamera: FocalLength 25.0217 mm, Aperture 1.26 x 0.94488 in), as XCamera 0x6e1f46 frames it
+static const float SCENE_FOVY = 2 * atanf(0.94488f * 25.4f * 0.5f / 25.0217f) * RAD2DEG;
+
 // W4M Camera.FollowSceneCam: the bomber's "persp" node (a Maya camera, looking down -z) until Bomber.AnimsComplete;
 // a payload with a CameraId (Fatkins) takes over at the drop (0x54dfa4).
 static bool bomberCam(Camera3D *c) {
@@ -582,7 +585,7 @@ static bool bomberCam(Camera3D *c) {
     Matrix m = MatrixMultiply(j, f.at);
     Vector3 p = Vector3Transform({0, 0, 0}, m);
     c->position = p, c->target = Vector3Add(p, Vector3Normalize(Vector3Subtract(Vector3Transform({0, 0, -1}, m), p)));
-    c->up = Vector3Normalize(Vector3Subtract(Vector3Transform({0, 1, 0}, m), p));  // fovy kept: perspShape's lens not read
+    c->up = Vector3Normalize(Vector3Subtract(Vector3Transform({0, 1, 0}, m), p)), c->fovy = SCENE_FOVY;
     return true;
 }
 
@@ -658,7 +661,7 @@ static bool ufoCam(Camera3D *c) {
     Matrix m = MatrixMultiply(j, ufo.at);
     Vector3 p = Vector3Transform({0, 0, 0}, m);
     c->position = p, c->target = Vector3Add(p, Vector3Normalize(Vector3Subtract(Vector3Transform({0, 0, -1}, m), p)));
-    c->up = Vector3Normalize(Vector3Subtract(Vector3Transform({0, 1, 0}, m), p));
+    c->up = Vector3Normalize(Vector3Subtract(Vector3Transform({0, 1, 0}, m), p)), c->fovy = SCENE_FOVY;
     return true;
 }
 
@@ -927,7 +930,7 @@ int main(int argc, char **argv) {
         if (e.kind == GameEvent::Fire && e.worm >= 0) Controls::rumble(livePad, 0.3f, 0.08f);
         if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom)
             Controls::rumble(view, (e.kind == GameEvent::BigBoom ? 1 : 0.8f) * Clamp(1 - Vector3Distance(e.pos, cam.target) / 30, 0, 1), 0.3f);
-        if (e.kind == GameEvent::Hurt && e.worm >= 0) Controls::rumble(padOf(game.worms[e.worm].team), 0.9f, 0.2f);
+        if (e.kind == GameEvent::Fall && e.worm >= 0) Controls::rumble(padOf(game.worms[e.worm].team), 100 / 255.0f, 0.5f);  // W4M 0x5ac3e0: RumbleService Heavy 100, 500 ms
     };
     auto stepOnce = [&](const Input &in) {
         auto flying = [&] { return game.phase == Phase::Flying || (game.phase == Phase::Settle && !game.shots.empty()); };  // retreat can end mid-flight
@@ -1536,8 +1539,10 @@ int main(int argc, char **argv) {
         bool chase = game.phase != Phase::Aim && !game.shots.empty() && !dropped(WEAPONS[game.shots[0].weapon]);  // dynamite: the camera stays on the worm
         Controls::Reticle ret = Controls::reticle(game, chase);
         bool scope = !chase && Controls::scoped(game), fp = ret == Controls::Reticle::Aim;  // W4M first-person aim
-        if ((!Controls::targetView(game) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) && IsGamepadButtonDown(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) &&  // L held: Blimp
-             (IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || IsGamepadButtonPressed(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))) || IsKeyPressed(KEY_F3))
+        static float minusT = 0;  // - held 1.5 s: perf overlay (user-requested, 2026-10-04); the controls help shows from 0.35 s
+        float minusWas = minusT;
+        minusT = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_MIDDLE_LEFT) ? minusT + dt : 0;
+        if ((minusWas < 1.5f && minusT >= 1.5f) || IsKeyPressed(KEY_F3))
             perfOn = (perfOn + 1) % 3;
         Controls::camera(cam, game, chase, scope, !pause.open && !hud.open && !(playing && freeCam), dt);
         updateBomber(game, pause.open ? 0 : dt);
@@ -1571,7 +1576,7 @@ int main(int argc, char **argv) {
             view.position = fcPos, view.target = Vector3Add(fcPos, f), view.fovy = 50;
         }
         Vector3 jolt = Vector3Scale({sinf(clock * 53), sinf(clock * 61 + 1) * 0.7f, sinf(clock * 47 + 2)}, Fx::shake);
-        view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt);
+        view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt), view.up = Controls::viewUp(view);
         mark = GetTime();
         // W4M PiP: the event camera in one low-resolution pass (terrain, worms, shots, objects, water), before the main view
         static RenderTexture2D pipRt = {};

@@ -285,7 +285,8 @@ Ours (sim.cpp `footing`, `walkStep`):
 #### FallDamage 0x5ac3e0(pData, vn) (disasm + data)
 
 - None if Flags & 0x800. If Flags & 0x8040: bit 0x40 is cleared and no damage (one-shot immunity).
-- Otherwise `damage = trunc((−0.3 − vn) × Worm.FallDamageRatio) + 1`, with Worm.FallDamageRatio = 100 (LOCAL). Then ApplyDamage 0x5ab7e0(damage, 1) and an effect via 0x4bc410(0, 100, worm pos, 500, −1, −1) (assumed: rumble or shake).
+- Otherwise `damage = trunc((−0.3 − vn) × Worm.FallDamageRatio) + 1`, with Worm.FallDamageRatio = 100 (LOCAL). Then ApplyDamage 0x5ab7e0(damage, 1) and a controller rumble via 0x4bc410(0, 100, worm pos, 500, −1, −1) (disasm): 0x4bc410 forwards to RumbleService 0x4bbc40(Light 0, Heavy 100, pos, Duration 500 ms, FadeIn −1, FadeOut −1), motors as bytes 0..255 (Light is the weak motor, Heavy the strong, assumed from the names in its ' Light=' / ' Heavy=' log, 0x827440); the position is only printed in the log, so the rumble is not positional. No camera shake and no sound. Same helper as the weapons' RumbleLight/RumbleHeavy (docs/w4m/weapons.md BaseWeaponContainer 0d/0e).
+- Jetpack landing (disasm 0x562810): the contact normal n.y > 0 (floor, 0x563252) ends the pack (OverridePhysics 0, PackAccessory.Hide, camera Default) with the velocity left unchanged; it sets neither flag 0x40 nor 0x800 (no field 0xec access in 0x562810/0x5624f0/0x561810/0x562990), so the worm's Ballistic runs FallDamage (0x5af77a, vn < −0.3) as for any fall. n.y <= 0 (wall, ceiling, 0x563355): v −= 1.8 (v.n) n, i.e. restitution 0.8; contact without a normal (0x5633e9): v *= −0.8. The n.y reading of the normal at [esp+0x5c] is assumed from the fcom against 0.
 - The threshold is |vn| > 0.3, i.e. a free fall of more than `0.3²/(2·0.00025)` = **180 units** (9 worm heights).
 - Examples: vn −0.4 (320 units) → 11 hp; vn −0.5 (500 units) → 21 hp.
 

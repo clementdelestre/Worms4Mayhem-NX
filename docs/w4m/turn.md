@@ -181,6 +181,7 @@ Who starts which phase:
   - explosion 0x5a9400 (`Worm.DeathWormDamage*`, `DeathImpulse*`, `DeathLandDamageRadius`, ExplosionMessage);
   - 0x5a9310 (spawns something at +20 height: gravestone, assumed);
   - **WXWormManager.UnspawnWorm**.
+- The drowning check 0x5ad640 also calls 0x5a7190 (0x5ad83d / 0x5ad8bc) before ChangeState 8: a drowned worm holds "Worm Dying" and asks the same WormTrackCamera when it drowns. That track ends only once the worm's tokens +0x54 / +0x58 / +0x5c are gone (TrackCam 0x532e94) or the worm is unspawned (0x533a61), plus RestTime, so it shows the blast (docs/camera-w4m.md §2) [disasm].
 - DrownFloat 0x5aa130 uses the same timer: it sets 2000 ms once its feet reach Water.Level − 8 units while not sinking (0x5aa222, docs/w4m/physics.md §11) [disasm], then -20 per tick, then the same blast and Unspawn.
 - **Delay between successive deaths** = 3000 ms of throes + unspawn/cleanup. The next pop waits until the dying worm's token is gone, because count == size + 1 while it is dying. There is no other gap.
 - **End-of-turn settle**: EndTurn waits for `ObjectCount.Active==0`, which includes damage displays (2.5 s) and dying worms (3 s each). Then PostActivityTime 2400 ms, then ApplyDamage (poison), which can start a new settle and death round.

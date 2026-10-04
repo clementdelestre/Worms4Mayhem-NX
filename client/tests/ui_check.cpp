@@ -22,7 +22,7 @@ int main() {
         }
         assert(g.weapon == want);
     }
-    {  // Switch repro: take off, panel pick of Dynamite with A, thrust held, ZL (JUMP) drops it and the flight goes on
+    {  // Switch repro: take off, panel pick of Dynamite with A, thrust held, B (JUMP) drops it and the flight goes on
         Game g;
         g.start({29, 2, 1, "", 0});
         g.hotSeat = 0;

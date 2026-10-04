@@ -33,6 +33,7 @@ Vector3 aimPoint(const Game &g);         // far point of the active worm's shot 
 // Free orbit while moving, over the shoulder in aim mode, chasing a shot, through the sniper scope.
 void reset();  // new match: camera cut behind the first worm, aim state cleared
 void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt);
+Vector3 viewUp(const Camera3D &c);  // the up the view is drawn with (XCamera 0x6e1d6c)
 void impact(Vector3 at);  // explosion: no camera move of its own (W4M)
 // W4M PiPService: the event camera while the main view stays the worm's; show 0..1 its slide on / off, full 0..1 its growth to full screen
 bool inset(Camera3D &view, float &show, float &full);

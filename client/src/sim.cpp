@@ -1245,7 +1245,7 @@ void Game::stepWorm(Worm &w) {
         if (speed > FALL_SAFE && cfg.scheme.fallDamage && !(cfg.wormpot & WP_WORMS_DROWN) && !winged) {  // no fall damage: flag 0x8000 (SetNoFallDamage)
             // Wormpot Max Fall: Worm.FallDamageRatio x FallingScale 2 (Wormpot.lub), the 0.3 threshold unchanged
             int dmg = (int)((speed - FALL_SAFE) * FALL_SCALE * (cfg.wormpot & WP_MAX_FALL ? 2 : 1)) + 1, wi = int(&w - worms.data());
-            if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi); }
+            if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi), emit(GameEvent::Fall, w.pos, wi); }
         }
     };
     bool jet = jetting && &w == &worms[current];  // W4M jetpack contact 0x5633e9: walls and ceilings bounce at 0.8; it lands itself, no Ballistic

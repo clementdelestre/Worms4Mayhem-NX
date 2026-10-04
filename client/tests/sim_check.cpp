@@ -520,8 +520,12 @@ static void checkEventCameras() {
         g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
         Camera3D cam = away();
         auto sane = [&] {
-            Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
-            assert(cam.up.y >= -1e-3f && Vector3Length(Vector3CrossProduct(f, cam.up)) > 0.2f);  // roll 0 for every W4M camera but the scene ones (data: bombrun_end4 rolls)
+            Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), u = Controls::viewUp(cam);
+            assert(cam.up.y >= -1e-3f && fabsf(Vector3DotProduct(u, f)) < 1e-3f && Vector3Length(u) > 0.99f);  // XCamera 0x6e1d6c: never degenerate
+        };
+        auto level = [&] {  // roll 0: the view's right is horizontal once the camera's up is (0, 1, 0)
+            Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), r = Vector3CrossProduct(f, Controls::viewUp(cam));
+            return fabsf(cam.up.x) < 1e-3f && fabsf(cam.up.z) < 1e-3f && fabsf(r.y) < 1e-3f;
         };
         Input in;
         in.buttons = Input::TARGET;
@@ -530,10 +534,23 @@ static void checkEventCameras() {
             if (t < 200) in.aim = -127;
             g.step(in), Controls::camera(cam, g, false, false, false, Game::DT), sane();
         }
+        const Vector3 tilt = Vector3Normalize({0.5f, 0.8f, 0.3f});  // an up a TrackCam inherits (0x5337c0), eased back at UpSpeed (0x533b25)
+        cam.up = tilt;
         g.objects.push_back({Object::Crate, Vector3Add(a.pos, {0, 40, 0}), {0, 0, 0}, -1, -1, true, false});
         for (int t = 0; t < 200; t++) {
             g.objects.back().pos.y -= 0.2f;
             Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, false, Game::DT), sane();
+            if (t >= 30) assert(level());  // CrateTrackCamera UpSpeed 0.2
+        }
+        for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, false, Game::DT), sane();
+        cam = away(), cam.up = tilt;
+        g.phase = Phase::Flying;
+        g.shots.push_back({{a.pos.x, a.pos.y + 12, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
+        g.shots.back().touching = 0;
+        for (int t = 0; t < 60 * 5 && !g.shots.empty(); t++) {
+            Controls::camera(cam, g, true, false, false, Game::DT), sane();
+            if (t >= 30) assert(level());  // PayloadTrackCamera UpSpeed 0.8
+            g.step(Input{});
         }
     }
     {  // CrateTrackCamera: starts off screen, cut to a crate ViewPoint (15-25 m)
@@ -689,10 +706,6 @@ static void checkEventCameras() {
         for (int t = 0; t < 60 * 10 && g.phase == Phase::Settle && (boom < 0 || t < boom + 120); t++) {
             g.step(Input{});
             for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) Controls::impact(e.pos), boom = t;
-            if (int i = g.dying(); i >= 0) {  // as Ui::Hud::trackHp: the surface above it, r 2
-                Vector3 c = {g.worms[i].pos.x, fmaxf(g.worms[i].pos.y, g.water) + 0.6f, g.worms[i].pos.z};
-                Controls::focus(&c, 2);
-            }
             Vector3 was = cam.position;
             Controls::camera(cam, g, false, false, false, Game::DT);
             if (boom >= 0 && t > boom + 85) continue;  // RestTime over: DefaultCam takes over with a cut
@@ -700,6 +713,27 @@ static void checkEventCameras() {
             assert(fabsf(remainderf(atan2f(cam.position.x - at.x, cam.position.z - at.z) - yaw0, 2 * PI)) < 0.2f);
         }
         assert(boom > 0 && cuts == 0);
+    }
+    for (int drown : {1, 0}) {  // "Worm Dying" 0x5a7190 (drowning 0x5ad640, Worm.TimeToDie 0x5adbf0): out of view, WormTrackCamera on it through its blast
+        Game g;
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+        settle(g);
+        Controls::reset();
+        int k = (g.current + 1) % (int)g.worms.size();
+        Worm &d = g.worms[k];
+        if (drown) {
+            d.pos = {d.pos.x, g.water - 0.5f, d.pos.z}, d.vel = {0, 0, 0}, d.grounded = false;
+            for (int n = 0; n < 400 && g.terrain.solid({d.pos.x, d.pos.y - 1.5f, d.pos.z}); n++) d.pos.x += 0.1f;
+        } else d.hp = 0, g.deathQueue = {k};
+        g.phase = Phase::Settle, g.timer = 1;
+        Camera3D cam = away();
+        bool shown = false;
+        for (int t = 0; t < 60 * 8 && !shown; t++) {
+            g.step(Input{});
+            Controls::camera(cam, g, false, false, false, Game::DT);
+            for (const GameEvent &e : g.events) if (e.kind == GameEvent::Death && e.worm == k) assert(inView(cam, e.pos)), shown = true;
+        }
+        assert(shown);
     }
     {  // game over: the winner from a worm ViewPoint, in clear view
         Game g;
@@ -1458,6 +1492,21 @@ static void checkJumps() {
         was = b.grounded;
     }
     assert(jumps == 1 && launches == 1 && !f.jumpDelay);
+
+    // Switch timing: press 1-6 ticks, gap 1-12, press 1-6 (frames of 1-3 ticks): always a backflip
+    for (int hold = 1; hold <= 6; hold++)
+        for (int gap = 1; gap <= 12; gap++) {
+            Game s;
+            s.start({31, 2, 1, "", 0}), s.hotSeat = 0;
+            settle(s);
+            Worm &c = s.worms[s.current];
+            for (int t = 0; t < Game::JUMP_WINDOW + 2 && c.grounded; t++) {
+                Input in;
+                in.buttons = t < hold || (t >= hold + gap && t < 2 * hold + gap) ? Input::JUMP : 0;
+                s.step(in);
+            }
+            assert(!c.grounded && Vector3DotProduct(c.vel, facing(c)) < -1.5f && c.vel.y > 9.5f);
+        }
 }
 
 // Dynamite: the worm walks away while the fuse burns, can't fire again, and the blast ends the turn.
@@ -1970,6 +2019,19 @@ static void checkJetpack() {
     a.vel = {0, -25, 0};
     for (int k = 0; k < 600 && g.jetting; k++) g.step(none);
     assert(!g.jetting && a.grounded && a.hp == hp);  // landing ends it; no fall damage under the jetpack
+    {  // W4M 0x563252: a floor contact lands the pack with its velocity unchanged, the worm's Ballistic FallDamage (0x5ac3e0) follows: a fast landing hurts as a plain fall
+        int loss[2];
+        for (int jet = 1; jet >= 0; jet--) {
+            Game h = g;
+            Worm &b = h.worms[h.current];
+            h.fuel = 5, h.jetting = jet, b.pos = Vector3Add(ground, {0, 12, 0}), b.vel = {0, -30, 0}, b.grounded = false, b.motion = {};
+            int was = b.hp;
+            for (int k = 0; k < 600 && !b.grounded; k++) h.step(none);
+            assert(b.grounded && b.pos.y < ground.y + 2);  // landed, not bounced at 0.8 (walls and ceilings only)
+            loss[jet] = was - b.hp;
+        }
+        assert(loss[1] > 0 && loss[1] == loss[0]);
+    }
     // with it out, the hand only takes what it drops (W4M 0x565d30 case 0)
     for (const char *w : {"Bazooka", "Shotgun", "Dynamite", "Landmine", "Sheep", "Teleport"}) g.ammo[a.team][weaponNamed(w)] = 1;
     g.step(fire);
@@ -2092,7 +2154,7 @@ static void checkToolGaps() {
         }
         assert(k.weapon != jp && !toolDrop(WEAPONS[k.weapon]) && k.secondary < 0);
     }
-    {  // 2. panel open in flight: move and jump cut (WormMoving), thrust and Fire.Second kept
+    {  // 2. panel open in flight: move and jump cut (WormMoving), thrust kept; B closes the panel so it never drops
         Game g;
         fly(g, 0);
         Ui::Hud hud;
@@ -2101,7 +2163,7 @@ static void checkToolGaps() {
         hud.open = true;
         in.buttons = Input::FIRE | Input::JUMP | Input::HEADING, in.walk = 127, in.turn = 40;
         hud.input(g, in, true, 0, 2);
-        assert(in.buttons == (Input::FIRE | Input::JUMP) && !in.walk && !in.turn);
+        assert(in.buttons == Input::FIRE && !in.walk && !in.turn);
     }
     {  // 3. D-pad up (Jetpack.Forward) sends walk without a heading: forward thrust, yaw kept
         Game g;
