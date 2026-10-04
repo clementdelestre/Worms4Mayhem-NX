@@ -363,10 +363,15 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
         return true;
     };
     float drown = Models::clipLength("worm", "FallDrown");  // dead and still drawn: drowned, afloat until Settle pops it
+    const Projectile *rk = nullptr;  // the Starburst the shooter rides
+    if (!fp && i == g.current && w.alive) for (const Projectile &q : g.shots) if (!q.child && WEAPONS[q.weapon].name == "Starburst") rk = &q;
     // W4M kWPS_DrownFloat 0x5a06b0: FallDrown scrubbed by clamp(vy x 10, -1, 1), vy in units/ms (0.02 per m/s); afloat = mid-clip
     if (!w.alive) clip = "FallDrown", t = drown * (1 + Clamp(w.vel.y * 0.2f, -1, 1)) / 2, loop = false;  // the sim's DrownFloat velocity
     else if (st == 1) clip = "BeamUpLoop";  // rising in the beam, weapon hidden (HeldAccessory.Hide)
-    else if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
+    else if (rk) {  // riding it (observed): FireStarburst while the fuse burns 3.5 s, then FlyStarburst, the rocket held overhead
+        float el = WEAPONS[rk->weapon].fuse - rk->fuse;
+        clip = el < 3.5f ? "FireStarburst" : "FlyStarburst", t = el < 3.5f ? el : el - 3.5f, held = "hold_starburst";
+    } else if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
     else if (fp && aimNow && aimPose()) {  // view-model: the aim pose whatever the body does (turning in place plays Walk)
     } else if (tool) {
         clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteLR", held = g.roped ? "hold_rope" : nullptr;
@@ -390,7 +395,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
     // W4M turns the model about its own root (0x5a26d3: angles +0x150/+0x158/+0x15c on the node), i.e. the raw mesh origin,
     // which worm.glb puts at (0, 0.299, 0.352) m (main_bone's rest translation)
-    float roll = !w.alive ? 0 : a.spin >= 0 && a.air > 0 ? a.spin : !strcmp(clip, "Blastflight2") ? blastPitch(w) : 0;
+    float roll = !w.alive ? 0 : rk ? asinf(Clamp(rk->vel.y / fmaxf(Vector3Length(rk->vel), 1e-3f), -1, 1)) - PI / 2 : a.spin >= 0 && a.air > 0 ? a.spin : !strcmp(clip, "Blastflight2") ? blastPitch(w) : 0;
     const Vector3 ROOT = {0, 0.299f, 0.352f};
     if (roll) p = Vector3Add(p, Vector3Subtract(Vector3Transform(ROOT, MatrixRotateY(w.yaw)), Vector3Transform(ROOT, MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)))));
     Matrix root = MatrixMultiply(MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)), MatrixTranslate(p.x, p.y, p.z));
@@ -407,7 +412,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
             m = MatrixMultiply(MatrixMultiply(MatrixScale(VM_SCALE, VM_SCALE, VM_SCALE), m), in);  // toed in toward the centre
             m.m12 = at.x, m.m13 = at.y, m.m14 = at.z;
         }
-        Models::draw(held, m);
+        Models::draw(held, !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m);
     }
     bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
     if (tool && !fp && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE, g.jetting ? nullptr : opening ? "FireParachute" : clip, opening ? a.chute : t);
@@ -672,6 +677,7 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     const WeaponDef &d = WEAPONS[s.weapon];
     const std::string &n = d.name;
     if (s.child && d.kind == Kind::SuperSheep) return true;  // starburst stars: particles only (Fx::trail)
+    if (n == "Starburst") return true;  // the rocket is held by the shooter riding it (drawWorm)
     if (!s.child && d.kind == Kind::Airstrike) return true;  // the plane: drawBomber()
     if (d.kind == Kind::Abduction) return true;  // the saucer: drawUfo()
     if (n == "Fatkins Strike" && s.stage > 0) return true;  // still in the bomber
@@ -770,7 +776,7 @@ int main(int argc, char **argv) {
             ly.actT[0] = L * k / 7;
             Models::draw(mdl, p, getenv("W4NX_YAW") ? (float)atof(getenv("W4NX_YAW")) : PI / 2, 0, WHITE, argv[2], L * k / 7, false, aim, aimT, layered ? &ly : nullptr);
             if (argc > 3 && Models::joint("worm", "WeaponLocator", argv[2], L * k / 7, false, &m, aim, aimT))
-                Models::draw(argv[3], MatrixMultiply(m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))));
+                Models::draw(argv[3], MatrixMultiply(!strcmp(argv[3], "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))));
         }
         EndMode3D();
         for (int k = 0; k < 8; k++) Ui::text(TextFormat("%.2fs", L * k / 7), 200 + (k % 4) * 290, k < 4 ? 20 : 380, 24, BLACK, 1);

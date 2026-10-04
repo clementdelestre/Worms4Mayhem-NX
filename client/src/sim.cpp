@@ -1710,6 +1710,10 @@ void Game::stepShots(const Input &in, bool detonate) {
                 for (int k = 0; k < wd.clusters; k++)
                     spawned.push_back({Vector3Add(np, {0, 0.5f, 0}), {(rand01() - 0.5f) * 8, 6 + rand01() * 5, (rand01() - 0.5f) * 8}, s.weapon, 0, true, 1});
         }
+        if (!boom && !s.child && wd.name == "Starburst" && worms[current].alive) {  // the shooter rides it (W4M FlyStarburst clip; pose assumed)
+            Worm &r = worms[current];
+            r.pos = s.pos, r.vel = {0, 0, 0}, r.grounded = false, r.yaw = atan2f(s.vel.x, s.vel.z);
+        }
         if ((boom && --s.hits <= 0) || gone) shots.erase(shots.begin() + i);
         else i++;
     }

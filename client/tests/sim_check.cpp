@@ -896,7 +896,7 @@ static void checkEventCameras() {
         }
         assert(v[0] > 17 && v[0] < 19.5f && fabsf(v[1] - 32.5f) < 0.1f);
     }
-    {  // Starburst (W4M Detonate 0x588dd0): one blast on the target, no clusters, then Worm.Vapourize kills the rider
+    {  // Starburst (W4M Detonate 0x588dd0): blast on the target, star rockets fly out and explode (observed), then Worm.Vapourize kills the rider
         Game g;
         g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
@@ -908,10 +908,17 @@ static void checkEventCameras() {
         fire.buttons = Input::FIRE;
         g.step(fire), g.step(Input{});
         assert(g.shots.size() == 1 && g.shots[0].touching != 0 && !g.shots[0].child);  // launched beside the rider: no blast at the launch
+        for (int t = 0; t < 30 && !g.shots.empty(); t++) g.step(Input{});  // the shooter rides it
+        assert(!g.shots.empty() && Vector3Distance(a.pos, g.shots[0].pos) < 0.05f && !a.grounded && a.hp > 0);
         g.shots.clear(), g.step(Input{});
         g.shots.push_back({Vector3Add(v.pos, {0, Game::R + 1, 0}), {0, -3, 0}, sb, 30, false, 1});
-        for (int t = 0; t < 600 && !g.shots.empty(); t++) g.step(Input{});
-        assert(g.shots.empty() && v.hp < hp && a.hp <= 0);
+        int booms = 0, kids = 0;
+        for (int t = 0; t < 900 && !g.shots.empty(); t++) {
+            g.step(Input{});
+            for (const Projectile &s : g.shots) kids += s.child && s.weapon == sb;
+            for (const GameEvent &e : g.events) booms += (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom);
+        }
+        assert(g.shots.empty() && v.hp < hp && a.hp <= 0 && kids > 0 && booms >= 3);
     }
     {  // homing from the Blimp: the entering press (Controls swallows FIRE) locks nothing; with TARGET, FIRE locks the cursor point, no launch
         Game g;

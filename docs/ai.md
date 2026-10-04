@@ -71,7 +71,7 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   is scored × (1 − effect/2), × (1 − 0.1·effect) with another weapon (the effect × 0.2, 0x4a6590), before the taste (**disasm**).
 - Worm-select mode: not used; W4M enables it only with ChooseWorm.Enabled, which is never set (**data**, 0x4a4ef7).
 - Scoring (`Outcome`, W4M 0x49f190 / 0x49ed30, **disasm**): a blast gives each worm, self included, d = (1 − dist/reach)·secondary·damage
-  (×2 doubled); a melee hits only the plan target with its damage; Flood 1000 below the level; Starburst its rider's hp with knock 1.
+  (×2 doubled); a melee hits only the plan target with its damage; Flood 1000 below the level; Starburst its rider's hp with knock 1 (disasm: rider vapourized; user unsure, 2026-10-04).
   Armour ×ARMOUR/100 except bat, prod, fire punch. Lethal (d ≥ hp): max(hp, 200). Else, with knock weight a (threat for blasts and
   melee, 0 for guns and Flood): t = the worm's threat rating, d = min(hp, d + a·t·(hp − d)), weight 2·(1 + a·t). Score += d·weight·value(i).
   Guns: one shot as a blast of the gun's reach at the hit point. Strikes: one blast at the target of reach 2 s × 7.5 m/s + 2·reach.
@@ -110,7 +110,7 @@ and barrels / weapon crates within 7 m of an enemy when secondary > 0 (**ours**)
 | Sheep / Old Woman | `sheepWalk` copy; kept if closest approach < 2 m; FIRE in flight within 1.2 m of an enemy | **ours** |
 | Super Sheep | pitch 0.3 / 0.9, flown by the `steer` autopilot (`superFly`), detonated within 1.5 m | **ours** |
 | Airstrike / Donkey | yaw 0/±0.25 × pitch {at target, 1.45}; bomber (Super Airstrike, fuse > 0) steered in flight and dropped with lead; Donkey/Fatkins: first impact scored twice | **ours** |
-| Starburst | as Super Sheep (`superFly`), plus its rider's death: all its hp on the thinking worm | W4M CAIPlanAttackStarburst 0x4a43a0: 0x49ed30 on the active worm with its hp (**disasm**) |
+| Starburst | as Super Sheep (`superFly`), plus its rider's death: all its hp on the thinking worm; the star rockets are not scored | W4M CAIPlanAttackStarburst 0x4a43a0: 0x49ed30 on the active worm with its hp (**disasm**; user unsure, 2026-10-04) |
 | Landmine | laid at the feet facing the target: `MINE_BLAST` on the ground under the launch point, self ignored as a dropped shell | W4M CAIPlanAttackLandmine = CloseRangeExplosive 0x4a2c70: the blast at the worm (**disasm**); the drop point and self **ours** |
 | Inflatable Scouser | our scouser's walk (`walkerStep`) until it touches a worm; that worm takes `damage`, or a kill if a drop of 1.2 m/s × `SCOUSER_FLOAT` drowns it, plus the fall damage | W4M CAIPlanAttackScouser exists (**data**); W4M scores an animal as its blast at the target (0x4a4210); ours scores our scouser, which swallows and drops (**ours**) |
 | Flood | one plan: every worm under `water + speed` (2.15 m, W4M Flood.Delta 43) counts a kill | W4M CAIPlanAttackFlood 0x4a3640: each target under Water.Level + Flood.Delta, 0x49ed30 with damage 1000 (**disasm**) |

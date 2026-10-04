@@ -169,7 +169,7 @@ const WORM_CLIPS: &[&str] = &[
     // WEAPTWK WXAnimTaunt (WAE_* state 2, played over the Hold pose)
     "TauntBazooka+HoldBazooka", "TauntThrown+HoldThrown", "TauntShotgun+HoldShotgun", "TauntSniper+HoldSniper", "TauntAirstrike+HoldAirstrike",
     "TauntBow+HoldBow", "TauntSentrygun+HoldSentrygun", "TauntOldWoman+HoldOldWoman", "TauntScouser+HoldScouser", "TauntSheep+HoldSheep",
-    "TauntStarburst+HoldStarburst", "TauntDynamite+HoldDynamite", "TauntBat+HoldBat", "TauntFirepunch+HoldFirepunch", "TauntProd+HoldProd",
+    "TauntStarburst+HoldStarburst", "FireStarburst", "FlyStarburst", "TauntDynamite+HoldDynamite", "TauntBat+HoldBat", "TauntFirepunch+HoldFirepunch", "TauntProd+HoldProd",
     "TauntNMN+HoldNMN", "TauntHomingMissile+HoldHomingMissile", "TauntNinjarope+HoldNinjarope", "SwingNinjarope", "JetpackFly", "FlyRedBull", "ParachuteWobble", "TelepadAppear", "BeamUpLoop",
     "FallDrown", "Nailed", "NailedHitFront",
     // WORMACTING.XOM scene emotes (looped) and gestures, docs/worm-reactions.md
