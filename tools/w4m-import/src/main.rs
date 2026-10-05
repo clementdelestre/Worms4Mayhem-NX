@@ -164,6 +164,9 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("explosion_boxed", "weapons", &["ExplosionBoxed1"]),  // WXP_ExploArrow_RingDk
     ("fireworks", "global", &["Firework1", "Firework2", "Firework3"]),  // global/FireWorksExplosion
     ("buffalo", "weapons", &["BuffaloOfLies"]),  // weapons/BuffaloOfLies
+    ("debris", "weapons", &["Debris1", "Debris2", "Debris3", "Debris4"]),  // weapons/Debris
+    ("jetpack", "weapons", &["JetPack"]),  // weapons/JetPack
+    ("jetpack_end", "weapons", &["JetPackEnd"]),
     ("bat_impact", "weapons", &["BaseballBatImpact"]),  // WXP_AbdTelep_Central's EmitterSoundFX
     ("bubble_inflate", "weapons", &["BubbleMachinePlace"]),  // weapons/BubbleMachineInflate
     ("bubble_wobble", "weapons", &["BubbleMachineWobble"]),

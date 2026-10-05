@@ -138,7 +138,7 @@ void FrontBg::draw(float dt) {
     ClearBackground(Fx::fog());
     Lit::frame(cam.position);
     BeginMode3D(cam);
-    Fx::drawSky(cam);
+    Fx::drawSky(cam, {}, S);
     // cloud dome (~25000 units) follows the camera inside the far plane, drawn behind everything
     rlDrawRenderBatchActive();
     rlDisableDepthTest(), rlDisableDepthMask(), rlDisableBackfaceCulling();

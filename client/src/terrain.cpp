@@ -367,20 +367,22 @@ Vector3 Terrain::normal(Vector3 p) const {
     return Vector3Normalize(Vector3Negate(g));
 }
 
-void Terrain::carve(Vector3 c, float radius) {
+bool Terrain::carve(Vector3 c, float radius) {
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX, NY, NZ};
     for (int a = 0; a < 3; a++) {
         lo[a] = std::max(0, (int)((cc[a] - radius) / VOX) - 1);
         hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + radius) / VOX) + 1);
     }
+    bool changed = false;
     for (int z = lo[2]; z <= hi[2]; z++)
         for (int y = lo[1]; y <= hi[1]; y++)
             for (int x = lo[0]; x <= hi[0]; x++) {
                 size_t i = idx(x, y, z);
                 signed char nv = std::min(d[i], qd(Vector3Distance({x * VOX, y * VOX, z * VOX}, c) - radius));
-                if (undo && nv != d[i]) undo->emplace_back((int)i, d[i]);
-                d[i] = nv;
+                if (nv == d[i]) continue;
+                if (undo) undo->emplace_back((int)i, d[i]);
+                d[i] = nv, changed = true;
             }
     // decor goes with the blast, or with the ground it stood on (sampled 0.3 m below its base, along its up axis)
     objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const Object &o) {
@@ -394,6 +396,7 @@ void Terrain::carve(Vector3 c, float radius) {
         for (int y = std::max(0, lo[1] - 1) / CS; y <= std::min(NY - 1, hi[1] + 1) / CS; y++)
             for (int x = std::max(0, lo[0] - 1) / CS; x <= std::min(NX - 1, hi[0] + 1) / CS; x++)
                 dirty[(z * CY + y) * CX + x] = true;
+    return changed;
 }
 
 void Terrain::weld(Vector3 c, Vector3 half) {

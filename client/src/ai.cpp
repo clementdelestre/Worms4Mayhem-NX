@@ -164,15 +164,18 @@ static void steer(const Game &g, Vector3 p, Vector3 v, Vector3 e, Input &in) {
 
 // Planned super sheep flight under the autopilot; false if it is lost.
 static bool superFly(const Game &g, const WeaponDef &wd, Vector3 pos, float yaw, float pitch, Vector3 e, Vector3 &out) {
-    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = muzzle(g.terrain, pos, launchPoint(wd, pos, yaw)), v = d * wd.speed;
+    Vector3 d = dirOf(yaw, wd.walks ? Game::SHEEP_TAKEOFF : pitch), p = muzzle(g.terrain, pos, launchPoint(wd, pos, yaw));
+    const bool star = !wd.walks;  // Starburst: still through its fuse, then accelerates (Game::starSpeed)
+    float sp = star ? 0 : wd.speed;
     uint64_t touching = ~0ull;
     for (float t = wd.fuse; t > 0; t -= DT) {  // walks: takes off at once (think() presses FIRE)
         Input in;
-        steer(g, p, v, e, in);
-        bool det = Vector3Distance(p, e) < 1.5f;
-        float yw = atan2f(v.x, v.z) + in.turn / 127.0f * 2 * DT;
-        float pt = Clamp(asinf(Clamp(v.y / fmaxf(Vector3Length(v), 0.01f), -1, 1)) + in.aim / 127.0f * 1.5f * DT, -1.4f, 1.4f);
-        v = dirOf(yw, pt) * wd.speed;
+        steer(g, p, d, e, in);
+        bool lit = star && wd.fuse - t < Game::STAR_FUSE - DT / 2, det = !lit && Vector3Distance(p, e) < 1.5f;
+        float yw = atan2f(d.x, d.z) + in.turn / 127.0f * 2 * DT;
+        float pt = Clamp(asinf(Clamp(d.y, -1, 1)) + in.aim / 127.0f * 1.5f * DT, -1.4f, 1.4f);
+        d = dirOf(yw, pt);
+        Vector3 v = d * sp;
         if (det) { out = p; return true; }
         uint64_t now = 0;
         for (int k = 0, n = substeps(v); k < n; k++) {  // Game::stepShots' sub-steps
@@ -182,6 +185,7 @@ static bool superFly(const Game &g, const WeaponDef &wd, Vector3 pos, float yaw,
             if (g.terrain.solid(out) || (m & ~touching)) return true;
         }
         touching = now;
+        if (star && wd.fuse - (t - DT) >= Game::STAR_FUSE - DT / 2) sp = Game::starSpeed(sp, wd.speed, p.y < g.water);
         if (outside(g, p)) return false;
     }
     return true;
@@ -193,7 +197,7 @@ static bool ground(const Game &g, Vector3 p, Vector3 &hit) {
 
 // --- rope race: exact copy of Game::step for the active worm, driven by a parametric swing policy ---
 
-struct Mover { Body b; float yaw, pitch; bool roped; Rope rope; uint8_t prev; int jump = 0; uint8_t kind = 0; Vault vault{}; };
+struct Mover { Body b; float yaw, pitch; bool roped; Rope rope; uint8_t prev; int jump = 0; uint8_t kind = 0; Vault vault{}; Hook hook{}; };
 
 static Vector3 feetOf(const Body &b) { return {b.pos.x, b.pos.y - R, b.pos.z}; }
 
@@ -225,15 +229,19 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
         if (pressed & Input::JUMP) m.roped = false, b.vel = g.ropeRelease(m.rope, feetOf(b), Game::ropeSwing(in, m.yaw));
     } else {
         m.pitch = Clamp(m.pitch + in.aim / 127.0f * 1.5f * DT, -1.2f, 1.45f);
-        Vector3 hit;
-        if ((pressed & Input::FIRE) && g.terrain.raycast({b.pos, dirOf(m.yaw, m.pitch)}, ropeMax, &hit)) {
-            m.roped = true, b.grounded = false, b.motion.slide = false;
-            g.ropeHang(m.rope, hit, feetOf(b), b.vel, m.yaw);
-        }
+        if (pressed & Input::FIRE) m.hook = m.hook.on ? Hook{} : Game::grappleFire(feetOf(b), m.yaw, m.pitch, b.vel, m.rope.swung);
     }
     if (m.vault.t && (m.roped || Vector3LengthSqr(b.vel) > 0)) b.pos = m.vault.to, m.vault.t = 0;
     if (m.roped) b.motion.slide = false;
-    return m.roped ? stepRope(g, m, in) : m.vault.t ? true : stepBody(g, b, m.yaw);
+    bool ok = m.roped ? stepRope(g, m, in) : m.vault.t ? true : stepBody(g, b, m.yaw);
+    if (m.hook.on) {  // Game::step's grapple, objects aside
+        Vector3 hit;
+        int r = g.grappleStep(m.hook, feetOf(b), ropeMax, false, &hit, nullptr);
+        m.hook.on = r == 1;
+        if (r == 2) m.roped = true, b.grounded = false, b.motion.slide = false, g.ropeHang(m.rope, hit, feetOf(b), b.vel, m.yaw);
+    }
+    if (!m.roped && !m.hook.on && (b.grounded || m.vault.t)) m.rope.swung = false;
+    return ok;
 }
 
 // Aim, fire the rope, swing pushing forward for `release` ticks, let go and fly until landing.
@@ -256,7 +264,7 @@ static Input ropePolicy(const Mover &m, Vector3 finish, const Ai::RopePlan &p, A
         return in;
     }
     if (r.fired) {
-        r.done = ++r.after > 20 || (r.after > 1 && m.b.grounded);
+        if (!m.hook.on) r.done = ++r.after > 20 || (r.after > 1 && m.b.grounded);
         return in;
     }
     float dy = wrapPi(p.yaw - m.yaw), dp = p.pitch - m.pitch;
@@ -271,7 +279,7 @@ Input Ai::race(const Game &g) {
     const Worm &w = g.worms[g.current];
     const float ropeMax = WEAPONS[g.weapon].speed;
     Vector3 fin = g.raceFinish;
-    Mover now{{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, g.roped, g.rope, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault};
+    Mover now{{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, g.roped, g.rope, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, g.grapple};
     if (run.done) {
         // spread over frames: standing it waits; in the air it plans from where it will be once the choice is made
         const bool rest = w.grounded && !g.roped && Vector3LengthSqr(w.vel) < 1e-4f;
@@ -311,7 +319,7 @@ Input Ai::race(const Game &g) {
                 else if (Vector3Distance(m.b.pos, fin) < 2) s = 1e6f - i - k;
             }
             if (s == 0) s = -Vector3Distance(m.b.pos, fin) - m.b.fall * 0.3f;
-            if (c.release >= 0 && !hooked) s = fminf(s, -1e19f);  // a miss only spends a rope shot
+            if (c.release >= 0 && !hooked) s = fminf(s, -1e19f);  // a miss gains nothing
             if (s > raceBest) { raceBest = s; rope = c; }
         }
         if (raceWait > 0) { raceWait--; return Input{}; }
@@ -1407,7 +1415,7 @@ Input Ai::think(const Game &g) {
             if (k == Kind::SuperSheep)
                 for (const Worm &x : g.worms) near |= x.alive && x.team != w.team && Vector3Distance(s.pos, x.pos) < 1.5f;
             else near = Vector2Distance({n.x, n.z}, {e.x, e.z}) > Vector2Distance({s.pos.x, s.pos.z}, {e.x, e.z});  // 0x57e130: the next step goes away
-            if (k == Kind::SuperSheep && g.worms[plan.target].alive) steer(g, s.pos, s.vel, e, in);
+            if (k == Kind::SuperSheep && g.worms[plan.target].alive) steer(g, s.pos, WEAPONS[s.weapon].walks ? s.vel : s.aim, e, in);  // Starburst: its heading
             if (near && !g.prevButtons) in.buttons = Input::FIRE;
         }
         return in;

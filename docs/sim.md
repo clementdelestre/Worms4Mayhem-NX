@@ -39,7 +39,7 @@ In order: bubbles age one turn end (W4M Bubble.Lifetime, data); Icarus, girder p
 DoPostActivity `SetData("DoubleDamage", 0)`, data); poison takes `poison` hp from each worm, never below 1 (W4M Worm.Poison, data);
 game over check; sudden death (below); the next team in order with a living worm (`idle` teams skipped: mission captives), its next
 worm in rotation (`nextWorm`); turn timer = `turnTime` s, hot seat = `hotSeat` s (W4M HotSeat 10 s, data); wind
-`WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10; HUD meter `Hud::draw`: downwind pointer in the camera frame, "NNm" = round(10 × |wind|), docs/w4m/render.md "Wind meter"; ours: drawn flat in 2D, so no perspective term, the tilt kept as a sin 0.75 squash of the screen-y component); the weapon in hand = `picked[team]`
+`WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10; HUD meter `Hud::draw`: downwind pointer in the camera frame, "NNm" = round(10 × |wind|), docs/w4m/render.md "Wind meter"; `Ui::windPointer`: W4M's yaw with its -sin(-268 / 640) term, the tip turned by ArrowOrien (0.75, 0, -0.2) in XYZ order and seen down -z, the sprite foreshortened along its axis; ours: the HUD is drawn in 2D with no projection of its own, so it matches W4M only if W4M's HUD camera is orthographic (not traced)); the weapon in hand = `picked[team]`
 (the weapon held when its last turn ended) if still `usable`, else `firstWeapon()` (W4M Weapon.Create 0x565770: first usable in list
 order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall before, in `Settle` (below).
 
@@ -227,8 +227,17 @@ damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack lan
 W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm + data]; what is ours is tagged.
 - State (`Game::rope`, checksummed while in use): the bends from the hook on (`pt`, `len`, unwrap `side`), the swing `angle` and `spin`
   (rad per 20 ms) in the vertical plane of `yaw`. The body point is the feet (W4M Position): `pos - R`. The yaw stays fixed on the rope.
-- Hooking (`ropeOn`, `use` → hit): length from the feet, angle = acos of the eye's drop below the hook (> 0: behind the facing), from the
-  second hook of a turn negated when moving backwards, spin = the angle swept about the hook by 20 ms of the velocity, negative moving forwards.
+- Firing (`use`, `grappleFire`, `grappleStep`, `Game::grapple`, checksummed in flight) [disasm 0x573790 / 0x572800 / 0x573d00]: FIRE
+  launches the hook from the eye (feet + 0.75 m) at 50 m/s (1 unit/ms) along the aim, or, once hooked since the worm last stood
+  (`Rope::swung`, W4M +0x79, cleared idle off Ballistic 0x574b96), along 0x570650's pitch: straight up, tilted 45° toward the horizontal
+  motion at 10 m/s and over (proportionally below). FIRE again while it flies retracts it. Each tick: a standing worm's hook takes the
+  first object its 0.25 m sphere touches (mask 0x1e: crates but mission targets, a still mine, a drum; a bubble retracts it); else land
+  within the tick's flight hooks (`ropeOn`); else it moves on and retracts past MaxLength from the feet. Only a hook on land counts
+  against Ninja.NumShots (`ropeShots`, 0x573ea3); the ammo goes once the rope has hooked, when it is put away or the turn ends
+  (`ropeCleanup`, 0x5727b0 on +0x7b). Ours: the 20 ms step runs per tick. Not ported [ours, the sim has no camera view]: W4M refuses a
+  standing fire from the first-person "Head" camera without a target (FEError, 0x573845).
+- Hooking (`ropeOn`): length from the feet, angle = acos of the eye's drop below the hook (> 0: behind the facing), negated when hooked
+  since the worm last stood and moving backwards, spin = the angle swept about the hook by 20 ms of the velocity, negative moving forwards.
 - Each tick `ropeTick`: reel (`aim` sign, 10 m/s, MaxLength over the whole rope, refused under MinLength / MinBendDistFromWorm or when the new
   point is blocked), swing (angle += spin; stick push −s × SwingAmount × 100 × MinLength / (L + 0.001 L²), units; RotationDamping 0.99
   without stick; gravity 400 g sin(angle) / L), body at the last bend + L (−sin, −cos) of angle + spin; a blocked body turns the spin
@@ -238,16 +247,18 @@ W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm 
   0.99^K). `ropeCut` (0x571020) casts from 0.1 m off the feet and stops 0.4 m short of the bend, and bends sit an extra half voxel off
   the land: our voxel raycast stops up to half a voxel deep, so the feet on the ground or a bend's own land would always cut the
   stretch. `ropeBlocked` samples Fits' three 1 m rods every voxel from half a voxel up (same reason), plus the 5-unit sphere at the feet
-  against other worms (10 units, 5 above their feet), shots (their Radius) and bubbles (9 units); crates, drums and mines are not counted
-  (their collider flags against the rope's mask 0x19 are not traced). Rope.MAX 16 bends: a wrap past it bounces instead.
+  against the colliders of mask 0x19 [disasm]: other worms (flag 1, 10 units, 5 above their feet), shots and mines (payload flag 8,
+  their Radius; mines 3 units), drums (0x10, 9 units at their Position) and bubbles (0x10, 9 units); crates (2 / health 4 / target
+  0x20) do not block a worm. A hooked object's rope uses mask 0x3f (crates too) and its own size: a crate 10 units, else 5 (0x571d90,
+  0x572269). Rope.MAX 16 bends: a wrap past it bounces instead.
 - Velocity while swinging is W4M's 0x56fd60 value, the step's motion × 0.001 units/ms (1/50 of the motion's speed); letting go (`JUMP`)
   sets the velocity of one more swing step over its time (0x573530, DetachVelocityMulti 1).
 - `ropeSwing` (0x571820): without `HEADING`, the sign of `walk`; with it, the stick's direction against the facing: under 81° forward,
   over 99° back, 0 between.
 - A hooked crate, drum or mine (0x571d90) runs the same update about the worm's feet at the hook time, its plane facing away from the
   worm, no spin; it hangs by its centre minus 10 units (crate, 0x5cbc86) or 9 (drum, 0x5d2135); `stepObjects` leaves it alone; `JUMP`
-  lets it go with `ropeRelease`'s velocity (NinjaRope.EndSwing). Not modelled [ours]: the hook's flight (W4M flies it at 1 unit/ms from the
-  eye, 0x572800 / 0x573d00, and retracts it past MaxLength); ours hooks at once along the aim ray.
+  lets it go with `ropeRelease`'s velocity (NinjaRope.EndSwing).
+- The AI's rope planner (`Mover`, ai.cpp) flies the hook with the same `grappleFire` / `grappleStep`, objects aside.
 
 ### Shots in water (`stepShots`' `wet`)
 
@@ -262,10 +273,16 @@ W4M PayloadLogicEntity 0x582050 / Parabolic events 0x577980, docs/w4m/weapons.md
 
 ### Wind on the parachute, the scouser and the gas (W4M docs/w4m/weapons.md "Wind drift")
 
-- Parachute (`chuteDrift`, `CHUTE_*`) [disasm]: opens under −11.25 m/s; per tick the velocity moves half its gap (0.5^K) to 3 m/s along the
-  facing + `chuteDrift` (70 ms of the opening's wind and gravity: 0.2975 m/s per wind unit, −0.875 m/s), at most 2.5 m/s × K; no
-  Ballistic gravity or Wormpot worm wind while it hangs. Not modelled [ours]: the canopy sway and its coupling into the fall (0 at rest),
-  closing on a blocked canopy. The yaw still turns with the stick [assumed: no W4M turn code found].
+- Parachute (`chuteOpen`, `chuteDrift`, `chuteAt`, `chuteAng` / `chuteSpin` / `chuteSink` / `chuteGain`, `CHUTE_*`, checksummed) [disasm
+  0x578db0 / 0x578a40 / 0x5792a0]: FIRE opens it only off the ground (Ballistic), spending the ammo, and closes an open one; held, it
+  opens itself under −11.25 m/s. The canopy starts 2 m over the worm, angle and spin 0. Per tick (W4M per 20 ms, × K): the stick
+  (`steerIn`, `chuteSteer`) turns the yaw 1 rad/s toward its side (pulled back or level: any side; pushed forward: only past 0.2 of full
+  tilt aside) and nudges the spin 0.001 the other way; yaw −= 0.01 sin(angle); spin = (spin − 0.003 sin) × 0.99, angle += spin. Swung
+  past cos 0.4 it sinks (`chuteSink` −= 2 (cos − 0.4) g ms⁻¹ × 1e-3 m/s), else the sink decays × 2/3 into `chuteGain`, which returns 1/7
+  to 0 (≤ 0.05 m/s a step); the velocity moves half its gap to (3 m/s + gain) along the facing + `chuteDrift` (70 ms of the opening's
+  wind and gravity), at most 2.5 m/s, then + the sink; the canopy moves by it and the worm hangs 2 m under it, swung sideways by
+  2 sin(angle). Ours: the worm reaches that point through `wormBody`'s sweep (voxel land), its velocity kept as the canopy's; landing
+  closes it (W4M: the canopy move no longer Fits, 0x57967e). The renderer's ParachuteLR follows the same stick test (main.cpp).
 - Inflatable Scouser [disasm]: caught (stage 1, stopped), it inflates the next tick: 4 m/s straight up, 6 s to the pop; it rises
   through land until a tick clear of it (stage 2), then drifts (stage 3): wind × 4.25 × 0.6 m/s² per wind unit, no gravity; land
   then pops it. The carried worm's feet are at the payload.

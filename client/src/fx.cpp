@@ -53,7 +53,7 @@ const Ramp RAMPS[] = {
     {},
     {5, {{255, 255, 255, 255}, {255, 204, 0, 255}, {255, 153, 77, 255}, {204, 128, 0, 255}, {26, 0, 0, 255}}, {0, 0.1f, 0.15f, 0.3f, 1}},  // WXP_StarBurstRocketFlames
     {5, {{255, 255, 255, 255}, {255, 204, 0, 255}, {230, 153, 77, 255}, {128, 77, 0, 255}, {26, 0, 0, 255}}, {0, 0.1f, 0.15f, 0.3f, 1}},  // WXP_BazookaTrail_Main
-    {2, {{230, 242, 255, 255}, {179, 204, 255, 255}}, {0, 1}},  // WXP_BazookaTrail_Puffs
+    {2, {{230, 242, 255, 255}, {179, 204, 255, 255}}, {0, 1}},  // WXP_BazookaTrail_Puffs, WXP_JetpackStartRing / StartBase
     {4, {{255, 255, 255, 255}, {191, 230, 255, 255}, {179, 191, 255, 255}, {255, 255, 255, 255}}, {0, 0.1f, 0.2f, 1}},  // WXP_HomingMissileSmoke
     {1, {{0, 128, 255, 255}}, {0, 1}},  // WXP_HomingMissileGlow
     {1, {{255, 255, 255, 255}}, {0, 1}},  // WeaponBazookaPuff
@@ -132,10 +132,10 @@ Vector3 posAt(const Particle &p, float t) {
 struct Emit {
     unsigned char tex; bool add = true, head = false, trail = false;  // trail: EmitterType kTrail
     int num = 1, max = 1; float lifeTime = 0, freq = 0, freqR = 0, delay = 0;
-    float life = 0, lifeR = 0, size = 0, sizeR = 0, aspect = 1, shrink = -1, shrinkR = 0;  // shrink: SizeVelocityDelay of a SizeVelocity < 0
+    float life = 0, lifeR = 0, size = 0, sizeR = 0, aspect = 1, shrink = -1, shrinkR = 0, sizeIn = 0;  // shrink: SizeVelocityDelay of a SizeVelocity < 0; sizeIn: SizeFadeIn
     float alpha = 1, alphaIn = 0, fade = -1;  // fade: AlphaVelocityDelay of an AlphaVelocity < 0
     Vector3 v{}, vR{}; bool norm = false; float mass = 0, altN = 0, altS = 0;  // mass: x ParticleAcceleration (0, -1, 0)
-    Vector3 off{}, offR{}; float spiral = 0, spiralW = 0, rotR = 0, spinR = 0;
+    Vector3 off{}, offR{}; float spiral = 0, spiralW = 0, rot = 0, rotR = 0, spinR = 0;
     unsigned char col = R_WHITE; int sfx = -1; const Emit *fx = nullptr, *expire = nullptr;  // EmitterSoundFX, EmitterParticleFX, EmitterParticleExpireFX
 };
 struct Live { const Emit *e; Vector3 at; uint32_t follow = 0; float clock = 0, next = 0, timer = 0, jitter = 0; bool started = false; std::vector<float> ends; };
@@ -149,9 +149,9 @@ float spawn(const Emit &e, Vector3 at) {
     auto r = [](float x) { return rnd(-x, x); };
     Vector3 v = {e.v.x + r(e.vR.x), e.v.y + r(e.vR.y), e.v.z + r(e.vR.z)}, o = {e.off.x + r(e.offR.x), e.off.y + r(e.offR.y), e.off.z + r(e.offR.z)};
     if (e.norm) v = Vector3Scale(Vector3Normalize(v), e.v.x + e.vR.x);
-    Particle q = {Vector3Add(at, Vector3Scale(o, 1 / 20.f)), Vector3Scale(v, 0.5f), 0, (e.life + r(e.lifeR)) / 1000, (e.size + r(e.sizeR)) / 20, 0, r(e.rotR) * DEG2RAD,
+    Particle q = {Vector3Add(at, Vector3Scale(o, 1 / 20.f)), Vector3Scale(v, 0.5f), 0, (e.life + r(e.lifeR)) / 1000, (e.size + r(e.sizeR)) / 20, 0, (e.rot + r(e.rotR)) * DEG2RAD,
                   r(e.spinR) * DEG2RAD * 10, e.altN > 0 ? 0 : 5 * e.mass, 0, WHITE, e.tex, e.add, e.trail ? TRAIL_SEGS * TRAIL_DT : 0};
-    q.altN = e.altN, q.altS = e.altS, q.p0 = q.p, q.ramp = e.col, q.delay = e.shrink < 0 ? 1e9f : (e.shrink + r(e.shrinkR)) / 1000;
+    q.altN = e.altN, q.altS = e.altS, q.p0 = q.p, q.ramp = e.col, q.fadeIn = e.sizeIn / 1000, q.delay = e.shrink < 0 ? 1e9f : (e.shrink + r(e.shrinkR)) / 1000;
     q.alpha = e.alpha, q.aIn = e.alphaIn / 1000, q.fadeA = e.fade < 0 ? -1 : e.fade / 1000, q.aspect = e.aspect;
     q.spR = e.spiral / 20, q.spW = e.spiralW * 10, q.head = e.head, q.expire = e.expire;
     if ((int)ps.size() >= MAX) return q.life;
@@ -195,6 +195,11 @@ void tickEmitters(float dt) {
 void effect(const std::vector<const Emit *> &list, Vector3 at) {  // EffectDetailsContainer: its emitters, all at one point
     for (const Emit *e : list) lives.push_back({e, at});
 }
+// WAE_Jetpack takeoff [data PARTTWK]: WXSprite4 (alpha), (.9, .95, 1) to (.7, .8, 1), orientation 30 +- 20, spin +- 30, thrown flat (normalised)
+const Emit JET_RING = {.tex = PUFF, .add = false, .num = 30, .max = 30, .lifeTime = 1, .life = 1000, .lifeR = 300, .size = 9.5f, .sizeR = 1.5f, .shrink = 0,
+                       .sizeIn = 20, .vR = {1.2f, 0, 1.2f}, .norm = true, .altN = 6500, .altS = 1e-6f, .rot = 30, .rotR = 20, .spinR = 30, .col = R_BAZ_PUFF};
+const Emit JET_BASE = {.tex = PUFF, .add = false, .max = 30, .lifeTime = 2000, .life = 800, .lifeR = 300, .size = 7, .sizeR = 1.5f, .shrink = 250,
+                       .sizeIn = 200, .vR = {0.8f, 0, 0.8f}, .norm = true, .altN = 6500, .altS = 1e-6f, .rot = 30, .rotR = 20, .spinR = 30, .col = R_BAZ_PUFF};
 
 const int FW_SFX = (int)Audio::Sfx::Fireworks, BANG_SFX = (int)Audio::Sfx::Explosion;  // global/FireWorksExplosion, global/ExplosionRegular
 // PARTTWK [data]: glows (WXSprite1), whiteouts, kTrail ribbons, stars (WXSprite7) and their sparkles (WXSprite26)
@@ -648,6 +653,7 @@ void trail(const Projectile &s, float dt, Vector3 wind) {
         add({s.pos, {rnd(-0.2f, 0.2f), rnd(0.1f, 0.4f), rnd(-0.2f, 0.2f)}, 0, rnd(1.8f, 2.2f), 0.35f, 0.05f, 0, rnd(-1, 1), -0.1f, 1, {255, 240, 200, 230}, CROSS, false});
     if (d.name == "Starburst") {  // rocket: WXP_Wep_StarburstRocket flames + orange glow; stars: blue trail + cyan glow
         float v = Vector3Length(s.vel);
+        if (!s.child && d.fuse - s.fuse < 2) return;  // the rocket's effect starts on Starburst.FuseLit, 2000 ms in (0x588cba)
         add({s.pos, {}, 0, 0.06f, s.child ? 0.9f : 0.75f, 0.6f, 0, 0, 0, 0, s.child ? Color{120, 230, 255, 255} : Color{255, 77, 0, 255}, GLOW, true});
         if (s.child && v > 0.5f) streaks.push_back({s.pos, Vector3Scale(s.vel, -1 / v), fminf(v * 0.15f, 2.5f), 0.3f, TRAIL_B});
         int alive = 0;
@@ -740,6 +746,9 @@ void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c,
     if ((int)ps.size() < MAX) ps.push_back({p, v, 0, life, size0, size1, 0, 0, grav, 0, c, (unsigned char)(bubble ? BUBBLE : QUESTION), false});
 }
 
+void jetStart(Vector3 at) { effect({&JET_RING, &JET_BASE}, at); }
+void jetStop() { lives.erase(std::remove_if(lives.begin(), lives.end(), [](const Live &l) { return l.e == &JET_BASE; }), lives.end()); }
+
 void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet) {
     add({Vector3Add(p, Vector3Scale(rndDir(), size0 * 0.25f)), Vector3Add(v, Vector3Scale(rndDir(), 0.5f)), 0, life, size0, size1, 0, rnd(-2, 2), 0, 2, jet ? Color{255, 200, 140, 255} : Color{255, 110, 30, 255}, (unsigned char)(jet ? JET : TOON), true});
 }
@@ -809,13 +818,21 @@ void update(float dt) {
     }
 }
 
-void drawSky(const Camera3D &cam) {
+static Vector3 skyOrigin;
+static float skyUnit = 0.05f;
+// Skybox1-3 camera (0x4d927b): the view with its x / z translation zeroed puts the scene origin on the view's up axis, this many units below the eye
+static float skyDrop(const Camera3D &cam, Vector3 up) { return Vector3DotProduct(Vector3Subtract(cam.position, skyOrigin), up) / skyUnit; }
+
+void drawSky(const Camera3D &cam, Vector3 origin, float unit) {
+    skyOrigin = origin, skyUnit = unit;
     rlDrawRenderBatchActive();
     if (skyModel.meshCount) {
         // the ~20000-unit scene shrunk inside the far plane around the camera: opaque parts, then the blended ones in scene
         // order with their XBlendModeGL; depth only sorts the sky's own parts and is cleared after
         static const int GL_FACTOR[11] = {0, 1, 0x306, 0x307, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305, 0x308};  // W4M BlendFactor -> GL, table 0x8b4b5c
-        Matrix m = MatrixMultiply(MatrixScale(SKY_K, SKY_K, SKY_K), MatrixTranslate(cam.position.x, cam.position.y, cam.position.z));
+        Matrix v = GetCameraMatrix(cam);
+        Vector3 up = {v.m1, v.m5, v.m9}, at = Vector3Add(cam.position, Vector3Scale(up, -skyDrop(cam, up) * SKY_K));
+        Matrix m = MatrixMultiply(MatrixScale(SKY_K, SKY_K, SKY_K), MatrixTranslate(at.x, at.y, at.z));
         float t = skyClip > 0 ? fmodf(skyT, skyClip) : 0;
         rlDisableBackfaceCulling();
         for (int pass = 0; pass < 2; pass++)
@@ -979,10 +996,10 @@ void drawFlare(const Camera3D &cam, float dt, const std::function<int(Vector3, V
     if (!hasSun || !flareTex.id) return;
     Matrix v = GetCameraMatrix(cam);
     Vector3 right = {v.m0, v.m4, v.m8}, up = {v.m1, v.m5, v.m9}, fwd = {-v.m2, -v.m6, -v.m10};
-    float x = Vector3DotProduct(sunAt, right), y = Vector3DotProduct(sunAt, up), z = Vector3DotProduct(sunAt, fwd);
-    float r = sqrtf(x * x + y * y) / fabsf(z);  // [assumed: view space, no projection scale]
+    float x = Vector3DotProduct(sunAt, right), y = Vector3DotProduct(sunAt, up) - skyDrop(cam, up), z = Vector3DotProduct(sunAt, fwd);
+    float r = sqrtf(x * x + y * y) / fabsf(z);  // affine transforms only (0x455d30): no projection scale
     if (r >= 1) { flareFade = 1; return; }  // as the exe: full again when it comes back on screen
-    int h = hit(cam.position, Vector3Normalize(sunAt));
+    int h = hit(cam.position, Vector3Normalize(Vector3Subtract(sunAt, Vector3Scale(Vector3Subtract(cam.position, skyOrigin), 1 / skyUnit))));  // 0x4799e7: sun - eye
     if (h == 2) flareOwed += dt;  // an object: the flare freezes and its clock stops
     else flareFade = Clamp(flareFade + (h ? -5.0f : 5.0f) * (dt + flareOwed), 0, 1), flareOwed = 0;  // 0.005 per ms
     if (flareFade <= 0) return;

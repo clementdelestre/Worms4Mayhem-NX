@@ -5,6 +5,7 @@
 // Client-side controls: sticks, gyro and mouse become the sim's per-tick rate Input (network and replays unchanged),
 // plus the match camera and HD rumble.
 namespace Controls {
+constexpr float FOV0 = 51.282f;  // W4M default projection, vertical: t = ±0.48 at unit distance, r = aspect x 0.48 (0x4d8067..0x4d808b)
 struct Settings {
     float aim = 1, cam = 1, gyro = 1;  // sensitivities
     bool invertAim = false, invertCam = false, gyroOn = false, rumbleOn = true;

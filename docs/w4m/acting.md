@@ -28,7 +28,7 @@ The `.wmv` files are separate. `MoviePlayerService` plays them full screen.
 | ThreatenWorm {Threatened} | flag at actor+0x6e bit 0 |
 | CutCamera {Position, LookAt} | cut to two locator names |
 | PathCamera {PositionKnotList, LookAtKnotList (comma lists of locators), Loop*, *Steps u32, *Tension, DrawDebugDots} | `Camera.Path.*` data + `Camera.Path.Start`. The movie waits for `Camera.Path.Stopped` before it ends |
-| TimedPathCamera {same, *Steps = comma string per segment} | `Camera.TimedPath.*`. The default step is 500 [disasm 0x637b50]. Steps x 10 ms matches the gaps between camera events in TinCanWally (500,500 = 10 s) [assumed] |
+| TimedPathCamera {same, *Steps = comma string per segment} | `Camera.TimedPath.*`. The default step is 500 [disasm 0x637b50]. A segment of n steps takes n x 10 ms: each camera update adds 1 / steps[segment] to the Catmull-Rom parameter (TimedKnotList 0x636de0, 0x636fee..0x637018), and the CMS runs cameras 100 times a second (docs/camera-w4m.md §11.1) [disasm]; TinCanWally's 500,500 = 10 s matches [data] |
 | ShakeCamera {Duration ms, Magnitude} | `Camera.Shake.Length/Magnitude` |
 | Comment {Comment = text id, Duration ms} | subtitle line via `CommentaryPanel.Comment` / `.Delay`, e.g. `M.Wild.Tin.EFMV.3a`. The ids are in the language files |
 | FailureComment {Duration} | random `Miss.Generic.Lose1-5` text |

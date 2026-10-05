@@ -24,12 +24,14 @@ void donkeyAriel(Vector3 at);  // W4M WXP_CrateSpawnLARGE rings where the Concre
 void ariel(Vector3 p);  // W4M WXP_AirstrikeArielA: the air strike bomb's one-off puff at its launch
 void dud(Vector3 p);  // mine fizzled: W4M ExpiryFx WXP_Wep_MineDudEffect
 void soap(Vector3 p);  // one W4M WXP_Bubbles_Small soap bubble, from the Bubble Trouble machine
+void jetStart(Vector3 at);  // W4M WAE_Jetpack PackAccessory.Trigger 0x58ce57: WXP_JetpackStartRing + WXP_JetPackStartBase, worm + 7 units
+void jetStop();  // its StartBase emitter is killed once the thrust stops (0x58cc94); the particles live on
 void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet);
 void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble);  // upright W4M "?" (WXSprite22) or bubble (WXSprite23)  // additive W4M jetfire (jet) or toonfire sprite
 void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, float g, int stage, float dt);  // Alien Abduction: e s into the sequence (its beam cues), g into the warp gate; stage: Game::ABD_*
 void update(float dt);
 Color fog();  // horizon colour: clear colour and terrain/water fog
-void drawSky(const Camera3D &cam);  // first thing inside BeginMode3D
+void drawSky(const Camera3D &cam, Vector3 origin, float unit);  // first thing inside BeginMode3D; origin: W4M world origin, unit: m per W4M unit
 void drawWater(const Camera3D &cam, float level, float time, float half = 12000 / 20.f);  // half: W4M's 12000-unit quad in m
 void draw(const Camera3D &cam);  // particles, after the opaque scene and the water
 // lens flare, last in the scene; hit(from, dir): 0 clear, 1 land, 2 object between the camera and the sun

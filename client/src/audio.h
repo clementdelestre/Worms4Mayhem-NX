@@ -31,6 +31,8 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  BowImpact, ExplosionBoxed, DonkeyImpact,  // W4M weapons/ConcreteDonkeyImpact: WXP_DonkeyStrikeBounce's EmitterSoundFX; W4M Poison Arrow: ArmSfxLoop on impact; WXP_ExploArrow_RingDk's EmitterSoundFX (its DetonationSfx is empty)
                  Fireworks,  // W4M global/FireWorksExplosion (Firework1-3)
                  Buffalo,  // W4M weapons/BuffaloOfLies: the mystery crate reveal (BuffaloOfLiesGraphicEntity 0x551020)
+                 Debris,  // W4M weapons/Debris: an explosion changed the land (0x4736c7)
+                 Jetpack, JetpackEnd,  // W4M weapons/Jetpack (the jet loop, JetpackUtilityLogicEntity +0xf8) and weapons/JetpackEnd (0x562530)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,

@@ -138,6 +138,9 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | BubbleLoop | `bubble_loop` | weapons/BubbleMachineLoop | -22 |  | 0.5–20 | 1 | weapons: Bubble1, Bubble2, Bubble3, Bubble4, Bubble5, Bubble6 | main.cpp `drawBubbles` |
 | Fireworks | `fireworks` | global/FireWorksExplosion | 0 |  | 0.5–25 log | 1 | global: Firework1, Firework2, Firework3 (mode 2) | fx.cpp `tickEmitters` (EmitterSoundFX of WXPF_Whiteout, WXPF_RedGlow / RedBigGlow, WXP_StarburstTrailsB, at the emitter start) |
 | Buffalo | `buffalo` | weapons/BuffaloOfLies | -2 |  | 0.5–25 | 1 | weapons: BuffaloOfLies | main.cpp `onEvent` (GameEvent::Mystery: the mystery crate reveal, BuffaloOfLiesGraphicEntity 0x551020) |
+| Debris | `debris` | weapons/Debris | -12 |  | 0.5–100 | 1 | weapons: Debris1–4 (random without repeat) | main.cpp `onEvent` (GameEvent::Debris from `Game::blastLand`: W4M Land Explosion handler 0x473530 plays it at the blast once Land.Changed is set, 0x4736b2 [disasm]); pitch x 2^(4 u), u uniform in ±0.025 (FEV +08, `Def::pitchRand`) |
+| Jetpack | `jetpack` | weapons/JetPack | -3 | loop | 0.5–60 | 1 | weapons: JetPack | main.cpp `jetAudio`: started at takeoff, volume ramp of JetpackUtilityLogicEntity 0x562530 (docs/weapons-audit.md Jetpack), stopped on landing / dry [disasm] |
+| JetpackEnd | `jetpack_end` | weapons/JetPackEnd | -3 |  | 0.5–60 | 1 | weapons: JetPackEnd | main.cpp `jetAudio`: the loop's volume falls under 0.3 after a full burn, 3 s apart (0x562679) [disasm] |
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 
 Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its Time envelope

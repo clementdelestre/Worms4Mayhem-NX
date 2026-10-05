@@ -1569,6 +1569,15 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     if (pick >= 0) in.buttons = (in.buttons & ~(Input::FIRE | Input::JUMP)) | Input::NEXT_WEAPON, in.aim = Input::pick(pick).aim;  // pending pick: Controls still sees the old weapon, so a bounce press would fire it unaimed
 }
 
+// WindMeterEntity 0x5fc6e0: the pointer's yaw (camera-relative downwind - sin(OnScreenPos.x -268 / 640), grey -pi/2) under
+// locator1's ArrowOrien (0.75, 0, -0.2), XYZ order; the tip (0, 0, -1) seen down -z, screen y down
+Vector2 windPointer(bool live, float wx, float wz, Vector2 fwd) {
+    fwd = Vector2Normalize(fwd);
+    float yaw = live ? atan2f(wx * fwd.y - wz * fwd.x, wx * fwd.x + wz * fwd.y) - sinf(-268.0f / 640) : -PI / 2;
+    float x = -sinf(yaw), y = cosf(yaw) * sinf(0.75f), c = cosf(-0.2f), s = sinf(-0.2f);
+    return {x * c - y * s, -(x * s + y * c)};
+}
+
 // assets/ui/hud/<name>.png (or a src cell of it) scaled by s, rotated deg about pivot (src px) placed at pos
 static bool sprite(const char *name, Vector2 pos, float s, Vector2 pivot, float deg = 0, Color tint = WHITE, Rectangle src = {}) {
     Texture2D t = tex(std::string("hud/") + name);
@@ -1930,10 +1939,7 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
             ticked |= lroundf(t.shown) != before;
         }
         if (ticked && tickGap <= 0) Audio::play(Audio::Sfx::HpTick), tickGap = 0.06f;
-        const Worm &fw = g.worms[g.countFocus()];
-        Vector3 c = {fw.pos.x, fmaxf(fw.pos.y, g.water) + 1.2f, fw.pos.z};
-        Controls::focus(&c);
-        counting = -1;
+        counting = -1;  // the camera: each display's WormTrackCamera request (Controls, 0x5abeec)
         return true;
     }
     auto pending = [&](int i) { return hpt[i].shown != hpt[i].seen; };
@@ -2004,6 +2010,10 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         if (!d.fuseShown || s.child || s.fuse <= 0 || s.fuse > 5 || dist < 0.5f) continue;
         text3dAt(TextFormat("%d", (int)ceilf(s.fuse - 0.001f)), top, d.fuseSize, WHITE, cam, fwd, camUp);
     }
+    if (!ready && g.jetting) {  // JetpackUtility's Text3D: (2 ms + 500) / 1000 (0x5626e0) at the worm's Position + 28 units (0x5633ca), default scale
+        Vector3 at = Vector3Add(cur.pos, {0, 1.4f - Game::R, 0});
+        if (Vector3DotProduct(Vector3Subtract(at, cam.position), fwd) >= 0.5f) text3dAt(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), at, 0.25f, TEXT3D_GREY, cam, fwd, camUp);
+    }
     // W4M worm labels: name over hp, team colour, on a Text.Backing; hidden on the ready screen, with the weapon panel open or a UFO out (0x5fd4e0)
     if (!ready && !open && !g.abducting()) for (const Worm &w : g.worms) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
@@ -2011,7 +2021,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float dist = Vector3DotProduct(Vector3Subtract(w.pos, cam.position), fwd);
         if (dist < 0.5f || (fp && &w == &cur) || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // first person: inside it
         // 0x5fb170: feet (W4M Position) + 25 units up + 4 along the view's up, then HealthOffset 4 / NameOffset 9 x lens zoom x text3dK
-        float q = tanf(cam.fovy * 0.5f * DEG2RAD) / tanf(25 * DEG2RAD), kq = q * text3dK(dist);
+        float q = tanf(cam.fovy * 0.5f * DEG2RAD) / 0.48f, kq = q * text3dK(dist);
         Vector3 base = Vector3Add(Vector3Add(w.pos, {0, 1.25f - Game::R, 0}), Vector3Scale(camUp, 0.2f));
         Vector3 hpAt = Vector3Add(base, Vector3Scale(camUp, 0.2f * kq)), nameAt = Vector3Add(base, Vector3Scale(camUp, 0.45f * kq));
         float s = text3dAt(nullptr, hpAt, 0.25f, BLANK, cam, fwd, camUp);
@@ -2026,7 +2036,6 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         const Color POISON = {120, 220, 60, 255};
         text3dAt(TextFormat("%d", hp), hpAt, 0.25f, i == counting && hpt[i].poison ? POISON : c, cam, fwd, camUp);  // WormHealthNameEntity 0x5fdb70: Text3Ds in FE.Font
         text3dAt(wormName(w.team, k), nameAt, 0.25f, c, cam, fwd, camUp);
-        if (&w == &cur && g.jetting) text3d(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), sp.x, sp.y - s * 2.55f, s, TEXT3D_GREY);  // JetpackUtility's Text3D  // W4M 0x5626e0: (2 ms + 500) / 1000
         for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
             if (p.worm != i) continue;
             float a = Clamp(1 - (p.age - 0.5f) / 0.5f, 0, 1), pop = 1 + 0.25f * fmaxf(0, 1 - p.punch / 0.08f) + 0.3f * sinf(fminf(p.age / 0.25f, 1) * PI);
@@ -2078,10 +2087,12 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     float ratio = hypotf(g.wind, g.windZ);
     int speed = (int)(ratio * 10 + 0.5f);
     if (!sprite(g.cfg.scheme.wind ? "wind_back" : "wind_backdisabled", wc, 0.72f, {64, 64})) DrawCircleV(wc, 30, {0, 104, 138, 220});
-    Vector2 f = Vector2Normalize({fwd.x + cam.up.x, fwd.z + cam.up.z}), v = {1, 0};
-    if (ratio >= 0.05f) v = {-g.wind * f.y + g.windZ * f.x, -(g.wind * f.x + g.windZ * f.y) * sinf(0.75f)};
+    Vector2 v = windPointer(ratio >= 0.05f, g.wind, g.windZ, {fwd.x + cam.up.x, fwd.z + cam.up.z});
     Color ac = ratio >= 0.05f ? Color{255, 170, 30, 255} : Color{150, 150, 150, 255};
-    if (!sprite("wormlocarrow", wc, 0.2f, {64, 64}, atan2f(v.y, v.x) * RAD2DEG - 90, ac)) DrawLineEx(wc, Vector2Add(wc, Vector2Scale(Vector2Normalize(v), 24)), 5, ac);
+    if (Texture2D t = tex("hud/wormlocarrow"); t.id)  // the needle's length foreshortened by its tilt
+        DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {wc.x, wc.y, t.width * 0.2f, t.height * 0.2f * Vector2Length(v)}, {64 * 0.2f, 64 * 0.2f * Vector2Length(v)},
+                       atan2f(v.y, v.x) * RAD2DEG - 90, ac);
+    else DrawLineEx(wc, Vector2Add(wc, Vector2Scale(v, 24)), 5, ac);
     float dw = digits(TextFormat("%02d", speed), wc.x + 54, wc.y - 11, 22, 0, speed == 0);  // HUD.Wind.TextOffset / SpeedScale, x 1.84 px per unit
     digits("m", wc.x + 54 + dw, wc.y - 11 + 22 * 0.3f, 22 * 0.8f, 0, speed == 0);
     // current weapon (top right) + ammo

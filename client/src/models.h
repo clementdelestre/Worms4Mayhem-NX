@@ -18,12 +18,13 @@ struct Layers {
     float gestYaw = 0, gestPitch = 0;               // GestureAt target
     float eyeYaw = 0, eyePitch = 0;                 // pupils, relative to the head
     const char *act[2] = {}; float actT[2] = {}, actW[2] = {};  // acting gestures (new, old) over the body clip at weight actW
+    float aimW = 1;  // weight of draw()'s aim clip
 };
 // W4M "Blend" node of the clip at t (under ly's gestures), relative to Base: x / y = left / right arm mode, z = head mode (degrees)
 bool blend(const char *name, const char *clip, float t, bool loop, const Layers *ly, Vector3 *out);
 float curve(const float (*keys)[6], int n, float t);  // W4M unweighted key curve; keys: in-tangent x, y, out-tangent x, y, time, value
 // Model faces +z: yaw turns it about +y, pitch raises the nose. clip: animation name, t in seconds.
-// aim: the arms (shoulder subtrees) re-aimed by that clip at aimT, as W4M layers its shoulder-only Aim* clips over Fire* ones.
+// aim: a clip at aimT added over clip, as W4M plays Aim* over Hold* / Fire* and JetpackRotLR over JetpackFly (both at weight 1).
 bool draw(const char *name, Vector3 pos, float yaw, float pitch = 0, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true,
           const char *aim = nullptr, float aimT = 0, const Layers *ly = nullptr);
 float clipLength(const char *name, const char *clip);  // seconds, 0 if absent

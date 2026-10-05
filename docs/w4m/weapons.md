@@ -194,6 +194,7 @@ Tags: **data** = WEAPTWK.XOM or tables stored in the exe; **disasm** = traced co
 - Secondary spawns (disasm):
   - **SuperSheep take-off**: Payload slot 24 (`Input.FirePressed`, 0x581a60) detonates if `DetonatesOnFirePress +0x1dc`. Otherwise, if the container class is exactly FlyingPayloadWeaponPropertiesContainer (0x9689e8), it spawns **FlyingPayloadLogicEntity** (vt 0x859424, HM 0x558250). Sheep (flag 1) explodes and SuperSheep (Flying container) flies.
   - **Bomber drop 0x54ddf0**: container kWeaponFatkins -> **FatkinsStrikePayloadLogicEntity** (vt 0x858f1c, HM 0x554cd0), else ParabolicPayloadLogicEntity. It also compares `kWeaponDoctorsStrike` (a cut weapon).
+  - **Fatkins [disasm 0x554a80..0x5553f4 + data]**: spawned as any Bomber bomb: position = run start + direction × GroundSpeed × elapsed, velocity = direction × GroundSpeed (0 if IsAffectedByWind), so it leaves the plane like an airstrike bomb (NumStrikeBombs 1). A Parabolic payload (gravity, not low gravity, Radius 25 = a 1.25 m sphere, Scale 1.6, LifeTime −1) overriding slots 2, 3, 6 (= Parabolic 0x576fc0), 7 (HM: init 0x554b60 sets the blast scale +0x1c4 = 1, the contact count +0x1c0 = 0, binds Camera.Shake.*), 14 (no graphic launch offset), 23 (creates FatkinsStrikePayloadGraphicEntity) and **32, the contact handler 0x554e90**. The Parabolic tick (0x577417) calls slot 32 on any contact (land, worm, object, bubble); Fatkins ignores the contact flags and every DetonatesOn* flag: disarmed (+0x6f, sunk) it is removed (slot 21); else 0x580db0 bounces it (0x57ef80 → Bounce 0x518f40 with e = ParallelMinBounceDamping 0.6 on the normal part, TangentialMinBounceDamping 0.4 kept on the tangential part, zero under `Bounce.MinSpeed` 0.03 units/ms; `Payload.Bounce` → BounceFx WXP_Wep_Fatkins / BounceSfx weapons/FatkinsBounce when it still moves), count += 1; moving and count ≤ 3 → flies on (0x576580), else `Payload.Rest` (0x5758c0) → DetonatesAtRest with no expiry → Detonate (full WEAPTWK blast at the entity, ImpulseOffset −30, DetonationFx WXP_ExplosionX_Large, DetonationSfx weapons/ExplosionLarge). Then, in every case, an ExplosionMessage at the entity position (the sphere centre) with WormDamageMagnitude 75 and ImpulseMagnitude 0.6 unscaled, WormDamageRadius 145, LandDamageRadius 115.8 and ImpulseRadius 200 × scale, the impulse centred on the blast (no ImpulseOffset), kind 0; WXP_ExplosionX_Med, or WXP_Explosion_Small when LandDamageRadius × scale < 60; scale −= 0.2; Camera.ShakeStart (inert: Shake.Length / Magnitude 0). So: contacts 1-3 bounce with blasts × 1, 0.8, 0.6; the 4th (or the first that stops it) detonates, then blasts × 0.4 (or the scale it had).
   - **SuperBomber 0x58ae50** spawns ParachutePayloadLogicEntity (vt 0x85be14, HM 0x57a8a0).
   - **Detonate** (Payload slot 20, 0x580f10): if `NumBomblets +0x1a0 > 0`, it creates ClusterGeneratorLogicEntity (vt 0x8588f0, HM 0x551950). That entity's 0x5519d0 spawns **ParabolicPayloadLogicEntity** bomblets. The bomblet container is the one named by the parent's `BombletWeaponName` (+0x1b0): 0x551a89 reads it and looks it up (0x50b760) for the new ParabolicPayloadLogicEntity (0x551a56) [disasm].
   - `GameLogicService::CreateMine` 0x4f9630 (and 0x4f9c40) creates level mines as Parabolic with kWeaponLandmine.
@@ -298,13 +299,32 @@ Crate pickup 0x5c9800 switches on crate type − 0x22 (byte table 0x5c99ac): 44 
   - **Reel 0x5713c0**: lengthening by 4 units clamped to MaxLength − total (0x570fc0 sums the lengths); shortening refused when the step
     exceeds the last length, the total would go under MinLength or the last under MinBendDistFromWorm; the moved point refused when cut
     or blocked (0x571020, 0x56fcb0); else length set, Position moved there, ω ×= L_old / L_new.
-  - **Attach on land 0x573d00** (hook flight mode 2: a 20-step cast 0x466ae0 along +0x40 each 20 ms; hook velocity = RotY(yaw)
-    RotX(−pitch) (0, 0, 1) units/ms from the eye, 0x572800; past MaxLength from the eye it retracts): segment 0 = the hit, length =
+  - **Fire / retract 0x573790** (FireUtil): mode 1 with NumShots +0x3c ≠ 0 → mode 2, 0x572800; mode 2 → retract (mode 1,
+    NinjaRope.Retracted, 3dAimer.Display; NinjaRope.Kill if no shot is left); modes 3 / 4 → release 0x573530. Refused with
+    global/FEError when standing (state 0) in the "Head" camera without Airstrike.HasTarget (0x573845).
+  - **Launch 0x572800**: hook point = Position + (0, Worm.EyeLevelOffset, 0); velocity +0x40 = RotY(yaw) RotX(−pitch) (0, 0, 1)
+    (0x91fa64), 1 unit/ms; pitch = WeaponAngle, or with +0x79 set 0x570650(Velocity, yaw): π/2 + s / 0.2 × π/4, s = min(|v.xz|,
+    0.2 units/ms), negative when v.xz is along the facing (acos < π/2), π/2 when v.xz = 0; +0x114 / +0x118 = (−pitch, yaw).
+  - **Flight 0x573d00** (mode 2, per 20 ms): the 5-unit rope collider at the hook point with mask 0x1e (0x56fcb0): an overlap calls
+    0x571d90 (object attach). Else a land-only cast 0x466ae0(point, +0x40, accel 0, 20 steps, 1, mask 0, 0): hit step ≤ 20 → attach on
+    land. Else point += 20 × +0x40; |Position (feet) − point| > Ninja.MaxLength → retract (0x573790, mode 2 path). NumShots +0x3c is
+    decremented only at the land attach (0x573ea3, FETXT.NinjaLastShot / RopeShotsRemaining). The inventory goes once at Cleanup
+    0x572620 when +0x7b (set by either attach) (DecrementInventory.Id 0x5727b0). +0x79 is cleared in mode 1 once the worm is not
+    Ballistic (0x574b96).
+  - **Collider flags** (WX_Collider 0x519c80 / 0x519d30, rope masks 0x19 / 0x1e / 0x3f): worm 1; payload ColliderFlags | 8
+    (0x58246d; WEAPTWK ColliderFlags 0, or 128 for Sheep, SuperSheep, OldWoman, Scouser, Starburst): a Landmine is 8, Radius 3;
+    crate by type (0x5c9200: health 1, weapon 0, utility 2, target 3, mystery 4, custom 5) 4 for health, 0x20 for target, else 2
+    (0x5ca180), radius +0x44 (10 units, 0x5c66e8); oil drum 0x10, 9 units at its Position +0x20 (0x5d18b2); bubble body 0x10. So
+    mask 0x19 (a worm's rope) is blocked by worms, payloads and mines, drums and bubbles, not crates [disasm].
+  - **Attach on land 0x573d00**: segment 0 = the hit, length =
     |hit − Position|; θ = acos(clamp(−d̂.y)), d = eye (Position + Worm.EyeLevelOffset 15) − hit; if hooked before this turn (+0x79) and
     0x570650 (the horizontal velocity against the facing) gives > π/2, θ = −θ; ω = 0x571aa0: the angle between (Position − hook) and
     (Position + 20 Velocity − hook), negated unless the horizontal velocity points backwards (pure vertical: positive).
-  - **Attach on an object 0x571d90** (mode 4; a moving object asserts): segment 0 = the worm's Position, length = |hook point − it|,
-    yaw = atan2(d.x, d.z) + π, d = hook point − worm, θ = acos(clamp(−d̂.y)), ω = 0; collider radius from the crate's size × 0.5, mask 0x3f.
+  - **Attach on an object 0x571d90** (mode 4): only when the worm is Ambulatory (0x571db4), else the flight goes on. A payload
+    (0x4f3520) moving: "Tried to attach to a moving object", false; a crate (0x4f3570) or a drum (0x4f3610, 0x5d1760) attaches; a
+    BubbleTroubleLogicEntity (0x95fba0) retracts the hook (0x57206f); else false. Segment 0 = the worm's Position, length = |hook
+    point − it|, yaw = atan2(d.x, d.z) + π, d = hook point − worm, θ = acos(clamp(−d̂.y)), ω = 0; rope collider radius 5 units, a
+    crate its 0x5c5fd0 size × 0.5 (+0x44), mask 0x3f; +0x79, +0x7b set, mode 4; NumShots unchanged.
   - **Release 0x573530** (FireUtil on the rope): one more swing from +0x58 (the last point), v = (new − old) × 0.05 × DetachVelocityMulti
     (units/ms); on land the worm gets it (Worm.OverridePhysics off); on an object NinjaRope.EndSwing carries it.
 - **Payload water** [disasm + data]: PayloadLogicEntity 0x582050, from slot 30 0x5827c0 after a tick without collision (Jumping, Flying,
@@ -333,19 +353,30 @@ Crate pickup 0x5c9800 switches on crate type − 0x22 (byte table 0x5c99ac): 44 
     0x592460: the payload acceleration with IsAffectedByWind forced, then x, z × 0.6 (0x81ae48), y = 0. 0x5925c0 in 5 and 6: the sweep;
     a hit in state 5 snaps there and pops (0x593fad); else v += a × 20, pos += v × 20; the worm's Position = the payload's (0x5927ff).
     Pop on expiry (DetonatesOnExpiry) or contact; WormDamageMagnitude 40, radius 21 units [data].
-  - **Parachute** (ParachuteLogicEntity, update 0x579a10 → 0x579720 per 20 ms): closed, it opens (0x578db0) when the worm's v.y <
-    −0.3 × 0.75 units/ms (0x85eaf0, 0x8c1568); the opening reads v88 = (Wind.Speed cos, Gravity × Low.Gravity.Multiplier, Wind.Speed sin)
-    once (0x579024..0x579109). Open (0x5792a0): A = (0.06 (0x85bcc0) + c0) × (sin yaw, 0, cos yaw) + 70 (0x838400) × v88; v = halfway to
-    A, the change capped at 0.05 units/ms (0x569fa0), then v.y += s5c; the canopy (+0x70) moves by v × 20 and the worm hangs 40 units under
-    it; a blocked canopy move (0x59edf0) closes it (0x57967e). Sway 0x578a40: ω = (ω − 0.003 sin θ) × 0.99 with ±0.001 nudges from the
-    lateral speed; cos θ < 0.4 (0x81a620) feeds s5c −= 2 (cos θ − 0.4) v88.y, else s5c ×= 2/3 and c0 takes the change; c0 → 6/7 c0
-    (≤ 0.001 a step). Input.TurnLeft / TurnRight only set +0xb0 / +0xb1, which no parachute code reads.
+  - **Parachute** (ParachuteLogicEntity, update 0x579a10 → 0x579720 per 20 ms): closed, +0x60 = (PhysicsState ≠ Ballistic) and it
+    opens (0x578db0) when the worm's v.y < −0.3 × 0.75 units/ms (0x85eaf0, 0x8c1568); Input.FireUtilPressed (0x57984f) and
+    Parachute.AutoOpen call the same 0x578db0, which opens only if +0x60 is clear (Ballistic) and closes an open one (+0x61:
+    ParachuteClose, 0x565920). Opening: DecrementInventory (unless +0xb8), Worm.OverridePhysics, PackAccessory.Wield, canopy +0x70 =
+    Position + (0, 40, 0), +0xa8 = +0xac = 0; v88 = (Wind.Speed cos, Gravity × Low.Gravity.Multiplier, Wind.Speed sin) Wind.Direction,
+    read once (0x579024..0x579109); s5c +0x5c and c0 +0xc0 are 0 from Initialize (0x57858d).
+    Sway 0x578a40 (first, on WormData InputImpulse +0x68, 0.05 units/ms at full tilt): with |I| > 0, ahead = I · F, side = I · (F.z, 0,
+    −F.x); ahead ≤ 0: side ≥ 0 → yaw += 0.02, lr → (3 lr + 0.75) / 4, ω −= 0.001; side < 0 → the mirror; ahead > 0: the same only past
+    |side| > 0.01; |I| = 0: lr → 3 lr / 4. Then yaw −= +0xc4 (0.01 sin θ, from the last update), wrapped to [0, 2π), written to WormData
+    Orientation; ω = (ω − 0.003 sin θ) × 0.99, θ += ω. So the stick turns the worm under the canopy at 0.02 rad a step (1 rad/s);
+    Input.TurnLeft / TurnRight only set +0xb0 / +0xb1, which no parachute code reads.
+    Open 0x5792a0: cos θ < 0.4 (0x81a620): s5c −= 2 (cos θ − 0.4) v88.y; else old = s5c, s5c = 2 s5c / 3, c0 += s5c − old; c0 =
+    0x47a1a0(c0, 0, 6, 0.001) = (6 c0) / 7, change ≤ 0.001. A = (0.06 (0x85bcc0) + c0) F(yaw) + 70 (0x838400) v88; v = Velocity halfway
+    to A, the change capped at 0.05 units/ms (0x569fa0), then v.y += s5c; canopy += 20 v; Position = canopy + (40 F.z sin θ, −40 cos θ,
+    −40 F.x sin θ) when it Fits (0x59edf0), with Velocity = v, ForcedCameraOffset = −offset − (0, 40, 0); else it closes (0x57967e).
+    The canopy graphic gets min(0.3 − 20 s5c, 1) (0x579488).
   - **Gas cloud** [data PARTTWK + disasm]: WXP_GasCloud is one 8000 ms particle, velocity and acceleration 0, ParticleIsEffectedByWind 1
     but ParticleMass 0.0: the position is p0 + v t + 0.5 Mass (a + W) t² from the spawn time (0x5b7450, Mass +0x13c, wind flag +0x1bc),
     so it never drifts; a spiral of 2 units at 0.0035 rad/ms (0x5b75e0); collision radius 100 units at offset (0, 10, 0), poison 10.
     WXP_GasCloudDelayed (Mass −0.05, visual) drifts upwind; WXP_LG_GasCloud (level gas, Mass 0.049, 60 s, poison 10) drifts downwind.
 
 - **Starburst flight model [disasm 0x5917d0 + data]**: WAE_Starburst on Accessory.Init loads mesh `Starburst` (0x85085c, StarBurst.xom, Bundl09) and mounts it on `Pack_Locator`; Starburst.FuseLit spawns `WXP_Wep_StarburstRocket` at the accessory's `locator1` (inside `Star_burst|fuse`). Same mesh as the held one: 17x44x25 units (0.85 x 2.2 x 1.25 m), nodes Star_burst, fuse, ropes (554 tris: the ropes are mesh), clip FireStarburst 3.5 s moves `fuse` from 2.4 s. WEAPTWK kWeaponStarburst: FlyingGraphicsResourceID Starburst, PayloadGraphicsResourceID / WeaponGraphicsResourceID Sheep, Scale 1.0. Worm clips FireStarburst / FlyStarburst animate Pack_Locator (FireStarburst: a scale-like pop 1.46 to 1.0 at 0.54-0.71 s). **Rider [disasm 0x5891e0, 0x588fd0, 0x588690]**: once attached (+0x230, set with `Starburst.Launched` when the launch time +0x1c0 is reached, 0x588860), each tick copies the payload position (+0x28) and velocity (+0x34) into the worm (WormData +0x38 / +0x50) and turns v̂ into angles: pitch −asin(v̂.y), yaw from the horizontal direction + π, written to WormData Orientation (+0x8c) and to the worm graphic +0x158 / +0x15c (0x59f3f0 / 0x59f410: the node angles of the tumble). No other offset: FlyStarburst itself lays the body along the rocket, which sits roped on the back at Pack_Locator (its `ropes` node), hands free and flapping [data: FlyStarburst channels animate Pack_Locator and both wrists, not the shoulders]. The hands never hold the rocket.
+  - **Fuse and speed [disasm + data]**: Init (0x588c10, message 0x40) sets the launch time +0x1c0 = now + 3500 ms, `PackAccessory.Wield` at +500 ms (+0x1c4) and `Starburst.FuseLit` at +2000 ms (+0x1c8, sent by 0x588480), and sends `Worm.OverridePhysics` bit 4 (0x588580): the worm is held where it stands and is not attached. Speed +0x1b0 starts at `Starburst.InitialSpeed` 0 (0x588a9f), so slot 26 (0x5883c0: v = heading × speed, after the Flying orientation step 0x557a20) keeps the rocket still for the whole fuse while the Fly.* inputs (0x558250) already turn its heading. `Input.FirePressed` detonates only once +0x1c0 is cleared (0x589142); `Timer.TurnTimedOut` detonates at any time. At the launch time 0x588860 sets the StarburstCamera, clears +0x1c0, attaches the rider (+0x230) and sends `Starburst.Launched`. Then each frame 0x588ea0: under `Water.Level` (+0xb8) speed −= `Starburst.Acceleration` 0.01 units/ms while > 0; above, speed += 0.01 while |v| < MaxTerminalVelocity 0.45 units/ms (22.5 m/s). Order in the base update 0x57fae0: slot 26 (velocity), expiry, slot 30 (move and contacts), slot 27 (0x5891e0: launch, speed step, rider copy), so a speed step shows the next frame. The contact query (0x5887b0) skips the active worm. Detonate and the removal path (0x588dd0 / 0x588d10) zero the speed and send `PackAccessory.Hide`.
+  - **Vapourize [disasm]**: Detonate 0x588dd0 runs the base Detonate (blast, WXP_StarburstExplosion) first, then `Worm.Vapourize` (0x5885f0), then `Timer.EndTurn`. The only handler is WXWormLogicEntity 0x5b07c0 → 0x5ac160: damage of its whole energy (0x5ab7e0, type 0: Worm.Damaged, Turn.Mistake for the active worm), then `WXWormManager.UnspawnWorm`, which WXWormManagerService handles like `Worm.DieQuietly` (0x5b65b8 → 0x5b4af0: the worm is removed). No graphic entity subscribes to Worm.Vapourize, no PARTTWK emitter or string names a vapourize effect, and the unspawn path spawns no death blast, grave or particle: the rider simply vanishes in the Starburst blast.
 
 - **Concrete Donkey [data: WEAPTWK kWeaponConcreteDonkey, PARTTWK; disasm: DonkeyLogicEntity 0x553000..0x553cc0]**: WormDamageMagnitude 80, WormDamageRadius 172 (8.6 m), LandDamageRadius 110.5 (5.525 m), ImpulseMagnitude 0.46 (23 m/s), ImpulseRadius 170 (8.5 m), ImpulseOffset -60 (3 m), Radius 72 (3.6 m = 60 x Scale 1.2, asserted >= 59.9 at 0x553773), LifeTime 8000, DetonatesOnExpiry 1, DetonatesOnLand 0, SinkDepth 80, DetonationFx WXP_Wep_Donkey, DetonationSfx weapons/ConcreteDonkeyImpact, ExpiryFx WXP_ExplosionX_Med (only read on the Payload.Disarm/dud path of Detonate 0x581336, never for the donkey), BounceFx WeaponDonkeyBounce (no PARTTWK container), ArielFx WXP_CrateSpawnLARGE, FxLocator Donkey_L (model node at (0, -93, 0) units). Donkey.Bounce 0.3 and MinBounceSpeed 0.2 are bound in Init (0x5537a5) and never read. CAMTWK Camera.Shake.Length / Magnitude = 0, so the 0x553290 ShakeStart on a smash is inert.
   - **Start (Init 0x553700)**: position = Airstrike.TargetPoint, y += max(Donkey.MinHeight 1500, Land.MaxHeight + Donkey.ExtraHeight 500) units; apex = that y at time 0. DonkeyCamera point = (x, y - ExtraHeight, z + 500) (0x5538d8: `fsub [esp+0x14]` is the ExtraHeight local).

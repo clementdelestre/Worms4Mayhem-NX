@@ -2,6 +2,7 @@
 // From client/: make ui_check
 #include "../src/fx.h"
 #include "../src/ui.h"
+#include "raymath.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -101,6 +102,17 @@ int main() {
         assert(peak > 50);
         for (int t = 0; t < 600; t++) Fx::update(1 / 60.f);
         assert(Fx::count() == 0);
+    }
+    {  // wind meter needle (0x5fc6e0): ArrowOrien tilt and roll, the -sin(-268 / 640) yaw term, grey fixed at -pi/2
+        Vector2 grey = Ui::windPointer(false, 1, 0, {0, 1});
+        assert(fabsf(grey.x - cosf(0.2f)) < 1e-4f && fabsf(grey.y - sinf(0.2f)) < 1e-4f);
+        Vector2 ahead = Ui::windPointer(true, 0, 1, {0, 1});  // downwind along the view: up the screen, turned left by the yaw term
+        assert(ahead.y < -0.5f && ahead.x < -0.2f);
+        for (float a = 0; a < 6.3f; a += 0.1f) {
+            Vector2 v = Ui::windPointer(true, cosf(a), sinf(a), {0.3f, 0.7f}), w = Ui::windPointer(true, -cosf(a), -sinf(a), {0.3f, 0.7f});
+            assert(Vector2Length(v) > sinf(0.75f) - 1e-4f && Vector2Length(v) < 1 + 1e-4f);
+            assert(fabsf(v.x + w.x) < 1e-4f && fabsf(v.y + w.y) < 1e-4f);
+        }
     }
     puts("ui_check ok");
 }

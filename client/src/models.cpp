@@ -29,6 +29,7 @@ struct Entry {
     Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr, *aimed = nullptr; int frame = -1, aimFrame = -1;
     std::vector<Matrix> invBind;
     std::vector<int> arm;  // per bone: its shoulder bone, -1 off the arms (the glb skeleton is flat: matched by name)
+    std::vector<int> parent;  // per bone: its parent in W4.Worm's main|head|... graph, -1 for main or another model
     std::vector<uint8_t> face;  // per bone: 1 lips, eyelid or eyebrow (W4M emote bones), 2 turns with the head
     bool hasFx = false;
     Vector3 fx{};
@@ -223,6 +224,25 @@ bool uploadStep(Job &j) {
     return true;
 }
 
+// W4.Worm graph (w4m-models --list, W4M_GROUPS): main > tail > tail2 > tail3, head > face bones and HatLocator, shoulder_X >
+// wrist_X > <finger>knuckle_X > <finger>_X (thumb_X and WeaponLocator on the wrist); XBone names are <group>_bone
+static int parentOf(const Entry &e, const char *n) {
+    const char *side = strstr(n, "_left") ? "left" : "right";
+    std::string p;
+    static const char *const FACE[] = {"upperlip", "bottomlip", "mouthmiddle", "eyetop", "eyebrow", "HatLocator"};
+    for (const char *f : FACE) if (!strncmp(n, f, strlen(f))) p = "head_bone";
+    if (!strcmp(n, "tail2_bone")) p = "tail_bone";
+    else if (!strcmp(n, "tail3_bone")) p = "tail2_bone";
+    else if (!strcmp(n, "WeaponLocator")) p = "wrist_right_bone";
+    else if (!strncmp(n, "wrist_", 6)) p = std::string("shoulder_") + side + "_bone";
+    else if (strstr(n, "knuckle_") || !strncmp(n, "thumb_", 6)) p = std::string("wrist_") + side + "_bone";
+    else if (const char *u = strchr(n, '_'); u && (!strncmp(n, "pinky_", 6) || !strncmp(n, "index_", 6) || !strncmp(n, "fore_", 5)))
+        p = std::string(n, u) + "knuckle_" + side + "_bone";
+    else if (p.empty() && strcmp(n, "main_bone")) p = "main_bone";
+    for (int b = 0; !p.empty() && b < (int)e.m.skeleton.boneCount; b++) if (p == e.m.skeleton.bones[b].name) return b;
+    return -1;
+}
+
 void add(Job &j) {
     Entry e;
     e.m = j.m;
@@ -247,6 +267,7 @@ void add(Job &j) {
         if (!strcmp(n, "main_bone")) e.mainB = b;
         if (!strcmp(n, "Blend")) e.blend = b;
     }
+    for (int b = 0; b < (int)e.m.skeleton.boneCount; b++) e.parent.push_back(parentOf(e, e.m.skeleton.bones[b].name));
     owners(e);
     for (int i = 0; i < e.count; i++) if (!strcmp(e.anims[i].name, "Base")) e.base = &e.anims[i];
     std::string name = GetFileNameWithoutExt(j.path.c_str());
@@ -378,11 +399,38 @@ static const ModelAnimation *clipFrame(const Entry &e, const char *clip, float t
     return a;
 }
 
-// Model-space matrix of bone b; aim (frame af): an arm bone keeps its offset from its shoulder, which takes aim's pose
-static Matrix bone(const Entry &e, const Transform *p, int b, const ModelAnimation *aim, int af) {
-    int s = aim && b < (int)e.arm.size() ? e.arm[b] : -1;
-    if (s < 0 || s >= (int)aim->boneCount) return trs(p[b]);
-    return MatrixMultiply(MatrixMultiply(trs(p[b]), MatrixInvert(trs(p[s]))), trs(aim->keyframePoses[af][s]));
+// x[b] relative to its parent; false where a scale of 0 (hidden hands) leaves it undefined
+static bool rel(const Entry &e, const Transform *x, int b, Transform *out) {
+    int p = e.parent[b];
+    if (fabsf(x[b].scale.x) < 1e-4f) return false;
+    if (p < 0) return *out = x[b], true;
+    const Transform &q = x[p];
+    if (fabsf(q.scale.x) < 1e-4f || fabsf(q.scale.y) < 1e-4f || fabsf(q.scale.z) < 1e-4f) return false;
+    Quaternion qi = QuaternionInvert(q.rotation);
+    Vector3 t = Vector3RotateByQuaternion(Vector3Subtract(x[b].translation, q.translation), qi);
+    *out = {Vector3Divide(t, q.scale), QuaternionMultiply(qi, x[b].rotation), Vector3Divide(x[b].scale, q.scale)};
+    return true;
+}
+
+// XAnim sums the clips' channels (0x7ac1a0): layer clip L adds its offset from Base to body joint by joint, translations
+// summed, rotations composed (ours, for W4M's Euler sum: the glb holds baked transforms); joints L leaves at Base keep body's offset
+static void addLayer(const Entry &e, const Transform *body, const Transform *L, float w, std::vector<Matrix> &out) {
+    int n = (int)out.size();
+    const Transform *B = e.base ? e.base->keyframePoses[0] : nullptr;
+    std::vector<int> moved(n, -1);  // the nearest re-posed joint at or above b
+    for (int b = 0; b < n; b++) {
+        int p = b < (int)e.parent.size() ? e.parent[b] : -1;
+        Transform rb, rl, r0;
+        bool own = B && b < (int)e.base->boneCount && rel(e, body, b, &rb) && rel(e, L, b, &rl) && rel(e, B, b, &r0) &&
+                   (Vector3Distance(rl.translation, r0.translation) > 1e-4f || fabsf(rl.rotation.x * r0.rotation.x + rl.rotation.y * r0.rotation.y + rl.rotation.z * r0.rotation.z + rl.rotation.w * r0.rotation.w) < 1 - 1e-6f);
+        if (own) {
+            Quaternion d = QuaternionSlerp(QuaternionIdentity(), QuaternionMultiply(rl.rotation, QuaternionInvert(r0.rotation)), w);
+            Transform r = {Vector3Add(rb.translation, Vector3Scale(Vector3Subtract(rl.translation, r0.translation), w)),
+                           QuaternionNormalize(QuaternionMultiply(d, rb.rotation)), rb.scale};
+            out[b] = p >= 0 ? MatrixMultiply(trs(r), out[p]) : trs(r), moved[b] = b;
+        } else if (int a = p >= 0 ? moved[p] : -1; a >= 0) out[b] = MatrixMultiply(MatrixMultiply(trs(body[b]), MatrixInvert(trs(body[a]))), out[a]), moved[b] = a;
+        else out[b] = trs(body[b]);
+    }
 }
 
 // The body clip at frame f under the acting gesture layers: XAnim sums w x value per channel (0x7ac1a0) and Base carries
@@ -441,7 +489,8 @@ static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnim
     int n = std::min(e.m.skeleton.boneCount, a.boneCount);
     out.resize(n);
     const Transform *src = layered(e, a, f, ly);
-    for (int b = 0; b < n; b++) out[b] = bone(e, src, b, aim, af);
+    if (aim && (int)aim->boneCount >= n) addLayer(e, src, aim->keyframePoses[af], ly ? ly->aimW : 1, out);
+    else for (int b = 0; b < n; b++) out[b] = trs(src[b]);
     if (!ly || e.head < 0 || e.head >= n || e.hat < 0 || e.hat >= n) return;
     int ff;
     const ModelAnimation *em = ly->face ? clipFrame(e, ly->face, ly->faceT, true, &ff, false) : nullptr;
@@ -511,7 +560,6 @@ bool Models::joint(const char *name, const char *joint, const char *clip, float 
     int n = (int)e.m.skeleton.boneCount;
     while (b < n && strcmp(e.m.skeleton.bones[b].name, joint)) b++;
     if (!a || b == n || b >= (int)a->boneCount) return false;
-    if (!ly) return *out = bone(e, a->keyframePoses[f], b, am, af), true;
     static std::vector<Matrix> p;
     pose(e, *a, f, am, af, ly, p);
     *out = p[b];
@@ -635,7 +683,7 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
 static bool same(const Models::Layers &a, const Models::Layers &b) {
     return a.face == b.face && (int)(a.faceT * 60) == (int)(b.faceT * 60) && a.lookYaw == b.lookYaw && a.lookPitch == b.lookPitch &&
            a.gestYaw == b.gestYaw && a.gestPitch == b.gestPitch && a.act[0] == b.act[0] && a.act[1] == b.act[1] && a.actW[0] == b.actW[0] &&
-           a.actW[1] == b.actW[1] && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) && (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60);
+           a.actW[1] == b.actW[1] && a.aimW == b.aimW && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) && (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60);
 }
 
 bool Models::blend(const char *name, const char *clip, float t, bool loop, const Layers *ly, Vector3 *out) {

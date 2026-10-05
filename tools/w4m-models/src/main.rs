@@ -29,8 +29,8 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_cluster", "ClusterGrenade", 0.0, false, &[]),
     ("hold_banana", "BananaBomb", 0.0, false, &[]),
     ("hold_holy", "HolyHandGrenade", 0.0, false, &[]),
-    ("hold_sheep", "Sheep", 0.0, false, &[]),
-    ("hold_shotgun", "Shotgun", 0.0, false, &[]),
+    ("hold_sheep", "Sheep", 0.0, false, &["Rest", "DrawSheep", "FireSheep", "HoldSheep", "TauntSheep"]),  // WAE slots play the same-named clip on the mesh (0x594d40)
+    ("hold_shotgun", "Shotgun", 0.0, false, &["Rest", "DrawShotgun"]),
     ("hold_radio", "Radio", 0.0, false, &[]),
     ("hold_rope", "NinjaRope.Gun", 0.0, false, &[]),
     ("supersheep", "SuperSheep", 0.9, false, &["Fly", "Run"]),
@@ -46,25 +46,26 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_bat", "BaseballBat", 0.0, false, &[]),
     ("wxpmesh7", "Particle.WXPMesh7", 0.0, false, &["WXM_DefSource"]),  // PARTTWK WXP_DonkeyStrikeBounce MeshSet, raw units
     ("hold_sniper", "SniperRifle", 0.0, false, &[]),
-    ("hold_bow", "Bow", 0.0, false, &[]),
+    ("hold_bow", "Bow", 0.0, false, &["Rest", "DrawBow", "HoldBow", "TauntBow", "Windup", "FireBow"]),  // WAE_Mechanical plays Windup / FireBow itself (0x58dc1a, 0x58dcd1)
     ("hold_flood", "Flood.Weapon", 0.0, false, &["DrawFlood"]),  // WAE_Mechanical Init plays DrawFlood once on it (0x58d89f)
-    ("hold_homing", "HomingMissile.Weapon", 0.0, false, &[]),
+    ("hold_homing", "HomingMissile.Weapon", 0.0, false, &["Rest", "DrawHomingMissile", "AimLockHomingMissile"]),  // TargetSelected on HUD.Target.Selected (0x590ae0)
     ("hold_dynamite", "Dynamite", 0.0, false, &[]),
     ("hold_gas", "GasCanister", 0.0, false, &[]),
     ("hold_landmine", "Landmine", 0.0, false, &[]),
     ("hold_starburst", "Starburst", 0.0, false, &["FireStarburst"]),  // WAE_Starburst 0x5917d0: the pack accessory at Pack_Locator, raw units; FireStarburst burns the fuse
-    ("hold_supersheep", "SuperSheep", 0.0, false, &[]),
-    ("hold_oldwoman", "Oldwoman", 0.0, false, &[]),
-    ("hold_scouser", "Scouser", 0.0, false, &[]),
-    ("hold_sentry", "SentryGun", 0.0, false, &[]),
-    ("hold_flag", "SurrenderFlag", 0.0, false, &[]),
-    ("hold_jetpack", "Jetpack", 0.0, false, &[]),
+    ("hold_oldwoman", "Oldwoman", 0.0, false, &["Rest", "DrawOldWoman", "FireOldWoman", "HoldOldWoman", "TauntOldWoman"]),
+    ("hold_scouser", "Scouser", 0.0, false, &["Rest", "DrawScouser", "FireScouser", "HoldScouser", "TauntScouser"]),
+    ("hold_sentry", "SentryGun", 0.0, false, &["Rest", "DrawSentrygun", "FireSentrygun", "HoldSentrygun", "TauntSentrygun"]),
+    ("hold_flag", "SurrenderFlag", 0.0, false, &["Rest", "DrawSurrender", "HoldSurrender", "TauntSurrender"]),
+    ("hold_jetpack", "Jetpack", 0.0, false, &["Rest", "JetpackRotLR"]),  // WAE_Jetpack 0x58cd74: at WXWorm.JetpackLR + 1
     ("hold_chute", "Worm.Chute", 0.0, false, &["ParachuteWobble", "FireParachute", "ParachuteLR"]),  // WAE_Parachute 0x58f180
     ("crate_chute", "Crate.Chute", 0.0, false, &["Open", "Fall", "Close"]),
     ("hold_hammer", "TailNail", 0.0, false, &[]),
+    ("hold_redbull", "RedBull", 0.0, false, &[]),
+    ("hold_skipgo", "SkippingRope", 0.0, false, &[]),
     ("girder", "Girder", 0.0, false, &[]),  // GirderKitGraphicEntity 0x5588c0: the preview mesh (Girder.xom), raw units
     ("bubble", "BubbleTrouble.Bubble", 4.2, false, &["WXM_Bobbing", "WXM_Create", "WXM_HitBounce"]),  // Bubble.Radius 42 units: 4.2 m across; Bobbing first: Create starts at scale 0
-    ("bubble_machine", "BubbleTrouble", 0.0, false, &[]),  // raw units: BubbleTroubleGraphicEntity leaves it at the bubble's base (0x54e5f0)
+    ("bubble_machine", "BubbleTrouble", 0.0, false, &["Rest", "DrawBT", "FireBT", "HoldBT", "TauntBT"]),  // raw units: BubbleTroubleGraphicEntity leaves it at the bubble's base (0x54e5f0)
     ("wings", "RedBullWings", 0.0, false, &["FlyRedBull"]),  // raw units: drawn at the worm's Pack_Locator (WAE 0x5953d1)
     ("superbomber", "SuperAirstrike", 4.1, false, &["OpenDoorsSource", "bombrun_end6", "bombrun_start"]),  // Bovine Blitz (SuperBomberGraphicEntity); the rest pose is nose-down, the clip starts level
     ("bomber", "BomberHelicopter", 4.1, false, &["bombrun_end", "bombrun_end2", "bombrun_end3", "bombrun_end4", "bombrun_end5", "bombrun_start", "bombrun_start2", "bombrun_start3"]),  // Airstrike (BomberGraphicEntity, table 0x91f39c)
@@ -159,9 +160,9 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
 const WORM_CLIPS: &[&str] = &[
-    "Base", "Walk", "Jump", "Fall", "Land", "Backflip", "Blastflight2", "AimBazooka+HoldBazooka", "AimGrenade+HoldThrown", "AimShotgun+HoldShotgun",
+    "Base", "Walk", "Jump", "Fall", "Land", "Backflip", "Blastflight2", "AimBazooka", "AimGrenade", "AimShotgun", "HoldShotgun", "HoldSniper", "HoldBow", "HoldHomingMissile", "JetpackRotLR",
     "HoldBazooka", "HoldThrown", "Wounded", "Victorious_Grin", "Hit_Front", "HoldAirstrike", "HoldNinjarope", "Wave",
-    "Yawn", "ScratchHead", "AimBat+HoldBat", "AimSniper+HoldSniper", "AimBow+HoldBow", "AimHomingMissile+HoldHomingMissile",
+    "Yawn", "ScratchHead", "HoldBat", "AimSniper", "AimBow", "AimHomingMissile",
     "HoldFirepunch", "HoldProd", "HoldDynamite", "HoldLandmine", "HoldOldWoman", "HoldScouser", "HoldSentrygun", "HoldSurrender",
     "HoldSkipGo", "HoldGasgrenade", "HoldStarburst", "HoldSheep",
     // WAE fire (Hold weighs 0 there: 0x58fb30), Thrown windup / lob (0x5954f0, 0x596640), Draw* (state 1), Flood's rain dance
@@ -176,7 +177,7 @@ const WORM_CLIPS: &[&str] = &[
     "TauntBow+HoldBow", "TauntSentrygun+HoldSentrygun", "TauntOldWoman+HoldOldWoman", "TauntScouser+HoldScouser", "TauntSheep+HoldSheep",
     "TauntStarburst+HoldStarburst", "FireStarburst", "FlyStarburst", "TauntDynamite+HoldDynamite", "TauntBat+HoldBat", "TauntFirepunch+HoldFirepunch", "TauntProd+HoldProd",
     "TauntNMN+HoldNMN", "TauntHomingMissile+HoldHomingMissile", "TauntNinjarope+HoldNinjarope", "SwingNinjarope", "JetpackFly", "FlyRedBull", "ParachuteWobble", "TelepadAppear", "BeamUpLoop",
-    "FallDrown", "Nailed", "NailedHitFront",
+    "FallDrown", "Nailed", "NailedHitFront", "DrawBT", "HoldBT", "FireBT", "TauntBT+HoldBT", "DrawRedbull", "HoldRedbull", "FireRedbull", "TauntRedbull+HoldRedbull",
     // WORMACTING.XOM scene emotes (looped) and gestures, docs/worm-reactions.md
     // emotes: face (eyebrows, eyelids, head and shoulder offsets) + its *Mouth clip (lips)
     "Scared+ScaredMouth", "Terror+TerrorMouth", "Nervous+NervousMouth", "CowerEmote+CowerEmoteMouth", "CantLook+CantLookMouth",
@@ -757,12 +758,14 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let lib = if s.lib != 0 { clips(x.d(s.lib), &x.s, &mut 0) } else { vec![] };
     let base = lib.iter().find(|c| c.name == "Base");
     let animated = s.parts.iter().any(|p| !p.skin.is_empty()) && !lib.is_empty();
-    // "A+B": clip A layered over B (channels A lacks come from B, then Base); "A@s": only A's first s seconds
-    let chosen: Vec<(Vec<&Clip>, f32)> = if !animated { vec![] } else {
+    // "A+B": clip A layered over B (channels A lacks come from B, then Base); "A@s": only A's first s seconds;
+    // "Rest": one frame of Base, else of the stored transforms (a held mesh with no slot clip playing)
+    let chosen: Vec<(&str, Vec<&Clip>, f32)> = if !animated { vec![] } else {
         wanted.iter().map(|n| {
             let (n, cap) = n.split_once('@').map_or((*n, f32::MAX), |(n, c)| (n, c.parse().unwrap_or(f32::MAX)));
-            (n.split('+').filter_map(|n| lib.iter().find(|c| c.name == n)).collect::<Vec<_>>(), cap)
-        }).filter(|l| !l.0.is_empty()).collect()
+            if n == "Rest" { return (n, base.into_iter().collect(), 0.0); }
+            (n, n.split('+').filter_map(|n| lib.iter().find(|c| c.name == n)).collect::<Vec<_>>(), cap)
+        }).filter(|l| !l.1.is_empty() || l.0 == "Rest").collect()
     };
     let animated = animated && !chosen.is_empty();
     // sky (SkyBoxEntity loops its one clip): per part, the clip's change of its groups' rotate Y and of its texture offset U / V
@@ -795,7 +798,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     };
 
     // rest pose (first chosen clip at t = 0, else the stored transforms): baked vertices, normalisation box
-    let rest = s.worlds(&s.locals(x, chosen.first().map(|c| (&c.0[..], base, 0.0))));
+    let rest = s.worlds(&s.locals(x, chosen.first().filter(|c| !c.1.is_empty()).map(|c| (&c.1[..], base, 0.0))));
     let skin_rest = s.skinning(x, &rest);
     let place = |pt: &Part, v: [f32; 3], w: f32, i: usize| -> [f32; 3] {
         if pt.skin.is_empty() { return pt.group.map_or(v, |g| apply(&rest[g], v, w)); }
@@ -918,9 +921,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let joints: Vec<String> = (1..=nb).map(|i| i.to_string()).collect();
         let mut anims = Vec::new();
         let mut t0 = None;
-        for (layers, cap) in &chosen {
-            let c = layers[0];
-            let dur = c.dur.min(*cap);
+        for (name, layers, cap) in &chosen {
+            let dur = layers.first().map_or(0.0, |c| c.dur.min(*cap));
             let frames = ((dur * FPS).ceil() as usize).max(1) + 1;
             let times: Vec<f32> = (0..frames).map(|f| (f as f32 / FPS).min(dur)).collect();
             let a_t = g.floats(&times, "SCALAR", frames, true);
@@ -928,7 +930,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             let mut rv = vec![Vec::new(); nb];
             let mut sv = vec![Vec::new(); nb];
             for &t in &times {
-                let m = skin_all(&s.worlds(&s.locals(x, Some((&layers[..], base, t)))));
+                let m = skin_all(&s.worlds(&s.locals(x, (!layers.is_empty()).then(|| (&layers[..], base, t)))));
                 for b in 0..nb {
                     let (t, mut r, sc) = trs(&m[b]);
                     // keep quaternions in one hemisphere so linear sampling doesn't spin
@@ -951,8 +953,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
                     samplers.push(format!("{{\"input\":{input},\"output\":{a},\"interpolation\":\"LINEAR\"}}"));
                 }
             }
-            anims.push(format!("{{\"name\":\"{}\",\"samplers\":[{}],\"channels\":[{}]}}", c.name, samplers.join(","), channels.join(",")));
-            clip_names.push(format!("{} {:.2}s", c.name, dur));
+            anims.push(format!("{{\"name\":\"{name}\",\"samplers\":[{}],\"channels\":[{}]}}", samplers.join(","), channels.join(",")));
+            clip_names.push(format!("{name} {dur:.2}s"));
         }
         extra = format!(",\"skins\":[{{\"joints\":[{}],\"inverseBindMatrices\":{a_ibm}}}],\"animations\":[{}]", joints.join(","), anims.join(","));
     }
@@ -1015,11 +1017,10 @@ fn main() {
                     let mut ch: Vec<_> = k.ch.keys().map(|(n, t)| format!("{n}:{t:x}")).collect();
                     ch.sort();
                     println!("  {}: {}", k.name, ch.join(" "));
-                    if std::env::var("W4M_KEYS").is_ok() { for (key, kf) in &k.ch { println!("    {key:?} {:?}", kf.iter().map(|f| (f[4], f[5])).collect::<Vec<_>>()); } }
                     if std::env::var("W4M_KEYS").is_ok() {  // debug: (time s, value) keys of each channel
                         let mut ks: Vec<_> = k.ch.iter().collect();
                         ks.sort_by(|a, b| a.0.cmp(b.0));
-                        for ((n, t), kf) in ks { println!("    {n}:{t:x} {:?}", kf.iter().map(|q| (q[4], q[5])).collect::<Vec<_>>()); }
+                        for ((n, t), kf) in ks { println!("    {n}:{t:x} inf {:x} {:?}", kf[0][6] as u32 >> 8 & 0x3f, kf.iter().map(|q| (q[4], q[5])).collect::<Vec<_>>()); }
                     }
                 }
             }

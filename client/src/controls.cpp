@@ -37,7 +37,6 @@ static uint8_t prevFire = 0;
 bool cpuTurn = false;
 static float camYaw = 0, camEl = EL0, zoom = 1, idle = 0;
 static int lastWorm = -1;
-static bool snap = false;  // new worm: swing behind it
 static float fpOut = 9;     // seconds since the first-person aim view
 static bool cut = true;     // place the camera at once (new match, in and out of first person)
 static bool focusOn = false, focusCrate = false;
@@ -351,17 +350,18 @@ struct TrackDef { const Vector3 *vp; int n; float far, pref, zoom, up; bool star
 static const TrackDef PAYLOAD_T = {PAYLOAD_VP, 11, 65, 30, 0.019f, 0.8f, false}, FATKINS_T = {FATKINS_VP, 4, 50, 25, 0.019f, 0.8f, false},
                       WORM_T = {WORM_VP, 13, 30, 10, 0.0015f, 0.8f, true}, CRATE_T = {CRATE_VP, 5, 25, 10, 0.009f, 0.2f, true};
 static struct { bool on, cutDone, force, seen, frame, dropped, ask, done; int idx, prio, worm = -1, last = -1; float flight, cutAgo, rest; Vector3 e, d, obj, ov, pv; const TrackDef *def; } tk;
-static struct { int prio, worm; Vector3 e, d; float age; } pend;  // the one pending event-camera request (CMS +0x350)
+static struct { int prio, worm; Vector3 e, d; int t; } pend;  // the one pending event-camera request (CMS +0x350); t: +0x374, kept when emptied
 static float sinceTrack = 9, floodT = 99, lastWater = 0;
 static std::vector<Vector3> lastVel;
 static std::vector<char> wasDying;
 static struct { int worm = -1; Vector3 pos; float rest; bool lift; } abd;  // AlienAbductionCamera; lift: its state 2
-static struct { int n, of; Vector3 a, b, v, look; float rest; } sa;  // SuperAirstrikeCamera: drops seen of `of`, first / last drop, bomber heading
+static struct { int n, of; Vector3 a, b, v, look; float rest; bool served; } sa;  // SuperAirstrikeCamera: drops seen of `of`, first / last drop, bomber heading
 static struct { bool on; float hold, kp; Vector3 end; float kl; } fly;  // FlyCam, then its PauseDuration hold
 static bool donkeyCam = false;  // DonkeyCamera, a SimpleCam: never Finished (slot 7 0x49b8f0), held until replaced or the next turn
 static struct { int mode; float t, from; } pip;  // PiPService: 1 shown, 2 sliding off, 3 growing to full screen; t s into that move; from: show at the grow
 static Camera3D pipCam;  // the event camera, drawn in the PiP or full screen
 static bool tracked = false;  // an event camera had the main view last frame
+static unsigned serves = 0, goneServe = ~0u;  // event cameras served (+0x2ac); the one current at PiP.GoneOffScreen
 
 // W4M per-update lerp factor at our dt: ZCamUpdateFudgeService 0x533c90, a 20 ms task (it returns 20), runs the CMS update 0x51da00 twice
 static float perFrame(float f, float dt) { return 1 - powf(1 - f, dt * 100); }
@@ -382,39 +382,52 @@ static bool seen(const Camera3D &cam, const Game &g, Vector3 p) {
     return onScreen(cam, p) && !g.terrain.raycast({cam.position, Vector3Normalize(to)}, Vector3Length(to) - 0.5f, &hit);
 }
 
-// W4M 0x51cf20: a worm knocked ballistic asks for WormTrackCamera, 3 with no landing in the sweep, 5 at its landing point;
-// dropped when it and that point are already in view. Also arms the abduction and flood cameras.
+// W4M 0x51cf20 WormTrackCamera request: land hit before the water level 3, else 5 (t = ms to the water, 0 under it); +1 when the
+// worm and the event point (both + 10 units) are on screen in clear view. Kept if higher, or a 5 / 6 reaching the water sooner.
+static void ask(const Game &g, const Camera3D &cam, int i) {
+    if ((ch.on || fly.on) && !g.shots.empty()) return;  // a ChaseCam (5) / FlyCam (6) on a live entity ignores it
+    const Worm &w = g.worms[i];
+    Vector3 p = w.pos, v = w.vel;
+    int prio = 5, t = 0;
+    for (; t < 900 && p.y > g.water; t++) {  // 0x515eb0 time to Water.Level, 0x466ae0 land sweep up to it
+        v.y -= g.gravity() / 30;
+        Vector3 n = Vector3Add(p, Vector3Scale(v, 1 / 30.0f));
+        if (g.terrain.solid(n)) { prio = 3; break; }
+        p = n;
+    }
+    if (seen(cam, g, Vector3Add(w.pos, {0, 0.5f, 0})) && seen(cam, g, Vector3Add(p, {0, 0.5f, 0}))) prio++;  // 4 / 6: dropped at the serve
+    t = t * 1000 / 30;
+    if (prio <= pend.prio && !(prio >= 5 && t < pend.t)) return;
+    Vector3 h = {w.vel.x, 0, w.vel.z};
+    pend = {prio, i, p, Vector3Length(h) > 0.1f ? Vector3Normalize(h) : flat(w.yaw), t};
+}
+
+// The 0x51cf20 callers: knocked ballistic (0x5ad60b), "Worm Dying" (0x5a7282), every damage display at ApplyDamage (0x5abeec).
+// Also arms the abduction and flood cameras.
 static void watch(const Game &g, const Camera3D &cam, float dt) {
-    sinceTrack += dt, sinceBoom += dt, floodT += dt, pend.age += dt;
+    sinceTrack += dt, sinceBoom += dt, floodT += dt, pend.prio = 0;  // the slot is emptied every CMS update (0x51d5ad)
     if (lastVel.size() != g.worms.size()) lastVel.assign(g.worms.size(), {}), wasDying.assign(g.worms.size(), 0), lastWater = g.water;  // new match
     if (g.water > lastWater + 0.5f && WEAPONS[g.weapon].kind == Kind::Flood) floodT = 0;
     lastWater = g.water;
     // AlienAbductionCamera on m_uCameraWorm while it rises (0x5486c9) and once it is spat out (0x547e1c); 0x547490: at (UFO x, Land.MaxHeight, UFO z + 200 units)
     if (const Projectile *u = g.ufo(); u && g.abdCam >= 0 && (u->stage == Game::ABD_LIFTING || (u->stage == Game::ABD_SPITTING && !g.aboard(g.abdCam)))) {
         float top = g.terrain.colTop.empty() ? 20 : g.terrain.colTop.back() * Terrain::VOX;
+        serves += abd.worm != g.abdCam || abd.lift != (u->stage == Game::ABD_LIFTING);  // 0x5486c9, 0x547e1c: one serve each
         abd = {g.abdCam, {u->pos.x, top, u->pos.z + 10}, 1, u->stage == Game::ABD_LIFTING};
     }
+    static int lastCountT = 1 << 30;
+    if (!g.countGroup.empty() && g.countT <= lastCountT && g.phase != Phase::GameOver)  // a new ApplyDamage: one request per display, in order
+        for (int i : g.countGroup) ask(g, cam, i);
+    lastCountT = g.countGroup.empty() ? 1 << 30 : g.countT;
     for (size_t i = 0; i < g.worms.size(); i++) {
         const Worm &w = g.worms[i];
         bool dying = (int)i == g.dyingWorm || (w.drowned && w.counted > 0);  // "Worm Dying" 0x5a7190: Worm.TimeToDie 0x5adcb6, drowning 0x5ad83d
-        if (dying && !wasDying[i] && g.phase != Phase::GameOver && !seen(cam, g, w.pos) && (5 > pend.prio || pend.age > 1))  // 0x51cf20: at itself, 5 (6 in clear view: dropped)
-            pend = {5, (int)i, w.pos, Vector3Length({w.vel.x, 0, w.vel.z}) > 0.1f ? Vector3Normalize({w.vel.x, 0, w.vel.z}) : flat(w.yaw), 0};
+        if (dying && !wasDying[i] && g.phase != Phase::GameOver) ask(g, cam, (int)i);
         wasDying[i] = dying;
         Vector3 was = lastVel[i];
         lastVel[i] = w.vel;
         if (!w.alive || g.phase == Phase::GameOver || Vector3Length(w.vel) < Vector3Length(was) + 3 || w.vel.y <= 0 || ((int)i == g.current && sinceBoom > 0.2f)) continue;
-        float grav = g.gravity();
-        Vector3 p = w.pos, v = w.vel;
-        int prio = 3;
-        for (int k = 0; k < 120 && p.y > g.water; k++) {  // 4 s sweep
-            v.y -= grav / 30;
-            Vector3 n = Vector3Add(p, Vector3Scale(v, 1 / 30.0f));
-            if (g.terrain.solid(n)) { prio = 5; break; }
-            p = n;
-        }
-        if (seen(cam, g, w.pos) && seen(cam, g, p)) continue;  // 4 / 6: no cut
-        Vector3 h = {w.vel.x, 0, w.vel.z};
-        if (prio > pend.prio || pend.age > 1) pend = {prio, (int)i, p, Vector3Length(h) > 0.1f ? Vector3Normalize(h) : flat(w.yaw), 0};
+        ask(g, cam, (int)i);
     }
 }
 
@@ -458,31 +471,31 @@ static bool trackStep(Camera3D &cam, const Game &g, float dt) {
     }
     cam.position.y = fmaxf(cam.position.y, g.water + 1);
     if (g.terrain.solid(cam.position)) cam.position.y += 0.25f * dt * 100;  // y += 5 units an update (0x533950)
-    cam.fovy = 50;  // the default projection: no zoom (CMS 0x51e150)
+    cam.fovy = FOV0;  // the default projection: no zoom (CMS 0x51e150)
     return true;
 }
 
 static void wormTrack(const Game &g, int worm, int prio, Vector3 e, Vector3 d, bool force) {
-    tk = {}, tk.on = true, tk.def = &WORM_T, tk.worm = worm, tk.prio = prio, tk.e = e, tk.d = d, tk.force = force, tk.rest = 1.5f;
+    serves++, tk = {}, tk.on = true, tk.def = &WORM_T, tk.worm = worm, tk.prio = prio, tk.e = e, tk.d = d, tk.force = force, tk.rest = 1.5f;
     fly.on = ch.on = donkeyCam = false, abd.worm = -1;  // a new event camera replaces the chase / fly one (0x51d3d0)
 }
 
 static void simple(Camera3D &cam, Vector3 pos, Vector3 look, float kp, float kl, float dt) {  // W4M SimpleCam: placed, drawn at (PosUpdateSpeed, LookUpdateSpeed)
-    cam.position = pos, cam.target = look, cam.up = {0, 1, 0}, evb = {kp, kl}, cam.fovy = 50;  // a new camera: up (0, 1, 0) (0x51b570)
+    cam.position = pos, cam.target = look, cam.up = {0, 1, 0}, evb = {kp, kl}, cam.fovy = FOV0;  // a new camera: up (0, 1, 0) (0x51b570)
 }
 
 // framing: the death or hp-count close-up, W4M's "Worm Dying" / "Worm Displaying Damage Taken" WormTrackCamera (0x51cf20, 5)
 static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool framing) {
     evb = {};  // TrackCam, the base Camera: drawn as placed
-    int run = tk.on && (tk.worm >= 0 || !framing) ? tk.prio : framing ? 5 : 0;  // 0x51d408: a lower request is dropped
+    int run = !pip.mode ? 0 : tk.on && (tk.worm >= 0 || !framing) ? tk.prio : framing ? 5 : 0;  // 0x51d408: PiP up (+0x2c2), a lower request is dropped
     if (framing && pend.prio && pend.prio < run) pend.prio = 0;
     if (overT > 0 && !g.cfg.mission) {  // game over: WormTrackCamera on the winner (current worm first), cut at once, until the orbit
         int c = -1;
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].alive && g.worms[i].team == g.winner && (c < 0 || (int)i == g.current)) c = (int)i;
         if (c < 0 || overT > 4) return tk = {}, false;
         if (tk.worm != c || !tk.force) wormTrack(g, c, 5, g.worms[c].pos, flat(g.worms[c].yaw), true), tk.rest = 1e9f;
-    } else if (pend.prio && pend.age < 1 && sinceTrack > 0.2f && run <= pend.prio && g.phase != Phase::Aim)
-        wormTrack(g, pend.worm, pend.prio, pend.e, pend.d, false), sinceTrack = 0, pend.prio = 0;
+    } else if ((pend.prio == 3 || pend.prio == 5) && sinceTrack > 0.2f && run <= pend.prio && g.phase != Phase::Aim)  // 0x51d5cc: 4 / 6 dropped
+        wormTrack(g, pend.worm, pend.prio, pend.e, pend.d, false), sinceTrack = 0;
     if (tk.on && tk.worm >= 0) {  // WormTrackCamera: until the worm rests 1.5 s
         const Worm &w = g.worms[tk.worm];
         bool gone = !w.alive && !(w.drowned && w.counted > 0) && tk.worm != g.dyingWorm;  // unspawned after its blast: frozen (0x533a61)
@@ -499,7 +512,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
             Vector3 f = Vector3Subtract(cam.target, cam.position);
             f.y = 0;
             fly.on = ch.on = donkeyCam = false;
-            tk = {}, tk.on = tk.frame = true, tk.def = &WORM_T, tk.prio = 5, tk.e = focusAt;  // event direction: the worm's facing (group: the view's)
+            serves++, tk = {}, tk.on = tk.frame = true, tk.def = &WORM_T, tk.prio = 5, tk.e = focusAt;  // event direction: the worm's facing (group: the view's)
             tk.d = n ? flat(n->yaw) : Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};
             tk.dropped = seen(cam, g, focusAt), tk.rest = 1.5f, sinceTrack = 0;  // 0x51d3b3 (4 / 6): already in clear view, no track, no cut
         }
@@ -513,7 +526,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
             Vector3 f = Vector3Subtract(cam.target, cam.position);
             f.y = 0;
             fly.on = ch.on = donkeyCam = false;
-            tk = {}, tk.on = true, tk.def = &CRATE_T, tk.prio = 1, tk.d = Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};  // ours: no crate facing
+            serves++, tk = {}, tk.on = true, tk.def = &CRATE_T, tk.prio = 1, tk.d = Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};  // ours: no crate facing
             tk.e = focusAt;
             while (tk.e.y > g.water && !g.terrain.solid({tk.e.x, tk.e.y - 0.25f, tk.e.z})) tk.e.y -= 0.25f;
             tk.obj = focusAt;
@@ -535,6 +548,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     }
     if (floodT > 1.4f && floodT < 4.7f && g.phase != Phase::Aim) {  // FloodCamera (0.01, 0.01): far off the level, at the rain cloud
         float c = Terrain::NX * Terrain::VOX / 2, top = g.terrain.colTop.empty() ? 20 : g.terrain.colTop.back() * Terrain::VOX, cloud = top + 22.5f;
+        serves += floodT - dt <= 1.4f;
         return simple(cam, {c, cloud - 10, c + fmaxf(c, 150)}, {c, cloud, c}, 0.01f, 0.01f, dt), true;
     }
     const Projectile *s = chase && !g.shots.empty() ? &g.shots[0] : nullptr;
@@ -548,10 +562,11 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         }
     if (sa.n && sa.n >= sa.of && g.phase != Phase::Aim && (sa.rest -= dt) > 0) {  // after the last bomb
         Vector3 ab = {sa.b.x - sa.a.x, 0, sa.b.z - sa.a.z}, d = Vector3Normalize(Vector3Length(ab) > 1 ? ab : sa.v);
+        if (!sa.served) sa.served = true, serves++;
         return simple(cam, Vector3Add(sa.a, {-10 * d.x + 2.5f * d.z, 0, -10 * d.z - 2.5f * d.x}), sa.look, 1, 0.1f, dt), true;  // A - 200 d + 50 perp(d)
     }
     if (wd && wd->kind == Kind::Airstrike && wd->fuse <= 0) return hold = 0, chase = false, false;  // no camera: the current one stays
-    bool flies = wd && !s->child && ((wd->kind == Kind::Homing && !wd->avoid) || (wd->kind == Kind::SuperSheep && (wd->walks ? s->stage == 1 : wd->fuse - s->fuse > 3.5f)));
+    bool flies = wd && !s->child && ((wd->kind == Kind::Homing && !wd->avoid) || (wd->kind == Kind::SuperSheep && (wd->walks ? s->stage == 1 : !Game::starLit(*s))));
     if (flies) {  // FlyCam (Homing / SuperSheepFly / Starburst): LagBehind 60 / 80 units, LookAhead 100, PosSpeed 0.05, LookSpeed 0.1 / 0.2 an update
         bool homing = wd->kind == Kind::Homing;
         Vector3 f = Vector3Normalize(s->vel), want = Vector3Subtract(s->pos, Vector3Scale(f, homing ? 3 : 4)), b = Vector3Subtract(want, s->pos), hit;
@@ -580,7 +595,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     donkeyCam = false;
     bool fat = wd && (wd->name == "Fatkins Strike" || (customWeapon(s->weapon) && wd->kind == Kind::Airstrike && s->child));  // FatkinsTrackCamera (0x5993e0: also the Factory airstrike)
     if (wd && wd->kind == Kind::Donkey && !fat) {  // DonkeyCamera: fixed at the spawn point - Donkey.ExtraHeight on y, + 500 units on z (0x5538d8), look-at donkey + 100 units at 0.1/frame
-        if (!donkeyCam) cam.position = Vector3Add(s->pos, {0, -Game::DONKEY_EXTRA, 25}), cam.up = {0, 1, 0}, donkeyCam = true;
+        if (!donkeyCam) cam.position = Vector3Add(s->pos, {0, -Game::DONKEY_EXTRA, 25}), cam.up = {0, 1, 0}, donkeyCam = true, serves++;
         cam.target = Vector3Add(s->pos, {0, 5, 0}), evb = {1, 0.1f};
         return true;
     }
@@ -607,7 +622,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     }
     tk.flight += dt, tk.obj = s->pos, tk.ov = tk.pv = s->vel;
     if (!tk.on && !tk.ask) return chase = false, false;  // ShoulderCamera for the whole flight
-    tk.on = true, tk.rest = 1.5f, tk.prio = 2, tk.def = fat ? &FATKINS_T : &PAYLOAD_T;
+    serves += !tk.on, tk.on = true, tk.rest = 1.5f, tk.prio = 2, tk.def = fat ? &FATKINS_T : &PAYLOAD_T;
     return trackStep(cam, g, dt);
 }
 
@@ -635,6 +650,25 @@ static bool occludes(const Game &g, Vector3 from, Vector3 to, Vector3 *hit, bool
     return blocked >= (inner ? 0.9f : 1.0f) * n - 0.01f;
 }
 
+static struct { bool on; float yaw; } setView;  // 0x91e8e8: the logical view's heading when SetCamera last ran
+
+// OccludingCam activation 0x52da00: Reset to the target's heading + StartYaw at DefaultHeight (0x52d870), then unless ResetYaw the
+// heading of setView; each searched (0x530c00): the first yaw of table 0x91ed78 whose spot sees the head or the tail, at el then at hi
+static void occActivate(const Game &g, Vector3 at, Vector3 hd, Vector3 tl, float back, float hi, float start, bool resetYaw, float &yaw, float &el) {
+    static const float TRY[] = {0, PI / 4, -PI / 4, PI / 2, -PI / 2, 3 * PI / 4, -3 * PI / 4, PI, -PI, 5 * PI / 4, -5 * PI / 4, 3 * PI / 2, -3 * PI / 2, 7 * PI / 4, -7 * PI / 4};
+    auto clear = [&](Vector3 a, Vector3 b) { Vector3 d = Vector3Subtract(b, a), hit; return Vector3Length(d) < 0.01f || !g.terrain.raycast({a, Vector3Normalize(d)}, Vector3Length(d), &hit); };
+    auto search = [&] {
+        for (float e : {el, hi})
+            for (float t : TRY) {
+                float y = yaw + t;
+                Vector3 c = Vector3Add(at, {-sinf(y) * cosf(e) * back, sinf(e) * back, -cosf(y) * cosf(e) * back});
+                if (clear(c, hd) || clear(c, tl)) return void((yaw = y, el = e));
+            }
+    };
+    yaw = start, el = EL0, search();
+    if (!resetYaw && setView.on) yaw = setView.yaw, search();
+}
+
 // W4M *ChaseCamera: 170 units behind the pet's heading at DefaultHeight 0.255, rises at OccHeightSpeed 0.4 while all 5 rays are blocked,
 // zooms in to MinZoomDist 50; the stick orbits it when full screen (ours)
 static void chaseCam(Camera3D &cam, const Game &g, const Projectile &p, float dt, const ChaseDef &cd) {
@@ -645,20 +679,7 @@ static void chaseCam(Camera3D &cam, const Game &g, const Projectile &p, float dt
     };
     float back = 8.5f * zoom;
     Vector3 hit;
-    if (!ch.on) {  // 0x52d870 / 0x52da00: the heading + StartYaw, or the view's yaw (0x91e8e8) unless ResetYaw
-        ch = {true, cd.resetYaw ? petYaw + cd.startYaw : camYaw, 1, 0, 0}, petEl = EL0;
-        static const float TRY[] = {0, PI / 4, -PI / 4, PI / 2, -PI / 2, 3 * PI / 4, -3 * PI / 4, PI, -PI, 5 * PI / 4, -5 * PI / 4, 3 * PI / 2, -3 * PI / 2, 7 * PI / 4, -7 * PI / 4};
-        Vector3 hd = at(cd.head), tl = at(cd.tail);
-        auto clear = [&](Vector3 a, Vector3 b) { Vector3 d = Vector3Subtract(b, a); return Vector3Length(d) < 0.01f || !g.terrain.raycast({a, Vector3Normalize(d)}, Vector3Length(d), &hit); };
-        [&] {  // 0x530c00: the first yaw of table 0x91ed78 whose spot sees the head or the tail, at DefaultHeight then MaxHeight
-            for (float el : {EL0, cd.hi})
-                for (float t : TRY) {
-                    float y = ch.yaw + t;
-                    Vector3 c = Vector3Add(p.pos, {-sinf(y) * cosf(el) * back, sinf(el) * back, -cosf(y) * cosf(el) * back});
-                    if (clear(c, hd) || clear(c, tl)) return void((ch.yaw = y, petEl = el));
-                }
-        }();
-    }
+    if (!ch.on) serves++, ch = {true, 0, 1, 0, 0}, occActivate(g, p.pos, at(cd.head), at(cd.tail), back, cd.hi, petYaw + cd.startYaw, cd.resetYaw, ch.yaw, petEl);
     float sx = pip.mode ? 0 : ch.stick;
     ch.idle = sx ? 0 : ch.idle + dt;
     ch.yaw -= sx * CAM_YAW * settings.cam * dt;
@@ -673,7 +694,7 @@ static void chaseCam(Camera3D &cam, const Game &g, const Projectile &p, float dt
     cam.target = from, cam.position = Vector3Add(from, Vector3Scale(to, ch.reach)), cam.up = {0, 1, 0};
     for (int i = 0; i < 40 && g.terrain.solid(cam.position); i++) cam.position.y += 0.25f;
     cam.position.y = fmaxf(cam.position.y, from.y + 0.5f);
-    cam.fovy = 50;
+    cam.fovy = FOV0;
 }
 
 // CMS 0x51e150: the drawn camera's projection (tan of the half fov) eases to default x the logical camera's zoom +0x5c by
@@ -703,25 +724,57 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     if (input) rs.x += IsKeyDown(KEY_D) - IsKeyDown(KEY_A), zin += IsKeyDown(KEY_X) - IsKeyDown(KEY_Z), wheel = GetMouseWheelMove();
 #endif
     bool moving = input && Vector2Length(stick(pad, GAMEPAD_AXIS_LEFT_X)) > 0;
-    if (lastWorm < 0) camYaw = cur.yaw, camEl = EL0, zoom = 1, lastWorm = g.current;  // new match
-    if (g.current != lastWorm) lastWorm = g.current, snap = true, cut = true, camYaw = cur.yaw, cutView |= !seen(drawn, g, cur.pos);  // 0x51f1b7: a cut unless the new worm is in clear view
-    if (g.roped != wasRoped) ropeYaw = cur.yaw + PI / 2, snap = !g.roped, wasRoped = g.roped, ninjaIdx = 0;  // NinjaCamera StartYaw 1.57, ResetYaw
-    if (rs.x || rs.y) snap = false;
+    static int lastKind = -1;  // the logical camera (SetCamera): 0 Default, 1 Girder, 2 Blimp, 3 Head, 4 Jetpack, 5 Ninja
+    int kind = g.girderOn && girdering(g) ? 1 : targetView(g) ? 2 : firstPerson(g) || scope ? 3 : g.jetting ? 4 : g.roped ? 5 : 0;
+    if (lastWorm < 0) camYaw = cur.yaw, camEl = EL0, zoom = 1, lastWorm = g.current, lastKind = kind, setView = {true, camYaw};  // new match (ours: behind the first worm)
+    bool turn = g.current != lastWorm;
+    if (turn) lastWorm = g.current, cut = true, cutView |= !seen(drawn, g, cur.pos);  // 0x51f1b7: a cut unless the new worm is in clear view
+    if (turn || kind != lastKind) {  // SetCamera 0x51e4e0 (turn start 0x51f0f7: Camera.StartOfTurnCamera "Default" for a new worm)
+        Vector3 d = Vector3Subtract(cam.target, cam.position);
+        setView = {d.x * d.x + d.z * d.z > 0, atan2f(d.x, d.z)};  // 0x52da91: asin of the normalised xz, + pi in W4M's yaw
+        if (kind == 0) {  // DefaultCam: ShoulderCamera StartYaw 0, ResetYaw 0, MaxHeight 1.0; HeadOffset (0, 20, 0), TailOffset (0, 0, -18) units
+            Vector3 at = {cur.pos.x, fmaxf(cur.pos.y, g.water - 0.35f), cur.pos.z};
+            Vector3 hd = Vector3Add(at, {0, 1, 0}), tl = Vector3Add(at, {-0.9f * sinf(cur.yaw), 0, -0.9f * cosf(cur.yaw)});
+            occActivate(g, at, hd, tl, 8.5f * zoom, 1.0f, cur.yaw, false, camYaw, camEl);
+        }
+        lastKind = kind;
+    }
+    if (g.roped != wasRoped) ropeYaw = cur.yaw + PI / 2, wasRoped = g.roped, ninjaIdx = 0;  // NinjaCamera StartYaw 1.57, ResetYaw
     ch.stick = ch.on && !pip.mode ? rs.x : 0;  // the chase camera full screen takes the stick
     if (ch.stick) rs.x = 0;
     idle = rs.x || rs.y || moving ? 0 : idle + dt;
     camYaw -= rs.x * CAM_YAW * settings.cam * dt;
     camEl = Clamp(camEl - rs.y * (settings.invertCam ? -1 : 1) * CAM_PITCH * settings.cam * dt, 0.05f, 1.2f);  // stick up: look up
-    float follow = scope || aimMode ? 12 : g.roped ? (rs.x || rs.y ? 0 : 6.3f) : snap ? 4 : chase ? (idle > 0.5f ? 2.5f : 0) : idle > RECENTER_AFTER ? 1.2f : 0;
+    float follow = scope || aimMode ? 12 : g.roped ? (rs.x || rs.y ? 0 : 6.3f) : chase ? (idle > 0.5f ? 2.5f : 0) : idle > RECENTER_AFTER ? 1.2f : 0;
     float k = 1 - expf(-dt * follow), err = wrapPi((g.roped ? ropeYaw : cur.yaw) - camYaw);
     camYaw += err * k, camEl += ((g.roped ? 0 : EL0) - camEl) * k;  // NinjaCamera DefaultHeight 0: level side view
-    if (fabsf(err) < 0.05f) snap = false;
     zoom = Clamp(zoom * expf(-zin * dt * 1.5f - wheel * 0.1f), 0.45f, 2.5f);
+    // the event cameras and the PiP run whatever the logical camera (CMS 0x51da00)
+    // W4M [0x95fb04], the active worm: from its activation to GameLogic.EndTurn (retreat or turn timed out, worm hurt: 0x5b2610)
+    bool active = g.phase == Phase::Aim || g.phase == Phase::Flying || g.phase == Phase::Retreat;
+    if (!tracked && !pip.mode) pipCam = drawn;  // TrackCam 0x5337c0 inherits the camera before
+    bool wasTrack = tk.on, ev = track(pipCam, g, chase, dt, focusOn && !focusCrate);
+    bool finished = wasTrack && !tk.on && !ev;  // TrackCam slot 7 0x5334b0: its RestTime over; the other cameras never finish
+    bool hidden = ev && serves == goneServe;  // PiP.GoneOffScreen 0x5228c5 drops +0x2b0: not drawn again until the next serve
+    ev = ev && !hidden;
+    pip.t += dt;
+    // Every serve slides the PiP on while a worm is active (0x51c000); the main view stays the logical one until PiP.GoneFullScreen
+    // (0x51c6e0). A FlyCam is a logical camera (SetCamera "FlyCam"), not served
+    if (ev && !tracked && !pip.mode && active && !fly.on) pip = {1, 0, 0}, pipView = pipCam;
+    float shown = pip.mode == 1 ? leadEase(pip.t, 0.5f, 0, 0.1f) : pip.from * (1 - leadEase(pip.t, 0.5f, 0, 0.1f));  // a move starts where the last one is (0x636590)
+    if ((pip.mode == 1 || pip.mode == 2) && (!active || (pip.mode == 1 && fly.on))) pip = {3, 0, shown};  // PiP.GoFullScreen: 0x51e382, FlyCam 0x51dbc0
+    else if (pip.mode == 1 && finished) pip = {2, 0, shown};  // PiP.SlideOff 0x51df74
+    if (pip.mode == 3 && pip.t >= 0.5f) cam = pipCam, tracked = swapView = true, pip = {};  // FullScreenTime 500 ms: the PiP's view becomes the main one
+    if (pip.mode == 2 && pip.t >= 0.5f) pip = {}, goneServe = serves;  // ShowTime 500 ms
+    if (ev && !pip.mode) { cam = pipCam, b = evb, fpOut += dt, cut = false, tracked = true; return; }
+    if (!ev && tracked && !pip.mode && g.phase == Phase::Settle) return void(b = evb);  // straight on to the count / death camera, no return to the shooter
+    if (!ev && tracked) tracked = false;  // DefaultCam 0x52da00 sets no Cut flag: the drawn view eases back
+    if (pip.mode || hidden) chase = false;  // the main view stays the worm's (Default)
 
     if (!focusOn && g.girderOn && girdering(g)) {  // W4M GirderCam: CAMTWK GirderCamera, DistFromObject 325, DefaultHeight 0.6 rad, on Girder.Position
         float y = g.cursorYaw, p = Game::GIRDER_CAM_PITCH;
         Vector3 e = Vector3Add(g.girder, {-sinf(y) * cosf(p) * Game::GIRDER_CAM, sinf(p) * Game::GIRDER_CAM, -cosf(y) * cosf(p) * Game::GIRDER_CAM});
-        cam.position = e, cam.target = g.girder, cam.fovy = 50, b = {0.1f, 0.1f};  // GirderCamera Pos / LookUpdateSpeed
+        cam.position = e, cam.target = g.girder, cam.fovy = FOV0, b = {0.1f, 0.1f};  // GirderCamera Pos / LookUpdateSpeed
         cut = false, fpOut += dt;
         return;
     }
@@ -731,11 +784,11 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     static bool inBlimp = false;
     if (!focusOn && targetView(g)) {  // W4M Blimp (IsometricCam): the sim's camera, drawn at Camera.Blimp.UpdateSpeed 0.05 (0x52a57d)
         if (!inBlimp) blimpZoom = 1;
-        blimpZoom = Clamp(blimpZoom * expf(-zin * 0.5f * dt) - 0.08f * wheel, 0.15f, 2);  // ZoomSpeed 0.99 / 20 ms, MouseZoomSpeed 0.08
+        blimpZoom = Clamp(blimpZoom * powf(0.99f, zin * dt * 100) - 0.08f * wheel, 0.15f, 2);  // 0x52a5e0: x or / ZoomSpeed 0.99 per CMS update (100 / s), MouseZoomSpeed 0.08
         bool live = g.cursorOn && blimped(WEAPONS[g.weapon].kind);  // before the first TARGET tick, or a CPU: around its aim point
         Vector3 f = live ? g.cursor : Vector3Add(g.target(), {0, Game::BLIMP_LIFT, 0});
         float y = live ? g.cursorYaw : cur.yaw, p = live ? g.cursorPitch : Game::BLIMP_PITCH;
-        cam.target = f, cam.position = g.blimpEye(f, y, p), cam.fovy = lensFov(50, blimpZoom, dt);
+        cam.target = f, cam.position = g.blimpEye(f, y, p), cam.fovy = lensFov(FOV0, blimpZoom, dt);
         cam.up = {sinf(y) * sinf(p), cosf(p), cosf(y) * sinf(p)};  // W4M 0x52a0a0: up = R(pitch, yaw) (0, 1, 0), never along the view
         inBlimp = true, fpOut += dt, cut = false, b = {0.05f, 0.05f, 0.05f};
         return;
@@ -744,33 +797,15 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
 
     if (!focusOn && (firstPerson(g) || scope)) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
         Vector3 e = eye(g), f = Vector3Add(e, Vector3Scale(g.aimDir(cur), AIM_FOCUS));
-        float fov = 50;  // CMS default projection x the HeadCam zoom
+        float fov = FOV0;  // CMS default projection x the HeadCam zoom
         bool bino = WEAPONS[g.weapon].kind == Kind::Binoculars;
-        head = bino ? g.scoutZoom(head, dt) : Clamp(head * expf(-zin * 0.5f * dt) - 0.08f * wheel, 0.05f, 1);  // rate as the Blimp's (assumed)
+        head = bino ? g.scoutZoom(head, dt) : Clamp(head * powf(1.1f, -zin * dt * 100) - 0.08f * wheel, 0.05f, 1);  // HeadCam 0x528e23: / or x ZoomSpeed 1.1 per CMS update (100 / s), - MouseZoomSpeed x wheel
         fov = lensFov(fov, head, dt);
         cam.position = e, cam.target = f, b = {g.ambulatory(cur) ? 0.15f : 1, 1};  // HeadCam 0x528d70: 0.15 while the worm is Ambulatory (state 0), else 1
         cam.fovy = fov;
         fpOut = 0, cut = false;
         return;
     }
-    // W4M [0x95fb04], the active worm: from its activation to GameLogic.EndTurn (retreat or turn timed out, worm hurt: 0x5b2610)
-    bool active = g.phase == Phase::Aim || g.phase == Phase::Flying || g.phase == Phase::Retreat;
-    if (!tracked && !pip.mode) pipCam = drawn;  // TrackCam 0x5337c0 inherits the camera before
-    bool wasTrack = tk.on, ev = track(pipCam, g, chase, dt, focusOn && !focusCrate);
-    bool finished = wasTrack && !tk.on && !ev;  // TrackCam slot 7 0x5334b0: its RestTime over; the other cameras never finish
-    pip.t += dt;
-    // Every serve slides the PiP on while a worm is active (0x51c000); the main view stays the logical one until PiP.GoneFullScreen
-    // (0x51c6e0). A FlyCam is a logical camera (SetCamera "FlyCam"), not served
-    if (ev && !tracked && !pip.mode && active && !fly.on) pip = {1, 0, 0}, pipView = pipCam;
-    float shown = pip.mode == 1 ? leadEase(pip.t, 0.5f, 0, 0.1f) : pip.from * (1 - leadEase(pip.t, 0.5f, 0, 0.1f));  // a move starts where the last one is (0x636590)
-    if ((pip.mode == 1 || pip.mode == 2) && (!active || (pip.mode == 1 && fly.on))) pip = {3, 0, shown};  // PiP.GoFullScreen: 0x51e382, FlyCam 0x51dbc0
-    else if (pip.mode == 1 && finished) pip = {2, 0, shown};  // PiP.SlideOff 0x51df74
-    if (pip.mode == 3 && pip.t >= 0.5f) cam = pipCam, tracked = swapView = true, pip = {};  // FullScreenTime 500 ms: the PiP's view becomes the main one
-    if (pip.mode == 2 && pip.t >= 0.5f) pip = {};  // ShowTime 500 ms
-    if (ev && !pip.mode) { cam = pipCam, b = evb, fpOut += dt, cut = false, tracked = true; return; }
-    if (!ev && tracked && !pip.mode && g.phase == Phase::Settle) return void(b = evb);  // straight on to the count / death camera, no return to the shooter
-    if (!ev && tracked) tracked = false;  // DefaultCam 0x52da00 sets no Cut flag: the drawn view eases back
-    if (pip.mode) chase = false;  // the main view stays the worm's (Default)
     static float jetEl = 0.5f, jetK = 0;  // jetK: JetpackCamMkII +0x50, 0 at take-off (0x52b03d)
     if (!focusOn && !chase && g.jetting) {  // W4M JetpackCamMkII 0x52b4c0: no input; behind the worm's yaw, pitch eases to 0.5 - 4 vy
         float want = 0.5f - 4 * cur.vel.y / 50, k = cut ? 1 : perFrame(0.01f, dt);  // DefaultPitch, PitchScale (vy units/ms), PitchSpeed
@@ -779,7 +814,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         Vector3 e = Vector3Add(cur.pos, {-sinf(cur.yaw) * cosf(jetEl) * L, sinf(jetEl) * L, -cosf(cur.yaw) * cosf(jetEl) * L});
         e.y = fmaxf(e.y, g.water + 0.25f);  // over Water.Level + 5 units
         jetK += (0.995f - jetK) * perFrame(0.0005f, dt);  // 0x52b6df: toward PosUpdateSpeed 0.995 at 0.0005 an update
-        cam.position = e, cam.target = cur.pos, cam.fovy = 50, b = {jetK, 0.2f, 0.2f};  // Camera.Jetpack.Look / UpUpdateSpeed (0x52b30f)
+        cam.position = e, cam.target = cur.pos, cam.fovy = FOV0, b = {jetK, 0.2f, 0.2f};  // Camera.Jetpack.Look / UpUpdateSpeed (0x52b30f)
         fpOut += dt, cut = false;
         return;
     }
@@ -796,7 +831,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     fpOut += dt;
     b = {0.1f, 0.1f};  // ShoulderCamera / NinjaCamera / OrbitCam (0x530fe8): Pos / LookUpdateSpeed 0.1
     {
-        float back = (chase ? 17.5f : g.roped && !focusOn ? 20 : focusOn ? fmaxf(7.5f, focusR * 3 + 4) : 8.5f) * zoom;  // Shoulder DistFromObject 170 units; fov 50: 3 r fits r
+        float back = (chase ? 17.5f : g.roped && !focusOn ? 20 : focusOn ? fmaxf(7.5f, focusR * 3 + 4) : 8.5f) * zoom;  // Shoulder DistFromObject 170 units; 3 r fits r
         bool group = (focusOn && focusR > 0) || champ;  // hp count of several worms, winner: from higher, around the scenery in the way
         float el = group ? fmaxf(camEl, 0.75f) : camEl;
         for (float dy : {0.0f, 0.8f, -0.8f, 1.6f, -1.6f, 2.4f, -2.4f, 0.0f}) {
@@ -843,7 +878,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     Vector3 back = Vector3Subtract(cam.position, from);  // following (not flying back from afar): never behind the scenery, pulled in front of it
     if (!orbit && !chase && !ninja && Vector3Length(back) < Vector3Length(to) + 2 && occludes(g, from, cam.position, &hit, true))
         cam.position = Vector3Add(from, Vector3Scale(Vector3Normalize(back), fmaxf(0.9f * Vector3Distance(from, hit) - 0.3f, 0.6f)));
-    cam.fovy = lensFov(50, 1, dt);
+    cam.fovy = lensFov(FOV0, 1, dt);
     cut = false;
 }
 

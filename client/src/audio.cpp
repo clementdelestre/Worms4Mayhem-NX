@@ -38,14 +38,15 @@ const char *SFX_NAMES[] = {
     "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
     "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
-    "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo",
+    "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo", "debris", "jetpack", "jetpack_end",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m/audio.md §12): the event of each file, its gain in dB
 // (event + sound definition + category), loop, 3D linear rolloff min..max in m (20 units/m; 0 = 2D), max playbacks.
 // fade: FEV fade in/out, s; w: FEV wave weights, null = equal; mode: FEV sounddef play mode (see pick);
 // delay: sounddef trigger delay min/max ms (+64/+66); spawn: spawn time min/max ms (+4/+8), for oneshot instances that respawn (hold)
-struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; };
+// pitchRand: FEV event +08, in units of 4 octaves (fmod_event 0x10017230, 0x10013bb8)
+struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; float pitchRand = 0; };
 // every other multi-wave def has equal weights in the FEV (100 each, 20 on OldWomanMutter)
 const int W_SCOUSER_HELD[] = {100, 300, 100};
 const Def DEFS[] = {
@@ -154,6 +155,9 @@ const Def DEFS[] = {
     {"weapons/ConcreteDonkeyImpact", 0, false, 0, 0, 1, 0, nullptr, 2},  // 2D, 3 waves
     {"global/FireWorksExplosion", 0, false, 0.5f, 25, 1, 0, nullptr, 2, {}, {}, true},  // EmitterSoundFX of the WXPF_ / Starburst bangs
     {"weapons/BuffaloOfLies", -2, false, 0.5f, 25, 1},
+    {"weapons/Debris", -12, false, 0.5f, 100, 1, 0, nullptr, 2, {}, {}, false, 0.025f},
+    {"weapons/JetPack", -3, true, 0.5f, 60, 1},  // 3D linear 10..1200 units
+    {"weapons/JetPackEnd", -3, false, 0.5f, 60, 1},
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -285,6 +289,7 @@ void playRandom(Variants &v, const Def &d, float volume, const Vector3 *at, bool
     if (!free) return;
     float g = place(free->s, d, volume * powf(10, d.db / 20), at);
     free->born = ++plays;
+    if (d.pitchRand > 0) SetSoundPitch(free->s, exp2f(4 * d.pitchRand * (GetRandomValue(0, 32767) / 16383.5f - 1)));
     if (ramp && d.fade > 0) SetSoundVolume(free->s, 0), ramps.push_back({free->s, GetTime(), g, d.fade});
     PlaySound(free->s);
 }

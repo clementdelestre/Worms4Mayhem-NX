@@ -706,6 +706,7 @@ void Game::start(const GameConfig &c) {
 }
 
 void Game::beginTurn(int team) {
+    ropeCleanup(), grapple.on = false;
     for (size_t i = 0; i < bubbles.size();) if (--bubbles[i].life <= 0) emit(GameEvent::BubblePop, bubbles[i].pos), bubbles.erase(bubbles.begin() + i); else i++;  // GameLogic.Turn.Ended
     girderOn = false, icarus = 0, bubbleAt = -1, drift = {}, doubleDamage = changing = false, scout.t = -1, walkVel = {};  // DoPostActivity: SetData("DoubleDamage", 0)
     crated = false;
@@ -982,12 +983,6 @@ bool Game::blimpHit(Vector3 *hit) const {
     return wet <= reach;
 }
 
-Vector3 Game::fatkinsDrop(const WeaponDef &wd, Vector3 tgt, Vector3 dir, Vector3 &vel) const {
-    float g = gravity(), t = (sqrtf(wd.speed * wd.speed + 50 * g) - wd.speed) / g;  // the 25 m fall at speed, under gravity
-    vel = {dir.x * BOMBER_SPEED, -wd.speed, dir.z * BOMBER_SPEED};
-    return {tgt.x - dir.x * BOMBER_SPEED * t, tgt.y + 25, tgt.z - dir.z * BOMBER_SPEED * t};
-}
-
 // W4M FallDamage 0x5ac3e0: none up to 0.3 units/ms; Wormpot Max Fall doubles FallDamageRatio (Wormpot.lub FallingScale 2), Worms Drown sets SetNoFallDamage
 int Game::fallDamage(float speed) const {
     if (speed <= FALL_SAFE || !cfg.scheme.fallDamage || wp(WP_WORMS_DROWN)) return 0;
@@ -1202,7 +1197,19 @@ void Game::use(Worm &w) {
     launched = weapon;
     const WeaponDef &wd = WEAPONS[weapon];
     int &n = ammo[w.team][weapon];
-    if (wd.kind == Kind::Rope && ropeShots >= ROPE_SHOTS) return;
+    if (wd.kind == Kind::Parachute) {  // 0x578db0 on FireUtil: opens only in Ballistic (+0x60), spending the ammo; open, it closes
+        if (chute) chute = false;
+        else if (!w.grounded && !vault.t) n -= n > 0, chuteOpen(w), emit(GameEvent::Fire, w.pos, current, weapon);
+        return;
+    }
+    if (wd.kind == Kind::Rope) {  // 0x573790: FIRE launches the hook (NumShots left) or retracts it in flight
+        if (grapple.on) grapple.on = false;
+        else if (ropeShots < ROPE_SHOTS) {
+            grapple = grappleFire({w.pos.x, w.pos.y - R, w.pos.z}, w.yaw, w.pitch, w.vel, rope.swung), ropeMax = wd.speed;
+            emit(GameEvent::Fire, w.pos, current, weapon);
+        }
+        return;
+    }
     if (wd.kind == Kind::Girder && (!girderOn || girderFits(girder) || girders >= GIRDER_MAX)) return;  // W4M 0x55a840: weapons/Gong
     if (wd.kind == Kind::Binoculars) {  // W4M: no DecrementInventory, no end of turn; FIRE needs a target in sight
         Vector3 d = aimDir(w), hit;
@@ -1219,7 +1226,10 @@ void Game::use(Worm &w) {
     }
     if (wd.kind == Kind::Jetpack) {  // W4M FireUtilPressed 0x562270: takes off with fuel > 20 ms, the first take-off spends the ammo
         if (!jetUsed) jetUsed = true, fuel = wd.fuse, n -= n > 0;
-        if (fuel > JET_DRY) jetting = true, thrust = wd.speed, boost = 0, emit(GameEvent::Fire, w.pos, current, weapon);
+        if (fuel > JET_DRY) {
+            if (ambulatory(w)) emit(GameEvent::JetStart, w.pos, current, weapon);
+            jetting = true, thrust = wd.speed, boost = 0, emit(GameEvent::Fire, w.pos, current, weapon);
+        }
         return;
     }
     if (wd.kind == Kind::Bubble) {  // W4M 0x54ff40 (not a BaseWeapon: no Timer.EndTurn, the turn goes on): its delay set to 1 for this turn
@@ -1227,7 +1237,7 @@ void Game::use(Worm &w) {
         emit(GameEvent::Fire, w.pos, current, weapon);
         return;
     }
-    if (n > 0 && !shotsLeft && !(wd.kind == Kind::Rope && ropeShots) && !(wd.kind == Kind::ChangeWorm && changing)) n--;  // one rope = ROPE_SHOTS launches
+    if (n > 0 && !shotsLeft && !(wd.kind == Kind::ChangeWorm && changing)) n--;
     Vector3 dir = aimDir(w), f = flat(w.yaw), tgt = target();
     // W4M 0x585a52 / 0x585bc5: off its feet and moving, a payload starts 30 units further along the worm's velocity and inherits it
     const bool carried = (!w.grounded && Vector3LengthSqr(w.vel) > 0) || (vault.t && Vector3LengthSqr(vault.vel) > 0);  // a vault is state 4, off its feet
@@ -1255,8 +1265,9 @@ void Game::use(Worm &w) {
         phase = Phase::Flying;
         break;
     case Kind::Donkey: {
-        Vector3 v = {0, -wd.speed, 0}, p = wd.name == "Fatkins Strike" ? fatkinsDrop(wd, tgt, cursorOn ? strikeDir() : f, v) : Vector3Add(tgt, {0, fmaxf(DONKEY_MIN_HEIGHT, landTop() + DONKEY_EXTRA), 0});
-        shots.push_back({p, v, weapon, 0, false, wd.clusters > 0 ? wd.clusters : 1 << 30, {0, p.y, 0}, wd.name == "Fatkins Strike" ? STRIKE_LEAD : 0});  // 0: smashes until LifeTime or the water
+        bool fat = wd.clusters > 0;  // Fatkins: the Bomber's one bomb (0x54ddf0), dropped as an airstrike bomb
+        Vector3 v = {0, -wd.speed, 0}, p = fat ? strikeStart(wd, tgt, cursorOn ? strikeDir() : f, v) : Vector3Add(tgt, {0, fmaxf(DONKEY_MIN_HEIGHT, landTop() + DONKEY_EXTRA), 0});
+        shots.push_back({p, v, weapon, 0, false, fat ? 1 : 1 << 30, {0, p.y, 0}, fat ? STRIKE_LEAD : 0, 0});  // donkey: smashes until LifeTime or the water
         if (wd.clusters == 0) emit(GameEvent::Launch, p, -1, weapon);  // ArielFx WXP_CrateSpawnLARGE where it appears
     }
         phase = Phase::Flying;
@@ -1274,26 +1285,7 @@ void Game::use(Worm &w) {
         if (--shotsLeft == 0) phase = Phase::Flying;
         break;
     }
-    case Kind::Rope: {
-        ropeShots++;
-        Vector3 hit;
-        float reach = terrain.raycast({w.pos, dir}, wd.speed, &hit) ? Vector3Distance(w.pos, hit) : wd.speed;
-        Object *grab = nullptr;  // W4M: the hook catches crates, mines and drums, reeled in and out like the rope
-        for (Object &o : objects) {
-            float t = Vector3DotProduct(Vector3Subtract(o.pos, w.pos), dir);
-            bool loose = o.type == Object::Mine || o.type == Object::Barrel || (o.type == Object::Crate && o.tag < 0);
-            if (loose && t > 0 && t < reach && Vector3Distance(o.pos, Vector3Add(w.pos, Vector3Scale(dir, t))) < 0.6f) reach = t, grab = &o;
-        }
-        ropeMax = wd.speed;
-        if (grab) {  // 0x571d90: the object swings about the worm's feet, its plane facing away from the worm, no spin
-            Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z}, d = Vector3Subtract(ropePoint(*grab), feet);
-            float l = Vector3Length(d);
-            grab->hooked = true, grab->falling = false;
-            rope.n = 1, rope.pt[0] = feet, rope.len[0] = l, rope.side[0] = {}, rope.yaw = atan2f(d.x, d.z) + PI, rope.spin = 0;
-            rope.angle = acosf(Clamp(l > 0 ? -d.y / l : 1, -1, 1));
-        } else if (reach < wd.speed) ropeOn(hit);
-        break;
-    }
+    case Kind::Rope: break;  // above
     case Kind::Jetpack: break;  // above
     case Kind::Teleport: w.pos = Vector3Add(tgt, {0, R + 0.3f, 0}); w.vel = {0, 0, 0}; break;
     case Kind::SuperSheep:
@@ -1304,8 +1296,10 @@ void Game::use(Worm &w) {
         }
         [[fallthrough]];
     case Kind::Homing:
-        shots.push_back({from, Vector3Add(carry, Vector3Scale(dir, wd.kind == Kind::Homing ? launchSpeed(wd, power) : wd.speed)), weapon, wd.fuse, false, 1,
-                         wd.kind == Kind::Homing && locked ? lockAt : tgt});
+        if (wd.kind == Kind::SuperSheep)  // Starburst: aim holds its heading, Starburst.InitialSpeed 0 (0x5883c0 sets v = heading x speed)
+            shots.push_back({from, {}, weapon, wd.fuse, false, 1, dir});
+        else
+            shots.push_back({from, Vector3Add(carry, Vector3Scale(dir, launchSpeed(wd, power))), weapon, wd.fuse, false, 1, locked ? lockAt : tgt});
         for (size_t k = 0; k < worms.size() && k < 63; k++)  // already inside a worm at launch (its rider): not a fresh contact
             if (worms[k].alive && Vector3Distance(from, worms[k].pos) < R + 0.3f) shots.back().touching |= 1ull << k;
         phase = Phase::Flying;
@@ -1364,7 +1358,7 @@ void Game::use(Worm &w) {
         break;
     }
     case Kind::Flood: water = fminf(water + wd.speed, Terrain::WATER + 15); phase = Phase::Flying; break;
-    case Kind::Parachute: chute = true, chuteDrift = Vector3Scale({wind * WIND_ACCEL, -gravity(), windZ * WIND_ACCEL}, 0.07f); break;
+    case Kind::Parachute: break;  // above
     case Kind::Armour: w.armour = true; break;
     case Kind::Girder:  // Land.SpawnPiece GirderSmall.xom: a 4 x 4 m deck 1 m thick on two 1 m legs, axis-aligned
         terrain.weld(Vector3Add(girder, {0, 0.5f, 0}), {2, 0.5f, 2});  // legs along x at the z ends: BitArray3D word 3 + x + 4 z (0x43dfd0)
@@ -1418,18 +1412,38 @@ void Game::stepWorm(Worm &w) {
     float hit = 0;
     bool hung = chute && &w == &worms[current] && !w.grounded;  // the parachute moves it (0x5792a0), no Ballistic gravity
     auto settle = [&](float e) { return wormBody(terrain, w.pos, w.vel, w.grounded, w.motion, w.yaw, hung ? 0 : gravity(), pot, e, hung ? Vector2{} : wormWind()); };
+    // hung: Position = canopy + 40 units (sin a right - cos a up); ours reaches it through the body's sweep (voxel land), Velocity kept
+    const Vector3 hv = w.vel, f = flat(w.yaw);
+    if (hung) w.vel = Vector3Scale(Vector3Subtract(Vector3Add(chuteAt, {2 * sinf(chuteAng) * f.z, -2 * cosf(chuteAng), -2 * sinf(chuteAng) * f.x}), w.pos), 1 / DT);
     if (!jet) hit = settle(0.3f);
     else if (w.grounded = false, jetBody(terrain, w.pos, w.vel, gravity())) jetting = false, settle(0.3f);  // landed: no fall speed left, only the shared settling
+    if (hung) w.vel = hv, chute = !w.grounded;  // a blocked canopy move closes it (0x57967e)
     if (!jet) land(hit);  // W4M 0x562f72: a foot touching land lands the pack with v -= (v.n) n, so Ballistic sees no fall speed
     if (jet) w.motion.stuck = stuck;
     if (underwater(w)) drown(w);
 }
 
-// W4M Worm.Vapourize 0x5885f0 (Starburst rider): removed at once (UnspawnWorm path 0x5ac160), no throes, no death blast, no damage display
+// 0x578db0: the canopy 40 units over Position, angle and spin 0; the drift reads 70 ms of (Wind, Gravity x Low.Gravity.Multiplier) once
+void Game::chuteOpen(const Worm &w) {
+    chute = true, chuteAt = {w.pos.x, w.pos.y + 2, w.pos.z}, chuteAng = chuteSpin = chuteSink = chuteGain = 0;
+    chuteDrift = Vector3Scale({wind * WIND_ACCEL, -gravity(), windZ * WIND_ACCEL}, 0.07f);
+}
+
+// 0x578a40 on InputImpulse (0.05 units/ms at full tilt): backward or level, toward its side (+ on 0); forward, past 0.01 units/ms aside
+int Game::chuteSteer(Vector3 in, float yaw) {
+    if (Vector3LengthSqr(in) == 0) return 0;
+    float ahead = in.x * sinf(yaw) + in.z * cosf(yaw), side = in.x * cosf(yaw) - in.z * sinf(yaw);
+    return ahead <= 0 ? (side < 0 ? -1 : 1) : side > 0.2f ? 1 : side < -0.2f ? -1 : 0;
+}
+
+// W4M Worm.Vapourize 0x5885f0 (Starburst rider): 0x5ac160 deals its energy (0x5ab7e0) and unspawns it: no throes, death blast, grave or FX
 void Game::vapourize(Worm &w) {
     int wi = int(&w - worms.data());
+    // unspawned in the blast's own dispatch: its graphic never shows the blast's hurt
+    events.erase(std::remove_if(events.begin(), events.end(), [&](const GameEvent &e) { return e.worm == wi && e.kind == GameEvent::Hurt; }), events.end());
     if ((cfg.rules & RULE_KING) && wi % perTeam == 0) surrender(w.team);
     w.alive = false, w.hp = w.counted = 0, w.vel = {0, 0, 0};
+    if (wi == current) selfHurt = true;
 }
 
 // W4M 0x5ad640, each frame: its Position (the feet) under Water.Level - Worm.Drown.HeightOffset (7 units) -> kWPS_DrownFloat with
@@ -1524,16 +1538,31 @@ int Game::ropeSwing(const Input &in, float yaw) {
     return a < 1.41372f ? 1 : a > 1.72788f ? -1 : 0;
 }
 
-// 0x56fcb0: the rope's 5-unit sphere at the feet meets another collider (a worm's 10 units, 5 above its feet; a payload's Radius;
-// a bubble's 9), or Fits 0x59edf0 fails: three 1 m rods at (+-4, -3) and (0, 5) units. Ours samples them from half a voxel up.
-bool Game::ropeBlocked(Vector3 f, int self) const {
+// W4M collider of an object (centre, radius, flags): crate 10 units at its centre, flags 4 health / 0x20 target / 2 others (0x5ca180);
+// drum 9 units at its Position, 0x10 (0x5d18b2); mine: a Landmine payload, Radius 3 units, ColliderFlags 0 | 8 (0x58246d)
+static uint32_t collider(const Object &o, Vector3 &c, float &r) {
+    c = ropePoint(o), r = o.type == Object::Mine ? 0.15f : o.type == Object::Barrel ? 0.45f : 0.5f;
+    if (o.type == Object::Crate || o.type == Object::Target) c = o.pos;
+    return o.type == Object::Crate ? (o.weapon < 0 && o.mystery < 0 ? 4 : 2) : o.type == Object::Target ? 0x20 : o.type == Object::Barrel ? 0x10 : o.type == Object::Mine ? 8 : 0;
+}
+
+// 0x56fcb0: the rope's sphere at the body meets a collider of its mask, or Fits 0x59edf0 fails: three 1 m rods at (+-4, -3) and
+// (0, 5) units, ours sampled from half a voxel up. A worm: 5 units, mask 0x19 (worms 1, payloads 8, drums and bubbles 0x10: no
+// crate); a hooked object (0x571d90): mask 0x3f, crates too, a crate's own 10 units (0x5c5fd0), else 5
+bool Game::ropeBlocked(Vector3 f, int self, int body) const {
     static const Vector2 ROD[] = {{0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};
     for (Vector2 r : ROD)
         for (float h = Terrain::VOX / 2; h < 1; h += Terrain::VOX) if (terrain.solid({f.x + r.x, f.y + h, f.z + r.y})) return true;
+    const float r = body >= 0 && objects[body].type == Object::Crate ? 0.5f : 0.25f;
     for (size_t i = 0; i < worms.size(); i++)
-        if ((int)i != self && worms[i].alive && Vector3Distance(f, {worms[i].pos.x, worms[i].pos.y - R + 0.25f, worms[i].pos.z}) < 0.75f) return true;
-    for (const Projectile &s : shots) if (Vector3Distance(f, s.pos) < 0.25f + WEAPONS[s.weapon].size) return true;
-    for (const Bubble &b : bubbles) if (Vector3Distance(f, b.pos) < 0.25f + 0.45f) return true;
+        if ((int)i != self && worms[i].alive && Vector3Distance(f, {worms[i].pos.x, worms[i].pos.y - R + 0.25f, worms[i].pos.z}) < r + 0.5f) return true;
+    for (const Projectile &s : shots) if (Vector3Distance(f, s.pos) < r + WEAPONS[s.weapon].size) return true;
+    for (const Bubble &b : bubbles) if (Vector3Distance(f, b.pos) < r + 0.45f) return true;
+    for (size_t i = 0; i < objects.size(); i++) {
+        Vector3 c;
+        float cr;
+        if ((int)i != body && (collider(objects[i], c, cr) & (body >= 0 ? 0x3f : 0x19)) && Vector3Distance(f, c) < r + cr) return true;
+    }
     return false;
 }
 
@@ -1555,7 +1584,7 @@ void Game::ropeHang(Rope &r, Vector3 hook, Vector3 feet, Vector3 vel, float yaw)
 
 // 0x574480: reel 0x5713c0, swing 0x5729e0, bounce or wrap 0x573060, unwrap 0x571600; vel as 0x56fd60 sets it ((new - old) x
 // 0.02 x 0.05 units/ms: a 50th of the motion's speed)
-void Game::ropeTick(Rope &r, Vector3 &feet, Vector3 &vel, int swing, int8_t aim, int self) const {
+void Game::ropeTick(Rope &r, Vector3 &feet, Vector3 &vel, int swing, int8_t aim, int self, int body) const {
     const Vector3 was = feet;
     Vector3 a = feet, hit;
     int last = r.n - 1;
@@ -1567,12 +1596,12 @@ void Game::ropeTick(Rope &r, Vector3 &feet, Vector3 &vel, int swing, int8_t aim,
         Vector3 d = Vector3Subtract(a, r.pt[last]), np;
         if (nl != l && Vector3LengthSqr(d) > 0 && nl > 0) {
             np = Vector3Add(r.pt[last], Vector3Scale(Vector3Normalize(d), nl));
-            if (!ropeCut(terrain, np, r.pt[last], &hit) && !ropeBlocked(np, self)) r.spin *= l / nl, r.len[last] = nl, a = np;
+            if (!ropeCut(terrain, np, r.pt[last], &hit) && !ropeBlocked(np, self, body)) r.spin *= l / nl, r.len[last] = nl, a = np;
         }
     }
     Vector3 np = swingStep(r, a, swing, gravity());
     // 0x573060: the body hits something: the swing turns back at 0.9; the stretch cut by land: a bend where it was cut
-    if (ropeBlocked(np, self)) r.spin *= -0.9f;
+    if (ropeBlocked(np, self, body)) r.spin *= -0.9f;
     else if (ropeCut(terrain, np, r.pt[last], &hit)) {
         Vector3 p = np, h;
         bool clear = false;
@@ -1618,6 +1647,42 @@ void Game::ropeOn(Vector3 hook) {
     Worm &w = worms[current];
     roped = true, w.grounded = false, w.motion.slide = false;
     ropeHang(rope, hook, {w.pos.x, w.pos.y - R, w.pos.z}, w.vel, w.yaw);
+}
+
+// 0x572800: from the eye, 1 unit/ms along RotY(yaw) RotX(-pitch); hooked since it last stood, the pitch is 0x570650's instead:
+// pi/2 tilted pi/4 toward the horizontal motion at 0.2 units/ms (10 m/s) and over, less below
+Hook Game::grappleFire(Vector3 feet, float yaw, float pitch, Vector3 vel, bool swung) {
+    if (swung) {
+        float h = sqrtf(vel.x * vel.x + vel.z * vel.z), s = fminf(h, 10);
+        if (sinf(yaw) * vel.x + cosf(yaw) * vel.z > 0) s = -s;
+        pitch = PI / 2 + s / 10 * PI / 4;
+    }
+    return {{feet.x, feet.y + ROPE_EYE, feet.z}, Vector3Scale(dirOf(yaw, pitch), HOOK_SPEED), true};
+}
+
+// 0x573d00 per 20 ms, ours per tick: a standing worm's hook takes what its 5 units touch (mask 0x1e: a crate but a target, a still
+// mine, a drum; a bubble retracts it, 0x572058); else land within this step's flight; else it flies on, retracted past maxLen
+int Game::grappleStep(Hook &h, Vector3 feet, float maxLen, bool standing, Vector3 *hit, int *obj) const {
+    if (standing && obj) {  // 0x571d90 asserts kWPS_Ambulatory first
+        for (size_t i = 0; i < objects.size(); i++) {
+            const Object &o = objects[i];
+            Vector3 c;
+            float r;
+            bool still = o.type != Object::Mine || Vector3LengthSqr(o.vel) == 0;  // a moving payload: "not allowed", it flies on
+            if ((collider(o, c, r) & 0x1e) && still && o.tag < 0 && Vector3Distance(h.at, c) < 0.25f + r) return *obj = (int)i, 3;
+        }
+        for (const Bubble &b : bubbles) if (Vector3Distance(h.at, b.pos) < 0.25f + 0.45f) return 0;
+    }
+    Vector3 d = Vector3Scale(h.vel, DT);
+    if (terrain.raycast({h.at, Vector3Normalize(d)}, Vector3Length(d), hit)) return 2;
+    h.at = Vector3Add(h.at, d);
+    return Vector3Distance(feet, h.at) > maxLen ? 0 : 1;
+}
+
+void Game::ropeCleanup() {  // 0x572620: a rope that hooked (+0x7b) decrements the inventory as it goes
+    if (ropeUsed < 0) return;
+    int &n = ammo[worms[current].team][ropeUsed];
+    n -= n > 0, ropeUsed = -1;
 }
 
 // W4M DamageImpulseMessage 0x518cbf: a direct hit (gun, melee) sets the worm's velocity, doubled under Double Damage, and launches it
@@ -1805,7 +1870,7 @@ void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapo
         if (Vector3Distance(p, Vector3Add(bubbles[i].pos, {0, BUBBLE_UP, 0})) < b.pushReach + BUBBLE_SHELL) bubbleHit(bubbles[i]);  // Damage.Impulse 0x54fc41
         i++;
     }
-    if (b.crater > 0 && !wp(WP_MINE_RESPAWN)) terrain.carve(p, b.crater);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
+    if (b.crater > 0 && !wp(WP_MINE_RESPAWN)) blastLand(p, b.crater);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
     emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, p, -1, weapon);
     for (Worm &w : worms) {
         if (!w.alive || int(&w - worms.data()) == dyingWorm || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
@@ -1971,6 +2036,7 @@ void Game::stepShots(const Input &in, bool detonate) {
     for (size_t i = 0; i < shots.size();) {
         Projectile &s = shots[i];
         const WeaponDef &wd = WEAPONS[s.weapon];
+        float fatBlast = 0;  // Fatkins: this contact's blast scale
         bool boom = false, lifeEnd = false, stuck = wd.stick > 0 && s.stage == 1 && !s.child, timed = (wd.fuse > 0 || (wd.stick > 0 && s.stage)) && !s.child;
         Vector3 np, was = s.pos;
         bool bomber = wd.kind == Kind::Airstrike && !s.child;  // the plane; fuse > 0: the steered Bovine Blitz
@@ -2021,11 +2087,15 @@ void Game::stepShots(const Input &in, bool detonate) {
                     steal(v), s.prey = vi, s.stage = msTicks(800), s.vel = {-s.vel.x, s.vel.y, -s.vel.z};
             }
         } else if (wd.kind == Kind::SuperSheep && !s.child) {
-            // steered by the stick at constant speed, no gravity
-            float yaw = atan2f(s.vel.x, s.vel.z) + in.turn / 127.0f * 2 * DT;
-            float pitch = Clamp(asinf(Clamp(s.vel.y / fmaxf(Vector3Length(s.vel), 0.01f), -1, 1)) + in.aim / 127.0f * 1.5f * DT, -1.4f, 1.4f);
-            s.vel = Vector3Scale({cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)}, wd.speed);
-            boom = detonate;
+            // steered by the stick, no gravity; the Starburst steers its heading during the fuse too (Fly.* inputs, 0x558250)
+            bool star = wd.name == "Starburst", lit = star && starLit(s);
+            Vector3 hd = star ? s.aim : Vector3Normalize(s.vel);
+            float yaw = atan2f(hd.x, hd.z) + in.turn / 127.0f * 2 * DT;
+            float pitch = Clamp(asinf(Clamp(hd.y, -1, 1)) + in.aim / 127.0f * 1.5f * DT, -1.4f, 1.4f);
+            hd = {cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)};
+            if (star) s.aim = hd;
+            s.vel = Vector3Scale(hd, star ? Vector3Length(s.vel) : wd.speed);
+            boom = detonate && !lit;  // 0x589142: FIRE only once launched (+0x1c0 cleared)
             uint64_t now = 0;
             for (int k = 0, n = substeps(s.vel); k < n && !boom; k++) {
                 Vector3 sn, was = s.pos;
@@ -2036,6 +2106,8 @@ void Game::stepShots(const Input &in, bool detonate) {
             }
             s.touching = now;
             np = s.pos;
+            // slot 27 after the move (0x57fbe7): launched at fuse end, then the speed steps for the next frame
+            if (star && wd.fuse - (s.fuse - DT) >= STAR_FUSE - DT / 2) s.vel = Vector3Scale(hd, starSpeed(Vector3Length(s.vel), wd.speed, s.pos.y < water));
         } else if (bomber && wd.fuse <= 0) {  // air strike plane: s.prey bombs dropped, s.stage ticks to the next
             bool lead = !s.prey && s.stage > 0;  // held at the first drop point while bombrun_start plays
             if (s.stage > 0) s.stage--;
@@ -2094,6 +2166,37 @@ void Game::stepShots(const Input &in, bool detonate) {
         } else if (stuck) {  // in the land, waiting out PreDetonationTime
             np = s.pos;
             if (!terrain.solid(Vector3Add(s.pos, Vector3Scale(s.aim, Terrain::VOX / 2)))) s.stage = 2;  // Land.NewShape took its voxel: it falls again (0x5777f0)
+        } else if (wd.kind == Kind::Donkey) {  // Fatkins 0x554e90: any contact (land, worm, object, bubble) bounces it, whatever DetonatesOn*
+            s.vel.y -= gravity() * DT;
+            if (windy(s.weapon)) s.vel.x += wind * WIND_ACCEL * DT, s.vel.z += windZ * WIND_ACCEL * DT;
+            // its collider is a sphere of Radius (lift): ours samples the voxel land on the half facing the motion
+            static const Vector3 DIR[] = {{0, -1, 0}, {0, 1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {.577f, .577f, .577f}, {-.577f, .577f, .577f},
+                                          {.577f, .577f, -.577f}, {-.577f, .577f, -.577f}, {.577f, -.577f, .577f}, {-.577f, -.577f, .577f}, {.577f, -.577f, -.577f}, {-.577f, -.577f, -.577f}};
+            Vector3 n{};
+            bool hit = false;
+            uint64_t now = 0;
+            np = s.pos;
+            for (int k = 0, ns = substeps(s.vel); k < ns && !hit; k++) {
+                Vector3 q = Vector3Add(np, Vector3Scale(s.vel, DT / ns)), sn;
+                for (const Vector3 &d : DIR)
+                    if (!hit && Vector3DotProduct(d, s.vel) > 0 && terrain.solid(Vector3Add(q, Vector3Scale(d, wd.lift)))) hit = true, n = terrain.normal(Vector3Add(q, Vector3Scale(d, wd.lift)));
+                uint64_t m = touches(q, wd.lift + R), fresh = m & ~s.touching;
+                now |= m;
+                for (int j = 0; !hit && fresh && j < 64; j++)
+                    if (fresh >> j & 1) hit = true, n = j < 63 ? Vector3Normalize(Vector3Subtract(q, worms[j].pos)) : Vector3Negate(Vector3Normalize(s.vel));
+                if (!hit && shell(np, q, &sn)) hit = true, n = sn;
+                if (!hit) np = q;
+            }
+            s.touching = now, s.pos = np;
+            if (hit) {  // 0x580db0 -> 0x518f40: v = vt x TangentialBounceDamping 0.4 - vn x Parallel 0.6, 0 under Bounce.MinSpeed 0.03 units/ms
+                float vn = Vector3DotProduct(s.vel, n);
+                s.vel = vn < 0 ? Vector3Subtract(Vector3Scale(Vector3Subtract(s.vel, Vector3Scale(n, vn)), 0.4f), Vector3Scale(n, vn * 0.6f)) : Vector3Scale(n, Vector3Length(s.vel) * 0.6f);
+                if (Vector3Length(s.vel) < FATKINS_STOP) s.vel = {};
+                else emit(GameEvent::Bounce, np, -1, s.weapon);  // Payload.Bounce: BounceFx / BounceSfx
+                s.prey++;
+                boom = Vector3LengthSqr(s.vel) == 0 || s.prey > FATKINS_BOUNCES;  // Payload.Rest, DetonatesAtRest: Detonate (0x5758c0)
+                fatBlast = 1 - 0.2f * (s.prey - 1);  // radii x 1, 0.8, 0.6, 0.4: blasted after the Detonate (0x555066)
+            }
         } else {
             bool homing = wd.kind == Kind::Homing && (s.fuse += DT) > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd);  // fuse: flight time
             if (homing) {  // 0x561730: the step, then the avoidance
@@ -2146,25 +2249,31 @@ void Game::stepShots(const Input &in, bool detonate) {
             s.pos = np;
             if (wd.stick > 0 && !stuck) emit(GameEvent::Arm, np, -1, s.weapon);  // a worm hit: armed by the impact, detonated in the same call (0x586520)
             Vector2 super = superScale(containerOf(s.weapon, s.child));
-            if (wd.name == "Starburst" && worms[current].alive) vapourize(worms[current]);  // before the blast so it is not pushed
             Blast b = blastOf(wd, s.child);
             b.damage *= super.x, b.crater *= super.x, b.push *= super.y;
-            Vector3 at = Vector3Add(np, {0, s.child ? 0 : wd.lift, 0});
+            Vector3 at = np;
             bool smash = wd.kind == Kind::Donkey && wd.clusters == 0;
-            if (smash && !lifeEnd && !wp(WP_MINE_RESPAWN)) terrain.carve(np, wd.lift * (doubled() ? 2 : 1));
+            if (smash && !lifeEnd && !wp(WP_MINE_RESPAWN)) blastLand(np, wd.lift * (doubled() ? 2 : 1));
             if (smash && !lifeEnd) at = Vector3Subtract(np, {0, wd.lift, 0});  // 0x553970: a land-only blast of Radius at the centre, then Explode Radius below it
             else if (smash) at = np;  // expiry: Detonate at the entity
             explode(at, b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0, smash || wd.stick > 0 ? s.weapon : -1);  // kind by container name prefix kWeaponCluster/Factory (0x57f32c); mine Clusters (3) not modelled
-            bool fly = !s.child && ((wd.kind == Kind::Homing && !wd.avoid) || (wd.kind == Kind::SuperSheep && (wd.name == "Starburst" ? wd.fuse - s.fuse >= 3.5f : !wd.walks || s.stage)));
+            if (wd.name == "Starburst" && !s.child && worms[current].alive) vapourize(worms[current]);  // Detonate 0x588dd0: the blast, then Worm.Vapourize
+            bool fly = !s.child && ((wd.kind == Kind::Homing && !wd.avoid) || (wd.kind == Kind::SuperSheep && (wd.name == "Starburst" ? !starLit(s) : !wd.walks || s.stage)));
             if (fly) camHold = msTicks(1000);  // the FlyCam's: CAMTWK PauseDuration 1000 (homing, super sheep, starburst)
             if (!s.child && wd.poison > 0 && (wd.fuse > 0 || wd.stick > 0)) gas.push_back({Vector3Add(np, {0, 0.5f, 0}), GAS_LIFE, wd.poison});  // timed poison shell: the gas canister; collider offset (0, 10, 0) units
             if (!s.child && wd.kind != Kind::Airstrike && wd.kind != Kind::Donkey)
                 for (int k = 0; k < wd.clusters; k++)
                     spawned.push_back({Vector3Add(np, {0, 0.5f, 0}), {(rand01() - 0.5f) * 8, 6 + rand01() * 5, (rand01() - 0.5f) * 8}, s.weapon, 0, true, 1});
         }
-        if (!boom && !s.child && wd.name == "Starburst" && worms[current].alive) {  // the shooter rides it (W4M FlyStarburst clip; pose assumed)
+        if (fatBlast > 0) {  // 0x555066: WormDamage / ImpulseMagnitude kept, the three radii scaled, the impulse at the centre
+            Vector2 super = superScale(containerOf(s.weapon, false));
+            Blast b = blastOf(wd, false);
+            b.damage *= super.x, b.crater *= super.x * fatBlast, b.push *= super.y, b.reach *= fatBlast, b.pushReach *= fatBlast, b.pushDepth = 0;
+            explode(s.pos, b, 0, 0, s.weapon);
+        }
+        if (!boom && !s.child && wd.name == "Starburst" && !starLit(s) && worms[current].alive) {  // 0x5891e0: attached at launch, takes the rocket's position and velocity
             Worm &r = worms[current];
-            r.pos = s.pos, r.vel = {0, 0, 0}, r.grounded = false, r.yaw = atan2f(s.vel.x, s.vel.z);
+            r.pos = s.pos, r.vel = s.vel, r.grounded = false, r.yaw = atan2f(s.aim.x, s.aim.z);
         }
         if ((boom && --s.hits <= 0) || gone) shots.erase(shots.begin() + i);
         else i++;
@@ -2196,7 +2305,7 @@ void Game::step(const Input &raw) {
     if (w.alive && icarus != 3 && (phase == Phase::Aim || retreating())) {  // drinking: W4M Worm.DisableMovementRef
         bool head = in.buttons & Input::HEADING;  // W4M 0x5b107c: walking sets Orientation to the input at once; the jetpack turns at 0x561e40's rate
         float rate = head ? wrapPi(in.turn * PI / 128 - w.yaw) / DT : in.turn / 127.0f * 2.5f, lim = jetting ? JET_TURN : head ? PI / DT : 2.5f;
-        if (!aimCursor && !vault.t && !roped) w.yaw += Clamp(rate, -lim, lim) * DT;  // W4M Vaulting keeps the Orientation; the rope's 0x5729e0 too
+        if (!aimCursor && !vault.t && !roped && !(chute && !w.grounded)) w.yaw += Clamp(rate, -lim, lim) * DT;  // W4M Vaulting keeps the Orientation; the rope's 0x5729e0 too
         if (aimCursor && blimped(WEAPONS[weapon].kind)) {  // W4M IsometricCam 0x52a5e0
             if (!cursorOn) cursorYaw = w.yaw, cursorPitch = BLIMP_PITCH, cursor = blimpFocus(w.pos, w.yaw), cursorOn = true;
             cursorYaw += in.turn / 127.0f * BLIMP_TURN * DT;
@@ -2245,6 +2354,7 @@ void Game::step(const Input &raw) {
     // rope and jetpack outlast the attack: still steered while the shot flies and during the retreat
     // observed in W4M (user, 2026-10-03): after the secondary drop a landed jetpack takes off again during the retreat while fuel lasts
     if (w.alive && (phase == Phase::Flying || phase == Phase::Retreat) && jetLanded() && (pressed & Input::FIRE)) {
+        if (ambulatory(w)) emit(GameEvent::JetStart, w.pos, current, weapon);
         jetting = tool = true, thrust = WEAPONS[weapon].speed, boost = 0;
         emit(GameEvent::Fire, w.pos, current, weapon);
     }
@@ -2261,8 +2371,8 @@ void Game::step(const Input &raw) {
             else {
                 const float n = DT / 0.02f, h = fmaxf(w.pos.y - water, 0);  // W4M steps per tick; height over Water.Level
                 Vector3 f = flat(w.yaw), a = {0, 0, 0};
-                float want = in.buttons & Input::HEADING ? PI * in.turn / 128 : w.yaw;  // W4M InputImpulse: the stick's direction (HEADING), else the facing
-                bool fwd = in.walk > 1, along = fwd && sinf(want) * w.vel.x + cosf(want) * w.vel.z > 0;  // InputImpulse . Velocity > 0 (0x5628ef, 0x562b81)
+                float want = PI * in.turn / 128;  // W4M InputImpulse: the move stick's direction (HEADING); none from the D-pad alone
+                bool fwd = in.walk > 1, along = fwd && (in.buttons & Input::HEADING) && sinf(want) * w.vel.x + cosf(want) * w.vel.z > 0;  // InputImpulse . Velocity > 0 (0x5628ef, 0x562b81)
                 if (burn) {
                     float t = thrust * DT;
                     fuel -= DT;
@@ -2311,7 +2421,8 @@ void Game::step(const Input &raw) {
         }
     }
 
-    if (secondary >= 0 && !toolOut() && !jetLanded()) weapon = secondary, secondary = -1, jetUsed = false;  // W4M 0x565920: rope, chute, jetpack dry
+    if (secondary >= 0 && !toolOut() && !jetLanded()) weapon = secondary, secondary = -1, jetUsed = false;
+    if (ropeUsed >= 0 && weapon != ropeUsed) ropeCleanup();  // W4M 0x565920: rope, chute, jetpack dry
     if (icarus && (WEAPONS[weapon].kind != Kind::Icarus || !w.alive)) icarus = 0, drift = {};  // a weapon change deletes it (0x587540)
     if (bubbleAt >= 0 && (WEAPONS[weapon].kind != Kind::Bubble || !w.alive)) bubbleAt = -1;  // Weapon.Delete ends the utility first
     if (bubbleAt >= 0 && clock >= bubbleAt) {  // 0x550190: spawned beside the worm, then falls freely
@@ -2350,25 +2461,56 @@ void Game::step(const Input &raw) {
         use(w);
     // W4M 0x5833a0 / 0x54a0e0: PostLaunchDelay, then StartRetreatTimer (RetreatTimeOverride or DefaultRetreatTime), the shot still flying
     if (before != phase && phase == Phase::Flying) timer = msTicks(WEAPONS[launched >= 0 ? launched : weapon].postLaunch) + retreatTicks(WEAPONS[launched >= 0 ? launched : weapon]);
-    if (chute && !w.grounded) {  // W4M 0x5792a0 per 20 ms: half the gap to 0.06 units/ms along the facing + the opening's drift, 0.05 units/ms at most
-        Vector3 d = Vector3Scale(Vector3Subtract(Vector3Add(Vector3Scale(flat(w.yaw), CHUTE_GLIDE), chuteDrift), w.vel), 1 - powf(0.5f, DT / 0.02f));
-        float l = Vector3Length(d), cap = CHUTE_STEP * DT / 0.02f;
+    if (chute && !w.grounded) {  // W4M 0x579720 per 20 ms (ours per tick, K steps): sway 0x578a40, then the open update 0x5792a0
+        const float K = DT / 0.02f, sn = sinf(chuteAng);
+        int dir = chuteSteer(steerIn, w.yaw);
+        w.yaw = wrapPi(w.yaw + (0.02f * dir - 0.01f * sn) * K), chuteSpin -= 0.001f * dir * K;  // +-0.02 rad a step, the swing's own -0.01 sin
+        chuteSpin = (chuteSpin - 0.003f * sn * K) * powf(0.99f, K), chuteAng += chuteSpin * K;
+        const float c = cosf(chuteAng), was = chuteSink;  // swung past acos 0.4 it sinks, else the sink decays into glide
+        if (c < 0.4f) chuteSink += 2 * (c - 0.4f) * gravity() * 1e-3f * K;
+        else chuteSink *= powf(2.0f / 3, K), chuteGain += chuteSink - was;
+        float g = chuteGain * (1 - powf(6.0f / 7, K)), gcap = 0.05f * K;  // 0x47a1a0(c0, 0, 6, 0.001): 1/7 back to 0, 0.001 units/ms at most
+        chuteGain -= Clamp(g, -gcap, gcap);
+        Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};  // half the gap to 0.06 units/ms + c0 along the facing + the drift, 0.05 at most
+        float k = 1 - powf(0.5f, K);
+        Vector3 d = Vector3Scale(Vector3Subtract(Vector3Add(Vector3Scale(f, CHUTE_GLIDE + chuteGain), chuteDrift), w.vel), k);
+        float l = Vector3Length(d), cap = CHUTE_STEP * K;
         w.vel = Vector3Add(w.vel, l > cap ? Vector3Scale(d, cap / l) : d);
+        w.vel.y += chuteSink * 2 * k;  // v.y += s5c a step after the halving: the same rest speed
+        chuteAt = Vector3Add(chuteAt, Vector3Scale(w.vel, DT));
     }
     if (vault.t && Vector3Distance(w.pos, vault.to) > Vector3Distance(vault.from, vault.to) + 0.01f) vault.t = 0;  // moved by a weapon
     else if (vault.t && (roped || jetting || !w.grounded || Vector3LengthSqr(w.vel) > 0)) w.pos = vault.to, vault.t = 0;  // W4M ChangeState 0x5aa847: snaps to the target
+    bool star = false;  // Worm.OverridePhysics bit 4 (0x588580): the Starburst holds its worm, standing through the fuse, on the rocket after
+    for (const Projectile &q : shots) star |= !q.child && WEAPONS[q.weapon].name == "Starburst";
     for (Worm &x : worms)
-        if (roped && &x == &w) {
+        if (star && &x == &w) {
+        } else if (roped && &x == &w) {
             Vector3 feet = {x.pos.x, x.pos.y - R, x.pos.z};
             x.motion.slide = false;
             ropeTick(rope, feet, x.vel, ropeIn.swing, ropeIn.aim, current);
             x.pos = {feet.x, feet.y + R, feet.z};
             if (underwater(x)) drown(x);
         } else stepWorm(x);
+    if (grapple.on) {
+        Vector3 hit;
+        int obj = -1, r = w.alive && WEAPONS[weapon].kind == Kind::Rope ? grappleStep(grapple, {w.pos.x, w.pos.y - R, w.pos.z}, ropeMax, ambulatory(w), &hit, &obj) : 0;
+        grapple.on = r == 1;
+        if (r == 2) ropeShots++, ropeUsed = weapon, ropeOn(hit);  // 0x573ea3: NumShots counts the hooks on land
+        if (r == 3) {  // 0x571d90: the object swings about the worm's feet, its plane facing away from the worm, no spin
+            Object &o = objects[obj];
+            Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z}, d = Vector3Subtract(ropePoint(o), feet);
+            float l = Vector3Length(d);
+            o.hooked = true, o.falling = false, ropeUsed = weapon;
+            rope.n = 1, rope.pt[0] = feet, rope.len[0] = l, rope.side[0] = {}, rope.yaw = atan2f(d.x, d.z) + PI, rope.spin = 0, rope.swung = true;
+            rope.angle = acosf(Clamp(l > 0 ? -d.y / l : 1, -1, 1));
+        }
+    }
+    if (!roped && !grapple.on && !hooked() && (w.grounded || vault.t || jetting || chute)) rope.swung = false;  // 0x574b96: idle off Ballistic
     stepShots(in, detonate);
     if (Object *o = hooked(); o && w.alive && phase != Phase::Settle) {  // 0x5cbc81 / 0x5d2110: the hooked object runs the rope's update
         Vector3 p = ropePoint(*o), off = Vector3Subtract(o->pos, p);
-        ropeTick(rope, p, o->vel, ropeIn.swing, ropeIn.aim, -1);
+        ropeTick(rope, p, o->vel, ropeIn.swing, ropeIn.aim, -1, int(o - objects.data()));
         o->pos = Vector3Add(p, off);
     }
     stepObjects();
@@ -2533,11 +2675,13 @@ uint32_t Game::checksum() const {
     for (const Worm &w : worms) { mix(&w.pos, sizeof w.pos); mix(&w.vel, sizeof w.vel); mix(&w.hp, sizeof w.hp); mix(&w.yaw, sizeof w.yaw); mix(&w.pitch, sizeof w.pitch); mix(&w.alive, sizeof w.alive); mix(&w.poison, sizeof w.poison); mix(&w.counted, sizeof w.counted); mix(&w.nailed, 1); mix(&w.armour, 1); mix(&w.motion.stuck, sizeof w.motion.stuck), mix(&w.motion.air, 1), mix(&w.motion.slide, 1), mix(&w.motion.spin, sizeof w.motion.spin), mix(&w.motion.spinTo, sizeof w.motion.spinTo), mix(&w.motion.normal, sizeof w.motion.normal); if (w.drowned) mix(&w.floatT, sizeof w.floatT); if (w.abducted) mix(&w.zap, sizeof w.zap), mix(&w.calm, sizeof w.calm), mix(&w.zapFound, 1), mix(&w.zapSpot, sizeof w.zapSpot); }
     for (const Projectile &s : shots) { mix(&s.pos, sizeof s.pos); mix(&s.vel, sizeof s.vel); mix(&s.weapon, sizeof s.weapon); mix(&s.fuse, sizeof s.fuse); mix(&s.hits, sizeof s.hits); mix(&s.stage, sizeof s.stage); mix(&s.prey, sizeof s.prey); mix(&s.aim, sizeof s.aim); mix(&s.touching, sizeof s.touching); }
     mix(&chute, 1);
-    if (chute) mix(&chuteDrift, sizeof chuteDrift);
+    if (chute) mix(&chuteDrift, sizeof chuteDrift), mix(&chuteAt, sizeof chuteAt), mix(&chuteAng, sizeof chuteAng), mix(&chuteSpin, sizeof chuteSpin),
+               mix(&chuteSink, sizeof chuteSink), mix(&chuteGain, sizeof chuteGain);
     mix(&walkVel, sizeof walkVel);
     mix(&windZ, sizeof windZ);
     mix(surrendered.data(), surrendered.size());
-    mix(&ropeShots, sizeof ropeShots);
+    mix(&ropeShots, sizeof ropeShots), mix(&ropeUsed, sizeof ropeUsed), mix(&rope.swung, 1);
+    if (grapple.on) mix(&grapple.at, sizeof grapple.at), mix(&grapple.vel, sizeof grapple.vel);
     bool hook = false;
     for (const Object &o : objects) hook |= o.hooked;
     if (roped || hook) mix(&roped, 1), mix(rope.pt, sizeof(Vector3) * rope.n), mix(rope.side, sizeof(Vector3) * rope.n), mix(rope.len, sizeof(float) * rope.n),
