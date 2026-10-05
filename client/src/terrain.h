@@ -59,7 +59,7 @@ struct Terrain {
     float sample(Vector3 p) const;  // trilinear density
     static inline thread_local unsigned long samples = 0;  // sample() calls: the AI's deterministic measure of its own work
     bool solid(Vector3 p) const { return sample(p) > 0; }
-    Vector3 normal(Vector3 p) const;
+    Vector3 normal(Vector3 p, float e = VOX) const;  // -gradient over +-e; e < VOX falls back to VOX where flat
     bool carve(Vector3 c, float radius);  // true when some voxel changed (W4M Land.Changed)
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }

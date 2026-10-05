@@ -353,9 +353,10 @@ static Sweep sweep(const Terrain &t, Vector3 pos, Vector3 m, Vector3 v) {
         Vector3 a = probePoint(pos, i), hit;
         d[i] = -1;
         if (!t.raycast({a, dir}, l, &hit) && !t.solid(hit = Vector3Add(a, m))) continue;  // raycast steps VOX/2 and stops short of l
-        if (Vector3DotProduct(v, hn[i] = t.normal(hit)) >= -0.01f) continue;
         float hi = Vector3Distance(hit, a), lo = fmaxf(hi - Terrain::VOX / 2, 0);
         for (int k = 0; k < 4; k++) (t.solid(Vector3Add(a, Vector3Scale(dir, (lo + hi) / 2))) ? hi : lo) = (lo + hi) / 2;  // the surface between the last empty sample and the hit
+        // 0x46a070: the plane of the face crossed; ours the slope at the crossing over VOX/4 (VOX-wide blends a wall with the floor at its foot)
+        if (Vector3DotProduct(v, hn[i] = t.normal(Vector3Add(a, Vector3Scale(dir, hi)), Terrain::VOX / 4)) >= -0.01f) continue;
         d[i] = lo;
         if (s.at < 0 || lo < s.d) s.at = i, s.d = lo;
     }

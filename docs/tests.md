@@ -75,6 +75,22 @@ Scenery and graphics levers (2026-10-05, same binary, `W4NX_GFX="msaa aniso=N re
 
 Docked (`appletGetOperationMode`) draws into 1920x1080 window buffers (`tools/patches/raylib-nx-docked-1080p.patch`, `Lit::profile`), handheld into their 1280x720 crop; docked frames averaging over 36 ms for 3 s drop to 720p until the next undock, and `sdmc:/switch/worms4nx/docked720` forces 720p. Handheld keeps 720p without MSAA: its GPU clock is about half the docked one. Terrain LOD: none (W4M has none; decor costs 0.6 ms).
 
+### Wall-jump scan (ours, scratch harness, 2026-10-05)
+
+Not a check binary: a `main` that includes `sim_check.cpp` (for `settle`), starts Deathmatch1, 3, 5, 7 and Clean-w3d
+(seed 7, 2 teams of 4), and for each settled worm and each of 8 yaws walks it (stick held, 150 ticks)
+until it has moved under 5 mm for 20 ticks, waits 10 ticks, presses jump and fails when it rises under 1 m in 60 ticks.
+
+| Normal of a sweep hit | Walls | Fails |
+|---|---|---|
+| VOX-wide gradient at the first solid sample | 134 | 11 |
+| over VOX/4 at the crossing (`sweep`) | 133 | 14 |
+
+- The 6 feet that read a 70-78° face now jump: their W4M faces are n.y 0.01, 0.13, -0.27, -0.42, -0.42, -0.06, all under 0.2, so W4M Rebounds and keeps rising [data: scratch w4m-maps probe of the exposed cell faces].
+- Kept, as W4M: 2 worms already sliding when jump is pressed, 2 with the head ray under a roof or overhang, 1 rod into a W4M bump (docs/w4m/physics.md §11 "Ballistic").
+- New: 3 land on a face that is n.y 0.21-0.40 in W4M too and slide, 1 rebounds off a W4M overhang (n.y -0.42), 5 come from a normal still off by 14-63° at a rounded voxel edge (2 of them on the wrong side of 0.2).
+- First contacts on the wrong side of n.y 0.2 against the W4M face: 9 of 89 before, 6 of 96 after.
+
 Helpers (scripted inputs, scene builders such as `settle`, `melee`, `floorAndWall`, `weaponNamed`) are not listed.
 
 ## sim_check.cpp

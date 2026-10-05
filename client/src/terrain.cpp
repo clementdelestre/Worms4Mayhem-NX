@@ -407,11 +407,11 @@ float Terrain::sample(Vector3 p) const {
     return r;
 }
 
-Vector3 Terrain::normal(Vector3 p) const {
-    const float e = VOX;
+Vector3 Terrain::normal(Vector3 p, float e) const {
     Vector3 g = {sample({p.x + e, p.y, p.z}) - sample({p.x - e, p.y, p.z}),
                  sample({p.x, p.y + e, p.z}) - sample({p.x, p.y - e, p.z}),
                  sample({p.x, p.y, p.z + e}) - sample({p.x, p.y, p.z - e})};
+    if (e < VOX && Vector3LengthSqr(g) <= 1e-8f) return normal(p);  // deep in land or out of the band: the field is flat there
     return Vector3Normalize(Vector3Negate(g));
 }
 
