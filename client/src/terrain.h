@@ -11,7 +11,7 @@ struct Terrain {
     static constexpr float Q = 254;  // density stored as int8 = metres * Q, clamped to +-0.5 m
 
     std::vector<signed char> d;
-    struct Part { int mat; Mesh mesh; };  // one mesh per (chunk, material)
+    struct Part { int mat; Mesh mesh; bool fringe = false; };  // one mesh per (chunk, material), plus its grass fringe cards
     std::vector<std::vector<Part>> parts;
     std::vector<bool> dirty;
     std::vector<std::pair<int, std::vector<Part>>> pending;  // rebuilt chunks held back until the dirty set is done
@@ -35,9 +35,13 @@ struct Terrain {
     // Imported maps ("voxels"): per-voxel material (0 = none) indexing palTop/palSide and texture files.
     std::vector<unsigned char> mats;
     std::vector<Color> palTop, palSide;
-    std::vector<std::string> texFiles;  // per material: top, side (paths, "" = none)
+    std::vector<std::string> texFiles;  // per material: top, side, roof, fringe (paths, "" = none)
     std::vector<Vector2> texRepeat;     // per material: metres per texture repeat (top, side)
-    std::vector<Material> texMats;      // per material, built with the textures on first remesh
+    std::vector<Material> texMats, fringeMats;  // per material, built with the textures on first remesh
+    float scale = 1;  // import scale: metres per W4M land voxel
+    struct Thin { int vox; unsigned char mat; Vector3 c[8]; };  // a sub-voxel W4M cell, drawn while voxel `vox` is solid
+    std::vector<std::vector<Thin>> thin;  // per chunk
+    std::vector<int> thinOnly;  // sorted voxels solid only for thin cells: not meshed
     std::vector<Texture2D> textures;
     std::map<std::string, Image> decoded;  // decodeTextures() output, uploaded by the first remesh
     int scaleLoc = -1;
@@ -64,7 +68,8 @@ struct Terrain {
     void remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call
     void draw() const;
     void setView(Vector3 cam) const;  // camera for the land and model shaders (W4M Landscape.cg: no fog)
-    void drawObjects(Vector3 cam) const;
+    void drawObjects(float clock, bool draw = true) const;  // clock: s, for the decor clips; draw false: only load the decor models
+    void drawFringe() const;  // W4M LandFringe bin: after the water
     void unload();
 
 private:
@@ -74,5 +79,6 @@ private:
     Color vertexColour(Vector3 p, Vector3 n) const;
     void loadGradients();
     bool loadVoxels(const std::string &path);
+    void loadThin(const std::string &path);
     void loadTextures();
 };

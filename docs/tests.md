@@ -39,6 +39,20 @@ the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup
 
 The shadow map would leave no margin over 30 fps on Switch, so it is not drawn (docs/maps.md "Rendering").
 
+Scenery and graphics levers (2026-10-05, same binary, `W4NX_GFX="msaa aniso=N res=WxH"`, gpu = desktop GPU-synced ms, Switch = 4x gpu docked):
+
+| Lever | Deathmatch1 | EscapeFromTreeRex | Shipped |
+|---|---|---|---|
+| old assets (no fringe / thin cells / decor states) | 6.02 ms, 24.1 ms (42 fps) | 5.76 ms, 23.1 ms (43 fps) | - |
+| new scenery, aniso 4 | 6.15, 24.6 (41 fps) | 6.13, 24.5 (41 fps) | yes |
+| aniso 1 / 16 | 6.00 / 6.15 | 6.10 / 6.14 | 16 (free) |
+| MSAA 4x, 720p | 7.07, 28.3 (35 fps) | 7.20, 28.8 (35 fps) | no |
+| 1920x1080 | 7.48, 29.9 (33 fps) | 7.57, 30.3 (33 fps) | docked |
+| 1920x1080 + MSAA 4x | 8.86, 35.4 (28 fps) | 8.88, 35.5 (28 fps) | no |
+| two-voxel normals | load remesh 70 -> 89 ms, no frame cost | | yes |
+
+Docked (`appletGetOperationMode`) draws into 1920x1080 window buffers (`tools/patches/raylib-nx-docked-1080p.patch`, `Lit::profile`), handheld into their 1280x720 crop; docked frames averaging over 36 ms for 3 s drop to 720p until the next undock, and `sdmc:/switch/worms4nx/docked720` forces 720p. Handheld keeps 720p without MSAA: its GPU clock is about half the docked one. Terrain LOD: none (W4M has none; decor costs 0.6 ms).
+
 Helpers (scripted inputs, scene builders such as `settle`, `melee`, `floorAndWall`, `weaponNamed`) are not listed.
 
 ## sim_check.cpp

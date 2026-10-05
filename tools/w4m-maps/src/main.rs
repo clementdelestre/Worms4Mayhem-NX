@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+mod anim;
 mod lua;
 mod mesh;
 mod mission;
@@ -233,7 +234,7 @@ fn find_ci(dir: &Path, rel: &str) -> Option<PathBuf> {
     Some(cur)
 }
 
-struct Tex { w: usize, h: usize, rgb: Vec<u8>, avg: [u8; 3] }
+struct Tex { w: usize, h: usize, px: Vec<[u8; 4]>, alpha: bool, avg: [u8; 3] }
 
 // Top mip of every RGB8/ARGB8 XImage in the bundles, keyed by lowercase texture stem.
 fn textures(bundles: &Path) -> HashMap<String, Tex> {
@@ -256,12 +257,13 @@ fn textures(bundles: &Path) -> HashMap<String, Tex> {
             q += 4;
             vi(&b, &mut q);
             let bpp = match fmt { 0 => 3, 1 | 2 => 4, _ => continue };
-            let Some(px) = b.get(q..q + w * h * bpp).filter(|_| w > 0 && h > 0) else { continue };
-            let rgb: Vec<u8> = px.chunks(bpp).flat_map(|c| [c[0], c[1], c[2]]).collect();
+            let Some(raw) = b.get(q..q + w * h * bpp).filter(|_| w > 0 && h > 0) else { continue };
+            let px: Vec<[u8; 4]> = raw.chunks(bpp).map(|c| [c[0], c[1], c[2], if bpp == 4 { c[3] } else { 255 }]).collect();
             let mut sum = [0u64; 3];
-            for c in rgb.chunks(3) { for k in 0..3 { sum[k] += c[k] as u64; } }
+            for c in &px { for k in 0..3 { sum[k] += c[k] as u64; } }
             let stem = name.rsplit(['\\', '/']).next().unwrap().to_lowercase().trim_end_matches(".tga").to_string();
-            out.insert(stem, Tex { w, h, rgb, avg: sum.map(|v| (v / (w * h) as u64) as u8) });
+            let alpha = px.iter().any(|c| c[3] < 255);
+            out.insert(stem, Tex { w, h, px, alpha, avg: sum.map(|v| (v / (w * h) as u64) as u8) });
         }
     }
     out
@@ -272,22 +274,22 @@ fn qoi(t: &Tex) -> Vec<u8> {
     let mut o = b"qoif".to_vec();
     o.extend((t.w as u32).to_be_bytes());
     o.extend((t.h as u32).to_be_bytes());
-    o.extend([3, 0]);
-    let (mut index, mut prev, mut run) = ([[0u8; 3]; 64], [0u8; 3], 0u8);
-    for px in t.rgb.chunks(3) {
-        let p = [px[0], px[1], px[2]];
+    o.extend([if t.alpha { 4 } else { 3 }, 0]);
+    let (mut index, mut prev, mut run) = ([[0u8; 4]; 64], [0u8, 0, 0, 255], 0u8);
+    for &p in &t.px {
         if p == prev {
             run += 1;
             if run == 62 { o.push(0xbf + run); run = 0; }
             continue;
         }
         if run > 0 { o.push(0xbf + run); run = 0; }
-        let h = (p[0] as usize * 3 + p[1] as usize * 5 + p[2] as usize * 7 + 255 * 11) % 64;
+        let h = (p[0] as usize * 3 + p[1] as usize * 5 + p[2] as usize * 7 + p[3] as usize * 11) % 64;
         if index[h] == p { o.push(h as u8); } else {
             index[h] = p;
             let [dr, dg, db] = [0, 1, 2].map(|i| p[i].wrapping_sub(prev[i]) as i8 as i32);
             let (rg, bg) = (dr - dg, db - dg);
-            if [dr, dg, db].iter().all(|v| (-2..2).contains(v)) {
+            if p[3] != prev[3] { o.extend([0xff, p[0], p[1], p[2], p[3]]); }
+            else if [dr, dg, db].iter().all(|v| (-2..2).contains(v)) {
                 o.push(0x40 | ((dr + 2) << 4 | (dg + 2) << 2 | (db + 2)) as u8);
             } else if (-32..32).contains(&dg) && (-8..8).contains(&rg) && (-8..8).contains(&bg) {
                 o.extend([0x80 | (dg + 32) as u8, ((rg + 8) << 4 | (bg + 8)) as u8]);
@@ -298,6 +300,20 @@ fn qoi(t: &Tex) -> Vec<u8> {
     if run > 0 { o.push(0xbf + run); }
     o.extend([0, 0, 0, 0, 0, 0, 0, 1]);
     o
+}
+
+// W4M material file reader 0x46ff30: 128 materials of 6 non-blank lines (top, side, roof, fringe, surface sound, ?);
+// blank lines are skipped, except one after 5 lines, which ends the material with its 6th = its 1st.
+fn material_fields(txt: &str) -> Vec<[String; 6]> {
+    let mut out = vec![Default::default()];
+    let mut n = 0;
+    for l in txt.lines().map(str::trim) {
+        let m: &mut [String; 6] = out.last_mut().unwrap();
+        if !l.is_empty() { m[n] = l.to_string(); n += 1; }
+        else if n == 5 { m[5] = m[0].clone(); n = 6; }
+        if n == 6 { if out.len() == 128 { break; } out.push(Default::default()); n = 0; }
+    }
+    out
 }
 
 fn theme_name(t: &str) -> &'static str {
@@ -388,19 +404,19 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let matfile = before("Databank.MaterialFile").or_else(|| find_ci(&maps, &format!("{stem}.txt")).map(|_| format!("Maps\\{stem}.txt")));
     let txt = matfile.and_then(|m| find_ci(data, &m).or_else(|| find_ci(&data.join("Themes"), &m)))
         .and_then(|p| fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-    let lines: Vec<&str> = txt.lines().map(str::trim).collect();
+    let fields = material_fields(&txt);
     let find = |name: &str| Some(name.to_lowercase()).filter(|n| tex.contains_key(n));
-    // 64 materials of 7 lines: top tex, side tex, ?, bump, surface sound, ?, blank; then the 2 heightmap textures
-    let mut names: Vec<[Option<String>; 2]> = (0..64).map(|m| {
-        let top = lines.get(m * 7).and_then(|n| find(n));
-        let side = lines.get(m * 7 + 1).and_then(|n| find(n)).or(top.clone());
-        [top.or(side.clone()), side]
+    // [top, side, roof, fringe] per material, then the 2 heightmap textures
+    let mut names: Vec<[Option<String>; 4]> = (0..64).map(|m| {
+        let f = |i: usize| fields.get(m).and_then(|f| find(&f[i]));
+        let (top, side) = (f(0), f(1).or(f(0)));
+        [top.or(side.clone()), side.clone(), f(2).or(side), f(3)]
     }).collect();
     for key in ["Heightmap.BaseTexture", "Heightmap.SecondTexture"] {
         let t = before(key).and_then(|n| find(&n));
-        names.push([t.clone(), t]);
+        names.push([t.clone(), t.clone(), t, None]);
     }
-    let pal: Vec<[u8; 6]> = names.iter().enumerate().map(|(m, [t, s])| {
+    let pal: Vec<[u8; 6]> = names.iter().enumerate().map(|(m, [t, s, ..])| {
         let def = if m >= 64 { [110, 150, 70] } else { [150, 140, 120] };
         let (t, s) = (t.as_ref().map_or(def, |n| tex[n].avg), s.as_ref().map_or(if m >= 64 { def } else { [120, 110, 100] }, |n| tex[n].avg));
         [t[0], t[1], t[2], s[0], s[1], s[2]]
@@ -481,16 +497,29 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let solid_at = |p: V3, skip: usize| below_hm(p) || bidx(p).map_or(false, |b| buckets[b].iter().any(|&i| i as usize != skip && hexes[i as usize].inside(p)));
 
     // occupancy at grid points; a cell missing every grid point (thin plank, cone tip) still claims its nearest one
+    // cells holding at most 2 grid points (ropes, twigs) also go to <stem>.thin: their exact hexahedron, drawn while its first voxel stands
+    let mut thin = b"W4T1".to_vec();
+    let mut nthin = 0u32;
+    thin.extend(0u32.to_le_bytes());
     for h in &hexes {
-        let mut any = false;
+        let (mut n, mut first) = (0, None);
         for (x, y, z) in points(h.lo, h.hi) {
-            if h.inside([x as f32, y as f32, z as f32]) { grid[gi(x, y, z)] = h.mat; any = true; }
+            if h.inside([x as f32, y as f32, z as f32]) { grid[gi(x, y, z)] = h.mat; n += 1; first.get_or_insert([x, y, z]); }
         }
         let cen = h.c.iter().fold([0.0; 3], |s, p| madd(s, *p, 0.125)).map(|v| v.round());
-        if !any && cen.iter().zip([NX, NY, NZ]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
+        if n == 0 && cen.iter().zip([NX, NY, NZ]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
             grid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)] = h.mat;
+            first = Some(cen.map(|v| v as usize));
+        }
+        if let Some(a) = first.filter(|_| n <= 2) {
+            nthin += 1;
+            for v in a { thin.extend((v as u16).to_le_bytes()); }
+            thin.push(h.mat);
+            for p in h.c { for v in p { thin.extend((v * VOX).to_le_bytes()); } }
         }
     }
+    thin[4..8].copy_from_slice(&nthin.to_le_bytes());
+    fs::write(out_dir.join(format!("{stem}.thin")), &thin).map_err(|e| e.to_string())?;
 
     // distance to the exposed faces (not covered by another cell or the heightmap), within BAND
     let mut dist = vec![BAND; NX * NY * NZ];
@@ -561,6 +590,19 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         i += r;
     }
     fs::write(out_dir.join(format!("{stem}.vox")), &vox).map_err(|e| e.to_string())?;
+    // W4M_MAPS_REF=<dir>: every visible poxel cell as OBJ quads in map metres (reference renders, unclipped)
+    if let Ok(dir) = std::env::var("W4M_MAPS_REF") {
+        let mut o = String::new();
+        let mut cur = u8::MAX;
+        for (n, c) in cells.iter().enumerate() {
+            if c.mat != cur { cur = c.mat; o += &format!("usemtl m{cur}\n"); }
+            for p in c.c { let g = to_grid(p); o += &format!("v {:.3} {:.3} {:.3}\n", g[0] * VOX, g[1] * VOX, g[2] * VOX); }
+            for f in FACES { o += &format!("f {} {} {} {}\n", n * 8 + f[0] + 1, n * 8 + f[1] + 1, n * 8 + f[2] + 1, n * 8 + f[3] + 1); }
+        }
+        let mtl: String = pal.iter().enumerate().map(|(m, c)| format!("newmtl m{m}\nKd {:.3} {:.3} {:.3}\n", c[3] as f32 / 255.0, c[4] as f32 / 255.0, c[5] as f32 / 255.0)).collect();
+        let _ = fs::write(Path::new(&dir).join(format!("{stem}.obj")), format!("mtllib {stem}.mtl\n{o}"));
+        let _ = fs::write(Path::new(&dir).join(format!("{stem}.mtl")), mtl);
+    }
 
     // texture repeat (m) per material and face kind: median over its cells of cell edge / texture vector
     let mut reps: Vec<[Vec<f32>; 2]> = vec![[Vec::new(), Vec::new()]; 66];
@@ -582,7 +624,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             format!("\"tex/{n}.qoi\"")
         }).unwrap_or("null".into()));
         let r = reps.get_mut(m).map_or([TEX_REPEAT * k; 2], |r| [median(&mut r[0]), median(&mut r[1])]);
-        texs.push(format!("[{},{},{:.2},{:.2}]", f[0], f[1], r[0], r[1]));
+        texs.push(format!("[{},{},{:.2},{:.2},{},{}]", f[0], f[1], r[0], r[1], f[2], f[3]));
     }
     // detail objects: "visible" entities whose library names a theme detail mesh (PREHISTORIC18...)
     let (mut objs, mut marks) = (Vec::new(), Vec::new());
@@ -594,7 +636,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let f: Vec<f32> = (0..12).map(|i| f32le(d, p + 4 * i)).collect();
         let w = xform(&r.w, [f[0], f[1], f[2]]);
         let pos = [w[0] * k + ox, w[1] * k + WATER, w[2] * k + oz];
-        if !(n.starts_with("visible") || n.starts_with("visable")) {
+        if !n.starts_with("visible") {  // W4M 0x5cd27d: upper(name[..7]) == "VISIBLE" only, so the "VISABLE" typos stay hidden
             if let Some(t) = marker_type(&lib, &n) {
                 marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
             }
@@ -613,7 +655,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let pv = mission::preview_of(data, stem).map_or(String::new(), |p| format!("  \"preview\": \"{p}\",\n"));
     let blk: Vec<String> = blocks.iter().map(|b| format!("[{:.2},{:.2},{:.2},{:.2}]", b[0] * k + ox, b[1] * k + oz, b[2] * k + ox, b[3] * k + oz)).collect();
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"scale\": {k:.4},\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","), blk.join(","),
         marks.join(",\n    "), objs.join(",\n    ")
     );
@@ -640,6 +682,7 @@ fn marker_type(lib: &str, name: &str) -> Option<&'static str> {
 fn decor(bundles: &Path, dir: &Path, libs: &HashSet<String>) {
     let _ = fs::create_dir_all(dir);
     let mut todo = libs.clone();
+    let mut anim = Vec::new();
     let Ok(rd) = fs::read_dir(bundles) else { return };
     let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
     paths.sort();
@@ -652,8 +695,11 @@ fn decor(bundles: &Path, dir: &Path, libs: &HashSet<String>) {
             let n = name.to_lowercase();
             if !todo.contains(&n) { continue; }
             match mesh::convert(&x, i, MESH_UNIT) {
-                Some((glb, lo, hi)) => {
+                Some((glb, side, lo, hi)) => {
                     let _ = fs::write(dir.join(format!("{n}.glb")), &glb);
+                    let head: Vec<&str> = side.lines().next().unwrap_or("").split(' ').collect();
+                    if head.len() == 4 && head[0] == "clip" && head[3] == "1" { anim.push(format!("{} {}\n", name, head[1])); }
+                    let _ = fs::write(dir.join(format!("{n}.mat")), side);
                     println!("decor {n} ({}): {:.1}..{:.1} x {:.1}..{:.1} x {:.1}..{:.1}, {} KB", path.file_name().unwrap().to_string_lossy(),
                         lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], glb.len() / 1024);
                 }
@@ -662,6 +708,9 @@ fn decor(bundles: &Path, dir: &Path, libs: &HashSet<String>) {
             todo.remove(&n);
         }
     }
+    // moving clips (transform keys) are skinned by tools/w4m-models into <name>_anim.glb
+    anim.sort();
+    let _ = fs::write(dir.join("anim.txt"), anim.concat());
     let mut missing: Vec<_> = todo.into_iter().collect();
     missing.sort();
     println!("{} detail meshes, missing: {missing:?}", libs.len() - missing.len());
@@ -731,5 +780,12 @@ mod tests {
         let x = Poxel { rot: [std::f32::consts::FRAC_PI_2, 0.0, 0.0], scale: [1.0; 3], ..Default::default() };
         let q = xform(&local(&x, true), [0.0, 1.0, 0.0]);
         assert!(q[1].abs() < 1e-6 && (q[2] - 1.0).abs() < 1e-6);
+    }
+    #[test]
+    fn material_file() {
+        let m = material_fields("A\r\nB\r\nC\r\nD\r\ns\r\nE\r\n\r\n\r\nF\nG\nH\nNULL\nt\n\nI\n");
+        assert_eq!(m[0], ["A", "B", "C", "D", "s", "E"].map(String::from));
+        assert_eq!(m[1], ["F", "G", "H", "NULL", "t", "F"].map(String::from));
+        assert_eq!(m[2][0], "I");
     }
 }

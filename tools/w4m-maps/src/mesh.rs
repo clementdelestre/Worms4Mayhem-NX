@@ -119,10 +119,16 @@ fn rot(v: [f32; 3]) -> M4 {
 }
 fn apply(m: &M4, p: [f32; 3], w: f32) -> [f32; 3] { std::array::from_fn(|i| m[i][0] * p[0] + m[i][1] * p[1] + m[i][2] * p[2] + m[i][3] * w) }
 
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, world: M4 }
+// XSimpleShader render attributes of a part (XBlendModeGL, XAlphaTest, XZBufferWriteEnable, XCullFace, XLightingEnable,
+// XMaterial emissive); absent ones stay at -1 / default.
+#[derive(Clone, Copy, PartialEq)]
+struct State { blend: [i32; 2], test: [i32; 2], zwrite: bool, cull: i32, lit: bool, emit: [u8; 3] }
+impl Default for State { fn default() -> Self { State { blend: [-1; 2], test: [-1; 2], zwrite: true, cull: -1, lit: true, emit: [0; 3] } } }
+
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, st: State, node: String, world: M4 }
 
 // Static scene walk: rest-pose world matrix per shape (texture-animation selectors keep their first child).
-fn walk(x: &Xom, i: usize, w: M4, out: &mut Vec<Part>, depth: u32) {
+fn walk(x: &Xom, i: usize, w: M4, out: &mut Vec<Part>, depth: u32, group: &str) {
     if i == 0 || depth > 64 { return; }
     let d = x.d(i);
     let mut p = 3;
@@ -134,21 +140,24 @@ fn walk(x: &Xom, i: usize, w: M4, out: &mut Vec<Part>, depth: u32) {
                 p += 16;
                 let r = vi(d, &mut p);
                 vi(d, &mut p);
-                walk(x, r, w, out, depth + 1);
+                walk(x, r, w, out, depth + 1, group);
             }
         }
-        "XInteriorNode" => for r in refs(&mut p) { walk(x, r, w, out, depth + 1) },
+        "XInteriorNode" => for r in refs(&mut p) { walk(x, r, w, out, depth + 1, group) },
         "XGroup" | "XSkeletonRoot" | "XBinModifier" => {
-            if x.t(i) == "XBinModifier" { p += 2; }
+            let bin = x.t(i) == "XBinModifier";
+            if bin { p += 2; }
             let xf = vi(d, &mut p);
             let mut kids = refs(&mut p);
+            p += 20;
+            let name = if bin { group.to_string() } else { x.str(vi(d, &mut p)) };
             if x.t(xf) == "XChildSelector" { kids.truncate(1); }
             let w = mul(&w, &local(x, xf));
-            for r in kids { walk(x, r, w, out, depth + 1); }
+            for r in kids { walk(x, r, w, out, depth + 1, &name); }
         }
-        "XSkin" => { let root = vi(d, &mut p); walk(x, root, w, out, depth + 1); for r in refs(&mut p) { walk(x, r, w, out, depth + 1); } }
-        "XShape" => { p += 4; let (sh, geo) = (vi(d, &mut p), vi(d, &mut p)); part(x, sh, geo, w, out); }
-        "XSkinShape" => { skip_set(d, &mut p); p += 4; let (sh, geo) = (vi(d, &mut p), vi(d, &mut p)); part(x, sh, geo, w, out); }
+        "XSkin" => { let root = vi(d, &mut p); walk(x, root, w, out, depth + 1, group); for r in refs(&mut p) { walk(x, r, w, out, depth + 1, group); } }
+        "XShape" => { p += 4; let (sh, geo) = (vi(d, &mut p), vi(d, &mut p)); part(x, sh, geo, w, group, out); }
+        "XSkinShape" => { skip_set(d, &mut p); p += 4; let (sh, geo) = (vi(d, &mut p), vi(d, &mut p)); part(x, sh, geo, w, group, out); }
         _ => {}
     }
 }
@@ -172,7 +181,7 @@ fn local(x: &Xom, xf: usize) -> M4 {
     }
 }
 
-fn part(x: &Xom, shader: usize, geo: usize, world: M4, out: &mut Vec<Part>) {
+fn part(x: &Xom, shader: usize, geo: usize, world: M4, shape: &str, out: &mut Vec<Part>) {
     if x.t(geo) != "XIndexedTriangleSet" { return; }
     let d = x.d(geo);
     let mut p = 3;
@@ -197,7 +206,25 @@ fn part(x: &Xom, shader: usize, geo: usize, world: M4, out: &mut Vec<Part>) {
     let mut sp = 3;
     let stages: Vec<usize> = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
     let img = stages.first().filter(|&&s| x.t(s) == "XOglTextureMap").map_or(0, |&s| { let mut q = 23; vi(x.d(s), &mut q) });
-    out.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, world });
+    let mut st = State::default();
+    if x.t(shader) == "XSimpleShader" {
+        for _ in 0..vi(sd, &mut sp) {
+            let a = vi(sd, &mut sp);
+            let d = x.d(a);
+            match x.t(a) {
+                "XBlendModeGL" => st.blend = [u32le(d, 3) as i32, u32le(d, 7) as i32],
+                "XAlphaTest" if d.get(3) == Some(&1) => st.test = [u32le(d, 4) as i32, f32le(d, 8).round() as i32],
+                "XZBufferWriteEnable" => st.zwrite = d.get(3) == Some(&1),
+                "XCullFace" => st.cull = u32le(d, 3) as i32,
+                "XLightingEnable" => st.lit = d.get(3) == Some(&1),
+                "XMaterial" => st.emit = fl::<3>(d, 3 + 48).map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8),
+                _ => {}
+            }
+        }
+    }
+    sp += 4;
+    let node = format!("{shape}_{}", x.str(vi(sd, &mut sp)));  // texture offset channels name "<shape>_<shader>"
+    out.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, st, node, world });
 }
 
 // Top mip of an XImage as RGBA8 (formats 0 = RGB8, 1/2 = RGBA8).
@@ -279,19 +306,41 @@ impl Glb {
 }
 
 // glb of the mesh scaled by `unit` (mesh units -> W4M world units), plus its bounding box (lo, hi) after scaling.
-pub fn convert(x: &Xom, desc: usize, unit: f32) -> Option<(Vec<u8>, [f32; 3], [f32; 3])> {
+pub fn convert(x: &Xom, desc: usize, unit: f32) -> Option<(Vec<u8>, String, [f32; 3], [f32; 3])> {
     let d = x.d(desc);
     let mut p = 0;
     vi(d, &mut p);
     p += 2;
     let mut parts = Vec::new();
-    walk(x, vi(d, &mut p), sc([unit; 3]), &mut parts, 0);
+    let graph = vi(d, &mut p);
+    walk(x, graph, sc([unit; 3]), &mut parts, 0, "");
     if parts.is_empty() { return None; }
+    // W4M 0x5cd38e: a detail plays its "Go" clip looped from a random time, else "GoSync" from 0
+    let gd = x.d(graph);
+    let mut q = 0;
+    let lib = if x.t(graph) != "XGraphSet" { None } else {
+        (0..vi(gd, &mut q)).find_map(|_| { q += 16; let r = vi(gd, &mut q); vi(gd, &mut q); (x.t(r) == "XAnimClipLibrary").then_some(r) })
+    };
+    let all = lib.map_or(vec![], |l| crate::anim::clips(x.d(l), &x.s, &mut 0));
+    let clip = all.iter().find(|c| c.name == "Go").or_else(|| all.iter().find(|c| c.name == "GoSync"));
+    const UV_STEPS: usize = 64;
+    let mut tracks: Vec<Vec<[f32; 2]>> = Vec::new();  // texture offset (U, V) at UV_STEPS + 1 even times over the clip
+    let part_track: Vec<Option<usize>> = parts.iter().map(|pt| {
+        let c = clip?;
+        let (u, v) = (c.ch.get(&(pt.node.clone(), 0x401)), c.ch.get(&(pt.node.clone(), 0x1000401)));
+        if u.is_none() && v.is_none() { return None; }
+        let at = |k: Option<&Vec<crate::anim::Key>>, t: f32| k.filter(|k| !k.is_empty()).map_or(0.0, |k| crate::anim::eval(k, t));
+        tracks.push((0..=UV_STEPS).map(|i| { let t = c.dur * i as f32 / UV_STEPS as f32; [at(u, t), at(v, t)] }).collect());
+        Some(tracks.len() - 1)
+    }).collect();
+    let motion = clip.map_or(false, |c| c.ch.keys().any(|(_, t)| matches!(t & 0xffffff, 0x102 | 0x103 | 0x104 | 0x904)));
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     let mut g = Glb::default();
     let mut images: Vec<usize> = parts.iter().map(|p| p.img).filter(|&i| i != 0).collect();
     images.sort();
     images.dedup();
+    let mut keys: Vec<(usize, State, Option<usize>)> = Vec::new();
+    for (pt, &tk) in parts.iter().zip(&part_track) { if pt.img != 0 && !keys.contains(&(pt.img, pt.st, tk)) { keys.push((pt.img, pt.st, tk)); } }
     let mut img_json = Vec::new();
     for &i in &images {
         let (w, h, rgba) = image(x, i).unwrap_or((1, 1, vec![255; 4]));
@@ -299,7 +348,7 @@ pub fn convert(x: &Xom, desc: usize, unit: f32) -> Option<(Vec<u8>, [f32; 3], [f
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
     let mut prims = Vec::new();
-    for pt in &parts {
+    for (pt, &tk) in parts.iter().zip(&part_track) {
         let pos: Vec<f32> = pt.pos.iter().flat_map(|&v| apply(&pt.world, v, 1.0)).collect();
         for q in pos.chunks(3) { for k in 0..3 { lo[k] = lo[k].min(q[k]); hi[k] = hi[k].max(q[k]); } }
         let nrm: Vec<f32> = pt.nrm.iter().flat_map(|&v| {
@@ -313,10 +362,21 @@ pub fn convert(x: &Xom, desc: usize, unit: f32) -> Option<(Vec<u8>, [f32; 3], [f
         let a_uv = g.floats(&pt.uv.iter().flatten().copied().collect::<Vec<_>>(), "VEC2", n, false);
         let ib: Vec<u8> = pt.idx.iter().flat_map(|i| i.to_le_bytes()).collect();
         let a_idx = g.acc(&ib, 5123, pt.idx.len(), "SCALAR", "");
-        let mat = images.iter().position(|&i| i == pt.img).map_or(String::new(), |m| format!(",\"material\":{m}"));
+        let mat = keys.iter().position(|&k| k == (pt.img, pt.st, tk)).map_or(String::new(), |m| format!(",\"material\":{m}"));
         prims.push(format!("{{\"attributes\":{{\"POSITION\":{a_pos},\"NORMAL\":{a_nrm},\"TEXCOORD_0\":{a_uv}}},\"indices\":{a_idx}{mat}}}"));
     }
-    let mats: Vec<String> = (0..images.len()).map(|i| format!("{{\"pbrMetallicRoughness\":{{\"baseColorTexture\":{{\"index\":{i}}},\"metallicFactor\":0}}}}")).collect();
+    let mats: Vec<String> = keys.iter().map(|k| {
+        let i = images.iter().position(|&m| m == k.0).unwrap();
+        format!("{{\"pbrMetallicRoughness\":{{\"baseColorTexture\":{{\"index\":{i}}},\"metallicFactor\":0}}}}")
+    }).collect();
+    // sidecar: "clip <name> <s> <motion>" if any, then one line per glb material: blend src dst (-1 -1 = none), alpha test function
+    // and ref (0..255), z write, cull mode, lit, emissive rgb, then its texture offset track if animated (count, u v pairs)
+    let mut side = clip.map_or(String::new(), |c| format!("clip {} {} {}\n", c.name, c.dur, motion as u8));
+    for (_, s, tk) in &keys {
+        side += &format!("{} {} {} {} {} {} {} {} {} {}", s.blend[0], s.blend[1], s.test[0], s.test[1], s.zwrite as u8, s.cull, s.lit as u8, s.emit[0], s.emit[1], s.emit[2]);
+        if let Some(t) = tk.map(|i| &tracks[i]) { side += &format!(" {}", t.len()); for [u, v] in t { side += &format!(" {u:.4} {v:.4}"); } }
+        side += "\n";
+    }
     let texs: Vec<String> = (0..images.len()).map(|i| format!("{{\"source\":{i}}}")).collect();
     let json = format!(
         "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"w4m-maps\"}},\"scene\":0,\"scenes\":[{{\"nodes\":[0]}}],\"nodes\":[{{\"mesh\":0}}],\"meshes\":[{{\"primitives\":[{}]}}],\"materials\":[{}],\"textures\":[{}],\"images\":[{}],\"accessors\":[{}],\"bufferViews\":[{}],\"buffers\":[{{\"byteLength\":{}}}]}}",
@@ -334,5 +394,5 @@ pub fn convert(x: &Xom, desc: usize, unit: f32) -> Option<(Vec<u8>, [f32; 3], [f
     o.extend((g.bin.len() as u32).to_le_bytes());
     o.extend(b"BIN\0");
     o.extend(&g.bin);
-    Some((o, lo, hi))
+    Some((o, side, lo, hi))
 }

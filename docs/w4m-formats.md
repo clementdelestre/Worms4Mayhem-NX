@@ -36,7 +36,7 @@ Covers x, z ∈ [−80, 80] (fits poxel footprints on DoomCanyon/StormTheCastle)
 
 ### Conversion to our grid
 
-Scale k = fit into 78 x 60 m (max 1). Each solid poxel voxel becomes a hexahedron (12 triangle planes); grid points inside one are solid. Faces whose outside is covered by another cell or the heightmap are dropped; the stored density is the exact distance to the remaining faces within 1 voxel (0.25 m), signed by occupancy, so surface nets gives flat floors and crisp edges. Cells missing every grid point (thin planks, cone tips) still claim their nearest one.
+Scale k = fit into 78 x 60 m (max 1). Each solid poxel voxel becomes a hexahedron (12 triangle planes); grid points inside one are solid. Faces whose outside is covered by another cell or the heightmap are dropped; the stored density is the exact distance to the remaining faces within 1 voxel (0.25 m), signed by occupancy, so surface nets gives flat floors and crisp edges. Cells missing every grid point (thin planks, cone tips) still claim their nearest one. Cells holding at most 2 grid points (ropes, cables, twigs, fence rails) also go to `<map>.thin` with their exact 8 corners, for the renderer (`docs/maps.md` `thin`); the `.vox` is unchanged by it.
 
 ## Lighting (`Data/Tweak/TWEAK.XOM`, `CG/*.cg`)
 
@@ -48,18 +48,18 @@ The importer writes the level's light and the 14 water.cg inputs as the map JSON
 
 ## Themes and textures
 
-`Data/Themes/Theme<X>/Theme<X>.txt`: 64 materials × 7 lines: top texture, side texture, ?, bump/second texture (`NULL`), surface sound (`Rock01`, `grass01blend`…), ?, blank. Textures (`C01`…) are `XImage`s in `Data/Bundles/Bundl13..21.xom` (one bundle per theme; Worms 3D banks in `Bundl15x`): name (path string `ThemeCamelot\C01.tga`), w, h (u16), mips (u8+pad), flags (u16), strides (count + u32s), mip offsets (count + u32s), format (u32: 0 = R8G8B8, 1/2 = 8888, 9/10/11 = DXT), varint size, pixels top mip first. The importer writes the top mip of format 0/1/2 images (1660 textures) as `maps/tex/<stem>.qoi` (only those used by an imported map) and keeps their average as the fallback palette colour.
+`Data/Themes/Theme<X>/Theme<X>.txt`: materials of 6 non-blank lines: top, side, roof (downward faces) and fringe textures (`NULL` = none; grass tufts hung on floor edges), surface sound (`Rock01`, `grass01blend`…), a 6th texture; blank lines are skipped (W4M reader 0x46ff30, `docs/w4m/render.md` "Level scenery"). Textures (`C01`…) are `XImage`s in `Data/Bundles/Bundl13..21.xom` (one bundle per theme; Worms 3D banks in `Bundl15x`): name (path string `ThemeCamelot\C01.tga`), w, h (u16), mips (u8+pad), flags (u16), strides (count + u32s), mip offsets (count + u32s), format (u32: 0 = R8G8B8, 1/2 = 8888, 9/10/11 = DXT), varint size, pixels top mip first. The importer writes the top mip of format 0/1/2 images (1660 textures) as `maps/tex/<stem>.qoi` (only those used by an imported map) and keeps their average as the fallback palette colour.
 
 ### DetailEntityStore (detail objects)
 
 Referenced from a poxel's detail list (every entity of a map is reachable that way). After `CTNR`+3: name (varint), library (varint), then 16 f32: position (poxel-local, centred, deformed lattice: same frame as the lattice vertices above), rotation (euler, `Rz·Ry·Rx`: ~80 % upright, the rest tilted / on walls / hanging), voxel cell (integer floats, the poxel voxel holding it), scale (often non-uniform), then always `0, 0, 0, -1` and 5 bytes `01 00 00 00 00`. Verified against the frontend previews (`Data/Frontend/Levels/*.tga`) and in game: objects sit on the poxel surfaces.
 
-- Name prefix `VISIBLE`/`visible`/`VISABLE` (+ `_MORTAL`) = rendered decor; others are editor/script markers: `spawn` / `STANDIN WORM` (`CheesyGrinWorm`), `mine`, `oildrum`, `Crate.*`, `Camera`, `Lookat Point`, `LIGHT` (`PNTLGHT r g b radius`), `EMITTER_*` (`PARTICLE EMITTER`), `PLUG_*` (`Sound Effect`), `Collision Sphere`, `BOUNDS`.
+- Name prefix `VISIBLE` (any case, + `_MORTAL`) = rendered decor (`VISABLE` typos are not drawn by W4M); others are editor/script markers: `spawn` / `STANDIN WORM` (`CheesyGrinWorm`), `mine`, `oildrum`, `Crate.*`, `Camera`, `Lookat Point`, `LIGHT` (`PNTLGHT r g b radius`), `EMITTER_*` (`PARTICLE EMITTER`), `PLUG_*` (`Sound Effect`), `Collision Sphere`, `BOUNDS`.
 - Library = `XMeshDescriptor` name in the theme detail bundle: `<THEME><n>`, n = line of `Data/Themes/Theme<X>/<L> Detail List.txt` (`CAMELOT18` lamp pole, `PREHISTORIC18` Tyrannosaurus statue, `WILDWEST8` skull...), or `Dxx_yy` for the `Themes/Custom` banks. Camelot `Bundl26`, Prehistoric `Bundl27`, Arabian `Bundl24`, Wild West `Bundl28`, Horror `Bundl31`; 136 meshes used by the shipped maps (`SHRINK` has none).
-- Detail meshes are static XOM scenes (a few have a sway clip, ignored) with RGB8/RGBA8 textures; 20 mesh units = 1 world unit (the 25-unit worm mesh ~ 1.25 voxels; lamp pole 54 units -> 2.7).
+- Detail meshes are XOM scenes with RGB8/RGBA8 textures, some with a `Go` / `GoSync` clip; 20 mesh units = 1 world unit (the 25-unit worm mesh ~ 1.25 voxels; lamp pole 54 units -> 2.7).
 - Big set pieces (EscapeFromTreeRex's T-Rex, trees, castle walls) are poxels, not details. Shipped maps hold 0-194 visible details, mostly grass and flowers.
 
-Imported by `tools/w4m-maps` (`src/mesh.rs`, static subset of `w4m-models`): meshes go to `models/decor/<lib lowercase>.glb` in world units, placements to the map JSON `objects` (position through the poxel's scaled matrix, basis = poxel rotation · detail rotation · detail scale, then the importer's k / offset).
+Imported by `tools/w4m-maps` (`src/mesh.rs`, static subset of `w4m-models`; `src/anim.rs` reads the clips): meshes go to `models/decor/<lib lowercase>.glb` in world units with `<lib>.mat` (per glb material: XSimpleShader states, emissive, texture offset track; first line `clip <name> <s> <moves>`), clips that move parts are listed in `decor/anim.txt` for `tools/w4m-models` (`decor/<lib>_anim.glb`, raw mesh units, skinned), placements to the map JSON `objects` (position through the poxel's scaled matrix, basis = poxel rotation · detail rotation · detail scale, then the importer's k / offset).
 
 ## Meshes, skeletons and animations (`Data/Bundles/*.xom`)
 

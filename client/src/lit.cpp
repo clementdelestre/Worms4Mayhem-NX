@@ -3,9 +3,14 @@
 #include "rlgl.h"
 #include <string>
 #include <vector>
+#ifdef __SWITCH__
+#include <switch.h>
+extern "C" void NxSetRenderSize(int width, int height);  // tools/patches/raylib-nx-docked-1080p.patch
+#endif
 
 namespace Lit {
 Light sun;
+int aniso = 16;  // measured free over 4x (docs/tests.md "Render budget")
 struct Entry { Shader s; bool worm; int loc[5]; };  // worm: fixed worm light; loc: sunDir, ambient, diffuse, specular, camPos
 static std::vector<Entry> shaders;
 
@@ -76,5 +81,22 @@ void frame(Vector3 cam) {
         SetShaderValue(x.s, x.loc[3], &sun.specular, SHADER_UNIFORM_VEC3);
         SetShaderValue(x.s, x.loc[4], &cam, SHADER_UNIFORM_VEC3);
     }
+}
+
+// Docked: a 1920x1080 framebuffer, handheld 1280x720 (docs/tests.md "Render budget"); docked frames averaging over 36 ms
+// for 3 s fall back to 720p until the next undock
+void profile(float frameTime) {
+#ifdef __SWITCH__
+    static int was = -1;
+    static bool slow = false;
+    static float sum = 0;
+    static int n = 0;
+    bool docked = appletGetOperationMode() == AppletOperationMode_Console;
+    if (docked != was) was = docked, slow = FileExists("sdmc:/switch/worms4nx/docked720"), sum = 0, n = 0;  // that file keeps docked play at 720p
+    if (docked && frameTime < 0.1f && (sum += frameTime, ++n, sum) >= 3) slow = slow || sum / n > 0.036f, sum = 0, n = 0;  // load hitches skipped
+    NxSetRenderSize(docked && !slow ? 1920 : 1280, docked && !slow ? 1080 : 720);
+#else
+    (void)frameTime;
+#endif
 }
 }

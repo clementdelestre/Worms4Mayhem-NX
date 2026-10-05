@@ -19,6 +19,7 @@ git -C .. apply ../../tools/patches/raylib-nx-pulse-s24.patch   # desktop sound 
 git -C .. apply ../../tools/patches/raylib-nx-gltf-pose-search.patch   # glTF clip sampling in O(log n): the worm's 165 clips took 2.2 s at boot
 make PLATFORM=PLATFORM_DESKTOP RAYLIB_RELEASE_PATH=../out/desktop && rm -f *.o
 git -C .. apply ../../tools/patches/raylib-nx-sideways-joycon.patch   # single Joy-Cons held sideways
+git -C .. apply ../../tools/patches/raylib-nx-docked-1080p.patch   # 1920x1080 window buffers, cropped to 1280x720 handheld (Lit::profile)
 docker run --rm -u $(id -u):$(id -g) -v "$PWD/../..":/w -w /w/raylib-nx/src devkitpro/devkita64 make PLATFORM=PLATFORM_NX RAYLIB_RELEASE_PATH=../out/nx CUSTOM_CFLAGS=-DNX_DISABLE_GAMEPAD_EMULATION && rm -f *.o
 ```
 Game:

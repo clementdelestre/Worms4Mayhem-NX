@@ -187,6 +187,7 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
 
 bool Terrain::load(const std::string &map, unsigned seed) {
     objects.clear(), objModels.clear(), markers.clear(), blocks.clear();
+    thin.assign(CX * CY * CZ, {}), thinOnly.clear();
     hasFinish = false;
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -214,9 +215,10 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         palSide.push_back({(unsigned char)c[3].f(c[0].f()), (unsigned char)c[4].f(c[1].f()), (unsigned char)c[5].f(c[2].f()), 255});
     }
     for (size_t i = 0; i < tex.size(); i++) {
-        for (int k = 0; k < 2; k++) texFiles.push_back(tex[i][k].type == Json::Str ? dir + tex[i][k].s() : "");
+        for (int k : {0, 1, 4, 5}) texFiles.push_back(tex[i][k].type == Json::Str ? dir + tex[i][k].s() : "");
         texRepeat.push_back({tex[i][2].f(4), tex[i][3].f(4)});
     }
+    scale = j["scale"].f(1);
 
     reset(-127);
     const Json &base = j["base"];
@@ -225,6 +227,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     float rad = base["radius"].f(0.8f) * NX * VOX / 2, cx = NX * VOX / 2, cz = NZ * VOX / 2;
     if (j["voxels"].type == Json::Str) {
         if (!loadVoxels(dir + j["voxels"].s())) TraceLog(LOG_WARNING, "map %s: bad voxel file '%s'", map.c_str(), j["voxels"].s().c_str());
+        if (j["thin"].type == Json::Str) loadThin(dir + j["thin"].s());
     } else if (kind != "none") {
         bool isl = kind == "island";
         island(bh, isl ? height : 0, isl ? rough : 0, rad, seed + (unsigned)base["seed"].f(0));
@@ -268,6 +271,41 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         objects.push_back({m, p, {b[0].f(1), b[1].f(0), b[2].f(0), p.x, b[3].f(0), b[4].f(1), b[5].f(0), p.y, b[6].f(0), b[7].f(0), b[8].f(1), p.z, 0, 0, 0, 1}});
     }
     return true;
+}
+
+// .thin "W4T1": u32 count, then per cell u16 x y z (its voxel), u8 material (1-based), 8 corners (3 f32, m; bit 1 +x, 2 +y, 4 +z)
+void Terrain::loadThin(const std::string &path) {
+    int n = 0;
+    unsigned char *b = LoadFileData(path.c_str(), &n);
+    if (!b) return;
+    uint32_t count = 0;
+    if (n >= 8 && !memcmp(b, "W4T1", 4)) memcpy(&count, b + 4, 4);
+    for (uint32_t i = 0; i < count && 8 + (i + 1) * 103 <= (uint32_t)n; i++) {
+        const unsigned char *r = b + 8 + i * 103;
+        uint16_t v[3];
+        memcpy(v, r, 6);
+        if (v[0] >= NX || v[1] >= NY || v[2] >= NZ) continue;
+        Thin t{(int)idx(v[0], v[1], v[2]), r[6], {}};
+        memcpy(t.c, r + 7, 96);
+        thin[(v[2] / CS * CY + v[1] / CS) * CX + v[0] / CS].push_back(t);
+    }
+    UnloadFileData(b);
+    // voxels standing only for thin cells (no other solid neighbour): their blob is not meshed, the hexahedra show instead
+    std::vector<int> anchors;
+    for (auto &ts : thin) for (const Thin &t : ts) anchors.push_back(t.vox);
+    std::sort(anchors.begin(), anchors.end());
+    thinOnly.clear();
+    for (int v : anchors) {
+        int x = v % NX, y = v / NX % NY, z = v / (NX * NY);
+        bool only = true;
+        for (int q = 0; q < 6 && only; q++) {
+            int a = x + (q == 0) - (q == 1), c = y + (q == 2) - (q == 3), e = z + (q == 4) - (q == 5);
+            if (a < 0 || c < 0 || e < 0 || a >= NX || c >= NY || e >= NZ) continue;
+            int w = (int)idx(a, c, e);
+            only = d[w] <= 0 || std::binary_search(anchors.begin(), anchors.end(), w);
+        }
+        if (only && (thinOnly.empty() || thinOnly.back() != v)) thinOnly.push_back(v);
+    }
 }
 
 // .vox "W4V2": u16 NX NY NZ, u8 D; materials as (material, run 1..255) pairs in d[] order (0 = air);
@@ -326,6 +364,7 @@ void Terrain::mergeBlocks() {
 }
 
 void Terrain::generate(unsigned seed) {
+    thin.assign(CX * CY * CZ, {}), thinOnly.clear();
     theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear();
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
@@ -543,6 +582,15 @@ void Terrain::buildChunk(int ci) {
                              (v[2] - v[0]) + (v[3] - v[1]) + (v[6] - v[4]) + (v[7] - v[5]),
                              (v[4] - v[0]) + (v[5] - v[1]) + (v[6] - v[2]) + (v[7] - v[3])};
                 cn[n] = Vector3Normalize(Vector3Negate(g));
+                {  // smoother: the gradient over two voxels at the vertex (fewer facets); the AI's sample count stays as it was
+                    unsigned long s0 = samples;
+                    Vector3 q = cp[n];
+                    const float h = VOX;
+                    Vector3 g2 = {sample({q.x + h, q.y, q.z}) - sample({q.x - h, q.y, q.z}), sample({q.x, q.y + h, q.z}) - sample({q.x, q.y - h, q.z}),
+                                  sample({q.x, q.y, q.z + h}) - sample({q.x, q.y, q.z - h})};
+                    samples = s0;
+                    if (Vector3Length(g2) > 1e-6f) cn[n] = Vector3Normalize(Vector3Negate(g2));
+                }
             }
         }
 
@@ -552,24 +600,39 @@ void Terrain::buildChunk(int ci) {
     size_t used = 0;
     const Lit::Light &sun = Lit::sun;
     const Vector3 light = Vector3Normalize(sun.dir);
-    auto vertex = [&](Builder &b, int n) {
-        if (b.vid[n] >= 0) return b.vid[n];
-        Vector3 p = cp[n], nr = cn[n];
-        int m = b.mat - 1;
+    auto colour = [&](int m, Vector3 p, Vector3 nr) -> Color {
         Color vc = m >= 64 ? WHITE : vertexColour(p, nr);  // heightmap land: HeightMapFragmentMain ignores the vertex rgb
-        b.pos.insert(b.pos.end(), {p.x, p.y, p.z});
-        b.nrm.insert(b.nrm.end(), {nr.x, nr.y, nr.z});
-        if (m >= 0 && m < (int)texMats.size() && texMats[m].maps) {  // textured: the shader lights it, times this colour
-            b.col.insert(b.col.end(), {vc.r, vc.g, vc.b, 255});
-            return b.vid[n] = (int)b.pos.size() / 3 - 1;
-        }
+        if (m >= 0 && m < (int)texMats.size() && texMats[m].maps) return {vc.r, vc.g, vc.b, 255};  // textured: the shader lights it, times this colour
         Color base = m >= 0 && m < (int)palTop.size() ? (nr.y > 0.7f ? palTop[m] : palSide[m]) : m == HARD - 1 ? Color{150, 150, 160, 255}  // untextured steel
                    : p.y < WATER + 0.8f ? beach : nr.y > 0.7f ? top : side;
         Vector3 l = Vector3Add(sun.ambient, Vector3Scale(sun.diffuse, fmaxf(0, Vector3DotProduct(nr, light))));
         auto ch = [&](unsigned char c, float k, unsigned char v) { return (unsigned char)fminf(255, c * k * v / 255); };
-        b.col.insert(b.col.end(), {ch(base.r, l.x, vc.r), ch(base.g, l.y, vc.g), ch(base.b, l.z, vc.b), 255});
+        return {ch(base.r, l.x, vc.r), ch(base.g, l.y, vc.g), ch(base.b, l.z, vc.b), 255};
+    };
+    auto vertex = [&](Builder &b, int n) {
+        if (b.vid[n] >= 0) return b.vid[n];
+        Vector3 p = cp[n], nr = cn[n];
+        Color c = colour(b.mat - 1, p, nr);
+        b.pos.insert(b.pos.end(), {p.x, p.y, p.z});
+        b.nrm.insert(b.nrm.end(), {nr.x, nr.y, nr.z});
+        b.col.insert(b.col.end(), {c.r, c.g, c.b, 255});
         return b.vid[n] = (int)b.pos.size() / 3 - 1;
     };
+    auto builder = [&](int m) -> Builder & {
+        size_t bi = 0;
+        while (bi < used && bs[bi].mat != m) bi++;
+        if (bi == used) {
+            if (used == bs.size()) bs.emplace_back();
+            Builder &b = bs[used++];
+            b.mat = m, b.vid.assign(S * S * S, -1), b.pos.clear(), b.nrm.clear(), b.col.clear(), b.idx.clear();
+        }
+        return bs[bi];
+    };
+    std::vector<int> skip;  // thinOnly voxels of this chunk's sample box
+    for (auto it = std::lower_bound(thinOnly.begin(), thinOnly.end(), (int)idx(0, 0, std::max(z0 - 1, 0))); it != thinOnly.end() && *it / (NX * NY) <= z0 + CS; ++it) {
+        int x = *it % NX, y = *it / NX % NY;
+        if (x >= x0 - 1 && x <= x0 + CS && y >= y0 - 1 && y <= y0 + CS) skip.push_back(*it);
+    }
     for (int k = 1; k < S; k++)
         for (int j = 1; j < S; j++) {
             uint64_t r = rows[k * L + j], ch[3] = {r ^ r >> 1, r ^ rows[k * L + j + 1], r ^ rows[(k + 1) * L + j]};
@@ -584,20 +647,118 @@ void Terrain::buildChunk(int ci) {
                     }
                     if (!has[cell[0]] || !has[cell[1]] || !has[cell[2]] || !has[cell[3]]) continue;
                     int m = in ? mt[(k * L + j) * L + i] : mt[((k + (a == 2)) * L + j + (a == 1)) * L + i + (a == 0)];
-                    size_t bi = 0;
-                    while (bi < used && bs[bi].mat != m) bi++;
-                    if (bi == used) {
-                        if (used == bs.size()) bs.emplace_back();
-                        Builder &b = bs[used++];
-                        b.mat = m, b.vid.assign(S * S * S, -1), b.pos.clear(), b.nrm.clear(), b.col.clear(), b.idx.clear();
+                    if (!skip.empty()) {
+                        int sv = in ? (int)idx(x0 - 1 + i, y0 - 1 + j, z0 - 1 + k) : (int)idx(x0 - 1 + i + (a == 0), y0 - 1 + j + (a == 1), z0 - 1 + k + (a == 2));
+                        if (std::binary_search(skip.begin(), skip.end(), sv)) continue;
                     }
-                    Builder &b = bs[bi];
+                    Builder &b = builder(m);
                     unsigned short v[4];
                     for (int q = 0; q < 4; q++) v[q] = (unsigned short)vertex(b, cell[q]);
                     if (in) b.idx.insert(b.idx.end(), {v[0], v[1], v[2], v[0], v[2], v[3]});
                     else b.idx.insert(b.idx.end(), {v[0], v[3], v[2], v[0], v[2], v[1]});
                 }
         }
+
+    // sub-voxel W4M cells (ropes, twigs): their own hexahedron, flat shaded, while their voxel stands [ours: voxel-forced]
+    if (ci < (int)thin.size())
+        for (const Thin &t : thin[ci]) {
+            if (d[t.vox] <= 0) continue;
+            Builder &b = builder(t.mat);
+            Vector3 cen = {0, 0, 0};
+            for (const Vector3 &q : t.c) cen = Vector3Add(cen, Vector3Scale(q, 0.125f));
+            static const int F[6][4] = {{0, 2, 6, 4}, {1, 3, 7, 5}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 1, 3, 2}, {4, 5, 7, 6}};
+            for (const auto &f : F) {
+                Vector3 nr = Vector3CrossProduct(Vector3Subtract(t.c[f[2]], t.c[f[0]]), Vector3Subtract(t.c[f[3]], t.c[f[1]]));
+                if (Vector3Length(nr) < 1e-8f) continue;
+                bool flip = Vector3DotProduct(nr, Vector3Subtract(Vector3Scale(Vector3Add(t.c[f[0]], t.c[f[2]]), 0.5f), cen)) < 0;
+                nr = Vector3Normalize(flip ? Vector3Negate(nr) : nr);
+                Color c = colour(t.mat - 1, cen, nr);
+                unsigned short n0 = (unsigned short)(b.pos.size() / 3);
+                for (int q = 0; q < 4; q++) {
+                    const Vector3 &p = t.c[f[flip ? 3 - q : q]];
+                    b.pos.insert(b.pos.end(), {p.x, p.y, p.z}), b.nrm.insert(b.nrm.end(), {nr.x, nr.y, nr.z}), b.col.insert(b.col.end(), {c.r, c.g, c.b, 255});
+                }
+                b.idx.insert(b.idx.end(), {n0, (unsigned short)(n0 + 1), (unsigned short)(n0 + 2), n0, (unsigned short)(n0 + 2), (unsigned short)(n0 + 3)});
+            }
+        }
+
+    // W4M GLG_FringeBuilder (0x449ba0): a card hangs from each open floor edge whose material has a fringe texture,
+    // from the edge's land vertices along (out 0.7, down 0.7) x Land.FringeLength (0.4 land voxels, LOCAL.XOM)
+    struct FB { int mat; std::vector<float> pos, uv; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
+    static std::vector<FB> fbs;
+    size_t fused = 0;
+    if (!fringeMats.empty()) {
+        const float L = 0.4f * scale;
+        const int drop = std::max(1, (int)ceilf(scale / VOX - 0.01f));  // the floor ends where a whole W4M voxel is open
+        auto air = [&](int x, int y, int z) { return x < 0 || y < 0 || z < 0 || x >= NX || y >= NY || z >= NZ || d[idx(x, y, z)] <= 0; };
+        auto open = [&](int x, int y, int z) { for (int t = 0; t < drop; t++) if (!air(x, y - t, z)) return false; return true; };
+        static const int DIR[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (int k = 1; k <= CS; k++)
+            for (int j = 1; j <= CS; j++)
+                for (int i = 1; i <= CS; i++) {
+                    int gx = x0 - 1 + i, gy = y0 - 1 + j, gz = z0 - 1 + k;
+                    if (gy + 1 >= NY || air(gx, gy, gz) || !air(gx, gy + 1, gz) || isSteel(idx(gx, gy, gz))) continue;
+                    int m = mats.empty() ? -1 : mats[idx(gx, gy, gz)] - 1;
+                    if (m < 0 || m >= (int)fringeMats.size() || !fringeMats[m].maps) continue;
+                    for (int s = 0; s < 4; s++) {
+                        int dx = DIR[s][0], dz = DIR[s][1], px = dz != 0, pz = dx != 0;  // (px, pz): along the edge
+                        if (!open(gx + dx, gy, gz + dz)) continue;
+                        Vector3 v[2], tip[2];
+                        Color col[2];
+                        bool ok = true;
+                        for (int e = 0; e < 2 && ok; e++) {
+                            int ci = i - 1 + (dx > 0 ? 1 : dx < 0 ? 0 : e), ck = k - 1 + (dz > 0 ? 1 : dz < 0 ? 0 : e), c = (ck * S + j) * S + ci;
+                            if (!(ok = has[c])) break;
+                            float sp = open(gx + (2 * e - 1) * px, gy, gz + (2 * e - 1) * pz) ? 0.2f * (2 * e - 1) : 0;  // corners splay
+                            v[e] = cp[c], col[e] = vertexColour(cp[c], cn[c]);
+                            tip[e] = Vector3Add(v[e], Vector3Scale({0.7f * dx + sp * px, -0.7f, 0.7f * dz + sp * pz}, L));
+                        }
+                        if (!ok) continue;
+                        size_t fi = 0;
+                        while (fi < fused && fbs[fi].mat != m) fi++;
+                        if (fi == fused) {
+                            if (fused == fbs.size()) fbs.emplace_back();
+                            FB &f = fbs[fused++];
+                            f.mat = m, f.pos.clear(), f.uv.clear(), f.col.clear(), f.idx.clear();
+                        }
+                        FB &f = fbs[fi];
+                        // one 8-cell atlas strip per W4M voxel of edge: split where the edge crosses a voxel boundary [ours: voxel-forced]
+                        float s0 = (px ? v[0].x : v[0].z) / scale, s1 = (px ? v[1].x : v[1].z) / scale;
+                        float cut[3] = {s0, floorf(s1) > floorf(s0) && floorf(s1) > s0 ? floorf(s1) : s1, s1};
+                        unsigned line = (unsigned)(px ? gz * 2 + (dz > 0) : gx * 2 + (dx > 0)) * 977u + (unsigned)gy * 131u;
+                        for (int q = 0; q < 2; q++) {
+                            float a = cut[q], b = cut[q + 1];
+                            if (b - a < 1e-5f) continue;
+                            float base = floorf(a + 1e-5f), ta = (a - s0) / (s1 - s0), tb = (b - s0) / (s1 - s0);
+                            int cell = (int)((hash3((int)base, (int)line, s, 0x51f7u) + 1) * 4) & 7;
+                            float u0 = 0.5f * (cell & 1), v0 = 0.25f * (cell >> 1), ua = u0 + (a - base) * 0.49f, ub = u0 + std::min(b - base, 1.0f) * 0.49f;
+                            unsigned short n0 = (unsigned short)(f.pos.size() / 3);
+                            for (int w = 0; w < 4; w++) {
+                                float t = w == 0 || w == 1 ? ta : tb;
+                                Vector3 p = Vector3Lerp(w == 0 || w == 3 ? v[0] : tip[0], w == 0 || w == 3 ? v[1] : tip[1], t);
+                                Color cl = ColorLerp(col[0], col[1], t);
+                                f.pos.insert(f.pos.end(), {p.x, p.y, p.z});
+                                f.uv.insert(f.uv.end(), {w == 0 || w == 1 ? ua : ub, v0 + (w == 0 || w == 3 ? 0.24f : 0.01f)});
+                                f.col.insert(f.col.end(), {cl.r, cl.g, cl.b, 255});
+                            }
+                            f.idx.insert(f.idx.end(), {n0, (unsigned short)(n0 + 1), (unsigned short)(n0 + 2), n0, (unsigned short)(n0 + 2), (unsigned short)(n0 + 3)});
+                        }
+                    }
+                }
+    }
+
+    for (size_t fi = 0; fi < fused; fi++) {
+        FB &f = fbs[fi];
+        Mesh m{};
+        m.vertexCount = (int)f.pos.size() / 3;
+        m.triangleCount = (int)f.idx.size() / 3;
+        m.vertices = f.pos.data(), m.texcoords = f.uv.data(), m.colors = f.col.data();
+        m.indices = (unsigned short *)MemAlloc(f.idx.size() * sizeof(unsigned short));
+        memcpy(m.indices, f.idx.data(), f.idx.size() * sizeof(unsigned short));
+        UploadMesh(&m, false);
+        m.vertices = m.texcoords = nullptr, m.colors = nullptr;
+        parts[ci].push_back({f.mat + 1, m, true});
+    }
 
     for (size_t bi = 0; bi < used; bi++) {
         Builder &b = bs[bi];
@@ -628,6 +789,7 @@ void main() { vPos = vertexPosition; vN = vertexNormal; vC = vertexColor.rgb; gl
 static const char *FS = R"(
 uniform sampler2D texture0;
 uniform sampler2D texture1;
+uniform sampler2D texture2;  // roof: downward faces (W4M material line 3)
 uniform vec3 sunDir;
 uniform vec3 ambient;
 uniform vec3 diffuse;
@@ -643,7 +805,7 @@ void main() {
     vec3 p = vPos * scale.y;
     vec2 t = vPos.xz * scale.x;
     vec3 c = texture2D(texture1, vec2(p.z, -p.y)).rgb * w.x + texture2D(texture1, vec2(p.x, -p.y)).rgb * w.z
-           + mix(texture2D(texture1, p.xz).rgb, texture2D(texture0, t).rgb, step(0.0, n.y)) * w.y;
+           + mix(texture2D(texture2, t).rgb, texture2D(texture0, t).rgb, step(0.0, n.y)) * w.y;
     vec3 e = camPos - vPos, v = normalize(e);
     float nv = max(dot(n, v), 0.0);
     float s = pow(max(dot(n, normalize(sunDir + v)), 0.0), 20.0);
@@ -653,10 +815,32 @@ void main() {
 }
 )";
 
+// W4M fringe: the theme texture's own XTexFont states (alpha blend, alpha test > 0, no z write, no culling, no lighting)
+static const char *FVS = R"(
+attribute vec3 vertexPosition;
+attribute vec2 vertexTexCoord;
+attribute vec4 vertexColor;
+uniform mat4 mvp;
+varying vec2 uv;
+varying vec4 vC;
+void main() { uv = vertexTexCoord; vC = vertexColor; gl_Position = mvp * vec4(vertexPosition, 1.0); }
+)";
+static const char *FFS = R"(
+uniform sampler2D texture0;
+varying vec2 uv;
+varying vec4 vC;
+void main() {
+    vec4 c = texture2D(texture0, uv) * vC;
+    if (c.a <= 0.0) discard;
+    gl_FragColor = c;
+}
+)";
+
 void Terrain::loadTextures() {
     static Shader sh{};
     if (!sh.id) sh = Lit::shader(VS, FS);
-    texMats.assign(texFiles.size() / 2, Material{});
+    texMats.assign(texFiles.size() / 4, Material{});
+    fringeMats.assign(texFiles.size() / 4, Material{});
     if (sh.id == rlGetShaderIdDefault()) return;  // compile failed: keep the vertex-colour fallback
     scaleLoc = GetShaderLocation(sh, "scale");
     std::map<std::string, Texture2D> cache;
@@ -668,19 +852,27 @@ void Terrain::loadTextures() {
         Texture2D t = d != decoded.end() ? LoadTextureFromImage(d->second) : LoadTexture(f.c_str());
         GenTextureMipmaps(&t);
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
-        SetTextureFilter(t, TEXTURE_FILTER_ANISOTROPIC_4X);
+        if (Lit::aniso > 1) rlTextureParameters(t.id, RL_TEXTURE_FILTER_ANISOTROPIC, Lit::aniso);
         textures.push_back(t);
         return cache[f] = t;
     };
     for (size_t m = 0; m < texMats.size(); m++) {
-        Texture2D a = tex(texFiles[2 * m]), b = tex(texFiles[2 * m + 1]);
+        Texture2D a = tex(texFiles[4 * m]), b = tex(texFiles[4 * m + 1]), r = tex(texFiles[4 * m + 2]), f = tex(texFiles[4 * m + 3]);
+        if (f.id) {
+            static Shader fsh = Lit::shader(FVS, FFS, false);
+            fringeMats[m] = LoadMaterialDefault();
+            fringeMats[m].shader = fsh;
+            fringeMats[m].maps[MATERIAL_MAP_DIFFUSE].texture = f;
+        }
         if (!a.id) a = b;
         if (!b.id) b = a;
+        if (!r.id) r = b;
         if (!a.id) continue;
         texMats[m] = LoadMaterialDefault();
         texMats[m].shader = sh;
         texMats[m].maps[MATERIAL_MAP_DIFFUSE].texture = a;
         texMats[m].maps[MATERIAL_MAP_SPECULAR].texture = b;
+        texMats[m].maps[MATERIAL_MAP_NORMAL].texture = r;
     }
     for (auto &[f, img] : decoded) UnloadImage(img);
     decoded.clear();
@@ -730,7 +922,7 @@ void Terrain::draw() const {
         if (parts[ci].empty()) continue;
         float h = CS * VOX / 2;  // chunk centre; vertices stay within a voxel of the chunk box
         if (!Models::visible({(ci % CX * CS) * VOX + h, (ci / CX % CY * CS) * VOX + h, (ci / (CX * CY) * CS) * VOX + h}, h * 1.74f + VOX)) continue;
-        for (const Part &p : parts[ci]) vis.push_back(&p);
+        for (const Part &p : parts[ci]) if (!p.fringe) vis.push_back(&p);
     }
     std::stable_sort(vis.begin(), vis.end(), [](const Part *a, const Part *b) { return a->mat < b->mat; });
     // per material: DrawMesh sets the full state once; uniforms persist in the program, so the rest only bind their VAO
@@ -759,17 +951,61 @@ void Terrain::draw() const {
     }
 }
 
-void Terrain::drawObjects(Vector3 cam) const {
+void Terrain::drawFringe() const {
+    if (fringeMats.empty()) return;
+    rlDrawRenderBatchActive();
+    rlDisableDepthMask(), rlDisableBackfaceCulling();
+    for (int ci = 0; ci < (int)parts.size(); ci++) {
+        float h = CS * VOX / 2;
+        if (parts[ci].empty() || !Models::visible({(ci % CX * CS) * VOX + h, (ci / CX % CY * CS) * VOX + h, (ci / (CX * CY) * CS) * VOX + h}, h * 1.74f + 1)) continue;
+        for (const Part &p : parts[ci])
+            if (p.fringe) DrawMesh(p.mesh, fringeMats[p.mat - 1], MatrixIdentity());
+    }
+    rlEnableDepthMask(), rlEnableBackfaceCulling();
+}
+
+// Decor: Lit model shading plus the part's W4M XSimpleShader states (models/decor/<name>.mat, one line per glb material)
+static const char *DFS = R"(
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+uniform vec3 sunDir;
+uniform vec3 ambient;
+uniform vec3 diffuse;
+uniform vec3 camPos;
+uniform vec3 emissive;
+uniform vec3 state;  // alpha test ref, lit, blended
+uniform vec2 uvOff;  // texture offset clip (W4M Go / GoSync)
+varying vec2 uv;
+varying vec3 n;
+varying vec3 wp;
+void main() {
+    vec4 c = texture2D(texture0, uv + uvOff) * colDiffuse;
+    if (c.a < state.x) discard;
+    vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
+    float r = 1.0 - max(dot(v, nn), 0.0);
+    vec3 l = (diffuse * max(dot(nn, sunDir), 0.0) + ambient + emissive) * c.rgb + (0.15 + 0.2 * diffuse) * r * r;
+    gl_FragColor = vec4(state.y > 0.5 ? l : c.rgb, state.z > 0.5 ? c.a : 1.0);
+}
+)";
+
+void Terrain::drawObjects(float clock, bool draw) const {
 #ifdef __SWITCH__
     static const std::string dir = "sdmc:/switch/worms4nx/assets/models/decor/";
 #else
     static const std::string dir = "./assets/models/decor/";
 #endif
-    struct Entry { Model m{}; float r = 0; };
+    struct State { int src = -1, dst = -1, cull = -1; float ref = 0.5f; bool zwrite = true, lit = true; Vector3 emit{}; std::vector<Vector2> uv; };
+    // st: per model material (0 = raylib's default); clip: W4M 0x5cd38e plays "Go" looped from a random time, "GoSync" from 0;
+    // anim: tools/w4m-models' skinned copy when the clip moves parts
+    struct Entry { Model m{}; float r = 0; std::vector<State> st; std::string clip, anim; float len = 0; };
     static std::map<std::string, Entry> cache;  // loaded on first use, kept across matches
-    static Shader sh{};
+    static Shader sh{}, ash{};
+    static int emitLoc = -1, stateLoc = -1, uvLoc = -1;
     if (objects.empty()) return;
-    if (!sh.id) sh = Lit::modelShader(false);  // textured, alpha-tested, two-sided (grass cards)
+    if (!sh.id) {
+        sh = Lit::shader(Lit::MVS, DFS), emitLoc = GetShaderLocation(sh, "emissive"), stateLoc = GetShaderLocation(sh, "state"), uvLoc = GetShaderLocation(sh, "uvOff");
+        ash = Lit::modelShader(false);
+    }
     std::vector<const Entry *> ms;
     for (const std::string &name : objModels) {
         auto it = cache.find(name);
@@ -777,24 +1013,84 @@ void Terrain::drawObjects(Vector3 cam) const {
             Entry e;
             std::string path = dir + name + ".glb";
             if (FileExists(path.c_str())) e.m = LoadModel(path.c_str());
+            e.st.assign(e.m.materialCount, State{});
+            if (char *t = LoadFileText((dir + name + ".mat").c_str())) {
+                int k = 1, test[2], z, l, em[3], motion = 0, used = 0;
+                char clip[32];
+                std::vector<char *> lines;
+                for (char *c = strtok(t, "\n"); c; c = strtok(nullptr, "\n")) lines.push_back(c);  // one sscanf per line
+                size_t li = 0;
+                if (!lines.empty() && sscanf(lines[0], "clip %31s %f %d", clip, &e.len, &motion) == 3) {
+                    e.clip = clip, li = 1;
+                    if (motion && Models::has(("decor/" + name + "_anim").c_str())) e.anim = "decor/" + name + "_anim";
+                }
+                for (char *line; li < lines.size() && (line = lines[li]) && k < e.m.materialCount; li++, k++) {
+                    State &q = e.st[k];
+                    if (sscanf(line, "%d %d %d %d %d %d %d %d %d %d%n", &q.src, &q.dst, &test[0], &test[1], &z, &q.cull, &l, &em[0], &em[1], &em[2], &used) != 10) break;
+                    q.ref = test[0] < 0 ? 0.5f : test[0] == 7 ? 0 : test[1] / 255.0f + (test[0] == 4 ? 0.5f / 255 : 0), q.zwrite = z, q.lit = l;  // 4 Greater, 6 GreaterEqual, 7 Always
+                    q.emit = {em[0] / 255.0f, em[1] / 255.0f, em[2] / 255.0f};
+                    int n = 0, at = 0;
+                    if (sscanf(line + used, "%d%n", &n, &at) == 1)
+                        for (char *c = line + used + at; n-- > 0;) {
+                            Vector2 v;
+                            if (sscanf(c, "%f %f%n", &v.x, &v.y, &at) != 2) break;
+                            q.uv.push_back(v), c += at;
+                        }
+                }
+                UnloadFileText(t);
+            }
             for (int k = 0; k < e.m.materialCount; k++) {
                 if (sh.id != rlGetShaderIdDefault()) e.m.materials[k].shader = sh;
                 Texture2D &t = e.m.materials[k].maps[MATERIAL_MAP_ALBEDO].texture;
-                if (t.id != rlGetTextureIdDefault()) { GenTextureMipmaps(&t); SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR); }
+                if (t.id != rlGetTextureIdDefault()) {
+                    GenTextureMipmaps(&t), SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
+                    if (Lit::aniso > 1) rlTextureParameters(t.id, RL_TEXTURE_FILTER_ANISOTROPIC, Lit::aniso);
+                }
             }
             if (e.m.meshCount) { BoundingBox b = GetModelBoundingBox(e.m); e.r = Vector3Distance(b.min, b.max) / 2; }
             it = cache.emplace(name, e).first;
         }
         ms.push_back(&it->second);
     }
-    rlDisableBackfaceCulling();
-    for (const Object &o : objects) {
-        const Entry &e = *ms[o.model];
-        float size = e.r * Vector3Length({o.m.m0, o.m.m1, o.m.m2});
-        if (!e.m.meshCount || Vector3Distance(cam, o.pos) > 35 + 40 * size || !Models::visible(o.pos, 2 * size)) continue;  // origin may sit on the box edge
-        for (int i = 0; i < e.m.meshCount; i++) DrawMesh(e.m.meshes[i], e.m.materials[e.m.meshMaterial[i]], o.m);
+    if (!draw) return;
+    static const int GL[12] = {RL_ZERO, RL_ONE, RL_DST_COLOR, RL_ONE_MINUS_DST_COLOR, RL_SRC_COLOR, RL_ONE_MINUS_SRC_COLOR, RL_SRC_ALPHA,
+                               RL_ONE_MINUS_SRC_ALPHA, RL_DST_ALPHA, RL_ONE_MINUS_DST_ALPHA, RL_SRC_ALPHA_SATURATE, RL_ONE};  // XBlendModeGL kBlendFactor*
+    // W4M DetailObjects bin: opaque parts first, then the blended ones (XBlendModeGL other than One / Zero)
+    for (int pass = 0; pass < 2; pass++) {
+        for (const Object &o : objects) {
+            const Entry &e = *ms[o.model];
+            float size = e.r * Vector3Length({o.m.m0, o.m.m1, o.m.m2});
+            if (!e.m.meshCount || !Models::visible(o.pos, 2 * size)) continue;  // W4M: frustum only (XBoundAction); origin may sit on the box edge
+            float t = e.len <= 0 ? 0 : fmodf(clock + (e.clip == "Go" ? (hash3((int)(&o - objects.data()), 0, 0, 0x60u) + 1) / 2 * e.len : 0), e.len);
+            if (!e.anim.empty()) {  // raw mesh units (20 per W4M unit)
+                if (pass == 0) Models::shade(ash), Models::draw(e.anim.c_str(), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), o.m), WHITE, e.clip.c_str(), t), Models::shade({});
+                continue;
+            }
+            for (int i = 0; i < e.m.meshCount; i++) {
+                const State &q = e.st[e.m.meshMaterial[i]];
+                bool blended = q.src >= 0 && !(q.src == 1 && q.dst == 0);
+                if (blended != (pass == 1)) continue;
+                Vector3 st = {q.ref, q.lit ? 1.0f : 0.0f, blended ? 1.0f : 0.0f};
+                Vector2 uv = {0, 0};
+                if (q.uv.size() > 1 && e.len > 0) {
+                    float f = t / e.len * (q.uv.size() - 1);
+                    int k = std::min((int)f, (int)q.uv.size() - 2);
+                    uv = Vector2Lerp(q.uv[k], q.uv[k + 1], f - k);
+                }
+                SetShaderValue(sh, emitLoc, &q.emit, SHADER_UNIFORM_VEC3), SetShaderValue(sh, stateLoc, &st, SHADER_UNIFORM_VEC3), SetShaderValue(sh, uvLoc, &uv, SHADER_UNIFORM_VEC2);
+                if (q.cull == 2 || q.cull == 4) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_BACK);
+                else if (q.cull == 1 || q.cull == 3) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_FRONT);
+                else rlDisableBackfaceCulling();  // kCullModeOff, or no XCullFace [ours: two-sided]
+                if (blended) {
+                    rlSetBlendFactors(GL[std::clamp(q.src, 0, 11)], GL[std::clamp(q.dst, 0, 11)], RL_FUNC_ADD), rlSetBlendMode(RL_BLEND_CUSTOM);
+                    if (!q.zwrite) rlDisableDepthMask();
+                }
+                DrawMesh(e.m.meshes[i], e.m.materials[e.m.meshMaterial[i]], o.m);
+                if (blended) rlSetBlendMode(RL_BLEND_ALPHA), rlEnableDepthMask();
+            }
+        }
     }
-    rlEnableBackfaceCulling();
+    rlSetCullFace(RL_CULL_FACE_BACK), rlEnableBackfaceCulling();
 }
 
 void Terrain::unload() {
@@ -806,5 +1102,6 @@ void Terrain::unload() {
     pending.clear();
     for (Texture2D &t : textures) UnloadTexture(t);
     for (Material &m : texMats) MemFree(m.maps);
-    textures.clear(), texMats.clear();
+    for (Material &m : fringeMats) MemFree(m.maps);
+    textures.clear(), texMats.clear(), fringeMats.clear();
 }

@@ -11,9 +11,11 @@ struct Light {
     float water[14] = {0.6f, 45, 1, 0.1f, 2, 6, 40, 6, 6, 1, 0.2f, 0.2f, 1, 0.2f};  // Water.CAMELOT.DAY
 };
 extern Light sun;  // set by Terrain::load from the map's "light"
+extern int aniso;  // anisotropic filtering of land and decor textures (1 = off)
 extern const char *MVS;  // the model vertex shader: other passes reuse it so their depths match
 Shader shader(const char *vs, const char *fs, bool lit = true);  // GLSL 100 source, macro-wrapped for 330; lit: refreshed by frame()
 // Textured, alpha-tested, two-sided lambert + rim. worm: W4M's fixed worm light, else the map light.
 Shader modelShader(bool worm);
 void frame(Vector3 cam);  // push sun + camera to every Lit shader
+void profile(float frameTime);  // once per frame, before BeginDrawing: picks the Switch framebuffer size
 }

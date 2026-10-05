@@ -1050,6 +1050,12 @@ fn main() {
     // level skies (SkyBoxEntity, Land.SkyBoxResource "<THEME>.<TIME>Sky"), raw units, named like the ramps in ui/sky
     let skies = SKY_THEMES.iter().flat_map(|&(l, t)| ["DAY", "EVENING", "NIGHT"].iter().enumerate().map(move |(n, time)| (format!("sky/{l}_sky0{}", n + 1), format!("{t}.{time}Sky"))));
     let mut todo: Vec<(String, String, f32, bool, &[&str])> = MODELS.iter().map(|m| (m.0.to_string(), m.1.to_string(), m.2, m.3, m.4)).chain(skies.map(|(n, d)| (n, d, 0.0, false, &[][..]))).collect();
+    // map details with a moving "Go" clip, listed by tools/w4m-maps: raw units, skinned (static parts as pseudo-bones)
+    for l in fs::read_to_string(out.join("decor/anim.txt")).unwrap_or_default().lines() {
+        let Some((desc, clip)) = l.split_once(' ') else { continue };
+        let wanted: &[&str] = Box::leak(vec![&*Box::leak(clip.to_string().into_boxed_str())].into_boxed_slice());
+        todo.push((format!("decor/{}_anim", desc.to_lowercase()), desc.to_string(), 0.0, false, wanted));
+    }
     for path in bundles {
         if todo.is_empty() { break; }
         let Ok(b) = fs::read(&path) else { continue };

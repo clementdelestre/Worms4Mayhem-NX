@@ -858,7 +858,13 @@ int main(int argc, char **argv) {
     SetTraceLogCallback(logLine);
 #endif
     if ((argc > 1 && !strcmp(argv[1], "--netbot")) || getenv("W4NX_HIDDEN")) SetConfigFlags(FLAG_WINDOW_HIDDEN);
-    InitWindow(1280, 720, "Worms4NX");
+    int winW = 1280, winH = 720;  // W4NX_GFX="msaa aniso=N res=WxH": graphics levers timed by --bench (docs/tests.md "Render budget")
+    if (const char *g = getenv("W4NX_GFX")) {
+        if (strstr(g, "msaa")) SetConfigFlags(FLAG_MSAA_4X_HINT);
+        if (const char *a = strstr(g, "aniso=")) Lit::aniso = atoi(a + 6);
+        if (const char *r = strstr(g, "res=")) sscanf(r + 4, "%dx%d", &winW, &winH);
+    }
+    InitWindow(winW, winH, "Worms4NX");
     SetExitKey(KEY_NULL);  // Esc is back / pause; quit from the title screen
     SetTargetFPS(60);
     rlSetClipPlanes(0.5, 500);  // default 0.01 near plane z-fights the water on GLES depth buffers
@@ -1130,7 +1136,7 @@ int main(int argc, char **argv) {
             game.terrain.remesh(0);  // texture upload and shadow columns only
             break;
         case 2: game.terrain.remesh(0.012); break;
-        case 3: game.terrain.drawObjects({1e6f, 0, 0}); break;  // loads the decor models, all culled
+        case 3: game.terrain.drawObjects(0, false); break;  // loads the decor models
         case 4: if (Ui::warmWeaponIcons(warmIcon)) return; break;  // one icon per frame
         }
         if (loadStep != 1 || wait) loadMs[loadStep] += (GetTime() - t0) * 1000;
@@ -1270,6 +1276,7 @@ int main(int argc, char **argv) {
     for (int frame = 0; !WindowShouldClose(); frame++) {
         float dt = bench || shot || uiShot || !capFrames.empty() ? Game::DT : fminf(GetFrameTime(), 0.25f);  // fixed: reproducible captures
         clock += dt;
+        Lit::profile(GetFrameTime());
         bool scriptEnd = false;
         for (; inScript && (sf >= 0 || fscanf(inScript, "%d %d %d", &sf, &sk, &sd) == 3) && sf <= frame; sf = -1)
             if (sk < 0) scriptEnd = true;
@@ -1763,6 +1770,7 @@ int main(int argc, char **argv) {
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) Models::draw(objectModel(o), o.pos, (&o - game.objects.data()) * 1.3f);
             Fx::drawWater(pipView, game.water, clock);
+            game.terrain.drawFringe();
             Fx::draw(pipView);
             EndMode3D();
             EndTextureMode();
@@ -1776,7 +1784,7 @@ int main(int argc, char **argv) {
         game.terrain.setView(view.position);
         game.terrain.draw();
         lap(T_TERRAIN);
-        game.terrain.drawObjects(view.position);
+        game.terrain.drawObjects(clock);
         lap(T_DECOR);
         animateWorms(game, dt, view);
         toolFx(game, dt);
@@ -1860,6 +1868,7 @@ int main(int argc, char **argv) {
         }
         lap(T_MODELS);
         Fx::drawWater(view, game.water, clock);
+        game.terrain.drawFringe();
         lap(T_SKY);
         float fxDt = pause.open ? 0 : dt;
         for (const Projectile &s : game.shots) Fx::trail(s, fxDt, {game.wind, 0, game.windZ});

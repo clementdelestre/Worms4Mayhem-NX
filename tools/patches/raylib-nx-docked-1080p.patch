@@ -1,0 +1,33 @@
+--- a/src/platforms/rcore_nx.c	2026-10-05 13:12:06.401325518 +0200
++++ b/src/platforms/rcore_nx.c	2026-10-05 13:12:06.403842399 +0200
+@@ -184,6 +184,21 @@
+     TRACELOG(LOG_WARNING, "SetWindowSize() not available on target platform");
+ }
+ 
++// Rendered area of the 1920x1080 window buffers (1280x720 handheld, all of it docked), shown through the window crop;
++// the screen stays 1280x720 units
++void NxSetRenderSize(int width, int height)
++{
++    if (!CORE.Window.ready || (width == CORE.Window.render.width && height == CORE.Window.render.height)) return;
++    nwindowSetCrop(platform.gbmSurface, 0, 1080 - height, width, 1080);  // GL rows run bottom-up in the buffer
++    CORE.Window.display.width = width;
++    CORE.Window.display.height = height;
++    CORE.Window.currentFbo.width = width;
++    CORE.Window.currentFbo.height = height;
++    CORE.Window.screenScale = MatrixScale((float)width/CORE.Window.screen.width, (float)height/CORE.Window.screen.height, 1.0f);
++    SetupViewport(width, height);
++    TRACELOG(LOG_INFO, "DISPLAY: render size %i x %i", width, height);
++}
++
+ // Set window opacity, value opacity is between 0.0 and 1.0
+ void SetWindowOpacity(float opacity)
+ {
+@@ -816,6 +831,8 @@
+     }
+ 
+     platform.gbmSurface = nwindowGetDefault();
++    nwindowSetDimensions(platform.gbmSurface, 1920, 1080);  // docked size; NxSetRenderSize crops it
++    nwindowSetCrop(platform.gbmSurface, 0, 1080 - 720, 1280, 1080);
+     platform.surface = eglCreateWindowSurface(platform.device, platform.config, (EGLNativeWindowType)platform.gbmSurface, NULL);
+ 
+     // There must be at least one frame displayed before the buffers are swapped
