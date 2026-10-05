@@ -493,6 +493,7 @@ void preloadVoices(int teams) {  // one decoder per bank
 }
 
 int voiceBanks() { return (int)banks.size(); }
+unsigned started() { return plays; }
 
 const char *voiceBankName(int bank) { return bank >= 0 && bank < (int)banks.size() ? GetFileName(banks[bank].dir.c_str()) : ""; }
 

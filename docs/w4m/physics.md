@@ -152,6 +152,7 @@ Exe quirk (disasm, at 0x5a5f3f and 0x5a5fac): the flip horizontal speeds divide 
   - jump window = **300 ms** (+0x114 = 0x12c);
   - kind = 2 ("held") (+0x118 = 2);
   - state → DetectJump (1). Coming from Vaulting, the position first snaps to the vault target.
+- Nothing else is tested: no Fits 0x59edf0, no head or wall probe, in StartJump or DetectJump 0x5aefa0 (no such call in either) [disasm]. In state 7 / 8 (DeathThroes / DrownFloat) the event is queued but the state is kept (0x5acda8) [disasm]. A worm against a cliff therefore jumps; the cliff is met in Ballistic, where a head-point ray hit Rebounds on the land normal, so a wall turns the horizontal speed only [disasm + reasoning on the Ballistic land-hit path below].
 
 #### DetectJump 0x5aefa0
 
@@ -186,10 +187,15 @@ Each frame:
      - Stuck counter ≥ 20 → force land (event 8 or 15, Ambulatory) where it is, support id 0xFFFF: the idle walk branch (0x5b1a3e) only falls again for an entity support, so a worm forced to land in the air stays there until it walks [disasm]. The counter (entity +0x12c) is never reset in Ballistic; only Sliding's Landed paths clear it (0x5b05c2 / 0x5b063b) [disasm].
 4. **Land hit**:
    - candidate = hit point − probe offset, sphere resolve, ground normal n (0x59ef90).
-   - If not Fits: stuck counter +2; at ≥ 20, force land. Otherwise clear air control and Rebound(n) with n = normalize(pos − candidate), or Velocity = −Velocity if that is zero (0x5af888), then event 23. pos is not moved.
+   - Rays and normal, traced [disasm]:
+     - CastRays 0x59ec70 casts one land ray (0x466ae0) from pos + P[i] for each mask bit; the nearest is replaced only on a strictly smaller distance, so a tie keeps the lower index (a foot before a head). No hit is filtered by its normal.
+     - 0x59ef90 with 2 or more hits: the sum of the land normals (0x59eb30 re-select, 0x482010, normalized) of the hits whose `hit − P[i]` lies strictly within 1 unit (squared distance < 1) of the nearest one's, the nearest included, then normalized. With 1 hit: that hit's normal. The jetpack (0x562ecd) uses the same function.
+     - The per-hit land normal is 0x482010 → 0x4732f0 → 0x46a070 on a land frame (a 1600-instruction voxel normal estimator), or 0x462910 for support 0xFFFF. 0x46a070 is not traced: how W4M tilts a normal at the foot of a wall is unknown.
+   - The hit branch never Integrates: Rebound and the landing use the frame's starting Velocity [disasm: 0x5a6e90 is called only on the no-hit path 0x5af98f].
+   - If not Fits: stuck counter +2; at ≥ 20, force land (no Rebound, air control kept). Otherwise clear air control and Rebound(n) with n = normalize(pos − candidate) then event 23, or, when pos − candidate is zero (0x445310 against the zero vector 0x96e878, epsilon 1.19e-7), Velocity = −Velocity with no event (0x5af8cb). pos is not moved.
    - A slot narrower than the 8-unit tripod (x ±4, z −3 / +5) is caught here: a foot point hits a lip within the frame and the worm lands on it, standing on that foot; the stuck counter is not involved. A slot 8 units wide or more lets all three Fits rods in, and the worm drops in [disasm + reasoning on the probe geometry 0x91ffc8].
    - If Fits: pos = candidate, SupportNormal = n, SupportFrame/Voxel stored.
-   - If the nearest hit is not a foot point (0x59ec50, per-point flag, assumed "foot") → Rebound + event 23.
+   - If the nearest hit is not a foot point (0x59ec50 returns the per-point flag of 0x91ffb8: 1 for the 4 feet, 0 for the 4 heads [disasm + data]) → Rebound + event 23.
    - If n.y < **0.2** → Rebound + event 23 (wall).
    - Otherwise it is a landing. With v = Velocity + Aftertouch: `vn = v·n` and `vt = v − vn·n`. When `|vt|² < vn²`, `|vt|²` is halved before the slide test.
      - Walkable (n.y ≥ cos SlideAngle[mat]) and `|vt|² < StartSlideVel²[mat]`, or Flags & 0x8040 → **land walking**:
@@ -280,6 +286,8 @@ Ours (sim.cpp `footing`, `walkStep`):
   - if `v·n ≥ 0`: v = n·|v|·0.3, or 0 when |v| < 0.01.
 - Velocity = v, Aftertouch = 0, air control off.
 - If v ends at exactly (0, ≤0, 0): when n.y > 0, event 8 + state → **Sliding**; otherwise Velocity = (0, −0.01, 0) and Integrate.
+- Bounce, traced [disasm 0x518f40]: the reflect branch is taken for `v·n ≤ 0` (zero included); its result is zeroed when its length is under 0.01. For `v·n > 0` the input |v| is compared: under 0.01 → 0, else n·|v|·0.3.
+- The stop to (0, 0, 0) is reached by any Rebound slower than 0.01 units/ms (0.5 m/s), e.g. the first undone fall of a worm at rest (−0.005 units/ms after one Integrate, rebounds to +0.0015). Sliding (0x5afbe0) never writes the support id (+0xe8), so that worm ends Ambulatory with support 0xFFFF and stays put [disasm].
 - The constants are hardcoded. `Worm.BounceMultiplier`/`Default` (0.6/0.3) are only handled in ParticleHandlerService 0x5c02c0, which switches them by WormPot Sticky/Slippy. The worm code never reads them (data: no other xref).
 
 #### FallDamage 0x5ac3e0(pData, vn) (disasm + data)
@@ -287,7 +295,7 @@ Ours (sim.cpp `footing`, `walkStep`):
 - None if Flags & 0x800. If Flags & 0x8040: bit 0x40 is cleared and no damage (one-shot immunity).
 - Otherwise `damage = trunc((−0.3 − vn) × Worm.FallDamageRatio) + 1`, with Worm.FallDamageRatio = 100 (LOCAL). Then ApplyDamage 0x5ab7e0(damage, 1) and a controller rumble via 0x4bc410(0, 100, worm pos, 500, −1, −1) (disasm): 0x4bc410 forwards to RumbleService 0x4bbc40(Light 0, Heavy 100, pos, Duration 500 ms, FadeIn −1, FadeOut −1), motors as bytes 0..255 (Light is the weak motor, Heavy the strong, assumed from the names in its ' Light=' / ' Heavy=' log, 0x827440); the position is only printed in the log, so the rumble is not positional. No camera shake and no sound. Same helper as the weapons' RumbleLight/RumbleHeavy (docs/w4m/weapons.md BaseWeaponContainer 0d/0e).
 - Jetpack contacts (JetpacUtilityLogicEntity update 0x562810, two paths) [disasm]:
-  - **Land** (0x562e4b): its own WXVertexCollider (0x59f1e0: 8 points 0x91ffc8, feet (±4, 0, −3), (0, 0, 5), (0, 0, 0) flagged 1 at 0x91ffb8, the same 4 at y 20 flagged 0; rods (0,4) (1,5) (2,6) at 0x91ffc0) sweeps v over 20 ms (0x59ec70); the first point hit wins, a tie goes to the lower index, so a foot. A foot hit (0x59ec50) with the rods clear at the contact (Fits 0x59edf0) **lands the pack: v −= (v·n) n** (restitution 0, 0x562f72..0x562fb6), then OverridePhysics 0, PackAccessory.Hide, camera Default, super thrust 0. The worm goes Ballistic (0x5ae17a → 0x5aa7f0) with only the tangential speed, so FallDamage (vn < −0.3) cannot fire however fast the fall was. A head hit, or rods not clear: v −= 1.8 (v·n) n (0x5630dc), restitution 0.8. Ours: `jetBody` in client/src/sim.cpp sweeps the same 8 points with `Terrain::raycast` and applies this, with no n.y rule (ours).
+  - **Land** (0x562e4b): its own WXVertexCollider (0x59f1e0: 8 points 0x91ffc8, feet (±4, 0, −3), (0, 0, 5), (0, 0, 0) flagged 1 at 0x91ffb8, the same 4 at y 20 flagged 0; rods (0,4) (1,5) (2,6) at 0x91ffc0) sweeps v over 20 ms (0x59ec70); the first point hit wins, a tie goes to the lower index, so a foot. A foot hit (0x59ec50) with the rods clear at the contact (Fits 0x59edf0) **lands the pack: v −= (v·n) n** (restitution 0, 0x562f72..0x562fb6), then OverridePhysics 0, PackAccessory.Hide, camera Default, super thrust 0. The worm goes Ballistic (0x5ae17a → 0x5aa7f0) with only the tangential speed, so FallDamage (vn < −0.3) cannot fire however fast the fall was. A head hit, or rods not clear: v −= 1.8 (v·n) n (0x5630dc), restitution 0.8. The contact is pos + v·nearest distance, the normal 0x59ef90 (0x562ecd) [disasm]. Ours: `jetBody` in client/src/sim.cpp uses the Ballistic `sweep` (docs/sim.md) and applies this, with no n.y rule.
   - **Objects** (no land hit, 0x56316a): the sphere resolver 0x519ed0 (worms, crates, drums, not land). Contact with n.y > 0 (0x563252, n.y at [esp+0x5c] = the resolver's normal + 4) ends the pack with v unchanged; Ballistic's object contact has no FallDamage (step 3 below: Ambulatory or Rebound). n.y ≤ 0: v −= 1.8 (v·n) n; rods not clear: v × −0.8 (0x5633e9).
   - Only running dry (0x562990) leaves v intact over land: the worm falls Ballistic and FallDamage applies. No jetpack function touches flags 0x40 / 0x800 (field 0xec: no access in 0x562810, 0x5624f0, 0x561810, 0x562270, 0x562180, 0x562130, 0x562530) [disasm]. Thrust while falling is not a brake to 0: 0.008 units/ms per update × (1 + super thrust) (docs/weapons-audit.md "Jetpack"); there is no fall-speed cap and no gravity scaling (Acceleration −0.00025 added each update, 0x562dc8).
   - Context only (community: worms.fandom.com Jet Pack, Steam guides "Worms 4 and Ultimate: tricks", "Weapon tricks in Worms UM"): a landing with the pack on is safe, falling with it off or dry hurts. The disasm agrees.
@@ -363,19 +371,26 @@ Ours (sim.cpp `slideStep` / `wormBody` / `slideIfSteep`, `Motion`; the same in a
 - `Motion`, per worm and checksummed: `stuck`, `air`, `slide`, `spin`, `spinTo`, `normal`. `input` is this tick's stick, used only by Sliding.
 - `slideStep` follows each W4M step above, in W4M frames per tick (DT/20 ms) and m/s (one unit/ms is 50 m/s).
 - Details:
-  - the wall branch casts the 8 probe points (the 4 feet, and the same 1 m higher for the heads) along v over one tick, as CastRays(pos, v, 20 steps, mask 0xFFFF) at 0x5b00e0; the hit normal is the mean of the hits within 1 unit of the nearest, as 0x59ef90. Ours uses `Terrain::raycast` per point;
+  - the wall branch casts the 8 probe points (the 4 feet, and the same 1 m higher for the heads) along v over one tick, as CastRays(pos, v, 20 steps, mask 0xFFFF) at 0x5b00e0; the hit normal is the mean of the hits within 1 unit of the nearest, as 0x59ef90. Ours is the Ballistic `sweep` (below) and `rebound`;
   - SupportNormal is `Motion::normal` (checksummed): stored at the landing (0x5af5ba), at a walk onto steep ground (0x5b1998), and on each ground follow (0x5b04a1); gravity, steering, the drop and the spin use it;
   - the spin's yaw sign matches ours. W4M yaw is `atan2(x, z)` (0x519120: acos(z), negated for x < 0) [disasm], our facing is (sin yaw, cos yaw), and tools/w4m-maps maps W4M x and z to our x and z without a mirror (`to_grid`) [data].
 - Sliding takes no walk and no jump. A slide that ends sets the worm Ambulatory (velocity 0); a slide drop goes Ballistic with air control off.
 - An Ambulatory worm with no velocity does nothing beyond the push-up out of land and `clearWalls` (our body's width).
-- Ballistic is unchanged apart from the stuck count. A horizontal or upward push of a standing worm goes Ballistic; a push into the ground starts Sliding.
+- A horizontal or upward push of a standing worm goes Ballistic; a push into the ground starts Sliding. A grounded worm is not moved by its velocity that tick: the slide moves it from the next one, as W4M's landing frame only changes state [disasm 0x5af7f6..0x5af804].
 - The 0.40 m slot (the tripod's width) gave 30 never-ending slides. That was our earlier slide; the W4M probe's wall branch now lands those worms.
 
-Ballistic stuck count, ours:
+Ballistic, ours (sim.cpp `flyBody`, `sweep`, `rebound`, `rodsFit`; shared with the AI through `wormBody`):
 
-- In flight, each tick where a move does not Fit adds 2, otherwise 1 is removed. The test covers sideways, upward and now downward moves: a falling move that would sink the upper body deeper is undone and rebounds at 0.3.
-- At 20 the worm is landed where it is, velocity 0, and the count is kept.
-- The next tick it tries to fall again, the move is undone again, and it lands again. It therefore stays put until it walks, jumps or is blasted, exactly like W4M's forced Ambulatory: neither the idle walk branch (0x5b1a3e) nor Passive (0x5b0c8b) drops a worm whose support id is 0xFFFF (land). EstablishPhysicsState 0x5a6af0 is only reached from the Undefined state (0x5b201d) and the UFO flag path (0x5a9fe8) [disasm].
+- One sweep per tick, as W4M's one CastRays per frame: the 8 PROBE points along the tick's chord `v·DT + ½·a·DT²` (W4M casts the parabola; the chord is at most g·DT²/8 = 0.4 mm off) [ours].
+- `Terrain::raycast` per point, plus the end point (raycast steps VOX/2 and stops short of the length), each hit refined by a 4-step bisection to the surface. Earliest first, a foot on a tie; the normal is the mean of the hits within 1 unit, as 0x59ef90 [disasm].
+- [ours] A hit whose land normal faces along v (`v·n ≥ −0.01 m/s`) is skipped: our feet stand inside the soft voxel surface, where W4M's stand 0.1 unit over it, so their rays would hit the ground they leave. The jetpack and the slide's wall branch share this sweep.
+- Fits is `rodsFit`: the 3 rods sampled every VOX/2 from half a voxel over the feet to the heads [disasm 0x59edf0]. Two [ours] allowances, both because our walk keeps the worm out of land with its own 0.2 m ring at 0.7 / 0.95 m (`fits`, `clearWalls`), not with W4M's rods:
+  - a rod sample counts as land only past 1 unit (0.05 m) deep, so a probe point grazing a wall it slides along does not block;
+  - rods already in land at the start fall back to the walk's relative `fits`, so a stance the walk allowed can move out of it.
+- No hit: Integrate; not Fitting: pos kept, stuck +2, Rebound on normalize(old − new). A hit: the contact must Fit (else stuck +2, Rebound on normalize(pos − contact), v = −v on no move), then pos = contact, `Motion::normal` = n; a head or n.y < 0.2 Rebounds, else the landing of step 4 (`wormBody`'s `land`, shared with the start-of-tick landing) with FallDamage on −vn [disasm].
+- `rebound` is Bounce 0x518f40 with e 0.3, the 0.5 m/s stop and both of Rebound's stop cases; a stop facing up starts Sliding, whose Landed clears the count.
+- Stuck count: +2 on each failed Fits, −1 otherwise (floor 0); at 20 the worm is landed where it is, velocity 0 [disasm 0x5af821].
+- [ours] An idle Ambulatory worm (velocity 0) with no ground under its feet stays put when a 1-unit fall does not Fit. W4M reaches the same state in 2 frames (undone fall, Rebound to a stop, Sliding, Landed with support 0xFFFF, 0x5b1a3e keeps it); ours re-tests the ground every tick, which would otherwise cycle Ballistic → Sliding forever.
 - The jetpack's flight does not count, since it is not Ballistic [ours].
 
 #### Passive 0x5b0c20 (kWPS_Passive = 6) and UpdatePassive 0x5aecb0

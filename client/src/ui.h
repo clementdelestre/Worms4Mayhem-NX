@@ -12,7 +12,7 @@ extern const Color TEAM_COLORS[4];
 void load();
 bool preload(double until);  // boot: uploads the decoded frontend art until GetTime() reaches until; true while some is pending
 void unload();
-bool warmWeaponIcons(int &i);  // loads weapon icon i++ into the cache (match prep, not on the first panel open); true while more remain
+bool warmHud(int &i, double until);  // match prep: loads the HUD art (weapon icons, hud/) until GetTime() reaches until; true while more remain
 void text(const char *t, float x, float y, float size, Color c, int align = 0);  // align: 0 left, 1 centre, 2 right
 float textWidth(const char *t, float size);
 const Font &textFont();  // the font text() draws, for rotated or outline-free text

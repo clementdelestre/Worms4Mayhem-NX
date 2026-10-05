@@ -20,3 +20,4 @@ romfs/romfs
 mission_check
 progress.txt
 obj/
+log.txt

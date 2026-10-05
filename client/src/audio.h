@@ -54,6 +54,7 @@ void loop(Sfx id, bool on, const Vector3 *at = nullptr, float volume = 1);  // c
 void voice(int team, Voice id);  // team i speaks with its bank (setTeamVoice), default i % bank count (banks = dirs under voices/)
 void voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
 int voiceBanks();
+unsigned started();  // sounds started so far (hitch log)
 const char *voiceBankName(int bank);  // folder name, "" if out of range
 void setTeamVoice(int team, int bank);
 void preloadVoices(int teams);  // load the banks of teams 0..teams-1 now instead of on their first line

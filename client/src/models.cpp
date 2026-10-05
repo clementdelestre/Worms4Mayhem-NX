@@ -306,8 +306,9 @@ void Models::prepare() {
     prepared = true;
 }
 
+static void compileBeam();
 bool Models::upload(double until) {
-    if (!shader.id) shader = Lit::modelShader(true);  // textured, alpha-tested (teeth/eye overlays), W4M worm light
+    if (!shader.id) shader = Lit::modelShader(true), compileBeam();  // textured, alpha-tested (teeth/eye overlays), W4M worm light
     static Job cur;
     static bool busy = false;
     for (bool done = prepared; GetTime() < until;) {
@@ -619,6 +620,7 @@ uniform vec4 colDiffuse;
 varying vec2 uv;
 void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse; }
 )";
+static void compileBeam() { scroll = Lit::shader(SCROLL_VS, SCROLL_FS, false); }  // at boot: a compile on the first abduction drops frames
 void Models::shade(Shader s) { over = s; }
 
 static void drawModel(Entry &e, Vector3 pos, Color tint) {
@@ -647,7 +649,6 @@ static void drawModel(Entry &e, Vector3 pos, Color tint) {
             int mi = m.meshMaterial[i];
             if (std::find(e.glow.begin(), e.glow.end(), mi) == e.glow.end()) continue;
             Material mat = m.materials[mi];
-            if (!scroll.id) scroll = Lit::shader(SCROLL_VS, SCROLL_FS, false);
             Vector2 shift = {0, -fmodf((float)GetTime(), 1.166f) / 1.166f};
             SetShaderValue(scroll, GetShaderLocation(scroll, "shift"), &shift, SHADER_UNIFORM_VEC2);
             mat.shader = scroll;

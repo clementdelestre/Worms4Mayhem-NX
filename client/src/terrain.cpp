@@ -885,7 +885,7 @@ void Terrain::decodeTextures() {
 
 void Terrain::setView(Vector3 cam) const { Lit::frame(cam); }  // the land shader is a Lit one
 
-void Terrain::remesh(double budget) {
+int Terrain::remesh(double budget) {
     if (!mat.maps) mat = LoadMaterialDefault();
     if (texMats.empty() && !texFiles.empty()) loadTextures();
     if (colTop.empty()) {
@@ -898,12 +898,17 @@ void Terrain::remesh(double budget) {
     }
     // over budget, rebuilt chunks wait in `pending` and swap in together, so new and stale chunks never meet at a seam
     double end = GetTime() + budget;
+    static double chunkCost = 0;  // recent dearest chunk build + upload: past the first, stop before the next one would overrun
+    int built = 0;
     for (int ci = 0; ci < (int)dirty.size(); ci++) {
         if (!dirty[ci]) continue;
-        if (GetTime() > end) return;
+        double t = GetTime();
+        if (t > end || (built && t + chunkCost > end)) return built;
+        built++;
         std::vector<Part> old;
         std::swap(old, parts[ci]);
         buildChunk(ci);
+        chunkCost = fmax(GetTime() - t, chunkCost * 0.9);
         dirty[ci] = false;
         pending.emplace_back(ci, std::move(parts[ci]));
         parts[ci] = std::move(old);
@@ -913,6 +918,7 @@ void Terrain::remesh(double budget) {
         parts[ci] = std::move(ps);
     }
     pending.clear();
+    return built;
 }
 
 void Terrain::draw() const {

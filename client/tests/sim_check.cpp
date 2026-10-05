@@ -1412,14 +1412,17 @@ static void checkW4MWalkRules() {
         for (int t = 0; t < 90; t++) g.step(walk), assert(!g.vault.t);
         assert(w.pos.x < 12.1f);
     }
-    {  // the upper body in the top of a slab, the feet under it: each fall sinks it deeper, is undone, and 10 of them land it there
+    {  // the rods through a slab, the feet under it: the fall does not Fit, is undone (+2), Rebounds to a stop (0x5acea0: under
+       // 0.01 units/ms, n up) into Sliding, whose Landed clears the count; then it stays put, Ambulatory
         Game g;
         arena(g, [](Vector3 p) { return 0.125f - fabsf(p.y - 50.25f); }, 190, 215);
         Worm &w = g.worms[g.current];
         w.pos = {12, 50.1f, 12}, w.vel = {}, w.grounded = false, w.motion = {};
         Vector3 at = w.pos;
-        for (int t = 0; t < 60; t++) g.step(Input{});
-        assert(w.grounded && w.motion.stuck >= 20 && fabsf(w.pos.y - at.y) < 0.02f);
+        g.step(Input{});
+        assert(w.motion.slide && w.motion.stuck == 2 && w.pos.y == at.y);
+        for (int t = 0; t < 60; t++) g.step(Input{}), assert(t == 0 || (w.grounded && !w.motion.slide && w.motion.stuck == 0));
+        assert(fabsf(w.pos.y - at.y) < 0.02f);
     }
 }
 
@@ -1517,6 +1520,42 @@ static void checkWallStuck() {
     assert(head(c, u.pos) > 0);
     walk(c, -PI / 2, 60);
     assert(u.pos.x < 11 && head(c, u.pos) <= 0);
+}
+
+// W4M StartJump 0x5acd40 tests only the button and Flags 0x1000: a worm pressed against a cliff jumps like anywhere else.
+static void checkJumpAtWall() {
+    const float yaws[4] = {PI / 2, -PI / 2, 0, PI};
+    const Vector3 from[4] = {{10, 50.5f, 12}, {14, 50.5f, 12}, {12, 50.5f, 10}, {12, 50.5f, 14}};
+    for (float lean : {0.0f, 0.1f})  // upright, or leaning 6 degrees over the worm: the body touches it on the way up
+    for (int dir = 0; dir < 4; dir++)  // the cliff on each side: the foot probes are not symmetric
+        for (int mode = 0; mode < 6; mode++) {  // facing it / away; tap, double tap, tap with the stick held into it
+            Game g;
+            g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
+            for (int z = 16; z < 80; z++)  // floor y 50, cliff beyond x or z 12
+                for (int y = 176; y < 248; y++)
+                    for (int x = 16; x < 176; x++) {
+                        Vector3 p = Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX);
+                        float c = (dir == 0 ? p.x - 12 : dir == 1 ? 12 - p.x : dir == 2 ? p.z - 12 : 12 - p.z) + lean * (p.y - 50);
+                        g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(fmaxf(50 - p.y, c) * Terrain::Q, -64, 64);
+                    }
+            Worm &w = g.worms[g.current];
+            w.pos = from[dir], w.vel = {}, w.yaw = yaws[dir];
+            g.hotSeat = 0;
+            Input walk;
+            walk.walk = 127;
+            for (int t = 0; t < 90; t++) g.step(walk);  // pressed against the cliff
+            bool away = mode & 1, twice = mode / 2 == 1, push = mode / 2 == 2;
+            if (away) w.yaw += PI;
+            for (int t = 0; t < 10; t++) g.step(Input{});
+            assert(w.grounded && !w.motion.slide && !g.vault.t && !g.jumpDelay);
+            float y0 = w.pos.y, top = y0;
+            for (int t = 0; t < 120; t++) {
+                Input in = push && !away ? walk : Input{};
+                if (t == 0 || (twice && t == 2)) in.buttons |= Input::JUMP;
+                g.step(in), top = fmaxf(top, w.pos.y);
+            }
+            assert(top - y0 > 1.5f);
+        }
 }
 
 // W4M launch 0x5a5d30 + exact Integrate 0x5a6e90, 20 units = 1 m: jump 50 units up, 80 along; backflip 80 up, 50.6 back.
@@ -4041,6 +4080,7 @@ int main() {
     checkW4MWalkRules();
     checkHeading();
     checkWallStuck();
+    checkJumpAtWall();
     checkSelfHurtEndsTurn();
     checkDynamite();
     checkOffMapShot();

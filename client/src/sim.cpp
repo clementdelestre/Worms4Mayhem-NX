@@ -202,10 +202,12 @@ bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd) {
     return ahead > -0.2f && ahead < 2 && side < 1 && d.y > -1.2f && d.y < (wd.fuse > 0 ? 3 : 1.2f);
 }
 
+static const Vector2 PROBE[4] = {{0, 0}, {0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};  // W4M 0x91ffc8: centre and foot tripod, world axes
+
 // W4M land probe 0x91ffc8: the centre and the foot tripod (+-4, -3) (0, 5) units, world axes; any hit carries the worm.
 // *n: the mean land normal of the hits, as W4M 0x59ef90 averages those level with the highest
 static bool footing(const Terrain &t, Vector3 foot, Vector3 *n = nullptr) {
-    const Vector2 O[4] = {{0, 0}, {0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};
+    const Vector2 *O = PROBE;
     int top[4], best = -1;  // land above the probe height, in units (5 at most)
     for (int i = 0; i < 4; i++) {
         top[i] = -1;
@@ -319,68 +321,100 @@ Vector3 restOn(const Terrain &t, Vector3 p, float r) {
     return t.solid({s.x, s.y - 0.02f, s.z}) ? Vector3Add(s, Vector3Scale(t.normal(s), r)) : p;  // in the air: as is
 }
 
-float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e, int *contact) {
-    const float R = Game::R;
-    float landing = 0;
-    int hits = 0;  // 1: a move did not Fit (W4M Ballistic 0x5afa78 / 0x5afb17: undone, rebounds), 2: a wall stopped it
-    for (int k = 0, n = substeps(vel); k < n; k++) {
-        Vector3 np = Vector3Add(pos, Vector3Scale(vel, Game::DT / n));
-        bool wall = t.solid({np.x, pos.y, np.z}), side = !wall && !fits(t, pos, {np.x, pos.y, np.z});
-        if (wall || side) { vel.x *= -e, vel.z *= -e; np.x = pos.x; np.z = pos.z; }  // wall normal taken along v
-        bool roof = vel.y > 0 && t.solid({np.x, np.y + R, np.z}), up = vel.y > 0 && !roof && !fits(t, {np.x, pos.y, np.z}, np);
-        if (roof || up) { vel.y *= -e; np.y = pos.y; }
-        Vector3 foot = {np.x, np.y - R, np.z};
-        bool down = false;
-        Vector3 fn;
-        if (vel.y < 0 && footing(t, foot, &fn)) {  // W4M Ballistic land hit: Rebound 0x5acea0 below n.y 0.2, else the landing keeps only vt
-            float vn = Vector3DotProduct(vel, fn);
-            bool face = fn.y < 0.2f;
-            landing = -vel.y;
-            if (vn < 0) vel = Vector3Subtract(vel, Vector3Scale(fn, vn * (face ? 1 + e : 1)));
-            else vel.y = 0;
-            if (!face) vel.y = fminf(vel.y, 0);
-            else hits |= 2;  // a wall: Rebound
-        } else if (vel.y < 0 && !fits(t, {np.x, pos.y, np.z}, np)) down = true, vel.y *= -e, np.y = pos.y;
-        hits |= (side || up || down) | (wall || roof) << 1;
-        // W4M lands a foot where its ray met land this frame (0x5af522): raised while it Fits, never above where the substep began + 1 unit
-        for (float top = fmaxf(pos.y, np.y) + 0.05f; np.y < top && footing(t, {np.x, np.y - R, np.z}) && fits(t, np, {np.x, np.y + 0.05f, np.z});) np.y += 0.05f;
-        pos = np;
-    }
-    if (contact) *contact = hits;
-    return landing;
+static Vector3 probePoint(Vector3 pos, int i) { return {pos.x + PROBE[i % 4].x, pos.y - Game::R + (i < 4 ? 0 : 1.0f), pos.z + PROBE[i % 4].y}; }
+
+// Rods sampled every VOX/2 from half a voxel over the feet (a foot on the surface samples its soft edge) to the heads. [ours] land
+// counts past 1 unit (0.05 m) deep: our walk (`fits` ring, `clearWalls`) can leave a probe point grazing a wall it then slides along
+static bool rodsClear(const Terrain &t, Vector3 p) {
+    for (int i = 1; i < 4; i++)
+        for (int k = 1; k <= 8; k++) {
+            Vector3 a = probePoint(p, i);
+            if (t.sample({a.x, a.y + Terrain::VOX / 2 * k, a.z}) > 0.05f) return false;
+        }
+    return true;
 }
 
-static const Vector2 PROBE[4] = {{0, 0}, {0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};  // W4M 0x91ffc8: centre and foot tripod, world axes
+// W4M Fits 0x59edf0: the 3 rods (PROBE 1..3, feet to heads) clear of land. [ours] rods already in land at `from` (a stance our walk's
+// `fits` and `clearWalls` allow) fall back to that relative body test, so the worm can move out
+static bool rodsFit(const Terrain &t, Vector3 from, Vector3 to) { return rodsClear(t, to) || (!rodsClear(t, from) && fits(t, from, to)); }
 
-// W4M jetpack collider 0x59ec70 over one tick: the 4 feet and 4 heads (20 units up) swept along v, earliest hit wins and a foot wins a tie;
-// a foot with the rods clear (Fits) lands the pack with v -= (v.n) n, whatever the normal, a head bounces v -= 1.8 (v.n) n (0x5630dc)
-bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g) {
-    const float DT = Game::DT, l = Vector3Length(vel) * DT;
-    vel.y -= g * DT / 2;
-    int at = -1;
-    float best = l;
-    Vector3 n{}, dir = l > 1e-6f ? Vector3Normalize(vel) : Vector3{0, -1, 0};
-    for (int i = 0; i < 8 && l > 1e-6f; i++) {
-        Vector2 o = PROBE[i % 4];
-        Vector3 a = {pos.x + o.x, pos.y - Game::R + (i < 4 ? 0 : 1.0f), pos.z + o.y}, hit;
-        if (!t.raycast({a, dir}, best, &hit)) continue;
-        Vector3 hn = t.normal(hit);
-        float d = Vector3Distance(hit, a);
-        if (Vector3DotProduct(vel, hn) < -0.01f && d < best) best = d, at = i, n = hn;  // strict: the lower index, a foot, keeps a tie
-    }
-    bool landed = false;
-    if (at >= 0) {
-        Vector2 o = PROBE[at % 4];
-        Vector3 a = {pos.x + o.x, pos.y - Game::R + (at < 4 ? 0 : 1.0f), pos.z + o.y};
-        float lo = fmaxf(best - Terrain::VOX / 2, 0), hi = best;
+struct Sweep { int at = -1; float d = 0; Vector3 n{}; };
+
+// W4M CastRays 0x59ec70: the 8 PROBE points (feet, heads 1 m up) along one tick's move m, the earliest hit first, a foot on a tie;
+// n = 0x59ef90, the mean land normal of the hits within 1 unit of it. [ours] land facing along v is skipped: a point inside our soft surface
+static Sweep sweep(const Terrain &t, Vector3 pos, Vector3 m, Vector3 v) {
+    Sweep s;
+    const float l = Vector3Length(m);
+    if (l < 1e-6f) return s;
+    const Vector3 dir = Vector3Scale(m, 1 / l);
+    float d[8];
+    Vector3 hn[8];
+    for (int i = 0; i < 8; i++) {
+        Vector3 a = probePoint(pos, i), hit;
+        d[i] = -1;
+        if (!t.raycast({a, dir}, l, &hit) && !t.solid(hit = Vector3Add(a, m))) continue;  // raycast steps VOX/2 and stops short of l
+        if (Vector3DotProduct(v, hn[i] = t.normal(hit)) >= -0.01f) continue;
+        float hi = Vector3Distance(hit, a), lo = fmaxf(hi - Terrain::VOX / 2, 0);
         for (int k = 0; k < 4; k++) (t.solid(Vector3Add(a, Vector3Scale(dir, (lo + hi) / 2))) ? hi : lo) = (lo + hi) / 2;  // the surface between the last empty sample and the hit
-        pos = Vector3Add(pos, Vector3Scale(dir, lo));
-        landed = at < 4;
-        for (int i = 1; i < 4 && landed; i++) {  // W4M Fits 0x59edf0: the 3 rods (PROBE 1..3, 1 m) clear of land
-            Vector3 hit, a = {pos.x + PROBE[i].x, pos.y - Game::R + Terrain::VOX / 2, pos.z + PROBE[i].y};  // from half a voxel up: a foot on the surface samples its soft edge
-            landed = !t.raycast({a, {0, 1, 0}}, 1.0f - Terrain::VOX / 2, &hit);
-        }
-        vel = Vector3Subtract(vel, Vector3Scale(n, Vector3DotProduct(vel, n) * (landed ? 1 : 1 + Game::JET_BOUNCE)));
+        d[i] = lo;
+        if (s.at < 0 || lo < s.d) s.at = i, s.d = lo;
+    }
+    for (int i = 0; i < 8 && s.at >= 0; i++)
+        if (d[i] >= 0 && d[i] - s.d < 0.05f) s.n = Vector3Add(s.n, hn[i]);
+    if (s.at >= 0) s.n = Vector3LengthSqr(s.n) > 1e-8f ? Vector3Normalize(s.n) : Vector3Negate(dir);
+    return s;
+}
+
+// W4M Rebound 0x5acea0 = Bounce 0x518f40(e, vt x1, 0.01 units/ms): v.n <= 0 keeps vt and turns vn into -e vn, else v = e |v| n; slower stops.
+// Stopped on land facing up: true (W4M Sliding); facing down: v = (0, -0.01, 0) units/ms and one unchecked Integrate (0x5acfa5)
+static bool rebound(Vector3 &pos, Vector3 &v, Vector3 n, float e, Vector3 acc) {
+    const float vn = Vector3DotProduct(v, n), l = Vector3Length(v), MIN = 0.5f, DT = Game::DT;
+    v = vn <= 0 ? Vector3Subtract(v, Vector3Scale(n, vn * (1 + e))) : Vector3Scale(n, l * e);
+    if ((vn <= 0 ? Vector3Length(v) : l) < MIN) v = {0, 0, 0};
+    if (v.x != 0 || v.z != 0 || v.y > 0) return false;
+    if (n.y > 0) return true;
+    v = {0, -MIN, 0};
+    pos = Vector3Add(pos, Vector3Add(Vector3Scale(v, DT), Vector3Scale(acc, DT * DT / 2)));
+    v = Vector3Add(v, Vector3Scale(acc, DT));
+    return false;
+}
+
+enum { FLY_STUCK = 1, FLY_REBOUND = 2, FLY_LAND = 4, FLY_SLIDE = 8 };
+
+// W4M Ballistic 0x5af430 on land, one tick: no hit Integrates; a hit moves to the contact and stores its normal (SupportNormal 0x5af5ba),
+// then a foot on n.y >= 0.2 lands, a head or a wall Rebounds on n. Not Fitting there: stays put and Rebounds on normalize(pos - there)
+static int flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, Vector3 acc, float e, Vector3 &support) {
+    const float DT = Game::DT;
+    const Vector3 m = Vector3Add(Vector3Scale(vel, DT), Vector3Scale(acc, DT * DT / 2));
+    const Sweep s = sweep(t, pos, m, vel);
+    const Vector3 to = s.at < 0 ? Vector3Add(pos, m) : Vector3Add(pos, Vector3Scale(Vector3Normalize(m), s.d));
+    if (s.at < 0) vel = Vector3Add(vel, Vector3Scale(acc, DT));  // 0x5af98f Integrate; a hit keeps the Velocity
+    if (!rodsFit(t, pos, to)) {  // 0x5af81a / 0x5afb17; the contact at pos itself: v = -v (0x5af8cb)
+        Vector3 back = Vector3Subtract(pos, to);
+        if (Vector3LengthSqr(back) > 1e-12f) return FLY_STUCK | (rebound(pos, vel, Vector3Normalize(back), e, acc) ? FLY_SLIDE : FLY_REBOUND);
+        if (s.at >= 0) vel = Vector3Negate(vel);
+        return FLY_STUCK | FLY_REBOUND;
+    }
+    pos = to;
+    if (s.at < 0) return 0;
+    support = s.n;
+    if (s.at >= 4 || s.n.y < 0.2f) return rebound(pos, vel, s.n, e, acc) ? FLY_SLIDE : FLY_REBOUND;  // 0x5af5e6 head, 0x5af5fb wall
+    return FLY_LAND;
+}
+
+// W4M jetpack collider 0x59ec70 over one tick (the same sweep): a foot with the rods clear (Fits) lands the pack with v -= (v.n) n,
+// whatever the normal; a head or blocked rods bounce v -= 1.8 (v.n) n (0x5630dc)
+bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g) {
+    const float DT = Game::DT;
+    const bool still = Vector3LengthSqr(vel) == 0;  // [ours] at rest (our take-off tick, its thrust comes a tick later) no sweep: the soft ground under the feet would land it
+    vel.y -= g * DT / 2;
+    const Sweep s = still ? Sweep{} : sweep(t, pos, Vector3Scale(vel, DT), vel);
+    bool landed = false;
+    if (s.at >= 0) {
+        const Vector3 from = pos;
+        pos = Vector3Add(pos, Vector3Scale(Vector3Normalize(vel), s.d));
+        landed = s.at < 4 && rodsFit(t, from, pos);
+        vel = Vector3Subtract(vel, Vector3Scale(s.n, Vector3DotProduct(vel, s.n) * (landed ? 1 : 1 + Game::JET_BOUNCE)));
     } else pos = Vector3Add(pos, Vector3Scale(vel, DT));
     vel.y -= g * DT / 2;
     clearWalls(t, pos);
@@ -390,7 +424,7 @@ bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g) {
 // W4M 0x59ec70 down the 4 foot rays from 20 units above: the highest land, in units over the feet; -99 when none down to -5
 static int probe(const Terrain &t, Vector3 feet) {
     int best = -99;
-    for (Vector2 o : {Vector2{0, 0}, Vector2{0.2f, -0.15f}, Vector2{-0.2f, -0.15f}, Vector2{0, 0.25f}})
+    for (Vector2 o : PROBE)
         for (int h = 20; h >= -5 && h > best; h--)
             if (t.solid({feet.x + o.x, feet.y + h * 0.05f, feet.z + o.y})) { best = h; break; }
     return best;
@@ -414,27 +448,11 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
     Vector3 cand = Vector3Add(pos, Vector3Scale(vel, DT));
     int d = probe(t, {cand.x, cand.y - R, cand.z});
     if (d > 5) {  // wall or step: slow lands, else one frame's ray along v rebounds it
-        float l = Vector3Length(vel), best = 1e9f;
-        if (l < start) return landed();
-        Vector3 sum{}, dir = Vector3Scale(vel, 1 / l);  // 0x5b00e0: the 8 probe points (feet and heads, 20 units up) along v for a frame
-        float near[8];
-        for (int i = 0; i < 8; i++) {
-            Vector2 o = PROBE[i % 4];
-            Vector3 hit;
-            near[i] = t.raycast({{pos.x + o.x, pos.y - R + (i < 4 ? 0 : 1.0f), pos.z + o.y}, dir}, l * DT, &hit) ? Vector3Distance(hit, {pos.x + o.x, pos.y - R + (i < 4 ? 0 : 1.0f), pos.z + o.y}) : 1e9f;
-            best = fminf(best, near[i]);
-        }
-        if (best > 1e8f) return landed();
-        for (int i = 0; i < 8; i++)  // 0x59ef90: the normals of the hits within 1 unit of the nearest
-            if (near[i] <= best + U) {
-                Vector2 o = PROBE[i % 4];
-                Vector3 a = {pos.x + o.x, pos.y - R + (i < 4 ? 0 : 1.0f), pos.z + o.y};
-                sum = Vector3Add(sum, t.normal(Vector3Add(a, Vector3Scale(dir, near[i]))));
-            }
-        Vector3 nh = Vector3LengthSqr(sum) > 1e-8f ? Vector3Normalize(sum) : Vector3Negate(dir), v = Vector3Scale(vel, 1.0f / 50);
-        m.spinTo = (m.spinTo + 3 * Vector3DotProduct(n, Vector3CrossProduct(nh, v))) / 2;
-        float vn = Vector3DotProduct(vel, nh);
-        if (vn < 0) vel = Vector3Subtract(vel, Vector3Scale(nh, vn * (1 + e)));  // Rebound 0x5acea0, air control off
+        if (Vector3Length(vel) < start) return landed();
+        const Sweep s = sweep(t, pos, Vector3Scale(vel, DT), vel);  // 0x5b00e0: CastRays(pos, v, 20 steps, all 8 points)
+        if (s.at < 0) return landed();
+        m.spinTo = (m.spinTo + 3 * Vector3DotProduct(n, Vector3CrossProduct(s.n, Vector3Scale(vel, 1.0f / 50)))) / 2;
+        rebound(pos, vel, s.n, e, {0, -g, 0});  // already Sliding: a stop on land facing up stays so
         m.air = false, m.stuck += 2;
     } else if (d < -5) {  // a drop: the velocity off the ground, Fall() if the body Fits at the old height
         Vector3 c = {cand.x, pos.y, cand.z};
@@ -459,7 +477,7 @@ void slideIfSteep(const Terrain &t, Vector3 pos, Vector3 &vel, Motion &m, Vector
 }
 
 float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float g, uint64_t pot, float e, Vector2 wind) {
-    const float R = Game::R, DT = Game::DT;
+    const float R = Game::R;
     bool was = grounded, slip = wpOn(pot, WP_SLIPPY);
     if (m.slide) {
         slideStep(t, pos, vel, m, yaw, g, pot, e);
@@ -467,33 +485,38 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
         clearWalls(t, pos);
         return 0;
     }
-    float fall = -vel.y, landing = 0;
-    Vector3 n;
-    grounded = vel.y <= 0 && footing(t, {pos.x, pos.y - R - 0.05f, pos.z}, &n);
-    if (grounded && was && Vector3LengthSqr(vel) > 0 && Vector3DotProduct(vel, n) >= 0) grounded = false;  // ImpulseWorm: not into the ground, Ballistic
-    if (grounded && (!was || Vector3LengthSqr(vel) > 0)) {  // a landing, or a push along the ground (ImpulseWorm 0x5ad010): walk or slide
-        if (!was) landing = fall;
+    float landing = 0;
+    // W4M Ballistic landing (0x5af601) on n, or ImpulseWorm 0x5ad010 into the ground: vt walks or slides, FallDamage takes vn
+    auto land = [&](Vector3 n, bool fall) {
         float vn = Vector3DotProduct(vel, n), start = slip ? SLIPPY_START : START_SLIDE;
+        if (fall) landing = -vn;
         vel = Vector3Subtract(vel, Vector3Scale(n, vn));  // vt
         float v2 = Vector3LengthSqr(vel);
-        if (!was && v2 < vn * vn) v2 *= 0.5f;  // W4M Ballistic 0x5af6be: |vt|² halved when below vn²
+        if (fall && v2 < vn * vn) v2 *= 0.5f;  // 0x5af6be: |vt|² halved when below vn²
         if (n.y >= (slip ? SLIPPY_NY : SLIDE_NY) && v2 < start * start) vel = {0, 0, 0};  // lands walking
         else m.slide = true, m.spin = m.spinTo = 0;  // event 17, Sliding with Velocity = vt
         m.normal = n;  // SupportNormal 0x5af5ba
-    } else if (grounded) vel = {0, 0, 0};  // Ambulatory: only the push-up below keeps the highest foot out of land, as W4M stands on it
-    else vel = Vector3Add(vel, {wind.x * DT / 2, -g * DT / 2, wind.y * DT / 2});  // half before and half after the move: exact like W4M Integrate 0x5a6e90
-    int contact = 0;
-    float hit = flyBody(t, pos, vel, e, &contact);
-    if (grounded) hit = 0;  // already landed: Sliding deals no fall damage
-    else if (!hit) vel = Vector3Add(vel, {wind.x * DT / 2, -g * DT / 2, wind.y * DT / 2});
-    if (contact & 2) m.air = false;  // Rebound 0x5acea0
-    if (!grounded) {
-        bool blocked = contact & 1;
-        m.stuck = blocked ? m.stuck + 2 : std::max(m.stuck - 1, 0);
-        if (blocked && m.stuck >= 20) vel = {0, 0, 0}, grounded = true, hit = 0;  // W4M 0x5af821: landed where it is, the count kept
+    };
+    Vector3 n;
+    grounded = vel.y <= 0 && footing(t, {pos.x, pos.y - R - 0.05f, pos.z}, &n);
+    if (grounded && was && Vector3LengthSqr(vel) > 0 && Vector3DotProduct(vel, n) >= 0) grounded = false;  // ImpulseWorm: not into the ground, Ballistic
+    // [ours] idle and no fall Fits: W4M would Rebound to a stop, Slide, land with support 0xFFFF and stay (0x5b1a3e); ours stays at once
+    if (!grounded && was && Vector3LengthSqr(vel) == 0 && !rodsFit(t, pos, {pos.x, pos.y - 0.05f, pos.z})) grounded = true;
+    if (grounded) {
+        if (!was || Vector3LengthSqr(vel) > 0) land(n, !was);
+        else vel = {0, 0, 0};
+        // Ambulatory: only this push-up keeps the highest foot out of land, as W4M stands on it
+        if (footing(t, {pos.x, pos.y - R, pos.z}) && fits(t, pos, {pos.x, pos.y + 0.05f, pos.z})) pos.y += 0.05f;
+    } else {
+        int c = flyBody(t, pos, vel, {wind.x, -g, wind.y}, e, m.normal);
+        m.stuck = c & FLY_STUCK ? m.stuck + 2 : std::max(m.stuck - 1, 0);
+        if ((c & FLY_STUCK) && m.stuck >= 20) vel = {0, 0, 0}, grounded = true;  // W4M 0x5af821: landed where it is, the count kept
+        else if (c & FLY_LAND) grounded = true, land(m.normal, true);
+        else if (c & FLY_SLIDE) grounded = m.slide = true, m.spin = m.spinTo = 0, m.air = false;  // Rebound stopped on land: event 8, Sliding
+        else if (c & FLY_REBOUND) m.air = false;
     }
     clearWalls(t, pos);
-    return fmaxf(landing, hit);
+    return landing;
 }
 
 void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity) {

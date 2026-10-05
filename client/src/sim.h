@@ -114,7 +114,7 @@ bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vaul
 void vaultStep(Vector3 &pos, Vault &v, Vector3 input);  // one vault tick
 void clearWalls(const Terrain &t, Vector3 &pos);
 bool fits(const Terrain &t, Vector3 from, Vector3 to);  // the upper body at `to` is out of land, or no deeper than at `from`
-// Free flight, shared with the AI: a tick's move cut into sub-steps of at most VOX/2, so nothing skips thin land.
+// A tick's move cut into sub-steps of at most VOX/2 (shots, objects, walkers), so nothing skips thin land.
 int substeps(Vector3 vel);
 // W4M 0x585a29 launches from the worm's eye (feet + Worm.EyeLevelOffset 15 units): spawn, pulled back to the last free point eye → spawn
 Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn);
@@ -122,8 +122,6 @@ Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn);
 Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw);
 // W4M payloads touch land by their centre point (0x574e90); at rest the mesh is drawn r along the land normal (0x5761f0)
 Vector3 restOn(const Terrain &t, Vector3 p, float r);
-// Worm body, walls bounce at e (W4M Rebound 0x5acea0: 0.3); returns the landing speed. *contact: 1 a move did not Fit, 2 a wall
-float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e = 0.3f, int *contact = nullptr);
 bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g);  // W4M jetpack collider, one tick: true when a foot landed the pack
 // One worm tick (ground slide, fall, flight), shared with the AI; returns the landing speed, 0 if none.
 // wind: the Ballistic acceleration's xz part (W4M SetAcceleration 0x5a6d20, Wormpot WindAffectsWorms), m/s²

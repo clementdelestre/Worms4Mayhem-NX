@@ -19,6 +19,7 @@
 #include "xray.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -59,14 +60,27 @@ static const Color TEAM_COLORS[] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60
 
 static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) { return Ui::pressed(pad, buttons, keys); }
 
-#ifdef __SWITCH__
-// raylib's log, timestamped, to the SD card (no console on Switch)
-static void logLine(int, const char *fmt, va_list ap) {
+// raylib's log, timestamped, to log.txt (no console on Switch; desktop echoes stdout). Counts GPU / file loads for the hitch log.
+enum { L_TEX, L_SHADER, L_MODEL, L_SOUND, L_IMAGE, L_FBO, L_COUNT };
+static unsigned loads[L_COUNT];
+static void logLine(int level, const char *fmt, va_list ap) {
+    static const char *const KIND[L_COUNT] = {"TEXTURE:", "SHADER:", "MODEL:", "WAVE:", "IMAGE:", "FBO:"};
+    if (strstr(fmt, "loaded successfully") || strstr(fmt, "created successfully"))
+        for (int k = 0; k < L_COUNT; k++) if (!strncmp(fmt, KIND[k], strlen(KIND[k]))) loads[k]++;
+    if (strstr(fmt, "Mesh uploaded")) return;  // one per remeshed chunk: SD writes in the explosion frames
     static FILE *f = fopen(DATA_DIR "log.txt", "w");
-    if (!f) return;
-    fprintf(f, "%.3f ", GetTime()), vfprintf(f, fmt, ap), fputc('\n', f), fflush(f);
-}
+#ifndef __SWITCH__
+    va_list cp;
+    va_copy(cp, ap);
+    printf("%s: ", level >= LOG_ERROR ? "ERROR" : level == LOG_WARNING ? "WARNING" : "INFO"), vprintf(fmt, cp), putchar('\n'), va_end(cp);
 #endif
+    static const auto t0 = std::chrono::steady_clock::now();  // not GetTime(): GLFW logs an error through here once terminated
+    static double flushed = -1;
+    double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (!f) return;
+    fprintf(f, "%.3f ", now), vfprintf(f, fmt, ap), fputc('\n', f);
+    if (level >= LOG_WARNING || now - flushed >= 1) fflush(f), flushed = now;  // a flush per line is an SD write per line
+}
 
 // Scripted input for shot mode: select weapon, aim up, charge, release.
 static Input scriptInput(int frame, int weapon, bool fire) {
@@ -853,10 +867,40 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
 
 enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading };
 
+// Match frames over W4NX_HITCH_MS (default 20) to log.txt with their section ms (20 lines per 10 s at most), and every
+// 10 s the sim ticks per frame histogram and the frame time spread: the fps counter averages both away.
+struct Pace {
+    double limit = getenv("W4NX_HITCH_MS") ? atof(getenv("W4NX_HITCH_MS")) : 20, sum = 0, sq = 0, worst = 0, jitter = 0, last = 0;
+    int hist[4] = {}, frames = 0, over = 0, logged = 0, dropped = 0;
+    unsigned seen[L_COUNT] = {}, sounds = 0;
+    void frame(double ms, int ticks, int chunks, const double *cost, const char *const *names, int n) {
+        unsigned now[L_COUNT], snd = Audio::started();
+        memcpy(now, loads, sizeof now);
+        if (frames++) jitter += fabs(ms - last);  // the first frame's delta spans the screen change
+        last = ms, sum += ms, sq += ms * ms, worst = fmax(worst, ms), hist[std::min(ticks, 3)]++;
+        if (ms > limit && ++over && logged++ >= 20) dropped++;
+        else if (ms > limit) {
+            char b[512];
+            int k = snprintf(b, sizeof b, "HITCH %.1f ms, %d ticks, %d chunks, %d particles, %u sounds |", ms, ticks, chunks, Fx::count(), snd - sounds);
+            double known = 0;
+            for (int i = 0; i < n; i++) known += cost[i], k += snprintf(b + k, sizeof b - k, " %s %.1f", names[i], cost[i] * 1000);
+            k += snprintf(b + k, sizeof b - k, " other %.1f | loads tex %u shader %u model %u wave %u image %u fbo %u", ms - known * 1000,
+                          now[L_TEX] - seen[L_TEX], now[L_SHADER] - seen[L_SHADER], now[L_MODEL] - seen[L_MODEL], now[L_SOUND] - seen[L_SOUND],
+                          now[L_IMAGE] - seen[L_IMAGE], now[L_FBO] - seen[L_FBO]);
+            TraceLog(LOG_INFO, "%s", b);
+        }
+        memcpy(seen, now, sizeof now), sounds = snd;
+        if (frames < 600) return;
+        double avg = sum / frames;
+        TraceLog(LOG_INFO, "PACE %d frames: ticks/frame 0:%d 1:%d 2:%d 3+:%d | frame avg %.2f sd %.2f max %.1f ms, %d over %.0f ms (%d not logged) | jitter %.2f ms",
+                 frames, hist[0], hist[1], hist[2], hist[3], avg, sqrt(fmax(0, sq / frames - avg * avg)), worst, over, limit, dropped, jitter / (frames - 1));
+        *this = Pace{};
+        memcpy(seen, now, sizeof now), sounds = snd;
+    }
+};
+
 int main(int argc, char **argv) {
-#ifdef __SWITCH__
     SetTraceLogCallback(logLine);
-#endif
     if ((argc > 1 && !strcmp(argv[1], "--netbot")) || getenv("W4NX_HIDDEN")) SetConfigFlags(FLAG_WINDOW_HIDDEN);
     int winW = 1280, winH = 720;  // W4NX_GFX="msaa aniso=N res=WxH": graphics levers timed by --bench (docs/tests.md "Render budget")
     if (const char *g = getenv("W4NX_GFX")) {
@@ -866,7 +910,11 @@ int main(int argc, char **argv) {
     }
     InitWindow(winW, winH, "Worms4NX");
     SetExitKey(KEY_NULL);  // Esc is back / pause; quit from the title screen
+#ifdef __SWITCH__
+    SetTargetFPS(0);  // eglSwapInterval(1) paces the frames; raylib's busy-wait timer on top of it beats against the vblank
+#else
     SetTargetFPS(60);
+#endif
     rlSetClipPlanes(0.5, 500);  // default 0.01 near plane z-fights the water on GLES depth buffers
     // boot splash: W4M's spinning worm on black while a worker decodes the assets and this thread uploads them
     static Texture2D bootWorm = LoadTexture(DATA_DIR "assets/ui/fe2/loading_worm.png");
@@ -1043,8 +1091,8 @@ int main(int argc, char **argv) {
     float acc = 0, clock = 0, reconnectAt = 0;
     // perf overlay (L+R / F3 cycles off, CPU, GPU-synced): ms per section, smoothed. CPU mode only times command
     // submission (GPU work lands in "present"); synced mode glFinish()es after each section to charge the GPU cost to it.
-    enum { T_SIM, T_REMESH, T_SKY, T_TERRAIN, T_DECOR, T_MODELS, T_FX, T_UI, T_PRESENT, T_COUNT };
-    static const char *NAMES[T_COUNT] = {"sim", "remesh", "sky+water", "terrain", "decor", "models", "fx", "ui", "present+wait"};
+    enum { T_SIM, T_REMESH, T_CAMERA, T_PIP, T_SKY, T_TERRAIN, T_DECOR, T_MODELS, T_FX, T_UI, T_PRESENT, T_COUNT };
+    static const char *const NAMES[T_COUNT] = {"sim", "remesh", "camera", "pip", "sky+water", "terrain", "decor", "models", "fx", "ui", "present+wait"};
     double perf[T_COUNT] = {}, cost[T_COUNT] = {}, cpuCost[T_COUNT] = {}, mark = 0;
     int perfOn = bench ? (argc > 4 ? 1 : 2) : 0;  // --bench map frames nosync: real fps, no glFinish
     auto lap = [&](int k) {
@@ -1054,7 +1102,10 @@ int main(int argc, char **argv) {
         double t = GetTime();
         cpuCost[k] += c - mark, cost[k] += t - mark, mark = t;
     };
-    double benchSum[T_COUNT] = {}, benchCpu[T_COUNT] = {}, benchMax[T_COUNT] = {}, benchStart = 0, frameMax = 0, frameStart = 0, benchDraws = 0, benchBinds = 0;
+    Pace pace;
+    int paceFrame = -2, stepped = 0;  // stepped: sim ticks this frame
+    double paceAt = 0;
+    double benchSum[T_COUNT] = {}, benchCpu[T_COUNT] = {}, benchMax[T_COUNT] = {}, benchStart = 0, frameMax = 0, frameSq = 0, frameStart = 0, benchDraws = 0, benchBinds = 0;
 
     // Match recording (saved to replays/ at game over or quit), Replays playback, instant replay of big shots (local only).
     Recording rec, play;
@@ -1102,7 +1153,7 @@ int main(int argc, char **argv) {
         auto flying = [&] { return game.phase == Phase::Flying || (game.phase == Phase::Settle && !game.shots.empty()); };  // retreat can end mid-flight
         bool was = flying();
         game.step(in);
-        tick++;
+        tick++, stepped++;
         if (!playing) rec.inputs.push_back(in);
         if (was && !flying()) shotDone = true, shotTick = tick;
         for (const GameEvent &e : game.events) {
@@ -1137,7 +1188,7 @@ int main(int argc, char **argv) {
             break;
         case 2: game.terrain.remesh(0.012); break;
         case 3: game.terrain.drawObjects(0, false); break;  // loads the decor models
-        case 4: if (Ui::warmWeaponIcons(warmIcon)) return; break;  // one icon per frame
+        case 4: if (Ui::warmHud(warmIcon, wait ? 1e30 : GetTime() + 0.008)) return; break;  // ~half a frame of uploads
         }
         if (loadStep != 1 || wait) loadMs[loadStep] += (GetTime() - t0) * 1000;
         else loadMs[0] = std::max(loadMs[0], (GetTime() - t0) * 1000);  // longest main-thread block of step 1
@@ -1274,7 +1325,11 @@ int main(int argc, char **argv) {
         UnloadImage(img);
     };
     for (int frame = 0; !WindowShouldClose(); frame++) {
-        float dt = bench || shot || uiShot || !capFrames.empty() ? Game::DT : fminf(GetFrameTime(), 0.25f);  // fixed: reproducible captures
+        // a frame shown for whole vblanks steps exactly that many ticks: timing noise must not make 0 / 2 tick frames at 60 Hz
+        float raw = fminf(GetFrameTime(), 0.25f), vblanks = roundf(raw / Game::DT);
+        bool fixedDt = bench || shot || uiShot || !capFrames.empty(), paced = !fixedDt && vblanks >= 1 && fabsf(raw - vblanks * Game::DT) < 0.002f;
+        float dt = fixedDt ? Game::DT : paced ? vblanks * Game::DT : raw;  // fixed: reproducible captures
+        if (paced) acc = floorf(acc / Game::DT) * Game::DT + Game::DT / 2;
         clock += dt;
         Lit::profile(GetFrameTime());
         bool scriptEnd = false;
@@ -1589,7 +1644,7 @@ int main(int argc, char **argv) {
         } else if (irEnd >= 0) {  // instant replay: slow motion, A skips
             if (!pause.open && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER})) irFinish();
             for (irAcc += pause.open ? 0 : dt * 0.5f; irAcc >= Game::DT && irEnd >= 0; irAcc -= Game::DT) {
-                game.step(rec.inputs[irTick++]);
+                game.step(rec.inputs[irTick++]), stepped++;
                 for (const GameEvent &e : game.events)
                     if (e.kind != GameEvent::GameOver) onEvent(game, e);  // the jingle already played live
                 if (irTick == (uint32_t)irEnd) irFinish();
@@ -1648,7 +1703,7 @@ int main(int argc, char **argv) {
         }
         if (!wait) shotDone = false;
         lap(T_SIM);
-        game.terrain.remesh(0.003);  // a big blast's rebuild spreads over a few frames, hidden by the fireball
+        int chunks = game.terrain.remesh(fmax(0, 0.003 - cost[T_SIM]));  // spread over the fireball's frames, never on top of a heavy sim frame
         lap(T_REMESH);
         // W4M HudClockEntity 0x5efe80 on the displayed seconds (rounded up): ClockFast loops at 5 and under (0x5efd80), ClockSlow from 15
         // at volume min(1, (15 - s) 0.11) (0x5efc40, Event property 1); both stop at 0, past 15 and during EFMV.Active
@@ -1751,14 +1806,14 @@ int main(int argc, char **argv) {
         }
         Vector3 jolt = Vector3Scale({sinf(clock * 53), sinf(clock * 61 + 1) * 0.7f, sinf(clock * 47 + 2)}, Fx::shake);
         view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt), view.up = Controls::viewUp(view);
-        mark = GetTime();
+        lap(T_CAMERA);
         // W4M PiP: the event camera in one low-resolution pass (terrain, worms, shots, objects, water), before the main view
         static RenderTexture2D pipRt = {};
         Camera3D pipView;
         float pipShow = 0, pipFull = 0;
         bool pipOn = !fixedView && !animShot && Controls::inset(pipView, pipShow, pipFull);
+        if (!pipRt.id) pipRt = LoadRenderTexture(320, 240);  // on the match's first frame, not the first PiP event's
         if (pipOn) {
-            if (!pipRt.id) pipRt = LoadRenderTexture(320, 240);
             BeginTextureMode(pipRt);
             ClearBackground(Fx::fog());
             BeginMode3D(pipView);
@@ -1775,6 +1830,7 @@ int main(int argc, char **argv) {
             EndMode3D();
             EndTextureMode();
         }
+        lap(T_PIP);
 
         BeginDrawing();
         ClearBackground(Fx::fog());
@@ -1981,6 +2037,8 @@ int main(int argc, char **argv) {
         capture(frame);
         EndDrawing();
         lap(T_PRESENT);
+        if (paceFrame == frame - 1) pace.frame((mark - paceAt) * 1000, stepped, chunks, cost, NAMES, T_COUNT);
+        paceFrame = frame, paceAt = mark, stepped = 0;
         if (missionAct) {  // end-of-mission choice, outside the frame: next, retry, back to the list
             int act = missionAct;
             missionAct = 0;
@@ -1991,7 +2049,7 @@ int main(int argc, char **argv) {
         const int warm = aimBench ? 70 : 10;  // skip load / first-use frames
         if (bench && frame == warm) benchStart = GetTime();
         if (bench && frame > warm) {
-            frameMax = fmax(frameMax, GetTime() - frameStart);
+            frameMax = fmax(frameMax, GetTime() - frameStart), frameSq += (GetTime() - frameStart) * (GetTime() - frameStart);
             benchDraws += glDraws, benchBinds += glBinds;
             for (int k = 0; k < T_COUNT; k++) benchSum[k] += cost[k], benchCpu[k] += cpuCost[k], benchMax[k] = fmax(benchMax[k], cost[k]);
         }
@@ -2000,8 +2058,8 @@ int main(int argc, char **argv) {
         for (int k = 0; k < T_COUNT; k++) perf[k] = perf[k] * 0.95 + cost[k] * 0.05, cost[k] = 0, cpuCost[k] = 0;
         if (bench && frame == warm + benchFrames) {
             double n = benchFrames, wall = GetTime() - benchStart, cpu = 0, gpu = 0;
-            printf("BENCH map=%s frames=%d  %.1f fps (%s)  frame avg %.2f ms max %.2f ms\n", opt.map.empty() ? "(procedural)" : opt.map.c_str(), benchFrames, n / wall, perfOn == 2 ? "gpu-synced" : "no sync",
-                   wall / n * 1000, frameMax * 1000);
+            printf("BENCH map=%s frames=%d  %.1f fps (%s)  frame avg %.2f ms sd %.2f max %.2f ms\n", opt.map.empty() ? "(procedural)" : opt.map.c_str(), benchFrames, n / wall, perfOn == 2 ? "gpu-synced" : "no sync",
+                   wall / n * 1000, sqrt(fmax(0, frameSq / n - wall / n * wall / n)) * 1000, frameMax * 1000);
             printf("%-13s %8s %8s %8s %8s\n", "section", "cpu", "sync", "gpu", "syncmax");
             for (int k = 0; k < T_COUNT; k++) {
                 double c = benchCpu[k] / n * 1000, s = benchSum[k] / n * 1000;

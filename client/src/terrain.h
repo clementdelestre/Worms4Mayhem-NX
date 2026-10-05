@@ -65,7 +65,7 @@ struct Terrain {
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
     void decodeTextures();  // CPU only (worker thread): moves the PNG decode out of remesh
-    void remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call
+    int remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call. Returns the chunks rebuilt
     void draw() const;
     void setView(Vector3 cam) const;  // camera for the land and model shaders (W4M Landscape.cg: no fog)
     void drawObjects(float clock, bool draw = true) const;  // clock: s, for the decor clips; draw false: only load the decor models

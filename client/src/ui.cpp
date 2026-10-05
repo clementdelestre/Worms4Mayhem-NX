@@ -88,6 +88,7 @@ Texture2D tex(const std::string &name) {
     Texture2D t{};
     const char *p = TextFormat(DATA_DIR "assets/ui/%s.png", name.c_str());
     if (FileExists(p)) {
+        TraceLog(LOG_INFO, "UI: texture %s loaded on first use", name.c_str());  // a frame-time hitch in a match: warm it at load
         t = LoadTexture(p);
         GenTextureMipmaps(&t);
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
@@ -1365,10 +1366,21 @@ template <size_t N> int indexOf(const char *(&list)[N], const std::string &v) {
 
 std::string iconOf(const WeaponDef &w) { return weaponIcon(w.icon.empty() ? w.name : w.icon); }
 
-bool warmWeaponIcons(int &i) {
-    if (i >= (int)WEAPONS.size()) return false;
-    tex(iconOf(WEAPONS[i++]));
-    return i < (int)WEAPONS.size();
+static const char *const TEAM_FLAGS[4] = {"flags/custom_cool", "flags/custom_police", "flags/custom_genie", "flags/custom_crown"};
+
+bool warmHud(int &i, double until) {
+    static std::vector<std::string> names;
+    if (names.empty()) {  // hud/ but the wxp_ particle sheets Fx loads itself, plus the art the match HUD reaches outside it
+        for (const WeaponDef &w : WEAPONS) names.push_back(iconOf(w));
+        for (const char *f : TEAM_FLAGS) names.push_back(f);
+        for (const char *n : {"fe/team_health", "fe/com_panel", "fe/speech_popup", "fe2/homing_inner"}) names.push_back(n);
+        FilePathList l = LoadDirectoryFilesEx(DATA_DIR "assets/ui/hud", ".png", false);
+        for (unsigned k = 0; k < l.count; k++)
+            if (const char *f = GetFileNameWithoutExt(l.paths[k]); strncmp(f, "wxp_", 4)) names.push_back(std::string("hud/") + f);
+        UnloadDirectoryFiles(l);
+    }
+    while (i < (int)names.size() && GetTime() < until) tex(names[i++]);
+    return i < (int)names.size();
 }
 
 void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, float t) {
@@ -2131,14 +2143,13 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
     if (retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
     // team health (bottom centre, above the hints)
-    static const char *FLAGS[4] = {"flags/custom_cool", "flags/custom_police", "flags/custom_genie", "flags/custom_crown"};
     int maxHp = std::max(1, (int)g.cfg.scheme.health) * std::max(1, g.perTeam);
     for (int t = 0; t < g.teams; t++) {
         float hp = 0;
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].team == t) hp += hpt[i].shown;  // shrinks with the count
         float y = 646 - (g.teams - 1 - t) * 38.0f;
         text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, TEAM_COLORS[t % 4], 2);
-        if (!image(FLAGS[t % 4], {584, y - 4, 32, 32})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, TEAM_COLORS[t % 4]);
+        if (!image(TEAM_FLAGS[t % 4], {584, y - 4, 32, 32})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, TEAM_COLORS[t % 4]);
         healthBar(t, 628, y, 240, 24, Clamp(hp / maxHp, 0, 1));
     }
     // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)

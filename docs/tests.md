@@ -29,6 +29,28 @@ Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU matc
 `W4NX_BENCH=<frames> ./worms4nx --shot <weapon index> [map]` (that weapon fired, e.g. 15 Airstrike, 18 Concrete Donkey:
 the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup and match loading.
 
+### Frame pacing and hitch log (ours, 2026-10-05)
+
+`log.txt` (`sdmc:/switch/worms4nx/` on Switch, `./` on desktop; raylib's log too, flushed at most once a second and
+on warnings) gets, in a match:
+- `HITCH <ms>, <n> ticks, <n> chunks, <n> particles, <n> sounds | <section ms> ... other <ms> | loads tex .. fbo ..`: a
+  frame over `W4NX_HITCH_MS` (default 20), 20 per 10 s at most. Sections are the perf overlay's, plus `camera` (logic,
+  audio loops, camera) and `pip`; `other` = input, audio update, net. Non-zero `loads` = something loaded on first use.
+- `PACE 600 frames: ticks/frame 0:a 1:b 2:c 3+:d | frame avg / sd / max, n over 20 ms | jitter`: every 10 s.
+  At 60 Hz, a healthy run is `1:600` (or `2:` only for real missed vblanks), sd and jitter well under 1 ms.
+- `UI: texture <name> loaded on first use`: an SD read + PNG decode on the main thread; warm it in `Ui::warmHud`.
+
+Pacing (ours): on Switch `eglSwapInterval(1)` alone paces the frames (`SetTargetFPS(0)`: raylib's busy-wait timer on top of
+it beat against the vblank). A frame time within 2 ms of n x 1/60 s is taken as exactly n ticks and the accumulator is held
+at half a tick, so timing noise never makes 0 / 2 tick frames (simulated with 0.5 ms noise: 2.5 % of the frames before,
+0 after). No render interpolation: with the sim at the 60 Hz display rate every shown frame lands on a whole tick, so
+interpolated poses would equal the drawn ones. The camera blends are already per-dt (`perFrame`, `expf(-dt k)`).
+
+Explosion frames: `remesh` gets 3 ms minus the frame's sim time and stops before a chunk that would overrun it (the
+dearest recent chunk cost); desktop Donkey worst frame 5.0-6.6 ms -> 3.6-4.4, remesh max 3.6-4.3 -> 2.4-2.5 ms. One chunk
+is the floor (about 1 ms desktop, so ~5 ms on Switch). The HUD art (`hud/`, weapon icons, flags) loads during the
+loading screen, the UFO beam shader at boot and the PiP render texture on the first match frame.
+
 ### Render budget (ours, `--bench <map> 600`, desktop GPU-synced, Switch estimate = max(5x cpu, 4x gpu))
 
 | Change | Deathmatch1 | ChallengeNavigation2 |
@@ -99,7 +121,9 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkLaunchAtWall` | W4M launch from the eye against a thin wall: bazooka on its own side, shotgun on the near face, dynamite ahead. |
 | `checkPointBlankDown` | Fired down at point blank: the shot passes the shooter's body, the floor blast hurts it. |
 | `checkPayloadForces` | W4M payloads: wind adds Wind.Speed; homing missile has no gravity, homes only in stage 2. |
+| `checkJumpAtWall` | StartJump 0x5acd40 tests no wall: against an upright or 6 degree overhanging cliff, on each side, facing it or away, tap, double tap or stick held, the worm leaves the ground over 1.5 m. |
 | `checkJumps` | DetectJump: double-press window, forward jump speeds, variant picked when the 300 ms window ends. |
+| `checkW4MWalkRules` | UpdateWalking / Sliding rules on 70° slopes; a worm whose rods cross a slab with nothing under its feet: the fall is undone (stuck +2), Rebound stops it (under 0.01 units/ms) into Sliding, whose Landed clears the count, and it then stays put Ambulatory (W4M Ballistic 0x5afb17, Rebound 0x5acea0, Sliding 0x5b05c2). |
 | `checkDynamite` | Dynamite: the worm walks away while the fuse burns, can't fire again, the blast ends the turn. |
 | `checkOffMapShot` | A shot leaving the map flies on (camera on it) until it falls into the sea with a splash. |
 | `checkCrateHold` | A crate dropped mid-turn holds the turn (no clock, no control) until it lands, then `POST_ACTIVITY`. |
