@@ -853,12 +853,10 @@ static void checkEventCameras() {
             float show, full;
             Camera3D v;
             bool in = Controls::inset(v, show, full);
-            if (t < 3) fprintf(stderr, "dbg t%d in%d show%.3f full%.3f phase%d\n", t, in, show, full, (int)g.phase);
             if (t == 0) assert(in && show < 0.1f && full == 0);  // slid on, then growing from where it is
             inset += in, grown += in && full > 0;
             if (!in && chase) {
                 frames++;
-                if (!(Vector3Distance(cam.position, eye) < 0.01f && fabsf(cam.fovy - Controls::FOV0) < 0.01f && Controls::viewUp(cam).y > 0.3f)) fprintf(stderr, "dbg t%d d%.3f fov%.2f up%.3f pos %.2f %.2f %.2f eye %.2f %.2f %.2f\n", t, Vector3Distance(cam.position, eye), cam.fovy, Controls::viewUp(cam).y, cam.position.x, cam.position.y, cam.position.z, eye.x, eye.y, eye.z);
                 assert(Vector3Distance(cam.position, eye) < 0.01f && fabsf(cam.fovy - Controls::FOV0) < 0.01f && Controls::viewUp(cam).y > 0.3f);
                 Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), to = Vector3Normalize(Vector3Subtract(g.shots[0].pos, cam.position));
                 framed += Vector3DotProduct(f, to) > cosf(Controls::FOV0 / 2 * DEG2RAD);

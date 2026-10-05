@@ -1615,12 +1615,14 @@ static float text3dK(float depth) {
     return u < 80 ? u / 80 : u > 200 ? u / 200 : 1;
 }
 
-// A Text3D centred on world point p, scale m (HUD.3DText.Scale 5 units unless set) x text3dK; returns its size in px
+// A Text3D centred on world point p, scale m (HUD.3DText.Scale 5 units unless set) x text3dK; returns its size in px.
+// The scale is the em (XTextInstance SetScale 0x6b6cb0 on em-normalised FE.Font glyphs, 0x6a7f00); our text size is the
+// font's line, 56 px for a 50 px em
 static float text3dAt(const char *t, Vector3 p, float scale, Color c, const Camera3D &cam, Vector3 fwd, Vector3 up) {
     float s = scale * text3dK(Vector3DotProduct(Vector3Subtract(p, cam.position), fwd));
     Vector2 a = GetWorldToScreen(p, cam), px = GetWorldToScreen(Vector3Add(p, Vector3Scale(up, s)), cam);
     float size = Vector2Distance(a, px);
-    if (t) text3d(t, a.x, a.y, size, c);
+    if (t) text3d(t, a.x, a.y, size * 56 / 50, c);
     return size;
 }
 
@@ -2046,7 +2048,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         Vector3 hpAt = Vector3Add(base, Vector3Scale(camUp, 0.2f * kq)), nameAt = Vector3Add(base, Vector3Scale(camUp, 0.45f * kq));
         float s = text3dAt(nullptr, hpAt, 0.25f, BLANK, cam, fwd, camUp);
         Vector2 sp = Vector2Add(GetWorldToScreen(hpAt, cam), {0, s / 2});  // bottom of the hp label
-        if (pipShow > 0) {  // not over the PiP
+        if (pipShow > 0 || pipFull > 0) {  // not over the PiP, growing too
             Vector2 pc, ph;
             float rot;
             pipPlace(pipShow, pipFull, pc, ph, rot);
