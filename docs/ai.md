@@ -170,7 +170,7 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 
 | parameter | ours | W4M | tag |
 |---|---|---|---|
-| grid | `Grid`: sqrt(Σ box areas / 16000); boxes = `Terrain::blocks` (importer: W4M land frames + heightmap; our maps: island heightmap + each shape), area ≥ 0.625 m², merged under a 2 m gap; lattice at the boxes' min corner, round to nearest; nodes only in a box | same (0x4b22e0, 0x4ae320, 0x4aeb70, 0x4ae9d0) | disasm |
+| grid | `Grid` (`navgrid.h`, shared with the start placement): max(0.5 m, sqrt(Σ box areas / 16000)); boxes = `Terrain::blocks` (importer: W4M land frames + heightmap; our maps: island heightmap + each shape), area ≥ 0.625 m², merged under a 2 m gap; lattice at the boxes' min corner, round to nearest; nodes only in a box's index range [round(min), round(max)] | same (0x4b22e0, 0x4ae320, 0x4aeb70, 0x4b2ba6, 0x4b1e00, 0x4ae9d0) | disasm |
 | nodes | (cell, layer), heights from `nodeH` | same (0x4aed70) | disasm |
 | walk edges | −x, +x, −z, +z, then each diagonal whose two sides were added; to the first layer that is a node with hi' − lo ≤ 1 m and hi − lo' ≤ 0.045/|g| (9 m); ours: the worm must fit there (`fits`, W4M Fits 0x59edf0) | 0x492510, 0x490830 | disasm |
 | jump edges | from layer 0, 8 headings: where our jump from rest lands (`jumpLand`: the sim's gravity, feet, head and front against the land), kept if the W4M reach table accepts it (`buildReach`, `jumpOk`) | edges to every valid table cell (0x4928e1), the worm aftertouches to it | disasm; ours: our sim has no jump aftertouch, so one landing per heading, and backflips (3.2 m at most < 4 m) never pass |

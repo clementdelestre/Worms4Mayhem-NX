@@ -576,7 +576,7 @@ private:
     void steal(const Worm &victim);  // old woman ammo theft
     void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies
-    Vector3 placeWorm();
+    Vector3 placeWorm(const struct Grid &gr, struct NodeCache &nc, float &yaw);  // a worm's feet
     bool dropPoint(Object::Type t, Vector3 &out, float radius = -1);  // radius: the sphere 0x4f26b0 checks, -1 the object's
     bool addObject(Object::Type t, float lift);
     void stepObjects();

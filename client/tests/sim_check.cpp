@@ -2,6 +2,7 @@
 // Each turn selects the next weapon in the table and uses it, so the whole arsenal gets exercised.
 #define private public  // the cap test calls hurt() directly
 #include "../src/sim.h"
+#include "../src/navgrid.h"
 #include "../src/controls.h"
 #include "../src/ai.h"
 #include "../src/ui.h"
@@ -120,7 +121,7 @@ static void checkCountCamera() {
     };
     for (int clear = 0; clear < 2; clear++) {
         Game g;
-        g.start({21, 2, 2, "", 0}), g.hotSeat = 0;
+        g.start({22, 2, 2, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
         g.phase = Phase::Settle, g.countGroup = {1, 2}, g.countT = 0;
@@ -147,7 +148,9 @@ static void checkDrownFloat() {
     int vi = (g.current + 2) % 4;  // a team mate of nobody playing: its team still stands
     Worm &d = g.worms[vi];
     d.pos = {d.pos.x, g.water + 0.6f, d.pos.z}, d.vel = {0, -8, 0}, d.grounded = false;
-    for (int k = 0; k < 400 && g.terrain.solid({d.pos.x, d.pos.y - 1.5f, d.pos.z}); k++) d.pos.x += 0.1f;  // open sea
+    const Vector3 at = d.pos;
+    for (int k = 0; k < 1600 && g.terrain.solid({d.pos.x, d.pos.y - 1.5f, d.pos.z}); k++)  // open sea, the nearest along x or z
+        d.pos = Vector3Add(at, Vector3Scale(k % 4 < 2 ? Vector3{1, 0, 0} : Vector3{0, 0, 1}, (k % 2 ? -0.1f : 0.1f) * (k / 4)));
     for (int t = 0; t < 30 && !d.drowned; t++) g.step(Input{});  // its feet 7 units under Water.Level (0x5ad640)
     assert(!d.alive && d.drowned && d.counted > 0 && g.dying() == vi);
     float low = d.pos.y;
@@ -349,7 +352,7 @@ static void settle(Game &g);
 // Victim placed `ahead` m in front of the settled attacker, `up` m higher; returns the victim after the swing.
 static Worm melee(const char *weapon, float ahead, float up = 0, uint32_t wormpot = 0) {
     Game g;
-    GameConfig c{23, 2, 1, "", 0};
+    GameConfig c{25, 2, 1, "", 0};
     c.wormpot = wormpot;
     g.start(c), g.hotSeat = 0;
     settle(g);
@@ -1213,7 +1216,7 @@ static void checkDeathBlast() {
     const Blast &k = Game::DEATH_BLAST;
     assert(Game::blastDamage(k, {}, {0.8f, 0, 0}) == 35 && Game::blastDamage(k, {}, {2.5f, 0, 0}) == 14 && Game::blastDamage(k, {}, {3.6f, 0, 0}) == 0);
     Game g;
-    g.start({23, 2, 2, "", 0}), g.hotSeat = 0;
+    g.start({24, 2, 2, "", 0}), g.hotSeat = 0;
     settle(g);
     Worm &d = g.worms[0], &n = g.worms[2];
     n.pos = Vector3Add(d.pos, {0.8f, 0, 0}), n.vel = {0, 0, 0};
@@ -2207,9 +2210,9 @@ static void checkCustomWeapons() {
 // W4M FuseUp: the grenade family's fuse is set on the d-pad (1..5 s) and is exact to the tick; other weapons ignore it.
 static int fuseTicks(int presses, uint8_t key, const char *weapon, int *choir = nullptr) {
     Game g;
-    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    g.start({28, 2, 1, "", 0}), g.hotSeat = 0;
+    settle(g);  // the worms drop onto their nodes first
     Worm &a = g.worms[g.current];
-    g.hotSeat = 0;
     g.weapon = weaponNamed(weapon);
     g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
     for (int i = 0; i < presses; i++) { Input in; in.buttons = key; g.step(in); g.step(Input{}); }
@@ -3185,6 +3188,7 @@ static void checkAirstrike() {
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];
+    a.yaw = atan2f(40 - a.pos.x, 40 - a.pos.z);  // the start yaw is random: aim inland
     g.objects.clear();  // no barrel or crate chain blasts
     g.weapon = weaponNamed("Airstrike");
     g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
@@ -3917,18 +3921,33 @@ static void checkArrowFalls() {
 // W4M 0x5b4180 / 0x4f26b0: worms are placed first, then a mine or drum its sphere (radius + 5 units) clear of every worm collider (10 units) and object
 static void checkPlacement() {
     const char *maps[] = {"", "Alien-w3d", "Accuracy", "ArabiaTest", "AssaultAndDefend", "BuildingSiteSaboteurs"};
-    int checked = 0;
+    int checked = 0, overhang = 0;
     for (const char *m : maps)
         for (uint32_t seed = 1; seed <= 30; seed++) {
             Game g;
             GameConfig c{seed, 3, 3, m, 0};
             c.scheme.mines = 15, c.scheme.barrels = 10;
             g.start(c);
-            for (size_t i = 0; i < g.worms.size(); i++)
-                for (size_t j = 0; j < i; j++) {  // 0x5b4180: sphere 10 units; the no-point fallback (Land.MaxHeight + 10 units) is unchecked there too
-                    bool fallback = fabsf(g.worms[i].pos.y - (g.landTop() + 0.5f + Game::R - 0.25f)) < 1e-3f;
-                    assert(fallback || Vector3Distance(g.worms[i].pos, g.worms[j].pos) >= 1.0f - 0.01f);
+            const Grid gr = makeGrid(g.terrain);
+            NodeCache nc;
+            for (size_t i = 0; i < g.worms.size(); i++) {
+                const Worm &w = g.worms[i];
+                const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2;
+                bool fallback = fabsf(w.pos.y - (g.landTop() + 0.5f + Game::R)) < 1e-3f && fabsf(w.pos.x - cx) <= 2.5f && fabsf(w.pos.z - cz) <= 2.5f;
+                for (size_t j = 0; j < i; j++)  // 0x5b4180: sphere 10 units; the no-point fallback (Land.MaxHeight + 10 units) is unchecked there too
+                    assert(fallback || Vector3Distance(w.pos - Vector3{0, Game::R, 0}, g.worms[j].pos - Vector3{0, Game::R - 0.25f, 0}) >= 1.0f - 0.01f);  // its feet vs their colliders
+                if (fallback) continue;
+                const float x = w.pos.x + sinf(w.yaw) * 0.25f, z = w.pos.z + cosf(w.yaw) * 0.25f;  // less the ZOffset -5 units
+                const int ci = gr.ci(x), cj = gr.cj(z);
+                assert(fabsf(gr.at(ci, cj).x - x) < 1e-3f && fabsf(gr.at(ci, cj).y - z) < 1e-3f);
+                int on = -1;
+                for (int l = 0; l < 2; l++) {
+                    const NodeH h = nodeH(g.terrain, g.water, gr, nc, ci, cj, l);
+                    if (h.flag == 0 && fabsf((h.lo + h.hi) / 2 + 1.0f + Game::R - w.pos.y) < 1e-3f) on = l;
                 }
+                assert(on >= 0);  // a walkable cell (0x4ae810), +20 units
+                if (on == 1) overhang++;
+            }
             for (const Object &o : g.objects) {
                 float r = o.type == Object::Mine ? 0.15f : 0.45f;
                 if (o.type != Object::Mine && o.type != Object::Barrel) continue;
@@ -3939,7 +3958,7 @@ static void checkPlacement() {
                 }
             }
         }
-    assert(checked > 0);
+    assert(checked > 0 && overhang > 0);  // layer 1: ground under an overhang
 }
 
 int main() {

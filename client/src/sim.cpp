@@ -1,4 +1,5 @@
 #include "sim.h"
+#include "navgrid.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cctype>
@@ -644,12 +645,13 @@ void Game::start(const GameConfig &c) {
         for (auto &a : ammo) for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Surrender) a[i] = 0;
     }
     const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2;
+    const Grid grid = makeGrid(terrain);
+    NodeCache nodes;
     for (int t = 0; t < teams; t++)
         for (int k = 0; k < per; k++) {
             Worm w = {{cx, (Terrain::NY - 1) * Terrain::VOX, cz}, {0, 0, 0}, 0, 0.3f, std::max(1, (int)cfg.scheme.health), t, true, false};
-            Vector3 c = placeWorm();
-            w.pos = {c.x, c.y + R - 5 * 0.05f, c.z};
-            w.yaw = atan2f(cx - c.x, cz - c.z);
+            Vector3 c = placeWorm(grid, nodes, w.yaw);
+            w.pos = {c.x, c.y + R, c.z};
             if (wp(WP_GOLIATH)) w.hp = k ? 50 : 50 * (per + 1);  // SetDavidAndGolithHealth(100 n, n): Davids 100 n / 2n, the first the rest
             if (wp(WP_ENERGY)) w.poison = POISON_DEFAULT;  // Wormpot.lub EnergyOrEnemy: PoisonRate = Worm.Poison.Default, then Worm.Poison
             worms.push_back(w);
@@ -799,22 +801,45 @@ void Game::nextWeapon(int team) {
 static Vector3 ropePoint(const Object &o) { return {o.pos.x, o.pos.y - (o.type == Object::Crate ? 0.5f : o.type == Object::Barrel ? 0.45f : 0), o.pos.z}; }
 static float halfHeight(Object::Type t) { return t == Object::Mine ? 0.15f : t == Object::Barrel || t == Object::Sentry ? 0.5f : 0.45f; }
 
-// W4M PlaceWormAtSpawnPoint (0x5b4180, Spawn "spawn"): up to 1000 random ground points, 10 units up; a point whose sphere (10 units)
-// is free of worms counts, the highest of 3 counted wins; none: Land.Center +-50 units at Land.MaxHeight + 10 units. Returns the sphere centre.
-Vector3 Game::placeWorm() {
-    const float U = 0.05f, top = landTop();
-    Vector3 best = {Terrain::NX * Terrain::VOX / 2 + (rand01() - 0.5f) * 100 * U, top + 10 * U, Terrain::NZ * Terrain::VOX / 2 + (rand01() - 0.5f) * 100 * U};
-    float bestY = -10000;
-    int found = 0;
-    for (int tries = 0; tries < 1000 && found < 3; tries++) {
-        Vector3 hit, from = {rand01() * Terrain::NX * Terrain::VOX, top, rand01() * Terrain::NZ * Terrain::VOX};  // assumed: our ground test for the AI walkable cell (0x4ae810)
-        if (!terrain.raycast({from, {0, -1, 0}}, top + 1, &hit) || hit.y < water + 1.5f) continue;
-        Vector3 c = {hit.x, hit.y + 10 * U, hit.z};
+// W4M PlaceWormAtSpawnPoint (0x5b4180, Spawn "spawn"): a random yaw, then up to 1000 random walkable cells (0x4ae810), each
+// at its node + (0, 10, ZOffset -5) turned by the yaw + 10 units up; a point whose sphere (10 units) is free of worms counts, the
+// highest of 3 counted wins; none: Land.Center +-50 units at Land.MaxHeight + 10 units. Returns the worm's logical position (feet).
+Vector3 Game::placeWorm(const Grid &gr, NodeCache &nc, float &yaw) {
+    const float U = 0.05f;
+    rand01();  // 0x5b41a8: the debug log's rand(), drawn whether it logs or not
+    yaw = (int)(rand01() * 256) * (2 * PI / 256);  // rand() & 0xff
+    const Vector3 off = {-sinf(yaw) * 5 * U, 20 * U, -cosf(yaw) * 5 * U};
+    float area = 0;
+    for (const Grid::Box &b : gr.boxes) area += (b.b.z - b.b.x) * (b.b.w - b.b.y);
+    // AISceneGraphService 0x4ae810: 500 draws of a box by area, a node in it, a layer; the first walkable one
+    auto cell = [&](int &i, int &j, int &l) {
+        for (int k = 0; k < 500; k++) {
+            float r = rand01() * area;
+            const Grid::Box *b = &gr.boxes.back();
+            for (const Grid::Box &x : gr.boxes)
+                if ((r -= (x.b.z - x.b.x) * (x.b.w - x.b.y)) <= 0) { b = &x; break; }
+            i = std::min(b->i0 + (int)(rand01() * (b->i1 - b->i0)), b->i1 - 1);
+            j = std::min(b->j0 + (int)(rand01() * (b->j1 - b->j0)), b->j1 - 1);
+            l = (int)(rand01() * 2);
+            if (nodeH(terrain, water, gr, nc, i, j, l).flag == 0) return true;
+        }
+        return false;
+    };
+    Vector3 best = {0, -1e4f, 0};
+    int found = 0, i, j, l;
+    for (int tries = 0; tries < 1000 && found < 3 && cell(i, j, l); tries++) {
+        const NodeH h = nodeH(terrain, water, gr, nc, i, j, l);
+        const Vector2 p = gr.at(i, j);
+        const Vector3 c = Vector3Add({p.x, (h.lo + h.hi) / 2, p.y}, off);  // node position 0x4aeb00: mid-height
         bool clear = true;
         for (const Worm &o : worms) clear = clear && Vector3Distance({o.pos.x, o.pos.y - R + 5 * U, o.pos.z}, c) >= 20 * U;
         if (!clear) continue;
         found++;
-        if (c.y >= bestY) bestY = c.y, best = c;
+        if (c.y > best.y) best = c;
+    }
+    if (!found) {
+        best = {Terrain::NX * Terrain::VOX / 2 + (rand01() - 0.5f) * 100 * U, landTop() + 10 * U, 0};
+        best.z = Terrain::NZ * Terrain::VOX / 2 + (rand01() - 0.5f) * 100 * U;
     }
     return best;
 }

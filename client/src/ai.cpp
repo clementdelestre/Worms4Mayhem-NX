@@ -1,4 +1,5 @@
 #include "ai.h"
+#include "navgrid.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cmath>
@@ -338,26 +339,6 @@ Input Ai::race(const Game &g) {
 static constexpr int MAX_ITER = 200;  // W4M m_nMaxNumIterations, every pathfind (0x4b0ba6)
 static int octile(int dx, int dz) { dx = std::abs(dx), dz = std::abs(dz); return 10 * std::max(dx, dz) + 4 * std::min(dx, dz); }  // W4M 0x4923a9
 
-// W4M AISceneGraphService node grid: spacing sqrt(Σ NodeGrid box areas / 16000) (PopulatePathingNodes 0x4b2a68), one lattice
-// anchored at the boxes' min corner with nodes at origin + i·spacing, i = trunc(offset / spacing + 0.5) (0x4aeb70); a node exists
-// only inside a box (0x4ae9d0). Boxes: Terrain::blocks (W4M AddLandBlock).
-struct Grid {
-    float s = 0.5f, ox = 0, oz = 0;
-    std::vector<Vector4> boxes;
-    struct Entry { bool ok = false; float hi = -1e4f, lo = 1e4f; };  // m, relative to the start: arc heights met at that offset
-    int n[2] = {0, 0};
-    std::vector<Entry> reach[2];  // W4M m_fJumpNodes per jump type (forward, backflip), n x n by |dx|, |dz|
-    int ci(float x) const { return (int)floorf((x - ox) / s + 0.5f); }
-    int cj(float z) const { return (int)floorf((z - oz) / s + 0.5f); }
-    Vector2 at(int i, int j) const { return {ox + i * s, oz + j * s}; }
-    bool has(int i, int j) const {
-        Vector2 p = at(i, j);
-        for (const Vector4 &b : boxes) if (p.x >= b.x && p.x < b.z && p.y >= b.y && p.y < b.w) return true;
-        return boxes.empty();
-    }
-    int64_t key(Vector3 p) const { return ((int64_t)ci(p.x) * 100003 + cj(p.z)) * 1009 + (int)floorf(p.y) + 100; }  // + ours: 1 m layer
-};
-
 // W4M 0x4af3f0, the jump reach table, in W4M units then m (20 units per m): each jump type's tweak velocity (|x| and y of
 // Worm.Jump.Forward 0.07, 0.15 / Backflip 0.04, 0.2) flies in 1 ms steps under Gravity -0.00025 until it falls at 0.3 units/ms,
 // twice: horizontal speed + 0.8 AftertouchDelta (0.015) each ms capped at AftertouchStrength 0.1, and - 0.8 AftertouchDelta
@@ -404,14 +385,8 @@ static void buildReach(Grid &gr) {
     }
 }
 
-static Grid makeGrid(const Terrain &t) {
-    Grid gr;
-    gr.boxes = t.blocks;
-    float area = 0;  // m², the 1/20 unit scale cancels out
-    gr.ox = gr.oz = 1e9f;
-    for (const Vector4 &b : gr.boxes) area += (b.z - b.x) * (b.w - b.y), gr.ox = fminf(gr.ox, b.x), gr.oz = fminf(gr.oz, b.y);
-    if (gr.boxes.empty()) gr.ox = gr.oz = 0, area = Terrain::NX * Terrain::NZ * Terrain::VOX * Terrain::VOX;
-    gr.s = sqrtf(area / 16000);
+static Grid aiGrid(const Terrain &t) {
+    Grid gr = makeGrid(t);
     buildReach(gr);
     return gr;
 }
@@ -475,18 +450,13 @@ static bool fits(const Terrain &t, Vector3 p) {
 
 // --- movement plans: W4M position scores 0x4aa6a0 over the ScoreAllMoveNodes window 0x4ab490, move -> retreat pairs 0x4a8c60 ---
 
-// A node's heights (W4M 0x4aed70): flag 0 a node, 1 water or outside the grid (heights: the water level), 3 blocked (over 20 units apart)
-struct NodeH { uint8_t flag = 1; float lo = 0, hi = 0; };
 
 // W4M ScoreAllMoveNodes 0x4ab490: the 21 x 21 window at every other node around the worm's (±20 nodes), both layers. Per entry: def
 // (0x4aa6a0 with arg5 1, the retreat spot score), open (arg6 1, the move spot score) and the retreat 0x4a8c60 paired it with.
-struct Moves {
+struct Moves : NodeCache {
     struct Entry { float def = -1e6f, open = -1e6f; int r = -1; };
     int i0 = 0, j0 = 0, l0 = 0, at = 0, warm = 0;  // the worm's node; next entry to score; layer-0 rows probed ahead
     Entry e[2 * 21 * 21];                // [layer][row][col]: node (i0 + 2 (row - 10), j0 + 2 (col - 10), layer)
-    std::unordered_map<int64_t, NodeH> heights;
-    std::vector<int16_t> tops;  // per voxel column: its highest solid voxel, -2 not read yet
-    long reads = 0;             // raw voxels read for them: work the samples don't count
     struct Jump { bool ok; Vector3 land; unsigned long work; };
     std::unordered_map<int64_t, Jump> jumps;  // jumpLand per (node, jump, heading); work: its Terrain::samples
     unsigned edits = 0;                       // Terrain::edits the jumps were found with
@@ -494,59 +464,7 @@ struct Moves {
     int j(int k) const { return j0 + 2 * (k % 21 - 10); }
 };
 
-static int colTop(const Terrain &t, Moves &mv, int x, int z) {
-    if (x < 0 || z < 0 || x >= Terrain::NX || z >= Terrain::NZ) return -1;
-    int16_t &c = mv.tops[(size_t)z * Terrain::NX + x];
-    if (c == -2) {
-        c = -1;
-        for (int y = Terrain::NY - 1; y >= 0 && c < 0; y--, mv.reads++) if (t.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] > 0) c = (int16_t)y;
-    }
-    return c;
-}
-
-// One of W4M 0x4ade10's rays: from y down in half voxels to the first solid sample, <= the water if none. Layer 0 starts at the
-// first step under every solid voxel `sample` can read there (same samples, fewer of them); layer 1 first leaves the land it starts in.
-static float rayDown(const Game &g, Moves &mv, float x, float z, float y, bool under) {
-    const float step = Terrain::VOX / 2;
-    if (under) while (y > g.water && g.terrain.solid({x, y, z})) y -= step;
-    else {
-        const int ix = (int)floorf(x / Terrain::VOX), iz = (int)floorf(z / Terrain::VOX);
-        const int t = std::max(std::max(colTop(g.terrain, mv, ix, iz), colTop(g.terrain, mv, ix + 1, iz)),
-                               std::max(colTop(g.terrain, mv, ix, iz + 1), colTop(g.terrain, mv, ix + 1, iz + 1)));
-        const float s = (t + 1) * Terrain::VOX;
-        if (y >= s) y -= (floorf((y - s) / step) + 1) * step;
-    }
-    while (y > g.water && !g.terrain.solid({x, y, z})) y -= step;
-    return y;
-}
-
-// W4M 0x4aed70: layer 0 probed from the land's top, layer 1 from 20 units under layer 0's lowest hit (water if layer 0 is);
-// 3 x 3 rays at ±spacing/3 (0x4ade10), lo / hi = lowest / highest hit, any miss or water hit: water
-static int64_t nodeKey(int i, int j, int layer) { return (((int64_t)i + (1 << 20)) * (1 << 21) + (j + (1 << 20))) * 2 + layer; }
-
-static NodeH nodeH(const Game &g, const Grid &gr, Moves &mv, int i, int j, int layer) {
-    const int64_t key = nodeKey(i, j, layer);
-    if (auto it = mv.heights.find(key); it != mv.heights.end()) return it->second;
-    NodeH h{1, g.water, g.water};
-    float from = (Terrain::NY - 1) * Terrain::VOX;
-    bool ok = gr.has(i, j);
-    if (ok && layer) {
-        const NodeH up = nodeH(g, gr, mv, i, j, 0);
-        from = up.lo - 1, ok = up.flag != 1;
-    }
-    if (ok) {
-        const Vector2 c = gr.at(i, j);
-        float lo = 1e9f, hi = -1e9f;
-        for (int a = -1; a <= 1 && ok; a++)
-            for (int b = -1; b <= 1 && ok; b++) {
-                const float y = rayDown(g, mv, c.x + a * gr.s / 3, c.y + b * gr.s / 3, from, layer > 0);
-                if (y <= g.water) ok = false;
-                lo = fminf(lo, y), hi = fmaxf(hi, y);
-            }
-        if (ok) h = {(uint8_t)(hi - lo > 1 ? 3 : 0), lo, hi};
-    }
-    return mv.heights[key] = h;
-}
+static NodeH nodeH(const Game &g, const Grid &gr, Moves &mv, int i, int j, int layer) { return nodeH(g.terrain, g.water, gr, mv, i, j, layer); }
 
 // W4M node position (0x4aeb00): mid-height, here the worm's centre over it
 static Vector3 nodePos(const Grid &gr, const NodeH &h, int i, int j) { const Vector2 c = gr.at(i, j); return {c.x, (h.lo + h.hi) / 2 + R, c.y}; }
@@ -996,7 +914,6 @@ void Ai::startEval(const Game &g) {
     if (!pairing) return nextPair(g);
     moves = std::make_shared<Moves>();
     Moves &mv = *moves;
-    mv.tops.assign((size_t)Terrain::NX * Terrain::NZ, -2);
     mv.i0 = grid->ci(w.pos.x), mv.j0 = grid->cj(w.pos.z);
     mv.l0 = layerOf(g, *grid, mv, w.pos);
 }
@@ -1443,7 +1360,7 @@ Input Ai::think(const Game &g) {
         walks = charged = aimed = wait = afterFire = shotsSeen = 0;
         if (g.clock < lastClock) memory.clear(), failed.clear(), recent.weapon = -1, grid.reset();  // new match
         lastClock = g.clock;
-        if (!grid) grid = std::make_shared<const Grid>(makeGrid(g.terrain));
+        if (!grid) grid = std::make_shared<const Grid>(aiGrid(g.terrain));
         pathFailed = moved = noMove = fireAfterWalk = retreatTaken = false, repaths = 0, walking = {}, blocked.clear();
         mode = Mode::Eval;
         stage = -1;
