@@ -22,11 +22,10 @@ void sprite(Texture2D x, Vector2 c, float size, float deg, Color tint) {
     DrawTexturePro(x, {0, 0, (float)x.width, (float)x.height}, {c.x, c.y, size, size}, {size / 2, size / 2}, deg, tint);
 }
 
-// Stage 1 (WXFE.PreStart): FullScreenColour over the menu scene, then the logo pops in (In_ScaleHitXY) with the Grenade
-// sound and the WXP_FE_BigPoof smoke (SpawnDelay 300 ms) swirls around it
+// Stage 1 (WXFE.PreStart): the menu scene unveiled (its FullScreenColour applies only to popups), then the logo pops in
+// (In_ScaleHitXY) with the Grenade sound and the WXP_FE_BigPoof smoke (SpawnDelay 300 ms) swirls around it
 void intro() {
     Ui::background();
-    DrawRectangle(0, 0, 1280, 720, {64, 45, 24, 180});
     float p = t - POP, tp = t - POOF;
     if (p < 0) return;
     Texture2D puff = Ui::art("hud/trailparticle");  // W4M's cartoon smoke cluster
@@ -41,7 +40,7 @@ void intro() {
             if ((depth > 0) != (front == 1)) continue;
             Vector2 q = {c.x + cosf(a) * 450 * spread, c.y + 30 + depth * 170 * spread + sinf(t * 2 + i) * 10};
             float size = (120 + 35 * sinf(i * 1.7f + t * 3)) * (0.8f + 0.25f * depth);
-            unsigned char g = (unsigned char)(150 + 45 * depth);
+            unsigned char g = (unsigned char)(255 * (1 - 0.45f * tp / 2));  // BigPoof ParticleColor white -> 0.55 over its 2 s life
             Color col = {g, g, g, (unsigned char)(220 * fminf(tp / 0.3f, 1))};
             if (puff.id) sprite(puff, q, size, i * 40 + t * 30, col);
             else DrawCircleV(q, size * 0.45f, col);
