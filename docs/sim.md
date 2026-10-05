@@ -220,7 +220,7 @@ Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `
 
 Constants (sim.h / sim.cpp): gravity 12.5 m/s² (W4M Gravity −0.00025 units/ms², data; low gravity × 0.5, Low.Gravity.OnValue);
 walk 3.0625 m/s (Walk.Speed, data; Quick Walk: VelocityScale 2, 0x5d6bc0, disasm); jumps: tapped or held forward (3.16, 7.91) m/s, held still: vertical 9.35 m/s,
-pressed twice: backflip (−1.58, 10) or forward flip (1.58, 10) (W4M 0x5a5d30 / 0x95fb88 / 0x95fb7c, data); fall damage above 15 m/s:
+pressed twice: backflip (−1.58, 10) with the stick against the facing, else forward flip (1.58, 10), the stick at rest included (W4M 0x5a5d30 / 0x95fb88 / 0x95fb8c, data; +0x159, docs/w4m/physics.md DetectJump, disasm); `jumpTick` returns the W4M kWE code (3 / 4 / 5 / 6), carried in `GameEvent::Jump.weapon` to pick the Jump / Backflip / Fwdflip clip (main.cpp), and the worm keeps its yaw through the 300 ms window (DetectJump never writes Orientation, disasm); the AI backflips with the stick back (ours: W4M's AI executor sends no JumpBack); fall damage above 15 m/s:
 trunc((v − 15) × 2) + 1 hp (`Game::fallDamage`, shared with the AI; W4M FallDamage 0x5ac3e0, FallDamageRatio 100, data; Max Fall: FallDamageRatio × FallingScale 2, Wormpot.lub, data; none when the scheme has fall damage off or under Wormpot Worms Drown, SetNoFallDamage); no fall
 damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack landing: a foot touching land lands the pack minus its normal speed (W4M 0x562f72, disasm), so `stepWorm` skips `land()` while `jet`; a dry pack falls and hurts as any fall (docs/w4m/physics.md FallDamage); the fall also rumbles the worm's pad: Heavy 100/255 for 500 ms (0x4bc410, disasm; GameEvent::Fall).
 

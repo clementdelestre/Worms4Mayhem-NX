@@ -829,6 +829,46 @@ static void checkEventCameras() {
         for (int t = 0; t < 60 * 4; t++) Controls::camera(cam, g, false, false, false, Game::DT);
         assert(Vector3Distance(cam.position, pos) < 0.01f && Vector3Distance(cam.target, look) < 0.1f);
     }
+    {  // a donkey dropped from the Blimp: served while the worm is active, so in the PiP (0x51c000), grown at once by the EndTurn of its
+       // 0 ms retreat (0x51e382); DonkeyCamera fixed at spawn + (0, -500, 500) units, default lens, up (0, 1, 0), the donkey in frame
+        Game g;
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+        settle(g);
+        Controls::reset();
+        Worm &a = g.worms[g.current];
+        g.weapon = weaponNamed("Concrete Donkey");
+        g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
+        Camera3D cam = {Vector3Add(a.pos, {0, 5, -8}), a.pos, {0, 1, 0}, 30, CAMERA_PERSPECTIVE};  // a zoomed lens before
+        Input in;
+        in.buttons = Input::TARGET;
+        for (int t = 0; t < 30; t++) g.step(in), Controls::camera(cam, g, false, false, false, Game::DT);
+        in.buttons = Input::TARGET | Input::FIRE;
+        for (int t = 0; t < 60 && (g.step(in), g.shots.empty()); t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        assert(!g.shots.empty() && g.phase != Phase::Aim);
+        Vector3 spawn = g.shots[0].pos, eye = Vector3Add(spawn, {0, -Game::DONKEY_EXTRA, 25});
+        int frames = 0, inset = 0, grown = 0, framed = 0, held = 0;
+        for (int t = 0; t < 60 * 12 && g.phase != Phase::Aim; t++) {
+            bool chase = !g.shots.empty();
+            Controls::camera(cam, g, chase, false, false, Game::DT);
+            float show, full;
+            Camera3D v;
+            bool in = Controls::inset(v, show, full);
+            if (t < 3) fprintf(stderr, "dbg t%d in%d show%.3f full%.3f phase%d\n", t, in, show, full, (int)g.phase);
+            if (t == 0) assert(in && show < 0.1f && full == 0);  // slid on, then growing from where it is
+            inset += in, grown += in && full > 0;
+            if (!in && chase) {
+                frames++;
+                if (!(Vector3Distance(cam.position, eye) < 0.01f && fabsf(cam.fovy - Controls::FOV0) < 0.01f && Controls::viewUp(cam).y > 0.3f)) fprintf(stderr, "dbg t%d d%.3f fov%.2f up%.3f pos %.2f %.2f %.2f eye %.2f %.2f %.2f\n", t, Vector3Distance(cam.position, eye), cam.fovy, Controls::viewUp(cam).y, cam.position.x, cam.position.y, cam.position.z, eye.x, eye.y, eye.z);
+                assert(Vector3Distance(cam.position, eye) < 0.01f && fabsf(cam.fovy - Controls::FOV0) < 0.01f && Controls::viewUp(cam).y > 0.3f);
+                Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), to = Vector3Normalize(Vector3Subtract(g.shots[0].pos, cam.position));
+                framed += Vector3DotProduct(f, to) > cosf(Controls::FOV0 / 2 * DEG2RAD);
+            }
+            if (!chase && !in && g.phase == Phase::Settle && Vector3Distance(cam.position, eye) < 0.01f) held++;
+            g.step(Input{});
+        }
+        assert(inset >= 25 && inset <= 32 && grown >= inset - 1);  // FullScreenTime 500 ms
+        assert(frames > 60 * 6 && framed > frames * 9 / 10 && held > 30);
+    }
     {  // an event camera held to the next turn: the view eases back to the worm at PosUpdateSpeed 0.1 a frame (CMS 0x51b940), no cut
         Game g;
         g.start({43, 2, 1, "", 0}), g.hotSeat = 0;
@@ -859,6 +899,7 @@ static void checkEventCameras() {
         if (!lost) for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
         float top = a.pos.y + 12;
         g.phase = Phase::Settle, g.timer = 1;  // no worm active: the TrackCam full screen
+        Controls::camera(cam, g, false, false, false, Game::DT);  // the turn ended an update before the shot
         g.shots.push_back({{a.pos.x, top, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
         g.shots.back().touching = 0;
         Vector3 before = cam.position, cutAt{}, end{};
@@ -1058,7 +1099,7 @@ static void checkEventCameras() {
         if (sea) assert(n > 20 && Vector3Distance(cam.target, spot) > 2);
         else assert(n > 30 && seen > (n - 20) * 7 / 10);
     }
-    {  // AlienAbductionCamera 0x547490: worm + 10 + (0, 50, 50) units while the beam lifts it, then the fixed shot above the UFO once it is spat out
+    {  // AlienAbductionCamera 0x547490: worm + 10 + (0, 50, 50) units where the beam starts lifting it, then above the UFO once it is spat out; placed at each serve only (0x531f70)
         Game g;
         g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
@@ -1075,11 +1116,13 @@ static void checkEventCameras() {
         Camera3D cam = away();
         int close = 0, fixed = 0;
         float top = g.terrain.colTop.empty() ? 20 : g.terrain.colTop.back() * Terrain::VOX;
+        Vector3 liftAt{};
         for (int t = 0; t < 60 * 40 && g.abducting(); t++) {
             Controls::camera(cam, g, false, false, false, Game::DT);
             Vector3 u = g.ufo()->pos;
-            float d = Vector3Distance(cam.position, Vector3Add(w.pos, {0, 0.5f, 0}));
-            close += g.ufo()->stage == Game::ABD_LIFTING && fabsf(d - 3.536f) < 0.05f && cam.position.y > w.pos.y;
+            bool lifting = g.ufo()->stage == Game::ABD_LIFTING;
+            if (lifting && liftAt.y == 0) liftAt = cam.position, assert(fabsf(Vector3Distance(cam.position, Vector3Add(w.pos, {0, 0.5f, 0})) - 3.536f) < 0.05f);
+            close += lifting && Vector3Distance(cam.position, liftAt) < 0.01f;
             fixed += g.ufo()->stage == Game::ABD_SPITTING && !g.aboard(1 - g.current) && Vector3Distance(cam.position, {u.x, top, u.z + 10}) < 0.1f;
             g.step(Input{});
         }
@@ -1747,16 +1790,18 @@ static void checkJumps() {
         along = Vector3DotProduct(b.vel, facing(b));
         return b.vel.y;
     };
-    float along, up = leave(true, false, 0, along);
-    assert(along < -1.5f && up > 9.5f);  // backflip
+    float along, up = leave(true, false, -127, along);
+    assert(along < -1.5f && up > 9.5f);  // backflip: stick back
     up = leave(true, false, 127, along);
     assert(along > 1.5f && along < 1.7f && up > 9.5f);  // forward flip
+    up = leave(true, false, 0, along);
+    assert(along > 1.5f && along < 1.7f && up > 9.5f);  // no input: forward too (+0x159 set, no JumpBack key)
     up = leave(false, true, 0, along);
     assert(fabsf(along) < 0.01f && up > 9 && up < 9.4f);  // held: vertical jump
     up = leave(false, true, 127, along);
     assert(along > 3 && up < 8);  // held with the stick forward: a normal jump
 
-    Game f;  // a double press: one backflip, one Jump event, nothing re-armed on landing
+    Game f;  // a double press: one forward flip, one Jump event, nothing re-armed on landing
     f.start({31, 2, 1, "", 0}), f.hotSeat = 0;
     settle(f);
     Worm &b = f.worms[f.current];
@@ -1767,12 +1812,12 @@ static void checkJumps() {
         in.buttons = t == 0 || t == 2 ? Input::JUMP : 0;
         f.step(in);
         for (const GameEvent &e : f.events) jumps += e.kind == GameEvent::Jump;
-        if (was && !b.grounded && b.vel.y > 5) launches++, assert(Vector3DotProduct(b.vel, facing(b)) < -1.5f);  // not a slide off a ledge
+        if (was && !b.grounded && b.vel.y > 5) launches++, assert(Vector3DotProduct(b.vel, facing(b)) > 1.5f);  // not a slide off a ledge
         was = b.grounded;
     }
     assert(jumps == 1 && launches == 1 && !f.jumpDelay);
 
-    // Switch timing: press 1-6 ticks, gap 1-12, press 1-6 (frames of 1-3 ticks): always a backflip
+    // Switch timing: press 1-6 ticks, gap 1-12, press 1-6 (frames of 1-3 ticks): always a flip
     for (int hold = 1; hold <= 6; hold++)
         for (int gap = 1; gap <= 12; gap++) {
             Game s;
@@ -1784,8 +1829,29 @@ static void checkJumps() {
                 in.buttons = t < hold || (t >= hold + gap && t < 2 * hold + gap) ? Input::JUMP : 0;
                 s.step(in);
             }
-            assert(!c.grounded && Vector3DotProduct(c.vel, facing(c)) < -1.5f && c.vel.y > 9.5f);
+            assert(!c.grounded && Vector3DotProduct(c.vel, facing(c)) > 1.5f && c.vel.y > 9.5f);
         }
+
+    // the pad (HEADING): double tap while walking forward, or pulling back in the window; the worm does not turn in DetectJump
+    for (int back = 0; back < 2; back++) {
+        Game h;
+        h.start({31, 2, 1, "", 0}), h.hotSeat = 0;
+        settle(h);
+        Worm &c = h.worms[h.current];
+        float yaw = c.yaw;
+        int ev = 0;
+        for (int t = 0; t < 30 && !ev; t++) {
+            Input in;
+            in.buttons = Input::HEADING | (t == 10 || t == 12 ? Input::JUMP : 0), in.walk = 127;
+            in.turn = (int8_t)lroundf(wrapPi(yaw + (back && t > 10 ? PI : 0)) / PI * 128);
+            h.step(in);
+            for (const GameEvent &e : h.events) if (e.kind == GameEvent::Jump) ev = e.weapon;
+            if (t > 10) assert(fabsf(wrapPi(c.yaw - yaw)) < 0.05f);
+        }
+        float a = Vector3DotProduct(c.vel, facing(c));
+        if (back) assert(ev == 4 && a < -1.5f && c.vel.y > 9.5f);  // W4M kWE 4 Backflip
+        else assert(ev == 5 && a > 1.5f && a < 1.7f && c.vel.y > 9.5f);  // kWE 5 Fwdflip: FwdFlipVx 0.031623 (0x95fb88), vy 0.2
+    }
 }
 
 // Dynamite: the worm walks away while the fuse burns, can't fire again, and the blast ends the turn.

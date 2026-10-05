@@ -170,6 +170,8 @@ Each frame:
 | 2 (held all 300 ms) | input·facing > 0 | normal jump | 3 |
 | 2 | otherwise | (0, VerticalVy, 0) | 6 vertical jump |
 
+- input is 0x5ab3d0's camera-relative stick, dotted with the facing from Orientation (+0x90); DetectJump only reads Orientation, so the worm does not turn in the window [disasm].
+- +0x159 [disasm + data]: 1 at reset (0x5ac6b6) and on Activate (0x5aaca2); 0 on `Input.JumpBackPressed` / `Released` (0x5ac957 / 0x5ac982), which only the jump key sends, and only when the PC control option `FETXT.Control.Backflip` (InputDetails Type 7 kIM_BackFlip, Key at +0x18) is "Backwards" (0x4deea0; toggle 0x748466, Key 0 "Forwards", 1 "Backwards"). DEFSAVE.XOM sets Key 0 for both FETXT.Control.Backflip and FETXT.Joypad.Control.Backflip, so by default a double tap with no stick is a forward flip; a backflip needs the stick against the facing.
 - Every launch then does: Velocity = launch, Aftertouch = 0, Flags |= 1 (air control on), state → **Ballistic (2)**.
 - A second variant runs when global 0x95a100+0x9b bit 0x40 is set and entity +0x15a == 0 (assumed: analog control). It scales the tap jump's horizontal speed by the input magnitude (quantised to 1/4) and by hold/300 ms (1/8 steps).
 

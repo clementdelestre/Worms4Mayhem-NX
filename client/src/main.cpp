@@ -293,7 +293,8 @@ static const char *tauntClip(const WeaponDef &d) {
 // Render-only gait state: the sim walks worms by moving pos (vel stays 0), so the cycle follows position deltas.
 // act: one-shot clip started by a sim event (weapon use, flinch, drowning), held: item kept at the WeaponLocator meanwhile.
 struct WormAnim {
-    Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, flip = false, nailed = false;
+    Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, nailed = false;
+    const char *flip = nullptr;  // kWE 4 Backflip / 5 Fwdflip clip, until it lands
     bool vaulting = false; float vaultT = 9, chute = -1, lr = 0, drowned = -1, spin = -1;  // spin: kWE 22 tumble angle, -1 off  // drowned: s since it sank  // vaultT: s since kWE 9; chute: s open, lr: WXWorm.ParachuteLR
     struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr, *from = nullptr; float fromT = 0; } act;  // aim: Aim* clip layered on the arms; from: windup frame faded out
     // WAE state 1 / 4 (current worm): drawT s since Accessory.Init, drawn: weapon in hand, wind: windup clock (s since FIRE press)
@@ -305,6 +306,7 @@ static std::vector<WormAnim> wormAnims;
 static void animEvent(const Game &g, const GameEvent &e) {
     if (e.worm < 0 || e.worm >= (int)g.worms.size()) return;
     wormAnims.resize(g.worms.size());
+    if (e.kind == GameEvent::Jump && e.weapon >= 0) wormAnims[e.worm].flip = e.weapon == 4 ? "Backflip" : e.weapon == 5 ? "Fwdflip" : nullptr;
     WormAnim::Act &a = wormAnims[e.worm].act;
     const char *c = nullptr, *h = nullptr;
     bool keep;
@@ -360,7 +362,6 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
             if (done) c = {};
         }
         if (!w.grounded && (fabsf(w.vel.y) > 1 || a.air > 0)) {  // ignore slope-contact flicker; the apex (|vy| < 1) stays airborne
-            if (a.air == 0) a.flip = w.vel.x * sinf(w.yaw) + w.vel.z * cosf(w.yaw) < -0.5f;  // backflip leaves backwards
             a.air += dt, a.fallV = fminf(a.fallV, w.vel.y), a.walk = 0, a.moving = false;
             // kWE 22 (0x5a3a60): falling past 0.3 units/ms (15 m/s), Skid and a 2 pi rad/s tumble (0x5a0593)
             // the angle (+0x158) carries on: 0 from a jump or fall (0x5a01a0 zeroes it), the mode-0 flight pitch asin(vy/|v|) from a blast (0x5a0617)
@@ -376,7 +377,7 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         }
         a.spin = -1;
         if (a.air > 0.2f && a.fallV < -4 && w.alive) a.land = 0, Audio::play(Audio::Sfx::Land, w.pos);
-        a.air = a.fallV = 0, a.land += dt;
+        a.air = a.fallV = 0, a.land += dt, a.flip = nullptr;
         float step = dist + turn * 0.6f;  // turning in place shuffles at half the walk pace
         a.still = step > 1e-4f ? 0 : a.still + dt;
         a.moving = w.alive && a.still < 0.1f;  // bridges render frames that ran no sim tick
@@ -526,7 +527,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     } else if (a.spin >= 0 && a.air > 0) clip = "Skid", t = a.air;  // tumbling down
     else if (bool air = a.air > 0.15f || w.vel.y > 2; air && speed > 4) clip = "Blastflight2";  // knocked flying (short drops keep the pose)
     else if (air) {
-        clip = a.flip ? "Backflip" : w.vel.y > 0 ? "Jump" : "Fall";
+        clip = a.flip ? a.flip : w.vel.y > 0 ? "Jump" : "Fall";
         if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
     } else if (a.vaultT < Models::clipLength("worm", "Vault")) clip = "Vault", t = a.vaultT, loop = false;  // kWE 9: Walking -> Vaulting
     else if (a.moving || a.walk > 0) clip = "Walk", t = a.walk;

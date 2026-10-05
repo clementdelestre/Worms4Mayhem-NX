@@ -184,7 +184,7 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 | repath | a walk step held off its node (`stuck`) blocks that node (`blocked`) and pathfinds again to the same goal (`walking`, `repath`); past 2 repaths on one path the worm may not move this turn (`noMove`); also during the retreat | path-failed blockage, repath, "too many repaths, forbidding further movement" past 2 (0x490551 → 0x490601) | disasm |
 
 - `stepInput`: walk turns at 2.5 rad/s, walks when off by < 0.3 rad with stick ∝ distance; a jump aligns within 2e-3 rad then presses JUMP,
-  a second press makes a backflip (yaw + π); the air phase ends when still or after 400 ticks. A path is followed with the sim's own
+  a second press with the stick held back makes a backflip (yaw + π; ours: no JumpBack key); the air phase ends when still or after 400 ticks. A path is followed with the sim's own
   walk, vault and jump code (the stick stays held while vaulting).
 - Jump error (`takePath`, W4M 0x496f24, **disasm**): each jump's displacement scaled per component by 1 + jumpErr·noise; only the heading changes.
 

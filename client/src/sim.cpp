@@ -2349,7 +2349,7 @@ void Game::step(const Input &raw) {
     if (w.alive && icarus != 3 && (phase == Phase::Aim || retreating())) {  // drinking: W4M Worm.DisableMovementRef
         bool head = in.buttons & Input::HEADING;  // W4M 0x5b107c: walking sets Orientation to the input at once; the jetpack turns at 0x561e40's rate
         float rate = head ? wrapPi(in.turn * PI / 128 - w.yaw) / DT : in.turn / 127.0f * 2.5f, lim = jetting ? JET_TURN : head ? PI / DT : 2.5f;
-        if (!aimCursor && !vault.t && !roped && !(chute && !w.grounded)) w.yaw += Clamp(rate, -lim, lim) * DT;  // W4M Vaulting keeps the Orientation; the rope's 0x5729e0 too
+        if (!aimCursor && !vault.t && !jumpDelay && !roped && !(chute && !w.grounded)) w.yaw += Clamp(rate, -lim, lim) * DT;  // W4M Vaulting keeps the Orientation; the rope's 0x5729e0 too
         if (aimCursor && blimped(WEAPONS[weapon].kind)) {  // W4M IsometricCam 0x52a5e0
             if (!cursorOn) cursorYaw = w.yaw, cursorPitch = BLIMP_PITCH, cursor = blimpFocus(w.pos, w.yaw), cursorOn = true;
             cursorYaw += in.turn / 127.0f * BLIMP_TURN * DT;
@@ -2387,9 +2387,9 @@ void Game::step(const Input &raw) {
         steerIn = aimCursor ? Vector3{} : Vector3Scale(head ? flat(in.turn * PI / 128) : flat(w.yaw), in.walk / 127.0f);
         Vector3 jv;
         if ((pressed & Input::JUMP) && !jumpDelay && !vault.t && w.grounded && !w.motion.slide && !tool && !w.nailed && !wp(WP_NO_JUMPING) && !artillery()) jumpDelay = JUMP_WINDOW, jumpKind = 2;
-        else if (jumpDelay && jumpTick(jumpDelay, jumpKind, in.buttons, pressed, in.walk, w.yaw, jv) && w.grounded) {
+        else if (int ev = jumpDelay ? jumpTick(jumpDelay, jumpKind, in, pressed, w.yaw, jv) : 0; ev && w.grounded) {
             w.vel = jv, w.grounded = false, w.motion.air = true;  // DetectJump: Flags |= 1
-            emit(GameEvent::Jump, w.pos, current);
+            emit(GameEvent::Jump, w.pos, current, ev);  // weapon: the W4M kWE code (animation)
         }
     } else {
         jumpDelay = 0, steerIn = {};

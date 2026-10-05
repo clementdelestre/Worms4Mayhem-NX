@@ -289,16 +289,20 @@ struct Game {
     // W4M InputImpulse at full stick: 1/20 unit/ms whatever the walk speed (0x5ab5f3); the walk moves it x Walk.Speed / 0.004 (0x5b0fec)
     static constexpr float INPUT_IMPULSE = 2.5f;
     static constexpr float FWDFLIP_FWD = 1.5811f, VJUMP_UP = 9.354f;  // W4M forward flip vx 0.031623 (0x95fb88), vertical vy 0.18708 (0x95fb7c)
-    // W4M DetectJump 0x5aefa0: release turns held (2) into tapped (0), a second press makes it a flip (1); all launch when the window ends
-    static bool jumpTick(int &delay, uint8_t &kind, uint8_t buttons, uint8_t pressed, int walk, float yaw, Vector3 &vel) {
-        if (kind == 2 && !(buttons & Input::JUMP)) kind = 0;
+    // W4M DetectJump 0x5aefa0: release turns held (2) into tapped (0), a second press makes it a flip (1); all launch when the window ends.
+    // Returns 0 while waiting, else the W4M event: 3 jump, 4 backflip, 5 forward flip, 6 vertical jump
+    static int jumpTick(int &delay, uint8_t &kind, const Input &in, uint8_t pressed, float yaw, Vector3 &vel) {
+        if (kind == 2 && !(in.buttons & Input::JUMP)) kind = 0;
         else if (kind == 0 && (pressed & Input::JUMP)) kind = 1;
-        if (--delay > 0) return false;
+        if (--delay > 0) return 0;
+        // input . facing (0x5ab3d0); zero input flips forward: +0x159 is set on Activate, cleared only by Input.JumpBack (DEFSAVE Backflip option: Forwards)
+        float along = in.buttons & Input::HEADING ? in.walk * cosf(PI * in.turn / 128 - yaw) : in.walk;
         float side = JUMP_FWD, up = JUMP_UP;  // tapped, or held with the stick forward
-        if (kind == 1) side = walk > 0 ? FWDFLIP_FWD : FLIP_BACK, up = FLIP_UP;
-        else if (kind == 2 && walk <= 0) side = 0, up = VJUMP_UP;
+        int ev = 3;
+        if (kind == 1) ev = along >= 0 ? 5 : 4, side = along >= 0 ? FWDFLIP_FWD : FLIP_BACK, up = FLIP_UP;
+        else if (kind == 2 && along <= 0) ev = 6, side = 0, up = VJUMP_UP;
         vel = {sinf(yaw) * side, up, cosf(yaw) * side};
-        return true;
+        return ev;
     }
     float gravity() const;
     static constexpr float MINE_DUD = 0.1f;  // W4M Mine.DudProbability

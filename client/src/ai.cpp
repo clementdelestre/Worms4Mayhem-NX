@@ -214,7 +214,7 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     m.prev = in.buttons;
     Body &b = m.b;
     bool tool = m.roped;
-    if (!m.vault.t && !m.roped) m.yaw += in.turn / 127.0f * 2.5f * DT;
+    if (!m.vault.t && !m.jump && !m.roped) m.yaw += in.turn / 127.0f * 2.5f * DT;
     const float ws = Game::WALK_SPEED * g.walkScale();
     if (m.vault.t) vaultStep(b.pos, m.vault, flat(m.yaw) * (float)in.walk);  // Game::step's vault
     else if (b.grounded && !b.motion.slide && in.walk && !m.jump) {  // Game::step's walk
@@ -225,7 +225,7 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     b.motion.input = flat(m.yaw) * (in.walk / 127.0f);
     Vector3 jv;  // Game::step's jump
     if ((pressed & Input::JUMP) && !m.jump && !m.vault.t && b.grounded && !b.motion.slide && !tool && !g.wp(WP_NO_JUMPING)) m.jump = Game::JUMP_WINDOW, m.kind = 2;
-    else if (m.jump && Game::jumpTick(m.jump, m.kind, in.buttons, pressed, in.walk, m.yaw, jv) && b.grounded) b.vel = jv, b.grounded = false, b.motion.air = true;
+    else if (m.jump && Game::jumpTick(m.jump, m.kind, in, pressed, m.yaw, jv) && b.grounded) b.vel = jv, b.grounded = false, b.motion.air = true;
     if (m.roped) {
         if (pressed & Input::JUMP) m.roped = false, b.vel = g.ropeRelease(m.rope, feetOf(b), Game::ropeSwing(in, m.yaw));
     } else {
@@ -428,7 +428,7 @@ static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::Ste
         return in;
     }
     if (m.jump || !m.b.grounded) {  // forward jump pending, or flying
-        if (s.move == 2 && m.jump && !(m.prev & Input::JUMP)) in.buttons = Input::JUMP;  // second press: backflip
+        if (s.move == 2 && m.jump) in.walk = -127, in.buttons = m.prev & Input::JUMP ? 0 : Input::JUMP;  // second press, stick back: backflip
         r.air = !m.b.grounded;
         return in;
     }
