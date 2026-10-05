@@ -91,6 +91,14 @@ Values shared by all 5 levels:
 4. Delay 1.0 s, camera "Default", then the retreat Path. There is no retreat if `AI.WeaponsDontEndTurn` is set, or if the move should not end the turn.
 5. If no good plan is found, the AI skips the turn. It never skips when locked to a multi-shot weapon: in that case it fires again. Plans with a negative score are forbidden.
 
+### Second actions: plan flags (+0x40) [disasm 0x49e6d0, plan constructors 0x49cb00..0x49dbb0]
+
+- Queue order in 0x49e6d0 by flag: 0x40 path before; 0x20 SetStrikeDirection (+0x2c); 0x10 SetWeaponTarget (+0x14); 0x80 FireWeapon(1, 0) then SetCamera "Default"; 0x2 / 0x400 orientation (0x496350); 0x2000 0x497d80; 0x1000 SetCamera "Head"; 0x4 SetAimAngle; 0x8 SetWeaponFuse; Delay(DelayBeforeFire); 0x1 SetLaunchVelocity; FireWeapon; 0x200 StrafeTowards; **0x800 DetonateWhenGoingAwayFrom(+0x14)**; Delay 1000; 0x1000 SetCamera "Default"; 0x100 retreat path.
+- Flags per constructor: projectile 0x147 (+8 SetWeaponFuse in four subclasses, 0x49cbe0..0x49cd00); TargettedProjectile (Homing) 0x1d7: the target is set (0x10), then a first FireWeapon locks it (0x80) before the aim and launch; direct 0x1147; strike 0x170 (target, direction, no worm orientation); melee 0x2444; close-range explosive 0x541 (+8 CheapDynamite); animal 0x541; Starburst 0x1047; Flood 0x40; non-targeted 0x140.
+- Animal subclasses: Sheep (0x49d810) = 0x541 − 0x100 + **0x800**; Old Woman (0x49d8d0) and Scouser (0x49d930) keep 0x541; Super Sheep (0x49d990) = 0x541 − 0x100, flown by a SUPER_SHEEP path move (0x4a3405 → worm command eType_SuperSheep 0x5a7b1b). **No other code sets 0x800**: the CPU detonates only the Sheep, never the Old Woman or Scouser.
+- DetonateWhenGoingAwayFrom: the worm command arms a payload check, `PayloadLogicEntity::CheckForGoingAwayFromTarget` 0x57e130 (from the payload update 0x576fc0): when |target − (pos + velocity)| > |target − pos| in x, z (y term 0), it sends `Input.FirePressed` once.
+- SetWeaponTarget 0x495d80 queues SetStrikeTarget (vtable 0x821a28) and StrikeOnTargetDelay; SetStrikeTarget 0x4b4c70 writes `AIStrike.TargetPoint`, calls SetCamera("Blimp") (0x4b4c99), then writes `Airstrike.TargetPoint`, `Payload.Target`, `Airstrike.HasTarget` 1, `Airstrike.WaterTarget` 0: the target is set directly, the Blimp is only the view.
+
 ### Shot evaluation [disasm]
 
 - **Launch is exact velocity.** The plan stores a launch vector and SetLaunchVelocity writes `AI.LaunchVelocity`. The AI does not charge the power bar.

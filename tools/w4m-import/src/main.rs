@@ -162,6 +162,7 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("bow_impact", "weapons", &["BowImpact"]),
     ("donkey_impact", "weapons", &["ConcreteDonkeyImpact", "ConcreteDonkeyImpact2", "ConcreteDonkeyImpact3"]),
     ("explosion_boxed", "weapons", &["ExplosionBoxed1"]),  // WXP_ExploArrow_RingDk
+    ("fireworks", "global", &["Firework1", "Firework2", "Firework3"]),  // global/FireWorksExplosion
     ("bat_impact", "weapons", &["BaseballBatImpact"]),  // WXP_AbdTelep_Central's EmitterSoundFX
     ("bubble_inflate", "weapons", &["BubbleMachinePlace"]),  // weapons/BubbleMachineInflate
     ("bubble_wobble", "weapons", &["BubbleMachineWobble"]),

@@ -4,6 +4,7 @@
 #include "models.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include <algorithm>
 #include <cmath>
 
 #ifdef __SWITCH__
@@ -113,7 +114,11 @@ void FrontBg::page(int id) { cur = id >= 0 && id < NPAGES ? id : 0; }
 void FrontBg::draw(float dt) {
     if (!tried) load();
     if (!ok) return;
-    if (GetTime() - lastDraw > 1) Fx::theme("pirate", {150, 200, 240, 255}, "day"), Fx::clear();  // back from a match
+    if (GetTime() - lastDraw > 1) {  // back from a match
+        static const float FE_WATER[14] = {0.5f, 60, 1, 0.2f, 1, 5, 15, 6, 6, 1, 0.4f, 0.4f, 1, 0.1f};  // TWEAK.XOM FE.Water
+        Fx::theme("pirate", {150, 200, 240, 255}, "day", false), Fx::clear();
+        std::copy(FE_WATER, FE_WATER + 14, Lit::sun.water);
+    }
     lastDraw = GetTime();
     elapsed += dt;
     // glide to the page's view (critically damped-ish), plus a slow drift so the scene never freezes

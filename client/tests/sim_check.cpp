@@ -1044,7 +1044,7 @@ static void checkEventCameras() {
         hold(), g.step(Input{});  // back to the aim view: the cursor no longer steers target()
         assert(!g.blimp && Vector3Distance(g.target(), h) > 0.01f);
     }
-    {  // victory fireworks in the OrbitCam frame: ours (camera target +-10 m, 5-10 m up); W4M's own box (Land.Center +-0.5 Radius) leaves the
+    {  // a +-10 m box 5-10 m above the OrbitCam target stays framed; the fireworks' own box (Land.Center +-0.5 Radius, W4M 0x4ffa56) can leave the
        // frame when the orbit swings low (0x530e30), so it is not asserted
         Game g;
         g.start({23, 2, 1, "", 0}), g.hotSeat = 0;

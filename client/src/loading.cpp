@@ -3,6 +3,9 @@
 #include "ui.h"
 #include <cmath>
 #include <string>
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 namespace {
 const float INTRO = 1.5f, FADE = 0.25f, MIN_LOAD = 1.5f, IN = 0.4f;  // seconds
@@ -108,6 +111,14 @@ bool frame(float dt, float progress) {
     if (out < FADE) return false;
     after = 0;
     return true;
+}
+
+void pinCore(int core) {
+#ifdef __SWITCH__
+    svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1u << core);  // libnx threads start on core 0, the main thread's
+#else
+    (void)core;
+#endif
 }
 
 void overlay(float dt) {

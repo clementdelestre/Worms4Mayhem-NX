@@ -100,7 +100,7 @@ Vector3 posOf(int a) {
     if (a == CAMERA) return camPos;
     return a - worms() < (int)props.size() && a >= worms() ? props[a - worms()].pos : Vector3{};
 }
-Vector3 facing(int a) { return isWorm(a) ? Vector3{sinf(G->worms[a].yaw), 0, cosf(G->worms[a].yaw)} : Vector3{0, 0, 1}; }
+Vector3 facing(int a) { return isWorm(a) ? flat(G->worms[a].yaw) : Vector3{0, 0, 1}; }
 int team(int a) { return isWorm(a) ? G->worms[a].team : -1; }
 int activeWorm(const Game &g) { return g.current < (int)g.worms.size() && g.worms[g.current].alive && g.phase != Phase::GameOver ? g.current : NONE; }
 
@@ -406,7 +406,7 @@ Vector3 locator(int i, bool vomit) {
 void stepFx(const Game &g, int i, float dt) {
     Actor &a = actors[i];
     const Worm &w = g.worms[i];
-    Vector3 fwd = {sinf(w.yaw), 0, cosf(w.yaw)};
+    Vector3 fwd = flat(w.yaw);
     for (int k = 0; k < a.nfx;) {
         Actor::Fx &e = a.fx[k];
         float t0 = e.t;

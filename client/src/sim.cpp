@@ -210,7 +210,7 @@ static bool footing(const Terrain &t, Vector3 foot, Vector3 *n = nullptr) {
 
 bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault) {
     const float R = Game::R, U = 0.05f;  // U: one W4M unit
-    Vector3 f = {sinf(yaw), 0, cosf(yaw)}, np = Vector3Add(pos, Vector3Scale(f, dist)), held = np;
+    Vector3 f = flat(yaw), np = Vector3Add(pos, Vector3Scale(f, dist)), held = np;
     float climb = 0;
     while (climb <= Game::STEP_UP && t.solid({np.x, pos.y - R + climb, np.z})) climb += U;
     clearWalls(t, held);
@@ -509,7 +509,7 @@ float Game::rand01() {
 float Game::gravity() const { return GRAVITY * ((cfg.rules & RULE_LOW_GRAVITY) ? 0.5f : 1.0f); }  // W4M Low.Gravity.OnValue 0.5 (TWEAK)
 
 Vector3 Game::aimDir(const Worm &w) const {
-    return {cosf(w.pitch) * sinf(w.yaw), sinf(w.pitch), cosf(w.pitch) * cosf(w.yaw)};
+    return dirOf(w.yaw, w.pitch);
 }
 
 void Game::start(const GameConfig &c) {
@@ -1045,8 +1045,8 @@ float Game::landTop() const {
     float top = 0;
     for (int x = 0; x < Terrain::NX; x += 8)
         for (int z = 0; z < Terrain::NZ; z += 8)
-            for (int y = Terrain::NY - 1; y * Terrain::VOX > top; y--)
-                if (terrain.solid({x * Terrain::VOX, y * Terrain::VOX, z * Terrain::VOX})) { top = y * Terrain::VOX; break; }
+            for (int y = Terrain::NY - 1; y * Terrain::VOX > top; y--)  // on a voxel, solid() is that voxel's density; still counted for the AI
+                if (Terrain::samples++, terrain.at(x, y, z) > 0) { top = y * Terrain::VOX; break; }
     return top;
 }
 
@@ -1095,7 +1095,7 @@ void Game::use(Worm &w) {
         return;
     }
     if (n > 0 && !shotsLeft && !(wd.kind == Kind::Rope && ropeShots) && !(wd.kind == Kind::ChangeWorm && changing)) n--;  // one rope = ROPE_SHOTS launches
-    Vector3 dir = aimDir(w), f = {sinf(w.yaw), 0, cosf(w.yaw)}, tgt = target();
+    Vector3 dir = aimDir(w), f = flat(w.yaw), tgt = target();
     // W4M 0x585a52 / 0x585bc5: off its feet and moving, a payload starts 30 units further along the worm's velocity and inherits it
     const bool carried = (!w.grounded && Vector3LengthSqr(w.vel) > 0) || (vault.t && Vector3LengthSqr(vault.vel) > 0);  // a vault is state 4, off its feet
     const Vector3 carry = carried ? (vault.t ? vault.vel : w.vel) : Vector3{},
@@ -1822,7 +1822,7 @@ void Game::step(const Input &raw) {
     bool aimCursor = phase == Phase::Aim && (in.buttons & Input::TARGET) && !tool;  // walk and aim drive the cursor, whatever the weapon
     if (w.alive && icarus != 3 && (phase == Phase::Aim || retreating())) {  // drinking: W4M Worm.DisableMovementRef
         bool head = in.buttons & Input::HEADING;  // W4M 0x5b107c: walking sets Orientation to the input at once; the jetpack turns at 0x561e40's rate
-        float rate = head ? remainderf(in.turn * PI / 128 - w.yaw, 2 * PI) / DT : in.turn / 127.0f * 2.5f, lim = jetting ? JET_TURN : head ? PI / DT : 2.5f;
+        float rate = head ? wrapPi(in.turn * PI / 128 - w.yaw) / DT : in.turn / 127.0f * 2.5f, lim = jetting ? JET_TURN : head ? PI / DT : 2.5f;
         if (!aimCursor && !vault.t) w.yaw += Clamp(rate, -lim, lim) * DT;  // W4M Vaulting keeps the Orientation
         if (aimCursor && blimped(WEAPONS[weapon].kind)) {  // W4M IsometricCam 0x52a5e0
             if (!cursorOn) cursorYaw = w.yaw, cursorPitch = BLIMP_PITCH, cursor = blimpFocus(w.pos, w.yaw), cursorOn = true;
@@ -1848,9 +1848,9 @@ void Game::step(const Input &raw) {
         const float ws = WALK_SPEED * (cfg.wormpot & WP_QUICK_WALK ? 2 : 1);  // quick walk x2: ours
         if (vault.t) {  // W4M 0x5ab3d0: the camera-relative stick, here the heading or the facing
             float y = head ? in.turn * PI / 128 : w.yaw;
-            vaultStep(w.pos, vault, aimCursor ? Vector3{} : Vector3Scale({sinf(y), 0, cosf(y)}, in.walk));
+            vaultStep(w.pos, vault, aimCursor ? Vector3{} : Vector3Scale(flat(y), in.walk));
         } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed) {  // W4M Sliding: no walking
-            Vector3 walkV = Vector3Scale({sinf(w.yaw), 0, cosf(w.yaw)}, in.walk / 127.0f * INPUT_IMPULSE), was = w.pos;  // W4M Velocity = InputImpulse (0x546f10)
+            Vector3 walkV = Vector3Scale(flat(w.yaw), in.walk / 127.0f * INPUT_IMPULSE), was = w.pos;  // W4M Velocity = InputImpulse (0x546f10)
             if (walkStep(terrain, w.pos, w.yaw, in.walk / 127.0f * ws * DT, &vault)) w.vel = walkV, w.motion.air = true;  // Fall(InputImpulse) 0x5b14c7, air control on
             else if (vault.t) vault.vel = walkVel;  // the vault start writes no Velocity: the last step's
             else {
@@ -1858,7 +1858,7 @@ void Game::step(const Input &raw) {
                 slideIfSteep(terrain, w.pos, w.vel, w.motion, walkV, cfg.wormpot);
             }
         } else if (!vault.t) walkVel = {};  // idle branch 0x5b1c1b zeroes Velocity
-        steerIn = aimCursor ? Vector3{} : Vector3Scale(head ? Vector3{sinf(in.turn * PI / 128), 0, cosf(in.turn * PI / 128)} : Vector3{sinf(w.yaw), 0, cosf(w.yaw)}, in.walk / 127.0f);
+        steerIn = aimCursor ? Vector3{} : Vector3Scale(head ? flat(in.turn * PI / 128) : flat(w.yaw), in.walk / 127.0f);
         Vector3 jv;
         if ((pressed & Input::JUMP) && !jumpDelay && !vault.t && w.grounded && !w.motion.slide && !tool && !w.nailed && !(cfg.wormpot & WP_NO_JUMPING)) jumpDelay = JUMP_WINDOW, jumpKind = 2;
         else if (jumpDelay && jumpTick(jumpDelay, jumpKind, in.buttons, pressed, in.walk, w.yaw, jv) && w.grounded) {
@@ -1876,7 +1876,7 @@ void Game::step(const Input &raw) {
         emit(GameEvent::Fire, w.pos, current, weapon);
     }
     if (w.alive && (phase == Phase::Aim || (tool && (phase == Phase::Flying || phase == Phase::Retreat)))) {
-        Vector3 push = Vector3Scale({sinf(w.yaw), 0, cosf(w.yaw)}, in.walk / 127.0f * DT);
+        Vector3 push = Vector3Scale(flat(w.yaw), in.walk / 127.0f * DT);
         bool armed = phase == Phase::Aim && !utility(WEAPONS[weapon].kind);  // a weapon in hand: FIRE and the aim axis are its own
         if (roped) {
             if (pressed & Input::JUMP) roped = false;
@@ -1890,7 +1890,7 @@ void Game::step(const Input &raw) {
             if ((w.grounded && !burn) || (burn && fuel <= JET_DRY)) jetting = false;  // landed (0x562f72), or dry (0x562990): it falls
             else {
                 const float n = DT / 0.02f, h = fmaxf(w.pos.y - water, 0);  // W4M steps per tick; height over Water.Level
-                Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, a = {0, 0, 0};
+                Vector3 f = flat(w.yaw), a = {0, 0, 0};
                 float want = in.buttons & Input::HEADING ? PI * in.turn / 128 : w.yaw;  // W4M InputImpulse: the stick's direction (HEADING), else the facing
                 bool fwd = in.walk > 1, along = fwd && sinf(want) * w.vel.x + cosf(want) * w.vel.z > 0;  // InputImpulse . Velocity > 0 (0x5628ef, 0x562b81)
                 if (burn) {
@@ -1945,7 +1945,7 @@ void Game::step(const Input &raw) {
     if (icarus && (WEAPONS[weapon].kind != Kind::Icarus || !w.alive)) icarus = 0, drift = {};  // a weapon change deletes it (0x587540)
     if (bubbleAt >= 0 && (WEAPONS[weapon].kind != Kind::Bubble || !w.alive)) bubbleAt = -1;  // Weapon.Delete ends the utility first
     if (bubbleAt >= 0 && clock >= bubbleAt) {  // 0x550190: spawned beside the worm, then falls freely
-        Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {cosf(w.yaw), 0, -sinf(w.yaw)};
+        Vector3 f = flat(w.yaw), side = {cosf(w.yaw), 0, -sinf(w.yaw)};
         // velocity 0.02 units/ms along (forward - up), orientation yaw + 1.3439 rad (0x55021d, 0x55031c)
         bubbles.push_back({Vector3Add(w.pos, Vector3Add(Vector3Add(Vector3Scale(f, 0.623f), Vector3Scale(side, -0.097f)), {0, 0.47f, 0})), {f.x, -1, f.z}, 6, w.yaw + 1.3439f});
         emit(GameEvent::BubbleNew, bubbles.back().pos);
@@ -1960,7 +1960,7 @@ void Game::step(const Input &raw) {
     else if (icarus == 2 && w.grounded) icarus = 1;  // landed: the wings fold
     if (icarus == 2) {  // 0x587970: JUMP and back-jump flap alike; too early restarts the wait, a missed window waits a beat
         while (clock >= flapAt + FLAP_WAIT) flapAt += FLAP_BEAT;
-        Vector3 was = drift, f = {sinf(w.yaw), 0, cosf(w.yaw)};
+        Vector3 was = drift, f = flat(w.yaw);
         drift = Vector3Add(drift, Vector3Scale(f, in.walk / 127.0f * AFTERTOUCH));  // WXWorm.AftertouchDelta 0.015 u/ms a frame
         if (Vector3Length(drift) > AFTERTOUCH_MAX) drift = Vector3Scale(Vector3Normalize(drift), AFTERTOUCH_MAX);  // AftertouchStrength 0.1
         w.vel = Vector3Add(w.vel, Vector3Subtract(drift, was));
@@ -2069,7 +2069,7 @@ void Game::stepGirder(const Input &in, uint8_t pressed) {
     if (girderWait > 0 && --girderWait) return;
     bool tilt = in.buttons & Input::PITCH;
     int side = tilt ? 0 : in.aim;
-    Vector3 fwd = {sinf(cursorYaw), 0, cosf(cursorYaw)}, right = {-cosf(cursorYaw), 0, sinf(cursorYaw)}, d = {0, 0, 0};
+    Vector3 fwd = flat(cursorYaw), right = {-cosf(cursorYaw), 0, sinf(cursorYaw)}, d = {0, 0, 0};
     if (side > 40) d = right;
     else if (side < -40) d = Vector3Negate(right);
     else if (in.walk < -40) d = Vector3Negate(fwd);

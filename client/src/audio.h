@@ -29,6 +29,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  Throw, SecretLaunch,  // W4M weapons/Throw, weapons/SecretWeapLaunch: LaunchSfx of a Factory thrown / launched weapon (0x598fc0, 0x599167)
                  TickSlow,  // W4M weapons/ClockSlow (HudClockEntity 0x5efd80); Tick is ClockFast
                  BowImpact, ExplosionBoxed, DonkeyImpact,  // W4M weapons/ConcreteDonkeyImpact: WXP_DonkeyStrikeBounce's EmitterSoundFX; W4M Poison Arrow: ArmSfxLoop on impact; WXP_ExploArrow_RingDk's EmitterSoundFX (its DetonationSfx is empty)
+                 Fireworks,  // W4M global/FireWorksExplosion (Firework1-3)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,

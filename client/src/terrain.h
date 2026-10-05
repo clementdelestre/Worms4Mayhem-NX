@@ -60,7 +60,7 @@ struct Terrain {
     void decodeTextures();  // CPU only (worker thread): moves the PNG decode out of remesh
     void remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call
     void draw() const;
-    void setFog(Vector3 cam, Color c, float start, float end) const;  // textured maps only
+    void setView(Vector3 cam) const;  // camera for the land and model shaders (W4M Landscape.cg: no fog)
     void drawObjects(Vector3 cam) const;
     void unload();
 

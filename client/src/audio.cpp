@@ -1,5 +1,6 @@
 #include <cstring>
 #include "audio.h"
+#include "loading.h"
 #include "raylib.h"
 #include "raymath.h"
 
@@ -7,6 +8,7 @@
 #include <cmath>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef __SWITCH__
@@ -36,14 +38,14 @@ const char *SFX_NAMES[] = {
     "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
     "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
-    "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact",
+    "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m/audio.md §12): the event of each file, its gain in dB
 // (event + sound definition + category), loop, 3D linear rolloff min..max in m (20 units/m; 0 = 2D), max playbacks.
 // fade: FEV fade in/out, s; w: FEV wave weights, null = equal; mode: FEV sounddef play mode (see pick);
 // delay: sounddef trigger delay min/max ms (+64/+66); spawn: spawn time min/max ms (+4/+8), for oneshot instances that respawn (hold)
-struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; };
+struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; };
 // every other multi-wave def has equal weights in the FEV (100 each, 20 on OldWomanMutter)
 const int W_SCOUSER_HELD[] = {100, 300, 100};
 const Def DEFS[] = {
@@ -130,7 +132,7 @@ const Def DEFS[] = {
     {"weapons/ShotgunEquip", -12, false, 0.5f, 500, 1},
     {"weapons/SniperEquip", -12, false, 0.5f, 500, 1},
     {"weapons/UmbrellaOpen", -12, false, 0, 0, 1},  // 2D
-    {"weapons/SheepHeld", -9.2f, false, 0.5f, 25, 1, 0, nullptr, 3, {1000, 3000}, {0, 1}},  // 3D log 10..500 units
+    {"weapons/SheepHeld", -9.2f, false, 0.5f, 25, 1, 0, nullptr, 3, {1000, 3000}, {0, 1}, true},
     {"weapons/SentryGunHeld", -8, true, 0.5f, 20, 1, 0.35f},
     {"weapons/ScouserHeld", 0, false, 0.5f, 60, 1, 0, W_SCOUSER_HELD, 0, {200, 1200}, {0, 1}},
     {"weapons/OldWomanHeld", -7, false, 0.5f, 60, 1, 0, nullptr, 0, {200, 1600}, {0, 1}},
@@ -150,6 +152,7 @@ const Def DEFS[] = {
     {"weapons/BowImpact", 0, false, 0.5f, 100, 1},  // 3D linear 10..2000 units
     {"weapons/ExplosionBoxed", -2, false, 0, 0, 4},  // 2D
     {"weapons/ConcreteDonkeyImpact", 0, false, 0, 0, 1, 0, nullptr, 2},  // 2D, 3 waves
+    {"global/FireWorksExplosion", 0, false, 0.5f, 25, 1, 0, nullptr, 2, {}, {}, true},  // EmitterSoundFX of the WXPF_ / Starburst bangs
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -220,13 +223,13 @@ void unload(Variants &v) {
     v.slot.clear(), v.n = 0;
 }
 
-// FMOD 3D linear rolloff (full volume inside min, silent past max) and pan from the listener's right
+// FMOD 3D rolloff: linear (full inside min, silent past max) or log (min / distance, constant past max); pan from the listener's right
 float place(Sound s, const Def &d, float gain, const Vector3 *at) {
     float pan = 0;
     if (at && d.max > 0) {
         Vector3 to = Vector3Subtract(*at, ear);
         float dist = Vector3Length(to);
-        gain *= Clamp((d.max - dist) / (d.max - d.min), 0, 1);
+        gain *= d.log ? d.min / Clamp(dist, d.min, d.max) : Clamp((d.max - dist) / (d.max - d.min), 0, 1);
         if (dist > 1e-3f) pan = Vector3DotProduct(to, earRight) / dist;
     }
     SetSoundVolume(s, gain), SetSoundPan(s, pan);
@@ -333,10 +336,14 @@ bool openMusic(const char *name) {
 
 void init() {
     InitAudioDevice();
-    for (int i = 0; i < (int)Sfx::Count; i++) {
-        sfx[i] = loadVariants(std::string(ASSET_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
-        if (!sfx[i].n) sfx[i] = loadVariants(std::string(ROMFS_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
-    }
+    auto load = [](int first) {  // two decoders: the OGG decode is most of the boot after the models
+        for (int i = first; i < (int)Sfx::Count; i += 2) {
+            sfx[i] = loadVariants(std::string(ASSET_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
+            if (!sfx[i].n) sfx[i] = loadVariants(std::string(ROMFS_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
+        }
+    };
+    std::thread odd(load, 1);
+    load(0), odd.join();
     std::vector<std::string> dirs = bankDirs(ASSET_ROOT);
     if (dirs.empty()) dirs = bankDirs(ROMFS_ROOT);
     for (auto &d : dirs) banks.push_back(Bank{d, false, {}});
@@ -448,13 +455,15 @@ void loop(Sfx id, bool on, const Vector3 *at, float volume) {
 }
 
 // banks load lazily (~30 decoded upfront would cost ~300 MB); preloadVoices() moves the hitch to match start
-static Bank &bankOf(int team) {
+static void load(Bank &b) {
+    if (b.loaded) return;
+    for (int i = 0; i < (int)Voice::Count; i++) b.lines[i] = loadVariants(b.dir + "/" + VOICE_NAMES[i], 1);
+    b.loaded = true;
+}
+static Bank &bankOf(int team, bool loaded = true) {
     int k = team < (int)teamBank.size() && teamBank[team] >= 0 ? teamBank[team] : team;
     Bank &b = banks[k % banks.size()];
-    if (!b.loaded) {
-        for (int i = 0; i < (int)Voice::Count; i++) b.lines[i] = loadVariants(b.dir + "/" + VOICE_NAMES[i], 1);
-        b.loaded = true;
-    }
+    if (loaded) load(b);
     return b;
 }
 
@@ -470,8 +479,14 @@ static void voice(int team, Voice id, const Vector3 *at) {
 void voice(int team, Voice id) { voice(team, id, nullptr); }
 void voice(int team, Voice id, Vector3 at) { voice(team, id, &at); }
 
-void preloadVoices(int teams) {
-    for (int t = 0; t < teams && !banks.empty(); t++) bankOf(t);
+void preloadVoices(int teams) {  // one decoder per bank
+    std::vector<Bank *> todo;
+    for (int t = 0; t < teams && !banks.empty(); t++)
+        if (Bank *b = &bankOf(t, false); !b->loaded && std::find(todo.begin(), todo.end(), b) == todo.end()) todo.push_back(b);
+    std::vector<std::thread> th;
+    for (size_t i = 1; i < todo.size(); i++) th.emplace_back([b = todo[i]] { Loading::pinCore(2), load(*b); });  // the caller is on core 1
+    if (!todo.empty()) load(*todo[0]);
+    for (std::thread &x : th) x.join();
 }
 
 int voiceBanks() { return (int)banks.size(); }

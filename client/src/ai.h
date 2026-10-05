@@ -63,6 +63,7 @@ private:
     void decide(const Game &g);
     void finish(const Game &g);
     Input act(const Game &g);
+    Input blimp(const Game &g) const;
     Input retreat(const Game &g);
     Input race(const Game &g);
 };

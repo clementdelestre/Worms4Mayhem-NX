@@ -7,4 +7,5 @@ void begin(const GameConfig &c);
 bool frame(float dt, float progress);  // inside Begin/EndDrawing; true once loaded (progress 1) and faded out
 bool ready();                          // the loading screen is up: blocking load steps may run between frames
 void overlay(float dt);                // over the first match frames: fade in from black
+void pinCore(int core);                // Switch: moves the calling worker thread to that CPU core (1 or 2)
 }  // namespace Loading

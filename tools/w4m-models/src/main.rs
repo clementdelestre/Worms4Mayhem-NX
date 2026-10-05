@@ -190,6 +190,9 @@ const WORM_CLIPS: &[&str] = &[
     "Skid", "RecoverFront1", "RecoverBurried1", "RecoverBack1", "RecoverBack2",
 ];
 const FPS: f32 = 30.0;
+// (letter used by the ui/sky ramps, W4M theme name)
+const SKY_THEMES: &[(&str, &str)] = &[("a", "ARABIAN"), ("b", "BUILDING"), ("c", "CAMELOT"), ("p", "PREHISTORIC"), ("w", "WILDWEST"),
+    ("r", "ARCTIC"), ("e", "ENGLAND"), ("h", "HORROR"), ("l", "LUNAR"), ("t", "PIRATE"), ("o", "WAR")];
 
 fn vi(d: &[u8], p: &mut usize) -> usize {
     let mut v = 0usize;
@@ -478,7 +481,8 @@ fn decompose(m: &M4) -> ([f32; 3], [f32; 4], [f32; 3]) {
 }
 
 struct Group { path: String, xf: usize, parent: Option<usize> }
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]> }
+// blend: the shader's XBlendModeGL (SourceFactor, DestFactor: W4M BlendFactor enum), None = opaque
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)> }
 #[derive(Default)]
 struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize }
 
@@ -585,7 +589,9 @@ impl Scene {
         let mut sp = 3;
         let stages = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
         let img = stages.first().filter(|&&s| x.t(s) == "XOglTextureMap").map_or(0, |&s| { let mut q = 23; vi(x.d(s), &mut q) });
-        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba });
+        let attrs: Vec<usize> = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
+        let blend = attrs.iter().find(|&&a| x.t(a) == "XBlendModeGL").map(|&a| (u32le(x.d(a), 3), u32le(x.d(a), 7)));
+        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend });
     }
 
     // Local matrix of every group, with the clip's curves layered on Base (offsets for keys Base also has).
@@ -724,7 +730,8 @@ impl Glb {
     }
 }
 
-fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Option<(Vec<u8>, String)> {
+// Returns the glb, a summary, and one line per glb primitive: its blend factors (Part::blend), "-" when opaque.
+fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Option<(Vec<u8>, String, String)> {
     let mut sc_ = Scene::default();
     let d = x.d(desc);
     let mut p = 0;
@@ -788,7 +795,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
     // static parts sharing a texture are merged (one draw call each), skinned ones kept as they are
-    struct Prim { img: usize, pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8> }
+    struct Prim { img: usize, blend: Option<(u32, u32)>, pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8> }
     let mut out: Vec<Prim> = Vec::new();
     for pt in &s.parts {
         let (pos, nrm): (Vec<f32>, Vec<f32>) = if animated {
@@ -806,7 +813,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let uv: Vec<f32> = pt.uv.iter().flatten().copied().collect();
         let skin = if !animated { vec![] } else if pt.skin.len() == n { pt.skin.clone() } else { vec![([0; 4], [1.0, 0.0, 0.0, 0.0]); n] };
         let rgba: Vec<u8> = if pt.rgba.len() == n { pt.rgba.iter().flatten().copied().collect() } else { vec![255; 4 * n] };
-        if let Some(o) = out.iter_mut().find(|o| !animated && o.img == pt.img && o.pos.len() / 3 + n < 65536) {
+        if let Some(o) = out.iter_mut().find(|o| !animated && o.img == pt.img && o.blend == pt.blend && o.pos.len() / 3 + n < 65536) {
             let base = (o.pos.len() / 3) as u16;
             o.idx.extend(pt.idx.iter().map(|&i| i + base));
             o.pos.extend(pos);
@@ -814,7 +821,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             o.uv.extend(uv);
             o.rgba.extend(rgba);
         } else {
-            out.push(Prim { img: pt.img, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba });
+            out.push(Prim { img: pt.img, blend: pt.blend, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba });
         }
     }
     let mut prims = Vec::new();
@@ -934,7 +941,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     o.extend(&g.bin);
     let info = format!("{} parts, {} bones, {} images, {:.0}x{:.0}x{:.0} units -> scale {k:.4}{}{}", s.parts.len(), s.bones.len(), images.len(),
         hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], if clip_names.is_empty() { "" } else { ", clips: " }, clip_names.join(", "));
-    Some((o, info))
+    Some((o, info, out.iter().map(|p| p.blend.map_or("-\n".into(), |(a, b)| format!("{a} {b}\n"))).collect()))
 }
 
 // Case-insensitive path lookup (game data uses Windows paths).
@@ -956,7 +963,7 @@ fn main() {
         for i in (1..x.c.len()).filter(|&i| x.t(i) == "XMeshDescriptor") {
             let mut p = 0;
             let name = x.str(vi(x.d(i), &mut p));
-            match convert(&x, i, 0.0, false, &[]) { Some((_, info)) => println!("{name}: {info}"), None => println!("{name}: -") }
+            match convert(&x, i, 0.0, false, &[]) { Some((_, info, _)) => println!("{name}: {info}"), None => println!("{name}: -") }
             let mut s = Scene::default();
             p += 2;
             s.walk(&x, vi(x.d(i), &mut p), None, 0);
@@ -994,21 +1001,26 @@ fn main() {
     }
     let data = find_ci(Path::new(&args[1]), "Data").unwrap_or_else(|| PathBuf::from(&args[1]));
     let out = PathBuf::from(args.get(2).map_or("client/assets/models", |s| s.as_str()));
-    for d in ["hats", "frontend"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
+    for d in ["hats", "frontend", "sky"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
     let mut bundles: Vec<PathBuf> = fs::read_dir(data.join("Bundles")).expect("Data/Bundles").flatten().map(|e| e.path()).collect();
     bundles.sort_by_key(|p| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok()).unwrap_or(u32::MAX));
-    let mut todo: Vec<_> = MODELS.iter().collect();
+    // level skies (SkyBoxEntity, Land.SkyBoxResource "<THEME>.<TIME>Sky"), raw units, named like the ramps in ui/sky
+    let skies = SKY_THEMES.iter().flat_map(|&(l, t)| ["DAY", "EVENING", "NIGHT"].iter().enumerate().map(move |(n, time)| (format!("sky/{l}_sky0{}", n + 1), format!("{t}.{time}Sky"))));
+    let mut todo: Vec<(String, String, f32, bool, &[&str])> = MODELS.iter().map(|m| (m.0.to_string(), m.1.to_string(), m.2, m.3, m.4)).chain(skies.map(|(n, d)| (n, d, 0.0, false, &[][..]))).collect();
     for path in bundles {
         if todo.is_empty() { break; }
         let Ok(b) = fs::read(&path) else { continue };
         let Some((s, _)) = strings(&b) else { continue };
-        if !todo.iter().any(|m| s.iter().any(|x| x == m.1)) { continue; }
+        if !todo.iter().any(|m| s.iter().any(|x| *x == m.1)) { continue; }
         let Some(x) = Xom::read(&b) else { println!("{}: unreadable", path.display()); continue };
-        todo.retain(|&&(name, desc, size, feet, wanted)| {
-            let Some(i) = (1..x.c.len()).find(|&i| x.t(i) == "XMeshDescriptor" && { let mut p = 0; x.str(vi(x.d(i), &mut p)) == desc }) else { return true };
+        todo.retain(|(name, desc, size, feet, wanted)| {
+            let (size, feet) = (*size, *feet);
+            let Some(i) = (1..x.c.len()).find(|&i| x.t(i) == "XMeshDescriptor" && { let mut p = 0; x.str(vi(x.d(i), &mut p)) == *desc }) else { return true };
             match convert(&x, i, size, feet, wanted) {
-                Some((glb, info)) => {
+                Some((glb, info, blends)) => {
                     fs::write(out.join(format!("{name}.glb")), &glb).expect("write glb");
+                    // raylib's glTF loader drops blend modes: one line per mesh, in order
+                    if name.starts_with("sky/") { fs::write(out.join(format!("{name}.blend")), &blends).expect("write blend"); }
                     println!("{name} ({desc}, {}): {info}, {} KB", path.file_name().unwrap().to_string_lossy(), glb.len() / 1024);
                 }
                 None => println!("{name} ({desc}): no geometry"),

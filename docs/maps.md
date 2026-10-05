@@ -28,7 +28,7 @@ World: 80 x 64 x 80 m (x, y up, z), voxels of 0.25 m (320 x 256 x 320 grid, int8
 | `base.roughness` | noise amplitude in m (default 4, 0 = smooth). |
 | `base.seed` | added to the match seed for the noise. |
 | `voxels` | `<file>.vox` next to the JSON: imported geometry, replaces `base`. `"W4V2"`, u16 NX NY NZ (must match the engine grid), u8 D; then (material, run 1..255) byte pairs over the grid in `(z*NY + y)*NX + x` order (material 0 = air, n = `palette[n-1]`); then density codes in the same order: byte h < 128 skips h voxels left at +D (solid) / -D (air), h >= 128 is followed by h - 127 int8 densities (metres * 254, > 0 = solid). |
-| `light` | `{"dir": [x,y,z], "ambient": [r,g,b], "diffuse": [r,g,b], "specular": [r,g,b]}`: sun direction (towards the sun) and colours (0..1), W4M's per theme/time land light (imported; `time` = `day`/`evening`/`night`, informational). Missing => a Camelot-day default. |
+| `light` | `{"dir": [x,y,z], "ambient": [r,g,b], "diffuse": [r,g,b], "specular": [r,g,b]}`: sun direction (towards the sun) and colours (0..1), W4M's per theme/time land light (imported; `time` = `day`/`evening`/`night` picks the sky and water). `"water"`: the 14 CG/water.cg inputs of the same WaterPlaneTweaks (docs/w4m/render.md "Level sky"). Missing => Camelot-day defaults. |
 | `palette` | `[[r,g,b, r,g,b], …]`: top (flat) and side colour per voxel material (fallback when there are no textures). |
 | `textures` | `[[top, side, topRepeat, sideRepeat], …]` aligned with `palette`: texture files (QOI/PNG, relative to the maps dir, `null` = none) and metres per texture repeat. Rendered with a triplanar shader (top texture on up-facing surfaces). |
 | `shapes` | applied in order: union, or carve with `"subtract": true` (tunnels, caves, moats). |
@@ -51,3 +51,10 @@ Shapes: `pos` is the centre of the shape's bounding box, `yaw` (degrees) rotates
 Shape cost is proportional to its bounding box volume; keep total load under ~0.1 s desktop (Switch is ~5x slower).
 
 Imported Worms 4 Mayhem maps: `tools/w4m-maps <W4M dir> client/assets/maps` (see `docs/w4m-formats.md`). They are written to `assets/maps` (local only, never committed).
+
+## Rendering (ours, after docs/w4m/render.md "Level sky, water and land colour")
+
+- Sky: `Fx::theme` loads `models/sky/<letter>_sky0<n>.glb` (the W4M `<THEME>.<TIME>Sky` scene, decoded on the loading thread by `Models::decode`) and its `.blend` (one `src dst` BlendFactor pair per mesh, `-` = opaque). `Fx::drawSky` draws it camera-centred at 0.04 m per unit (inside the 500 m far plane): opaque parts with depth, then the blended ones in file order with their W4M factors, then clears the depth buffer. Without the file, the old ramp dome. The sky clip (cloud drift, 1000 s) and the night star twinkle are not played.
+- Water: `Fx::drawWater` is water.cg `WaterFragmentMain` with the map's `light.water`; plane ±600 m (12000 units at 20 per m, ignoring the import scale k), uv 0..1 x TextureScale, time in seconds looped at 200 s (every pan speed repeats there).
+- No fog on land or water (W4M CG has none). Clear colour = the ramp's horizon colour, hidden by the sky scene.
+- Title screen: FE.Water parameters on the Pirate day textures (the FE.DAYWater set is not exported).

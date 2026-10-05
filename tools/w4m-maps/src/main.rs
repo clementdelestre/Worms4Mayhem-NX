@@ -678,11 +678,14 @@ fn lights(data: &Path) -> HashMap<String, String> {
         let Some(key) = name.strip_prefix("Water.").filter(|_| t == "WaterPlaneTweaks") else { continue };
         let mut p = 7;
         for _ in 0..3 { vi(w, &mut p); }
+        // water.cg inputs: NearOpacity, TextureScale, SpecularFadeScale, ReflectionStrength, ReflectionContrast, SpecularContrast,
+        // SpecularPower, NormalIntensity (3), NormalIntensity1 (3), SubtractColourScale
+        let water: Vec<String> = (0..14).map(|i| format!("{}", f32le(w, p + 4 * i))).collect();
         p += 14 * 4;
         let v = |p: usize| format!("[{:.3},{:.3},{:.3}]", f32le(w, p), f32le(w, p + 4), f32le(w, p + 8));
         let c = |p: usize| format!("[{:.3},{:.3},{:.3}]", w[p] as f32 / 255.0, w[p + 1] as f32 / 255.0, w[p + 2] as f32 / 255.0);
         if w.len() < p + 24 { continue; }
-        out.insert(key.to_string(), format!("{{\"dir\": {}, \"ambient\": {}, \"diffuse\": {}, \"specular\": {}}}", v(p), c(p + 12), c(p + 15), c(p + 18)));
+        out.insert(key.to_string(), format!("{{\"dir\": {}, \"ambient\": {}, \"diffuse\": {}, \"specular\": {}, \"water\": [{}]}}", v(p), c(p + 12), c(p + 15), c(p + 18), water.join(",")));
     }
     out
 }

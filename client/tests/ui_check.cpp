@@ -1,6 +1,8 @@
 // Weapon panel: its direct pick (Input::pick) must land on the weapon whatever the ticks per frame.
 // From client/: make ui_check
+#include "../src/fx.h"
 #include "../src/ui.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 
@@ -89,6 +91,16 @@ int main() {
         in = Input{};
         hud.input(g, in, true, 0, 2);
         assert(hud.open && hud.skipHp && !hud.readyScreen(g, false));
+    }
+    {  // victory fireworks (W4M 0x4ff8d0): nothing in the 4 s wait, PARTTWK emitters during the 5 s show, all burnt out after
+        Fx::clear(), Fx::fireworks({40, 10, 40}, 40, 20);
+        for (int t = 0; t < 240; t++) Fx::update(1 / 60.f);
+        assert(Fx::count() == 0);
+        int peak = 0;
+        for (int t = 0; t < 300; t++) Fx::update(1 / 60.f), peak = std::max(peak, Fx::count());
+        assert(peak > 50);
+        for (int t = 0; t < 600; t++) Fx::update(1 / 60.f);
+        assert(Fx::count() == 0);
     }
     puts("ui_check ok");
 }

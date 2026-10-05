@@ -1,7 +1,10 @@
 #include "fx.h"
+#include "lit.h"
+#include "audio.h"
 #include "models.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -11,14 +14,17 @@
 #define DATA_DIR "./"
 #endif
 
+extern "C" void glClear(unsigned int mask);
+
 namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, MIST, TEX_COUNT };  // also the draw order within a blend pass
+enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, MIST, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
 const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_005", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
 const int MAX = 1024;
 
+struct Emit;
 struct Particle {
     Vector3 p, v;
     float age, life, size0, size1, rot, spin, grav, drag;  // age < 0: not born yet
@@ -32,8 +38,13 @@ struct Particle {
     unsigned char ramp = 0;  // > 0: PARTTWK ParticleColor / ColorBand ramp (RAMPS) by age, constant alpha, size S fade-in / delay / shrink to 0
     float fadeIn = 0, delay = 0;  // ParticleSizeFadeIn / ParticleSizeVelocityDelay, s
     float alpha = 1;  // ParticleAlpha of a ramp particle
-    bool fadeA = false;  // ParticleAlphaVelocity < 0: linear fade to 0 at the end of life
+    float fadeA = -1;  // >= 0: ParticleAlphaVelocity < 0, linear fade to 0 at end of life from aIn + this (AlphaVelocityDelay), s
     Vector3 acc{};  // m/s², on top of grav (ParticleMass x (ParticleAcceleration + wind))
+    float aIn = 0, aspect = 1;  // ParticleAlphaFadeIn s; ParticleSize y / x
+    float spR = 0, spW = 0;  // ParticleIsSpiral: radius m, rad/s
+    bool head = false;  // kTrail sprite set "A,B": B (WXSprite1) drawn at the head (0x5bc6e5)
+    uint32_t id = 0;  // > 0: carries an EmitterParticleFX emitter
+    const Emit *expire = nullptr;  // EmitterParticleExpireFX
 };
 // ParticleColorBand 0x5b77c0: edge[i] = end of segment c[i] -> c[i+1]; the last segment runs to 1
 struct Ramp { int n; Color c[5]; float edge[5]; };
@@ -47,8 +58,16 @@ const Ramp RAMPS[] = {
     {1, {{255, 255, 255, 255}}, {0, 1}},  // WeaponBazookaPuff
     {2, {{255, 255, 255, 255}, {140, 140, 140, 255}}, {0, 1}},  // WXP_DonkeySpritePuffLG / Horiz
     {2, {{242, 255, 255, 255}, {153, 204, 255, 255}}, {0, 1}},  // WXP_CrateSpawnLGRings
+    {1, {{77, 255, 255, 255}}, {0, 1}},  // WXP_StarburstGlowBangs / EXPGlowBang1
+    {1, {{128, 230, 255, 255}}, {0, 1}},  // WXP_StarB_ManyGlows
+    {1, {{255, 128, 0, 255}}, {0, 1}},  // WXPF_RedGlow / RedBigGlow(Delayed)
+    {1, {{0, 255, 64, 255}}, {0, 1}},  // WXPF_GreenGlowBang / BigBang
+    {2, {{255, 255, 255, 255}, {255, 204, 0, 255}}, {0, 1}},  // WXPF_Exploder_1/2, RedExpiryFlash, Twinkle*
+    {1, {{255, 255, 128, 255}}, {0, 1}},  // WXPF_ExploderGreen, GreenTrail1
+    {2, {{255, 255, 64, 255}, {0, 204, 0, 255}}, {0, 1}},  // WXPF_EndGlowGreen
 };
-enum RampId { R_NONE, R_STARBURST, R_BAZ_MAIN, R_BAZ_PUFF, R_HOM_SMOKE, R_HOM_GLOW, R_MIST, R_DONKEY_PUFF, R_DONKEY_RING };
+enum RampId { R_NONE, R_STARBURST, R_BAZ_MAIN, R_BAZ_PUFF, R_HOM_SMOKE, R_HOM_GLOW, R_MIST, R_DONKEY_PUFF, R_DONKEY_RING,
+              R_SB_CYAN, R_SB_GLOW, R_FW_RED, R_FW_GREEN, R_FW_STAR, R_FW_PALE, R_FW_ENDGREEN, R_WHITE = R_MIST };
 struct Streak { Vector3 p, dir; float len, width; unsigned char tex; };
 
 Texture2D tex[TEX_COUNT];
@@ -56,7 +75,7 @@ std::vector<Particle> ps;
 std::vector<Streak> streaks;
 struct Seen { Vector3 p; int weapon; bool child; float age; };  // age: s since the rocket's emitters started
 std::vector<Seen> seen, seenPrev;  // live shots of this / the previous frame: which weapon blew up where
-float show = 0, tickAcc = 0, sinceLast = 0;  // victory fireworks: s left of W4M GameOverLogicEntity's 4 s wait + 5 s show
+float show = 0, tickAcc = 0;  // victory fireworks: s left of W4M GameOverLogicEntity's 4 s wait + 5 s show
 Vector3 stageC{};  // Land.Center, Land.Radius, Land.MaxHeight of the match that ended
 float stageR = 0, stageTop = 0;
 Vector3 camAt{};
@@ -64,6 +83,8 @@ Texture2D skyTex{}, waterTex[3]{};
 Shader skySh{}, waterSh{};
 Mesh dome{}, plane{};
 Material skyMat{}, waterMat{};
+Model skyModel{};  // W4M SkyBoxEntity scene "<THEME>.<TIME>Sky" (tools/w4m-models), W4M units
+std::vector<std::pair<int, int>> skyBlend;  // per mesh: XBlendModeGL source / dest factor, -1 = opaque
 Color fogCol = {120, 170, 230, 255};
 uint32_t seed = 12345;
 
@@ -77,9 +98,139 @@ Vector3 rndDir() {
 }
 void add(Particle p) {
     if ((int)ps.size() >= MAX) return;
-    p.rot = rnd(0, 2 * PI);
+    p.rot = rnd(0, 2 * PI), p.p0 = p.p;
     ps.push_back(p);
 }
+
+// CParticle position 0x5b7450: p0 + v t + (acc - grav) t² / 2, or the alternate curve (t in ms, no gravity); plus the spiral circle in x, z
+Vector3 posAt(const Particle &p, float t) {
+    Vector3 q;
+    if (p.altN > 0) q = Vector3Add(p.p0, Vector3Add(Vector3Scale(p.v, (p.altN - 1 / (p.altS * t * 1000 + 1 / p.altN)) / 1000), {0, p.v.y * t, 0}));
+    else q = Vector3Add(p.p0, Vector3Add(Vector3Scale(p.v, t), Vector3Scale({p.acc.x, p.acc.y - p.grav, p.acc.z}, t * t / 2)));
+    if (p.spR > 0) q.x += sinf(p.spW * t) * p.spR, q.z += cosf(p.spW * t) * p.spR;
+    return q;
+}
+
+// PARTTWK ParticleEmitterContainer fields, in W4M units (20 per m) and ms
+struct Emit {
+    unsigned char tex; bool add = true, head = false, trail = false;  // trail: EmitterType kTrail
+    int num = 1, max = 1; float lifeTime = 0, freq = 0, freqR = 0, delay = 0;
+    float life = 0, lifeR = 0, size = 0, sizeR = 0, aspect = 1, shrink = -1, shrinkR = 0;  // shrink: SizeVelocityDelay of a SizeVelocity < 0
+    float alpha = 1, alphaIn = 0, fade = -1;  // fade: AlphaVelocityDelay of an AlphaVelocity < 0
+    Vector3 v{}, vR{}; bool norm = false; float mass = 0, altN = 0, altS = 0;  // mass: x ParticleAcceleration (0, -1, 0)
+    Vector3 off{}, offR{}; float spiral = 0, spiralW = 0, rotR = 0, spinR = 0;
+    unsigned char col = R_WHITE; int sfx = -1; const Emit *fx = nullptr, *expire = nullptr;  // EmitterSoundFX, EmitterParticleFX, EmitterParticleExpireFX
+};
+struct Live { const Emit *e; Vector3 at; uint32_t follow = 0; float clock = 0, next = 0, timer = 0, jitter = 0; bool started = false; std::vector<float> ends; };
+std::vector<Live> lives, born;  // running emitters; those created while they tick
+uint32_t lastId = 0;
+const float TRAIL_DT = 0.02f;
+const int TRAIL_SEGS = 24;  // TrailGraphicEntity: 25 points (0x5bc899), shifted once per 20 ms update (0x5c3aa0 -> 0x5c2ae0)
+
+// CParticle setup 0x5b98e0: V + (2r - 1) Vrand per axis x 0.01 units/ms (IsNormalised: the unit vector x (V.x + Vrand.x)); returns the life, s
+float spawn(const Emit &e, Vector3 at) {
+    auto r = [](float x) { return rnd(-x, x); };
+    Vector3 v = {e.v.x + r(e.vR.x), e.v.y + r(e.vR.y), e.v.z + r(e.vR.z)}, o = {e.off.x + r(e.offR.x), e.off.y + r(e.offR.y), e.off.z + r(e.offR.z)};
+    if (e.norm) v = Vector3Scale(Vector3Normalize(v), e.v.x + e.vR.x);
+    Particle q = {Vector3Add(at, Vector3Scale(o, 1 / 20.f)), Vector3Scale(v, 0.5f), 0, (e.life + r(e.lifeR)) / 1000, (e.size + r(e.sizeR)) / 20, 0, r(e.rotR) * DEG2RAD,
+                  r(e.spinR) * DEG2RAD * 10, e.altN > 0 ? 0 : 5 * e.mass, 0, WHITE, e.tex, e.add, e.trail ? TRAIL_SEGS * TRAIL_DT : 0};
+    q.altN = e.altN, q.altS = e.altS, q.p0 = q.p, q.ramp = e.col, q.delay = e.shrink < 0 ? 1e9f : (e.shrink + r(e.shrinkR)) / 1000;
+    q.alpha = e.alpha, q.aIn = e.alphaIn / 1000, q.fadeA = e.fade < 0 ? -1 : e.fade / 1000, q.aspect = e.aspect;
+    q.spR = e.spiral / 20, q.spW = e.spiralW * 10, q.head = e.head, q.expire = e.expire;
+    if ((int)ps.size() >= MAX) return q.life;
+    if (e.fx) q.id = ++lastId, born.push_back({e.fx, q.p, q.id});
+    ps.push_back(q);
+    return q.life;
+}
+
+// ParticleEmitterEffectEntity 0x5bb690 / 0x5bab20 per 20 ms (docs/w4m/render.md §3); an attached emitter (EmitterParticleFX) follows
+// its particle and stops with it [assumed]
+void tickEmitters(float dt) {
+    for (size_t i = 0; i < lives.size();) {
+        Live &L = lives[i];
+        const Emit &e = *L.e;
+        bool done = false;
+        if (L.follow) {
+            auto it = std::find_if(ps.begin(), ps.end(), [&](const Particle &p) { return p.id == L.follow; });
+            if (it == ps.end()) done = true;
+            else L.at = it->p;
+        }
+        for (L.clock += dt; !done && L.clock >= L.next; L.next += 0.02f) {
+            float t = L.next * 1000 - e.delay;
+            if (t < 0) continue;
+            if (!L.started) {
+                L.started = true, L.timer = e.freq;
+                if (e.sfx >= 0) Audio::play((Audio::Sfx)e.sfx, L.at);
+            } else L.timer += 20;
+            if (t >= fmaxf(e.lifeTime, 1)) { done = true; break; }
+            if (L.timer < e.freq + L.jitter) continue;
+            L.timer -= e.freq + L.jitter, L.jitter = rnd(-e.freqR, e.freqR);
+            int alive = 0;
+            for (float end : L.ends) alive += end > L.next;
+            for (int k = 0; k < e.num && alive < e.max; k++, alive++) L.ends.push_back(L.next + spawn(e, L.at));
+        }
+        if (done) lives[i] = std::move(lives.back()), lives.pop_back();
+        else i++;
+    }
+    for (Live &l : born) lives.push_back(std::move(l));
+    born.clear();
+}
+void effect(const std::vector<const Emit *> &list, Vector3 at) {  // EffectDetailsContainer: its emitters, all at one point
+    for (const Emit *e : list) lives.push_back({e, at});
+}
+
+const int FW_SFX = (int)Audio::Sfx::Fireworks, BANG_SFX = (int)Audio::Sfx::Explosion;  // global/FireWorksExplosion, global/ExplosionRegular
+// PARTTWK [data]: glows (WXSprite1), whiteouts, kTrail ribbons, stars (WXSprite7) and their sparkles (WXSprite26)
+const Emit SB_GLOWS = {.tex = GLOW, .num = 2, .max = 2, .lifeTime = 10, .life = 800, .size = 30, .fade = 0, .off = {0, 4, 0}, .col = R_SB_CYAN};
+const Emit SB_BIG_GLOW = {.tex = GLOW, .lifeTime = 10, .delay = 5, .life = 1800, .size = 120, .fade = 0, .off = {0, 4, 0}, .col = R_SB_CYAN};
+const Emit SB_MANY_GLOWS = {.tex = GLOW, .num = 2, .max = 20, .lifeTime = 10, .delay = 400, .life = 800, .size = 20, .fade = 0, .offR = {100, 100, 100}, .col = R_SB_GLOW};
+const Emit SB_TRAILS_A = {.tex = TRAIL_B, .trail = true, .num = 16, .max = 16, .lifeTime = 100, .freq = 1, .life = 1200, .lifeR = 400, .size = 1, .vR = {5, 5, 5},
+                          .altN = 5000, .altS = 3e-6f, .spiral = 1, .spiralW = 4};
+const Emit SB_TRAILS_B = {.tex = TRAIL_B, .trail = true, .num = 16, .max = 16, .lifeTime = 100, .freq = 1, .life = 1750, .lifeR = 400, .size = 1, .vR = {7, 7, 7},
+                          .altN = 5000, .altS = 3e-6f, .spiral = 1, .spiralW = 4, .sfx = FW_SFX};
+const Emit WHITEOUT_FW = {.tex = WHITEOUT, .life = 80, .size = 400, .aspect = 0.75f, .alpha = 0.1f, .alphaIn = 50, .fade = 1000, .sfx = FW_SFX};
+const Emit WHITEOUT_DELAYED = {.tex = WHITEOUT, .delay = 250, .life = 80, .size = 400, .aspect = 0.75f, .alpha = 0.1f, .alphaIn = 50, .fade = 1000};
+const Emit WHITEOUT_LARGE = {.tex = WHITEOUT, .life = 80, .size = 400, .aspect = 0.75f, .alpha = 0.6f, .alphaIn = 50, .fade = 1000};  // WXP_WhiteoutflashLarge
+const Emit RED_GLOW = {.tex = GLOW, .num = 2, .max = 2, .lifeTime = 10, .life = 800, .size = 30, .fade = 0, .off = {0, 4, 0}, .col = R_FW_RED, .sfx = FW_SFX};
+const Emit RED_BIG_GLOW = {.tex = GLOW, .lifeTime = 10, .delay = 5, .life = 1800, .size = 120, .fade = 0, .off = {0, 4, 0}, .col = R_FW_RED, .sfx = FW_SFX};
+const Emit RED_BIG_GLOW_DELAYED = {.tex = GLOW, .num = 2, .max = 2, .lifeTime = 10, .delay = 250, .life = 1800, .size = 200, .sizeR = 50, .fade = 0, .off = {0, 4, 0},
+                                   .rotR = 360, .col = R_FW_RED};
+const Emit GREEN_GLOW = {.tex = GLOW, .num = 2, .max = 2, .lifeTime = 10, .life = 800, .size = 30, .fade = 0, .off = {0, 4, 0}, .col = R_FW_GREEN};
+const Emit GREEN_BIG_GLOW = {.tex = GLOW, .lifeTime = 10, .delay = 5, .life = 1800, .size = 120, .fade = 0, .off = {0, 4, 0}, .col = R_FW_GREEN};
+// kTrail ribbons with a glow head: V (0, 30, 0) +- 40, Mass 4.6 (23 m/s²), shrinking from 800 ms
+const Emit BLUE_TRAILS = {.tex = TRAIL_B, .head = true, .trail = true, .num = 12, .max = 12, .lifeTime = 1, .life = 1600, .lifeR = 400, .size = 2, .sizeR = 0.5f,
+                          .shrink = 800, .v = {0, 30, 0}, .vR = {40, 40, 40}, .mass = 4.6f, .rotR = 5};
+const Emit RED_TRAILS = {.tex = TRAIL_R, .head = true, .trail = true, .num = 12, .max = 12, .lifeTime = 1, .life = 1600, .lifeR = 400, .size = 4, .sizeR = 0.5f,
+                         .shrink = 800, .v = {0, 30, 0}, .vR = {40, 40, 40}, .mass = 4.6f, .rotR = 5};
+const Emit RED_TRAILS_LONG = {.tex = TRAIL_R, .head = true, .trail = true, .num = 18, .max = 18, .lifeTime = 1, .life = 3000, .lifeR = 400, .size = 2, .sizeR = 0.5f,
+                              .shrink = 800, .v = {0, 30, 0}, .vR = {40, 40, 40}, .mass = 4.6f, .rotR = 5};
+// sparkles: still (normalised V of speed V.x + Vrand.x = 0), shrinking to 0; the anchors fall (Mass 2: 10 m/s²)
+const Emit RED_EXPIRY = {.tex = SPARK, .add = false, .max = 3, .lifeTime = 25, .freq = 50, .freqR = 25, .life = 250, .size = 15, .shrink = 0, .v = {0, 0.02f, 0},
+                         .norm = true, .altN = 6500, .altS = 2e-6f, .offR = {10, 10, 10}, .rotR = 360, .spinR = 30, .col = R_FW_STAR};
+const Emit TWINKLE_TRAILS = {.tex = SPARK, .add = false, .max = 5, .lifeTime = 1500, .freq = 150, .freqR = 25, .life = 600, .size = 15, .shrink = 0, .v = {0, 0.02f, 0},
+                             .norm = true, .altN = 6500, .altS = 2e-6f, .offR = {10, 10, 10}, .rotR = 360, .spinR = 30, .col = R_FW_STAR};
+const Emit TWINKLE_ANCHOR = {.tex = SPARK, .add = false, .lifeTime = 25, .freq = 50, .freqR = 25, .life = 2000, .size = 15, .shrink = 0, .v = {0, 0.02f, 0}, .norm = true,
+                             .mass = 2, .offR = {10, 10, 10}, .rotR = 360, .spinR = 30, .col = R_FW_STAR, .fx = &TWINKLE_TRAILS};
+const Emit GREEN_TRAIL = {.tex = SPARK, .add = false, .max = 3, .lifeTime = 1500, .freq = 50, .freqR = 30, .life = 200, .size = 15, .shrink = 0, .v = {0, 0.02f, 0},
+                          .norm = true, .altN = 6500, .altS = 2e-6f, .offR = {10, 10, 10}, .rotR = 360, .spinR = 30, .col = R_FW_PALE};
+const Emit END_GLOW_GREEN = {.tex = GLOW, .max = 2, .lifeTime = 25, .life = 500, .size = 50, .sizeR = 25, .shrink = 0, .v = {0, 0.02f, 0}, .norm = true, .mass = 2,
+                             .rotR = 360, .spinR = 30, .col = R_FW_ENDGREEN};
+// stars: thrown out on the alternate curve (radius 4 / 6 / 8 x 0.01 x 6500 units = 13 / 19.5 / 26 m), constant size
+const Emit EXPLODER_1 = {.tex = STAR, .add = false, .num = 30, .max = 30, .lifeTime = 1, .freq = 80, .life = 800, .size = 3, .shrink = 2200, .shrinkR = 400, .vR = {4, 4, 4},
+                         .norm = true, .altN = 6500, .altS = 2e-6f, .spinR = 8, .col = R_FW_STAR, .sfx = BANG_SFX, .expire = &RED_EXPIRY};
+const Emit EXPLODER_2 = {.tex = STAR, .add = false, .num = 50, .max = 50, .lifeTime = 1, .freq = 80, .delay = 250, .life = 1500, .size = 3, .shrink = 2200, .shrinkR = 400,
+                         .vR = {6, 6, 6}, .norm = true, .altN = 6500, .altS = 2e-6f, .spinR = 8, .col = R_FW_STAR, .sfx = BANG_SFX, .expire = &TWINKLE_ANCHOR};
+const Emit EXPLODER_GREEN = {.tex = STAR, .add = false, .num = 50, .max = 50, .lifeTime = 1, .freq = 80, .life = 1500, .lifeR = 100, .size = 3, .shrink = 2200, .shrinkR = 400,
+                             .vR = {8, 8, 8}, .norm = true, .altN = 6500, .altS = 2e-6f, .spinR = 8, .col = R_FW_PALE, .sfx = BANG_SFX, .fx = &GREEN_TRAIL, .expire = &END_GLOW_GREEN};
+const std::vector<const Emit *> FIREWORKS[] = {  // WXPF_Firework1-5
+    {&SB_GLOWS, &SB_TRAILS_A, &SB_BIG_GLOW, &WHITEOUT_FW, &SB_TRAILS_B, &BLUE_TRAILS},
+    {&RED_GLOW, &RED_BIG_GLOW, &WHITEOUT_FW, &RED_TRAILS, &EXPLODER_1, &RED_TRAILS},
+    {&RED_GLOW, &RED_BIG_GLOW, &WHITEOUT_FW, &EXPLODER_1, &EXPLODER_2, &RED_BIG_GLOW_DELAYED, &WHITEOUT_DELAYED},
+    {&GREEN_GLOW, &GREEN_BIG_GLOW, &WHITEOUT_FW, &EXPLODER_GREEN},
+    {&RED_GLOW, &RED_BIG_GLOW, &WHITEOUT_FW, &RED_TRAILS_LONG, &RED_TRAILS_LONG, &RED_TRAILS_LONG, &RED_TRAILS_LONG},
+};
+// WXP_StarburstExplosion without its WXP_ExplosionX_Med (drawn by the common blast)
+const std::vector<const Emit *> STARBURST = {&SB_GLOWS, &SB_TRAILS_A, &SB_TRAILS_A, &SB_BIG_GLOW, &WHITEOUT_LARGE, &SB_MANY_GLOWS, &SB_TRAILS_B};
 
 Texture2D loadTex(const char *dir, const char *name, bool mips) {
     const char *f = TextFormat(DATA_DIR "assets/ui/%s/%s.png", dir, name);
@@ -112,38 +263,41 @@ void main() {
     gl_FragColor = vec4(texture2D(texture0, vec2(0.75 * pow(1.0 - h, 3.0), 0.5)).rgb, 1.0);
 }
 )";
-// Water after W4M's water.cg: two panned normal maps distort the diffuse and a sphere-mapped environment,
-// plus sun specular, fresnel alpha and distance fog.
+// W4M CG/water.cg WaterFragmentMain: colour from the three panned normal maps alone (no eye vector), constant alpha.
+// p0 = (ReflectionContrast, ReflectionStrength, SpecularPower), p3 = (SpecularContrast, NearOpacity, SubtractColourScale).
 const char *WATER_VS = R"(
 attribute vec3 vertexPosition;
+attribute vec2 vertexTexCoord;
 uniform mat4 mvp;
-uniform mat4 matModel;
-varying vec3 wPos;
-void main() { wPos = (matModel * vec4(vertexPosition, 1.0)).xyz; gl_Position = mvp * vec4(vertexPosition, 1.0); }
+uniform float textureScale;
+varying vec2 uv;
+void main() { uv = vertexTexCoord * textureScale; gl_Position = mvp * vec4(vertexPosition, 1.0); }
 )";
 const char *WATER_FS = R"(
 uniform sampler2D texture0;
 uniform sampler2D texture1;
 uniform sampler2D texture2;
 uniform float time;
-uniform vec3 camPos;
-uniform vec3 fogColor;
-uniform vec2 fogRange;
-varying vec3 wPos;
+uniform vec3 p0;
+uniform vec3 ni;
+uniform vec3 ni1;
+uniform vec3 p3;
+varying vec2 uv;
+vec3 cube(vec3 c) {
+    c = normalize(c);
+    float m = max(max(c.x, c.y), c.z);
+    vec2 f = m == c.x ? c.yz : m == c.y ? c.xz : c.xy;
+    return texture2D(texture2, f * 0.5 + 0.5).rgb;
+}
+vec3 nmap(vec2 t) { return normalize(texture2D(texture1, t).rgb * 2.0 - 1.0); }
 void main() {
-    vec2 uv = wPos.xz / 14.0;
-    vec3 a = texture2D(texture1, uv + time * vec2(-0.015, 0.03)).rgb * 2.0 - 1.0;
-    vec3 b = texture2D(texture1, uv * -0.6 + time * vec2(0.01, -0.02)).rgb * 2.0 - 1.0;
-    vec3 n = normalize(vec3(a.x + b.x, 2.5, a.y + b.y));
-    vec3 e = normalize(wPos - camPos);
-    vec3 r = reflect(e, n);
-    vec3 col = texture2D(texture0, uv * 0.5 + n.xz * 0.08).rgb;
-    vec2 sp = vec2(0.5) + normalize(r.xz + vec2(0.0001)) * (1.0 - r.y) * 0.25;
-    float f = pow(1.0 - max(-e.y, 0.0), 4.0);
-    col = mix(col, texture2D(texture2, sp).rgb, 0.35 + 0.4 * f);
-    col += vec3(pow(max(dot(r, normalize(vec3(0.4, 1.0, 0.3))), 0.0), 80.0));
-    float fog = clamp((length(wPos - camPos) - fogRange.x) / (fogRange.y - fogRange.x), 0.0, 1.0);
-    gl_FragColor = vec4(mix(col, fogColor, fog), mix(0.7 + 0.25 * f, 1.0, fog));
+    float t = time * 0.5;
+    vec3 n = normalize(nmap(uv * 5.0 + t * vec2(-0.3, 0.6)) * vec3(0.2, 0.2, 0.0) + nmap(uv * -0.2 + t * vec2(0.0, 0.2))
+                       + nmap(uv * -0.75 + t * vec2(-0.1, -0.2)));
+    vec3 d = texture2D(texture0, n.gg * 0.25).rgb - texture2D(texture0, n.bb * 2.0).rrr * p3.z;
+    vec3 r = pow(cube(n * ni1), vec3(p0.x)) * p0.y;
+    float s = clamp(pow(cube(n * ni).r, p0.z) * p3.x, 0.0, 1.0);
+    gl_FragColor = vec4(d + r + s, p3.y);
 }
 )";
 
@@ -169,6 +323,7 @@ void load() {
     tex[QUESTION] = loadTex("hud", "wxp_sprite_022", true), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", true);  // W4M Particle.WXSprite22/23
     tex[SOAP] = loadTex("hud", "wxp_sprite_011", true);  // Particle.WXSprite11, the soap bubbles
     tex[MIST] = loadTex("hud", "mist_puff", true);  // Particle.MistPuff (Mist_Puff.tga)
+    tex[WHITEOUT] = loadTex("fe", "whiteout", false);  // Particle.Whiteout: flat white, additive
     UnloadImage(ring);
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
@@ -179,13 +334,40 @@ void load() {
     ps.reserve(MAX);
 }
 
-void theme(const std::string &theme, Color sky, const std::string &time) {
+namespace {
+void skyKey(const std::string &theme, const std::string &time, char &l, char &suffix) {
     static const char *NAMES[] = {"jurassic", "camelot", "arabian", "wildwest", "construction", "arctic", "england", "horror", "lunar", "pirate", "war"};
     static const char LETTERS[] = "pcawbrehlto";
-    char l = 'c';  // procedural island and unknown themes
+    l = 'c';  // procedural island and unknown themes
     for (int i = 0; i < 11; i++)
         if (theme == NAMES[i]) l = LETTERS[i];
-    char suffix = time == "night" ? '3' : time == "evening" ? '2' : '1';  // W4M ramp naming: 01 day, 02 evening, 03 night
+    suffix = time == "night" ? '3' : time == "evening" ? '2' : '1';  // W4M ramp naming: 01 day, 02 evening, 03 night
+}
+}  // namespace
+
+std::string skyFile(const std::string &theme, const std::string &time) {
+    char l, suffix;
+    skyKey(theme, time, l, suffix);
+    return TextFormat(DATA_DIR "assets/models/sky/%c_sky0%c.glb", l, suffix);
+}
+
+void theme(const std::string &theme, Color sky, const std::string &time, bool levelSky) {
+    char l, suffix;
+    skyKey(theme, time, l, suffix);
+    std::string glb = skyFile(theme, time);
+    if (skyModel.meshCount) UnloadModel(skyModel), skyModel = {};
+    skyBlend.clear();
+    if (levelSky && FileExists(glb.c_str())) {
+        skyModel = Models::take(glb.c_str());
+        char *b = LoadFileText((glb.substr(0, glb.size() - 4) + ".blend").c_str());
+        for (char *p = b; p && *p;) {
+            int s = -1, d = -1, n = 0;
+            sscanf(p, "%d %d%n", &s, &d, &n);
+            skyBlend.push_back({s, d});
+            while (*p && *p++ != '\n') {}
+        }
+        if (b) UnloadFileText(b);
+    }
     if (skyTex.id) UnloadTexture(skyTex);
     for (Texture2D &t : waterTex)
         if (t.id) UnloadTexture(t), t = {};
@@ -210,6 +392,7 @@ void theme(const std::string &theme, Color sky, const std::string &time) {
 
 void unload() {
     for (Texture2D &t : tex) UnloadTexture(t);
+    if (skyModel.meshCount) UnloadModel(skyModel), skyModel = {};
     if (skyTex.id) UnloadTexture(skyTex);
     for (Texture2D &t : waterTex)
         if (t.id) UnloadTexture(t);
@@ -218,8 +401,8 @@ void unload() {
     MemFree(skyMat.maps), MemFree(waterMat.maps);
 }
 
-void fireworks(Vector3 centre, float radius, float top) { stageC = centre, stageR = radius, stageTop = top, tickAcc = 0; }
-void clear() { ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), shake = show = 0; }
+void fireworks(Vector3 centre, float radius, float top) { stageC = centre, stageR = radius, stageTop = top, tickAcc = 0, show = 9; }
+void clear() { ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), shake = show = 0; }
 
 Color fog() { return fogCol; }
 int count() { return (int)ps.size(); }
@@ -238,47 +421,6 @@ bool is(const Seen *s, const char *name) { return s && s->weapon >= 0 && WEAPONS
 void anchors(Vector3 c, int n, float up, float size, Color col, unsigned char t) {
     for (int i = 0; i < n; i++)
         add({c, {rnd(-6, 6), up * rnd(0.7f, 1.2f), rnd(-6, 6)}, -rnd(0, 0.05f), rnd(1.2f, 2.0f), size, size * 0.7f, 0, rnd(-6, 6), 14, 0.3f, col, t, true, 0, {255, 140, 20, 150}});
-}
-// W4M firework (WXP_StarburstExplosion, WXPF_Firework*): glow bang, trail-sprite spray, delayed glints
-void burst(Vector3 c, Color glow, unsigned char trailTex, Color trailCol) {
-    add({c, {}, 0, 0.8f, 1.5f, 3, 0, 0, 0, 0, glow, GLOW, true});
-    add({c, {}, -0.005f, 1.8f, 4, 7, 0, 0, 0, 0, {glow.r, glow.g, glow.b, 110}, GLOW, true});
-    for (int i = 0; i < 32; i++)
-        add({c, Vector3Scale(rndDir(), rnd(6, 10)), 0, rnd(1.2f, 1.75f), 0.5f, 0.2f, 0, 0, 4, 1.2f, trailCol, trailTex, true, 0.18f});
-    for (int i = 0; i < 20; i++)  // WXP_StarB_ManyGlows: crackle 0.4 s later, within 5 m
-        add({Vector3Add(c, Vector3Scale(rndDir(), rnd(1, 5))), {}, -rnd(0.4f, 0.9f), 0.8f, 1.3f, 0.2f, 0, 0, 0, 0, {glow.r, glow.g, glow.b, 220}, GLOW, true});
-}
-// W4M PARTTWK WXPF_Firework1-5 (m = units / 20). Glows (WXSprite1) additive, stars (WXSprite7) alpha. Trails additive: their
-// Bundl10 shader is alpha but the TrailSprite images have no alpha channel (black ground), so they are drawn as light.
-// Trails fly at (0, 15, 0) +-20 m/s under Mass 4.6 x Acceleration (23 m/s²). Stars and Starburst trails use W4M's alternate curve
-// (no gravity): v0 = ParticleVelocityRandomise x 0.01 units/ms (normalised for the stars, per axis for the trails), so r -> v0 N.
-void firework(Vector3 c, int kind) {
-    auto glow = [&](int n, float size, float rand, float life, float delay, Color col) {
-        for (int i = 0; i < n; i++) { float s = size + rnd(-rand, rand); add({c, {}, -delay, life, s, s, 0, 0, 0, 0, col, GLOW, true}); }
-    };
-    auto whiteout = [&](float delay) { add({c, {}, -delay, 0.08f, 20, 20, 0, 0, 0, 0, {255, 255, 255, 26}, GLOW, true}); };  // 400 units, alpha 0.1
-    auto trails = [&](int n, unsigned char t, float size, float life) {  // WXPF_*Trails*: kTrail ribbons, size +-0.5 units, life +-400 ms
-        for (int i = 0; i < n; i++)
-            add({c, {rnd(-20, 20), 15 + rnd(-20, 20), rnd(-20, 20)}, 0, life + rnd(-0.4f, 0.4f), size + rnd(-0.025f, 0.025f), 0, 0, 0, 23, 0, WHITE, t, true, 0.48f});
-    };
-    auto alt = [&](Particle q, float n, float s) { q.altN = n, q.altS = s, q.p0 = q.p; add(q); };  // v in m/s: units/ms x 50
-    auto stars = [&](int n, float radius, float life, float delay, Color col) {  // WXPF_Exploder*: N 6500, S 2e-6; radius m = v0 N / 20
-        for (int i = 0; i < n; i++) alt({c, Vector3Scale(rndDir(), radius * 1000 / 6500), -delay, life, 0.15f, 0.15f, 0, 0, 0, 0, col, STAR, false}, 6500, 2e-6f);
-    };
-    auto starTrails = [&](float reach, float life) {  // WXP_StarburstTrailsA/B: 16, per-axis velocity, N 5000, S 3e-6, white
-        for (int i = 0; i < 16; i++)
-            alt({c, Vector3Scale({rnd(-reach, reach), rnd(-reach, reach), rnd(-reach, reach)}, 1000 / 5000.0f), 0, life + rnd(-0.4f, 0.4f), 0.05f, 0, 0, 0, 0, 0, WHITE, TRAIL_B, true, 0.48f}, 5000, 3e-6f);
-    };
-    const Color FW_CYAN = {77, 255, 255, 255}, FW_ORANGE = {255, 128, 0, 255}, FW_GREEN = {0, 255, 64, 255}, STAR_COL = {255, 230, 128, 255};  // stars: white to (1, 0.8, 0)
-    whiteout(0);
-    if (kind == 0) glow(2, 1.5f, 0, 0.8f, 0, FW_CYAN), glow(1, 6, 0, 1.8f, 0.005f, FW_CYAN), starTrails(12.5f, 1.2f), starTrails(17.5f, 1.75f), trails(12, TRAIL_B, 0.1f, 1.6f);
-    else if (kind == 3) glow(2, 1.5f, 0, 0.8f, 0, FW_GREEN), glow(1, 6, 0, 1.8f, 0.005f, FW_GREEN), stars(50, 26, 1.5f, 0, {255, 255, 128, 255});
-    else {
-        glow(2, 1.5f, 0, 0.8f, 0, FW_ORANGE), glow(1, 6, 0, 1.8f, 0.005f, FW_ORANGE);
-        if (kind == 1) trails(24, TRAIL_R, 0.2f, 1.6f), stars(30, 13, 0.8f, 0, STAR_COL);
-        if (kind == 2) stars(30, 13, 0.8f, 0, STAR_COL), stars(50, 19.5f, 1.5f, 0.25f, STAR_COL), glow(2, 10, 2.5f, 1.8f, 0.25f, FW_ORANGE), whiteout(0.25f);
-        if (kind == 4) trails(72, TRAIL_R, 0.1f, 3);
-    }
 }
 }  // namespace
 
@@ -381,7 +523,7 @@ void event(const GameEvent &e, Color dirt) {
             Color c = holy ? Color{255, (unsigned char)rnd(225, 250), (unsigned char)rnd(150, 210), 255} : Color{255, (unsigned char)rnd(120, 220), (unsigned char)rnd(30, 90), 255};
             add({Vector3Add(e.pos, Vector3Scale(d, r * 0.2f)), Vector3Scale(d, rnd(1, 3) * r * 0.5f), -rnd(0, 0.08f), rnd(0.4f, 0.7f), r * 0.5f, r * 1.2f, 0, rnd(-2, 2), -1.5f, 4, c, FIRE, false});  // fireball
         }
-        if (is(s, "Starburst")) burst(e.pos, {77, 255, 255, 255}, TRAIL_B, WHITE);
+        if (is(s, "Starburst")) effect(STARBURST, e.pos);
         if (holy) {
             anchors(e.pos, 8, 14, 1.4f, WHITE, CROSS);
             for (int i = 0; i < 24; i++) {  // WXP_Explosion_Holy_HG_Ring: gold halo spreading 3 m up
@@ -439,7 +581,7 @@ void event(const GameEvent &e, Color dirt) {
         add({e.pos, {}, 0, 0.9f, 1, 5, 0, 0, 0, 0, {255, 255, 255, 170}, RING, false});
         for (int i = 0; i < 8; i++)
             add({e.pos, {rnd(-1, 1), rnd(1, 4), rnd(-1, 1)}, 0, rnd(0.8f, 1.3f), 0.8f, 2.2f, 0, rnd(-1, 1), 2, 1.5f, {235, 245, 255, 170}, PUFF, false});  // spray
-    } else if (e.kind == GameEvent::GameOver) show = 9;  // W4M GameOverLogicEntity 0x4ff8d0: WXPF_Firework1-5
+    }
 }
 
 void trail(const Projectile &s, float dt, Vector3 wind) {
@@ -502,7 +644,7 @@ void trail(const Projectile &s, float dt, Vector3 wind) {
     if (customWeapon(s.weapon)) {  // WeaponBazookaPuff: one MistPuff per update (SpawnFreq 0), 200 ms, rising with Mass 2 x (0.2 + wind)
         for (int i = batches(0.02f, 65.535f), alive = count(R_MIST); i > 0 && alive++ < 20; i--) {
             Particle q = {tail, {}, 0, 0.2f, 7.0f / 20, 0, rnd(-2 * PI, 2 * PI), rnd(-30, 30) * DEG2RAD * 10, -2.0f, 0, WHITE, MIST, false};
-            q.ramp = R_MIST, q.delay = 0.3f, q.alpha = 0.5f, q.fadeA = true;
+            q.ramp = R_MIST, q.delay = 0.3f, q.alpha = 0.5f, q.fadeA = 0;
             q.acc = {wind.x * 8.5f, 0, wind.z * 8.5f};  // Wind.MaxSpeed 8.5e-5 units/ms² = 4.25 m/s², x Mass 2
             add(q);
         }
@@ -582,21 +724,23 @@ void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, floa
 
 void update(float dt) {
     shake *= expf(-dt * 6);
-    // W4M 0x4ffa56, per 20 ms tick after the 4 s wait: at most one per 100 ms, chance 1/40, WXPF_Firework<1 + rand % 5>,
-    // at Land.Center +- Radius / 2 in x and z, Land.MaxHeight + rand x 30 units
-    for (tickAcc += show > 0 && show < 5 ? dt : 0, sinceLast += dt; tickAcc >= 0.02f; tickAcc -= 0.02f)
-        if (sinceLast >= 0.1f && rnd() * 40 < 1)
-            sinceLast = 0, firework({stageC.x + (rnd() - 0.5f) * stageR, stageTop + rnd() * 1.5f, stageC.z + (rnd() - 0.5f) * stageR}, (int)rnd(0, 4.99f));
+    // W4M 0x4ffa56, every 20 ms of the 5 s show: rand() % 40 == 0 fires WXPF_Firework<1 + rand() % 5> at Land.Center +- Radius / 2 in x and z,
+    // Land.MaxHeight + rand x 30 units (its 100 ms gap test computes last - now, unsigned, so it never holds)
+    for (tickAcc += show > 0 && show < 5 ? dt : 0; tickAcc >= 0.02f; tickAcc -= 0.02f)
+        if (rnd() * 40 < 1) effect(FIREWORKS[(int)(rnd() * 5)], {stageC.x + (rnd() - 0.5f) * stageR, stageTop + rnd() * 1.5f, stageC.z + (rnd() - 0.5f) * stageR});
     show -= dt;
+    tickEmitters(dt);
     for (size_t i = 0; i < ps.size();) {
         Particle &p = ps[i];
         p.age += dt;
         if (p.age < 0) { i++; continue; }
-        if (p.age >= p.life) { p = ps.back(); ps.pop_back(); continue; }
-        if (p.altN > 0) {
-            float f = p.altN - 1 / (p.altS * p.age * 1000 + 1 / p.altN);  // ms
-            p.p = Vector3Add(p.p0, Vector3Add(Vector3Scale(p.v, f / 1000), {0, p.v.y * p.age, 0}));
-        } else {
+        if (p.age >= p.life) {
+            if (p.expire) lives.push_back({p.expire, p.p});
+            p = ps.back(), ps.pop_back();
+            continue;
+        }
+        if (p.altN > 0 || p.ramp) p.p = posAt(p, p.age);
+        else {
             p.v = Vector3Scale(Vector3Add(p.v, Vector3Scale(p.acc, dt)), expf(-p.drag * dt));
             p.v.y -= p.grav * dt;
             p.p = Vector3Add(p.p, Vector3Scale(p.v, dt));
@@ -609,28 +753,54 @@ void update(float dt) {
 }
 
 void drawSky(const Camera3D &cam) {
-    if (!skyTex.id || skySh.id == rlGetShaderIdDefault()) return;
     rlDrawRenderBatchActive();
+    if (skyModel.meshCount) {
+        // the ~20000-unit scene shrunk inside the far plane around the camera: opaque parts, then the blended ones in scene
+        // order with their XBlendModeGL; depth only sorts the sky's own parts and is cleared after
+        static const int GL_FACTOR[11] = {0, 1, 0x306, 0x307, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305, 0x308};  // W4M BlendFactor -> GL, table 0x8b4b5c
+        Matrix m = MatrixMultiply(MatrixScale(0.04f, 0.04f, 0.04f), MatrixTranslate(cam.position.x, cam.position.y, cam.position.z));
+        rlDisableBackfaceCulling();
+        for (int pass = 0; pass < 2; pass++)
+            for (int i = 0; i < skyModel.meshCount; i++) {
+                auto [src, dst] = i < (int)skyBlend.size() ? skyBlend[i] : std::pair<int, int>{-1, -1};
+                if ((src >= 0) != (pass == 1)) continue;
+                if (pass) {
+                    if (src < 11 && dst < 11) rlSetBlendFactors(GL_FACTOR[src], GL_FACTOR[dst], 0x8006);  // else glBlendFunc fails in W4M: state kept
+                    rlSetBlendMode(RL_BLEND_CUSTOM), rlDisableDepthMask();
+                }
+                DrawMesh(skyModel.meshes[i], skyModel.materials[skyModel.meshMaterial[i]], m);
+            }
+        rlSetBlendMode(RL_BLEND_ALPHA), rlEnableDepthMask(), rlEnableBackfaceCulling();
+        glClear(0x100);  // GL_DEPTH_BUFFER_BIT
+        return;
+    }
+    if (!skyTex.id || skySh.id == rlGetShaderIdDefault()) return;
     rlDisableDepthTest(), rlDisableDepthMask(), rlDisableBackfaceCulling();
     DrawMesh(dome, skyMat, MatrixMultiply(MatrixScale(100, 100, 100), MatrixTranslate(cam.position.x, cam.position.y, cam.position.z)));
     rlEnableDepthTest(), rlEnableDepthMask(), rlEnableBackfaceCulling();
 }
 
 void drawWater(const Camera3D &cam, float level, float time) {
+    // W4M WaterCgGraphicEntity: a 0..1 uv quad scaled to +-12000 units (0x48cada), alpha blended, depth written, not culled
+    const float HALF = 12000 / 20.f;
     if (!waterTex[0].id || !waterTex[1].id || waterSh.id == rlGetShaderIdDefault()) {
-        DrawPlane({40, level, 40}, {400, 400}, {30, 80, 160, 180});
+        DrawPlane({40, level, 40}, {2 * HALF, 2 * HALF}, {30, 80, 160, 180});
         return;
     }
-    Vector3 fc = {fogCol.r / 255.f, fogCol.g / 255.f, fogCol.b / 255.f};
-    Vector2 fr = {FOG_NEAR, FOG_FAR};
-    time = fmodf(time, 200);  // every pan speed below loops at 200 s: keeps uv offsets small
+    const float *w = Lit::sun.water;
+    Vector3 p0 = {w[4], w[3], w[6]}, ni = {w[7], w[8], w[9]}, ni1 = {w[10], w[11], w[12]}, p3 = {w[5], w[0], w[13]};
+    time = fmodf(time, 200);  // every pan speed loops at 200 s: keeps uv offsets small
     SetShaderValue(waterSh, GetShaderLocation(waterSh, "time"), &time, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "camPos"), &cam.position, SHADER_UNIFORM_VEC3);
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "fogColor"), &fc, SHADER_UNIFORM_VEC3);
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "fogRange"), &fr, SHADER_UNIFORM_VEC2);
+    SetShaderValue(waterSh, GetShaderLocation(waterSh, "textureScale"), &w[1], SHADER_UNIFORM_FLOAT);
+    SetShaderValue(waterSh, GetShaderLocation(waterSh, "p0"), &p0, SHADER_UNIFORM_VEC3);
+    SetShaderValue(waterSh, GetShaderLocation(waterSh, "ni"), &ni, SHADER_UNIFORM_VEC3);
+    SetShaderValue(waterSh, GetShaderLocation(waterSh, "ni1"), &ni1, SHADER_UNIFORM_VEC3);
+    SetShaderValue(waterSh, GetShaderLocation(waterSh, "p3"), &p3, SHADER_UNIFORM_VEC3);
     rlDrawRenderBatchActive();
     BeginBlendMode(BLEND_ALPHA);
-    DrawMesh(plane, waterMat, MatrixMultiply(MatrixScale(400, 1, 400), MatrixTranslate(40, level, 40)));
+    rlDisableBackfaceCulling();
+    DrawMesh(plane, waterMat, MatrixMultiply(MatrixScale(2 * HALF, 1, 2 * HALF), MatrixTranslate(40, level, 40)));
+    rlEnableBackfaceCulling();
     EndBlendMode();
 }
 
@@ -647,13 +817,14 @@ void draw(const Camera3D &cam) {
             if (!tex[t].id) continue;
             bool any = false;
             for (const Particle &p : ps) {
-                if (p.tex != t || p.add != (bool)add || p.age < 0) continue;
+                bool body = p.tex == t && p.add == (bool)add, head = p.head && t == GLOW && add;
+                if ((!body && !head) || p.age < 0) continue;
                 if (!any) rlSetTexture(tex[t].id), rlBegin(RL_QUADS), any = true;
-                float k = p.age / p.life, s = Lerp(p.size0, p.size1, k) * 0.5f;
-                if (p.ramp)  // ParticleSize 0x5b6f40: linear fade-in, S until the delay, then linear to 0 at end of life
-                    s = p.size0 * 0.5f * fminf(1, p.fadeIn > 0 ? p.age / p.fadeIn : 1) * (p.age <= p.delay ? 1 : 1 - (p.age - p.delay) / (p.life - p.delay));
+                // ParticleSize 0x5b6f40 (ramp): linear fade-in, S until the delay, then linear to 0 at end of life; half size
+                auto half = [&](float t) { return p.size0 * 0.5f * fminf(1, p.fadeIn > 0 ? t / p.fadeIn : 1) * (t <= p.delay ? 1 : 1 - (t - p.delay) / (p.life - p.delay)); };
+                float k = p.age / p.life, s = p.ramp ? half(p.age) : Lerp(p.size0, p.size1, k) * 0.5f;
                 float c = cosf(p.rot) * s, sn = sinf(p.rot) * s;
-                Vector3 r = Vector3Add(Vector3Scale(right, c), Vector3Scale(up, sn)), u = Vector3Subtract(Vector3Scale(up, c), Vector3Scale(right, sn));
+                Vector3 r = Vector3Add(Vector3Scale(right, c), Vector3Scale(up, sn)), u = Vector3Scale(Vector3Subtract(Vector3Scale(up, c), Vector3Scale(right, sn)), p.aspect);
                 Color col = p.c;
                 if (p.ramp) {
                     const Ramp &R = RAMPS[p.ramp];
@@ -661,9 +832,27 @@ void draw(const Camera3D &cam) {
                     while (i < R.n - 2 && k > R.edge[i + 1]) i++;
                     if (R.n > 1) col = ColorLerp(R.c[i], R.c[i + 1], (k - R.edge[i]) / (R.edge[i + 1] - R.edge[i]));
                     else col = R.c[0];
-                    col.a = (unsigned char)(255 * p.alpha * (p.fadeA ? 1 - k : 1));
+                    float a = p.alpha, from = p.aIn + p.fadeA;  // ParticleAlpha 0x5b7660: fade-in, then linear to 0 past the delay
+                    if (p.age < p.aIn) a *= p.age / p.aIn;
+                    else if (p.fadeA >= 0 && p.age > from) a *= 1 - (p.age - from) / (p.life - from);
+                    col.a = (unsigned char)(255 * a);
                 } else col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));
-                if (p.stretch > 0) {  // trail texture: u = 0 head, 1 tail
+                if (head) quad(p.p, r, u, col);
+                if (!body) continue;
+                if (p.stretch > 0 && p.ramp) {  // TrailGraphicEntity: a point (position, particle size) per update, u = 0 head, 1 tail
+                    rlColor4ub(col.r, col.g, col.b, col.a);
+                    Vector3 a = p.p;
+                    float sa = s;
+                    for (int j = 1; j <= TRAIL_SEGS && p.age > (j - 1) * TRAIL_DT; j++) {
+                        float tb = fmaxf(p.age - j * TRAIL_DT, 0), sb = half(tb), u0 = (j - 1) / (float)TRAIL_SEGS, u1 = j / (float)TRAIL_SEGS;
+                        Vector3 b = posAt(p, tb), n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), fwd)), wa = Vector3Scale(n, sa), wb = Vector3Scale(n, sb);
+                        rlTexCoord2f(u0, 0); rlVertex3f(a.x + wa.x, a.y + wa.y, a.z + wa.z);
+                        rlTexCoord2f(u0, 1); rlVertex3f(a.x - wa.x, a.y - wa.y, a.z - wa.z);
+                        rlTexCoord2f(u1, 1); rlVertex3f(b.x - wb.x, b.y - wb.y, b.z - wb.z);
+                        rlTexCoord2f(u1, 0); rlVertex3f(b.x + wb.x, b.y + wb.y, b.z + wb.z);
+                        a = b, sa = sb;
+                    }
+                } else if (p.stretch > 0) {  // trail texture: u = 0 head, 1 tail
                     float k = p.altN > 0 ? p.altS / powf(p.altS * p.age * 1000 + 1 / p.altN, 2) : 1;  // alternate curve: f'(t)
                     Vector3 vel = p.altN > 0 ? Vector3Add(Vector3Scale(p.v, k), {0, p.v.y, 0}) : p.v;
                     Vector3 tail = Vector3Subtract(p.p, Vector3Scale(vel, p.stretch)), w = Vector3Scale(Vector3Normalize(Vector3CrossProduct(Vector3Subtract(tail, p.p), fwd)), s);

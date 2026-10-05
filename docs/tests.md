@@ -25,6 +25,10 @@ Repository-level scripts in `tests/` (run from the repository root, they build t
 | `tests/quit_check.sh` | Pause → Quit to menu stays on the menu: scripted keys (title, Local, Quick match, pause, Quit, arrows); fails on a second Play. |
 | `tests/netbot.sh` | Two real clients (`--netbot`, the AI plays each owner's team) through a local server; fails on a desync. |
 
+Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU match, per-section ms and worst frame);
+`W4NX_BENCH=<frames> ./worms4nx --shot <weapon index> [map]` (that weapon fired, e.g. 15 Airstrike, 18 Concrete Donkey:
+the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup and match loading.
+
 Helpers (scripted inputs, scene builders such as `settle`, `melee`, `floorAndWall`, `weaponNamed`) are not listed.
 
 ## sim_check.cpp

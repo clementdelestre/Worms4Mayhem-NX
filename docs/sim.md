@@ -39,7 +39,7 @@ In order: bubbles age one turn end (W4M Bubble.Lifetime, data); Icarus, girder p
 DoPostActivity `SetData("DoubleDamage", 0)`, data); poison takes `poison` hp from each worm, never below 1 (W4M Worm.Poison, data);
 game over check; sudden death (below); the next team in order with a living worm (`idle` teams skipped: mission captives), its next
 worm in rotation (`nextWorm`); turn timer = `turnTime` s, hot seat = `hotSeat` s (W4M HotSeat 10 s, data); wind
-`WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10); the weapon in hand = `picked[team]`
+`WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10; HUD meter `Hud::draw`: downwind pointer in the camera frame, "NNm" = round(10 × |wind|), docs/w4m/render.md "Wind meter"; ours: drawn flat in 2D, so no perspective term, the tilt kept as a sin 0.75 squash of the screen-y component); the weapon in hand = `picked[team]`
 (the weapon held when its last turn ended) if still `usable`, else `firstWeapon()` (W4M Weapon.Create 0x565770: first usable in list
 order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall before, in `Settle` (below).
 

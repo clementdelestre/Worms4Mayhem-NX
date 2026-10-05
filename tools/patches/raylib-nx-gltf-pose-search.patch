@@ -1,0 +1,40 @@
+diff --git a/src/rmodels.c b/src/rmodels.c
+index 4dbfb4b..0b089d3 100644
+--- a/src/rmodels.c
++++ b/src/rmodels.c
+@@ -6392,20 +6392,23 @@ static bool GetPoseAtTimeGLTF(cgltf_interpolation_type interpolationType, cgltf_
+     int keyframe = 0;       // Defaults to first pose
+     bool found = false;
+ 
+-    for (int i = 0; i < (int)input->count - 1; i++)
++    // Binary search (times are non-decreasing): the first key after time, same interval as a linear scan
++    int lo = 0, hi = (int)input->count;
++    while (lo < hi)
+     {
+-        cgltf_bool r1 = cgltf_accessor_read_float(input, i, &tstart, 1);
+-        if (!r1) return false;
+-
+-        cgltf_bool r2 = cgltf_accessor_read_float(input, i + 1, &tend, 1);
+-        if (!r2) return false;
++        int mid = (lo + hi)/2;
++        float tm = 0.0f;
++        if (!cgltf_accessor_read_float(input, mid, &tm, 1)) return false;
++        if (tm <= time) lo = mid + 1;
++        else hi = mid;
++    }
+ 
+-        if ((tstart <= time) && (time < tend))
+-        {
+-            keyframe = i;
+-            found = true;
+-            break;
+-        }
++    if ((lo >= 1) && (lo <= (int)input->count - 1))
++    {
++        keyframe = lo - 1;
++        if (!cgltf_accessor_read_float(input, keyframe, &tstart, 1)) return false;
++        if (!cgltf_accessor_read_float(input, keyframe + 1, &tend, 1)) return false;
++        found = true;
+     }
+ 
+     // No interval contains a time at (or past) the last keyframe, because the

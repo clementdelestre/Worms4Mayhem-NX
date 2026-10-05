@@ -7,11 +7,6 @@
 static constexpr float DT = Game::DT, R = Game::R;
 static constexpr float FALL_SAFE = 15, FALL_SCALE = 2;  // copy of sim.cpp's W4M fall damage
 
-static float grav(const Game &g) { return g.gravity(); }
-static Vector3 dirOf(float yaw, float pitch) { return {cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)}; }
-static Vector3 flat(float yaw) { return {sinf(yaw), 0, cosf(yaw)}; }
-static float yawTo(Vector3 a, Vector3 b) { return atan2f(b.x - a.x, b.z - a.z); }
-static float angle(float a) { return remainderf(a, 2 * PI); }
 static int8_t q(float v) { return (int8_t)Clamp(roundf(v * 127), -127, 127); }
 
 // W4M AITWK.XOM AIParams.CPU1..CPU5 (docs/w4m/ai.md §18); distances at 20 W4M units per game unit.
@@ -55,7 +50,7 @@ static bool outside(const Game &g, Vector3 p) {
 // Copy of Game::stepWorm without hp; false once drowned.
 struct Body { Vector3 pos, vel; bool grounded; float fall = 0; Motion motion{}; };
 static bool stepBody(const Game &g, Body &b, float &yaw) {
-    float speed = wormBody(g.terrain, b.pos, b.vel, b.grounded, b.motion, yaw, grav(g), g.cfg.wormpot);
+    float speed = wormBody(g.terrain, b.pos, b.vel, b.grounded, b.motion, yaw, g.gravity(), g.cfg.wormpot);
     if (speed > FALL_SAFE && g.cfg.scheme.fallDamage) b.fall += (int)((speed - FALL_SAFE) * FALL_SCALE) + 1;
     return b.pos.y >= g.water;
 }
@@ -116,7 +111,7 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
     for (int i = 0; i < 600; i++) {
         uint64_t now = 0;
         if (aim && (fuse += DT) > Game::HOMING_LOCK && fuse < Game::HOMING_LOCK + Game::HOMING_TIME) v = Game::homingStep(v, p, *aim);
-        else v.y -= grav(g) * (child && wd.kind != Kind::Airstrike ? 1 : wd.grav) * DT;
+        else v.y -= g.gravity() * (child && wd.kind != Kind::Airstrike ? 1 : wd.grav) * DT;
         if (g.windy(int(&wd - WEAPONS.data()))) v.x += wind * Game::WIND_ACCEL * DT, v.z += g.windZ * Game::WIND_ACCEL * DT;
         for (int k = 0, n = substeps(v); k < n; k++) {  // Game::stepShots' sub-steps
             Vector3 np = p + v * (DT / n);
@@ -142,7 +137,7 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
 static Vector3 sheepWalk(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 f, Vector3 e, Vector3 &end) {
     Vector3 v = f * wd.speed, best = p;
     for (int i = 0; i * DT < wd.fuse && p.y > g.water - 2; i++) {
-        walkerStep(g.terrain, p, v, grav(g));
+        walkerStep(g.terrain, p, v, g.gravity());
         if (Vector3Distance(p, e) < Vector3Distance(best, e)) best = p;
     }
     end = p;
@@ -155,7 +150,7 @@ static void steer(const Game &g, Vector3 p, Vector3 v, Vector3 e, Input &in) {
     float h = sqrtf(to.x * to.x + to.z * to.z);
     Vector3 d = h > 6 ? to + Vector3{0, fminf(h * 0.4f, 8), 0} : to;
     float yaw = atan2f(v.x, v.z), pitch = asinf(Clamp(v.y / fmaxf(Vector3Length(v), 0.01f), -1, 1));
-    float dy = angle(atan2f(d.x, d.z) - yaw), dp = atan2f(d.y, sqrtf(d.x * d.x + d.z * d.z)) - pitch;
+    float dy = wrapPi(atan2f(d.x, d.z) - yaw), dp = atan2f(d.y, sqrtf(d.x * d.x + d.z * d.z)) - pitch;
     if (h > 3 && (g.terrain.solid(p + dir * 3) || g.terrain.solid(p + dir * 1.5f))) dp = 1;
     in.turn = q(dy / (2 * DT));
     in.aim = q(dp / (1.5f * DT));
@@ -184,15 +179,6 @@ static bool superFly(const Game &g, const WeaponDef &wd, Vector3 pos, float yaw,
         if (outside(g, p)) return false;
     }
     return true;
-}
-
-// Game::target() for a hypothetical aim.
-static Vector3 reticle(const Game &g, Vector3 pos, float yaw, float pitch) {
-    Vector3 hit, dir = dirOf(yaw, pitch);
-    if (g.terrain.raycast({pos + dir, dir}, 60, &hit)) return hit;
-    Vector3 far = {pos.x + sinf(yaw) * 30, (Terrain::NY - 1) * Terrain::VOX, pos.z + cosf(yaw) * 30};
-    if (g.terrain.raycast({far, {0, -1, 0}}, Terrain::NY * Terrain::VOX, &hit)) return hit;
-    return {far.x, g.water, far.z};
 }
 
 static bool seen(const Game &g, Vector3 a, Vector3 b) {
@@ -229,7 +215,7 @@ struct Mover { Body b; float yaw, pitch; bool roped; Vector3 anchor; float len; 
 
 static bool stepRope(const Game &g, Mover &m) {
     Body &b = m.b;
-    b.vel.y -= grav(g) * DT;
+    b.vel.y -= g.gravity() * DT;
     auto blocked = [&](Vector3 p) { return g.terrain.solid({p.x, p.y - R, p.z}) || g.terrain.solid({p.x, p.y + R, p.z}); };
     for (int k = 0, n = substeps(b.vel); k < n; k++) {
         Vector3 np = Vector3Add(b.pos, Vector3Scale(b.vel, DT / n)), d = Vector3Subtract(np, m.anchor);
@@ -287,7 +273,7 @@ static Input ropePolicy(const Mover &m, Vector3 finish, const Ai::RopePlan &p, A
     r.t++;
     if (p.release < -1) { r.done = r.t >= 60; return in; }  // stay
     if (p.release < 0) {
-        in.turn = q(angle(yawTo(m.b.pos, finish) - m.yaw) / (2.5f * DT));
+        in.turn = q(wrapPi(yawTo(m.b.pos, finish) - m.yaw) / (2.5f * DT));
         in.walk = 127;
         if (r.t % 30 == 0) in.buttons = Input::JUMP;
         r.done = r.t >= 60;
@@ -296,7 +282,7 @@ static Input ropePolicy(const Mover &m, Vector3 finish, const Ai::RopePlan &p, A
     if (m.roped) {
         in.walk = 127;
         in.aim = p.reel ? 127 : 0;
-        in.turn = q(angle(p.yaw - m.yaw) / (2.5f * DT));
+        in.turn = q(wrapPi(p.yaw - m.yaw) / (2.5f * DT));
         if (++r.held >= p.release && !(m.prev & Input::JUMP)) { in.buttons = Input::JUMP; r.after = 0; }
         return in;
     }
@@ -304,7 +290,7 @@ static Input ropePolicy(const Mover &m, Vector3 finish, const Ai::RopePlan &p, A
         r.done = ++r.after > 20 || (r.after > 1 && m.b.grounded);
         return in;
     }
-    float dy = angle(p.yaw - m.yaw), dp = p.pitch - m.pitch;
+    float dy = wrapPi(p.yaw - m.yaw), dp = p.pitch - m.pitch;
     in.turn = q(dy / (2.5f * DT));
     in.aim = q(dp / (1.5f * DT));
     if (fabsf(dy) < 0.02f && fabsf(dp) < 0.02f && !m.prev) { in.buttons = Input::FIRE; r.fired = true; }
@@ -477,7 +463,7 @@ static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::Ste
     if (m.vault.t) { in.walk = 127; return in; }  // releasing the stick would drop it back (W4M Vaulting)
     if (s.move == 0) {
         Vector3 d = s.to - m.b.pos;
-        float h = sqrtf(d.x * d.x + d.z * d.z), dy = angle(atan2f(d.x, d.z) - m.yaw), ws = Game::WALK_SPEED * (g.cfg.wormpot & WP_QUICK_WALK ? 2 : 1);
+        float h = sqrtf(d.x * d.x + d.z * d.z), dy = wrapPi(atan2f(d.x, d.z) - m.yaw), ws = Game::WALK_SPEED * (g.cfg.wormpot & WP_QUICK_WALK ? 2 : 1);
         if (h < 0.05f || !m.b.grounded || r.t > 120) { r.stuck = h >= 0.05f && m.b.grounded; r.air = true; r.done = still; return in; }
         in.turn = q(dy / (2.5f * DT));
         if (fabsf(dy) < 0.3f) in.walk = (int8_t)Clamp(roundf(127 * h / (ws * DT)), 1, 127);
@@ -488,7 +474,7 @@ static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::Ste
         r.air = !m.b.grounded;
         return in;
     }
-    float dy = angle(s.yaw + (s.move == 2 ? PI : 0) - m.yaw);  // a backflip leaves backwards
+    float dy = wrapPi(s.yaw + (s.move == 2 ? PI : 0) - m.yaw);  // a backflip leaves backwards
     in.turn = q(dy / (2.5f * DT));
     if (fabsf(dy) < 2e-3f && still && !(m.prev & Input::JUMP)) in.buttons = Input::JUMP;
     r.done = r.t > 200;
@@ -893,7 +879,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
             // constant acceleration A: hit T at time t with V = (T - P - A t(t+DT)/2) / t (semi-implicit Euler)
             for (float t = 0.2f; t < 4.5f; t += 0.43f) {  // 11 arcs, as W4M samples about 11 speeds (0x4ace50)
                 const bool wf = g.windy(int(&wd - WEAPONS.data()));
-                Vector3 A = {wf ? wind * Game::WIND_ACCEL : 0, -grav(g) * wd.grav, wf ? g.windZ * Game::WIND_ACCEL : 0}, P = launchPoint(wd, w.pos, yawE);
+                Vector3 A = {wf ? wind * Game::WIND_ACCEL : 0, -g.gravity() * wd.grav, wf ? g.windZ * Game::WIND_ACCEL : 0}, P = launchPoint(wd, w.pos, yawE);
                 Vector3 V = (e - P - A * (0.5f * t * (t + DT))) / t;
                 float sp = Vector3Length(V), pitch = asinf(V.y / sp), yaw = atan2f(V.x, V.z);
                 const float lo = launchSpeed(wd, 0);
@@ -905,11 +891,11 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                 if (fly(g, wd, muzzle(g.terrain, w.pos, P), d * launchSpeed(wd, pw), wind, false, out)) consider(shell(out), yaw, pitch, n, ti);
             }
             break;
-        case Kind::Homing: {
+        case Kind::Homing: {  // locked on the target's feet from the Blimp (act())
             if (!isWorm) break;
             float pitch = atan2f(to.y - R - 0.2f, horiz);
-            Vector3 tgt = reticle(g, w.pos, yawE, pitch), d = dirOf(yawE, pitch), out;
-            if (Vector3Distance(tgt, e) > 2.5f || pitch < -1.2f) break;
+            Vector3 tgt = e - Vector3{0, R, 0}, d = dirOf(yawE, pitch), out;
+            if (pitch < -1.2f) break;
             for (int n : {30, 60, 90}) {
                 if (!pick()) continue;
                 float pw = 0;
@@ -987,21 +973,15 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub) {
                 consider(o.s + bonus(false), w.yaw, w.pitch, 0, ti);
             }
             break;
-        case Kind::Airstrike:  // W4M CAIPlanAttackStrike 0x4a11d0: one blast at the target, radius BlitzDuration 2 s x GroundSpeed
-        case Kind::Donkey:     // + 2 WormDamageRadius, the payload's WormDamageMagnitude
-            if (!isWorm) break;
-            for (float dy : {0.0f, -0.25f, 0.25f})
-                for (float pitch : {atan2f(to.y - R - 0.1f, horiz), 1.45f}) {
-                    if (!pick()) continue;
-                    const bool bomber = wd.kind == Kind::Airstrike && wd.fuse > 0;  // steered: think() drops the cows over the target
-                    if (bomber && (dy != 0 || pitch > 1.4f)) continue;
-                    float yaw = yawE + dy;
-                    Blast b = blastOf(wd, wd.kind == Kind::Airstrike);
-                    b.reach = 2 * Game::BOMBER_SPEED + 2 * b.reach;
-                    Outcome oc(g, L, me, rating);
-                    oc.blast(bomber ? e : reticle(g, w.pos, yaw, pitch), b, L.threat);
-                    consider(oc.s + bonus(false), yaw, pitch, 0, ti);
-                }
+        case Kind::Airstrike:  // W4M CAIPlanAttackStrike 0x4a11d0: one blast at the target (set from the Blimp, act()), radius
+        case Kind::Donkey:     // BlitzDuration 2 s x GroundSpeed + 2 WormDamageRadius, the payload's WormDamageMagnitude
+            if (isWorm && pick()) {
+                Blast b = blastOf(wd, wd.kind == Kind::Airstrike);
+                b.reach = 2 * Game::BOMBER_SPEED + 2 * b.reach;
+                Outcome oc(g, L, me, rating);
+                oc.blast(e, b, L.threat);
+                consider(oc.s + bonus(false), w.yaw, w.pitch, 0, ti);  // W4M strike plans queue no worm orientation (flags 0x170)
+            }
             break;
         default: break;  // sentry, abduction, bubble, girder, teleport and utilities: W4M has no AI plan for them (no CAIPlanAttack*)
         }
@@ -1028,7 +1008,6 @@ void Ai::finish(const Game &g) {
     const Level &L = levelOf(g, w.team);
     const Kind k = WEAPONS[plan.weapon].kind;
     uint32_t r = (salt ^ (uint32_t)g.shotsLeft * 2654435761u) + (uint32_t)walks * 40503u;  // turn-start state: not the think's length
-    auto noise = [&] { r = r * 1664525u + 1013904223u; return ((r >> 8) / 16777216.0f) * 2 - 1; };
     Vector3 at = plan.target >= 0 ? g.worms[plan.target].pos : w.pos;
     float match = 0;  // W4M 0x4a5640: effect x (1 - d_from / R)(1 - d_at / R) within MatchRadius R 200 units, any worm's records
     for (const Shot &s : memory) {
@@ -1040,20 +1019,14 @@ void Ai::finish(const Game &g) {
     const float recall = 1 + L.memory * match;
     strikeOff = {};
     if (k == Kind::Airstrike || k == Kind::Donkey) {  // W4M 0x4a1b00: target + ShotErrorStrike·(2r-1) per component, no accuracy memory
-        const float ex = noise() * L.strikeErr;
-        noise();  // the y offset: bombs fall straight down
-        strikeOff = {ex, 0, noise() * L.strikeErr};
-        if (WEAPONS[plan.weapon].fuse <= 0 || k == Kind::Donkey) {  // aimed by the reticle; the steered bomber (think()) uses strikeOff
-            const bool far = plan.pitch > 1.4f;  // the reticle 30 m ahead: only the sideways part moves it
-            Vector3 t = reticle(g, w.pos, plan.yaw, plan.pitch) + strikeOff, hit;
-            plan.yaw = yawTo(w.pos, t);
-            if (!far) plan.pitch = Clamp(atan2f((ground(g, t, hit) ? hit.y : t.y) - w.pos.y, Vector2Length({t.x - w.pos.x, t.z - w.pos.z})), -1.2f, 1.45f);
-        }
+        const float ex = noise(r) * L.strikeErr;
+        noise(r);  // the y offset: bombs fall straight down
+        strikeOff = {ex, 0, noise(r) * L.strikeErr};
     }
     else if (k != Kind::Melee && k != Kind::Mine && k != Kind::Flood && !dropped(WEAPONS[plan.weapon])) {  // direct weapons aim statically: ShotErrorDirectNonStrafe
         float e = (k == Kind::Shotgun ? L.directErr : L.shotErr) / recall;
         Vector3 v = dirOf(plan.yaw, plan.pitch) * (powered(k) ? plan.charge / 90.0f : 1);
-        v = {v.x * (1 + e * noise()), v.y * (1 + e * noise()), v.z * (1 + e * noise())};
+        v = {v.x * (1 + e * noise(r)), v.y * (1 + e * noise(r)), v.z * (1 + e * noise(r))};
         float sp = Vector3Length(v);
         plan.yaw = atan2f(v.x, v.z);
         plan.pitch = Clamp(asinf(Clamp(v.y / sp, -1, 1)), -1.2f, 1.45f);
@@ -1121,14 +1094,29 @@ Input Ai::act(const Game &g) {
     }
     if (!select(g, plan.weapon, in)) return in;
     Kind k = WEAPONS[g.weapon].kind;
-    float dy = angle(plan.yaw - w.yaw), dp = plan.pitch - w.pitch;
+    float dy = wrapPi(plan.yaw - w.yaw), dp = plan.pitch - w.pitch;
     in.turn = q(dy / (2.5f * DT));
     in.aim = q(dp / (1.5f * DT));
     if (fabsf(dy) > 2e-3f || fabsf(dp) > 2e-3f) return in;
     if (aimed++ < levelOf(g, w.team).fireDelay / DT) return in;  // W4M DelayBeforeFire
-    if (k == Kind::Homing && !g.locked) { if (!g.prevButtons) in.buttons = Input::FIRE; return in; }  // the lock press, released before the charge
+    if (blimped(k) && !g.locked) return blimp(g);
     if (powered(k)) { if (k == Kind::Homing && !charged && g.prevButtons) return in; if (charged++ < plan.charge) in.buttons = Input::FIRE; }  // release fires
     else if (!g.prevButtons) in.buttons = Input::FIRE;
+    return in;
+}
+
+// W4M SetStrikeTarget 0x4b4c70 sets the strike or homing target with the Blimp camera on (0x4b4c99); ours drives the Blimp
+// cursor until its camera ray meets the target's feet, then FIRE confirms (a strike fires, a homing missile locks).
+Input Ai::blimp(const Game &g) const {
+    Input in;
+    in.buttons = Input::TARGET;
+    if (!g.cursorOn || plan.target < 0) return in;  // the first TARGET tick opens the view
+    const Vector3 t = g.worms[plan.target].pos + strikeOff - Vector3{0, R, 0};
+    const float y = g.cursorYaw, back = (g.cursor.y - t.y) / tanf(g.cursorPitch), dx = t.x - sinf(y) * back - g.cursor.x,
+                dz = t.z - cosf(y) * back - g.cursor.z, step = Game::CURSOR_SPEED * DT;
+    in.walk = q((sinf(y) * dx + cosf(y) * dz) / step);  // Game::step's cursor axes
+    in.aim = q((sinf(y) * dz - cosf(y) * dx) / step);
+    if (dx * dx + dz * dz < 0.05f * 0.05f && !(g.prevButtons & Input::FIRE)) in.buttons |= Input::FIRE;
     return in;
 }
 
@@ -1151,14 +1139,18 @@ Input Ai::think(const Game &g) {
             if (k == Kind::Airstrike && WEAPONS[s.weapon].fuse > 0 && !s.child) {  // bomber: head for the target, drop with the lead
                 if (plan.target < 0 || !g.worms[plan.target].alive || (!s.prey && s.stage > 0)) continue;  // held for STRIKE_LEAD
                 Vector3 e = g.worms[plan.target].pos + strikeOff, land = s.pos + s.vel * (0.3f * (s.pos.y - e.y) / Game::COW_CHUTE);
-                in.turn = q(angle(yawTo(s.pos, e) - atan2f(s.vel.x, s.vel.z)) / (0.8f * DT));
+                in.turn = q(wrapPi(yawTo(s.pos, e) - atan2f(s.vel.x, s.vel.z)) / (0.8f * DT));
                 if (Vector2Distance({land.x, land.z}, {e.x, e.z}) < 1.5f && !g.prevButtons) in.buttons = Input::FIRE;
                 continue;
             }
-            if (s.child || (k != Kind::Sheep && k != Kind::SuperSheep && k != Kind::OldWoman)) continue;
+            // W4M queues DetonateWhenGoingAwayFrom for the Sheep only (flag 0x800, 0x49d848): no AI press for the Old Woman or Scouser
+            if (s.child || (k != Kind::Sheep && k != Kind::SuperSheep) || plan.target < 0) continue;
+            const Vector3 e = g.worms[plan.target].pos, n = s.pos + s.vel * DT;
             bool near = k == Kind::SuperSheep && WEAPONS[s.weapon].walks && !s.stage;  // take off at once
-            for (const Worm &e : g.worms) near = near || (e.alive && e.team != w.team && Vector3Distance(s.pos, e.pos) < (k == Kind::SuperSheep ? 1.5f : 1.2f));
-            if (k == Kind::SuperSheep && plan.target >= 0 && g.worms[plan.target].alive) steer(g, s.pos, s.vel, g.worms[plan.target].pos, in);
+            if (k == Kind::SuperSheep)
+                for (const Worm &x : g.worms) near |= x.alive && x.team != w.team && Vector3Distance(s.pos, x.pos) < 1.5f;
+            else near = Vector2Distance({n.x, n.z}, {e.x, e.z}) > Vector2Distance({s.pos.x, s.pos.z}, {e.x, e.z});  // 0x57e130: the next step goes away
+            if (k == Kind::SuperSheep && g.worms[plan.target].alive) steer(g, s.pos, s.vel, e, in);
             if (near && !g.prevButtons) in.buttons = Input::FIRE;
         }
         return in;

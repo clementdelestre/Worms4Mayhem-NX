@@ -2052,16 +2052,17 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (g.suddenDeath && banners.empty()) text("SUDDEN DEATH!", 640, 46, 26, GOLDEN, 1);  // crate drops: commentary banner
 
     radar(g, {124, 112}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
-    // wind: arrow along the wind on screen, length by strength; distance to the aim target
+    // W4M WindMeterEntity (docs/w4m/render.md): downwind arrow in the camera frame, tilted 0.75 rad; grey and fixed under 0.05
     Vector2 wc = {58, 236};
-    float wind = g.wind, ws = fabsf(wind);
-    if (!sprite(ws < 0.01f ? "wind_backdisabled" : "wind_back", wc, 0.72f, {64, 64})) DrawCircleV(wc, 30, {0, 104, 138, 220});
-    if (ws >= 0.01f) {
-        Vector2 f = Vector2Normalize({fwd.x + cam.up.x, fwd.z + cam.up.z}), v = {-wind * f.y, -wind * f.x};
-        float deg = atan2f(v.y, v.x) * RAD2DEG, l = 0.12f + 0.12f * Clamp(ws / 1.5f, 0, 1);
-        if (!sprite("wormlocarrow", wc, l, {64, 64}, deg - 90, {255, 170, 30, 255})) DrawLineEx(wc, Vector2Add(wc, Vector2Scale(Vector2Normalize(v), 24)), 5, ORANGE);
-    }
-    if (aiming) digits(TextFormat("%02dm", (int)roundf(Vector3Distance(cur.pos, g.target()))), 96, 216, 40, 0);
+    float ratio = hypotf(g.wind, g.windZ);
+    int speed = (int)(ratio * 10 + 0.5f);
+    if (!sprite(g.cfg.scheme.wind ? "wind_back" : "wind_backdisabled", wc, 0.72f, {64, 64})) DrawCircleV(wc, 30, {0, 104, 138, 220});
+    Vector2 f = Vector2Normalize({fwd.x + cam.up.x, fwd.z + cam.up.z}), v = {1, 0};
+    if (ratio >= 0.05f) v = {-g.wind * f.y + g.windZ * f.x, -(g.wind * f.x + g.windZ * f.y) * sinf(0.75f)};
+    Color ac = ratio >= 0.05f ? Color{255, 170, 30, 255} : Color{150, 150, 150, 255};
+    if (!sprite("wormlocarrow", wc, 0.2f, {64, 64}, atan2f(v.y, v.x) * RAD2DEG - 90, ac)) DrawLineEx(wc, Vector2Add(wc, Vector2Scale(Vector2Normalize(v), 24)), 5, ac);
+    float dw = digits(TextFormat("%02d", speed), wc.x + 54, wc.y - 11, 22, 0, speed == 0);  // HUD.Wind.TextOffset / SpeedScale, x 1.84 px per unit
+    digits("m", wc.x + 54 + dw, wc.y - 11 + 22 * 0.3f, 22 * 0.8f, 0, speed == 0);
     // current weapon (top right) + ammo
     int ammo = g.ammo[cur.team][g.weapon];
     Vector2 wp = {1176, 92 - (300 - 174) * 1.5f * pipShow * (1 - pipFull)};  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows

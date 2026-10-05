@@ -3,6 +3,7 @@
 #include "../src/ai.h"
 #include "../src/controls.h"
 #include "raymath.h"
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -84,7 +85,7 @@ static void blimpView() {
             g.weapon = sim;
             for (const GameEvent &e : g.events)
                 if (e.kind == GameEvent::Fire && e.worm >= 0) {
-                    assert(!shown || targeted(WEAPONS[e.weapon].kind));
+                    assert(!shown || blimped(WEAPONS[e.weapon].kind));  // Homing: locked from the Blimp too
                     strikes += shown;
                 }
             if (g.phase != Phase::Aim) shown = false;
@@ -161,9 +162,66 @@ static void wallAhead(uint32_t seed, uint8_t level, float x0, bool bazooka) {
     assert(far < fmaxf(x0 + 0.05f, 21.5f) && a.hp == hp && nearBoom > 2);  // 21.5: the face less 0.33 m
 }
 
+// Flat floor at y 50 m (x 4..75 m, z 4..20 m), only `weapon` (+ Skip Go), CPU5 at x 10 m, its enemy `dist` m ahead.
+static Game arena(const char *weapon, float dist) {
+    Game g;
+    GameConfig c{5, 2, 1, "", RULE_NO_DELAYS};
+    c.teamSetup = {{"CPU", 5}, {"CPU", 5}};
+    g.start(c);
+    for (int z = 16; z < 80; z++)
+        for (int y = 176; y < 248; y++)
+            for (int x = 16; x < 300; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+    for (auto &a : g.ammo)
+        for (size_t k = 0; k < a.size(); k++) a[k] = WEAPONS[k].name == weapon ? 9 : WEAPONS[k].kind == Kind::SkipGo ? -1 : 0;
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    a.pos = {10, 50.6f, 12}, v.pos = {10 + dist, 50.6f, 12}, a.vel = v.vel = {}, a.yaw = PI / 2, v.yaw = -PI / 2;
+    g.wind = g.windZ = 0;
+    return g;
+}
+
+// Two-action weapons, one CPU5 turn each: the strike target and the homing lock are confirmed from the Blimp (W4M SetStrikeTarget
+// 0x4b4c70), the Sheep is detonated (DetonateWhenGoingAwayFrom, Sheep only), the Super Sheep takes off. W4M has no plan class for
+// Teleport or Abduction, and no AI detonation of the Old Woman or Scouser.
+static void secondActions() {
+    struct Case { const char *name; float dist; };
+    for (Case c : {Case{"Sheep", 14}, {"Super Sheep", 18}, {"Old Woman", 8}, {"Inflatable Scouser", 8}, {"Airstrike", 20}, {"Super Airstrike", 20},
+                   {"Fatkins Strike", 20}, {"Concrete Donkey", 20}, {"Homing Missile", 20}, {"Landmine", 2}, {"Dynamite", 2}, {"Alien Abduction", 15},
+                   {"Teleport", 15}}) {
+        Game g = arena(c.name, c.dist);
+        const int wi = (int)(std::find_if(WEAPONS.begin(), WEAPONS.end(), [&](const WeaponDef &d) { return d.name == c.name; }) - WEAPONS.begin());
+        const Kind k = WEAPONS[wi].kind;
+        const int me = g.current, hp = g.worms[1 - me].hp;
+        Ai ai;
+        bool fired = false, locked = false, tookOff = false, left = false;
+        int presses = 0;  // FIRE presses while the shot is out: detonate, take off, drop
+        for (int t = 0; t < 60 * 90 && !(left && g.phase == Phase::Settle && g.shots.empty()); t++) {
+            Input in = ai.think(g);
+            bool out = false;
+            for (const Projectile &s : g.shots) out |= !s.child && s.weapon == wi;
+            presses += out && g.phase != Phase::Aim && (in.buttons & ~g.prevButtons & Input::FIRE);
+            g.step(in);
+            locked |= g.locked;
+            left |= g.phase != Phase::Aim;
+            for (const Projectile &s : g.shots) tookOff |= k == Kind::SuperSheep && !s.child && s.stage > 0;
+            for (const GameEvent &e : g.events) fired |= e.kind == GameEvent::Fire && e.worm == me && e.weapon == wi;
+        }
+        const int dmg = hp - std::max(0, g.worms[1 - me].hp);
+        printf("second action %-18s fired %d, presses %d, locked %d, took off %d, dmg %d\n", c.name, fired, presses, locked, tookOff, dmg);
+        if (k == Kind::Teleport || k == Kind::Abduction) { assert(!fired); continue; }
+        assert(fired);
+        if (k == Kind::OldWoman || k == Kind::Scouser) assert(presses == 0);
+        else if (k != Kind::Mine) assert(dmg > 0);  // the mine waits for a worm to walk by
+        if (k == Kind::Homing) assert(locked);
+        if (k == Kind::Sheep) assert(presses == 1);
+        if (k == Kind::SuperSheep) assert(tookOff && presses >= 1);
+        if (WEAPONS[wi].name == "Super Airstrike") assert(presses >= WEAPONS[wi].clusters);  // one cow per press, once the last has dropped
+    }
+}
+
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
+    secondActions();
     for (uint8_t level : {1, 3, 5}) wallAhead(5, level, 21.4f, true), wallAhead(5, level, 19.4f, false);
     for (auto &f : fires) f.assign(WEAPONS.size(), 0);
     blimpView();

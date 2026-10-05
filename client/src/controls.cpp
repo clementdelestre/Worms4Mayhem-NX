@@ -226,7 +226,7 @@ Input read(const Game &g, int pad, bool live, float dt) {
         float m = fminf(Vector2Length(ls), 1);
         rel = true;
         if (m > 0) {
-            float want = remainderf(camYaw + atan2f(-ls.x, ls.y), 2 * PI), err = remainderf(want - w.yaw, 2 * PI);
+            float want = wrapPi(camYaw + atan2f(-ls.x, ls.y)), err = wrapPi(want - w.yaw);
             heading = true, head = (int8_t)(lroundf(want / PI * 128) & 0xff);
             walk = g.jetting ? fmaxf(m * cosf(err), 0) : m;  // W4M 0x562ac2: forward thrust once the stick leans along the facing
         }
@@ -393,7 +393,7 @@ static void watch(const Game &g, const Camera3D &cam, float dt) {
         const Worm &w = g.worms[i];
         bool dying = (int)i == g.dyingWorm || (w.drowned && w.counted > 0);  // "Worm Dying" 0x5a7190: Worm.TimeToDie 0x5adcb6, drowning 0x5ad83d
         if (dying && !wasDying[i] && g.phase != Phase::GameOver && !seen(cam, g, w.pos) && (5 > pend.prio || pend.age > 1))  // 0x51cf20: at itself, 5 (6 in clear view: dropped)
-            pend = {5, (int)i, w.pos, Vector3Length({w.vel.x, 0, w.vel.z}) > 0.1f ? Vector3Normalize({w.vel.x, 0, w.vel.z}) : Vector3{sinf(w.yaw), 0, cosf(w.yaw)}, 0};
+            pend = {5, (int)i, w.pos, Vector3Length({w.vel.x, 0, w.vel.z}) > 0.1f ? Vector3Normalize({w.vel.x, 0, w.vel.z}) : flat(w.yaw), 0};
         wasDying[i] = dying;
         Vector3 was = lastVel[i];
         lastVel[i] = w.vel;
@@ -409,7 +409,7 @@ static void watch(const Game &g, const Camera3D &cam, float dt) {
         }
         if (seen(cam, g, w.pos) && seen(cam, g, p)) continue;  // 4 / 6: no cut
         Vector3 h = {w.vel.x, 0, w.vel.z};
-        if (prio > pend.prio || pend.age > 1) pend = {prio, (int)i, p, Vector3Length(h) > 0.1f ? Vector3Normalize(h) : Vector3{sinf(w.yaw), 0, cosf(w.yaw)}, 0};
+        if (prio > pend.prio || pend.age > 1) pend = {prio, (int)i, p, Vector3Length(h) > 0.1f ? Vector3Normalize(h) : flat(w.yaw), 0};
     }
 }
 
@@ -475,7 +475,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         int c = -1;
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].alive && g.worms[i].team == g.winner && (c < 0 || (int)i == g.current)) c = (int)i;
         if (c < 0 || overT > 4) return tk = {}, false;
-        if (tk.worm != c || !tk.force) wormTrack(g, c, 5, g.worms[c].pos, {sinf(g.worms[c].yaw), 0, cosf(g.worms[c].yaw)}, true), tk.rest = 1e9f;
+        if (tk.worm != c || !tk.force) wormTrack(g, c, 5, g.worms[c].pos, flat(g.worms[c].yaw), true), tk.rest = 1e9f;
     } else if (pend.prio && pend.age < 1 && sinceTrack > 0.2f && run <= pend.prio && g.phase != Phase::Aim)
         wormTrack(g, pend.worm, pend.prio, pend.e, pend.d, false), sinceTrack = 0, pend.prio = 0;
     if (tk.on && tk.worm >= 0) {  // WormTrackCamera: until the worm rests 1.5 s
@@ -495,7 +495,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
             f.y = 0;
             fly.on = ch.on = false;
             tk = {}, tk.on = tk.frame = true, tk.def = &WORM_T, tk.prio = 5, tk.e = focusAt;  // event direction: the worm's facing (group: the view's)
-            tk.d = n ? Vector3{sinf(n->yaw), 0, cosf(n->yaw)} : Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};
+            tk.d = n ? flat(n->yaw) : Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};
             tk.dropped = seen(cam, g, focusAt), tk.rest = 1.5f, sinceTrack = 0;  // 0x51d3b3 (4 / 6): already in clear view, no track, no cut
         }
         tk.obj = focusAt;
@@ -595,7 +595,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
             p = n;
         }
         hv = {v.x, 0, v.z};
-        tk.e = p, tk.d = Vector3Length(hv) > 0.1f ? Vector3Normalize(hv) : Vector3{sinf(g.worms[g.current].yaw), 0, cosf(g.worms[g.current].yaw)};
+        tk.e = p, tk.d = Vector3Length(hv) > 0.1f ? Vector3Normalize(hv) : flat(g.worms[g.current].yaw);
         // 0x575320, run once at launch (task message 0x40, 0x577530): +0x1a8 = predicted ms to that event; bounces ask nothing
         if (tk.flight == 0) tk.ask = k > 0 && (!onScreen(cam, tk.e) || k * Game::DT > 1);
     }
@@ -637,7 +637,7 @@ static void chaseCam(Camera3D &cam, const Game &g, const Projectile &p, float dt
     float sx = pip.mode ? 0 : ch.stick;
     ch.idle = sx ? 0 : ch.idle + dt;
     ch.yaw -= sx * CAM_YAW * settings.cam * dt;
-    ch.yaw += remainderf(petYaw - ch.yaw, 2 * PI) * (ch.idle > 0.5f ? 1 - expf(-dt * 4) : 0);
+    ch.yaw += wrapPi(petYaw - ch.yaw) * (ch.idle > 0.5f ? 1 - expf(-dt * 4) : 0);
     float back = 8.5f * zoom;
     Vector3 from = Vector3Add(p.pos, Vector3Scale(p.vel, 0.1f)), hit;
     Vector3 to = {-sinf(ch.yaw) * cosf(petEl) * back, sinf(petEl) * back, -cosf(ch.yaw) * cosf(petEl) * back};
@@ -689,7 +689,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     camYaw -= rs.x * CAM_YAW * settings.cam * dt;
     camEl = Clamp(camEl - rs.y * (settings.invertCam ? -1 : 1) * CAM_PITCH * settings.cam * dt, 0.05f, 1.2f);  // stick up: look up
     float follow = scope || aimMode ? 12 : g.roped ? (rs.x || rs.y ? 0 : 6.3f) : snap ? 4 : chase ? (idle > 0.5f ? 2.5f : 0) : idle > RECENTER_AFTER ? 1.2f : 0;
-    float k = 1 - expf(-dt * follow), err = remainderf((g.roped ? ropeYaw : cur.yaw) - camYaw, 2 * PI);
+    float k = 1 - expf(-dt * follow), err = wrapPi((g.roped ? ropeYaw : cur.yaw) - camYaw);
     camYaw += err * k, camEl += ((g.roped ? 0 : EL0) - camEl) * k;  // NinjaCamera DefaultHeight 0: level side view
     if (fabsf(err) < 0.05f) snap = false;
     zoom = Clamp(zoom * expf(-zin * dt * 1.5f - wheel * 0.1f), 0.45f, 2.5f);

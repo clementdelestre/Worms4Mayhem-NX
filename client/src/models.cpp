@@ -1,10 +1,12 @@
 #include "models.h"
 #include "lit.h"
+#include "loading.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include "external/cgltf.h"
 #include <algorithm>
 #include <atomic>
+#include <thread>
 #include <deque>
 #include <mutex>
 #include <cstring>
@@ -264,11 +266,20 @@ void add(Job &j) {
 void Models::prepare() {
     if (DirectoryExists(MODEL_DIR)) {
         FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", true);  // recurses into hats/ and frontend/
-        for (unsigned i = 0; i < files.count; i++) {
-            Job j = ::prepare(files.paths[i]);
-            std::lock_guard<std::mutex> l(mu);
-            jobs.push_back(std::move(j));
-        }
+        std::stable_partition(files.paths, files.paths + files.count, [](const char *p) { return strstr(p, "/worm.glb"); });  // longest job (165 clips): first
+        std::atomic<unsigned> next{0};
+        auto work = [&](int core) {
+            Loading::pinCore(core);
+            for (unsigned i; (i = next++) < files.count;) {
+                if (strstr(files.paths[i], "/sky/")) continue;  // level skies: one per match, Models::decode()
+                Job j = ::prepare(files.paths[i]);
+                std::lock_guard<std::mutex> l(mu);
+                jobs.push_back(std::move(j));
+            }
+        };
+        std::thread a(work, 1);
+        work(2);
+        a.join();
         UnloadDirectoryFiles(files);
     }
     prepared = true;
@@ -294,10 +305,24 @@ bool Models::upload(double until) {
     return true;
 }
 
+static std::map<std::string, Job> decoded;  // Models::decode() output, uploaded by take()
+
+void Models::decode(const char *path) {
+    Job j = ::prepare(path);
+    std::lock_guard<std::mutex> l(mu);
+    decoded[path] = std::move(j);
+}
+
 Model Models::take(const char *path) {
     auto it = spare.find(path);
     if (it == spare.end()) {
-        Job j = ::prepare(path);
+        Job j;
+        {
+            std::lock_guard<std::mutex> l(mu);
+            auto d = decoded.find(path);
+            if (d != decoded.end()) j = std::move(d->second), decoded.erase(d);
+        }
+        if (j.path.empty()) j = ::prepare(path);
         while (!uploadStep(j)) {}
         return j.m;
     }

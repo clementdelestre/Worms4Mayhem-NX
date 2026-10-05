@@ -18,6 +18,12 @@ struct Input {
     static Input pick(int weapon) { Input in; in.buttons = NEXT_WEAPON, in.aim = (int8_t)(uint8_t)(weapon + 1); return in; }
 };
 
+// Heading helpers shared by the sim, the AI and the controls: yaw 0 faces +z
+inline Vector3 dirOf(float yaw, float pitch) { return {cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)}; }
+inline Vector3 flat(float yaw) { return {sinf(yaw), 0, cosf(yaw)}; }
+inline float yawTo(Vector3 a, Vector3 b) { return atan2f(b.x - a.x, b.z - a.z); }
+inline float wrapPi(float a) { return remainderf(a, 2 * PI); }
+
 // Shell covers bazooka/grenades/clusters; speed = rope length or jetpack thrust, fuse = sheep timeout or jetpack fuel.
 // Melee: speed = knock along the aim, bounce = upward knock, fuse = attacker's leap. Sentry: radius = range, fuse = reload.
 // Abduction: radius = W4M Abduction.AreaOfEffect (xz), speed = NormalSpeed, m/s.

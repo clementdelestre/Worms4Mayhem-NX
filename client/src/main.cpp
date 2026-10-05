@@ -77,12 +77,10 @@ static Input scriptInput(int frame, int weapon, bool fire) {
     return in;
 }
 
-static void drawTextCentered(const char *t, int x, int y, int size, Color c) {
-    Ui::text(t, x, y, size, c, 1);
-}
-
 static void animEvent(const Game &g, const GameEvent &e);
 
+// W4M GameOverLogicEntity +0x2c == 2 (0x4fd5c5: Win, Mission / Challenge / Tutorial Success): victory music, crowd and fireworks; not on a draw or a failure
+static bool won(const Game &g) { return g.cfg.mission ? g.run.result > 0 : g.winner >= 0; }
 static bool gunBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun; }  // EmitterSoundFX weapons/ShotgunFire of WXP_ShotgunBlastHit, no bang
 static bool donkeyBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0; }  // its DetonationFx and sound, not a bang
 static bool holyNext = false;  // the blast after the Hallelujah is the holy grenade's own
@@ -93,7 +91,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
     using Audio::Sfx;
     using Audio::Voice;
     int team = e.worm >= 0 ? g.worms[e.worm].team : 0;
-    if (e.kind == GameEvent::GameOver) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
+    if (e.kind == GameEvent::GameOver && won(g)) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
     Fx::event(e, g.terrain.side);
     switch (e.kind) {
     case GameEvent::Boom: Audio::play(gunBlast(e) ? Sfx::Shotgun : donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
@@ -145,7 +143,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
     case GameEvent::BubbleHit: Audio::play(Sfx::BubbleWobble, e.pos); break;
     case GameEvent::BubblePop: break;  // Fx::event; WXP_BubbleMachineExpire has no EmitterSoundFX
     case GameEvent::GameOver:
-        Audio::music(true, "victory");  // the crowd (cheer/cheer) loops below while the match is over
+        if (won(g)) Audio::music(true, "victory");  // the crowd (cheer/cheer) loops below while the match is over
         if (g.winner >= 0) Audio::voice(g.winner, Voice::Victory);
         break;
     }
@@ -256,7 +254,7 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         const Worm &w = g.worms[i];
         WormAnim &a = wormAnims[i];
         Vector3 d = Vector3Subtract(w.pos, a.pos);
-        float dist = sqrtf(d.x * d.x + d.z * d.z), turn = fabsf(remainderf(w.yaw - a.yaw, 2 * PI));
+        float dist = sqrtf(d.x * d.x + d.z * d.z), turn = fabsf(wrapPi(w.yaw - a.yaw));
         if (!a.init || dist > 2) { WormAnim::Act act = a.act; a = WormAnim{}, a.act = act, a.init = true, dist = turn = 0; }  // spawn, teleport, replay rewind
         a.pos = w.pos, a.yaw = w.yaw;
         a.drowned = w.alive ? -1 : fmaxf(a.drowned, 0) + dt;
@@ -559,7 +557,7 @@ static void updateBomber(const Game &g, float dt) {
         else if (!f.live && d.fuse <= 0) f.fat = false, f.begin = (f.begin + 1) % 3, f.end = (f.end + 1) % 5;  // Bomber.Begin/End.AnimIndex, +1 per strike
         if (!f.live) f.last = yaw, f.bank = 0;
         if (d.kind == Kind::Airstrike && d.fuse > 0) {  // Bovine Blitz: OpenDoorsSource from the start of the steered run (0x58b5ea)
-            float rate = remainderf(yaw - f.last, 2 * PI) / fmaxf(dt, 1e-3f);
+            float rate = wrapPi(yaw - f.last) / fmaxf(dt, 1e-3f);
             if (dt > 0) f.last = yaw, f.bank = Lerp(f.bank, Clamp(rate * 0.8f, -0.6f, 0.6f), 0.1f);
             bool lead = !p->prey && p->stage > 0;  // bombrun_start while the sim holds it (Game::STRIKE_LEAD)
             f.model = "superbomber", f.clip = lead ? "bombrun_start" : "OpenDoorsSource";
@@ -741,9 +739,11 @@ int main(int argc, char **argv) {
         EndDrawing();
     };
     // GL-only work first, on black: shader compiles and the font can't run on the workers
+    double bt[5] = {GetTime()};  // BOOT log marks
     Ui::load();
     Fx::load();
     Models::upload(0);  // compiles the model shader
+    bt[1] = GetTime();
     std::vector<std::string> maps = {""};  // "" = procedural island
     std::thread sounds([&] {
         Audio::init();
@@ -762,9 +762,14 @@ int main(int argc, char **argv) {
     Controls::load(DATA_DIR "controls.txt");
     BeginDrawing(), ClearBackground(BLACK), EndDrawing();  // flushes those uploads before the spinner starts
     for (double until = 0; Ui::preload(until) | Models::upload(until); until = GetTime() + 0.008) boot();  // ~half a frame of uploads
+    bt[2] = GetTime();
     meshes.join(), sounds.join();
+    bt[3] = GetTime();
     FrontBg::load();
+    bt[4] = GetTime();
     Audio::music(true);
+    TraceLog(LOG_INFO, "BOOT: gl %.0f ms, decode+upload %.0f, join %.0f, menu scene %.0f, music %.0f, total %.0f", (bt[1] - bt[0]) * 1000,
+             (bt[2] - bt[1]) * 1000, (bt[3] - bt[2]) * 1000, (bt[4] - bt[3]) * 1000, (GetTime() - bt[4]) * 1000, (GetTime() - bt[0]) * 1000);
     // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit; --animshot <weapon>: a turn firing it, anim_<frame>.png
     if (argc > 2 && !strcmp(argv[1], "--animshot") && (argv[2][0] < '0' || argv[2][0] > '9')) {
         const char *mdl = getenv("W4NX_MODEL") ? getenv("W4NX_MODEL") : "worm";  // W4NX_MODEL / W4NX_ZOOM: another model, camera distance x
@@ -803,7 +808,7 @@ int main(int argc, char **argv) {
 
     // Shot mode (flag file or --shot): scripted turn, screenshot, quit. Lets us check rendering in the emulator.
     // --cpu [map] [level]: every team is played by the AI (until the team setup menu lands)
-    // --ui title|main|local|network|myworms|helpopts|confirm|setup|options|hud|panel|ready|loading [map]: capture that screen to ui.png (loading: ui_<frame>.png) and quit
+    // --ui title|main|local|network|myworms|helpopts|confirm|setup|options|hud|panel|ready|loading|gameover [map]: capture that screen to ui.png (loading: ui_<frame>.png) and quit
     const char *uiShot = argc > 2 && !strcmp(argv[1], "--ui") ? argv[2] : nullptr;
     // shot flag file "ui <screen> [frames...] [map]": the same, ui_<frame>.png at each frame (Switch has no args); intro = title, A at frame 20, Local at 80
     char *flag = argc <= 3 && FileExists(DATA_DIR "shot") ? LoadFileText(DATA_DIR "shot") : nullptr, flagUi[32], capPath[64], flagMap[64] = "";
@@ -837,9 +842,10 @@ int main(int argc, char **argv) {
     uint8_t prevShotJump = 0;
     if (utilShot && (!strcmp(utilShot, "Binoculars") || strstr(utilShot, "Homing"))) Controls::forceAim = 1;
     if (aimShot) Controls::forceAim = argc > 4 && !strcmp(argv[4], "fine") ? 2 : 1;
-    // W4NX_BENCH=<frames> [W4NX_LOCK=1] with --aimshot: that view, still from frame 60 (homing: locked), timed as --bench
-    int aimBench = aimShot && getenv("W4NX_BENCH") ? atoi(getenv("W4NX_BENCH")) : 0;
-    if (aimBench) bench = true, benchFrames = aimBench, SetTargetFPS(0);
+    // W4NX_BENCH=<frames> [W4NX_LOCK=1] with --aimshot: that view, still from frame 60 (homing: locked), timed as --bench;
+    // with --shot: that weapon fired (explosion spikes), timed the same
+    int shotBench = shot && getenv("W4NX_BENCH") ? atoi(getenv("W4NX_BENCH")) : 0, aimBench = aimShot ? shotBench : 0;
+    if (shotBench) bench = true, benchFrames = shotBench, SetTargetFPS(0);
     if (bench) countGl();
     if (!loadWeapons(ROMFS_DIR "weapons.json")) TraceLog(LOG_WARNING, "weapons.json missing or invalid, using built-in weapons");
 
@@ -883,11 +889,12 @@ int main(int argc, char **argv) {
         GameConfig sc = {1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u};
         if (utilShot) loadCustomWeapons(DATA_DIR "custom_weapons.json", sc.custom);  // --utilshot <Factory weapon name>
         game.start(sc);
+        Audio::preloadVoices(game.teams);
         game.terrain.remesh();
         Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);
     }
-    for (size_t i = 0; (utilShot || aimBench) && i < WEAPONS.size(); i++)
-        if ((utilShot && WEAPONS[i].name == utilShot) || (aimBench && (int)i == shotWeapon)) game.ammo[game.worms[game.current].team][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
+    for (size_t i = 0; (utilShot || shotBench) && i < WEAPONS.size(); i++)
+        if ((utilShot && WEAPONS[i].name == utilShot) || (shotBench && (int)i == shotWeapon)) game.ammo[game.worms[game.current].team][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
 
     Camera3D cam = {{40, 30, 0}, {40, 8, 40}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
     float acc = 0, clock = 0, reconnectAt = 0;
@@ -976,11 +983,7 @@ int main(int argc, char **argv) {
     auto prepStep = [&](bool wait) {
         double t0 = GetTime();
         switch (loadStep) {
-        case 0:
-            FrontBg::unload();  // ~9 MB of menu scene; the next menu frame reloads it
-            loaderDone = false, loadT0 = t0;
-            loader = std::thread([&] { game.start(loadCfg), game.terrain.decodeTextures(), Audio::preloadVoices(game.teams), loaderDone = true; });
-            break;
+        case 0: FrontBg::unload(); break;  // ~9 MB of menu scene; the next menu frame reloads it
         case 1:
             if (!loaderDone && !wait) return;
             loader.join();
@@ -1016,6 +1019,12 @@ int main(int argc, char **argv) {
         if (loader.joinable()) loader.join();  // online: Start again mid-load
         loadCfg = c, loadStep = 0, warmIcon = 0;
         for (double &m : loadMs) m = 0;
+        loaderDone = false, loadT0 = GetTime();  // from the intro on: off the main thread's core it doesn't touch the menu frames
+        loader = std::thread([&] {
+            Loading::pinCore(1), game.start(loadCfg), game.terrain.decodeTextures();
+            if (std::string f = Fx::skyFile(game.terrain.theme, game.terrain.time); FileExists(f.c_str())) Models::decode(f.c_str());
+            Audio::preloadVoices(game.teams), loaderDone = true;
+        });
         tick = 0;
         acc = 0;
         Controls::reset();
@@ -1078,12 +1087,13 @@ int main(int argc, char **argv) {
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu
     Ui::forceHelp = uiShot && (!strcmp(uiShot, "help") || !strcmp(uiShot, "helpmenu"));
-    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready") || !strcmp(uiShot, "loading"))) {
+    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready") || !strcmp(uiShot, "loading") || !strcmp(uiShot, "gameover"))) {
         startMatch({1234, 2, 2, argc > 3 ? argv[3] : flagMap, 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
         if (strcmp(uiShot, "ready")) game.hotSeat = 0;  // every shot but "ready" skips the hot-seat pause
         for (size_t i = 0; argc > 4 && i < WEAPONS.size(); i++) if (WEAPONS[i].name == argv[4]) game.weapon = (int)i;  // --ui hud <map> <weapon>
         hud.open = !strcmp(uiShot, "panel");
         pause.open = !strcmp(uiShot, "pause");
+        if (!strcmp(uiShot, "gameover")) game.phase = Phase::GameOver, game.winner = 0, onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
     } else if (uiShot) {
         front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::Setup
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
@@ -1326,14 +1336,14 @@ int main(int argc, char **argv) {
             Ui::background();
             if (inRoom) Ui::room(net, opt, lan, status);
             else {
-                drawTextCentered(lan ? "JOINING..." : "ONLINE LOBBY", 640, 60, 60, {255, 220, 120, 255});
+                Ui::text(lan ? "JOINING..." : "ONLINE LOBBY", 640, 60, 60, {255, 220, 120, 255}, 1);
                 for (size_t i = 0; i < net.rooms.size(); i++) {
                     const NetRoom &r = net.rooms[i];
-                    drawTextCentered(TextFormat("%s %s  (%d/%d)%s", (int)i == roomSel ? ">" : " ", r.name.c_str(), r.players, r.maxPlayers, r.started ? " playing" : ""),
-                                     640, 160 + (int)i * 40, 30, (int)i == roomSel ? YELLOW : WHITE);
+                    Ui::text(TextFormat("%s %s  (%d/%d)%s", (int)i == roomSel ? ">" : " ", r.name.c_str(), r.players, r.maxPlayers, r.started ? " playing" : ""),
+                                     640, 160 + (int)i * 40, 30, (int)i == roomSel ? YELLOW : WHITE, 1);
                 }
-                if (net.rooms.empty()) drawTextCentered("No rooms yet", 640, 200, 30, LIGHTGRAY);
-                drawTextCentered(status.c_str(), 640, 660, 22, ORANGE);
+                if (net.rooms.empty()) Ui::text("No rooms yet", 640, 200, 30, LIGHTGRAY, 1);
+                Ui::text(status.c_str(), 640, 660, 22, ORANGE, 1);
             }
             if (Ui::helpHeld()) Ui::controls(false);
             EndDrawing();
@@ -1396,13 +1406,13 @@ int main(int argc, char **argv) {
         if (game.locked && !wasLocked) Audio::play(Audio::Sfx::LockOn);
         wasLocked = game.locked;
         int late = animShot ? 2 * shotWeapon : 0;  // animshot: fire once the weapon cycling is over
-        Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, aimBench ? 0 : shotWeapon, !aimShot && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
+        Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, shotBench ? 0 : shotWeapon, !aimShot && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
         if (aimSeq && frame > 40 && frame < 80) in.aim = 127;
         if (utilShot && game.girderOn && frame < 38) in.buttons |= Input::TARGET | (frame % 2 ? Input::PITCH : 0), in.walk = 127, in.aim = frame % 2 ? 127 : 0;
         if (utilShot && WEAPONS[game.weapon].kind == Kind::Icarus && frame > 100)  // jump, then flap on each window
             in = Input{}, in.walk = 60, in.buttons = (game.icarus == 1 && frame % 30 == 0) || (game.icarus == 2 && game.clock >= game.flapAt && !(prevShotJump & Input::JUMP)) ? Input::JUMP : 0;
         prevShotJump = in.buttons;
-        if (utilShot && WEAPONS[game.weapon].kind == Kind::Abduction) {  // aim at the enemy, FIRE once
+        if (utilShot && (WEAPONS[game.weapon].kind == Kind::Abduction || WEAPONS[game.weapon].kind == Kind::Binoculars)) {  // face the first enemy, FIRE once
             in = Input{}, in.buttons = frame == 40 ? Input::FIRE : 0;
             for (const Worm &e : game.worms)
                 if (frame == 2 && e.alive && e.team != cur.team) {
@@ -1416,15 +1426,6 @@ int main(int argc, char **argv) {
             if (Controls::targetView(game)) in.buttons = Input::TARGET | (frame == 61 ? Input::FIRE : 0);
             else if (game.locked) in.buttons = frame % 2 ? Input::FIRE : 0;
         }
-        if (utilShot && WEAPONS[game.weapon].kind == Kind::Binoculars) {  // look at the nearest enemy, then FIRE once
-            in = Input{}, in.buttons = frame == 40 ? Input::FIRE : 0;
-            for (const Worm &e : game.worms)
-                if (frame == 2 && e.alive && e.team != cur.team) {
-                    Vector3 d = Vector3Subtract(e.pos, cur.pos);
-                    game.worms[game.current].yaw = atan2f(d.x, d.z), game.worms[game.current].pitch = asinf(d.y / Vector3Length(d));
-                    break;
-                }
-        }  // look up: the exit starts from the sky
         if (aimShot && Controls::targetView(game) && frame > 30)  // Blimp: pan, yaw, then tilt down
             in.buttons |= Input::TARGET | (frame >= 45 ? Input::PITCH : 0), in.walk = frame < 45 ? 127 : 0, in.turn = frame < 45 ? 40 : 0, in.aim = frame >= 45 ? -60 : 0;
         if (aimBench && frame >= 60) in = Input{}, in.buttons = Controls::targetView(game) ? Input::TARGET | (frame == 61 && getenv("W4NX_LOCK") ? Input::FIRE : 0) : 0;
@@ -1537,7 +1538,7 @@ int main(int argc, char **argv) {
         Audio::hold(Audio::Sfx::Homing, onMatch && rocket && rocketAge < 5.029f && !pause.open, rocket);
         Audio::loop(Audio::Sfx::MineBeep, onMatch && mine && !pause.open, mine);
         Audio::loop(Audio::Sfx::HolyHeld, onMatch && game.phase == Phase::Aim && cur.alive && wd.name == "Holy Hand Grenade" && !pause.open, &cur.pos);
-        Audio::loop(Audio::Sfx::Cheer, onMatch && game.phase == Phase::GameOver);
+        Audio::loop(Audio::Sfx::Cheer, onMatch && game.phase == Phase::GameOver && won(game));
         // W4M PowerbarMeterEntity 0x5f5c70: PoweringUpStart plays the type's sound on the worm, cut at the launch (0x1a = kWeaponPoisonArrow, table 0x90c920)
         const WeaponDef &sw = WEAPONS[game.weapon];
         bool charging = onMatch && game.phase == Phase::Aim && cur.alive && game.power > 0 && powered(sw.kind) && !pause.open;
@@ -1618,7 +1619,7 @@ int main(int argc, char **argv) {
             ClearBackground(Fx::fog());
             BeginMode3D(pipView);
             Fx::drawSky(pipView);
-            game.terrain.setFog(pipView.position, Fx::fog(), Fx::FOG_NEAR, Fx::FOG_FAR);
+            game.terrain.setView(pipView.position);
             game.terrain.draw();
             for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawWorm(game, w, clock);
             for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain)) DrawSphere(s.pos, 0.2f, DARKGRAY);
@@ -1635,7 +1636,7 @@ int main(int argc, char **argv) {
         BeginMode3D(view);
         Fx::drawSky(view);
         lap(T_SKY);
-        game.terrain.setFog(view.position, Fx::fog(), Fx::FOG_NEAR, Fx::FOG_FAR);
+        game.terrain.setView(view.position);
         game.terrain.draw();
         lap(T_TERRAIN);
         game.terrain.drawObjects(view.position);
@@ -1661,7 +1662,7 @@ int main(int argc, char **argv) {
                 Xray::done();
                 if (bin) Xray::hidden(), drawWorm(game, w, clock), Xray::done();
             } else {
-                Vector3 f = {sinf(w.yaw), 0, cosf(w.yaw)}, side = {f.z, 0, -f.x};
+                Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};
                 DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
                 for (float s : {-0.13f, 0.13f})
                     DrawSphere(Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 0.3f), Vector3Add(Vector3Scale(side, s), {0, 0.4f, 0}))), 0.1f, WHITE);
@@ -1772,8 +1773,8 @@ int main(int argc, char **argv) {
             Ui::playbackBar(paused, speed, freeCam, tick * Game::DT, play.inputs.size() * Game::DT,
                             !end ? "" : play.checksum && game.checksum() != play.checksum ? "Replay out of sync (other game version?)" : "End of replay");
         } else if (irEnd >= 0) Ui::replayBadge();
-        if (remoteTurn) drawTextCentered("Remote player's turn", 640, 90, 24, WHITE);
-        if (online && !status.empty()) drawTextCentered(status.c_str(), 640, 120, 24, ORANGE);
+        if (remoteTurn) Ui::text("Remote player's turn", 640, 90, 24, WHITE, 1);
+        if (online && !status.empty()) Ui::text(status.c_str(), 640, 120, 24, ORANGE, 1);
         Loading::overlay(dt);
         if (Ui::helpHeld()) Ui::controls(true);
         if (perfOn && !bench) {  // bench: keep the overlay out of the measured ui cost
@@ -1791,7 +1792,7 @@ int main(int argc, char **argv) {
             Ui::text(TextFormat("terrain %dk tris  fx %d", tris / 1000, Fx::count()), 14, 62 + T_COUNT * 20, 18, LIGHTGRAY);
         } else DrawFPS(10, 10);
         lap(T_UI);
-        if (shot && (frame == 35 || frame == 150)) {
+        if (shot && !shotBench && (frame == 35 || frame == 150)) {
             rlDrawRenderBatchActive();
             Image img = LoadImageFromScreen();
             ExportImage(img, frame == 35 ? DATA_DIR "shot_aim.png" : DATA_DIR "shot.png");
@@ -1864,7 +1865,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && !aimBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : 40))) break;
+        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") ? 40 : 600))) break;
     }
     if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();

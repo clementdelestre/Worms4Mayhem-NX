@@ -10,8 +10,9 @@ Status: the gains, loop flags, 3D ranges and max playbacks are **data** (FEV, ha
   100/300/100). `assets/` (imported) is tried first, then `romfs/` (CC0). A missing file is silent. Per-weapon fire sounds
   (`Shotgun` .. `SuperSheepFire`) fall back to `Fire` when not imported.
 - **Gain**: event + sound definition + category dB, × the call's volume.
-- **3D**: FMOD linear rolloff: full inside min, silent past max (20 units = 1 m), pan from the listener's right; the listener is the
-  drawn camera (`Audio::listen`). 2D events ignore the position.
+- **3D**: FMOD linear rolloff: full inside min, silent past max (20 units = 1 m); FEV "log" events (`Def::log`: SheepHeld,
+  FireWorksExplosion) min / distance, constant past max [data: FEV rolloff; FMOD Ex log model]; pan from the listener's right; the
+  listener is the drawn camera (`Audio::listen`). 2D events ignore the position.
 - **Trigger delay**: `Def::delay` (sounddef +64/+66, data): each sound starts min + rand % (max − min) ms late (fmod_event 0x10038400,
   disasm), queued in `Audio::update`: MissileLoop 1000, OldWomenFootsteps 120, SheepHeld 1000–3000, ScouserHeld 200–1200, OldWomanHeld 200–1600.
 - **Fade-in**: a `play` of an event with an FEV fade (`Def::fade`) ramps its volume over it (Teleport 0.35 s, RainLoop 2 s).
@@ -76,7 +77,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | CrateImpactHealth | `crate_impact_health` | weapons/CrateImpactHealth | -2 |  | 0.5–60 | 1 | weapons: CrateHitHealth | main.cpp `onEvent` |
 | CrateImpactWeapon | `crate_impact_weapon` | weapons/CrateImpactWeapon | -2 |  | 0.5–60 | 1 | weapons: CrateImpactWeapons | main.cpp `onEvent` |
 | CrateImpactUtil | `crate_impact_util` | weapons/CrateImpactUtil | -3 |  | 0.5–60 | 1 | weapons: CrateImpactUtil | main.cpp `onEvent` |
-| Cheer | `cheer` | cheer/cheer | -12.9 | yes | 2D | 1 | cheer: CrowdCheer | main.cpp `main` |
+| Cheer | `cheer` | cheer/cheer | -12.9 | yes | 2D | 1 | cheer: CrowdCheer | main.cpp `main` (game over won: `won()`, as music/victory) |
 | FeHighlight | `fe_highlight` | global/Highlight | 0 |  | 2D | 1 | global: Highlight | ui.cpp `P`, ui.cpp `Hud::input` |
 | FeChange | `fe_change` | global/click2 | 0 |  | 2D | 1 | global: Click2 | ui.cpp `P` |
 | FeClick | `fe_click` | frontendsfx/click | 0 |  | 2D | 1 | frontendsfx: Click | ui.cpp `P`, ui.cpp `Frontend::frame`, ui.cpp `Hud::input` |
@@ -135,6 +136,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | BubbleInflate | `bubble_inflate` | weapons/BubbleMachineInflate | -2 |  | 0.5–25 | 1 | weapons: BubbleMachinePlace | main.cpp `onEvent` |
 | BubbleWobble | `bubble_wobble` | weapons/BubbleMachineWobble | -2 |  | 0.5–25 | 1 | weapons: BubbleMachineWobble | main.cpp `onEvent` |
 | BubbleLoop | `bubble_loop` | weapons/BubbleMachineLoop | -22 |  | 0.5–20 | 1 | weapons: Bubble1, Bubble2, Bubble3, Bubble4, Bubble5, Bubble6 | main.cpp `drawBubbles` |
+| Fireworks | `fireworks` | global/FireWorksExplosion | 0 |  | 0.5–25 log | 1 | global: Firework1, Firework2, Firework3 (mode 2) | fx.cpp `tickEmitters` (EmitterSoundFX of WXPF_Whiteout, WXPF_RedGlow / RedBigGlow, WXP_StarburstTrailsB, at the emitter start) |
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 
 Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its Time envelope

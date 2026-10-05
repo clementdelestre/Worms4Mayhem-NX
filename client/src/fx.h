@@ -6,14 +6,15 @@
 // Client-side visuals (never read by the sim): billboard particles, projectile trails, sky dome, water.
 // Art: assets/ui/fe/wxp_*.png and assets/ui/sky/<theme letter>_{sky0n,water0na/b/c}.png (n = 1/2/3 day/evening/night) from tools/w4m-ui.
 namespace Fx {
-constexpr float FOG_NEAR = 90, FOG_FAR = 220;  // metres from the camera: W4M shows almost no fog at short range
 extern float shake;  // camera shake amplitude (m), decays in update()
 void load();
-void theme(const std::string &theme, Color sky, const std::string &time);  // per match: sky ramp, water textures, fog colour
+// per match: level sky scene (levelSky; else the ramp), water textures, clear colour
+void theme(const std::string &theme, Color sky, const std::string &time, bool levelSky = true);
+std::string skyFile(const std::string &theme, const std::string &time);  // the level sky .glb (Models::decode() it ahead)
 void unload();
 void clear();
 void event(const GameEvent &e, Color dirt);
-void fireworks(Vector3 centre, float radius, float top);  // W4M Land.Center, Land.Radius, Land.MaxHeight for the victory show
+void fireworks(Vector3 centre, float radius, float top);  // victory show (W4M GameOverLogicEntity: 4 s wait, 5 s) over Land.Center, Radius, MaxHeight
 void trail(const Projectile &s, float dt, Vector3 wind);  // call once per frame per live projectile; wind: (cos, 0, sin) x Wind.Speed / Wind.MaxSpeed
 void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire = false);  // one ambient particle (rises, slows down)
 void wingTrail(Vector3 p);  // one puff of W4M WXP_PlaneWingTrails (Bomber.EffectName)

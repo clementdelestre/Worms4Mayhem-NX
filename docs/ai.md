@@ -57,7 +57,7 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   (clamped -1.2..1.45) and charge (1..90 ticks) are re-derived. W4M 0x4a06c0 scales the exact launch velocity (**disasm**); ours scales the
   charge vector, since the AI charges like a player (see Timings).
 - Shotgun / Sniper Rifle (`Kind::Shotgun`): same scaling with directErr = ShotErrorDirectNonStrafe (W4M 0x4a0d90, **disasm**). No strafe mode.
-- Airstrike / donkeys: the reticle point gets strikeErr·noise added on x and z (y drawn, unused: bombs fall straight), no accuracy memory; yaw and pitch re-aimed at it (the 30 m sky-aim candidate only turns); the steered bomber uses the offset target (`strikeOff`). W4M 0x4a1b00 (**disasm**).
+- Airstrike / donkeys: the target gets strikeErr·noise added on x and z (`strikeOff`; y drawn, unused: bombs fall straight), no accuracy memory; the Blimp cursor and the steered bomber aim at the offset target. W4M 0x4a1b00 (**disasm**).
 - Melee and dropped shells (`dropped()`: Dynamite, Cheap Dynamite...) get no error (**ours**).
 - Wind: every plan flies with the exact `g.wind` at every level (W4M solver 0x4ac6f0, "wind never degraded", **disasm**).
 - Repeat-shot memory (`memory`, W4M AIPlanMemory ImproveAccuracy): e /= 1 + memory·Σ match (0x4a5d00), match = effect × (1 − d_from/R) ×
@@ -104,12 +104,12 @@ and barrels / weapon crates within 7 m of an enemy when secondary > 0 (**ours**)
 |---|---|---|
 | Shell | flight times t = 0.2..4.5 s step 0.43 (11 arcs), exact `V = (T − P − A·t(t+DT)/2)/t`; reject if speed outside `launchSpeed(0)..speed`, pitch outside -1.2..1.45; charge `n = round(frac·90)` ticks; flight checked with `fly()` | W4M 11 speeds 0x4ace50 (**disasm**); ours samples times |
 | Dropped shell | set down at the feet facing the target | W4M CheapDynamite* (**data**) |
-| Homing | pitch at the target, reticle within 2.5 m of it, charges 30 / 60 / 90; `fly()` homes on the reticle | **ours**; never locks from the Blimp |
+| Homing | pitch at the target, charges 30 / 60 / 90; `fly()` homes on the target's feet, locked from the Blimp (`blimp()`) | target set from the Blimp: W4M flags 0x1d7 (SetWeaponTarget, lock FireWeapon) (**disasm**); candidates **ours** |
 | Shotgun / Sniper | one straight ray (60 m), first worm on it takes `damage` per shot; re-aimed for each shot (`act`) | W4M Direct (**data**) |
 | Melee (incl. Tail Nail) | within 3.5 m; yaw ±0.8/±0.4/0 × pitch 0/0.5/1 (15), `meleeHits` | **ours** |
-| Sheep / Old Woman | `sheepWalk` copy; kept if closest approach < 2 m; FIRE in flight within 1.2 m of an enemy | **ours** |
+| Sheep / Old Woman | `sheepWalk` copy; kept if closest approach < 2 m. Sheep: FIRE in flight once its next step moves away from the target (x, z) | detonation: W4M DetonateWhenGoingAwayFrom 0x57e130, queued for the Sheep only (flag 0x800, 0x49d848): the CPU never detonates the Old Woman or Scouser (**disasm**); candidates **ours** |
 | Super Sheep | pitch 0.3 / 0.9, flown by the `steer` autopilot (`superFly`), detonated within 1.5 m | **ours** |
-| Airstrike / Donkey | yaw 0/±0.25 × pitch {at target, 1.45}; bomber (Super Airstrike, fuse > 0) steered in flight and dropped with lead; Donkey/Fatkins: first impact scored twice | **ours** |
+| Airstrike / Donkey | one blast at the target worm, no worm aim; `blimp()` drives the Blimp cursor until its ray meets the target's feet (+ strikeErr), then FIRE; the bombers cross the view as for a player (no thrust direction choice); bomber (Super Airstrike, fuse > 0) steered in flight and dropped with lead | W4M 0x4a11d0 one blast, SetStrikeTarget 0x4b4c70 with the Blimp camera (**disasm**); cursor driving and direction **ours** |
 | Starburst | as Super Sheep (`superFly`), plus its rider's death: all its hp on the thinking worm; the star rockets are not scored | W4M CAIPlanAttackStarburst 0x4a43a0: 0x49ed30 on the active worm with its hp (**disasm**; user unsure, 2026-10-04) |
 | Landmine | laid at the feet facing the target: `MINE_BLAST` on the ground under the launch point, self ignored as a dropped shell | W4M CAIPlanAttackLandmine = CloseRangeExplosive 0x4a2c70: the blast at the worm (**disasm**); the drop point and self **ours** |
 | Inflatable Scouser | our scouser's walk (`walkerStep`) until it touches a worm; that worm takes `damage`, or a kill if a drop of 1.2 m/s × `SCOUSER_FLOAT` drowns it, plus the fall damage | W4M CAIPlanAttackScouser exists (**data**); W4M scores an animal as its blast at the target (0x4a4210); ours scores our scouser, which swallows and drops (**ours**) |
@@ -189,7 +189,7 @@ retreat node too comes from that 21 × 21 × 2 window: the move → retreat pair
   columns (every 8th x, z step 8; only when the team owns an airstrike), one shot candidate. Unusable weapons are skipped for free.
 - Modes: `Eval` (targets, sweet spots, landTop, candidates, then `decide`), `Search` (crate / closer A*), `Walk` (`follow` the path),
   `Act` (retreat A* first, then select, aim, wait, charge / fire), `Jet` (waiting for take-off; `jet()` steers the flight).
-- In `Flying`: retreat, steer the bomber / super sheep, detonate sheep near enemies. Roped outside a race: release with JUMP.
+- In `Flying`: retreat, steer the bomber / super sheep, detonate the sheep as it leaves its target. Roped outside a race: release with JUMP.
 - `race()` (rope race) uses the same budget: 1 + 54 swings + 12 climbs, each simulated up to 400 ticks.
 
 ## Determinism

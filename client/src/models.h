@@ -6,7 +6,8 @@
 namespace Models {
 void prepare();               // worker thread: reads, decodes and samples every .glb
 bool upload(double until);    // main thread, until GetTime() reaches until: GPU uploads; true while models are pending
-Model take(const char *path);  // a frontend/ model prepare() decoded (else loaded now); the caller unloads it
+Model take(const char *path);  // a frontend/ model prepare() or decode() decoded (else loaded now); the caller unloads it
+void decode(const char *path);  // worker thread: reads and decodes one .glb for a later take()
 void unload();
 // W4M WormPoseManager layers over the body clip: the emote on the face bones the clip leaves still (WormEmote), the head
 // (HeadRotY/X: WormLookAt), the shoulders (Left/RightArmRotY/X: WormGestureAt or the head, by the clip's Blend node) and the

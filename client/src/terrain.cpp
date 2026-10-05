@@ -203,6 +203,8 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     if (const Json &l = j["light"]; l.type == Json::Obj) {
         Lit::sun.dir = vec(l["dir"], Lit::sun.dir), Lit::sun.ambient = vec(l["ambient"], Lit::sun.ambient);
         Lit::sun.diffuse = vec(l["diffuse"], Lit::sun.diffuse), Lit::sun.specular = vec(l["specular"], Lit::sun.specular);
+        if (l["water"].size() == 14)
+            for (int i = 0; i < 14; i++) Lit::sun.water[i] = l["water"][i].f();
     }
     const Json &pal = j["palette"], &tex = j["textures"];
     for (size_t i = 0; i < pal.size(); i++) {
@@ -607,8 +609,6 @@ uniform vec3 diffuse;
 uniform vec3 specular;
 uniform vec2 scale;  // 1 / repeat: top, side
 uniform vec3 camPos;
-uniform vec3 fogColor;
-uniform vec2 fogRange;
 varying vec3 vPos;
 varying vec3 vN;
 varying vec2 vL;
@@ -624,8 +624,7 @@ void main() {
     float s = sh * pow(max(dot(n, normalize(sunDir + v)), 0.0), 20.0);
     vec3 col = (diffuse * (max(dot(n, sunDir), 0.0) * sh) + ambient) * c + specular * (0.6 * s)
              + (0.5 + 0.5 * sh) * vec3(0.2, 0.275, 0.175) * (1.0 - nv) * sqrt(1.0 - nv);
-    float f = clamp((length(e) - fogRange.x) / (fogRange.y - fogRange.x), 0.0, 1.0);
-    gl_FragColor = vec4(mix(clamp(col, 0.0, 1.0) * vL.x, fogColor, f), 1.0);
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0) * vL.x, 1.0);
 }
 )";
 
@@ -635,8 +634,6 @@ void Terrain::loadTextures() {
     texMats.assign(texFiles.size() / 2, Material{});
     if (sh.id == rlGetShaderIdDefault()) return;  // compile failed: keep the vertex-colour fallback
     scaleLoc = GetShaderLocation(sh, "scale");
-    Vector2 noFog = {1e4f, 2e4f};
-    SetShaderValue(sh, GetShaderLocation(sh, "fogRange"), &noFog, SHADER_UNIFORM_VEC2);
     std::map<std::string, Texture2D> cache;
     auto tex = [&](const std::string &f) {
         if (f.empty() || !FileExists(f.c_str())) return Texture2D{};
@@ -669,15 +666,10 @@ void Terrain::decodeTextures() {
         if (!f.empty() && !decoded.count(f) && FileExists(f.c_str())) decoded[f] = LoadImage(f.c_str());
 }
 
-void Terrain::setFog(Vector3 cam, Color c, float start, float end) const {
+void Terrain::setView(Vector3 cam) const {
     Lit::frame(cam);
     if (texMats.empty() || !texMats[0].maps) return;
-    Shader sh = texMats[0].shader;  // shared by every textured material
-    Vector3 fc = {c.r / 255.f, c.g / 255.f, c.b / 255.f};
-    Vector2 r = {start, end};
-    SetShaderValue(sh, GetShaderLocation(sh, "camPos"), &cam, SHADER_UNIFORM_VEC3);
-    SetShaderValue(sh, GetShaderLocation(sh, "fogColor"), &fc, SHADER_UNIFORM_VEC3);
-    SetShaderValue(sh, GetShaderLocation(sh, "fogRange"), &r, SHADER_UNIFORM_VEC2);
+    SetShaderValue(texMats[0].shader, GetShaderLocation(texMats[0].shader, "camPos"), &cam, SHADER_UNIFORM_VEC3);  // shared by every textured material
 }
 
 void Terrain::remesh(double budget) {
