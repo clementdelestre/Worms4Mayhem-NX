@@ -18,6 +18,7 @@ struct Terrain {
     std::vector<std::pair<int, signed char>> *undo = nullptr;  // when set, carve() logs (voxel, old density) here
     // girder voxels (W4M kUtilityGirder): ordinary land meshed with theme material 61; empty until a weld()
     std::vector<bool> steel;  // undo logs a voxel turning steel as (-1 - voxel, 0)
+    unsigned edits = 0;  // carve() / weld() calls that may have changed a voxel: stamps the AI's per-think caches
     Material mat{};  // loaded on first remesh, so the sim runs without a GL context
 
     // Filled by load(): fixed spawn points (team-major order), optional race finish, theme palette.

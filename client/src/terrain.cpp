@@ -352,9 +352,18 @@ float Terrain::sample(Vector3 p) const {
     float x = p.x / VOX, y = p.y / VOX, z = p.z / VOX;
     int ix = (int)floorf(x), iy = (int)floorf(y), iz = (int)floorf(z);
     float fx = x - ix, fy = y - iy, fz = z - iz, r = 0;
+    const float wx[2] = {1 - fx, fx}, wy[2] = {1 - fy, fy}, wz[2] = {1 - fz, fz};
+    if (ix >= 0 && iy >= 0 && iz >= 0 && ix < NX - 1 && iy < NY - 1 && iz < NZ - 1) {  // the AI's hot path: no bounds checks, same sum order
+        const signed char *q = &d[idx(ix, iy, iz)];
+        for (int n = 0; n < 8; n++) {
+            int a = n & 1, b = (n >> 1) & 1, c = n >> 2;
+            r += q[a + b * NX + c * NX * NY] * (1 / Q) * wx[a] * wy[b] * wz[c];
+        }
+        return r;
+    }
     for (int n = 0; n < 8; n++) {
         int a = n & 1, b = (n >> 1) & 1, c = n >> 2;
-        r += at(ix + a, iy + b, iz + c) * (a ? fx : 1 - fx) * (b ? fy : 1 - fy) * (c ? fz : 1 - fz);
+        r += at(ix + a, iy + b, iz + c) * wx[a] * wy[b] * wz[c];
     }
     return r;
 }
@@ -396,11 +405,13 @@ bool Terrain::carve(Vector3 c, float radius) {
         for (int y = std::max(0, lo[1] - 1) / CS; y <= std::min(NY - 1, hi[1] + 1) / CS; y++)
             for (int x = std::max(0, lo[0] - 1) / CS; x <= std::min(NX - 1, hi[0] + 1) / CS; x++)
                 dirty[(z * CY + y) * CX + x] = true;
+    edits += changed;
     return changed;
 }
 
 void Terrain::weld(Vector3 c, Vector3 half) {
     if (steel.empty()) steel.assign(TOTAL, false);
+    edits++;
     float reach = Vector3Length(half) + 0.5f;
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX, NY, NZ};
@@ -680,11 +691,7 @@ void Terrain::decodeTextures() {
         if (!f.empty() && !decoded.count(f) && FileExists(f.c_str())) decoded[f] = LoadImage(f.c_str());
 }
 
-void Terrain::setView(Vector3 cam) const {
-    Lit::frame(cam);
-    if (texMats.empty() || !texMats[0].maps) return;
-    SetShaderValue(texMats[0].shader, GetShaderLocation(texMats[0].shader, "camPos"), &cam, SHADER_UNIFORM_VEC3);  // shared by every textured material
-}
+void Terrain::setView(Vector3 cam) const { Lit::frame(cam); }  // the land shader is a Lit one
 
 void Terrain::remesh(double budget) {
     if (!mat.maps) mat = LoadMaterialDefault();

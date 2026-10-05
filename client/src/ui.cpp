@@ -314,6 +314,8 @@ const char *tr(const char *key, const char *en, const char *fr) {
     return it != strings.end() ? it->second.c_str() : language && fr ? fr : en;
 }
 
+static const char *mysteryText(int item) { return tr(TextFormat("Text.kMystery%s", MYSTERY_ITEMS[item].name), MYSTERY_ITEMS[item].text); }
+
 static const char *potName(int id) { return tr(TextFormat("FETXT.WPotName.%s", WORMPOT_MODES[id].key), WORMPOT_MODES[id].name, nullptr); }
 
 // lang.txt ("en" / "fr"), else the console / desktop locale
@@ -1610,9 +1612,8 @@ static float text3dAt(const char *t, Vector3 p, float scale, Color c, const Came
     return size;
 }
 
-// PiP centre, half extents (px) and tilt (rad): HUDTWK PiP.Off/OnScreenPosition, OnScreenScale, OnScreenRotation z. PiPService
-// (0x635e10, 0x6360d6) multiplies position and scale by 0x4d4cc0's (0.75 aspect, clamped to 4/3..16/9; 1): x 4/3 at 16:9.
-// OnScreenScale is the HUD.PiP sprite's half extents: XBitmap SetScale (0x6b4ec0 -> 0x69f570) writes the sprite Size, drawn at ±Size (0x79b4f0).
+// PiP centre, half extents (px) and tilt (rad): HUDTWK PiP.Off/OnScreenPosition, OnScreenScale (the sprite's ±Size, 0x6b4ec0), OnScreenRotation z;
+// PiPService (0x635e10, 0x6360d6) scales position and size by 0x4d4cc0's (0.75 aspect clamped to 4/3..16/9): x 4/3 at 16:9.
 static void pipPlace(float show, float full, Vector2 &c, Vector2 &h, float &rot) {
     const float u = 720 / 480.0f, k = Clamp(0.75f * 1280 / 720, 4 / 3.0f, 16 / 9.0f);  // HUD units: centre origin, y up, 480 high
     Vector2 on = Vector2Lerp({400, 155}, {190, 135}, show);
@@ -1857,8 +1858,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
         comment(g.objects.back().mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
         crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
     } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15) {  // CommentaryPanel.Comment: the item's Text.k<name>
-        const MysteryItem &m = MYSTERY_ITEMS[e.weapon];
-        banners.push_back(tr(TextFormat("Text.kMystery%s", m.name), m.text));
+        banners.push_back(mysteryText(e.weapon));
     } else if (e.kind == GameEvent::Collect && e.worm >= 0) {
         const Worm &w = g.worms[e.worm];
         const char *who = wormName(w.team, e.worm % std::max(1, g.perTeam));
@@ -1985,6 +1985,14 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
 // An open panel is always drawn: the ready screen yields to it.
 bool Hud::readyScreen(const Game &g, bool cinematic) const { return mine && g.phase == Phase::Aim && g.hotSeat > 0 && !cinematic && !open; }
 
+// Payload.Input.FirePressed of a live Super Sheep (walk, take off, detonate): 0 none, 1 one still walking, 2 flying
+static int sheepFlight(const Game &g) {
+    int r = 0;
+    for (const Projectile &s : g.shots)
+        if (!s.child && WEAPONS[s.weapon].kind == Kind::SuperSheep) r = WEAPONS[s.weapon].walks && !s.stage ? 1 : r ? r : 2;
+    return r;
+}
+
 void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     menuPage = false;
     const Worm &cur = g.worms[g.current];
@@ -1999,7 +2007,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         for (const Object &o : g.objects) {
             Vector3 top = Vector3Add(o.pos, {0, 0.75f, 0});  // 0x5c4580: crate + 15 units
             if (o.type != Object::Crate || Vector3DotProduct(Vector3Subtract(top, cam.position), fwd) < 0.5f) continue;
-            const char *what = o.mystery >= 0 ? tr(TextFormat("Text.kMystery%s", MYSTERY_ITEMS[o.mystery].name), MYSTERY_ITEMS[o.mystery].text)
+            const char *what = o.mystery >= 0 ? mysteryText(o.mystery)
                              : o.weapon < 0 ? tr("Text.Health", "Health", "Santé") : WEAPONS[o.weapon].name.c_str();
             text3dAt(what, top, 0.25f, TEXT3D_GREY, cam, fwd, camUp);
         }
@@ -2169,9 +2177,8 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         hints({{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}});
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
         hints({{"ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
-    else if (mine && !quiet && !aiming && std::any_of(g.shots.begin(), g.shots.end(), [](const Projectile &s) { return !s.child && WEAPONS[s.weapon].kind == Kind::SuperSheep; })) {
-        bool walking = false;  // ours: no W4M legend; the press is Payload.Input.FirePressed (docs/w4m/weapons.md §13): walk, take off, detonate
-        for (const Projectile &s : g.shots) walking |= !s.child && WEAPONS[s.weapon].kind == Kind::SuperSheep && WEAPONS[s.weapon].walks && !s.stage;
+    else if (int sheep = mine && !quiet && !aiming ? sheepFlight(g) : 0; sheep) {  // ours: no W4M legend (docs/w4m/weapons.md §13)
+        bool walking = sheep == 1;
         std::vector<Hint> h = {{"A/ZR", "Space", walking ? tr(nullptr, "Take off", "Décoller") : tr(nullptr, "Detonate", "Exploser")}};
         if (!walking) h.push_back({"LS", "Arrows", tr(nullptr, "Steer", "Diriger")});
         hints(h);

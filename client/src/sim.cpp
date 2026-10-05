@@ -166,9 +166,8 @@ const std::vector<int> WORMPOT_REEL[3] = {{2, 3, 4, 5, 6, 11, 10, 17, 9, 16, 15,
                                          {2, 3, 4, 5, 6, 11, 10, 26, 36, 21, 20, 22, 23, 24, 25, 27, 29, 31, 32, 35}};
 
 
-// Order: turn, retreat (LandTime), hot seat (HotSeat, 10 s in every W4M scheme), round (min), energy, crate %, weapon/health/utility shares, crate hp,
-// mines, barrels (W4M Objects: 3 = 15 mines + 10 drums, 2 = drums only), mine fuse, sudden death, fall damage, wind, weapon set (ours), water speed.
-// Shares: SchemeData WeaponChance / HealthChance / UtilityChance / MysteryChance (CreateRandomCrate 0x4fa4b0).
+// Order: turn, retreat (LandTime), hot seat (10 s in every W4M scheme), round (min), energy, crate %, weapon/health/utility shares, crate hp, mines, barrels
+// (Objects: 3 = 15 mines + 10 drums, 2 = drums only), mine fuse, sudden death, fall damage, wind, weapon set (ours), water speed, mystery share (*Chance, 0x4fa4b0).
 const std::vector<SchemePreset> SCHEMES = {
     {"Standard", {45, 5, 10, 20, 100, 40, 30, 30, 20, 25, 15, 10, 3, 1, 1, 1, 0, 2}, "Airstrike 5|Banana Bomb 8|Holy Hand Grenade 3|Homing Missile 2|Super Sheep 5|Icarus Potion 2|Binoculars 2|* 3"},
     {"Beginner", {90, 5, 10, 20, 100, 50, 30, 30, 20, 50, 15, 10, 5, 0, 1, 0, 0, 1}, "Homing Missile 2"},
@@ -514,6 +513,9 @@ void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity) {
     pos = np;
 }
 
+// CreateMine 0x4f97cf: Min + r (Max - Min), MineFuse -1 = 0..5000 ms
+float Game::mineFuse() { return cfg.scheme.mineFuse == Scheme::FUSE_RANDOM ? rand01() * 5 : cfg.scheme.mineFuse; }
+
 float Game::rand01() {
     rng = rng * 1664525u + 1013904223u;
     return (rng >> 8) / 16777216.0f;
@@ -540,17 +542,21 @@ void Game::wobbleStep() {
     o.at = {amp * p, amp * y};  // ours: x 1, W4M x min(1.5 zoom, 1) of the client camera, not on the wire
 }
 
+// Wormpot.lub SetSpecialistTeam: the ammo of each set, and the sets of each worm class
+static const std::pair<const char *, int> SPEC_AMMO[4][7] = {
+    {{"Shotgun", -1}, {"Airstrike", 1}, {"Landmine", 2}, {"Fire Punch", -1}, {"Prod", -1}},
+    {{"Ninja Rope", 5}, {"Girder", 3}, {"Dynamite", 1}, {"Parachute", 2}, {"Baseball Bat", 1}, {"Sheep", 1}, {"Teleport", 2}},
+    {{"Bazooka", -1}, {"Homing Missile", 1}}, {{"Grenade", -1}, {"Cluster Grenade", 3}}};
+static const int SPEC_SETS[7] = {0, 4 | 8, 1 | 2, 1, 2, 4, 8};
+
 bool Game::allowed(int team, int wi) const {
     if (current < 0 || current >= (int)worms.size() || worms[current].team != team) return true;
     const std::string &n = WEAPONS[wi].name;
     if (artillery() && WEAPONS[wi].kind == Kind::Jetpack) return false;  // AllowJetpack 0
     int c = current < (int)special.size() ? special[current] : 0;
     if (!c || n == "Skip Go" || n == "Surrender" || n == "Teleport" || n == "Binoculars") return true;  // DisallowAllWeapons leaves these
-    static const std::vector<std::string> SET[4] = {{"Shotgun", "Airstrike", "Landmine", "Fire Punch", "Prod"},
-                                                    {"Ninja Rope", "Girder", "Dynamite", "Parachute", "Baseball Bat", "Sheep"},
-                                                    {"Bazooka", "Homing Missile"}, {"Grenade", "Cluster Grenade"}};
-    static const int SETS[7] = {0, 4 | 8, 1 | 2, 1, 2, 4, 8};  // class -> sets
-    for (int k = 0; k < 4; k++) if ((SETS[c] >> k & 1) && std::count(SET[k].begin(), SET[k].end(), n)) return true;
+    for (int k = 0; k < 4; k++)
+        for (int j = 0; j < 7 && (SPEC_SETS[c] >> k & 1) && SPEC_AMMO[k][j].first; j++) if (n == SPEC_AMMO[k][j].first) return true;
     return false;
 }
 
@@ -676,16 +682,11 @@ void Game::start(const GameConfig &c) {
     special.assign(worms.size(), 0);
     if (wp(WP_SPECIALIST) && per > 1) {  // Wormpot.lub SetSpecialistTeam: a class per worm by team size and place, the team's ammo set
         static const uint8_t CLASS[7][6] = {{}, {}, {1, 2}, {1, 3, 4}, {5, 6, 3, 4}, {5, 6, 3, 4, 6}, {5, 6, 3, 4, 6, 3}};
-        static const std::pair<const char *, int> AMMO[4][7] = {
-            {{"Shotgun", -1}, {"Airstrike", 1}, {"Landmine", 2}, {"Fire Punch", -1}, {"Prod", -1}},
-            {{"Ninja Rope", 5}, {"Girder", 3}, {"Dynamite", 1}, {"Parachute", 2}, {"Baseball Bat", 1}, {"Sheep", 1}, {"Teleport", 2}},
-            {{"Bazooka", -1}, {"Homing Missile", 1}}, {{"Grenade", -1}, {"Cluster Grenade", 3}}};
-        static const int SETS[7] = {0, 4 | 8, 1 | 2, 1, 2, 4, 8};
         for (size_t i = 0; i < worms.size(); i++) {
             int c = special[i] = CLASS[std::min(per, 6)][i % per];
             for (int k = 0; k < 4; k++)
-                for (int j = 0; j < 7 && (SETS[c] >> k & 1) && AMMO[k][j].first; j++)
-                    for (size_t x = 0; x < WEAPONS.size(); x++) if (WEAPONS[x].name == AMMO[k][j].first) ammo[worms[i].team][x] = AMMO[k][j].second;
+                for (int j = 0; j < 7 && (SPEC_SETS[c] >> k & 1) && SPEC_AMMO[k][j].first; j++)
+                    for (size_t x = 0; x < WEAPONS.size(); x++) if (WEAPONS[x].name == SPEC_AMMO[k][j].first) ammo[worms[i].team][x] = SPEC_AMMO[k][j].second;
         }
         for (size_t x = 0; x < WEAPONS.size(); x++)  // Inventory.WeaponDelays.Default: HomingMissile 1, Airstrike 5, copied to every team
             for (auto &d : delays) if (WEAPONS[x].name == "Homing Missile" || WEAPONS[x].name == "Airstrike") d[x] = WEAPONS[x].name == "Airstrike" ? 5 : 1;
@@ -848,8 +849,8 @@ bool Game::addObject(Object::Type t, float lift) {
     if (!dropPoint(t, p)) return false;
     Object o = {t, {p.x, p.y + halfHeight(t) + 0.05f + lift, p.z}, {0, 0, 0}, -1, -1, false, false};
     o.spawning = t == Object::Crate && lift > 0;
-    if (t == Object::Mine) {  // CreateMine 0x4f97cf: fuse Min + r (Max - Min), MineFuse -1 = 0..5000 ms; the dud roll too
-        o.delay = cfg.scheme.mineFuse == Scheme::FUSE_RANDOM ? rand01() * 5 : cfg.scheme.mineFuse;
+    if (t == Object::Mine) {  // CreateMine 0x4f97cf: the fuse, then the dud roll
+        o.delay = mineFuse();
         o.fizzle = !wp(WP_MINE_RESPAWN) && rand01() < MINE_DUD;  // no dud roll with Mine Respawn (0x4f97c9)
     }
     const Scheme &sc = cfg.scheme;
@@ -904,7 +905,7 @@ void Game::stepObjects() {
             if (o.courtesy > 0) o.courtesy--;
             for (const Worm &w : worms)  // every worm, flying or sliding too
                 if (o.fuse < 0 && !o.dud && !o.courtesy && w.alive && Vector3Distance(w.pos, o.pos) < MINE_ARM) {
-                    o.fuse = o.delay >= 0 ? o.delay : cfg.scheme.mineFuse == Scheme::FUSE_RANDOM ? rand01() * 5 : cfg.scheme.mineFuse;  // Mine.Min/MaxFuse 0..5000 ms
+                    o.fuse = o.delay >= 0 ? o.delay : mineFuse();
                     emit(GameEvent::MineArm, o.pos);
                 }
             if (o.fuse >= 0 && (o.fuse -= DT) <= 0) {
@@ -952,10 +953,7 @@ void Game::stepObjects() {
         objects.erase(objects.begin() + i);  // before explode(), which only flags the others
         if (opened >= 0) openMystery(opened, worms[opener]);
         if (boom && !gone) {
-            Blast mb = MINE_BLAST;  // kWeaponLandmine's container
-            Vector2 k = superScale(W4M_LANDMINE);
-            mb.damage *= k.x, mb.crater *= k.x, mb.push *= k.y;
-            explode(x.pos, x.type == Object::Barrel ? BARREL_BLAST : x.type == Object::Mine ? mb : CRATE_BLAST);
+            explode(x.pos, x.type == Object::Barrel ? BARREL_BLAST : x.type == Object::Mine ? superBlast(MINE_BLAST, W4M_LANDMINE) : CRATE_BLAST);
             if (x.type == Object::Mine && wp(WP_MINE_RESPAWN)) respawns.push_back({x.pos, msTicks(500)});
         }
     }
@@ -966,7 +964,7 @@ void Game::stepObjects() {
             respawns.erase(respawns.begin() + i);
             if (p.y <= water) continue;
             Object m = {Object::Mine, p, {0, 0, 0}, -1, -1, false, false};
-            m.delay = cfg.scheme.mineFuse == Scheme::FUSE_RANDOM ? rand01() * 5 : cfg.scheme.mineFuse;
+            m.delay = mineFuse();
             objects.push_back(m);
         }
 }
@@ -1011,10 +1009,11 @@ Game::GunHit Game::gunRay(Ray r, const Worm &shooter) const {
     return h;
 }
 
-Blast Game::gunBlast(int weapon) const {
-    Blast b = blastOf(WEAPONS[weapon], false);
-    Vector2 k = superScale(containerOf(weapon, false));
-    b.damage *= k.x, b.push *= k.y;
+Blast Game::gunBlast(int weapon) const { return superBlast(blastOf(WEAPONS[weapon], false), containerOf(weapon, false)); }
+
+Blast Game::superBlast(Blast b, int container) const {
+    Vector2 k = superScale(container);
+    b.damage *= k.x, b.crater *= k.x, b.push *= k.y;
     return b;
 }
 
@@ -1546,9 +1545,8 @@ static uint32_t collider(const Object &o, Vector3 &c, float &r) {
     return o.type == Object::Crate ? (o.weapon < 0 && o.mystery < 0 ? 4 : 2) : o.type == Object::Target ? 0x20 : o.type == Object::Barrel ? 0x10 : o.type == Object::Mine ? 8 : 0;
 }
 
-// 0x56fcb0: the rope's sphere at the body meets a collider of its mask, or Fits 0x59edf0 fails: three 1 m rods at (+-4, -3) and
-// (0, 5) units, ours sampled from half a voxel up. A worm: 5 units, mask 0x19 (worms 1, payloads 8, drums and bubbles 0x10: no
-// crate); a hooked object (0x571d90): mask 0x3f, crates too, a crate's own 10 units (0x5c5fd0), else 5
+// 0x56fcb0: the rope's sphere at the body meets a collider of its mask, or Fits 0x59edf0's 1 m rods (ours from half a voxel up) fail. A worm:
+// 5 units, mask 0x19 (worms, payloads, drums, bubbles: no crate); a hooked object (0x571d90): 0x3f, a crate its own 10 units (0x5c5fd0)
 bool Game::ropeBlocked(Vector3 f, int self, int body) const {
     static const Vector2 ROD[] = {{0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};
     for (Vector2 r : ROD)
@@ -1783,7 +1781,7 @@ void Game::openMystery(int item, Worm &w) {
     case MY_MINE_TRIPLET:  // Payload.Arm: each starts its own fuse
         for (int j : triplet(Object::Mine)) {
             Object &m = objects[j];
-            if (m.fuse < 0 && !m.dud) m.fuse = m.delay >= 0 ? m.delay : cfg.scheme.mineFuse == Scheme::FUSE_RANDOM ? rand01() * 5 : cfg.scheme.mineFuse, emit(GameEvent::MineArm, m.pos);
+            if (m.fuse < 0 && !m.dud) m.fuse = m.delay >= 0 ? m.delay : mineFuse(), emit(GameEvent::MineArm, m.pos);
         }
         break;
     case MY_BARREL_TRIPLET:  // a 1-unit blast at each drum: its own explosion
@@ -2092,7 +2090,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             Vector3 hd = star ? s.aim : Vector3Normalize(s.vel);
             float yaw = atan2f(hd.x, hd.z) + in.turn / 127.0f * 2 * DT;
             float pitch = Clamp(asinf(Clamp(hd.y, -1, 1)) + in.aim / 127.0f * 1.5f * DT, -1.4f, 1.4f);
-            hd = {cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)};
+            hd = dirOf(yaw, pitch);
             if (star) s.aim = hd;
             s.vel = Vector3Scale(hd, star ? Vector3Length(s.vel) : wd.speed);
             boom = detonate && !lit;  // 0x589142: FIRE only once launched (+0x1c0 cleared)
@@ -2248,9 +2246,7 @@ void Game::stepShots(const Input &in, bool detonate) {
         } else if (boom) {
             s.pos = np;
             if (wd.stick > 0 && !stuck) emit(GameEvent::Arm, np, -1, s.weapon);  // a worm hit: armed by the impact, detonated in the same call (0x586520)
-            Vector2 super = superScale(containerOf(s.weapon, s.child));
-            Blast b = blastOf(wd, s.child);
-            b.damage *= super.x, b.crater *= super.x, b.push *= super.y;
+            Blast b = superBlast(blastOf(wd, s.child), containerOf(s.weapon, s.child));
             Vector3 at = np;
             bool smash = wd.kind == Kind::Donkey && wd.clusters == 0;
             if (smash && !lifeEnd && !wp(WP_MINE_RESPAWN)) blastLand(np, wd.lift * (doubled() ? 2 : 1));
@@ -2266,9 +2262,8 @@ void Game::stepShots(const Input &in, bool detonate) {
                     spawned.push_back({Vector3Add(np, {0, 0.5f, 0}), {(rand01() - 0.5f) * 8, 6 + rand01() * 5, (rand01() - 0.5f) * 8}, s.weapon, 0, true, 1});
         }
         if (fatBlast > 0) {  // 0x555066: WormDamage / ImpulseMagnitude kept, the three radii scaled, the impulse at the centre
-            Vector2 super = superScale(containerOf(s.weapon, false));
-            Blast b = blastOf(wd, false);
-            b.damage *= super.x, b.crater *= super.x * fatBlast, b.push *= super.y, b.reach *= fatBlast, b.pushReach *= fatBlast, b.pushDepth = 0;
+            Blast b = superBlast(blastOf(wd, false), containerOf(s.weapon, false));
+            b.crater *= fatBlast, b.reach *= fatBlast, b.pushReach *= fatBlast, b.pushDepth = 0;
             explode(s.pos, b, 0, 0, s.weapon);
         }
         if (!boom && !s.child && wd.name == "Starburst" && !starLit(s) && worms[current].alive) {  // 0x5891e0: attached at launch, takes the rocket's position and velocity
@@ -2471,7 +2466,7 @@ void Game::step(const Input &raw) {
         else chuteSink *= powf(2.0f / 3, K), chuteGain += chuteSink - was;
         float g = chuteGain * (1 - powf(6.0f / 7, K)), gcap = 0.05f * K;  // 0x47a1a0(c0, 0, 6, 0.001): 1/7 back to 0, 0.001 units/ms at most
         chuteGain -= Clamp(g, -gcap, gcap);
-        Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};  // half the gap to 0.06 units/ms + c0 along the facing + the drift, 0.05 at most
+        Vector3 f = flat(w.yaw);  // half the gap to 0.06 units/ms + c0 along the facing + the drift, 0.05 at most
         float k = 1 - powf(0.5f, K);
         Vector3 d = Vector3Scale(Vector3Subtract(Vector3Add(Vector3Scale(f, CHUTE_GLIDE + chuteGain), chuteDrift), w.vel), k);
         float l = Vector3Length(d), cap = CHUTE_STEP * K;

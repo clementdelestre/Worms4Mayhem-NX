@@ -213,7 +213,11 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 - Modes: `Eval` (threats, window, pairs and their paths, shots origin by origin, then `decide`), `Search` (a move plan's or a repath's
   A*), `Walk` (`follow` the path), `Act` (a close-range retreat A* first, then select, aim, wait, charge / fire).
 - In `Flying`: retreat, steer the bomber / super sheep, detonate the sheep as it leaves its target. Roped outside a race: release with JUMP.
-- `race()` (rope race) uses the same budget: 1 + 54 swings + 12 climbs, each simulated up to 400 ticks.
+- `race()` (rope race) uses the same budget: 1 + 54 swings + 12 climbs, each simulated up to 400 ticks. In the air it plans from where
+  the worm will be after a 12-tick wait, at least an even share of the candidates per waiting tick; knocked off its feet with no wait
+  left, the rest runs in that tick (~36 ms desktop on ropetrack) [ours].
+- Caches that keep the slicing: a jump edge's landing (`jumpFrom`, per think, reset on `Terrain::edits`) charges the
+  `Terrain::samples` it first cost; the jump reach tables visit only the cells each 1 ms step crosses [ours].
 
 ## Determinism
 

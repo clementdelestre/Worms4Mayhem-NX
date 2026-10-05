@@ -41,11 +41,8 @@ const char *SFX_NAMES[] = {
     "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo", "debris", "jetpack", "jetpack_end",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
-// W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m/audio.md §12): the event of each file, its gain in dB
-// (event + sound definition + category), loop, 3D linear rolloff min..max in m (20 units/m; 0 = 2D), max playbacks.
-// fade: FEV fade in/out, s; w: FEV wave weights, null = equal; mode: FEV sounddef play mode (see pick);
-// delay: sounddef trigger delay min/max ms (+64/+66); spawn: spawn time min/max ms (+4/+8), for oneshot instances that respawn (hold)
-// pitchRand: FEV event +08, in units of 4 octaves (fmod_event 0x10017230, 0x10013bb8)
+// W4M WormsX.fev via tools/w4m-re/fev.py (docs/w4m/audio.md §12): event, dB (event + sounddef + category), loop, 3D rolloff min..max m (0 = 2D), max playbacks,
+// fade s, wave weights (null: equal), sounddef mode (pick), trigger delay / respawn ms (+64/+66, +4/+8), log rolloff, pitch spread (+08, x 4 octaves)
 struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; float pitchRand = 0; };
 // every other multi-wave def has equal weights in the FEV (100 each, 20 on OldWomanMutter)
 const int W_SCOUSER_HELD[] = {100, 300, 100};

@@ -417,19 +417,25 @@ static bool rel(const Entry &e, const Transform *x, int b, Transform *out) {
 static void addLayer(const Entry &e, const Transform *body, const Transform *L, float w, std::vector<Matrix> &out) {
     int n = (int)out.size();
     const Transform *B = e.base ? e.base->keyframePoses[0] : nullptr;
-    std::vector<int> moved(n, -1);  // the nearest re-posed joint at or above b
+    static std::vector<int> moved;  // the nearest re-posed joint at or above b
+    static std::vector<Matrix> inv;  // body matrix of a re-posed joint, inverted at its first child
+    static std::vector<uint8_t> hasInv;
+    moved.assign(n, -1), inv.resize(n), hasInv.assign(n, 0);
     for (int b = 0; b < n; b++) {
         int p = b < (int)e.parent.size() ? e.parent[b] : -1;
         Transform rb, rl, r0;
-        bool own = B && b < (int)e.base->boneCount && rel(e, body, b, &rb) && rel(e, L, b, &rl) && rel(e, B, b, &r0) &&
-                   (Vector3Distance(rl.translation, r0.translation) > 1e-4f || fabsf(rl.rotation.x * r0.rotation.x + rl.rotation.y * r0.rotation.y + rl.rotation.z * r0.rotation.z + rl.rotation.w * r0.rotation.w) < 1 - 1e-6f);
+        bool own = B && b < (int)e.base->boneCount && rel(e, L, b, &rl) && rel(e, B, b, &r0) &&
+                   (Vector3Distance(rl.translation, r0.translation) > 1e-4f || fabsf(rl.rotation.x * r0.rotation.x + rl.rotation.y * r0.rotation.y + rl.rotation.z * r0.rotation.z + rl.rotation.w * r0.rotation.w) < 1 - 1e-6f) &&
+                   rel(e, body, b, &rb);
         if (own) {
             Quaternion d = QuaternionSlerp(QuaternionIdentity(), QuaternionMultiply(rl.rotation, QuaternionInvert(r0.rotation)), w);
             Transform r = {Vector3Add(rb.translation, Vector3Scale(Vector3Subtract(rl.translation, r0.translation), w)),
                            QuaternionNormalize(QuaternionMultiply(d, rb.rotation)), rb.scale};
             out[b] = p >= 0 ? MatrixMultiply(trs(r), out[p]) : trs(r), moved[b] = b;
-        } else if (int a = p >= 0 ? moved[p] : -1; a >= 0) out[b] = MatrixMultiply(MatrixMultiply(trs(body[b]), MatrixInvert(trs(body[a]))), out[a]), moved[b] = a;
-        else out[b] = trs(body[b]);
+        } else if (int a = p >= 0 ? moved[p] : -1; a >= 0) {
+            if (!hasInv[a]) inv[a] = MatrixInvert(trs(body[a])), hasInv[a] = 1;
+            out[b] = MatrixMultiply(MatrixMultiply(trs(body[b]), inv[a]), out[a]), moved[b] = a;
+        } else out[b] = trs(body[b]);
     }
 }
 

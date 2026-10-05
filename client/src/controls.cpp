@@ -475,9 +475,15 @@ static bool trackStep(Camera3D &cam, const Game &g, float dt) {
     return true;
 }
 
+// A new event camera, served: it replaces the chase / fly one (0x51d3d0)
+static void serve(const TrackDef *def, int prio, Vector3 e) { serves++, tk = {}, tk.on = true, tk.def = def, tk.prio = prio, tk.e = e, fly.on = ch.on = donkeyCam = false; }
+static Vector3 viewHeading(const Camera3D &cam) {
+    Vector3 f = {cam.target.x - cam.position.x, 0, cam.target.z - cam.position.z};
+    return Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};
+}
+
 static void wormTrack(const Game &g, int worm, int prio, Vector3 e, Vector3 d, bool force) {
-    serves++, tk = {}, tk.on = true, tk.def = &WORM_T, tk.worm = worm, tk.prio = prio, tk.e = e, tk.d = d, tk.force = force, tk.rest = 1.5f;
-    fly.on = ch.on = donkeyCam = false, abd.worm = -1;  // a new event camera replaces the chase / fly one (0x51d3d0)
+    serve(&WORM_T, prio, e), tk.worm = worm, tk.d = d, tk.force = force, tk.rest = 1.5f, abd.worm = -1;
 }
 
 static void simple(Camera3D &cam, Vector3 pos, Vector3 look, float kp, float kl, float dt) {  // W4M SimpleCam: placed, drawn at (PosUpdateSpeed, LookUpdateSpeed)
@@ -509,11 +515,8 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         if (!tk.frame || (Vector3Distance(tk.e, focusAt) > 2 && sinceTrack > 0.2f)) {  // 200 ms between requests
             const Worm *n = nullptr;
             for (const Worm &w : g.worms) if (Vector3Distance(w.pos, focusAt) < 2.5f && (!n || Vector3Distance(w.pos, focusAt) < Vector3Distance(n->pos, focusAt))) n = &w;
-            Vector3 f = Vector3Subtract(cam.target, cam.position);
-            f.y = 0;
-            fly.on = ch.on = donkeyCam = false;
-            serves++, tk = {}, tk.on = tk.frame = true, tk.def = &WORM_T, tk.prio = 5, tk.e = focusAt;  // event direction: the worm's facing (group: the view's)
-            tk.d = n ? flat(n->yaw) : Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};
+            serve(&WORM_T, 5, focusAt), tk.frame = true;
+            tk.d = n ? flat(n->yaw) : viewHeading(cam);  // event direction: the worm's facing (group: the view's)
             tk.dropped = seen(cam, g, focusAt), tk.rest = 1.5f, sinceTrack = 0;  // 0x51d3b3 (4 / 6): already in clear view, no track, no cut
         }
         tk.obj = focusAt;
@@ -523,11 +526,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     if (tk.frame) tk = {};
     if (focusOn && focusCrate) {  // CrateTrackCamera; the event point is where it lands (0x5c5bb0: a sweep straight down)
         if (tk.def != &CRATE_T) {
-            Vector3 f = Vector3Subtract(cam.target, cam.position);
-            f.y = 0;
-            fly.on = ch.on = donkeyCam = false;
-            serves++, tk = {}, tk.on = true, tk.def = &CRATE_T, tk.prio = 1, tk.d = Vector3Length(f) > 0.01f ? Vector3Normalize(f) : Vector3{0, 0, 1};  // ours: no crate facing
-            tk.e = focusAt;
+            serve(&CRATE_T, 1, focusAt), tk.d = viewHeading(cam);  // ours: no crate facing
             while (tk.e.y > g.water && !g.terrain.solid({tk.e.x, tk.e.y - 0.25f, tk.e.z})) tk.e.y -= 0.25f;
             tk.obj = focusAt;
         }

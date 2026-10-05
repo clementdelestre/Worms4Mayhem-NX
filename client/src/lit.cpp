@@ -6,7 +6,8 @@
 
 namespace Lit {
 Light sun;
-static std::vector<std::pair<Shader, bool>> shaders;  // bool: fixed worm light
+struct Entry { Shader s; bool worm; int loc[5]; };  // worm: fixed worm light; loc: sunDir, ambient, diffuse, specular, camPos
+static std::vector<Entry> shaders;
 
 // Worm.Light.Ambient / Worm.Light.Diffuse from Data/Tweak/TWEAK.XOM.
 static const Vector3 WORM_AMB = {0.5f, 0.5f, 0.6f}, WORM_DIF = {0.7f, 0.7f, 0.6f};
@@ -52,24 +53,28 @@ Shader shader(const char *vs, const char *fs, bool lit) {
     std::string f = es ? "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
                        : "#version 330\n#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n";
     Shader s = LoadShaderFromMemory((v + vs).c_str(), (f + fs).c_str());
-    if (lit && s.id != rlGetShaderIdDefault()) shaders.push_back({s, false});
+    if (lit && s.id != rlGetShaderIdDefault()) {
+        static const char *U[5] = {"sunDir", "ambient", "diffuse", "specular", "camPos"};
+        shaders.push_back({s, false, {}});
+        for (int i = 0; i < 5; i++) shaders.back().loc[i] = GetShaderLocation(s, U[i]);
+    }
     return s;
 }
 
 Shader modelShader(bool worm) {
     Shader s = shader(MVS, MFS);
-    if (worm && !shaders.empty() && shaders.back().first.id == s.id) shaders.back().second = true;
+    if (worm && !shaders.empty() && shaders.back().s.id == s.id) shaders.back().worm = true;
     return s;
 }
 
 void frame(Vector3 cam) {
     Vector3 l = Vector3Normalize(sun.dir);
-    for (auto &[s, worm] : shaders) {
-        SetShaderValue(s, GetShaderLocation(s, "sunDir"), &l, SHADER_UNIFORM_VEC3);
-        SetShaderValue(s, GetShaderLocation(s, "ambient"), worm ? &WORM_AMB : &sun.ambient, SHADER_UNIFORM_VEC3);
-        SetShaderValue(s, GetShaderLocation(s, "diffuse"), worm ? &WORM_DIF : &sun.diffuse, SHADER_UNIFORM_VEC3);
-        SetShaderValue(s, GetShaderLocation(s, "specular"), &sun.specular, SHADER_UNIFORM_VEC3);
-        SetShaderValue(s, GetShaderLocation(s, "camPos"), &cam, SHADER_UNIFORM_VEC3);
+    for (const Entry &x : shaders) {
+        SetShaderValue(x.s, x.loc[0], &l, SHADER_UNIFORM_VEC3);
+        SetShaderValue(x.s, x.loc[1], x.worm ? &WORM_AMB : &sun.ambient, SHADER_UNIFORM_VEC3);
+        SetShaderValue(x.s, x.loc[2], x.worm ? &WORM_DIF : &sun.diffuse, SHADER_UNIFORM_VEC3);
+        SetShaderValue(x.s, x.loc[3], &sun.specular, SHADER_UNIFORM_VEC3);
+        SetShaderValue(x.s, x.loc[4], &cam, SHADER_UNIFORM_VEC3);
     }
 }
 }

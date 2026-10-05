@@ -83,6 +83,11 @@ static void animEvent(const Game &g, const GameEvent &e);
 static bool won(const Game &g) { return g.cfg.mission ? g.run.result > 0 : g.winner >= 0; }
 static bool gunBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun; }  // EmitterSoundFX weapons/ShotgunFire of WXP_ShotgunBlastHit, no bang
 static bool donkeyBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0; }  // its DetonationFx and sound, not a bang
+static const char *objectModel(const Object &o) {
+    if (o.type != Object::Crate) return o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry" : "target";
+    if (o.mystery >= 0) return Models::has("crate_mystery") ? "crate_mystery" : "crate_weapon";
+    return o.weapon < 0 ? "crate_health" : utility(WEAPONS[o.weapon].kind) && Models::has("crate_utility") ? "crate_utility" : "crate_weapon";
+}
 static bool holyNext = false;  // the blast after the Hallelujah is the holy grenade's own
 static void onEvent(const Game &g, const GameEvent &e) {
     animEvent(g, e);
@@ -521,8 +526,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     if (Vector3 bm; ly && Models::blend("worm", clip, t, loop, ly, &bm)) Acting::headMode(i, bm.z);  // read by the next Acting::update
     Color tint = Acting::tint(i, ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f));
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
-    // W4M turns the model about its own root (0x5a26d3: angles +0x150/+0x158/+0x15c on the node), i.e. the raw mesh origin,
-    // which worm.glb puts at (0, 0.299, 0.352) m (main_bone's rest translation)
+    // W4M turns the model about its own root (0x5a26d3), the raw mesh origin: worm.glb's main_bone rest translation
     // rider (0x588fd0, once launched): pitch = the rocket's elevation; during the fuse the worm stands, not attached (0x5891e0)
     float roll = !w.alive ? 0 : rk ? (strcmp(clip, "FlyStarburst") ? 0 : asinf(Clamp(rk->aim.y, -1, 1))) : a.spin >= 0 && a.air > 0 ? a.spin : !strcmp(clip, "Blastflight2") ? blastPitch(w) : 0;
     const Vector3 ROOT = {0, 0.299f, 0.352f};
@@ -1757,7 +1761,7 @@ int main(int argc, char **argv) {
             for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawWorm(game, w, clock);
             for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain)) DrawSphere(s.pos, 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
-                if (Models::visible(o.pos, 2)) Models::draw(o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Crate ? (o.mystery >= 0 && Models::has("crate_mystery") ? "crate_mystery" : o.weapon < 0 && o.mystery < 0 ? "crate_health" : "crate_weapon") : "sentry", o.pos, (&o - game.objects.data()) * 1.3f);
+                if (Models::visible(o.pos, 2)) Models::draw(objectModel(o), o.pos, (&o - game.objects.data()) * 1.3f);
             Fx::drawWater(pipView, game.water, clock);
             Fx::draw(pipView);
             EndMode3D();
@@ -1827,9 +1831,7 @@ int main(int argc, char **argv) {
         }
         dudFx(game.objects);
         for (const Object &o : game.objects) {
-            const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry"
-                          : o.type == Object::Target ? "target" : o.mystery >= 0 ? (Models::has("crate_mystery") ? "crate_mystery" : "crate_weapon") : o.weapon < 0 ? "crate_health"
-                          : utility(WEAPONS[o.weapon].kind) && Models::has("crate_utility") ? "crate_utility" : "crate_weapon";
+            const char *m = objectModel(o);
             if (o.type == Object::Crate) crateChute(o, &o - game.objects.data(), pause.open ? 0 : dt);
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute
             if (!Models::draw(m, o.pos, (&o - game.objects.data()) * 1.3f)) {

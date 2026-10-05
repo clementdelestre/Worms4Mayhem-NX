@@ -79,9 +79,9 @@ std::vector<Seen> seen, seenPrev;  // live shots of this / the previous frame: w
 float show = 0, tickAcc = 0;  // victory fireworks: s left of W4M GameOverLogicEntity's 4 s wait + 5 s show
 Vector3 stageC{};  // Land.Center, Land.Radius, Land.MaxHeight of the match that ended
 float stageR = 0, stageTop = 0;
-Vector3 camAt{};
 Texture2D skyTex{}, waterTex[3]{};
 Shader skySh{}, waterSh{};
+int waterLoc[6];
 Mesh dome{}, plane{};
 Material skyMat{}, waterMat{};
 Model skyModel{};  // W4M SkyBoxEntity scene "<THEME>.<TIME>Sky" (tools/w4m-models), W4M units
@@ -182,8 +182,8 @@ void tickEmitters(float dt) {
             if (t >= fmaxf(e.lifeTime, 1)) { done = true; break; }
             if (L.timer < e.freq + L.jitter) continue;
             L.timer -= e.freq + L.jitter, L.jitter = rnd(-e.freqR, e.freqR);
-            int alive = 0;
-            for (float end : L.ends) alive += end > L.next;
+            L.ends.erase(std::remove_if(L.ends.begin(), L.ends.end(), [&](float end) { return end <= L.next; }), L.ends.end());  // next only grows
+            int alive = (int)L.ends.size();
             for (int k = 0; k < e.num && alive < e.max; k++, alive++) L.ends.push_back(L.next + spawn(e, L.at));
         }
         if (done) lives[i] = std::move(lives.back()), lives.pop_back();
@@ -367,6 +367,8 @@ void load() {
     UnloadImage(ring);
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
+    static const char *WATER_U[6] = {"time", "textureScale", "p0", "ni", "ni1", "p3"};
+    for (int i = 0; i < 6; i++) waterLoc[i] = GetShaderLocation(waterSh, WATER_U[i]);
     skyMeshSh = shader(SKYMESH_VS, SKYMESH_FS);
     uvOffLoc = GetShaderLocation(skyMeshSh, "uvOff");
     flareTex = loadTex("hud", "lensflares", false);  // W4M Lens.Flares (LensFlares.tga)
@@ -526,8 +528,8 @@ void soap(Vector3 p) {
 
 // W4M PARTTWK, one burst each (EmitterLifeTime 1 ms): n sprites, life 2 +- 0.3 s, 1.75 m shrinking to 0, spin +- 8 deg x 10/s, IsAlternateAcceleration N / S;
 // ParticleVelocityIsNormalised: unit(V + (2r-1) Vrand) x (V.x + Vrand.x) x 0.01 units/ms = x 0.5 m/s
-static void alt(Vector3 p, Vector3 dir, float speed, float life, float size, float spin, float rot, RampId r, float n) {
-    Particle q = {p, Vector3Scale(Vector3Normalize(dir), speed * 0.5f), 0, life, size / 20, 0, rot, spin, 0, 0, WHITE, PUFF, false};
+static void alt(Vector3 p, Vector3 dir, float speed, float life, float size, float spin, float rot, RampId r, float n, Color c = WHITE) {
+    Particle q = {p, Vector3Scale(Vector3Normalize(dir), speed * 0.5f), 0, life, size / 20, 0, rot, spin, 0, 0, c, PUFF, false};
     q.ramp = r, q.altN = n, q.altS = 2e-6f, q.p0 = p;
     add(q);
 }
@@ -545,10 +547,8 @@ static void gunBlast(Vector3 p) {
     for (int i = 0; i < 20; i++) {
         float k = i < 10 ? 1 : 1.5f;
         Vector3 d = {rnd(-1, 1) * 0.2f * k, 0.02f + rnd(-1, 1) * 0.05f * k, rnd(-1, 1) * 0.2f * k};
-        Particle q = {p, Vector3Scale(Vector3Normalize(d), 0.2f * k * 0.5f), 0, (i < 10 ? 1.2f : 0.4f) + rnd(-0.2f, 0.2f) * (i < 10 ? 1 : 0.5f), (i < 10 ? 3.f : 1.f) / 20, 0, 0,
-                      rnd(-8, 8) * DEG2RAD * 10, 0, 0, ColorLerp({242, 230, 255, 255}, {128, 115, 140, 255}, rnd()), PUFF, false};
-        q.altN = 6500, q.altS = 2e-6f, q.p0 = p;
-        add(q);
+        float life = (i < 10 ? 1.2f : 0.4f) + rnd(-0.2f, 0.2f) * (i < 10 ? 1 : 0.5f), spin = rnd(-8, 8) * DEG2RAD * 10;
+        alt(p, d, 0.2f * k, life, i < 10 ? 3 : 1, spin, 0, R_NONE, 6500, ColorLerp({242, 230, 255, 255}, {128, 115, 140, 255}, rnd()));
     }
 }
 
@@ -868,12 +868,12 @@ void drawWater(const Camera3D &cam, float level, float time, float HALF) {
     const float *w = Lit::sun.water;
     Vector3 p0 = {w[4], w[3], w[6]}, ni = {w[7], w[8], w[9]}, ni1 = {w[10], w[11], w[12]}, p3 = {w[5], w[0], w[13]};
     time = fmodf(time, 200);  // every pan speed loops at 200 s: keeps uv offsets small
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "time"), &time, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "textureScale"), &w[1], SHADER_UNIFORM_FLOAT);
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "p0"), &p0, SHADER_UNIFORM_VEC3);
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "ni"), &ni, SHADER_UNIFORM_VEC3);
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "ni1"), &ni1, SHADER_UNIFORM_VEC3);
-    SetShaderValue(waterSh, GetShaderLocation(waterSh, "p3"), &p3, SHADER_UNIFORM_VEC3);
+    SetShaderValue(waterSh, waterLoc[0], &time, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(waterSh, waterLoc[1], &w[1], SHADER_UNIFORM_FLOAT);
+    SetShaderValue(waterSh, waterLoc[2], &p0, SHADER_UNIFORM_VEC3);
+    SetShaderValue(waterSh, waterLoc[3], &ni, SHADER_UNIFORM_VEC3);
+    SetShaderValue(waterSh, waterLoc[4], &ni1, SHADER_UNIFORM_VEC3);
+    SetShaderValue(waterSh, waterLoc[5], &p3, SHADER_UNIFORM_VEC3);
     rlDrawRenderBatchActive();
     BeginBlendMode(BLEND_ALPHA);
     rlDisableBackfaceCulling();
@@ -975,7 +975,7 @@ void draw(const Camera3D &cam) {
         EndBlendMode();
     }
     streaks.clear();
-    seenPrev.swap(seen), seen.clear(), camAt = cam.target;
+    seenPrev.swap(seen), seen.clear();
     rlEnableDepthMask();
     rlEnableBackfaceCulling();
 }

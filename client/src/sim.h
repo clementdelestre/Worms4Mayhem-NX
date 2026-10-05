@@ -540,11 +540,13 @@ struct Game {
     int containerOf(int weapon, bool child) const;
     int inventoryId(int weapon) const;  // W4M inventory slot (enum 0x90c920, utilities 0x22..0x2f), 0 none
     Vector2 superScale(int container) const;  // x: WormDamageMagnitude and LandDamageRadius, y: ImpulseMagnitude
+    Blast superBlast(Blast b, int container) const;  // b under its container's superScale
     std::vector<int> superWeapon;  // per team: TeamData.WormpotSuperWeapon (Super Secret Weapons), a container id, 0 none
     float fuseOf(const WeaponDef &wd) const { return wd.userFuse ? fuses[worms[current].team] : wd.fuse; }
 
 private:
     float rand01();
+    float mineFuse();  // a new mine's fuse, s (Scheme mineFuse, random: one draw)
     void beginTurn(int team);
     void ropeCleanup();  // the rope entity goes: a hooked rope spends its ammo
     // stdlib.lub turn end: ApplyDamage, CheckActivity, DoPostActivity's two passes; ApplyPoison 0x5ac060; SurrenderTeam 0x5b4d00
