@@ -275,15 +275,120 @@ Crate pickup 0x5c9800 switches on crate type − 0x22 (byte table 0x5c99ac): 44 
 - **Wings mount** (WAE_RedBullWings 0x595390): `RedBullWings` at the worm's `Pack_Locator` (0x5953d1, same locator as the jetpack 0x58c7f4, chute 0x58f1c3, Starburst 0x5917d0); the wings and the worm both play `FlyRedBull` (0x595428 / 0x595437) [disasm].
 - **Abductee zap** (UpdateAbductee 0x5a9c40, from the worm update 0x5b2045 only in physics states 0, 2, 3; flag 0x400 clear sets the timer +0x13c to −1): the first call sets 30000 ms; then −20 per call. While the timer is > 0 or no spot is held, each call tries one spot: pos + ((r − 0.5) × 2 × XZRange, r × YRange, (r − 0.5) × 2 × XZRange) (three rand calls in that order), kept if Fits 0x59edf0 and EstablishPhysicsState 0x5a6af0 lands it Ambulatory (support within 1000 units below, land or collider) above `Water.Level` (+0xac): the landed position is stored (+0x140, +0x14c = 1). Once the timer is ≤ 0 with a spot: if the worm moves (|Velocity|² ≠ 0) it jumps there (WXP_Poof_VLarge, Velocity 0, WXP_Abductee_Teleport, message 0x22); either way the timer becomes MinTime + rand % (MaxTime − MinTime) and a spot farther than XZRange (3D) is dropped [disasm]. Worm.Zap.* at +0xc4..+0xd0 (0x5a9a56..0x5a9aad).
 - **Ninja rope reel** (0x5713c0, from the rope update 0x574480, once per 20 ms): `NinjaRope.Lengthen.On/Off` / `Shorten.On/Off` (bound to Joypad.Input.MoveBackward / MoveForward at 0x4e19e0, digital) set +0x64 / +0x65; the step is `LengthenShortenRate` 0.2 × 20 = 4 units a tick (10 m/s). Lengthening is clamped to MaxLength over the whole rope (0x570fc0); shortening is refused outright when the step exceeds the last segment, when the rope would drop below `MinLength` 10, or the last segment below `MinBendDistFromWorm` 10, or when the moved end is blocked (0x571020, 0x56fcb0). The hooked crate (0x5cbc81) and drum (0x5d2110) run the same rope update 0x574480 with their own position and velocity [disasm].
+- **Ninja rope swing** [disasm; TWEAK Ninja.* data]. Entity fields: m_NinjaRopeList +0x20 (28-byte segments: point, length +0xc, unwrap
+  side +0x10), mode +0x38 (1 idle, 2 hook flying, 3 on land, 4 on an object), angle +0x120, spin +0x10c (rad per 20 ms), stick +0x68.
+  Tweaks: Gravity × Low.Gravity.Multiplier × Ninja.GravityMultiplier 1 (+0xcc / +0xc8 / +0xfc), MaxLength 450, MinLength 10,
+  MinBendDistFromWorm 10, NumRaycastRefinements 8, RotationDamping 0.99, LengthenShortenRate 0.2, SnapOffAngleRadians 7.5 (not read in the
+  update), SwingAmount 6e-5, MaxUnreducedSwingLength 40 (not read in the update), WormMass 100, DetachVelocityMulti 1 (+0xd0..+0xf8).
+  - **Update 0x574480** (per 20 ms, arguments Position, Velocity, Orientation): reel 0x5713c0, swing 0x5729e0, bounce / wrap 0x573060,
+    unwrap 0x571600, Velocity = (new − old) × 0.02 × 0.05 (0x56fd60: a 50th of the motion's speed), Position = the swing's point.
+  - **Swing 0x5729e0**: θ += ω (kept in [−π, π]); T = sin θ × (−g / L) × (−20), L = the last segment's length; stick s from 0x571820 (or
+    +0x70 when set); ω += −s × SwingAmount × 20 × 5 × MinLength / (Lc + 0.001 Lc²), Lc = |Position − last point|; no push: ω ×=
+    RotationDamping; ω += 20 T. Point = last point + L × row 2 of RotX(θ + ω + π/2) × RotY(yaw) = L (−sin(θ+ω) forward(yaw) − cos(θ+ω) up):
+    θ = 0 hangs, θ > 0 behind the facing, forward stick drives θ down (the body forward). Orientation out: (θ + ω + 3π/2, yaw, const);
+    the yaw is passed through (0x571820 converts the camera-relative stick to s = 1 under 1.41372 rad from the facing, −1 over 1.72788,
+    else 0). _CIsin / _CIcos / _CIacos / _CIasin / _CIatan2 are the import thunks 0x6fe73c / 0x6fe742 / 0x6fe9a2 / 0x6fe9e4 / 0x6fe9f0.
+  - **0x573060**: 0x56fcb0 (the rope's 5-unit collider at the new point, mask 0x19, overlapping more than one collider — one in mode 2 —,
+    or Fits 0x59edf0 failing): ω = −0.9 ω, the point is still taken. Else the last stretch cut by land (0x571020: a cast from the point
+    to the last bend, 0x56fbf0): up to 8 halvings p = (old + p) / 2 while still cut, keeping the latest hit (all cut: p = old); hit += 1
+    unit toward p; |hit − p| ≤ MinBendDistFromWorm: ω = −0.9 ω; else ω ×= L_old / |hit − new|, the old segment's length becomes
+    |its point − hit|, its side = −(hit − (its point + |its point − hit| × dir(its point → old))) (or −(new − old)), push (hit, |hit − new|).
+  - **Unwrap 0x571600**: with two segments or more, the stretch from the point to the bend before clear (0x466ae0, 1000 steps) and
+    (point − that bend) · its side > 0: pop the last segment, the new last length = |point − its point|, ω ×= L_popped / L_new (0x570600).
+  - **Reel 0x5713c0**: lengthening by 4 units clamped to MaxLength − total (0x570fc0 sums the lengths); shortening refused when the step
+    exceeds the last length, the total would go under MinLength or the last under MinBendDistFromWorm; the moved point refused when cut
+    or blocked (0x571020, 0x56fcb0); else length set, Position moved there, ω ×= L_old / L_new.
+  - **Attach on land 0x573d00** (hook flight mode 2: a 20-step cast 0x466ae0 along +0x40 each 20 ms; hook velocity = RotY(yaw)
+    RotX(−pitch) (0, 0, 1) units/ms from the eye, 0x572800; past MaxLength from the eye it retracts): segment 0 = the hit, length =
+    |hit − Position|; θ = acos(clamp(−d̂.y)), d = eye (Position + Worm.EyeLevelOffset 15) − hit; if hooked before this turn (+0x79) and
+    0x570650 (the horizontal velocity against the facing) gives > π/2, θ = −θ; ω = 0x571aa0: the angle between (Position − hook) and
+    (Position + 20 Velocity − hook), negated unless the horizontal velocity points backwards (pure vertical: positive).
+  - **Attach on an object 0x571d90** (mode 4; a moving object asserts): segment 0 = the worm's Position, length = |hook point − it|,
+    yaw = atan2(d.x, d.z) + π, d = hook point − worm, θ = acos(clamp(−d̂.y)), ω = 0; collider radius from the crate's size × 0.5, mask 0x3f.
+  - **Release 0x573530** (FireUtil on the rope): one more swing from +0x58 (the last point), v = (new − old) × 0.05 × DetachVelocityMulti
+    (units/ms); on land the worm gets it (Worm.OverridePhysics off); on an object NinjaRope.EndSwing carries it.
+- **Payload water** [disasm + data]: PayloadLogicEntity 0x582050, from slot 30 0x5827c0 after a tick without collision (Jumping, Flying,
+  Homing, Starburst 0x5887b0 and Donkey use it; Walking 0x85d6dc does not); Parabolic payloads get the same planes as events
+  (Payload.CollideWithWater / DisarmPlane / ExpiryPlane, FindFirstEvent 0x576580, handled at 0x577cc4..0x577d4b). A plane is crossed
+  when y > plane ≥ y + 20 v.y (0x57dc50). Water.Level 0 and Water.ExpiryDepth −200 units, absolute (WEAPTWK).
+  - +0x6e set (the default, 0x5804c8; HomingPayload clears it while homing, 0x560bdc, and sets it again after, 0x560bac): Water.Level +
+    Radius → slot 19 0x580830: SkimsOnWater and |v| > MinSpeedForSkim and asin(v̂.y) > MaxAngleForSkim (≤ 0): v ×= SkimDamping (x = z, y < 0
+    asserted), SplishFx; else SplashFx; y = Water.Level + Radius. Else Water.Level − SinkDepth → 0x580aa0 + 0x57dda0. Else ExpiryDepth → slot
+    21 (removal without a blast).
+  - +0x6e clear: Water.Level → SplashFx (0x57fcc0) only.
+  - **Sink 0x580aa0**: +0x6f = 1, acceleration 0; s = min(|v|, Payload.SinkSpeed.Max 0.1), v = v̂ s; k = s / Max; v.xz ×= k²; v.y =
+    −max(Payload.SinkSpeed.Min 0.08, |v.y| k); y = Water.Level − SinkDepth; Payload.Sink, SinkingFx, Payload.Sunk (+0x144). 0x57dda0 disarms
+    (+0x5c = 0, Payload.Disarm). Detonate 0x580f10 does nothing while +0x6f (0x581312); a collision while sinking removes it (0x577e86).
+  - Per weapon [data WEAPTWK, units]: Radius / SinkDepth / skim (MinSpeed, MaxAngle, Damping): Bazooka 5 / 5 / (0.1, −0.4, 0.5, −0.5);
+    Grenade 3 / 6 / (0.2, −0.4, 0.75, −0.75); ClusterGrenade 8 / 5 / (0.1, −0.4, 0.5, −0.6); BananaBomb 8 / 5 / (0.2, −0.4, 0.5, −0.5);
+    HolyHandGrenade 3 / 5 / (0.2, −0.4, 0.5, −0.5); GasCanister 3 / 5 / (0.2, −0.4, 0.5, −0.5); PoisonArrow 1 / 5 / (0.1, −0.4, 0.75, −0.75);
+    FactoryWeapon 5 / 5 / (0.1, −0.4, 0.45, −0.3); HomingMissile, FactoryHoming 5 / 5; Dynamite 7 / 7; Landmine 3 / 5; Sheep, SuperSheep,
+    Starburst 8 / 8; OldWoman, Scouser 8 / 10; Airstrike, SuperAirstrike 15 / 15; Fatkins 25 / 30; ConcreteDonkey 72 / 80; ClusterBomb
+    4 / 5 (SkimsOnWater 1 with MinSpeed 0, MaxAngle 0, Damping 0: never on a descent); Bananette 2 / 5; FactoryCluster, LandmineBomblet 4 / 5.
+- **Wind drift** [disasm; data where noted]. Wind = Wind.Speed × (cos, 0, sin) Wind.Direction units/ms² (0x57eb25), Wind.MaxSpeed 8.5e-5.
+  - **Inflatable Scouser, FloatAway** (WalkingPayload, state +0x158, update 0x593ee0, table 0x59418c): the catch 0x5931f7 (WormCollideResponse
+    2): state 4, velocity 0, Worm.OverridePhysics(0x10), Payload.ChangeToSecondMesh. State 4 (0x591ac0) the next update: velocity (0, 0.08,
+    0) units/ms (0x85d65c), expiry now + 6000 ms (0x591b13), state 6, WXP_ScouserTransform; with land both at pos + v × 1500 and pos +
+    (0, radius, 0) it pops at once. State 6 (0x5924a0): acceleration 0; the first update whose sweep (0x59ec70) is clear: state 5 and
+    0x592460: the payload acceleration with IsAffectedByWind forced, then x, z × 0.6 (0x81ae48), y = 0. 0x5925c0 in 5 and 6: the sweep;
+    a hit in state 5 snaps there and pops (0x593fad); else v += a × 20, pos += v × 20; the worm's Position = the payload's (0x5927ff).
+    Pop on expiry (DetonatesOnExpiry) or contact; WormDamageMagnitude 40, radius 21 units [data].
+  - **Parachute** (ParachuteLogicEntity, update 0x579a10 → 0x579720 per 20 ms): closed, it opens (0x578db0) when the worm's v.y <
+    −0.3 × 0.75 units/ms (0x85eaf0, 0x8c1568); the opening reads v88 = (Wind.Speed cos, Gravity × Low.Gravity.Multiplier, Wind.Speed sin)
+    once (0x579024..0x579109). Open (0x5792a0): A = (0.06 (0x85bcc0) + c0) × (sin yaw, 0, cos yaw) + 70 (0x838400) × v88; v = halfway to
+    A, the change capped at 0.05 units/ms (0x569fa0), then v.y += s5c; the canopy (+0x70) moves by v × 20 and the worm hangs 40 units under
+    it; a blocked canopy move (0x59edf0) closes it (0x57967e). Sway 0x578a40: ω = (ω − 0.003 sin θ) × 0.99 with ±0.001 nudges from the
+    lateral speed; cos θ < 0.4 (0x81a620) feeds s5c −= 2 (cos θ − 0.4) v88.y, else s5c ×= 2/3 and c0 takes the change; c0 → 6/7 c0
+    (≤ 0.001 a step). Input.TurnLeft / TurnRight only set +0xb0 / +0xb1, which no parachute code reads.
+  - **Gas cloud** [data PARTTWK + disasm]: WXP_GasCloud is one 8000 ms particle, velocity and acceleration 0, ParticleIsEffectedByWind 1
+    but ParticleMass 0.0: the position is p0 + v t + 0.5 Mass (a + W) t² from the spawn time (0x5b7450, Mass +0x13c, wind flag +0x1bc),
+    so it never drifts; a spiral of 2 units at 0.0035 rad/ms (0x5b75e0); collision radius 100 units at offset (0, 10, 0), poison 10.
+    WXP_GasCloudDelayed (Mass −0.05, visual) drifts upwind; WXP_LG_GasCloud (level gas, Mass 0.049, 60 s, poison 10) drifts downwind.
 
-- **Starburst flight model [disasm 0x5917d0 + data]**: WAE_Starburst on Accessory.Init loads mesh `Starburst` (0x85085c, StarBurst.xom, Bundl09) and mounts it on `Pack_Locator`; Starburst.FuseLit spawns `WXP_Wep_StarburstRocket` at the accessory's `locator1` (inside `Star_burst|fuse`). Same mesh as the held one: 17x44x25 units (0.85 x 2.2 x 1.25 m), nodes Star_burst, fuse, ropes (554 tris: the ropes are mesh), clip FireStarburst 3.5 s moves `fuse` from 2.4 s. WEAPTWK kWeaponStarburst: FlyingGraphicsResourceID Starburst, PayloadGraphicsResourceID / WeaponGraphicsResourceID Sheep, Scale 1.0. Worm clips FireStarburst / FlyStarburst animate Pack_Locator (FireStarburst: a scale-like pop 1.46 to 1.0 at 0.54-0.71 s).
+- **Starburst flight model [disasm 0x5917d0 + data]**: WAE_Starburst on Accessory.Init loads mesh `Starburst` (0x85085c, StarBurst.xom, Bundl09) and mounts it on `Pack_Locator`; Starburst.FuseLit spawns `WXP_Wep_StarburstRocket` at the accessory's `locator1` (inside `Star_burst|fuse`). Same mesh as the held one: 17x44x25 units (0.85 x 2.2 x 1.25 m), nodes Star_burst, fuse, ropes (554 tris: the ropes are mesh), clip FireStarburst 3.5 s moves `fuse` from 2.4 s. WEAPTWK kWeaponStarburst: FlyingGraphicsResourceID Starburst, PayloadGraphicsResourceID / WeaponGraphicsResourceID Sheep, Scale 1.0. Worm clips FireStarburst / FlyStarburst animate Pack_Locator (FireStarburst: a scale-like pop 1.46 to 1.0 at 0.54-0.71 s). **Rider [disasm 0x5891e0, 0x588fd0, 0x588690]**: once attached (+0x230, set with `Starburst.Launched` when the launch time +0x1c0 is reached, 0x588860), each tick copies the payload position (+0x28) and velocity (+0x34) into the worm (WormData +0x38 / +0x50) and turns v̂ into angles: pitch −asin(v̂.y), yaw from the horizontal direction + π, written to WormData Orientation (+0x8c) and to the worm graphic +0x158 / +0x15c (0x59f3f0 / 0x59f410: the node angles of the tumble). No other offset: FlyStarburst itself lays the body along the rocket, which sits roped on the back at Pack_Locator (its `ropes` node), hands free and flapping [data: FlyStarburst channels animate Pack_Locator and both wrists, not the shoulders]. The hands never hold the rocket.
 
 - **Concrete Donkey [data: WEAPTWK kWeaponConcreteDonkey, PARTTWK; disasm: DonkeyLogicEntity 0x553000..0x553cc0]**: WormDamageMagnitude 80, WormDamageRadius 172 (8.6 m), LandDamageRadius 110.5 (5.525 m), ImpulseMagnitude 0.46 (23 m/s), ImpulseRadius 170 (8.5 m), ImpulseOffset -60 (3 m), Radius 72 (3.6 m = 60 x Scale 1.2, asserted >= 59.9 at 0x553773), LifeTime 8000, DetonatesOnExpiry 1, DetonatesOnLand 0, SinkDepth 80, DetonationFx WXP_Wep_Donkey, DetonationSfx weapons/ConcreteDonkeyImpact, ExpiryFx WXP_ExplosionX_Med (only read on the Payload.Disarm/dud path of Detonate 0x581336, never for the donkey), BounceFx WeaponDonkeyBounce (no PARTTWK container), ArielFx WXP_CrateSpawnLARGE, FxLocator Donkey_L (model node at (0, -93, 0) units). Donkey.Bounce 0.3 and MinBounceSpeed 0.2 are bound in Init (0x5537a5) and never read. CAMTWK Camera.Shake.Length / Magnitude = 0, so the 0x553290 ShakeStart on a smash is inert.
   - **Start (Init 0x553700)**: position = Airstrike.TargetPoint, y += max(Donkey.MinHeight 1500, Land.MaxHeight + Donkey.ExtraHeight 500) units; apex = that y at time 0. DonkeyCamera point = (x, y - ExtraHeight, z + 500) (0x5538d8: `fsub [esp+0x14]` is the ExtraHeight local).
   - **Collider**: sphere of Radius at the entity origin (docs above, Payload start 0x582200). Collision handler 0x553970 (vtable slot 28, replaces 0x57fc00; it checks no DetonatesOn* flag): any contact except a bubble shell (flags 0x3000: only the 0x553be6 tail, state 1 and entity position = contact) does (1) ExplosionMessage 0x518ce0 at the contact position with only LandDamageRadius = Radius (all damage / impulse fields 0) = a crater of 3.6 m at the centre, (2) Explode 0x57f140 at (x, y - Radius, z) with the WEAPTWK values, (3) DetonationFx at the contact (spawn 0x5c1410, props +0x1bc), (4) state 1, hit time stored. No Detonate, so the entity lives on.
   - **Motion (0x553370 / 0x553560)**: state 0: y = apex - 220 (t - tApex)^4 units, t in s, no gravity. State 1 holds 85 ms, then apex = y + 220 h^4, tApex = now + h with h = max(0.75, elapsed x 0.5 first smash / x 0.25 later) = 0.75 s, so it rises 3.48 m and falls back for 1.5 s: one smash per 1.585 s.
-  - **End**: LifeTime 8000 ms from the start, DetonatesOnExpiry: Detonate 0x580f10 at the entity position (no Radius offset): DetonationSfx + DetonationFx + Explode 0x57f140. Water: generic payload handler 0x582050 (splash at Water.Level, sink state 0x580aa0 at SinkDepth, expiry at Water.ExpiryDepth -200 units), unchanged in our sim.
-  - **WXP_Wep_Donkey** [data]: WXP_DonkeyStrikeBounce (mesh Particle.WXPMesh7 = 193 x 88 x 193 units, clip WXM_DefSource 0.83 s: scale 0 -> 1, alpha 1 -> 0; 1 particle, life 5000, size 1.2 x 1.3, EmitterSoundFX weapons/ConcreteDonkeyImpact, offset +10 units), WXP_DonkeySpritePuffLG (WXSprite4, 40, offset +20 units, V (0, 2, 0) +- (1.3, 4, 1.3) normalised, life 2000 +- 300, size 35 units shrinking to 0, white -> 0.55 grey, alternate acceleration N 6500 S 2e-6, spin +- 8) and WXP_DonkeySpritePuffHoriz (20, V (0, 0.2, 0) +- (2.2, 0, 2.2), same). WXP_DonkeySpritePuffMid is in no effect list. No fireball, ring or WXP_ExplosionX in the donkey blast. ArielFx WXP_CrateSpawnLARGE = WXP_CrateSpawnLGRings (30 puffs, 22 units, life 1200 +- 500, N 6000, EmitterSoundFX weapons/Cratespawn) + WXP_CrateSpawnDropping (size 0: invisible). Model Donkey: 85 x 167 x 108 units, drawn at Scale 1.2.
+  - **End**: LifeTime 8000 ms from the start, DetonatesOnExpiry: Detonate 0x580f10 at the entity position (no Radius offset): DetonationSfx + DetonationFx + Explode 0x57f140. Water: generic payload handler 0x582050 (slot 30 0x552f50 jumps to 0x5827c0; "Payload water" below), SinkDepth 80, Radius 72.
+  - **WXP_Wep_Donkey** [data]: WXP_DonkeyStrikeBounce (mesh Particle.WXPMesh7: two flared open cones, 225.6 x 102.6 x 225.6 units at scale 1 (193 x 88 x 193 at its rest scale 0.855), clip WXM_DefSource 0.833 s: Hermite scale keys (0, 0), (0.16663, 0.85498), (0.83301, 1), material alpha 1 -> 0 linear, invisible for the rest of its life; texture opaque only in its lower half of v, SrcAlpha / OneMinusSrcAlpha; 1 particle, life 5000, size 1.2 x 1.3, EmitterSoundFX weapons/ConcreteDonkeyImpact, offset +10 units), WXP_DonkeySpritePuffLG (WXSprite4, 40, offset +20 units, V (0, 2, 0) +- (1.3, 4, 1.3) normalised, life 2000 +- 300, size 35 units shrinking to 0, white -> 0.55 grey, alternate acceleration N 6500 S 2e-6, spin +- 8) and WXP_DonkeySpritePuffHoriz (20, V (0, 0.2, 0) +- (2.2, 0, 2.2), same). WXP_DonkeySpritePuffMid is in no effect list. No fireball, ring or WXP_ExplosionX in the donkey blast. ArielFx WXP_CrateSpawnLARGE = WXP_CrateSpawnLGRings (30 puffs, 22 units, life 1200 +- 500, N 6000, EmitterSoundFX weapons/Cratespawn) + WXP_CrateSpawnDropping (size 0: invisible). Model Donkey: 85 x 167 x 108 units, drawn at Scale 1.2.
+
+### Mystery crates [disasm; values data LOCAL / WEAPTWK / TWEAK]
+
+**Spawn**
+- CreateRandomCrate 0x4fa4b0 makes one draw: `(rand >> 15) % (H + W + U + M)`. The shares are SchemeData Health +0x13c, Weapon +0x134, Utility +0x138
+  and MysteryChance +0x130, taken in that order.
+- MysteryChance per scheme: 0 in Standard, Beginner, Pro, BnG, Shopping, Strategy, Family, Holy Grail, Darksider; 20 in All Action, Kitchen Sink and
+  WXD.DefaultSchemeData; 30 in Mega Power; 80 in Mystery.
+- The item is drawn at spawn (0x4f4b90): `rand % total` over the `<Item>Mystery.Crate` weights. Ammo −1 gives weight 0, and a total of 0 means no
+  crate.
+  - Weights in the schemes that drop mystery crates: MineLayer 40, MineTriplet 30, BarrelTriplet 40, Flood 50, Disarm 40, Teleport 60, QuickWalk 70,
+    LowGravity 70, DoubleTurnTime 60, Health 70, Damage 40, SuperHealth 40, SpecialWeapon 50, BadPoison 20, GoodPoison 30.
+  - Standard's are the same except Flood 10 and SpecialWeapon 40.
+- Model `MysteryCrate.xom`. Spawn comment `Comment.MysteryCrateSpawn` (Comment.Mystery.1..5). It lands with `weapons/CrateImpactWeapon` (0x5ca143).
+- Crate Spy shows the item's text.
+
+**Collection** (0x5cb5a0 → 0x5ca1f0)
+- The commentary panel shows `Text.k<Item>`. BuffaloOfLiesGraphicEntity makes the reveal (`weapons/BuffaloOfLies`); there is no pickup sound.
+- Effects:
+
+| item | effect |
+|---|---|
+| MineLayer | `GameLogic.CreateRandomMine` × MysteryMineLayer.NumMines 5 |
+| MineTriplet / BarrelTriplet | min(n, 3) draws of `rand % n` over the mines / drums, repeats dropped; each mine gets Payload.Arm, each drum a 1-unit blast (it explodes) |
+| Flood | a FloodLogicEntity: the Flood weapon's rise |
+| Disarm | from slot `rand % 66` of the alliance inventory, the first slot with ammo > 0 loses 1 |
+| Teleport | up to 3 tries of the mine spot search (15-unit sphere 10 units up), land below, the worm must fit 2 units above it; rope / jetpack / parachute killed |
+| QuickWalk | `Worm.VelocityScale` 2 until the turn ends (nothing under JumpingOnly) |
+| LowGravity | `Low.Gravity.Multiplier` 0.5 until the turn ends |
+| DoubleTurnTime | the running turn timer × 2, at most 99000 ms |
+| Health / SuperHealth | +25 / +100 (MysteryHealth / MysterySuperHealth.HealthValue), Worm.Antidote |
+| Damage | 25 (MysteryDamage.DamageValue), type 0, ApplyDamage at once |
+| SpecialWeapon | `rand % 3` of Concrete Donkey, Holy Hand Grenade, Super Airstrike: +1 unless infinite |
+| BadPoison / GoodPoison | Worm.Poison to every worm of the collector's team / of the other teams (by team, not alliance) |
+
+- A blown-up mystery crate explodes like any crate; its item never applies (0x5c9a10).
 
 ### Poison Arrow (kWeaponPoisonArrow, PoisonArrowLogicEntity 0x85c934: ParabolicPayloadLogicEntity) [data + disasm]
 
@@ -295,6 +400,9 @@ Crate pickup 0x5c9800 switches on crate type − 0x22 (byte table 0x5c99ac): 44 
   3. 0x577da0 picks DetonatesOnWormImpact (worm), DetonatesOnLandImpact (land) or DetonatesOnObjectImpact; armed and flagged: vtable +0x7c = 0x586520. A worm hit (+0x1b9) goes straight to vtable +0x50, Detonate 0x580f10 (DetonationFx + Explode 0x57f140): **detonates at once at the worm**;
   4. land (flag 0 on the detonate test): 0x580db0 applies the bounce response, damping 0, so the velocity is 0 and the arrow stops (**sticks**), then 0x5758c0 (at rest) schedules `Payload.Expire` at +0x58 (immediately). MsgExpire 0x577980: DetonatesOnExpiry and armed: vtable +0x7c again, no worm: 0x575fb0, PreDetonationTime 2000 > 0 posts `Payload.Detonate` 2000 ms later (0x574c40), which calls Detonate: **the arrow detonates 2 s after it stops**;
   5. then it posts `Payload.Impact`, handled by PayloadGraphicEntity 0x57c5b4, which plays AnimImpact "Hit" (Arrow mesh clip, 1.00 s).
-  Not read: a Land.NewShape under a stuck arrow (0x5777f0 re-predicts at-rest payloads).
+  6. Land.NewShape on a payload at rest (Parabolic HM 0x577f40 → 0x5777f0): 0x574d10 asks whether its land frame (+0x18c / +0x190) still
+     exists; gone: acceleration recomputed (vtable +0x48, gravity and wind), "Rested payload on the move again" (active again), events
+     re-predicted. The Payload.Detonate posted at the first stop stays queued, so the arrow still detonates 2 s after that stop; a second
+     stop posts another one, later [disasm].
 - **Poison** [data]: DetonationFx WXP_PoisonArrowPuffOut = WXP_ExploArrow_RingDk (150 ms, EmitterSoundFX weapons/ExplosionBoxed), WXP_ExplosionX_ShockRing, WXP_WhiteoutFlash, WXP_ExploArrow_BallCloud, WXP_ExploArrow_X_Ring, WXP_ArrowPoofColumn, WXP_PoisonArrowGasCloud (8000 ms smoke, EmitterSoundFX weapons/GasLoop after 800 ms, no collision) and **WXP_GasCloud** (the Gas Canister's collision emitter: radius 100 units, ParticleCollisionWormPoisonMagnitude 10, wind). The poison is therefore the Gas Canister's 5 m, 8 s cloud at the detonation point: the hit worm is in it and so is any worm within 5 m ("contagion" of the wiki spec is this cloud).
 - **Sounds** [data]: LaunchSfx weapons/BowRelease; ArmSfxLoop weapons/BowImpact (oneshot, 3D linear 10..2000 units, 0 dB) on Arm, i.e. on every impact; DetonationSfx empty, so no ExplosionRegular: the only blast sound is ExplosionBoxed (2D, -2 dB, max 4 playbacks) from WXP_ExploArrow_RingDk. weapons/BowImpactWorm exists in the FEV and nothing references it (not in the exe strings, WEAPTWK, PARTTWK or Lua). ArielFx WXP_ExplosionG_Tail (65535 ms emitter, 10 ms spawn, 500 +- 200 ms sprites): the flight trail.

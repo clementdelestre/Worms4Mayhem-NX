@@ -136,6 +136,12 @@ Speeds are given in units per 20 ms frame. This unit is assumed.
   - Then the canopy and the worm play `ParachuteLR` at time 1 − lr.
   - lr = (3·lr + target)/4 per frame. The target is ±0.75 depending on the direction of sideways drift beyond 0.01 unit/ms; this direction is not checked.
   - `ParachuteWobble`, layered on top in W4M, is not stacked here: one clip per model.
+- **Weapon in hand (WAE_*, docs/w4m/physics.md §11 "Weapon clips").** Render only (`main.cpp`: `heldModel`, `drawClip`, `windupClip`, `fireClip`, `WormAnim::drawT / wind`).
+  - **Draw** [disasm]: the WEAPTWK Draw clip (DrawThrown for the five grenades) from t = 0 whenever the current worm in Aim gets its weapon back in hand: turn start, weapon change, standing again after walking or a jump (ActivateAccessory). The Aim pose fades in by drawT / length. Ours: the fading layer is our merged `Aim*+Hold*` clip, so Hold fades in with Aim instead of appearing at the draw's end; layers mix as a lerp (`Models::Layers::act`).
+  - **Aim time** [disasm]: WeaponAngle / (π/2) + 1 s (was our pitch range stretched over the clip).
+  - **Windup** while FIRE charges [disasm]: WindupThrown (grenades) / WindupBow (Poison Arrow) at the charge time (power × 1.5 s, Tweaks.MaxPowerUpTime), held at its end, Aim on the arms.
+  - **Fire** [disasm + data]: the WEAPTWK Fire clip alone (Hold weighs 0) with the Aim layer: grenades FireThrown past a 0.6 s windup, else LobThrown, the windup frame fading out at 0.2 per 20 ms; Poison Arrow replays WindupBow (no worm ever plays an EndFire clip); Flood FireRainDance with the Flood.Weapon umbrella (its DrawFlood played once from the draw); Surrender Tantrum (flag dropped); strikes none (the radio is put away). Fatkins has no accessory: nothing in hand, no draw, no taunt, no EquipSfx.
+  - **Not done**: the weapon meshes' own slot clips (DrawShotgun on the shotgun, HoldSheep on the sheep, the bow string, ...): our held meshes are static except the umbrella; Hold does not loop on its own clock (it follows the Aim time inside the merged clip); Starburst's Aim weight easing to 0 during FireStarburst.
 - **Objects on steep slopes (sim).** On the ground, beyond 60° (WXWorm.SlideAngle_Default), an object follows the same law as the sliding worm (`wormBody`): gravity along the slope, then SlideFriction 0.95 per 20 ms frame (0.9582 per tick). It is deterministic. Test: `sim_check` (`checkTunnelling`, 70° and 30° slopes).
 
 ## Limits

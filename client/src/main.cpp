@@ -133,9 +133,10 @@ static void onEvent(const Game &g, const GameEvent &e) {
     case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); Audio::voice(team, Voice::Idle, e.pos); break;
     case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, e.pos); break;
     case GameEvent::CrateLand:
-        Audio::play(e.weapon < 0 ? Sfx::CrateImpactHealth : utility(WEAPONS[e.weapon].kind) ? Sfx::CrateImpactUtil : Sfx::CrateImpactWeapon, e.pos);
+        Audio::play(e.weapon == -1 ? Sfx::CrateImpactHealth : e.weapon >= 0 && utility(WEAPONS[e.weapon].kind) ? Sfx::CrateImpactUtil : Sfx::CrateImpactWeapon, e.pos);  // mystery (-2): Weapon (0x5ca143)
         break;
     case GameEvent::Collect: Audio::play(Sfx::Pickup, e.pos); break;
+    case GameEvent::Mystery: Audio::play(Sfx::Buffalo, e.pos); break;
     case GameEvent::MineArm: break;  // MineArmLoop: looped below while a mine ticks
     case GameEvent::Zap: Audio::play(Sfx::BatImpact, e.pos); break;  // WXP_AbdTelep_Central's EmitterSoundFX
     case GameEvent::Poof: case GameEvent::AbdDamage: case GameEvent::Abducted: break;  // Fx::event; no sound in their PARTTWK emitters
@@ -170,30 +171,63 @@ static const char *heldModel(const WeaponDef &d, const char **clip) {
     case Kind::Sentry: *clip = "HoldSentrygun"; return "hold_sentry";
     case Kind::Surrender: *clip = "HoldSurrender"; return "hold_flag";
     case Kind::SkipGo: *clip = "HoldSkipGo"; return "";
-    case Kind::Airstrike: case Kind::Donkey: case Kind::Abduction: case Kind::Flood: *clip = "HoldAirstrike"; return "hold_radio";
+    case Kind::Airstrike: case Kind::Donkey: case Kind::Abduction:  // Fatkins (id 23) has no WAE in table 0x95f6d0: nothing in hand
+        if (n == "Fatkins Strike") return nullptr;
+        *clip = "HoldAirstrike";
+        return "hold_radio";
+    case Kind::Flood: *clip = "HoldRainDance"; return "hold_flood";  // WEAPTWK kWeaponFlood: Flood.Weapon, Aim = Hold = HoldRainDance
     case Kind::Rope: *clip = "HoldNinjarope"; return "hold_rope";
     default: return nullptr;
     }
 }
 
-// W4M's use clip for a weapon; *keep: the held item stays in hand (launchers, bat, radio) instead of leaving it (throws, animals, placed items).
-static const char *fireClip(const WeaponDef &d, bool *keep) {
+// WEAPTWK WXAnimDraw (WAE state 1, Accessory.Init); WAE_Thrown 0x595ed0 hardcodes DrawThrown for the five grenades
+static const char *drawClip(const WeaponDef &d) {
+    const std::string &n = d.name;
+    switch (d.kind) {
+    case Kind::Shell: return n == "Poison Arrow" ? "DrawBow" : n == "Dynamite" ? "DrawDynamite" : d.fuse > 0 ? "DrawThrown" : "DrawBazooka";
+    case Kind::Shotgun: return n == "Sniper Rifle" ? "DrawSniper" : "DrawShotgun";
+    case Kind::Homing: return "DrawHomingMissile";
+    case Kind::Sheep: case Kind::SuperSheep: return n == "Starburst" ? "DrawStarburst" : "DrawSheep";
+    case Kind::OldWoman: return "DrawOldWoman";
+    case Kind::Scouser: return "DrawScouser";
+    case Kind::Melee: return n == "Baseball Bat" ? "DrawBat" : n == "Prod" ? "DrawProd" : n == "Tail Nail" ? "DrawNMN" : "DrawFirepunch";
+    case Kind::Mine: return "DrawLandmine";
+    case Kind::Sentry: return "DrawSentrygun";
+    case Kind::Surrender: return "DrawSurrender";
+    case Kind::SkipGo: return "DrawSkipGo";
+    case Kind::Airstrike: case Kind::Donkey: case Kind::Abduction: return "DrawAirstrike";
+    case Kind::Flood: return "DrawRainDance";
+    case Kind::Rope: return "DrawNinjarope";
+    default: return nullptr;
+    }
+}
+
+// Clip of the powered windup (PoweringUpStart / PlayWindupAnim on FIRE press): WAE_Thrown WindupThrown, WAE_Mechanical the
+// WEAPTWK Fire clip (WindupBow); the other WAE classes ignore both messages
+static const char *windupClip(const WeaponDef &d) {
+    return d.kind != Kind::Shell || d.name == "Dynamite" ? nullptr : d.name == "Poison Arrow" ? "WindupBow" : d.fuse > 0 ? "WindupThrown" : nullptr;
+}
+
+// W4M's use clip for a weapon (Weapon.PlayFireAnim); *keep: the held item stays in hand instead of leaving it (throws, animals,
+// placed items, the dropped flag 0x5908d7). wind: s of windup; WAE_Thrown throws FireThrown past 0.6 s, else LobThrown (0x59663e).
+static const char *fireClip(const WeaponDef &d, bool *keep, float wind = 0) {
     const std::string &n = d.name;
     *keep = true;
     switch (d.kind) {
     case Kind::Shell:
-        if (n == "Poison Arrow") return "FireBow";
+        if (n == "Poison Arrow") return "WindupBow";  // WAE_Mechanical loads WEAPTWK Fire in its fire slot too (0x58d932); EndFire FireBow is never read
         *keep = d.fuse <= 0;
-        return n == "Dynamite" ? "FireDynamite" : d.fuse > 0 ? "FireThrown" : "FireBazooka";
+        return n == "Dynamite" ? "FireDynamite" : d.fuse > 0 ? (wind > 0.6f ? "FireThrown" : "LobThrown") : "FireBazooka";
     case Kind::Shotgun: return n == "Sniper Rifle" ? "FireSniper" : "FireShotgun";
     case Kind::Homing: return "FireHomingMissile";
     case Kind::Melee: return n == "Baseball Bat" ? "Fire2Bat" : n == "Prod" ? "FireProd" : n == "Tail Nail" ? "FireNMN" : "Fire2Firepunch";
-    case Kind::Airstrike: case Kind::Donkey: case Kind::Abduction: case Kind::Flood: return "HoldAirstrike";  // talks into the radio
-    case Kind::Surrender: return "TauntSurrender";
+    case Kind::Flood: return "FireRainDance";
     default: break;
     }
     *keep = false;
     switch (d.kind) {
+    case Kind::Surrender: return "Tantrum";
     case Kind::Sheep: case Kind::SuperSheep: return n == "Starburst" ? nullptr : "FireSheep";
     case Kind::OldWoman: return "FireOldWoman";
     case Kind::Scouser: return "FireScouser";
@@ -209,7 +243,7 @@ static const char *tauntClip(const WeaponDef &d) {
         {"Bazooka", "TauntBazooka"}, {"Grenade", "TauntThrown"}, {"Cluster Grenade", "TauntThrown"}, {"Banana Bomb", "TauntThrown"},
         {"Holy Hand Grenade", "TauntThrown"}, {"Gas Canister", "TauntThrown"}, {"Landmine", "TauntThrown"}, {"Dynamite", "TauntDynamite"},
         {"Airstrike", "TauntAirstrike"}, {"Super Airstrike", "TauntAirstrike"}, {"Concrete Donkey", "TauntAirstrike"},
-        {"Alien Abduction", "TauntAirstrike"}, {"Fatkins Strike", "TauntAirstrike"}, {"Homing Missile", "TauntHomingMissile"},
+        {"Alien Abduction", "TauntAirstrike"}, {"Homing Missile", "TauntHomingMissile"},
         {"Shotgun", "TauntShotgun"}, {"Sniper Rifle", "TauntSniper"}, {"Baseball Bat", "TauntBat"}, {"Fire Punch", "TauntFirepunch"},
         {"Prod", "TauntProd"}, {"Tail Nail", "TauntNMN"}, {"Poison Arrow", "TauntBow"}, {"Old Woman", "TauntOldWoman"},
         {"Inflatable Scouser", "TauntScouser"}, {"Sheep", "TauntSheep"}, {"Super Sheep", "TauntSheep"}, {"Starburst", "TauntStarburst"},
@@ -223,7 +257,9 @@ static const char *tauntClip(const WeaponDef &d) {
 struct WormAnim {
     Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, flip = false, nailed = false;
     bool vaulting = false; float vaultT = 9, chute = -1, lr = 0, drowned = -1, spin = -1;  // spin: kWE 22 tumble angle, -1 off  // drowned: s since it sank  // vaultT: s since kWE 9; chute: s open, lr: WXWorm.ParachuteLR
-    struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr; } act;  // aim: Aim* clip layered on the arms
+    struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr, *from = nullptr; float fromT = 0; } act;  // aim: Aim* clip layered on the arms; from: windup frame faded out
+    // WAE state 1 / 4 (current worm): drawT s since Accessory.Init, drawn: weapon in hand, wind: windup clock (s since FIRE press)
+    float drawT = 0, wind = 0; int drawW = -1; bool drawn = false, charging = false;
 };
 static std::vector<WormAnim> wormAnims;
 
@@ -234,7 +270,13 @@ static void animEvent(const Game &g, const GameEvent &e) {
     const char *c = nullptr, *h = nullptr;
     bool keep;
     if (e.kind == GameEvent::Fire && WEAPONS[e.weapon].kind == Kind::Teleport) a = {"TelepadAppear", 1.5f};  // its first half is invisible
-    else if (e.kind == GameEvent::Fire) h = heldModel(WEAPONS[e.weapon], &c), a = {fireClip(WEAPONS[e.weapon], &keep), 0, keep ? h : nullptr, c && c[0] == 'A' ? c : nullptr};
+    else if (e.kind == GameEvent::Fire) {
+        const WeaponDef &d = WEAPONS[e.weapon];
+        const char *wc = windupClip(d);
+        float wind = wormAnims[e.worm].wind;
+        h = heldModel(d, &c), a = {fireClip(d, &keep, wind), 0, keep ? h : nullptr, c && c[0] == 'A' ? c : nullptr};
+        if (wc && !strcmp(wc, "WindupThrown")) a.from = wc, a.fromT = fminf(wind, Models::clipLength("worm", wc));  // 0x595a3b: Windup at 1 - v
+    }
     else if (e.kind == GameEvent::Hurt && !a.clip) a = {g.worms[e.worm].nailed ? "NailedHitFront" : "Hit_Front"};  // W4M 0x5a9100: Nailed* variant
     else if (e.kind == GameEvent::Splash) a = {"FallDrown"};
     if (a.clip && !strcmp(a.clip, "FireNMN")) a.t = 0.7f;  // the sim hits at once: start at the hammer's downswing
@@ -304,6 +346,18 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         bool self = (int)i == g.current && (g.phase == Phase::Aim || g.retreating()) && Vector3Length(w.vel) < 0.3f;  // not sliding
         if (a.moving && beat && self) Audio::play(Audio::Sfx::Step, w.pos);
     }
+    // ActivateAccessory -> Accessory.Init (Draw from 0): turn start, weapon change, back on its feet after walking or a jump
+    // (UpdateWalking 0x5b1bed; kWE 1 / 2 hid it); windup clock = charge x Tweaks.MaxPowerUpTime 1.5 s
+    for (size_t i = 0; i < g.worms.size(); i++) {
+        WormAnim &a = wormAnims[i];
+        const char *pc;
+        bool drawn = (int)i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && g.worms[i].alive && !a.moving && a.air == 0 &&
+                     heldModel(WEAPONS[g.weapon], &pc);
+        if (drawn && (!a.drawn || a.drawW != g.weapon)) a.drawT = 0, a.drawW = g.weapon, a.wind = 0;
+        else a.drawT += dt;
+        a.drawn = drawn, a.charging = drawn && g.power > 0;
+        if (a.charging) a.wind = g.power * 1.5f;
+    }
     static std::vector<uint8_t> busy;
     busy.assign(g.worms.size(), 0);
     for (size_t i = 0; i < g.worms.size(); i++) busy[i] = wormAnims[i].moving || wormAnims[i].air > 0 || wormAnims[i].act.clip;
@@ -363,9 +417,19 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     for (int k = 0; k < 2; k++) dying.act[k] = lay.act[k], dying.actT[k] = lay.actT[k], dying.actW[k] = lay.actW[k];
     const Models::Layers *ly = fp || !w.alive ? nullptr : w.hp <= 0 ? &dying : &lay;  // drowned: FallDrown alone
     const bool aimNow = i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting;
-    auto aimPose = [&] {  // the weapon in hand and its aim clip at the sim pitch (range [-1.2, 1.45])
+    const float aimAt = w.pitch / (PI / 2) + 1;  // WAE Aim clip time, s: WeaponAngle / (pi / 2) + 1 (0x58f63d)
+    Models::Layers wl;  // WAE layers over the body clip, on top of ly's
+    auto aimPose = [&] {  // the weapon in hand: Draw, Windup or the Aim (+ Hold) pose
         if (!(held = heldModel(WEAPONS[g.weapon], &clip))) return false;
-        if (clip[0] == 'A') t = (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", clip), loop = false;
+        const char *pose = clip, *wc = windupClip(WEAPONS[g.weapon]), *dc = drawClip(WEAPONS[g.weapon]);
+        if (clip[0] == 'A') t = aimAt, loop = false;
+        float dl = Models::clipLength("worm", dc);
+        if (fp || !ly) return true;
+        if (a.charging && wc) clip = wc, t = a.wind, loop = false, aim = pose[0] == 'A' ? pose : nullptr;  // state 4: Windup and Aim at 1, Hold 0
+        else if (dl > 0 && a.drawT < dl) {  // state 1: Draw at 1, Aim at drawT / length (0x58f731)
+            if (pose[0] == 'A') wl = *ly, wl.act[1] = pose, wl.actT[1] = t, wl.actW[1] = a.drawT / dl, ly = &wl;
+            clip = dc, t = a.drawT, loop = false;
+        }
         return true;
     };
     float drown = Models::clipLength("worm", "FallDrown");  // dead and still drawn: drowned, afloat until Settle pops it
@@ -374,10 +438,17 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     // W4M kWPS_DrownFloat 0x5a06b0: FallDrown scrubbed by clamp(vy x 10, -1, 1), vy in units/ms (0.02 per m/s); afloat = mid-clip
     if (!w.alive) clip = "FallDrown", t = drown * (1 + Clamp(w.vel.y * 0.2f, -1, 1)) / 2, loop = false;  // the sim's DrownFloat velocity
     else if (st == 1) clip = "BeamUpLoop";  // rising in the beam, weapon hidden (HeldAccessory.Hide)
-    else if (rk) {  // riding it (observed): FireStarburst while the fuse burns 3.5 s, then FlyStarburst, the rocket held overhead
+    else if (rk) {  // riding it: FireStarburst while the fuse burns 3.5 s (WAE state 5), then FlyStarburst (Starburst.Launched, state 7)
         float el = WEAPONS[rk->weapon].fuse - rk->fuse;
         clip = el < 3.5f ? "FireStarburst" : "FlyStarburst", t = el < 3.5f ? el : el - 3.5f;
-    } else if (a.act.clip && !fp) clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
+    } else if (a.act.clip && !fp) {
+        clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
+        if (a.act.from && ly) {  // WAE_Thrown state 5: Windup at 1 - v, v += clamp((1 - v) / 2, 0.2) per 20 ms (0x595a3b, 0x47a1a0)
+            float v = 0;
+            for (int n = (int)(t / 0.02f); n > 0 && v < 1; n--) v += fminf((1 - v) / 2, 0.2f);
+            wl = *ly, wl.act[1] = a.act.from, wl.actT[1] = a.act.fromT, wl.actW[1] = 1 - v, ly = &wl;
+        }
+    }
     else if (fp && aimNow && aimPose()) {  // view-model: the aim pose whatever the body does (turning in place plays Walk)
     } else if (tool) {
         clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteLR", held = g.roped ? "hold_rope" : nullptr;
@@ -401,11 +472,12 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
     // W4M turns the model about its own root (0x5a26d3: angles +0x150/+0x158/+0x15c on the node), i.e. the raw mesh origin,
     // which worm.glb puts at (0, 0.299, 0.352) m (main_bone's rest translation)
-    float roll = !w.alive ? 0 : rk ? asinf(Clamp(rk->vel.y / fmaxf(Vector3Length(rk->vel), 1e-3f), -1, 1)) - PI / 2 : a.spin >= 0 && a.air > 0 ? a.spin : !strcmp(clip, "Blastflight2") ? blastPitch(w) : 0;
+    // rider (0x588fd0): pitch = the rocket's elevation, FlyStarburst lies the worm along it; FireStarburst stands it on its tail (ours)
+    float roll = !w.alive ? 0 : rk ? asinf(Clamp(rk->vel.y / fmaxf(Vector3Length(rk->vel), 1e-3f), -1, 1)) - (strcmp(clip, "FlyStarburst") ? PI / 2 : 0) : a.spin >= 0 && a.air > 0 ? a.spin : !strcmp(clip, "Blastflight2") ? blastPitch(w) : 0;
     const Vector3 ROOT = {0, 0.299f, 0.352f};
     if (roll) p = Vector3Add(p, Vector3Subtract(Vector3Transform(ROOT, MatrixRotateY(w.yaw)), Vector3Transform(ROOT, MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)))));
     Matrix root = MatrixMultiply(MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)), MatrixTranslate(p.x, p.y, p.z));
-    float aimT = aim ? (w.pitch + 1.2f) / 2.65f * Models::clipLength("worm", aim) : 0;
+    float aimT = aimAt;
     if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, roll, tint, clip, t, loop, aim, aimT, ly)) return false;
     Matrix m;
     if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly)) {
@@ -418,7 +490,9 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
             m = MatrixMultiply(MatrixMultiply(MatrixScale(VM_SCALE, VM_SCALE, VM_SCALE), m), in);  // toed in toward the centre
             m.m12 = at.x, m.m13 = at.y, m.m14 = at.z;
         }
-        Models::draw(held, !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m);
+        float open = Models::clipLength("hold_flood", "DrawFlood") - 1e-3f;  // WAE_Mechanical Init plays DrawFlood once on the umbrella
+        Models::draw(held, !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, WHITE,
+                     strcmp(held, "hold_flood") ? nullptr : "DrawFlood", fminf(a.drawT, open));
     }
     bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
     if (tool && !fp && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE, g.jetting ? nullptr : opening ? "FireParachute" : clip, opening ? a.chute : t);
@@ -793,8 +867,9 @@ int main(int argc, char **argv) {
             float aimT = argc > 5 ? atof(argv[5]) : 0;
             ly.actT[0] = L * k / 7;
             Models::draw(mdl, p, getenv("W4NX_YAW") ? (float)atof(getenv("W4NX_YAW")) : PI / 2, 0, WHITE, argv[2], L * k / 7, false, aim, aimT, layered ? &ly : nullptr);
-            if (argc > 3 && Models::joint("worm", "WeaponLocator", argv[2], L * k / 7, false, &m, aim, aimT))
-                Models::draw(argv[3], MatrixMultiply(!strcmp(argv[3], "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))));
+            const char *loc = getenv("W4NX_LOC") ? getenv("W4NX_LOC") : "WeaponLocator";  // W4NX_LOC: another attach joint (Pack_Locator)
+            if (argc > 3 && Models::joint("worm", loc, argv[2], L * k / 7, false, &m, aim, aimT))
+                Models::draw(argv[3], MatrixMultiply(!strcmp(argv[3], "hold_starburst") && !getenv("W4NX_LOC") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))), WHITE, getenv("W4NX_LOC") ? argv[2] : nullptr, L * k / 7);
         }
         EndMode3D();
         for (int k = 0; k < 8; k++) Ui::text(TextFormat("%.2fs", L * k / 7), 200 + (k % 4) * 290, k < 4 ? 20 : 380, 24, BLACK, 1);
@@ -1100,7 +1175,7 @@ int main(int argc, char **argv) {
         static const std::pair<const char *, Ui::Frontend::Screen> MENUS[] = {{"local", Ui::Frontend::Local}, {"network", Ui::Frontend::Network},
             {"myworms", Ui::Frontend::MyWorms}, {"helpopts", Ui::Frontend::HelpOpts}, {"confirm", Ui::Frontend::Confirm}};
         for (auto &m : MENUS) if (!strcmp(uiShot, m.first)) front.screen = m.second;
-        if (!strcmp(uiShot, "wormpot")) front.screen = Ui::Frontend::Wormpot, opt.wormpot = WP_DOUBLE_DAMAGE | WP_QUICK_WALK | WP_CRATE_SHOWER;
+        if (!strcmp(uiShot, "wormpot")) front.screen = Ui::Frontend::Wormpot, opt.wormpot = WP_DOUBLE_DAMAGE | WP_CRATE_SHOWER << 8 | WP_QUICK_WALK << 16;
         if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
         if (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback")) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
         if (!strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
@@ -1624,7 +1699,7 @@ int main(int argc, char **argv) {
             for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawWorm(game, w, clock);
             for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain)) DrawSphere(s.pos, 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
-                if (Models::visible(o.pos, 2)) Models::draw(o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Crate ? (o.weapon < 0 ? "crate_health" : "crate_weapon") : "sentry", o.pos, (&o - game.objects.data()) * 1.3f);
+                if (Models::visible(o.pos, 2)) Models::draw(o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Crate ? (o.mystery >= 0 && Models::has("crate_mystery") ? "crate_mystery" : o.weapon < 0 && o.mystery < 0 ? "crate_health" : "crate_weapon") : "sentry", o.pos, (&o - game.objects.data()) * 1.3f);
             Fx::drawWater(pipView, game.water, clock);
             Fx::draw(pipView);
             EndMode3D();
@@ -1670,7 +1745,8 @@ int main(int argc, char **argv) {
             if ((game.cfg.rules & RULE_KING) && int(&w - game.worms.data()) % game.perTeam == 0)
                 DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
         }
-        if (game.roped) DrawLine3D(game.anchor, cur.pos, BROWN);
+        if (game.roped)
+            for (int k = 0; k < game.rope.n; k++) DrawLine3D(game.rope.pt[k], k + 1 < game.rope.n ? game.rope.pt[k + 1] : cur.pos, BROWN);
         drawUtilities(game);
         drawBomber(pause.open ? 0 : dt);
         drawUfo(pause.open ? 0 : dt);
@@ -1692,7 +1768,7 @@ int main(int argc, char **argv) {
         dudFx(game.objects);
         for (const Object &o : game.objects) {
             const char *m = o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry"
-                          : o.type == Object::Target ? "target" : o.weapon < 0 ? "crate_health"
+                          : o.type == Object::Target ? "target" : o.mystery >= 0 ? (Models::has("crate_mystery") ? "crate_mystery" : "crate_weapon") : o.weapon < 0 ? "crate_health"
                           : utility(WEAPONS[o.weapon].kind) && Models::has("crate_utility") ? "crate_utility" : "crate_weapon";
             if (o.type == Object::Crate) crateChute(o, &o - game.objects.data(), pause.open ? 0 : dt);
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute
@@ -1731,6 +1807,14 @@ int main(int argc, char **argv) {
         drawBubbles(game, fxDt);
         Fx::update(fxDt);
         Fx::draw(view);
+        Fx::drawFlare(view, fxDt, [&](Vector3 o, Vector3 d) {
+            Vector3 at;
+            if (game.terrain.raycast({o, d}, 1000, &at)) return 1;
+            auto near = [&](Vector3 c) { Vector3 q = Vector3Subtract(c, o); float t = Vector3DotProduct(q, d); return t > 1 && Vector3LengthSqr(q) - t * t < Game::R * Game::R; };  // W4M: line from 20 units out
+            for (const Worm &w : game.worms) if (w.alive && near(w.pos)) return 2;
+            for (const Object &b : game.objects) if (!b.dead && near(b.pos)) return 2;
+            return 0;
+        });
         lap(T_FX);
         EndMode3D();
         if (blimp) Xray::outline(TEAM_COLORS);

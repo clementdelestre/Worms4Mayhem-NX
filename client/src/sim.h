@@ -65,6 +65,9 @@ struct WeaponDef {
     float base = -1;  // "min_speed": W4M BasePower in m/s, speed = BasePower + MaxPower; -1: 0.15 x speed
     bool avoid = false;  // "avoid_land": W4M Factory HomingAvoidLand (+0x69): the homing missile steers off land, 30 s life, 12.5 m/s, detonates on expiry, ChaseCamera
     int retreat = -1, postLaunch = 0;  // "retreat", "post_launch": W4M RetreatTimeOverride (-1: the scheme's LandTime), PostLaunchDelay, ms
+    // W4M payload water (Game::wet): "size" Radius (the surface is met that high), "sink" SinkDepth, m; "skim_speed" MinSpeedForSkim
+    // m/s (-1: SkimsOnWater 0), "skim_angle" MaxAngleForSkim rad, "skim_xz" / "skim_y" SkimDamping; cluster_*: the bomblets' container
+    float size = 0, sink = 0, csize = 0, csink = 0, skim[4] = {-1, 0, 0, 0};
 };
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
 struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns)
@@ -123,10 +126,21 @@ Vector3 restOn(const Terrain &t, Vector3 p, float r);
 float flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float e = 0.3f, int *contact = nullptr);
 bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g);  // W4M jetpack collider, one tick: true when a foot landed the pack
 // One worm tick (ground slide, fall, flight), shared with the AI; returns the landing speed, 0 if none.
-float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float gravity, uint32_t wormpot, float e = 0.3f);
+// wind: the Ballistic acceleration's xz part (W4M SetAcceleration 0x5a6d20, Wormpot WindAffectsWorms), m/s²
+float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float gravity, uint64_t pot, float e = 0.3f, Vector2 wind = {0, 0});
 // W4M UpdateWalking 0x5b19d0: a step onto ground past SlideAngle starts Sliding with the walk velocity
-void slideIfSteep(const Terrain &t, Vector3 pos, Vector3 &vel, Motion &m, Vector3 walk, uint32_t wormpot);
+void slideIfSteep(const Terrain &t, Vector3 pos, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot);
 void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity);  // sheep, old woman, scouser on foot
+
+// W4M NinjaRopeUtilityLogicEntity: the body (worm feet, or a hooked object) swings in its yaw's vertical plane about the last bend
+struct Rope {
+    static constexpr int MAX = 16;
+    Vector3 pt[MAX]{}, side[MAX]{};  // m_NinjaRopeList (+0x20): bends from the hook on, each with its unwrap side (+0x10)
+    float len[MAX]{};                // segment lengths, m
+    int n = 0;
+    float angle = 0, spin = 0, yaw = 0;  // +0x120: 0 hangs, > 0 behind the yaw; +0x10c: rad per 20 ms; the swing plane (+0x114)
+    bool swung = false;                  // +0x79: hooked once this turn
+};
 
 struct Projectile {
     Vector3 pos, vel;
@@ -138,6 +152,7 @@ struct Projectile {
     int stage = 0;   // walks-first super sheep: 1 once airborne; scouser: 1 once inflated
     int prey = -1;   // scouser: the worm it carries; old woman: the last worm she robbed
     uint64_t touching = ~0ull;  // W4M 0x582200 / 0x581dc0: last tick's contacts (worm bits, 63 = target) are not hits; all of them on the first tick
+    bool sunk = false;  // W4M +0x6f: under the disarm plane, disarmed, sinking to Water.ExpiryDepth
 };
 
 // Battlefield object. Crate: weapon = contents (-1 = health). Mine: fuse < 0 idle, else counting down.
@@ -153,16 +168,24 @@ struct Object {
     int tag = -1;   // mission object index; tagged crates and targets are pinned in place, crates can't be blown up
     bool dud = false;  // mine whose fuse fizzled (W4M Mine.DudProbability): inert for good
     int courtesy = 0;  // mine: ticks before a worm can arm it (W4M ArmingCourtesyTime)
-    bool hooked = false;  // W4M kRopeModeAttachedToObject: on the active worm's rope, at most Game::ropeLen away
+    bool hooked = false;  // W4M kRopeModeAttachedToObject: swings on Game::rope about the worm's feet
     bool spawning = false;  // crate: W4M "Crate Spawn" active object (0x5c9bd0) until a bounce leaves it under 1 m/s (0x5c8900)
     float delay = -1;  // mine: fuse s drawn at creation (W4M CreateMine 0x4f97cf); -1: drawn when armed
     bool fizzle = false;  // mine: its dud roll, drawn with delay
+    int mystery = -1;  // crate: W4M kMystery item - 0x32 (MYSTERY_ITEMS), drawn at spawn; weapon stays -1
 };
+
+// W4M mystery crate items (kMysteryMineLayer 0x32 .. kMysteryGoodPoison 0x40): Text.k<name> and the <name>Mystery.Crate weight of the
+// schemes that drop them (All Action, Mega Power, Mystery, Kitchen Sink, custom WXD.DefaultSchemeData; LOCAL.XOM)
+struct MysteryItem { const char *name, *text; int weight; };
+extern const MysteryItem MYSTERY_ITEMS[15];
+enum : int { MY_MINE_LAYER, MY_MINE_TRIPLET, MY_BARREL_TRIPLET, MY_FLOOD, MY_DISARM, MY_TELEPORT, MY_QUICK_WALK, MY_LOW_GRAVITY, MY_DOUBLE_TIME,
+             MY_HEALTH, MY_DAMAGE, MY_SUPER_HEALTH, MY_SPECIAL_WEAPON, MY_BAD_POISON, MY_GOOD_POISON };
 
 // Things that happened this tick, for audio/fx; not part of the checksum. worm/weapon = -1 when not applicable.
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
-                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm } kind;  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)
+                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery } kind;  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)
     Vector3 pos;
     int worm, weapon;
 };
@@ -190,24 +213,30 @@ struct Scheme {
     uint8_t fallDamage = 1, wind = 1;                      // wind 0..3: W4M WindMaxStrength 0, 3, 5 (editor Medium), 10
     uint8_t weapons = 0;                                   // SET_*
     uint8_t waterSpeed = 2;                                // W4M SchemeData WaterSpeed 0..3: Water.RiseSpeed 0 / 4 / 8 / 16 units per turn end
+    uint8_t mysteryShare = 0;                              // W4M SchemeData MysteryChance (+0x130), rolled after the other three shares
     enum : uint8_t { FUSE_RANDOM = 6, SD_ONE_HP = 0, SD_NOTHING, SD_DRAW, SET_DEFAULT = 0, SET_BNG, SET_CRATES, SET_UNLIMITED };
 };
-static_assert(sizeof(Scheme) == 18, "Scheme must stay plain bytes");
-// W4M Wormpot modes (FETXT.WPotName.*), one bit each; bits 20 + 4 r: reel r's pick (0 empty, else WORMPOT_REEL[r] index + 1).
-enum Wormpot : uint32_t {
-    WP_DOUBLE_DAMAGE = 1, WP_SUPER_EXPLOSIVES = 2, WP_SUPER_ANIMALS = 4, WP_WIND_ALL = 8, WP_WORMS_DROWN = 16,
-    WP_QUICK_WALK = 32, WP_SLIPPY = 64, WP_STICKY = 128, WP_LOW_GRAVITY = 256, WP_NO_JUMPING = 512, WP_MAX_FALL = 1024,
-    WP_CRATE_SHOWER = 2048, WP_CRATE_DROPS = 4096, WP_MAX_HEALTH = 8192, WP_GOLIATH = 16384, WP_ONE_SHOT = 32768,
-    WP_VAMPIRE = 65536, WP_VITAL_WORM = 131072, WP_MULTI_GIRDER = 262144,  // MULTI_GIRDER: W4M WormPot GirdersDontEndTurn
-    WP_NO_BOMBING = 524288,  // W4M WormPot.NoParachuteDrops (+0x4c): no secondary weapon under a movement tool (0x5662f6)
+static_assert(sizeof(Scheme) == 19, "Scheme must stay plain bytes");
+// W4M Wormpot modes: the ids of SetupModes' jump table (0x5d6bc0, names FETXT.WPotName.* at 0x9205e0); 1 = empty reel.
+// GameConfig::wormpot holds the three reels' ids, reel r in byte r (W4M FE.Wormpot.Reel1..3); 0 = empty too.
+enum WormpotMode : uint8_t {
+    WP_EMPTY = 1, WP_SUPER_EXPLOSIVES, WP_SUPER_CLUSTERS, WP_SUPER_ANIMALS, WP_SUPER_FIREARMS, WP_SUPER_MELEE, WP_WORMS_DROWN, WP_GOLIATH,
+    WP_MAX_FALL, WP_DOUBLE_DAMAGE, WP_CRATE_SHOWER, WP_SPECIALIST, WP_NO_COWARDS, WP_MAX_HEALTH, WP_WIND_ALL, WP_ENERGY, WP_CRATE_DROPS,
+    WP_STICKY, WP_SLIPPY, WP_LOW_GRAVITY, WP_NO_JUMPING, WP_TUG_O_WORMS, WP_WIND_GUNS, WP_QUICK_WALK, WP_NO_BLIMP, WP_MINE_RESPAWN,
+    WP_MULTI_GIRDER, WP_DIM_MAK, WP_NO_BOMBING, WP_VAMPIRE, WP_VITAL_WORM, WP_SECRET_WEAPON, WP_DONOR_CARD, WP_GIRDERS_ONLY, WP_WIND_WORMS,
+    WP_JUMPING_ONLY, WP_ONE_SHOT, WP_MODES
 };
-struct WormpotMode { const char *name, *help; };
-extern const WormpotMode WORMPOT_MODES[20];  // [bit index]
-constexpr int WORMPOT_COUNT = 20;
-extern const std::vector<int> WORMPOT_REEL[3];  // W4M reel lists 0x8ac960 / 0x8ac9c8 / 0x8aca28 (shared modes), our bits
-int wormpotReel(uint32_t wp, int r);             // reel r's index in WORMPOT_REEL[r], -1 empty
-void wormpotPick(uint32_t &wp, int r, int m);    // sets reel r; the mode bits become the union of the three picks
-uint32_t wormpotSlots(uint32_t wp);              // a saved value without picks: each mode goes on the first reel free for it
+struct WormpotInfo { const char *key, *name, *help; };  // key: FETXT.WPotName.<key> / WPotHelp.<key>
+extern const WormpotInfo WORMPOT_MODES[WP_MODES];   // [mode id]
+extern const std::vector<int> WORMPOT_REEL[3];      // W4M reel lists 0x8ac960 / 0x8ac9c8 / 0x8aca28 (empty left out), mode ids
+inline int wormpotReel(uint32_t wp, int r) { return int(wp >> 8 * r & 0xff); }  // reel r's mode id, < WP_SUPER_EXPLOSIVES: empty
+inline uint32_t wormpotSet(uint32_t wp, int r, int mode) { return (wp & ~(0xffu << 8 * r)) | uint32_t(mode & 0xff) << 8 * r; }
+inline uint64_t wormpotModes(uint32_t wp) {  // the picked modes, bit = mode id
+    uint64_t m = 0;
+    for (int r = 0; r < 3; r++) if (int k = wormpotReel(wp, r); k > WP_EMPTY && k < WP_MODES) m |= 1ull << k;
+    return m;
+}
+inline bool wpOn(uint64_t modes, int mode) { return modes >> mode & 1; }
 struct SchemePreset { const char *name; Scheme s; const char *delays; };  // delays: "Weapon N|..." (W4M SchemeData Delay), "*" = Weapon Factory
 extern const std::vector<SchemePreset> SCHEMES;  // [0] = Standard; values from W4M Data/Tweak/LOCAL.XOM
 struct GameConfig {
@@ -218,7 +247,7 @@ struct GameConfig {
     struct Team { std::string name; uint8_t cpu = 0, voice = 0, hat = 0; };  // cpu: 0 = human, 1..5 = AI level (W4M CPU1..CPU5)
     std::vector<Team> teamSetup;  // per team; may be shorter than teams (defaults apply)
     Scheme scheme;
-    uint32_t wormpot = 0;            // Wormpot flags
+    uint32_t wormpot = 0;            // Wormpot reels: mode id per byte (wormpotReel)
     std::vector<WeaponDef> custom;   // host's Weapon Factory weapons, appended to the loaded table at start()
     const struct MissionSpec *mission = nullptr;  // single-player mission (mission.h), owned by the caller
 };
@@ -281,13 +310,17 @@ struct Game {
     static constexpr Blast MINE_BLAST = {2.625f, 3.73f, 40, 12.5f, 5, 2.5f}, BARREL_BLAST = {2.25f, 3.75f, 55, 20, 3.75f, 0.45f},
                            CRATE_BLAST = {3, 3.5f, 60, 9, 2.5f, 0.5f};
     static constexpr int ROPE_SHOTS = 5;     // W4M Ninja.NumShots: rope launches per turn
-    // W4M 0x5713c0: Shorten / Lengthen on/off, LengthenShortenRate 0.2 x 20 units per tick (10 m/s); MaxLength clamps, MinLength 10 units refuses the step
-    static float reel(float len, int8_t aim, float max) {
-        float step = 10 * DT;
-        return aim < 0 ? fminf(len + step, max) : aim > 0 && len - step >= 0.5f ? len - step : len;
-    }
+    // Ninja rope (W4M 0x574480 per 20 ms; shared with the AI's planner). hang: attach at `hook` (0x573d00); tick: reel by aim's
+    // sign, swing by `swing` (-1, 0, 1), bounce or wrap, unwrap; release: the velocity on letting go (0x573530)
+    static int ropeSwing(const Input &in, float yaw);  // 0x571820: the stick along (1) or against (-1) the facing
+    void ropeHang(Rope &r, Vector3 hook, Vector3 feet, Vector3 vel, float yaw) const;
+    void ropeTick(Rope &r, Vector3 &feet, Vector3 &vel, int swing, int8_t aim, int self) const;
+    Vector3 ropeRelease(Rope r, Vector3 feet, int swing) const;
+    bool ropeBlocked(Vector3 feet, int self) const;
+    void ropeOn(Vector3 hook);  // the active worm hangs from `hook`
     static constexpr float SHEEP_WALK = 5, SHEEP_STEP = 4, SHEEP_TAKEOFF = 0.6f;  // walks-first super sheep: walk fuse s, m/s, take-off pitch
-    static constexpr float SCOUSER_FLOAT = 5;  // s a swallowed worm is carried before the pop
+    // W4M WalkingPayload FloatAway (0x591ac0): expiry 6000 ms from the inflation, rising 0.08 units/ms (0x85d65c)
+    static constexpr float SCOUSER_FLOAT = 6, SCOUSER_RISE = 4;
     static constexpr int STRIKE_BLITZ = 2000;  // W4M Bomber.BlitzDuration ms: N bombs, one every BlitzDuration / N (0x54dbf5, integer ms)
     static int strikeTicks(const WeaponDef &wd) { return (STRIKE_BLITZ / std::max(1, wd.clusters) * 60 + 500) / 1000; }
     static constexpr int STRIKE_LEAD = 240;    // W4M Bomber: the first DropBomb waits for the 4 s bombrun_start clip (0x54db75)
@@ -332,6 +365,7 @@ struct Game {
     Vault vault;        // the active worm's ledge vault
     Vector3 walkVel{};  // the active worm's W4M Velocity while it walks: the last step's InputImpulse, 0 when idle
     Vector3 steerIn{};  // this tick's stick for the active worm's slide (transient)
+    struct { int8_t swing = 0, aim = 0; } ropeIn;  // this tick's rope stick: ropeSwing(), the reel axis (transient)
     uint8_t jumpKind = 0;  // W4M DetectJump kind: 0 tapped, 1 pressed twice, 2 held
     bool selfHurt = false;  // the active worm took damage: its turn ends (W4M)
     float power = 0, wind = 0, windZ = 0;  // W4M Wind.Speed / Wind.MaxSpeed along x and z: (cos, sin) Wind.Direction (0x57eb25)
@@ -344,11 +378,18 @@ struct Game {
     // OverCeilingThrustMod, XZWindResThrust / NoThrust per 20 ms; SuperThrust* under -0.15 units/ms (Mod 0.2 per units/ms = 0.004 per m/s)
     static constexpr float JET_OVER = 0.05f, JET_RES = 0.999f, JET_RES_IDLE = 0.95f, JET_FALL = 7.5f, BOOST_MOD = 0.004f, BOOST_ACCEL = 0.3f, BOOST_DECAY = 0.97f, BOOST_OFF = 0.01f;
     bool chute = false;                   // parachute open until the turn ends
-    Vector3 anchor{};
-    float ropeLen = 0, fuel = 0, ropeMax = 0, thrust = 0;  // max/thrust: of the tool in use, the hand may hold a weapon
+    // W4M ParachuteLogicEntity: 70 ms of (Wind, Gravity x Low.Gravity.Multiplier) read at the opening (0x578db0, +0x88);
+    // glide 0.06 units/ms along the facing (0x85bcc0), at most 0.05 units/ms of change a step (0x5792a0)
+    Vector3 chuteDrift{};
+    static constexpr float CHUTE_GLIDE = 3, CHUTE_STEP = 2.5f;
+    Rope rope;  // the active worm's rope, or the hooked object's
+    float fuel = 0, ropeMax = 0, thrust = 0;  // max/thrust: of the tool in use, the hand may hold a weapon
     std::vector<int> fuses;  // per team: seconds set for userFuse weapons (W4M default 3)
     std::vector<std::vector<int>> delays;  // [team][weapon]: own turns left before it unlocks (W4M InventoryN.WeaponDelays)
-    bool usable(int team, int wi) const { return ammo[team][wi] && !delays[team][wi]; }
+    bool usable(int team, int wi) const { return ammo[team][wi] && !delays[team][wi] && allowed(team, wi); }
+    bool allowed(int team, int wi) const;  // the team's active worm's WormData Allow* flags (0x50c800): Specialists, Tug O Worms
+    std::vector<uint8_t> special;  // per worm: Wormpot.lub SetSpecialistTeam class 1..6, 0 none
+    bool artillery() const { return wp(WP_TUG_O_WORMS); }  // WormData.ArtilleryMode (0x5d6a10): no walking, no jump (0x5ac390)
     bool jetLanded() const { return jetUsed && !jetting && WEAPONS[weapon].kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x562f72: entity kept
     bool pickable(int team, int wi) const { return wi == weapon || usable(team, wi); }  // a direct pick (pick()) is legal
     bool selectable(int team, int wi) const;  // usable, and with a movement tool out only the tool itself or a toolDrop()
@@ -395,7 +436,7 @@ struct Game {
     Vector3 drift{};  // aftertouch velocity, kept across flaps
     bool doubleDamage = false;  // W4M SetData("DoubleDamage", 1) from a crate: every blast and hit this turn x2
     bool changing = false;  // W4M WormSelectLogicEntity +0x44: this Change Worm already spent its ammo; a move or jump ends it
-    bool doubled() const { return doubleDamage || (cfg.wormpot & WP_DOUBLE_DAMAGE); }  // the Wormpot mode sets it every turn
+    bool doubled() const { return doubleDamage || wp(WP_DOUBLE_DAMAGE); }  // the Wormpot mode sets it every turn
     std::vector<uint8_t> spy;   // per team: TeamDataContainer.IsCrateSpyActive, crate contents shown in its turns
     // W4M Binoculars 0x54bcc0: FIRE on a target seen from the eye solves the bazooka shot (no wind), shown after 4 s
     struct Scout { Vector3 at; float power, pitch; int t = -1; bool ok; };  // t: ticks since FIRE, -1 none
@@ -424,6 +465,17 @@ struct Game {
     }
 
     GameConfig cfg;
+    uint64_t pot = 0;  // wormpotModes(cfg.wormpot)
+    bool wp(int mode) const { return wpOn(pot, mode); }
+    static constexpr int POISON_DEFAULT = 10;  // TWEAK Worm.Poison.Default
+    bool mysteryWalk = false, mysteryLow = false;  // mystery Quick Walk / Low Gravity: Worm.VelocityScale 2, Low.Gravity.Multiplier 0.5 until the turn ends
+    // W4M GunWobbleObject (GunWeaponLogicEntity +0x90, ctor 0x55f5b0, update 0x55f9e0): the gun's aim sways from its creation
+    struct Wobble { float w[8], phase[8], freq[8], f = 1; int start = 0, weapon = -1; Vector2 at{}; };  // at: (pitch, yaw) rad
+    Wobble wobble;
+    void wobbleStep();
+    std::vector<std::pair<Vector3, int>> respawns;  // Mine Respawn: GameLogic.RespawnMine at the mine's last position, ticks left (0x5812af, 500 ms)
+    Vector2 wormWind() const { return wp(WP_WIND_WORMS) ? Vector2{wind * WIND_ACCEL * 0.5f, windZ * WIND_ACCEL * 0.5f} : Vector2{0, 0}; }  // x WormPot.WindScale 0.5
+    float walkScale() const { return wp(WP_QUICK_WALK) || (mysteryWalk && !wp(WP_JUMPING_ONLY)) ? 2 : wp(WP_JUMPING_ONLY) ? 0 : 1; }  // Worm.VelocityScale, set by SetupModes 0x5d6bc0
 
     void start(const GameConfig &cfg);
     void step(const Input &in);
@@ -451,11 +503,21 @@ struct Game {
     Vector3 landCenter() const;
     Vector3 strikeDir() const { return {-cosf(cursorYaw), 0, sinf(cursorYaw)}; }  // the view's right: bombers cross the screen
     int retreatTicks(const WeaponDef &d) const { return msTicks(d.retreat >= 0 ? d.retreat : cfg.scheme.retreatTime * 1000); }
-    bool steered() const;     // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
+    int fallDamage(float speed) const;  // W4M FallDamage 0x5ac3e0: hp lost landing at `speed` m/s, scheme and Wormpot included
+    struct GunHit { Vector3 at; float dist; int worm; bool land; };  // at: the struck worm's centre, else the ray's end; worm -1: none
+    GunHit gunRay(Ray r, const Worm &shooter) const;  // W4M gun ray 0x55e10f: land, worms, targets, bubbles (dist 60: a miss)
+    Blast gunBlast(int weapon) const;                  // one hit's explosion, Wormpot super firearms included
+    bool steered() const;    // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
     bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)
     bool ambulatory(const Worm &w) const { return w.grounded && !w.motion.slide && !vault.t && !jumpDelay; }  // W4M kWPS_Ambulatory (state 0)
     bool retreating() const;  // Flying / Retreat and the worm may move: W4M timer started (0x549bb0), no FlyCam holding WormMoving
     bool windy(int weapon) const;  // W4M IsAffectedByWind, Wormpot WindEffectMore included
+    // W4M weapon enum id (0x90c920) of a shot's WEAPTWK container, 0 none
+    static constexpr int W4M_LANDMINE = 8, W4M_FACTORY = 21, W4M_SENTRY = 27;
+    int containerOf(int weapon, bool child) const;
+    int inventoryId(int weapon) const;  // W4M inventory slot (enum 0x90c920, utilities 0x22..0x2f), 0 none
+    Vector2 superScale(int container) const;  // x: WormDamageMagnitude and LandDamageRadius, y: ImpulseMagnitude
+    std::vector<int> superWeapon;  // per team: TeamData.WormpotSuperWeapon (Super Secret Weapons), a container id, 0 none
     float fuseOf(const WeaponDef &wd) const { return wd.userFuse ? fuses[worms[current].team] : wd.fuse; }
 
 private:
@@ -481,18 +543,18 @@ private:
     void zapStep(Worm &w);
     void drown(Worm &w);
     void vapourize(Worm &w);
-    float superScale(const WeaponDef &wd) const;
     bool underwater(const Worm &w) const;
-    void stepRope(Worm &w);
     void stepShots(const Input &in, bool detonate);
     void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1);  // weapon: carried by the Boom event (the donkey's blast has its own effects)
     void steal(const Worm &victim);  // old woman ammo theft
     void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies
     Vector3 placeWorm();
-    bool dropPoint(Object::Type t, Vector3 &out);
+    bool dropPoint(Object::Type t, Vector3 &out, float radius = -1);  // radius: the sphere 0x4f26b0 checks, -1 the object's
     bool addObject(Object::Type t, float lift);
     void stepObjects();
+    void openMystery(int item, Worm &w);  // CrateLogicEntity 0x5ca1f0
+    void poisonWorm(Worm &w) { if (!w.poison) w.poison = POISON_DEFAULT, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm
     Object *hooked();  // the object on the rope, if any
 };
 void missionStart(Game &g);  // mission.cpp: worms, ammo, objects from cfg.mission

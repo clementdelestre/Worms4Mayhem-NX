@@ -203,7 +203,7 @@ EFMV/*/LIP.txt, Audio/EFMV/*.lsd, FMV/*.wmv, Frontend/Gallery, *.csh, HUDTWK/LVL
 | type | layout |
 |---|---|
 | `XMeshDescriptor` | varint name, **u16 bundle number**, varint ref -> `XGraphSet` (scene), 2 bytes (`08 00` 655, `00 00` 314, `08 02` 211, `01 00` 36...; meaning unknown) |
-| `XBitmapDescriptor` | name, u16 bundle, ref -> `XTexFont` (sprite: image + UV rects), u16 w, u16 h (`80 00 80 00` = 128x128 ...) |
+| `XBitmapDescriptor` | name, u16 bundle, ref -> `XTexFont` (sprite: image + UV rects), u16 w, u16 h (`80 00 80 00` = 128x128 ...): the drawn size in units (sprite Size = w / 2, h / 2, render.md XBitmap quad size) |
 | `XSpriteSetDescriptor` | name, u16 bundle, ref -> `XGroup` |
 | `XCustomDescriptor` | name, u16 bundle, 2 bytes (`01 00` 46, `00 00` 3) |
 | `XTextDescriptor` | name, u16 bundle, ref graph, u16 glyph count k, 2 B, k x 6 B char map (FE.Font, Bundl03) |

@@ -137,6 +137,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | BubbleWobble | `bubble_wobble` | weapons/BubbleMachineWobble | -2 |  | 0.5–25 | 1 | weapons: BubbleMachineWobble | main.cpp `onEvent` |
 | BubbleLoop | `bubble_loop` | weapons/BubbleMachineLoop | -22 |  | 0.5–20 | 1 | weapons: Bubble1, Bubble2, Bubble3, Bubble4, Bubble5, Bubble6 | main.cpp `drawBubbles` |
 | Fireworks | `fireworks` | global/FireWorksExplosion | 0 |  | 0.5–25 log | 1 | global: Firework1, Firework2, Firework3 (mode 2) | fx.cpp `tickEmitters` (EmitterSoundFX of WXPF_Whiteout, WXPF_RedGlow / RedBigGlow, WXP_StarburstTrailsB, at the emitter start) |
+| Buffalo | `buffalo` | weapons/BuffaloOfLies | -2 |  | 0.5–25 | 1 | weapons: BuffaloOfLies | main.cpp `onEvent` (GameEvent::Mystery: the mystery crate reveal, BuffaloOfLiesGraphicEntity 0x551020) |
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 
 Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its Time envelope

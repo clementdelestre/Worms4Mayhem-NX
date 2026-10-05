@@ -6,6 +6,7 @@
 #include "rlgl.h"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <vector>
 
 #ifdef __SWITCH__
@@ -84,7 +85,23 @@ Shader skySh{}, waterSh{};
 Mesh dome{}, plane{};
 Material skyMat{}, waterMat{};
 Model skyModel{};  // W4M SkyBoxEntity scene "<THEME>.<TIME>Sky" (tools/w4m-models), W4M units
-std::vector<std::pair<int, int>> skyBlend;  // per mesh: XBlendModeGL source / dest factor, -1 = opaque
+// per sky mesh: XBlendModeGL source / dest factor (-1 opaque), clip change of rotate Y (rad) and texture offset U, V, last key s
+struct SkyPart { int src = -1, dst = -1; float rot = 0, u = 0, v = 0, t1 = 0; };
+std::vector<SkyPart> skyParts;
+float skyClip = 0, skyT = 0;  // SkyBoxEntity's one clip, looped (0x486019)
+constexpr float SKY_K = 0.04f;  // the ~20000-unit sky scene shrunk inside the far plane, centred on the camera
+Shader skyMeshSh{};
+int uvOffLoc = -1;
+bool hasSun = false;  // the scene's Sun locator: LensFlareGraphicEntity "LF.<sky>"
+Vector3 sunAt{};
+int flareSet = 0;
+float flareFade = 0, flareOwed = 0;
+Texture2D flareTex{};
+// Particle.WXPMesh7 emitters (one particle each): ParticleSize as (xz, y) like the sprites' aspect [assumed]
+Model domeModel{};
+struct Dome { Vector3 p; float sxz, sy, age; };
+std::vector<Dome> domes;
+constexpr float DOME_CLIP = 0.833f;  // WXM_DefSource: scale 0 -> 1 and material alpha 1 -> 0 (linear), then invisible
 Color fogCol = {120, 170, 230, 255};
 uint32_t seed = 12345;
 
@@ -263,6 +280,24 @@ void main() {
     gl_FragColor = vec4(texture2D(texture0, vec2(0.75 * pow(1.0 - h, 3.0), 0.5)).rgb, 1.0);
 }
 )";
+// Sky scene parts: raylib's default shading plus the clip's texture offset [assumed: added to the uv]
+const char *SKYMESH_VS = R"(
+attribute vec3 vertexPosition;
+attribute vec2 vertexTexCoord;
+attribute vec4 vertexColor;
+uniform mat4 mvp;
+uniform vec2 uvOff;
+varying vec2 uv;
+varying vec4 col;
+void main() { uv = vertexTexCoord + uvOff; col = vertexColor; gl_Position = mvp * vec4(vertexPosition, 1.0); }
+)";
+const char *SKYMESH_FS = R"(
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+varying vec2 uv;
+varying vec4 col;
+void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse * col; }
+)";
 // W4M CG/water.cg WaterFragmentMain: colour from the three panned normal maps alone (no eye vector), constant alpha.
 // p0 = (ReflectionContrast, ReflectionStrength, SpecularPower), p3 = (SpecularContrast, NearOpacity, SubtractColourScale).
 const char *WATER_VS = R"(
@@ -327,6 +362,11 @@ void load() {
     UnloadImage(ring);
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
+    skyMeshSh = shader(SKYMESH_VS, SKYMESH_FS);
+    uvOffLoc = GetShaderLocation(skyMeshSh, "uvOff");
+    flareTex = loadTex("hud", "lensflares", false);  // W4M Lens.Flares (LensFlares.tga)
+    if (FileExists(DATA_DIR "assets/models/wxpmesh7.glb")) domeModel = LoadModel(DATA_DIR "assets/models/wxpmesh7.glb");  // raw units, rest scale 1
+    for (int i = 0; i < domeModel.materialCount && skyMeshSh.id != rlGetShaderIdDefault(); i++) domeModel.materials[i].shader = skyMeshSh;
     dome = GenMeshSphere(1, 12, 16);
     plane = GenMeshPlane(1, 1, 1, 1);
     skyMat = LoadMaterialDefault(), waterMat = LoadMaterialDefault();
@@ -334,16 +374,20 @@ void load() {
     ps.reserve(MAX);
 }
 
-namespace {
-void skyKey(const std::string &theme, const std::string &time, char &l, char &suffix) {
-    static const char *NAMES[] = {"jurassic", "camelot", "arabian", "wildwest", "construction", "arctic", "england", "horror", "lunar", "pirate", "war"};
-    static const char LETTERS[] = "pcawbrehlto";
+static void skyKey(const std::string &theme, const std::string &time, char &l, char &suffix) {
+    static const char *NAMES[] = {"jurassic", "camelot", "arabian", "wildwest", "construction", "arctic", "england", "horror", "lunar", "pirate", "war", "frontend"};
+    static const char LETTERS[] = "pcawbrehltof";
     l = 'c';  // procedural island and unknown themes
-    for (int i = 0; i < 11; i++)
+    for (int i = 0; i < 12; i++)
         if (theme == NAMES[i]) l = LETTERS[i];
     suffix = time == "night" ? '3' : time == "evening" ? '2' : '1';  // W4M ramp naming: 01 day, 02 evening, 03 night
 }
-}  // namespace
+
+std::string gradientFile(const std::string &theme, const std::string &time, bool side) {
+    char l, suffix;
+    skyKey(theme, time, l, suffix);
+    return TextFormat(DATA_DIR "assets/ui/sky/%c_%ssky0%c.png", l, side ? "side" : "", suffix);
+}
 
 std::string skyFile(const std::string &theme, const std::string &time) {
     char l, suffix;
@@ -356,18 +400,22 @@ void theme(const std::string &theme, Color sky, const std::string &time, bool le
     skyKey(theme, time, l, suffix);
     std::string glb = skyFile(theme, time);
     if (skyModel.meshCount) UnloadModel(skyModel), skyModel = {};
-    skyBlend.clear();
+    skyParts.clear(), skyClip = skyT = 0, hasSun = false, flareFade = flareOwed = 0;
     if (levelSky && FileExists(glb.c_str())) {
         skyModel = Models::take(glb.c_str());
+        if (skyMeshSh.id != rlGetShaderIdDefault())
+            for (int i = 0; i < skyModel.materialCount; i++) skyModel.materials[i].shader = skyMeshSh;
         char *b = LoadFileText((glb.substr(0, glb.size() - 4) + ".blend").c_str());
         for (char *p = b; p && *p;) {
-            int s = -1, d = -1, n = 0;
-            sscanf(p, "%d %d%n", &s, &d, &n);
-            skyBlend.push_back({s, d});
+            SkyPart k;
+            if (sscanf(p, "clip %f", &skyClip) == 1 || sscanf(p, "sun %f %f %f", &sunAt.x, &sunAt.y, &sunAt.z) == 3) hasSun |= *p == 's';
+            else sscanf(p, "%d %d %f %f %f %f", &k.src, &k.dst, &k.rot, &k.u, &k.v, &k.t1), skyParts.push_back(k);
             while (*p && *p++ != '\n') {}
         }
         if (b) UnloadFileText(b);
     }
+    // TWEAK.XOM LF.<THEME>.<TIME>Sky -> Sky.Flare<n+1>: day 0, night 1, evening 2 (Wild West evening 1)
+    flareSet = time == "night" || (time == "evening" && theme == "wildwest") ? 1 : time == "evening" ? 2 : 0;
     if (skyTex.id) UnloadTexture(skyTex);
     for (Texture2D &t : waterTex)
         if (t.id) UnloadTexture(t), t = {};
@@ -382,7 +430,8 @@ void theme(const std::string &theme, Color sky, const std::string &time, bool le
         SetTextureWrap(skyTex, TEXTURE_WRAP_CLAMP);
         UnloadImage(im);
     }
-    for (int i = 0; i < 3; i++) waterTex[i] = loadTex("sky", TextFormat("%c_water0%c%c", l, suffix, 'a' + i), true);
+    // WaterPlaneTweaks Diffuse / Normal / EnvironmentTexture: <L>.<TIME>Water, FE.DAYWaterNormal for every theme, <L>.<TIME>WaterEnv
+    for (int i = 0; i < 3; i++) waterTex[i] = loadTex("sky", i == 1 ? "f_water01b" : TextFormat("%c_water0%c%c", l, suffix, 'a' + i), true);
     if (waterTex[2].id) SetTextureWrap(waterTex[2], TEXTURE_WRAP_CLAMP);
     skyMat.maps[MATERIAL_MAP_DIFFUSE].texture = skyTex;
     waterMat.maps[MATERIAL_MAP_DIFFUSE].texture = waterTex[0];
@@ -397,12 +446,13 @@ void unload() {
     for (Texture2D &t : waterTex)
         if (t.id) UnloadTexture(t);
     UnloadMesh(dome), UnloadMesh(plane);
-    UnloadShader(skySh), UnloadShader(waterSh);
+    UnloadShader(skySh), UnloadShader(waterSh), UnloadShader(skyMeshSh), UnloadTexture(flareTex);
+    if (domeModel.meshCount) UnloadModel(domeModel), domeModel = {};
     MemFree(skyMat.maps), MemFree(waterMat.maps);
 }
 
 void fireworks(Vector3 centre, float radius, float top) { stageC = centre, stageR = radius, stageTop = top, tickAcc = 0, show = 9; }
-void clear() { ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), shake = show = 0; }
+void clear() { domes.clear(), ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), shake = show = 0; }
 
 Color fog() { return fogCol; }
 int count() { return (int)ps.size(); }
@@ -505,6 +555,10 @@ void event(const GameEvent &e, Color dirt) {
     abductee(e);
     if (e.kind == GameEvent::BubblePop) bubblePop(e.pos);
     bool big = e.kind == GameEvent::BigBoom;
+    if ((e.kind == GameEvent::Boom || big) && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && domeModel.meshCount) {
+        bool donkey = WEAPONS[e.weapon].clusters == 0;  // WXP_DonkeyStrikeBounce: +10 units, (1.2, 1.3); WXP_FatkinsBounceMesh: 0, (0.6, 0.225)
+        domes.push_back({Vector3Add(e.pos, {0, donkey ? 0.5f : 0, 0}), donkey ? 1.2f : 0.6f, donkey ? 1.3f : 0.225f, 0});
+    }
     if ((e.kind == GameEvent::Boom || big) && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0) {
         shake = fmaxf(shake, 0.6f);  // the Explode ExplosionMessage shakes the camera as any blast; its only effect is DetonationFx
         donkeyDust(e.pos);
@@ -723,6 +777,9 @@ void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, floa
 }
 
 void update(float dt) {
+    skyT += dt;
+    for (Dome &d : domes) d.age += dt;
+    domes.erase(std::remove_if(domes.begin(), domes.end(), [](const Dome &d) { return d.age >= DOME_CLIP; }), domes.end());
     shake *= expf(-dt * 6);
     // W4M 0x4ffa56, every 20 ms of the 5 s show: rand() % 40 == 0 fires WXPF_Firework<1 + rand() % 5> at Land.Center +- Radius / 2 in x and z,
     // Land.MaxHeight + rand x 30 units (its 100 ms gap test computes last - now, unsigned, so it never holds)
@@ -758,17 +815,22 @@ void drawSky(const Camera3D &cam) {
         // the ~20000-unit scene shrunk inside the far plane around the camera: opaque parts, then the blended ones in scene
         // order with their XBlendModeGL; depth only sorts the sky's own parts and is cleared after
         static const int GL_FACTOR[11] = {0, 1, 0x306, 0x307, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305, 0x308};  // W4M BlendFactor -> GL, table 0x8b4b5c
-        Matrix m = MatrixMultiply(MatrixScale(0.04f, 0.04f, 0.04f), MatrixTranslate(cam.position.x, cam.position.y, cam.position.z));
+        Matrix m = MatrixMultiply(MatrixScale(SKY_K, SKY_K, SKY_K), MatrixTranslate(cam.position.x, cam.position.y, cam.position.z));
+        float t = skyClip > 0 ? fmodf(skyT, skyClip) : 0;
         rlDisableBackfaceCulling();
         for (int pass = 0; pass < 2; pass++)
             for (int i = 0; i < skyModel.meshCount; i++) {
-                auto [src, dst] = i < (int)skyBlend.size() ? skyBlend[i] : std::pair<int, int>{-1, -1};
+                SkyPart k = i < (int)skyParts.size() ? skyParts[i] : SkyPart{};
+                auto [src, dst] = std::pair<int, int>{k.src, k.dst};
                 if ((src >= 0) != (pass == 1)) continue;
+                float f = k.t1 > 0 ? fminf(t, k.t1) / k.t1 : 0;  // 2-key linear channels, held to the clip end
+                Vector2 off = {k.u * f, k.v * f};
+                if (skyMeshSh.id != rlGetShaderIdDefault()) SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2);
                 if (pass) {
                     if (src < 11 && dst < 11) rlSetBlendFactors(GL_FACTOR[src], GL_FACTOR[dst], 0x8006);  // else glBlendFunc fails in W4M: state kept
                     rlSetBlendMode(RL_BLEND_CUSTOM), rlDisableDepthMask();
                 }
-                DrawMesh(skyModel.meshes[i], skyModel.materials[skyModel.meshMaterial[i]], m);
+                DrawMesh(skyModel.meshes[i], skyModel.materials[skyModel.meshMaterial[i]], MatrixMultiply(MatrixRotateY(k.rot * f), m));
             }
         rlSetBlendMode(RL_BLEND_ALPHA), rlEnableDepthMask(), rlEnableBackfaceCulling();
         glClear(0x100);  // GL_DEPTH_BUFFER_BIT
@@ -780,9 +842,8 @@ void drawSky(const Camera3D &cam) {
     rlEnableDepthTest(), rlEnableDepthMask(), rlEnableBackfaceCulling();
 }
 
-void drawWater(const Camera3D &cam, float level, float time) {
+void drawWater(const Camera3D &cam, float level, float time, float HALF) {
     // W4M WaterCgGraphicEntity: a 0..1 uv quad scaled to +-12000 units (0x48cada), alpha blended, depth written, not culled
-    const float HALF = 12000 / 20.f;
     if (!waterTex[0].id || !waterTex[1].id || waterSh.id == rlGetShaderIdDefault()) {
         DrawPlane({40, level, 40}, {2 * HALF, 2 * HALF}, {30, 80, 160, 180});
         return;
@@ -805,6 +866,23 @@ void drawWater(const Camera3D &cam, float level, float time) {
 }
 
 void draw(const Camera3D &cam) {
+    if (!domes.empty()) {  // unlit, SrcAlpha / OneMinusSrcAlpha (lambert2 XBlendModeGL 6 7), no z write, two-sided [assumed]
+        static const float SCALE[3][6] = {{0.1344f, 0.9907f, 0.1344f, 0.9907f, 0, 0}, {0.8091f, 0.5869f, 0.8091f, 0.5869f, 0.16663f, 0.85498f},
+                                          {0.9995f, 0.0215f, 0.9995f, 0.0215f, 0.83301f, 1}};  // WXM_DefSource scale keys
+        Vector2 off = {0, 0};
+        SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2);
+        rlDrawRenderBatchActive();
+        rlDisableDepthMask(), rlDisableBackfaceCulling();
+        BeginBlendMode(BLEND_ALPHA);
+        for (const Dome &d : domes) {
+            float k = Models::curve(SCALE, 3, d.age) / 20;
+            for (int i = 0; i < domeModel.materialCount; i++) domeModel.materials[i].maps[MATERIAL_MAP_DIFFUSE].color.a = (unsigned char)(255 * (1 - d.age / DOME_CLIP));
+            Matrix m = MatrixMultiply(MatrixScale(d.sxz * k, d.sy * k, d.sxz * k), MatrixTranslate(d.p.x, d.p.y, d.p.z));
+            for (int i = 0; i < domeModel.meshCount; i++) DrawMesh(domeModel.meshes[i], domeModel.materials[domeModel.meshMaterial[i]], m);
+        }
+        EndBlendMode();
+        rlEnableDepthMask(), rlEnableBackfaceCulling();
+    }
     Matrix v = GetCameraMatrix(cam);
     Vector3 right = {v.m0, v.m4, v.m8}, up = {v.m1, v.m5, v.m9}, fwd = {-v.m2, -v.m6, -v.m10};
     rlDrawRenderBatchActive();
@@ -884,4 +962,52 @@ void draw(const Camera3D &cam) {
     rlEnableDepthMask();
     rlEnableBackfaceCulling();
 }
+// W4M LensFlareGraphicEntity (0x479770): additive billboards on the line from the sun through the screen centre
+void drawFlare(const Camera3D &cam, float dt, const std::function<int(Vector3, Vector3)> &hit) {
+    struct El { float scale, size, fadeIn; unsigned char r, g, b; int type; };
+    // LVLSETUP Sky.Flare1-3 (LensScale 2, FocalOffset 1); type 0 SunGlow, 1 Circle, 2 FadedRing, 4 FadedHex, 5 Hex
+    static const El F1[] = {{0, 4000, 1, 255, 255, 255, 0}, {.8f, 600, 1, 128, 0, 128, 1}, {.2f, 100, 1, 64, 64, 255, 2}, {.3f, 200, .6f, 128, 64, 128, 1},
+                            {.7f, 300, .5f, 64, 64, 128, 4}, {.75f, 100, .8f, 42, 32, 128, 2}, {.15f, 200, .9f, 64, 32, 32, 5}, {.4f, 100, 1, 63, 64, 128, 0},
+                            {0, 500, 2, 255, 255, 255, 1}};
+    static const El F2[] = {{0, 7000, .2f, 150, 140, 82, 0}};
+    static const El F3[] = {{.1f, 4000, 1, 100, 100, 100, 0}, {.8f, 800, .5f, 40, 40, 40, 1}, {.3f, 200, .6f, 128, 64, 128, 1}, {.6f, 200, .5f, 40, 40, 40, 4},
+                            {.4f, 100, .5f, 40, 40, 40, 1}, {0, 200, .5f, 60, 60, 60, 0}};
+    static const struct { const El *e; int n; } SETS[3] = {{F1, 9}, {F2, 1}, {F3, 6}};
+    // atlas 0x81cea8 per type: u0, v0, w, h, v counted from the image bottom
+    static const float ATLAS[7][4] = {{0, .5f, .5f, .5f}, {0, 0, .5f, .5f}, {.5f, .25f, .25f, .25f}, {.5f, .5f, .5f, .5f}, {.75f, .25f, .25f, .25f}, {.5f, 0, .25f, .25f}, {.75f, 0, .25f, .25f}};
+    const float LENS = 2, FOCAL = 1;
+    if (!hasSun || !flareTex.id) return;
+    Matrix v = GetCameraMatrix(cam);
+    Vector3 right = {v.m0, v.m4, v.m8}, up = {v.m1, v.m5, v.m9}, fwd = {-v.m2, -v.m6, -v.m10};
+    float x = Vector3DotProduct(sunAt, right), y = Vector3DotProduct(sunAt, up), z = Vector3DotProduct(sunAt, fwd);
+    float r = sqrtf(x * x + y * y) / fabsf(z);  // [assumed: view space, no projection scale]
+    if (r >= 1) { flareFade = 1; return; }  // as the exe: full again when it comes back on screen
+    int h = hit(cam.position, Vector3Normalize(sunAt));
+    if (h == 2) flareOwed += dt;  // an object: the flare freezes and its clock stops
+    else flareFade = Clamp(flareFade + (h ? -5.0f : 5.0f) * (dt + flareOwed), 0, 1), flareOwed = 0;  // 0.005 per ms
+    if (flareFade <= 0) return;
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest(), rlDisableDepthMask(), rlDisableBackfaceCulling();
+    BeginBlendMode(BLEND_ADDITIVE);
+    rlSetTexture(flareTex.id);
+    rlBegin(RL_QUADS);
+    for (int i = 0; i < SETS[flareSet].n; i++) {
+        const El &e = SETS[flareSet].e[i];
+        float k = e.type == 0 ? 1 - r / 2 : LENS, a = (e.fadeIn > 1 ? 1 : (1 - r) * e.fadeIn) * flareFade, hs = e.size * k * 0.5f * SKY_K;
+        Vector3 p = Vector3Add(cam.position, Vector3Scale(Vector3Add(Vector3Add(Vector3Scale(right, x * (1 - 2 * e.scale)), Vector3Scale(up, y * (1 - 2 * e.scale))), Vector3Scale(fwd, FOCAL * z)), SKY_K));
+        Vector3 rr = Vector3Scale(right, hs), uu = Vector3Scale(up, hs);
+        const float *t = ATLAS[e.type];
+        float u0 = t[0], u1 = t[0] + t[2], vt = 1 - t[1] - t[3], vb = 1 - t[1];
+        rlColor4ub((unsigned char)(e.r * a), (unsigned char)(e.g * a), (unsigned char)(e.b * a), 255);
+        rlTexCoord2f(u0, vt); rlVertex3f(p.x - rr.x + uu.x, p.y - rr.y + uu.y, p.z - rr.z + uu.z);
+        rlTexCoord2f(u0, vb); rlVertex3f(p.x - rr.x - uu.x, p.y - rr.y - uu.y, p.z - rr.z - uu.z);
+        rlTexCoord2f(u1, vb); rlVertex3f(p.x + rr.x - uu.x, p.y + rr.y - uu.y, p.z + rr.z - uu.z);
+        rlTexCoord2f(u1, vt); rlVertex3f(p.x + rr.x + uu.x, p.y + rr.y + uu.y, p.z + rr.z + uu.z);
+    }
+    rlEnd();
+    rlSetTexture(0);
+    EndBlendMode();
+    rlEnableDepthTest(), rlEnableDepthMask(), rlEnableBackfaceCulling();
+}
+
 }  // namespace Fx

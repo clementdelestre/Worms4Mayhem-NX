@@ -59,6 +59,7 @@ const SchemeField SCHEME_FIELDS[] = {
     {"Sudden death", nullptr, 0, 2, 1, {"1 HP", "Water only", "Draw"}}, {"Fall damage", nullptr, 0, 1, 1, {"Off", "On"}},
     {"Wind", nullptr, 0, 3, 1, {"None", "Low", "Medium", "High"}}, {"Weapons", nullptr, 0, 3, 1, {"Default", "BnG", "Crates only", "Unlimited"}},
     {"Water rise", nullptr, 0, 3, 1, {"None", "Slow", "Medium", "Fast"}},  // FETXT.WaterNoRise / Slow / Medium / FastRise
+    {"Mystery crates", "%d", 0, 100, 10, {}},  // SchemeData MysteryChance
 };
 static_assert(sizeof SCHEME_FIELDS / sizeof *SCHEME_FIELDS == sizeof(Scheme), "one row per Scheme byte");
 
@@ -312,6 +313,8 @@ const char *tr(const char *key, const char *en, const char *fr) {
     auto it = key ? strings.find(key) : strings.end();
     return it != strings.end() ? it->second.c_str() : language && fr ? fr : en;
 }
+
+static const char *potName(int id) { return tr(TextFormat("FETXT.WPotName.%s", WORMPOT_MODES[id].key), WORMPOT_MODES[id].name, nullptr); }
 
 // lang.txt ("en" / "fr"), else the console / desktop locale
 static int systemLanguage() {
@@ -918,7 +921,7 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
         if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, online ? 1 : 2, 4);
         else if (sscanf(line, "worms %d", &a) == 1) cfg.wormsPerTeam = Clamp(a, 1, 4);
         else if (sscanf(line, "rules %d", &a) == 1) cfg.rules = (uint32_t)a;
-        else if (sscanf(line, "wormpot %d", &a) == 1) cfg.wormpot = wormpotSlots((uint32_t)a);
+        else if (sscanf(line, "reels %d", &a) == 1) cfg.wormpot = (uint32_t)a;
         else if (!strncmp(line, "scheme ", 7)) {
             char *p = line + 7;
             for (size_t i = 0; i < sizeof(Scheme); i++) {
@@ -946,7 +949,7 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
 }
 
 void Frontend::saveSetup(const GameConfig &cfg) const {
-    std::string s = TextFormat("teams %d\nworms %d\nrules %u\nwormpot %u\nmap %s\nscheme", cfg.teams, cfg.wormsPerTeam, cfg.rules, cfg.wormpot,
+    std::string s = TextFormat("teams %d\nworms %d\nrules %u\nreels %u\nmap %s\nscheme", cfg.teams, cfg.wormsPerTeam, cfg.rules, cfg.wormpot,
                                cfg.map.empty() ? "-" : cfg.map.c_str());
     for (size_t i = 0; i < sizeof(Scheme); i++) s += TextFormat(" %d", ((const uint8_t *)&cfg.scheme)[i]);
     s += "\n";
@@ -1279,8 +1282,8 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             value(300 + r, {690, 372 + r * 24.0f, 548, 23}, RULE_LABELS[r] ? RULE_LABELS[r] : tr("RULE.NoDelays", "No weapon delays (test)", "Sans délai d'armes (test)"),
                   cfg.rules & (1u << r) ? "ON" : "off", 22);
         int pots = 0, pot = 0;
-        for (int b = 0; b < WORMPOT_COUNT; b++) if (cfg.wormpot & (1u << b)) pots++, pot = b;
-        value(350, {690, 372 + RULES * 24.0f, 548, 23}, "Wormpot", !pots ? "None" : pots == 1 ? WORMPOT_MODES[pot].name : TextFormat("%d modes", pots), 22);
+        for (int b = 0; b < WP_MODES; b++) if (wpOn(wormpotModes(cfg.wormpot), b)) pots++, pot = b;
+        value(350, {690, 372 + RULES * 24.0f, 548, 23}, "Wormpot", !pots ? "None" : pots == 1 ? potName(pot) : TextFormat("%d modes", pots), 22);
         Rectangle go = {860, 608, 390, 70};
         panel(go, ids[row] == 400);
         text(online ? lan ? "FIND GAMES" : "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ink(ids[row] == 400), 1);
@@ -1327,9 +1330,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
 
 namespace {
 int reelSize(int r) { return (int)WORMPOT_REEL[r].size(); }
-int reelMode(uint32_t wp, int r) { return wormpotReel(wp, r); }
-void setReel(uint32_t &wp, int r, int m) { wormpotPick(wp, r, m); }
-const char *modeName(int r, int m) { return m < 0 ? "- Empty Reel -" : WORMPOT_MODES[WORMPOT_REEL[r][m]].name; }
+int reelMode(uint32_t wp, int r) {  // reel r's index in WORMPOT_REEL[r], -1 empty
+    auto it = std::find(WORMPOT_REEL[r].begin(), WORMPOT_REEL[r].end(), wormpotReel(wp, r));
+    return it == WORMPOT_REEL[r].end() ? -1 : int(it - WORMPOT_REEL[r].begin());
+}
+void setReel(uint32_t &wp, int r, int m) { wp = wormpotSet(wp, r, m < 0 ? 0 : WORMPOT_REEL[r][m]); }
+const char *modeName(int r, int m) { return potName(m < 0 ? WP_EMPTY : WORMPOT_REEL[r][m]); }
 
 // centred, word-wrapped to width w
 void wrapped(const char *s, float cx, float y, float w, float size, Color c) {
@@ -1403,7 +1409,8 @@ void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, floa
         DrawRectangleRoundedLinesEx(box, 0.12f, 6, r == reel ? 5 : 2, r == reel ? GOLDEN : GRAY);
     }
     int m = reelMode(cfg.wormpot, reel);
-    wrapped(m < 0 ? "No wormpot mode selected on this reel." : WORMPOT_MODES[WORMPOT_REEL[reel][m]].help, 640, 500, 900, 24, WHITE);
+    const WormpotInfo &mi = WORMPOT_MODES[m < 0 ? WP_EMPTY : WORMPOT_REEL[reel][m]];
+    wrapped(tr(TextFormat("FETXT.WPotHelp.%s", mi.key), mi.help, nullptr), 640, 500, 900, 24, WHITE);
     text(spinning ? "Spinning..." : "Spin those reels!", 640, 600, 30, GOLDEN, 1);
     hints({{"D-pad", "Left/Right", "Reel"}, {"D-pad", "Up/Down", "Nudge"}, {"X", "S", "Spin"}, {"Y", "R", "Reset"}, {"B", "Esc", "Back"}});
     if ((back || ok) && !spinning) screen = Setup;
@@ -1579,9 +1586,24 @@ static void text3d(const char *t, float x, float y, float size, Color c) {
     text(t, x, y - size / 2, size, c, 1);
 }
 
+// Text3D 0x5fad80, view depth in m: HUD.3DText.Min/MaxScalingDist 80 / 200 units hold the on-screen size outside that band
+static float text3dK(float depth) {
+    float u = depth * 20;
+    return u < 80 ? u / 80 : u > 200 ? u / 200 : 1;
+}
+
+// A Text3D centred on world point p, scale m (HUD.3DText.Scale 5 units unless set) x text3dK; returns its size in px
+static float text3dAt(const char *t, Vector3 p, float scale, Color c, const Camera3D &cam, Vector3 fwd, Vector3 up) {
+    float s = scale * text3dK(Vector3DotProduct(Vector3Subtract(p, cam.position), fwd));
+    Vector2 a = GetWorldToScreen(p, cam), px = GetWorldToScreen(Vector3Add(p, Vector3Scale(up, s)), cam);
+    float size = Vector2Distance(a, px);
+    if (t) text3d(t, a.x, a.y, size, c);
+    return size;
+}
+
 // PiP centre, half extents (px) and tilt (rad): HUDTWK PiP.Off/OnScreenPosition, OnScreenScale, OnScreenRotation z. PiPService
 // (0x635e10, 0x6360d6) multiplies position and scale by 0x4d4cc0's (0.75 aspect, clamped to 4/3..16/9; 1): x 4/3 at 16:9.
-// The scale as half extents is unverified: HUD.PiP is an XBitmapDescriptor quad built by the XOM renderer (table 0x91df5c).
+// OnScreenScale is the HUD.PiP sprite's half extents: XBitmap SetScale (0x6b4ec0 -> 0x69f570) writes the sprite Size, drawn at ±Size (0x79b4f0).
 static void pipPlace(float show, float full, Vector2 &c, Vector2 &h, float &rot) {
     const float u = 720 / 480.0f, k = Clamp(0.75f * 1280 / 720, 4 / 3.0f, 16 / 9.0f);  // HUD units: centre origin, y up, 480 high
     Vector2 on = Vector2Lerp({400, 155}, {190, 135}, show);
@@ -1639,13 +1661,7 @@ void reticle(const WeaponDef &wd, Vector2 c, bool scope) {
         return t.id != 0;
     };
     bool ok;
-    if (wd.kind == Kind::Homing) {
-        Texture2D t[4] = {tex("hud/homing_tl"), tex("hud/homing_tr"), tex("hud/homing_bl"), tex("hud/homing_br")};
-        ok = t[0].id && t[3].id;
-        for (int k = 0; k < 4 && ok; k++)
-            DrawTexturePro(t[k], {0, 0, (float)t[k].width, (float)t[k].height}, {c.x + (k % 2 ? 46 : -94), c.y + (k / 2 ? 46 : -94), 48, 48}, {}, 0, CREAM);
-        put("bazookatargetinner", 185, 370, 0.5f);
-    } else if (wd.kind == Kind::Shell && wd.fuse <= 0) ok = put("bazookatargetouter", 185, 185, 0.5f) && put("bazookatargetinner", 185, 370, 0.5f);
+    if (wd.kind == Kind::Shell && wd.fuse <= 0) ok = put("bazookatargetouter", 185, 185, 0.5f) && put("bazookatargetinner", 185, 370, 0.5f);
     else if (wd.kind == Kind::Shell) ok = put("target", 200, 200, 0.5f);  // thrown
     else ok = put("aimer_outer", 215, 215, 0.5f) && put("aimer_inner", 110, 110, 0.5f);
     if (!ok) {
@@ -1725,7 +1741,7 @@ void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock, const Vec
             Vector2 at = {c.x + D[i].x * p * s * u, c.y + D[i].y * p * s * u};
             DrawTexturePro(in, src, {at.x, at.y, 54 * s * u, 18 * s * u}, {27 * s * u, 9 * s * u}, i < 2 ? -90 : 0, WHITE);  // the Inner mesh is never tinted
         }
-        auto corners = [&](Vector2 o, float x, float y, float k, Color col) {  // locators 1-4 at (-+x, +-y); bitmaps 128 units x k
+        auto corners = [&](Vector2 o, float x, float y, float k, Color col) {  // locators 1-4 at (-+x, +-y); 128-unit bitmaps (Size ±64) x the node scale k
             const char *N[4] = {"homing_tl", "homing_tr", "homing_bl", "homing_br"};
             for (int i = 0; i < 4; i++) quad(N[i], {o.x + (i % 2 ? x : -x) * u, o.y + (i / 2 ? y : -y) * u}, 128 * k, 128 * k, 0, col);
         };
@@ -1829,8 +1845,11 @@ void hudEvent(const Game &g, const GameEvent &e) {
         int wi = g.objects.back().weapon;
         Kind k = wi >= 0 && wi < (int)WEAPONS.size() ? WEAPONS[wi].kind : Kind::Shell;
         bool util = utility(k);
-        comment(wi < 0 ? "Health" : util ? "Utility" : "Crate", "");
+        comment(g.objects.back().mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
         crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
+    } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15) {  // CommentaryPanel.Comment: the item's Text.k<name>
+        const MysteryItem &m = MYSTERY_ITEMS[e.weapon];
+        banners.push_back(tr(TextFormat("Text.kMystery%s", m.name), m.text));
     } else if (e.kind == GameEvent::Collect && e.worm >= 0) {
         const Worm &w = g.worms[e.worm];
         const char *who = wormName(w.team, e.worm % std::max(1, g.perTeam));
@@ -1968,44 +1987,46 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     bool cinematic = trackHp(g, turnStart, tick);
     bool ready = readyScreen(g, cinematic);  // local human's hot seat: W4M full-screen ready pause
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+    Vector3 camUp = Vector3Normalize(Vector3CrossProduct(Vector3CrossProduct(fwd, cam.up), fwd));
+    const Color TEXT3D_GREY = {200, 200, 200, 255};  // 0x5c4527, 0x563682
     if (!ready && cur.team < (int)g.spy.size() && g.spy[cur.team])  // W4M Crate Spy (CrateGraphicEntity 0x5c5270): contents over every crate
         for (const Object &o : g.objects) {
-            Vector3 top = Vector3Add(o.pos, {0, 0.9f, 0});
-            float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
-            if (o.type != Object::Crate || dist < 0.5f) continue;
-            Vector2 sp = GetWorldToScreen(top, cam);
-            text3d(o.weapon < 0 ? tr("Text.Health", "Health", "Santé") : WEAPONS[o.weapon].name.c_str(), sp.x, sp.y, Clamp(170 / dist, 12, 22), WHITE);  // CrateGraphicEntity's Text3D
+            Vector3 top = Vector3Add(o.pos, {0, 0.75f, 0});  // 0x5c4580: crate + 15 units
+            if (o.type != Object::Crate || Vector3DotProduct(Vector3Subtract(top, cam.position), fwd) < 0.5f) continue;
+            const char *what = o.mystery >= 0 ? tr(TextFormat("Text.kMystery%s", MYSTERY_ITEMS[o.mystery].name), MYSTERY_ITEMS[o.mystery].text)
+                             : o.weapon < 0 ? tr("Text.Health", "Health", "Santé") : WEAPONS[o.weapon].name.c_str();
+            text3dAt(what, top, 0.25f, TEXT3D_GREY, cam, fwd, camUp);
         }
-    Vector3 camUp = Vector3Normalize(Vector3CrossProduct(Vector3CrossProduct(fwd, cam.up), fwd));
     if (!ready) for (const Projectile &s : g.shots) {  // W4M 0x57b1e0: ceil(fuse left) in FE.Font, white, while 0 < left <= 5 s
         const WeaponDef &d = WEAPONS[s.weapon];
         Vector3 top = Vector3Add(s.pos, Vector3Scale(camUp, d.fuseHeight));  // the offset along the view's up (0x47a120)
-        float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd), u = dist * 20;
+        float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
         if (!d.fuseShown || s.child || s.fuse <= 0 || s.fuse > 5 || dist < 0.5f) continue;
-        float k = u < 80 ? 1 : u <= 200 ? u / 80 : u / 200;  // Text3D 0x5fad80: HUD.3DText.MinScalingDist 80, MaxScalingDist 200
-        Vector2 sp = GetWorldToScreen(top, cam), sp2 = GetWorldToScreen(Vector3Add(top, Vector3Scale(camUp, d.fuseSize * k)), cam);
-        text3d(TextFormat("%d", (int)ceilf(s.fuse - 0.001f)), sp.x, sp.y, Vector2Distance(sp, sp2), WHITE);
+        text3dAt(TextFormat("%d", (int)ceilf(s.fuse - 0.001f)), top, d.fuseSize, WHITE, cam, fwd, camUp);
     }
     // W4M worm labels: name over hp, team colour, on a Text.Backing; hidden on the ready screen, with the weapon panel open or a UFO out (0x5fd4e0)
     if (!ready && !open && !g.abducting()) for (const Worm &w : g.worms) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
         if (!w.alive) continue;  // blown up, or drowned: W4M shows no label afloat
-        Vector3 top = Vector3Add(w.pos, {0, 1.1f, 0});
-        float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
+        float dist = Vector3DotProduct(Vector3Subtract(w.pos, cam.position), fwd);
         if (dist < 0.5f || (fp && &w == &cur) || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // first person: inside it
-        Vector2 sp = GetWorldToScreen(top, cam);
+        // 0x5fb170: feet (W4M Position) + 25 units up + 4 along the view's up, then HealthOffset 4 / NameOffset 9 x lens zoom x text3dK
+        float q = tanf(cam.fovy * 0.5f * DEG2RAD) / tanf(25 * DEG2RAD), kq = q * text3dK(dist);
+        Vector3 base = Vector3Add(Vector3Add(w.pos, {0, 1.25f - Game::R, 0}), Vector3Scale(camUp, 0.2f));
+        Vector3 hpAt = Vector3Add(base, Vector3Scale(camUp, 0.2f * kq)), nameAt = Vector3Add(base, Vector3Scale(camUp, 0.45f * kq));
+        float s = text3dAt(nullptr, hpAt, 0.25f, BLANK, cam, fwd, camUp);
+        Vector2 sp = Vector2Add(GetWorldToScreen(hpAt, cam), {0, s / 2});  // bottom of the hp label
         if (pipShow > 0) {  // not over the PiP
             Vector2 pc, ph;
             float rot;
             pipPlace(pipShow, pipFull, pc, ph, rot);
             if (fabsf(sp.x - pc.x) < ph.x + 30 && fabsf(sp.y - pc.y) < ph.y + 30) continue;
         }
-        float s = Clamp(170 / dist, 12, 24);
         Color c = TEAM_COLORS[w.team % 4];
         const Color POISON = {120, 220, 60, 255};
-        text3d(TextFormat("%d", hp), sp.x, sp.y - s / 2, s, i == counting && hpt[i].poison ? POISON : c);  // WormHealthNameEntity 0x5fdb70: Text3Ds
-        text3d(wormName(w.team, k), sp.x, sp.y - s * 1.5f, s, c);
-        if (&w == &cur && g.jetting) text3d(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), sp.x, sp.y - s * 3.2f + s * 0.65f, s * 1.3f, WHITE);  // JetpackUtility's Text3D  // W4M 0x5626e0: (2 ms + 500) / 1000
+        text3dAt(TextFormat("%d", hp), hpAt, 0.25f, i == counting && hpt[i].poison ? POISON : c, cam, fwd, camUp);  // WormHealthNameEntity 0x5fdb70: Text3Ds in FE.Font
+        text3dAt(wormName(w.team, k), nameAt, 0.25f, c, cam, fwd, camUp);
+        if (&w == &cur && g.jetting) text3d(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), sp.x, sp.y - s * 2.55f, s, TEXT3D_GREY);  // JetpackUtility's Text3D  // W4M 0x5626e0: (2 ms + 500) / 1000
         for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
             if (p.worm != i) continue;
             float a = Clamp(1 - (p.age - 0.5f) / 0.5f, 0, 1), pop = 1 + 0.25f * fmaxf(0, 1 - p.punch / 0.08f) + 0.3f * sinf(fminf(p.age / 0.25f, 1) * PI);

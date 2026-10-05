@@ -63,11 +63,82 @@ Commentary (lib_Comment, lib_Display{Failure,Success,SuddenDeath}Comment: Commen
 - Retreat time per weapon [disasm]: on fire, weapon logic entities do r=GetData("DefaultRetreatTime"); if props.RetreatTimeOverride (i32 @+0x50 in weapon properties, schema field #0x10) >= 0 then r=override; SetData("RetreatTime", r). Seen in GunWeaponLogicEntity 0x55cff0, MeleeWeaponLogicEntity 0x568860, NewSentrygunWeaponLogicEntity 0x56e6d0, PayloadWeaponLogicEntity 0x582d70; AI planner 0x4a1cf0 reads DefaultRetreatTime. FloodLogicEntity 0x555580 / FloodWeaponLogicEntity 0x555d30 and 0x588160/0x58ba00 write RetreatTime directly. Timer.StartRetreatTimer senders: TUs at 0x5210b0, 0x549bb0 + several weapon TUs (msgobjs 0x95c6ac,0x95d04c,0x95d964,0x95e094,0x95ea20). Front-end option "NoRetreatTime" (FE.WP.NoRetreatTime, 0x5d5830).
 - GameLogicService (.\GameLogicService.cpp): 0x4fdc90 HandleMessage (WormSelect.WeaponSelected/OptionSelected, GameLogic.AddMeToDeathQueue, Worm.Died, GameLogic.GunWaiting, Turn.Started/Ended, MsgActivateSuddenDeath, MsgTurnEnded, inventory, telepads, briefing box); 0x4f7d80 = subscribe/init (wind, mines, SuddenDamageMode, WormPot, GoodShotDamageThreshold, MaxRandomCrates). 0x4fb880 HandleEndOfGame (Win/Draw -> GameOver menus, rounds, stockpile, mission/challenge records).
 - Death queue [disasm]: AddMeToDeathQueue handler 0x4fac70 pushes worm id onto vector at GameLogicService+0x1fc. Tick 0x4fa2c0 calls 0x4f9b30 every frame: if queue non-empty and (ActiveObjectRegistrationService count (0x4d3960) == queue size, OR `GameLogic.SuddenDamageMode` (+0x210 is that key's handle, default 0, never written: there is no timeout, see §14), OR flag+0x1b1 set and count <= size+2): clear flag, pop FRONT id, post Worm.TimeToDie to that entity. One worm per pass -> deaths are sequential (each dying worm is an active object until done). Flag +0x1b1 set by message GameLogic.GunWaiting (gun weapons waiting for input tolerate 2 extra active objects) [assumed meaning].
-- Senders: WXWormLogicEntity 0x5abc50 (damage-display routine "Worm Displaying Damage Taken", DamageGraphic.Offset) posts AddMeToDeathQueue(worm id) when energy ≤ the summed pending damage (0x5abf13), at ApplyDamage, before the 2500 ms display ends [disasm]. Damage type 6 (poison, abductee roll) alone gets no display and no token (0x5abe38); the vampire call 0x5a9710 gets −total/2 with poison included (0x5abef1) [disasm]. 0x5ab7e0 caps damage types 2, 3, 4 at 75 per ApplyDamage (DoubleDamage doubles the cap, not type 1 fall damage, 0x5ababb..0x5abb6a) [disasm]. Applied in sim.cpp hurt() per worm and type, reset in applyDamage() [ours]; type = ExplosionMessage kind arg, set only by Explode 0x57f140 (0x57f32c..0x57f367): container name prefix `kWeaponCluster` -> 2 (kWeaponClusterGrenade AND its kWeaponClusterBomb child; Banana/Bananette, airstrike bombs, kWeaponLandmineBomblet -> 0), `kWeaponFactory` -> 4, Landmine DetonationType Clusters (+0x14c == 3) -> 3; all other 0x518ce0 callers push 0 (gun 0x55e5da, sentry, crate/barrel, death 0x5a95be) or 6 (0x5ca577) [disasm]. Ours: Cluster Grenade (parent and children) 2, Weapon Factory 4, rest 0; type 3 not modelled (no Mine.DetonationType) [ours]. The type-4 cap is 150 when the team's TeamData.WormpotSuperWeapon (+0x24, via Rm 0x50bf60 on the worm's team byte +0x127) == 0x15 (kWeaponFactoryWeapon) and WormPot.SecretSuperWeapons (+0x50, FE.WP.SecretSuperWeapons) is set (0x5abaf0..0x5abb44) [disasm]; "class 0x15" is that weapon id, not a wormpot mode. Not modelled: our 20 Wormpot modes (WORMPOT_MODES) have no SecretSuperWeapons bit and teams have no super weapon, so the branch is unreachable [ours]. 0x5ab7e0 (take damage) posts Worm.Damaged / Worm.Damaged.Current, sets Turn.Boring/Mistake/FriendlyDamage/EnemyDamage, DamagedWorm.Id, DamageTypeTaken, uses DoubleDamage, MostRecentlyActiveWorm. 0x5b07c0 worm HandleMessage: Worm.TimeToDie (death sequence, see docs/death-sequence.md), GameLogic.ApplyDamage, Worm.ApplyPoison, Land.NewShape. 0x5a6970 Cleanup: DeadWorm.Id, posts Worm.Died. Net.Client.TimeToDie: 0x5f5220 (net replication).
+- Senders: WXWormLogicEntity 0x5abc50 (damage-display routine "Worm Displaying Damage Taken", DamageGraphic.Offset) posts AddMeToDeathQueue(worm id) when energy ≤ the summed pending damage (0x5abf13), at ApplyDamage, before the 2500 ms display ends [disasm]. Damage type 6 (poison, abductee roll) alone gets no display and no token (0x5abe38); the vampire call 0x5a9710 gets −total/2 with poison included (0x5abef1) [disasm]. 0x5ab7e0 caps damage types 2, 3, 4 at 75 per ApplyDamage (DoubleDamage doubles the cap, not type 1 fall damage, 0x5ababb..0x5abb6a) [disasm]. Applied in sim.cpp hurt() per worm and type, reset in applyDamage() [ours]; type = ExplosionMessage kind arg, set only by Explode 0x57f140 (0x57f32c..0x57f367): container name prefix `kWeaponCluster` -> 2 (kWeaponClusterGrenade AND its kWeaponClusterBomb child; Banana/Bananette, airstrike bombs, kWeaponLandmineBomblet -> 0), `kWeaponFactory` -> 4, Landmine DetonationType Clusters (+0x14c == 3) -> 3; all other 0x518ce0 callers push 0 (gun 0x55e5da, sentry, crate/barrel, death 0x5a95be) or 6 (0x5ca577) [disasm]. Ours: Cluster Grenade (parent and children) 2, Weapon Factory 4, rest 0; type 3 not modelled (no Mine.DetonationType) [ours]. The type-4 cap is 150 when the team's TeamData.WormpotSuperWeapon (+0x24, via Rm 0x50bf60 on the worm's team byte +0x127) == 0x15 (kWeaponFactoryWeapon) and WormPot.SecretSuperWeapons (+0x50, FE.WP.SecretSuperWeapons) is set (0x5abaf0..0x5abb44) [disasm]; "class 0x15" is that weapon id, not a wormpot mode. Modelled: `Game::superWeapon` and the 150 cap in `Game::hurt` [ours]. The team read is the hurt worm's [disasm]. 0x5ab7e0 (take damage) posts Worm.Damaged / Worm.Damaged.Current, sets Turn.Boring/Mistake/FriendlyDamage/EnemyDamage, DamagedWorm.Id, DamageTypeTaken, uses DoubleDamage, MostRecentlyActiveWorm. 0x5b07c0 worm HandleMessage: Worm.TimeToDie (death sequence, see docs/death-sequence.md), GameLogic.ApplyDamage, Worm.ApplyPoison, Land.NewShape. 0x5a6970 Cleanup: DeadWorm.Id, posts Worm.Died. Net.Client.TimeToDie: 0x5f5220 (net replication).
 - WXWormManagerService (.\WXWormManagerService.cpp): 0x5b5e70 HandleMessage: SpawnWorm, RespawnWorm, ActivateNextWorm (worm selection), ReinitialiseWorms, EndTurn, SelectNextWorm, UnspawnWorm, ApplyDamage; 0x5b37c0 subscribe (Water.Level).
 - ActiveObjectRegistrationService 0x4d37a0 (Unregister): posts GameLogic.NoActivity when count hits 0; "ObjectCount.Active" read by AIService 0x4b3390, 0x4d3cb0 and GunWeaponLogicEntity.
 - AIService 0x4b3390: handles GameLogic.EndTurn ("AIService got message c_MsgEndTurn"), GameLogic.AITurn.Started, AI.WeaponsDontEndTurn.
 - Many services subscribe Turn.Started/Ended/EndTurn (HUD, camera, weapons, net 0x70bda0/0x7f7d30 NetService "Received Gamelogic.Turn.Started/Ended", g_msgEndTurnImmediate). Full list in turn_msgrefs.txt.
+
+### 6b. Wormpot: WormpotService and Wormpot.lub
+
+**Reels** [disasm, data]
+- Mode ids are the jump-table cases of SetupModes 0x5d6bc0 (table 0x5d7110). Their names are `FETXT.%s.<key>` (0x9205e0, WPotName / WPotHelp).
+  1 Empty, 2 SuperExplos, 3 SuperCluster, 4 SuperAnimals, 5 SuperFirearms, 6 SuperMelee, 7 WormsDrown, 8 Goliath, 9 MaxFall, 10 DoubleDamage,
+  11 CrateShower, 12 Specialist, 13 NoCowards, 14 Max Health, 15 WindAll, 16 Energy, 17 CrateDrops, 18 Sticky, 19 Slippy, 20 Lowgravity,
+  21 NoJumping, 22 TugOWorms, 23 WindGuns, 24 QuickWalk, 25 BlimpView, 26 MineRespawn, 27 MUltiGirder, 28 DimMak, 29 NoBombing, 30 Vampire,
+  31 VitalWorm, 32 SecretWeap, 33 DonorCard, 34 GirdersOnly, 35 WindWorms, 36 JumpingOnly, 37 OneShot.
+- Reel lists (each starts with 1):
+  - 0x8ac960: 2 3 4 5 6 11 10 17 9 16 15 14 13 12 7 30 20 23 25 27 28 29 31 32 35.
+  - 0x8ac9c8: 2 3 4 5 6 11 10 9 37 8 18 19 15 14 13 20 23 25 27 29 31 32 35.
+  - 0x8aca28: 2 3 4 5 6 11 10 26 36 21 20 22 23 24 25 27 29 31 32 35.
+- 33 DonorCard and 34 GirdersOnly are on no reel. Their flags (+0x51 / +0x52) have no reader in the exe or the Lua: unreachable, and inert if set.
+- SetupModes reads `FE.Wormpot.Reel1..3`. It sets `Worm.VelocityScale` 1, then runs each reel's case, which sets its `WormPot` container flag
+  (LVLSETUP `WormPotContainer`: PowerScale 2, SuperScale 2, FallingScale 2, SlippyModeScale 0.5, StickyModeScale 0.5, WindScale 0.5).
+
+**Modes added in wave 2, exe side** [disasm unless tagged]
+- **SuperCluster / SuperFirearms / SuperMelee** [data: Wormpot.lub]: `ApplyWormpotDamageScale` multiplies WormDamageMagnitude and LandDamageRadius by
+  SuperScale; `ApplyWormpotPowerScale` multiplies ImpulseMagnitude by PowerScale.
+  - Clusters: kWeaponClusterGrenade, ClusterBomb, Airstrike, SuperAirstrike, BananaBomb, Bananette.
+  - Firearms: Shotgun, SniperRifle.
+  - Hand to hand: BaseballBat, Prod, FirePunch, NoMoreNails.
+  - For reference, Explosives: Bazooka, Dynamite, Grenade, HolyHandGrenade, Landmine, HomingMissile, GasCanister, Fatkins. Animals: Sheep, SuperSheep,
+    OldWoman, ConcreteDonkey, Scouser.
+- **Specialist** (+0x35, Lua only) [data: raw bytecode]: `SetSpecialistTeam(n, team)` returns unless n > 1. The worm at place p (1..n) gets class
+  `T[(p-1)*6 + n]`.
+  - Classes by team size: n=2: 1 2; n=3: 1 3 4; n=4: 5 6 3 4; n=5: 5 6 3 4 6; n=6: 5 6 3 4 6 3.
+  - `DisallowAllWeapons` clears every Allow* on the worm except SkipGo / Surrender. It leaves AllowTeleport / Binoculars / BridgeKit / Pipe (LOCAL 1).
+  - Each class sets its Allow flags on the worm and writes the ammo into the team inventory:
+    - class 3 or 2: Shotgun -1, Airstrike 1, Landmine 2, FirePunch -1, Prod -1;
+    - class 4 or 2: NinjaRope 5, Girder 3, Dynamite 1, Parachute 2, BaseballBat 1, Sheep 1, Teleport 2;
+    - class 5 or 1: Bazooka -1, HomingMissile 1;
+    - class 6 or 1: Grenade -1, ClusterGrenade 3.
+  - Then `Inventory.WeaponDelays.Default` (the scheme's delays, stdvs SetupInventoriesAndDelays) gets HomingMissile 1 and Airstrike 5, copied to
+    Inventory0..3.
+- **NoCowards** (+0x36, Lua only) [data]: `DefaultRetreatTime` = `RetreatTime` = 0. Surrender is set to 0 in every team, alliance and worm inventory.
+  Weapons still apply their RetreatTimeOverride on fire (6.6).
+- **Energy** (EnergyOrEnemy +0x3a, Lua only) [data]: every worm gets PoisonRate = `Worm.Poison.Default` 10 (TWEAK), then `Worm.Poison`.
+  The Worm.Poison handler (0x5add14) applies only when PoisonRate is 0; it clears the abducted bit 0x400 and posts Comment.Poison.
+- **TugOWorms** (+0x41): 0x5d6a10 sets every worm's `ArtilleryMode` (+0x12a) = 1 and `AllowJetpack` (+0x14c) = 0.
+  - "Movement disabled" 0x5ac390 is then true, so the worm runs only UpdatePassive 0x5aecb0: it turns in place and falls, but never walks or jumps.
+  - The rope keeps the scheme's ammo.
+  - AI: 0x4a4a04 sets `0x90ea74 = !ArtilleryMode`; the move plans read it.
+- **WindGuns** (+0x42) and WindEffectMore (+0x38): GunWobbleObject (GunWeaponLogicEntity +0x90).
+  - Built when the gun entity is made (ctor 0x55f5b0); only kWeaponShotgun and kWeaponSniperRifle are guns.
+  - At build time: `f = 1 + 2.5 Wind.Speed / Wind.MaxSpeed` with either flag, else 1. Then 8 x (w = r, phase = r·π, freq = r·GunWobble.Speed·f).
+  - Update 0x55f9e0, t = ms since build: `amp = GunWobble.MaxAmp·cos(t / Period)·f`; pitch = amp·Σ0..3 sin(freq·t + phase)·w; yaw = the same over 4..7.
+    Both are multiplied by min(1.5 camera zoom, 1). A firing tick adds the kick (KickSize 0 for both guns, but one RNG draw).
+  - Tweaks [data: WEAPTWK]: MaxAmp 0.03, Period 5000, Speed 0.004.
+  - The shot uses it (Fire 0x55df90: pitch at 0x55e1d8, yaw at 0x55e1ff), and HeadCam adds it to the view (0x528eb5).
+- **BlimpView** (+0x44): byte 0x90ea75 = 0 and `Camera.Disable "Blimp"`.
+  - SetCamera 0x51e4e0 then refuses the Blimp; targeting still works from the aim view (0x583a10).
+  - The AI skips Homing (0x4a03ab) and the Airstrike, Donkey, SuperAirstrike and Fatkins plans (0x4a0f18).
+- **MineRespawn** (+0x45): `Land.Indestructable` 1. The land Explosion handler 0x473530 returns at once, so blasts leave no crater; a gun's
+  Land.ClearVoxel (0x4733b0) is not gated.
+  - Mine Detonate 0x580f10 clears the dud flag (0x581179) and posts `GameLogic.RespawnMine` 500 ms later (0x5812af).
+  - Handler 0x4ff56a: CreateMine at `Payload.Deleted.LastPosition` if it is above Water.Level.
+  - CreateMine skips the dud roll in this mode (0x4f97c9, 0x4f9d9d).
+- **DimMak** (+0x4b, no reader): 0x5d6420 sets kWeaponProd `InstantKill` (+0xdb) 1 and `WormCollisionFX` "WXP_Wep_DimMak".
+  - The melee hit 0x567a40 then deals Energy − pending damage (0x567c03), with impulse 0 (0x567d48), as type 5.
+- **SecretWeap** (+0x50): 0x5d65c0 loops over teams 0..3. If the team inventory holds any kWeapon (1..31), it draws `rand % 30` until the team holds
+  that id, and stores it in TeamData.WormpotSuperWeapon (+0x24; 0x43 kWeaponUndefined otherwise, 0x5d63c4).
+  - At the start of a turn (0x5d71b0), the active team's weapon container gets WormDamageMagnitude and LandDamageRadius × SuperScale; turn end
+    (0x5d73c0) restores them (0x5d6770). Payload +0x15c / +0x168, Gun +0xc8 / +0xe8, Melee +0xc0 / +0xd0; a Sentry Gun is refused (0x5d692e).
+  - The Weapon Factory reads SuperScale through 0x5d66e0 (0x598684). Damage type 4 is capped at 150 for that team (0x5abaf0).
+  - Not shown anywhere (`FETXT.SelectTeamWeapon` has no reader).
+- **WindWorms** (+0x53): the worm's Acceleration gets Wind × WindScale 0.5 (0x5a6d20, physics.md); the Ballistic integrate uses it.
+- **JumpingOnly** (+0x54): `Worm.VelocityScale` 0. The walk step 0x5b0f9d scales its displacement by it; jumps don't read it.
+  - The turn-end reset 0x4f59f0 (to 1) skips it, and the mystery Quick Walk crate does nothing in this mode.
+- **QuickWalk** (24): `Worm.VelocityScale` 2 for the game (0x5d6f9e).
 
 ### 7. .lub inventory (145 files) [data: names + markers; roles assumed from name/flow]
 - Core: stdlib (base turn state machine), stdvs (versus/multiplayer rules on top of stdlib), lib_help (helper library), Wormpot (Wormpot modifier modes, DoWormpotOncePerTurnFunctions).

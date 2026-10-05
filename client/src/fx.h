@@ -1,6 +1,7 @@
 #pragma once
 #include "raylib.h"
 #include "sim.h"
+#include <functional>
 #include <string>
 
 // Client-side visuals (never read by the sim): billboard particles, projectile trails, sky dome, water.
@@ -10,6 +11,7 @@ extern float shake;  // camera shake amplitude (m), decays in update()
 void load();
 // per match: level sky scene (levelSky; else the ramp), water textures, clear colour
 void theme(const std::string &theme, Color sky, const std::string &time, bool levelSky = true);
+std::string gradientFile(const std::string &theme, const std::string &time, bool side);  // W4M LightGradient <L>_Sky0n / <L>_SideSky0n
 std::string skyFile(const std::string &theme, const std::string &time);  // the level sky .glb (Models::decode() it ahead)
 void unload();
 void clear();
@@ -28,7 +30,9 @@ void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, floa
 void update(float dt);
 Color fog();  // horizon colour: clear colour and terrain/water fog
 void drawSky(const Camera3D &cam);  // first thing inside BeginMode3D
-void drawWater(const Camera3D &cam, float level, float time);
+void drawWater(const Camera3D &cam, float level, float time, float half = 12000 / 20.f);  // half: W4M's 12000-unit quad in m
 void draw(const Camera3D &cam);  // particles, after the opaque scene and the water
+// lens flare, last in the scene; hit(from, dir): 0 clear, 1 land, 2 object between the camera and the sun
+void drawFlare(const Camera3D &cam, float dt, const std::function<int(Vector3, Vector3)> &hit);
 int count();
 }  // namespace Fx

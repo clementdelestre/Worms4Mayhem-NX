@@ -615,8 +615,7 @@ void Acting::taunt(const Game &g, int worm, const std::string &weapon) {
         {"Bazooka", TAUNT_RANGED}, {"Cluster Grenade", TAUNT_RANGED}, {"Holy Hand Grenade", TAUNT_RANGED}, {"Banana Bomb", TAUNT_RANGED},
         {"Shotgun", TAUNT_RANGED}, {"Homing Missile", TAUNT_RANGED}, {"Sheep", TAUNT_RANGED}, {"Gas Canister", TAUNT_RANGED}, {"Old Woman", TAUNT_RANGED},
         {"Super Sheep", TAUNT_RANGED}, {"Starburst", TAUNT_RANGED}, {"Inflatable Scouser", TAUNT_RANGED},
-        {"Poison Arrow", TAUNT_RANGED}, {"Sentry Gun", TAUNT_RANGED}, {"Sniper Rifle", TAUNT_RANGED},
-        {"Fatkins Strike", PAYLOAD5}};  // 0x596830 leaves Fatkins at 0: TimedPayloadFive, no payload, so only the rotation moves
+        {"Poison Arrow", TAUNT_RANGED}, {"Sentry Gun", TAUNT_RANGED}, {"Sniper Rifle", TAUNT_RANGED}};  // Fatkins: no accessory gets the key (0x597401)
     if (!loaded) load();
     if (actors.size() != g.worms.size() || worm < 0) return;
     G = &g;

@@ -508,45 +508,52 @@ WormPoseManager (0x59da40, disasm): `Blend` is an XTransform node of the worm wh
 
 Bored clock (0x5a47d0) [disasm]: graphic +0x5c adds the frame's ms (+0x198 = ms / 20, times 20) until 90000 (0x15f90), where WXActor +0x6e bit 4 ("bored") is set. kWE 13, 14, 15, 17, 19, 21 and 22 zero it and clear the bit (7 does not). The bit feeds the Bored pool (0x60df50) and lets an `Idle` track take a worm already in a scene (0x60c767). kWE 7 and 17 also end the worm's scene with StopAnimation blend 200 (0x60ae60, 0x60ba40).
 
-#### Weapon clips (data: WEAPTWK `WXAnimDraw/Aim/Fire/Holding/EndFire/Taunt/TargetSelected`, fields +0x54..+0x6c of the weapon properties container)
+#### Weapon clips (WeaponAccessoryEntity, WAE_*)
 
-| weapon | Draw | Aim | Fire | Hold | other |
-|---|---|---|---|---|---|
-| Bazooka | DrawBazooka | AimBazooka | FireBazooka | HoldBazooka | TauntBazooka |
-| Grenade | DrawThrown | AimGrenade | FireThrown | HoldThrown | TauntThrown |
-| Cluster | DrawCluster | AimGrenade | FireCluster | HoldCluster | – |
-| Banana | DrawBanana | AimGrenade | Fire1Banana | – | – |
-| Holy | DrawGrenade | – | Fire2Grenade | – | – |
-| Gas | DrawGasgrenade | – | FireGasgrenade | – | – |
-| Homing | DrawHomingMissile | AimHomingMissile | FireHomingMissile | – | TargetSelected AimLockHomingMissile |
-| Shotgun | DrawShotgun | AimShotgun | FireShotgun | HoldShotgun | TauntShotgun |
-| Sniper | DrawSniper | AimSniper | FireSniper | HoldSniper | TauntSniper |
-| Bat | DrawBat | AimBat | Fire2Bat | HoldBat | – |
-| FirePunch | DrawFirepunch | HoldFirepunch | Fire2Firepunch | HoldFirepunch | – |
-| PoisonArrow | DrawBow | AimBow | WindupBow | HoldBow | EndFire FireBow |
-| Airstrike-like | DrawAirstrike | – | – | HoldAirstrike | TauntAirstrike |
-| Dynamite | DrawDynamite | – | FireDynamite | – | – |
-| Landmine | DrawLandmine | – | FireLandmine | – | – |
-| Sheep / SuperSheep | DrawSheep | – | FireSheep | – | – |
-| OldWoman / Scouser | DrawOldWoman / DrawScouser | Struggle | – | – | – |
-| NinjaRope | DrawNinjarope | AimBazooka | FireNinjarope | – | – |
-| Girder | DrawGirder | HoldGirder | – | HoldGirder | – |
-| Flood | DrawRainDance | HoldRainDance | FireRainDance | – | – |
-| SkipGo | DrawSkipGo | – | – | HoldSkipGo | – |
-| Surrender | DrawSurrender | – | Tantrum | HoldSurrender | – |
-| Redbull, Prod, NMN, SentryGun, Starburst, BubbleTrouble | Draw*/Fire*/Hold*/Taunt* | – | – | – | – |
+**Clip names [data: WEAPTWK `WXAnimDraw/Aim/Fire/Holding/EndFire/Taunt/TargetSelected/Windup`, container +0x54..+0x6c, Windup +0xb8 (melee)].** "–" = empty. A name the worm bundle (Bundl474, 329 clips) lacks loads as no clip (0x594da0 stores handle −1, length 0): AimBat, DrawCluster, DrawBanana, DrawGrenade, DrawGasgrenade, HoldCluster, HoldBanana, HoldGrenade, HoldGasgrenade, Fire1Banana, FireCluster, Fire2Grenade, FireGasgrenade, Struggle and the RainDance taunt are absent [data: byte search of Data/].
 
-Other weapon clips hardcoded in the WAE_* entities (strings 0x85d2f6..0x85dc08):
+| weapon (id) | WAE class | Draw | Aim | Fire | Hold | other |
+|---|---|---|---|---|---|---|
+| Bazooka (1) | Standard | DrawBazooka | AimBazooka | FireBazooka | HoldBazooka | |
+| Grenade (2), Cluster (3), Holy (6), Banana (7), Gas (16) | Thrown | (DrawThrown) | AimGrenade | (FireThrown / LobThrown) | (HoldThrown) | Windup (WindupThrown) |
+| Dynamite (5) / Landmine (8) | Dropped | DrawDynamite / DrawLandmine | – | FireDynamite / FireLandmine | HoldDynamite / HoldLandmine | |
+| Shotgun (9) / Sniper (28) | Standard | DrawShotgun / DrawSniper | AimShotgun / AimSniper | FireShotgun / FireSniper | HoldShotgun / HoldSniper | |
+| Bat (10) / FirePunch (12) | Melee | DrawBat / DrawFirepunch | (AimBat) / HoldFirepunch | Fire2Bat / Fire2Firepunch | HoldBat / HoldFirepunch | Windup WindupBat / WindupFirepunch |
+| Prod (11), NoMoreNails (25) | Standard | DrawProd, DrawNMN | – | FireProd, FireNMN | HoldProd, HoldNMN | |
+| Homing (13) | Standard | DrawHomingMissile | AimHomingMissile | FireHomingMissile | HoldHomingMissile | TargetSelected AimLockHomingMissile |
+| Flood (14) | Mechanical | DrawRainDance | HoldRainDance | FireRainDance | HoldRainDance | mesh Flood.Weapon |
+| Sheep (15), SuperSheep (19) | Standard | DrawSheep | – | FireSheep | HoldSheep | |
+| OldWoman (17) / Scouser (24) | Standard | DrawOldWoman / DrawScouser | (Struggle) | FireOldWoman / FireScouser | HoldOldWoman / HoldScouser | |
+| Starburst (20) | Starburst | DrawStarburst | AimBazooka | FireStarburst | HoldStarburst | FlyStarburst (0x591314) |
+| PoisonArrow (26) | Mechanical | DrawBow | AimBow | WindupBow | HoldBow | EndFire FireBow (never loaded, below) |
+| SentryGun (27) | Standard | DrawSentrygun | – | FireSentrygun | HoldSentrygun | |
+| Airstrike (4), Donkey (18), Abduction (22), SuperAirstrike (29) | Standard | DrawAirstrike | – | – | HoldAirstrike | mesh Radio |
+| NinjaRope (35) | Standard | DrawNinjarope | AimBazooka | FireNinjarope | HoldNinjarope | |
+| Surrender (39) | Standard | DrawSurrender | – | Tantrum | HoldSurrender | |
+| SkipGo (38) | Standard | DrawSkipGo | – | – | HoldSkipGo | |
+| Girder (34), Fatkins (23, WEAPTWK as Airstrike) | none: no 0x95f6d0 entry, no accessory, nothing in hand | | | | | |
+| Redbull (41), BubbleTrouble (42) | Standard | DrawRedbull, DrawBT | – | FireRedbull, FireBT | HoldRedbull, HoldBT | |
 
-- JetpackFly, JetLeft/JetRight, JetpackBump, AJetpackRotLR;
-- FireParachute, ParachuteLR, ParachuteWobble;
-- FlyStarburst, FlyRedBull, LobThrown, WindupThrown, Windup, AimFP;
-- Nailed{Draw,Hold,Fire}SkipGo;
-- {Draw,Hold,Fire,Taunt}WFGun.
+Parenthesised names come from the class, not WEAPTWK. **Class by weapon id [disasm]**: table 0x95f6d0 (8 bytes per id), filled by 0x596830: 0x5901c0 WAE_Standard (default), 0x595ed0 WAE_Thrown (ids 2, 3, 6, 7, 16), 0x58c060 WAE_Dropped (5, 8), 0x58e6c0 WAE_Melee (10, 12), 0x58d720 WAE_Mechanical (14, 26), 0x5910a0 WAE_Starburst (20), 0x5942d0 the pack class (Jetpack 37, Parachute 36). Factory weapons (21): WAE_Thrown when WeaponType == 4 (kThrown), else WAE_Standard (0x5973e6).
 
-Chaining, WAE_Standard pose update 0x58f620 [disasm]. Init (0x58c1c5..) loads each WEAPTWK clip name as a (worm clip, weapon-mesh clip, length) slot: Draw +0x54 -> (+0xe4, +0xe8, length +0xd8, clock +0xdc), Aim +0x58 -> (+0x130, +0x138), Fire +0x5c -> (+0x158, +0x160, +0x148), Holding +0x60 -> (+0x110, +0x114, +0x104, clock +0x108), EndFire +0x64 -> (+0x168, +0x16c, +0x14c), Taunt +0x68 -> (+0xf8, +0xfc, +0xec, clock +0xf0); 0x594d40 sets a slot's (time, weight). The Aim clip is scrubbed by pitch: t = WormData+0xd0 / (π/2) + 1 (+0x144).
-  - State 1 (drawn): Draw at weight 1 and t = clock while clock < length, Aim fading in at clock / length; then Draw 0, Aim 1, Holding 1 looping (clock wraps at its length). With WormData `PhysicsOverride` (+0xe8) == 8 every layer weighs 0 (meaning of 8 not traced, assumed).
-  - State 2 (taunt): Draw held at its end; w = min(1, 4 (len − t), 4 t); Taunt at w, Aim and Holding at 1 − w; at t ≥ len back to 1.
-  - State 5 (`Weapon.PlayFireAnim`): Fire at 1, Aim at 1, the rest 0, until the Fire length; then EndFire from t = 0 (state 6) with Aim at 1. State 6 ends with Aim and Holding at 0 and state 0 (holstered), or 1 for weapon id 9 (Shotgun: its second shot, no redraw).
+**Slots [disasm].** Init (Standard 0x5901c0, Dropped 0x58c1c5, ...) loads each name as a (worm clip, weapon-mesh clip of the same name, length) slot through 0x594da0: Draw +0x54 -> (+0xe4, +0xe8, length +0xd8, clock +0xdc), Aim +0x58 -> (+0x130, +0x138), AimFP -> (+0x134, +0x13c), Fire +0x5c -> (+0x158, +0x160, +0x148), Holding +0x60 -> (+0x110, +0x114, +0x104, clock +0x108), EndFire +0x64 -> (+0x168, +0x16c, +0x14c), Taunt +0x68 -> (+0xf8, +0xfc, +0xec, clock +0xf0), windup -> (+0x184, +0x188, +0x170 / +0x178, clock +0x17c). 0x594d40 sets a slot's (time, weight) on the worm and on the weapon mesh. Exceptions: WAE_Thrown hardcodes DrawThrown, HoldThrown and WindupThrown (0x59618b..0x596291) and keeps WEAPTWK Aim and Taunt; WAE_Mechanical loads WEAPTWK **Fire into both the windup and the fire slot** (0x58d90e, 0x58d932) and never reads EndFire; WAE_Melee's windup is WEAPTWK Windup (+0xb8). EndFire is non-empty only for PoisonArrow, a Mechanical weapon, so no worm ever plays an EndFire clip.
+
+**Aim time [disasm 0x58f63d].** t = WormData `WeaponAngle` (+0xd0, radians) / (π/2) + 1, in seconds (the Aim clips are 2 s long).
+
+**Shared pose update 0x58f620 (Standard, Dropped) [disasm].** Jump table 0x58fe38 on state +0xb0:
+- State 1 (drawn): while the draw clock < Draw length: Draw at weight 1 and t = clock, Aim at clock / length, Hold 0. Then Draw 0, Aim 1, Hold 1 looping (clock wraps at its length). WormData `PhysicsOverride` (+0xe8) == 8: every layer 0.
+- State 2 (taunt): w = min(1, 4 (len − t), 4 t); Taunt at w, Aim and Hold at 1 − w; at t ≥ len back to 1.
+- State 5 (`Weapon.PlayFireAnim`): Fire at 1, Aim at 1, Draw and Hold 0, until the Fire length (an empty Fire has length 0: state 5 ends on its first update); then EndFire from t = 0 (state 6) with Aim at 1. State 6 ends with Aim and Hold at 0 and state 0 (holstered), or 1 for weapon id 9 (Shotgun: its second shot, no redraw).
+- State 0: nothing is written; `HeldAccessory.Hide` (kWE 1 walk, kWE 2 jump) runs 0x595bd0: state 0, every weight 0.
+
+**WAE_Thrown (update 0x5954f0, handler 0x595ed0) [disasm].** States 1, 2 as above. `Weapon.PoweringUpStart` (PoweredWeaponLogicEntity, FIRE press): state 4, windup clock 0. State 4: WindupThrown at 1, t = clock, clock stops at the clip length (1.5 s); Aim 1; Draw and Hold 0. `Weapon.PlayFireAnim`: **FireThrown if the windup clock > 0.6 s, else LobThrown** (0x59663e, constant 0x853b40), blend v = 0, state 5. State 5: v += clamp((1 − v) / 2, ±0.2) per update (0x47a1a0); the throw clip at v, WindupThrown at 1 − v (frozen at its clock), Aim 1, Draw and Hold 0; at the throw's end its weight is 0 and state 0.
+
+**WAE_Mechanical (update 0x58d0a0, handler 0x58d720) [disasm].** `Weapon.PlayWindupAnim` (state 4) comes only from PayloadWeaponLogicEntity on FIRE press in mode 2 (0x5860dd: a powered payload weapon); the bow mesh plays `Windup` (id 26). State 4: the windup clip at 1, clock clamped at its length; Aim 1; Draw and Hold 0. `Weapon.PlayFireAnim`: state 5, clock 0, the bow mesh plays `FireBow`. State 5: the fire slot (WEAPTWK Fire again: WindupBow from t = 0, FireRainDance for the Flood) at 1 and Aim at 1 until its length, then state 0. Init plays `DrawBow` / `DrawFlood` once on the weapon mesh (0x58d876, 0x58d89f).
+
+**WAE_Melee (update 0x58de60, handler 0x58e6c0) [disasm].** Its windup state (4: Windup weight eased in at max 0.1 per update, Hold at the complement, clock wrapping) needs `Weapon.PlayWindupAnim`, which MeleeWeaponLogicEntity never sends (senders of the name objects: 0x5860dd only) [disasm], so WindupBat / WindupFirepunch never play. `Weapon.PlayFireAnim`: Fire at 1 + Aim at 1 (state 5), EndFire (state 6, empty), state 0.
+
+**WAE_Starburst (update 0x590b70) [disasm].** State 1 as Standard. `Weapon.PlayFireAnim`: state 5, the mesh plays `FireStarburst`, global Aim weight 0x95f004 = 1 then eased to 0 (0x47a1a0, 0.1 per update); FireStarburst at 1 until its length. `Starburst.Launched`: state 7: FlyStarburst at 1, looping on clock 0x95f000; the fire slot is zeroed.
+
+**Who sends what [disasm].** `Weapon.ActivateAccessory` -> a new WAE + `Accessory.Init` (0x597220, state 1, the Draw from t = 0): LogicalWeaponManagerService (0x565998, 0x56656c: selection, turn start) and UpdateWalking (0x5b1bed) once the worm is back on its feet with its weapon (not after a turn-in-place event 10..12, not for Jetpack / Parachute). `Weapon.Wield` (Payload 0x5862d0, Gun 0x55dbe5, Melee 0x5699bc, Powered 0x586f2f, NinjaRope 0x573ba1) redraws a holstered weapon through the state-0 taunt path (0x58c356: clocks 0, state 1). `Weapon.PlayFireAnim`: the payload launch 0x583160 (0x583302), Melee, Flood, Surrender, BubbleTrouble, SentryGun, Redbull.
 
 The gestures (fidget, victory, hurt reactions, death) are WORMACTING EFMV scenes (docs/worm-reactions.md), cast by WXSceneManagerService. The trigger tokens are in WXActor.cpp strings 0x869950..0x869bbc. `Worm.QueueAnim` / `Worm.ResetAnim` have name objects (0x95c804, 0x95c7fc, 0x95e940) but no subscriber: only static inits and one send (ResetAnim, 0x587f3e, SkipGo/Surrender) use them; the `-w3d` scripts send them [disasm, data]. `Worm.ScriptDrawAnim` and `Worm.SurrenderAnim` are bare strings with no name object. All four do nothing on PC.

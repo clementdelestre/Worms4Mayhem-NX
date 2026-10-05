@@ -40,6 +40,8 @@ struct Terrain {
     std::vector<Texture2D> textures;
     std::map<std::string, Image> decoded;  // decodeTextures() output, uploaded by the first remesh
     int scaleLoc = -1;
+    Color grad[2][32] = {};  // W4M LightGradient and side gradient, 32 entries each (loaded on first remesh)
+    bool hasGrad = false;
     std::vector<unsigned char> colTop;  // per (x, z) column: 1 + highest solid voxel at remesh time (shadow ray early-out); back() = max
     // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
     struct Object { int model; Vector3 pos; Matrix m; };
@@ -68,7 +70,8 @@ private:
     void reset(signed char fill);
     void island(float bh, float height, float rough, float rad, unsigned s);
     void buildChunk(int ci);
-    void bake(Vector3 p, Vector3 n, Vector3 l, float *ao, float *vis) const;
+    Color vertexColour(Vector3 p, Vector3 n) const;
+    void loadGradients();
     bool loadVoxels(const std::string &path);
     void loadTextures();
 };

@@ -95,8 +95,8 @@ static void blimpView() {
     assert(strikes > 0);
 }
 
-// Enemy right next to the active CPU worm: the weapon it fires first.
-static int pointBlank(uint32_t seed, uint8_t level) {
+// Enemy right next to the active CPU worm: the weapon it fires first, and from how far.
+static std::pair<int, float> pointBlank(uint32_t seed, uint8_t level) {
     Game g;
     GameConfig c{seed, 2, 1, "", 0};
     c.teamSetup = {{"CPU", level}, {"CPU", level}};
@@ -110,9 +110,9 @@ static int pointBlank(uint32_t seed, uint8_t level) {
     Ai ai;
     for (int t = 0; t < 60 * 40 && g.phase == Phase::Aim; t++) {
         g.step(ai.think(g));
-        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Fire && e.worm >= 0) return e.weapon;
+        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Fire && e.worm >= 0) return {e.weapon, Vector3Distance(g.worms[e.worm].pos, v.pos)};
     }
-    return -1;
+    return {-1, 0.f};
 }
 
 // The first shots of a match with a given planning budget: the plan must not depend on how the think is sliced.
@@ -244,17 +244,18 @@ int main() {
     for (int l = 1; l <= 5; l++) for (size_t i = 0; i < WEAPONS.size(); i++) changes += WEAPONS[i].kind == Kind::ChangeWorm ? fires[l][i] : 0;
     assert(changes == 0);
 
-    int close = 0;
+    int attacks = 0;
     printf("point blank:");
     for (uint32_t seed = 1; seed <= 12; seed++) {
-        int wi = pointBlank(seed, 1 + seed % 5);
-        printf(" %s", wi < 0 ? "-" : WEAPONS[wi].name.c_str());
-        close += wi >= 0 && (WEAPONS[wi].kind == Kind::Melee || WEAPONS[wi].kind == Kind::Shotgun || dropped(WEAPONS[wi]));
+        auto [wi, d] = pointBlank(seed, 1 + seed % 5);
+        printf(" %s %.1f m", wi < 0 ? "-" : WEAPONS[wi].name.c_str(), d);
+        // adjacent enemy: a close-range plan where it stands (melee, dynamite or a mine set down), or a move first: W4M plans
+        // projectiles, guns, strikes and animals only at targets over 100 units (5 m) from where they fire (0x49fcf6)
+        if (wi >= 0) assert(WEAPONS[wi].kind == Kind::Melee || WEAPONS[wi].kind == Kind::Mine || dropped(WEAPONS[wi]) || d > 4.5f);
+        attacks += wi >= 0;
     }
     printf("\n");
-    // adjacent enemy: melee, a gun or dynamite set down before the retreat, not a blast that hurts the shooter.
-    // No melee quota: W4M scores damage linearly with no point-blank bonus, so 75 hp dynamite outranks a 30 hp bat.
-    assert(close >= 10);
+    assert(attacks >= 10);
 
     int wins = 0, games = 0;
     for (const char *map : maps)

@@ -6,9 +6,9 @@ Default install path in the examples: the Steam `WormsXHD` folder (Worms Ultimat
 | tool | command | writes | format notes |
 |---|---|---|---|
 | `tools/w4m-import` | `w4m-import [--list] [--raw] <W4M dir> [out = client/assets]` | `sfx/`, `voices/<bank>/`, `music/` (below) | this file |
-| `tools/w4m-models` | `w4m-models <W4M dir> [out = client/assets/models]`; `w4m-models --list <one bundle .xom>` dumps its meshes and clips (`W4M_CHANNELS`, `W4M_KEYS`, `W4M_GROUPS`, `W4M_IMG_DIR` add detail) | `models/*.glb` (worm with skin and clips, weapons, hats, decor, frontend scene), `models/sky/<letter>_sky0<n>.glb` + `.blend` (level skies, blend factors per mesh) | `w4m-formats.md` "Meshes" |
+| `tools/w4m-models` | `w4m-models <W4M dir> [out = client/assets/models]`; `w4m-models --list <one bundle .xom>` dumps its meshes and clips (`W4M_CHANNELS`, `W4M_KEYS`, `W4M_GROUPS`, `W4M_IMG_DIR` add detail) | `models/*.glb` (worm with skin and clips, weapons, hats, decor, frontend scene), `models/sky/<letter>_sky0<n>.glb` + `.blend` (level skies: blend factors and clip rates per mesh, clip length, Sun locator), `wxpmesh7.glb` (Donkey dome, raw units) | `w4m-formats.md` "Meshes" |
 | `tools/w4m-maps` | `w4m-maps <W4M dir> [out = client/assets/maps] [map stems...]` | `maps/<name>.json` + `.vox`, textures, `missions/` | `maps.md`, `missions.md`, `w4m-formats.md` |
-| `tools/w4m-ui` | `w4m-ui <W4M dir> [out = client/assets/ui]` | `ui/` (fe, fe2, hud, sky...) PNGs, `lang/<code>.txt` | `w4m-formats.md` "Frontend / HUD art" |
+| `tools/w4m-ui` | `w4m-ui <W4M dir> [out = client/assets/ui]` | `ui/` (fe, fe2, hud, sky...; `sky/f_water01a/b/c` = FE.DAYWater set) PNGs, `lang/<code>.txt` | `w4m-formats.md` "Frontend / HUD art" |
 | `tools/w4m-re/acting.py` | `acting.py [out = client/assets/acting.txt]` | the WORMACTING scenes | `worm-reactions.md` |
 
 Build each Rust tool with `cargo build --release --manifest-path tools/<tool>/Cargo.toml`. `--list` of `w4m-models` takes exactly one

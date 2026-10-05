@@ -1,4 +1,5 @@
 #include "terrain.h"
+#include "fx.h"
 #include "json.h"
 #include "lit.h"
 #include "models.h"
@@ -437,26 +438,37 @@ bool Terrain::raycast(Ray r, float maxDist, Vector3 *hit) const {
     return false;
 }
 
-// Ambient occlusion (solid fraction of 8 points around the normal) and sun visibility (voxel ray march).
+// W4M GLG_PC 0x451ea0: LightGradient[N.L capped by the sun ray] + SideGradient[normal x] - 128 (GLG_Shadow 0x454e30, 0x451590)
 // ponytail: a carve only remeshes nearby chunks, so shadows cast by blown-away ground elsewhere stay until remeshed
-void Terrain::bake(Vector3 p, Vector3 n, Vector3 l, float *ao, float *vis) const {
+Color Terrain::vertexColour(Vector3 p, Vector3 n) const {
+    static const Vector3 L = Vector3Normalize({0, 0.26f, -0.78f});  // Sun.LowLightVector: every theme (0x4e7ed0)
+    if (!hasGrad) return WHITE;
     auto solidAt = [&](Vector3 q) {
         int x = (int)(q.x * (1 / VOX) + 0.5f), y = (int)(q.y * (1 / VOX) + 0.5f), z = (int)(q.z * (1 / VOX) + 0.5f);
         return x >= 0 && y >= 0 && z >= 0 && x < NX && z < NZ && y < colTop[z * NX + x] && d[idx(x, y, z)] > 0;
     };
-    static const float K = 0.57735f;
-    static const Vector3 DIRS[8] = {{K, K, K}, {-K, K, K}, {K, -K, K}, {-K, -K, K}, {K, K, -K}, {-K, K, -K}, {K, -K, -K}, {-K, -K, -K}};
-    int occ = 0;
-    for (const Vector3 &k : DIRS) {
-        Vector3 dir = Vector3Normalize(Vector3Add(n, Vector3Scale(k, 0.9f)));
-        occ += solidAt(Vector3Add(p, Vector3Scale(dir, 0.8f)));
+    int b0 = (int)(Vector3DotProduct(n, L) * 127 + 128), b3 = (int)(n.x * 127 + 128);
+    // first hit from 10 units out along L, 999 units max (20 units per m): cap 105 + 0.15 per unit
+    Vector3 q = Vector3Add(p, Vector3Scale(L, 0.5f));
+    float t = 0, step = 0.25f;  // steps grow 8%: ~37 lookups reach 50 m
+    for (; b0 > 105 && t < 49.95f && q.y < colTop.back() * VOX; t += step, q = Vector3Add(q, Vector3Scale(L, step)), step *= 1.08f)
+        if (solidAt(q)) { b0 = std::min(b0, 105 + (int)(t * 20 * 0.15f)); break; }
+    Color m = grad[0][std::clamp(b0, 0, 255) >> 3], sd = grad[1][std::clamp(b3, 0, 255) >> 3];
+    auto ch = [](int a, int b) { return (unsigned char)std::clamp(a + b - 128, 0, 255); };
+    return {ch(m.r, sd.r), ch(m.g, sd.g), ch(m.b, sd.b), 255};
+}
+
+// W4M GLG_PC 0x451ba0: both 256x1 gradients sampled every 8 pixels
+void Terrain::loadGradients() {
+    hasGrad = false;
+    for (int k = 0; k < 2; k++) {
+        std::string f = Fx::gradientFile(theme, time, k);
+        if (!FileExists(f.c_str())) return;
+        Image im = LoadImage(f.c_str());
+        for (int i = 0; i < 32; i++) grad[k][i] = GetImageColor(im, std::min(8 * i, im.width - 1), 0);
+        UnloadImage(im);
     }
-    *ao = 1 - 0.7f * occ / 8;
-    *vis = Vector3DotProduct(n, l) > 0;
-    Vector3 q = Vector3Add(p, Vector3Scale(n, 0.3f)), step = Vector3Scale(l, 0.4f);
-    // steps grow 12% each: ~32 lookups reach >100 m instead of 90 fixed ones (remesh cost on Switch)
-    for (int i = 0; i < 32 && *vis > 0 && q.y < colTop.back() * VOX; i++, q = Vector3Add(q, step), step = Vector3Scale(step, 1.12f))
-        if (solidAt(q)) *vis = 0;
+    hasGrad = true;
 }
 
 void Terrain::buildChunk(int ci) {
@@ -530,19 +542,18 @@ void Terrain::buildChunk(int ci) {
         if (b.vid[n] >= 0) return b.vid[n];
         Vector3 p = cp[n], nr = cn[n];
         int m = b.mat - 1;
-        float ao, vis;
-        bake(p, nr, light, &ao, &vis);
+        Color vc = m >= 64 ? WHITE : vertexColour(p, nr);  // heightmap land: HeightMapFragmentMain ignores the vertex rgb
         b.pos.insert(b.pos.end(), {p.x, p.y, p.z});
         b.nrm.insert(b.nrm.end(), {nr.x, nr.y, nr.z});
-        if (m >= 0 && m < (int)texMats.size() && texMats[m].maps) {  // textured: the shader lights it from (ao, sun visibility)
-            b.col.insert(b.col.end(), {(unsigned char)(ao * 255), (unsigned char)(vis * 255), 0, 255});
+        if (m >= 0 && m < (int)texMats.size() && texMats[m].maps) {  // textured: the shader lights it, times this colour
+            b.col.insert(b.col.end(), {vc.r, vc.g, vc.b, 255});
             return b.vid[n] = (int)b.pos.size() / 3 - 1;
         }
         Color base = m >= 0 && m < (int)palTop.size() ? (nr.y > 0.7f ? palTop[m] : palSide[m]) : m == HARD - 1 ? Color{150, 150, 160, 255}  // untextured steel
                    : p.y < WATER + 0.8f ? beach : nr.y > 0.7f ? top : side;
-        Vector3 l = Vector3Add(sun.ambient, Vector3Scale(sun.diffuse, fmaxf(0, Vector3DotProduct(nr, light)) * vis));
-        auto ch = [&](unsigned char c, float k) { return (unsigned char)fminf(255, c * k * ao); };
-        b.col.insert(b.col.end(), {ch(base.r, l.x), ch(base.g, l.y), ch(base.b, l.z), 255});
+        Vector3 l = Vector3Add(sun.ambient, Vector3Scale(sun.diffuse, fmaxf(0, Vector3DotProduct(nr, light))));
+        auto ch = [&](unsigned char c, float k, unsigned char v) { return (unsigned char)fminf(255, c * k * v / 255); };
+        b.col.insert(b.col.end(), {ch(base.r, l.x, vc.r), ch(base.g, l.y, vc.g), ch(base.b, l.z, vc.b), 255});
         return b.vid[n] = (int)b.pos.size() / 3 - 1;
     };
     for (int k = 1; k < S; k++)
@@ -588,8 +599,8 @@ void Terrain::buildChunk(int ci) {
     }
 }
 
-// Triplanar: top texture on up-facing surfaces, side texture elsewhere. Lighting after W4M's CG/Landscape.cg;
-// vertex colour r = ambient occlusion, g = sun visibility (baked by Terrain::bake).
+// Triplanar: top texture on up-facing surfaces, side texture elsewhere. Lighting after W4M's CG/Landscape.cg,
+// whose whole output is multiplied by the vertex colour (Terrain::vertexColour).
 static const char *VS = R"(
 attribute vec3 vertexPosition;
 attribute vec3 vertexNormal;
@@ -597,8 +608,8 @@ attribute vec4 vertexColor;
 uniform mat4 mvp;
 varying vec3 vPos;
 varying vec3 vN;
-varying vec2 vL;
-void main() { vPos = vertexPosition; vN = vertexNormal; vL = vertexColor.rg; gl_Position = mvp * vec4(vertexPosition, 1.0); }
+varying vec3 vC;
+void main() { vPos = vertexPosition; vN = vertexNormal; vC = vertexColor.rgb; gl_Position = mvp * vec4(vertexPosition, 1.0); }
 )";
 static const char *FS = R"(
 uniform sampler2D texture0;
@@ -611,7 +622,7 @@ uniform vec2 scale;  // 1 / repeat: top, side
 uniform vec3 camPos;
 varying vec3 vPos;
 varying vec3 vN;
-varying vec2 vL;
+varying vec3 vC;
 void main() {
     vec3 n = normalize(vN), w = n * n * n * n;
     w /= w.x + w.y + w.z;
@@ -620,11 +631,11 @@ void main() {
     vec3 c = texture2D(texture1, vec2(p.z, -p.y)).rgb * w.x + texture2D(texture1, vec2(p.x, -p.y)).rgb * w.z
            + mix(texture2D(texture1, p.xz).rgb, texture2D(texture0, t).rgb, step(0.0, n.y)) * w.y;
     vec3 e = camPos - vPos, v = normalize(e);
-    float sh = vL.y, nv = max(dot(n, v), 0.0);
-    float s = sh * pow(max(dot(n, normalize(sunDir + v)), 0.0), 20.0);
-    vec3 col = (diffuse * (max(dot(n, sunDir), 0.0) * sh) + ambient) * c + specular * (0.6 * s)
-             + (0.5 + 0.5 * sh) * vec3(0.2, 0.275, 0.175) * (1.0 - nv) * sqrt(1.0 - nv);
-    gl_FragColor = vec4(clamp(col, 0.0, 1.0) * vL.x, 1.0);
+    float nv = max(dot(n, v), 0.0);
+    float s = pow(max(dot(n, normalize(sunDir + v)), 0.0), 20.0);
+    vec3 col = (diffuse * max(dot(n, sunDir), 0.0) + ambient) * c + specular * (0.6 * s)
+             + vec3(0.2, 0.275, 0.175) * (1.0 - nv) * sqrt(1.0 - nv);
+    gl_FragColor = vec4(clamp(col, 0.0, 1.0) * vC, 1.0);
 }
 )";
 
@@ -681,6 +692,7 @@ void Terrain::remesh(double budget) {
             for (int y = 0; y < NY; y++)
                 for (int x = 0; x < NX; x++)
                     if (d[idx(x, y, z)] > 0) colTop[z * NX + x] = (unsigned char)std::min(y + 1, 255), colTop.back() = std::max(colTop.back(), colTop[z * NX + x]);
+        loadGradients();
     }
     // over budget, rebuilt chunks wait in `pending` and swap in together, so new and stale chunks never meet at a seam
     double end = GetTime() + budget;

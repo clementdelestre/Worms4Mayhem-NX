@@ -116,7 +116,7 @@ void FrontBg::draw(float dt) {
     if (!ok) return;
     if (GetTime() - lastDraw > 1) {  // back from a match
         static const float FE_WATER[14] = {0.5f, 60, 1, 0.2f, 1, 5, 15, 6, 6, 1, 0.4f, 0.4f, 1, 0.1f};  // TWEAK.XOM FE.Water
-        Fx::theme("pirate", {150, 200, 240, 255}, "day", false), Fx::clear();
+        Fx::theme("frontend", {150, 200, 240, 255}, "day", false), Fx::clear();  // FE.DAYWater set
         std::copy(FE_WATER, FE_WATER + 14, Lit::sun.water);
     }
     lastDraw = GetTime();
@@ -153,7 +153,7 @@ void FrontBg::draw(float dt) {
     rlScalef(S, S, S);
     for (const Gull &g : GULLS) Models::draw("seagull", g.p, g.yaw, 0, WHITE, "WXM_SGull_WingFlap", elapsed + g.t0);
     rlPopMatrix();
-    Fx::drawWater(cam, 0, elapsed);
+    Fx::drawWater(cam, -100 * S, elapsed, 12000 * S);  // MenuBackgroundLandscapeEntity 0x47fdd0: Water.Level -100 units
     Fx::draw(cam);
     EndMode3D();
 }

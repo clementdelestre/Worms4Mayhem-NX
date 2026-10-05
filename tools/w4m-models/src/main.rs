@@ -21,6 +21,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("crate_health", "Crate.Health", 0.9, false, &[]),
     ("crate_weapon", "Crate.Weapon", 0.9, false, &[]),
     ("crate_utility", "Crate.Utility", 0.9, false, &[]),
+    ("crate_mystery", "Crate.Mystery", 0.9, false, &[]),
     ("mine", "Landmine", 0.4, false, &[]),
     ("barrel", "OilDrum", 1.0, false, &[]),
     ("hold_bazooka", "Bazooka.Weapon", 0.0, false, &[]),
@@ -43,8 +44,10 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("scouser", "InflatedScouser", 1.4, false, &[]),
     ("sentry", "SentryGun", 1.0, false, &[]),
     ("hold_bat", "BaseballBat", 0.0, false, &[]),
+    ("wxpmesh7", "Particle.WXPMesh7", 0.0, false, &["WXM_DefSource"]),  // PARTTWK WXP_DonkeyStrikeBounce MeshSet, raw units
     ("hold_sniper", "SniperRifle", 0.0, false, &[]),
     ("hold_bow", "Bow", 0.0, false, &[]),
+    ("hold_flood", "Flood.Weapon", 0.0, false, &["DrawFlood"]),  // WAE_Mechanical Init plays DrawFlood once on it (0x58d89f)
     ("hold_homing", "HomingMissile.Weapon", 0.0, false, &[]),
     ("hold_dynamite", "Dynamite", 0.0, false, &[]),
     ("hold_gas", "GasCanister", 0.0, false, &[]),
@@ -161,11 +164,13 @@ const WORM_CLIPS: &[&str] = &[
     "Yawn", "ScratchHead", "AimBat+HoldBat", "AimSniper+HoldSniper", "AimBow+HoldBow", "AimHomingMissile+HoldHomingMissile",
     "HoldFirepunch", "HoldProd", "HoldDynamite", "HoldLandmine", "HoldOldWoman", "HoldScouser", "HoldSentrygun", "HoldSurrender",
     "HoldSkipGo", "HoldGasgrenade", "HoldStarburst", "HoldSheep",
-    // weapon use (W4M's Fire* clips end holstered), rope/jetpack/parachute, teleport, flinch, drowning
-    "FireBazooka+HoldBazooka", "FireThrown+HoldThrown", "FireBow+HoldBow", "FireDynamite+HoldDynamite", "FireShotgun+HoldShotgun",
-    "FireSniper+HoldSniper", "FireHomingMissile+HoldHomingMissile", "FireSheep+HoldSheep", "FireOldWoman+HoldOldWoman",
-    "FireScouser+HoldScouser", "FireLandmine+HoldLandmine", "FireSentrygun+HoldSentrygun", "Fire2Bat+HoldBat", "FireProd+HoldProd",
-    "Fire2Firepunch+HoldFirepunch", "HoldNMN", "FireNMN", "TauntSurrender+HoldSurrender",
+    // WAE fire (Hold weighs 0 there: 0x58fb30), Thrown windup / lob (0x5954f0, 0x596640), Draw* (state 1), Flood's rain dance
+    "FireBazooka", "FireThrown", "LobThrown", "WindupThrown", "WindupBow", "FireDynamite", "FireShotgun",
+    "FireSniper", "FireHomingMissile", "FireSheep", "FireOldWoman", "FireScouser", "FireLandmine", "FireSentrygun", "Fire2Bat", "FireProd",
+    "Fire2Firepunch", "HoldNMN", "FireNMN", "TauntSurrender+HoldSurrender", "HoldRainDance", "FireRainDance",
+    "DrawAirstrike", "DrawBat", "DrawBazooka", "DrawBow", "DrawDynamite", "DrawFirepunch", "DrawHomingMissile", "DrawLandmine", "DrawNMN",
+    "DrawNinjarope", "DrawOldWoman", "DrawProd", "DrawRainDance", "DrawScouser", "DrawSentrygun", "DrawSheep", "DrawShotgun", "DrawSkipGo",
+    "DrawSniper", "DrawStarburst", "DrawSurrender", "DrawThrown",
     // WEAPTWK WXAnimTaunt (WAE_* state 2, played over the Hold pose)
     "TauntBazooka+HoldBazooka", "TauntThrown+HoldThrown", "TauntShotgun+HoldShotgun", "TauntSniper+HoldSniper", "TauntAirstrike+HoldAirstrike",
     "TauntBow+HoldBow", "TauntSentrygun+HoldSentrygun", "TauntOldWoman+HoldOldWoman", "TauntScouser+HoldScouser", "TauntSheep+HoldSheep",
@@ -760,6 +765,34 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         }).filter(|l| !l.0.is_empty()).collect()
     };
     let animated = animated && !chosen.is_empty();
+    // sky (SkyBoxEntity loops its one clip): per part, the clip's change of its groups' rotate Y and of its texture offset U / V
+    // (2-key linear channels, node "<shape>_<shader>" for offsets), with the last key time
+    let sky_clip = if !animated && lib.len() == 1 { Some(&lib[0]) } else { None };
+    let leaf = |p: &str| p.rsplit('|').next().unwrap_or("").to_string();
+    let part_anim = |pt: &Part| -> [f32; 4] {
+        let mut a = [0.0f32; 4];
+        let Some(c) = sky_clip else { return a };
+        let shape = pt.group.map(|g| leaf(&s.groups[g].path)).unwrap_or_default();
+        for ((path, ty), kf) in &c.ch {
+            let (Some(k0), Some(k1)) = (kf.first(), kf.last()) else { continue };
+            let node = leaf(path);
+            match *ty {
+                0x1000103 => {
+                    let mut g = pt.group;
+                    while let Some(gi) = g {
+                        if leaf(&s.groups[gi].path) == node { a[0] += k1[5] - k0[5]; a[3] = k1[4]; }
+                        g = s.groups[gi].parent;
+                    }
+                }
+                0x401 | 0x1000401 if !shape.is_empty() && node.starts_with(&format!("{shape}_")) => {
+                    a[if *ty == 0x401 { 1 } else { 2 }] += k1[5] - k0[5];
+                    a[3] = k1[4];
+                }
+                _ => {}
+            }
+        }
+        a
+    };
 
     // rest pose (first chosen clip at t = 0, else the stored transforms): baked vertices, normalisation box
     let rest = s.worlds(&s.locals(x, chosen.first().map(|c| (&c.0[..], base, 0.0))));
@@ -795,7 +828,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
     // static parts sharing a texture are merged (one draw call each), skinned ones kept as they are
-    struct Prim { img: usize, blend: Option<(u32, u32)>, pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8> }
+    struct Prim { img: usize, blend: Option<(u32, u32)>, anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8> }
     let mut out: Vec<Prim> = Vec::new();
     for pt in &s.parts {
         let (pos, nrm): (Vec<f32>, Vec<f32>) = if animated {
@@ -813,7 +846,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let uv: Vec<f32> = pt.uv.iter().flatten().copied().collect();
         let skin = if !animated { vec![] } else if pt.skin.len() == n { pt.skin.clone() } else { vec![([0; 4], [1.0, 0.0, 0.0, 0.0]); n] };
         let rgba: Vec<u8> = if pt.rgba.len() == n { pt.rgba.iter().flatten().copied().collect() } else { vec![255; 4 * n] };
-        if let Some(o) = out.iter_mut().find(|o| !animated && o.img == pt.img && o.blend == pt.blend && o.pos.len() / 3 + n < 65536) {
+        let anim = part_anim(pt);
+        if let Some(o) = out.iter_mut().find(|o| !animated && o.img == pt.img && o.blend == pt.blend && o.anim == anim && o.pos.len() / 3 + n < 65536) {
             let base = (o.pos.len() / 3) as u16;
             o.idx.extend(pt.idx.iter().map(|&i| i + base));
             o.pos.extend(pos);
@@ -821,7 +855,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             o.uv.extend(uv);
             o.rgba.extend(rgba);
         } else {
-            out.push(Prim { img: pt.img, blend: pt.blend, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba });
+            out.push(Prim { img: pt.img, blend: pt.blend, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba });
         }
     }
     let mut prims = Vec::new();
@@ -941,7 +975,15 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     o.extend(&g.bin);
     let info = format!("{} parts, {} bones, {} images, {:.0}x{:.0}x{:.0} units -> scale {k:.4}{}{}", s.parts.len(), s.bones.len(), images.len(),
         hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], if clip_names.is_empty() { "" } else { ", clips: " }, clip_names.join(", "));
-    Some((o, info, out.iter().map(|p| p.blend.map_or("-\n".into(), |(a, b)| format!("{a} {b}\n"))).collect()))
+    // per primitive: blend factors (-1 -1 = opaque), clip change of rotate Y (rad), offset U, V, last key time; then the clip
+    // length and the Sun locator (SkyBoxEntity: lens flare)
+    let mut side: String = out.iter().map(|p| {
+        let (a, b) = p.blend.map_or((-1, -1), |(a, b)| (a as i64, b as i64));
+        format!("{a} {b} {} {} {} {}\n", p.anim[0], p.anim[1], p.anim[2], p.anim[3])
+    }).collect();
+    if let Some(c) = sky_clip { side += &format!("clip {}\n", c.dur); }
+    if let Some(gi) = s.groups.iter().position(|g| leaf(&g.path) == "Sun") { side += &format!("sun {} {} {}\n", rest[gi][0][3], rest[gi][1][3], rest[gi][2][3]); }
+    Some((o, info, side))
 }
 
 // Case-insensitive path lookup (game data uses Windows paths).

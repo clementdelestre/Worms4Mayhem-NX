@@ -29,6 +29,16 @@ Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU matc
 `W4NX_BENCH=<frames> ./worms4nx --shot <weapon index> [map]` (that weapon fired, e.g. 15 Airstrike, 18 Concrete Donkey:
 the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup and match loading.
 
+### Render budget (ours, `--bench <map> 600`, desktop GPU-synced, Switch estimate = max(5x cpu, 4x gpu))
+
+| Change | Deathmatch1 | ChallengeNavigation2 |
+|---|---|---|
+| before wave 2 (4750d4f) | 18.5 ms (54 fps), remesh at load 68 ms | 18.8 ms (53 fps), remesh 68 ms |
+| land vertex colour, sky clip, lens flare, Donkey dome | 18.5-19.3 ms (52-54 fps), remesh 50 ms | 18.9 ms (53 fps), remesh 49 ms |
+| + W4M shadow map, measured as a 1024² land depth pass (+1.9 ms gpu) and 9 extra land texture taps (+1.3 ms gpu) | 32 ms (31 fps), objects not even counted | - |
+
+The shadow map would leave no margin over 30 fps on Switch, so it is not drawn (docs/maps.md "Rendering").
+
 Helpers (scripted inputs, scene builders such as `settle`, `melee`, `floorAndWall`, `weaponNamed`) are not listed.
 
 ## sim_check.cpp
@@ -63,7 +73,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkScopeCrest` | Sniper at a worm just over a crest, aimed like a player at the scope camera's screen centre. |
 | `checkSentry` | Sentry gun shoots an enemy in range, then reloads. |
 | `checkSheepCamera` | W4M SheepChaseCamera: behind and above the sheep, rises when land hides it, never under it. |
-| `checkEventCameras` | W4M event cameras: worm, crate, winner TrackCams, homing FlyCam, shoulder camera occlusion zoom. |
+| `checkEventCameras` | W4M event cameras: worm, crate, winner TrackCams, homing FlyCam, shoulder camera occlusion zoom; PiP during the active worm's turn then the grow at EndTurn, chase start yaw (Sheep / Scouser ResetYaw), Donkey camera held. |
 | `checkDeathBlast` | W4M Worm.Death*: the death blast takes up to 35 hp off neighbours, throws them, digs 1.75 m; the settle waits for the thrown worm (W4M Worm Falling is active). |
 | `checkWallClearance` | Concave corner: walking or dropping against a wall leaves the body out of the rock. |
 | `checkWalkW4M` | Density clamped like imported .vox maps: corridors and steps walkable, ledges vaulted up to body height. |
@@ -88,8 +98,8 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkWormpot` | Wormpot modes: double damage, worms drown, quick walk, energy/rule combos, ammo and hp presets. |
 | `checkCustomWeapons` | Weapon Factory: custom weapons append at start(), survive a save/load, and fire. |
 | `checkFuse` | W4M FuseUp: grenade-family fuse 1..5 s on the d-pad, exact to the tick; Holy Hand Grenade blast 2 s after rest. |
-| `checkParachute` | Long fall with the parachute in hand opens it: no fall damage, drifts downwind. |
-| `checkRetreatInFlight` | W4M PostLaunchDelay then retreat while the shell flies; timeout ends the turn; walking sends the TrackCam to the PiP. |
+| `checkParachute` | Long fall with the parachute in hand opens it under −11.25 m/s; open, the velocity settles on 3 m/s along the facing plus 70 ms of the opening's wind and gravity; it lands unhurt. |
+| `checkRetreatInFlight` | W4M PostLaunchDelay then retreat while the shell flies; timeout ends the turn; the TrackCam served during the turn is the PiP. |
 | `checkToolWeapons` | Rope and jetpack: the held weapon goes off without leaving the tool, which works through the retreat. |
 | `checkJetpack` | W4M jetpack: thrust curve by height, fuel burns only while thrusting, landing ends it, ammo taken once. |
 | `checkJetpackSecondary` | Switch path: take off, pick dynamite as secondary, ZL lays it in flight; a leftover secondary becomes the weapon. |
@@ -102,7 +112,10 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkMineDuds` | Mine.DudProbability: about one mine in ten fizzles. |
 | `checkMineBlast` | A blast only pushes a mine, up and away; it does not arm it. |
 | `checkMineFlyby` | ArmingRadius 45 units: a worm blown past 2 m off arms it; a laid mine waits ArmingCourtesyTime. |
-| `checkRopeShots` | Ninja.NumShots: 5 launches a turn; the hook catches a crate, reels it, jump lets go. |
+| `checkRopeShots` | Ninja.NumShots: 5 launches a turn; the hook catches a crate, which swings about the worm's feet at the rope's length while reeled in and out; jump lets go. |
+| `checkRope` | Ninja rope in the open air: the hook angle and length, the yaw kept, gravity's first pull, the body on the circle, a damped swing past the bottom, the release velocity; the stick's swing (0x571820 thresholds); reel at 10 m/s within MinLength / MaxLength; a wrap round a bar and its unwrap; a bounce off a worm's collider. |
+| `checkWaterShots` | Payload water: a Bazooka skims (SkimDamping, set on the Radius plane); a Grenade splashes, is disarmed at SinkDepth, sinks at 4..5 m/s without a blast and goes at Water.ExpiryDepth; a homing missile homing only splashes. |
+| `checkArrowFalls` | A stuck Poison Arrow whose land is carved falls again and detonates at its first stop's time. |
 | `checkScouser` | Inflatable Scouser: swallows a worm, floats it up, pops and drops it. |
 | `checkGasCloud` | Gas canister leaves an 8 s cloud that poisons every worm within 5 m. |
 | `checkBomber` | Bovine Blitz: steered plane, FIRE drops a cow, 0.8 s apart, 3 bombs. |
@@ -128,7 +141,7 @@ AI vs AI. Prints weapon usage, damage per turn and planning cost.
 |---|---|
 | `match` | One CPU-vs-CPU match: checksum, turns, shots (Fire events too: a 0 s retreat goes Aim → Settle in one tick), damage, winner, rope race finish; `main` also asserts the CPU uses Change Worm (W4M worm-select mode) and that Landmine, Scouser and Flood are planned in the single weapon runs. |
 | `blimpView` | CPU turn shows the Blimp view only while its plan fires a targeted weapon, not on reselect or replay. |
-| `pointBlank` | Enemy right next to the CPU: the first weapon fired (melee, gun or dropped, at least 10 of 12 seeds). |
+| `pointBlank` | Enemy right next to the CPU: it attacks (10 of 12 seeds), with a close-range plan where it stands (melee, dropped explosive, mine) or a ranged weapon from over 5 m (W4M targets over 100 units from the move node, 0x49fcf6). |
 | `shots` | First shots with a given planning budget: same plan sliced or in one tick. |
 | `wallAhead` | Thin wall in front, enemy behind: no walk or jump against it, no shot into it, at levels 1, 3, 5. |
 

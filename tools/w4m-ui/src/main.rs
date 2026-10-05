@@ -12,7 +12,7 @@ const BUNDLES: &[&str] = &["Bundl00", "Bundl06", "Bundl08", "Bundl10", "Bundl472
 // Names embed the time as a numeric suffix (01 day, 02 evening, 03 night), e.g. C_Sky02.tga -> sky/c_sky02.png.
 // In-match HUD (also holds particles): images go to hud/<image name>.png
 const HUD_BUNDLE: &str = "Bundl09";
-// Frontend menu art -> fe2/<out>.png: (bundle, image name, nth image of that name in the bundle, out). Most are
+// Frontend menu art -> fe2/<out>.png (an out with a directory: <out>.png): (bundle, image name, nth image of that name in the bundle, out). Most are
 // textures of the menu's flat illustration meshes (WX.Mesh.SinglePlayer, NetOptions, CustomiseOptions, Options...).
 const FE2: &[(&str, &str, usize, &str)] = &[
     ("Bundl10", "maya:file16/-1", 0, "paper_strip"),     // torn paper ticker strip
@@ -22,6 +22,9 @@ const FE2: &[(&str, &str, usize, &str)] = &[
     ("Bundl06", "maya:file5/-1", 2, "art_network"),      // globe
     ("Bundl06", "maya:paint_bits/-1", 0, "art_myworms"), // brushes + paint (Mes Worms)
     ("Bundl474", "Nav Normal.tga", 0, "nav_normal"),     // 2x2: grenade, tick, back arrow, cross
+    ("Bundl474", "watertestdiffuse.tga", 0, "sky/f_water01a"),   // FE.DAYWater, FE.DAYWaterNormal, FE.DAYWaterEnv: the title's water
+    ("Bundl474", "watertestnormal.tga", 0, "sky/f_water01b"),
+    ("Bundl474", "LightingMap_cam01.tga", 0, "sky/f_water01c"),
     ("Bundl05", "maya:file8/-1", 0, "loading_worm"),    // loading screen's round worm (LoadingIcon)
     ("Bundl09", "maya:file7/-1", 3, "homing_inner"),    // Homing.Cursor.Mesh: its 4 brush ticks, one per row
 ];
@@ -397,7 +400,7 @@ fn main() {
             last = (bundle, ximages(&b).unwrap_or_default());
         }
         match last.1.iter().filter(|(nm, _)| nm == name).nth(nth).and_then(|(_, d)| image(d)) {
-            Some((w, h, px)) => { fs::write(out.join(format!("fe2/{dst}.png")), png(w, h, &px)).expect("write"); n += 1; }
+            Some((w, h, px)) => { fs::write(out.join(if dst.contains('/') { format!("{dst}.png") } else { format!("fe2/{dst}.png") }), png(w, h, &px)).expect("write"); n += 1; }
             None => println!("{bundle} {name} #{nth}: missing"),
         }
     }

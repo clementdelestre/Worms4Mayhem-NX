@@ -336,9 +336,11 @@ static void checkPoison() {
 static void settle(Game &g);
 
 // Victim placed `ahead` m in front of the settled attacker, `up` m higher; returns the victim after the swing.
-static Worm melee(const char *weapon, float ahead, float up = 0) {
+static Worm melee(const char *weapon, float ahead, float up = 0, uint32_t wormpot = 0) {
     Game g;
-    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    GameConfig c{23, 2, 1, "", 0};
+    c.wormpot = wormpot;
+    g.start(c), g.hotSeat = 0;
     settle(g);
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     v.pos = Vector3Add(a.pos, {sinf(a.yaw) * ahead, up, cosf(a.yaw) * ahead});
@@ -365,9 +367,11 @@ static void checkMelee() {
 }
 
 // A worm hit by a gun takes the weapon's full damage, not a blast falloff.
-static void checkShotgun() {
+static void checkShotgun(uint32_t wormpot = 0) {
     Game g;
-    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
+    GameConfig c{25, 2, 1, "", 0};
+    c.wormpot = wormpot;
+    g.start(c), g.hotSeat = 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     a.pos = {10, 55, 10}, v.pos = {10.4f, 55, 20};  // open sky, off-centre hit
     a.yaw = 0, a.pitch = 0;
@@ -375,7 +379,7 @@ static void checkShotgun() {
     Input in;
     in.buttons = Input::FIRE;
     g.step(in);
-    assert(v.hp == 100 - (int)WEAPONS[g.weapon].damage);
+    assert(v.hp == 100 - (int)WEAPONS[g.weapon].damage * (g.wp(WP_SUPER_FIREARMS) ? 2 : 1));
 }
 
 // Homing missile: flies off along the aim, then dives onto the reticle point.
@@ -536,21 +540,26 @@ static void checkSheepCamera() {
     Input fire;
     fire.buttons = Input::FIRE;
     g.step(fire);
+    Camera3D pip;
+    auto view = [&]() -> const Camera3D & {  // the chase camera: the inset while the worm is active (0x51c000), then full screen
+        float show, grow;
+        return Controls::inset(pip, show, grow) ? pip : cam;
+    };
     int checked = 0;
     for (int t = 0; t < 60 * 8 && g.phase == Phase::Flying; t++) {
         g.step(Input{});
         bool chase = !g.shots.empty();
         Controls::camera(cam, g, chase, false, false, Game::DT);
-        if (chase && t > 30) assert(cam.position.y > g.shots[0].pos.y), checked++;
+        if (chase && t > 30) assert(view().position.y > g.shots[0].pos.y), checked++;
     }
     assert(checked > 60);
     for (int t = 0; t < 60 * 40 && !g.shots.empty(); t++) g.step(Input{}), Controls::camera(cam, g, !g.shots.empty(), false, false, Game::DT);
     assert(g.shots.empty() && g.phase != Phase::Aim);
     Controls::camera(cam, g, false, false, false, Game::DT);
-    Vector3 frozen = cam.position;  // ChaseCam has no Finished (vtable slot 7 = 0x49b8f0): it stays until another event or the next turn
+    Vector3 frozen = view().position;  // ChaseCam has no Finished (vtable slot 7 = 0x49b8f0): it stays until another event or the next turn
     for (int t = 0; t < 30 && g.phase != Phase::Aim; t++) {  // the drawn view only settles onto it (0.1 an update), it does not go back to the worm
         g.step(Input{}), Controls::camera(cam, g, false, false, false, Game::DT);
-        assert(g.phase == Phase::Aim || Vector3Distance(cam.position, frozen) < 1);
+        assert(g.phase == Phase::Aim || Vector3Distance(view().position, frozen) < 1);
     }
 }
 
@@ -561,6 +570,11 @@ static void checkEventCameras() {
     auto inView = [](const Camera3D &c, Vector3 p) {
         Vector3 f = Vector3Normalize(Vector3Subtract(c.target, c.position)), to = Vector3Subtract(p, c.position);
         return Vector3DotProduct(f, to) > 0.8f * Vector3Length(to);
+    };
+    Camera3D pipV;
+    auto shown = [&](const Camera3D &c) -> const Camera3D & {  // served while the worm is active, an event camera is the inset (0x51c000)
+        float show, grow;
+        return Controls::inset(pipV, show, grow) ? pipV : c;
     };
     {  // a worm knocked ballistic off screen: WormTrackCamera cut, then kept in view
         Game g;
@@ -574,8 +588,8 @@ static void checkEventCameras() {
         int seen = 0, n = 0;
         for (int t = 0; t < 60 * 3 && !w.grounded; t++, n++) {
             Controls::camera(cam, g, false, false, false, Game::DT);
-            if (t == 6) assert(Vector3Distance(cam.position, {0, 60, 0}) > 5 && inView(cam, w.pos));  // 2 ViewPoints tried a frame
-            seen += inView(cam, w.pos);
+            if (t == 6) assert(Vector3Distance(shown(cam).position, {0, 60, 0}) > 5 && inView(shown(cam), w.pos));  // 2 ViewPoints tried a frame
+            seen += inView(shown(cam), w.pos);
             g.step(Input{});
         }
         assert(n > 20 && seen > n * 8 / 10);
@@ -623,10 +637,11 @@ static void checkEventCameras() {
             g.step(Input{});
         }
     }
-    {  // CrateTrackCamera: starts off screen, cut to a crate ViewPoint (15-25 m)
+    {  // CrateTrackCamera: starts off screen, cut to a crate ViewPoint (15-25 m); a crate drops with no worm active: full screen
         Game g;
         g.start({43, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
+        g.phase = Phase::Settle, g.timer = 1;
         Controls::reset();
         Worm &w = g.worms[g.current];
         g.objects.push_back({Object::Crate, Vector3Add(w.pos, {3, 12, 0}), {0, 0, 0}, -1, -1, true, false});
@@ -642,7 +657,8 @@ static void checkEventCameras() {
             assert(Vector3Distance(cam.position, at) < 0.3f && fabsf(remainderf(atan2f(f.x, f.z) - atan2f(f0.x, f0.z), 2 * PI)) < 0.05f);
         }
     }
-    {  // PiP (0x51d360 +0x2c0): served while the worm moves with retreat time left, it stays the inset; the retreat over, it grows full screen
+    {  // PiP: a shot served while the worm is active is the inset, the worm standing still (a CPU shot; 0x51c000, 0x51c6e0);
+       // GameLogic.EndTurn deactivates the worm and the inset grows full screen (0x51e382, FullScreenTime 500 ms)
         Game g;
         g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
@@ -650,21 +666,24 @@ static void checkEventCameras() {
         Worm &a = g.worms[g.current];
         Camera3D cam = away();
         for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
-        g.phase = Phase::Retreat, g.timer = g.retreatTicks(WEAPONS[g.weapon]);
+        g.phase = Phase::Retreat, g.timer = 100;
         g.shots.push_back({{a.pos.x, a.pos.y + 12, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
         g.shots.back().touching = 0;
-        int inset = 0, full = 0;
+        int inset = 0, grew = 0, end = -1;
         for (int t = 0; t < 60 * 3; t++) {
-            if (t == 120) g.phase = Phase::Settle;  // Timer.RetreatTimedOut
-            a.vel = {1, 0, 0};
             Controls::camera(cam, g, !g.shots.empty(), false, false, Game::DT);
             Camera3D v;
             float show, grow;
             bool in = Controls::inset(v, show, grow);
-            inset += in && t < 120, full += !in && t > 160;
-            if (t > 75 && t < 120) assert(in && Vector3Distance(cam.target, a.pos) < 3);  // the main view stays the worm's
+            if (end < 0 && g.phase == Phase::Settle) end = t;
+            if (end < 0) {
+                inset += in;
+                if (t > 30) assert(in && grow == 0 && Vector3Length(a.vel) < 1e-3f && Vector3Distance(cam.target, a.pos) < 3);  // the main view stays the worm's
+            } else if (t < end + 25) grew += in && grow > 0;
+            else if (t > end + 40) assert(!in && Vector3Distance(cam.target, a.pos) > 3);
+            g.step(Input{});
         }
-        assert(inset > 40 && full > 10);
+        assert(end > 90 && inset > 60 && grew > 10);
     }
     {  // no PiP once the turn is over, and no return to the shooter between the shot's camera and the count (W4M: straight to it)
         Game g;
@@ -685,7 +704,7 @@ static void checkEventCameras() {
             if (!Controls::inset(v, show, full)) assert(Vector3Distance(cam.target, a.pos) > 3);
         }
     }
-    for (int k : {0, 1, 2}) {  // +0x2c0: a sheep's ChaseCam (0x51d5e0) stays full screen while the worm walks, PiP while jetting (bit 0); a still roped worm: full screen
+    for (int k : {0, 1, 2}) {  // the ChaseCam serve 0x51d5e0 slides the PiP on as any serve: walking, jetting (PhysicsOverride bit 0 only sets +0x2c0) or roped
         Game g;
         g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
@@ -702,11 +721,45 @@ static void checkEventCameras() {
             Camera3D v;
             float show, grow;
             inset += Controls::inset(v, show, grow);
-            if (k == 0 && t > 30) assert(Vector3Distance(cam.target, g.shots[0].pos) < 2);  // the main view is the chase camera
+            if (t > 30) assert(Vector3Distance(cam.target, a.pos) < 3);  // the main view stays the worm's
         }
-        assert(k == 1 ? inset > 50 : inset == 0);
+        assert(inset > 50);
     }
-    {  // an event camera done: the view eases back to the worm at PosUpdateSpeed 0.1 a frame (CMS 0x51b940), no cut
+    for (const char *pet : {"Sheep", "Inflatable Scouser"}) {  // ChaseCam start: Sheep keeps the view's yaw, ResetYaw (Scouser) goes behind its heading
+        Game g;
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+        settle(g);
+        Controls::reset();
+        Worm &a = g.worms[g.current];
+        Camera3D cam = away();
+        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        float h = a.yaw + PI / 2;  // heading sideways to the thrower's (and the view's) yaw
+        g.phase = Phase::Retreat, g.timer = 600;
+        g.shots.push_back({{a.pos.x, a.pos.y + 15, a.pos.z}, {3 * sinf(h), 0, 3 * cosf(h)}, weaponNamed(pet), 0, false, 1});
+        Controls::camera(cam, g, true, false, false, Game::DT);
+        Camera3D v;
+        float show, grow;
+        assert(Controls::inset(v, show, grow));  // pipView is the chase camera as placed at the serve
+        Vector3 d = Vector3Subtract(v.position, g.shots[0].pos);
+        float want = pet[0] == 'S' ? a.yaw : h, yaw = atan2f(-d.x, -d.z);
+        assert(fabsf(remainderf(yaw - want, 2 * PI)) < 0.15f);
+    }
+    {  // DonkeyCamera, a SimpleCam: never Finished, it holds its last view once the donkey is gone (until another camera or the next turn)
+        Game g;
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+        settle(g);
+        Controls::reset();
+        Worm &a = g.worms[g.current];
+        Camera3D cam = away();
+        g.phase = Phase::Settle, g.timer = 1;
+        g.shots.push_back({{a.pos.x + 10, a.pos.y + 20, a.pos.z}, {0, -5, 0}, weaponNamed("Concrete Donkey"), 0, false, 1 << 30});
+        for (int t = 0; t < 120; t++) g.shots[0].pos.y -= 0.05f, Controls::camera(cam, g, true, false, false, Game::DT);
+        Vector3 pos = cam.position, look = Vector3Add(g.shots[0].pos, {0, 5, 0});
+        g.shots.clear();
+        for (int t = 0; t < 60 * 4; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        assert(Vector3Distance(cam.position, pos) < 0.01f && Vector3Distance(cam.target, look) < 0.1f);
+    }
+    {  // an event camera held to the next turn: the view eases back to the worm at PosUpdateSpeed 0.1 a frame (CMS 0x51b940), no cut
         Game g;
         g.start({43, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
@@ -714,9 +767,11 @@ static void checkEventCameras() {
         Worm &w = g.worms[g.current];
         g.objects.push_back({Object::Crate, Vector3Add(w.pos, {3, 12, 0}), {0, 0, 0}, -1, -1, true, false});
         Camera3D cam = away();
+        g.phase = Phase::Settle, g.timer = 1;
         for (int t = 0; t < 30; t++) Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, false, Game::DT);
         float gap = Vector3Distance(cam.target, w.pos), jump = 0;
         assert(gap > 3);
+        g.phase = Phase::Aim;
         for (int t = 0; t < 90; t++) {
             Vector3 was = cam.target;
             Controls::camera(cam, g, false, false, false, Game::DT);
@@ -733,14 +788,14 @@ static void checkEventCameras() {
         Camera3D cam = away();
         if (!lost) for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
         float top = a.pos.y + 12;
-        g.phase = Phase::Flying;
+        g.phase = Phase::Settle, g.timer = 1;  // no worm active: the TrackCam full screen
         g.shots.push_back({{a.pos.x, top, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
         g.shots.back().touching = 0;
         Vector3 before = cam.position, cutAt{}, end{};
         Camera3D ev = cam;
         int cuts = 0, after = 0, inset = 0;
         bool wasIn = false;
-        for (int t = 0; t < 60 * 6 && after < 90; t++) {  // the flight, then RestTime 1.5 s; the worm's turn: in the PiP
+        for (int t = 0; t < 60 * 9 && after < 90; t++) {  // the flight (into the sea: a skim, then the sinking), then RestTime 1.5 s
             Vector3 was = ev.position;
             Controls::camera(cam, g, !g.shots.empty(), false, false, Game::DT);
             float show, full;
@@ -757,7 +812,7 @@ static void checkEventCameras() {
         }
         assert(after == 90 && cuts <= 1);  // a typical shot: at most the one cut once lost, none at or after the blast
         if (lost) assert(cutAt.y > end.y && Vector3Distance(cutAt, end) < 22 && Vector3Distance(cutAt, {a.pos.x, top, a.pos.z}) > 30);
-        assert(inset == 0);  // W4M 0x51d360 (+0x2c0): a worm standing still gets it full screen
+        assert(inset == 0);
     }
     {  // a drowned worm in view: no cut while it floats, at its blast or in the RestTime after (W4M 0x51d3b3 drop); the view keeps its yaw
         Game g;
@@ -900,7 +955,7 @@ static void checkEventCameras() {
         g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &w = g.worms[g.current];
         w.pos = {40, 55, 40}, w.yaw = 0, w.grounded = false, w.vel = {0, 0, 0};
-        g.roped = true, g.anchor = {40, 60, 40}, g.ropeLen = 5;
+        g.ropeOn({40, 60, 40});
         for (int z = 120; z < 200; z++)  // side view at yaw + 1.57: the camera sits 20 m off in -x, at (20, 55, 40)
             for (int y = 0; y < Terrain::NY; y++)
                 for (int x = inside ? 60 : 112; x < (inside ? 100 : 120); x++)
@@ -916,7 +971,7 @@ static void checkEventCameras() {
         g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
         settle(g);
         Controls::reset();
-        g.phase = Phase::Retreat, g.timer = g.retreatTicks(WEAPONS[g.weapon]);
+        g.phase = Phase::Settle, g.timer = 1;  // the count runs with no worm active: full screen
         Worm &w = g.worms[1 - g.current];
         Vector3 spot = g.worms[g.current].pos;
         if (sea) w.pos = {1, 30, 40}, w.vel = {-20, 4, 0};  // off the map's edge: no landing in the sweep
@@ -1809,13 +1864,13 @@ static void checkScheme() {
     assert(w.hp == 150 || !w.alive);
 }
 
-static int hitHp(uint32_t wormpot) {  // victim hp after a cluster bomblet lands on it
+static int hitHp(uint32_t wormpot, int weapon = -1) {  // victim hp after a cluster bomblet lands on it
     Game g;
     GameConfig c{6, 2, 1, "", 0};
     c.wormpot = wormpot;
     g.start(c), g.hotSeat = 0;
     int victim = 1 - g.current;
-    g.shots = {{g.worms[victim].pos, {0, 0, 0}, clusterWeapon(), 0, true, 1}};
+    g.shots = {{g.worms[victim].pos, {0, 0, 0}, weapon < 0 ? clusterWeapon() : weapon, 0, true, 1}};
     for (Projectile &s : g.shots) s.touching = 0;  // already in flight
     g.step(Input{});
     return g.worms[victim].hp;
@@ -1841,10 +1896,10 @@ static void checkWormpot() {
     assert(walked(WP_QUICK_WALK) > walked(0) * 1.5f);
 
     GameConfig c{41, 2, 3, "", 0};
-    c.wormpot = WP_GOLIATH | WP_CRATE_DROPS | WP_VITAL_WORM | WP_LOW_GRAVITY;
+    c.wormpot = WP_CRATE_DROPS | WP_GOLIATH << 8 | WP_VITAL_WORM << 16;
     Game g;
     g.start(c), g.hotSeat = 0;
-    assert(g.worms[0].hp == 200 && g.worms[1].hp == 50 && (g.cfg.rules & RULE_KING) && (g.cfg.rules & RULE_LOW_GRAVITY));
+    assert(g.worms[0].hp == 200 && g.worms[1].hp == 50 && (g.cfg.rules & RULE_KING));
     for (size_t i = 0; i < WEAPONS.size(); i++)
         if (WEAPONS[i].kind != Kind::SkipGo && WEAPONS[i].kind != Kind::Surrender) assert(g.ammo[0][i] == 0);
     c.wormpot = WP_ONE_SHOT;
@@ -1858,8 +1913,158 @@ static void checkWormpot() {
     jump.buttons = Input::JUMP;
     g.step(jump);
     assert(!g.jumpDelay);
-    for (int b = 0; b < WORMPOT_COUNT; b++) assert(runRules(0, 44, Scheme{}, 1u << b) == runRules(0, 44, Scheme{}, 1u << b));
+    c.wormpot = WP_LOW_GRAVITY << 16;
+    g.start(c);
+    assert(g.cfg.rules & RULE_LOW_GRAVITY);
+    for (int m = WP_SUPER_EXPLOSIVES; m < WP_MODES; m++) assert(runRules(0, 44, Scheme{}, m) == runRules(0, 44, Scheme{}, m));
     assert(runRules(0, 44, Scheme{}, WP_DOUBLE_DAMAGE) != runRules(0, 44, Scheme{}));  // the wormpot is part of the checksum
+}
+
+// The modes Wormpot.lub and WormpotService set up, one assert each (W4M ids, docs/w4m/turn.md Wormpot).
+static void checkWormpotModes() {
+    const int cg = weaponNamed("Cluster Grenade");
+    int normal = 100 - hitHp(0, cg);
+    assert(100 - hitHp(WP_SUPER_CLUSTERS, cg) >= 2 * normal - 1 && hitHp(WP_SUPER_EXPLOSIVES, cg) == 100 - normal);  // kWeaponClusterBomb is a cluster container
+    Worm bat = melee("Baseball Bat", 1.6f), hard = melee("Baseball Bat", 1.6f, 0, WP_SUPER_MELEE);
+    assert(100 - hard.hp == 2 * (100 - bat.hp) && Vector3Length(hard.vel) > 1.9f * Vector3Length(bat.vel));
+    checkShotgun(WP_SUPER_FIREARMS);
+
+    Game g;
+    GameConfig c{41, 2, 2, "", 0};
+    c.wormpot = WP_NO_COWARDS | WP_ENERGY << 8;
+    g.start(c);
+    int sur = -1, dyn = -1;
+    for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Surrender) sur = (int)i; else if (WEAPONS[i].name == "Dynamite") dyn = (int)i;
+    assert(g.cfg.scheme.retreatTime == 0 && g.retreatTicks(WEAPONS[dyn]) == msTicks(5000) && g.ammo[0][sur] == 0);  // RetreatTimeOverride stays
+    for (const Worm &w : g.worms) assert(w.poison == Game::POISON_DEFAULT);
+
+    for (uint32_t seed = 1; seed < 6; seed++) {  // Super Secret Weapons: one weapon per team, from its inventory, ids below 30
+        c = GameConfig{seed, 2, 1, "", 0};
+        c.wormpot = WP_SECRET_WEAPON;
+        g.start(c);
+        for (int t = 0; t < 2; t++) {
+            int id = g.superWeapon[t], held = 0;
+            for (size_t i = 0; i < WEAPONS.size(); i++) held += g.ammo[t][i] && g.containerOf((int)i, false) == id;
+            assert(id > 0 && id < 30 && held);
+        }
+    }
+    int t = g.worms[g.current].team;
+    g.superWeapon[t] = Game::W4M_FACTORY;
+    assert(g.superScale(Game::W4M_FACTORY).x == 2 && g.superScale(Game::W4M_FACTORY).y == 1 && g.superScale(1).x == 1);
+    Worm &v = g.worms[g.current];
+    v.hp = 300;
+    for (int k = 0; k < 3; k++) g.hurt(v, 60, false, 4);
+    assert(v.hp == 300 - 150);  // 0x5abaf0: the type-4 cap is 150 for the Factory super weapon's team
+
+    c = GameConfig{31, 2, 1, "", 0};
+    for (int on = 0; on < 2; on++) {
+        c.wormpot = on ? WP_WIND_WORMS : 0;
+        g.start(c), g.hotSeat = 0;
+        g.wind = 1, g.windZ = 0;
+        Worm &w = g.worms[g.current];
+        w.pos = {20, 70, 20}, w.vel = {0, 0, 0}, w.grounded = false;
+        for (int k = 0; k < 30; k++) g.step(Input{});
+        assert(on ? w.pos.x > 20.2f : fabsf(w.pos.x - 20) < 0.01f);  // Wind.Speed x WindScale 0.5 on a flying worm
+    }
+
+    auto fresh = [&](uint32_t wp, uint32_t seed = 31, int per = 1) -> Game & {
+        c = GameConfig{seed, 2, per, "", 0};
+        c.wormpot = wp;
+        g.start(c), g.hotSeat = 0;
+        settle(g);
+        return g;
+    };
+    Input walk, jump, target;
+    walk.walk = 127, jump.buttons = Input::JUMP, target.buttons = Input::TARGET;
+    for (uint32_t wp : {(uint32_t)WP_TUG_O_WORMS, (uint32_t)WP_JUMPING_ONLY}) {  // ArtilleryMode: no walk, no jump, no jetpack; VelocityScale 0: jumps only
+        fresh(wp);
+        Vector3 p = g.worms[g.current].pos;
+        for (int k = 0; k < 30; k++) g.step(walk);
+        assert(Vector3Distance(p, g.worms[g.current].pos) < 0.05f);
+        g.step(jump);
+        assert((g.jumpDelay > 0) == (wp == WP_JUMPING_ONLY));
+        assert(g.allowed(g.worms[g.current].team, weaponNamed("Jetpack")) == (wp == WP_JUMPING_ONLY));
+    }
+    fresh(WP_NO_BLIMP).weapon = weaponNamed("Airstrike");  // Camera.Disable "Blimp": TARGET is ignored
+    g.step(target);
+    assert(!g.cursorOn && !g.blimp);
+
+    fresh(WP_MINE_RESPAWN);  // Land.Indestructable, the mine back 500 ms later where it went off, never a dud
+    {
+        Worm &w = g.worms[g.current];
+        std::vector<signed char> land = g.terrain.d;
+        Object m = {Object::Mine, {w.pos.x + 6, w.pos.y, w.pos.z}, {0, 0, 0}, -1, 0.05f, false, false};
+        m.fizzle = true, m.delay = 0;
+        g.objects = {m};
+        for (int k = 0; k < 10 && !g.objects.empty(); k++) g.step(Input{});
+        assert(g.objects.empty() && g.terrain.d == land && g.respawns.size() == 1);
+        for (int k = 0; k < 40; k++) g.step(Input{});
+        assert(g.objects.size() == 1 && g.objects[0].type == Object::Mine && !g.objects[0].fizzle);
+    }
+
+    for (int on = 0; on < 2; on++) {  // Dim-Mak: the Prod takes all the energy left, no push
+        Worm v = melee("Prod", 1, 0, on ? WP_DIM_MAK : 0);
+        assert(on ? v.hp <= 0 && fabsf(v.vel.x) + fabsf(v.vel.z) < 0.01f : v.hp == 100);  // only gravity moves it
+    }
+
+    fresh(WP_SPECIALIST, 31, 4);  // 4 worms: classes 5 6 3 4 (Bazooka / Grenade / Shotgun / Rope sets)
+    assert(g.special[0] == 5 && g.special[1] == 6 && g.special[2] == 3 && g.special[3] == 4);
+    assert(g.ammo[0][weaponNamed("Bazooka")] == -1 && g.ammo[0][weaponNamed("Cluster Grenade")] == 3 && g.ammo[0][weaponNamed("Ninja Rope")] == 5);
+    assert(g.delays[1][weaponNamed("Airstrike")] == 5 && g.delays[1][weaponNamed("Homing Missile")] == 1);
+    {
+        int t = g.worms[g.current].team, cls = g.special[g.current];
+        assert(g.allowed(t, weaponNamed("Skip Go")) && g.allowed(t, weaponNamed("Bazooka")) == (cls == 5) && g.allowed(t, weaponNamed("Shotgun")) == (cls == 3));
+    }
+
+    fresh(WP_WIND_GUNS).wind = 1, g.windZ = 0;  // gun wobble x (1 + 2.5 Wind.Speed / MaxSpeed), sampled when the gun is wielded
+    g.weapon = weaponNamed("Shotgun");
+    for (int k = 0; k < 60; k++) g.step(Input{});
+    assert(g.wobble.weapon == g.weapon && fabsf(g.wobble.f - 3.5f) < 1e-4f && (g.wobble.at.x != 0 || g.wobble.at.y != 0));
+    fresh(0).weapon = weaponNamed("Shotgun");
+    g.step(Input{}), g.step(Input{});
+    assert(g.wobble.f == 1);
+}
+
+// Mystery crates (CreateRandomCrate 0x4fa4b0, CrateLogicEntity 0x5ca1f0): drawn at spawn by MysteryChance, opened on collection.
+static void checkMystery() {
+    Game g;
+    GameConfig c{57, 2, 2, "", 0};
+    c.scheme.healthShare = c.scheme.weaponShare = c.scheme.utilityShare = 0, c.scheme.mysteryShare = 100;
+    g.start(c), g.hotSeat = 0;
+    settle(g);
+    assert(g.addObject(Object::Crate, 0) && g.objects.back().mystery >= 0 && g.objects.back().weapon < 0);
+    Worm &w = g.worms[g.current];
+    int team = w.team, hp = w.hp;
+    g.openMystery(MY_HEALTH, w), assert(w.hp == hp + 25);
+    g.openMystery(MY_SUPER_HEALTH, w), assert(w.hp == hp + 125);
+    g.openMystery(MY_DAMAGE, w), assert(w.hp == hp + 100 && w.counted == w.hp);
+    g.openMystery(MY_GOOD_POISON, w);
+    for (const Worm &x : g.worms) assert((x.poison == Game::POISON_DEFAULT) == (x.team != team));
+    g.openMystery(MY_BAD_POISON, w), assert(w.poison == Game::POISON_DEFAULT);
+    float grav = g.gravity();
+    g.openMystery(MY_LOW_GRAVITY, w), g.openMystery(MY_QUICK_WALK, w);
+    assert(g.gravity() == grav / 2 && g.walkScale() == 2);
+    int t0 = g.timer;
+    g.openMystery(MY_DOUBLE_TIME, w), assert(g.timer == std::min(2 * t0, 99 * 60));
+    int big = 0;
+    for (const char *n : {"Concrete Donkey", "Holy Hand Grenade", "Super Airstrike"}) big += g.ammo[team][weaponNamed(n)];
+    g.openMystery(MY_SPECIAL_WEAPON, w);
+    int after = 0;
+    for (const char *n : {"Concrete Donkey", "Holy Hand Grenade", "Super Airstrike"}) after += g.ammo[team][weaponNamed(n)];
+    assert(after == big + 1);
+    int total = 0, left = 0;
+    for (int a : g.ammo[team]) total += a > 0 ? a : 0;
+    g.openMystery(MY_DISARM, w);
+    for (int a : g.ammo[team]) left += a > 0 ? a : 0;
+    assert(left == total - 1);
+    size_t objs = g.objects.size();
+    g.openMystery(MY_MINE_LAYER, w), assert(g.objects.size() == objs + 5);
+    float sea = g.water;
+    g.openMystery(MY_FLOOD, w), assert(g.water > sea);
+    Vector3 at = w.pos;
+    g.openMystery(MY_TELEPORT, w), assert(Vector3Distance(at, w.pos) > 1);
+    g.beginTurn(team);  // turn end: Low.Gravity.GameDefault, Worm.VelocityScale 1
+    assert(g.gravity() == grav && g.walkScale() == 1);
 }
 
 // Weapon Factory: custom weapons append to the table at start(), survive a save/load, and fire.
@@ -1960,18 +2165,27 @@ static void checkFuse() {
     assert(g.fuses[g.worms[g.current].team] == 3);
 }
 
-// W4M "Will auto activate if selected": a long fall with the parachute in hand opens it, no fall damage, drifts downwind.
+// W4M "Will auto activate if selected": a long fall with the parachute in hand opens it (0x579720, under -0.225 units/ms); open
+// (0x5792a0) it glides 0.06 units/ms along the facing plus 70 ms of the opening's wind and gravity, so it lands without damage.
 static void checkParachute() {
     Game g;
     g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+    for (int z = 0; z < Terrain::NZ; z++)  // a floor at 45 m
+        for (int x = 0; x < Terrain::NX; x++) g.terrain.d[((size_t)z * Terrain::NY + 179) * Terrain::NX + x] = 127;
+    g.objects.clear(), g.timer = 100000;
     Worm &a = g.worms[g.current];
-    g.hotSeat = 0, g.wind = 1;
+    for (Worm &o : g.worms) if (&o != &a) o.pos = {5, 46, 5};
+    g.hotSeat = 0, g.wind = 1, g.windZ = 0;
     int chute = weaponNamed("Parachute");
     g.weapon = chute, g.ammo[a.team][chute] = 1, g.delays[a.team][chute] = 0;
-    a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = false;
-    float x = a.pos.x;
-    for (int t = 0; t < 60 && !g.chute; t++) g.step(Input{});
-    assert(g.chute && g.ammo[a.team][chute] == 0);
+    a.pos = {20, 58, 20}, a.vel = {0, 0, 0}, a.grounded = false, a.yaw = 0;
+    float x = a.pos.x, vy = 0;
+    for (int t = 0; t < 120 && !g.chute; t++) vy = a.vel.y, g.step(Input{});
+    assert(g.chute && g.ammo[a.team][chute] == 0 && vy >= -11.25f - 0.25f && vy < -11.25f + 0.25f);
+    for (int t = 0; t < 60; t++) g.step(Input{});
+    Vector3 want = {Game::WIND_ACCEL * 0.07f, -12.5f * 0.07f, 3};  // the 0.06 units/ms glide + 70 x (Wind.Speed, Gravity)
+    assert(Vector3Distance(a.vel, want) < 0.02f);
     for (int t = 0; t < 60 * 30 && !a.grounded; t++) g.step(Input{});
     assert(a.grounded && a.hp == 100 && a.pos.x > x + 1);
 }
@@ -2004,10 +2218,13 @@ static void checkPayloadFollow() {
             float tail = 1e9f;
             for (int t = 0; t < 60 * 6 && !g.shots.empty() && g.phase == Phase::Flying; t++) {
                 Controls::camera(cam, g, true, false, true, Game::DT);
-                if (t > 60) tail = fminf(tail, Vector3Distance(cam.target, g.shots[0].pos));
+                Camera3D v;
+                float show, grow;
+                const Camera3D &seen = Controls::inset(v, show, grow) ? v : cam;  // a TrackCam served in the turn is the inset (0x51c000)
+                if (t > 60) tail = fminf(tail, Vector3Distance(seen.target, g.shots[0].pos));
                 g.step(Controls::read(g, 0, true, Game::DT));
             }
-            assert(tail < 6);  // the look-at is on the shot, not on the worm
+            assert(tail < 6);  // the shot's view looks at the shot, not at the worm
             Controls::forceAim = 0;
             for (int t = 0; t < 30; t++) g.step(Input{});
             g.phase = Phase::Aim, g.shots.clear(), g.power = 0, g.timer = 2000;
@@ -2052,7 +2269,7 @@ static void checkRetreatInFlight() {
         if (!g.shots.empty() && g.phase == Phase::Flying) flown += Vector3Distance(a.pos, was);
         if (settleAt < 0 && g.phase == Phase::Settle) settleAt = t;
     }
-    assert(flown > 1 && Vector3Distance(a.pos, p0) > 1 && inset == 0);  // the TrackCam is served at launch, the worm still locked: full screen
+    assert(flown > 1 && Vector3Distance(a.pos, p0) > 1 && inset > 0);  // the TrackCam served at launch during the worm's turn: the inset (0x51c000)
     assert(settleAt == end - 1 && g.current != first);
 }
 
@@ -2064,9 +2281,9 @@ static void checkToolWeapons() {
         Worm &a = g.worms[g.current];
         g.hotSeat = 0;
         bool rope = tool[0] == 'N';
-        if (rope) g.roped = true, g.anchor = {20, 58, 20}, g.ropeLen = 3, g.ropeMax = 25;
-        else g.jetting = g.jetUsed = true, g.fuel = 6, g.thrust = 20;
         a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = false;
+        if (rope) g.ropeMax = 25, g.ropeOn({20, 58, 20});
+        else g.jetting = g.jetUsed = true, g.fuel = 6, g.thrust = 20;
         g.weapon = weaponNamed(tool), g.secondary = weaponNamed("Dynamite");  // W4M m_eSecondaryWeapon beside the tool
         int dyn = g.secondary;
         g.ammo[a.team][dyn] = 1, g.delays[a.team][dyn] = 0;
@@ -2348,15 +2565,11 @@ static void checkToolGaps() {
         assert(g.selectable(a.team, dyn) && !g.selectable(a.team, weaponNamed("Bazooka")));
         for (int k = 0; k < 4 * (int)WEAPONS.size() && g.jetting; k++) g.step(k % 2 ? fire : pr(Input::FIRE | Input::NEXT_WEAPON));
         assert(!g.jetting && !g.jetUsed && toolDrop(WEAPONS[g.weapon]) && g.secondary < 0);  // 0x565650 ends it, the payload in hand
-        assert(std::string(WORMPOT_MODES[19].name) == "No Bombing");
-        for (int r = 0; r < 3; r++) assert(std::count(WORMPOT_REEL[r].begin(), WORMPOT_REEL[r].end(), 19) == 1);  // on every W4M reel
-        uint32_t wp = 0;
-        wormpotPick(wp, 0, 12), wormpotPick(wp, 2, 8);  // reel 1 slot 12, reel 3 slot 8: both No Bombing
-        assert((wp & ((1u << WORMPOT_COUNT) - 1)) == WP_NO_BOMBING && wormpotReel(wp, 0) == 12 && wormpotReel(wp, 1) < 0 && wormpotReel(wp, 2) == 8);
-        wormpotPick(wp, 0, -1);
-        assert((wp & ((1u << WORMPOT_COUNT) - 1)) == WP_NO_BOMBING && wormpotReel(wp, 0) < 0);
-        uint32_t old = wormpotSlots(WP_NO_BOMBING | WP_QUICK_WALK);  // a save without picks
-        assert((old & ((1u << WORMPOT_COUNT) - 1)) == (WP_NO_BOMBING | WP_QUICK_WALK) && wormpotReel(old, 2) >= 0);
+        assert(std::string(WORMPOT_MODES[WP_NO_BOMBING].name) == "No Bombing");
+        for (int r = 0; r < 3; r++) assert(std::count(WORMPOT_REEL[r].begin(), WORMPOT_REEL[r].end(), (int)WP_NO_BOMBING) == 1);  // on every W4M reel
+        uint32_t wp = wormpotSet(wormpotSet(0, 0, WP_NO_BOMBING), 2, WP_NO_BOMBING);
+        assert(wormpotModes(wp) == 1ull << WP_NO_BOMBING && wormpotReel(wp, 0) == WP_NO_BOMBING && wormpotReel(wp, 1) == 0);
+        assert(wormpotModes(wormpotSet(wp, 0, WP_EMPTY)) == 1ull << WP_NO_BOMBING);
     }
     {  // 7. direct pick (W4M 0x565d30): NEXT_WEAPON + aim = index + 1, aim unused that tick; aim 0 still steps
         Game g;
@@ -2386,7 +2599,7 @@ static void checkToolGaps() {
             Worm &a = g.worms[g.current];
             bool rope = tool[0] == 'N';
             a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = false;
-            if (rope) g.roped = true, g.anchor = {20, 58, 20}, g.ropeLen = 3, g.ropeMax = 25;
+            if (rope) g.ropeMax = 25, g.ropeOn({20, 58, 20});
             else g.chute = true;
             int pw = weaponNamed(pk);
             g.weapon = weaponNamed(tool), g.ammo[a.team][pw] = 1, g.delays[a.team][pw] = 0;
@@ -2695,14 +2908,16 @@ static void checkRopeShots() {
     Input fire;
     fire.buttons = Input::FIRE;
     g.step(fire);
-    assert(g.ropeShots == 1 && !g.roped && g.objects[0].hooked && fabsf(g.ropeLen - 6) < 0.1f);
+    // 0x571d90: about the worm's feet, by the point 10 units under the crate's centre
+    assert(g.ropeShots == 1 && !g.roped && g.objects[0].hooked && fabsf(g.rope.len[0] - 6) < 0.1f && g.rope.n == 1);
+    auto hang = [&] { return Vector3Distance({g.objects[0].pos.x, g.objects[0].pos.y - 0.5f, g.objects[0].pos.z}, g.rope.pt[0]); };
     Input reel;
     reel.aim = 127;  // stick up: shorter
     for (int k = 0; k < 12; k++) g.step(reel);  // 2 m in at 10 m/s (W4M 0x5713c0): the crate is still out of reach
-    assert(g.ropeLen < 4.1f && g.objects.size() == 1 && Vector3Distance(g.objects[0].pos, a.pos) <= g.ropeLen + 0.2f);
+    assert(g.rope.len[0] < 4.1f && g.objects.size() == 1 && fabsf(hang() - g.rope.len[0]) < 0.05f);
     reel.aim = -127;
     for (int k = 0; k < 10; k++) g.step(reel);
-    assert(g.ropeLen > 4.5f && g.objects[0].hooked);
+    assert(g.rope.len[0] > 4.5f && g.objects[0].hooked && fabsf(hang() - g.rope.len[0]) < 0.05f);
     Input jump;
     jump.buttons = Input::JUMP;
     for (int k = 0; k < 6; k++) { g.step(jump); g.step(Input{}); g.step(fire); }
@@ -3283,12 +3498,209 @@ static void checkTunnelling() {
     assert(fabsf(flat.x - 16) < 0.2f);
 }
 
-// W4M 0x5713c0: on/off reel at 4 units per 20 ms, clamped at MaxLength, refused below MinLength 10 units
-static void checkRopeReel() {
-    const float step = 10 * Game::DT;
-    assert(fabsf(Game::reel(5, 127, 22.5f) - (5 - step)) < 1e-5f && fabsf(Game::reel(5, 1, 22.5f) - (5 - step)) < 1e-5f);
-    assert(Game::reel(0.5f + step * 0.5f, 127, 22.5f) == 0.5f + step * 0.5f);  // the step would go under 0.5 m: none
-    assert(Game::reel(22.5f - step * 0.5f, -127, 22.5f) == 22.5f && Game::reel(5, 0, 22.5f) == 5);
+static Vector3 feetOf(const Worm &w) { return {w.pos.x, w.pos.y - Game::R, w.pos.z}; }
+
+// W4M NinjaRopeUtilityLogicEntity 0x574480: an angle pendulum in the yaw's plane (0x5729e0), reel 0x5713c0, bounce and wrap
+// 0x573060, unwrap 0x571600, release 0x573530; in the open air (all voxels cleared)
+static void checkRope() {
+    auto open = [](Game &g) {
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+        std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+        g.objects.clear(), g.ropeMax = 22.5f, g.weapon = weaponNamed("Ninja Rope"), g.timer = 100000;
+        Worm &w = g.worms[g.current];
+        for (Worm &o : g.worms) if (&o != &w) o.pos = {5, 40, 5};
+        w.pos = {40, 50.5f, 40}, w.vel = {}, w.yaw = 0, w.grounded = false;
+        return &w;
+    };
+    const float K = Game::DT / 0.02f;
+    {  // hooked ahead and up: the eye's angle (> 0, behind the facing), length from the feet, no spin from rest
+        Game g;
+        Worm &w = *open(g);
+        Vector3 hook = {40, 55, 45};
+        g.ropeOn(hook);
+        float th = acosf(4.25f / sqrtf(4.25f * 4.25f + 25));
+        assert(g.roped && g.rope.n == 1 && fabsf(g.rope.len[0] - sqrtf(50)) < 1e-4f && fabsf(g.rope.angle - th) < 1e-4f && g.rope.spin == 0);
+        Input turn;
+        turn.turn = 127;
+        g.step(turn);  // 0x5729e0 keeps the yaw; gravity's first pull: -0.1 sin / L units per 20 ms
+        float l = sqrtf(50) * 20, spin = 400 * -0.00025f * sinf(th) / l * K;
+        assert(w.yaw == 0 && fabsf(g.rope.spin - spin) < 1e-7f);
+        assert(fabsf(Vector3Distance(feetOf(w), hook) - g.rope.len[0]) < 1e-3f && feetOf(w).z < hook.z);
+        float lo = 0;
+        Game low;  // at the first pass under the hook
+        for (int t = 0; t < 300; t++) {
+            g.step(Input{});
+            lo = fminf(lo, g.rope.angle);
+            if (!low.worms.size() && fabsf(feetOf(w).z - hook.z) < 0.2f) low = g;
+            assert(fabsf(Vector3Distance(feetOf(w), hook) - g.rope.len[0]) < 1e-3f);  // on the circle, in the plane x = 40
+            assert(fabsf(feetOf(w).x - 40) < 1e-4f);
+        }
+        assert(low.worms.size() && lo < 0 && -lo < th);  // swung past the bottom, damped by RotationDamping 0.99 per 20 ms
+        Worm &u = low.worms[low.current];
+        Vector3 at = feetOf(u), v = low.ropeRelease(low.rope, at, 0);
+        Input jump;
+        jump.buttons = Input::JUMP;
+        low.step(jump);  // 0x573530: one more swing step's motion over its time, then a plain fall
+        assert(!low.roped && fabsf(u.vel.z - v.z) < 1e-3f && fabsf(u.vel.y - (v.y - 12.5f * Game::DT)) < 0.05f && v.z > 3);
+        assert(fabsf(Vector3DotProduct(v, Vector3Subtract(at, hook))) < 0.05f * Vector3Length(v) * low.rope.len[0]);
+    }
+    {  // the stick swings it along the facing: forward drives the angle negative, the body in front
+        Game g;
+        Worm &w = *open(g);
+        g.ropeOn({40, 55.5f, 40});
+        Input fwd;
+        fwd.walk = 127;
+        assert(Game::ropeSwing(fwd, 0) == 1 && Game::ropeSwing(Input{}, 0) == 0);
+        fwd.buttons = Input::HEADING, fwd.turn = 64;  // stick at 90 deg to the facing: 0x571820 gives 0 between 81 and 99 deg
+        assert(Game::ropeSwing(fwd, 0) == 0);
+        fwd.turn = -128;
+        assert(Game::ropeSwing(fwd, 0) == -1);
+        fwd.buttons = 0, fwd.turn = 0;
+        g.step(fwd);
+        float lc = Vector3Distance(feetOf(w), g.rope.pt[0]) * 20;
+        assert(g.rope.spin < 0 && g.rope.spin > -6e-5f * 20 * 5 * 10 / lc * K * 1.01f);  // SwingAmount x 20 x 5 MinLength / (L + 0.001 L²)
+        float lo = 0, z = 0;
+        for (int t = 0; t < 90; t++) g.step(fwd), lo = fminf(lo, g.rope.angle), z = fmaxf(z, feetOf(w).z);
+        assert(lo < -0.2f && z > 41);
+    }
+    {  // reel: 10 m/s; MaxLength over the whole rope; never under MinLength or MinBendDistFromWorm 10 units
+        Game g;
+        Worm &w = *open(g);
+        Vector3 hook = {40, 55, 40};
+        g.ropeOn(hook);
+        Input in;
+        in.aim = 127;
+        float l0 = g.rope.len[0];
+        g.step(in);
+        assert(fabsf(g.rope.len[0] - (l0 - 10 * Game::DT)) < 1e-4f && fabsf(Vector3Distance(feetOf(w), hook) - g.rope.len[0]) < 1e-3f);
+        for (int t = 0; t < 120; t++) g.step(in);
+        assert(g.rope.len[0] >= 0.5f && g.rope.len[0] < 0.5f + 10 * Game::DT);
+        in.aim = -127;
+        for (int t = 0; t < 240; t++) g.step(in);
+        assert(fabsf(g.rope.len[0] - 22.5f) < 1e-3f);
+    }
+    {  // a wall's corner in the way: a bend 1 unit (+ half a voxel) off it, spin x old / new length; swung back, it unwraps
+        Game g;
+        Worm &w = *open(g);
+        Vector3 hook = {40, 56, 40}, peg = {40, 54.5f, 44};
+        for (int x = 140; x < 180; x++) g.terrain.d[((size_t)175 * Terrain::NY + 217) * Terrain::NX + x] = 127;  // a thin bar along x at z 44, y 54.4
+        w.pos = {40, 56.5f, 49}, w.yaw = PI;  // the hook ahead: hung behind the facing, the rope level, clear above the bar
+        g.ropeOn(hook);
+        int most = 1;
+        bool back = false;
+        for (int t = 0; t < 1500 && !back && g.roped; t++) {
+            Input pump;  // once wrapped, the stick pushes along the motion until it swings back over the bar
+            pump.walk = most == 2 ? (g.rope.spin > 0 ? -127 : 127) : 0;
+            g.step(pump);
+            most = std::max(most, g.rope.n);
+            if (g.rope.n == 2) {
+                assert(fabsf(g.rope.pt[1].z - peg.z) < 0.4f && fabsf(g.rope.pt[1].y - peg.y) < 0.4f);
+                assert(fabsf(Vector3Distance(feetOf(w), g.rope.pt[1]) - g.rope.len[1]) < 1e-3f);
+                assert(fabsf(g.rope.len[0] + g.rope.len[1] - 9.03f) < 0.3f);
+            }
+            back = most == 2 && g.rope.n == 1;
+        }
+        assert(most == 2 && back && fabsf(g.rope.len[0] - Vector3Distance(feetOf(w), hook)) < 1e-3f);
+    }
+    {  // the body meets a worm's collider: 0x573060 turns the swing back at 0.9
+        Game g;
+        Worm &w = *open(g);
+        w.pos = {40, 52.5f, 44}, w.yaw = PI;
+        g.ropeOn({40, 56, 40});
+        Worm &o = g.worms[1 - g.current];
+        int bounced = 0;
+        for (int t = 0; t < 300 && !bounced; t++) {
+            float s = g.rope.spin;
+            o.pos = {40, 50.95f, 37.6f}, o.vel = {}, o.grounded = true;
+            g.step(Input{});
+            if (s < 0 && g.rope.spin > 0 && feetOf(w).z > 38) bounced = t;
+        }
+        assert(bounced && fabsf(g.rope.spin) > 0);
+    }
+}
+
+// W4M payload water (0x582050 / 0x580830 / 0x580aa0): skim, splash, disarm and sink at Payload.SinkSpeed, gone at Water.ExpiryDepth
+static void checkWaterShots() {
+    auto sea = [](Game &g) {
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+        std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+        g.objects.clear(), g.phase = Phase::Flying, g.timer = 100000, g.wind = g.windZ = 0;
+        for (Worm &o : g.worms) o.pos = {5, 40, 5}, o.grounded = true;
+    };
+    {  // Bazooka: 20 m/s at -0.2 rad, over MinSpeedForSkim 0.1 units/ms and MaxAngleForSkim -0.4: SkimDamping (0.5, -0.5, 0.5)
+        Game g;
+        sea(g);
+        int wi = weaponNamed("Bazooka");
+        Vector3 v = {0, -20 * sinf(0.2f), 20 * cosf(0.2f)};
+        g.shots = {{{40, g.water + 0.3f, 40}, v, wi, 0, false, 1}};
+        bool splash = false;
+        for (int t = 0; t < 10 && !splash; t++) {
+            Vector3 was = g.shots[0].vel;
+            g.step(Input{});
+            for (const GameEvent &e : g.events) splash = splash || e.kind == GameEvent::Splash;
+            if (splash) {
+                const Projectile &s = g.shots[0];
+                was.y -= 12.5f * 0.6f * Game::DT;  // that tick's gravity (IsLowGravity: Gravity.Slow)
+                assert(!s.sunk && s.vel.y > 0 && fabsf(s.vel.y - was.y * -0.5f) < 1e-3f && fabsf(s.vel.z - was.z * 0.5f) < 1e-3f);
+                assert(s.pos.y == g.water + 0.25f);
+            }
+        }
+        assert(splash);
+    }
+    {  // Grenade dropped straight in: a splash at the surface, disarmed 6 units under it, sinks straight, its fuse never goes off
+        Game g;
+        sea(g);
+        int wi = weaponNamed("Grenade");
+        g.shots = {{{40, g.water + 1, 40}, {0, -8, 0}, wi, 1, false, 1}};
+        bool splash = false, boom = false;
+        int t = 0;
+        for (; t < 30 && !g.shots[0].sunk; t++) {
+            g.step(Input{});
+            for (const GameEvent &e : g.events) splash = splash || e.kind == GameEvent::Splash;
+        }
+        const Projectile &s = g.shots[0];
+        assert(splash && s.sunk && s.pos.y == g.water - 0.3f && s.vel.x == 0 && s.vel.z == 0 && s.vel.y <= -4 && s.vel.y >= -5);
+        for (t = 0; t < 600 && !g.shots.empty(); t++) {
+            g.step(Input{});
+            for (const GameEvent &e : g.events) boom = boom || e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom;
+            if (!g.shots.empty()) assert(g.shots[0].pos.y > Terrain::WATER - 10);
+        }
+        assert(g.shots.empty() && !boom && t > (int)((10 - 0.3f) / 5 / Game::DT) - 2);  // gone at Water.ExpiryDepth -200 units
+    }
+    {  // a Homing Missile homing: +0x6e clear, it only splashes and flies on under the water
+        Game g;
+        sea(g);
+        int wi = weaponNamed("Homing Missile");
+        g.shots = {{{40, g.water + 0.5f, 40}, {0, -10, 0}, wi, Game::HOMING_LOCK + 0.1f, false, 1, {40, g.water - 20, 40}}};
+        for (int t = 0; t < 30; t++) g.step(Input{});
+        assert(!g.shots.empty() && !g.shots[0].sunk && g.shots[0].pos.y < g.water - 1);
+    }
+}
+
+// Poison Arrow stuck in land whose voxel goes (Land.NewShape, 0x5777f0): it falls again; its detonation keeps the first time
+static void checkArrowFalls() {
+    Game g;
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+    for (int z = 150; z < 170; z++)
+        for (int y = 190; y < 200; y++)
+            for (int x = 150; x < 170; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = 127;
+    for (Worm &o : g.worms) o.pos = {5, 40, 5};
+    g.objects.clear(), g.phase = Phase::Flying, g.timer = 100000, g.wind = g.windZ = 0;
+    int wi = weaponNamed("Poison Arrow");
+    g.shots = {{{40, 51, 40}, {0, -10, 0}, wi, 0, false, 1}};
+    g.shots[0].touching = 0;
+    for (int t = 0; t < 30 && g.shots[0].stage != 1; t++) g.step(Input{});
+    assert(g.shots[0].stage == 1);
+    for (int t = 0; t < 30; t++) g.step(Input{});
+    g.terrain.carve({40, 49.5f, 40}, 1.2f);
+    g.step(Input{});
+    assert(g.shots.size() == 1 && g.shots[0].stage == 2);
+    int left = msTicks(2000) - 32;
+    for (int t = 0; t < left - 2; t++) g.step(Input{});
+    assert(g.shots.size() == 1 && g.shots[0].stage >= 1 && g.gas.empty());
+    for (int t = 0; t < 4; t++) g.step(Input{});
+    assert(g.shots.empty() && g.gas.size() == 1);
 }
 
 // W4M 0x5b4180 / 0x4f26b0: worms are placed first, then a mine or drum its sphere (radius + 5 units) clear of every worm collider (10 units) and object
@@ -3343,6 +3755,9 @@ int main() {
         assert(w.hp == 500 - 75 - 60 - 200 - 60);
     }
     assert(loadWeapons("romfs/weapons.json"));
+    checkRope();
+    checkWaterShots();
+    checkArrowFalls();
     std::vector<bool> used(WEAPONS.size()), again(WEAPONS.size());
     assert(run(used) == run(again));
     for (size_t i = 0; i < WEAPONS.size(); i++) printf("%-18s %s\n", WEAPONS[i].name.c_str(), used[i] ? "used" : "-");
@@ -3405,6 +3820,8 @@ int main() {
     checkWipeEndsMatch();
     checkScheme();
     checkWormpot();
+    checkWormpotModes();
+    checkMystery();
     checkCustomWeapons();
     checkFuse();
     checkParachute();
@@ -3437,7 +3854,6 @@ int main() {
     checkBinoculars();
     checkChangeWorm();
     checkBubble();
-    checkRopeReel();
     checkIcarus();
     checkCollectedUtilities();
     checkTunnelling();

@@ -38,7 +38,7 @@ const char *SFX_NAMES[] = {
     "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
     "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
-    "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks",
+    "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev, hand-kept from `tools/w4m-re/fev.py` (docs/w4m/audio.md §12): the event of each file, its gain in dB
@@ -153,6 +153,7 @@ const Def DEFS[] = {
     {"weapons/ExplosionBoxed", -2, false, 0, 0, 4},  // 2D
     {"weapons/ConcreteDonkeyImpact", 0, false, 0, 0, 1, 0, nullptr, 2},  // 2D, 3 waves
     {"global/FireWorksExplosion", 0, false, 0.5f, 25, 1, 0, nullptr, 2, {}, {}, true},  // EmitterSoundFX of the WXPF_ / Starburst bangs
+    {"weapons/BuffaloOfLies", -2, false, 0.5f, 25, 1},
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -406,16 +407,16 @@ void play(Sfx id, float volume) { play(id, volume, nullptr); }
 void play(Sfx id, Vector3 at) { play(id, 1, &at); }
 
 void equip(const char *w, Vector3 at) {
-    struct E { const char *name; Sfx id; };  // WEAPTWK EquipSfx by weapon; Sheep, Starburst, Fire Punch, Prod, Armour, Binoculars, Teleport, Change Worm, Skip Go have none
+    struct E { const char *name; Sfx id; };  // WEAPTWK EquipSfx, played by the WAE_* classes only (0x5950c0): none without one (Fatkins, Girder, Jetpack, Parachute)
     static const E T[] = {
         {"Bazooka", Sfx::EquipBazooka}, {"Homing Missile", Sfx::EquipBazooka}, {"Sentry Gun", Sfx::EquipBazooka},
-        {"Airstrike", Sfx::EquipAir}, {"Super Airstrike", Sfx::EquipAir}, {"Fatkins Strike", Sfx::EquipAir}, {"Concrete Donkey", Sfx::EquipAir}, {"Alien Abduction", Sfx::EquipAir},
+        {"Airstrike", Sfx::EquipAir}, {"Super Airstrike", Sfx::EquipAir}, {"Concrete Donkey", Sfx::EquipAir}, {"Alien Abduction", Sfx::EquipAir},
         {"Flood", Sfx::EquipUmbrella}, {"Inflatable Scouser", Sfx::EquipScouser}, {"Shotgun", Sfx::EquipShotgun}, {"Sniper Rifle", Sfx::EquipSniper},
         {"Bubble Trouble", Sfx::EquipBubble}, {"Icarus Potion", Sfx::EquipPotion},
         {"Grenade", Sfx::EquipDefault}, {"Cluster Grenade", Sfx::EquipDefault}, {"Banana Bomb", Sfx::EquipDefault}, {"Holy Hand Grenade", Sfx::EquipDefault},
         {"Poison Arrow", Sfx::EquipDefault}, {"Dynamite", Sfx::EquipDefault}, {"Gas Canister", Sfx::EquipDefault}, {"Landmine", Sfx::EquipDefault},
         {"Old Woman", Sfx::EquipDefault}, {"Baseball Bat", Sfx::EquipDefault}, {"Tail Nail", Sfx::EquipDefault}, {"Ninja Rope", Sfx::EquipDefault},
-        {"Jetpack", Sfx::EquipDefault}, {"Parachute", Sfx::EquipDefault}, {"Girder", Sfx::EquipDefault}, {"Surrender", Sfx::EquipDefault},
+        {"Surrender", Sfx::EquipDefault},
     };
     for (const E &e : T) if (!strcmp(w, e.name)) return play(e.id, at);
 }

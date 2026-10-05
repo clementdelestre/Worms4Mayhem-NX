@@ -75,8 +75,10 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
   heal (W4M RedbullUtilityLogicEntity 0x587600 → Weapon.PostLaunchDelay → 0x587750, disasm); the turn stays in `Aim`. We have no Bridge Kit (1).
 - Poison Arrow (`stick` 2 in weapons.json, W4M PreDetonationTime; docs/w4m/weapons.md "Poison Arrow"): a worm contact detonates it at once, a land
   contact stops it (`Projectile::stage` 1, heading kept in `aim`, `fuse` counting down) and it detonates 2 s later; the detonation has no damage, knock
-  or crater and puts down the gas cloud (`Game::gas`), which poisons. `GameEvent::Arm` is the impact (ArmSfxLoop BowImpact). Not modelled: water skim, a
-  Land.NewShape under the stuck arrow [ours].
+  or crater and puts down the gas cloud (`Game::gas`), which poisons. `GameEvent::Arm` is the impact (ArmSfxLoop BowImpact). When the voxel half a
+  voxel ahead of a stuck arrow is gone (our stand-in for Land.NewShape's "its land frame is gone", 0x5777f0 / 0x574d10) it falls again (`stage` 2,
+  fuse still running); stopping again keeps the first detonation time (the first Payload.Detonate stays queued) [disasm; voxel probe ours]. It skims
+  as every SkimsOnWater payload (below, "Shots in water").
 
 ### Settle (`case Phase::Settle`): W4M stdlib.lub EndTurn, as is (data + disasm)
 
@@ -144,6 +146,55 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
   fuse = scheme `mineFuse` or 1..5 s random; 10 % duds (Mine.DudProbability, data). A blast only pushes a mine.
 - **Steep ground**: objects slide past 60° like a worm (`wormBody` law, W4M SlideAngle_Default, data).
 
+## Wormpot (`WormpotMode`, `Game::pot`, `Game::wp`)
+
+W4M side: docs/w4m/turn.md §6b.
+- **Reels** [ours, data]: `GameConfig::wormpot` holds the three reels' W4M mode ids, one per byte (W4M FE.Wormpot.Reel1..3). The setup screen
+  uses W4M's reel lists and FETXT names. `Game::pot` is the set of picked modes. Saved settings use the key `reels`.
+- **Super Explosives / Clusters / Animals / Firearms / Hand to Hand, Super Secret Weapons** [data, disasm]:
+  - `containerOf` maps a shot to its W4M container: bomblets are kWeaponClusterBomb / Bananette, bomber payloads their own.
+  - `superScale` gives (damage and crater ×2, push ×2) for the Super modes. The super weapon of the active team adds ×2 damage and crater for its
+    turn.
+  - `superWeapon` is drawn at start from the team's ammo, before Crates Only clears it. The 150 type-4 cap is in `hurt`.
+- **Specialists** [data]:
+  - `special` holds each worm's class. `allowed()` (inside `usable()`) applies the active worm's Allow set; the class's ammo is written into the team
+    ammo. Homing / Airstrike delays become 1 / 5. Our teams have at most 4 worms.
+- **No Cowards** [data]: the scheme's retreat time becomes 0 (weapon overrides stay), Surrender ammo 0.
+- **Energy Or Enemy** [data]: every worm starts poisoned at Worm.Poison.Default 10.
+- **Tug O Worms** [disasm]: `artillery()`: no walking, no jump, the Jetpack not allowed; the rope keeps its ammo. The AI plans no move and no retreat.
+- **Jumping Only / Quick Walk** [disasm]: `walkScale()` is Worm.VelocityScale (0 / 2). The mystery Quick Walk sets 2 for the turn unless Jumping
+  Only is on.
+- **Wind Affects Guns** [disasm]: `Wobble` / `wobbleStep` is W4M's GunWobbleObject on the Shotgun and Sniper Rifle. `aimDir` adds it, so the shot
+  and the aim camera sway.
+  - [ours] W4M multiplies the wobble by min(1.5 zoom, 1) of the client camera. The zoom is not on the wire, so ours uses 1.
+  - [ours] The per-firing-tick kick draw is skipped (KickSize 0, no effect besides the RNG).
+- **No Blimp View** [disasm]: the sim drops TARGET, and `blimpable()` (controls.cpp) refuses the view. Targeting weapons aim from the aim view.
+  The AI skips the Homing, Airstrike, Super Airstrike, Concrete Donkey and Fatkins plans.
+- **Mine Respawn** [disasm]:
+  - Explosions carve nothing; the gun's single voxel and the girder are not gated.
+  - A detonating mine is never a dud, and new mines skip the dud roll. `respawns` re-creates the mine 500 ms later where it went off, if above water.
+- **Dim-Mak** [disasm]: the Prod deals the hp left, type 5, no push. [ours] The WXP_Wep_DimMak effect is not drawn.
+- **Wind Affects Worms** [disasm]: `wormWind()` (Wind × 0.5) is added to the flying worm's acceleration in `wormBody`, the AI's copy included.
+- **Donor Card, Girders Only**: in the name table, on no reel (W4M has no reader); nothing to do.
+
+## Mystery crates (`addObject`, `openMystery`)
+
+W4M side: docs/w4m/weapons.md "Mystery crates".
+- **Spawn** [data]:
+  - The fourth share is `Scheme::mysteryShare` (W4M MysteryChance): 20 in All Action, 30 in Mega Power, 0 in the other presets. The scheme editor
+    has a row for it.
+  - The item is drawn at spawn by `MYSTERY_ITEMS` weights (the table of every scheme with mystery crates) into `Object::mystery`.
+- **Collection** [disasm]: `openMystery` runs after the crate is removed. Every item follows W4M's values.
+  - [ours] Teleport moves the worm at once, as our Teleport utility does; the fit test is "not inside land".
+  - [ours] Flood is our instant Flood rise.
+  - [ours] Disarm walks our weapons in W4M inventory-slot order (`inventoryId`).
+- **Feedback** [data]:
+  - The `Mystery` event plays `weapons/BuffaloOfLies` (sfx `buffalo`) and shows `Text.kMystery*` in the banner.
+  - The spawn banner is Comment.Mystery.
+  - The crate lands with CrateImpactWeapon.
+  - Crate Spy shows the item.
+  - The model is `crate_mystery` (tools/w4m-models `Crate.Mystery`), falling back to the weapon crate.
+
 ## Movement and collisions (shared with the AI)
 
 Free functions in sim.cpp, also called by `ai.cpp` (`Mover`, `stepBody`) so the CPU predicts exactly what the sim does.
@@ -168,8 +219,58 @@ Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `
 Constants (sim.h / sim.cpp): gravity 12.5 m/s² (W4M Gravity −0.00025 units/ms², data; low gravity × 0.5, Low.Gravity.OnValue);
 walk 3.0625 m/s (Walk.Speed, data; Quick Walk: VelocityScale 2, 0x5d6bc0, disasm); jumps: tapped or held forward (3.16, 7.91) m/s, held still: vertical 9.35 m/s,
 pressed twice: backflip (−1.58, 10) or forward flip (1.58, 10) (W4M 0x5a5d30 / 0x95fb88 / 0x95fb7c, data); fall damage above 15 m/s:
-trunc((v − 15) × 2) + 1 hp (W4M FallDamage 0x5ac3e0, FallDamageRatio 100, data; Max Fall: FallDamageRatio × FallingScale 2, Wormpot.lub, data; none when the scheme has fall damage off); no fall
+trunc((v − 15) × 2) + 1 hp (`Game::fallDamage`, shared with the AI; W4M FallDamage 0x5ac3e0, FallDamageRatio 100, data; Max Fall: FallDamageRatio × FallingScale 2, Wormpot.lub, data; none when the scheme has fall damage off or under Wormpot Worms Drown, SetNoFallDamage); no fall
 damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack landing: a foot touching land lands the pack minus its normal speed (W4M 0x562f72, disasm), so `stepWorm` skips `land()` while `jet`; a dry pack falls and hurts as any fall (docs/w4m/physics.md FallDamage); the fall also rumbles the worm's pad: Heavy 100/255 for 500 ms (0x4bc410, disasm; GameEvent::Fall).
+
+### Ninja rope (`Rope`, `Game::ropeHang` / `ropeTick` / `ropeRelease`, shared with the AI's `Mover`)
+
+W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm + data]; what is ours is tagged.
+- State (`Game::rope`, checksummed while in use): the bends from the hook on (`pt`, `len`, unwrap `side`), the swing `angle` and `spin`
+  (rad per 20 ms) in the vertical plane of `yaw`. The body point is the feet (W4M Position): `pos - R`. The yaw stays fixed on the rope.
+- Hooking (`ropeOn`, `use` → hit): length from the feet, angle = acos of the eye's drop below the hook (> 0: behind the facing), from the
+  second hook of a turn negated when moving backwards, spin = the angle swept about the hook by 20 ms of the velocity, negative moving forwards.
+- Each tick `ropeTick`: reel (`aim` sign, 10 m/s, MaxLength over the whole rope, refused under MinLength / MinBendDistFromWorm or when the new
+  point is blocked), swing (angle += spin; stick push −s × SwingAmount × 100 × MinLength / (L + 0.001 L²), units; RotationDamping 0.99
+  without stick; gravity 400 g sin(angle) / L), body at the last bend + L (−sin, −cos) of angle + spin; a blocked body turns the spin
+  back × 0.9; land across the last stretch adds a bend (8 halvings back toward the old position, 1 unit off the land, spin × old / new
+  length; under MinBendDistFromWorm: a bounce instead); the bend before seen again and the body past its side: the bend goes.
+- Ours: W4M's 20 ms step runs per 1/60 s tick with every per-step term × `ROPE_K` = DT / 20 ms (angle, spin, pushes, damping as
+  0.99^K). `ropeCut` (0x571020) casts from 0.1 m off the feet and stops 0.4 m short of the bend, and bends sit an extra half voxel off
+  the land: our voxel raycast stops up to half a voxel deep, so the feet on the ground or a bend's own land would always cut the
+  stretch. `ropeBlocked` samples Fits' three 1 m rods every voxel from half a voxel up (same reason), plus the 5-unit sphere at the feet
+  against other worms (10 units, 5 above their feet), shots (their Radius) and bubbles (9 units); crates, drums and mines are not counted
+  (their collider flags against the rope's mask 0x19 are not traced). Rope.MAX 16 bends: a wrap past it bounces instead.
+- Velocity while swinging is W4M's 0x56fd60 value, the step's motion × 0.001 units/ms (1/50 of the motion's speed); letting go (`JUMP`)
+  sets the velocity of one more swing step over its time (0x573530, DetachVelocityMulti 1).
+- `ropeSwing` (0x571820): without `HEADING`, the sign of `walk`; with it, the stick's direction against the facing: under 81° forward,
+  over 99° back, 0 between.
+- A hooked crate, drum or mine (0x571d90) runs the same update about the worm's feet at the hook time, its plane facing away from the
+  worm, no spin; it hangs by its centre minus 10 units (crate, 0x5cbc86) or 9 (drum, 0x5d2135); `stepObjects` leaves it alone; `JUMP`
+  lets it go with `ropeRelease`'s velocity (NinjaRope.EndSwing). Not modelled [ours]: the hook's flight (W4M flies it at 1 unit/ms from the
+  eye, 0x572800 / 0x573d00, and retracts it past MaxLength); ours hooks at once along the aim ray.
+
+### Shots in water (`stepShots`' `wet`)
+
+W4M PayloadLogicEntity 0x582050 / Parabolic events 0x577980, docs/w4m/weapons.md "Payload water" [disasm + data]. weapons.json carries
+`size` (Radius), `sink` (SinkDepth), `skim_*` (SkimsOnWater, MinSpeedForSkim, MaxAngleForSkim, SkimDamping), `cluster_size` / `cluster_sink`
+(the bomblets' containers); Weapon Factory weapons get kWeaponFactoryWeapon / Homing / Cluster's in `Game::start`.
+- Crossing Water.Level + Radius: a skim (v × damping, never for bomblets) or a splash (`GameEvent::Splash`); set on that plane either way.
+- Crossing Water.Level − SinkDepth: `Projectile::sunk` (checksummed): speed capped at 5 m/s, xz × k², vy = −max(4, |vy| k), k = speed / 5;
+  no acceleration, no fuse, no blast; any contact or Water.ExpiryDepth (absolute, `Terrain::WATER` − 10 m) removes it.
+- A homing missile while homing only splashes at Water.Level. Walking payloads (old woman, scouser) keep their own sinking (0x594002);
+  the sheep (W4M JumpingPayload) and the walks-first super sheep use these planes.
+
+### Wind on the parachute, the scouser and the gas (W4M docs/w4m/weapons.md "Wind drift")
+
+- Parachute (`chuteDrift`, `CHUTE_*`) [disasm]: opens under −11.25 m/s; per tick the velocity moves half its gap (0.5^K) to 3 m/s along the
+  facing + `chuteDrift` (70 ms of the opening's wind and gravity: 0.2975 m/s per wind unit, −0.875 m/s), at most 2.5 m/s × K; no
+  Ballistic gravity or Wormpot worm wind while it hangs. Not modelled [ours]: the canopy sway and its coupling into the fall (0 at rest),
+  closing on a blocked canopy. The yaw still turns with the stick [assumed: no W4M turn code found].
+- Inflatable Scouser [disasm]: caught (stage 1, stopped), it inflates the next tick: 4 m/s straight up, 6 s to the pop; it rises
+  through land until a tick clear of it (stage 2), then drifts (stage 3): wind × 4.25 × 0.6 m/s² per wind unit, no gravity; land
+  then pops it. The carried worm's feet are at the payload.
+- Gas cloud [data + disasm]: fixed 0.5 m above the blast for 8 s (WXP_GasCloud's ParticleMass 0 cancels its wind); the spiral
+  wobble (0.1 m) is not modelled.
 
 ### Shots: launch and self-hit
 
