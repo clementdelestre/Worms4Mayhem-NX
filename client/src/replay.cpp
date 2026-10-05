@@ -104,35 +104,79 @@ std::string replayName(const GameConfig &cfg) {
     return std::string(date) + "_" + map + ".w4r";
 }
 
-void Snapshot::take(Game &live, uint32_t t) {
-    Terrain ter = std::move(live.terrain);  // the voxels stay out of the copy
-    g = live;
+namespace {
+void copyState(Game &to, Game &from) {  // the voxels stay out of the copy
+    Terrain ter = std::move(from.terrain);
+    to = from;
+    from.terrain = std::move(ter);
+}
+void setState(Game &live, const Game &from) {
+    Terrain ter = std::move(live.terrain);
+    live = from;
     live.terrain = std::move(ter);
-    decor = live.terrain.objects;
-    log.clear();
+}
+void markChunks(Terrain &t, int v) {  // chunk cells sample one voxel past their bounds
+    constexpr int CS = Terrain::CS, CX = Terrain::NX / CS, CY = Terrain::NY / CS;
+    int x = v % Terrain::NX, y = v / Terrain::NX % Terrain::NY, z = v / (Terrain::NX * Terrain::NY);
+    for (int cz = std::max(z - 1, 0) / CS; cz <= std::min(z + 1, Terrain::NZ - 1) / CS; cz++)
+        for (int cy = std::max(y - 1, 0) / CS; cy <= std::min(y + 1, Terrain::NY - 1) / CS; cy++)
+            for (int cx = std::max(x - 1, 0) / CS; cx <= std::min(x + 1, Terrain::NX - 1) / CS; cx++) t.dirty[(cz * CY + cy) * CX + cx] = true;
+}
+}  // namespace
+
+void Snapshot::take(Game &live, uint32_t t) {
+    copyState(g, live);
+    decor = live.terrain.objects, emit = live.terrain.emitters;
+    log.clear(), cps.clear(), redo.clear();
     live.terrain.undo = &log;
+    live.terrain.keepMeshes();
     tick = t;
-    valid = true;
+    valid = true, hasLive = false;
 }
 
-void Snapshot::restore(Game &live) {
+void Snapshot::mark(Game &live, uint32_t t) {
+    if (cps.size() == 20) cps.erase(cps.begin());
+    cps.push_back({t, Game{}, live.terrain.objects, live.terrain.emitters, log.size()});
+    copyState(cps.back().g, live);
+}
+
+uint32_t Snapshot::restore(Game &live, uint32_t upTo) {
     Terrain &t = live.terrain;
-    constexpr int CS = Terrain::CS, CX = Terrain::NX / CS, CY = Terrain::NY / CS;
-    for (auto it = log.rbegin(); it != log.rend(); ++it) {  // newest first: the oldest value of a voxel wins
-        int v = it->first < 0 ? -1 - it->first : it->first;  // negative: a voxel a girder made steel
-        if (it->first < 0) t.steel[v] = false;
-        else t.d[v] = it->second;
-        int x = v % Terrain::NX, y = v / Terrain::NX % Terrain::NY, z = v / (Terrain::NX * Terrain::NY);
-        for (int dz = -1; dz <= 1; dz++)  // chunk cells sample one voxel past their bounds
-            for (int dy = -1; dy <= 1; dy++)
-                for (int dx = -1; dx <= 1; dx++) {
-                    int cx = (x + dx) / CS, cy = (y + dy) / CS, cz = (z + dz) / CS;
-                    if (x + dx >= 0 && y + dy >= 0 && z + dz >= 0 && cx < CX && cy < CY && cz < Terrain::NZ / CS) t.dirty[(cz * CY + cy) * CX + cx] = true;
-                }
+    t.remeshWait();
+    size_t k = cps.size();
+    while (k > 0 && cps[k - 1].tick > upTo) k--;
+    size_t stop = k ? cps[k - 1].log : 0;
+    redo.clear();
+    for (size_t i = stop; i < log.size(); i++) redo.push_back({log[i].first, log[i].first < 0 ? (signed char)0 : t.d[log[i].first]});
+    copyState(liveG, live);
+    liveDecor = t.objects, liveEmit = t.emitters, hasLive = true;
+    bool kept = stop == 0 && t.rewindMeshes();  // the meshes drawn at take() are the restored land's
+    for (size_t i = log.size(); i-- > stop;) {  // newest first: the oldest value of a voxel wins
+        int v = log[i].first < 0 ? -1 - log[i].first : log[i].first;  // negative: a voxel a girder made steel
+        if (log[i].first < 0) t.steel[v] = false;
+        else t.d[v] = log[i].second;
+        if (!kept) markChunks(t, v);
     }
-    log.clear();
-    t.objects = decor;
-    Terrain ter = std::move(t);
-    live = g;
-    live.terrain = std::move(ter);
+    log.resize(stop);
+    t.objects = k ? cps[k - 1].decor : decor, t.emitters = k ? cps[k - 1].emit : emit;
+    setState(live, k ? cps[k - 1].g : g);
+    return k ? cps[k - 1].tick : tick;
+}
+
+bool Snapshot::forward(Game &live) {
+    if (!hasLive) return false;
+    hasLive = false;
+    Terrain &t = live.terrain;
+    t.remeshWait();
+    bool kept = t.forwardMeshes();
+    for (auto [v, val] : redo) {
+        int i = v < 0 ? -1 - v : v;
+        if (v < 0) t.steel[i] = true;
+        else t.d[i] = val;
+        if (!kept) markChunks(t, i);
+    }
+    redo.clear();
+    t.objects = liveDecor, t.emitters = liveEmit;
+    setState(live, liveG);
+    return true;
 }

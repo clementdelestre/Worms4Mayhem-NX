@@ -627,7 +627,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         texs.push(format!("[{},{},{:.2},{:.2},{},{}]", f[0], f[1], r[0], r[1], f[2], f[3]));
     }
     // detail objects: "visible" entities whose library names a theme detail mesh (PREHISTORIC18...)
-    let (mut objs, mut marks) = (Vec::new(), Vec::new());
+    let (mut objs, mut marks, mut emits) = (Vec::new(), Vec::new(), Vec::new());
     for r in &dets {
         let Some((_, d)) = xom.ctn.get(r.ctn.wrapping_sub(1)).filter(|c| c.0 == "DetailEntityStore") else { continue };
         let mut p = 3;
@@ -636,6 +636,10 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let f: Vec<f32> = (0..12).map(|i| f32le(d, p + 4 * i)).collect();
         let w = xform(&r.w, [f[0], f[1], f[2]]);
         let pos = [w[0] * k + ox, w[1] * k + WATER, w[2] * k + oz];
+        // W4M 0x5cd5eb: upper(name[..7]) == "EMITTER" starts the PARTTWK effect name[8..] at the detail's position (0x5c1410)
+        if n.starts_with("emitter") {
+            emits.push(format!("{{\"fx\":\"{}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.get(8..).unwrap_or("").replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
+        }
         if !n.starts_with("visible") {  // W4M 0x5cd27d: upper(name[..7]) == "VISIBLE" only, so the "VISABLE" typos stay hidden
             if let Some(t) = marker_type(&lib, &n) {
                 marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
@@ -652,16 +656,31 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         used_libs.insert(lib);
     }
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
-    let pv = mission::preview_of(data, stem).map_or(String::new(), |p| format!("  \"preview\": \"{p}\",\n"));
+    // no W4M Frontend_Image (dev and W3D leftover levels): our top-down render of the land (ours)
+    let pv = match mission::preview_of(data, stem) {
+        Some(p) => p,
+        None => {
+            let (p, dir) = (format!("map_{}", stem.to_lowercase()), out_dir.join("../ui/levels"));
+            fs::create_dir_all(&dir).and_then(|_| fs::write(dir.join(format!("{p}.png")), thumbnail(&grid, &pal))).map_err(|e| e.to_string())?;
+            p
+        }
+    };
+    let pv = format!("  \"preview\": \"{pv}\",\n");
+    let title = mission::title_of(data, stem).map_or(String::new(), |t| format!("  \"title\": \"{t}\",\n"));
+    // the level script's Initialise may force the weather odds (SetData Particle.Rain.Prob, read before the roll 0x5c1270)
+    let rain = find_ci(&data.join("scripts"), &format!("{stem}.lub")).and_then(|p| fs::read(p).ok()).and_then(|b| lua::functions(&b))
+        .and_then(|f| f.get("Initialise").and_then(|i| i.calls.iter().rev().find(|(c, a)| c == "SetData" && a.first() == Some(&lua::Val::Str("Particle.Rain.Prob".into())))
+            .and_then(|(_, a)| match a.get(1) { Some(lua::Val::Num(n)) => Some(*n), _ => None })))
+        .map_or(String::new(), |p| format!("  \"rain_prob\": {p},\n"));
     let blk: Vec<String> = blocks.iter().map(|b| format!("[{:.2},{:.2},{:.2},{:.2}]", b[0] * k + ox, b[1] * k + oz, b[2] * k + ox, b[3] * k + oz)).collect();
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"scale\": {k:.4},\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"scale\": {k:.4},\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","), blk.join(","),
-        marks.join(",\n    "), objs.join(",\n    ")
+        marks.join(",\n    "), objs.join(",\n    "), emits.join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
-    Ok(format!("{} cells, {faces} faces, {} objects, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
-        cells.len(), objs.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
+    Ok(format!("{} cells, {faces} faces, {} objects, {} emitters, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
+        cells.len(), objs.len(), emits.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
 }
 
 // Script markers (DetailEntityStore library) exported for missions; cameras, lights, emitters, sounds are skipped.
@@ -739,6 +758,56 @@ fn lights(data: &Path) -> HashMap<String, String> {
     out
 }
 
+// 256x256 top-down RGB PNG of the voxel grid: palette top colour of each column's highest voxel, hillshaded; sea elsewhere
+fn thumbnail(grid: &[u8], pal: &[[u8; 6]]) -> Vec<u8> {
+    const W: usize = 256;
+    let h: Vec<f32> = (0..NX * NZ).map(|i| (0..NY).rev().find(|&y| grid[gi(i % NX, y, i / NX)] != 0).map_or(-1.0, |y| y as f32)).collect();
+    let mut rgb = Vec::with_capacity(W * W * 3);
+    for py in 0..W { for px in 0..W {
+        let (x, z) = (px * NX / W, py * NZ / W);
+        let t = h[z * NX + x];
+        if t < WATER / VOX { rgb.extend([38, 104, 158]); continue; }
+        let g = |xx: usize, zz: usize| h[zz.min(NZ - 1) * NX + xx.min(NX - 1)].max(t - 8.0);
+        let (gx, gz) = (g(x + 1, z) - g(x.saturating_sub(1), z), g(x, z + 1) - g(x, z.saturating_sub(1)));
+        let shade = (0.8 + 0.12 * (gz - gx) + 0.25 * t / NY as f32).clamp(0.45, 1.25);
+        let c = pal.get(grid[gi(x, t as usize, z)] as usize - 1).map_or([150, 140, 120], |c| [c[0], c[1], c[2]]);
+        rgb.extend(c.map(|v| (v as f32 * shade).min(255.0) as u8));
+    } }
+    png(W, W, &rgb)
+}
+
+// RGB8 PNG with stored (uncompressed) deflate blocks: no compression crate needed
+fn png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
+    fn crc(b: &[u8]) -> u32 {
+        let mut c = !0u32;
+        for &x in b { c ^= x as u32; for _ in 0..8 { c = if c & 1 != 0 { 0xedb88320 ^ (c >> 1) } else { c >> 1 }; } }
+        !c
+    }
+    let raw: Vec<u8> = rgb.chunks(w * 3).flat_map(|r| std::iter::once(0).chain(r.iter().copied())).collect();
+    let mut z = vec![0x78, 0x01];
+    let n = raw.chunks(65535).count();
+    for (i, b) in raw.chunks(65535).enumerate() {
+        z.push((i + 1 == n) as u8);
+        z.extend((b.len() as u16).to_le_bytes());
+        z.extend((!(b.len() as u16)).to_le_bytes());
+        z.extend(b);
+    }
+    let (a, b) = raw.iter().fold((1u32, 0u32), |(a, b), &x| ((a + x as u32) % 65521, (b + (a + x as u32) % 65521) % 65521));
+    z.extend((b << 16 | a).to_be_bytes());
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut hdr = (w as u32).to_be_bytes().to_vec();
+    hdr.extend((h as u32).to_be_bytes());
+    hdr.extend([8, 2, 0, 0, 0]);
+    for (t, d) in [(b"IHDR", hdr), (b"IDAT", z), (b"IEND", Vec::new())] {
+        out.extend((d.len() as u32).to_be_bytes());
+        let mut c = t.to_vec();
+        c.extend(&d);
+        out.extend(&c);
+        out.extend(crc(&c).to_be_bytes());
+    }
+    out
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -780,6 +849,12 @@ mod tests {
         let x = Poxel { rot: [std::f32::consts::FRAC_PI_2, 0.0, 0.0], scale: [1.0; 3], ..Default::default() };
         let q = xform(&local(&x, true), [0.0, 1.0, 0.0]);
         assert!(q[1].abs() < 1e-6 && (q[2] - 1.0).abs() < 1e-6);
+    }
+    #[test]
+    fn png_header_and_crc() {
+        let p = png(1, 1, &[255, 0, 0]);
+        assert_eq!(&p[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(&p[p.len() - 4..], &[0xae, 0x42, 0x60, 0x82]);  // IEND CRC
     }
     #[test]
     fn material_file() {

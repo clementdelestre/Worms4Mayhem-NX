@@ -39,6 +39,7 @@ const char *SFX_NAMES[] = {
     "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
     "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo", "debris", "jetpack", "jetpack_end",
+    "fire_loop", "steam_loop", "flies_loop", "elec_arc", "electric_arcing", "storm_cloud", "hose_into_water",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev via tools/w4m-re/fev.py (docs/w4m/audio.md §12): event, dB (event + sounddef + category), loop, 3D rolloff min..max m (0 = 2D), max playbacks,
@@ -155,6 +156,13 @@ const Def DEFS[] = {
     {"weapons/Debris", -12, false, 0.5f, 100, 1, 0, nullptr, 2, {}, {}, false, 0.025f},
     {"weapons/JetPack", -3, true, 0.5f, 60, 1},  // 3D linear 10..1200 units
     {"weapons/JetPackEnd", -3, false, 0.5f, 60, 1},
+    {"weapons/FireLoop", -10, true, 0.5f, 25, 4, 0.5f},  // 3D linear 10..500 units, fade out 500 ms
+    {"weapons/SteamLoop", -15, true, 0.5f, 25, 4, 0.5f},
+    {"weapons/FliesLoop", -12, true, 0.05f, 10, 1},  // 1..200 units
+    {"weapons/ElecArc", -6, true, 0.5f, 15, 1},  // 10..300 units
+    {"weapons/ElectricArching", 0, true, 0.5f, 25, 1},
+    {"weapons/StormCloud", 0, false, 0.5f, 80, 4, 0.5f, nullptr, 2},  // ThunderClaps x 5, 10..1600 units
+    {"weapons/HoseIntoWater", 0, true, 0.05f, 35, 1},  // TapIntoWater, 1..700 units
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -318,21 +326,33 @@ void leave() {
     else UnloadMusicStream(theme);
 }
 
-bool openMusic(const char *name) {
+std::vector<std::pair<std::string, Music>> ready;  // preloadMusic(): opened streams waiting for their first play
+
+Music loadMusic(const char *name) {
+    for (size_t i = 0; i < ready.size(); i++)
+        if (ready[i].first == name) {
+            Music m = ready[i].second;
+            ready.erase(ready.begin() + i);
+            return m;
+        }
     for (const char *root : {ASSET_ROOT, ROMFS_ROOT}) {
         std::string s = std::string(root) + "music/" + name + ".ogg";
-        const char *p = s.c_str();
-        if (!FileExists(p)) continue;
-        Music m = LoadMusicStream(p);
-        if (!IsMusicValid(m)) continue;
-        if (musicLoaded) leave();
-        theme = m;
-        theme.looping = std::string(name) != "victory";  // jingle: once, then silence
-        musicLoaded = true;
-        track = name;
-        return true;
+        if (!FileExists(s.c_str())) continue;
+        Music m = LoadMusicStream(s.c_str());
+        if (IsMusicValid(m)) return m;
     }
-    return false;
+    return Music{};
+}
+
+bool openMusic(const char *name) {
+    Music m = loadMusic(name);
+    if (!IsMusicValid(m)) return false;
+    if (musicLoaded) leave();
+    theme = m;
+    theme.looping = std::string(name) != "victory";  // jingle: once, then silence
+    musicLoaded = true;
+    track = name;
+    return true;
 }
 
 }  // namespace
@@ -360,6 +380,8 @@ void shutdown() {
     banks.clear();
     if (musicLoaded) UnloadMusicStream(theme);
     if (outGain > 0) UnloadMusicStream(outgoing), outGain = 0;
+    for (auto &r : ready) UnloadMusicStream(r.second);
+    ready.clear();
     musicLoaded = false;
     CloseAudioDevice();
 }
@@ -370,7 +392,15 @@ void stopSfx() {
     pending.clear(), ramps.clear();
 }
 
+struct EmitterVoice { Sfx id; Slot *slot; unsigned born, frame; bool stolen; };
+std::map<int, EmitterVoice> emitters;
+unsigned emitterFrame = 0;
+
 void update() {
+    for (auto it = emitters.begin(); it != emitters.end();)  // emitters that stopped calling emitter()
+        if (it->second.frame + 1 < emitterFrame) { if (!it->second.stolen) StopSound(it->second.slot->s); it = emitters.erase(it); }
+        else ++it;
+    emitterFrame++;
     for (size_t i = 0; i < pending.size();)
         if (Pending p = pending[i]; GetTime() >= p.due) pending.erase(pending.begin() + i), playRandom(*p.v, *p.d, p.vol, p.has ? &p.at : nullptr, true);
         else i++;
@@ -444,6 +474,34 @@ void hold(Sfx id, bool on, const Vector3 *at) {
     was[(int)id] = on;
 }
 
+void emitter(int key, Sfx id, Vector3 at) {
+    Variants &v = sfx[(int)id];
+    const Def &d = DEFS[(int)id];
+    auto it = emitters.find(key);
+    if (it == emitters.end()) {
+        if (!v.n) return;
+        std::vector<EmitterVoice *> mine;
+        for (auto &[k, e] : emitters) if (e.id == id && !e.stolen) mine.push_back(&e);
+        if ((int)mine.size() >= d.maxpb) {
+            EmitterVoice *old = *std::min_element(mine.begin(), mine.end(), [](auto *a, auto *b) { return a->born < b->born; });
+            StopSound(old->slot->s), old->stolen = true;
+        }
+        Slot *free = nullptr;
+        int k = pick(v.n, d);
+        for (Slot &x : v.slot) {
+            bool used = std::any_of(emitters.begin(), emitters.end(), [&](auto &e) { return !e.second.stolen && e.second.slot == &x; });
+            if (!used && (!free || x.variant == k)) free = &x;
+        }
+        if (!free) return;
+        it = emitters.emplace(key, EmitterVoice{id, free, ++plays, emitterFrame, false}).first;
+    }
+    EmitterVoice &e = it->second;
+    e.frame = emitterFrame;
+    if (e.stolen) return;
+    place(e.slot->s, d, powf(10, d.db / 20), &at);
+    if (!IsSoundPlaying(e.slot->s)) PlaySound(e.slot->s);
+}
+
 void loop(Sfx id, bool on, const Vector3 *at, float volume) {
     Variants &v = sfx[(int)id];
     const Def &d = DEFS[(int)id];
@@ -500,6 +558,11 @@ const char *voiceBankName(int bank) { return bank >= 0 && bank < (int)banks.size
 void setTeamVoice(int team, int bank) {
     if (team >= (int)teamBank.size()) teamBank.resize(team + 1, -1);
     teamBank[team] = bank;
+}
+
+void preloadMusic(const char *name) {
+    for (auto &r : ready) if (r.first == name) return;
+    if (Music m = loadMusic(name); IsMusicValid(m)) ready.emplace_back(name, m);
 }
 
 void music(bool on, const char *name) {

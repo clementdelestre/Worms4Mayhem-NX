@@ -173,17 +173,15 @@ std::string lower(std::string s) {
     return s;
 }
 
-// Level picture: the map's "preview" (W4M Frontend_Image, set by w4m-maps), else its theme's picture, else nolevel
-std::string preview(const std::string &m) {
-    static std::map<std::string, std::string> cache;
+// A map json's head fields: "title" (W4M Frontend_Name key), "preview" (W4M Frontend_Image, else w4m-maps' top-down render), "theme"
+struct MapInfo { std::string title, pic, theme; };
+const MapInfo &mapInfo(const std::string &m) {
+    static std::map<std::string, MapInfo> cache;
     auto c = cache.find(m);
     if (c != cache.end()) return c->second;
-    static const std::map<std::string, std::string> THEME = {
-        {"arabian", "level_arabian"}, {"camelot", "level_camelot"}, {"construction", "level_building"}, {"jurassic", "level_prehistoric"}, {"wildwest", "level_wildwest"}};
-    std::string pv = m.empty() ? "random_camelot" : "";
+    MapInfo info;
     for (const char *dir : {DATA_DIR "assets/maps/", ROMFS_DIR "maps/"}) {
-        if (!pv.empty() || m.empty()) break;
-        FILE *f = fopen((dir + m + ".json").c_str(), "rb");
+        FILE *f = m.empty() ? nullptr : fopen((dir + m + ".json").c_str(), "rb");
         if (!f) continue;
         char head[400] = {};
         size_t n = fread(head, 1, sizeof head - 1, f);
@@ -194,15 +192,31 @@ std::string preview(const std::string &m) {
             const char *e = k ? strchr(k + strlen(key), '"') : nullptr;
             return e ? std::string(k + strlen(key), e) : std::string();
         };
-        pv = field("\"preview\": \"");
-        if (pv.empty() || !tex("levels/" + pv).id) pv = THEME.count(field("\"theme\": \"")) ? THEME.at(field("\"theme\": \"")) : "";
+        info = {field("\"title\": \""), field("\"preview\": \""), field("\"theme\": \"")};
+        break;
     }
+    return cache[m] = info;
+}
+
+// Level picture: the map's preview, else its theme's picture, else nolevel
+std::string preview(const std::string &m) {
+    static std::map<std::string, std::string> cache;
+    auto c = cache.find(m);
+    if (c != cache.end()) return c->second;
+    static const std::map<std::string, std::string> THEME = {
+        {"arabian", "level_arabian"}, {"camelot", "level_camelot"}, {"construction", "level_building"}, {"jurassic", "level_prehistoric"}, {"wildwest", "level_wildwest"}};
+    const MapInfo &i = mapInfo(m);
+    std::string pv = m.empty() ? "random_camelot" : i.pic;
+    if (!m.empty() && (pv.empty() || !tex("levels/" + pv).id)) pv = THEME.count(i.theme) ? THEME.at(i.theme) : "";
     return cache[m] = tex("levels/" + pv).id ? "levels/" + pv : "levels/nolevel";
 }
 
-// "EscapeFromTreeRex" -> "Escape From Tree Rex", "Alien-w3d" -> "Alien (W3D)"
+}  // namespace
+
+// W4M's level name, else from the file name: "EscapeFromTreeRex" -> "Escape From Tree Rex", "Alien-w3d" -> "Alien (W3D)"
 std::string mapTitle(const std::string &m) {
     if (m.empty()) return "Random island";
+    if (const std::string &t = mapInfo(m).title; !t.empty()) return tr(t.c_str(), m.c_str());
     std::string s, b = m;
     bool w3d = b.size() > 4 && lower(b.substr(b.size() - 4)) == "-w3d";
     if (w3d) b.resize(b.size() - 4);
@@ -213,6 +227,8 @@ std::string mapTitle(const std::string &m) {
     s[0] = (char)toupper((unsigned char)s[0]);
     return w3d ? s + " (W3D)" : s;
 }
+
+namespace {
 
 // HUD/Weapons icon for a weapon name ("Holy Hand Grenade" -> weapons/hollyhandgrenade)
 std::string weaponIcon(const std::string &n) {
@@ -663,6 +679,17 @@ void background() {
     FrontBg::draw(GetFrameTime());
 }
 
+float clipKeys(const float (*k)[2], int n, float t) {
+    if (t <= k[0][0]) return k[0][1];
+    for (int i = 1; i < n; i++)
+        if (t < k[i][0]) return Lerp(k[i - 1][1], k[i][1], (t - k[i - 1][0]) / (k[i][0] - k[i - 1][0]));
+    return k[n - 1][1];
+}
+// Bundl10 WXFrontend.Anim keys (w4m-models --list, W4M_KEYS): in_scalehitxy scale XY and shake X / Y
+const float IN_SCALEHIT_S[6][2] = {{0, 0}, {0.00017f, 0.5996f}, {0.0833f, 1.0361f}, {0.125f, 0.981f}, {0.1666f, 1.0098f}, {0.2083f, 1}};
+const float IN_SCALEHIT_X[7][2] = {{0, 0}, {0.0833f, -0.4346f}, {0.125f, 1.5566f}, {0.1666f, -1.0449f}, {0.2083f, 0.7393f}, {0.25f, 0.3396f}, {0.2915f, 0.6689f}};
+const float IN_SCALEHIT_Y[7][2] = {{0, 0}, {0.0833f, -0.4346f}, {0.125f, -1.6318f}, {0.1666f, 0.0544f}, {0.2083f, 1.1113f}, {0.25f, -0.0006f}, {0.2915f, 0.6689f}};
+
 // tilted deg about its centre
 void logo(float cx, float y, float w, float deg) {
     Texture2D t = tex("fe/tournament_vsus");
@@ -809,7 +836,12 @@ static int bgPage(Frontend::Screen s, bool online) {
     return s <= F::Main || s == F::Confirm ? 0 : s == F::Local || (s == F::Setup && !online) ? 1 : s == F::Network || s == F::Setup ? 2 : 3;
 }
 
+static const float TITLE_OUT = 0.35f + 0.05f * (MAIN_ITEMS - 1);  // the title glide's length: last menu row in
+
 float Frontend::subIn(float t) const { return leaving >= 0 ? 1 - (t - leaving) / LEAVE : (t - entered) / 0.4f; }
+float Frontend::titleIn(float t) const {
+    return leaving >= 0 && next == Title ? TITLE_OUT - (t - leaving) : from == Title && leaving < 0 ? t - entered : 100;
+}
 void Frontend::go(Screen s) {
     next = s, leaving = now(), FrontBg::page(bgPage(s, online));
     Audio::play(feBack ? Audio::Sfx::FePrevOut : Audio::Sfx::FeNextOut);
@@ -820,8 +852,8 @@ void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, boo
     float k = fminf(1, GetFrameTime() * 14);
     for (int i = 0; i < n; i++) {
         const MenuItem &m = items[i];
-        float &g = glow[i], a = !live ? 1 : leaving >= 0 ? 1 - easeOut((t - leaving - 0.012f * i) / (LEAVE - 0.06f))
-                                                           : easeOut((t - entered - 0.05f * i) / 0.35f);
+        float &g = glow[i], a = !live ? 1 : leaving >= 0 && next != Title ? 1 - easeOut((t - leaving - 0.012f * i) / (LEAVE - 0.06f))
+                                                    : easeOut(((leaving >= 0 || from == Title ? titleIn(t) : t - entered) - 0.05f * i) / 0.35f);
         g = live ? g + ((i == sel) - g) * k : i == sel;
         menuEntry(tr(m.key, m.en, m.fr), m.x, m.y, m.size, m.deg, g, a, t);
     }
@@ -970,7 +1002,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     if (cfg.teamSetup.size() < 4) cfg.teamSetup.resize(4);
     Action act = None;
     float t = now();
-    if (leaving >= 0 && t - leaving >= LEAVE) screen = next, leaving = -1;
+    if (leaving >= 0 && t - leaving >= (next == Title ? TITLE_OUT : LEAVE)) screen = next, leaving = -1;
     bool typing = editing != nullptr, busy = typing || leaving >= 0;  // no input while the menu flies out
     if (editing) {
         for (int c = GetCharPressed(); c; c = GetCharPressed())
@@ -1009,8 +1041,8 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     case Main:
     case Confirm: {
         bool confirm = screen == Confirm;
-        float a = from == Title ? easeOut((t - entered) / 0.4f) : 1;  // the title's logo glides to its menu spot
-        float up = leaving >= 0 ? easeOut((t - leaving) / LEAVE) : from == Title ? 0 : 1 - easeOut((t - entered) / 0.35f);  // to / from a submenu
+        float a = easeOut(titleIn(t) / 0.4f);  // the title's logo glides to its menu spot (backwards on B)
+        float up = leaving >= 0 && next != Title ? easeOut((t - leaving) / LEAVE) : from == Title || leaving >= 0 ? 0 : 1 - easeOut((t - entered) / 0.35f);  // to / from a submenu
         logo(Lerp(640, 330, a), Lerp(90, 40, a) - up * 300, Lerp(760, 560, a), -6 * a);
         menu(MAIN_MENU, MAIN_ITEMS, mainRow, confirm ? 0 : dy, t, !confirm);
         rlPushMatrix();
@@ -1039,7 +1071,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             else if (ok) act = Quit;
             break;
         }
-        if (back) screen = Title;
+        if (back) go(Title);
         if (ok) {
             Screen to[] = {Local, Network, MyWorms, Main, HelpOpts, Confirm};
             if (mainRow == 3) act = Replays;
@@ -1320,7 +1352,6 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     EndDrawing();
     if (act != None) {
-        if (act != Quit && act != Replays && act != SinglePlayer) Audio::play(Audio::Sfx::FeGrenade);  // match launch
         for (int k = 0; k < 4; k++) Audio::setTeamVoice(k, cfg.teamSetup[k].voice);
         cfg.teamSetup.resize(cfg.teams);
         cfg.custom = customs;

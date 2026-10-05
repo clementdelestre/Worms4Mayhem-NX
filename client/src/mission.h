@@ -12,6 +12,7 @@ struct MissionSpec {
     bool endless = false;    // turn_time 0: the turn never runs out (challenges)
     bool sequence = false;   // targets / crates appear one at a time, in file order
     bool placeObjects = false;  // also the map's mine / oil drum markers
+    float rainProb = -1;  // >= 0: Particle.Rain.Prob set by the mission script (weather odds, render only)
     struct Place { std::string marker; Vector3 pos{}; bool set = false; };  // marker name (map JSON "markers") or position
     struct WormSpec { std::string name; int hp = 100; Place at; };
     struct TeamSpec { std::string name; uint8_t cpu = 0; bool idle = false, weaponsSet = false; std::vector<std::pair<std::string, int>> weapons; std::vector<WormSpec> worms; };

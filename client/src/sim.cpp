@@ -204,6 +204,29 @@ bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd) {
 
 static const Vector2 PROBE[4] = {{0, 0}, {0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};  // W4M 0x91ffc8: centre and foot tripod, world axes
 
+// W4M 0x46a070 for a foot ray (down) hitting land at `p`: the flat lattice face it enters (cells of 0.5 m and more). [ours] our field
+// rounds edges and corners over about VOX/2: p unlike both surfaces VOX/2 aside takes the flatter one whose plane passes within VOX of it
+static Vector3 groundNormal(const Terrain &t, Vector3 p) {
+    const float V = Terrain::VOX;
+    const Vector3 n = t.normal(p, V / 4);
+    Vector3 across = {n.x, 0, n.z}, best = n;
+    if (Vector3LengthSqr(across) < 1e-6f) return n;
+    across = Vector3Scale(Vector3Normalize(across), V / 2);
+    bool face = false;
+    for (float s : {-1.0f, 1.0f}) {  // the surface VOX/2 to each side, within 1.5 VOX of p's height
+        const Vector3 a = {p.x + s * across.x, p.y + 2 * V, p.z + s * across.z};
+        if (t.solid(a)) continue;
+        float lo = 0, hi = 0;
+        while (hi < 3.5f * V && !t.solid({a.x, a.y - hi, a.z})) lo = hi, hi += V / 8;
+        if (hi < V / 2 || hi >= 3.5f * V) continue;
+        for (int i = 0; i < 4; i++) (t.solid({a.x, a.y - (lo + hi) / 2, a.z}) ? hi : lo) = (lo + hi) / 2;
+        const Vector3 q = {a.x, a.y - hi, a.z}, m = t.normal(q, V / 4);
+        if (Vector3DotProduct(m, n) > 0.97f) return n;  // p lies on a face
+        if (fabsf(Vector3DotProduct(m, Vector3Subtract(p, q))) <= V && m.y > 0.5f && (!face || m.y > best.y)) best = m, face = true;
+    }
+    return best;
+}
+
 // W4M land probe 0x91ffc8: the centre and the foot tripod (+-4, -3) (0, 5) units, world axes; any hit carries the worm.
 // *n: the mean land normal of the hits, as W4M 0x59ef90 averages those level with the highest
 static bool footing(const Terrain &t, Vector3 foot, Vector3 *n = nullptr) {
@@ -216,18 +239,45 @@ static bool footing(const Terrain &t, Vector3 foot, Vector3 *n = nullptr) {
         best = std::max(best, top[i]);
     }
     if (best < 0) return false;
+    float h[4], hb = -1e9f;  // each hit's crossing; 0x59ef90 keeps those within 1 unit of the highest
+    for (int i = 0; i < 4; i++) {
+        if (top[i] < 0) continue;
+        float lo = foot.y + top[i] * 0.05f, hi = lo + 0.05f;
+        for (int k = 0; k < 4; k++) (t.solid({foot.x + O[i].x, (lo + hi) / 2, foot.z + O[i].y}) ? lo : hi) = (lo + hi) / 2;
+        hb = fmaxf(hb, h[i] = lo);
+    }
     Vector3 sum{};
     for (int i = 0; i < 4; i++)
-        if (top[i] >= best - 1) sum = Vector3Add(sum, t.normal({foot.x + O[i].x, foot.y + top[i] * 0.05f, foot.z + O[i].y}));
+        if (top[i] >= 0 && hb - h[i] < 0.05f) sum = Vector3Add(sum, groundNormal(t, {foot.x + O[i].x, h[i], foot.z + O[i].y}));
     *n = Vector3LengthSqr(sum) > 1e-8f ? Vector3Normalize(sum) : Vector3{0, 1, 0};
     return true;
+}
+
+// W4M 0x59ec70 down the 4 foot rays from 20 units above: the highest land, in units over the feet; -99 when none down to -5.
+// [ours] land over an air gap above the feet (a ceiling our relative `fits` lets the head graze) is passed, not hit at once
+static float probe(const Terrain &t, Vector3 feet) {
+    float best = -99;
+    for (Vector2 o : PROBE) {
+        auto solid = [&](float h) { return t.solid({feet.x + o.x, feet.y + h * 0.05f, feet.z + o.y}); };
+        int h = 20;
+        while (h >= 0 && solid(h)) h--;
+        if (h < 0) { best = 20; continue; }  // land from the start down to the feet: hit at once
+        for (; h >= -5 && h > best - 1; h--)
+            if (solid(h)) {
+                float lo = h, hi = h + 1;
+                for (int k = 0; k < 5; k++) (solid((lo + hi) / 2) ? lo : hi) = (lo + hi) / 2;
+                best = fmaxf(best, lo);
+                break;
+            }
+    }
+    return best;
 }
 
 bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault) {
     const float R = Game::R, U = 0.05f;  // U: one W4M unit
     Vector3 f = flat(yaw), np = Vector3Add(pos, Vector3Scale(f, dist)), held = np;
-    float climb = 0;
-    while (climb <= Game::STEP_UP && t.solid({np.x, pos.y - R + climb, np.z})) climb += U;
+    const float d = probe(t, {np.x, pos.y - R, np.z});  // W4M UpdateWalking CastRays: the highest foot's hit + 0.1 unit is the candidate
+    float climb = d >= -5 ? (d + 0.1f) * U : 0;
     clearWalls(t, held);
     if (Vector3DotProduct(Vector3Subtract(held, pos), f) * dist < 0.5f * dist * dist) {  // a face holds the body off: W4M vault onto the highest ground the front foot finds
         Vector3 toe = Vector3Add(np, Vector3Scale(f, copysignf(Game::BODY_R + 0.1f, dist)));
@@ -422,15 +472,6 @@ bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g) {
     return landed;
 }
 
-// W4M 0x59ec70 down the 4 foot rays from 20 units above: the highest land, in units over the feet; -99 when none down to -5
-static int probe(const Terrain &t, Vector3 feet) {
-    int best = -99;
-    for (Vector2 o : PROBE)
-        for (int h = 20; h >= -5 && h > best; h--)
-            if (t.solid({feet.x + o.x, feet.y + h * 0.05f, feet.z + o.y})) { best = h; break; }
-    return best;
-}
-
 // W4M Sliding 0x5afbe0, one tick (K W4M frames); velocities are m/s, W4M's units/ms are 50 times smaller
 static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, float &yaw, float g, uint64_t pot, float e) {
     const float R = Game::R, DT = Game::DT, U = 0.05f, K = DT / 0.02f;
@@ -447,7 +488,7 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
     const float f = slip ? SLIPPY_FRICTION : SLIDE_FRICTION;  // Sticky changes no slide value (only ImpulseWorm, 0x5ad1ea)
     vel = {(vel.x + n.x * n.y * g * DT) * f, vel.y * f, (vel.z + n.z * n.y * g * DT) * f};  // gravity's slope part acts on x, z only
     Vector3 cand = Vector3Add(pos, Vector3Scale(vel, DT));
-    int d = probe(t, {cand.x, cand.y - R, cand.z});
+    float d = probe(t, {cand.x, cand.y - R, cand.z});
     if (d > 5) {  // wall or step: slow lands, else one frame's ray along v rebounds it
         if (Vector3Length(vel) < start) return landed();
         const Sweep s = sweep(t, pos, Vector3Scale(vel, DT), vel);  // 0x5b00e0: CastRays(pos, v, 20 steps, all 8 points)
@@ -460,7 +501,7 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
         if (!fits(t, pos, c)) return landed();
         pos = c, vel = Vector3Subtract(vel, Vector3Scale(n, Vector3DotProduct(vel, n))), m.slide = m.air = false;
     } else {  // follow the ground: the highest hit + 0.1 unit
-        Vector3 c = {cand.x, cand.y + (d + 1) * U, cand.z}, nn = n;
+        Vector3 c = {cand.x, cand.y + (d + 0.1f) * U, cand.z}, nn = n;
         if (!fits(t, pos, c)) return landed();
         pos = c, m.stuck = std::max(m.stuck - 1, 0);
         footing(t, {c.x, c.y - R - U, c.z}, &nn);
@@ -1502,6 +1543,7 @@ void Game::drown(Worm &w) {
     int wi = int(&w - worms.data());
     if (wp(WP_VAMPIRE) && current % perTeam == 0 && wi != current) worms[current].hp += w.counted / 2;
     if ((cfg.rules & RULE_KING) && wi % perTeam == 0) surrender(w.team);
+    if (w.grounded || w.motion.slide) w.vel = {w.vel.x / 2, -1.5f, w.vel.z / 2};  // from Ambulatory / Sliding (0x5ad91f): -0.03 units/ms
     w.alive = false, w.drowned = true, w.floatT = 0;
     w.hp = 0, w.counted = std::max(1, w.counted);  // counted > 0: afloat, drawn until its blast
     emit(GameEvent::Splash, w.pos, wi);

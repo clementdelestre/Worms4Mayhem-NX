@@ -48,18 +48,27 @@ fn language(data: &Path) -> HashMap<String, String> {
 
 struct Level { name: String, brief: String, preview: String, file: String, script: String, kind: u32, index: u32, par: u32 }
 
-// Frontend_Image of a level file (WXFE_LevelDetails; the struct's `script` field holds Level_FileName): the versus entry (kind 0) wins, "LP_"/"SPLP_" loading variants share their base level's.
-pub fn preview_of(data: &Path, stem: &str) -> Option<String> {
+// WXFE_LevelDetails of a level file (`script` holds Level_FileName), with a Frontend_Image: the versus entry (kind 0) wins.
+// Demo (kinds 12, 13) and outtake (16) entries reuse another level's name and image.
+fn level_of(data: &Path, stem: &str) -> Option<&'static Level> {
     static L: std::sync::OnceLock<Vec<Level>> = std::sync::OnceLock::new();
-    let lv = L.get_or_init(|| levels(data));
+    let n = stem.to_lowercase();
+    let m: Vec<&Level> = L.get_or_init(|| levels(data)).iter()
+        .filter(|l| l.script.to_lowercase() == n && !l.preview.is_empty() && !matches!(l.kind, 12 | 13 | 16)).collect();
+    m.iter().find(|l| l.kind == 0).or(m.first()).copied()
+}
+
+// Frontend_Image of a level file; "LP_"/"SPLP_" loading variants share their base level's
+pub fn preview_of(data: &Path, stem: &str) -> Option<String> {
     let low = stem.to_lowercase();
     let base = low.strip_prefix("splp_").or_else(|| low.strip_prefix("lp_")).unwrap_or(&low);
-    let of = |n: &str| {
-        let m: Vec<&Level> = lv.iter().filter(|l| l.script.to_lowercase() == n && !l.preview.is_empty()).collect();
-        let l = m.iter().find(|l| l.kind == 0).or(m.first())?;
-        Some(l.preview.to_lowercase().trim_end_matches(".tga").replace(' ', "_"))
-    };
-    of(&low).or_else(|| of(base))
+    let l = level_of(data, &low).or_else(|| level_of(data, base))?;
+    Some(l.preview.to_lowercase().trim_end_matches(".tga").replace(' ', "_"))
+}
+
+// Frontend_Name text key of the level file itself (the variants keep their own name)
+pub fn title_of(data: &Path, stem: &str) -> Option<String> {
+    level_of(data, stem).map(|l| l.name.clone()).filter(|n| !n.is_empty())
 }
 
 fn levels(data: &Path) -> Vec<Level> {
@@ -252,9 +261,11 @@ fn mission(data: &Path, lv: &Level, lang: &HashMap<String, String>, maps: &Path,
         format!("    {{\"name\": {}, \"cpu\": {cpu}, {}\"weapons\": {inv},\n     \"worms\": [{}]}}", esc(n), if *idle { "\"idle\": true, " } else { "" }, w.join(", "))
     }).collect();
     let preview = format!("levels/{}", lv.preview.to_lowercase().trim_end_matches(".tga"));
+    // Lua Initialise may force the weather odds (FlowControlService reads them first, 0x4e73c0)
+    let rain = set("Particle.Rain.Prob").map_or(String::new(), |p| format!("  \"rain_prob\": {p},\n"));
     let done = t(if lv.kind == 4 { "FETXT.MissionCompleteBody" } else { "FETXT.ChallengeCompleteBody" });
     Ok(format!(
-        "{{\n  \"name\": {},\n  \"kind\": \"{kindj}\",\n  \"campaign\": \"{campaign}\",\n  \"order\": {order},\n  \"map\": {},\n  \"preview\": {},\n  \"par\": {},\n  \"brief\": {},\n  \"success\": {},\n  \"turn_time\": {turn},\n  \"retreat_time\": {},\n  \"hot_seat\": {},\n  \"wind\": {},\n  \"crate_chance\": 0,\n  \"place_objects\": {place},\n  \"sequence\": {sequence},\n  \"teams\": [\n{}\n  ],\n  \"objects\": [{}],\n  \"objectives\": [{}],\n  \"fail\": [{}]\n}}\n",
+        "{{\n  \"name\": {},\n  \"kind\": \"{kindj}\",\n  \"campaign\": \"{campaign}\",\n  \"order\": {order},\n  \"map\": {},\n  \"preview\": {},\n  \"par\": {},\n  \"brief\": {},\n  \"success\": {},\n  \"turn_time\": {turn},\n  \"retreat_time\": {},\n  \"hot_seat\": {},\n  \"wind\": {},\n  \"crate_chance\": 0,\n  \"place_objects\": {place},\n  \"sequence\": {sequence},\n{rain}  \"teams\": [\n{}\n  ],\n  \"objects\": [{}],\n  \"objectives\": [{}],\n  \"fail\": [{}]\n}}\n",
         esc(&name), esc(&stem), esc(&preview), lv.par, esc(&t(&lv.brief)), esc(&done), secs("RetreatTime", 3.0).min(10), secs("HotSeatTime", 0.0).min(10),
         if set("Wind.Speed") == Some(0.0) || turn == 0 { 0 } else { 1 }, team_json.join(",\n"),
         objs.iter().map(|o| o.0.clone()).collect::<Vec<_>>().join(", "), goals.join(", "), fails.join(", ")))

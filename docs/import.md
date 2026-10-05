@@ -9,9 +9,10 @@ Default install path in the examples: the Steam `WormsXHD` folder (Worms Ultimat
 | `tools/w4m-models` | `w4m-models <W4M dir> [out = client/assets/models]`; `w4m-models --list <one bundle .xom>` dumps its meshes and clips (`W4M_CHANNELS`, `W4M_KEYS`, `W4M_GROUPS`, `W4M_IMG_DIR` add detail) | `models/*.glb` (worm with skin and clips, weapons, hats, decor, frontend scene), `models/sky/<letter>_sky0<n>.glb` + `.blend` (level skies: blend factors and clip rates per mesh, clip length, Sun locator), `wxpmesh7.glb` (Donkey dome, raw units) | `w4m-formats.md` "Meshes" |
 | `tools/w4m-maps` | `w4m-maps <W4M dir> [out = client/assets/maps] [map stems...]`; `W4M_MAPS_REF=<dir>` also writes every visible W4M land cell as `<dir>/<map>.obj` (reference renders) | `maps/<name>.json` + `.vox` + `.thin`, textures, `models/decor/` (+ `.mat`, `anim.txt`), `missions/` | `maps.md`, `missions.md`, `w4m-formats.md` |
 | `tools/w4m-ui` | `w4m-ui <W4M dir> [out = client/assets/ui]` | `ui/` (fe, fe2, hud, sky...; `sky/f_water01a/b/c` = FE.DAYWater set) PNGs, `lang/<code>.txt` | `w4m-formats.md` "Frontend / HUD art" |
+| `tools/w4m-re/parttwk.py` | `parttwk.py [assets = client/assets]`, after w4m-maps, before w4m-models | `fx/parttwk.json` (the PARTTWK effects the maps and the weather start), `fx/<sprite set>.png` + `fx/sprites.txt` (blend factors, frames), `fx/sets.txt` (MeshSet meshes and clips for w4m-models: `models/fx/`) | `maps.md` "Rendering" |
 | `tools/w4m-re/acting.py` | `acting.py [out = client/assets/acting.txt]` | the WORMACTING scenes | `worm-reactions.md` |
 
-Run `w4m-models` after `w4m-maps`: it skins the moving decor listed in `models/decor/anim.txt` (`decor/<lib>_anim.glb`).
+Order: `w4m-maps`, then `parttwk.py`, then `w4m-models` (it skins the moving decor listed in `models/decor/anim.txt` (`decor/<lib>_anim.glb`) and exports the particle meshes of `fx/sets.txt`). Run w4m-maps on all maps: with map stems it rewrites `anim.txt` for those maps only.
 
 Build each Rust tool with `cargo build --release --manifest-path tools/<tool>/Cargo.toml`. `--list` of `w4m-models` takes exactly one
 bundle file: with any other argument count `--list` is taken as the install dir and the next argument as the out dir (`main()`). Then copy `client/assets/` to the console (`README.md`

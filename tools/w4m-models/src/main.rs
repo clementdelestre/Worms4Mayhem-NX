@@ -160,7 +160,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
 const WORM_CLIPS: &[&str] = &[
-    "Base", "Walk", "Jump", "Fall", "Land", "Backflip", "Blastflight2", "AimBazooka", "AimGrenade", "AimShotgun", "HoldShotgun", "HoldSniper", "HoldBow", "HoldHomingMissile", "JetpackRotLR",
+    "Base", "Walk", "Jump", "Fall", "Land", "Backflip", "Fwdflip", "Blastflight2", "AimBazooka", "AimGrenade", "AimShotgun", "HoldShotgun", "HoldSniper", "HoldBow", "HoldHomingMissile", "JetpackRotLR",
     "HoldBazooka", "HoldThrown", "Wounded", "Victorious_Grin", "Hit_Front", "HoldAirstrike", "HoldNinjarope", "Wave",
     "Yawn", "ScratchHead", "HoldBat", "AimSniper", "AimBow", "AimHomingMissile",
     "HoldFirepunch", "HoldProd", "HoldDynamite", "HoldLandmine", "HoldOldWoman", "HoldScouser", "HoldSentrygun", "HoldSurrender",
@@ -771,23 +771,25 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     // sky (SkyBoxEntity loops its one clip): per part, the clip's change of its groups' rotate Y and of its texture offset U / V
     // (2-key linear channels, node "<shape>_<shader>" for offsets), with the last key time
     let sky_clip = if !animated && lib.len() == 1 { Some(&lib[0]) } else { None };
+    let uv_clip = sky_clip.or_else(|| chosen.first().and_then(|c| c.1.first().copied()));  // particle meshes: their first clip's offsets
     let leaf = |p: &str| p.rsplit('|').next().unwrap_or("").to_string();
     let part_anim = |pt: &Part| -> [f32; 4] {
         let mut a = [0.0f32; 4];
-        let Some(c) = sky_clip else { return a };
+        let Some(c) = uv_clip else { return a };
         let shape = pt.group.map(|g| leaf(&s.groups[g].path)).unwrap_or_default();
         for ((path, ty), kf) in &c.ch {
             let (Some(k0), Some(k1)) = (kf.first(), kf.last()) else { continue };
             let node = leaf(path);
             match *ty {
-                0x1000103 => {
+                0x1000103 if sky_clip.is_some() => {
                     let mut g = pt.group;
                     while let Some(gi) = g {
                         if leaf(&s.groups[gi].path) == node { a[0] += k1[5] - k0[5]; a[3] = k1[4]; }
                         g = s.groups[gi].parent;
                     }
                 }
-                0x401 | 0x1000401 if !shape.is_empty() && node.starts_with(&format!("{shape}_")) => {
+                // skinned shapes have no group: they take the clip's offset channel (one per particle mesh)
+                0x401 | 0x1000401 if shape.is_empty() || node.starts_with(&format!("{shape}_")) => {
                     a[if *ty == 0x401 { 1 } else { 2 }] += k1[5] - k0[5];
                     a[3] = k1[4];
                 }
@@ -1044,7 +1046,7 @@ fn main() {
     }
     let data = find_ci(Path::new(&args[1]), "Data").unwrap_or_else(|| PathBuf::from(&args[1]));
     let out = PathBuf::from(args.get(2).map_or("client/assets/models", |s| s.as_str()));
-    for d in ["hats", "frontend", "sky"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
+    for d in ["hats", "frontend", "sky", "fx"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
     let mut bundles: Vec<PathBuf> = fs::read_dir(data.join("Bundles")).expect("Data/Bundles").flatten().map(|e| e.path()).collect();
     bundles.sort_by_key(|p| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok()).unwrap_or(u32::MAX));
     // level skies (SkyBoxEntity, Land.SkyBoxResource "<THEME>.<TIME>Sky"), raw units, named like the ramps in ui/sky
@@ -1055,6 +1057,12 @@ fn main() {
         let Some((desc, clip)) = l.split_once(' ') else { continue };
         let wanted: &[&str] = Box::leak(vec![&*Box::leak(clip.to_string().into_boxed_str())].into_boxed_slice());
         todo.push((format!("decor/{}_anim", desc.to_lowercase()), desc.to_string(), 0.0, false, wanted));
+    }
+    // PARTTWK MeshSet meshes with their MeshAnimNodeName clips, listed by tools/w4m-re/parttwk.py: raw units
+    for l in fs::read_to_string(out.join("../fx/sets.txt")).unwrap_or_default().lines() {
+        let Some((desc, clips)) = l.strip_prefix("mesh ").and_then(|r| r.split_once(' ')) else { continue };
+        let wanted: Vec<&str> = clips.split('+').filter(|c| *c != "-").map(|c| &*Box::leak(c.to_string().into_boxed_str())).collect();
+        todo.push((format!("fx/{}", desc.to_lowercase()), desc.to_string(), 0.0, false, Box::leak(wanted.into_boxed_slice())));
     }
     for path in bundles {
         if todo.is_empty() { break; }
@@ -1069,7 +1077,7 @@ fn main() {
                 Some((glb, info, blends)) => {
                     fs::write(out.join(format!("{name}.glb")), &glb).expect("write glb");
                     // raylib's glTF loader drops blend modes: one line per mesh, in order
-                    if name.starts_with("sky/") { fs::write(out.join(format!("{name}.blend")), &blends).expect("write blend"); }
+                    if name.starts_with("sky/") || name.starts_with("fx/") { fs::write(out.join(format!("{name}.blend")), &blends).expect("write blend"); }
                     println!("{name} ({desc}, {}): {info}, {} KB", path.file_name().unwrap().to_string_lossy(), glb.len() / 1024);
                 }
                 None => println!("{name} ({desc}): no geometry"),

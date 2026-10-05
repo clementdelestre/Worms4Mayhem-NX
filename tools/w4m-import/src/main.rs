@@ -167,6 +167,13 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("debris", "weapons", &["Debris1", "Debris2", "Debris3", "Debris4"]),  // weapons/Debris
     ("jetpack", "weapons", &["JetPack"]),  // weapons/JetPack
     ("jetpack_end", "weapons", &["JetPackEnd"]),
+    ("fire_loop", "weapons", &["FireLoop"]),  // PARTTWK EmitterSoundFX of map emitters (FEV sound definitions)
+    ("steam_loop", "weapons", &["SteamLoop"]),
+    ("flies_loop", "weapons", &["FliesLoop"]),
+    ("elec_arc", "weapons", &["ElecArc"]),
+    ("electric_arcing", "weapons", &["ElectricArcing"]),
+    ("storm_cloud", "weapons", &["ThunderClap_3", "ThunderClap_4", "ThunderClap_5", "ThunderClap_1", "ThunderClap_2"]),
+    ("hose_into_water", "weapons", &["TapIntoWater"]),
     ("bat_impact", "weapons", &["BaseballBatImpact"]),  // WXP_AbdTelep_Central's EmitterSoundFX
     ("bubble_inflate", "weapons", &["BubbleMachinePlace"]),  // weapons/BubbleMachineInflate
     ("bubble_wobble", "weapons", &["BubbleMachineWobble"]),

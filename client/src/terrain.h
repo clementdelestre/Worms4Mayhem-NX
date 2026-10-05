@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+struct ChunkGeo;
+
 // Destructible voxel landscape: density field (>0 = solid, ~metres to surface), surface-nets meshed per chunk.
 struct Terrain {
     static constexpr int NX = 320, NY = 256, NZ = 320, CS = 32;
@@ -15,6 +17,14 @@ struct Terrain {
     std::vector<std::vector<Part>> parts;
     std::vector<bool> dirty;
     std::vector<std::pair<int, std::vector<Part>>> pending;  // rebuilt chunks held back until the dirty set is done
+    // Instant replay (Snapshot): the meshes drawn at the snapshot, kept as rebuilt chunks replace them, then the live
+    // ones set aside while the replay draws the kept ones (liveDirty: live chunks not meshed yet)
+    std::vector<std::pair<int, std::vector<Part>>> kept, liveKept;
+    std::vector<int> liveDirty;
+    bool keep = false;
+    void keepMeshes();     // Snapshot::take: keeps from now on if every chunk is meshed
+    bool rewindMeshes();   // Snapshot::restore to the take: the kept meshes drawn again; false if none were kept
+    bool forwardMeshes();  // Snapshot::forward: the live meshes back; false if rewindMeshes() did not run
     std::vector<std::pair<int, signed char>> *undo = nullptr;  // when set, carve() logs (voxel, old density) here
     // girder voxels (W4M kUtilityGirder): ordinary land meshed with theme material 61; empty until a weld()
     std::vector<bool> steel;  // undo logs a voxel turning steel as (-1 - voxel, 0)
@@ -48,12 +58,19 @@ struct Terrain {
     Color grad[2][32] = {};  // W4M LightGradient and side gradient, 32 entries each (loaded on first remesh)
     bool hasGrad = false;
     std::vector<unsigned char> colTop;  // per (x, z) column: 1 + highest solid voxel at remesh time (shadow ray early-out); back() = max
+    BoundingBox bounds{};  // solid voxels at the first remesh: the shadow map's land box
+    static inline unsigned meshVer = 0;  // bumped whenever rebuilt chunks swap in or the land unloads
     // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
     struct Object { int model; Vector3 pos; Matrix m; };
     std::vector<Object> objects;
     std::vector<std::string> objModels;
+    struct Emitter { std::string fx; Vector3 pos; bool alive = true; };  // W4M EMITTER_ details: PARTTWK effect at pos (render only)
+    std::vector<Emitter> emitters;
+    Vector3 origin{40, WATER, 40};  // W4M world origin in map metres (map "origin"), for the sky
+    float rainProb = -1;  // >= 0: the level script's Particle.Rain.Prob (map "rain_prob")
 
     bool load(const std::string &map, unsigned seed);  // empty or missing map => generate(seed)
+    static std::string mapTheme(const std::string &map);  // the map file's theme without loading it ("" if none)
     void generate(unsigned seed);
     float at(int x, int y, int z) const;
     float sample(Vector3 p) const;  // trilinear density
@@ -66,16 +83,25 @@ struct Terrain {
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
     void decodeTextures();  // CPU only (worker thread): moves the PNG decode out of remesh
     int remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call. Returns the chunks rebuilt
+    // Match frames: uploads what the meshing thread built, then hands it the dirty chunks with `budget` s to start new ones
+    // (it runs while the frame renders). Returns the chunks uploaded. remeshWait() must precede any voxel change.
+    int remeshAsync(double budget);
+    void remeshWait();
+    void chunkGeometry(int ci, ChunkGeo &g) const;  // CPU only, any thread
     void draw() const;
     void setView(Vector3 cam) const;  // camera for the land and model shaders (W4M Landscape.cg: no fog)
-    void drawObjects(float clock, bool draw = true) const;  // clock: s, for the decor clips; draw false: only load the decor models
+    // clock: s, for the decor clips; draw false: only load the decor models; pick 1 / 2: only still / clip-played decor; at: their spheres
+    void drawObjects(float clock, bool draw = true, int pick = 0, std::vector<Vector4> *at = nullptr) const;
     void drawFringe() const;  // W4M LandFringe bin: after the water
+    void drawShadow() const;  // the land's depth for Lit::shadowPass
     void unload();
 
 private:
     void reset(signed char fill);
     void island(float bh, float height, float rough, float rad, unsigned s);
     void buildChunk(int ci);
+    int collect();       // the meshing thread's chunks into pending
+    void swapPending();  // rebuilt chunks replace the drawn ones together
     Color vertexColour(Vector3 p, Vector3 n) const;
     void loadGradients();
     bool loadVoxels(const std::string &path);

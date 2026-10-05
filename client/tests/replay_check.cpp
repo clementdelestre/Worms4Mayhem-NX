@@ -1,10 +1,12 @@
-// Recorded AI match: save/load/re-sim gives the same checksum; instant-replay restore + re-sim lands on the live state.
+// Recorded AI match: save/load/re-sim gives the same checksum; instant-replay restore (snapshot or checkpoint) + re-sim,
+// or a skip (forward), lands on the live state.
 // Run from client/ (romfs maps).
 #include "../src/ai.h"
 #include "../src/replay.h"
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <map>
 
 static uint32_t voxels(const Game &g) {
     uint32_t h = 2166136261u;
@@ -25,10 +27,11 @@ int main() {
         Ai ai;
         Snapshot snap;
         snap.take(g, 0);
+        std::map<uint32_t, uint32_t> sums = {{0, g.checksum()}};  // checksum at the snapshot and each checkpoint
         uint32_t snapSum = g.checksum(), snapVox = voxels(g);
         int replays = 0;
         size_t maxLog = 0;
-        double take = 0, restore = 0, resim = 0, step = 0;
+        double take = 0, restore = 0, resim = 0, resimCp = 0, step = 0;
         Phase prev = g.phase;
         for (uint32_t tick = 0; tick < 60 * 60 * 20 && g.phase != Phase::GameOver; tick++) {
             Input in = ai.think(g);
@@ -38,22 +41,27 @@ int main() {
             step += ms(t0);
             bool turnStart = false;
             for (const GameEvent &e : g.events) turnStart |= e.kind == GameEvent::TurnStart;
-            if (turnStart) {  // as main.cpp: one snapshot per turn
+            if (turnStart) {  // as main.cpp: one snapshot per turn, a checkpoint every 30 ticks
                 t0 = std::chrono::steady_clock::now();
                 snap.take(g, tick + 1);
                 take = std::max(take, ms(t0));
                 snapSum = g.checksum(), snapVox = voxels(g);
-            }
+                sums.clear(), sums[tick + 1] = snapSum;
+            } else if ((tick + 1 - snap.tick) % 30 == 0) snap.mark(g, tick + 1), sums[tick + 1] = g.checksum();
             if (prev == Phase::Flying && g.phase != Phase::Flying) {  // instant replay of the shot
                 uint32_t liveSum = g.checksum(), liveVox = voxels(g);
                 maxLog = std::max(maxLog, snap.log.size());
+                bool skip = replays % 2;  // odd replays: from a checkpoint 45 ticks back, skipped halfway (forward)
                 t0 = std::chrono::steady_clock::now();
-                snap.restore(g);
+                uint32_t from = snap.restore(g, skip ? std::max(snap.tick, tick + 1 > 45 ? tick + 1 - 45 : 0) : snap.tick);
                 restore = std::max(restore, ms(t0));
-                assert(g.checksum() == snapSum && voxels(g) == snapVox);
+                assert(g.checksum() == sums[from] && (from != snap.tick || voxels(g) == snapVox));
                 t0 = std::chrono::steady_clock::now();
-                for (uint32_t t = snap.tick; t <= tick; t++) g.step(rec.inputs[t]);
-                resim = std::max(resim, ms(t0));
+                uint32_t to = skip ? (from + tick + 1) / 2 : tick + 1;
+                for (uint32_t t = from; t < to; t++) g.step(rec.inputs[t]);
+                double &worst = skip ? resimCp : resim;
+                worst = std::max(worst, ms(t0));
+                if (skip) assert(snap.forward(g));
                 assert(g.checksum() == liveSum && voxels(g) == liveVox);
                 replays++;
             }
@@ -74,8 +82,8 @@ int main() {
         assert(h.checksum() == rec.checksum && voxels(h) == voxels(g));
         printf("%-8s %zu ticks (%zu KB file) %s, %d instant replays ok; step avg %.3f ms, fast-forward %.0f ticks/s\n", *map ? map : "island", rec.inputs.size(),
                rec.inputs.size() * 4 / 1024, g.phase == Phase::GameOver ? "game over" : "timeout", replays, step / rec.inputs.size(), back.inputs.size() / ff * 1000);
-        printf("         snapshot take max %.3f ms, restore max %.3f ms (undo log max %zu voxels = %zu KB), re-sim max %.1f ms\n", take, restore, maxLog,
-               maxLog * sizeof(snap.log[0]) / 1024, resim);
+        printf("         snapshot take max %.3f ms, restore max %.3f ms (undo log max %zu voxels = %zu KB), re-sim max %.1f ms (from the snapshot) %.1f ms (from a checkpoint, half)\n", take, restore,
+               maxLog, maxLog * sizeof(snap.log[0]) / 1024, resim, resimCp);
         remove(path);
     }
     puts("replay_check OK");

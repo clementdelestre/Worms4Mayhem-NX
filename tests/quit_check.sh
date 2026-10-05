@@ -14,7 +14,7 @@ ENTER=257 ESC=256 RIGHT=262 LEFT=263 DOWN=264 UP=265
 tap() { echo "$1 $2 1"; echo "$(($1 + 3)) $2 0"; }
 {
     tap 30 $ENTER; tap 60 $ENTER; tap 100 $ENTER      # title -> main -> Local -> Quick match
-    tap 530 $ESC; tap 560 $DOWN; tap 580 $DOWN; tap 610 $ENTER  # past the ~3.3 s loading sequence: pause, Quit to menu
+    tap 530 $ESC; tap 560 $DOWN; tap 580 $DOWN; tap 610 $ENTER  # past the ~4.3 s loading sequence: pause, Quit to menu
     f=650; for k in $UP $DOWN $LEFT $RIGHT $UP $UP $DOWN; do tap $f $k; f=$((f + 25)); done
     echo "890 -1 0"
 } > "$W/script"

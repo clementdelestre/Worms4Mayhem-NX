@@ -48,7 +48,7 @@ bool loadMission(const std::string &path, MissionSpec &m) {
     s.retreatTime = (uint8_t)j["retreat_time"].f(s.retreatTime), s.hotSeat = (uint8_t)j["hot_seat"].f(s.hotSeat);
     s.wind = (uint8_t)Clamp(j["wind"].f(s.wind), 0, 3), s.fallDamage = (uint8_t)j["fall_damage"].f(s.fallDamage);
     s.roundTime = (uint8_t)Clamp(j["round_time"].f(60), 1, 255);
-    m.sequence = j["sequence"].is(), m.placeObjects = j["place_objects"].is();
+    m.sequence = j["sequence"].is(), m.placeObjects = j["place_objects"].is(), m.rainProb = j["rain_prob"].f(-1);
     for (const Json &t : j["teams"].arr) {
         MissionSpec::TeamSpec ts;
         ts.name = t["name"].s(), ts.cpu = (uint8_t)Clamp(t["cpu"].f(0), 0, 5), ts.idle = t["idle"].is();

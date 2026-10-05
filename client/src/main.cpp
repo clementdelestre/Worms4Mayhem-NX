@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -63,23 +64,50 @@ static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initial
 // raylib's log, timestamped, to log.txt (no console on Switch; desktop echoes stdout). Counts GPU / file loads for the hitch log.
 enum { L_TEX, L_SHADER, L_MODEL, L_SOUND, L_IMAGE, L_FBO, L_COUNT };
 static unsigned loads[L_COUNT];
+// A Switch SD write blocks 15-25 ms (newlib flushes every 1 KB): after boot (logAsync) lines queue in memory and a thread
+// writes them each second; boot lines and warnings are written at once, so a crash leaves them on the card
+struct LogQueue { std::mutex mu, fileMu; std::string text; bool async = false; FILE *f = nullptr; std::thread writer; std::atomic<bool> stop{false}; };
+static LogQueue &logq = *new LogQueue;  // never destroyed: the writer is joined in an atexit handler
+static void logDrain() {
+    std::string out;
+    std::lock_guard<std::mutex> fl(logq.fileMu);
+    { std::lock_guard<std::mutex> l(logq.mu); out.swap(logq.text); }
+    if (logq.f && !out.empty()) fwrite(out.data(), 1, out.size(), logq.f), fflush(logq.f);
+}
+static void logAsync() {  // joined at exit: libnx has no pthread_detach (std::thread::detach aborts)
+    if (!logq.f || logq.async) return;
+    logq.async = true;
+    logq.writer = std::thread([] {
+        for (int i = 1; !logq.stop; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (i % 20 == 0) logDrain();
+        }
+    });
+    atexit([] { logq.stop = true, logq.writer.join(), logDrain(); });
+}
 static void logLine(int level, const char *fmt, va_list ap) {
     static const char *const KIND[L_COUNT] = {"TEXTURE:", "SHADER:", "MODEL:", "WAVE:", "IMAGE:", "FBO:"};
     if (strstr(fmt, "loaded successfully") || strstr(fmt, "created successfully"))
         for (int k = 0; k < L_COUNT; k++) if (!strncmp(fmt, KIND[k], strlen(KIND[k]))) loads[k]++;
-    if (strstr(fmt, "Mesh uploaded")) return;  // one per remeshed chunk: SD writes in the explosion frames
-    static FILE *f = fopen(DATA_DIR "log.txt", "w");
+    if (strstr(fmt, "Mesh uploaded") || strstr(fmt, "Unloaded vertex array")) return;  // one per remeshed chunk
 #ifndef __SWITCH__
     va_list cp;
     va_copy(cp, ap);
     printf("%s: ", level >= LOG_ERROR ? "ERROR" : level == LOG_WARNING ? "WARNING" : "INFO"), vprintf(fmt, cp), putchar('\n'), va_end(cp);
 #endif
     static const auto t0 = std::chrono::steady_clock::now();  // not GetTime(): GLFW logs an error through here once terminated
-    static double flushed = -1;
-    double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (!f) return;
-    fprintf(f, "%.3f ", now), vfprintf(f, fmt, ap), fputc('\n', f);
-    if (level >= LOG_WARNING || now - flushed >= 1) fflush(f), flushed = now;  // a flush per line is an SD write per line
+    static bool opened = (logq.f = fopen(DATA_DIR "log.txt", "w")) != nullptr;
+    if (!opened) return;
+    char b[1024];
+    int k = snprintf(b, sizeof b, "%.3f ", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    vsnprintf(b + k, sizeof b - k, fmt, ap);
+    bool now;
+    {
+        std::lock_guard<std::mutex> l(logq.mu);
+        logq.text.append(b) += '\n';
+        now = !logq.async || level >= LOG_WARNING;
+    }
+    if (now) logDrain();
 }
 
 // Scripted input for shot mode: select weapon, aim up, charge, release.
@@ -834,6 +862,15 @@ static void drawUfo(float dt) {
 }
 
 // Shells point along their velocity; fused throwables (grenades) tumble instead.
+// The map's particle emitters and weather (render only), after the match's Fx::theme
+static void levelFx(const Game &g) {
+    const Terrain &t = g.terrain;
+    Fx::level(t.emitters, t.scale / 20, t.origin, t.theme, t.time, g.water, [&t](Vector3 from, float len, Vector3 *hit, Vector3 *n) {
+        if (!t.raycast({from, {0, -1, 0}}, len, hit)) return false;
+        return *n = t.normal(*hit), true;
+    }, g.cfg.mission && g.cfg.mission->rainProb >= 0 ? g.cfg.mission->rainProb : t.rainProb);
+}
+
 static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     const WeaponDef &d = WEAPONS[s.weapon];
     const std::string &n = d.name;
@@ -868,35 +905,111 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
 
 enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading };
 
-// Match frames over W4NX_HITCH_MS (default 20) to log.txt with their section ms (20 lines per 10 s at most), and every
-// 10 s the sim ticks per frame histogram and the frame time spread: the fps counter averages both away.
+// Match frames over W4NX_HITCH_MS (default 20) to log.txt with their section ms (20 lines per 10 s at most, plus the
+// window's worst frame), and every 10 s the sim ticks per frame histogram and the frame time spread.
 struct Pace {
     double limit = getenv("W4NX_HITCH_MS") ? atof(getenv("W4NX_HITCH_MS")) : 20, sum = 0, sq = 0, worst = 0, jitter = 0, last = 0;
     int hist[4] = {}, frames = 0, over = 0, logged = 0, dropped = 0;
     unsigned seen[L_COUNT] = {}, sounds = 0;
+    std::string worstLine;  // the worst frame's HITCH line while the rate limit held it back
+    double gpuSum[16] = {}, gpuMax = 0;
+    int gpuFrames = 0, gpuOver = 0;
+    int gpuN = 0;
+    void gpu(const double *ms, int n) {  // a frame's GPU ms of its first n sections, from GpuClock
+        double t = 0;
+        for (int i = 0; i < n; i++) gpuSum[i] += ms[i], t += ms[i];
+        gpuFrames++, gpuMax = fmax(gpuMax, t), gpuOver += t > 1000 / 60.0, gpuN = n;
+    }
     void frame(double ms, int ticks, int chunks, const double *cost, const char *const *names, int n) {
         unsigned now[L_COUNT], snd = Audio::started();
         memcpy(now, loads, sizeof now);
         if (frames++) jitter += fabs(ms - last);  // the first frame's delta spans the screen change
-        last = ms, sum += ms, sq += ms * ms, worst = fmax(worst, ms), hist[std::min(ticks, 3)]++;
-        if (ms > limit && ++over && logged++ >= 20) dropped++;
-        else if (ms > limit) {
-            char b[512];
+        last = ms, sum += ms, sq += ms * ms, hist[std::min(ticks, 3)]++;
+        if (ms > limit) {
+            char b[768];
             int k = snprintf(b, sizeof b, "HITCH %.1f ms, %d ticks, %d chunks, %d particles, %u sounds |", ms, ticks, chunks, Fx::count(), snd - sounds);
             double known = 0;
             for (int i = 0; i < n; i++) known += cost[i], k += snprintf(b + k, sizeof b - k, " %s %.1f", names[i], cost[i] * 1000);
             k += snprintf(b + k, sizeof b - k, " other %.1f | loads tex %u shader %u model %u wave %u image %u fbo %u", ms - known * 1000,
                           now[L_TEX] - seen[L_TEX], now[L_SHADER] - seen[L_SHADER], now[L_MODEL] - seen[L_MODEL], now[L_SOUND] - seen[L_SOUND],
                           now[L_IMAGE] - seen[L_IMAGE], now[L_FBO] - seen[L_FBO]);
-            TraceLog(LOG_INFO, "%s", b);
+            over++;
+            if (logged++ < 20) TraceLog(LOG_INFO, "%s", b);
+            else if (dropped++, ms > worst) worstLine = b;
         }
+        worst = fmax(worst, ms);
         memcpy(seen, now, sizeof now), sounds = snd;
         if (frames < 600) return;
+        if (!worstLine.empty()) TraceLog(LOG_INFO, "%s (worst of the window)", worstLine.c_str());
         double avg = sum / frames;
         TraceLog(LOG_INFO, "PACE %d frames: ticks/frame 0:%d 1:%d 2:%d 3+:%d | frame avg %.2f sd %.2f max %.1f ms, %d over %.0f ms (%d not logged) | jitter %.2f ms",
                  frames, hist[0], hist[1], hist[2], hist[3], avg, sqrt(fmax(0, sq / frames - avg * avg)), worst, over, limit, dropped, jitter / (frames - 1));
+        if (gpuFrames) {
+            char b[512];
+            double t = 0;
+            for (int i = 0; i < gpuN; i++) t += gpuSum[i];
+            int k = snprintf(b, sizeof b, "GPU %d frames: avg %.2f max %.1f ms, %d over 16.7 ms |", gpuFrames, t / gpuFrames, gpuMax, gpuOver);
+            for (int i = 0; i < gpuN; i++) k += snprintf(b + k, sizeof b - k, " %s %.2f", names[i], gpuSum[i] / gpuFrames);
+            TraceLog(LOG_INFO, "%s", b);
+        }
         *this = Pace{};
         memcpy(seen, now, sizeof now), sounds = snd;
+    }
+};
+
+// GPU ms per perf section from timestamp queries read a few frames later, so nothing waits on the GPU
+// (GL 3.3 core; GLES needs EXT_disjoint_timer_query)
+#ifdef __SWITCH__
+extern "C" void *eglGetProcAddress(const char *);
+extern "C" const unsigned char *glGetString(unsigned);
+#else
+extern "C" void (*glad_glGenQueries)(int, unsigned *), (*glad_glQueryCounter)(unsigned, unsigned), (*glad_glGetQueryObjectiv)(unsigned, unsigned, int *),
+    (*glad_glGetQueryObjectui64v)(unsigned, unsigned, uint64_t *);
+#endif
+extern "C" void glGetIntegerv(unsigned, int *);
+struct GpuClock {
+    static constexpr int F = 4, N = 16;  // frames in flight, marks per frame
+    void (*gen)(int, unsigned *) = nullptr;
+    void (*counter)(unsigned, unsigned) = nullptr;
+    void (*avail)(unsigned, unsigned, int *) = nullptr;
+    void (*get)(unsigned, unsigned, uint64_t *) = nullptr;
+    unsigned q[F][N] = {};
+    int sec[F][N] = {}, used[F] = {}, slot = 0;
+    bool init() {
+#ifdef __SWITCH__
+        const char *ext = (const char *)glGetString(0x1F03);  // GL_EXTENSIONS
+        if (!ext || !strstr(ext, "GL_EXT_disjoint_timer_query")) return false;
+        gen = (void (*)(int, unsigned *))eglGetProcAddress("glGenQueriesEXT"), counter = (void (*)(unsigned, unsigned))eglGetProcAddress("glQueryCounterEXT");
+        avail = (void (*)(unsigned, unsigned, int *))eglGetProcAddress("glGetQueryObjectivEXT");
+        get = (void (*)(unsigned, unsigned, uint64_t *))eglGetProcAddress("glGetQueryObjectui64vEXT");
+#else
+        gen = glad_glGenQueries, counter = glad_glQueryCounter, avail = glad_glGetQueryObjectiv, get = glad_glGetQueryObjectui64v;
+#endif
+        if (!gen || !counter || !avail || !get) return gen = nullptr, false;
+        gen(F * N, &q[0][0]);
+        return true;
+    }
+    void mark(int section) {  // section: what ran since the previous mark (-1: frame start)
+        if (section < 0) used[slot] = 0;
+        if (gen && used[slot] < N) counter(q[slot][used[slot]], 0x8E28), sec[slot][used[slot]++] = section;  // GL_TIMESTAMP
+    }
+    // next frame; returns true and fills ms[] when the slot about to be reused had complete results
+    bool next(double *ms, int n) {
+        if (!gen) return false;
+        slot = (slot + 1) % F;
+        int k = used[slot], ready = 1, disjoint = 0;
+        used[slot] = 0;
+        if (k < 2) return false;
+        avail(q[slot][k - 1], 0x8867, &ready);  // GL_QUERY_RESULT_AVAILABLE: the last mark implies the others
+#ifdef __SWITCH__
+        glGetIntegerv(0x8FBB, &disjoint);  // GL_GPU_DISJOINT_EXT: a clock change voids the frame
+#endif
+        if (!ready || disjoint) return false;
+        uint64_t t[N];
+        for (int i = 0; i < k; i++) get(q[slot][i], 0x8866, &t[i]);  // GL_QUERY_RESULT
+        for (int i = 0; i < n; i++) ms[i] = 0;
+        for (int i = 1; i < k; i++) if (sec[slot][i] >= 0 && sec[slot][i] < n) ms[sec[slot][i]] += (t[i] - t[i - 1]) / 1e6;
+        return true;
     }
 };
 
@@ -955,12 +1068,17 @@ int main(int argc, char **argv) {
     for (double until = 0; Ui::preload(until) | Models::upload(until); until = GetTime() + 0.008) boot();  // ~half a frame of uploads
     bt[2] = GetTime();
     meshes.join(), sounds.join();
+    std::sort(maps.begin() + 1, maps.end(), [](const std::string &a, const std::string &b) {  // readdir order differs between PC and Switch
+        int c = strcasecmp(Ui::mapTitle(a).c_str(), Ui::mapTitle(b).c_str());
+        return c ? c < 0 : a < b;
+    });
     bt[3] = GetTime();
     FrontBg::load();
     bt[4] = GetTime();
     Audio::music(true);
     TraceLog(LOG_INFO, "BOOT: gl %.0f ms, decode+upload %.0f, join %.0f, menu scene %.0f, music %.0f, total %.0f", (bt[1] - bt[0]) * 1000,
              (bt[2] - bt[1]) * 1000, (bt[3] - bt[2]) * 1000, (bt[4] - bt[3]) * 1000, (GetTime() - bt[4]) * 1000, (GetTime() - bt[0]) * 1000);
+    logAsync();
     // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit; --animshot <weapon>: a turn firing it, anim_<frame>.png
     if (argc > 2 && !strcmp(argv[1], "--animshot") && (argv[2][0] < '0' || argv[2][0] > '9')) {
         const char *mdl = getenv("W4NX_MODEL") ? getenv("W4NX_MODEL") : "worm";  // W4NX_MODEL / W4NX_ZOOM: another model, camera distance x
@@ -1084,6 +1202,7 @@ int main(int argc, char **argv) {
         Audio::preloadVoices(game.teams);
         game.terrain.remesh();
         Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);
+        levelFx(game);
     }
     for (size_t i = 0; (utilShot || shotBench) && i < WEAPONS.size(); i++)
         if ((utilShot && WEAPONS[i].name == utilShot) || (shotBench && (int)i == shotWeapon)) game.ammo[game.worms[game.current].team][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
@@ -1092,12 +1211,15 @@ int main(int argc, char **argv) {
     float acc = 0, clock = 0, reconnectAt = 0;
     // perf overlay (L+R / F3 cycles off, CPU, GPU-synced): ms per section, smoothed. CPU mode only times command
     // submission (GPU work lands in "present"); synced mode glFinish()es after each section to charge the GPU cost to it.
-    enum { T_SIM, T_REMESH, T_CAMERA, T_PIP, T_SKY, T_TERRAIN, T_DECOR, T_MODELS, T_FX, T_UI, T_PRESENT, T_COUNT };
-    static const char *const NAMES[T_COUNT] = {"sim", "remesh", "camera", "pip", "sky+water", "terrain", "decor", "models", "fx", "ui", "present+wait"};
+    enum { T_SIM, T_REMESH, T_CAMERA, T_SHADOW, T_PIP, T_SKY, T_TERRAIN, T_DECOR, T_MODELS, T_FX, T_UI, T_PRESENT, T_COUNT };
+    static const char *const NAMES[T_COUNT] = {"sim", "remesh", "camera", "shadow", "pip", "sky+water", "terrain", "decor", "models", "fx", "ui", "present+wait"};
     double perf[T_COUNT] = {}, cost[T_COUNT] = {}, cpuCost[T_COUNT] = {}, mark = 0;
     int perfOn = bench ? (argc > 4 ? 1 : 2) : 0;  // --bench map frames nosync: real fps, no glFinish
+    GpuClock gpuClock;
+    TraceLog(LOG_INFO, "GPU: timestamp queries %s", gpuClock.init() ? "on" : "unavailable");
     auto lap = [&](int k) {
-        if (perfOn == 2) rlDrawRenderBatchActive();
+        if (perfOn == 2 || gpuClock.gen) rlDrawRenderBatchActive();  // the batch's draws belong to this section
+        gpuClock.mark(k);
         double c = GetTime();  // before glFinish: CPU submission only
         if (perfOn == 2) glFinish();
         double t = GetTime();
@@ -1106,7 +1228,7 @@ int main(int argc, char **argv) {
     Pace pace;
     int paceFrame = -2, stepped = 0;  // stepped: sim ticks this frame
     double paceAt = 0;
-    double benchSum[T_COUNT] = {}, benchCpu[T_COUNT] = {}, benchMax[T_COUNT] = {}, benchStart = 0, frameMax = 0, frameSq = 0, frameStart = 0, benchDraws = 0, benchBinds = 0;
+    double benchSum[T_COUNT] = {}, benchCpu[T_COUNT] = {}, benchMax[T_COUNT] = {}, benchGpu[T_COUNT] = {}, benchGpuN = 0, benchStart = 0, frameMax = 0, frameSq = 0, frameStart = 0, benchDraws = 0, benchBinds = 0;
 
     // Match recording (saved to replays/ at game over or quit), Replays playback, instant replay of big shots (local only).
     Recording rec, play;
@@ -1119,18 +1241,22 @@ int main(int argc, char **argv) {
     Vector3 fcPos{};
     std::vector<std::string> replayFiles;
     if (char *t = FileExists(DATA_DIR "replay.txt") ? LoadFileText(DATA_DIR "replay.txt") : nullptr) instant = t[0] != '0', UnloadFileText(t);
+    std::thread saver;  // the SD write takes 100+ ms on Switch: off the frame
     auto saveRec = [&] {
         if (recSaved || playing || rec.inputs.empty() || shot || bench || uiShot || netbot || rec.cfg.mission) return;  // replays don't carry missions
         recSaved = true;
         rec.checksum = irEnd < 0 && rec.inputs.size() == tick ? game.checksum() : 0;
-        MakeDirectory(DATA_DIR "replays");
-        std::string path = DATA_DIR "replays/" + replayName(rec.cfg);
-        if (!rec.save(path)) TraceLog(LOG_WARNING, "cannot save %s", path.c_str());
+        if (saver.joinable()) saver.join();
+        saver = std::thread([r = rec, path = std::string(DATA_DIR "replays/") + replayName(rec.cfg)] {
+            MakeDirectory(DATA_DIR "replays");
+            if (!r.save(path)) TraceLog(LOG_WARNING, "cannot save %s", path.c_str());
+        });
     };
-    auto irFinish = [&] {  // the replayed ticks end on the live state (determinism)
+    auto irFinish = [&] {  // back to the live state set aside at the replay's start
         if (irEnd < 0) return;
-        for (; irTick < (uint32_t)irEnd; irTick++) game.step(rec.inputs[irTick]);
-        if (game.checksum() != irLive) TraceLog(LOG_ERROR, "instant replay diverged from the live state");  // local only: keep playing
+        if (irTick == (uint32_t)irEnd && game.checksum() != irLive) TraceLog(LOG_ERROR, "instant replay diverged from the live state");  // local only: keep playing
+        if (!snap.forward(game))
+            for (; irTick < (uint32_t)irEnd; irTick++) game.step(rec.inputs[irTick]);
         irEnd = -1;
         irSwallow = true;
         Fx::clear();
@@ -1167,6 +1293,7 @@ int main(int argc, char **argv) {
             if (online) net.turnEnd(tick, game.checksum());
             if (netbot) printf("[%s] turn %d tick %u checksum %08x%s\n", name.c_str(), ++turns, tick, game.checksum(), e.kind == GameEvent::GameOver ? " gameover" : "");
         }
+        if (snap.valid && !online && !playing && tick != snap.tick && (tick - snap.tick) % 30 == 0) snap.mark(game, tick);  // a replay re-simulates 30 ticks at most
     };
     // Match prep while the loading screen animates: CPU work (sim start, texture decode, voices) on `loader`, then
     // GL steps between frames. The sim starts (and online inputs leave net's buffer) once screen is Play.
@@ -1184,11 +1311,11 @@ int main(int argc, char **argv) {
             loader.join();
             loadMs[1] = (GetTime() - loadT0) * 1000;  // wall clock, the screen kept drawing
             Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);
-            Fx::clear();
+            levelFx(game);
             game.terrain.remesh(0);  // texture upload and shadow columns only
             break;
         case 2: game.terrain.remesh(0.012); break;
-        case 3: game.terrain.drawObjects(0, false); break;  // loads the decor models
+        case 3: game.terrain.drawObjects(0, false), Audio::preloadMusic("victory"), Audio::preloadMusic("theme"); break;  // decor models; the match-end tracks
         case 4: if (Ui::warmHud(warmIcon, wait ? 1e30 : GetTime() + 0.008)) return; break;  // ~half a frame of uploads
         }
         if (loadStep != 1 || wait) loadMs[loadStep] += (GetTime() - t0) * 1000;
@@ -1384,6 +1511,7 @@ int main(int argc, char **argv) {
             if (uiShot && frame > uiFrames.back()) break;
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;
+            if (a == Ui::Frontend::Replays && saver.joinable()) saver.join();  // the last match's file complete
             if (a == Ui::Frontend::Replays) replayFiles = listReplays(DATA_DIR "replays"), replaySel = 0, screen = Screen::Replays;
             if (a == Ui::Frontend::SinglePlayer) missionMenu.tab = front.missionTab, missionMenu.brief = false, openMissions();
             if (a == Ui::Frontend::QuickMatch) {  // you vs one level-2 CPU team on a random map, Standard scheme; opt untouched
@@ -1417,7 +1545,7 @@ int main(int argc, char **argv) {
 
         if (screen == Screen::Loading) {
             BeginDrawing();
-            bool done = Loading::frame(dt, loadProgress());
+            bool done = Loading::frame(fixedDt ? dt : GetFrameTime(), loadProgress());  // wall clock, unclamped: in step with the audio, like W4M's
             if (loadShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
                 rlDrawRenderBatchActive();
                 Image img = LoadImageFromScreen();
@@ -1551,6 +1679,9 @@ int main(int argc, char **argv) {
         }
 
         mark = GetTime();
+        gpuClock.mark(-1);
+        game.terrain.remeshWait();  // the meshing thread reads the voxels the sim is about to change
+        lap(T_REMESH);
         const Worm &cur = game.worms[game.current];
         int pad = !online && IsGamepadAvailable(cur.team) ? cur.team : 0;
         bool quit;
@@ -1692,19 +1823,22 @@ int main(int argc, char **argv) {
             }
             wait = !ready;
             if (ready && (kill || dmg >= 30)) {  // replay from just before the shot, at most the last 8 s
+                double t0 = GetTime();
                 irLive = game.checksum(), irEnd = (int)tick;
-                snap.restore(game);
-                snap.valid = false;
                 irTick = std::max({snap.tick, fireTick > 45 ? fireTick - 45 : 0, tick > 480 ? tick - 480 : 0});
-                for (uint32_t t = snap.tick; t < irTick; t++) game.step(rec.inputs[t]);
-                game.terrain.remesh();
+                uint32_t from = snap.restore(game, irTick);
+                for (uint32_t t = from; t < irTick; t++) game.step(rec.inputs[t]);
+                snap.valid = false;
+                int built = game.terrain.remesh();  // what the kept meshes do not cover
+                TraceLog(LOG_INFO, "REPLAY: %u ticks re-simulated, %d chunks remeshed, %d kept, %.1f ms", irTick - from, built,
+                         (int)game.terrain.liveKept.size(), (GetTime() - t0) * 1000);
                 Fx::clear();
                 irAcc = 0;
             }
         }
         if (!wait) shotDone = false;
         lap(T_SIM);
-        int chunks = game.terrain.remesh(fmax(0, 0.003 - cost[T_SIM]));  // spread over the fireball's frames, never on top of a heavy sim frame
+        int chunks = game.terrain.remeshAsync(0.010);  // the meshing thread starts no chunk past 10 ms, while this frame renders
         lap(T_REMESH);
         // W4M HudClockEntity 0x5efe80 on the displayed seconds (rounded up): ClockFast loops at 5 and under (0x5efd80), ClockSlow from 15
         // at volume min(1, (15 - s) 0.11) (0x5efc40, Event property 1); both stop at 0, past 15 and during EFMV.Active
@@ -1808,6 +1942,17 @@ int main(int argc, char **argv) {
         Vector3 jolt = Vector3Scale({sinf(clock * 53), sinf(clock * 61 + 1) * 0.7f, sinf(clock * 47 + 2)}, Fx::shake);
         view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt), view.up = Controls::viewUp(view);
         lap(T_CAMERA);
+        animateWorms(game, dt, view);
+        // W4M lighting pass: land and still decor cached until remeshed; clip-played decor, worms, graves, shots and objects every frame
+        Lit::shadowPass(game.terrain.bounds, Terrain::meshVer, [&] { game.terrain.drawShadow(), game.terrain.drawObjects(0, true, 1); }, [&](std::vector<Vector4> &at) {
+            game.terrain.drawObjects(clock, true, 2, &at);
+            for (const Worm &w : game.worms)
+                if (Models::visible(w.pos, 2)) (w.alive || w.counted > 0) ? (void)drawWorm(game, w, clock) : drawGrave(game, w), at.push_back({w.pos.x, w.pos.y, w.pos.z, 2});
+            for (const Projectile &s : game.shots) drawShot(s, clock, game.terrain), at.push_back({s.pos.x, s.pos.y, s.pos.z, 3});
+            for (const Object &o : game.objects)
+                if (Models::visible(o.pos, 2)) Models::draw(objectModel(o), o.pos, (&o - game.objects.data()) * 1.3f), at.push_back({o.pos.x, o.pos.y, o.pos.z, 2});
+        });
+        lap(T_SHADOW);
         // W4M PiP: the event camera in one low-resolution pass (terrain, worms, shots, objects, water), before the main view
         static RenderTexture2D pipRt = {};
         Camera3D pipView;
@@ -1818,14 +1963,14 @@ int main(int argc, char **argv) {
             BeginTextureMode(pipRt);
             ClearBackground(Fx::fog());
             BeginMode3D(pipView);
-            Fx::drawSky(pipView, {40, Terrain::WATER, 40}, 0.05f);
+            Fx::drawSky(pipView, game.terrain.origin, game.terrain.scale / 20);
             game.terrain.setView(pipView.position);
             game.terrain.draw();
             for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawWorm(game, w, clock);
             for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain)) DrawSphere(s.pos, 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) Models::draw(objectModel(o), o.pos, (&o - game.objects.data()) * 1.3f);
-            Fx::drawWater(pipView, game.water, clock);
+            Fx::drawWater(pipView, game.water, clock, 12000 * game.terrain.scale / 20, {game.terrain.origin.x, game.terrain.origin.z});
             game.terrain.drawFringe();
             Fx::draw(pipView);
             EndMode3D();
@@ -1836,14 +1981,13 @@ int main(int argc, char **argv) {
         BeginDrawing();
         ClearBackground(Fx::fog());
         BeginMode3D(view);
-        Fx::drawSky(view, {40, Terrain::WATER, 40}, 0.05f);
+        Fx::drawSky(view, game.terrain.origin, game.terrain.scale / 20);
         lap(T_SKY);
         game.terrain.setView(view.position);
         game.terrain.draw();
         lap(T_TERRAIN);
         game.terrain.drawObjects(clock);
         lap(T_DECOR);
-        animateWorms(game, dt, view);
         toolFx(game, dt);
         jetAudio(game);
         Xray::begin();
@@ -1924,7 +2068,7 @@ int main(int argc, char **argv) {
             DrawCube(Vector3Add(game.raceFinish, {0, 10.3f, 0}), 1.2f, 0.6f, 0.08f, RED);
         }
         lap(T_MODELS);
-        Fx::drawWater(view, game.water, clock);
+        Fx::drawWater(view, game.water, clock, 12000 * game.terrain.scale / 20, {game.terrain.origin.x, game.terrain.origin.z});
         game.terrain.drawFringe();
         lap(T_SKY);
         float fxDt = pause.open ? 0 : dt;
@@ -1933,6 +2077,7 @@ int main(int argc, char **argv) {
             if (fxDt > 0 && GetRandomValue(0, 14) == 0)
                 Fx::puff(Vector3Add(c.pos, {GetRandomValue(-40, 40) / 10.0f, GetRandomValue(0, 15) / 10.0f, GetRandomValue(-40, 40) / 10.0f}), {game.wind, 0.2f, game.windZ}, 5, 2, 3.5f, {120, 200, 60, 110});
         drawBubbles(game, fxDt);
+        Fx::setWind({game.wind, 0, game.windZ}), Fx::levelSync(game.terrain.emitters), Fx::weather(game.cfg.seed, game.clock);
         Fx::update(fxDt);
         Fx::draw(view);
         Fx::drawFlare(view, fxDt, [&](Vector3 o, Vector3 d) {
@@ -2038,6 +2183,9 @@ int main(int argc, char **argv) {
         capture(frame);
         EndDrawing();
         lap(T_PRESENT);
+        double gpuMs[T_COUNT];
+        bool gpuDone = gpuClock.next(gpuMs, T_COUNT);
+        if (gpuDone) pace.gpu(gpuMs, T_PRESENT);  // the swap's span is mostly the vblank wait
         if (paceFrame == frame - 1) pace.frame((mark - paceAt) * 1000, stepped, chunks, cost, NAMES, T_COUNT);
         paceFrame = frame, paceAt = mark, stepped = 0;
         if (missionAct) {  // end-of-mission choice, outside the frame: next, retry, back to the list
@@ -2053,6 +2201,8 @@ int main(int argc, char **argv) {
             frameMax = fmax(frameMax, GetTime() - frameStart), frameSq += (GetTime() - frameStart) * (GetTime() - frameStart);
             benchDraws += glDraws, benchBinds += glBinds;
             for (int k = 0; k < T_COUNT; k++) benchSum[k] += cost[k], benchCpu[k] += cpuCost[k], benchMax[k] = fmax(benchMax[k], cost[k]);
+            for (int k = 0; k < T_COUNT && gpuDone; k++) benchGpu[k] += gpuMs[k];
+            benchGpuN += gpuDone;
         }
         frameStart = GetTime();
         glDraws = glBinds = 0;
@@ -2061,16 +2211,20 @@ int main(int argc, char **argv) {
             double n = benchFrames, wall = GetTime() - benchStart, cpu = 0, gpu = 0;
             printf("BENCH map=%s frames=%d  %.1f fps (%s)  frame avg %.2f ms sd %.2f max %.2f ms\n", opt.map.empty() ? "(procedural)" : opt.map.c_str(), benchFrames, n / wall, perfOn == 2 ? "gpu-synced" : "no sync",
                    wall / n * 1000, sqrt(fmax(0, frameSq / n - wall / n * wall / n)) * 1000, frameMax * 1000);
-            printf("%-13s %8s %8s %8s %8s\n", "section", "cpu", "sync", "gpu", "syncmax");
+            printf("%-13s %8s %8s %8s %8s %8s\n", "section", "cpu", "sync", "gpu", "syncmax", "timer");
+            double timer = 0;
             for (int k = 0; k < T_COUNT; k++) {
-                double c = benchCpu[k] / n * 1000, s = benchSum[k] / n * 1000;
-                cpu += c, gpu += s - c;
-                printf("%-13s %8.3f %8.3f %8.3f %8.2f\n", NAMES[k], c, s, s - c, benchMax[k] * 1000);
+                double c = benchCpu[k] / n * 1000, s = benchSum[k] / n * 1000, g = benchGpuN ? benchGpu[k] / benchGpuN : 0;
+                cpu += c, gpu += s - c, timer += k == T_PRESENT ? 0 : g;
+                printf("%-13s %8.3f %8.3f %8.3f %8.2f %8.3f\n", NAMES[k], c, s, s - c, benchMax[k] * 1000, g);
             }
             gpu -= (benchSum[T_PRESENT] - benchCpu[T_PRESENT]) / n * 1000;  // vsync wait, not GPU work
-            // ponytail: Switch ~5x slower CPU, Tegra X1 docked ~4x below a desktop iGPU; glFinish waits overstate GPU time
-            double sw = fmax(5 * cpu, 4 * gpu);
-            printf("total cpu %.2f ms gpu %.2f ms -> Switch ~%.1f ms = max(5x cpu, 4x gpu docked) = %.0f fps\n", cpu, gpu, sw, 1000 / sw);
+            // Switch handheld 720p, fitted on sw-log3 (docs/tests.md "Render budget"): 7x cpu, 14x the timer GPU of a nosync run
+            // (glFinish idles the GPU between sections: synced timer and gpu read 3-5x high, 3x synced gpu as a fallback)
+            bool timed = timer > 0 && perfOn != 2;
+            double sw = fmax(7 * cpu, timed ? 14 * timer : 3 * gpu);
+            printf("total cpu %.2f ms gpu %.2f (synced) %.2f (timer) ms -> Switch handheld ~%.1f ms = max(7x cpu, %s) = %.0f fps\n", cpu, gpu, timer, sw,
+                   timed ? "14x timer" : "3x synced gpu", 1000 / sw);
             int tris = 0, parts = 0;
             for (const auto &ps : game.terrain.parts)
                 for (const Terrain::Part &p : ps) tris += p.mesh.triangleCount, parts++;
@@ -2083,6 +2237,7 @@ int main(int argc, char **argv) {
     }
     if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();
+    if (saver.joinable()) saver.join();
     net.close();
     game.terrain.unload();
     Models::unload();

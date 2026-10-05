@@ -5,6 +5,9 @@
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
+#include <deque>
+#include <map>
+#include "json.h"
 #include <cmath>
 #include <functional>
 #include <vector>
@@ -36,8 +39,8 @@ struct Particle {
     Color tail = {};  // alpha > 0: leaves a trail of additive puffs of this colour (W4M anchor particles)
     float altN = 0, altS = 0;  // > 0: W4M IsAlternateAcceleration (0x5b7450), p = p0 + v (N - 1/(S t + 1/N)) + v.y t on y, t in ms
     Vector3 p0{};
-    unsigned char ramp = 0;  // > 0: PARTTWK ParticleColor / ColorBand ramp (RAMPS) by age, constant alpha, size S fade-in / delay / shrink to 0
-    float fadeIn = 0, delay = 0;  // ParticleSizeFadeIn / ParticleSizeVelocityDelay, s
+    uint16_t ramp = 0;  // > 0: PARTTWK ParticleColor / ColorBand ramp (ramps) by age, ParticleAlpha, ParticleSize as below
+    float fadeIn = 0, delay = 0;  // ParticleSizeFadeIn (end of the fade, s) / ParticleSizeVelocityDelay, s
     float alpha = 1;  // ParticleAlpha of a ramp particle
     float fadeA = -1;  // >= 0: ParticleAlphaVelocity < 0, linear fade to 0 at end of life from aIn + this (AlphaVelocityDelay), s
     Vector3 acc{};  // m/s², on top of grav (ParticleMass x (ParticleAcceleration + wind))
@@ -46,6 +49,15 @@ struct Particle {
     bool head = false;  // kTrail sprite set "A,B": B (WXSprite1) drawn at the head (0x5bc6e5)
     uint32_t id = 0;  // > 0: carries an EmitterParticleFX emitter
     const Emit *expire = nullptr;  // EmitterParticleExpireFX
+    // ramp particles, 0x5b6f40: S half extents (m; 0 = size0, size0 x aspect), F FinalSizeScale (< 0: SizeVelocity V, m/s), d0 SizeFadeInDelay s
+    Vector2 S{}, F{-1, -1}, V{-1, -1};
+    float d0 = 0, alphaV = 0, aDelay = 0, spS = 0, windK = 0;  // AlphaVelocity >= 0 (/s) from aIn + aDelay; spiral shrink m/s; wind x Mass, m/s² per unit
+    bool immortal = false;  // ParticleLife 65535 (0x5b73d0)
+    int8_t mesh = -1;  // MeshSet particle (meshes), drawn as that model
+    Vector3 ori{}, oriV{};  // mesh particles: ParticleOrientation, rad and rad/s
+    const std::vector<const Emit *> *expireL = nullptr;  // data EmitterParticleExpireFX (an effect or one emitter)
+    float unit = 0.05f;  // m per W4M unit of the emitter, for the emitters it carries or leaves
+    int level = -1;  // map emitter that spawned it: its deletion takes immortal particles (0x5bbfa9)
 };
 // ParticleColorBand 0x5b77c0: edge[i] = end of segment c[i] -> c[i+1]; the last segment runs to 1
 struct Ramp { int n; Color c[5]; float edge[5]; };
@@ -71,7 +83,8 @@ enum RampId { R_NONE, R_STARBURST, R_BAZ_MAIN, R_BAZ_PUFF, R_HOM_SMOKE, R_HOM_GL
               R_SB_CYAN, R_SB_GLOW, R_FW_RED, R_FW_GREEN, R_FW_STAR, R_FW_PALE, R_FW_ENDGREEN, R_WHITE = R_MIST };
 struct Streak { Vector3 p, dir; float len, width; unsigned char tex; };
 
-Texture2D tex[TEX_COUNT];
+std::vector<Texture2D> tex(TEX_COUNT);  // past TEX_COUNT: the data sprite sets (sprites.txt)
+std::vector<Ramp> ramps(std::begin(RAMPS), std::end(RAMPS));
 std::vector<Particle> ps;
 std::vector<Streak> streaks;
 struct Seen { Vector3 p; int weapon; bool child; float age; };  // age: s since the rocket's emitters started
@@ -101,7 +114,9 @@ Texture2D flareTex{};
 Model domeModel{};
 struct Dome { Vector3 p; float sxz, sy, age; };
 std::vector<Dome> domes;
-constexpr float DOME_CLIP = 0.833f;  // WXM_DefSource: scale 0 -> 1 and material alpha 1 -> 0 (linear), then invisible
+// WXM_DefSource scales 0 -> 1 then holds (no LOOP:); its material alpha key reaches no CG program (materialDiffuseCol is a constant in
+// FixedFunction.cg), so the dome stays for ParticleLife 5000 ms
+constexpr float DOME_LIFE = 5;
 Color fogCol = {120, 170, 230, 255};
 uint32_t seed = 12345;
 
@@ -119,13 +134,38 @@ void add(Particle p) {
     ps.push_back(p);
 }
 
-// CParticle position 0x5b7450: p0 + v t + (acc - grav) t² / 2, or the alternate curve (t in ms, no gravity); plus the spiral circle in x, z
+Vector3 windNow{};  // (cos, 0, sin) x Wind.Speed / Wind.MaxSpeed (setWind)
+// CParticle position 0x5b7450: p0 + v t + (acc + wind - grav) t² / 2 (wind read now: the closed form follows its changes), or the alternate
+// curve (t in ms, no gravity); plus the spiral circle in x, z while its radius (shrinking by SpiralRadiusSizeVelocity) is > 0
 Vector3 posAt(const Particle &p, float t) {
     Vector3 q;
     if (p.altN > 0) q = Vector3Add(p.p0, Vector3Add(Vector3Scale(p.v, (p.altN - 1 / (p.altS * t * 1000 + 1 / p.altN)) / 1000), {0, p.v.y * t, 0}));
-    else q = Vector3Add(p.p0, Vector3Add(Vector3Scale(p.v, t), Vector3Scale({p.acc.x, p.acc.y - p.grav, p.acc.z}, t * t / 2)));
-    if (p.spR > 0) q.x += sinf(p.spW * t) * p.spR, q.z += cosf(p.spW * t) * p.spR;
+    else q = Vector3Add(p.p0, Vector3Add(Vector3Scale(p.v, t), Vector3Scale({p.acc.x + windNow.x * p.windK, p.acc.y - p.grav, p.acc.z + windNow.z * p.windK}, t * t / 2)));
+    if (float r = p.spR - p.spS * t; r > 0) q.x += sinf(p.spW * t) * r, q.z += cosf(p.spW * t) * r;
     return q;
+}
+
+// ParticleSize 0x5b6f40 (half extents, written to the XSpriteSet Size, 0x5b7ecb): 0 before SizeFadeInDelay, linear up to S at SizeFadeIn,
+// S until SizeVelocityDelay, then linear to S x FinalSizeScale at end of life, or (no FinalSizeScale) S + SizeVelocity t, or a shrink to 0 when
+// that velocity is negative (or shrink: a mesh particle with AlphaVelocity < 0, 0x5bd69e)
+Vector2 sizeAt(const Particle &p, float t, bool shrink = false) {
+    Vector2 S = p.S.x > 0 || p.S.y > 0 ? p.S : Vector2{p.size0, p.size0 * p.aspect};
+    if (t < p.d0) return {0, 0};
+    if (t < p.fadeIn) return Vector2Scale(S, (t - p.d0) / (p.fadeIn - p.d0));
+    if (t < p.delay) return S;
+    float u = (t - p.delay) / (p.life - p.delay);
+    if (p.F.x >= 0) return {S.x * (p.F.x * u + 1 - u), S.y * (p.F.y * u + 1 - u)};
+    return {p.V.x >= 0 && !shrink ? S.x + p.V.x * t : (1 - u) * S.x, p.V.y >= 0 && !shrink ? S.y + p.V.y * t : (1 - u) * S.y};
+}
+
+// ParticleAlpha 0x5b7660: linear fade-in over AlphaFadeIn, then past AlphaVelocityDelay a linear fade to 0 at end of life (AlphaVelocity < 0)
+// or a drop of AlphaVelocity per ms; clamped to 0..1
+float alphaAt(const Particle &p, float t) {
+    float a = p.alpha, from = p.aIn + (p.fadeA >= 0 ? p.fadeA : p.aDelay);
+    if (t < p.aIn) a *= t / p.aIn;
+    else if (p.fadeA >= 0 && t > from) a *= 1 - (t - from) / (p.life - from);
+    else if (p.alphaV > 0 && t > from) a -= (t - from) * p.alphaV;
+    return Clamp(a, 0, 1);
 }
 
 // PARTTWK ParticleEmitterContainer fields, in W4M units (20 per m) and ms
@@ -136,33 +176,74 @@ struct Emit {
     float alpha = 1, alphaIn = 0, fade = -1;  // fade: AlphaVelocityDelay of an AlphaVelocity < 0
     Vector3 v{}, vR{}; bool norm = false; float mass = 0, altN = 0, altS = 0;  // mass: x ParticleAcceleration (0, -1, 0)
     Vector3 off{}, offR{}; float spiral = 0, spiralW = 0, rot = 0, rotR = 0, spinR = 0;
-    unsigned char col = R_WHITE; int sfx = -1; const Emit *fx = nullptr, *expire = nullptr;  // EmitterSoundFX, EmitterParticleFX, EmitterParticleExpireFX
+    uint16_t col = R_WHITE; int sfx = -1; const Emit *fx = nullptr, *expire = nullptr;  // EmitterSoundFX, EmitterParticleFX, EmitterParticleExpireFX
+    // data emitters (parttwk.json), W4M units and ms: the fields the hand-written ones above leave at their defaults
+    bool w4m = false, wind = false, infinite = false, immortal = false, sfxLoop = false, sfxHold = false;  // EmitterLifeTime / ParticleLife 65535
+    int kind = 0, numR = 0; float lifeTimeR = 0;  // EmitterType (2 kRain), EmitterNumSpawnRadnomise, EmitterLifeTimeRandomise
+    Vector2 sizeV{}, sizeVR{}, fin{-1, -1}; float finR = 0, sizeInR = 0, sizeInDelay = 0, sizeInDelayR = 0, alphaV = 0, aDelay = 0;  // alphaV: AlphaVelocity >= 0, per ms
+    float spiralR = 0, spiralWR = 0, spiralS = 0; Vector3 acc{0, -1, 0}, accR{}, ori{}, oriR{}, oriV{}, oriVR{};
+    int8_t mesh = -1; bool spiralOn = false, altOn = false;
+    const std::vector<const Emit *> *fxL = nullptr, *expireL = nullptr;  // data EmitterParticleFX / ExpireFX
+    int pool() const;  // particle slots, 0x5b9f24
 };
-struct Live { const Emit *e; Vector3 at; uint32_t follow = 0; float clock = 0, next = 0, timer = 0, jitter = 0; bool started = false; std::vector<float> ends; };
+// Running emitter (ParticleEmitterEffectEntity): age, spawn timer, its randoms (0x5ba3bc..0x5ba446), particle slot ends, batch progress
+struct Live {
+    const Emit *e; Vector3 at; uint32_t follow = 0; float clock = 0, next = 0, timer = 0, jitter = 0; bool started = false; std::vector<float> ends;
+    int key = 0, level = -1; float unit = 0.05f, lifeR = 0; int extra = 0, spawned = 0, batch = 0; bool init = false;  // level: map emitter index
+};
 std::vector<Live> lives, born;  // running emitters; those created while they tick
 uint32_t lastId = 0;
+int lastKey = 0, curLevel = -1;  // curLevel: the map emitter spawn() is spawning for
 const float TRAIL_DT = 0.02f;
 const int TRAIL_SEGS = 24;  // TrailGraphicEntity: 25 points (0x5bc899), shifted once per 20 ms update (0x5c3aa0 -> 0x5c2ae0)
 
-// CParticle setup 0x5b98e0: V + (2r - 1) Vrand per axis x 0.01 units/ms (IsNormalised: the unit vector x (V.x + Vrand.x)); returns the life, s
-float spawn(const Emit &e, Vector3 at) {
+int Emit::pool() const {  // min(MaxParticles, (Life + LifeRand) / (SpawnFreq - SpawnFreqRand) x (NumSpawn + NumSpawnRand, 0 -> 1) + 1), integers
+    int f = (int)freq - (int)freqR, n = num + numR;
+    return life > 0 && f > 0 ? std::min(max, (int)(life + lifeR) / f * (n ? n : 1) + 1) : max;
+}
+
+// CParticle setup 0x5b98e0: V + (2r - 1) Vrand per axis x 0.01 units/ms (IsNormalised: the unit vector x (V.x + Vrand.x)); returns the life, s.
+// u: metres per W4M unit (map emitters: the import scale k / 20)
+float spawn(const Emit &e, Vector3 at, float u = 0.05f) {
     auto r = [](float x) { return rnd(-x, x); };
     Vector3 v = {e.v.x + r(e.vR.x), e.v.y + r(e.vR.y), e.v.z + r(e.vR.z)}, o = {e.off.x + r(e.offR.x), e.off.y + r(e.offR.y), e.off.z + r(e.offR.z)};
     if (e.norm) v = Vector3Scale(Vector3Normalize(v), e.v.x + e.vR.x);
-    Particle q = {Vector3Add(at, Vector3Scale(o, 1 / 20.f)), Vector3Scale(v, 0.5f), 0, (e.life + r(e.lifeR)) / 1000, (e.size + r(e.sizeR)) / 20, 0, (e.rot + r(e.rotR)) * DEG2RAD,
-                  r(e.spinR) * DEG2RAD * 10, e.altN > 0 ? 0 : 5 * e.mass, 0, WHITE, e.tex, e.add, e.trail ? TRAIL_SEGS * TRAIL_DT : 0};
+    Particle q = {Vector3Add(at, Vector3Scale(o, u)), Vector3Scale(v, 10 * u), 0, (e.life + r(e.lifeR)) / 1000, (e.size + r(e.sizeR)) * u, 0, (e.rot + r(e.rotR)) * DEG2RAD,
+                  r(e.spinR) * DEG2RAD * 10, e.altN > 0 ? 0 : 100 * u * e.mass, 0, WHITE, e.tex, e.add, e.trail ? TRAIL_SEGS * TRAIL_DT : 0};
     q.altN = e.altN, q.altS = e.altS, q.p0 = q.p, q.ramp = e.col, q.fadeIn = e.sizeIn / 1000, q.delay = e.shrink < 0 ? 1e9f : (e.shrink + r(e.shrinkR)) / 1000;
     q.alpha = e.alpha, q.aIn = e.alphaIn / 1000, q.fadeA = e.fade < 0 ? -1 : e.fade / 1000, q.aspect = e.aspect;
-    q.spR = e.spiral / 20, q.spW = e.spiralW * 10, q.head = e.head, q.expire = e.expire;
+    q.spR = e.spiral * u, q.spW = e.spiralW * 10, q.head = e.head, q.expire = e.expire;
+    if (e.w4m) {
+        float k = rnd(-1, 1), kv = rnd(-1, 1);  // 0x5b6a30 / 0x5b6920: one random for both axes (SizeVelocityRandomise y < 0 reuses x's)
+        q.S = {(e.size + k * e.sizeR) * u, (e.size * e.aspect + k * e.sizeR) * u};
+        q.V = Vector2Scale({e.sizeV.x + kv * e.sizeVR.x, e.sizeV.y + (e.sizeVR.y < 0 ? kv * e.sizeVR.x : r(e.sizeVR.y))}, 10 * u);
+        q.F = e.fin.x < 0 ? Vector2{-1, -1} : Vector2AddValue(e.fin, r(e.finR));  // FinalSizeScale (0, 0) means none (0x5b9a83)
+        q.d0 = (e.sizeInDelay + r(e.sizeInDelayR)) / 1000, q.fadeIn = (e.sizeIn + r(e.sizeInR)) / 1000;
+        q.delay = (e.shrink + r(e.shrinkR)) / 1000;
+        q.alphaV = e.alphaV * 1000, q.aDelay = e.aDelay / 1000;
+        Vector3 a = {e.acc.x + r(e.accR.x), e.acc.y + r(e.accR.y), e.acc.z + r(e.accR.z)};
+        q.grav = 0, q.acc = Vector3Scale(a, 100 * u * e.mass), q.windK = e.wind ? 85 * u * e.mass : 0;
+        q.altN = e.altOn ? e.altN : 0;
+        q.spR = e.spiralOn ? (e.spiral + r(e.spiralR)) * u : 0, q.spW = (e.spiralW + r(e.spiralWR)) * 10, q.spS = e.spiralS * 10 * u;
+        q.ori = Vector3Scale({e.ori.x + r(e.oriR.x), e.ori.y + r(e.oriR.y), e.ori.z + r(e.oriR.z)}, DEG2RAD);
+        q.oriV = Vector3Scale({e.oriV.x + r(e.oriVR.x), e.oriV.y + r(e.oriVR.y), e.oriV.z + r(e.oriVR.z)}, DEG2RAD * 10);
+        q.rot = q.ori.z, q.spin = q.oriV.z, q.immortal = e.immortal, q.mesh = e.mesh;
+    }
     if ((int)ps.size() >= MAX) return q.life;
-    if (e.fx) q.id = ++lastId, born.push_back({e.fx, q.p, q.id});
+    q.unit = u, q.expireL = e.expireL, q.level = curLevel;
+    if (e.fx || e.fxL) q.id = ++lastId;
+    if (e.fx) born.push_back({e.fx, q.p, q.id});
+    if (e.fxL)
+        for (const Emit *x : *e.fxL) { Live l{x, q.p, q.id}; l.unit = u, l.level = curLevel; born.push_back(std::move(l)); }
     ps.push_back(q);
-    return q.life;
+    return q.immortal ? 1e30f : q.life;
 }
 
-// ParticleEmitterEffectEntity 0x5bb690 / 0x5bab20 per 20 ms (docs/w4m/render.md §3); an attached emitter (EmitterParticleFX) follows
-// its particle and stops with it [assumed]
+// ParticleEmitterEffectEntity 0x5bb690 / 0x5bab20 per 20 ms (docs/w4m/render.md §3): the spawn timer starts at SpawnFreq (so the first update
+// past StartDelay spawns), each batch of NumSpawn (+ rand) fills free slots of the pool; past EmitterLifeTime (+ rand, 65535 = forever) with the
+// pool spawned once, it stops (0x5bc022). An attached emitter (EmitterParticleFX) follows its particle and stops with it [assumed]
 void tickEmitters(float dt) {
+    auto rr = [](float x) { return truncf(rnd(-x, x)); };
     for (size_t i = 0; i < lives.size();) {
         Live &L = lives[i];
         const Emit &e = *L.e;
@@ -172,28 +253,40 @@ void tickEmitters(float dt) {
             if (it == ps.end()) done = true;
             else L.at = it->p;
         }
+        int pool = e.pool();
+        curLevel = L.level;
         for (L.clock += dt; !done && L.clock >= L.next; L.next += 0.02f) {
-            float t = L.next * 1000 - e.delay;
-            if (t < 0) continue;
-            if (!L.started) {
-                L.started = true, L.timer = e.freq;
-                if (e.sfx >= 0) Audio::play((Audio::Sfx)e.sfx, L.at);
-            } else L.timer += 20;
-            if (t >= fmaxf(e.lifeTime, 1)) { done = true; break; }
-            if (L.timer < e.freq + L.jitter) continue;
-            L.timer -= e.freq + L.jitter, L.jitter = rnd(-e.freqR, e.freqR);
-            L.ends.erase(std::remove_if(L.ends.begin(), L.ends.end(), [&](float end) { return end <= L.next; }), L.ends.end());  // next only grows
-            int alive = (int)L.ends.size();
-            for (int k = 0; k < e.num && alive < e.max; k++, alive++) L.ends.push_back(L.next + spawn(e, L.at));
+            float t = L.next * 1000;
+            if (!L.init) L.init = true, L.timer = e.freq, L.jitter = rr(e.freqR), L.extra = (int)rr((float)e.numR), L.lifeR = rr(e.lifeTimeR);
+            else L.timer += 20;
+            if (t >= e.delay) {
+                if (!L.started) {
+                    L.started = true;
+                    if (e.sfx >= 0 && !e.sfxLoop && !e.sfxHold) Audio::play((Audio::Sfx)e.sfx, L.at);
+                }
+                L.ends.erase(std::remove_if(L.ends.begin(), L.ends.end(), [&](float end) { return end <= L.next; }), L.ends.end());  // next only grows
+                for (bool go = L.timer >= e.freq + L.jitter; go && (int)L.ends.size() < pool;) {
+                    L.ends.push_back(L.next + spawn(e, L.at, L.unit)), L.spawned++;
+                    if (++L.batch >= e.num + L.extra) L.batch = 0, L.timer -= e.freq + L.jitter, L.jitter = rr(e.freqR), L.extra = (int)rr((float)e.numR), go = false;
+                }
+            }
+            if (!e.infinite && t + 20 > fmaxf(e.lifeTime, 1) + L.lifeR && L.spawned >= pool) done = true;
         }
+        if (!done && L.started && e.sfx >= 0 && e.sfxLoop) Audio::emitter(L.key, (Audio::Sfx)e.sfx, L.at);
+        if (!done && L.started && e.sfx >= 0 && e.sfxHold) Audio::hold((Audio::Sfx)e.sfx, true, &L.at);
         if (done) lives[i] = std::move(lives.back()), lives.pop_back();
         else i++;
     }
-    for (Live &l : born) lives.push_back(std::move(l));
+    curLevel = -1;
+    for (Live &l : born) l.key = ++lastKey, lives.push_back(std::move(l));
     born.clear();
 }
-void effect(const std::vector<const Emit *> &list, Vector3 at) {  // EffectDetailsContainer: its emitters, all at one point
-    for (const Emit *e : list) lives.push_back({e, at});
+void effect(const std::vector<const Emit *> &list, Vector3 at, float unit = 0.05f, int level = -1) {  // EffectDetailsContainer: its emitters, all at one point
+    for (const Emit *e : list) {
+        Live l{e, at};
+        l.key = ++lastKey, l.unit = unit, l.level = level;
+        lives.push_back(std::move(l));
+    }
 }
 // WAE_Jetpack takeoff [data PARTTWK]: WXSprite4 (alpha), (.9, .95, 1) to (.7, .8, 1), orientation 30 +- 20, spin +- 30, thrown flat (normalised)
 const Emit JET_RING = {.tex = PUFF, .add = false, .num = 30, .max = 30, .lifeTime = 1, .life = 1000, .lifeR = 300, .size = 9.5f, .sizeR = 1.5f, .shrink = 0,
@@ -254,6 +347,214 @@ const std::vector<const Emit *> FIREWORKS[] = {  // WXPF_Firework1-5
 // WXP_StarburstExplosion without its WXP_ExplosionX_Med (drawn by the common blast)
 const std::vector<const Emit *> STARBURST = {&SB_GLOWS, &SB_TRAILS_A, &SB_TRAILS_A, &SB_BIG_GLOW, &WHITEOUT_LARGE, &SB_MANY_GLOWS, &SB_TRAILS_B};
 
+// ---- data effects: assets/fx/parttwk.json (tools/w4m-re/parttwk.py), started by name like ParticleHandlerService 0x5c09d0 ----
+// PARTTWK MeshSet: models/fx/<name>.glb, MeshAnimNodeName clips; its .blend (tools/w4m-models): first part's XBlendModeGL and the clip's
+// texture offset change (u, v over t1 s, 2-key linear)
+struct MeshSet { std::string model, clip, clip2; int src = -1, dst = -1; float u = 0, v = 0, t1 = 0; };
+std::vector<MeshSet> meshes;
+std::deque<Emit> dataEmits;
+int rainSplashTex = -1;
+bool rainSplashAdd = false;
+std::map<std::string, std::vector<const Emit *>> dataFx;  // lowercase name (the resource trie folds case, 0x6bdff0) -> its emitters
+bool dataLoaded = false;
+
+std::string lower(std::string n) { for (char &c : n) c = (char)tolower((unsigned char)c); return n; }
+// unknown names fall back to XXX_PlaceholderPP (0x5c0aae)
+const std::vector<const Emit *> *fxNamed(const std::string &name) {
+    auto it = dataFx.find(lower(name));
+    if (it == dataFx.end()) it = dataFx.find("xxx_placeholderpp");
+    return it == dataFx.end() ? nullptr : &it->second;
+}
+
+void loadData() {
+    if (dataLoaded) return;
+    dataLoaded = true;
+    struct Spr { int tex; bool add; };
+    std::map<std::string, Spr> sprites;
+    if (char *t = LoadFileText(DATA_DIR "assets/fx/sprites.txt")) {
+        for (char *l = strtok(t, "\n"); l; l = strtok(nullptr, "\n")) {
+            char name[96];
+            int src, dst;
+            if (sscanf(l, "%95s %d %d", name, &src, &dst) != 3) continue;
+            const char *f = TextFormat(DATA_DIR "assets/fx/%s.png", lower(name).c_str());
+            if (!FileExists(f)) continue;
+            Texture2D x = LoadTexture(f);
+            GenTextureMipmaps(&x), SetTextureFilter(x, TEXTURE_FILTER_TRILINEAR);
+            sprites[lower(name)] = {(int)tex.size(), dst == 1};  // XBlendModeGL: SrcAlpha / One additive, else SrcAlpha / OneMinusSrcAlpha
+            if (lower(name) == "particle.rainsplash") rainSplashTex = (int)tex.size(), rainSplashAdd = dst == 1;
+            tex.push_back(x);
+        }
+        UnloadFileText(t);
+    }
+    char *txt = LoadFileText(DATA_DIR "assets/fx/parttwk.json");
+    if (!txt) return;
+    Json j;
+    bool ok = Json::parse(txt, j);
+    UnloadFileText(txt);
+    if (!ok) return;
+    auto v3 = [](const Json &a) { return Vector3{a[0].f(), a[1].f(), a[2].f()}; };
+    std::vector<std::pair<Emit *, const Json *>> made;
+    for (const auto &[name, c] : j["emitters"].obj) {
+        Emit &e = dataEmits.emplace_back();
+        e.w4m = true, e.kind = (int)c["EmitterType"].f(), e.trail = e.kind == 3;
+        std::string set = c["SpriteSet"].s(), a = set.substr(0, set.find(','));
+        auto sp = sprites.find(lower(a));
+        e.tex = sp == sprites.end() ? 255 : (unsigned char)sp->second.tex, e.add = sp != sprites.end() && sp->second.add;
+        e.head = set.find(',') != std::string::npos;  // "A,B": B drawn at the particles (0x5bc735)
+        if (c["MeshSet"].size() && !c["MeshSet"][0].s().empty()) {
+            std::string clips = c["MeshAnimNodeName"].s(), c1, c2;
+            for (size_t k = 0, n = 0; k <= clips.size(); k++)
+                if (k == clips.size() || clips[k] == '+') {
+                    std::string part = clips.substr(n, k - n);
+                    part = part.substr(part.find(':') + 1);
+                    (c1.empty() ? c1 : c2) = part, n = k + 1;
+                }
+            MeshSet ms{lower(c["MeshSet"][0].s()), c1, c2};
+            if (char *b = LoadFileText(TextFormat(DATA_DIR "assets/models/fx/%s.blend", ms.model.c_str()))) {
+                float rot;
+                sscanf(b, "%d %d %f %f %f %f", &ms.src, &ms.dst, &rot, &ms.u, &ms.v, &ms.t1);
+                UnloadFileText(b);
+            }
+            meshes.push_back(ms);
+            e.mesh = (int8_t)(meshes.size() - 1), e.tex = 255;
+        }
+        int lt = (int)c["EmitterLifeTime"].f(), pl = (int)c["ParticleLife"].f();
+        e.infinite = lt == 65535, e.immortal = pl == 65535;  // 0x5b9f0d, 0x5b73dc
+        e.lifeTime = (float)lt, e.lifeTimeR = c["EmitterLifeTimeRandomise"].f(), e.max = (int)c["EmitterMaxParticles"].f();
+        e.num = (int)c["EmitterNumSpawn"].f(), e.numR = (int)c["EmitterNumSpawnRadnomise"].f();
+        e.off = v3(c["EmitterOriginOffset"]), e.offR = v3(c["EmitterOriginRandomise"]);
+        e.freq = c["EmitterSpawnFreq"].f(), e.freqR = c["EmitterSpawnFreqRansomise"].f(), e.delay = c["EmitterStartDelay"].f();
+        e.acc = v3(c["ParticleAcceleration"]), e.accR = v3(c["ParticleAccelerationRandomise"]), e.mass = c["ParticleMass"].f();
+        e.alpha = c["ParticleAlpha"].f(1), e.alphaIn = c["ParticleAlphaFadeIn"].f();
+        float av = c["ParticleAlphaVelocity"].f(), ad = c["ParticleAlphaVelocityDelay"].f();
+        if (av < 0) e.fade = ad; else e.alphaV = av, e.aDelay = ad;
+        e.altOn = c["ParticleIsAlternateAcceleration"].f() != 0, e.altN = c["ParticleAlternateAccelerationN"].f(), e.altS = c["ParticleAlternateAccelerationS"].f();
+        e.wind = c["ParticleIsEffectedByWind"].f() != 0, e.spiralOn = c["ParticleIsSpiral"].f() != 0;
+        e.life = (float)pl, e.lifeR = c["ParticleLifeRandomise"].f();
+        e.ori = v3(c["ParticleOrientation"]), e.oriR = v3(c["ParticleOrientationRandomise"]);
+        e.oriV = v3(c["ParticleOrientationVelocity"]), e.oriVR = v3(c["ParticleOrientationVelocityRandomise"]);
+        const Json &sz = c["ParticleSize"];
+        e.size = sz[0].f(), e.aspect = sz[0].f() != 0 ? sz[1].f() / sz[0].f() : 1, e.sizeR = c["ParticleSizeRandomise"].f();
+        e.sizeV = {c["ParticleSizeVelocity"][0].f(), c["ParticleSizeVelocity"][1].f()};
+        e.sizeVR = {c["ParticleSizeVelocityRandomise"][0].f(), c["ParticleSizeVelocityRandomise"][1].f()};
+        e.shrink = c["ParticleSizeVelocityDelay"].f(), e.shrinkR = c["ParticleSizeVelocityDelayRandomise"].f();
+        Vector2 fin = {c["ParticleFinalSizeScale"][0].f(), c["ParticleFinalSizeScale"][1].f()};
+        e.fin = fin.x == 0 && fin.y == 0 ? Vector2{-1, -1} : fin, e.finR = c["ParticleFinalSizeScaleRandomise"].f();
+        e.sizeIn = c["ParticleSizeFadeIn"].f(), e.sizeInR = c["ParticleSizeFadeInRandomize"].f();
+        e.sizeInDelay = c["ParticleSizeFadeInDelay"].f(), e.sizeInDelayR = c["ParticleSizeFadeInDelayRandomize"].f();
+        e.spiral = c["ParticleSpiralRadius"].f(), e.spiralR = c["ParticleSpiralRadiusRandomise"].f();
+        e.spiralW = c["ParticleSpiralRadiusVelocity"].f(), e.spiralWR = c["ParticleSpiralRadiusVelocityRandomise"].f(), e.spiralS = c["ParticleSpiralRadiusSizeVelocity"].f();
+        e.v = v3(c["ParticleVelocity"]), e.vR = v3(c["ParticleVelocityRandomise"]), e.norm = c["ParticleVelocityIsNormalised"].f() != 0;
+        // ParticleColor / ColorBand 0x5b77c0: 0 colours = white; band[i] ends segment i, the last segment runs to 1
+        Ramp rp{1, {WHITE}, {0, 1}};
+        int n = std::min((int)c["ParticleNumColors"].f(), std::min((int)c["ParticleColor"].size(), 5));
+        if (n > 0) {
+            rp.n = n;
+            for (int k = 0; k < n; k++) {
+                const Json &col = c["ParticleColor"][k];
+                rp.c[k] = {(unsigned char)(255 * col[0].f()), (unsigned char)(255 * col[1].f()), (unsigned char)(255 * col[2].f()), 255};
+            }
+            for (int k = 1; k < n - 1; k++) rp.edge[k] = c["ParticleColorBand"][k - 1].f();
+            rp.edge[0] = 0, rp.edge[n - 1] = 1;
+        }
+        e.col = (uint16_t)ramps.size(), ramps.push_back(rp);
+        // EmitterSoundFX (FEV event names fold case, fmod_event 0x10005110); the "silent" events have no sound definition
+        static const struct { const char *ev; Audio::Sfx id; int mode; } SND[] = {
+            {"weapons/fireloop", Audio::Sfx::FireLoop, 1}, {"weapons/steamloop", Audio::Sfx::SteamLoop, 1}, {"weapons/fliesloop", Audio::Sfx::FliesLoop, 1},
+            {"weapons/elecarc", Audio::Sfx::ElecArc, 1}, {"weapons/electricarching", Audio::Sfx::ElectricArching, 1},
+            {"weapons/hoseintowater", Audio::Sfx::HoseIntoWater, 1}, {"weapons/stormcloud", Audio::Sfx::StormCloud, 0},
+            {"weapons/thud", Audio::Sfx::Land, 0}, {"weapons/bubblemachineloop", Audio::Sfx::BubbleLoop, 2}};
+        for (const auto &x : SND)
+            if (lower(c["EmitterSoundFX"].s()) == x.ev) e.sfx = (int)x.id, e.sfxLoop = x.mode == 1, e.sfxHold = x.mode == 2;
+        dataFx[lower(name)] = {&e};
+        made.push_back({&e, &c});
+    }
+    // an effect's names are emitters or effects (0x5c0c06 recurses), each an unknown one the placeholder
+    std::function<void(const std::string &, std::vector<const Emit *> &, int)> expand = [&](const std::string &n, std::vector<const Emit *> &out, int depth) {
+        const Json &eff = j["effects"][n.c_str()];
+        if (eff.type != Json::Arr) {
+            auto it = dataFx.find(lower(n));
+            if (it != dataFx.end()) out.insert(out.end(), it->second.begin(), it->second.end());
+            else if (depth < 8 && lower(n) != "xxx_placeholderpp") expand("XXX_PlaceholderPP", out, depth + 1);
+            return;
+        }
+        for (const Json &x : eff.arr) if (depth < 8) expand(x.s(), out, depth + 1);
+    };
+    for (const auto &[name, list] : j["effects"].obj) {
+        std::vector<const Emit *> v;
+        expand(name, v, 0);
+        dataFx[lower(name)] = v;
+    }
+    for (auto &[e, c] : made) {
+        if (std::string f = (*c)["EmitterParticleFX"].s(); !f.empty()) e->fxL = fxNamed(f);
+        if (std::string f = (*c)["EmitterParticleExpireFX"].s(); !f.empty()) e->expireL = fxNamed(f);
+    }
+}
+
+// ---- kRain / kSnow emitters: SnowParticleEmitterEntity (init 0x487140, update 0x486b70) and RainGraphicEntity splashes (0x482910, 0x482530) ----
+struct Drop { Vector3 p; float t; Vector2 S; };  // spawn point (W4M position, not wrapped), s since spawn, half extents m
+struct Splash { Vector3 p; float size, alpha, acc; };  // half extent units, alpha byte, ms toward the next 7 ms step
+struct Rain { const Emit *e; Vector3 origin; std::vector<Drop> d; std::vector<Splash> sp; bool dying = false, weather = false; float fadeB = 255; int level = -1; };
+std::vector<Rain> rains;
+constexpr float RU = 0.05f;  // rain is camera-relative: W4M units at 20 per m, not the map scale
+Vector3 camPos{}, camLook{0, 0, 1};
+std::function<bool(Vector3, float, Vector3 *, Vector3 *)> ground;  // ray straight down from a point, length: land hit and its normal
+float waterY = 0;
+
+void rainSpawn(Rain &r, Drop &d) {  // base particle setup at the emitter origin + offset + OriginRandomise, then 0x5b6790
+    const Emit &e = *r.e;
+    auto q = [](float x) { return rnd(-x, x); };
+    float k = rnd(-1, 1);
+    d = {Vector3Add(r.origin, Vector3Scale({e.off.x + q(e.offR.x), e.off.y + q(e.offR.y), e.off.z + q(e.offR.z)}, RU)), 0,
+         {(e.size + k * e.sizeR) * RU, (e.size * e.aspect + k * e.sizeR) * RU}};
+}
+// 0x4863e0: wrap into the +-200 unit box around the camera (+0x194..0x19c); a y wrap tells the caller to respawn
+bool rainWrap(Vector3 &p) {
+    const float h = 200 * RU, w = 2 * h;
+    auto wrap = [&](float &v, float c) { bool out = v < c - h || v > c + h; v = c - h + fmodf(fmodf(v - (c - h), w) + w, w); return out; };
+    wrap(p.x, camPos.x), wrap(p.z, camPos.z);
+    return wrap(p.y, camPos.y);
+}
+void rainStart(const Emit *e, Vector3 origin, bool weather, int level) {
+    Rain r{e, origin};
+    r.weather = weather, r.level = level;
+    r.d.resize(e->pool());  // the whole pool at once, each wrapped into the box (0x487140)
+    for (Drop &d : r.d) rainSpawn(r, d), rainWrap(d.p);
+    rains.push_back(std::move(r));
+}
+void rainUpdate(float dt) {
+    for (size_t i = 0; i < rains.size();) {
+        Rain &r = rains[i];
+        Vector3 v = Vector3Scale(r.e->v, 10 * RU);
+        for (Drop &d : r.d) {
+            d.t += dt;
+            Vector3 p = Vector3Add(d.p, Vector3Scale(v, d.t));
+            if (rainWrap(p)) rainSpawn(r, d), rainWrap(d.p);
+        }
+        if (r.dying) r.fadeB = fmaxf(0, r.fadeB - dt * 600);  // 0.6 per ms (0x487053)
+        // splashes, RainGraphicEntity 0x482070: up to 3 a frame below 50, r = rand % 500 units ahead of the view, down from 250 units up
+        if (!r.dying && r.e->kind == 2)
+            for (int k = 0; k < 3 && r.sp.size() < 50; k++) {
+                float spread = fabsf(camLook.y) > 0.5f ? fabsf(camLook.y) * PI : 35 * DEG2RAD;
+                float a = atan2f(camLook.x, camLook.z) + rnd(-spread, spread), dist = (float)(GetRandomValue(0, 499)) * RU;
+                Vector3 from = {camPos.x + sinf(a) * dist, camPos.y + 250 * RU, camPos.z + cosf(a) * dist}, hit, n;
+                Vector3 at = {from.x, waterY, from.z};
+                if (ground && ground(from, from.y - waterY, &hit, &n)) {
+                    if (!(fabsf(n.y) > fabsf(n.x) && fabsf(n.y) > fabsf(n.z))) continue;
+                    at = hit;
+                }
+                r.sp.push_back({{at.x, at.y + 1.05f * RU, at.z}, 0.1f, 200, 0});
+            }
+        for (Splash &q : r.sp)  // every 7 ms: size + 0.4, alpha - 16 (0x482350)
+            for (q.acc += dt * 1000; q.acc >= 7; q.acc -= 7) q.size += 0.4f, q.alpha -= 16;
+        r.sp.erase(std::remove_if(r.sp.begin(), r.sp.end(), [](const Splash &q) { return q.alpha <= 10; }), r.sp.end());
+        if (r.dying && r.fadeB <= 0 && r.sp.empty()) rains.erase(rains.begin() + i);
+        else i++;
+    }
+    bool loop = std::any_of(rains.begin(), rains.end(), [](const Rain &r) { return r.e->kind == 2; });
+    Audio::loop(Audio::Sfx::Flood, loop);  // RainGraphicEntity's weapons/RainLoop (0x4829cc); kRain never plays its EmitterSoundFX
+}
+
 Texture2D loadTex(const char *dir, const char *name, bool mips) {
     const char *f = TextFormat(DATA_DIR "assets/ui/%s/%s.png", dir, name);
     if (!FileExists(f)) return Texture2D{};
@@ -285,7 +586,7 @@ void main() {
     gl_FragColor = vec4(texture2D(texture0, vec2(0.75 * pow(1.0 - h, 3.0), 0.5)).rgb, 1.0);
 }
 )";
-// Sky scene parts: raylib's default shading plus the clip's texture offset [assumed: added to the uv]
+// Sky scene parts: raylib's default shading plus the clip's texture offset (0x6dffd0: uv x Repeat + Offset; sky Repeat 1, Rotate 0)
 const char *SKYMESH_VS = R"(
 attribute vec3 vertexPosition;
 attribute vec2 vertexTexCoord;
@@ -459,7 +760,66 @@ void unload() {
 }
 
 void fireworks(Vector3 centre, float radius, float top) { stageC = centre, stageR = radius, stageTop = top, tickAcc = 0, show = 9; }
-void clear() { domes.clear(), ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), shake = show = 0; }
+namespace {
+int rolled = -1;  // last weather roll index (60 s periods)
+float rainProb = 0;
+Vector3 weatherAt{};
+const std::vector<Terrain::Emitter> *levelEm = nullptr;
+float levelUnit = 0.05f;
+void startLevel() {  // DetailEntity 0x5cd5eb -> 0x5c1410: each live EMITTER_ detail's effect at its position
+    for (int i = 0; levelEm && i < (int)levelEm->size(); i++) {
+        const Terrain::Emitter &m = (*levelEm)[i];
+        const std::vector<const Emit *> *fx = m.alive ? fxNamed(m.fx) : nullptr;
+        for (size_t k = 0; fx && k < fx->size(); k++)
+            if ((*fx)[k]->kind == 1 || (*fx)[k]->kind == 2) rainStart((*fx)[k], m.pos, false, i);  // SnowParticleEmitterEntity (0x5c0c44)
+            else effect({(*fx)[k]}, m.pos, levelUnit, i);
+    }
+}
+}  // namespace
+void clear() {
+    domes.clear(), ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), rains.clear(), shake = show = 0;
+    startLevel();  // the map's emitters are part of the level, not of the moment cleared
+    rolled = -1;
+}
+
+void setWind(Vector3 w) { windNow = w; }
+
+
+void level(const std::vector<Terrain::Emitter> &em, float unit, Vector3 origin, const std::string &theme, const std::string &time, float water,
+           std::function<bool(Vector3, float, Vector3 *, Vector3 *)> down, float rainOverride) {
+    loadData();
+    ground = std::move(down), waterY = water, weatherAt = origin, rolled = -1;
+    // LOCAL.XOM Prob.Rain.<THEME>.<TIME>, read by FlowControlService 0x4e7fcd (absent keys: 0)
+    static const struct { const char *theme, *time; float p; } PROB[] = {{"england", "evening", 40}, {"england", "night", 20}, {"horror", "day", 40},
+        {"horror", "evening", 30}, {"horror", "night", 20}, {"war", "day", 50}, {"war", "night", 40}};
+    rainProb = 0;
+    for (const auto &r : PROB) if (theme == r.theme && time == r.time) rainProb = r.p;
+    if (rainOverride >= 0) rainProb = fminf(rainOverride, 100);
+    levelEm = &em, levelUnit = unit;
+    clear();
+}
+
+void levelSync(const std::vector<Terrain::Emitter> &em) {
+    auto gone = [&](int l) { return l >= 0 && l < (int)em.size() && !em[l].alive; };
+    lives.erase(std::remove_if(lives.begin(), lives.end(), [&](const Live &l) { return gone(l.level); }), lives.end());
+    ps.erase(std::remove_if(ps.begin(), ps.end(), [&](const Particle &p) { return p.immortal && gone(p.level); }), ps.end());
+    for (Rain &r : rains) if (gone(r.level)) r.dying = true;
+}
+
+// ParticleHandlerService 0x5c1270, at GameLoadComplete then every Particle.Weather.RefreshFreq 60000 ms of logic time: r = rand % 100 starts
+// WXP_RainFallBG below Particle.Rain.Prob, deletes it above (W4M draws from the logic RNG; ours from the match seed, render only)
+void weather(uint32_t seed, int ticks) {
+    int k = ticks / 3600;
+    if (k == rolled || rainProb <= 0) return;
+    rolled = k;
+    uint32_t x = seed ^ (0x9e3779b9u * (uint32_t)(k + 1));
+    x ^= x >> 16, x *= 0x7feb352du, x ^= x >> 15, x *= 0x846ca68bu, x ^= x >> 16;
+    int r = (int)(x % 100);
+    auto it = std::find_if(rains.begin(), rains.end(), [](const Rain &q) { return q.weather && !q.dying; });
+    const std::vector<const Emit *> *fx = fxNamed("WXP_RainFallBG");
+    if (it == rains.end() && r < rainProb && fx && !fx->empty() && ((*fx)[0]->kind == 2 || (*fx)[0]->kind == 1)) rainStart((*fx)[0], weatherAt, true, -1);
+    else if (it != rains.end() && r > rainProb) it->dying = true;
+}
 
 Color fog() { return fogCol; }
 int count() { return (int)ps.size(); }
@@ -788,7 +1148,7 @@ void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, floa
 void update(float dt) {
     skyT += dt;
     for (Dome &d : domes) d.age += dt;
-    domes.erase(std::remove_if(domes.begin(), domes.end(), [](const Dome &d) { return d.age >= DOME_CLIP; }), domes.end());
+    domes.erase(std::remove_if(domes.begin(), domes.end(), [](const Dome &d) { return d.age >= DOME_LIFE; }), domes.end());
     shake *= expf(-dt * 6);
     // W4M 0x4ffa56, every 20 ms of the 5 s show: rand() % 40 == 0 fires WXPF_Firework<1 + rand() % 5> at Land.Center +- Radius / 2 in x and z,
     // Land.MaxHeight + rand x 30 units (its 100 ms gap test computes last - now, unsigned, so it never holds)
@@ -796,12 +1156,14 @@ void update(float dt) {
         if (rnd() * 40 < 1) effect(FIREWORKS[(int)(rnd() * 5)], {stageC.x + (rnd() - 0.5f) * stageR, stageTop + rnd() * 1.5f, stageC.z + (rnd() - 0.5f) * stageR});
     show -= dt;
     tickEmitters(dt);
+    rainUpdate(dt);
     for (size_t i = 0; i < ps.size();) {
         Particle &p = ps[i];
         p.age += dt;
         if (p.age < 0) { i++; continue; }
-        if (p.age >= p.life) {
+        if (p.age >= p.life && !p.immortal) {
             if (p.expire) lives.push_back({p.expire, p.p});
+            if (p.expireL) effect(*p.expireL, p.p, p.unit);
             p = ps.back(), ps.pop_back();
             continue;
         }
@@ -859,10 +1221,10 @@ void drawSky(const Camera3D &cam, Vector3 origin, float unit) {
     rlEnableDepthTest(), rlEnableDepthMask(), rlEnableBackfaceCulling();
 }
 
-void drawWater(const Camera3D &cam, float level, float time, float HALF) {
+void drawWater(const Camera3D &cam, float level, float time, float HALF, Vector2 centre) {
     // W4M WaterCgGraphicEntity: a 0..1 uv quad scaled to +-12000 units (0x48cada), alpha blended, depth written, not culled
     if (!waterTex[0].id || !waterTex[1].id || waterSh.id == rlGetShaderIdDefault()) {
-        DrawPlane({40, level, 40}, {2 * HALF, 2 * HALF}, {30, 80, 160, 180});
+        DrawPlane({centre.x, level, centre.y}, {2 * HALF, 2 * HALF}, {30, 80, 160, 180});
         return;
     }
     const float *w = Lit::sun.water;
@@ -877,12 +1239,13 @@ void drawWater(const Camera3D &cam, float level, float time, float HALF) {
     rlDrawRenderBatchActive();
     BeginBlendMode(BLEND_ALPHA);
     rlDisableBackfaceCulling();
-    DrawMesh(plane, waterMat, MatrixMultiply(MatrixScale(2 * HALF, 1, 2 * HALF), MatrixTranslate(40, level, 40)));
+    DrawMesh(plane, waterMat, MatrixMultiply(MatrixScale(2 * HALF, 1, 2 * HALF), MatrixTranslate(centre.x, level, centre.y)));
     rlEnableBackfaceCulling();
     EndBlendMode();
 }
 
 void draw(const Camera3D &cam) {
+    camPos = cam.position, camLook = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
     if (!domes.empty()) {  // unlit, SrcAlpha / OneMinusSrcAlpha (lambert2 XBlendModeGL 6 7), no z write, two-sided [assumed]
         static const float SCALE[3][6] = {{0.1344f, 0.9907f, 0.1344f, 0.9907f, 0, 0}, {0.8091f, 0.5869f, 0.8091f, 0.5869f, 0.16663f, 0.85498f},
                                           {0.9995f, 0.0215f, 0.9995f, 0.0215f, 0.83301f, 1}};  // WXM_DefSource scale keys
@@ -893,12 +1256,31 @@ void draw(const Camera3D &cam) {
         BeginBlendMode(BLEND_ALPHA);
         for (const Dome &d : domes) {
             float k = Models::curve(SCALE, 3, d.age) / 20;
-            for (int i = 0; i < domeModel.materialCount; i++) domeModel.materials[i].maps[MATERIAL_MAP_DIFFUSE].color.a = (unsigned char)(255 * (1 - d.age / DOME_CLIP));
             Matrix m = MatrixMultiply(MatrixScale(d.sxz * k, d.sy * k, d.sxz * k), MatrixTranslate(d.p.x, d.p.y, d.p.z));
             for (int i = 0; i < domeModel.meshCount; i++) DrawMesh(domeModel.meshes[i], domeModel.materials[domeModel.meshMaterial[i]], m);
         }
         EndBlendMode();
         rlEnableDepthMask(), rlEnableBackfaceCulling();
+    }
+    // MeshSet particles (0x5bd665): the mesh at the particle, scale (Size.x, Size.y, Size.x), ParticleOrientation (+ velocity) in XYZ order;
+    // no alpha reaches a mesh, so AlphaVelocity < 0 shrinks it to 0 at end of life instead (0x5bd69e)
+    for (const Particle &p : ps) {
+        if (p.mesh < 0 || p.age < 0 || p.mesh >= (int)meshes.size()) continue;
+        const MeshSet &m = meshes[p.mesh];
+        Vector2 sz = sizeAt(p, p.age, p.fadeA >= 0);
+        Vector3 o = Vector3Add(p.ori, Vector3Scale(p.oriV, p.age));
+        Matrix r = MatrixMultiply(MatrixMultiply(MatrixRotateX(o.x), MatrixRotateY(o.y)), MatrixRotateZ(o.z));
+        Matrix w = MatrixMultiply(MatrixMultiply(MatrixScale(sz.x, sz.y, sz.x), r), MatrixTranslate(p.p.x, p.p.y, p.p.z));
+        float f = m.t1 > 0 ? fmodf(p.age, m.t1) / m.t1 : 0;
+        Vector2 off = {m.u * f, m.v * f};
+        SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2);
+        static const int GL_FACTOR[11] = {0, 1, 0x306, 0x307, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305, 0x308};
+        rlDrawRenderBatchActive();
+        if (m.src >= 0 && m.src < 11 && m.dst >= 0 && m.dst < 11) rlSetBlendFactors(GL_FACTOR[m.src], GL_FACTOR[m.dst], 0x8006), rlSetBlendMode(RL_BLEND_CUSTOM), rlDisableDepthMask();
+        rlDisableBackfaceCulling();
+        Models::shade(skyMeshSh), Models::draw(m.model.c_str(), w, WHITE, m.clip.empty() ? nullptr : m.clip.c_str(), p.age), Models::shade({});
+        rlDrawRenderBatchActive();
+        rlSetBlendMode(RL_BLEND_ALPHA), rlEnableDepthMask(), rlEnableBackfaceCulling();
     }
     Matrix v = GetCameraMatrix(cam);
     Vector3 right = {v.m0, v.m4, v.m8}, up = {v.m1, v.m5, v.m9}, fwd = {-v.m2, -v.m6, -v.m10};
@@ -908,56 +1290,66 @@ void draw(const Camera3D &cam) {
     // alpha pass first (smoke behind fire reads better), one texture per batch
     for (int add : {0, 1}) {
         BeginBlendMode(add ? BLEND_ADDITIVE : BLEND_ALPHA);
-        for (int t = 0; t < TEX_COUNT; t++) {
+        for (int t = 0; t < (int)tex.size(); t++) {
             if (!tex[t].id) continue;
             bool any = false;
             for (const Particle &p : ps) {
-                bool body = p.tex == t && p.add == (bool)add, head = p.head && t == GLOW && add;
+                bool body = p.tex == t && p.add == (bool)add && p.mesh < 0, head = p.head && t == GLOW && add;
                 if ((!body && !head) || p.age < 0) continue;
                 if (!any) rlSetTexture(tex[t].id), rlBegin(RL_QUADS), any = true;
-                // ParticleSize 0x5b6f40 (ramp): linear fade-in, S until the delay, then linear to 0 at end of life; half size
-                auto half = [&](float t) { return p.size0 * 0.5f * fminf(1, p.fadeIn > 0 ? t / p.fadeIn : 1) * (t <= p.delay ? 1 : 1 - (t - p.delay) / (p.life - p.delay)); };
-                float k = p.age / p.life, s = p.ramp ? half(p.age) : Lerp(p.size0, p.size1, k) * 0.5f;
-                float c = cosf(p.rot) * s, sn = sinf(p.rot) * s;
-                Vector3 r = Vector3Add(Vector3Scale(right, c), Vector3Scale(up, sn)), u = Vector3Scale(Vector3Subtract(Vector3Scale(up, c), Vector3Scale(right, sn)), p.aspect);
+                float k = p.immortal ? 0 : p.age / p.life;
+                Vector2 sz = p.ramp ? sizeAt(p, p.age) : Vector2{Lerp(p.size0, p.size1, k) * 0.5f, Lerp(p.size0, p.size1, k) * 0.5f * p.aspect};
+                float c = cosf(p.rot), sn = sinf(p.rot);
+                Vector3 r = Vector3Scale(Vector3Add(Vector3Scale(right, c), Vector3Scale(up, sn)), sz.x), u = Vector3Scale(Vector3Subtract(Vector3Scale(up, c), Vector3Scale(right, sn)), sz.y);
                 Color col = p.c;
                 if (p.ramp) {
-                    const Ramp &R = RAMPS[p.ramp];
+                    const Ramp &R = ramps[p.ramp];
                     int i = 0;
                     while (i < R.n - 2 && k > R.edge[i + 1]) i++;
                     if (R.n > 1) col = ColorLerp(R.c[i], R.c[i + 1], (k - R.edge[i]) / (R.edge[i + 1] - R.edge[i]));
                     else col = R.c[0];
-                    float a = p.alpha, from = p.aIn + p.fadeA;  // ParticleAlpha 0x5b7660: fade-in, then linear to 0 past the delay
-                    if (p.age < p.aIn) a *= p.age / p.aIn;
-                    else if (p.fadeA >= 0 && p.age > from) a *= 1 - (p.age - from) / (p.life - from);
-                    col.a = (unsigned char)(255 * a);
+                    col.a = (unsigned char)(255 * alphaAt(p, p.age));
                 } else col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));
                 if (head) quad(p.p, r, u, col);
                 if (!body) continue;
-                if (p.stretch > 0 && p.ramp) {  // TrailGraphicEntity: a point (position, particle size) per update, u = 0 head, 1 tail
-                    rlColor4ub(col.r, col.g, col.b, col.a);
+                if (p.stretch > 0) {
+                    // TrailGraphicEntity 0x5c28f0 / 0x5c2ae0: a point per 20 ms update, edges +- n x Size.x (n across the view), u = 0 at the particle,
+                    // +n edge v = 1; the first point has no width; no colour set: the texture alone, additive (0x5c2d30)
+                    rlColor4ub(255, 255, 255, 255);
                     Vector3 a = p.p;
-                    float sa = s;
+                    float sa = sizeAt(p, p.age).x;
                     for (int j = 1; j <= TRAIL_SEGS && p.age > (j - 1) * TRAIL_DT; j++) {
-                        float tb = fmaxf(p.age - j * TRAIL_DT, 0), sb = half(tb), u0 = (j - 1) / (float)TRAIL_SEGS, u1 = j / (float)TRAIL_SEGS;
-                        Vector3 b = posAt(p, tb), n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), fwd)), wa = Vector3Scale(n, sa), wb = Vector3Scale(n, sb);
-                        rlTexCoord2f(u0, 0); rlVertex3f(a.x + wa.x, a.y + wa.y, a.z + wa.z);
-                        rlTexCoord2f(u0, 1); rlVertex3f(a.x - wa.x, a.y - wa.y, a.z - wa.z);
-                        rlTexCoord2f(u1, 1); rlVertex3f(b.x - wb.x, b.y - wb.y, b.z - wb.z);
-                        rlTexCoord2f(u1, 0); rlVertex3f(b.x + wb.x, b.y + wb.y, b.z + wb.z);
+                        float tb = p.age - j * TRAIL_DT, sb = tb <= 0 ? 0 : sizeAt(p, tb).x, u0 = (j - 1) / (float)TRAIL_SEGS, u1 = j / (float)TRAIL_SEGS;
+                        Vector3 b = posAt(p, fmaxf(tb, 0)), n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(a, cam.position), Vector3Subtract(a, b)));
+                        Vector3 wa = Vector3Scale(n, sa), wb = Vector3Scale(n, sb);
+                        rlTexCoord2f(u0, 1); rlVertex3f(a.x + wa.x, a.y + wa.y, a.z + wa.z);
+                        rlTexCoord2f(u0, 0); rlVertex3f(a.x - wa.x, a.y - wa.y, a.z - wa.z);
+                        rlTexCoord2f(u1, 0); rlVertex3f(b.x - wb.x, b.y - wb.y, b.z - wb.z);
+                        rlTexCoord2f(u1, 1); rlVertex3f(b.x + wb.x, b.y + wb.y, b.z + wb.z);
                         a = b, sa = sb;
                     }
-                } else if (p.stretch > 0) {  // trail texture: u = 0 head, 1 tail
-                    float k = p.altN > 0 ? p.altS / powf(p.altS * p.age * 1000 + 1 / p.altN, 2) : 1;  // alternate curve: f'(t)
-                    Vector3 vel = p.altN > 0 ? Vector3Add(Vector3Scale(p.v, k), {0, p.v.y, 0}) : p.v;
-                    Vector3 tail = Vector3Subtract(p.p, Vector3Scale(vel, p.stretch)), w = Vector3Scale(Vector3Normalize(Vector3CrossProduct(Vector3Subtract(tail, p.p), fwd)), s);
-                    rlColor4ub(col.r, col.g, col.b, col.a);
-                    rlTexCoord2f(0, 0); rlVertex3f(p.p.x + w.x, p.p.y + w.y, p.p.z + w.z);
-                    rlTexCoord2f(0, 1); rlVertex3f(p.p.x - w.x, p.p.y - w.y, p.p.z - w.z);
-                    rlTexCoord2f(1, 1); rlVertex3f(tail.x - w.x, tail.y - w.y, tail.z - w.z);
-                    rlTexCoord2f(1, 0); rlVertex3f(tail.x + w.x, tail.y + w.y, tail.z + w.z);
                 } else quad(p.p, r, u, col);
             }
+            // kRain drops: vertical streaks facing the view (right = (look.z, 0, -look.x), 0x486900), vertex alpha 128 or the delete fade
+            for (const Rain &rn : rains) {
+                if (rn.e->tex != t || rn.e->add != (bool)add) continue;
+                if (!any) rlSetTexture(tex[t].id), rlBegin(RL_QUADS), any = true;
+                Vector3 rs = Vector3Normalize({camLook.z, 0, -camLook.x}), us = {0, 1, 0};
+                Vector3 v = Vector3Scale(rn.e->v, 10 * RU);
+                Color col = {255, 255, 255, (unsigned char)(rn.dying ? rn.fadeB : 128)};
+                for (const Drop &d : rn.d) {
+                    Vector3 q = Vector3Add(d.p, Vector3Scale(v, d.t));
+                    rainWrap(q);
+                    quad(q, Vector3Scale(rs, d.S.x), Vector3Scale(us, d.S.y), col);
+                }
+            }
+            if (t == rainSplashTex && rainSplashAdd == (bool)add)  // splashes: turn about the vertical only
+                for (const Rain &rn : rains)
+                    for (const Splash &q : rn.sp) {
+                        if (!any) rlSetTexture(tex[t].id), rlBegin(RL_QUADS), any = true;
+                        Vector3 rs = Vector3Normalize({camLook.z, 0, -camLook.x});
+                        quad(q.p, Vector3Scale(rs, q.size * RU), {0, q.size * RU, 0}, {255, 255, 255, (unsigned char)fmaxf(0, q.alpha)});
+                    }
             if (add && (t == TRAIL_R || t == TRAIL_B))
                 for (const Streak &st : streaks) {
                     if (st.tex != t) continue;

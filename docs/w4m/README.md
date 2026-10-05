@@ -27,6 +27,9 @@ User-requested behaviours (kept on purpose; retest only when the user asks):
 - Rule 128 "No delays": test rule ignoring the preset's weapon delays (PROTOCOL.md, Start rules).
 - 3D texts (worm names and HP, fuse countdown, Crate Spy, jetpack fuel): no "Name Backing" frame as W4M, a drop shadow instead (2026-10-03).
 - A local key press skips a CPU's hot seat ("Ready") in offline games (main.cpp, 2026-10-03).
+- Worms 3D maps (`*-w3d`) found in the W4M install stay selectable although W4M never offers them (2026-10-05).
+- Title <-> main menu (2026-10-06): our big title logo glides to its menu spot as the rows fade in (0.6 s, FeBounce); B plays it backwards
+  with W4M's FE screen-out sound (Out_Prev) before the title shows, where W4M scales the list in (In_ScaleY) and drops it at once (Out None) (frontend.md §Title).
 - Network protocol stays version 1 until a server is deployed (PROTOCOL.md).
 
 Attributing a function to a class is reliable when the function comes from a vtable. When it was inferred from the nearest `.cpp` assert string, it can be wrong near file boundaries.

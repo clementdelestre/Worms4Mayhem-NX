@@ -40,8 +40,20 @@ struct Entry {
     std::vector<uint64_t> owns;  // per clip: the face bones it moves itself, which an emote layer leaves to it
     Models::Layers lay{}; bool layered = false;  // the Layers of the last skin()
     std::vector<int> glow;  // materials drawn as additive light (W4M shader surfaces)
+    // skinned poses in their own buffers: a worm drawn in the shadow pass then the view is skinned once a frame
+    struct Slot { const ModelAnimation *a, *am; int f, af; bool lay; Models::Layers ly; float eyeUV[3]; unsigned long used; std::vector<Mesh> meshes; };
+    std::vector<Slot> slots;
 };
 std::map<std::string, Entry> models;
+
+static void unloadSlot(Entry::Slot &s) {  // GPU side only: the CPU arrays are the model's
+    for (Mesh m : s.meshes) {
+        m.vertices = m.texcoords = m.normals = m.tangents = m.texcoords2 = m.animVertices = m.animNormals = m.boneWeights = nullptr;
+        m.colors = nullptr, m.indices = nullptr, m.boneIndices = nullptr;
+        UnloadMesh(m);
+    }
+    s.meshes.clear();
+}
 
 // Per clip, the face bones whose offset from the head differs from Base's: W4M channels a gesture animates win over the emote's
 void owners(Entry &e) {
@@ -357,6 +369,7 @@ static Shader scroll{};  // drawModel's beam pass
 
 void Models::unload() {
     for (auto &[name, e] : models) {
+        for (Entry::Slot &s : e.slots) unloadSlot(s);
         UnloadModelAnimations(e.anims, e.count);
         UnloadModel(e.m);
     }
@@ -574,8 +587,10 @@ bool Models::joint(const char *name, const char *joint, const char *clip, float 
 }
 
 // UpdateModelAnimation() equivalent at an integer frame; raylib inverts a bone matrix per vertex for the normals
-static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af, const Models::Layers *ly) {
+// dst: the meshes whose buffers take the result (the model's own by default)
+static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af, const Models::Layers *ly, Mesh *dst = nullptr) {
     Model &m = e.m;
+    if (!dst) dst = m.meshes;
     static std::vector<Matrix> nm, p;
     nm.resize(m.skeleton.boneCount);
     pose(e, a, f, aim, af, ly, p);
@@ -599,8 +614,8 @@ static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation 
             memcpy(&me.animVertices[3 * v], &op, sizeof op);
             memcpy(&me.animNormals[3 * v], &on, sizeof on);
         }
-        rlUpdateVertexBuffer(me.vboId[SHADER_LOC_VERTEX_POSITION], me.animVertices, me.vertexCount * 3 * sizeof(float), 0);
-        if (me.normals) rlUpdateVertexBuffer(me.vboId[SHADER_LOC_VERTEX_NORMAL], me.animNormals, me.vertexCount * 3 * sizeof(float), 0);
+        rlUpdateVertexBuffer(dst[i].vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION], me.animVertices, me.vertexCount * 3 * sizeof(float), 0);
+        if (me.normals) rlUpdateVertexBuffer(dst[i].vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL], me.animNormals, me.vertexCount * 3 * sizeof(float), 0);
     }
 }
 
@@ -703,33 +718,58 @@ bool Models::blend(const char *name, const char *clip, float t, bool loop, const
 }
 
 // The pupils' texcoords offset (W4M shadercolor2 as a texture translation), uploaded when they change
-static void eyes(Entry &e, const Models::Layers *ly) {
+static void eyes(Entry &e, const Models::Layers *ly, Mesh *dst, float *had) {
     float uv[3];
     eyeOffsets(ly, uv);
-    if (e.pupil.size() != 2 || !memcmp(uv, e.eyeUV, sizeof uv)) return;
-    memcpy(e.eyeUV, uv, sizeof uv);
+    if (e.pupil.size() != 2 || !memcmp(uv, had, sizeof uv)) return;
+    memcpy(had, uv, sizeof uv);
     for (int k = 0; k < 2; k++) {
         Mesh &me = e.m.meshes[e.pupil[k]];
         for (int v = 0; v < me.vertexCount; v++) me.texcoords[2 * v] = e.uv0[k][2 * v] + uv[k], me.texcoords[2 * v + 1] = e.uv0[k][2 * v + 1] + uv[2];
-        rlUpdateVertexBuffer(me.vboId[SHADER_LOC_VERTEX_TEXCOORD01], me.texcoords, me.vertexCount * 2 * sizeof(float), 0);
+        rlUpdateVertexBuffer(dst[e.pupil[k]].vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_TEXCOORD], me.texcoords, me.vertexCount * 2 * sizeof(float), 0);
     }
+}
+
+// The slot holding this pose, skinned into it on a miss (the least recently drawn slot is reused past 16)
+static Entry::Slot &slotFor(Entry &e, const ModelAnimation *a, int f, const ModelAnimation *am, int af, const Models::Layers *ly) {
+    static unsigned long seq = 0;
+    bool lay = ly != nullptr;
+    for (Entry::Slot &s : e.slots)
+        if (s.a == a && s.f == f && s.am == am && s.af == af && s.lay == lay && (!lay || same(*ly, s.ly))) return s.used = ++seq, s;
+    if (e.slots.size() < 16) {
+        e.slots.push_back({});
+        for (int i = 0; i < e.m.meshCount; i++) {
+            Mesh c = e.m.meshes[i];
+            c.vaoId = 0, c.vboId = nullptr;
+            UploadMesh(&c, true);
+            e.slots.back().meshes.push_back(c);
+        }
+    }
+    Entry::Slot &s = *std::min_element(e.slots.begin(), e.slots.end(), [](const Entry::Slot &x, const Entry::Slot &y) { return x.used < y.used; });
+    skin(e, *a, f, am, af, ly, s.meshes.data());
+    s.a = a, s.f = f, s.am = am, s.af = af, s.lay = lay, s.ly = lay ? *ly : Models::Layers{}, s.used = ++seq;
+    s.eyeUV[0] = s.eyeUV[1] = s.eyeUV[2] = NAN;  // uploaded below
+    return s;
 }
 
 bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers *ly) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     Entry &e = it->second;
-    // skinned meshes are shared: pose them right before each draw (CPU skinning), unless already in that pose
+    // CPU skinning into the pose's slot (skinned once while it stays in use)
     int f, af = -1;
     const ModelAnimation *am = aim ? clipFrame(e, aim, aimT, false, &af, false) : nullptr;
-    if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f)) {
-        bool lay = ly != nullptr, moved = lay != e.layered || (lay && !same(*ly, e.lay));
-        if ((a != e.posed || f != e.frame || am != e.aimed || af != e.aimFrame || moved) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, am, af, ly);
-        e.posed = a, e.frame = f, e.aimed = am, e.aimFrame = af, e.layered = lay;
-        if (lay) e.lay = *ly;
-    }
-    eyes(e, ly);
     e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
+    if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f); a && e.m.boneMatrices && a->keyframeCount > 0) {
+        Entry::Slot &s = slotFor(e, a, f, am, af, ly);
+        eyes(e, ly, s.meshes.data(), s.eyeUV);
+        Mesh *own = e.m.meshes;
+        e.m.meshes = s.meshes.data();
+        drawModel(e, pos, tint);
+        e.m.meshes = own;
+        return true;
+    }
+    eyes(e, ly, e.m.meshes, e.eyeUV);
     drawModel(e, pos, tint);
     return true;
 }

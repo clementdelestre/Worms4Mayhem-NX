@@ -29,6 +29,12 @@ Status: the gains, loop flags, 3D ranges and max playbacks are **data** (FEV, ha
   arabian, wildwest, suddendeath, −12 for the others (FEV sound definition + category music); fades in over 1 s (W4M Music.FadeIn
   0x7290b4 +0.01 a frame). `theme` (frontendmusic/femusic) fades out over 2 s (its FEV fade-out) when stopped or replaced. The `cheer`
   crowd loop stops when the track changes.
+- **Match launch and loading** [ours, after docs/w4m/frontend.md §17 "Pre-match and loading screen"]: `Loading::frame` plays
+  FeGrenade 0.25 s into the pre-match intro, with the logo's pop-in (WXFE.PreStart's Audio_Incoming); at the loading screen
+  (1.75 s) `theme` stops with its 2 s fade-out (FrontEndService shutdown); the map track fades in once the match shows. The
+  loading clock is the wall clock (`GetFrameTime`, unclamped), as W4M's renders take the elapsed ms, so a long frame cannot
+  put the animation behind the sounds. `Audio::update` runs every loop iteration, Loading included; the blocking GL steps
+  start only after the theme's fade-out (`Loading::ready`), so no stream is playing while they hold the main thread.
 
 ## Sounds (`enum class Sfx`)
 
@@ -100,7 +106,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | FeFactory | `fe_factory` | frontendsfx/In_WeaponFactory | 0 |  | 2D | 1 | frontendsfx: In_WeaponFactory | ui.cpp `enterSfx` |
 | FeBookIn | `fe_book_in` | frontendsfx/In_Book | 0 |  | 2D | 1 | frontendsfx: In_Book | ui.cpp `missionMenu` |
 | FeBookOut | `fe_book_out` | frontendsfx/Out_Book | -INFINITY |  | 2D | 1 | frontendsfx: Out_Book | ui.cpp `missionMenu` |
-| FeGrenade | `fe_grenade` | frontendsfx/grenade | 0 |  | 2D | 1 | frontendsfx: Grenade | ui.cpp `Frontend::frame` |
+| FeGrenade | `fe_grenade` | frontendsfx/grenade | 0 |  | 2D | 1 | frontendsfx: Grenade | loading.cpp `Loading::frame` |
 | FeWormpot | `fe_wormpot` | frontendsfx/In_Wormpot | 0 |  | 2D | 1 | frontendsfx: In_WormPot | ui.cpp `enterSfx` |
 | WormpotSpin | `wormpot_spin` | frontendsfx/WormPotLoop | 0 | yes | 2D | 1 | frontendsfx: WormPotLoop | ui.cpp `Frontend::wormpot` |
 | WormpotStop | `wormpot_stop` | frontendsfx/WormPotStop | 0 |  | 2D | 1 | frontendsfx: WormPotStop | ui.cpp `Frontend::wormpot` |
@@ -141,6 +147,13 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | Debris | `debris` | weapons/Debris | -12 |  | 0.5–100 | 1 | weapons: Debris1–4 (random without repeat) | main.cpp `onEvent` (GameEvent::Debris from `Game::blastLand`: W4M Land Explosion handler 0x473530 plays it at the blast once Land.Changed is set, 0x4736b2 [disasm]); pitch x 2^(4 u), u uniform in ±0.025 (FEV +08, `Def::pitchRand`) |
 | Jetpack | `jetpack` | weapons/JetPack | -3 | loop | 0.5–60 | 1 | weapons: JetPack | main.cpp `jetAudio`: started at takeoff, volume ramp of JetpackUtilityLogicEntity 0x562530 (docs/weapons-audit.md Jetpack), stopped on landing / dry [disasm] |
 | JetpackEnd | `jetpack_end` | weapons/JetPackEnd | -3 |  | 0.5–60 | 1 | weapons: JetPackEnd | main.cpp `jetAudio`: the loop's volume falls under 0.3 after a full burn, 3 s apart (0x562679) [disasm] |
+| FireLoop | `fire_loop` | weapons/FireLoop | -10 | loop, fade out 0.5 s | 0.5–25 | 4 | weapons: FireLoop | fx.cpp map emitters (EmitterSoundFX of WXP_BonfireBase, WXP_SmallFlames, Campfire_1 `weapons/Fireloop`: FEV names fold case, fmod_event 0x10005110): `Audio::emitter`, one voice per emitter, steal oldest past 4 [data] |
+| SteamLoop | `steam_loop` | weapons/SteamLoop | -15 | loop, fade out 0.5 s | 0.5–25 | 4 | weapons: SteamLoop | fx.cpp map emitters (WXP_Smoke_SteamyThick) |
+| FliesLoop | `flies_loop` | weapons/FliesLoop | -12 | loop | 0.05–10 | 1 | weapons: FliesLoop | fx.cpp map emitters (WXP_OldLadyFlies) |
+| ElecArc | `elec_arc` | weapons/ElecArc | -6 | loop | 0.5–15 | 1 | weapons: ElecArc | fx.cpp map emitters (WXPL_ElectricSpark) |
+| ElectricArching | `electric_arcing` | weapons/ElectricArching | 0 | loop | 0.5–25 | 1 | weapons: ElectricArcing | fx.cpp map emitters (SndRadioFx) |
+| StormCloud | `storm_cloud` | weapons/StormCloud | 0 | fade out 0.5 s | 0.5–80 | 4 | weapons: ThunderClap_1-5 | fx.cpp map emitters (WXPL_TowerClouds): played once when the emitter starts (0x5bb88e) |
+| HoseIntoWater | `hose_into_water` | weapons/HoseIntoWater | 0 | loop | 0.05–35 | 1 | weapons: TapIntoWater | fx.cpp map emitters (Hose_Part1) |
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 
 Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its Time envelope
@@ -150,3 +163,5 @@ three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6); `BigExplosion`
 
 ## Voice lines [ours, per the coordinator]
 - A line is dropped while any line of the same voice bank still plays: no queue, no gap (`voice()` in audio.cpp).
+
+Map emitter sounds (fx.cpp, docs/w4m/render.md §3): the other EmitterSoundFX of map effects (weapons/ChurchBell, MetalCreak, CreakingTree, FlyingSaucer, HourGlass, Mummy, OldRobot, RustlingLeaves, Tentacles, Windmill, WooWooBeams, BomberEngine) are FEV events without a sound definition: silent in W4M [data, fev.py]. kRain emitters never start their EmitterSoundFX (weapons/FloodRainLoop, weapons/RainLoop); the rain's sound is RainGraphicEntity's weapons/RainLoop (`Flood` above, `Audio::loop` while a rain runs) [disasm 0x4829cc].

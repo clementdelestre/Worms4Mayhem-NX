@@ -32,9 +32,16 @@ void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, floa
 void update(float dt);
 Color fog();  // horizon colour: clear colour and terrain/water fog
 void drawSky(const Camera3D &cam, Vector3 origin, float unit);  // first thing inside BeginMode3D; origin: W4M world origin, unit: m per W4M unit
-void drawWater(const Camera3D &cam, float level, float time, float half = 12000 / 20.f);  // half: W4M's 12000-unit quad in m
+void drawWater(const Camera3D &cam, float level, float time, float half = 12000 / 20.f, Vector2 centre = {40, 40});  // half: W4M's 12000-unit quad in m, at the W4M origin
 void draw(const Camera3D &cam);  // particles, after the opaque scene and the water
 // lens flare, last in the scene; hit(from, dir): 0 clear, 1 land, 2 object between the camera and the sun
 void drawFlare(const Camera3D &cam, float dt, const std::function<int(Vector3, Vector3)> &hit);
 int count();
+void setWind(Vector3 w);  // (cos, 0, sin) x Wind.Speed / Wind.MaxSpeed, for ParticleIsEffectedByWind
+// match start: the map's EMITTER_ details (unit: m per W4M unit, the import scale / 20), the weather odds of theme / time, the W4M origin
+// (weather emitter), the water height and a downward land ray for the rain splashes
+void level(const std::vector<Terrain::Emitter> &em, float unit, Vector3 origin, const std::string &theme, const std::string &time, float water,
+           std::function<bool(Vector3, float, Vector3 *, Vector3 *)> down, float rainProb = -1);  // rainProb >= 0: a mission's override
+void levelSync(const std::vector<Terrain::Emitter> &em);  // each frame: emitters whose detail a blast removed stop
+void weather(uint32_t seed, int ticks);  // each frame: the 60 s rain roll (ticks: sim ticks at 60 Hz)
 }  // namespace Fx

@@ -33,6 +33,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  Buffalo,  // W4M weapons/BuffaloOfLies: the mystery crate reveal (BuffaloOfLiesGraphicEntity 0x551020)
                  Debris,  // W4M weapons/Debris: an explosion changed the land (0x4736c7)
                  Jetpack, JetpackEnd,  // W4M weapons/Jetpack (the jet loop, JetpackUtilityLogicEntity +0xf8) and weapons/JetpackEnd (0x562530)
+                 FireLoop, SteamLoop, FliesLoop, ElecArc, ElectricArching, StormCloud, HoseIntoWater,  // PARTTWK EmitterSoundFX of map emitters
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
@@ -51,6 +52,9 @@ void play(Sfx id, Vector3 at);  // 3D events attenuated at `at`, 2D ones as play
 void equip(const char *weapon, Vector3 at);  // W4M WeaponAccessoryEntity 0x5950c0: the weapon's EquipSfx, none for most animals and melee
 void hold(Sfx id, bool on, const Vector3 *at = nullptr);  // call every frame: one pass from the rising edge, cut at the falling edge
 void loop(Sfx id, bool on, const Vector3 *at = nullptr, float volume = 1);  // call every frame: keeps one variant replaying while on
+// a particle emitter's EmitterSoundFX loop (one voice per key), call every frame while it runs: past the event's max playbacks the
+// oldest is stolen for good (FMOD steal oldest); a key not refreshed for a frame stops
+void emitter(int key, Sfx id, Vector3 at);
 void voice(int team, Voice id);  // team i speaks with its bank (setTeamVoice), default i % bank count (banks = dirs under voices/)
 void voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
 int voiceBanks();
@@ -60,5 +64,6 @@ void setTeamVoice(int team, int bank);
 void preloadVoices(int teams);  // load the banks of teams 0..teams-1 now instead of on their first line
 // track = music/<track>.ogg (e.g. the map theme); null keeps the current track, unknown falls back to theme.ogg
 void music(bool on, const char *track = nullptr);
+void preloadMusic(const char *track);  // open the stream now (an SD read of ~40 ms on Switch); its next music() call takes it
 
 }  // namespace Audio

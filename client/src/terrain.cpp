@@ -5,8 +5,15 @@
 #include "models.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include "loading.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+static void mesherForget(const struct Terrain *t);
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -185,8 +192,15 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
             }
 }
 
+std::string Terrain::mapTheme(const std::string &map) {
+    Json j;
+    std::string dir;
+    return !map.empty() && readMap(map, j, dir) ? j["theme"].s() : "";
+}
+
 bool Terrain::load(const std::string &map, unsigned seed) {
-    objects.clear(), objModels.clear(), markers.clear(), blocks.clear();
+    remeshWait(), mesherForget(this);  // the old land's chunks
+    objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), origin = {40, WATER, 40}, rainProb = -1;
     thin.assign(CX * CY * CZ, {}), thinOnly.clear();
     hasFinish = false;
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
@@ -270,6 +284,9 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         Vector3 p = vec(o["pos"], {cx, 8, cz});
         objects.push_back({m, p, {b[0].f(1), b[1].f(0), b[2].f(0), p.x, b[3].f(0), b[4].f(1), b[5].f(0), p.y, b[6].f(0), b[7].f(0), b[8].f(1), p.z, 0, 0, 0, 1}});
     }
+    for (const Json &e : j["emitters"].arr) emitters.push_back({e["fx"].s(), vec(e["pos"], {cx, 8, cz})});
+    if (j["origin"].type == Json::Arr) origin = vec(j["origin"], origin);
+    rainProb = j["rain_prob"].f(-1);
     return true;
 }
 
@@ -365,7 +382,7 @@ void Terrain::mergeBlocks() {
 
 void Terrain::generate(unsigned seed) {
     thin.assign(CX * CY * CZ, {}), thinOnly.clear();
-    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear();
+    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear(), emitters.clear(), origin = {40, WATER, 40}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
@@ -432,13 +449,15 @@ bool Terrain::carve(Vector3 c, float radius) {
                 if (undo) undo->emplace_back((int)i, d[i]);
                 d[i] = nv, changed = true;
             }
-    // decor goes with the blast, or with the ground it stood on (sampled 0.3 m below its base, along its up axis)
+    // W4M 0x5cc960: a detail (and its emitter, 0x5cc8c0) goes when |pos - blast|² < radius²; decor also goes with the ground under it
+    // (0.3 m below its base along its up axis) [ours: W4M removes a detail with its emptied land frame, 0x46c630]
     objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const Object &o) {
         float dist = Vector3Distance(o.pos, c);
         if (dist > radius + 2) return false;
         Vector3 up = Vector3Normalize({o.m.m4, o.m.m5, o.m.m6});
-        return dist < radius + 0.2f || !solid(Vector3Subtract(o.pos, Vector3Scale(up, 0.3f)));
+        return dist < radius || !solid(Vector3Subtract(o.pos, Vector3Scale(up, 0.3f)));
     }), objects.end());
+    for (Emitter &e : emitters) e.alive = e.alive && Vector3Distance(e.pos, c) >= radius;
     // chunk cells sample one voxel past their bounds, so neighbours of the box are dirty too
     for (int z = std::max(0, lo[2] - 1) / CS; z <= std::min(NZ - 1, hi[2] + 1) / CS; z++)
         for (int y = std::max(0, lo[1] - 1) / CS; y <= std::min(NY - 1, hi[1] + 1) / CS; y++)
@@ -494,7 +513,7 @@ bool Terrain::raycast(Ray r, float maxDist, Vector3 *hit) const {
 // W4M GLG_PC 0x451ea0: LightGradient[N.L capped by the sun ray] + SideGradient[normal x] - 128 (GLG_Shadow 0x454e30, 0x451590)
 // ponytail: a carve only remeshes nearby chunks, so shadows cast by blown-away ground elsewhere stay until remeshed
 Color Terrain::vertexColour(Vector3 p, Vector3 n) const {
-    static const Vector3 L = Vector3Normalize({0, 0.26f, -0.78f});  // Sun.LowLightVector: every theme (0x4e7ed0)
+    static const Vector3 L = Vector3Normalize(Lit::LOW_LIGHT);
     if (!hasGrad) return WHITE;
     auto solidAt = [&](Vector3 q) {
         int x = (int)(q.x * (1 / VOX) + 0.5f), y = (int)(q.y * (1 / VOX) + 0.5f), z = (int)(q.z * (1 / VOX) + 0.5f);
@@ -524,11 +543,100 @@ void Terrain::loadGradients() {
     hasGrad = true;
 }
 
+namespace {
+constexpr int MS = Terrain::CS + 1, ML = Terrain::CS + 2;  // a chunk's cells, their corners (one voxel border)
+struct Builder { int mat; std::vector<int> vid; std::vector<float> pos, nrm; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
+struct FB { int mat; std::vector<float> pos, uv; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
+struct Scratch {  // one per meshing thread
+    float c[ML * ML * ML];
+    unsigned char mt[ML * ML * ML];
+    uint64_t rows[ML * ML];
+    Vector3 cp[MS * MS * MS], cn[MS * MS * MS];
+    bool has[MS * MS * MS];
+    std::vector<Builder> bs;
+    std::vector<FB> fbs;
+};
+}  // namespace
+
+struct ChunkGeo {  // a chunk's meshes in RAM: built on any thread, uploaded on the GL one
+    int ci = -1;
+    struct M { int mat; bool fringe; std::vector<float> pos, nrm, uv; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
+    std::vector<M> ms;
+};
+
+// The meshing thread: chunk geometry on another core while the main thread renders. The voxels it reads only change in
+// the sim, which first waits for it (remeshWait).
+namespace {
+struct Mesher {
+    std::mutex mu;
+    std::condition_variable cv;
+    const Terrain *t = nullptr;
+    std::vector<int> todo;
+    size_t next = 0;  // todo entries started
+    std::vector<ChunkGeo> done;
+    std::chrono::steady_clock::time_point until;  // no chunk starts past it, but the first
+    bool busy = false, quit = false;
+    std::thread th;  // joined at exit: libnx has no pthread_detach
+};
+Mesher &mesher = *new Mesher;  // never destroyed: its thread is joined in an atexit handler
+using Clock = std::chrono::steady_clock;
+
+void mesherLoop() {
+    Loading::pinCore(2);
+    std::unique_lock<std::mutex> l(mesher.mu);
+    double cost = 0;  // recent dearest chunk, s
+    for (;;) {
+        mesher.cv.wait(l, [] { return mesher.busy || mesher.quit; });
+        if (mesher.quit) return;
+        for (bool first = true; mesher.next < mesher.todo.size(); first = false) {
+            if (!first && Clock::now() + std::chrono::duration<double>(cost) > mesher.until) break;
+            ChunkGeo g;
+            const Terrain *t = mesher.t;
+            int ci = mesher.todo[mesher.next++];
+            l.unlock();
+            auto t0 = Clock::now();
+            t->chunkGeometry(ci, g);
+            cost = std::max(std::chrono::duration<double>(Clock::now() - t0).count(), cost * 0.9);
+            l.lock();
+            mesher.done.push_back(std::move(g));
+        }
+        mesher.busy = false;
+        mesher.cv.notify_all();
+    }
+}
+}  // namespace
+
+static void mesherForget(const Terrain *t) {
+    std::lock_guard<std::mutex> l(mesher.mu);
+    if (mesher.t == t) mesher.done.clear(), mesher.t = nullptr;
+}
+
+static void upload(ChunkGeo &g, std::vector<Terrain::Part> &out) {
+    for (ChunkGeo::M &b : g.ms) {
+        Mesh m{};
+        m.vertexCount = (int)b.pos.size() / 3;
+        m.triangleCount = (int)b.idx.size() / 3;
+        m.vertices = b.pos.data(), m.normals = b.nrm.empty() ? nullptr : b.nrm.data(), m.texcoords = b.uv.empty() ? nullptr : b.uv.data(), m.colors = b.col.data();
+        m.indices = (unsigned short *)MemAlloc(b.idx.size() * sizeof(unsigned short));  // DrawMesh tests it to draw indexed
+        memcpy(m.indices, b.idx.data(), b.idx.size() * sizeof(unsigned short));
+        UploadMesh(&m, false);
+        m.vertices = m.normals = m.texcoords = nullptr, m.colors = nullptr;  // GPU copy only
+        out.push_back({b.mat, m, b.fringe});
+    }
+}
+
 void Terrain::buildChunk(int ci) {
-    int x0 = ci % CX * CS, y0 = ci / CX % CY * CS, z0 = ci / (CX * CY) * CS;
-    constexpr int S = CS + 1, L = CS + 2;  // cells x0-1 .. x0+CS-1, their corners x0-1 .. x0+CS
     for (Part &p : parts[ci]) UnloadMesh(p.mesh);
     parts[ci].clear();
+    ChunkGeo g;
+    chunkGeometry(ci, g);
+    upload(g, parts[ci]);
+}
+
+void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
+    int x0 = ci % CX * CS, y0 = ci / CX % CY * CS, z0 = ci / (CX * CY) * CS;
+    constexpr int S = MS, L = ML;  // cells x0-1 .. x0+CS-1, their corners x0-1 .. x0+CS
+    geo.ci = ci;
     // most chunks are all air or all solid: a raw sign scan is much cheaper than the full fill below
     bool any[2] = {x0 == 0 || y0 == 0 || z0 == 0 || x0 + CS >= NX || y0 + CS >= NY || z0 + CS >= NZ, false};
     for (int z = std::max(z0 - 1, 0); z <= std::min(z0 + CS, NZ - 1) && !(any[0] && any[1]); z++)
@@ -537,9 +645,11 @@ void Terrain::buildChunk(int ci) {
             for (int x = std::max(x0 - 1, 0); x <= std::min(x0 + CS, NX - 1); x++) any[r[x] > 0] = true;
         }
     if (!any[0] || !any[1]) return;
-    static float c[L * L * L];
-    static unsigned char mt[L * L * L];
-    static uint64_t rows[L * L];  // bit i: local voxel i of the row is solid
+    static thread_local Scratch *scratch = nullptr;
+    if (!scratch) scratch = new Scratch;
+    float *c = scratch->c;
+    unsigned char *mt = scratch->mt;
+    uint64_t *rows = scratch->rows;  // bit i: local voxel i of the row is solid
     for (int k = 0, n = 0; k < L; k++)
         for (int j = 0; j < L; j++) {
             uint64_t &r = rows[k * L + j];
@@ -553,9 +663,9 @@ void Terrain::buildChunk(int ci) {
             }
         }
 
-    static Vector3 cp[S * S * S], cn[S * S * S];
-    static bool has[S * S * S];
-    memset(has, 0, sizeof has);
+    Vector3 *cp = scratch->cp, *cn = scratch->cn;
+    bool *has = scratch->has;
+    memset(has, 0, sizeof scratch->has);
     static const int E[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
     auto C = [&](int i, int j, int k) { return c[(k * L + j) * L + i]; };
     for (int k = 0; k < S; k++)
@@ -595,8 +705,7 @@ void Terrain::buildChunk(int ci) {
         }
 
     // quads go to the mesh of the material of their solid voxel; vertices are shared within that mesh
-    struct Builder { int mat; std::vector<int> vid; std::vector<float> pos, nrm; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
-    static std::vector<Builder> bs;
+    std::vector<Builder> &bs = scratch->bs;
     size_t used = 0;
     const Lit::Light &sun = Lit::sun;
     const Vector3 light = Vector3Normalize(sun.dir);
@@ -684,8 +793,7 @@ void Terrain::buildChunk(int ci) {
 
     // W4M GLG_FringeBuilder (0x449ba0): a card hangs from each open floor edge whose material has a fringe texture,
     // from the edge's land vertices along (out 0.7, down 0.7) x Land.FringeLength (0.4 land voxels, LOCAL.XOM)
-    struct FB { int mat; std::vector<float> pos, uv; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
-    static std::vector<FB> fbs;
+    std::vector<FB> &fbs = scratch->fbs;
     size_t fused = 0;
     if (!fringeMats.empty()) {
         const float L = 0.4f * scale;
@@ -749,28 +857,11 @@ void Terrain::buildChunk(int ci) {
 
     for (size_t fi = 0; fi < fused; fi++) {
         FB &f = fbs[fi];
-        Mesh m{};
-        m.vertexCount = (int)f.pos.size() / 3;
-        m.triangleCount = (int)f.idx.size() / 3;
-        m.vertices = f.pos.data(), m.texcoords = f.uv.data(), m.colors = f.col.data();
-        m.indices = (unsigned short *)MemAlloc(f.idx.size() * sizeof(unsigned short));
-        memcpy(m.indices, f.idx.data(), f.idx.size() * sizeof(unsigned short));
-        UploadMesh(&m, false);
-        m.vertices = m.texcoords = nullptr, m.colors = nullptr;
-        parts[ci].push_back({f.mat + 1, m, true});
+        geo.ms.push_back({f.mat + 1, true, std::move(f.pos), {}, std::move(f.uv), std::move(f.col), std::move(f.idx)});
     }
-
     for (size_t bi = 0; bi < used; bi++) {
         Builder &b = bs[bi];
-        Mesh m{};
-        m.vertexCount = (int)b.pos.size() / 3;
-        m.triangleCount = (int)b.idx.size() / 3;
-        m.vertices = b.pos.data(), m.normals = b.nrm.data(), m.colors = b.col.data();
-        m.indices = (unsigned short *)MemAlloc(b.idx.size() * sizeof(unsigned short));  // DrawMesh tests it to draw indexed
-        memcpy(m.indices, b.idx.data(), b.idx.size() * sizeof(unsigned short));
-        UploadMesh(&m, false);
-        m.vertices = m.normals = nullptr, m.colors = nullptr;  // GPU copy only
-        parts[ci].push_back({b.mat, m});
+        geo.ms.push_back({b.mat, false, std::move(b.pos), std::move(b.nrm), {}, std::move(b.col), std::move(b.idx)});
     }
 }
 
@@ -781,10 +872,15 @@ attribute vec3 vertexPosition;
 attribute vec3 vertexNormal;
 attribute vec4 vertexColor;
 uniform mat4 mvp;
+uniform mat4 shadowMatrix;
 varying vec3 vPos;
 varying vec3 vN;
 varying vec3 vC;
-void main() { vPos = vertexPosition; vN = vertexNormal; vC = vertexColor.rgb; gl_Position = mvp * vec4(vertexPosition, 1.0); }
+varying vec4 vS;
+void main() {
+    vPos = vertexPosition; vN = vertexNormal; vC = vertexColor.rgb; vS = shadowMatrix * vec4(vertexPosition, 1.0);
+    gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
 )";
 static const char *FS = R"(
 uniform sampler2D texture0;
@@ -799,18 +895,43 @@ uniform vec3 camPos;
 varying vec3 vPos;
 varying vec3 vN;
 varying vec3 vC;
+#ifdef SHADOW
+uniform SHADOW_SAMPLER shadowMap;
+varying vec4 vS;
+// Landscape.cg SHADOW_METHOD 2: compared taps one texel apart (GetInShadow), the centre and its 4 neighbours, plus the
+// 4 diagonals on PC (X_XBOX: 5 taps); off the map = lit
+float tap(vec2 s, float z, float i, float j) { return texture(shadowMap, vec3(s + vec2(i, j) / 1024.0, z)); }
+float shadowScale() {
+    vec3 s = vS.xyz / vS.w;
+    if (s.x < 0.0 || s.x > 1.0 || s.y < 0.0 || s.y > 1.0) return 1.0;
+    float f = tap(s.xy, s.z, 0.0, 0.0) + tap(s.xy, s.z, -1.0, 0.0) + tap(s.xy, s.z, 1.0, 0.0) + tap(s.xy, s.z, 0.0, -1.0) + tap(s.xy, s.z, 0.0, 1.0);
+#ifdef TAPS5
+    return f / 5.0;
+#else
+    return (f + tap(s.xy, s.z, -1.0, -1.0) + tap(s.xy, s.z, 1.0, -1.0) + tap(s.xy, s.z, -1.0, 1.0) + tap(s.xy, s.z, 1.0, 1.0)) / 9.0;
+#endif
+}
+#else
+float shadowScale() { return 1.0; }
+#endif
 void main() {
     vec3 n = normalize(vN), w = n * n * n * n;
+    w *= step(0.004 * (w.x + w.y + w.z), w);  // planes under 0.4 % of the blend skip their fetch (most land is flat)
     w /= w.x + w.y + w.z;
     vec3 p = vPos * scale.y;
-    vec2 t = vPos.xz * scale.x;
-    vec3 c = texture2D(texture1, vec2(p.z, -p.y)).rgb * w.x + texture2D(texture1, vec2(p.x, -p.y)).rgb * w.z
-           + mix(texture2D(texture2, t).rgb, texture2D(texture0, t).rgb, step(0.0, n.y)) * w.y;
+    vec2 t = vPos.xz * scale.x, tx = vec2(p.z, -p.y), tz = vec2(p.x, -p.y);
+    vec3 c = vec3(0.0);
+    if (w.x > 0.0) c += texture2D(texture1, tx).rgb * w.x;
+    if (w.z > 0.0) c += texture2D(texture1, tz).rgb * w.z;
+    if (w.y > 0.0) {
+        if (n.y >= 0.0) c += texture2D(texture0, t).rgb * w.y;
+        else c += texture2D(texture2, t).rgb * w.y;
+    }
     vec3 e = camPos - vPos, v = normalize(e);
-    float nv = max(dot(n, v), 0.0);
-    float s = pow(max(dot(n, normalize(sunDir + v)), 0.0), 20.0);
-    vec3 col = (diffuse * max(dot(n, sunDir), 0.0) + ambient) * c + specular * (0.6 * s)
-             + vec3(0.2, 0.275, 0.175) * (1.0 - nv) * sqrt(1.0 - nv);
+    float nv = max(dot(n, v), 0.0), fs = shadowScale(), d = 0.0, s = 0.0;
+    if (fs > 0.01) d = clamp(dot(n, sunDir) * fs, 0.0, 1.0), s = fs * pow(max(dot(n, normalize(sunDir + v)), 0.0), 20.0);
+    vec3 col = (diffuse * d + ambient) * c + specular * (0.6 * s)
+             + vec3(0.2, 0.275, 0.175) * (0.5 + fs / 2.0) * (1.0 - nv) * sqrt(1.0 - nv);
     gl_FragColor = vec4(clamp(col, 0.0, 1.0) * vC, 1.0);
 }
 )";
@@ -838,7 +959,14 @@ void main() {
 
 void Terrain::loadTextures() {
     static Shader sh{};
-    if (!sh.id) sh = Lit::shader(VS, FS);
+#ifdef __SWITCH__
+    const std::string taps = "#define TAPS5\n";  // W4M's own console path (X_XBOX): 4 fewer compared fetches per land pixel
+#else
+    const std::string taps;
+#endif
+    if (!sh.id && (sh = Lit::shader(VS, (taps + "#define SHADOW\n" + FS).c_str(), true, true)).id == rlGetShaderIdDefault())
+        Lit::shadows = false, sh = Lit::shader(VS, FS);  // no shadow samplers
+    if (Lit::shadows && sh.id != rlGetShaderIdDefault()) sh.locs[SHADER_LOC_MAP_OCCLUSION] = GetShaderLocation(sh, "shadowMap");
     texMats.assign(texFiles.size() / 4, Material{});
     fringeMats.assign(texFiles.size() / 4, Material{});
     if (sh.id == rlGetShaderIdDefault()) return;  // compile failed: keep the vertex-colour fallback
@@ -873,6 +1001,7 @@ void Terrain::loadTextures() {
         texMats[m].maps[MATERIAL_MAP_DIFFUSE].texture = a;
         texMats[m].maps[MATERIAL_MAP_SPECULAR].texture = b;
         texMats[m].maps[MATERIAL_MAP_NORMAL].texture = r;
+        if (Lit::shadows) texMats[m].maps[MATERIAL_MAP_OCCLUSION].texture = Lit::shadowMap();
     }
     for (auto &[f, img] : decoded) UnloadImage(img);
     decoded.clear();
@@ -894,8 +1023,13 @@ int Terrain::remesh(double budget) {
             for (int y = 0; y < NY; y++)
                 for (int x = 0; x < NX; x++)
                     if (d[idx(x, y, z)] > 0) colTop[z * NX + x] = (unsigned char)std::min(y + 1, 255), colTop.back() = std::max(colTop.back(), colTop[z * NX + x]);
+        bounds = {{1e9f, 0, 1e9f}, {0, colTop.back() * VOX, 0}};
+        for (int z = 0; z < NZ; z++)
+            for (int x = 0; x < NX; x++)
+                if (colTop[z * NX + x]) bounds.min = Vector3Min(bounds.min, {x * VOX, 0, z * VOX}), bounds.max = Vector3Max(bounds.max, {(x + 1) * VOX, bounds.max.y, (z + 1) * VOX});
         loadGradients();
     }
+    collect();  // older than what this call builds
     // over budget, rebuilt chunks wait in `pending` and swap in together, so new and stale chunks never meet at a seam
     double end = GetTime() + budget;
     static double chunkCost = 0;  // recent dearest chunk build + upload: past the first, stop before the next one would overrun
@@ -913,12 +1047,115 @@ int Terrain::remesh(double budget) {
         pending.emplace_back(ci, std::move(parts[ci]));
         parts[ci] = std::move(old);
     }
+    swapPending();
+    return built;
+}
+
+static void unloadParts(std::vector<std::pair<int, std::vector<Terrain::Part>>> &v) {
+    for (auto &[ci, ps] : v)
+        for (Terrain::Part &p : ps) UnloadMesh(p.mesh);
+    v.clear();
+}
+
+void Terrain::swapPending() {
     for (auto &[ci, ps] : pending) {  // a chunk rebuilt twice: the later entry wins
+        int c = ci;
+        if (keep && std::none_of(kept.begin(), kept.end(), [c](const auto &k) { return k.first == c; })) kept.emplace_back(ci, std::move(parts[ci]));
+        else for (Part &p : parts[ci]) UnloadMesh(p.mesh);
+        parts[ci] = std::move(ps);
+    }
+    meshVer += !pending.empty();
+    pending.clear();
+}
+
+void Terrain::keepMeshes() {
+    unloadParts(kept), unloadParts(liveKept), liveDirty.clear();
+    std::lock_guard<std::mutex> l(mesher.mu);
+    keep = pending.empty() && (mesher.t != this || mesher.done.empty()) && std::find(dirty.begin(), dirty.end(), true) == dirty.end();
+}
+
+bool Terrain::rewindMeshes() {
+    unloadParts(liveKept), liveDirty.clear();
+    if (!keep) return unloadParts(kept), false;
+    keep = false;
+    remeshWait();
+    {
+        std::lock_guard<std::mutex> l(mesher.mu);
+        if (mesher.t == this)
+            for (ChunkGeo &g : mesher.done) liveDirty.push_back(g.ci);
+        if (mesher.t == this) mesher.done.clear();
+    }
+    for (auto &[ci, ps] : pending) liveDirty.push_back(ci);
+    unloadParts(pending);
+    for (int ci = 0; ci < (int)dirty.size(); ci++)
+        if (dirty[ci]) liveDirty.push_back(ci), dirty[ci] = false;
+    for (auto &[ci, ps] : kept) liveKept.emplace_back(ci, std::move(parts[ci])), parts[ci] = std::move(ps);
+    kept.clear();
+    meshVer++;
+    return true;
+}
+
+bool Terrain::forwardMeshes() {
+    if (liveKept.empty() && liveDirty.empty()) return false;
+    remeshWait(), mesherForget(this);
+    unloadParts(pending);
+    dirty.assign(dirty.size(), false);
+    for (auto &[ci, ps] : liveKept) {
         for (Part &p : parts[ci]) UnloadMesh(p.mesh);
         parts[ci] = std::move(ps);
     }
-    pending.clear();
-    return built;
+    liveKept.clear();
+    for (int ci : liveDirty) dirty[ci] = true;
+    liveDirty.clear();
+    meshVer++;
+    return true;
+}
+
+
+void Terrain::remeshWait() {
+    std::unique_lock<std::mutex> l(mesher.mu);
+    mesher.cv.wait(l, [] { return !mesher.busy; });
+    if (mesher.t != this) return;
+    for (size_t i = mesher.next; i < mesher.todo.size(); i++) dirty[mesher.todo[i]] = true;  // over the budget: next time
+    mesher.todo.clear(), mesher.next = 0;
+}
+
+int Terrain::collect() {
+    remeshWait();
+    std::vector<ChunkGeo> got;
+    {
+        std::lock_guard<std::mutex> l(mesher.mu);
+        if (mesher.t == this) got.swap(mesher.done);
+    }
+    for (ChunkGeo &g : got) {
+        std::vector<Part> ps;
+        upload(g, ps);
+        pending.emplace_back(g.ci, std::move(ps));
+    }
+    return (int)got.size();
+}
+
+int Terrain::remeshAsync(double budget) {
+    if (colTop.empty()) return remesh(budget);  // first remesh: textures and shadow columns
+    int n = collect();
+    std::vector<int> todo;
+    for (int ci = 0; ci < (int)dirty.size(); ci++)
+        if (dirty[ci]) todo.push_back(ci), dirty[ci] = false;
+    if (todo.empty()) return swapPending(), n;
+    std::lock_guard<std::mutex> l(mesher.mu);
+    mesher.t = this, mesher.todo = std::move(todo), mesher.next = 0;
+    mesher.until = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(budget));
+    mesher.busy = true;
+    if (!mesher.th.joinable()) {
+        mesher.th = std::thread(mesherLoop);
+        atexit([] {
+            { std::lock_guard<std::mutex> q(mesher.mu); mesher.quit = true; }
+            mesher.cv.notify_all();
+            mesher.th.join();
+        });
+    }
+    mesher.cv.notify_all();
+    return n;
 }
 
 void Terrain::draw() const {
@@ -970,6 +1207,17 @@ void Terrain::drawFringe() const {
     rlEnableDepthMask(), rlEnableBackfaceCulling();
 }
 
+// W4M LightingLandscape*: depth only. Front faces culled [assumed: W4M sets no depth bias, and its lighting-pass cull state is not traced]
+void Terrain::drawShadow() const {
+    static const char *SVS = "attribute vec3 vertexPosition;\nuniform mat4 mvp;\nvoid main() { gl_Position = mvp * vec4(vertexPosition, 1.0); }\n";
+    static Material m{};
+    if (!m.maps) m = LoadMaterialDefault(), m.shader = Lit::shader(SVS, "void main() { gl_FragColor = vec4(1.0); }\n", false);
+    rlSetCullFace(RL_CULL_FACE_FRONT);
+    for (const std::vector<Part> &ps : parts)
+        for (const Part &p : ps) if (!p.fringe) DrawMesh(p.mesh, m, MatrixIdentity());
+    rlSetCullFace(RL_CULL_FACE_BACK);
+}
+
 // Decor: Lit model shading plus the part's W4M XSimpleShader states (models/decor/<name>.mat, one line per glb material)
 static const char *DFS = R"(
 uniform sampler2D texture0;
@@ -994,7 +1242,7 @@ void main() {
 }
 )";
 
-void Terrain::drawObjects(float clock, bool draw) const {
+void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4> *at) const {
 #ifdef __SWITCH__
     static const std::string dir = "sdmc:/switch/worms4nx/assets/models/decor/";
 #else
@@ -1067,6 +1315,8 @@ void Terrain::drawObjects(float clock, bool draw) const {
             const Entry &e = *ms[o.model];
             float size = e.r * Vector3Length({o.m.m0, o.m.m1, o.m.m2});
             if (!e.m.meshCount || !Models::visible(o.pos, 2 * size)) continue;  // W4M: frustum only (XBoundAction); origin may sit on the box edge
+            if (pick && (pick == 2) != (e.len > 0)) continue;
+            if (at && pass == 0) at->push_back({o.pos.x, o.pos.y, o.pos.z, 2 * size});
             float t = e.len <= 0 ? 0 : fmodf(clock + (e.clip == "Go" ? (hash3((int)(&o - objects.data()), 0, 0, 0x60u) + 1) / 2 * e.len : 0), e.len);
             if (!e.anim.empty()) {  // raw mesh units (20 per W4M unit)
                 if (pass == 0) Models::shade(ash), Models::draw(e.anim.c_str(), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), o.m), WHITE, e.clip.c_str(), t), Models::shade({});
@@ -1100,6 +1350,8 @@ void Terrain::drawObjects(float clock, bool draw) const {
 }
 
 void Terrain::unload() {
+    collect();
+    unloadParts(kept), unloadParts(liveKept), liveDirty.clear(), keep = false;
     for (auto &ps : parts)
         for (Part &p : ps) UnloadMesh(p.mesh);
     parts.clear();
@@ -1110,4 +1362,5 @@ void Terrain::unload() {
     for (Material &m : texMats) MemFree(m.maps);
     for (Material &m : fringeMats) MemFree(m.maps);
     textures.clear(), texMats.clear(), fringeMats.clear();
+    meshVer++;
 }

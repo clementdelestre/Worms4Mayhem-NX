@@ -31,13 +31,34 @@ the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup
 
 ### Frame pacing and hitch log (ours, 2026-10-05)
 
-`log.txt` (`sdmc:/switch/worms4nx/` on Switch, `./` on desktop; raylib's log too, flushed at most once a second and
-on warnings) gets, in a match:
+`log.txt` (`sdmc:/switch/worms4nx/` on Switch, `./` on desktop; raylib's log too) is written line by line until the
+`BOOT:` line (a boot crash leaves its last line on the card) and for warnings; after it lines queue in memory and a thread
+writes them each second (a Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer made one every ~3 HITCH lines:
+the `other` 15-22 ms stalls of sw-log3). The thread is joined at exit: libnx has no `pthread_detach`, so
+`std::thread::detach` aborts the process (ours, found 2026-10-05). In a match:
 - `HITCH <ms>, <n> ticks, <n> chunks, <n> particles, <n> sounds | <section ms> ... other <ms> | loads tex .. fbo ..`: a
-  frame over `W4NX_HITCH_MS` (default 20), 20 per 10 s at most. Sections are the perf overlay's, plus `camera` (logic,
-  audio loops, camera) and `pip`; `other` = input, audio update, net. Non-zero `loads` = something loaded on first use.
+  frame over `W4NX_HITCH_MS` (default 20), 20 per 10 s at most, plus the window's worst frame when the limit held it
+  back (`... (worst of the window)`). Sections are the perf overlay's, plus `camera` (logic, audio loops, camera) and
+  `pip`; `remesh` = waiting for the meshing thread + uploading its chunks (`chunks` = chunks uploaded); `other` = input,
+  audio update, net. Non-zero `loads` = something loaded on first use.
 - `PACE 600 frames: ticks/frame 0:a 1:b 2:c 3+:d | frame avg / sd / max, n over 20 ms | jitter`: every 10 s.
   At 60 Hz, a healthy run is `1:600` (or `2:` only for real missed vblanks), sd and jitter well under 1 ms.
+- `GPU <n> frames: avg / max ms, n over 16.7 ms | <section ms> ...`: GPU time per section from timestamp queries read 4
+  frames late (no stall; GL 3.3, or GLES with `GL_EXT_disjoint_timer_query`, else the boot line `GPU: timestamp queries
+  unavailable`). The swap is left out (its span is the vblank wait). A section the CPU submits slower than the GPU runs
+  shows the submission gaps too.
+- `REPLAY: <n> ticks re-simulated, <n> chunks remeshed, <n> kept, <ms>`: an instant replay's start.
+
+sw-log3 spikes (handheld, 2026-10-05) and their fixes [data: the log; ours]:
+- 220-395 ms (`sim`, or unlogged maxima): the instant replay start (restore to the turn snapshot, re-simulate up to the
+  shot, remesh every carved chunk on the main thread) and its skip (re-simulate the rest); at game over also the replay
+  file write and the victory stream open. Now: a checkpoint every 30 ticks (`Snapshot::mark`, re-sim <= 30 ticks), the
+  meshes drawn at the snapshot kept while the land changes and swapped back (`Terrain::rewindMeshes`, no remesh), the live
+  state and meshes set aside and restored on skip or end (`Snapshot::forward`), the dirty marking per voxel 27 -> 1-8
+  chunk tests (restore 2.2 / 6.8 -> 0.4 / 1.2 ms desktop), `saveRec` on a thread, `victory` / `theme` opened during the loading.
+- 26-53 ms `remesh` with 1 chunk: the chunk build plus a log write; see "Explosion frames".
+- 15-22 ms `other` in 322 of 726 logged hitches: newlib flushing the log to the SD every 1 KB; now the writer thread.
+- 10-22 ms `sky+water` in 278: GPU-bound frames (see "Render budget").
 - `UI: texture <name> loaded on first use`: an SD read + PNG decode on the main thread; warm it in `Ui::warmHud`.
 
 Pacing (ours): on Switch `eglSwapInterval(1)` alone paces the frames (`SetTargetFPS(0)`: raylib's busy-wait timer on top of
@@ -46,12 +67,44 @@ at half a tick, so timing noise never makes 0 / 2 tick frames (simulated with 0.
 0 after). No render interpolation: with the sim at the 60 Hz display rate every shown frame lands on a whole tick, so
 interpolated poses would equal the drawn ones. The camera blends are already per-dt (`perFrame`, `expf(-dt k)`).
 
-Explosion frames: `remesh` gets 3 ms minus the frame's sim time and stops before a chunk that would overrun it (the
-dearest recent chunk cost); desktop Donkey worst frame 5.0-6.6 ms -> 3.6-4.4, remesh max 3.6-4.3 -> 2.4-2.5 ms. One chunk
-is the floor (about 1 ms desktop, so ~5 ms on Switch). The HUD art (`hud/`, weapon icons, flags) loads during the
+Explosion frames (ours, 2026-10-05): chunk geometry is built on a meshing thread (core 2) while the frame renders
+(`Terrain::remeshAsync`, after the sim: uploads what the thread built, hands it the dirty chunks; it starts no chunk past
+10 ms but the first), and the frame waits for it before the sim (`remeshWait`: the sim is the only voxel writer). The
+rebuilt chunks still swap in together. sw-log3 measured one chunk at 6-15 ms on Switch (A57), plus 15-25 ms when a
+log write landed in it: 26-53 ms `remesh` hitches per explosion frame before. The HUD art (`hud/`, weapon icons, flags) loads during the
 loading screen, the UFO beam shader at boot and the PiP render texture on the first match frame.
 
-### Render budget (ours, `--bench <map> 600`, desktop GPU-synced, Switch estimate = max(5x cpu, 4x gpu))
+### Render budget (ours, `--bench <map> 600`)
+
+Calibrated on sw-log3 (handheld 720p, 2026-10-05; data from the log, factors fitted): Switch handheld frame ~= max(7 x
+the desktop `cpu` total, 14 x the desktop `timer` GPU total of a `nosync` run). Deathmatch1 at idle: cpu 1.36-1.45 ms,
+timer 1.06 ms -> ~15 ms; EscapeFromTreeRex 1.48 / 1.20 -> ~17 ms. The real handheld runs Deathmatch1 at 17-22 ms average
+with 10-35 % of the frames on two vblanks, i.e. a GPU frame around 15-17 ms [assumed from the pacing: the `sky+water` 10-22 ms
+stalls are the wait for a free swap buffer, landing at the frame's first draw]; its per-frame CPU (no sync) is 6.5-13 ms.
+The `GPU` lines of the next Switch log measure the GPU directly: refit the 14 then.
+
+Why the former estimate (max(5x cpu, 4x synced gpu), "docked") read 33-37 ms with shadows: (1) the synced `gpu` column
+glFinish()es after each of 12 sections, the desktop iGPU idles and clocks down between them, so it reads 5.5-6 ms for a
+GPU frame the timestamp queries measure at ~1.1 ms (nosync, 735 fps, the swap left out); (2) the 8.3 / 8.7 ms
+it was given were measured while other agents' games shared the iGPU (5.45 at idle). 4 x 8.3 = 33 ms; 3 x 5.45 = 16 ms
+matches the handheld. The CPU side also mixes two rates: logic about 3-5x desktop, draw submission on nouveau 10-25x
+(terrain 0.08 ms desktop -> 1.5-3.3 ms Switch): 7 fits the whole frame.
+
+Desktop nosync GPU split (timer, Deathmatch1): terrain 0.41-0.45, sky+water 0.33, shadow 0.10, ui 0.09, models 0.05.
+The terrain is mostly geometry on this iGPU (0.40 ms at 640x360, 0.47 at 720p, 0.70 at 1080p), so the land shader's
+texture fetches do not show here; on Tegra (16 TMUs at 307-384 MHz handheld) they do [assumed].
+
+Land shader fetches, 2026-10-05: 13 per pixel before (4 triplanar diffuse, the top and roof ones both fetched, + 9
+compared shadow taps). Now a triplanar plane under 0.4 % of the blend skips its fetch and only one of top / roof is read
+(1-2 diffuse fetches on most land; image diff with the former shader: max 1 / 255 on 0.2 % of the pixels), and on Switch
+the shadow uses W4M's own X_XBOX path of `SHADOW_METHOD 2`, 5 taps (docs/w4m/render.md, Landscape.cg): 6-7 fetches.
+
+Worm skinning: a pose drawn in the shadow pass then the view was skinned twice (shared VBOs); poses now live in up to 16
+buffer slots per model (`Models` `Entry::Slot`): `models` cpu 0.15 -> 0.08 ms desktop. The animated normals went to the
+colour VBO index (`SHADER_LOC_VERTEX_NORMAL` = 3 is the colour attribute's buffer): now the normal buffer, so worm
+lighting follows the pose.
+
+Older measurements (synced `gpu` x 4, "docked"):
 
 | Change | Deathmatch1 | ChallengeNavigation2 |
 |---|---|---|
@@ -59,7 +112,20 @@ loading screen, the UFO beam shader at boot and the PiP render texture on the fi
 | land vertex colour, sky clip, lens flare, Donkey dome | 18.5-19.3 ms (52-54 fps), remesh 50 ms | 18.9 ms (53 fps), remesh 49 ms |
 | + W4M shadow map, measured as a 1024² land depth pass (+1.9 ms gpu) and 9 extra land texture taps (+1.3 ms gpu) | 32 ms (31 fps), objects not even counted | - |
 
-The shadow map would leave no margin over 30 fps on Switch, so it is not drawn (docs/maps.md "Rendering").
+Shadow map as shipped (2026-10-05, docs/maps.md "Rendering": land cached, casters only per frame, dirty-rectangle restore), same
+binary with and without, runs interleaved on a machine shared with other agents' games (the baseline read 16.9 / 19.2 ms on an idle GPU):
+
+| `--bench <map> 600` | Deathmatch1 | EscapeFromTreeRex |
+|---|---|---|
+| without | gpu 6.67-6.72, Switch 26.7-26.9 ms | gpu 7.16-7.21, Switch 28.7-28.9 ms |
+| with | gpu 8.26-8.28, Switch 33.0-33.1 ms; `shadow` cpu 1.26 gpu 1.03, terrain +0.3 gpu | gpu 8.74-8.82, Switch 35.0-35.3 ms; `shadow` cpu 1.21 gpu 1.19, terrain +0.38 gpu |
+| 1920x1080 without / with | gpu 8.36 / 10.20, Switch 33.4 / 40.8 ms | - |
+
+So +1.5-1.6 ms gpu at 720p (+6 ms Switch estimate), +1.8 at 1080p; on the idle-GPU baseline that is about 23 / 25.5 ms at 720p.
+Of the `shadow` section, a pass into an FBO costs ~0.3 ms of sync overhead even when empty, a full-map depth blit ~0.35 (the
+dirty rectangle averages 37 % of the map), the casters the rest; its cpu is mostly worm re-skinning. A land change redraws the
+cached map once (the whole land, ~1.9 ms gpu) on the frame the rebuilt chunks swap in. Docked 1080p may now cross the 36 ms
+fallback to 720p (`Lit::profile`).
 
 Scenery and graphics levers (2026-10-05, same binary, `W4NX_GFX="msaa aniso=N res=WxH"`, gpu = desktop GPU-synced ms, Switch = 4x gpu docked):
 
@@ -106,6 +172,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkKing` | King rule: the king dies, then his team through the death queue; the other team untouched. |
 | `checkDeathQueue` | W4M death queue: dead worms of one count blow up one after another. |
 | `checkDrownFloat` | W4M drowning: no hp count, the worm floats a moment with the camera on it, pops at the surface. |
+| `checkDrownPair` | W4M: two worms drowned by one blast pop one after the other, each 2000 ms after its own surface arrival (no queue); a standing worm reached by the water sinks at 0.03 units/ms. |
 | `checkPostActivity` | W4M PostActivityTime: 2400 ms between the end of the settle and the next turn. |
 | `checkKarma` | Karma: a cluster explosion injected into `shots[]` hurts the attacker (damage rule in isolation). |
 | `checkVampire` | Vampire: damage dealt to an enemy heals the attacker above full. |
@@ -129,17 +196,18 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkDeathBlast` | W4M Worm.Death*: the death blast takes up to 35 hp off neighbours, throws them, digs 1.75 m; the settle waits for the thrown worm (W4M Worm Falling is active). |
 | `checkWallClearance` | Concave corner: walking or dropping against a wall leaves the body out of the rock. |
 | `checkWalkW4M` | Density clamped like imported .vox maps: corridors and steps walkable, ledges vaulted up to body height. |
+| `checkLowLedges` | 0.2-0.7 m ledges, on and off the voxel grid and diagonal: the front foot finds them (4 foot rays) and the worm steps or vaults on; the walkable test reads the flat top past our rounded lip (`groundNormal`). |
 | `checkVault` | W4M Vaulting: a 16-unit ledge in 250 ms; stick keeps it going, release drops back, jump ignored. |
 | `checkNarrowSlot` | W4M 8 land probe points: a foot lands on the lips of a slot narrower than the stance; wider slot lets it in. |
 | `checkHeading` | W4M: walking sets the facing to the stick direction at once, whatever the turn angle. |
-| `checkWallStuck` | Off a ledge onto a 76 degree face, or wedged under a sloping ceiling: the worm lands, then walks out. |
+| `checkWallStuck` | Off a ledge onto a 76 degree face (pushed into it, it skids up and slides back), or wedged under a sloping ceiling: the worm lands, then walks out. |
 | `checkJumpTrajectory` | W4M launch + Integrate: jump 50 units up, 80 along; backflip 80 up, 50.6 back. |
 | `checkLaunchAtWall` | W4M launch from the eye against a thin wall: bazooka on its own side, shotgun on the near face, dynamite ahead. |
 | `checkPointBlankDown` | Fired down at point blank: the shot passes the shooter's body, the floor blast hurts it. |
 | `checkPayloadForces` | W4M payloads: wind adds Wind.Speed; homing missile has no gravity, homes only in stage 2. |
 | `checkJumpAtWall` | StartJump 0x5acd40 tests no wall: against an upright or 6 degree overhanging cliff, on each side, facing it or away, tap, double tap or stick held, the worm leaves the ground over 1.5 m. |
 | `checkJumps` | DetectJump: double-press window, forward jump speeds, variant picked when the 300 ms window ends. |
-| `checkW4MWalkRules` | UpdateWalking / Sliding rules on 70° slopes; a worm whose rods cross a slab with nothing under its feet: the fall is undone (stuck +2), Rebound stops it (under 0.01 units/ms) into Sliding, whose Landed clears the count, and it then stays put Ambulatory (W4M Ballistic 0x5afb17, Rebound 0x5acea0, Sliding 0x5b05c2). |
+| `checkW4MWalkRules` | UpdateWalking / Sliding rules on 70° slopes (walked into from 20 approach phases: never walks up it, any step onto it Slides back to the foot); a worm whose rods cross a slab with nothing under its feet: the fall is undone (stuck +2), Rebound stops it (under 0.01 units/ms) into Sliding, whose Landed clears the count, and it then stays put Ambulatory (W4M Ballistic 0x5afb17, Rebound 0x5acea0, Sliding 0x5b05c2). |
 | `checkDynamite` | Dynamite: the worm walks away while the fuse burns, can't fire again, the blast ends the turn. |
 | `checkOffMapShot` | A shot leaving the map flies on (camera on it) until it falls into the sea with a splash. |
 | `checkCrateHold` | A crate dropped mid-turn holds the turn (no clock, no control) until it lands, then `POST_ACTIVITY`. |
@@ -216,8 +284,9 @@ in `10_target_practice`; `Progress` save/load keeps done and best time, the next
 ## replay_check.cpp
 
 No static check: `main` plays a recorded AI match on the island and arabian (double damage). Save/load/re-sim gives the
-same checksum and voxels; each instant replay (snapshot restore + re-sim) lands on the live state. Prints step, snapshot
-and fast-forward timings.
+same checksum and voxels; each instant replay lands on the live state: even replays restore the turn snapshot and
+re-simulate, odd ones restore the checkpoint 45 ticks back, re-simulate half way and skip (`Snapshot::forward`). Prints
+step, snapshot, restore and re-sim timings.
 
 ## ui_check.cpp
 

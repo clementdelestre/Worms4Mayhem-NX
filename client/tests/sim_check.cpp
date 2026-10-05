@@ -164,6 +164,39 @@ static void checkDrownFloat() {
     assert(fabsf(d.pos.y - Game::R - (g.water - 0.4f)) < 0.2f && d.counted == 0);  // popped at its float height, nothing left to draw
 }
 
+// W4M: each drowned worm blows up on its own DrownFloat clock (0x5aa130, set 2000 ms at its float height 0x5aa222), never
+// through the death queue: two worms drowned by one blast pop one after the other, spaced as their surface arrivals
+static void checkDrownPair() {
+    Game g;
+    g.start({1, 2, 2, "", 0}), g.hotSeat = 0;
+    settle(g);
+    g.hotSeat = 0;
+    int a = (g.current + 1) % 4, b = (g.current + 3) % 4;
+    const Vector3 near = {g.worms[a].pos.x, g.water + 1.0f, g.worms[a].pos.z};
+    Vector3 at = near;
+    for (int k = 0; k < 4000 && (g.terrain.solid({at.x - 3, at.y - 3, at.z}) || g.terrain.solid({at.x + 3, at.y - 3, at.z})); k++)  // open sea
+        at = Vector3Add(near, Vector3Scale(k % 4 < 2 ? Vector3{1, 0, 0} : Vector3{0, 0, 1}, (k % 2 ? -0.2f : 0.2f) * (k / 4)));
+    g.worms[a].pos = Vector3Add(at, {-1.0f, 0, 0}), g.worms[b].pos = Vector3Add(at, {1.6f, 0, 0});
+    for (int i : {a, b}) g.worms[i].vel = {}, g.worms[i].grounded = false;
+    g.events.clear(), g.explode({at.x, at.y - 0.6f, at.z}, Game::MINE_BLAST);
+    int up[2] = {-1, -1}, died[2] = {-1, -1};
+    for (int t = 0; t < 60 * 20 && (died[0] < 0 || died[1] < 0); t++) {
+        g.step(Input{});
+        for (int j = 0; j < 2; j++) {
+            const int i = j ? b : a;
+            if (up[j] < 0 && g.worms[i].floatT > 0) up[j] = t;
+            for (const GameEvent &e : g.events) if (e.kind == GameEvent::Death && e.worm == i) died[j] = t;
+        }
+    }
+    assert(up[0] >= 0 && up[1] >= 0 && up[0] != up[1]);
+    for (int j = 0; j < 2; j++) assert(died[j] - up[j] == Game::DROWN_FLOAT - 1);
+    Worm &s = g.worms[g.current];  // standing when the water reaches it: vy -0.03 units/ms (0x5ad91f), not its own
+    assert(s.alive && s.grounded);
+    g.water = s.pos.y - Game::R + 0.4f;
+    g.step(Input{});
+    assert(s.drowned && s.vel.y == -1.5f);
+}
+
 // W4M PostActivityTime: 2400 ms between the end of the settle and the next turn.
 static void checkPostActivity() {
     GameConfig c{1, 2, 1, "", 0};
@@ -1343,6 +1376,31 @@ static void checkWalkW4M() {
     assert(c.x < 10.6f && c.z < 10.6f && worst <= 0);  // in the corner, out of both walls
 }
 
+// W4M UpdateWalking casts the 4 foot rays: the front foot finds a low ledge and the worm steps or vaults onto it. Our field rounds the
+// ledge's edges, where the walkable test reads the flat face beyond (0x46a070); off the voxel grid and across it alike.
+static void checkLowLedges() {
+    for (float h : {0.2f, 0.35f, 0.5f, 0.7f})
+        for (float off : {0.0f, 0.07f, 0.13f})
+            for (int diag = 0; diag < 2; diag++) {
+                Game g;
+                g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
+                for (int z = 16; z < 80; z++)
+                    for (int y = 176; y < 248; y++)
+                        for (int x = 16; x < 176; x++) {
+                            Vector3 p = Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX);
+                            float u = (diag ? (p.x + p.z - 24) * 0.7071f + 12 : p.x) - off;  // across the ledge edge at u = 12
+                            g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(fmaxf(50 - p.y, fminf(50 + h - p.y, u - 12)) * Terrain::Q, -64, 64);
+                        }
+                Worm &w = g.worms[g.current];
+                w.pos = {10, 50.5f, diag ? 10.0f : 12.0f}, w.vel = {}, w.yaw = diag ? PI / 4 : PI / 2;
+                g.hotSeat = 0;
+                Input walk;
+                walk.walk = 127;
+                for (int t = 0; t < 120; t++) g.step(walk);
+                assert(w.pos.y > 50.5f + h - 0.05f && !w.motion.slide);
+            }
+}
+
 // W4M Vaulting 0x5aca80: a 16-unit ledge is climbed in 250 ms at 4 units per frame, not at once; the stick held along the start input
 // keeps it going, letting go drops it back, jump is ignored and nothing in the way stops it.
 static void checkVault() {
@@ -1436,14 +1494,14 @@ static void checkW4MWalkRules() {
         for (int t = 0; t < 40; t++) a.step(walk), b.step(Input{});
         assert(fabsf(a.worms[a.current].pos.x - b.worms[b.current].pos.x) < 1e-4f && !a.worms[a.current].motion.slide && fabsf(a.worms[a.current].pos.x - 12.6f) < 0.05f);
     }
-    {  // walking into it from the floor: no climb past the foot of the slope
+    for (int k = 0; k < 20; k++) {  // walked into from the floor: a step onto it (cand on the slope, n.(cand - pos) ~ 0) Slides, never walks up it
         Game g;
         arena(g, slope(70));
         Worm &w = g.worms[g.current];
-        w.pos = {11, 50.5f, 12}, w.vel = {}, w.yaw = PI / 2;
-        float top = 0;
-        for (int t = 0; t < 90; t++) g.step(walk), top = fmaxf(top, w.pos.y);
-        assert(top < 50.5f + 0.4f && w.pos.x < 12.4f);
+        w.pos = {11 + k * 0.0021f, 50.5f, 12}, w.vel = {}, w.yaw = PI / 2;
+        for (int t = 0; t < 90; t++) g.step(walk), assert(w.motion.slide || w.pos.y < 50.5f + 0.4f);
+        for (int t = 0; t < 120; t++) g.step(Input{});
+        assert(w.pos.x < 12.1f && w.pos.y < 50.5f + 0.15f);  // slid back to the foot
     }
     {  // a 0.35 m step onto a 70 degree slope: a vault onto ground that is not walkable, refused
         Game g;
@@ -1547,8 +1605,9 @@ static void checkWallStuck() {
     arena(g, [](Vector3 p) { return fmaxf(fmaxf(fminf(50 - p.y, 12 - p.x), 46 - p.y), 0.97f * (p.x - 13.5f) - 0.24f * (p.y - 46)); });
     Worm &w = g.worms[g.current];
     w.pos = {10.5f, 50.5f, 12}, w.vel = {}, w.yaw = 0;
-    walk(g, PI / 2, 150);  // turns to the face at once, walks off and falls against it
-    assert(w.grounded && w.pos.y < 47.5f);
+    walk(g, PI / 2, 150);  // turns to the face at once, walks off and falls against it; pushed into it, it skids up and back (Sliding)
+    for (int t = 0; t < 120; t++) g.step(Input{});
+    assert(w.grounded && !w.motion.slide && w.pos.y < 47.5f);
     Vector3 at = w.pos;
     walk(g, -PI / 2, 30);
     assert(w.pos.x < at.x - 0.5f);
@@ -2693,6 +2752,49 @@ static void checkJetpackSecondary() {
     h.secondary = dyn, h.fuel = 0.01f;
     h.step(fire);
     assert(!h.jetting && h.weapon == dyn && h.secondary < 0);
+}
+
+// W4M: a jetpack worm drowns from Override with its Velocity (0x5ad640); Worm.Damaged.Current runs Lua EndTurn in that frame, which
+// kills the jetpack (Jetpack.Kill); the float (0x5aa130) and the dropped dynamite keep their own clocks, the next turn waits for both
+static void checkJetpackDrown() {
+    const int jp = weaponNamed("Jetpack"), dyn = weaponNamed("Dynamite");
+    for (int mode = 0; mode < 3; mode++) {  // 0: dynamite dropped, 1: no secondary, 2: dynamite dropped, retreat over before the fall
+        Game g;
+        g.start({1, 2, 2, "", 0}), g.hotSeat = 0;
+        settle(g);
+        const int cur = g.current;
+        Worm &a = g.worms[cur];
+        g.weapon = jp, g.ammo[a.team][jp] = 1, g.ammo[a.team][dyn] = 1, g.delays[a.team][jp] = g.delays[a.team][dyn] = 0;
+        Input fire, drop;
+        fire.buttons = Input::FIRE, drop.buttons = Input::FIRE | Input::JUMP;
+        g.step(fire);
+        assert(g.jetting);
+        if (mode != 1) {
+            g.secondary = dyn, g.step(drop);
+            assert(g.shots.size() == 1 && g.phase == Phase::Flying && g.jetting);
+        }
+        const Vector3 near = {a.pos.x, g.water + 1.5f, a.pos.z};
+        Vector3 at = near;
+        for (int k = 0; k < 4000 && g.terrain.solid({at.x, at.y - 3, at.z}); k++)  // open sea
+            at = Vector3Add(near, Vector3Scale(k % 4 < 2 ? Vector3{1, 0, 0} : Vector3{0, 0, 1}, (k % 2 ? -0.2f : 0.2f) * (k / 4)));
+        a.pos = at, a.vel = {};
+        if (mode == 2) g.timer = 1;
+        int drownT = -1, upT = -1, deathT = -1, boomT = mode == 1 ? 0 : -1, aimT = -1;
+        for (int t = 0; t < 60 * 30 && aimT < 0; t++) {
+            g.step(Input{});
+            if (mode == 2 && t == 0) assert(g.phase == Phase::Settle && !g.jetting && a.alive);  // EndTurn: Jetpack.Kill, the worm falls
+            if (drownT < 0 && a.drowned) {
+                drownT = t;
+                assert(!g.jetting && g.phase == Phase::Settle && g.dying() == cur && !a.alive);  // jetpack gone, turn over, "Worm Dying"
+            }
+            if (upT < 0 && a.floatT > 0) upT = t;
+            for (const GameEvent &e : g.events) if (e.kind == GameEvent::Death && e.worm == cur) deathT = t;
+            if (boomT < 0 && g.shots.empty()) boomT = t;  // the dynamite's blast, on its own fuse
+            if (drownT >= 0 && g.phase == Phase::Aim) aimT = t;  // the next turn
+        }
+        assert(drownT >= 0 && upT > drownT && deathT - upT == Game::DROWN_FLOAT - 1 && boomT >= 0);
+        assert(aimT >= std::max(deathT, boomT) + Game::POST_ACTIVITY && (mode == 1 || deathT < boomT));  // the float waits for no dynamite
+    }
 }
 
 // Tool gaps closed against W4M: landing keeps the secondary (0x562f72), the panel keeps UtilityFire (0x602ea0), D-pad
@@ -4110,6 +4212,7 @@ int main() {
     checkSheepCamera();
     checkEventCameras();
     checkDrownFloat();
+    checkDrownPair();
     checkPostActivity();
     checkDeathBlast();
     checkKarma();
@@ -4139,6 +4242,7 @@ int main() {
     checkPointBlankDown();
     checkWallClearance();
     checkWalkW4M();
+    checkLowLedges();
     checkVault();
     checkNarrowSlot();
     checkW4MWalkRules();
@@ -4165,6 +4269,7 @@ int main() {
     checkToolWeapons();
     checkJetpack();
     checkJetpackSecondary();
+    checkJetpackDrown();
     checkToolGaps();
     checkFirstWeapon();
     checkAbduction();

@@ -18,12 +18,16 @@ float textWidth(const char *t, float size);
 const Font &textFont();  // the font text() draws, for rotated or outline-free text
 Texture2D art(const char *name);  // assets/ui/<name>.png, cached; id 0 when missing
 void logo(float cx, float y, float w, float deg = 0);  // W4M logo, top centre at (cx, y), tilted deg
+// one channel of a W4M frontend clip (WXFrontend.Anim, {time s, value} keys), linear between keys, clamped
+float clipKeys(const float (*keys)[2], int n, float t);
+extern const float IN_SCALEHIT_S[6][2], IN_SCALEHIT_X[7][2], IN_SCALEHIT_Y[7][2];
 // Menu language: 0 English, 1 French (lang.txt, else the system language). tr(): W4M's string for key
 // (assets/lang/<en|fr>.txt from tools/w4m-ui), else the built-in en / fr text (key may be null).
 extern int language;
 const char *tr(const char *key, const char *en, const char *fr = nullptr);
 void background();
 std::string teamName(const GameConfig &c, int team);
+std::string mapTitle(const std::string &map);  // display name: W4M's level name, else from the file name
 const char *wormName(int team, int i);
 // pad -1 = any pad. D-pad buttons also fire on left-stick flicks and auto-repeat while held.
 bool pressed(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys);
@@ -53,6 +57,7 @@ private:
     Screen next = Title;  // W4M menu change: the current items fly out for LEAVE s since `leaving`, then `next` slides in
     float leaving = -1;
     float subIn(float t) const;  // submenu panel progress: 0 hidden .. 1 shown
+    float titleIn(float t) const;  // s into the title -> main menu glide, run backwards when B goes back to the title
     void menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live = true);  // live: animate + take input
     bool online = false, lan = false, loaded = false, music = true, layout = false;  // layout: Controls shows the pad diagram  // online: network setup (LAN or server)
     std::string *editing = nullptr;  // desktop text entry target
