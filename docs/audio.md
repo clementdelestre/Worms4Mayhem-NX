@@ -79,7 +79,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | SuperSheepFire | `super_sheep` | weapons/WingFlap | -3 |  | 0.5–25 | 1 | weapons: WingFlap1, WingFlap2, WingFlap3 | main.cpp `onEvent` |
 | Step | `step` | weapons/OldWomenFootsteps | -6 |  | 0.5–60 | 1 | weapons: OldWomenFootstep1, OldWomenFootstep2, OldWomenFootstep3, OldWomenFootStep4, OldWomenFootstep5 | main.cpp `animateWorms` |
 | Land | `land` | weapons/Thud | 0 |  | 0.5–25 | 2 | weapons: Thud1, Thud2, Thud3, Thud4 | main.cpp `animateWorms` |
-| HpTick | `hp_tick` | global/click3 | 0 |  | 2D | 1 | global: Click3 | ui.cpp `Hud::trackHp` |
+| HpTick | `hp_tick` | global/click3 | 0 |  | 2D | 1 | global: Click3 | ui.cpp `Hud::trackHp`; `Pause::update` (popups' MenuGoingAway `WXMsg.PlaySample$click3`: the pause menu left for the briefing, the briefing closed) |
 | CrateImpactHealth | `crate_impact_health` | weapons/CrateImpactHealth | -2 |  | 0.5–60 | 1 | weapons: CrateHitHealth | main.cpp `onEvent` |
 | CrateImpactWeapon | `crate_impact_weapon` | weapons/CrateImpactWeapon | -2 |  | 0.5–60 | 1 | weapons: CrateImpactWeapons | main.cpp `onEvent` |
 | CrateImpactUtil | `crate_impact_util` | weapons/CrateImpactUtil | -3 |  | 0.5–60 | 1 | weapons: CrateImpactUtil | main.cpp `onEvent` |
@@ -160,6 +160,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | FatkinsBounce | `fatkins_bounce` | weapons/FatkinsBounce | -3 |  | 2D | 1 | weapons: FatkinsBounce1, FatkinsBounce2 (mode 2) | main.cpp `onEvent` Bounce (WEAPTWK BounceSfx) |
 | BananaBounce | `banana_bounce` | weapons/BananaBombImpact | -6 |  | 0.5–60 | 1 | weapons: BananaBombImpact | main.cpp `onEvent` Bounce (WEAPTWK BounceSfx of kWeaponBananaBomb) |
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
+| FeScaleHit | `fe_scalehit` | global/In_Scalehitxy | 0 |  | 2D | 1 | global: In_Scalehitxy | ui.cpp `Pause::update`: WXFEP.MissionBriefing's Audio_Incoming (kAUDIO_In_ScaleHitXY), at its 200 ms Delay_Incoming [data] |
 
 Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its Time envelope
 ends it at 5.03 s, so it is one pass of the 5.85 s clip [ours]: started with a 1 s trigger delay when a Bazooka or Homing Missile shot exists, placed on the shot every frame, stopped at 5.03 s of flight or when the shot is gone (no 500 ms fade-out, the blast covers it); the Fire event plays RocketRelease (2D, -6 dB) for both [data + disasm, docs/w4m/audio.md "MissileLoop owners"]; `Parachute` is the Open layer of ParachuteLoop; `Pickup` uses PickupWeapon's −11 dB for all

@@ -1076,7 +1076,7 @@ fn main() {
                     if std::env::var("W4M_KEYS").is_ok() {  // debug: (time s, value) keys of each channel
                         let mut ks: Vec<_> = k.ch.iter().collect();
                         ks.sort_by(|a, b| a.0.cmp(b.0));
-                        for ((n, t), kf) in ks { println!("    {n}:{t:x} inf {:x} {:?}", kf[0][6] as u32 >> 8 & 0x3f, kf.iter().map(|q| (q[4], q[5])).collect::<Vec<_>>()); }
+                        for ((n, t), kf) in ks { println!("    {n}:{t:x} inf {:x} {:?}", kf[0][6] as u32 >> 8 & 0x3f, kf.iter().map(|q| if std::env::var("W4M_KEYS").is_ok_and(|v| v == "full") { format!("{:?}", q) } else { format!("({}, {})", q[4], q[5]) }).collect::<Vec<_>>()); }
                     }
                 }
             }

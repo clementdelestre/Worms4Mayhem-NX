@@ -4,6 +4,10 @@
 #include "terrain.h"
 #include "ui.h"
 #include <cmath>
+#include <cstring>
+#include <dirent.h>
+#include <strings.h>
+#include <sys/stat.h>
 #include <string>
 #ifdef __SWITCH__
 #include <switch.h>
@@ -144,6 +148,26 @@ void pinCore(int core) {
 #else
     (void)core;
 #endif
+}
+
+// readdir's d_type, not raylib's LoadDirectoryFilesEx: that stats every entry twice, an SD request each on Switch
+std::vector<std::string> list(const std::string &dir, const char *ext, bool recurse) {
+    std::vector<std::string> out;
+    DIR *d = opendir(dir.c_str());
+    if (!d) return out;
+    bool dirs = !strcmp(ext, "/");
+    size_t n = strlen(ext);
+    while (dirent *e = readdir(d)) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        std::string p = dir + "/" + e->d_name;
+        struct stat st;
+        bool isDir = e->d_type == DT_UNKNOWN ? !stat(p.c_str(), &st) && S_ISDIR(st.st_mode) : e->d_type == DT_DIR;
+        size_t l = strlen(e->d_name);
+        if (isDir ? dirs : !dirs && l >= n && !strcasecmp(e->d_name + l - n, ext)) out.push_back(p);
+        if (isDir && recurse) for (std::string &f : list(p, ext, true)) out.push_back(std::move(f));
+    }
+    closedir(d);
+    return out;
 }
 
 void overlay(float dt) {

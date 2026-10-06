@@ -39,6 +39,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  FloodRain, FloodThunder,  // weapons/FloodRainLoop (WXP_StormClouds): its rain loop and its delayed Thunder layer
                  FatkinsBounce, BananaBounce,  // WEAPTWK BounceSfx of kWeaponFatkins / kWeaponBananaBomb
                  MineMachine,  // W4M weapons/MineMachineOperate: the mine factory runs, MineFactory.Start to .Fire (0x5cf413, 0x5cf579)
+                 FeScaleHit,  // W4M kAUDIO_In_ScaleHitXY (global/In_Scalehitxy)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
@@ -50,7 +51,9 @@ enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
 struct Viseme { uint16_t frame; uint8_t v; };
 using Lip = std::vector<Viseme>;
 
-void init();
+void init();  // device, menu sounds, theme
+void loadRest();  // starts loading the match sounds on worker threads
+bool finishLoads(bool wait);  // true once the match sounds are in (wait: block until then)
 void shutdown();
 void stopSfx();  // cut every sound effect and voice line (replay skipped, match left); music untouched
 void update();  // call once per frame: streams music

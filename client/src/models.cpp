@@ -6,6 +6,7 @@
 #include "external/cgltf.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <deque>
 #include <mutex>
@@ -124,7 +125,11 @@ struct Job {
 };
 std::mutex mu;
 std::deque<Job> jobs;
-std::atomic<bool> prepared{false};
+// load cost per phase, ns summed over threads: every LoadFileData() read, then the models' glb parse, png decode, mipmaps, clips, upload
+enum { T_READ, T_PARSE, T_PNG, T_MIP, T_CLIPS, T_UPLOAD, T_N };
+std::atomic<long long> spent[T_N]{}, readBytes{0};
+struct Span { int k; std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now();
+              ~Span() { spent[k] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count(); } };
 std::map<std::string, Model> spare;  // decoded on the worker but not drawn here (frontend/): take()
 thread_local Job *serve = nullptr;
 
@@ -136,13 +141,14 @@ unsigned char *readFile(const char *path, int *size) {
         serve->data = nullptr;
         return *size = serve->size, d;
     }
+    Span sp{T_READ};
     FILE *f = fopen(path, "rb");
     if (!f) return TraceLog(LOG_WARNING, "FILEIO: [%s] Failed to open file", path), nullptr;
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
     unsigned char *d = n > 0 ? (unsigned char *)malloc(n) : nullptr;
-    if (d && fread(d, 1, n, f) == (size_t)n) *size = (int)n;
+    if (d && fread(d, 1, n, f) == (size_t)n) *size = (int)n, readBytes += n;
     else free(d), d = nullptr;
     fclose(f);
     return d;
@@ -202,17 +208,21 @@ Job prepare(const char *path) {
     j.data = readFile(path, &j.size);
     cgltf_options o{};
     cgltf_data *g = nullptr;
-    if (!j.data || j.size < 20 || cgltf_parse(&o, j.data, j.size, &g) != cgltf_result_success || g->file_type != cgltf_file_type_glb ||
-        cgltf_load_buffers(&o, g, path) != cgltf_result_success) {
-        if (g) cgltf_free(g);
-        return j;
+    {
+        Span sp{T_PARSE};
+        if (!j.data || j.size < 20 || cgltf_parse(&o, j.data, j.size, &g) != cgltf_result_success || g->file_type != cgltf_file_type_glb ||
+            cgltf_load_buffers(&o, g, path) != cgltf_result_success) {
+            if (g) cgltf_free(g);
+            return j;
+        }
     }
     j.albedo.resize(g->materials_count + 1);
     for (size_t i = 0; i < g->materials_count; i++) {
         cgltf_texture *t = g->materials[i].pbr_metallic_roughness.base_color_texture.texture;
         cgltf_buffer_view *v = t && t->image ? t->image->buffer_view : nullptr;
         if (!v || !v->buffer->data) continue;
-        j.albedo[i + 1] = LoadImageFromMemory(".png", (unsigned char *)v->buffer->data + v->offset, (int)v->size);
+        { Span sp{T_PNG}; j.albedo[i + 1] = LoadImageFromMemory(".png", (unsigned char *)v->buffer->data + v->offset, (int)v->size); }
+        Span sp{T_MIP};
         ImageMipmaps(&j.albedo[i + 1]);  // here rather than GenTextureMipmaps(): no GPU blits on the main thread
     }
     size_t acc = 0, views = 0;  // accessors / buffer views LoadModel() reads: meshes and skins (the clips' come after)
@@ -239,13 +249,20 @@ Job prepare(const char *path) {
     auto [js, end] = json(j);
     const char *tag = "\"baseColorTexture\"";
     for (char *p = js; (p = std::search(p, end, tag, tag + 18)) != end; p++) p[16] = 'X';  // a key cgltf ignores: no decode
-    if (skinned) j.anims = LoadModelAnimations(path, &j.count);  // reads the file again: it needs the clips blank() drops
+    if (skinned) {  // a copy of the bytes, not a second SD read: it needs the clips blank() drops
+        Span sp{T_CLIPS};
+        unsigned char *keep = j.data;
+        j.data = (unsigned char *)memcpy(malloc(j.size), keep, j.size);
+        serve = &j, j.anims = LoadModelAnimations(path, &j.count), serve = nullptr;
+        j.data = keep;
+    }
     blank(j, "animations", 0), blank(j, "accessors", acc), blank(j, "bufferViews", views), compact(j);
     return j;
 }
 
 // One step of a job's GPU side (LoadModel(), then a texture); true once j.m is complete
 bool uploadStep(Job &j) {
+    Span sp{T_UPLOAD};
     if (j.next < 0) {
         serve = &j;
         j.m = LoadModel(j.path.c_str());
@@ -322,52 +339,81 @@ void add(Job &j) {
         e.uv0.emplace(left ? e.uv0.begin() : e.uv0.end(), me.texcoords, me.texcoords + 2 * me.vertexCount);
         e.pupil.insert(left ? e.pupil.begin() : e.pupil.end(), i);
     }
-    if (strstr(j.path.c_str(), "/hats/")) hatNames.push_back(name);
     models[name] = e;
 }
 }  // namespace
 
-void Models::prepare() {
-    if (DirectoryExists(MODEL_DIR)) {
-        FilePathList files = LoadDirectoryFilesEx(MODEL_DIR, ".glb", true);  // recurses into hats/ and frontend/
-        std::stable_partition(files.paths, files.paths + files.count, [](const char *p) { return strstr(p, "/worm.glb"); });  // longest job (165 clips): first
-        std::atomic<unsigned> next{0};
-        auto work = [&](int core) {
+// Workers on cores 1 and 2: the menu scene, then (second start()) worm.glb (longest job) and the rest
+static std::vector<std::string> files;
+static std::atomic<unsigned> nextFile{0};
+static std::atomic<int> working{0};
+static std::atomic<bool> stopWork{false};
+static std::thread workers[2];
+static int menuLeft = 0;  // menu scene jobs not yet added
+static double startT = 0;
+static bool menuFile(const std::string &p) { return p.find("/frontend/") != std::string::npos || p.find("/seagull.glb") != std::string::npos; }
+
+void Models::start() {
+    bool first = files.empty();
+    if (first) {
+        for (std::string &p : Loading::list(MODEL_DIR, ".glb", true)) {  // recurses into hats/ and frontend/
+            if (p.find("/sky/") != std::string::npos) continue;  // level skies: one per match, Models::decode()
+            if (p.find("/hats/") != std::string::npos) hatNames.push_back(GetFileNameWithoutExt(p.c_str()));
+            files.push_back(p);
+        }
+        if (files.empty()) return;
+        std::sort(hatNames.begin(), hatNames.end());  // same file set on every client -> same order
+        auto rank = [](const std::string &p) { return menuFile(p) ? 0 : p.find("/worm.glb") != std::string::npos ? 1 : 2; };
+        std::stable_sort(files.begin(), files.end(), [&](const std::string &a, const std::string &b) { return rank(a) < rank(b); });
+        menuLeft = (int)std::count_if(files.begin(), files.end(), menuFile);
+        startT = GetTime();
+    }
+    for (std::thread &w : workers) if (w.joinable()) w.join();
+    unsigned end = first ? (unsigned)menuLeft : (unsigned)files.size();
+    working = 2;
+    for (int c = 0; c < 2; c++)
+        workers[c] = std::thread([end](int core) {
             Loading::pinCore(core);
-            for (unsigned i; (i = next++) < files.count;) {
-                if (strstr(files.paths[i], "/sky/")) continue;  // level skies: one per match, Models::decode()
-                Job j = ::prepare(files.paths[i]);
+            for (unsigned i; !stopWork && (i = nextFile++) < end;) {
+                Job j = ::prepare(files[i].c_str());
                 std::lock_guard<std::mutex> l(mu);
                 jobs.push_back(std::move(j));
             }
-        };
-        std::thread a(work, 1);
-        work(2);
-        a.join();
-        UnloadDirectoryFiles(files);
-    }
-    prepared = true;
+            nextFile = std::min(nextFile.load(), end);
+            working--;
+        }, c + 1);
 }
+
+bool Models::menuReady() { return menuLeft == 0; }
 
 static void compileBeam();
 bool Models::upload(double until) {
     if (!shader.id) shader = Lit::modelShader(true), compileBeam();  // textured, alpha-tested (teeth/eye overlays), W4M worm light
     static Job cur;
-    static bool busy = false;
-    for (bool done = prepared; GetTime() < until;) {
+    static bool busy = false, finished = false;
+    if (finished || files.empty()) return false;
+    while (GetTime() < until) {
         if (!busy) {
             std::lock_guard<std::mutex> l(mu);
-            if (jobs.empty()) {
-                if (!done) return true;
-                std::sort(hatNames.begin(), hatNames.end());  // same file set on every client -> same order
-                TraceLog(LOG_INFO, "MODELS: %d loaded from %s (%d hats)", (int)models.size(), MODEL_DIR, (int)hatNames.size());
-                return false;
-            }
+            if (jobs.empty()) break;
             cur = std::move(jobs.front()), jobs.pop_front(), busy = true;
         }
-        if (uploadStep(cur)) add(cur), busy = false;
+        if (uploadStep(cur)) menuLeft -= menuFile(cur.path), add(cur), busy = false;
     }
-    return true;
+    if (busy || working || nextFile < files.size()) return true;
+    if (std::lock_guard<std::mutex> l(mu); !jobs.empty()) return true;
+    for (std::thread &w : workers) w.join();
+    finished = true;
+    TraceLog(LOG_INFO, "MODELS: %d loaded from %s (%d hats) in %.0f ms", (int)models.size(), MODEL_DIR, (int)hatNames.size(), (GetTime() - startT) * 1000);
+    return false;
+}
+
+const char *Models::bootStats() {
+    static char b[256];
+    auto ms = [](int k) { return spent[k] / 1e6; };
+    snprintf(b, sizeof b, "files %.1f MB read in %.0f ms (all threads); models: glb parse %.0f, png %.0f, mipmaps %.0f, clips %.0f (workers, summed), upload %.0f (main)",
+             readBytes / 1048576.0, ms(T_READ), ms(T_PARSE), ms(T_PNG), ms(T_MIP), ms(T_CLIPS), ms(T_UPLOAD));
+    return b;
 }
 
 static std::map<std::string, Job> decoded;  // Models::decode() output, uploaded by take()
@@ -399,6 +445,8 @@ Model Models::take(const char *path) {
 static Shader scroll{};  // drawModel's beam pass
 
 void Models::unload() {
+    stopWork = true;
+    for (std::thread &w : workers) if (w.joinable()) w.join();
     for (auto &[name, e] : models) {
         for (Entry::Slot &s : e.slots) unloadSlot(s);
         UnloadModelAnimations(e.anims, e.count);

@@ -16,6 +16,7 @@ unlocked W4M WXFE_UnlockableItem). Missions of a campaign unlock in `order`; cha
 | `par` | W4M BonusTime in s. |
 | `script`, `bank` | the `.lub` name and the level databank (`assets/scripts/`). |
 | `rain_prob` | Initialise's `Particle.Rain.Prob` (render only). |
+| `objectives` | W4M Objectives (`M.Diner.Obj`): `<key>.A/.B/.C` are the in-game briefing's lines; empty on challenges and deathmatches. |
 
 Menu (`ui.cpp` `missionMenu`, docs/w4m/frontend.md §17 "Story and Challenges screens"): the list's text and the briefing page show
 the title (Frontend_Name) and the briefing (Frontend_Briefing), as W4M's Mission Title / Mission Briefing (Challenges: Challenge
@@ -25,6 +26,22 @@ under BonusTime x 1000 ms unlocks `Lock.T.<level>` (GameLogicService 0x4f6f50, f
 it to `progress.txt` with the easter eggs, so the script sees it unlocked too. Best time and the tabs, rows and campaign line are ours.
 
 Score / best time: mission ticks until success (60 per second).
+
+In-game briefing (`ui.cpp` `Pause`, docs/w4m/frontend.md §17 "WXFEP.MissionBriefing"): in a Story mission (`kind` mission) the pause menu
+gets W4M's Briefing row (`FETXT.MissionBriefing`) before Quit; challenges have none [disasm 0x4cd3a0]. It opens on that row only, never at
+the mission start [disasm, data]. The popup draws W4M's items at their FE positions (960 x 540 FE units about the screen centre, Scale as
+half extents): the paper, the divider, the title, one bullet (`teaminfo04` frame 7) and line per existing `<objectives>.A/.B/.C` text
+(missing keys leave the slot empty), and the Return row highlighted; font sizes are FE size x 1280 / 960 px [data]. Animation and sounds:
+the whole popup's In_ScaleY after 200 ms with In_ScaleHitXY; closing kills it (KillPopUpNamed: no Out_ScaleY) and fades the veil out
+over 200 ms; leaving the pause menu and closing play click3 [data, disasm].
+A, B or + closes it and resumes the match (W4M MenuGoingAway `App.Resume`) [data]. The sim stays paused (`pause.open`) from the pause menu
+until the popup closes, as for the pause menu; nothing enters the sim or its checksum [ours: UI only]. Objective lines wrap at the box width,
+line height = font size, and shrink by 1 FE unit while taller than the box, down to 5, a single line never (W4M AutoScale 0x75f1b2)
+[disasm]. The title's MediumWobble holds each glyph 0.7 FE up or down, picked once per popup (0x6a9920, seed 0: random) [disasm]; ours
+seeds it from the opening time [ours]. The Return row's Click anim is not drawn: the kill removes the popup the same frame [disasm]. Text colours are W4M's gradients (title kGC_Button_Yellow, lines
+kGC_List_Lable_Blue, Return kGC_Solid_White on the charcoal stroke) [disasm 0x754e96]. A level movie's bars are not drawn while the pause
+menu or the briefing is up and come back on its close, as EFMV.Borders.Off / .On (the subtitles already hide with the HUD) [disasm]. The pause menu's own rows now use W4M's text keys
+(`FETXT.ResumeGame`, `FETXT.Help&Options`, `Lang.Quit`, header `FE.Header.Paused`); its layout stays ours.
 
 ## W4M import
 
@@ -83,9 +100,13 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
 - **Ammo**: the default inventories and delays are emptied before Initialise and copied into the 16 worm, 4 team, 4 alliance inventories
   (0x4f5bd0: LOCAL's SkipGo / Surrender -1 do not survive) [disasm]. A worm's ammo is Inventory.WormNN + TeamNN + AllianceNN, -1 if any
   is -1; ours is per team, the team's active worm's (`ammoSlot`, switched by ActivateNextWorm). Each tick `bookAmmo` books the sim's
-  changes as W4M makes them: a use takes from the alliance, then the team, then the worm (0x4f4fd0), a crate adds to the alliance
-  (0x5c8820), or to the collector's Inventory.WormNN for a crate made with Crate.AddToWormInventory (TraitorousWaters' Crate3-9; the key
-  is reset per crate, 0x4f2245) [disasm]; then every team is recomputed (a shared alliance, another worm's inventory).
+  changes as W4M makes them: a use takes from the alliance, then the team, then the worm (0x4f4fd0); a crate (its Collect event carries
+  NumContents, booked once a tick) adds NumContents as a u8 to the alliance's count alone, an infinite one staying, 0xff giving infinite
+  (`crateAdd`, 0x5c8820 / 0x5c88bb), or to the collector's Inventory.WormNN for a crate made with Crate.AddToWormInventory (the key is
+  reset per crate, 0x4f2245) [disasm]; then every team is recomputed (a shared alliance, another worm's inventory). So a NumContents -1
+  crate on a count of 0 gives an infinite weapon: SneakyBridgeThieves' Crate_9-11 (bat, dynamite, bazooka), CarpetCapers' 2/4/7/8,
+  StormTheCastle's girder [data]. No shipped script spawns an AddToWormInventory crate (TraitorousWaters' Crate3-9 are never passed to
+  lib_SpawnCrate) [data].
 - **Turns**: the script drives them. `GameLogic.ActivateNextWorm` is our `beginTurn` (delays of the team that played -1 first; turn and
   hot-seat clocks from TurnTime / HotSeatTime, TurnTime 0 = no turn clock), the script's own `SetWind` sets the wind (`beginTurn` draws
   none), `GameLogic.EndTurn` ends control. Our clocks call `Timer_TurnTimedOut`, `Timer_RetreatTimedOut`, `Timer_PostActivityTimedOut`;
@@ -165,7 +186,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   - Team bars (ui.cpp): a team's shown hp / the largest team total at the match start (W4M EnergyBarManagerEntity, §23.8), so reserved
     respawn columns and uneven mission teams keep W4M's lengths.
   - No objective box in game: W4M shows none (its Objectives `<key>.A/B/C` texts are the in-game pause menu's WXFEP.MissionBriefing
-    popup, docs/w4m/frontend.md §17).
+    popup, docs/w4m/frontend.md §17; "In-game briefing" below).
 - **Crates** (`GameLogic.CreateCrate`, docs/w4m/missions.md §23.10): at the Crate.Spawn marker itself, tag = Crate.Index; Type target ->
   `Object::Target`, health, custom (no contents, `weapon` -2), else Contents (kWeapon* / kUtility*). The keys go to the `Object`: count =
   NumContents, hp = Hitpoints x HitpointsMultiplier, teamCollect / teamDestroy = TeamCollectable / TeamDestructible (AlliedGroups),

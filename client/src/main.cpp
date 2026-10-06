@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <map>
 #include <mutex>
 #include <string>
@@ -66,8 +67,8 @@ static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initial
 // raylib's log, timestamped, to log.txt (no console on Switch; desktop echoes stdout). Counts GPU / file loads for the hitch log.
 enum { L_TEX, L_SHADER, L_MODEL, L_SOUND, L_IMAGE, L_FBO, L_COUNT };
 static unsigned loads[L_COUNT];
-// A Switch SD write blocks 15-25 ms (newlib flushes every 1 KB): after boot (logAsync) lines queue in memory and a thread
-// writes them each second; boot lines and warnings are written at once, so a crash leaves them on the card
+// A Switch SD write blocks 15-25 ms (newlib flushes every 1 KB): lines queue in memory and a thread writes them each second
+// (sync boot lines were 46 of the 47 s Switch boot); warnings are written at once, so a crash leaves them on the card
 struct LogQueue { std::mutex mu, fileMu; std::string text; bool async = false; FILE *f = nullptr; std::thread writer; std::atomic<bool> stop{false}; };
 static LogQueue &logq = *new LogQueue;  // never destroyed: the writer is joined in an atexit handler
 static void logDrain() {
@@ -77,7 +78,7 @@ static void logDrain() {
     if (logq.f && !out.empty()) fwrite(out.data(), 1, out.size(), logq.f), fflush(logq.f);
 }
 static void logAsync() {  // joined at exit: libnx has no pthread_detach (std::thread::detach aborts)
-    if (!logq.f || logq.async) return;
+    if (!(logq.f = fopen(DATA_DIR "log.txt", "w"))) return;
     logq.async = true;
     logq.writer = std::thread([] {
         for (int i = 1; !logq.stop; i++) {
@@ -98,8 +99,7 @@ static void logLine(int level, const char *fmt, va_list ap) {
     printf("%s: ", level >= LOG_ERROR ? "ERROR" : level == LOG_WARNING ? "WARNING" : "INFO"), vprintf(fmt, cp), putchar('\n'), va_end(cp);
 #endif
     static const auto t0 = std::chrono::steady_clock::now();  // not GetTime(): GLFW logs an error through here once terminated
-    static bool opened = (logq.f = fopen(DATA_DIR "log.txt", "w")) != nullptr;
-    if (!opened) return;
+    if (!logq.f) return;
     char b[1024];
     int k = snprintf(b, sizeof b, "%.3f ", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     vsnprintf(b + k, sizeof b - k, fmt, ap);
@@ -1111,6 +1111,7 @@ struct GpuClock {
 
 int main(int argc, char **argv) {
     SetTraceLogCallback(logLine);
+    logAsync();
     if ((argc > 1 && !strcmp(argv[1], "--netbot")) || getenv("W4NX_HIDDEN")) SetConfigFlags(FLAG_WINDOW_HIDDEN);
     int winW = 1280, winH = 720;  // W4NX_GFX="msaa aniso=N res=WxH": graphics levers timed by --bench (docs/tests.md "Render budget")
     if (const char *g = getenv("W4NX_GFX")) {
@@ -1146,25 +1147,41 @@ int main(int argc, char **argv) {
     bt[1] = GetTime();
     std::vector<std::string> maps = {""};  // "" = procedural island
     Ui::onNarrator = Audio::narrator;  // SubtitleGraphicEntity's failure narration (0x5f90a0)
+    double soundMs = 0, mapMs = 0;
     std::thread sounds([&] {
+        Loading::pinCore(1);
+        double t = GetTime();
         Audio::init();
+        soundMs = (GetTime() - t) * 1000;
+    });
+    std::thread mapList([&] {
+        double t = GetTime();
         for (const char *dir : {ROMFS_DIR "maps", DATA_DIR "assets/maps"}) {  // assets/ = maps imported from the user's W4M install
-            if (!DirectoryExists(dir)) continue;
-            FilePathList files = LoadDirectoryFilesEx(dir, ".json", false);
-            for (unsigned i = 0; i < files.count; i++) {
-                std::string m = files.paths[i];  // GetFileNameWithoutExt() isn't thread-safe
-                m = m.substr(m.find_last_of('/') + 1), m.resize(m.size() - 5);
+            for (std::string m : Loading::list(dir, ".json")) {
+                m = m.substr(m.find_last_of('/') + 1), m.resize(m.size() - 5);  // GetFileNameWithoutExt() isn't thread-safe
                 if (std::find(maps.begin(), maps.end(), m) == maps.end()) maps.push_back(m);
             }
-            UnloadDirectoryFiles(files);
         }
+        Ui::mapHeads(maps);  // the sort's titles
+        mapMs = (GetTime() - t) * 1000;
     });
-    std::thread meshes(Models::prepare);
+    Models::start();
     Controls::load(DATA_DIR "controls.txt");
     BeginDrawing(), ClearBackground(BLACK), EndDrawing();  // flushes those uploads before the spinner starts
-    for (double until = 0; Ui::preload(until) | Models::upload(until); until = GetTime() + 0.008) boot();  // ~half a frame of uploads
+    // a plain launch shows the title once the menu's assets are in; the match ones finish behind the first loading screen
+    static const bool lazy = argc <= 1 && !FileExists(DATA_DIR "shot");
+    if (!lazy) Models::start();
+    auto modelsPending = [](double until) { return Models::upload(until) && !(lazy && Models::menuReady()); };
+    double artMs = 0, modelMs = 0;  // when each finished, from bt[1]
+    for (double until = 0;; until = GetTime() + 0.008) {  // ~half a frame of uploads
+        bool art = Ui::preload(until), mdl = modelsPending(until);
+        if (!art && !artMs) artMs = (GetTime() - bt[1]) * 1000;
+        if (!mdl && !modelMs) modelMs = (GetTime() - bt[1]) * 1000;
+        if (!art && !mdl) break;
+        boot();
+    }
     bt[2] = GetTime();
-    meshes.join(), sounds.join();
+    sounds.join(), mapList.join();
     std::sort(maps.begin() + 1, maps.end(), [](const std::string &a, const std::string &b) {  // readdir order differs between PC and Switch
         int c = strcasecmp(Ui::mapTitle(a).c_str(), Ui::mapTitle(b).c_str());
         return c ? c < 0 : a < b;
@@ -1173,9 +1190,18 @@ int main(int argc, char **argv) {
     FrontBg::load();
     bt[4] = GetTime();
     Audio::music(true);
-    TraceLog(LOG_INFO, "BOOT: gl %.0f ms, decode+upload %.0f, join %.0f, menu scene %.0f, music %.0f, total %.0f", (bt[1] - bt[0]) * 1000,
-             (bt[2] - bt[1]) * 1000, (bt[3] - bt[2]) * 1000, (bt[4] - bt[3]) * 1000, (GetTime() - bt[4]) * 1000, (GetTime() - bt[0]) * 1000);
-    logAsync();
+    TraceLog(LOG_INFO, "BOOT: gl %.0f ms, menu assets %.0f (art %.0f, models %.0f, sounds %.0f, maps %.0f), join %.0f, menu scene %.0f, music %.0f, total %.0f",
+             (bt[1] - bt[0]) * 1000, (bt[2] - bt[1]) * 1000, artMs, modelMs, soundMs, mapMs, (bt[3] - bt[2]) * 1000, (bt[4] - bt[3]) * 1000, (GetTime() - bt[4]) * 1000, (GetTime() - bt[0]) * 1000);
+    TraceLog(LOG_INFO, "BOOT: so far %s", Models::bootStats());
+    if (lazy) Models::start();
+    Audio::loadRest();
+    if (!lazy) Audio::finishLoads(true);
+    auto missionsF = std::async(std::launch::async, [] {  // the Missions page's list and pictures, read while the title shows
+        Loading::pinCore(2);
+        std::vector<MissionSpec> l = listMissions(ROMFS_DIR, DATA_DIR);
+        for (const MissionSpec &m : l) Ui::predecode(m.preview);
+        return l;
+    });
     // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit; --animshot <weapon>: a turn firing it, anim_<frame>.png
     if (argc > 2 && !strcmp(argv[1], "--animshot") && (argv[2][0] < '0' || argv[2][0] > '9')) {
         const char *mdl = getenv("W4NX_MODEL") ? getenv("W4NX_MODEL") : "worm";  // W4NX_MODEL / W4NX_ZOOM: another model, camera distance x
@@ -1407,7 +1433,11 @@ int main(int argc, char **argv) {
     auto prepStep = [&](bool wait) {
         double t0 = GetTime();
         switch (loadStep) {
-        case 0: FrontBg::unload(); break;  // ~9 MB of menu scene; the next menu frame reloads it
+        case 0:
+            if (Models::upload(wait ? 1e30 : GetTime() + 0.008) || !Audio::finishLoads(wait)) return;  // the boot's background loads
+            if (static bool once = true; once) once = false, TraceLog(LOG_INFO, "BOOT: match assets in %.0f ms after start; %s", (GetTime() - bootT0) * 1000, Models::bootStats());
+            FrontBg::unload();  // ~9 MB of menu scene; the next menu frame reloads it
+            break;
         case 1:
             if (!loaderDone && !wait) return;
             loader.join();
@@ -1502,7 +1532,7 @@ int main(int argc, char **argv) {
     int missionIdx = -1, missionAct = 0;
     bool missionSaved = false, eggShown = false;
     auto openMissions = [&] {
-        if (missions.empty()) missions = listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt"), scriptUnlocks = progress.unlocks;
+        if (missions.empty()) missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt"), scriptUnlocks = progress.unlocks;
         screen = Screen::Missions;
     };
     auto startMission = [&](int i) {
@@ -1528,13 +1558,15 @@ int main(int argc, char **argv) {
         if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
         if (REPLAYS && (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback"))) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
         if (REPLAYS && !strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
-        // missions | briefing | missionhud | missionend [mission id]
+        // missions | briefing | missionhud | missionend | missionpause | missionbrief [mission id]
         if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "briefing") || !strcmp(uiShot, "movie")) openMissions(), missionMenu.brief = !strcmp(uiShot, "briefing"), missionMenu.shown = -100;
         // movie <mission id> <Lua function>: that mission, its intro skipped, then the script function (PlayMidtroMovie, PlayOutroMovie)
         bool movieShot = !strcmp(uiShot, "movie");
-        for (size_t i = 0; i < missions.size() && (!strcmp(uiShot, "missionhud") || !strcmp(uiShot, "missionend") || movieShot); i++)
+        bool pauseShot = !strcmp(uiShot, "missionpause") || !strcmp(uiShot, "missionbrief");
+        for (size_t i = 0; i < missions.size() && (!strcmp(uiShot, "missionhud") || !strcmp(uiShot, "missionend") || movieShot || pauseShot); i++)
             if (argc > 3 ? missions[i].id == argv[3] : i == 0) {
                 startMission((int)i);
+                if (pauseShot) pause.open = true, pause.row = 2, pause.brief = !strcmp(uiShot, "missionbrief") ? 0 : -1;
                 if (!strcmp(uiShot, "missionend")) game.run.result = 1, game.run.ticks = 5000, game.phase = Phase::GameOver;
                 if (movieShot && argc > 4) {
                     while (loadStep >= 0) prepStep(true);
@@ -1796,6 +1828,7 @@ int main(int argc, char **argv) {
         const Worm &cur = game.worms[game.current];
         int pad = !online && IsGamepadAvailable(cur.team) ? cur.team : 0;
         bool quit;
+        pause.story = game.cfg.mission && game.cfg.mission->kind == "mission" ? game.cfg.mission : nullptr;  // W4M GameOver.GameType "Story"
         if (playing) {  // match playback controls
             if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) paused = !paused;
             if (pressed({GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, {KEY_TAB})) speed = speed == 4 ? 1 : speed * 2;
@@ -2226,7 +2259,7 @@ int main(int argc, char **argv) {
             Ui::targetCursor(wd, !hit ? 2 : game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr);
         } else if (ret == Controls::Reticle::Lock && locked) Ui::targetCursor(wd, -1, &lockAt);
         if (pipOn) Ui::pipInset(pipRt, pipShow, pipFull);
-        Efmv::borders(game);
+        if (!pause.open) Efmv::borders(game);  // WXFEP.Pause sends EFMV.Borders.Off; its Cancel and the briefing's close send .On (0x5e6e00)
         hud.pipShow = pipOn ? pipShow : 0, hud.pipFull = pipFull;
         hud.quiet = pause.open || playing || irEnd >= 0;  // those draw their own hints
         hud.draw(game, view, tick);

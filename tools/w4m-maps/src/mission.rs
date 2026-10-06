@@ -29,7 +29,7 @@ fn language(data: &Path) -> HashMap<String, String> {
     out
 }
 
-struct Level { id: String, name: String, brief: String, preview: String, file: String, script: String, kind: u32, index: u32, par: u32 }
+struct Level { id: String, name: String, brief: String, preview: String, file: String, script: String, objectives: String, kind: u32, index: u32, par: u32 }
 
 // WXFE_LevelDetails of a level file (`script` holds Level_FileName), with a Frontend_Image: the versus entry (kind 0) wins.
 // Demo (kinds 12, 13) and outtake (16) entries reuse another level's name and image.
@@ -69,7 +69,7 @@ fn levels(data: &Path) -> Vec<Level> {
         p += 8;
         vi(d, &mut p); // unlock key
         Level { id: ids.get(&i).cloned().unwrap_or_default(), par: u32le(d, p + 8), name: std::mem::take(&mut s[0]), brief: std::mem::take(&mut s[1]), preview: std::mem::take(&mut s[2]),
-                file: std::mem::take(&mut s[3]), script: std::mem::take(&mut s[4]), kind, index }
+                file: std::mem::take(&mut s[3]), script: std::mem::take(&mut s[4]), objectives: std::mem::take(&mut s[5]), kind, index }
     }).collect()
 }
 
@@ -93,8 +93,8 @@ fn mission(data: &Path, lv: &Level, lang: &HashMap<String, String>, maps: &Path,
     let done = if lv.kind == 4 { "FETXT.MissionCompleteBody" } else { "FETXT.ChallengeCompleteBody" };
     // the *_id keys: the client shows the language's text (assets/lang), the English one above as the fallback
     Ok(format!(
-        "{{\n  \"name\": {},\n  \"kind\": \"{kindj}\",\n  \"campaign\": \"{campaign}\",\n  \"order\": {order},\n  \"level\": {},\n  \"map\": {},\n  \"preview\": {},\n  \"par\": {},\n  \"brief\": {},\n  \"success\": {},\n  \"name_id\": {},\n  \"brief_id\": {},\n  \"success_id\": \"{done}\",\n{rain}  \"script\": {},\n  \"bank\": {}\n}}\n",
-        esc(&name), esc(&lv.id), esc(&stem), esc(&preview), lv.par, esc(&t(&lv.brief)), esc(&t(done)), esc(&lv.name), esc(&lv.brief), esc(&lv.script), esc(&lv.file)))
+        "{{\n  \"name\": {},\n  \"kind\": \"{kindj}\",\n  \"campaign\": \"{campaign}\",\n  \"order\": {order},\n  \"level\": {},\n  \"map\": {},\n  \"preview\": {},\n  \"par\": {},\n  \"brief\": {},\n  \"success\": {},\n  \"name_id\": {},\n  \"brief_id\": {},\n  \"success_id\": \"{done}\",\n  \"objectives\": {},\n{rain}  \"script\": {},\n  \"bank\": {}\n}}\n",
+        esc(&name), esc(&lv.id), esc(&stem), esc(&preview), lv.par, esc(&t(&lv.brief)), esc(&t(done)), esc(&lv.name), esc(&lv.brief), esc(&lv.objectives), esc(&lv.script), esc(&lv.file)))
 }
 
 // Writes <out>/<file>.json for every story mission (W4M type 4), challenge (8) and deathmatch (9) whose map was imported.

@@ -1,4 +1,5 @@
 #include "mission.h"
+#include "loading.h"
 #include "json.h"
 #include "script.h"
 #include "raymath.h"
@@ -14,10 +15,11 @@ bool loadMission(const std::string &path, MissionSpec &m) {
     UnloadFileText(txt);
     if (!ok) { TraceLog(LOG_WARNING, "mission %s: invalid", path.c_str()); return false; }
     m = MissionSpec{};
-    m.id = GetFileNameWithoutExt(path.c_str());
+    m.id = path.substr(path.rfind('/') + 1), m.id.resize(m.id.rfind('.'));  // not GetFileNameWithoutExt(): listMissions() runs off the main thread
     m.name = j["name"].s(m.id), m.kind = j["kind"].s("mission"), m.campaign = j["campaign"].s(), m.map = j["map"].s();
     m.preview = j["preview"].s(), m.brief = j["brief"].s(), m.success = j["success"].s(), m.failure = j["failure"].s();
     m.level = j["level"].s(), m.nameId = j["name_id"].s(), m.briefId = j["brief_id"].s(), m.successId = j["success_id"].s();
+    m.objectives = j["objectives"].s();
     m.order = (int)j["order"].f(0), m.par = (int)j["par"].f(0);
     m.script = j["script"].s(), m.bank = j["bank"].s(), m.scriptDir = path.substr(0, path.rfind('/')) + "/../scripts/";  // raylib GetDirectoryPath prefixes "./" to sdmc:/ paths
     for (const SchemePreset &p : SCHEMES) if (j["scheme"].s("Standard") == p.name) m.scheme = p.s;
@@ -33,15 +35,12 @@ bool loadMission(const std::string &path, MissionSpec &m) {
 
 std::vector<MissionSpec> listMissions(const char *romfsDir, const char *dataDir) {
     std::vector<MissionSpec> out;
-    if (std::string dir = std::string(dataDir) + "assets/missions"; DirectoryExists(dir.c_str())) {
-        FilePathList files = LoadDirectoryFilesEx(dir.c_str(), ".json", false);
-        for (unsigned i = 0; i < files.count; i++) {
-            MissionSpec m;
-            if (!loadMission(files.paths[i], m)) continue;
-            bool map = m.map.empty() || FileExists(TextFormat("%sassets/maps/%s.json", dataDir, m.map.c_str())) || FileExists(TextFormat("%smaps/%s.json", romfsDir, m.map.c_str()));
-            if (map && std::none_of(out.begin(), out.end(), [&](const MissionSpec &o) { return o.id == m.id; })) out.push_back(m);
-        }
-        UnloadDirectoryFiles(files);
+    for (const std::string &path : Loading::list(std::string(dataDir) + "assets/missions", ".json")) {
+        MissionSpec m;
+        if (!loadMission(path, m)) continue;
+        bool map = m.map.empty() || FileExists((std::string(dataDir) + "assets/maps/" + m.map + ".json").c_str()) ||
+                   FileExists((std::string(romfsDir) + "maps/" + m.map + ".json").c_str());
+        if (map && std::none_of(out.begin(), out.end(), [&](const MissionSpec &o) { return o.id == m.id; })) out.push_back(m);
     }
     std::sort(out.begin(), out.end(), [](const MissionSpec &a, const MissionSpec &b) {
         auto key = [](const MissionSpec &m) { return std::make_tuple(m.kind != "mission", m.campaign, m.order, m.name); };

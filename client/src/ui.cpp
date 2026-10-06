@@ -8,6 +8,7 @@
 #include "audio.h"
 #include "models.h"
 #include "frontbg.h"
+#include "loading.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <thread>
 
 #ifdef __SWITCH__
@@ -84,11 +86,23 @@ bool plOk = false;
 #endif
 std::map<std::string, Texture2D> cache;
 
+std::mutex predMu;
+std::map<std::string, Image> predecoded;  // predecode() output, uploaded by tex()
+
 // assets/ui/<name>.png, loaded once; id 0 when missing
 Texture2D tex(const std::string &name) {
     auto it = cache.find(name);
     if (it != cache.end()) return it->second;
     Texture2D t{};
+    Image pre{};
+    if (std::lock_guard<std::mutex> l(predMu); predecoded.count(name)) pre = predecoded[name], predecoded.erase(name);
+    if (pre.data) {
+        t = LoadTextureFromImage(pre);
+        UnloadImage(pre);
+        GenTextureMipmaps(&t);
+        SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
+        return cache[name] = t;
+    }
     const char *p = TextFormat(DATA_DIR "assets/ui/%s.png", name.c_str());
     if (FileExists(p)) {
         TraceLog(LOG_INFO, "UI: texture %s loaded on first use", name.c_str());  // a frame-time hitch in a match: warm it at load
@@ -178,10 +192,10 @@ std::string lower(std::string s) {
 
 // A map json's head fields: "title" (W4M Frontend_Name key), "preview" (W4M Frontend_Image, else w4m-maps' top-down render), "theme"
 struct MapInfo { std::string title, pic, theme; };
+std::mutex mapMu;  // mapHeads() fills the cache off the main thread
 const MapInfo &mapInfo(const std::string &m) {
     static std::map<std::string, MapInfo> cache;
-    auto c = cache.find(m);
-    if (c != cache.end()) return c->second;
+    if (std::lock_guard<std::mutex> l(mapMu); cache.count(m)) return cache[m];
     MapInfo info;
     for (const char *dir : {DATA_DIR "assets/maps/", ROMFS_DIR "maps/"}) {
         FILE *f = m.empty() ? nullptr : fopen((dir + m + ".json").c_str(), "rb");
@@ -198,8 +212,10 @@ const MapInfo &mapInfo(const std::string &m) {
         info = {field("\"title\": \""), field("\"preview\": \""), field("\"theme\": \"")};
         break;
     }
+    std::lock_guard<std::mutex> l(mapMu);
     return cache[m] = info;
 }
+
 
 // Level picture: the map's preview, else its theme's picture, else nolevel
 std::string preview(const std::string &m) {
@@ -217,6 +233,10 @@ std::string preview(const std::string &m) {
 }  // namespace
 
 // W4M's level name, else from the file name: "EscapeFromTreeRex" -> "Escape From Tree Rex", "Alien-w3d" -> "Alien (W3D)"
+void mapHeads(const std::vector<std::string> &maps) {
+    for (const std::string &m : maps) mapInfo(m);
+}
+
 std::string mapTitle(const std::string &m) {
     if (m.empty()) return "Random island";
     if (const std::string &t = mapInfo(m).title; !t.empty()) return tr(t.c_str(), m.c_str());
@@ -402,7 +422,21 @@ void load() {
     else font = GetFontDefault();
 }
 
+void predecode(const std::string &name) {
+    std::string p = DATA_DIR "assets/ui/" + name + ".png";
+    int n = 0;
+    unsigned char *d = FileExists(p.c_str()) ? LoadFileData(p.c_str(), &n) : nullptr;
+    if (!d) return;
+    Image img = LoadImageFromMemory(".png", d, n);
+    UnloadFileData(d);
+    std::lock_guard<std::mutex> l(predMu);
+    if (img.data && !predecoded.count(name)) predecoded[name] = img;
+    else UnloadImage(img);
+}
+
 void unload() {
+    for (auto &kv : predecoded) UnloadImage(kv.second);
+    predecoded.clear();
     if (preThread.joinable()) preThread.join();
     for (Image &i : preImg) if (i.data) UnloadImage(i), i = {};
     preUploaded = NPRE;
@@ -1516,10 +1550,8 @@ bool warmHud(int &i, double until) {
         for (const WeaponDef &w : WEAPONS) names.push_back(iconOf(w));
         for (const char *f : TEAM_FLAGS) names.push_back(f);
         for (const char *n : {"fe/team_health", "fe/com_panel", "fe/speech_popup", "fe2/homing_inner"}) names.push_back(n);
-        FilePathList l = LoadDirectoryFilesEx(DATA_DIR "assets/ui/hud", ".png", false);
-        for (unsigned k = 0; k < l.count; k++)
-            if (const char *f = GetFileNameWithoutExt(l.paths[k]); strncmp(f, "wxp_", 4)) names.push_back(std::string("hud/") + f);
-        UnloadDirectoryFiles(l);
+        for (const std::string &p : Loading::list(DATA_DIR "assets/ui/hud", ".png"))
+            if (const char *f = GetFileNameWithoutExt(p.c_str()); strncmp(f, "wxp_", 4)) names.push_back(std::string("hud/") + f);
     }
     while (i < (int)names.size() && GetTime() < until) tex(names[i++]);
     return i < (int)names.size();
@@ -2479,38 +2511,110 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
 
 // ---------------------------------------------------------------- pause
 
+static float paragraph(const std::string &s, float x, float y, float w, float size, Color c, int maxLines = 99, bool draw = true, const Color *c2 = nullptr, float lead = 4);
+// W4M kGC_* text gradients, top and bottom (GradientColour 0x754e96)
+static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 255}}, GC_LIST_LABLE_BLUE[2] = {{151, 207, 255, 255}, {233, 255, 255, 255}};
+
+// MENUTWKXINGAME WXFEP.MissionBriefing (docs/w4m/frontend.md §17): the menu's In_ScaleY after its 200 ms Delay_Incoming
+static const float K_IN_SCALEY[7][6] = {{0, 0, 0.00027776f, 0.99951f, 0, 0}, {0.00016665f, 0.59961f, 0.94434f, 0.32764f, 0.94434f, 0.32764f},
+                                        {0.083313f, 1.0361f, 0.063599f, 0.99756f, 0.49951f, -0.86621f}, {0.125f, 0.95508f, 0.4541f, -0.89063f, 0.49341f, 0.86963f},
+                                        {0.16663f, 1.0283f, 0.49341f, 0.86963f, 0.61914f, -0.78467f}, {0.20825f, 0.97559f, 0.61914f, -0.78467f, 0.86621f, 0.49951f},
+                                        {0.25f, 1, 0.86621f, 0.49951f, 1, 0}};
+static const FeClip IN_SCALEY = {{}, keys(K_IN_SCALEY, false), {}, {}};
+static const float BRIEF_IN = 0.2f, BRIEF_OUT = 0.2f;  // killed (KillPopUpNamed: no Out_ScaleY), only the veil fades out
+
 Pause::Action Pause::update() {
-    bool plus = P({PLUS}, {KEY_ESCAPE, KEY_P});
+    using S = Audio::Sfx;
+    float t = now();
+    if (briefOut >= 0 && t - briefOut >= BRIEF_OUT) briefOut = -1;
+    bool plus = P({PLUS}, {KEY_ESCAPE, KEY_P}), ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = plus || P({B}, {KEY_BACKSPACE});
+    if (brief >= 0) {  // Return / Cancel kill it; MenuGoingAway: click3, App.Resume (back to the match, not the pause menu)
+        if (last < brief + BRIEF_IN && t >= brief + BRIEF_IN) Audio::play(S::FeScaleHit);  // Audio_Incoming In_ScaleHitXY, with its anim
+        last = t;
+        if (ok || back) brief = -1, briefOut = t, open = false, Audio::play(S::HpTick);
+        return None;
+    }
     if (!open) {
-        if (plus) open = true, help = false, row = 0, Audio::play(Audio::Sfx::FePopupIn);
+        if (plus) open = true, help = false, row = 0, Audio::play(S::FePopupIn);
         return None;
     }
-    bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = plus || P({B}, {KEY_BACKSPACE});
     if (help) {
-        if (ok || back) help = false, Audio::play(Audio::Sfx::FePrevIn);
+        if (ok || back) help = false, Audio::play(S::FePrevIn);
         return None;
     }
-    row = clampWrap(row + P({DOWN}, {}) - P({UP}, {}), 3);
-    if (back || (ok && row == 0)) open = false, Audio::play(Audio::Sfx::FePopupOut);
-    if (ok && row == 1) help = true, Audio::play(Audio::Sfx::FeController);
-    if (ok && row == 2) { open = false; return Quit; }
+    int n = story ? 4 : 3;  // TablePopulationService 0x4cd3a0: Briefing (Story only) sits before Quit
+    row = clampWrap(row + P({DOWN}, {}) - P({UP}, {}), n);
+    if (back || (ok && row == 0)) open = false, Audio::play(S::FePopupOut);
+    if (ok && row == 1) help = true, Audio::play(S::FeController);
+    if (ok && story && row == 2) brief = last = t, briefOut = -1, Audio::play(S::HpTick);  // KillPopUpNamed$WXFEP.Pause (its click3), no App.Resume
+    if (ok && row == n - 1) { open = false; return Quit; }
     return None;
+}
+
+// WXFEP.MissionBriefing: FE units (960 x 540, y up) about the screen centre; ImageView / TextBox Scale = half extents
+void Pause::briefing() const {
+    float t = now(), out = briefOut >= 0 ? t - briefOut : -1, since = brief >= 0 ? t - brief : 0;
+    const MissionSpec *m = story;
+    if (!m) return;
+    float fade = out >= 0 ? 1 - Clamp(out / BRIEF_OUT, 0, 1) : 1;  // FullScreenColour (40, 40, 60, 160); the last popup's kill fades it over 200 ms
+    DrawRectangle(0, 0, 1280, 720, {40, 40, 60, (unsigned char)(160 * fade)});
+    if (out >= 0 || !feItem({640, 360}, &IN_SCALEY, BRIEF_IN, nullptr, since, -1)) return;
+    auto fe = [](float x, float y) { return Vector2{640 + x * FE_PX, 360 - y * FE_PX}; };
+    auto box = [&](float x, float y, float hw, float hh) { Vector2 c = fe(x, y); return Rectangle{c.x - hw * FE_PX, c.y - hh * FE_PX, 2 * hw * FE_PX, 2 * hh * FE_PX}; };
+    image("fe/paperpopup01", box(0, 0, 180, 140));       // Paper Back, WXFE.PaperPopUp1
+    image("fe/speechpopup_divide", box(0, 81, 70, 8));   // DIVIDE1, WXFE.PopUpDivide
+    float title = 20 * FE_PX;                            // PopUp Title: FETXT.MissionBriefing, FontSizeOverride 20, centred
+    const char *head = tr("FETXT.MissionBriefing", "Mission Objectives", "Objectifs de la mission");
+    float hx = 640 - textWidth(head, title) / 2;  // TextAnim MediumWobble: each glyph held at High5 / Low5 (+-0.7 FE), picked once (0x6a9920)
+    uint32_t r = (uint32_t)(brief * 1000) | 1;
+    for (int i = 0, n = 1; head[i]; i += n) {
+        GetCodepointNext(head + i, &n);
+        std::string g(head + i, n);
+        r = r * 0x41c64e6du + 0x3039u;
+        textG(g.c_str(), hx, fe(0, 103).y - title / 2 + (r % 2 ? 0.7f : -0.7f) * FE_PX, title, GC_BUTTON_YELLOW[0], GC_BUTTON_YELLOW[1], 0);
+        hx += textWidth(g.c_str(), title);
+    }
+    Texture2D bullet = tex("fe/teaminfo04");  // WXFE.HandicapAllies:7, its XTexFont's last frame (u 0.75, v 0, 0.25 x 0.5, GL v up)
+    for (int i = 0; i < 3; i++) {  // 0x4cbb20: WXD.Mission.Obj<i> = text of "<Objectives>.<A+i>", empty (and no bullet) when the key is missing
+        std::string key = m->objectives + "." + (char)('A' + i);
+        const char *s = m->objectives.empty() ? "" : tr(key.c_str(), "");
+        if (!*s) continue;
+        Rectangle b = box(15, 40 - 50.0f * i, 140, 20);  // ObjectiveN: top-left justified, FE.TextBoxTextSize 20, AutoScale
+        float size = 20;  // AutoScale (0x75f1b2): wrapped, then 1 FE smaller while lines x size > the box, down to 5; one line never shrinks
+        for (float h; size > 5 && (h = paragraph(s, b.x, b.y, b.width, size * FE_PX, WHITE, 99, false, nullptr, 0)) > b.height && h > size * FE_PX;) size -= 1;
+        paragraph(s, b.x, b.y, b.width, size * FE_PX, GC_LIST_LABLE_BLUE[0], 99, true, &GC_LIST_LABLE_BLUE[1], 0);
+        if (bullet.id) DrawTexturePro(bullet, {0.75f * bullet.width, 0.5f * bullet.height, 0.25f * bullet.width, 0.5f * bullet.height}, box(-140, 52 - 50.0f * i, 10, 10), {}, 0, WHITE);
+    }
+    float row = 20 * FE_PX, y = fe(0, -99).y - row / 2;  // Return: ConfirmList row 26 at FontSize 20, highlighted (default item): charcoal border, kGC_Solid_White
+    const char *ret = tr("FETXT.ReturnToMenu", "Return", "Retour");
+    float w = textWidth(ret, row) + row * 0.9f;
+    mark({640 - w / 2, y - row * 0.1f, w, row * 1.15f}, true);
+    text(ret, 640, y, row, WHITE, 1);
+    rlPopMatrix();
 }
 
 void Pause::draw(bool online) const {
     menuPage = true;
+    if (brief >= 0 || briefOut >= 0) {
+        briefing();
+        if (brief >= 0) hints({{"A", "Enter", tr("FETXT.ReturnToMenu", "Return", "Retour")}});
+        return;
+    }
     if (!open) return;
     if (help) {
         controls(true);
         hints({{"B", "Esc", "Back"}});
         return;
     }
+    int n = story ? 4 : 3;
+    float y0 = 150 - 36.0f * (n - 3);
     DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 140});
-    popup({420, 150, 440, 400});
-    heading("Pause", 640, 172, 60);
-    const char *items[] = {"Resume", "Help & options", online ? "Leave match" : "Quit"};
-    for (int i = 0; i < 3; i++) item(items[i], 640, 285 + i * 72.0f, 42, i == row);
-    if (online) text("The match keeps running", 640, 505, 20, CREAM, 1);
+    popup({420, y0, 440, 400 + 72.0f * (n - 3)});
+    heading(tr("FE.Header.Paused", "Pause", "Pause"), 640, y0 + 30, 50);
+    const char *items[] = {tr("FETXT.ResumeGame", "Resume"), tr("FETXT.Help&Options", "Help & options"),
+                           story ? tr("FETXT.MissionBriefing", "Mission Objectives") : nullptr, online ? "Leave match" : tr("Lang.Quit", "Quit")};
+    for (int i = 0, k = 0; i < 4; i++) if (items[i]) item(items[i], 640, y0 + 135 + k * 72.0f, fminf(42, 42 * 360 / textWidth(items[i], 42)), k == row), k++;
+    if (online) text("The match keeps running", 640, y0 + 355, 20, CREAM, 1);
     hints({{"A", "Enter", "Select"}, {"B/+", "Esc", "Resume"}});
 }
 
@@ -2603,11 +2707,11 @@ void room(const Net &net, const GameConfig &opt, bool lan, const std::string &st
 
 static std::string clockText(int ticks) { return TextFormat("%d:%02d.%d", ticks / 3600, ticks / 60 % 60, ticks % 60 / 6); }
 
-// Word-wrapped text, at most maxLines lines; returns the height used.
-static float paragraph(const std::string &s, float x, float y, float w, float size, Color c, int maxLines = 99) {
+// Word-wrapped text, at most maxLines lines; returns the height used (draw false: only measures).
+static float paragraph(const std::string &s, float x, float y, float w, float size, Color c, int maxLines, bool draw, const Color *c2, float lead) {
     std::string line, word;
     int lines = 0;
-    auto flush = [&] { if (lines < maxLines) text(line.c_str(), x, y + lines * (size + 4), size, c); lines++, line.clear(); };
+    auto flush = [&] { if (lines < maxLines && draw) textG(line.c_str(), x, y + lines * (size + lead), size, c, c2 ? *c2 : c, 0); lines++, line.clear(); };
     for (size_t i = 0; i <= s.size(); i++) {
         char ch = i < s.size() ? s[i] : ' ';
         if (ch != ' ' && ch != '\n') { word += ch; continue; }
@@ -2617,7 +2721,7 @@ static float paragraph(const std::string &s, float x, float y, float w, float si
         if (ch == '\n') flush();
     }
     if (!line.empty()) flush();
-    return std::min(lines, maxLines) * (size + 4);
+    return std::min(lines, maxLines) * (size + lead);
 }
 
 // WXFE.Story / WXFE.Challenges (docs/w4m/frontend.md §17): each item takes the clips of its W4M counterpart; ours-only items

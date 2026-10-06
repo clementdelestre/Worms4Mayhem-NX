@@ -31,10 +31,10 @@ the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup
 
 ### Frame pacing and hitch log (ours, 2026-10-05)
 
-`log.txt` (`sdmc:/switch/worms4nx/` on Switch, `./` on desktop; raylib's log too) is written line by line until the
-`BOOT:` line (a boot crash leaves its last line on the card) and for warnings; after it lines queue in memory and a thread
-writes them each second (a Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer made one every ~3 HITCH lines:
-the `other` 15-22 ms stalls of sw-log3). The thread is joined at exit: libnx has no `pthread_detach`, so
+`log.txt` (`sdmc:/switch/worms4nx/` on Switch, `./` on desktop; raylib's log too): lines queue in memory from the first
+one and a thread writes them each second; warnings are written at once (a crash keeps them, but may lose the last second of
+info lines). A Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer made one every ~3 HITCH lines (the `other`
+15-22 ms stalls of sw-log3); written line by line, the 2597 boot lines were the whole 47 s boot (see "Boot time"). The thread is joined at exit: libnx has no `pthread_detach`, so
 `std::thread::detach` aborts the process (ours, found 2026-10-05). In a match:
 - `HITCH <ms>, <n> ticks, <n> chunks, <n> particles, <n> sounds | <section ms> ... other <ms> | loads tex .. fbo ..`: a
   frame over `W4NX_HITCH_MS` (default 20), 20 per 10 s at most, plus the window's worst frame when the limit held it
@@ -73,6 +73,51 @@ Explosion frames (ours, 2026-10-05): chunk geometry is built on a meshing thread
 rebuilt chunks still swap in together. sw-log3 measured one chunk at 6-15 ms on Switch (A57), plus 15-25 ms when a
 log write landed in it: 26-53 ms `remesh` hitches per explosion frame before. The HUD art (`hud/`, weapon icons, flags) loads during the
 loading screen, the UFO beam shader at boot and the PiP render texture on the first match frame.
+
+### Boot time (ours, 2026-10-06)
+
+swlog2 (Switch, before): `BOOT: gl 2789 ms, decode+upload 42683, join 1055, menu scene 89, total 46616`. Its 2597 log
+lines were each written to the SD at once, 12-30 ms apart (median ~18 ms): 2597 x 18 ms = the 46.6 s. The decode itself
+was hidden under it [data: swlog2 timestamps].
+
+Now (ours):
+- The log is queued from the first line (above).
+- A plain launch (no argument, no `shot` file) shows the title once the menu's assets are in: frontend art (`Ui::preload`),
+  `models/frontend/` and `seagull.glb`, the `fe_*` / `wormpot_*` sounds, the map list. The other models (worm.glb first),
+  the match sounds and the Missions list with its preview pictures load on cores 1-2 while the title and menus run (no
+  GPU work there: the menu frames do not change). The first match's loading screen uploads the models in 8 ms slices and
+  takes the sounds (prep step 0), before the map steps. Any argument or the `shot` file loads everything at boot, as before.
+- Directory listings use `Loading::list` (readdir `d_type`): raylib's `LoadDirectoryFilesEx` stats every entry twice
+  (strace: 1766 stats for the 884 files of `assets/maps`), each an SD request on Switch. Sound variants are looked up in one
+  listing of their directory instead of a `FileExists` per variant.
+- worm.glb's clips are sampled from a copy of the bytes already read, not a second 19 MB read.
+- The map titles the sort needs are read on a thread (`Ui::mapHeads`), not on the main thread after the joins.
+
+Log lines to read on Switch:
+- `BOOT: gl <ms>, menu assets <ms> (art, models, sounds, maps: when each finished), join, menu scene, music, total`: total
+  = black screen + spinner until the title.
+- `BOOT: so far files <MB> read in <ms> (all threads); models: glb parse, png, mipmaps, clips (worker time, summed),
+  upload (main)`: read = every `LoadFileData()` (models, art, sounds), the rest per phase.
+- `BOOT: match assets in <ms> after start; ...`: the same totals once the first loading screen took the background loads.
+
+Desktop (warm file cache, 3-5 runs each) [ours]:
+
+| | before | after |
+|---|---|---|
+| title shown (`total`) | 575-584 ms | 76-104 ms |
+| critical part | worm.glb clips: 530 ms on one worker | menu art decode 58-77 ms |
+| sounds | 461-478 ms (all 170) | 45-61 ms (menu), the rest in the background |
+| reads at the title | 95.9 MB (worm.glb twice) | 37.2 MB |
+
+Switch estimate [ours, assumed until a log confirms]: CPU work ~7x desktop (Render budget), a small file ~5 ms (swlog2: the
+221 map heads in ~1 s of `join`; 256x256 HUD PNGs read + decoded in 17-22 ms), ~55 MB/s for big reads (1 MB PNGs +18 ms).
+Title: ~0.3 s GL, then ~0.5 s of decode, 37 MB of reads (~0.7 s) and ~300 small files (~1.5 s if the SD serialises them):
+about 2-3.5 s instead of 46.6. The background part (worm.glb's clips ~3.7 s on one core, 64 MB more) ends a few seconds
+after the title; a match started before that waits for it behind the loading screen.
+
+Left as is: the UI PNGs are stored uncompressed (`back/loadbackgeneric` 8.3 MB of the 23.6 MB menu art); a lossless
+recompression at import trades SD reads for inflate time, to be measured on Switch first. Map previews in the setup screen
+and the HUD art (`warmHud`, behind the loading screen) still load on first use.
 
 ### Render budget (ours, `--bench <map> 600`)
 

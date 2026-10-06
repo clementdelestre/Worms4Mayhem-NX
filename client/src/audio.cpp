@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstring>
 #include "audio.h"
 #include "loading.h"
@@ -8,6 +9,8 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <mutex>
+#include <set>
 #include <strings.h>
 #include <string>
 #include <thread>
@@ -42,7 +45,7 @@ const char *SFX_NAMES[] = {
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
     "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo", "debris", "jetpack", "jetpack_end",
     "fire_loop", "steam_loop", "flies_loop", "elec_arc", "electric_arcing", "storm_cloud", "hose_into_water",
-    "flood_rain", "flood_thunder", "fatkins_bounce", "banana_bounce", "mine_machine",
+    "flood_rain", "flood_thunder", "fatkins_bounce", "banana_bounce", "mine_machine", "fe_scalehit",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev via tools/w4m-re/fev.py (docs/w4m/audio.md §12): event, dB (event + sounddef + category), loop, 3D rolloff min..max m (0 = 2D), max playbacks,
@@ -176,6 +179,7 @@ const Def DEFS[] = {
     {"weapons/FatkinsBounce", -3, false, 0, 0, 1, 0, nullptr, 2},  // 2D, FatkinsBounce1-2
     {"weapons/BananaBombImpact", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
     {"weapons/MineMachineOperate", -10, true, 0, 0, 1, 0.35f},  // 2D loop, fades 350 ms
+    {"global/In_Scalehitxy", 0, false, 0, 0, 1},
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -233,12 +237,26 @@ unsigned plays = 0;
 void efmvUpdate(), efmvStop();
 namespace {
 
+// A directory's file list read once: one SD request instead of a FileExists() per variant
+bool exists(const std::string &path) {
+    static std::mutex mu;
+    static std::map<std::string, std::set<std::string>> dirs;
+    std::string dir = path.substr(0, path.rfind('/'));
+    std::lock_guard<std::mutex> l(mu);
+    auto d = dirs.find(dir);
+    if (d == dirs.end()) {
+        std::vector<std::string> f = Loading::list(dir, ".ogg");
+        d = dirs.emplace(dir, std::set<std::string>(f.begin(), f.end())).first;
+    }
+    return d->second.count(path);
+}
+
 // base.ogg, base_2.ogg, ... until the first gap. No TextFormat: init and preloadVoices run on loading threads.
 Variants loadVariants(const std::string &base, int maxpb) {
     Variants v;
     for (; v.n < MAX_VARIANTS; v.n++) {
         std::string p = v.n ? base + "_" + std::to_string(v.n + 1) + ".ogg" : base + ".ogg";
-        if (!FileExists(p.c_str())) break;
+        if (!exists(p)) break;
         Sound s = LoadSound(p.c_str());
         for (int k = 0; k < maxpb; k++) v.slot.push_back({k ? LoadSoundAlias(s) : s, v.n, 0});
     }
@@ -344,12 +362,7 @@ void trigger(Variants &v, const Def &d, float vol, const Vector3 *at, int id = -
 }
 
 std::vector<std::string> bankDirs(const char *root) {
-    std::vector<std::string> dirs;
-    std::string voices = std::string(root) + "voices";
-    if (!DirectoryExists(voices.c_str())) return dirs;
-    FilePathList l = LoadDirectoryFilesEx(voices.c_str(), "DIRS*", false);
-    for (unsigned i = 0; i < l.count; i++) dirs.push_back(l.paths[i]);
-    UnloadDirectoryFiles(l);
+    std::vector<std::string> dirs = Loading::list(std::string(root) + "voices", "/");
     std::sort(dirs.begin(), dirs.end());  // stable team -> bank mapping across runs
     return dirs;
 }
@@ -390,18 +403,26 @@ bool openMusic(const char *name) {
     return true;
 }
 
+// The match sounds load on cores 1 and 2 while the menu runs (loadRest), into `staged` until finishLoads()
+Variants staged[(int)Sfx::Count];
+std::thread rest[2];
+std::atomic<int> restLeft{0};
+std::atomic<bool> stopLoads{false};
+bool menuSfx(int i) { return !strncmp(SFX_NAMES[i], "fe_", 3) || !strncmp(SFX_NAMES[i], "wormpot_", 8); }
+void loadSfx(int first, bool menu, Variants *out) {  // every other sound from first: two decoders
+    for (int i = first; i < (int)Sfx::Count && !stopLoads; i += 2) {
+        if (menuSfx(i) != menu) continue;
+        out[i] = loadVariants(std::string(ASSET_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
+        if (!out[i].n) out[i] = loadVariants(std::string(ROMFS_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
+    }
+}
+
 }  // namespace
 
 void init() {
     InitAudioDevice();
-    auto load = [](int first) {  // two decoders: the OGG decode is most of the boot after the models
-        for (int i = first; i < (int)Sfx::Count; i += 2) {
-            sfx[i] = loadVariants(std::string(ASSET_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
-            if (!sfx[i].n) sfx[i] = loadVariants(std::string(ROMFS_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
-        }
-    };
-    std::thread odd(load, 1);
-    load(0), odd.join();
+    std::thread odd([] { Loading::pinCore(2), loadSfx(1, true, sfx); });  // core 0 decodes the menu art
+    loadSfx(0, true, sfx), odd.join();
     std::vector<std::string> dirs = bankDirs(ASSET_ROOT);
     if (dirs.empty()) dirs = bankDirs(ROMFS_ROOT);
     for (auto &d : dirs) banks.push_back(Bank{d, false, {}});
@@ -409,7 +430,21 @@ void init() {
     openMusic("theme");
 }
 
+void loadRest() {
+    restLeft = 2;
+    for (int c = 0; c < 2; c++) rest[c] = std::thread([](int c) { Loading::pinCore(c + 1), loadSfx(c, false, staged), restLeft--; }, c);
+}
+
+bool finishLoads(bool wait) {
+    if (!rest[0].joinable()) return true;
+    if (restLeft && !wait) return false;
+    for (std::thread &t : rest) t.join();
+    for (int i = 0; i < (int)Sfx::Count; i++) if (!menuSfx(i)) sfx[i] = std::move(staged[i]);
+    return true;
+}
+
 void shutdown() {
+    stopLoads = true, finishLoads(true);
     for (auto &v : sfx) unload(v);
     for (auto &b : banks) for (auto &v : b.lines) unload(v);
     banks.clear();
@@ -696,12 +731,10 @@ void efmvLevel(const char *level) {
     for (Efmv &e : efmvs) unload(e.v);
     efmvs.clear(), envs.clear(), speaking.clear(), looping = nullptr, efmvLoaded = want;
     std::string root = ASSET_ROOT "efmv";
-    if (!DirectoryExists(root.c_str())) return;
-    FilePathList l = LoadDirectoryFilesEx(root.c_str(), "DIRS*", false);
+    std::vector<std::string> l = Loading::list(root, "/");
     for (const char *g : {want.c_str(), "failures"})
-        for (unsigned i = 0; *g && i < l.count; i++)
-            if (lower(GetFileName(l.paths[i])) == g) loadEfmv(l.paths[i], GetFileName(l.paths[i]));
-    UnloadDirectoryFiles(l);
+        for (const std::string &d : l)
+            if (*g && lower(GetFileName(d.c_str())) == g) loadEfmv(d.c_str(), GetFileName(d.c_str()));
     for (Efmv &e : efmvs) e.d.event = e.name.c_str();  // stable from here on
 }
 

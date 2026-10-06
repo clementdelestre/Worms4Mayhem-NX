@@ -172,6 +172,8 @@ struct Projectile {
 // Target: mission bullseye, floats until an explosion or a shot reaches it.
 constexpr int CRATE_HP = 12;  // W4M Crate.Hitpoints 25 x Crate.HitpointsMultiplier 0.5, truncated (0x5c7f98)
 constexpr int CRATE_STOCK = INT32_MIN;  // a crate's NumContents left to the scheme: 1 item, Crate.HealthInCrates hp (0x4fa71d)
+// An ammo crate into an inventory count (0x5c88bb): an infinite one stays, else a u8 sum, 0xff infinite (NumContents -1 gives infinite)
+inline int crateAdd(int have, int count) { int n = (have + (count == CRATE_STOCK ? 1 : count)) & 0xff; return have < 0 || n == 0xff ? -1 : n; }
 struct Object {
     enum Type : uint8_t { Crate, Mine, Barrel, Sentry, Target } type;
     Vector3 pos, vel;
@@ -214,6 +216,7 @@ struct GameEvent {
     Vector3 pos;
     int worm, weapon;
     const char *fx = nullptr;  // Boom: the PARTTWK effect its W4M caller starts (render only; null: our generic blast)
+    int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories
 };
 
 // Match options, identical on every client (sent in the network Start message).

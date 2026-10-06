@@ -1,6 +1,6 @@
 // Every W4M mission (assets/missions, a Lua script) starts, runs with the AI on every team to its end without a Lua error, and lists
 // what its script asked that we do not model yet; a scripted mission replays bit-identically.
-// Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only, W4NX_MISSION=movies the movie checks)
+// Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only, W4NX_MISSION=movies / crates those checks)
 #include "../src/ai.h"
 #include "../src/mission.h"
 #include "../src/script.h"
@@ -178,6 +178,47 @@ static void checkMovies(const std::vector<MissionSpec> &list) {
     }
 }
 
+// Crates book into the W4M inventories as 0x5c8820: NumContents as a u8 on the alliance's count; -1 on a count of 0 gives an infinite
+// weapon (SneakyBridgeThieves' bat)
+static void checkCrates(const std::vector<MissionSpec> &list) {
+    auto start = [&](const char *id, Game &g) {
+        for (const MissionSpec &m : list) if (m.id == id) g.start(missionConfig(m, 3));
+        Input skip;
+        skip.flags = Input::SKIP_MOVIE;
+        for (int t = 0; t < 60 * 120 && !(g.phase == Phase::Aim && g.worms[g.current].team == 0 && !scriptMovieOn(g)); t++) g.step(t % 30 ? Input{} : skip);
+        assert(g.phase == Phase::Aim && g.worms[g.current].team == 0);
+    };
+    auto collect = [](Game &g, int tag) {  // the crate's weapon, its count 20 ticks after the pickup
+        auto o = std::find_if(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.tag == tag && x.type == Object::Crate; });
+        assert(o != g.objects.end() && o->weapon >= 0);
+        int w = o->weapon, before = g.ammo[0][w];
+        g.worms[g.current].pos = o->pos, g.worms[g.current].vel = {}, g.hotSeat = 0;
+        for (int t = 0; t < 20; t++) g.step(Input{});
+        printf("crate %d: %s %d -> %d\n", tag, WEAPONS[w].name.c_str(), before, g.ammo[0][w]);
+        return std::make_pair(w, g.ammo[0][w]);
+    };
+    {
+        Game g;
+        start("SneakyBridgeThieves", g);
+        auto [bat, n] = collect(g, 9);  // Crate_9: kWeaponBaseballBat, NumContents -1
+        assert(WEAPONS[bat].name == "Baseball Bat" && n == -1);
+        g.weapon = bat;
+        Input fire;
+        fire.buttons = Input::FIRE;
+        g.step(fire), g.step(Input{});
+        assert(g.phase != Phase::Aim && g.ammo[0][bat] == -1);
+    }
+    {
+        Game g;
+        start("CarpetCapers", g);
+        auto [bazooka, n] = collect(g, 1);
+        assert(n == 10 && collect(g, 3).second == 4 && collect(g, 9).second == 5);  // Bazooka x10, HomingMissile x4 then x1
+        g.objects.push_back({Object::Crate, g.worms[g.current].pos, {0, 0, 0}, bazooka, 0, false, false});  // a random crate: 1 item
+        g.objects.back().tag = 50;
+        assert(collect(g, 50).second == 11);
+    }
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<MissionSpec> list = listMissions("./romfs/", "./");
@@ -195,6 +236,7 @@ int main() {
     for (const MissionSpec &m : list) {
         if (only && m.id != only) continue;
         imported++;
+        assert((m.kind == "mission") == !m.objectives.empty());  // the pause menu's Briefing: Story levels only carry Objectives
         Run r = scripted(m, 5, 60 * 60 * 90);  // ChuteToVictory: its round clock (50 min) stands through ~8 s of movie camera a turn
         printf("%-24s %-9s %s after %5d s, Lua errors %d%s%s, comments %d, emitters %d\n", m.id.c_str(), m.kind.c_str(), r.result > 0 ? "won " : r.result < 0 ? "lost" : "NOT ENDED",
                r.ticks / 60, r.rep.errors, r.rep.errors ? ": " : "", r.rep.lastError.c_str(), r.comments, r.emitters);
@@ -209,8 +251,10 @@ int main() {
         ended += r.result != 0;
     }
     if (only && !strcmp(only, "movies")) return checkMovies(list), 0;
+    if (only && !strcmp(only, "crates")) return checkCrates(list), 0;
     if (only) return 0;
     checkLot2(list);
+    checkCrates(list);
     checkMovies(list);
     for (const MissionSpec &x : list)  // a scripted mission plays the same twice (its Lua state is in the checksum)
         if (x.id == "DeathMatch1") {

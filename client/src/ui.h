@@ -14,6 +14,7 @@ namespace Ui {
 extern const Color TEAM_COLORS[4];
 void load();
 bool preload(double until);  // boot: uploads the decoded frontend art until GetTime() reaches until; true while some is pending
+void predecode(const std::string &name);  // any thread: decodes assets/ui/<name>.png for a later first use (no SD read or decode then)
 void unload();
 bool warmHud(int &i, double until);  // match prep: loads the HUD art (weapon icons, hud/) until GetTime() reaches until; true while more remain
 void text(const char *t, float x, float y, float size, Color c, int align = 0);  // align: 0 left, 1 centre, 2 right
@@ -31,6 +32,7 @@ extern int language;
 const char *tr(const char *key, const char *en, const char *fr = nullptr);
 void background();
 std::string teamName(const GameConfig &c, int team);
+void mapHeads(const std::vector<std::string> &maps);  // any thread: reads the maps' json heads that mapTitle() and the previews use
 std::string mapTitle(const std::string &map);  // display name: W4M's level name, else from the file name
 const char *wormName(int team, int i);
 // pad -1 = any pad. D-pad buttons also fire on left-stick flicks and auto-repeat while held.
@@ -124,8 +126,14 @@ struct Pause {
     enum Action { None, Quit };
     bool open = false, help = false;
     int row = 0;
+    const MissionSpec *story = nullptr;  // a Story mission: the Briefing row opens W4M WXFEP.MissionBriefing
+    float brief = -1, briefOut = -1;     // that popup: when it opened / began going away (now() s), -1 none
     Action update();
     void draw(bool online) const;
+
+private:
+    float last = 0;  // previous update's clock: the popup's delayed incoming sound
+    void briefing() const;
 };
 // Replays list (inside Begin/EndDrawing): picked file index, -1 none yet, -2 back. Y toggles `instant` (instant replay).
 int replayList(const std::vector<std::string> &files, int &sel, bool &instant);

@@ -1,4 +1,5 @@
 #include "replay.h"
+#include "loading.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -87,10 +88,7 @@ bool Recording::load(const std::string &path) {
 
 std::vector<std::string> listReplays(const std::string &dir) {
     std::vector<std::string> out;
-    if (!DirectoryExists(dir.c_str())) return out;
-    FilePathList files = LoadDirectoryFilesEx(dir.c_str(), ".w4r", false);
-    for (unsigned i = 0; i < files.count; i++) out.push_back(GetFileName(files.paths[i]));
-    UnloadDirectoryFiles(files);
+    for (const std::string &f : Loading::list(dir, ".w4r")) out.push_back(f.substr(f.rfind('/') + 1));
     std::sort(out.rbegin(), out.rend());  // date prefix: newest first
     return out;
 }

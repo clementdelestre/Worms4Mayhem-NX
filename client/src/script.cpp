@@ -214,15 +214,16 @@ struct ScriptHost {
     static void bookAmmo() {
         Game &g = *G;
         bool any = false;
-        for (const GameEvent &e : g.events)  // an AddToWormInventory crate: its contents to the collector's Inventory.WormNN (0x5c8820)
-            for (const Object &o : S->tagged)
-                if (e.kind == GameEvent::Collect && e.worm >= 0 && e.weapon >= 0 && S->toWorm.count(o.tag) && Vector3Distance(e.pos, o.pos) < 0.01f) {
-                    int t = g.worms[e.worm].team, &was = S->shown[t][e.weapon];
-                    for (auto &f : weaponFields())
-                        if (Val *v = f.second == e.weapon ? field(ctn(slotName("Inventory.Worm%02d", slotOf(e.worm))), f.first.c_str()) : nullptr; v && v->n >= 0)
-                            v->n += o.count, S->wroteCtns.insert(slotName("Inventory.Worm%02d", slotOf(e.worm))), any = true;
-                    if (was >= 0 && g.ammo[t][e.weapon] >= 0) was += o.count;  // not the alliance's
-                }
+        for (GameEvent &e : g.events) {  // a crate adds to the alliance's count, or the collector's with AddToWormInventory (0x5c8820)
+            if (e.kind != GameEvent::Collect || !e.count || e.worm < 0 || e.weapon < 0) continue;
+            int t = g.worms[e.worm].team;
+            bool mine = std::any_of(S->tagged.begin(), S->tagged.end(), [&](const Object &o) { return S->toWorm.count(o.tag) && Vector3Distance(e.pos, o.pos) < 0.01f; });
+            std::string to = mine ? slotName("Inventory.Worm%02d", slotOf(e.worm)) : invName(t, 0);
+            for (auto &f : weaponFields())
+                if (Val *v = f.second == e.weapon ? field(ctn(to), f.first.c_str()) : nullptr) v->n = crateAdd((int)v->n, e.count), S->wroteCtns.insert(to);
+            if (t < (int)S->shown.size()) S->shown[t][e.weapon] = crateAdd(S->shown[t][e.weapon], e.count);  // the sim's own sum: not a use
+            e.count = 0, any = true;  // booked once, whoever reads the inventories again this tick
+        }
         for (int t = 0; t < (int)S->shown.size() && t < g.teams; t++)
             for (auto &f : weaponFields()) {
                 int n = g.ammo[t][f.second], &was = S->shown[t][f.second];

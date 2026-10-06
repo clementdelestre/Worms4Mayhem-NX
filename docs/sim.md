@@ -172,7 +172,8 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   crate's (10 x `scale` units), any time (0x5cb7e0), or a sheep-like shot (Sheep, Super Sheep, Starburst, Old Woman, Scouser: collider
   0x88) by its Radius, for the active worm (0x5c9750); with `teamCollect` set, only that AlliedGroup (`Game::alliance`). Health: +
   `count` hp (NumContents; a random crate's is `crateHealth`, 0x4fa71d; `CRATE_STOCK`: the scheme's), cures poison and the abductee flag
-  (W4M Worm.Antidote 0x5adecd). Weapons: `count` added as a u8 (0xff infinite, 0x5c88bb). Double Damage, Crate Spy and Armour apply at
+  (W4M Worm.Antidote 0x5adecd). Weapons: `count` added as a u8 (`crateAdd`: 0xff infinite, an infinite count stays, 0x5c88bb) [disasm]; in a
+  mission the Collect event carries `count` for the W4M inventories (missions.md "Ammo") [ours]. Double Damage, Crate Spy and Armour apply at
   once and never enter the inventory (`collected()`, W4M crate collect 0x5c9800). Targets and custom crates hold nothing.
 - **Damage** (0x5c9a10, 0x5c87a0, disasm): a crate or target takes WormDamageMagnitude (R - d) / R within the blast's LandDamageRadius
   (crater), x 2 under Double Damage, and bullets their damage (gun ray `GunHit::obj`, 0x5c8a90); `teamDestroy` limits it to the active

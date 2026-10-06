@@ -9,6 +9,7 @@ struct MissionSpec {
     std::string id, name, kind, campaign, map, preview, brief, success, failure;
     std::string level;                       // W4M WXFE_LevelDetails name ("Story.DinerMight")
     std::string nameId, briefId, successId;  // W4M text keys (assets/lang): Frontend_Name, Frontend_Briefing, the complete body
+    std::string objectives;                  // W4M Objectives: "<key>.A/.B/.C" are the in-game briefing lines
     int order = 0, par = 0;  // par: W4M BonusTime (s), 0 = none
     std::string script, bank, scriptDir;  // W4M: <scriptDir><script>.lub and <bank>.json (assets/scripts)
     Scheme scheme;

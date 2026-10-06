@@ -424,7 +424,8 @@ Crates (CrateLogicEntity, vtable 0x8619a0, HandleMessage 0x5cb330, spawn 0x5c9bd
 - Collision 0x5cb7e0: a worm (flags 1) -> 0x5c8370: TeamCollectable -1 or the worm's team's AlliedGroup (TeamData +0x6c); UXB marks it
   to detonate; else collected by that worm. Collider flags 0x88 (sheep-like payloads) -> 0x5c9750: the same for the active worm.
   Collection 0x5cb5a0 by type (table 0x5cb7c4): weapon / utility add NumContents as a u8 to the alliance's inventory (0xff infinite; the
-  worm's with AddToWormInventory, 0x5c8820), health 0x5c8660 (energy + NumContents, ApplyDamage, Worm.Antidote), mystery 0x5ca1f0,
+  worm's with AddToWormInventory, 0x5c8820: that container's count alone is read as a u8, left when 0xff, else set to count + NumContents
+  as a u8, so NumContents -1 on 0 gives infinite) [disasm], health 0x5c8660 (energy + NumContents, ApplyDamage, Worm.Antidote), mystery 0x5ca1f0,
   target and custom a pickup sound only; then Crate.Index, Crate.Collected.
 - Explosion 0x5c9a10 (active, not collected): d = |crate - damage epicentre|; d < LandDamageRadius: WormDamageMagnitude (R - d) / R to
   0x5c87a0 (TeamDestructible -1 or the active worm's AlliedGroup; Hitpoints -= trunc; <= 0 destroys). Then a Pushable crate within
