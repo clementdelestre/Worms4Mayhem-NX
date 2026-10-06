@@ -21,9 +21,10 @@ float textWidth(const char *t, float size);
 const Font &textFont();  // the font text() draws, for rotated or outline-free text
 Texture2D art(const char *name);  // assets/ui/<name>.png, cached; id 0 when missing
 void logo(float cx, float y, float w, float deg = 0);  // W4M logo, top centre at (cx, y), tilted deg
-// one channel of a W4M frontend clip (WXFrontend.Anim, {time s, value} keys), linear between keys, clamped
-float clipKeys(const float (*keys)[2], int n, float t);
-extern const float IN_SCALEHIT_S[6][2], IN_SCALEHIT_X[7][2], IN_SCALEHIT_Y[7][2];
+// one channel of a W4M frontend item clip t s after it started (WXFrontend.Anim keys {time s, value, in tangent x, y, out tangent
+// x, y}, at FE.AnimSpeed), held past its ends
+float clipKeys(const float (*keys)[6], int n, float t, bool weighted = false);
+extern const float IN_SCALEHIT_S[6][6], IN_SCALEHIT_X[7][6], IN_SCALEHIT_Y[7][6];
 // Menu language: 0 English, 1 French (lang.txt, else the system language). tr(): W4M's string for key
 // (assets/lang/<en|fr>.txt from tools/w4m-ui), else the built-in en / fr text (key may be null).
 extern int language;
@@ -116,6 +117,8 @@ private:
     bool trackHp(const Game &g, bool turnStart, uint32_t tick);  // true while the camera is on a worm or a crate
 };
 void hudEvent(const Game &g, const GameEvent &e);  // per sim event: W4M commentary banners (deaths, crates)
+// audio hook: a subtitle Miss.Generic.Lose<n> line shows (SubtitleGraphicEntity 0x5f90a0 plays EFMV/Failures/Failures_Narrator_0<n>)
+extern void (*onNarrator)(int n);
 // + menu in a match. Local play stops stepping the sim while open; online it is only an overlay.
 struct Pause {
     enum Action { None, Quit };
@@ -138,4 +141,5 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
 void missionHud(const Game &g, const MissionSpec &m);  // objectives and clock during a mission
 // Mission over (drawn over the match): 0 nothing yet, 1 next mission, 2 retry, 3 back to the list
 int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best, bool hasNext);
+bool eggFound(const char *nameId, int coins);  // W4M WXFE.EasterEggFound popup; true once dismissed
 }  // namespace Ui

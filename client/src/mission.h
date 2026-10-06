@@ -41,10 +41,11 @@ void spawnObject(Game &g, Object::Type t, Vector3 pos, int weapon, bool drop, in
 void placeMapObjects(Game &g);           // W4M GameLogic.PlaceObjects: mines and oil drums on the map's markers
 void missionEnd(Game &g, bool won);      // result, GameOver
 
-// progress.txt: "<mission id> <completed 0/1> <best ticks>" per line
+// progress.txt: "<mission id> <completed 0/1> <best ticks>" per line, "unlock <item>" per unlocked W4M WXFE_UnlockableItem
 struct Progress {
     struct Entry { bool done = false; int best = 0; };
     std::vector<std::pair<std::string, Entry>> entries;
+    std::vector<std::string> unlocks;
     Entry get(const std::string &id) const;
     void record(const std::string &id, bool done, int ticks);
     bool unlocked(const std::vector<MissionSpec> &list, size_t i) const;  // missions: previous one of the campaign done

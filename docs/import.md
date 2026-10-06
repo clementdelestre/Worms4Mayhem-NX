@@ -40,7 +40,8 @@ tools/w4m-import/target/release/w4m-import "$W4M" client/assets   # out dir defa
 
 `Data/Audio/PC/*.fsb` are FMOD Ex FSB4 banks: MPEG-1/2 Layer II (mp2) except `voRussian` (PCM16).
 Speech categories come from `Data/Audio/Speech/<bank>.lsd` (category -> line hashes) and
-`speech/<bank>/LIP.txt` (hash -> line name, matched to the subsound name cut at 29 chars).
+`speech/<bank>/LIP.txt` (hash -> line name, matched to the subsound name cut at 29 chars, and the lip rows).
+EFMV banks: `WormsX.fev` gives each event's waves (bank, subsound index), gains, loop and envelope; the FEV wave index is the FSB subsound index (test `fixed_line_waves_are_bank_indices`).
 For the 14 speech events whose parameter is not named `MultiSelect` (`WormsX.fev`, see docs/w4m/audio.md §12), only the line of the event's first instance is written: W4M never sets their parameter, so they always play it [disasm].
 
 ## What it writes
@@ -50,6 +51,10 @@ For the 14 speech events whose parameter is not named `MultiSelect` (`WormsX.fev
 | `sfx/<name>.ogg`, `<name>_2.ogg`, ... | hand-picked `weapons`/`global` subsounds (table `SFX` in `main.rs`) |
 | `voices/<bank>/{fire,hurt,death,victory,jump,idle}[_N].ogg` | speech categories WeaponFired, FireDamage, FriendlyDeath, Victory, Jump, StartTurn of each `vo*` bank |
 | `music/<theme>.ogg` | `mu*` banks; `theme.ogg` = frontend music; map themes use their `docs/maps.md` names (`jurassic` = muPrehistoric) |
+| `voices/<bank>/lip.txt` | per written line (`fire_2`...): its LIP.txt rows, `<frame>:<viseme>` (0 Rest, 1 A, 2 Cons, 3 EI, 4 FV, 5 L, 6 MBP, 7 O, 8 QUW) |
+| `efmv/<group>/<event>[_N].ogg` | every `EFMV/<group>/<event>` FEV event whose waves are on disk (840: 56 groups incl. `Failures`), one file per wave |
+| `efmv/<group>/events.txt` | per event: gain dB (event × sounddef × instance × category), loop, 3D min / max m (0 0: 2D), play mode, wave count, Time volume envelope (rate, x,y points) |
+| `efmv/<group>/lip.txt` | per event: the LIP rows of its `.lsd` hash (`Data/Audio/EFMV/<group>.lsd`, `EFMV/<group>/LIP.txt`) |
 
 The client picks a random variant on each play; each team speaks with the voice bank chosen in team setup (default `team % banks`).
 Which file plays when, with its W4M event, gain and 3D range: `docs/audio.md`.

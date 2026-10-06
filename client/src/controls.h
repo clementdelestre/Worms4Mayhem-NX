@@ -42,4 +42,5 @@ void focus(const Vector3 *at, float radius = 0, bool crate = false);  // HUD cin
 // crate: W4M CrateTrackCamera on it instead of the framing
 void rumble(int pad, float amp, float secs);  // pad -1: nobody
 void update(float dt);                         // rumble envelopes, once per frame
+bool quitMovie();  // W4M input group EFMVMovie: Input.QuitEFMV on Space, or any pad's Y or Back (- here) (0x4e1360, 0x4e4a20)
 }  // namespace Controls

@@ -333,6 +333,25 @@ bool SharpLand::edge(size_t c, Vector3 a, Vector3 b, Vector3 *q, Vector3 *n) con
     return Vector3LengthSqr(*n) > 0;
 }
 
+void SharpLand::drop(const std::vector<uint32_t> &hexes) {
+    if (!on || hexes.empty()) return;
+    std::vector<bool> gone(hexP0.size(), false);
+    for (uint32_t h : hexes) if (h < gone.size()) gone[h] = true;
+    std::vector<uint32_t> o;
+    for (size_t w = 0; w < bits.size(); w++)
+        for (uint64_t b = bits[w]; b; b &= b - 1) {
+            size_t c = w * 64 + __builtin_ctzll(b);
+            const uint32_t *p = ops(c);
+            o.clear();
+            for (uint32_t i = 1; i <= p[0]; i++) {
+                bool hex = (p[i] & KIND) == HEX;
+                if (!hex || !gone[p[i] & ID]) { o.push_back(p[i]); if (hex) o.push_back(p[i + 1]); }
+                i += hex;
+            }
+            if (o.size() != p[0]) setOps(c, o.data(), (uint32_t)o.size());
+        }
+}
+
 void SharpLand::carve(const std::vector<signed char> &d, Vector3 c, float r) {
     if (!on) return;
     const uint32_t id = (uint32_t)sph.size();

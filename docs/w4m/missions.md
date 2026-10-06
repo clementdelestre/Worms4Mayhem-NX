@@ -219,7 +219,8 @@ Commentary (CommentService 0x5e4ca0, CommentaryBoxGraphicEntity 0x5dce30):
   which every default comment checks (deaths 0x5e41e0 / 0x5e4960, Win / Draw, crate spawn and pickup texts, turn start, weapon
   comments), reset to 1 per game (0x5de730).
 - Subtitle mode (+0x68): `EFMV.Subtitles.On` / `.Off`, sent by EfmvBorderEntity (0x5e6c88, with `HUD.Hide`) when movie borders come up;
-  On / Off both empty the queue. Movie shutdown 0x525540 calls 0x5dff70, which empties it only in subtitle mode. A skipped movie never
+  On / Off both empty the queue; the lines then go to SubtitleGraphicEntity, one at a time (acting.md §19 "Borders and subtitles").
+  Movie shutdown 0x525540 calls 0x5dff70, which empties it only in subtitle mode. A skipped movie never
   creates its borders (CreateBorders is not Critical), so its Critical Comment events (fields Comment, Duration: TimedText with Delay =
   Duration, 0x525dc0) reach the commentary box.
 - Text ids: the mission lines (`M.*`, `C.*`) are in `Language/PC/<Lang>LS.xom` (EngLS 1575 strings), not English.xom [data]. Texts may
@@ -238,7 +239,8 @@ HUD:
   which also zeroes ElapsedRoundTime), both skipped while GameLogic.PauseGame (+0x69: every timer stops), GameLogic.RoundTime.Pause
   (+0x6f, to .Resume; sent by none of the 51 scripts nor the exe) or while the current logical camera (CameraManagerService [0x95c370]
   +0x2a0[+0x28c], type +0x2c) is 14 (0x50f15f): the type the Path (0x531580) and TimedPath (0x637880) cameras pass to the Camera
-  constructor 0x51b570, i.e. the movies' PathCamera / TimedPathCamera [disasm].
+  constructor 0x51b570, i.e. every movie camera event, CutCamera included (a one-knot PathCam), from the first to the movie's end;
+  TurnTimeRemaining stops with it (0x50f383) [disasm; acting.md §19 "Movie cameras"].
 - Team energy bars (EnergyBarManagerEntity, 0x5e9f10 at WormManager.Reinitialise): each team's value is the sum over its Active worms of
   Energy less pending damage (0x5e9a00; a surrendered team 0); a bar is value x `HUD.Energy.MaxLength` / M x 0.5 long (0x5e8250), M the
   largest team total at that Reinitialise (100 if under 1): the strongest team fills the bar, a later Worm.Respawn changes nothing.
@@ -259,10 +261,22 @@ Camera shake (CameraManagerService 0x522c29, CameraShakeManager):
   (rand % 3 - 1) per axis x Magnitude x (1 - elapsed / Length) (0x5243b0); the sum x 0.02 (0x51dcde) is clamped to `Camera.Shake.Max` 0.01
   and scaled x 1000 units (0x523e60): Magnitude m per axis, 0.5 m at most. Explosions add objects the same way (0x5241c0).
 
+Easter eggs (MissionService 0x734395 -> 0x72c567):
+- `WXMsg.EasterEggFound` (string: a WXFE_UnlockableItem, `Lock.EasterEgg.0..4` in DEFSAVE: State 0, DescriptionName
+  FETXT.EasterEgg.N, Value 1000 [data]): Achv.TrackAchievement; then, unless State is already 2 (0x67dc36), WXFE.EasterEgg.Name =
+  FETXT.EasterEgg.Name.Template % tr(DescriptionName), WXFE.EasterEgg.Coins = FETXT.EasterEgg.Coins.Template % Value, State = 2
+  (0x67daaa), WXFE.Shop.Balance += Value, GameOver.EasterEgg = 1.
+- At the front end (0x4fd829), unless GameLogic.RestartGame, GameOver.EasterEgg pushes the `WXFE.EasterEggFound` menu (MENUTWKX: a
+  paper popup, FullScreenColour (40, 40, 60, 160), the name text over the coins text, a Return item) over the next menu.
+- Senders [data]: DestructAndServe (Trigger_Destroyed, egg 0), CarpetCapers (Crate_Collected, 3), TinCanWally, EscapeFromTreeRex (4);
+  their Initialise tests the item's State to set the egg up.
+
 Point lights:
-- `Land.EnablePointLight` / `DisablePointLight` (LandscapeLogicEntity 0x478e03 -> 0x4757c0): the named detail's light index (+0x58) sets
-  bit 0 of the 48-byte light entry ([0x953344]+0x20) and rebuilds the land chunks it lights (0x470270), the vertex colour term of
-  render.md (col x 500 cos(1 - d / R)). Used by TurkishDelights only (PL01, PL04 in Initialise) [data].
+- `Land.EnablePointLight` / `DisablePointLight` (LandscapeLogicEntity 0x478e03 -> 0x4757c0): the string's first 4 bytes are compared
+  with each registered detail's code (+0xbc list, details +0xa4, 0x477c60); each match calls 0x5cbf40 -> 0x470a40(light index +0x58, on):
+  if bit 0 of the light entry differs it is set and, unless [0x955640], the light's chunks are rebuilt (0x470270). The lights are
+  created on (render.md "Point lights"), so TurkishDelights' Initialise (PL01, PL04, the only calls in the 51 scripts) changes
+  nothing [data + disasm]. `Land.SetPointLightColor` (0x475820, Red / Green / Blue keys) is sent by no script.
 
 ### 23.9 Lot 2 keys and messages: mines, factory, water, weapons, turn keys, end of game [disasm unless tagged]
 
@@ -285,8 +299,11 @@ Mine.StartsMidAir +0x198):
 
 Mine factory (MineFactoryLogicEntity 0x5d0510; kMineFactoryData [data]: NumMineActivation 20, NumTurnsInactive 7, SafeRadiusPadding 82,
 DamageMagnitude 100, ImpulseMagnitude 0.6, Worm / Land / Impulse radii 100; MineVelocityX/Y/Z are "Obsolete" and absent):
-- Created by PlaceObjects on the "minefactory" detail (DeathMatch6) or stdvs's CreateRandMineFactory (0x4f26b0: radius 45, offset
-  (0, 40, 0)); one at a time (GLS +0x208). Init 0x5d0170: a 1000-step ray of 1 unit down snaps it to the land; Land.SpawnPiece
+- Created by PlaceObjects on the "minefactory" detail (DeathMatch6) or stdvs's CreateRandMineFactory (0x4fe1a0: 0x4f26b0 with a
+  sphere of 40 + 5 units at the hit + (0, 40, 0); the column top it returns goes to CreateMineFactory, whose init snaps it down; all
+  100 tries failed: none). stdvs Initialise sends it after the sudden-death check when GM.SchemeData.MineFactoryOn, and its
+  DoOncePerTurnFunctions sends StartMineFactory after DropRandomCrate [data]; LOCAL schemes with MineFactoryOn 1: Bng, Allaction,
+  MegaPower, Mystery, Thekitchensink, and WXD.DefaultSchemeData [data]. One at a time (GLS +0x208). Init 0x5d0170: a 1000-step ray of 1 unit down snaps it to the land; Land.SpawnPiece
   "MineFacCollisionSmall" / "MineFacCollisionBig" (Bundl09 FactoryCollision1 / 2: solid boxes centred on pos + (18.96, 15.96, 1.08) half
   (10.5, 16, 8.4) and pos + (-5.28, 20.76, 0.96) half (12, 20, 12) units [data]), never removed; counter = NumTurnsInactive; land maxY kept.
 - `GameLogic.StartMineFactory` (0x5cfe40, DM6's DoOncePerTurnFunctions): counter - 1; at <= 0, if the kWeaponLandmine payloads in play
@@ -310,7 +327,10 @@ SetData moves it at once (the water graphic follows at Water.RiseSpeed.Graphic).
 Weapons (LogicalWeaponManagerService 0x566b80):
 - `Weapon.Create` 0x565770: keeps the active worm's WeaponIndex if 0x50d900 finds it usable, else writes ids 0, 1, ... (0x26 Skip Go and
   0x27 Surrender skipped) into Worm.DataNN.WeaponIndex until one is usable, kWeaponUndefined 0x43 when none (0x56582d); then posts
-  Weapon.PreSelected. Only scripts send it: a match's turn start never runs it.
+  Weapon.PreSelected. Only scripts send it: a match's turn start never runs it. GameLogic.Turn.Started (0x566cf0): current and
+  secondary weapon (+0x94, +0x98) = kWeaponUndefined, +0x8d = 1 then 0x565200(0) (UtilityFire group off, Fire on): every turn starts
+  empty-handed. ActiveWormHudInfoEntity 0x5d7bb0 shows the weapon box on Weapon.Selected only for a usable weapon other than 0x43,
+  and hides it on Weapon.Delete.
 - `Weapon.PreSelected` 0x566c77: 0x566690(0) deletes the weapon / utility entities (the tool-out rule may keep them), then WeaponSelected
   0x565d30 builds WeaponIndex's item, no ammo test.
 - `Weapon.Wield`: WeaponAccessoryEntity 0x597739 only: a holstered (+0xb0 0) weapon is drawn (state-0 taunt path, EquipSfx): no gameplay.

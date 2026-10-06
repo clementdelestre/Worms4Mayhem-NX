@@ -250,11 +250,11 @@ const MUSIC: &[(&str, &str)] = &[
 
 struct Job { input: Vec<u8>, fmt: &'static str, out: PathBuf, secs: f32, rate: u32 }
 
-// category -> subsound indices, via <bank>.lsd (category -> line hashes) and LIP.txt (hash -> line name).
-fn speech_categories(lsd: &str, lip: &str, subs: &[Sample]) -> HashMap<String, Vec<usize>> {
+// category -> (subsound index, line hash), via <bank>.lsd (category -> line hashes) and LIP.txt (hash -> line name).
+fn speech_categories(lsd: &str, lip: &str, subs: &[Sample]) -> HashMap<String, Vec<(usize, String)>> {
     let names: HashMap<&str, &str> = lip.lines().filter_map(|l| l.strip_prefix('#')?.split_once(' '))
         .map(|(h, n)| (h, n.trim().trim_end_matches(".txt"))).collect();
-    let mut cats: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut cats: HashMap<String, Vec<(usize, String)>> = HashMap::new();
     let mut cur = String::new();
     for l in lsd.lines().map(str::trim) {
         if let Some(n) = l.strip_prefix("<name>").and_then(|n| n.strip_suffix("</name>")) {
@@ -264,20 +264,25 @@ fn speech_categories(lsd: &str, lip: &str, subs: &[Sample]) -> HashMap<String, V
             let short = &line.as_bytes()[..line.len().min(29)];
             if let Some(i) = subs.iter().position(|s| s.name.as_bytes().eq_ignore_ascii_case(short)) {
                 let v = cats.entry(cur.clone()).or_default();
-                if !v.contains(&i) { v.push(i); }
+                if !v.iter().any(|x| x.0 == i) { v.push((i, l.to_string())); }
             }
         }
     }
     cats
 }
 
-// WormsX.fev walk (layout: tools/w4m-re/fev.py). Speech events whose parameter is not "MultiSelect" get no value from the exe
-// (handle lookup 0x6f99a2) and stay at the minimum (fmod_event reset 0x10024640): they always play their first instance.
-// Returns "<bank>/<Category>" -> that instance's wave name.
-fn fev_fixed_lines(b: &[u8]) -> HashMap<String, String> {
+// WormsX.fev (layout: tools/w4m-re/fev.py, docs/w4m/audio.md §12): what the importer needs of each event.
+struct Inst { sd: usize, start: f32, looped: bool, vol: f32 }
+struct Event { path: String, vol: f32, mode: u32, min: f32, max: f32, cat: String, params: Vec<(String, f32)>, insts: Vec<Inst>, envs: Vec<(u32, Vec<(f32, f32)>)> }
+struct Wave { bank: String, index: usize }
+struct SoundDef { play: u32, vol: f32, waves: Vec<Wave> }
+struct Fev { events: Vec<Event>, sds: Vec<SoundDef>, cats: HashMap<String, f32> }
+
+fn parse_fev(b: &[u8]) -> Fev {
     struct R<'a> { b: &'a [u8], p: usize }
     impl R<'_> {
         fn u(&mut self) -> u32 { let v = u32le(self.b, self.p); self.p += 4; v }
+        fn f(&mut self) -> f32 { f32::from_bits(self.u()) }
         fn skip(&mut self, n: usize) { self.p += n; }
         fn s(&mut self) -> String {
             let n = self.u() as usize;
@@ -286,36 +291,54 @@ fn fev_fixed_lines(b: &[u8]) -> HashMap<String, String> {
             v
         }
     }
-    fn cat(r: &mut R) { r.s(); r.skip(16); for _ in 0..r.u() { cat(r); } }
-    // event path -> (param names, (start, sounddef) per instance)
-    type Ev = (String, Vec<String>, Vec<(f32, u16)>);
-    fn group(r: &mut R, path: &str, out: &mut Vec<Ev>) {
+    // category gains multiply down the tree; keyed by path below the root, like the events' category strings
+    fn cat(r: &mut R, path: &str, gain: f32, out: &mut HashMap<String, f32>) {
+        let name = r.s();
+        let g = gain * r.f();
+        r.skip(12);
+        let full = if path.is_empty() { name } else { format!("{path}/{name}") };
+        out.insert(full.split_once('/').map_or(String::new(), |(_, rest)| rest.to_string()), g);
+        for _ in 0..r.u() { cat(r, &full, g, out); }
+    }
+    fn group(r: &mut R, path: &str, out: &mut Vec<Event>) {
         let full = format!("{path}/{}", r.s());
         for _ in 0..r.u() { r.s(); match r.u() { 2 => { r.s(); } _ => r.skip(4) } }
         let (ns, ne) = (r.u(), r.u());
         for _ in 0..ne {
             let kind = r.u();
             let name = r.s();
-            r.skip(16 + 0x84);
-            let inst = |r: &mut R, v: &mut Vec<(f32, u16)>| {
-                let sd = u16le(r.b, r.p);
-                v.push((f32::from_bits(u32le(r.b, r.p + 2)), sd));
+            r.skip(16);
+            let h = r.p;
+            let mut e = Event { path: format!("{full}/{name}").trim_start_matches("/Master/").to_string(), vol: f32::from_bits(u32le(r.b, h)),
+                                mode: u32le(r.b, h + 0x1c), min: f32::from_bits(u32le(r.b, h + 0x20)), max: f32::from_bits(u32le(r.b, h + 0x24)),
+                                cat: String::new(), params: vec![], insts: vec![], envs: vec![] };
+            r.skip(0x84);
+            // instance: u16 sounddef, f start, f length, u32 start mode, u32 loop mode (0 loop, 1 oneshot, 2 loop to end), ..., f volume at +38
+            let inst = |r: &mut R, v: &mut Vec<Inst>| {
+                v.push(Inst { sd: u16le(r.b, r.p) as usize, start: f32::from_bits(u32le(r.b, r.p + 2)), looped: u32le(r.b, r.p + 14) != 1,
+                              vol: f32::from_bits(u32le(r.b, r.p + 38)) });
                 r.skip(58);
             };
-            let (mut params, mut insts) = (Vec::new(), Vec::new());
-            if kind == 0x10 { r.u(); inst(r, &mut insts); } else {
+            if kind == 0x10 { r.u(); inst(r, &mut e.insts); } else {
                 for _ in 0..r.u() {
                     let (ni, nenv) = (u16le(r.b, r.p + 6), u16le(r.b, r.p + 8));
                     r.skip(10);
-                    for _ in 0..ni { inst(r, &mut insts); }
-                    for _ in 0..nenv { r.u(); r.s(); r.skip(12); let n = r.u() as usize; r.skip(12 * n + 8); }
+                    for _ in 0..ni { inst(r, &mut e.insts); }
+                    for _ in 0..nenv {
+                        r.u(); r.s(); r.u();
+                        let flags = r.u();
+                        r.u();
+                        let pts = (0..r.u()).map(|_| { let x = r.f(); let y = r.f(); r.u(); (x, y) }).collect();
+                        r.skip(8);
+                        e.envs.push((flags, pts));
+                    }
                 }
-                for _ in 0..r.u() { params.push(r.s()); r.skip(24); let n = r.u() as usize; r.skip(4 * n); }
+                for _ in 0..r.u() { let n = r.s(); let vel = r.f(); r.skip(20); let k = r.u() as usize; r.skip(4 * k); e.params.push((n, vel)); }
                 r.u();
             }
             r.u();
-            r.s();
-            out.push((format!("{full}/{name}"), params, insts));
+            e.cat = r.s();
+            out.push(e);
         }
         for _ in 0..ns { group(r, &full, out); }
     }
@@ -324,33 +347,90 @@ fn fev_fixed_lines(b: &[u8]) -> HashMap<String, String> {
     r.skip(8 * n);
     r.s();
     for _ in 0..r.u() { r.skip(16); r.s(); }
-    cat(&mut r);
-    let mut evs = Vec::new();
-    for _ in 0..r.u() { group(&mut r, "", &mut evs); }
-    let np = r.u() as usize;
-    r.skip(70 * np);
-    let mut waves = Vec::new();
-    for _ in 0..r.u() {
-        r.s(); r.u();
-        let mut first = String::new();
-        for k in 0..r.u() {
-            r.skip(8);
-            let f = r.s();
-            r.s(); r.skip(8);
-            if k == 0 { first = f; }
-        }
-        waves.push(first);
-    }
+    let mut cats = HashMap::new();
+    cat(&mut r, "", 1.0, &mut cats);
+    let mut events = Vec::new();
+    for _ in 0..r.u() { group(&mut r, "", &mut events); }
+    let props: Vec<(u32, f32)> = (0..r.u()).map(|_| { let p = (u32le(r.b, r.p), f32::from_bits(u32le(r.b, r.p + 16))); r.skip(70); p }).collect();
+    let sds = (0..r.u()).map(|_| {
+        r.s();
+        let (play, vol) = props[r.u() as usize];
+        let waves = (0..r.u()).map(|_| { r.skip(8); r.s(); let bank = r.s(); let index = r.u() as usize; r.u(); Wave { bank, index } }).collect();
+        SoundDef { play, vol, waves }
+    }).collect();
+    Fev { events, sds, cats }
+}
+
+// Speech events whose parameter is not "MultiSelect" get no value from the exe (handle lookup 0x6f99a2) and stay at the minimum
+// (fmod_event reset 0x10024640): they always play their first instance. Returns "<bank>/<Category>" -> that instance's wave index.
+fn fev_fixed_lines(f: &Fev) -> HashMap<String, usize> {
     let mut out = HashMap::new();
-    for (path, params, insts) in evs {
-        let Some(rest) = path.split_once("/Speech/").map(|(_, r)| r.to_string()) else { continue };
-        if insts.len() < 2 || params.iter().any(|p| p == "MultiSelect") { continue; }
-        let &(_, sd) = insts.iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
-        let w = &waves[sd as usize];
-        let base = w.rsplit('/').next().unwrap_or(w);
-        out.insert(rest, base.strip_suffix(".wav").unwrap_or(base).to_string());
+    for e in &f.events {
+        let Some(rest) = e.path.split_once("Speech/").map(|(_, r)| r.to_string()) else { continue };
+        if e.insts.len() < 2 || e.params.iter().any(|p| p.0 == "MultiSelect") { continue; }
+        let i = e.insts.iter().min_by(|a, b| a.start.total_cmp(&b.start)).unwrap();
+        if let Some(w) = f.sds[i.sd].waves.first() { out.insert(rest, w.index); }
     }
     out
+}
+
+// W4M LIP.txt rows "frame,VISEME,<none>" under "#<hash> <line>.txt": per hash, (frame, viseme) with the exe's parse (0x605d40):
+// the viseme's first letter A C E F L M O Q R -> 1..8, 0 (Rest); another letter keeps the previous row's
+fn lip_rows(lip: &str) -> HashMap<String, Vec<(u16, u8)>> {
+    let mut out: HashMap<String, Vec<(u16, u8)>> = HashMap::new();
+    let (mut cur, mut v) = (String::new(), 0u8);
+    for l in lip.lines().map(str::trim) {
+        if let Some(h) = l.strip_prefix('#') {
+            cur = h.split(' ').next().unwrap_or("").to_string();
+            out.entry(cur.clone()).or_default();
+        } else if let Some((fr, rest)) = l.split_once(',') {
+            v = match rest.as_bytes().first() {
+                Some(b'A') => 1, Some(b'C') => 2, Some(b'E') => 3, Some(b'F') => 4, Some(b'L') => 5, Some(b'M') => 6,
+                Some(b'O') => 7, Some(b'Q') => 8, Some(b'R') => 0, _ => v,
+            };
+            if let (Ok(f), Some(rows)) = (fr.trim().parse::<u16>(), out.get_mut(&cur)) { rows.push((f, v)); }
+        }
+    }
+    out
+}
+
+fn lip_line(name: &str, rows: &[(u16, u8)]) -> String {
+    rows.iter().fold(name.to_string(), |s, (f, v)| format!("{s} {f}:{v}"))
+}
+
+// efmv/<group>/events.txt, one line per event: name, gain dB, loop, 3D linear min max (m, 0 0: 2D), sounddef play mode, wave count,
+// then the volume envelope on its Time parameter if any: rate (share of the range per second) and x,y points;
+// efmv/<group>/lip.txt: the event's line (its .lsd hash, the first: no EFMV event has a MultiSelect parameter) as LIP rows
+fn efmv_index(f: &Fev, efmv: &[&Event], game: &Path, out: &Path) {
+    let (lsds, lipdirs) = (index(&game.join("Data/Audio/EFMV")), index(&game.join("EFMV")));
+    let mut groups: std::collections::BTreeMap<&str, (String, String)> = Default::default();
+    for e in efmv {
+        let (group, name) = e.path[5..].split_once('/').unwrap();
+        let (i, sd) = (&e.insts[0], &f.sds[e.insts[0].sd]);
+        let gain = e.vol * sd.vol * i.vol * f.cats.get(&e.cat).copied().unwrap_or(1.0);
+        let (min, max) = if e.mode & 0x10 != 0 { (e.min / 20.0, e.max / 20.0) } else { (0.0, 0.0) };
+        let mut l = format!("{} {:.2} {} {min} {max} {} {}", safe(name), if gain > 0.0 { 20.0 * gain.log10() } else { -99.0 }, i.looped as u8, sd.play, sd.waves.len());
+        if let (Some((_, rate)), Some((_, pts))) = (e.params.iter().find(|p| p.0 == "Time"), e.envs.iter().find(|v| v.0 == 12)) {
+            l += &pts.iter().fold(format!(" {rate}"), |s, (x, y)| format!("{s} {x},{y}"));
+        }
+        groups.entry(group).or_default().0 += &(l + "\n");
+    }
+    for (group, (events, lips)) in &mut groups {
+        let lsd = lsds.get(&format!("{}.lsd", group.to_lowercase())).and_then(|p| fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned());
+        let lip = lipdirs.get(&group.to_lowercase()).and_then(|d| fs::read(d.join("LIP.txt")).ok()).map(|b| String::from_utf8_lossy(&b).into_owned());
+        if let (Some(lsd), Some(lip)) = (lsd, lip) {
+            let rows = lip_rows(&lip);
+            let mut cur = String::new();
+            for l in lsd.lines().map(str::trim) {
+                if let Some(n) = l.strip_prefix("<name>").and_then(|n| n.strip_suffix("</name>")) { cur = n.rsplit('/').next().unwrap().to_string(); }
+                else if let Some(r) = rows.get(l).filter(|_| !cur.is_empty()) { *lips += &(lip_line(&safe(&cur), r) + "\n"); cur.clear(); }
+            }
+        }
+        let dir = out.join("efmv").join(group);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("events.txt"), &events).unwrap();
+        fs::write(dir.join("lip.txt"), &lips).unwrap();
+    }
 }
 
 fn variant(dir: &Path, name: &str, i: usize) -> PathBuf {
@@ -392,7 +472,11 @@ fn main() {
     banks.sort();
     if banks.is_empty() { eprintln!("no .fsb under {}", pc.display()); std::process::exit(1); }
 
-    let fixed = fs::read(pc.join("WormsX.fev")).map(|b| fev_fixed_lines(&b)).unwrap_or_default();
+    let fev = fs::read(pc.join("WormsX.fev")).map(|b| parse_fev(&b)).ok();
+    let fixed = fev.as_ref().map(fev_fixed_lines).unwrap_or_default();
+    // EFMV/<group>/<event> whose waves are all on disk (the Outtake* banks are not)
+    let efmv: Vec<&Event> = fev.iter().flat_map(|f| &f.events).filter(|e| e.path.starts_with("EFMV/") && !e.insts.is_empty() &&
+        fev.as_ref().unwrap().sds[e.insts[0].sd].waves.iter().all(|w| banks.iter().any(|(b, _)| b.eq_ignore_ascii_case(&w.bank)))).collect();
     let mut jobs = Vec::new();
     let (mut raw_files, mut raw_bytes, mut skipped) = (0, 0u64, 0);
     let mut queue = |subs: &[Sample], i: usize, out: PathBuf, jobs: &mut Vec<Job>| {
@@ -448,18 +532,34 @@ fn main() {
             let lsd = String::from_utf8_lossy(&fs::read(lsd).unwrap()).into_owned();
             let lip = String::from_utf8_lossy(&fs::read(lip.join("LIP.txt")).unwrap_or_default()).into_owned();
             let cats = speech_categories(&lsd, &lip, &subs);
+            let rows = lip_rows(&lip);
             let dir = out.join("voices").join(bank.strip_prefix("vo").unwrap_or(bank));
             fs::create_dir_all(&dir).unwrap();
+            let mut lips = String::new();
             for (name, cat) in VOICES {
-                let only = fixed.get(&format!("{bank}/{cat}")).map(|w| &w.as_bytes()[..w.len().min(29)]);
-                let lines = cats.get(*cat).into_iter().flatten().filter(|&&i| only.is_none_or(|w| subs[i].name.as_bytes().eq_ignore_ascii_case(w)));
-                for (k, &i) in lines.enumerate() {
-                    queue(&subs, i, variant(&dir, name, k), &mut jobs);
+                let only = fixed.get(&format!("{bank}/{cat}"));
+                let lines = cats.get(*cat).into_iter().flatten().filter(|x| only.is_none_or(|&w| w == x.0));
+                for (k, (i, hash)) in lines.enumerate() {
+                    queue(&subs, *i, variant(&dir, name, k), &mut jobs);
+                    let stem = variant(&dir, name, k).file_stem().unwrap().to_string_lossy().into_owned();
+                    if let Some(r) = rows.get(hash) { lips += &(lip_line(&stem, r) + "\n"); }
                 }
+            }
+            fs::write(dir.join("lip.txt"), lips).unwrap();
+        }
+        for e in &efmv {
+            let (group, name) = e.path[5..].split_once('/').unwrap();
+            let dir = out.join("efmv").join(group);
+            for (k, w) in fev.as_ref().unwrap().sds[e.insts[0].sd].waves.iter().enumerate() {
+                if !w.bank.eq_ignore_ascii_case(bank) { continue; }
+                if w.index >= subs.len() { eprintln!("{}: wave {} past {bank}", e.path, w.index); continue; }
+                fs::create_dir_all(&dir).unwrap();
+                queue(&subs, w.index, variant(&dir, &safe(name), k), &mut jobs);
             }
         }
     }
     if list { return; }
+    if let Some(f) = &fev { efmv_index(f, &efmv, &game, &out); }
 
     let next = AtomicUsize::new(0);
     let errors = Mutex::new(Vec::new());
@@ -502,7 +602,7 @@ mod tests {
         // needs the user's install; the walk must reach the 14 events named in docs/w4m/audio.md §12
         let Some(dir) = std::env::var_os("W4M_DIR") else { return };
         let b = fs::read(Path::new(&dir).join("Data/Audio/PC/WormsX.fev")).unwrap();
-        let f = fev_fixed_lines(&b);
+        let f = fev_fixed_lines(&parse_fev(&b));
         assert_eq!(f.len(), 14, "{f:?}");
         assert!(f.contains_key("vobuild/StartTurn") && f.contains_key("voklein/NoDamageA"));
     }
@@ -514,7 +614,29 @@ mod tests {
         let lsd = "<name>Speech/voalien/Cheer</name>\r\n1\r\n;\r\n<name>Speech/voalien/Taunt</name>\r\n2\r\n3\r\n;";
         let lip = "#1 cheer 1.txt\n0,A,<none>\n#2 a gift from home bah just more junk.txt\n#3 a gift from home bah just more junk 2.txt";
         let c = speech_categories(lsd, lip, &subs);
-        assert_eq!(c["Cheer"], [0]);
-        assert_eq!(c["Taunt"], [1]);
+        assert_eq!(c["Cheer"], [(0, "1".to_string())]);
+        assert_eq!(c["Taunt"], [(1, "2".to_string())]);
+    }
+
+    #[test]
+    fn lip_rows_follow_the_exe_parse() {
+        let r = lip_rows("#7 a.txt\n0,CONS,<none>\n4,Rest,<none>\n\n6,X,<none>\n9,QUW,<none>\n#8 b.txt\n0,MBP,<none>");
+        assert_eq!(r["7"], [(0, 2), (4, 0), (6, 0), (9, 8)]);
+        assert_eq!(lip_line("b", &r["8"]), "b 0:6");
+    }
+
+    #[test]
+    fn fixed_line_waves_are_bank_indices() {
+        // needs the user's install: the FEV wave index of a fixed line is its subsound in the bank
+        let Some(dir) = std::env::var_os("W4M_DIR") else { return };
+        let pc = Path::new(&dir).join("Data/Audio/PC");
+        let f = parse_fev(&fs::read(pc.join("WormsX.fev")).unwrap());
+        let e = f.events.iter().find(|e| e.path == "Speech/vobuild/StartTurn").unwrap();
+        let i = e.insts.iter().min_by(|a, b| a.start.total_cmp(&b.start)).unwrap();
+        let bank = fs::read(index(&pc)["vobuild.fsb"].clone()).unwrap();
+        let subs = parse_fsb4(&bank).unwrap();
+        assert_eq!(fev_fixed_lines(&f)["vobuild/StartTurn"], f.sds[i.sd].waves[0].index);
+        assert!(subs.len() > f.sds[i.sd].waves[0].index);
+        assert_eq!(f.cats["Speech/EFMVDialogue"], 1.0);
     }
 }

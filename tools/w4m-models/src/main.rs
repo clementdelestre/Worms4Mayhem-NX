@@ -193,6 +193,8 @@ const WORM_CLIPS: &[&str] = &[
     "Normal+NormalMouth", "Disgust+DisgustMouth", "Interested+InterestedMouth", "Curious+CuriousMouth",
     "Patronising+PatronisingMouth", "EvilGrin+EvilGrinMouth", "Awestruck+AwestruckMouth", "Daft+DaftMouth", "Daft2+Daft2Mouth",
     "Incredulity+IncredulityMouth", "Sneer", "Search",
+    // lip-sync visemes (WormPoseManager 0x59cf50 binds them; 0x59d570 plays them by LIP row)
+    "A", "Cons", "EI", "FV", "L", "MBP", "O", "QUW",
     "Startled", "Shriek", "Cover_Head", "Gasp", "Blow", "Disbelief", "Pray", "Shake_Fist", "Titter", "Chuckle", "PointAndLaugh",
     "Wipe_Brow", "ShakeHead", "Indicate", "Watch_Distant", "Cheer", "Thumbs_Up", "Salute", "ClaspHands", "ClutchChest", "Doh",
     "SighAndShakeHead", "WhatWereYouThinking", "SeeImpact", "Vomit", "Sneeze", "Yawn2", "Bored", "Taunt1", "BringItOn",

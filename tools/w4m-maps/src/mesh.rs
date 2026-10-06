@@ -315,14 +315,15 @@ pub fn convert(x: &Xom, desc: usize, unit: f32) -> Option<(Vec<u8>, String, [f32
     let graph = vi(d, &mut p);
     walk(x, graph, sc([unit; 3]), &mut parts, 0, "");
     if parts.is_empty() { return None; }
-    // W4M 0x5cd38e: a detail plays its "Go" clip looped from a random time, else "GoSync" from 0
+    // W4M 0x5cd38e: a detail plays its "Go" clip looped from a random time, else "GoSync" from 0; another clip only on an
+    // EFMV AnimateDetail (Detail.PlayAnim 0x5ccc80: once, from 0), the first one kept
     let gd = x.d(graph);
     let mut q = 0;
     let lib = if x.t(graph) != "XGraphSet" { None } else {
         (0..vi(gd, &mut q)).find_map(|_| { q += 16; let r = vi(gd, &mut q); vi(gd, &mut q); (x.t(r) == "XAnimClipLibrary").then_some(r) })
     };
     let all = lib.map_or(vec![], |l| crate::anim::clips(x.d(l), &x.s, &mut 0));
-    let clip = all.iter().find(|c| c.name == "Go").or_else(|| all.iter().find(|c| c.name == "GoSync"));
+    let clip = all.iter().find(|c| c.name == "Go").or_else(|| all.iter().find(|c| c.name == "GoSync")).or_else(|| all.first());
     const UV_STEPS: usize = 64;
     let mut tracks: Vec<Vec<[f32; 2]>> = Vec::new();  // texture offset (U, V) at UV_STEPS + 1 even times over the clip
     let part_track: Vec<Option<usize>> = parts.iter().map(|pt| {

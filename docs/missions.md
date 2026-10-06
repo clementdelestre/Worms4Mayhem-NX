@@ -43,9 +43,14 @@ mission JSON carries `script` (the `.lub` name) and `bank` (the level databank),
 - `data.json`: the named resources of LOCAL, LVLSETUP, TWEAK, WEAPTWK, AITWK, HUDTWK, CAMTWK and DEFSAVE: data keys (`keys`, a float
   keeps its `.` so the client tells int from float) and the containers of the classes the scripts use (`containers`, field names and
   types from `tools/w4m-maps/src/schema.rs`, generated from `pe.py schema`; refs and the fields some files lack are handled as `xom.py`);
-- `<bank>.json`: the level databank's keys, containers and, per movie, its Critical events in the player's firing order (`movies`).
+- `<bank>.json`: the level databank's keys, containers and its movies (`movies`): per movie its tracks in order, per track its events
+  in file order (the player's cursor order, acting.md §19), each `[type, Time ms, Critical 0/1, fields...]` with the field order of
+  `pe.py schema EFMV_*` (`schema.rs`); 174 movies, 4643 events in the 51 levels [data].
 Map markers: every hidden named detail is exported (`locator` when its library is no worm, crate, target, mine, drum, trigger or
-telepad type), so the scripts' spawn, crate and explosion names resolve.
+telepad type), so the scripts' spawn, crate and explosion names and the movie camera knots resolve; each carries `dir`, its local -Z in
+the world (TimedPathCam's look, acting.md §19 "Movie cameras"). A map with coded land frames (name "...CODE xxxx", subtree included)
+gets `codes`: per 4-byte code its cells (`hex`, the `.cells` HEX ids) and the voxels only they hold (`vox`, index runs); a detail whose
+name holds a code (Detail.PlayAnim) gets `code` in `objects`; a decor mesh with no Go / GoSync clip lists its first clip in its `.mat`.
 
 ## Scripts
 
@@ -69,8 +74,9 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
 - **Worms** (`WormManager.Reinitialise`): the Worm.DataNN slots the script set up, team-major by TeamIndex then slot, at their Spawn
   marker (dropped onto the ground below, facing the map centre [ours, as the JSON path]); Active 0 slots are unspawned placeholders;
   `IsAllowedToTakeTurn` 0 never plays (`Worm::turns`). Team names and CPU levels from Team.DataNN `IsAIControlled` and the AIParams.CPUn
-  copied to its worms; none copied: CPU2, the AIService init's copy into every AIParams.WormNN [disasm 0x4b3390]. Ours is per team: the
-  first copied worm's level [ours: the AI level is a team setting]. The teams are those of the worms and of every Team.DataNN written;
+  copied to its worms; none copied: CPU2, the AIService init's copy into every AIParams.WormNN [disasm 0x4b3390]. The AI reads the
+  thinking worm's own level (`Game::wormCpu`, kept by `syncCpu` at Reinitialise, Respawn and every AIParams.WormNN copy); the team's
+  `cpu` (its first copied worm's level) only marks it AI-controlled and shows in the menu [ours]. The teams are those of the worms and of every Team.DataNN written;
   `Game::allied` holds their AlliedGroup (crate team rules, the AI's allies: docs/w4m/missions.md §23.10).
   - Worm.Respawn (and EFMV SpawnWorm: its DataId copied to the slot first) puts a fresh worm at the slot's Spawn marker as above, if
     Active and no worm is in the slot [disasm 0x5b4f70]. Our worms are team-major, so Reinitialise keeps 16 - (slots set up) spare
@@ -99,10 +105,51 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   with Crate.Index when a crate with an Index leaves; Timer_GameTimedOut when the round clock (from Timer.StartGame) runs out; due timers
   in deadline order; queued callbacks (EFMV_Terminated).
 - **Timers**: 10 slots, deadline in game ms = ticks x 1000 / 60 [disasm: TaskManager logical time].
-- **Movies** (`EFMV.Play`): played as skipped: only the Critical events run (CreateExplosion: a real blast at its locator, units / 20, impulse
-  x 50, the impulse centre ImpulseOffset units above it, its ParticleEffect (none: WXP_ExplosionX_Med) on the Boom event, as
-  Explosion.Construct [disasm 0x4f9970]; Comment, CreateEmitter / DeleteEmitter: UI below; DeleteBorders: nothing to undo), then
-  EFMV_Terminated is queued [data: acting.md §19].
+- **Movies** (`EFMV.Play`, `ScriptState::Movie`, docs/w4m/acting.md §19): the player runs in the sim and is checksummed (name, clock,
+  cursors, camera lists). Every 10 game ms: the camera update, then the player's step (each track fires its events in file order while
+  Time <= the clock, then the clock + 10) [disasm 0x526cb0; ours: the order of the two within a 10 ms slot]; the movie ends once every
+  track is done and no camera path runs (+0x32), queueing EFMV_Terminated. A second EFMV.Play while one plays is ignored (0x4ff21d).
+  - Sim events: CreateExplosion (a real blast at its locator, units / 20, impulse x 50, the impulse centre ImpulseOffset units above it,
+    its ParticleEffect (none: WXP_ExplosionX_Med), as Explosion.Construct, 0x4f9970), SpawnWorm / UnspawnWorm, RaiseWater, SelectWorm
+    (ActiveWormIndex), SelectWeapon (WormData WeaponIndex; the current worm takes it if no tool is out; Lua Weapon_Selected),
+    DeleteLandframe (`Terrain::clearCoded`: the code's HEX ops leave the exact land, `SharpLand::drop`, its voxels empty, chunks dirty;
+    worms and objects lose their support as after a blast; no debris), CreateBorders / DeleteBorders = EFMV.Start / EFMV.End.
+  - Cameras: CutCamera, PathCamera, TimedPathCamera keep two knot lists (knot count from the " ,"-split names, current knot, float t)
+    stepped as PathCam 0x52bb40 / TimedPathCam 0x636de0 (t = float(t + 1 / steps), past 1 the next knot; the activation steps once);
+    a path holds the movie until both lists end. From the first camera event to the end the turn clock (Aim) and the round clock stand
+    (type 14). A TimedPath step list shorter than its segments reuses its last value [ours: W4M reads past the vector].
+  - Skip: `Input::SKIP_MOVIE` (lockstep input; ignored while EFMV.Unskipable) steps to the end firing only the Critical events, then
+    the end as usual (0x526d90). Client: Space, or any pad's Y or - (W4M Back) (`Controls::quitMovie`, input group EFMVMovie).
+  - While a movie plays the sim zeroes every input (the EFMVMovie group alone, 0x5074a0) [ours for a CPU's: W4M's AI acts through
+    messages, not traced], ObjectCount.Active stays, acting scenes are not started (Acting::fire; W4M ends them within 20 ms).
+  - Game-over movie: at Mission / Challenge .Success / .Failure, Win, Draw with EFMV.GameOverMovie set (not .Off) that movie plays
+    (MovieName = it, 0x4f52c0), the phase already GameOver: the world, the movie and the script run on (Game::step), no turn; the
+    result shows once it ends (`scriptOutro` 1); no GameOverLogicEntity (no victory music, crowd, fireworks or orbit). A challenge's
+    end writes Challenge.Success 1 / 0 first (FailureComment reads it). `run.ticks` stops at the end.
+  - Render (client, never read back): `scriptMovie()` gives the movie clock, its tracks, per track the cast (WORM<slot> -> our worm,
+    else the name), the camera event and its lists, the borders state. `Efmv::camera` evaluates the knots (markers by exact name; a
+    TimedPath look-at knot 1000 units along the marker's `dir`) with the cardinal spline (s = (1 - Tension) / 2, TimedPath 0.5), up
+    (0, 1, 0), the default lens; it outranks the game camera, the bomber / UFO scene cams outrank it; the shake applies. `Efmv::borders`:
+    two black bars, inner edge 190 HUD units off the middle of a 540-high screen, sliding to 240 over EFMV.BorderOffTime after EFMV.End
+    (EfmvBorderEntity; the bar quad read as +-1 x scale [assumed: its sprite is in no bundle]). While the borders are up the HUD and the
+    ready screen are hidden (BordersActive) [ours: at once, no Out_* slide]; worm labels hide while EFMV.Active.
+  - Worm events (WormEmote, PlayAnimation, StopAnimation, WormLookAt / GestureAt, ThreatenWorm, SpawnParticle, TriggerSpeech) are
+    `GameEvent::Movie` events played by `Acting::movie` on the cast actors with the acting-scene code (a "PROP <name>" detail is a look
+    target, 0x5cd12e); a plain TriggerSpeech name plays the worm's voice category there. AnimateDetail plays the coded details' clip once
+    from that frame (`Efmv::event`), held on its last pose (0x7ad288). No EFMV event moves a worm: only clips (none in the data).
+  - Subtitles (ui.cpp): in subtitle mode (borders up until EFMV.End) Comment lines wrap at 600 units, scale 20 (the box's 300 / 18 ratio
+    on our banner font), each shown alone for its delay, white, centred at (0, -210); the mode's start drops the box and its queue, its
+    end and the movie's end drop the subtitles; default comments (deaths, crates) are dropped meanwhile. FailureComment: Miss.Generic.Lose
+    1..5 by GetRandomValue (W4M's graphical rng), Delay = Duration.
+  - Audio hooks (the other side is audio.cpp): `GameEvent::Speech` {fx = Speech name (`*Name`: the level's EFMV bank line, else a voice
+    category), worm = the speaker (-1: none), pos = its position, weapon = Duration ms}; `GameEvent::MovieSound` {fx = EffectName, pos = its
+    Location locator, weapon = Duration ms, worm = Looping 0/1}; `GameEvent::MovieStart` / `MovieEnd` {fx = movie name} (music fade
+    500 / 2000 ms, acting.md §19); `Ui::onNarrator(n)` when a subtitle Miss.Generic.Lose<n> line shows (Failures_Narrator_0<n>);
+    `scriptMovieEvent(g, fx, code)` gives any GameEvent::Movie's event.
+  - Captures: `--ui missionhud <id>` plays the intro; `--ui movie <id> <Lua function>` skips it then calls that script function
+    (`PlayMidtroMovie`, `PlayOutroMovie`), with `W4NX_CAPFRAMES` / `W4NX_SHOTEND`.
+  - Worms in close-ups look bigger than in W4M: the map's import scale (0.59 in TinCanWally) shrinks the land and locators, not the
+    worms [ours: the voxel grid fit, docs/maps.md].
 - **UI and render** (docs/w4m/missions.md §23.8): never read back by the sim or the checksum. The script queues GameEvents (`Comment`,
   `CommentClear`, `Emitter`, `EmitterOff`, `Shake`, worm -1) in `ScriptState::ui`; the end of `scriptStep` appends them to `g.events`, so
   Initialise's (run before the first step clears the events) reach the listeners too. Persistent HUD state is read by `scriptHud()`.
@@ -146,11 +193,11 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   that Index without callback. Trigger.Visibility 1: drawn as a translucent red sphere of its radius (main.cpp, the W4M Trigger.Ball's
   texture colour and blend) [ours: raylib's sphere for the 2-unit ball mesh].
 - **End**: GameLogic.Mission / Challenge .Success / .Failure, GameLogic.Win (team 0 wins) / Draw -> `missionEnd`. With
-  EFMV.GameOverMovie (or .Off) set the result shows at once (the movie, skipped, ends at once: lot 3); else GameOverLogicEntity's pace
+  EFMV.GameOverMovie set the result shows after that movie (Movies above), with .Off at once; else GameOverLogicEntity's pace
   (main.cpp `overDone`, the game-over camera of controls.cpp as in a match): 4.02 s on a worm, the orbit 5.02 s (any key or button ends
   it), a 1.02 s fade, then the result [disasm 0x4ff8d0].
-- **Round clock**: elapsed game ms since Timer.StartGame, held while GameLogic.RoundTime.Pause is on (to .Resume) [disasm 0x50f173]; W4M
-  also holds it while the logical camera is a Path / TimedPath one (type 14, movie cameras), which skipped movies never start.
+- **Round clock**: ElapsedRoundTime counted by 10 game ms (zeroed by Timer.StartGame), held while GameLogic.RoundTime.Pause is on (to
+  .Resume) or a movie camera is current (type 14) [disasm 0x50f100, 0x50f173, 0x50f15f].
 - **Mines**: PlaceMine (string: a marker) is a CreateMine there (`Game::newMine`: the dud roll unless Mine Respawn, then the fuse
   MinFuse + trunc((MaxFuse - MinFuse) r) ms; Mine.Id = its `Object::id`); GameLogic.PlaceObjects places a CreateMine on the details named
   exactly "mine" (not "Mine1"), an oil drum on "oildrum", the factory on "minefactory" [disasm 0x4fb490]. Mine.* keys go to `Game::mineMin`
@@ -159,8 +206,8 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
 - **Water.Level** (`Game::water` = origin y + Level x scale / 20 [ours: the map's import scale]), set at once (the drown test reads it);
   the movies' Critical RaiseWater adds its Delta. Read back when the sim moved it (Flood, sudden death).
 - **Weapons**: Weapon.Create keeps WormData.WeaponIndex if usable, else writes the first usable id from 0 (Skip Go, Surrender skipped;
-  none: kWeaponUndefined) back, then PreSelected; Weapon.PreSelected wields WeaponIndex without an ammo test [disasm 0x565770,
-  0x566c77; ours: kWeaponUndefined keeps the hand, our sim has no empty hand]. Weapon.Wield is the draw pose and EquipSfx only.
+  none: kWeaponUndefined) back, then PreSelected; Weapon.PreSelected wields WeaponIndex without an ammo test, kWeaponUndefined (or a
+  weapon we lack) empties the hand (`weapon` -1) [disasm 0x565770, 0x566c77]. Every turn starts empty-handed (docs/sim.md). Weapon.Wield is the draw pose and EquipSfx only.
   Challenge.EndlessGun: the gun keeps its last shot (`Game::endlessGun`: one ammo, no turn end). Jetpack.InitFuel: a new jetpack's
   fuel (`Game::jetInit`, set as the jetpack is selected).
 - **Turn keys**: SameTeamNextTurn gives ActivateNextWorm's turn to the same team's next worm, without the delay turn, and is reset to 0
@@ -171,65 +218,74 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   restore, replay snapshots being off for missions.
 - `Game` copies share the script (`shared_ptr`): only the replay snapshots copy a Game, and they never run with a mission.
 
-Not modelled yet, each logged once and counted per mission: DeleteLandframe, point lights (Land.EnablePointLight: our
-maps import no chunk point light, docs/maps.md), the easter-egg message.
+- **Easter eggs** (`WXMsg.EasterEggFound`, docs/w4m/missions.md §23.8): an item not yet unlocked gets State Unlocked at once (the
+  script sees it) and is kept in progress.txt (`unlock <item>`, `scriptUnlocks` applied over DEFSAVE at every scriptStart); after the
+  game, before the result screen, the WXFE.EasterEggFound popup shows FETXT.EasterEgg.Name.Template with the item's DescriptionName
+  and FETXT.EasterEgg.Coins.Template with its Value (1000) (`Ui::eggFound`) [disasm 0x72c567, 0x4fd829; data MENUTWKX, DEFSAVE].
+  Not modelled: the shop balance (ours has no shop) and the achievement tracking.
+
+Point lights: `Land.EnablePointLight` / `DisablePointLight` call `Terrain::pointLight` (every light whose code matches the string's
+first 4 characters; a change marks the chunks its sphere reaches dirty for the async remesh); render only, never read by the sim or
+the checksum (docs/maps.md "Point lights").
 
 `make mission_check` plays every W4M mission with the AI on all teams (after 3 game minutes it collects the crates it may, pops targets,
 walks into a trigger the script answers with Trigger_Collected or blasts one it may destroy when it answers Trigger_Destroyed, ends the
 player's turn with the enemies at 0 hp and the never-playing worms poisoned) until the script ends it, and asserts no Lua error, no
-missing data key and that all 51 end. Result after lot 2 (worms, triggers, crates; with the mines / water and UI passes, 2026-10-06):
-51 of 51 end. What is still logged as not modelled (UI and render keys included):
+missing data key and that all 51 end (within 90 game minutes: ChuteToVictory's round clock stands through ~8 s of movie camera a
+turn). The assist never acts during a movie (the player has no control then). Result after lot 3 (movies played in full, 2026-10-06):
+51 of 51 end. A movie now lasts its real length, so a trigger blown while one plays (a shell still flying) starts no second movie
+(EFMV.Play ignored while EFMV.Active, as W4M): DinerMight's 4th trigger then never ends it, as it would in W4M. Still logged as not modelled:
 
 | mission | end | not modelled (count) |
 |---|---|---|
-| DinerMight | won 116 s | SetData EFMV.GameOverMovie 1 |
-| SneakyBridgeThieves | won 232 s | SetData EFMV.GameOverMovie 1 |
-| BuildingSiteSaboteurs | lost 197 s | - |
-| TheCrateEscape | won 199 s | SetData EFMV.GameOverMovie 1 |
-| DestructAndServe | won 215 s | EFMV DeleteLandframe 1, SetData EFMV.GameOverMovie 1, SetData WXD.StoryMovie 1, WXMsg.EasterEggFound 1 |
-| StormTheCastle | won 246 s | SetData EFMV.GameOverMovie 1 |
-| TheWindyWizard | lost 196 s | EFMV DeleteLandframe 1 |
-| RobInTheHood | won 229 s | SetData EFMV.GameOverMovie 1 |
-| JoustAboutIt | lost 1816 s | - |
-| NiceToSiegeYou | lost 99 s | - |
-| MineAllMine | won 217 s | SetData EFMV.GameOverMovie 1 |
-| GhostHillGraveyard | won 259 s | SetData EFMV.GameOverMovie 1 |
-| TinCanWally | lost 278 s | WXMsg.EasterEggFound 1 |
-| DoomCanyon | lost 33 s | - |
-| HighNoonHiJinx | won 214 s | SetData EFMV.GameOverMovie 1, SetData WXD.StoryMovie 1 |
-| TurkishDelights | lost 380 s | Land.EnablePointLight 2 |
-| NoRoomForError | won 203 s | SetData EFMV.GameOverMovie 1 |
-| CarpetCapers | lost 207 s | WXMsg.EasterEggFound 1 |
-| TraitorousWaters | lost 243 s | SetData EFMV.GameOverMovie.Off 1 |
-| GibbonTake | won 207 s | SetData EFMV.GameOverMovie 1, SetData WXD.StoryMovie 1 |
-| FastFoodDino | won 180 s | SetData EFMV.GameOverMovie 1 |
-| EscapeFromTreeRex | won 212 s | SetData EFMV.GameOverMovie 1, WXMsg.EasterEggFound 1 |
-| ChuteToVictory | lost 3006 s | - |
-| TheLandThatWormsForgot | lost 66 s | EFMV StopAnimation 1 |
-| ValleyOfDinoWorms | won 180 s | SetData EFMV.GameOverMovie 1 |
-| ChallengeSniper | won 180 s | SetData EFMV.GameOverMovie 1 |
-| ChallengeJetpack | won 180 s | SetData EFMV.GameOverMovie 1 |
-| ChallengeSheep | won 180 s | SetData EFMV.GameOverMovie 1 |
-| ChallengeIcarus | won 180 s | SetData EFMV.GameOverMovie 1 |
-| ChallengeShotgun | won 180 s | SetData EFMV.GameOverMovie 1 |
-| ChallengeAccuracy | won 180 s | SetData EFMV.GameOverMovie 1 |
-| ChallengeNavigation | won 180 s | SetData EFMV.GameOverMovie 1 |
-| ChallengeCrate | won 180 s | SetData EFMV.GameOverMovie 1 |
+| DinerMight | lost 3102 s | - |
+| SneakyBridgeThieves | won 206 s | - |
+| BuildingSiteSaboteurs | lost 212 s | - |
+| TheCrateEscape | won 198 s | - |
+| DestructAndServe | won 270 s | SetData WXD.StoryMovie x1 |
+| StormTheCastle | won 250 s | - |
+| TheWindyWizard | lost 3061 s | - |
+| RobInTheHood | lost 115 s | - |
+| JoustAboutIt | lost 1847 s | - |
+| NiceToSiegeYou | lost 131 s | - |
+| MineAllMine | won 254 s | - |
+| GhostHillGraveyard | won 275 s | - |
+| TinCanWally | lost 1945 s | - |
+| DoomCanyon | lost 70 s | - |
+| HighNoonHiJinx | won 225 s | SetData WXD.StoryMovie x1 |
+| TurkishDelights | lost 503 s | - |
+| NoRoomForError | won 225 s | - |
+| CarpetCapers | lost 230 s | - |
+| TraitorousWaters | lost 325 s | - |
+| GibbonTake | won 250 s | SetData WXD.StoryMovie x1 |
+| FastFoodDino | won 189 s | - |
+| EscapeFromTreeRex | won 264 s | - |
+| ChuteToVictory | lost 4938 s | - |
+| TheLandThatWormsForgot | lost 222 s | - |
+| ValleyOfDinoWorms | won 250 s | - |
+| ChallengeSniper | won 195 s | - |
+| ChallengeJetpack | won 195 s | - |
+| ChallengeSheep | won 195 s | - |
+| ChallengeIcarus | won 195 s | - |
+| ChallengeShotgun | won 195 s | - |
+| ChallengeAccuracy | won 195 s | - |
+| ChallengeNavigation | won 195 s | - |
+| ChallengeCrate | won 195 s | - |
 | ChallengeSniper2 | won 180 s | - |
 | ChallengeJetpack2 | won 180 s | - |
 | ChallengeSheep2 | won 180 s | - |
 | ChallengeShotgun2 | won 180 s | - |
-| ChallengeAccuracy2 | won 203 s | - |
+| ChallengeAccuracy2 | won 209 s | - |
 | ChallengeNavigation2 | won 180 s | - |
 | ChallengeCrate2 | won 180 s | - |
-| DeathMatch1 | won 211 s | - |
-| DeathMatch2 | won 216 s | - |
-| DeathMatch3 | won 204 s | - |
-| DeathMatch4 | won 206 s | - |
-| DeathMatch5 | won 222 s | - |
-| DeathMatch6 | won 205 s | - |
-| DeathMatch7 | won 208 s | - |
-| DeathMatch8 | won 207 s | - |
-| DeathMatch9 | won 232 s | - |
-| DeathMatch10 | won 236 s | - |
-| DeathMatch11 | won 209 s | - |
+| DeathMatch1 | won 204 s | - |
+| DeathMatch2 | won 233 s | - |
+| DeathMatch3 | won 207 s | - |
+| DeathMatch4 | won 202 s | - |
+| DeathMatch5 | won 240 s | - |
+| DeathMatch6 | won 238 s | - |
+| DeathMatch7 | won 236 s | - |
+| DeathMatch8 | won 276 s | - |
+| DeathMatch9 | won 259 s | - |
+| DeathMatch10 | won 213 s | - |
+| DeathMatch11 | won 225 s | - |

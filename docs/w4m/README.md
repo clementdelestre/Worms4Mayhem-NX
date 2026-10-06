@@ -129,5 +129,5 @@ Python access: `import scan; d = scan.index()` gives `d['calls'][target]`, `d['r
 - **Network (§16):** the wire class id is assumed to be the registration order; the replay of received input messages is inferred from the structure, not traced.
 - **Frontend (§17):** the per-frame update of menu entities; the `WXMsg.ScrewMenu` title stage; the Select path is assumed by symmetry with Cancel.
 - **AI (§18):** some AITWK fields have no reader (MortarMaximumAimAngleAllowed, AddScoreTeleport, WeightTeleport*, WeightRetreat*).
-- **EFMV (§19):** acting pools per trigger (jump table 0x60e818) and the Near radius (20·R units, squared at 0x60c4d0) are now in docs/worm-reactions.md; the `TargetCastMember -1` target (0x7e, position from [0x95a100]+8 vfunc 0x38) is assumed to be the camera; the PathCamera step timing; the audio fades on `EFMV.Play` / `EFMV.Terminated`.
+- **EFMV (§19):** acting pools per trigger (jump table 0x60e818) and the Near radius (20·R units, squared at 0x60c4d0) are now in docs/worm-reactions.md; the `TargetCastMember -1` target (0x7e, position from [0x95a100]+8 vfunc 0x38) is assumed to be the camera; the PathCamera step timing.
 - **Rendering (§8):** the enum value orders are now read from the exe (`pe.py schema`); which render bin `kPS_Default` maps to is still unknown. Bloom and blur classes have no PC shader.

@@ -12,8 +12,9 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
 
 ## Levels (`Level`, `LEVELS[5]`, `levelOf`)
 
-- `GameConfig::teamSetup[team].cpu` 1..5 picks `LEVELS[cpu-1]` = AIParams.CPU1..CPU5 (**data**; W4M copies `CPU<level>` into the worm
-  slot, AIService 0x4b3820, **disasm**). Values above 5 clamp to CPU5.
+- `levelOf(g)`: the thinking worm's `Game::wormCpu` (W4M AIParams.WormNN, per worm; set by mission scripts), else
+  `GameConfig::teamSetup[team].cpu`; 1..5 picks `LEVELS[cpu-1]` = AIParams.CPU1..CPU5 (**data**; W4M copies `CPU<level>` into each
+  worm slot of the team, AIService 0x4b3820, **disasm**). Values above 5 clamp to CPU5.
 - `cpu == 0` (a human team played by the AI) uses CPU5, as W4M `/ALLAIPLAYERS` 0x4da163 (**disasm**).
 
 | field (ours) | AITWK field | CPU1 | CPU2 | CPU3 | CPU4 | CPU5 | tag |

@@ -30,9 +30,12 @@ static const Level LEVELS[5] = {
 // Shared by all five levels (AITWK): AddScoreMove, AddScoreMoveIfNotMoved, RandomSmallMoveRange 100 units, StrikeSweetSpotDistance 2 units
 static constexpr float MOVE_BONUS = 10, FIRST_MOVE_BONUS = 20, SMALL_MOVE = 5, STRIKE_SWEET = 0.1f;
 
-static const Level &levelOf(const Game &g, int team) {  // a human team played by the AI is CPU5 (W4M /ALLAIPLAYERS)
-    int l = team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[team].cpu : 0;
-    return LEVELS[l ? std::min(l, 5) - 1 : 4];
+// The thinking worm's AIParams.WormNN (W4M per worm), else its team's level; a human team played by the AI is CPU5, copied over
+// its worms' params as /ALLAIPLAYERS does (0x4b39b4)
+static const Level &levelOf(const Game &g) {
+    int team = g.worms[g.current].team, t = team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[team].cpu : 0;
+    int l = !t ? 5 : g.current < (int)g.wormCpu.size() && g.wormCpu[g.current] ? g.wormCpu[g.current] : t;
+    return LEVELS[std::min(l, 5) - 1];
 }
 
 static int owned(const Game &g, int team, Kind k) {
@@ -280,7 +283,11 @@ static Input ropePolicy(const Mover &m, Vector3 finish, const Ai::RopePlan &p, A
 
 Input Ai::race(const Game &g) {
     const Worm &w = g.worms[g.current];
-    const float ropeMax = WEAPONS[g.weapon].speed;
+    if (weaponDef(g.weapon).kind != Kind::Rope) {  // every turn starts empty-handed
+        int rope = owned(g, w.team, Kind::Rope);
+        return rope >= 0 ? Input::pick(rope) : Input{};
+    }
+    const float ropeMax = weaponDef(g.weapon).speed;
     Vector3 fin = g.raceFinish;
     Mover now{{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, g.roped, g.rope, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, g.grapple, g.walkTick};
     if (run.done) {
@@ -655,7 +662,7 @@ struct Search {
                     add(g, i, j, l, {at, atan2f((float)DX[d], (float)DZ[d]), 0}, {at.x, q.hi + R, at.z}, bi, n.g + (d & 1 ? 14 : 10));
                     break;
                 }
-        const Level &L = levelOf(g, g.worms[g.current].team);
+        const Level &L = levelOf(g);
         if (n.l != 0) return;
         for (int t = 0; t < 2; t++) {  // JUMP_FORWARD, JUMP_BACKFLIP when MovementJumpForward/BackflipAllowed (0x4924d7)
             if (!(t ? L.flip : L.jump)) continue;
@@ -733,7 +740,7 @@ void Ai::searchStep(const Game &g) {
             if (ok) {
                 walking = r, walking.purpose = Route::Rewalk, repaths = 0;
                 takePath(g, std::move(steps));
-                wait = walks++ ? (int)(levelOf(g, g.worms[g.current].team).nonFirstMove / DT) : 0;  // DelayBeforeNonFirstMove
+                wait = walks++ ? (int)(levelOf(g).nonFirstMove / DT) : 0;  // DelayBeforeNonFirstMove
                 moved = true, fireAfterWalk = false, mode = Mode::Walk;
                 return;
             }
@@ -764,7 +771,7 @@ void Ai::searchStep(const Game &g) {
 // W4M 0x496f24: MovementJumpError scales each jump's displacement by 1 ± e per component; only its heading is the AI's to choose.
 void Ai::takePath(const Game &g, std::vector<Step> &&p) {
     const Worm &w = g.worms[g.current];
-    const float e = levelOf(g, w.team).jumpErr;
+    const float e = levelOf(g).jumpErr;
     uint32_t r = salt * 2246822519u + (uint32_t)walks;
     Vector3 from = w.pos;
     for (Step &s : p) {
@@ -893,7 +900,7 @@ void Ai::nextPair(const Game &g) {
 void Ai::startEval(const Game &g) {
     const int me = g.current;
     const Worm &w = g.worms[me];
-    const Level &L = levelOf(g, w.team);
+    const Level &L = levelOf(g);
     plan = Plan{};
     threats.clear(), origins.clear(), choices.clear(), choiceAt = 0, moves.reset(), landTop = -1;
     rating.assign(g.worms.size(), 0), away.assign(g.worms.size(), {}), vals.assign(g.worms.size(), 0);
@@ -924,7 +931,7 @@ void Ai::startEval(const Game &g) {
 
 // Targets from one origin: each enemy, the ground 1.5 m short of it, its sweet spot.
 void Ai::targetsFor(const Game &g, const Origin &o) {
-    const Level &L = levelOf(g, g.worms[g.current].team);
+    const Level &L = levelOf(g);
     tpos.clear(), tworm.clear();
     for (size_t i = 0; i < g.worms.size(); i++) {
         const Worm &e = g.worms[i];
@@ -993,7 +1000,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
     w.pos = O.pos, w.yaw = O.yaw;  // W4M sets the worm position to the plan's (0x49b479) when it has a path
     const WeaponDef &wd = WEAPONS[wi];
     const int team = w.team;
-    const Level &L = levelOf(g, team);
+    const Level &L = levelOf(g);
     const float wind = g.wind;  // W4M solves with the exact wind at every level
     if (!g.usable(team, wi) && !(g.shotsLeft && wi == g.weapon)) return 0;  // W4M SchemeData Delay: not before its turn
     if (w.nailed && !nailUsable(wd.kind)) return 0;  // Tail Nail: the sim refuses it
@@ -1166,8 +1173,7 @@ void Ai::regress(const Game &g) {
 // Shot is ready: W4M 0x4a4580 scales each launch-velocity component by 1 ± ShotError / (1 + MemoryImproveAccuracyEffect · match)
 // (0x4a5d00, game-derived seed); then 0x49e6d0 queues the path before, the weapon and, under plan flag 0x100, the path after.
 void Ai::finish(const Game &g, bool again) {
-    const Worm &w = g.worms[g.current];
-    const Level &L = levelOf(g, w.team);
+    const Level &L = levelOf(g);
     const Kind k = WEAPONS[plan.weapon].kind;
     const Origin &O = plan.origin >= 0 ? origins[plan.origin] : reaim;
     uint32_t r = (salt ^ (uint32_t)g.shotsLeft * 2654435761u) + (uint32_t)walks * 40503u;  // turn-start state: not the think's length
@@ -1229,7 +1235,7 @@ void Ai::finish(const Game &g, bool again) {
 void Ai::decide(const Game &g) {
     const Worm &w = g.worms[g.current];
     const int team = w.team;
-    const Level &L = levelOf(g, team);
+    const Level &L = levelOf(g);
     if (choiceAt == 0 && choices.empty()) {
         const float left = thinkTimer * DT;  // the think's start: the plan must not depend on how it was sliced
         const float slow = left < L.moveTime ? left / L.moveTime : 1;  // ReduceMoveScoreIfTimeLeftLessThan (0x4a75c0)
@@ -1294,12 +1300,12 @@ Input Ai::act(const Game &g) {
         return in;
     }
     if (!select(g, plan.weapon, in)) return in;
-    Kind k = WEAPONS[g.weapon].kind;
+    Kind k = weaponDef(g.weapon).kind;
     float dy = wrapPi(plan.yaw - w.yaw), dp = plan.pitch - w.pitch;
     in.turn = q(dy / (2.5f * DT));
     in.aim = q(dp / (1.5f * DT));
     if (fabsf(dy) > 2e-3f || fabsf(dp) > 2e-3f) return in;
-    if (aimed++ < levelOf(g, w.team).fireDelay / DT) return in;  // W4M DelayBeforeFire
+    if (aimed++ < levelOf(g).fireDelay / DT) return in;  // W4M DelayBeforeFire
     if (blimped(k) && !g.locked) return blimp(g);
     moved = false;  // W4M FireWeapon 0x496a42
     if (powered(k)) { if (k == Kind::Homing && !charged && g.prevButtons) return in; if (charged++ < plan.charge) in.buttons = Input::FIRE; }  // release fires

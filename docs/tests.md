@@ -186,7 +186,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkMelee` | Fire Punch and the other melee weapons: reach, height, behind, knock-back, W4M 0-damage push. |
 | `checkShotgun` | A gun hit takes the weapon's full damage, not a blast falloff. |
 | `checkHoming` | Homing missile flies along the aim, then dives onto the reticle point. |
-| `checkTeamWeapon` | W4M: each team gets back the weapon it last had in hand, or the next one with ammo. |
+| `checkTeamWeapon` | Each turn starts empty-handed (W4M Turn.Started); `picked` keeps the last weapon (AI variety) and is checksummed. |
 | `checkCrateWalk` | Walking into a crate (real input) collects it: health heals, a weapon adds ammo. |
 | `checkSniper` | Sniper over 20 m of open sky deals its damage. |
 | `checkScopeCrest` | Sniper at a worm just over a crest, aimed like a player at the scope camera's screen centre. |
@@ -226,7 +226,9 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkJetpack` | W4M jetpack: thrust curve by height, fuel burns only while thrusting, landing ends it, ammo taken once. |
 | `checkJetpackSecondary` | Switch path: take off, pick dynamite as secondary, ZL lays it in flight; a leftover secondary becomes the weapon. |
 | `checkToolGaps` | W4M tool details: secondary kept on landing, UtilityFire panel, D-pad forward, HeadCam zoom, No Bombing, girder. |
-| `checkFirstWeapon` | W4M Weapon.Create: turn starts on the last weapon if usable, else the first usable (Skip Go, Surrender skipped). |
+| `checkEmptyHand` | W4M kWeaponUndefined at turn start: FIRE fires nothing, takes no ammo; NEXT_WEAPON picks a usable one. |
+| `checkSchemeFactory` | Scheme `mineFactory` (W4M MineFactoryOn): the factory exists at start and counts down at each turn end. |
+| `checkGunObjects` | W4M gun mask 0x1c3f: the bullet stops on a mine or an oil drum in its way. |
 | `checkAbduction` | W4M alien abduction: UFO lifts worms in reach nearest first, spits them out 2.1 s apart at half health. |
 | `checkSuperSheep` | Super Sheep: walks, FIRE takes off (25 s flight), FIRE again blows it up. |
 | `checkOldWoman` | Old Woman: steered, FIRE explodes, each enemy bumped loses 1-8 of a weapon to her team. |
@@ -277,10 +279,12 @@ scheme plays with sudden death; rope race reached at levels 1 and 5; Karma + Vam
 | `forceWin` | Forces every objective each tick (kills, moves, pops targets): the mission ends won. |
 | `forceLose` | Player team wiped out: the mission ends lost. |
 | `checkLot2` | On the W4M scripts: MineAllMine's 4 placed mines (none from its "MineN" details), Surrender emptied, a sunk Mine1 brings Mine2 (Payload_Deleted); DeathMatch6's factory (activation 15) drops mines on its 7th StartMineFactory; DoomCanyon's Water.Level 20; FastFoodDino's InitFuel; Shotgun2's PreSelected shotgun, Sniper's EndlessGun; CPU2 for AI teams with no CPUn copy. |
+| `checkMovies` (alone: `W4NX_MISSION=movies`) | TinCanWally's Intro plays in the sim for 80.39 s (its last camera's look-at, 600 steps, holds the end); `SKIP_MOVIE` ends it at once; DestructAndServe's `JEFF` coded land frames (the DeLorean) leave no solid voxel once cleared. |
 
 `main` also asserts: every mission (bundled and imported) loads with all its worms, warns on worms in water or missing
 markers; at least 3 bundled; AI on both sides of the first mission ends and replays identically; a shotgun pops a target
-in `10_target_practice`; `Progress` save/load keeps done and best time, the next mission stays locked.
+in `10_target_practice`; `Progress` save/load keeps done, best time and the `unlock` lines, the next mission stays locked; an
+easter egg a run unlocks (WXMsg.EasterEggFound) is a `Lock.EasterEgg.N` worth 1000 coins.
 
 ## replay_check.cpp
 

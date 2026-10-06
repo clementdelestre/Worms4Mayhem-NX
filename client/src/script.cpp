@@ -33,8 +33,31 @@ struct ScriptState {
     bool touched[SLOTS] = {};        // Worm.DataNN set up by the script
     std::vector<int> wormSlot;
     bool built = false, started = false, hurtSent = false, endless = false, roundOn = false, timedOut = false;
-    int64_t roundStart = 0, idleDue = -1;  // idleDue: a turn with no worm times out then (game ms)
-    int64_t roundHeld = 0, holdFrom = -1;  // GameLogic.RoundTime.Pause: ms the round clock stood still, since when it stands
+    int64_t idleDue = -1;  // a turn with no worm times out then (game ms)
+    // TimerLogicEntity 0x50f100: ElapsedRoundTime += 10 every 10 ms (roundNext: game ms of the next count) unless
+    // GameLogic.RoundTime.Pause (+0x6f) or a Path / TimedPath camera (type 14, 0x50f15f) holds it
+    int64_t roundEl = 0, roundNext = 10;
+    bool roundPause = false, roundCam = false;
+    struct Movie {  // EFMVMovieLogicEntity (acting.md §19)
+        const Json *tracks = nullptr;
+        std::string name;
+        int now = 0;              // the player's clock, ms (+0x2c)
+        int64_t next = 0;         // game ms of its next 10 ms step
+        std::vector<int> cur;     // per track: the next event, -1 done (+0x28)
+        std::vector<std::string> actor;  // per track: its CastActor name
+        bool path = false;        // a camera path holds the end (+0x32), until Camera.Path.Stopped / TimedPath.Stopped
+        int camT = -1, camE = -1, camAt = 0;  // the current movie camera event and its start (movie ms)
+        // PathCam / TimedPathCam KnotLists (0x52c140, 0x637690), one step per 10 ms camera update: knots, current knot, its
+        // segment parameter; steps: PathCam position / look-at Steps, TimedPathCam one per segment
+        struct Knots { int n = 0, cur = 0; float t = 0; bool on = false; } kp, kl;
+        std::vector<int> steps;
+        bool timed = false, camOn = false;
+        int outro = 0;            // the EFMV.GameOverMovie: the game's result (1 won, -1 lost) once it ends
+    } mv;
+    bool movie = false;  // EFMV.Active
+    bool borders = false;  // EfmvBorderEntity up (EFMV.Start .. EFMV.End), render only
+    int64_t bordersOff = -1;  // game ms of its EFMV.End: the bars slide off over EFMV.BorderOffTime
+    int outro = -1;  // at the end: -1 GameOverLogicEntity's pace, 0 the GameOverMovie plays, 1 the result now
     int nextId = 0;  // Mine.Id of a placed mine, Payload.Deleted.Id of the other payloads: only ever compared with each other
     std::vector<int> poison;  // Worm.ApplyPoison's damage, for the next GameLogic.ApplyDamage
     std::vector<Object> tagged;  // last tick's crates with an Index
@@ -46,6 +69,7 @@ struct ScriptState {
     std::vector<GameEvent> ui;  // UI-only events (commentary, emitters, shake), into g.events at the end of the tick
     int emitters = 0;           // Particle.Handle of the last script emitter
     bool noDefault = false;     // Commentary.NoDefault: CommentService +0x138
+    std::string egg;            // WXMsg.EasterEggFound: the WXFE_UnlockableItem it unlocked (GameOver.EasterEgg)
     std::map<std::string, int> ignored, missing;
     int errors = 0;
     std::string lastError;
@@ -68,11 +92,10 @@ struct Using {
     ~Using() { S = s, G = g; }
 };
 
-static int64_t roundMs();
 static int64_t nowMs() { return (int64_t)G->clock * 1000 / 60; }  // W4M game time [0x96d030]+0x38 (docs/w4m/missions.md §23.1)
-// ElapsedRoundTime: the 10 ms counts of TimerLogicEntity 0x50f100, skipped while GameLogic.RoundTime.Pause holds (+0x6f) or the
-// logical camera is a Path / TimedPath one (type 14, 0x50f15f: movie cameras, which skipped movies never start)
-static int64_t roundMs() { return nowMs() - S->roundStart - S->roundHeld - (S->holdFrom >= 0 ? nowMs() - std::max(S->holdFrom, S->roundStart) : 0); }
+static int64_t roundDue() { return nowMs() >= S->roundNext ? (nowMs() - S->roundNext) / 10 + 1 : 0; }  // 10 ms counts not booked yet
+static int64_t roundMs() { return S->roundEl + (S->roundPause || S->roundCam ? 0 : 10 * roundDue()); }
+static void roundBook() { S->roundEl = roundMs(), S->roundNext += 10 * roundDue(); }  // before a hold changes
 
 static void count(std::map<std::string, int> &m, const std::string &k) { m[k]++; }
 
@@ -128,6 +151,11 @@ static float waterY(double units) { return G->terrain.origin.y + (float)units * 
 static bool crate(const Object &o) { return o.type == Object::Crate || o.type == Object::Target; }  // a W4M CrateLogicEntity
 static int slotOf(int worm) { return worm >= 0 && worm < (int)S->wormSlot.size() ? S->wormSlot[worm] : -1; }
 static std::string slotName(const char *fmt, int i) { char b[40]; snprintf(b, sizeof b, fmt, i); return b; }
+// A movie actor "WORM<n>": the worm of slot n (WXSceneManagerService 0x5a58c0), -1 for any other actor
+static int castWorm(const std::string &a) {
+    bool w = !strncasecmp(a.c_str(), "WORM", 4) && a.size() > 4 && a.find_first_not_of("0123456789", 4) == std::string::npos;
+    return w ? S->slotWorm[std::min(SLOTS - 1, atoi(a.c_str() + 4))] : -1;
+}
 
 // Live game state into the store / containers before a script reads them, and back after it writes
 struct ScriptHost {
@@ -240,6 +268,7 @@ struct ScriptHost {
             int lv = 0;
             if (sscanf(from->c_str(), "AIParams.CPU%d", &lv) == 1) S->ai[i] = lv;
             else if (sscanf(from->c_str(), "AIParams.Worm%d", &lv) == 1 && lv >= 0 && lv < SLOTS) S->ai[i] = S->ai[lv];
+            syncCpu();
         } else if (!n.compare(0, 10, "Inventory.")) {
             for (int t = 0; t < g.teams && S->built; t++) pushInventory(t);
         } else if (sscanf(n.c_str(), "Inventory%d.WeaponDelays", &i) == 1) {
@@ -277,6 +306,14 @@ struct ScriptHost {
 
     // Worm.Respawn 0x5b4f70: a worm that exists stays; else a fresh one at its Spawn (SpawnWorm 0x5b31b0), joining the turns if
     // IsAllowedToTakeTurn. A slot new since Reinitialise takes its team's first free column [ours: the team-major layout]
+    // The AI reads the thinking worm's AIParams.WormNN: CPU2 unless the script copied another (AIService init 0x4b3390)
+    static void syncCpu() {
+        Game &g = *G;
+        g.wormCpu.assign(g.worms.size(), 0);
+        for (size_t i = 0; i < g.worms.size() && i < S->wormSlot.size(); i++)
+            if (int s = S->wormSlot[i]; s >= 0) g.wormCpu[i] = (uint8_t)Clamp(S->ai[s] ? S->ai[s] : 2, 1, 5);
+    }
+
     static void respawn(int s) {
         Game &g = *G;
         if (s < 0 || s >= SLOTS || !S->built) return;
@@ -291,6 +328,7 @@ struct ScriptHost {
         Worm w = blank();
         if (!place(g, w, ctn(slotName("Worm.Data%02d", s)), s)) return;
         g.worms[i] = w, S->died[i] = false, g.lastHitTeam[i] = -1, g.special[i] = 0;
+        syncCpu();
     }
 
     // Worm.DieQuietly and WXWormManager.UnspawnWorm (both 0x5b4af0): the worm entity goes, WormData.Active = 0; no blast, no grave,
@@ -339,6 +377,7 @@ struct ScriptHost {
         S->died.assign(worms.size(), false);
         S->shown.assign(teams, std::vector<int>(WEAPONS.size(), 0)), S->ammoSlot.assign(teams, -1);
         S->built = true;
+        syncCpu();
         g.cfg.teams = teams, g.cfg.wormsPerTeam = per;
         g.cfg.teamSetup.resize(teams);
         for (int t = 0; t < teams; t++) {
@@ -409,26 +448,152 @@ struct ScriptHost {
         ui(GameEvent::Emitter, p, handle, fx);
     }
 
-    static void movie() {
-        const Val *nm = key("EFMV.MovieName");
-        auto it = nm ? S->movies.find(nm->s) : S->movies.end();
-        if (it == S->movies.end()) TraceLog(LOG_WARNING, "script: no movie '%s'", nm ? nm->s.c_str() : "");
-        else
-            for (const Json &e : it->second.arr) {  // the skip: Critical events only (acting.md §19)
-                std::string t = e[0].s();
-                if (t == "CreateExplosion") explode(e[1].s(), e[2].f(), e[3].f(), e[4].f(), e[5].f(), e[6].f(), e[8].f(), e[7].s());
-                else if (t == "Comment") comment(e[1].s(), (int)e[2].f(), false);  // 0x525dc0: Comment + Delay = Duration, TimedText
-                else if (t == "CreateEmitter") emitter(e[1].s(), e[2].s(), -1 - (int)e[4].f());  // NewUserIdEmitter
-                else if (t == "DeleteEmitter") ui(GameEvent::EmitterOff, {}, -1 - (int)e[1].f());
-                else if (t == "RaiseWater") put("Water.Level", num("Water.Level") + e[1].f()), pushKey("Water.Level");
-                else if (t == "SpawnWorm") {  // 0x525e7b: CopyContainer(DataId, Worm.Data<WormId>), then Worm.Respawn
-                    std::string to = slotName("Worm.Data%02d", (int)e[1].f()), from = e[2].s();
-                    Ctn *a = ctn(from), *b = ctn(to);
-                    if (a && b) *b = *a, push(to, &from), respawn((int)e[1].f());
-                } else if (t == "UnspawnWorm") unspawn((int)e[1].f());  // 0x525fa0
-                else if (t != "DeleteBorders") count(S->ignored, "EFMV " + t);  // borders: render only
+    // EFMV.Play -> EFMVMovieLogicEntity Start 0x526f70: EFMV.Active, the cursors (a track with no event is done at once)
+    static bool moviePlay(const std::string &name, int outro = 0) {
+        auto it = S->movies.find(name);
+        if (S->movie) return TraceLog(LOG_WARNING, "script: EFMV.Play '%s' while a movie plays", name.c_str()), false;  // asserted (0x4ff21d)
+        if (it == S->movies.end()) return TraceLog(LOG_WARNING, "script: Couldn't find EFMV clip '%s'", name.c_str()), false;
+        S->movie = true, S->mv = {};
+        S->mv.tracks = &it->second, S->mv.name = name, S->mv.outro = outro, S->mv.next = nowMs();
+        for (const Json &t : it->second.arr) S->mv.cur.push_back(t.arr.empty() ? -1 : 0), S->mv.actor.push_back("");
+        put("EFMV.Active", 1);
+        ui(GameEvent::MovieStart, {}, 0, name);
+        return true;
+    }
+
+    // The player's step 0x526cb0: per track, the events in file order while Time <= now (skip: the Critical ones only), then
+    // now += 10; true once every track is done
+    static bool movieStep(bool skip) {
+        ScriptState::Movie &m = S->mv;
+        bool done = true;
+        for (size_t t = 0; t < m.cur.size(); t++) {
+            const Json &ev = (*m.tracks)[(int)t];
+            while (m.cur[t] >= 0 && ev[m.cur[t]][1].f() <= m.now) {
+                int e = m.cur[t];
+                if (++m.cur[t] == (int)ev.size()) m.cur[t] = -1;
+                if (!skip || ev[e][2].f() != 0) movieEvent((int)t, e, ev[e]);
+                if (!S->movie) return true;
             }
+            done &= m.cur[t] < 0;
+        }
+        m.now += 10;
+        return done;
+    }
+
+    // One KnotList step (PathCam 0x52bb40, TimedPathCam 0x636de0): the last knot ends the list; else t += 1 / steps (float t, the
+    // sum in double), past 1 the next knot (t 0); Steps 0: one update per knot
+    static void knotStep(ScriptState::Movie::Knots &k, int steps) {
+        if (!k.on) return;
+        if (k.cur + 1 >= k.n) { k.on = false; return; }
+        k.t = (float)((double)k.t + 1.0 / (double)steps);
+        if (k.t > 1) k.t = 0, k.cur++;
+    }
+    // A CMS camera update (twice per 20 ms frame, camera-w4m.md §11.1): both lists; Path.Stopped / TimedPath.Stopped once both end
+    static void cameraStep() {
+        ScriptState::Movie &m = S->mv;
+        if (!m.camOn) return;
+        size_t seg = std::min((size_t)m.kp.cur, m.steps.size() - 1);  // past the list W4M reads beyond its vector (NiceToSiegeYou)
+        knotStep(m.kp, m.timed ? m.steps[seg] : m.steps[0]);
+        knotStep(m.kl, m.timed ? m.steps[seg] : m.steps[1]);
+        if (!m.kp.on && !m.kl.on) m.path = false;
+    }
+    static int knotCount(const std::string &l) {  // strtok " ," (0x52c140)
+        int n = 0;
+        for (size_t i = 0; (i = l.find_first_not_of(" ,", i)) != std::string::npos; i = l.find_first_of(" ,", i)) n++;
+        return n;
+    }
+
+    // A movie camera (dispatcher 0x5257b0): Camera.Path.Start or TimedPath.Start, the logical camera a new PathCam / TimedPathCam
+    // (type 14: the round clock stops until the movie ends, 0x50f15f); CutCamera is a PathCam of one knot each that holds nothing
+    static void movieCamera(int t, int e, const Json &ev) {
+        ScriptState::Movie &m = S->mv;
+        std::string ty = ev[0].s();
+        auto f = [&](int i) { return ev[3 + i]; };
+        roundBook(), S->roundCam = true;
+        m.camT = t, m.camE = e, m.camAt = m.now, m.camOn = true, m.timed = ty == "TimedPathCamera", m.steps.clear();
+        if (ty == "CutCamera") m.kp = {knotCount(f(0).s()), 0, 0, true}, m.kl = {knotCount(f(1).s()), 0, 0, true}, m.steps = {0, 0};
+        else if (!m.timed) m.kp = {knotCount(f(0).s()), 0, 0, true}, m.kl = {knotCount(f(1).s()), 0, 0, true}, m.steps = {(int)f(4).f(), (int)f(5).f()};
+        else {  // only the position knots and steps are read (0x637b50): the look-at list is the same knots' -Z
+            std::string l = f(4).s();
+            for (size_t i = 0; (i = l.find_first_not_of(" ,", i)) != std::string::npos; i = l.find_first_of(" ,", i)) m.steps.push_back(atoi(l.c_str() + i));
+            if (m.steps.empty()) m.steps.push_back(0);
+            m.kp = {knotCount(f(0).s()), 0, 0, true}, m.kl = m.kp;
+        }
+        m.path = ty != "CutCamera";
+        cameraStep();  // the activation's first step (0x531880 / 0x637b50)
+    }
+
+    static void movieEvent(int t, int e, const Json &ev) {
+        ScriptState::Movie &m = S->mv;
+        std::string ty = ev[0].s();
+        auto f = [&](int i) { return ev[3 + i]; };
+        int worm = castWorm(m.actor[t]);
+        int code = t << 16 | e;
+        if (ty == "CastActor") m.actor[t] = f(0).s();
+        else if (ty == "CutCamera" || ty == "PathCamera" || ty == "TimedPathCamera") movieCamera(t, e, ev);
+        else if (ty == "CreateExplosion") explode(f(0).s(), f(1).f(), f(2).f(), f(3).f(), f(4).f(), f(5).f(), f(7).f(), f(6).s());
+        else if (ty == "Comment") comment(f(0).s(), (int)f(1).f(), false);  // 0x525dc0: Comment + Delay = Duration, TimedText
+        else if (ty == "CreateEmitter") emitter(f(0).s(), f(1).s(), -1 - (int)f(3).f());  // NewUserIdEmitter
+        else if (ty == "DeleteEmitter") ui(GameEvent::EmitterOff, {}, -1 - (int)f(0).f());
+        else if (ty == "ShakeCamera") ui(GameEvent::Shake, {f(1).f(), 0, 0}, (int)f(0).f());  // Camera.Shake.Length / Magnitude, ShakeStart
+        else if (ty == "RaiseWater") put("Water.Level", num("Water.Level") + f(0).f()), pushKey("Water.Level");
+        else if (ty == "SpawnWorm") {  // 0x525e7b: CopyContainer(DataId, Worm.Data<WormId>), then Worm.Respawn
+            std::string to = slotName("Worm.Data%02d", (int)f(0).f()), from = f(1).s();
+            Ctn *a = ctn(from), *b = ctn(to);
+            if (a && b) *b = *a, push(to, &from), respawn((int)f(0).f());
+        } else if (ty == "UnspawnWorm") unspawn((int)f(0).f());  // 0x525fa0
+        else if (ty == "SelectWorm") put("ActiveWormIndex", f(0).f());  // 0x525fd3, then WormSelect.WormSelected, which nothing handles
+        else if (ty == "SelectWeapon") {  // 0x526032: WormData[ActiveWormIndex].WeaponIndex, then Weapon.Selected (the worm takes it)
+            int slot = (int)num("ActiveWormIndex", -1);
+            std::string n = slotName("Worm.Data%02d", slot);
+            if (Val *wi = field(ctn(n), "WeaponIndex")) wi->n = f(0).f(), S->wroteCtns.insert(n), S->dirty = true;
+            if (slot >= 0 && slot == slotOf(G->current) && !G->toolOut()) G->weapon = weaponById((int)f(0).f()), G->secondary = -1;
+            call("Weapon_Selected");
+        } else if (ty == "FailureComment") {  // 0x526962: none once Challenge.Success; the line's pick is the graphical rng's (ui.cpp)
+            if (num("Challenge.Success") != 1) ui(GameEvent::Movie, {}, code, m.name);
+        } else if (ty == "DeleteLandframe") { if (!G->terrain.clearCoded(f(0).s().c_str())) TraceLog(LOG_DEBUG, "script: no land frame coded '%s'", f(0).s().c_str()); }  // Land.ClearCoded
+        else if (ty == "CreateBorders") message("EFMV.Start", 0, nullptr);  // 0x52610b
+        else if (ty == "DeleteBorders") message("EFMV.End", 0, nullptr);
+        else if (ty == "TriggerSpeech") {  // a speech hook for the audio (docs/missions.md "Movies")
+            Vector3 p = worm >= 0 ? G->worms[worm].pos : Vector3{};
+            S->ui.push_back({GameEvent::Speech, p, worm, (int)f(2).f(), intern(f(0).s())});
+            ui(GameEvent::Movie, {}, code, m.name), S->ui.back().worm = worm;
+        } else if (ty == "TriggerSoundEffect") {  // EffectName at the Location locator, Duration ms; Looping in worm
+            Vector3 p{};
+            if (!f(1).s().empty() && !marker(*G, f(1).s(), p)) TraceLog(LOG_DEBUG, "script: no sound locator '%s'", f(1).s().c_str());
+            S->ui.push_back({GameEvent::MovieSound, p, f(2).is() || f(2).f() != 0, (int)f(3).f(), intern(f(0).s())});
+        } else if (ty == "WormEmote" || ty == "PlayAnimation" || ty == "StopAnimation" || ty == "WormLookAt" || ty == "WormGestureAt" ||
+                   ty == "ThreatenWorm" || ty == "SpawnAccessory" || ty == "SpawnParticle" || ty == "ClearAccessory" || ty == "WormBase" || ty == "AnimateDetail") {
+            ui(GameEvent::Movie, {}, code, m.name), S->ui.back().worm = worm;  // the cast actor's, render only (WormScenePlayerService 0x60b810)
+        } else count(S->ignored, "EFMV " + ty);
+    }
+
+    // Shutdown 0x525540: EFMV.Active 0, the subtitles cleared, EFMV.Terminated, the camera back to Default
+    static void movieEnd() {
+        ScriptState::Movie &m = S->mv;
+        m.camOn = false;
+        roundBook(), S->roundCam = false;
+        S->movie = false;
+        put("EFMV.Active", 0);
+        ui(GameEvent::MovieEnd, {}, 0, m.name);
+        if (m.outro) S->outro = 1;
         S->queue.push_back("EFMV_Terminated");
+    }
+
+    // Every 10 ms: the camera update, then the movie task 0x526ec0's step; done with no camera path running, the movie ends
+    static void movieTick() {
+        while (S->movie && S->mv.next <= nowMs()) {
+            S->mv.next += 10;
+            if (S->mv.now > S->mv.camAt) cameraStep();  // ours: the order of the two tasks within a 10 ms slot
+            if (movieStep(false) && !S->mv.path && S->movie) movieEnd();
+        }
+    }
+
+    // Input.QuitEFMV 0x526d90 (ignored while EFMV.Unskipable): steps to the end firing only the Critical events, then the end
+    static void movieSkip() {
+        if (!S->movie || num("EFMV.Unskipable") != 0) return;
+        while (S->movie && !movieStep(true)) {}
+        if (S->movie) movieEnd();
     }
 
     static void createCrate() {
@@ -504,11 +669,29 @@ struct ScriptHost {
         S->wroteCtns.insert(n), S->dirty = true;
         preSelected();
     }
-    // Weapon.PreSelected 0x566c77: WeaponSelected 0x565d30 builds the WeaponIndex item, no ammo test; kWeaponUndefined: ours keeps the hand
+    // MissionService 0x72c567: an item not yet unlocked is unlocked; its name and Value (coins) fill the WXFE.EasterEggFound popup
+    static void easterEgg(const char *n) {
+        Val *st = field(ctn(n ? n : ""), "State");
+        if (!st || st->n == 2) return;
+        st->n = 2, S->wroteCtns.insert(n), S->egg = n, S->dirty = true;
+        put("GameOver.EasterEgg", 1);
+    }
+    // Weapon.PreSelected 0x566c77: WeaponSelected 0x565d30 builds the WeaponIndex item, no ammo test; kWeaponUndefined: the empty hand
     static void preSelected() {
         Game &g = *G;
         int k = weaponById((int)fnum(ctn(slotName("Worm.Data%02d", slotOf(g.current))), "WeaponIndex", 0x43));
-        if (k >= 0 && !g.toolOut()) g.weapon = k, g.secondary = -1, g.jetUsed = false, g.fuel = g.jetInit;
+        if (!g.toolOut()) g.weapon = k, g.secondary = -1, g.jetUsed = false, g.fuel = g.jetInit;
+    }
+
+    // End of game 0x4fd27a: with EFMV.GameOverMovie set (and not .Off) that movie plays (0x4f52c0), the result once it ends
+    static void gameOver(bool won, bool challenge = false) {
+        Game &g = *G;
+        if (g.phase == Phase::GameOver) return;
+        if (challenge) S->keys["Challenge.Success"] = Val{'i', (double)won, ""}, S->wroteKeys.insert("Challenge.Success");  // PERSIST.XOM's key (0x4fcda1, 0x4fcf45)
+        missionEnd(g, won);
+        const Val *m = key("EFMV.GameOverMovie");
+        if (num("EFMV.GameOverMovie.Off") != 0) S->outro = 1;
+        else if (m && !m->s.empty()) putStr("EFMV.MovieName", m->s.c_str()), S->outro = moviePlay(m->s, won ? 1 : -1) ? 0 : 1;
     }
 
     static void message(const char *m, float a, const char *s) {
@@ -517,9 +700,8 @@ struct ScriptHost {
         S->dirty = true;
         if (is("GameLogic.ActivateNextWorm")) activateNext();
         else if (is("GameLogic.EndTurn")) endTurn();
-        else if (is("Timer.StartGame")) S->roundStart = nowMs(), S->roundOn = num("RoundTime") > 0, S->roundHeld = 0, S->holdFrom = S->holdFrom < 0 ? -1 : nowMs();
-        else if (is("GameLogic.RoundTime.Pause")) { if (S->holdFrom < 0) S->holdFrom = nowMs(); }  // TimerLogicEntity +0x6f (0x510018)
-        else if (is("GameLogic.RoundTime.Resume")) { if (S->holdFrom >= 0) S->roundHeld += nowMs() - S->holdFrom, S->holdFrom = -1; }
+        else if (is("Timer.StartGame")) roundBook(), S->roundEl = 0, S->roundOn = num("RoundTime") > 0;  // 0x50fa23
+        else if (is("GameLogic.RoundTime.Pause") || is("GameLogic.RoundTime.Resume")) roundBook(), S->roundPause = is("GameLogic.RoundTime.Pause");  // +0x6f (0x510018)
         else if (is("Timer.StartPostActivity")) {
             int t = scriptPostActivity(g);
             if (t > 0) g.timer = -t;
@@ -541,9 +723,9 @@ struct ScriptHost {
             int t = 0;
             while (t < g.teams && !g.standing(t)) t++;
             put("SurvivingTeamIndex", t < g.teams ? t : -1);
-        } else if (is("GameLogic.Mission.Success") || is("GameLogic.Challenge.Success")) missionEnd(g, true);
-        else if (is("GameLogic.Mission.Failure") || is("GameLogic.Challenge.Failure") || is("GameLogic.Draw")) missionEnd(g, false);
-        else if (is("GameLogic.Win")) missionEnd(g, (int)a == 0);
+        } else if (is("GameLogic.Mission.Success") || is("GameLogic.Challenge.Success")) gameOver(true, is("GameLogic.Challenge.Success"));
+        else if (is("GameLogic.Mission.Failure") || is("GameLogic.Challenge.Failure") || is("GameLogic.Draw")) gameOver(false, is("GameLogic.Challenge.Failure"));
+        else if (is("GameLogic.Win")) gameOver((int)a == 0);
         else if (is("WormManager.Reinitialise")) reinitialise();
         else if (is("GameLogic.PlaceObjects")) placeMapObjects(g);
         else if (is("GameLogic.ResetCrateParameters") || is("GameLogic.ResetTriggerParams")) {
@@ -567,15 +749,18 @@ struct ScriptHost {
         else if (is("Worm.Respawn")) respawn((int)a);
         else if (is("Worm.DieQuietly") || is("WXWormManager.UnspawnWorm")) unspawn((int)a);
         else if (is("GameLogic.DropRandomCrate")) g.dropCrates(1, true);
-        else if (is("EFMV.Play")) movie();
+        else if (is("EFMV.Play")) moviePlay(key("EFMV.MovieName") ? key("EFMV.MovieName")->s : "");
         else if (is("Explosion.Construct")) {
             explode(key("Explosion.DetailObject") ? key("Explosion.DetailObject")->s : "", (float)num("Explosion.WormDamageMagnitude"), (float)num("Explosion.ImpulseMagnitude"),
                     (float)num("Explosion.WormDamageRadius"), (float)num("Explosion.LandDamageRadius"), (float)num("Explosion.ImpulseRadius"),
                     (float)num("Explosion.ImpulseOffset"), key("Explosion.ParticleEffect") ? key("Explosion.ParticleEffect")->s : "");
             triggers();  // the triggers it destroys post Trigger.Destroyed at once (0x5d48ca -> 0x6910e4)
         }
+        else if (is("EFMV.Start")) { if (!S->borders || S->bordersOff >= 0) S->borders = true, S->bordersOff = -1; }  // EfmvBorderEntity
+        else if (is("EFMV.End")) { if (S->borders && S->bordersOff < 0) S->bordersOff = nowMs(); }  // 0x5e6e00: slides off, then goes
         else if (is("Weapon.Create")) createWeapon();
         else if (is("Weapon.PreSelected")) preSelected();
+        else if (is("WXMsg.EasterEggFound")) easterEgg(s);
         else if (is("Jetpack.UpdateFuel")) put("Jetpack.Fuel", g.fuel * 1000);
         else if (is("CommentaryPanel.TimedText") || is("CommentaryPanel.ScriptText")) {
             const Val *c = key("CommentaryPanel.Comment");
@@ -586,12 +771,13 @@ struct ScriptHost {
             const Val *at = key("Particle.DetailObject"), *fx = key("Particle.Name");
             emitter(fx ? fx->s : "", at ? at->s : "", ++S->emitters);
         } else if (is("Particle.DelGraphicalEmitter") || is("Particle.DelGraphicalEmitterImm")) ui(GameEvent::EmitterOff, {(float)is("Particle.DelGraphicalEmitterImm"), 0, 0}, (int)a);
+        else if (is("Land.EnablePointLight") || is("Land.DisablePointLight")) g.terrain.pointLight(s ? s : "", is("Land.EnablePointLight"));  // 0x478e03
         else if (is("Camera.ShakeStart")) ui(GameEvent::Shake, {(float)num("Camera.Shake.Magnitude"), 0, 0}, (int)num("Camera.Shake.Length"));  // 0x522c29
         else if (is("Timer.StartHotSeatTimer") || is("Timer.StartTurn") || is("Timer.EndTurn") || is("Timer.EndRetreatTimer") || is("GameLogic.Turn.Started") ||
                  is("GameLogic.Turn.Ended") || is("GameLogic.AboutToApplyDamage") || is("AI.PerformDefaultAITurn") || is("AI.ExecuteActions") ||
-                 is("Weapon.Delete") || is("Utility.Delete") || is("Weapon.DisableWeaponChange") || is("Net.DisableAllInput") || is("EFMV.End") ||
+                 is("Weapon.Delete") || is("Utility.Delete") || is("Weapon.DisableWeaponChange") || is("Net.DisableAllInput") ||
                  is("Weapon.Wield")) {
-            // covered by the sim's own turn: ActivateNextWorm sets the clocks, EndTurn the tools, our AI polls; EFMV.End: borders;
+            // covered by the sim's own turn: ActivateNextWorm sets the clocks, EndTurn the tools, our AI polls;
             // Weapon.Wield: the holstered weapon's draw pose and EquipSfx only (WeaponAccessoryEntity 0x597739)
         } else {
             count(S->ignored, m);
@@ -672,7 +858,7 @@ static int lGet(lua_State *L) {
 // Keys the sim reads or that only feed our handlers; RetreatTime: every weapon rewrites it on firing (turn.md §6.6). The parameters of
 // a message counted itself (CreateTrigger, NewEmitter, ShakeStart, the commentary) are not counted twice.
 static bool modelled(const char *k) {
-    static const char *USED[] = {"Crate.", "EFMV.MovieName", "Explosion.", "TurnTime", "HotSeatTime", "RoundTime", "PostActivityTime", "DefaultRetreatTime",
+    static const char *USED[] = {"Crate.", "EFMV.", "Explosion.", "TurnTime", "HotSeatTime", "RoundTime", "PostActivityTime", "DefaultRetreatTime",
                                  "RetreatTime", "Wind.", "DoubleDamage", "Land.Indestructable", "Jetpack.Fuel", "Particle.Rain.Prob",
                                  "Trigger.Spawn", "Trigger.Radius", "Trigger.Index", "Trigger.Team", "Trigger.HitPoints", "Trigger.SheepCollect",
                                  "Trigger.PayloadCollect", "Trigger.GirderCollect", "Trigger.WormCollect", "Trigger.Visibility", "Trigger.AffectsAI", "Particle.DetailObject", "Particle.Name",
@@ -868,6 +1054,18 @@ static bool loadChunk(const std::string &dir, const std::string &name) {
     return !r;
 }
 
+std::vector<std::string> scriptUnlocks;
+
+ScriptEgg scriptEgg(const Game &g) {
+    ScriptEgg e;
+    if (!g.script || g.script->egg.empty()) return e;
+    Using u(g);
+    Ctn *c = ctn(g.script->egg);
+    const Val *d = field(c, "DescriptionName"), *v = field(c, "Value");
+    e.item = g.script->egg, e.name = d ? d->s : "", e.coins = v ? (int)v->n : 0;
+    return e;
+}
+
 bool scriptStart(Game &g, const std::string &dir, const std::string &script, const std::string &bank) {
     g.script = std::make_shared<ScriptState>();
     Using u(g);
@@ -880,6 +1078,7 @@ bool scriptStart(Game &g, const std::string &dir, const std::string &script, con
     auto copy = [&](const char *from, const char *fmt, int n) { for (int i = 0; i < n; i++) if (Ctn *c = ctn(slotName(fmt, i)); c && ctn(from)) *c = *ctn(from); };
     copy("Inventory.Worm.Default", "Inventory.Worm%02d", SLOTS), copy("Inventory.Team.Default", "Inventory.Team%02d", 4);
     copy("Inventory.Alliance.Default", "Inventory.Alliance%02d", 4), copy("Inventory.WeaponDelays.Default", "Inventory%d.WeaponDelays", 4);
+    for (const std::string &n : scriptUnlocks) if (Val *st = field(ctn(n), "State")) st->n = 2;  // the save's unlocks over DEFSAVE
     lua_State *L = S->L = lua_open();
     luaopen_base(L), luaopen_math(L), lua_settop(L, 0);  // XLuaBaseLibrary, XLuaMathLibrary (0x6958d2)
     static const luaL_reg FNS[] = {{"SendMessage", lSend}, {"SendFloatMessage", lSend}, {"SendIntMessage", lSend}, {"SendStringMessage", lSend},
@@ -919,6 +1118,8 @@ void scriptStep(Game &g) {
     Using u(g);
     if (S->built) ScriptHost::bookAmmo();
     ScriptHost::events();
+    ScriptHost::movieTick();
+    if (S->bordersOff >= 0 && nowMs() >= S->bordersOff + (int64_t)num("EFMV.BorderOffTime", 500)) S->borders = false, S->bordersOff = -1;  // 0x5e6918
     if (S->roundOn && !S->timedOut && roundMs() >= (int64_t)num("RoundTime")) S->timedOut = true, call("Timer_GameTimedOut");  // 0x50f17d
     if (S->idleDue >= 0 && nowMs() >= S->idleDue) S->idleDue = -1, call("Timer_TurnTimedOut");
     for (bool fired = true; fired;) {  // due timers in deadline order (each a delayed message)
@@ -993,8 +1194,15 @@ uint32_t scriptChecksum(const Game &g) {
     for (const Timer &t : S->timers) if (t.live) b += t.fn, b.append((const char *)&t.due, sizeof t.due);
     for (const std::string &q : S->queue) b += q;
     b += (char)(S->started | S->hurtSent << 1 | S->endless << 2 | S->roundOn << 3 | S->timedOut << 4);
-    b.append((const char *)&S->roundStart, sizeof S->roundStart), b.append((const char *)&S->idleDue, sizeof S->idleDue);
-    b.append((const char *)&S->roundHeld, sizeof S->roundHeld), b.append((const char *)&S->holdFrom, sizeof S->holdFrom);
+    b.append((const char *)&S->roundEl, sizeof S->roundEl), b.append((const char *)&S->roundNext, sizeof S->roundNext), b.append((const char *)&S->idleDue, sizeof S->idleDue);
+    b += (char)(S->roundPause | S->roundCam << 1 | S->movie << 2 | S->mv.path << 3), b += (char)S->mv.outro, b += (char)S->outro;
+    if (S->movie) {
+        b += S->mv.name, b.append((const char *)&S->mv.now, sizeof S->mv.now), b.append((const char *)&S->mv.next, sizeof S->mv.next);
+        for (int c : S->mv.cur) b.append((const char *)&c, sizeof c);
+        for (int c : {S->mv.camT, S->mv.camE, S->mv.camAt, S->mv.kp.n, S->mv.kp.cur, S->mv.kp.on * 2 + S->mv.camOn, S->mv.kl.n, S->mv.kl.cur, (int)S->mv.kl.on})
+            b.append((const char *)&c, sizeof c);
+        b.append((const char *)&S->mv.kp.t, sizeof(float)), b.append((const char *)&S->mv.kl.t, sizeof(float));
+    }
     b.append((const char *)&S->nextId, sizeof S->nextId);
     for (int a : S->ammoSlot) b.append((const char *)&a, sizeof a);
     for (int c : S->toWorm) b.append((const char *)&c, sizeof c);
@@ -1025,11 +1233,37 @@ double scriptNum(const Game &g, const char *k, double def) {
     return key(k) ? num(k, def) : def;
 }
 
-bool scriptOutro(const Game &g) {
-    if (!g.script) return false;
+int scriptOutro(const Game &g) { return g.script ? g.script->outro : -1; }
+
+void scriptSkipMovie(Game &g) {
     Using u(g);
-    const Val *m = key("EFMV.GameOverMovie");
-    return (m && !m->s.empty()) || num("EFMV.GameOverMovie.Off") != 0;
+    ScriptHost::movieSkip();
+}
+
+bool scriptMovieOn(const Game &g) { return g.script && g.script->movie; }
+bool scriptMovieCamera(const Game &g) { return g.script && g.script->roundCam; }
+
+MovieView scriptMovie(const Game &g) {
+    MovieView v;
+    if (!g.script) return v;
+    Using u(g);
+    const ScriptState::Movie &m = S->mv;
+    v.borders = S->borders, v.subtitles = S->borders && S->bordersOff < 0;
+    if (S->bordersOff >= 0) v.bordersOut = Clamp((float)(nowMs() - S->bordersOff) / (float)std::max(1.0, num("EFMV.BorderOffTime", 500)), 0, 1);
+    if (!S->movie) return v;
+    v.on = true, v.name = m.name, v.ms = (float)(m.now + nowMs() - m.next), v.tracks = m.tracks;
+    v.camT = m.camT, v.camE = m.camE, v.camAt = m.camAt, v.actor = m.actor;
+    v.kpCur = m.kp.cur, v.klCur = m.kl.cur, v.kpT = m.kp.t, v.klT = m.kl.t, v.kpOn = m.kp.on, v.klOn = m.kl.on, v.timed = m.timed, v.steps = m.steps;
+    for (const std::string &a : m.actor) v.worm.push_back(castWorm(a));
+    return v;
+}
+
+const Json *scriptMovieEvent(const Game &g, const char *movie, int code) {
+    if (!g.script || !movie) return nullptr;
+    auto it = g.script->movies.find(movie);
+    if (it == g.script->movies.end()) return nullptr;
+    const Json &e = it->second[code >> 16][code & 0xffff];
+    return e.type == Json::Arr ? &e : nullptr;
 }
 
 ScriptReport scriptReport(const Game &g) {

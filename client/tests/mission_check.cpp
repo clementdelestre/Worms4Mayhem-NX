@@ -1,7 +1,7 @@
 // Every JSON mission (romfs/missions) loads, places its worms and objects, wins when its objectives are forced and loses when the
 // player team is wiped out; one AI-vs-AI mission replays bit-identically. Every W4M mission (assets/missions, a Lua script) starts,
 // runs with the AI on every team to its end without a Lua error, and lists what its script asked that we do not model yet.
-// Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only)
+// Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only, W4NX_MISSION=movies the movie checks)
 #include "../src/ai.h"
 #include "../src/mission.h"
 #include "../src/script.h"
@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 
 using G = MissionSpec::Goal;
 
@@ -48,7 +49,7 @@ static int forceLose(const MissionSpec &m) {
 // the accuracy dummies)
 static void assist(Game &g) {
     Worm &me = g.worms[g.current];
-    if (g.phase != Phase::Aim || me.team != 0 || !me.alive) return;
+    if (g.phase != Phase::Aim || me.team != 0 || !me.alive || scriptMovieOn(g)) return;  // a movie leaves the player no control
     for (Object &o : g.objects) if (o.tag >= 0 && o.type == Object::Target) o.dead = true;
     for (const Object &o : g.objects)
         if (o.tag >= 0 && o.type == Object::Crate && (o.teamCollect < 0 || o.teamCollect == g.alliance(0))) { me.pos = o.pos, me.vel = {}; return; }
@@ -64,19 +65,19 @@ static void assist(Game &g) {
 }
 
 // A W4M mission played by the AI on every team until its script ends it, or `cap` ticks; assisted after 3 minutes
-struct Run { int ticks = 0, result = 0; uint32_t sum = 0; ScriptReport rep; int comments = 0, emitters = 0; };
+struct Run { int ticks = 0, result = 0; uint32_t sum = 0; ScriptReport rep; int comments = 0, emitters = 0; ScriptEgg egg; };
 static Run scripted(const MissionSpec &m, uint32_t seed, int cap) {
     Game g;
     g.start(missionConfig(m, seed));
     for (auto &t : g.cfg.teamSetup) t.cpu = std::max<uint8_t>(t.cpu, 3);
     Ai ai;
     Run r;
-    for (; r.ticks < cap && g.phase != Phase::GameOver; r.ticks++) {
+    for (; r.ticks < cap && (g.phase != Phase::GameOver || scriptMovieOn(g)); r.ticks++) {  // and its game-over movie
         if (r.ticks > 60 * 60 * 3) assist(g);
         g.step(ai.think(g));
         for (const GameEvent &e : g.events) r.comments += e.kind == GameEvent::Comment, r.emitters += e.kind == GameEvent::Emitter;
     }
-    r.result = g.run.result, r.sum = g.checksum(), r.rep = scriptReport(g);
+    r.result = g.run.result, r.sum = g.checksum(), r.rep = scriptReport(g), r.egg = scriptEgg(g);
     return r;
 }
 
@@ -85,7 +86,9 @@ static Run scripted(const MissionSpec &m, uint32_t seed, int cap) {
 static void checkLot2(const std::vector<MissionSpec> &list) {
     auto run = [&](const char *id, Game &g, int ticks) {
         for (const MissionSpec &m : list) if (m.id == id) g.start(missionConfig(m, 3));
-        for (int t = 0; t < ticks; t++) g.step(Input{});
+        Input skip;
+        skip.flags = Input::SKIP_MOVIE;
+        for (int t = 0; t < ticks; t++) g.step(skip);
         assert(g.script);
     };
     auto mines = [](const Game &g, bool placed) { int n = 0; for (const Object &o : g.objects) n += o.type == Object::Mine && (o.id >= 0) == placed; return n; };
@@ -127,10 +130,66 @@ static void checkLot2(const std::vector<MissionSpec> &list) {
         run("ChallengeSniper", h, 2);
         assert(h.endlessGun);
     }
+    {
+        Game g;
+        run("TurkishDelights", g, 1);  // PNTLGHT ... PL01 / PL04, created on: Initialise's EnablePointLight changes nothing
+        Terrain &t = g.terrain;
+        assert(t.lights.size() == 2 && t.lights[0].code == "PL01" && t.lights[0].on && t.lights[1].on);
+        std::fill(t.dirty.begin(), t.dirty.end(), false);
+        t.pointLight("PL01", false);
+        assert(!t.lights[0].on && t.lights[1].on && std::count(t.dirty.begin(), t.dirty.end(), true) > 0);
+    }
     for (const char *id : {"GibbonTake", "TraitorousWaters"}) {  // AI teams whose script copies no AIParams.CPUn: the AIService init's CPU2
         Game g;
         run(id, g, 1);
         for (const auto &t : g.cfg.teamSetup) assert(t.cpu == 0 || t.cpu == 2);
+    }
+}
+
+// Level movies (docs/missions.md "Movies"): played in the sim at the W4M player's pace, its camera paths holding the end; skipped
+// with Input::SKIP_MOVIE (Critical events only)
+static void checkMovies(const std::vector<MissionSpec> &list) {
+    auto play = [&](const char *id, int skipAt, int *startT, int *endT, Game &g) {
+        for (const MissionSpec &m : list) if (m.id == id) g.start(missionConfig(m, 3));
+        *startT = *endT = -1;
+        for (int t = 0; t < 60 * 200 && *endT < 0; t++) {
+            Input in;
+            if (t == skipAt) in.flags = Input::SKIP_MOVIE;
+            g.step(in);
+            for (const GameEvent &e : g.events) {
+                if (e.kind == GameEvent::MovieStart && *startT < 0) *startT = t;
+                if (e.kind == GameEvent::MovieEnd) *endT = t;
+            }
+        }
+    };
+    int a, b;
+    {  // TinCanWally Intro: its last camera, TargetWatch at 74380 ms, a look-at of 600 steps: 601 updates to the last knot, then 1
+        Game g;
+        play("TinCanWally", -1, &a, &b, g);
+        int ms = (b - a) * 1000 / 60;
+        printf("TinCanWally Intro: %d ms\n", ms);
+        assert(a == 0 && abs(ms - 80390) <= 17 && !scriptMovieOn(g));
+    }
+    {  // skipped: over at once, its Critical DeleteBorders run, its comments and cameras not
+        Game g;
+        play("TinCanWally", 30, &a, &b, g);
+        assert(b == 30 && !scriptMovie(g).on);
+    }
+    {  // DestructAndServe's EasterMovie: Land.ClearCoded JEFF empties the DeLorean's land frames
+        Game g;
+        for (const MissionSpec &m : list) if (m.id == "DestructAndServe") g.start(missionConfig(m, 3));
+        assert(g.terrain.codes.count("JEFF"));
+        Terrain::Coded jeff = g.terrain.codes["JEFF"];
+        auto solid = [&] {
+            int k = 0, n = 0;
+            for (auto [at, len] : jeff.vox)
+                for (int i = at; i < at + len; i++, n++)
+                    k += g.terrain.solid({i % Terrain::NX * Terrain::VOX, i / Terrain::NX % Terrain::NY * Terrain::VOX, i / (Terrain::NX * Terrain::NY) * Terrain::VOX});
+            return std::make_pair(k, n);
+        };
+        auto [was, n] = solid();
+        assert(n > 0 && was > n * 9 / 10 && g.terrain.clearCoded("JEFF") && !g.terrain.codes.count("JEFF") && solid().first == 0);
+        printf("DestructAndServe JEFF: %d of %d voxels solid, none once cleared\n", was, n);
     }
 }
 
@@ -142,19 +201,23 @@ int main() {
     for (const MissionSpec &m : list) {
         if (m.script.empty() || (only && m.id != only)) continue;
         imported++;
-        Run r = scripted(m, 5, 60 * 60 * 60);
+        Run r = scripted(m, 5, 60 * 60 * 90);  // ChuteToVictory: its round clock (50 min) stands through ~8 s of movie camera a turn
         printf("%-24s %-9s %s after %5d s, Lua errors %d%s%s, comments %d, emitters %d\n", m.id.c_str(), m.kind.c_str(), r.result > 0 ? "won " : r.result < 0 ? "lost" : "NOT ENDED",
                r.ticks / 60, r.rep.errors, r.rep.errors ? ": " : "", r.rep.lastError.c_str(), r.comments, r.emitters);
         if (m.id == "SneakyBridgeThieves") assert(r.emitters >= 8);  // Initialise's emitters reach the events
         if (m.id == "EscapeFromTreeRex") assert(r.comments >= 1);    // its skipped intro's Critical Comment
+        if (!r.egg.item.empty()) printf("    easter egg: %s (%s, %d coins)\n", r.egg.item.c_str(), r.egg.name.c_str(), r.egg.coins);
+        assert(r.egg.item.empty() || (!r.egg.item.compare(0, 15, "Lock.EasterEgg.") && r.egg.coins == 1000));  // DEFSAVE Value
         for (auto &k : r.rep.ignored) printf("    not modelled: %s x%d\n", k.first.c_str(), k.second);
         for (auto &k : r.rep.missingKeys) printf("    missing data: %s x%d\n", k.first.c_str(), k.second);
         fflush(stdout);
         assert(r.rep.errors == 0 && r.rep.missingKeys.empty());
         ended += r.result != 0;
     }
+    if (only && !strcmp(only, "movies")) return checkMovies(list), 0;
     if (only) return 0;
     checkLot2(list);
+    checkMovies(list);
     for (const MissionSpec &m : list) {
         if (!m.script.empty()) continue;
         ours++;
@@ -173,7 +236,7 @@ int main() {
         assert(g.phase != Phase::GameOver && g.run.result == 0);
         int win = forceWin(m), lose = forceLose(m);
         printf("%-24s %-9s %-15s %zu teams, %2zu objects: win %d lose %d  [%s]\n", m.id.c_str(), m.kind.c_str(), m.campaign.c_str(), m.teams.size(), m.objects.size(),
-               win, lose, goalText(m, m.objectives[0], nullptr).c_str());
+               win, lose, m.objectives.empty() ? "script" : goalText(m, m.objectives[0], nullptr).c_str());
         fflush(stdout);
         assert(win == 1 && lose == -1);
     }
@@ -218,11 +281,12 @@ int main() {
 
     Progress p;
     p.record("a", false, 0), p.record("a", true, 900), p.record("a", true, 1200);
+    p.unlocks = {"Lock.EasterEgg.3"};
     p.save("progress_check.txt");
     Progress q;
     q.load("progress_check.txt");
     remove("progress_check.txt");
-    assert(q.get("a").done && q.get("a").best == 900 && !q.get("b").done);
+    assert(q.get("a").done && q.get("a").best == 900 && !q.get("b").done && q.unlocks == p.unlocks);
     for (size_t i = 1; i < list.size(); i++)
         if (list[i].kind == "mission" && list[i - 1].kind == "mission" && list[i].campaign == list[i - 1].campaign) { assert(!Progress{}.unlocked(list, i)); break; }
     printf("mission_check ok: %d bundled, %d imported\n", ours, imported);

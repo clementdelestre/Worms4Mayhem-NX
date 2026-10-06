@@ -38,6 +38,7 @@ struct SharpLand {
     void weld(const std::vector<signed char> &d, Vector3 c, Vector3 half);
     // a convex cell (corners bit 1 +x, 2 +y, 4 +z) laid over the land, as the importer's (starts an exact land); its HEX id
     uint32_t add(const std::vector<signed char> &d, const Vector3 *c);
+    void drop(const std::vector<uint32_t> &hexes);  // those W4M cells leave every list (Land.ClearCoded)
     bool inside(uint32_t hex, Vector3 p) const;
 
 private:

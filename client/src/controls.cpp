@@ -1,4 +1,5 @@
 #include "controls.h"
+#include "script.h"
 #include "raymath.h"
 #include <cmath>
 #include <cstdio>
@@ -156,9 +157,9 @@ static bool joyCon(int) { return false; }
 
 static bool blimpable(const Game &g);
 static bool girdering(const Game &g) {  // W4M GirderKitLogicEntity input group: the sticks move the preview, not the worm
-    return g.phase == Phase::Aim && g.worms[g.current].alive && !g.roped && !g.jetting && WEAPONS[g.weapon].kind == Kind::Girder;
+    return g.phase == Phase::Aim && g.worms[g.current].alive && !g.roped && !g.jetting && weaponDef(g.weapon).kind == Kind::Girder;
 }
-static bool fuseKeys(const Game &g) { return g.phase == Phase::Aim && WEAPONS[g.weapon].userFuse; }
+static bool fuseKeys(const Game &g) { return g.phase == Phase::Aim && weaponDef(g.weapon).userFuse; }
 
 Input read(const Game &g, int pad, bool live, float dt) {
     padUsed = pad;
@@ -169,7 +170,7 @@ Input read(const Game &g, int pad, bool live, float dt) {
     const bool kb = true;
 #endif
     bool zl = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) || (kb && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
-    bool held = targetHeld(g), homing = WEAPONS[g.weapon].kind == Kind::Homing;
+    bool held = targetHeld(g), homing = weaponDef(g.weapon).kind == Kind::Homing;
     bool fpHoming = homing && zl;  // Homing: ZL / right mouse = first person, where A locks
     // W4M Input.BlimpViewPressed toggles Blimp / Default (E; user-requested: Y on the pad, 2026-10-04). Keyboard Space also enters it
     // (that press does not fire); B / Enter leave it (no jump).
@@ -188,7 +189,7 @@ Input read(const Game &g, int pad, bool live, float dt) {
     }
     wasY = yDown, wasZl = zl, blimpLive = live;
     bool canAim = live && g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting, tv = live && blimpable(g) && blimpOn;
-    aimMode = canAim && (forceAim || zl || (g.power > 0 && aimed(WEAPONS[g.weapon])));  // a dynamite press charges, it does not aim
+    aimMode = canAim && (forceAim || zl || (g.power > 0 && aimed(weaponDef(g.weapon))));  // a dynamite press charges, it does not aim
     fine = aimMode && (zl || forceAim == 2);
     Vector2 ls = stick(pad, GAMEPAD_AXIS_LEFT_X), rs = stick(pad, GAMEPAD_AXIS_RIGHT_X);
     float turn = 0, walk = 0, aim = 0, inv = settings.invertAim ? -1 : 1;  // rad/s, walk share, rad/s
@@ -266,7 +267,7 @@ Input read(const Game &g, int pad, bool live, float dt) {
     if (dpR || (kb && IsKeyDown(KEY_TAB))) in.buttons |= Input::NEXT_WEAPON;
     else if (dpL && !wasDp && g.phase == Phase::Aim && !g.shotsLeft)  // previous weapon: the sim's direct pick of the selectable one before
         for (int i = 1, n = (int)WEAPONS.size(); i <= n; i++)
-            if (int k = ((g.held() - i) % n + n) % n; g.selectable(w.team, k)) { in.buttons |= Input::NEXT_WEAPON, in.aim = Input::pick(k).aim; break; }
+            if (int k = (((g.held() < 0 ? n : g.held()) - i) % n + n) % n; g.selectable(w.team, k)) { in.buttons |= Input::NEXT_WEAPON, in.aim = Input::pick(k).aim; break; }
     wasDp = dpL;
     if (fuseKeys(g)) {  // W4M FuseUp on the d-pad
         if (down(pad, GAMEPAD_BUTTON_LEFT_FACE_UP) || (kb && IsKeyDown(KEY_EQUAL))) in.buttons |= Input::FUSE_UP;
@@ -301,11 +302,11 @@ bool aiming() { return aimMode; }
 
 static bool blimpable(const Game &g) {
     const Worm &w = g.worms[g.current];
-    return g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting && blimped(WEAPONS[g.weapon].kind) && !g.wp(WP_NO_BLIMP);  // No Blimp View: Camera.Disable
+    return g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting && blimped(weaponDef(g.weapon).kind) && !g.wp(WP_NO_BLIMP);  // No Blimp View: Camera.Disable
 }
 bool targetHeld(const Game &g) { return blimpable(g); }
 bool targetView(const Game &g) {  // the CPU aims from the Blimp too (W4M AI)
-    return blimpable(g) && (blimpLive ? blimpOn : (cpuTurn && WEAPONS[g.weapon].kind != Kind::Homing) || g.blimp);
+    return blimpable(g) && (blimpLive ? blimpOn : (cpuTurn && weaponDef(g.weapon).kind != Kind::Homing) || g.blimp);
 }
 bool fireRefused() { return refusedNow; }
 float sinceFirstPerson() { return fpOut; }
@@ -321,18 +322,18 @@ bool aimed(const WeaponDef &wd) {
     }
 }
 
-bool firstPerson(const Game &g) { return aimMode && aimed(WEAPONS[g.weapon]); }
+bool firstPerson(const Game &g) { return aimMode && aimed(weaponDef(g.weapon)); }
 
 bool scoped(const Game &g) {
     const Worm &w = g.worms[g.current];
-    return g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting && WEAPONS[g.weapon].name == "Sniper Rifle" && aimMode;
+    return g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting && weaponDef(g.weapon).name == "Sniper Rifle" && aimMode;
 }
 
 Reticle reticle(const Game &g, bool chase) {
     if (targetView(g)) return Reticle::Blimp;  // camera(): the Blimp view comes before the first-person one
     if (!chase && (scoped(g) || firstPerson(g))) return Reticle::Aim;
     const Worm &w = g.worms[g.current];
-    return g.locked && WEAPONS[g.weapon].kind == Kind::Homing && g.phase == Phase::Aim && w.alive ? Reticle::Lock : Reticle::None;
+    return g.locked && weaponDef(g.weapon).kind == Kind::Homing && g.phase == Phase::Aim && w.alive ? Reticle::Lock : Reticle::None;
 }
 
 // On the sim's shot line (rays and launches start at pos + dir * t): the screen centre is where the shot goes.
@@ -411,7 +412,7 @@ static void ask(const Game &g, const Camera3D &cam, int i) {
 static void watch(const Game &g, const Camera3D &cam, float dt) {
     sinceTrack += dt, sinceBoom += dt, floodT += dt, pend.prio = 0;  // the slot is emptied every CMS update (0x51d5ad)
     if (lastVel.size() != g.worms.size()) lastVel.assign(g.worms.size(), {}), wasDying.assign(g.worms.size(), 0), lastWater = g.water;  // new match
-    if (g.water > lastWater + 0.5f && WEAPONS[g.weapon].kind == Kind::Flood) floodT = 0;
+    if (g.water > lastWater + 0.5f && weaponDef(g.weapon).kind == Kind::Flood) floodT = 0;
     lastWater = g.water;
     // AlienAbductionCamera on m_uCameraWorm while it rises (0x5486c9) and once it is spat out (0x547e1c); 0x547490: at (UFO x, Land.MaxHeight, UFO z + 200 units)
     if (const Projectile *u = g.ufo(); u && g.abdCam >= 0 && (u->stage == Game::ABD_LIFTING || (u->stage == Game::ABD_SPITTING && !g.aboard(g.abdCam)))) {
@@ -507,7 +508,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     evb = {};  // TrackCam, the base Camera: drawn as placed
     int run = !pip.mode ? 0 : tk.on && (tk.worm >= 0 || !framing) ? tk.prio : framing ? 5 : 0;  // 0x51d408: PiP up (+0x2c2), a lower request is dropped
     if (framing && pend.prio && pend.prio < run) pend.prio = 0;
-    if (overT > 0 && (!g.cfg.mission || g.script)) {  // game over (GameOverLogicEntity, W4M levels too): WormTrackCamera on the winner (current worm first), cut at once, until the orbit
+    if (overT > 0 && (!g.cfg.mission || (g.script && scriptOutro(g) < 0))) {  // game over (GameOverLogicEntity, W4M levels too): WormTrackCamera on the winner (current worm first), cut at once, until the orbit
         int c = -1;
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].alive && g.worms[i].team == g.winner && (c < 0 || (int)i == g.current)) c = (int)i;
         if (c < 0 || overT > 4) return tk = {}, false;
@@ -801,7 +802,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     if (!focusOn && targetView(g)) {  // W4M Blimp (IsometricCam): the sim's camera, drawn at Camera.Blimp.UpdateSpeed 0.05 (0x52a57d)
         if (!inBlimp) blimpZoom = 1;
         blimpZoom = Clamp(blimpZoom * powf(0.99f, zin * dt * 100) - 0.08f * wheel, 0.15f, 2);  // 0x52a5e0: x or / ZoomSpeed 0.99 per CMS update (100 / s), MouseZoomSpeed 0.08
-        bool live = g.cursorOn && blimped(WEAPONS[g.weapon].kind);  // before the first TARGET tick, or a CPU: around its aim point
+        bool live = g.cursorOn && blimped(weaponDef(g.weapon).kind);  // before the first TARGET tick, or a CPU: around its aim point
         Vector3 f = live ? g.cursor : Vector3Add(g.target(), {0, Game::BLIMP_LIFT, 0});
         float y = live ? g.cursorYaw : cur.yaw, p = live ? g.cursorPitch : Game::BLIMP_PITCH;
         cam.target = f, cam.position = g.blimpEye(f, y, p), cam.fovy = lensFov(FOV0, blimpZoom, dt);
@@ -814,7 +815,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     if (!focusOn && (firstPerson(g) || scope)) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
         Vector3 e = eye(g), f = Vector3Add(e, Vector3Scale(g.aimDir(cur), AIM_FOCUS));
         float fov = FOV0;  // CMS default projection x the HeadCam zoom
-        bool bino = WEAPONS[g.weapon].kind == Kind::Binoculars;
+        bool bino = weaponDef(g.weapon).kind == Kind::Binoculars;
         head = bino ? g.scoutZoom(head, dt) : Clamp(head * powf(1.1f, -zin * dt * 100) - 0.08f * wheel, 0.05f, 1);  // HeadCam 0x528e23: / or x ZoomSpeed 1.1 per CMS update (100 / s), - MouseZoomSpeed x wheel
         fov = lensFov(fov, head, dt);
         cam.position = e, cam.target = f, b = {g.ambulatory(cur) ? 0.15f : 1, 1};  // HeadCam 0x528d70: 0.15 while the worm is Ambulatory (state 0), else 1
@@ -981,3 +982,9 @@ bool inset(Camera3D &view, float &show, float &full) {
     return pip.mode;
 }
 }  // namespace Controls
+
+bool Controls::quitMovie() {
+    for (int p = 0; p < 4; p++)
+        if (IsGamepadButtonPressed(p, GAMEPAD_BUTTON_RIGHT_FACE_LEFT) || IsGamepadButtonPressed(p, GAMEPAD_BUTTON_MIDDLE_LEFT)) return true;
+    return IsKeyPressed(KEY_SPACE);
+}

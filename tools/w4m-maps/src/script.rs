@@ -1,5 +1,5 @@
 // Mission script data for the client's Lua runtime (docs/missions.md "Scripts"): the .lub chunks, the data keys and containers of
-// the Tweak files (scripts/data.json) and, per level, its databank's keys, containers and the Critical events of its movies.
+// the Tweak files (scripts/data.json) and, per level, its databank's keys, containers and movies.
 use crate::mission::esc;
 use crate::schema::CLASSES;
 use crate::{find_ci, read_xom, u32le, vi, Xom};
@@ -59,32 +59,33 @@ fn container(x: &Xom, i: usize) -> Option<String> {
     })
 }
 
-// A movie's Critical events (acting.md §19: the skip fires only those) in the player's order: a cursor per track fires events in
-// file order while Time <= now, now += 10 ms per step. Each: [type, fields...]; types the client does not run keep their name.
+// A movie (acting.md §19): its tracks in order, each its events in file order (the player's cursor fires them so, 0x526cb0).
+// Each event: [type, Time ms, Critical 0/1, fields...]; a type without fields of its own keeps only the three.
 fn movie(x: &Xom, i: usize) -> Option<String> {
     let d = &x.ctn.get(i)?.1;
     let mut p = 3;
     vi(d, &mut p);  // Tag
-    let mut ev = Vec::new();  // (step, track, file order, JSON)
-    for tr in 0..vi(d, &mut p) {
+    let mut tracks = Vec::new();
+    for _ in 0..vi(d, &mut p) {
         let (_, td) = x.ctn.get(vi(d, &mut p).checked_sub(1)?)?;
         let mut q = 3;
         vi(td, &mut q);
-        let mut at = 0u32;
-        for k in 0..vi(td, &mut q) {
-            let e = vi(td, &mut q).checked_sub(1)?;
-            let (t, ed) = x.ctn.get(e)?;
+        let mut ev = Vec::new();
+        for _ in 0..vi(td, &mut q) {
+            let (t, ed) = x.ctn.get(vi(td, &mut q).checked_sub(1)?)?;
             let n = ed.len();
-            at = at.max(u32le(ed, n.checked_sub(5)?));  // base fields last: Tag, Time u32, Critical bool
-            if ed[n - 1] != 1 { continue; }
+            let (time, crit) = (u32le(ed, n.checked_sub(5)?), ed[n - 1] == 1);  // base fields last: Tag, Time u32, Critical bool
             let mut f = 3;
-            let fields: Vec<String> = class(t).map_or(Vec::new(), |c| c.iter().take(c.len() - 3).filter_map(|f2| value(x, ed, &mut f, f2.1)).collect());
+            let fields: Vec<String> = class(t).map_or(Vec::new(), |c| c.iter().take(c.len() - 3).filter_map(|f2| {
+                if f2.2 { let k = vi(ed, &mut f); Some(format!("[{}]", (0..k).filter_map(|_| value(x, ed, &mut f, f2.1)).collect::<Vec<_>>().join(", "))) }
+                else { value(x, ed, &mut f, f2.1) }
+            }).collect());
             let name = t.trim_start_matches("EFMV_").split("Event").next().unwrap_or(t);
-            ev.push((at.div_ceil(10), tr, k, format!("[{}]", std::iter::once(esc(name)).chain(fields).collect::<Vec<_>>().join(", "))));
+            ev.push(format!("[{}]", [esc(name), time.to_string(), (crit as u8).to_string()].into_iter().chain(fields).collect::<Vec<_>>().join(", ")));
         }
+        tracks.push(format!("[{}]", ev.join(", ")));
     }
-    ev.sort_by_key(|e| (e.0, e.1, e.2));
-    Some(format!("[{}]", ev.into_iter().map(|e| e.3).collect::<Vec<_>>().join(", ")))
+    Some(format!("[{}]", tracks.join(",\n  ")))
 }
 
 // Named resources: data keys (XInt/Uint/Float/String/Vector/ColorResourceDetails: Value, Name, Flags) and containers

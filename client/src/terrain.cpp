@@ -200,7 +200,7 @@ std::string Terrain::mapTheme(const std::string &map) {
 
 bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
-    objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), origin = {40, WATER, 40}, rainProb = -1;
+    objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {40, WATER, 40}, rainProb = -1;
     thin.assign(CX * CY * CZ, {}), thinOnly.clear();
     hasFinish = false, sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
@@ -273,7 +273,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     }
 
     if (j["finish"].type == Json::Arr) hasFinish = true, finish = vec(j["finish"], {cx, 8, cz});
-    for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz})});
+    for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz}), vec(m["dir"], {0, 0, 0})});
     for (const Json &b : j["blocks"].arr) blocks.push_back({b[0].f(), b[1].f(), b[2].f(), b[3].f()});  // imported: already merged
     mergeBlocks();
     const Json &ob = j["objects"];
@@ -283,9 +283,16 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         int m = (int)(std::find(objModels.begin(), objModels.end(), name) - objModels.begin());
         if (m == (int)objModels.size()) objModels.push_back(name);
         Vector3 p = vec(o["pos"], {cx, 8, cz});
-        objects.push_back({m, p, {b[0].f(1), b[1].f(0), b[2].f(0), p.x, b[3].f(0), b[4].f(1), b[5].f(0), p.y, b[6].f(0), b[7].f(0), b[8].f(1), p.z, 0, 0, 0, 1}});
+        objects.push_back({m, p, {b[0].f(1), b[1].f(0), b[2].f(0), p.x, b[3].f(0), b[4].f(1), b[5].f(0), p.y, b[6].f(0), b[7].f(0), b[8].f(1), p.z, 0, 0, 0, 1}, o["code"].s()});
     }
     for (const Json &e : j["emitters"].arr) emitters.push_back({e["fx"].s(), vec(e["pos"], {cx, 8, cz})});
+    for (const Json &l : j["lights"].arr)
+        lights.push_back({vec(l["pos"], {cx, 8, cz}), {(unsigned char)l["col"][0].f(), (unsigned char)l["col"][1].f(), (unsigned char)l["col"][2].f(), 255}, l["r"].f(), l["code"].s()});
+    for (const auto &[c, v] : j["codes"].obj) {
+        Coded &k = codes[c];
+        for (const Json &h : v["hex"].arr) k.hex.push_back((uint32_t)h.num);
+        for (const Json &r : v["vox"].arr) k.vox.push_back({(int)r[0].num, (int)r[1].num});
+    }
     if (j["origin"].type == Json::Arr) origin = vec(j["origin"], origin);
     rainProb = j["rain_prob"].f(-1);
     return true;
@@ -383,7 +390,7 @@ void Terrain::mergeBlocks() {
 
 void Terrain::generate(unsigned seed) {
     thin.assign(CX * CY * CZ, {}), thinOnly.clear();
-    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear(), emitters.clear(), origin = {40, WATER, 40}, rainProb = -1;
+    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {40, WATER, 40}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
@@ -634,7 +641,65 @@ Color Terrain::vertexColour(Vector3 p, Vector3 n) const {
         if (solidAt(q)) { b0 = std::min(b0, 105 + (int)(t * 20 * 0.15f)); break; }
     Color m = grad[0][std::clamp(b0, 0, 255) >> 3], sd = grad[1][std::clamp(b3, 0, 255) >> 3];
     auto ch = [](int a, int b) { return (unsigned char)std::clamp(a + b - 128, 0, 255); };
-    return {ch(m.r, sd.r), ch(m.g, sd.g), ch(m.b, sd.b), 255};
+    Color c = {ch(m.r, sd.r), ch(m.g, sd.g), ch(m.b, sd.b), 255};
+    // W4M lights a chunk with the last light whose sphere meets the chunk's (0x470d20) [ours: per vertex, our chunks are not W4M's]
+    const PointLight *pl = nullptr;
+    for (const PointLight &l : lights) if (Vector3DistanceSqr(l.pos, p) < l.r * l.r) pl = &l;
+    if (!pl || !pl->on) return c;
+    // 0x451590: min(255, 500 n.D (1/d - 1/R)) when n.D > 0; 0x451ea0 adds col x that / 256, saturated
+    Vector3 D = Vector3Subtract(pl->pos, p);
+    float dist = Vector3Length(D), nd = Vector3DotProduct(n, D), u = scale / 20;  // m per W4M unit
+    if (nd <= 0) return c;
+    // 0x454e30: unlit when a land frame voxel (not the heightmap) is first along P + 20 units .. trunc(d - 20) units towards it
+    if (dist > 21 * u) {
+        Vector3 dir = Vector3Scale(D, 1 / dist);
+        float end = (int)(dist / u - 20) * u;
+        for (float t = 20 * u; t < end; t += VOX * 0.5f) {
+            Vector3 q = Vector3Add(p, Vector3Scale(dir, t));
+            if (!solidAt(q)) continue;
+            int x = (int)(q.x * (1 / VOX) + 0.5f), y = (int)(q.y * (1 / VOX) + 0.5f), z = (int)(q.z * (1 / VOX) + 0.5f);
+            if (mats.empty() || mats[idx(x, y, z)] < 65) return c;
+            break;
+        }
+    }
+    const int lum = (int)std::min(255.0f, 500 * nd * (1 / dist - 1 / pl->r));
+    auto add = [&](unsigned char b, unsigned char k) { return (unsigned char)std::min(255, b + (k * lum >> 8)); };
+    return {add(c.r, pl->col.r), add(c.g, pl->col.g), add(c.b, pl->col.b), 255};
+}
+
+bool Terrain::clearCoded(const char *code) {  // exact on 4 bytes (0x47519c); no debris, sound or damage: worms lose support (Land.NewShape)
+    auto it = std::find_if(codes.begin(), codes.end(), [&](const auto &k) { return !strncmp(k.first.c_str(), code, 4) && strlen(code) >= 4; });
+    if (it == codes.end()) return false;
+    remeshWait();
+    sharp.drop(it->second.hex);
+    for (auto [at, n] : it->second.vox)
+        for (int i = at; i < at + n && i < (int)d.size(); i++) {
+            if (undo && d[i] > 0) undo->emplace_back(i, d[i]);
+            d[i] = std::min(d[i], (signed char)-127), mats[i] = 0;
+            int x = i % NX, y = i / NX % NY, z = i / (NX * NY);
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int cx = (x + dx) / CS, cy = (y + dy) / CS, cz = (z + dz) / CS;
+                        if (x + dx >= 0 && y + dy >= 0 && z + dz >= 0 && cx < CX && cy < CY && cz < CZ) dirty[(cz * CY + cy) * CX + cx] = true;
+                    }
+        }
+    codes.erase(it);
+    edits++;
+    return true;
+}
+
+void Terrain::pointLight(const char *code, bool on) {  // W4M 0x4757c0 -> 0x470a40: every light of that code, rebuilt if it changed
+    remeshWait();  // the meshing thread reads `on`
+    for (PointLight &l : lights) {
+        if (strncmp(l.code.c_str(), code, 4) || l.on == on) continue;
+        l.on = on;
+        int lo[3] = {(int)((l.pos.x - l.r) / VOX) - 1, (int)((l.pos.y - l.r) / VOX) - 1, (int)((l.pos.z - l.r) / VOX) - 1};
+        int hi[3] = {(int)((l.pos.x + l.r) / VOX) + 1, (int)((l.pos.y + l.r) / VOX) + 1, (int)((l.pos.z + l.r) / VOX) + 1};
+        for (int z = std::max(0, lo[2]) / CS; z <= std::min(NZ - 1, hi[2]) / CS; z++)
+            for (int y = std::max(0, lo[1]) / CS; y <= std::min(NY - 1, hi[1]) / CS; y++)
+                for (int x = std::max(0, lo[0]) / CS; x <= std::min(NX - 1, hi[0]) / CS; x++) dirty[(z * CY + y) * CX + x] = true;
+    }
 }
 
 // W4M GLG_PC 0x451ba0: both 256x1 gradients sampled every 8 pixels
@@ -1498,7 +1563,8 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
             if (!e.m.meshCount || !Models::visible(o.pos, 2 * size)) continue;  // W4M: frustum only (XBoundAction); origin may sit on the box edge
             if (pick && (pick == 2) != (e.len > 0)) continue;
             if (at && pass == 0) at->push_back({o.pos.x, o.pos.y, o.pos.z, 2 * size});
-            float t = e.len <= 0 ? 0 : fmodf(clock + (e.clip == "Go" ? (hash3((int)(&o - objects.data()), 0, 0, 0x60u) + 1) / 2 * e.len : 0), e.len);
+            bool loop = e.clip == "Go" || e.clip == "GoSync";  // another clip waits for Detail.PlayAnim, then plays once and holds its last key (0x7ad288)
+            float t = e.len <= 0 ? 0 : !loop ? (o.playFrom < 0 ? 0 : fminf(clock - o.playFrom, e.len)) : fmodf(clock + (e.clip == "Go" ? (hash3((int)(&o - objects.data()), 0, 0, 0x60u) + 1) / 2 * e.len : 0), e.len);
             if (!e.anim.empty()) {  // raw mesh units (20 per W4M unit)
                 if (pass == 0) Models::shade(ash), Models::draw(e.anim.c_str(), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), o.m), WHITE, e.clip.c_str(), t), Models::shade({});
                 continue;

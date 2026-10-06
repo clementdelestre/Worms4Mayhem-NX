@@ -36,7 +36,7 @@ struct Terrain {
     // Filled by load(): fixed spawn points (team-major order), optional race finish, theme palette.
     bool hasFinish = false;
     Vector3 finish{};
-    struct Marker { std::string name, type; Vector3 pos; };  // W4M script markers (missions): worm, target, crate, mine...
+    struct Marker { std::string name, type; Vector3 pos, dir{}; };  // W4M script markers (missions): worm, target, crate, mine...; dir: its local -Z
     std::vector<Marker> markers;
     std::vector<Vector4> blocks;  // W4M AI NodeGrid boxes (x0, z0, x1, z1 in m): heightmap and land pieces, merged (AddLandBlock)
     void addBlock(Vector4 b);     // W4M AddLandBlock 0x4b22e0: drops a box under 250 units², else merges it into the first it touches
@@ -63,11 +63,19 @@ struct Terrain {
     BoundingBox bounds{};  // solid voxels at the first remesh: the shadow map's land box
     static inline unsigned meshVer = 0;  // bumped whenever rebuilt chunks swap in or the land unloads
     // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
-    struct Object { int model; Vector3 pos; Matrix m; };
+    struct Object { int model; Vector3 pos; Matrix m; std::string code; float playFrom = -1; };  // code: Detail.PlayAnim FourCC; playFrom: its one-shot clip's start (render clock, s)
     std::vector<Object> objects;
     std::vector<std::string> objModels;
     struct Emitter { std::string fx; Vector3 pos; bool alive = true; };  // W4M EMITTER_ details: PARTTWK effect at pos (render only)
     std::vector<Emitter> emitters;
+    // W4M point lights (PNTLGHT details, 0x46fbb0): land vertex colour only, never read by the sim; r in m, code = script FourCC
+    struct PointLight { Vector3 pos; Color col; float r; std::string code; bool on = true; };
+    std::vector<PointLight> lights;
+    void pointLight(const char *code, bool on);  // Land.EnablePointLight / DisablePointLight: remeshes the chunks it reaches
+    // W4M coded land frames (name "...CODE xxxx", subtree included): their cells (HEX ids) and the voxels only they hold
+    struct Coded { std::vector<uint32_t> hex; std::vector<std::pair<int, int>> vox; };
+    std::map<std::string, Coded> codes;
+    bool clearCoded(const char *code);  // Land.ClearCoded 0x475170: the frames of that 4-byte code go at once; false: none
     Vector3 origin{40, WATER, 40};  // W4M world origin in map metres (map "origin"), for the sky
     float rainProb = -1;  // >= 0: the level script's Particle.Rain.Prob (map "rain_prob")
 

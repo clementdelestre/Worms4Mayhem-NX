@@ -1,4 +1,5 @@
 #pragma once
+#include "json.h"
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -23,4 +24,30 @@ const char *scriptCrateGraphic(const Game &g, int index);  // a custom crate's C
 struct ScriptHud { bool counter = false, percent = false, tenths = false, roundClock = true, defaults = true, endless = false; int value = 0, roundTime = 0; int64_t clockMs = 0; };
 ScriptHud scriptHud(const Game &g);
 double scriptNum(const Game &g, const char *key, double def);  // a data key's value, def when the store lacks it
-bool scriptOutro(const Game &g);  // EFMV.GameOverMovie (or .Off) set: the end skips GameOverLogicEntity (0x4fd27a)
+// The end (0x4fd27a): -1 GameOverLogicEntity's pace; 0 the EFMV.GameOverMovie plays; 1 the result now (that movie ended, or .Off)
+int scriptOutro(const Game &g);
+extern std::vector<std::string> scriptUnlocks;  // WXFE_UnlockableItems unlocked in the save (progress.txt), applied at scriptStart
+struct ScriptEgg { std::string item, name; int coins = 0; };  // name: its DescriptionName text id; coins: its Value
+ScriptEgg scriptEgg(const Game &g);  // the item WXMsg.EasterEggFound unlocked this game, item "" none
+// Level movies (docs/missions.md "Movies"): the player runs in the sim; the client draws its camera, borders, subtitles and actors
+void scriptSkipMovie(Game &g);       // Input::SKIP_MOVIE (W4M Input.QuitEFMV): the Critical events only, then the end
+bool scriptMovieOn(const Game &g);   // EFMV.Active
+bool scriptMovieCamera(const Game &g);  // a movie camera is the logical one (type 14): the turn and round clocks stand (0x50f15f)
+struct MovieView {
+    bool on = false;
+    std::string name;
+    float ms = 0;                     // the movie clock (ms) at this tick
+    const Json *tracks = nullptr;     // [track][event] = [type, Time, Critical, fields...]
+    std::vector<int> worm;            // per track: our worm cast (WORM<slot>), -1 none
+    std::vector<std::string> actor;   // per track: its CastActor name
+    int camT = -1, camE = -1, camAt = 0;  // the movie camera event and its start (ms); -1: none yet
+    // its KnotLists after the last 10 ms update: position / look-at current knot, parameter, running; steps as in script.cpp
+    int kpCur = 0, klCur = 0;
+    float kpT = 0, klT = 0;
+    bool kpOn = false, klOn = false, timed = false;
+    std::vector<int> steps;
+    bool borders = false, subtitles = false;  // EfmvBorderEntity up; subtitle mode (EFMV.Subtitles.On .. Off)
+    float bordersOut = 0;             // 0..1 of the bars' slide off (EFMV.BorderOffTime), 0 while on
+};
+MovieView scriptMovie(const Game &g);
+const Json *scriptMovieEvent(const Game &g, const char *movie, int code);  // a GameEvent::Movie's event (code = track << 16 | index)

@@ -65,9 +65,9 @@ In order: bubbles age one turn end (W4M Bubble.Lifetime, data); Icarus, girder p
 DoPostActivity `SetData("DoubleDamage", 0)`, data); poison takes `poison` hp from each worm, never below 1 (W4M Worm.Poison, data);
 game over check; sudden death (below); the next team in order with a living worm (`idle` teams skipped: mission captives), its next
 worm in rotation (`nextWorm`); turn timer = `turnTime` s, hot seat = `hotSeat` s (W4M HotSeat 10 s, data); wind
-`WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10; HUD meter `Hud::draw`: downwind pointer in the camera frame, "NNm" = round(10 × |wind|), docs/w4m/render.md "Wind meter"; `Ui::windPointer`: W4M's yaw with its -sin(-268 / 640) term, the tip turned by ArrowOrien (0.75, 0, -0.2) in XYZ order and seen down -z, the sprite foreshortened along its axis; ours: the HUD is drawn in 2D with no projection of its own, so it matches W4M only if W4M's HUD camera is orthographic (not traced)); the weapon in hand = `picked[team]`
-(the weapon held when its last turn ended) if still `usable`, else `firstWeapon()` (W4M Weapon.Create 0x565770: first usable in list
-order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall before, in `Settle` (below).
+`WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10; HUD meter `Hud::draw`: downwind pointer in the camera frame, "NNm" = round(10 × |wind|), docs/w4m/render.md "Wind meter"; `Ui::windPointer`: W4M's yaw with its -sin(-268 / 640) term, the tip turned by ArrowOrien (0.75, 0, -0.2) in XYZ order and seen down -z, the sprite foreshortened along its axis; ours: the HUD is drawn in 2D with no projection of its own, so it matches W4M only if W4M's HUD camera is orthographic (not traced)); the empty hand: `weapon` -1 (W4M GameLogic.Turn.Started
+0x566d57 sets kWeaponUndefined, disasm; Weapon.Create runs only from scripts); `picked[team]` keeps the weapon held when its last turn
+ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall before, in `Settle` (below).
 
 - **Hot seat**: the turn clock waits `hotSeat` s; any input but `TARGET` alone ends it (`sim_check` `checkHotSeat`). W4M (disasm): TimerLogicEntity
   0x50fce0 cancels the hot seat on any `Input.SomeInputFrom`, which InputTranslationService (0x505e20, 0x506850) sends for every key of a
@@ -193,10 +193,13 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
   Clusters landmine children leave the blast point 20 ms apart (`Projectile::stage` holds a child in place until its spawn, ticks
   `msTicks(20 k)`), direction in a cone of `cluster_cone` around up (azimuth 2 pi r, tilt cone r), speed `cluster_min_speed` +
   (max - min) r; W4M draws each at its spawn, ours all at the blast [ours: our rand is not W4M's]. Weapon Factory weapons get the
-  W4M factory cone 0.28 and speeds with ClusterSpread 0 (`Game::start`) [ours: our factory has no ClusterSpread]. A child's wind
+  W4M factory cone 0.28 and speeds k / 7 .. k / 2 units/ms, k = 0.5 ClusterSpread + 0.3 (`Game::start`, weapons JSON `cluster_spread`,
+default 0.3 = WXD.DefaultWeapon; editor row "Cluster spread": +-0.1 in 0..1, wrapping) [disasm 0x5995dd, 0x740fec; data MENUTWKX]. A child's wind
   under Wind-All follows its own container (`windy(weapon, child)`, Wormpot.lub SetWeaponWind) [data].
 - **Mine factory** (`Game::factory`, `factoryCreate` / `factoryStart` / `stepFactory`; W4M MineFactoryLogicEntity, docs/w4m/missions.md
-  §23.9, disasm + data): made on the level detail "minefactory" (DeathMatch6), snapped to the land below, with its two collision boxes
+  §23.9, disasm + data): made on the level detail "minefactory" (DeathMatch6), or in a match with the scheme's `mineFactory`
+  (W4M SchemeData MineFactoryOn: stdvs Initialise's CreateRandMineFactory after the sudden-death check, `dropPoint` with a 2 m sphere;
+  each turn end's DoOncePerTurnFunctions calls `factoryStart` after the crate drop; presets BnG, All Action, Mega Power), snapped to the land below, with its two collision boxes
   welded (`Terrain::weld`, Land.SpawnPiece). Each GameLogic.StartMineFactory counts NumTurnsInactive (7) down, then, while fewer than
   NumMineActivation mines are in play, runs Start (2 s) / Fire (291 ms) / FireEnd (708 ms) as an active object, then drops up to 10
   CreateMine mines at 15 m/s from land top + 0.5 m, 6.4 m from a random worm, on flat land above the water and 6.35 m from every worm (xz),

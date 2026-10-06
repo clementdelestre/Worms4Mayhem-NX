@@ -1,5 +1,7 @@
 #pragma once
 #include "raylib.h"
+#include <cstdint>
+#include <vector>
 
 // Sound effects and voice lines. Missing asset files are silently skipped, never fatal.
 // Each sound may have variants (name.ogg, name_2.ogg, ...); one is picked at random per play.
@@ -44,6 +46,10 @@ enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
                    FirstBlood, EnemyDeath, SadSigh, Yawn, Sneeze, ClutchChest, Nooo, Bounce, Taunt, Waiting, ShortOnTime, SkipGo,
                    Collect, CrateDrop, Drown, Revenge, Punch, DamageB, NoDamageA, NoDamageB, MaxDamage, PointAndLaugh, Count };
 
+// W4M LIP.txt rows (tools/w4m-import lip.txt): from frame (30 fps) on, viseme v: 0 Rest, 1 A, 2 Cons, 3 EI, 4 FV, 5 L, 6 MBP, 7 O, 8 QUW
+struct Viseme { uint16_t frame; uint8_t v; };
+using Lip = std::vector<Viseme>;
+
 void init();
 void shutdown();
 void stopSfx();  // cut every sound effect and voice line (replay skipped, match left); music untouched
@@ -58,8 +64,9 @@ void loop(Sfx id, bool on, const Vector3 *at = nullptr, float volume = 1);  // c
 // a particle emitter's EmitterSoundFX loop (one voice per key), call every frame while it runs: past the event's max playbacks the
 // oldest is stolen for good (FMOD steal oldest); a key not refreshed for a frame stops
 void emitter(int key, Sfx id, Vector3 at);
-void voice(int team, Voice id);  // team i speaks with its bank (setTeamVoice), default i % bank count (banks = dirs under voices/)
-void voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
+// team i speaks with its bank (setTeamVoice), default i % bank count (banks = dirs under voices/); the line's lip rows, null if not played
+const Lip *voice(int team, Voice id);
+const Lip *voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
 int voiceBanks();
 unsigned started();  // sounds started so far (hitch log)
 const char *voiceBankName(int bank);  // folder name, "" if out of range
@@ -67,6 +74,12 @@ void setTeamVoice(int team, int bank);
 void preloadVoices(int teams);  // load the banks of teams 0..teams-1 now instead of on their first line
 // track = music/<track>.ogg (e.g. the map theme); null keeps the current track, unknown falls back to theme.ogg
 void music(bool on, const char *track = nullptr);
-void preloadMusic(const char *track);  // open the stream now (an SD read of ~40 ms on Switch); its next music() call takes it
+void preloadMusic(const char *track);
+// Level movies (docs/audio.md "EFMV"): the bank EFMV/<level> (efmv/<level>/, any case) and EFMV/Failures; null: none
+void efmvLevel(const char *level);
+const Lip *efmvSpeech(const char *line, Vector3 at, int speaker);  // TriggerSpeech "*line": cuts the speaker's last line; null: no such event
+void efmvSfx(const char *name, bool looping, Vector3 at);  // TriggerSoundEffect: EFMV/<level>/<name>; one looping instance at a time
+void movie(bool playing);  // EFMV.Play: music out over 500 ms; EFMV.Terminated: the looping sfx stops, music back over 2000 ms
+void narrator(int n);      // EFMV/Failures/Failures_Narrator_0n, n 1..5  // open the stream now (an SD read of ~40 ms on Switch); its next music() call takes it
 
 }  // namespace Audio

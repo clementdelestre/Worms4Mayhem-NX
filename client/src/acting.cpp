@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <strings.h>
 
 #ifdef __SWITCH__
 #define ACTING_FILE "sdmc:/switch/worms4nx/assets/acting.txt"
@@ -54,6 +55,7 @@ bool loaded = false;
 struct Prop { Vector3 pos; int type; bool shot; };  // W4M actor types: 2 payload / threat, 3 goodies (crate), 5 other detail
 std::vector<Prop> props;
 
+constexpr int MOVIE = -2;  // the level movie's run (scene slot 0 in W4M)
 struct Run { int scene = -1, clk = 0; float t = 0; int cast[30]; Vector3 at[30]; std::vector<size_t> cur; };  // clk: scene clock, ms
 std::vector<Run> runs;
 
@@ -77,6 +79,9 @@ struct Actor {
     float vy = 0;
     int poison = 0, hp0 = 0;
     struct Fx { std::string name; float t; } fx[3]; int nfx = 0;
+    // lip sync (0x59d570): rows +0x1b8, cursor +0x1a8, clock +0x1b0 (25 a second); visemes new +0xdc / old +0xe0 (0 Rest .. 8 QUW, -1
+    // none) with their last SetTimeAndWeight w and +0x17c / +0x178; blend +0x180, open +0x19c toward +0x1c8
+    struct Mouth { const Audio::Lip *rows = nullptr; size_t cur = 0; float clock = 0; int clip[2] = {-1, -1}; float w[2] = {}, cw[2] = {}, blend = 0, open = 0, target = 0; } mouth;
 };
 std::vector<Actor> actors;
 std::vector<Vector3> rested;  // timed payloads already announced (0x577158 flag)
@@ -182,10 +187,46 @@ std::vector<int> order(int trig) {
     return l;
 }
 
+// A line starts (0x59cb20 / 0x59cc70): the clock, cursor and open target reset, its rows read on the next update
+void speak(int worm, const Audio::Lip *rows) {
+    if (worm < 0 || worm >= worms()) return;
+    Actor::Mouth &m = actors[worm].mouth;
+    m.rows = rows && !rows->empty() ? rows : nullptr, m.cur = 0, m.clock = 0, m.target = 0;
+    TraceLog(LOG_DEBUG, "ACTING: worm %d speaks, %d lip rows", worm, m.rows ? (int)m.rows->size() : 0);
+}
+// One update (0x59d570, then +0x1b0 += ticks / 2 while it has rows): weights, blend and open ease, then the rows up to frame clock x 30 / 25
+void mouthStep(Actor::Mouth &m, int ticks) {
+    if (m.clip[0] >= 0) m.w[0] = m.blend * m.cw[0];
+    if (m.clip[1] >= 0) m.w[1] = (1 - m.blend) * m.cw[1];
+    if (m.blend > 0.9f) m.blend = 1, m.clip[1] = -1, m.w[1] = 0;
+    m.blend = (2 * m.blend + 1) / 3, m.open = (2 * m.open + m.target) / 3;
+    if (!m.rows) return;
+    const Audio::Lip &r = *m.rows;
+    int frame = (int)((double)m.clock / 25 * 30);
+    if (r[m.cur].frame <= frame) {
+        size_t row = m.cur;
+        while (++m.cur < r.size() && r[m.cur].frame <= frame) row = m.cur;
+        if (m.cur >= r.size()) {  // the last row ends the line, never shown
+            m.rows = nullptr, m.clip[0] = m.clip[1] = -1, m.w[0] = m.w[1] = 0;
+            return;
+        }
+        static const float OPEN[9] = {0, 0.5f, 0.8f, 0.5f, 0.9f, 0.6f, 0.9f, 0.8f, 0.9f};  // Rest A Cons EI FV L MBP O QUW (0x59d8bb..0x59d986)
+        int v = r[row].v;
+        m.cw[1] = m.cw[0], m.cw[0] = v ? 1 : 0, m.target = OPEN[v];
+        if (m.clip[0] != v) m.clip[1] = m.clip[0], m.w[1] = m.w[0], m.clip[0] = v, m.w[0] = 0, m.blend = 0;
+    }
+    m.clock += 0.5f * ticks;
+}
+
 void line(int worm, V v) {  // W4M speech is 3D at the speaker; audio.cpp keeps one line per category
-    if (worm >= 0 && worm < (int)G->worms.size()) Audio::voice(G->worms[worm].team, v, G->worms[worm].pos);
+    if (worm >= 0 && worm < (int)G->worms.size())
+        if (const Audio::Lip *l = Audio::voice(G->worms[worm].team, v, G->worms[worm].pos)) speak(worm, l);
 }
 void say(int worm, const std::string &name) {
+    if (!name.empty() && name[0] == '*') {  // a level line: EFMV/<level>/<name> (0x59cc70)
+        if (worm >= 0 && worm < (int)G->worms.size()) speak(worm, Audio::efmvSpeech(name.c_str() + 1, G->worms[worm].pos, worm));
+        return;
+    }
     static const std::pair<const char *, V> LINES[] = {
         {"Startled", V::Startled}, {"GrenadeLanded", V::Grenade}, {"Shriek", V::Shriek}, {"Gasp", V::Gasp}, {"ShakeFist", V::ShakeFist},
         {"Titter", V::Titter}, {"Disbelief", V::Disbelief}, {"Incoming", V::Incoming}, {"Missed", V::Missed}, {"Mistake", V::Mistake},
@@ -275,7 +316,7 @@ bool castFrom(std::vector<int> &pool, const TrackDef &t, int *cast, int k, bool 
 
 void start(int scene, const int *cast) {
     int slot = 0;
-    while (slot < (int)runs.size() && runs[slot].scene >= 0) slot++;
+    while (slot < (int)runs.size() && runs[slot].scene != -1) slot++;
     if (slot == (int)runs.size()) runs.emplace_back();
     const SceneDef &s = defs[scene];
     for (size_t k = 0; k < s.tracks.size(); k++)  // a cast worm leaves its old scene, which ends for all (0x60b750)
@@ -326,6 +367,7 @@ void shuffle(const Game &g, std::vector<int> &v, uint32_t salt) {  // 0x60c390: 
 
 // One Acting.Trigger (handler 0x60e2e0, jump table 0x60e818): the trigger's candidate pools, then the chooser
 void fire(const Game &g, int trig, int subject = NONE, int payload = NONE) {
+    if (scriptMovieOn(g)) return;  // ours: a scene would take a movie actor, and EFMV.Active ends it within 20 ms anyway (0x60b96c)
     if (lists[trig].empty() && trig != DAMAGE && trig != FIRST_BLOOD && trig != MAX_DAMAGE) return;
     int active = activeWorm(g), n = worms();
     std::vector<int> A, B;
@@ -451,45 +493,48 @@ void snap(Actor &a) {
     a.poseT = 0;
 }
 
-// Track k of run r: its events up to the run's clock (WormScenePlayerService 0x60b1b0)
+// One worm event of track k of run r on its cast actor (WormScenePlayerService 0x60b1b0)
+void apply(int r, int k, const Ev &e) {
+    Run &run = runs[r];
+    int x = run.cast[k];
+    if (!isWorm(x) || actors[x].run != r) return;
+    Actor &a = actors[x];
+    auto target = [&](int n, int *id, Vector3 *at) {  // own track: stop (0x7d), < 0: the camera (0x7e)
+        if (n == k) *id = STOP;
+        else if (n < 0) *id = CAMERA;
+        else if (n < 30 && run.cast[n] != NONE) *id = run.cast[n], *at = run.at[n];
+    };
+    switch (e.op) {
+    case 'e': {  // name[,PermittedEyeMovement[,Coyness]]
+        float eye = 0, coy = 0;
+        std::string em = e.arg.substr(0, e.arg.find(','));
+        if (em.size() < e.arg.size()) sscanf(e.arg.c_str() + em.size(), ",%f,%f", &eye, &coy);
+        a.emote = em == "Default" ? "" : em, a.eyeOld = a.eyeMove, a.eyeMove = eye, a.coy = coy * DEG2RAD;  // 0x59e7e6
+        break;
+    }
+    case 'p':  // 0x59c990: the playing gesture becomes the old one (weight at most 0.9), the same clip is not restarted
+        if (has(e.arg) && e.arg != a.act[0].clip) a.act[1] = a.act[0], a.act[1].w = fminf(a.act[0].w, 0.9f), a.act[0] = {e.arg, 0, 1 - a.act[1].w}, a.stopRate = 0;
+        break;  // unknown names (ShakeFist, CoverHead...) play nothing
+    case 'x': if (e.n > 0) a.stopRate = 20.f / e.n; break;  // BlendTime ms; 0 (141 of 149) does nothing (0x59e85a)
+    case 's': say(x, e.arg); break;
+    case 'l': snap(a), target(e.n, &a.look, &a.lookAt);
+        if (a.look == STOP) a.headY = a.headP = a.cur.ey = a.cur.ep = 0;  // 0x59e92b
+        else a.coyOff = a.coy;  // 0x59ea23: the sign follows the head's turn, which the exe measures as 0: always +
+        break;
+    case 'g': snap(a), target(e.n, &a.gest, &a.gestAt); break;
+    case 't': a.threatened = e.n != 0; break;
+    case 'f': particle(x, e.arg); break;
+    }
+}
+
+// Run r: each track's events up to the run's clock
 void play(int r) {
     Run &run = runs[r];
     const SceneDef &s = defs[run.scene];
     bool more = false;
     for (size_t k = 0; k < s.tracks.size(); k++) {
         const std::vector<Ev> &ev = s.tracks[k].ev;
-        int x = run.cast[k];
-        for (; run.cur[k] < ev.size() && ev[run.cur[k]].ms <= run.clk; run.cur[k]++) {
-            if (!isWorm(x) || actors[x].run != r) continue;
-            const Ev &e = ev[run.cur[k]];
-            Actor &a = actors[x];
-            auto target = [&](int n, int *id, Vector3 *at) {  // own track: stop (0x7d), < 0: the camera (0x7e)
-                if (n == (int)k) *id = STOP;
-                else if (n < 0) *id = CAMERA;
-                else if (n < 30 && run.cast[n] != NONE) *id = run.cast[n], *at = run.at[n];
-            };
-            switch (e.op) {
-            case 'e': {  // name[,PermittedEyeMovement[,Coyness]]
-                float eye = 0, coy = 0;
-                std::string em = e.arg.substr(0, e.arg.find(','));
-                if (em.size() < e.arg.size()) sscanf(e.arg.c_str() + em.size(), ",%f,%f", &eye, &coy);
-                a.emote = em == "Default" ? "" : em, a.eyeOld = a.eyeMove, a.eyeMove = eye, a.coy = coy * DEG2RAD;  // 0x59e7e6
-                break;
-            }
-            case 'p':  // 0x59c990: the playing gesture becomes the old one (weight at most 0.9), the same clip is not restarted
-                if (has(e.arg) && e.arg != a.act[0].clip) a.act[1] = a.act[0], a.act[1].w = fminf(a.act[0].w, 0.9f), a.act[0] = {e.arg, 0, 1 - a.act[1].w}, a.stopRate = 0;
-                break;  // unknown names (ShakeFist, CoverHead...) play nothing
-            case 'x': if (e.n > 0) a.stopRate = 20.f / e.n; break;  // BlendTime ms; 0 (141 of 149) does nothing (0x59e85a)
-            case 's': say(x, e.arg); break;
-            case 'l': snap(a), target(e.n, &a.look, &a.lookAt);
-                if (a.look == STOP) a.headY = a.headP = a.cur.ey = a.cur.ep = 0;  // 0x59e92b
-                else a.coyOff = a.coy;  // 0x59ea23: the sign follows the head's turn, which the exe measures as 0: always +
-                break;
-            case 'g': snap(a), target(e.n, &a.gest, &a.gestAt); break;
-            case 't': a.threatened = e.n != 0; break;
-            case 'f': particle(x, e.arg); break;
-            }
-        }
+        for (; run.cur[k] < ev.size() && ev[run.cur[k]].ms <= run.clk; run.cur[k]++) apply(r, (int)k, ev[run.cur[k]]);
         more |= run.cur[k] < ev.size();
     }
     if (!more) release(r);
@@ -608,6 +653,58 @@ void Acting::event(const Game &g, const GameEvent &e) {
     }
 }
 
+// A level movie (script.cpp runs it in the sim): its worm events on the cast actors, as an acting scene's
+void Acting::movie(const Game &g, const GameEvent &e) {
+    if (!loaded) load();
+    if (actors.size() != g.worms.size() && e.kind != GameEvent::MovieStart) return;  // an Initialise movie starts before the first update
+    G = &g;
+    static int mrun = -1;
+    if (e.kind == GameEvent::MovieStart || e.kind == GameEvent::MovieEnd) {
+        if (mrun >= 0 && mrun < (int)runs.size() && runs[mrun].scene == MOVIE) release(mrun);
+        mrun = -1;
+        if (e.kind == GameEvent::MovieEnd) return;
+        for (int r = 0; r < (int)runs.size(); r++) if (runs[r].scene >= 0) release(r);  // EFMV.Active ends every scene (0x60b96c)
+        mrun = 0;
+        while (mrun < (int)runs.size() && runs[mrun].scene != -1) mrun++;
+        if (mrun == (int)runs.size()) runs.emplace_back();
+        runs[mrun].scene = MOVIE, runs[mrun].cur.clear();
+        std::fill(runs[mrun].cast, runs[mrun].cast + 30, NONE);
+        return;
+    }
+    const Json *ev = scriptMovieEvent(g, e.fx, e.weapon);
+    if (e.kind != GameEvent::Movie || !ev || mrun < 0 || runs[mrun].scene != MOVIE) return;
+    Run &run = runs[mrun];
+    MovieView v = scriptMovie(g);
+    for (int k = 0; k < 30 && k < (int)v.actor.size(); k++) {  // the cast so far: WORM<slot>, or a "PROP <name>" detail (0x5cd12e)
+        int was = run.cast[k];
+        run.cast[k] = v.worm[k] >= 0 && g.worms[v.worm[k]].alive ? v.worm[k] : NONE;  // not found: 0x7f (0x60c190)
+        if (run.cast[k] == NONE && !v.actor[k].empty())
+            for (const Terrain::Marker &m : g.terrain.markers)
+                if (m.name.size() > 5 && !strncasecmp(m.name.c_str(), "PROP", 4) && m.name.compare(5, std::string::npos, v.actor[k]) == 0) { run.cast[k] = 1000 + k, run.at[k] = m.pos; break; }
+        if (isWorm(run.cast[k])) run.at[k] = posOf(run.cast[k]);
+        if (isWorm(run.cast[k]) && run.cast[k] != was) {
+            if (actors[run.cast[k]].run >= 0 && actors[run.cast[k]].run != mrun) release(actors[run.cast[k]].run);
+            actors[run.cast[k]].run = mrun, actors[run.cast[k]].track = k;
+        }
+    }
+    int k = e.weapon >> 16;
+    const Json &j = *ev;
+    std::string ty = j[0].s();
+    auto f = [&](int i) { return j[3 + i]; };
+    Ev x{(int)j[1].f(), 0, "", 0};
+    if (ty == "WormEmote") {  // acting.py's form: name[,PermittedEyeMovement[,Coyness]]
+        x.op = 'e', x.arg = f(0).s();
+        if (f(1).f() || f(3).f()) x.arg += TextFormat(",%g", f(1).f()), x.arg += f(3).f() ? TextFormat(",%g", f(3).f()) : "";
+    } else if (ty == "PlayAnimation") x.op = 'p', x.arg = f(0).s();
+    else if (ty == "StopAnimation") x.op = 'x', x.n = (int)f(0).f();
+    else if (ty == "TriggerSpeech") x.op = 's', x.arg = f(0).s();  // a '*' line names the level's EFMV bank: no voice category
+    else if (ty == "WormLookAt") x.op = 'l', x.n = (int)f(0).f();
+    else if (ty == "WormGestureAt") x.op = 'g', x.n = (int)f(0).f();
+    else if (ty == "ThreatenWorm") x.op = 't', x.n = f(0).is() || f(0).f();
+    else if (ty == "SpawnParticle") x.op = 'f', x.arg = f(0).s().compare(0, 4, "WXP_") ? f(0).s() : f(0).s().substr(4);
+    if (x.op && k < 30) apply(mrun, k, x);
+}
+
 void Acting::taunt(const Game &g, int worm, const std::string &weapon) {
     static const std::pair<const char *, int> T[] = {
         {"Grenade", TAUNT_MELEE}, {"Dynamite", TAUNT_MELEE}, {"Landmine", TAUNT_MELEE}, {"Baseball Bat", TAUNT_MELEE}, {"Prod", TAUNT_MELEE},
@@ -665,7 +762,7 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
     }
     // TimerLogicEntity 0x50f44b: RetreatTimeRemaining passing 4000 ms
     static bool late = false;
-    bool now = (g.phase == Phase::Flying || g.phase == Phase::Retreat) && g.retreatTicks(WEAPONS[g.weapon]) > msTicks(4000) && g.timer <= msTicks(4000);
+    bool now = (g.phase == Phase::Flying || g.phase == Phase::Retreat) && g.retreatTicks(weaponDef(g.weapon)) > msTicks(4000) && g.timer <= msTicks(4000);
     if (now && !late && cur != NONE) fire(g, RETREAT, cur);
     late = now;
     lastPhase = g.phase;
@@ -678,7 +775,12 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
     for (size_t i = 0; i < n; i++) {
         const Worm &w = g.worms[i];
         Actor &a = actors[i];
-        if (!w.alive) { if (a.run >= 0) release(a.run); a.act[0] = a.act[1] = {}; continue; }
+        if (!w.alive) {  // a level movie goes on without its actor
+            if (a.run >= 0 && runs[a.run].scene == MOVIE) a.run = a.track = -1;
+            else if (a.run >= 0) release(a.run);
+            a.act[0] = a.act[1] = {};
+            continue;
+        }
         Vector2 s = GetWorldToScreen(w.pos, cam);  // OnScreen: in the view frustum (0x5a2420)
         a.onScreen = Vector3DotProduct(Vector3Subtract(w.pos, cam.position), Vector3Subtract(cam.target, cam.position)) > 0 && s.x >= 0 &&
                      s.y >= 0 && s.x < GetScreenWidth() && s.y < GetScreenHeight();
@@ -728,7 +830,7 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
     // loses 100 per run and fires at <= 100, then restarts at 300 + rand % 300; it is frozen while EFMV.Active (+0xe0, 0x5b34e4)
     static float task = 0;
     for (task += dt; task >= 0.1f; task -= 0.1f) {
-        if (g.abducting()) continue;
+        if (g.efmvActive()) continue;
         if (ambientIn > 100) { ambientIn -= 100; continue; }
         static const int CYCLE[4] = {IDLE, SICK, ABDUCTED, BORED};
         fire(g, CYCLE[ambientIdx % 4]);
@@ -738,13 +840,14 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
     // WormScenePlayerService task 0x60b940, every 20 ms: EFMV.Active ends every scene (0x60b96c), else each track fires its events in
     // file order while Time <= the scene clock (one blocking cursor, 0x60b6db), then the clock gains 20 ms (0x60b72b)
     for (int r = 0; r < (int)runs.size(); r++) {
-        if (runs[r].scene >= 0 && g.abducting()) release(r);
+        if (runs[r].scene >= 0 && g.efmvActive()) release(r);
         if (runs[r].scene >= 0) runs[r].t += dt;
         for (; runs[r].scene >= 0 && runs[r].t * 1000 >= runs[r].clk; runs[r].clk += 20) play(r);
     }
     // the per-frame task queue runs on time rounded up to 20 ms (0x68d57a), the worm updates when that moved (0x5a47a0)
     static float tick = 0;
-    bool step = (tick += dt) >= 0.02f;
+    int ticks = (int)((tick += dt) / 0.02f);
+    bool step = ticks > 0;
     if (step) tick = fmodf(tick, 0.02f);
     for (size_t i = 0; i < n; i++) {
         Actor &a = actors[i];
@@ -752,7 +855,7 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         for (Actor::Gest &c : a.act) c.t += dt;  // XAnim clips run in real time, whatever their weight
         a.poseT += dt;
         // the aiming worm: weapons set Forbid Lookaround (0x59f3a0)
-        if (step) lookStep(a, (int)i, (int)i == g.current && g.phase == Phase::Aim, busy[i]);
+        if (step) lookStep(a, (int)i, (int)i == g.current && g.phase == Phase::Aim, busy[i]), mouthStep(a.mouth, ticks);
         if (step) {  // Sick / Abducted tint weights +0x90 / +0x1ec: linear, 0.05 per update (0x5a1afd)
             a.sickW = Clamp(a.sickW + Clamp((g.worms[i].poison > 0) - a.sickW, -0.05f, 0.05f), 0, 1);
             a.abdW = Clamp(a.abdW + Clamp(a.abducted - a.abdW, -0.05f, 0.05f), 0, 1);
@@ -780,11 +883,16 @@ const char *Acting::clip(const Game &g, int i, float clock, float *t, bool *loop
         ly->eyeYaw = a.eyeW * at(a.old.ey, a.cur.ey), ly->eyePitch = a.eyeW * at(a.old.ep, a.cur.ep);
         for (int k = 0; k < 2; k++)  // gesture weight x ground factor (0x59dcac)
             if (!a.act[k].clip.empty()) ly->act[k] = a.act[k].clip.c_str(), ly->actT[k] = a.act[k].t, ly->actW[k] = a.actS * a.act[k].w;
+        static const char *const VISEME[9] = {nullptr, "A", "Cons", "EI", "FV", "L", "MBP", "O", "QUW"};  // clips bound by 0x59cf50
+        for (int k = 0; k < 2; k++) ly->lip[k] = a.mouth.clip[k] > 0 ? VISEME[a.mouth.clip[k]] : nullptr, ly->lipW[k] = a.mouth.w[k];
+        ly->open = a.mouth.open;
     }
     if (face) return nullptr;
     *t = clock + i * 1.3f, *loop = true;
     return e.c_str();
 }
+
+void Acting::speak(const Game &g, int worm, Audio::Voice v) { G = &g, line(worm, v); }
 
 void Acting::headMode(int i, float deg) {
     if (i >= 0 && i < (int)actors.size()) actors[i].mode = deg;

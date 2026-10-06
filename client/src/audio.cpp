@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
+#include <strings.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -210,6 +212,7 @@ struct Bank {
     std::string dir;
     bool loaded = false;
     Variants lines[(int)Voice::Count];
+    std::vector<Lip> lips[(int)Voice::Count];  // per variant
 };
 
 Variants sfx[(int)Sfx::Count];
@@ -222,8 +225,13 @@ std::string track;
 bool musicLoaded = false, musicOn = false;
 // W4M Music.FadeIn (FrontEndService 0x7290b4): +0.01 per frame up to Audio.Vol.Music 0.6 (DEFSAVE), 1 s at 60 fps
 float fade = 1;
+// AudioService 0x605720: EFMV.Play / Terminated timers (+0x24 500 ms, +0x20 2000 ms, the latter first) scale the music; none running: held
+float duck = 1, duckOut = 0, duckIn = 0;
 Vector3 ear{}, earRight{1, 0, 0};
 unsigned plays = 0;
+}  // namespace
+void efmvUpdate(), efmvStop();
+namespace {
 
 // base.ogg, base_2.ogg, ... until the first gap. No TextFormat: init and preloadVoices run on loading threads.
 Variants loadVariants(const std::string &base, int maxpb) {
@@ -292,9 +300,9 @@ int pick(int n, const Def &d) {
     return k;
 }
 
-// past maxpb playing voices the oldest is cut (FMOD max playbacks behaviour 1, steal oldest)
-void playRandom(Variants &v, const Def &d, float volume, const Vector3 *at, bool ramp = false) {
-    if (!v.n) return;
+// past maxpb playing voices the oldest is cut (FMOD max playbacks behaviour 1, steal oldest); the slot played, null: none
+Slot *playRandom(Variants &v, const Def &d, float volume, const Vector3 *at, bool ramp = false) {
+    if (!v.n) return nullptr;
     int k = pick(v.n, d);
     int busy = 0;
     Slot *oldest = nullptr, *free = nullptr;
@@ -302,12 +310,28 @@ void playRandom(Variants &v, const Def &d, float volume, const Vector3 *at, bool
         if (IsSoundPlaying(x.s)) busy++, oldest = !oldest || x.born < oldest->born ? &x : oldest;
         else if (x.variant == k && !free) free = &x;
     if (busy >= d.maxpb && oldest) StopSound(oldest->s), free = free ? free : oldest;
-    if (!free) return;
+    if (!free) return nullptr;
     float g = place(free->s, d, volume * powf(10, d.db / 20), at);
     free->born = ++plays;
     if (d.pitchRand > 0) SetSoundPitch(free->s, exp2f(4 * d.pitchRand * (GetRandomValue(0, 32767) / 16383.5f - 1)));
     if (ramp && d.fade > 0) SetSoundVolume(free->s, 0), ramps.push_back({free->s, GetTime(), g, d.fade});
     PlaySound(free->s);
+    return free;
+}
+
+// "<name> <frame>:<viseme>..." per line (tools/w4m-import lip.txt)
+std::map<std::string, Lip> loadLips(const std::string &path) {
+    std::map<std::string, Lip> out;
+    char *text = LoadFileText(path.c_str());
+    for (char *l = text ? strtok(text, "\n") : nullptr; l; l = strtok(nullptr, "\n")) {
+        char name[96];
+        int n = 0, f, v;
+        if (sscanf(l, "%95s%n", name, &n) != 1) continue;
+        Lip &lip = out[name];
+        for (int k; sscanf(l + n, " %d:%d%n", &f, &v, &k) == 2; n += k) lip.push_back({(uint16_t)f, (uint8_t)v});
+    }
+    if (text) UnloadFileText(text);
+    return out;
 }
 
 // fmod_event 0x10038400: a trigger delay of min + rand() % (max - min) ms (min when equal) before each sound starts (Channel delay)
@@ -399,6 +423,7 @@ void shutdown() {
 
 void stopSfx() {
     for (auto &v : sfx) for (Slot &k : v.slot) StopSound(k.s);
+    efmvStop();
     for (auto &b : banks) for (auto &v : b.lines) for (Slot &k : v.slot) StopSound(k.s);
     pending.clear(), ramps.clear();
 }
@@ -408,6 +433,7 @@ std::map<int, EmitterVoice> emitters;
 unsigned emitterFrame = 0;
 
 void update() {
+    efmvUpdate();
     for (auto it = emitters.begin(); it != emitters.end();)  // emitters that stopped calling emitter()
         if (it->second.frame + 1 < emitterFrame) {
             if (!it->second.stolen) StopSound(it->second.slot->s);
@@ -435,11 +461,15 @@ void update() {
     }
     if (stopping && musicLoaded) {
         if ((fade -= GetFrameTime() / 2) <= 0) fade = 0, stopping = false, StopMusicStream(theme);
-        else SetMusicVolume(theme, fade * powf(10, trackDb(track) / 20)), UpdateMusicStream(theme);
+        else SetMusicVolume(theme, fade * duck * powf(10, trackDb(track) / 20)), UpdateMusicStream(theme);
         return;
     }
     if (!musicLoaded || !musicOn) return;
-    if (fade < 1) fade = fminf(fade + GetFrameTime(), 1), SetMusicVolume(theme, fade * powf(10, trackDb(track) / 20));
+    float ms = GetFrameTime() * 1000;
+    if (duckIn > 0) duck = (duckIn -= ms) > 0 ? 1 - duckIn / 2000 : 1;
+    else if (duckOut > 0) duck = (duckOut -= ms) > 0 ? duckOut / 500 : 0;
+    fade = fminf(fade + GetFrameTime(), 1);
+    SetMusicVolume(theme, fade * duck * powf(10, trackDb(track) / 20));
     UpdateMusicStream(theme);
 }
 
@@ -540,7 +570,11 @@ void loop(Sfx id, bool on, const Vector3 *at, float volume) {
 // banks load lazily (~30 decoded upfront would cost ~300 MB); preloadVoices() moves the hitch to match start
 static void load(Bank &b) {
     if (b.loaded) return;
-    for (int i = 0; i < (int)Voice::Count; i++) b.lines[i] = loadVariants(b.dir + "/" + VOICE_NAMES[i], 1);
+    std::map<std::string, Lip> lips = loadLips(b.dir + "/lip.txt");
+    for (int i = 0; i < (int)Voice::Count; i++) {
+        b.lines[i] = loadVariants(b.dir + "/" + VOICE_NAMES[i], 1);
+        for (int k = 0; k < b.lines[i].n; k++) b.lips[i].push_back(lips[k ? std::string(VOICE_NAMES[i]) + "_" + std::to_string(k + 1) : VOICE_NAMES[i]]);
+    }
     b.loaded = true;
 }
 static Bank &bankOf(int team, bool loaded = true) {
@@ -550,17 +584,19 @@ static Bank &bankOf(int team, bool loaded = true) {
     return b;
 }
 
-static void voice(int team, Voice id, const Vector3 *at) {
-    if (banks.empty()) return;
+static const Lip *voice(int team, Voice id, const Vector3 *at) {
+    if (banks.empty()) return nullptr;
     Bank &b = bankOf(team);
     const Def &d = id == Voice::SadSigh || id == Voice::Yawn ? SPEECH_SOFT : SPEECH;
     for (Variants &v : b.lines)  // a new line is dropped while the bank's voice is still speaking (no queue, no gap)
-        for (Slot &x : v.slot) if (IsSoundPlaying(x.s)) return;
+        for (Slot &x : v.slot) if (IsSoundPlaying(x.s)) return nullptr;
     for (int hop = 0; hop < 4 && !b.lines[(int)id].n; hop++) id = FALLBACK[(int)id];
-    playRandom(b.lines[(int)id], d, 1, at);
+    Slot *s = playRandom(b.lines[(int)id], d, 1, at);
+    if (s) TraceLog(LOG_DEBUG, "AUDIO: voice %s/%s_%d", GetFileName(b.dir.c_str()), VOICE_NAMES[(int)id], s->variant + 1);
+    return s && s->variant < (int)b.lips[(int)id].size() ? &b.lips[(int)id][s->variant] : nullptr;
 }
-void voice(int team, Voice id) { voice(team, id, nullptr); }
-void voice(int team, Voice id, Vector3 at) { voice(team, id, &at); }
+const Lip *voice(int team, Voice id) { return voice(team, id, nullptr); }
+const Lip *voice(int team, Voice id, Vector3 at) { return voice(team, id, &at); }
 
 void preloadVoices(int teams) {  // one decoder per bank
     std::vector<Bank *> todo;
@@ -593,10 +629,128 @@ void music(bool on, const char *name) {
     musicOn = on;
     if (!musicLoaded) return;
     if (on && !IsMusicStreamPlaying(theme))
-        fade = track == "victory" ? 1 : 0, SetMusicVolume(theme, fade * powf(10, trackDb(track) / 20)), PlayMusicStream(theme);
+        fade = track == "victory" ? 1 : 0, SetMusicVolume(theme, fade * duck * powf(10, trackDb(track) / 20)), PlayMusicStream(theme);
     else if (!on && track == "theme" && IsMusicStreamPlaying(theme)) stopping = true;
     else if (!on) StopMusicStream(theme);
     if (on) stopping = false;
+}
+
+namespace {
+// One EFMV event (tools/w4m-import efmv/<group>/events.txt): its W4M FEV properties, waves, Time volume envelope and LIP rows
+struct Efmv {
+    std::string name;
+    Def d;
+    Variants v;
+    float rate = 0;          // envelope parameter speed, share of its range per second; the parameter holds at the end (fmod_event 0x10023bab)
+    std::vector<float> env;  // x, y pairs (y: 0 or 1 in every EFMV event, linear between)
+    Lip lip;
+};
+std::vector<Efmv> efmvs;  // the level's, then EFMV/Failures
+std::string efmvLoaded;
+struct Env { Sound s; const Efmv *e; double t0; float gain; };
+std::vector<Env> envs;
+Slot *looping = nullptr;              // EFMVMovieLogicEntity +0x58
+std::map<int, Slot *> speaking;       // WormPoseManager +0x1d4 per speaker
+
+std::string lower(std::string s) {
+    for (char &c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
+void loadEfmv(const std::string &dir, const std::string &group) {
+    std::map<std::string, Lip> lips = loadLips(dir + "/lip.txt");
+    size_t first = efmvs.size();
+    char *text = LoadFileText((dir + "/events.txt").c_str());
+    for (char *l = text ? strtok(text, "\n") : nullptr; l; l = strtok(nullptr, "\n")) {
+        char name[96];
+        int loop, play, waves, n = 0;
+        float db, mn, mx;
+        if (sscanf(l, "%95s %f %d %f %f %d %d%n", name, &db, &loop, &mn, &mx, &play, &waves, &n) != 7) continue;
+        Efmv e{name, {nullptr, db, loop != 0, mn, mx, 1, 0, nullptr, play}};
+        float x, y;
+        int k;
+        if (sscanf(l + n, " %f%n", &e.rate, &k) == 1)
+            for (n += k; sscanf(l + n, " %f,%f%n", &x, &y, &k) == 2; n += k) e.env.push_back(x), e.env.push_back(y);
+        e.v = loadVariants(dir + "/" + name, 1);
+        if (auto it = lips.find(name); it != lips.end()) e.lip = it->second;
+        efmvs.push_back(std::move(e));
+    }
+    if (text) UnloadFileText(text);
+    TraceLog(LOG_INFO, "AUDIO: EFMV/%s: %d events", group.c_str(), (int)std::count_if(efmvs.begin() + first, efmvs.end(), [](const Efmv &e) { return e.v.n > 0; }));
+}
+Efmv *findEfmv(const char *name) {
+    for (Efmv &e : efmvs)
+        if (e.v.n && !strcasecmp(e.name.c_str(), name)) return &e;  // FMOD event names: case-insensitive (fmod_event 0x100051f0)
+    return nullptr;
+}
+Slot *playEfmv(Efmv &e, const Vector3 *at) {
+    Slot *s = playRandom(e.v, e.d, 1, at);
+    if (s && !e.env.empty()) envs.push_back({s->s, &e, GetTime(), powf(10, e.d.db / 20)});
+    TraceLog(LOG_INFO, "AUDIO: EFMV %s %.1f dB%s, lip %d rows", e.name.c_str(), e.d.db, e.d.loop ? " loop" : "", (int)e.lip.size());
+    return s;
+}
+}  // namespace
+
+void efmvLevel(const char *level) {
+    std::string want = level ? lower(level) : "";
+    if (want == efmvLoaded && !efmvs.empty()) return;
+    for (Efmv &e : efmvs) unload(e.v);
+    efmvs.clear(), envs.clear(), speaking.clear(), looping = nullptr, efmvLoaded = want;
+    std::string root = ASSET_ROOT "efmv";
+    if (!DirectoryExists(root.c_str())) return;
+    FilePathList l = LoadDirectoryFilesEx(root.c_str(), "DIRS*", false);
+    for (const char *g : {want.c_str(), "failures"})
+        for (unsigned i = 0; *g && i < l.count; i++)
+            if (lower(GetFileName(l.paths[i])) == g) loadEfmv(l.paths[i], GetFileName(l.paths[i]));
+    UnloadDirectoryFiles(l);
+    for (Efmv &e : efmvs) e.d.event = e.name.c_str();  // stable from here on
+}
+
+const Lip *efmvSpeech(const char *line, Vector3 at, int speaker) {
+    if (Slot *&was = speaking[speaker]; was) StopSound(was->s), was = nullptr;  // 0x59cc70 releases the speaker's last instance
+    Efmv *e = findEfmv(line);
+    Slot *s = e ? playEfmv(*e, &at) : nullptr;
+    if (!e) TraceLog(LOG_INFO, "AUDIO: EFMV speech %s: no such event", line);
+    speaking[speaker] = s;
+    return s ? &e->lip : nullptr;
+}
+
+void efmvSfx(const char *name, bool loop, Vector3 at) {
+    Efmv *e = findEfmv(name);
+    if (!e) return (void)TraceLog(LOG_INFO, "AUDIO: EFMV sfx %s: no such event", name);  // W4M: "Failed to find an event", silent
+    if (loop && looping) StopSound(looping->s);
+    Slot *s = playEfmv(*e, &at);
+    if (loop) looping = s;
+}
+
+void movie(bool on) {
+    if (on) duckOut = 500;
+    else {
+        duckIn = 2000;
+        if (looping) StopSound(looping->s), looping = nullptr;
+    }
+    TraceLog(LOG_INFO, "AUDIO: movie %s", on ? "start: music out 500 ms" : "end: music in 2000 ms");
+}
+
+void narrator(int n) {
+    if (Efmv *e = n >= 1 && n <= 5 ? findEfmv(TextFormat("Failures_Narrator_0%d", n)) : nullptr) playEfmv(*e, nullptr);
+}
+
+void efmvStop() {
+    for (Efmv &e : efmvs) for (Slot &k : e.v.slot) StopSound(k.s);
+}
+
+// EFMV Time envelopes: gain at the parameter's normalised position, linear between points, held past the ends
+void efmvUpdate() {
+    for (size_t i = 0; i < envs.size();) {
+        Env &v = envs[i];
+        if (!IsSoundPlaying(v.s)) { envs.erase(envs.begin() + i); continue; }
+        const std::vector<float> &p = v.e->env;
+        float x = fminf(1, (float)(GetTime() - v.t0) * v.e->rate), g = p[1];
+        for (size_t k = 0; k + 2 < p.size(); k += 2)
+            if (x >= p[k]) g = x < p[k + 2] ? p[k + 1] + (p[k + 3] - p[k + 1]) * (x - p[k]) / (p[k + 2] - p[k]) : p[k + 3];
+        SetSoundVolume(v.s, v.gain * g);
+        i++;
+    }
 }
 
 }  // namespace Audio

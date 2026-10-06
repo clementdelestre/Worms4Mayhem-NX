@@ -62,6 +62,7 @@ const SchemeField SCHEME_FIELDS[] = {
     {"Wind", nullptr, 0, 3, 1, {"None", "Low", "Medium", "High"}}, {"Weapons", nullptr, 0, 3, 1, {"Default", "BnG", "Crates only", "Unlimited"}},
     {"Water rise", nullptr, 0, 3, 1, {"None", "Slow", "Medium", "Fast"}},  // FETXT.WaterNoRise / Slow / Medium / FastRise
     {"Mystery crates", "%d", 0, 100, 10, {}},  // SchemeData MysteryChance
+    {"Mine factory", nullptr, 0, 1, 1, {"Off", "On"}},  // SchemeData MineFactoryOn
 };
 static_assert(sizeof SCHEME_FIELDS / sizeof *SCHEME_FIELDS == sizeof(Scheme), "one row per Scheme byte");
 
@@ -681,16 +682,55 @@ void background() {
     FrontBg::draw(GetFrameTime());
 }
 
-float clipKeys(const float (*k)[2], int n, float t) {
+// MENUTWKXINGAME FE.AnimSpeed (FrontEndService +0x134, 0x72a244): item clips last their length x it (0x6a03d0, 0x7a9cf8)
+static const float FE_ANIM_SPEED = 0.9f;
+// The exe's key curve (tools/w4m-models curve(), 0x7abb1c): a zero out-tangent holds; unweighted = Hermite on the tangent
+// slopes, weighted = Bezier with handles at key +- tangent / 3, solved for t
+float clipKeys(const float (*k)[6], int n, float t, bool weighted) {
+    t /= FE_ANIM_SPEED;
     if (t <= k[0][0]) return k[0][1];
-    for (int i = 1; i < n; i++)
-        if (t < k[i][0]) return Lerp(k[i - 1][1], k[i][1], (t - k[i - 1][0]) / (k[i][0] - k[i - 1][0]));
-    return k[n - 1][1];
+    int i = 0;
+    while (i < n - 1 && t >= k[i + 1][0]) i++;
+    const float *a = k[i], *b = k[std::min(i + 1, n - 1)];
+    if (a == b || (a[4] == 0 && a[5] == 0)) return a[1];
+    float dx = b[0] - a[0], s = t - a[0];
+    if (!weighted) {
+        auto slope = [](float x, float y) { return x != 0 ? y / x : 5.72958e6f; };
+        float m0 = slope(a[4], a[5]), m1 = slope(b[2], b[3]), dy = b[1] - a[1];
+        float c3 = (m0 * dx + m1 * dx - 2 * dy) / (dx * dx * dx), c2 = (3 * dy - 2 * m0 * dx - m1 * dx) / (dx * dx);
+        return ((c3 * s + c2) * s + m0) * s + a[1];
+    }
+    // ponytail: handles clamped into the segment; the exe's monotonic fix-up (0x7ab6f1) is skipped, no FE clip needs it
+    float o1 = a[4] / 3 / dx, o2 = 1 - b[2] / 3 / dx, u1 = fmaxf(o1, 0), u2 = fminf(o2, 1);
+    float y1 = a[1] + a[5] / 3, y2 = b[1] - b[3] / 3;
+    if (u1 != o1 && o1 != 0) y1 = a[1] + (y1 - a[1]) * u1 / o1;
+    if (u2 != o2 && o2 != 1) y2 = b[1] - (b[1] - y2) * (1 - u2) / (1 - o2);
+    auto bz = [](float u, float p0, float p1, float p2, float p3) {
+        float v = 1 - u;
+        return v * v * v * p0 + 3 * u * v * v * p1 + 3 * u * u * v * p2 + u * u * u * p3;
+    };
+    float lo = 0, hi = 1, u = 0.5f;
+    for (int it = 0; it < 30; it++) {
+        u = (lo + hi) / 2;
+        float x = bz(u, 0, u1 * dx, u2 * dx, dx);
+        if (fabsf(x - s) < 1e-6f) break;
+        (x > s ? hi : lo) = u;
+    }
+    return bz(u, a[1], y1, y2, b[1]);
 }
-// Bundl10 WXFrontend.Anim keys (w4m-models --list, W4M_KEYS): in_scalehitxy scale XY and shake X / Y
-const float IN_SCALEHIT_S[6][2] = {{0, 0}, {0.00017f, 0.5996f}, {0.0833f, 1.0361f}, {0.125f, 0.981f}, {0.1666f, 1.0098f}, {0.2083f, 1}};
-const float IN_SCALEHIT_X[7][2] = {{0, 0}, {0.0833f, -0.4346f}, {0.125f, 1.5566f}, {0.1666f, -1.0449f}, {0.2083f, 0.7393f}, {0.25f, 0.3396f}, {0.2915f, 0.6689f}};
-const float IN_SCALEHIT_Y[7][2] = {{0, 0}, {0.0833f, -0.4346f}, {0.125f, -1.6318f}, {0.1666f, 0.0544f}, {0.2083f, 1.1113f}, {0.25f, -0.0006f}, {0.2915f, 0.6689f}};
+// Bundl10 WXFrontend.Anim keys {time s, value, in tangent x, y, out tangent x, y} (w4m-models --list, W4M_KEYS):
+// in_scalehitxy scale XY and shake X / Y, unweighted
+const float IN_SCALEHIT_S[6][6] = {{0, 0, 0.00027776f, 0.99951f, 0, 0}, {0.00016665f, 0.59961f, 0.94434f, 0.32764f, 0.94434f, 0.32764f},
+                                   {0.083313f, 1.0361f, 0.08844f, 0.99561f, 0.49951f, -0.86621f}, {0.125f, 0.98096f, 0.59717f, -0.80176f, 0.81934f, 0.57275f},
+                                   {0.16663f, 1.0098f, 0.81934f, 0.57275f, 0.97168f, -0.23511f}, {0.20825f, 1, 0.97168f, -0.23511f, 1, 0}};
+const float IN_SCALEHIT_X[7][6] = {{0, 0, 0.18823f, -0.98193f, 0.18823f, -0.98193f}, {0.083313f, -0.43457f, 0.18823f, -0.98193f, 0.020905f, 0.99951f},
+                                   {0.125f, 1.5566f, 0.020905f, 0.99951f, 0.016006f, -0.99951f}, {0.16663f, -1.0449f, 0.016006f, -0.99951f, 0.023331f, 0.99951f},
+                                   {0.20825f, 0.73926f, 0.023331f, 0.99951f, 0.1037f, -0.99414f}, {0.25f, 0.3396f, 0.1037f, -0.99414f, 0.12549f, 0.9917f},
+                                   {0.2915f, 0.66895f, 0.12549f, 0.9917f, 0, 0}};
+const float IN_SCALEHIT_Y[7][6] = {{0, 0, 0.18823f, -0.98193f, 0.18823f, -0.98193f}, {0.083313f, -0.43457f, 0.18823f, -0.98193f, 0.03476f, -0.99902f},
+                                   {0.125f, -1.6318f, 0.03476f, -0.99902f, 0.024689f, 0.99951f}, {0.16663f, 0.054443f, 0.024689f, 0.99951f, 0.039368f, 0.99902f},
+                                   {0.20825f, 1.1113f, 0.039368f, 0.99902f, 0.037415f, -0.99902f}, {0.25f, -0.00060606f, 0.037415f, -0.99902f, 0.062103f, 0.99805f},
+                                   {0.2915f, 0.66895f, 0.062103f, 0.99805f, 0, 0}};
 
 // tilted deg about its centre
 void logo(float cx, float y, float w, float deg) {
@@ -834,19 +874,33 @@ static float rowAppear(float in, float out, int i, float stagger = 0.05f) {
 }
 
 // Bundl10 WXFrontend.Anim clips (docs/w4m/frontend.md §17): (s, value) keys per channel, translation in FE units (y up)
-struct Keys { const float (*k)[2] = nullptr; int n = 0; };
-template <int N> static constexpr Keys keys(const float (&k)[N][2]) { return {k, N}; }
+struct Keys { const float (*k)[6] = nullptr; int n = 0; bool weighted = false; };
+template <int N> static constexpr Keys keys(const float (&k)[N][6], bool w) { return {k, N, w}; }
 struct FeClip { Keys sx, sy, tx, ty; };
-static const float K_SLIDEX[2][2] = {{0, 0}, {0.625f, 1}}, K_SPEECH[4][2] = {{0, 0}, {0.125f, 0.7905f}, {0.4583f, 1}, {0.625f, 1}},
-                   K_TOOLTIP[2][2] = {{0, 0}, {1.041f, 1}}, K_OUT_SCALEY[3][2] = {{0, 1}, {0.2083f, 0.2668f}, {0.2085f, 0}},
-                   K_TITLE_IN_X[2][2] = {{0, -290}, {1.041f, 0}}, K_TITLE_OUT_X[2][2] = {{0, 0}, {0.5f, -454}},
-                   K_TITLE_IN_Y[12][2] = {{0, 0}, {0.0833f, 0.8203f}, {0.125f, -1.3145f}, {0.2083f, 1.4424f}, {0.25f, 0.2854f}, {0.375f, -0.2003f},
-                                          {0.4583f, 0.1445f}, {0.5415f, -0.0546f}, {0.625f, 0.1219f}, {0.708f, -0.0975f}, {0.833f, 0.045f}, {0.958f, 0.0141f}},
-                   K_TITLE_OUT_Y[11][2] = {{0, 0}, {0.0833f, 0.0844f}, {0.125f, -0.1532f}, {0.2083f, 0.132f}, {0.2915f, -0.0795f}, {0.4583f, 0.0807f},
-                                           {0.5415f, -0.0546f}, {0.625f, 0.0469f}, {0.708f, -0.09f}, {0.833f, 0.045f}, {0.958f, 0.0141f}};
-static const FeClip IN_SLIDEX = {keys(K_SLIDEX), {}, {}, {}}, IN_SPEECH = {keys(K_SPEECH), keys(K_SPEECH), {}, {}}, IN_TOOLTIP = {{}, keys(K_TOOLTIP), {}, {}},
-                    IN_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_IN_X), keys(K_TITLE_IN_Y)}, OUT_SCALEY = {{}, keys(K_OUT_SCALEY), {}, {}},
-                    OUT_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_OUT_X), keys(K_TITLE_OUT_Y)};
+static const float K_SLIDEX[2][6] = {{0, 0, 0, 3.0723f, 0, 3.0723f}, {0.625f, 1, 1.0625f, 0, 1.0625f, 0}},
+                   K_SPEECH[4][6] = {{0, 0, 1, 0, 0, 0}, {0.125f, 0.79053f, 0.00041008f, 1.4258f, 0.00027919f, 0.97021f},
+                                     {0.45825f, 1, 0.28711f, -0.094971f, 0.031891f, 0.018967f}, {0.625f, 1, 0.17236f, -0.023331f, 0.17236f, -0.023331f}},
+                   K_TOOLTIP[2][6] = {{0, 0, 0, 3.0723f, 0, 3.0723f}, {1.041f, 1, 2.5723f, 0, 2.5723f, 0}},
+                   K_OUT_SCALEY[3][6] = {{0, 1, 2.1426f, -0.0098724f, 0.52344f, -0.00089788f}, {0.20825f, 0.26685f, 0.055634f, -1.0742f, 0.00016665f, 0},
+                                         {0.2085f, 0, 0.00016665f, -0.26685f, 0, 0}},
+                   K_TITLE_IN_X[2][6] = {{0, -290, 0, 833.5f, 0, 833.5f}, {1.041f, 0, 2.6621f, 0, 2.6621f, 0}},
+                   K_TITLE_OUT_X[2][6] = {{0, 0, 1.1309f, 0, 1.1309f, 0}, {0.5f, -454, 0, -557.5f, 0, -557.5f}},
+                   K_TITLE_IN_Y[12][6] = {{0, 0, 0, 0, 0.10101f, 0.99463f}, {0.083313f, 0.82031f, 0.10101f, 0.99463f, 0.019501f, -0.99951f},
+                                          {0.125f, -1.3145f, 0.019501f, -0.99951f, 0.030197f, 0.99951f}, {0.20825f, 1.4424f, 0.030197f, 0.99951f, 0.03595f, -0.99902f},
+                                          {0.25f, 0.2854f, 0.03595f, -0.99902f, 0.24915f, -0.96826f}, {0.375f, -0.20032f, 0.24915f, -0.96826f, 0.23474f, 0.97168f},
+                                          {0.45825f, 0.14453f, 0.23474f, 0.97168f, 0.38574f, -0.92236f}, {0.5415f, -0.054565f, 0.38574f, -0.92236f, 0.42676f, 0.9043f},
+                                          {0.625f, 0.12195f, 0.42676f, 0.9043f, 0.35474f, -0.93457f}, {0.70801f, -0.097473f, 0.35474f, -0.93457f, 0.65918f, 0.75146f},
+                                          {0.83301f, 0.044983f, 0.65918f, 0.75146f, 0.9707f, -0.23962f}, {0.95801f, 0.014137f, 0.9707f, -0.23962f, 0, 0}},
+                   K_TITLE_OUT_Y[11][6] = {{0, 0, 0, 0, 0.70215f, 0.71143f}, {0.083313f, 0.084412f, 0.70215f, 0.71143f, 0.17261f, -0.98486f},
+                                           {0.125f, -0.1532f, 0.17261f, -0.98486f, 0.28027f, 0.95947f}, {0.20825f, 0.13196f, 0.28027f, 0.95947f, 0.36646f, -0.93018f},
+                                           {0.2915f, -0.079468f, 0.36646f, -0.93018f, 0.7207f, 0.69287f}, {0.45825f, 0.08075f, 0.7207f, 0.69287f, 0.52393f, -0.85107f},
+                                           {0.5415f, -0.054565f, 0.52393f, -0.85107f, 0.63428f, 0.77246f}, {0.625f, 0.046906f, 0.63428f, 0.77246f, 0.51953f, -0.854f},
+                                           {0.70801f, -0.089966f, 0.51953f, -0.854f, 0.6792f, 0.7334f}, {0.83301f, 0.044983f, 0.6792f, 0.7334f, 0.9707f, -0.23962f},
+                                           {0.95801f, 0.014137f, 0.9707f, -0.23962f, 0, 0}};
+static const FeClip IN_SLIDEX = {keys(K_SLIDEX, true), {}, {}, {}}, IN_SPEECH = {keys(K_SPEECH, true), keys(K_SPEECH, true), {}, {}},
+                    IN_TOOLTIP = {{}, keys(K_TOOLTIP, true), {}, {}}, OUT_SCALEY = {{}, keys(K_OUT_SCALEY, true), {}, {}},
+                    IN_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_IN_X, true), keys(K_TITLE_IN_Y, false)},
+                    OUT_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_OUT_X, true), keys(K_TITLE_OUT_Y, false)};
 static const float FE_PX = 1280 / 960.0f;  // FE units span 960 x 540
 
 // A W4M menu item about its centre c: Anim_Incoming `in` once `delay` s passed since the screen showed (`since`), Anim_Outgoing
@@ -855,7 +909,7 @@ static bool feItem(Vector2 c, const FeClip *in, float delay, const FeClip *out, 
     if (in && since < delay) return false;  // W4M parks the item off-screen until its delay is up (0x755a78)
     const FeClip *k = leaving >= 0 ? out : in;
     float t = leaving >= 0 ? leaving : since - delay, sx = 1, sy = 1, tx = 0, ty = 0;
-    auto at = [&](Keys ch, float rest) { return ch.n ? clipKeys(ch.k, ch.n, t) : rest; };
+    auto at = [&](Keys ch, float rest) { return ch.n ? clipKeys(ch.k, ch.n, t, ch.weighted) : rest; };
     if (k) sx = at(k->sx, 1), sy = at(k->sy, 1), tx = at(k->tx, 0) * FE_PX, ty = -at(k->ty, 0) * FE_PX;
     else if (float a = rowAppear(since, leaving, row); a > 0) tx = (1 - a) * slide;
     else return false;
@@ -1561,6 +1615,7 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
         {"Bounce", &w.bounce, nullptr, 0, 1, 0.05f, "%.2f"}, {launch == 2 ? "Missiles" : "Clusters", nullptr, &w.clusters, 0, 10, 1, "%d"},
         {launch == 2 ? "Missile radius" : "Cluster radius", &w.cradius, nullptr, 0.5f, 5, 0.5f, "%.1f m"},
         {launch == 2 ? "Missile damage" : "Cluster damage", &w.cdamage, nullptr, 0, 60, 5, "%.0f"},
+        {"Cluster spread", &w.spread, nullptr, 0, 1, 0.1f, "%.1f"},
         {"Crate weight", nullptr, &w.weight, 0, 10, 1, "%d"}, {"Ammo", nullptr, &w.count, -1, 9, 1, "%d"},
     };
     const int N = 5 + (int)(sizeof nums / sizeof *nums);  // name, launch, model, icon, wind + numbers
@@ -1578,6 +1633,11 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
     default: {
         const Num &k = nums[facRow - 5];
         if (k.f == &w.fuse && launch != 1) break;  // only grenades have a fuse
+        if (k.f == &w.spread) {  // W4M AdjustFactoryList ClusterSpread (0x740fec -> 0x73447e): +-0.1 in 0..1, wrapping past 0.05 out
+            float v = w.spread + dx * 0.1f;
+            w.spread = v < -0.05f ? 1 : v > 1.05f ? 0 : Clamp(v, 0, 1);
+            break;
+        }
         if (k.f) *k.f = Clamp(roundf((*k.f + dx * k.step) / k.step) * k.step, k.lo, k.hi);
         else *k.i = (int)Clamp(*k.i + dx, k.lo, k.hi);
         if (k.i == &w.clusters && launch == 2) w.clusters = std::max(w.clusters, 1);
@@ -1945,6 +2005,20 @@ static std::vector<std::string> wrapBanner(const std::string &s) {
 }
 static uint32_t bannerTick = 0;
 static std::vector<uint8_t> announced;  // per worm death, per team wipe (replays re-emit events)
+// W4M SubtitleGraphicEntity (0x5f93b0, 0x5f9350): in subtitle mode (EFMV.Subtitles.On .. Off) the comments wrap at 600 units
+// (scale 20, the box's 300 / 18), each line its own entry shown alone for the full delay, white, no shadow, centred at (0, -210)
+struct Sub { std::string s; float life; int lose = 0; };
+static std::vector<Sub> subs;
+void (*onNarrator)(int n) = nullptr;
+static float subAge = 0;
+static bool subMode = false;
+static const float SUB_SIZE = 20 * BANNER_SIZE / 18, SUB_W = 600 * BANNER_SIZE / 18;
+static void syncSubs(const Game &g) {  // Subtitles.On kills the box and empties the queue (0x5e4cf7); Off ends the line and the queue
+    bool on = scriptMovie(g).subtitles;
+    if (on == subMode) return;
+    subMode = on, subs.clear(), subAge = 0;
+    if (on) banners.clear(), bannerAge = 0;
+}
 
 // Random W4M line "Comment.<cat>.<n>" with %s = name
 static void comment(const char *cat, const char *name) {
@@ -1960,14 +2034,37 @@ static void comment(const char *cat, const char *name) {
 void hudEvent(const Game &g, const GameEvent &e) {
     announced.resize(g.worms.size() + g.teams);
     bannerClock = g.clock;
-    bool defaults = scriptHud(g).defaults;  // Commentary.NoDefault: CommentService +0x138 gates every default comment
-    if (e.kind == GameEvent::Comment && e.fx) {  // 0x5e0680: one queue entry per line, 0 ms -> 1200; a box shows two lines for 2 x the delay (0x5dce30)
-        const char *t = tr(e.fx, nullptr);
-        std::string s = t && *t ? t : e.pos.x ? e.fx : std::string("** INVALID STRING ID: ") + e.fx;  // ScriptText keeps an unknown id as text
-        float d = (e.weapon ? e.weapon : 1200) / 1000.f;
-        std::vector<std::string> lines = wrapBanner(s);
-        for (size_t i = 0; i < lines.size(); i += 2) banners.push_back(i + 1 < lines.size() ? Banner{lines[i] + " " + lines[i + 1], 2 * d} : Banner{lines[i], d});
+    syncSubs(g);
+    // Commentary.NoDefault: CommentService +0x138 gates every default comment; subtitle mode drops them all (0x5e510f)
+    bool defaults = scriptHud(g).defaults && !subMode;
+    const Json *mv = e.kind == GameEvent::Movie ? scriptMovieEvent(g, e.fx, e.weapon) : nullptr;
+    // a movie's FailureComment (0x526962): Miss.Generic.Lose1..5 by the graphical rng, Delay = its Duration
+    std::string lose = mv && (*mv)[0].s() == "FailureComment" ? TextFormat("Miss.Generic.Lose%d", GetRandomValue(1, 5)) : "";
+    const char *id = e.kind == GameEvent::Comment ? e.fx : lose.empty() ? nullptr : lose.c_str();
+    int delay = e.kind == GameEvent::Comment ? e.weapon : mv ? (int)(*mv)[3].f() : 0;
+    if (id) {  // 0x5e0680: one queue entry per line, 0 ms -> 1200; a box shows two lines for 2 x the delay (0x5dce30)
+        const char *t = tr(id, nullptr);
+        std::string s = t && *t ? t : e.kind == GameEvent::Comment && e.pos.x ? id : std::string("** INVALID STRING ID: ") + id;  // ScriptText keeps an unknown id as text
+        float d = (delay ? delay : 1200) / 1000.f;
+        if (subMode) {
+            std::vector<std::string> lines(1);
+            for (size_t i = 0, j; i < s.size(); i = j + 1) {  // breaks at a space or '-' (0x5e0a43)
+                j = std::min(s.find_first_of(" -", i), s.size());
+                std::string word = s.substr(i, j - i + (j < s.size() && s[j] == '-')), line = lines.back().empty() ? word : lines.back() + " " + word;
+                if (textWidth(line.c_str(), SUB_SIZE) > SUB_W && !lines.back().empty()) lines.push_back(word);
+                else lines.back() = line;
+            }
+            int n = 0;
+            sscanf(id, "Miss.Generic.Lose%d", &n);  // CommentService +0x148 (atoi(id + 17)), played once with the next line shown
+            for (const std::string &l : lines) subs.push_back({l, d, n}), n = 0;
+        } else {
+            std::vector<std::string> lines = wrapBanner(s);
+            for (size_t i = 0; i < lines.size(); i += 2) banners.push_back(i + 1 < lines.size() ? Banner{lines[i] + " " + lines[i + 1], 2 * d} : Banner{lines[i], d});
+        }
+    } else if (e.kind == GameEvent::MovieEnd && subMode) {  // 0x5dff70: the movie's end empties the queue and hides the line
+        subs.clear(), subAge = 0;
     } else if (e.kind == GameEvent::CommentClear) {  // 0x5dfed0: the waiting comments go, the shown one stays
+        if (subs.size() > 1) subs.erase(subs.begin() + 1, subs.end());
         if (banners.size() > 1) banners.erase(banners.begin() + 1, banners.end());
     } else if (e.kind == GameEvent::Death && e.worm >= 0 && !announced[e.worm]) {
         const Worm &w = g.worms[e.worm];
@@ -1985,7 +2082,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
         bool util = utility(k);
         if (defaults) comment(g.objects.back().mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
         crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
-    } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15) {  // CommentaryPanel.Comment: the item's Text.k<name>
+    } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15 && !subMode) {  // CommentaryPanel.Comment: the item's Text.k<name>
         banners.push_back({mysteryText(e.weapon)});
     } else if (e.kind == GameEvent::Collect && e.worm >= 0 && defaults) {  // CommentaryPanel.CrateText
         const Worm &w = g.worms[e.worm];
@@ -1995,6 +2092,14 @@ void hudEvent(const Game &g, const GameEvent &e) {
             banners.push_back({TextFormat("%s : %s", who, weaponName(WEAPONS[e.weapon]))});
         }
     }
+}
+
+static void drawSubtitle(float dt) {
+    if (subs.empty()) return;
+    if (subs[0].lose > 0 && onNarrator) onNarrator(subs[0].lose);
+    subs[0].lose = 0;
+    if ((subAge += dt) > subs[0].life) { subs.erase(subs.begin()), subAge = 0; return; }
+    text(subs[0].s.c_str(), 640, 360 + 210 * 720 / 540.f - SUB_SIZE / 2, SUB_SIZE, WHITE, 1);
 }
 
 static void drawBanner(float dt) {
@@ -2124,7 +2229,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     bool turnStart = g.current != introWorm;
     if (turnStart) introWorm = g.current, introStart = tick;  // turn changed: (re)start the name-banner clock
     bool cinematic = trackHp(g, turnStart, tick);
-    bool ready = readyScreen(g, cinematic);  // local human's hot seat: W4M full-screen ready pause
+    bool ready = !scriptMovie(g).borders && readyScreen(g, cinematic);  // local human's hot seat: W4M full-screen ready pause (killed by the borders, 0x5ee275)
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
     Vector3 camUp = Vector3Normalize(Vector3CrossProduct(Vector3CrossProduct(fwd, cam.up), fwd));
     const Color TEXT3D_GREY = {200, 200, 200, 255};  // 0x5c4527, 0x563682
@@ -2148,7 +2253,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         if (Vector3DotProduct(Vector3Subtract(at, cam.position), fwd) >= 0.5f) text3dAt(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), at, 0.25f, TEXT3D_GREY, cam, fwd, camUp);
     }
     // W4M worm labels: name over hp, team colour, on a Text.Backing; hidden on the ready screen, with the weapon panel open or a UFO out (0x5fd4e0)
-    if (!ready && !open && !g.abducting()) for (const Worm &w : g.worms) {
+    if (!ready && !open && !g.efmvActive()) for (const Worm &w : g.worms) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
         if (!w.alive) continue;  // blown up, or drowned: W4M shows no label afloat
         float dist = Vector3DotProduct(Vector3Subtract(w.pos, cam.position), fwd);
@@ -2189,15 +2294,17 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             if (!sprite("wormlocarrow", {sp.x, sp.y - s * 2 - 18 + b}, 0.22f, {64, 120}, 0, c)) DrawTriangle({sp.x - 8, sp.y - s * 2 - 30 + b}, {sp.x, sp.y - s * 2 - 18 + b}, {sp.x + 8, sp.y - s * 2 - 30 + b}, c);
         }
     }
-    if (!quiet) drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f));
+    syncSubs(g);
+    if (!quiet) drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f)), drawSubtitle(fminf((tick - bannerTick) * Game::DT, 0.1f));
     bannerTick = tick;
+    if (scriptMovie(g).borders) return;  // EFMV.BordersActive: every HUD object leaves (BaseHudObject 0x5daf31) [ours: at once]
     if (g.phase == Phase::GameOver) {
         if (g.winner >= 0) text(TextFormat("%s WINS!", teamName(g.cfg, g.winner).c_str()), 640, 260, 70, TEAM_COLORS[g.winner % 4], 1);
         else text("DRAW!", 640, 260, 70, WHITE, 1);
         if (!g.cfg.mission && !quiet) hints({{"A", "Space", "Continue"}});  // missionEnd() has its own
         return;
     }
-    const WeaponDef &wd = WEAPONS[g.weapon];
+    const WeaponDef &wd = weaponDef(g.weapon);
     Color tc = TEAM_COLORS[cur.team % 4];
     bool aiming = g.phase == Phase::Aim;
     if (ready) {  // W4M ready screen: big worm + team name, "Ready?" + countdown, rest of the HUD hidden
@@ -2229,12 +2336,14 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     float dw = digits(TextFormat("%02d", speed), wc.x + 54, wc.y - 11, 22, 0, speed == 0);  // HUD.Wind.TextOffset / SpeedScale, x 1.84 px per unit
     digits("m", wc.x + 54 + dw, wc.y - 11 + 22 * 0.3f, 22 * 0.8f, 0, speed == 0);
     // current weapon (top right) + ammo
-    int ammo = g.ammo[cur.team][g.weapon];
     Vector2 wp = {1176, 92 - (300 - 174) * 1.5f * pipShow * (1 - pipFull)};  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
-    if (!sprite("secondback", wp, 0.5f, {128, 128})) DrawCircleV(wp, 44, {0, 119, 155, 230});
-    if (!image(iconOf(wd), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
-    digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
-    text(weaponName(wd), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
+    if (g.weapon >= 0) {  // W4M ActiveWormHudInfoEntity 0x5d7bb0: hidden for kWeaponUndefined
+        int ammo = g.ammo[cur.team][g.weapon];
+        if (!sprite("secondback", wp, 0.5f, {128, 128})) DrawCircleV(wp, 44, {0, 119, 155, 230});
+        if (!image(iconOf(wd), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
+        digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
+        text(weaponName(wd), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
+    }
     if (wd.userFuse) text(TextFormat("%s %ds", tr("FETXT.Fuse", "Fuse", "Mèche"), (int)g.fuseOf(wd)), wp.x - 54, wp.y + 16, 22, GOLDEN, 2);  // d-pad up/down
     if (g.secondary >= 0) {  // W4M SecondaryWeaponGraphicEntity 0x5f82f0: dynamite / landmine / sheep icon under the tool's
         const WeaponDef &sd = WEAPONS[g.secondary];
@@ -2247,7 +2356,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     // turn timer (bottom right): turn seconds, round clock below
     bool retreat = g.phase == Phase::Flying || g.phase == Phase::Retreat;  // W4M: the retreat clock runs from the launch
-    int left = aiming && g.hotSeat ? g.hotSeat : aiming ? g.timer : retreat ? std::min(g.timer, g.retreatTicks(WEAPONS[g.weapon])) : 0, secs = (left + 59) / 60;
+    int left = aiming && g.hotSeat ? g.hotSeat : aiming ? g.timer : retreat ? std::min(g.timer, g.retreatTicks(weaponDef(g.weapon))) : 0, secs = (left + 59) / 60;
     Vector2 tp = {1180, 612};
     bool urgent = (secs <= 5 && aiming && !g.hotSeat) || retreat;
     if (!sprite("timer_back", tp, 0.62f, {128, 128}, 0, urgent && tick / 15 % 2 ? Color{255, 120, 120, 255} : WHITE)) DrawCircleV(tp, 54, {0, 119, 155, 230});
@@ -2513,7 +2622,7 @@ static float paragraph(const std::string &s, float x, float y, float w, float si
 
 // WXFE.Story / WXFE.Challenges (docs/w4m/frontend.md §17): each item takes the clips of its W4M counterpart; ours-only items
 // (tabs, rows) and W4M's Out None use our menu rows' rowAppear() (user-requested). The list and the briefing are W4M's one page.
-static const float MISSION_OUT = 0.25f;  // Out_ScaleY is done at 0.21 s; Out_TitleUnderline has the header past the left edge
+static const float MISSION_OUT = 0.25f;  // Out_ScaleY is done at 0.19 s (x FE.AnimSpeed); then the header is cut mid Out_TitleUnderline
 
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p) {
     using S = Audio::Sfx;
@@ -2632,7 +2741,7 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
         }
         auto body = [&] {
             text(m.campaign.c_str(), 800, 400, 22, SKYBLUE);
-            paragraph(open ? goalText(m, m.objectives[0], nullptr) : "Complete the previous mission to unlock", 800, 430, 420, 26, open ? WHITE : GRAY, 2);
+            paragraph(!open ? std::string("Complete the previous mission to unlock") : m.objectives.empty() ? std::string() : goalText(m, m.objectives[0], nullptr), 800, 430, 420, 26, open ? WHITE : GRAY, 2);
             paragraph(m.brief, 800, 500, 420, 20, LIGHTGRAY, 7);
         };
         Vector2 c = {1010, 530};
@@ -2676,6 +2785,17 @@ int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best,
     if (P({A}, {KEY_ENTER, KEY_SPACE})) return won ? (hasNext ? 1 : 3) : 2;
     if (P({X}, {KEY_R})) return 2;
     return P({B}, {KEY_BACKSPACE, KEY_ESCAPE}) ? 3 : 0;
+}
+
+// MENUTWKX WXFE.EasterEggFound: a paper popup, WXFE.EasterEgg.Name over WXFE.EasterEgg.Coins (MissionService 0x72c567), Return
+bool eggFound(const char *nameId, int coins) {
+    DrawRectangle(0, 0, 1280, 720, {40, 40, 60, 160});  // FullScreenColour
+    popup({390, 220, 500, 280});
+    std::string name = tr(nameId, nameId);
+    wrapped(TextFormat(tr("FETXT.EasterEgg.Name.Template", "You found the %s Easter Egg!"), name.c_str()), 640, 270, 440, 30, GOLDEN);
+    text(TextFormat(tr("FETXT.EasterEgg.Coins.Template", "%u Coins awarded."), (unsigned)coins), 640, 380, 26, WHITE, 1);
+    hints({{"A", "Enter", "Return"}});
+    return P({A}, {KEY_ENTER, KEY_SPACE}) || P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
 }
 
 }  // namespace Ui

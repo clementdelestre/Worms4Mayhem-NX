@@ -75,12 +75,12 @@ C = client → server, S = server → client.
   64 Sudden death, 128 No delays (test: the preset's W4M weapon delays are ignored).
 - **Start scheme**: the `Scheme` struct of `sim.h` as raw bytes in field order (turn, retreat, hot seat time,
   round minutes, worm energy, crate %, weapon/health/utility crate shares, crate hp, mines, barrels, mine fuse,
-  sudden death type, fall damage, wind, weapon set, water speed, mystery crate share). Fields are only ever appended: a reader keeps defaults for
-  bytes it does not get (missing block = default scheme) and ignores extra ones. The block is preceded by its length (`u8 k`, 19 today).
+  sudden death type, fall damage, wind, weapon set, water speed, mystery crate share, mine factory on). Fields are only ever appended: a reader keeps defaults for
+  bytes it does not get (missing block = default scheme) and ignores extra ones. The block is preceded by its length (`u8 k`, 20 today).
   Weapon delays are not sent: every client derives them in `Game::start` from the preset whose bytes equal the scheme (`SCHEMES`), unless rule 128.
 - **Start wormpot / custom weapons** (optional, after the scheme block; absent = 0 / none): `wormpot` holds the three
-  reels: byte r = reel r's W4M mode id (`WormpotMode` of `sim.h`, 0 or 1 = empty). `Weapon` = `str name, u8 kind` (clamped to `Kind::ChangeWorm` on read), 8 × f32 (radius, damage, speed, fuse, bounce,
-  cluster radius, cluster damage, poison), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon`
+  reels: byte r = reel r's W4M mode id (`WormpotMode` of `sim.h`, 0 or 1 = empty). `Weapon` = `str name, u8 kind` (clamped to `Kind::ChangeWorm` on read), 9 × f32 (radius, damage, speed, fuse, bounce,
+  cluster radius, cluster damage, poison, cluster spread), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon`
   (f32 = IEEE-754 bits as u32). These are the host's Weapon Factory weapons: every client appends them to its
   `weapons.json` table at start, so the table (part of the checksum) is the same everywhere. Fields not on the wire
   (`post_launch`, `retreat`, blast keys, `user_fuse`...) are reset by `Game::start` on every peer: PostLaunchDelay 500 ms (homing 0),

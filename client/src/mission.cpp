@@ -187,7 +187,7 @@ static bool teamDead(const Game &g, int t) {
 void missionStep(Game &g) {
     const MissionSpec &m = *g.cfg.mission;
     MissionRun &r = g.run;
-    r.ticks++;
+    if (g.phase != Phase::GameOver) r.ticks++;  // not under the game-over movie
     if (g.script) return scriptStep(g);
     if (m.endless && g.phase == Phase::Aim) g.timer = std::max(g.timer, 99 * 60);
     bool hurt = false, collect = false;
@@ -299,13 +299,14 @@ bool Progress::unlocked(const std::vector<MissionSpec> &list, size_t i) const {
 }
 
 void Progress::load(const char *path) {
-    entries.clear();
+    entries.clear(), unlocks.clear();
     char *txt = LoadFileText(path);
     if (!txt) return;
     for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
         char id[128];
         int done = 0, best = 0;
         if (sscanf(line, "%127s %d %d", id, &done, &best) == 3) entries.push_back({id, {done != 0, best}});
+        else if (sscanf(line, "unlock %127s", id) == 1) unlocks.push_back(id);
     }
     UnloadFileText(txt);
 }
@@ -313,5 +314,6 @@ void Progress::load(const char *path) {
 void Progress::save(const char *path) const {
     std::string s;
     for (const auto &e : entries) s += TextFormat("%s %d %d\n", e.first.c_str(), e.second.done, e.second.best);
+    for (const std::string &u : unlocks) s += "unlock " + u + "\n";
     SaveFileText(path, s.data());
 }

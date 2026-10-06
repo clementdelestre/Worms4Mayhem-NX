@@ -5,6 +5,7 @@
 #include "ai.h"
 #include "audio.h"
 #include "controls.h"
+#include "efmv.h"
 #include "frontbg.h"
 #include "fx.h"
 #include "lanhost.h"
@@ -123,7 +124,7 @@ static Input scriptInput(int frame, int weapon, bool fire) {
 static void animEvent(const Game &g, const GameEvent &e);
 
 // W4M GameOverLogicEntity +0x2c == 2 (0x4fd5c5: Win, Mission / Challenge / Tutorial Success): victory music, crowd and fireworks; not on a draw or a failure
-static bool won(const Game &g) { return g.cfg.mission ? g.run.result > 0 : g.winner >= 0; }
+static bool won(const Game &g) { return g.cfg.mission ? g.run.result > 0 && scriptOutro(g) < 0 : g.winner >= 0; }  // an EFMV.GameOverMovie replaces it (0x4fd27a)
 static bool gunBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun; }  // EmitterSoundFX weapons/ShotgunFire of WXP_ShotgunBlastHit, no bang
 static bool donkeyBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0; }  // its DetonationFx and sound, not a bang
 static const char *objectModel(const Object &o) {
@@ -170,10 +171,12 @@ static void floodFx(const Game &g, float stop) {  // FloodLogicEntity 0x555720: 
 static void onEvent(const Game &g, const GameEvent &e) {
     animEvent(g, e);
     Acting::event(g, e);
+    if (e.kind >= GameEvent::Movie) Acting::movie(g, e);
     Ui::hudEvent(g, e);
     using Audio::Sfx;
     using Audio::Voice;
     int team = e.worm >= 0 ? g.worms[e.worm].team : 0;
+    auto say = [&](Voice v) { e.worm >= 0 ? Acting::speak(g, e.worm, v) : (void)Audio::voice(team, v, e.pos); };
     if (e.kind == GameEvent::GameOver && won(g)) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
     Fx::event(e, g.terrain.side);
     switch (e.kind) {
@@ -199,7 +202,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
         if (k != Kind::Airstrike && k != Kind::Abduction && k != Kind::Jetpack && k != Kind::Flood) Audio::play(s, e.pos);  // chopper / UFO: drawBomber, drawUfo; jetpack: its loop (jetAudio); Flood: its rain's
         if (k == Kind::Flood) floodFx(g, 1 + 4.7f);  // FloodWeaponLogicEntity 0x555c90: StopRain with DoFlood, RainDuration 4700 ms after the start
         bool tool = utility(k) || k == Kind::SkipGo;
-        if (e.worm >= 0 && !tool) Audio::voice(team, WEAPONS[e.weapon].name == "Fire Punch" ? Voice::Punch : Voice::Fire, e.pos);  // worm -1: sentry gun; MeleeWeaponLogicEntity 0x568270: kMeleeFirepunch says Punch
+        if (e.worm >= 0 && !tool) Acting::speak(g, e.worm, WEAPONS[e.weapon].name == "Fire Punch" ? Voice::Punch : Voice::Fire);  // worm -1: sentry gun; MeleeWeaponLogicEntity 0x568270: kMeleeFirepunch says Punch
         break;
     }
     case GameEvent::Bounce: {  // Payload.Bounce: WEAPTWK BounceFx / BounceSfx (none for the others)
@@ -222,10 +225,10 @@ static void onEvent(const Game &g, const GameEvent &e) {
         if (WEAPONS[e.weapon].fuse <= 0) Fx::ariel(e.pos);
         break;
     case GameEvent::Splash: Audio::play(Sfx::Splash, e.pos); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking
-    case GameEvent::Death: Audio::voice(team, Voice::Death, e.pos); break;
-    case GameEvent::Hurt: Audio::voice(team, Voice::Hurt, e.pos); break;
-    case GameEvent::Jump: Audio::play(Sfx::Jump, e.pos); Audio::voice(team, Voice::Jump, e.pos); break;
-    case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); Audio::voice(team, Voice::Idle, e.pos); break;
+    case GameEvent::Death: say(Voice::Death); break;  // worm speech goes through its WormPoseManager: lip sync (0x59cb20)
+    case GameEvent::Hurt: say(Voice::Hurt); break;
+    case GameEvent::Jump: Audio::play(Sfx::Jump, e.pos); say(Voice::Jump); break;
+    case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); say(Voice::Idle); break;
     case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, e.pos); break;
     case GameEvent::CrateLand:
         Audio::play(e.weapon == -1 ? Sfx::CrateImpactHealth : e.weapon >= 0 && utility(WEAPONS[e.weapon].kind) ? Sfx::CrateImpactUtil : Sfx::CrateImpactWeapon, e.pos);  // mystery (-2): Weapon (0x5ca143)
@@ -250,8 +253,13 @@ static void onEvent(const Game &g, const GameEvent &e) {
     case GameEvent::BubblePop: break;  // Fx::event; WXP_BubbleMachineExpire has no EmitterSoundFX
     case GameEvent::GameOver:
         if (won(g)) Audio::music(true, "victory");  // the crowd (cheer/cheer) loops below while the match is over
-        if (g.winner >= 0) Audio::voice(g.winner, Voice::Victory);
+        if (g.winner >= 0 && scriptOutro(g) < 0) Audio::voice(g.winner, Voice::Victory);
         break;
+    case GameEvent::Movie: case GameEvent::Speech: break;  // TriggerSpeech: Acting::movie, the cast worm's line and lips
+    case GameEvent::MovieSound: Audio::efmvSfx(e.fx, e.worm != 0, e.pos); break;
+    case GameEvent::MovieStart: Audio::movie(true); break;
+    case GameEvent::MovieEnd: Audio::movie(false); break;
+    default: break;
     }
 }
 
@@ -481,7 +489,7 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         WormAnim &a = wormAnims[i];
         const char *pc;
         bool drawn = (int)i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && g.worms[i].alive && !a.moving && a.air == 0 &&
-                     heldModel(WEAPONS[g.weapon], &pc);
+                     heldModel(weaponDef(g.weapon), &pc);
         if (drawn && (!a.drawn || a.drawW != g.weapon)) a.drawT = 0, a.drawW = g.weapon, a.wind = 0;
         else a.drawT += dt;
         a.drawn = drawn, a.charging = drawn && g.power > 0;
@@ -576,8 +584,8 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     float aimT = aimAt;
     Models::Layers wl;  // WAE layers over the body clip, on top of ly's
     auto aimPose = [&] {  // the weapon in hand: Draw, Windup or Hold, with the Aim clip added
-        const char *ac = nullptr, *wc = windupClip(WEAPONS[g.weapon]), *dc = drawClip(WEAPONS[g.weapon]);
-        if (!(held = heldModel(WEAPONS[g.weapon], &clip, &ac))) return false;
+        const char *ac = nullptr, *wc = windupClip(weaponDef(g.weapon)), *dc = drawClip(weaponDef(g.weapon));
+        if (!(held = heldModel(weaponDef(g.weapon), &clip, &ac))) return false;
         float dl = Models::clipLength("worm", dc);
         t = fmaxf(a.drawT - dl, 0), loop = true, aim = ac;  // state 1: Hold loops on its own clock, run from the Draw's end (0x58f8a3)
         if (fp || !ly) return true;
@@ -1137,6 +1145,7 @@ int main(int argc, char **argv) {
     Models::upload(0);  // compiles the model shader
     bt[1] = GetTime();
     std::vector<std::string> maps = {""};  // "" = procedural island
+    Ui::onNarrator = Audio::narrator;  // SubtitleGraphicEntity's failure narration (0x5f90a0)
     std::thread sounds([&] {
         Audio::init();
         for (const char *dir : {ROMFS_DIR "maps", DATA_DIR "assets/maps"}) {  // assets/ = maps imported from the user's W4M install
@@ -1179,6 +1188,8 @@ int main(int argc, char **argv) {
         ly.face = strcmp(face, "-") ? face : nullptr;
         static char act[64] = "";  // W4NX_ACT="<gesture> <weight>": that acting gesture over the clip, same time
         if (getenv("W4NX_ACT") && sscanf(getenv("W4NX_ACT"), "%63s %f", act, &ly.actW[0]) == 2) ly.act[0] = act, layered = true;
+        static char lip[16] = "";  // W4NX_LIP="<viseme clip> <weight> <open>": lip sync over every pose
+        if (getenv("W4NX_LIP") && sscanf(getenv("W4NX_LIP"), "%15s %f %f", lip, &ly.lipW[0], &ly.open) == 3) ly.lip[0] = lip, layered = true;
         BeginDrawing();
         ClearBackground(SKYBLUE);
         Lit::frame(c.position);
@@ -1375,6 +1386,7 @@ int main(int argc, char **argv) {
         if (was && !flying()) shotDone = true, shotTick = tick;
         for (const GameEvent &e : game.events) {
             onEvent(game, e);
+            Efmv::event(game, e, clock);
             feel(e);
             if (e.kind == GameEvent::Fire && e.worm >= 0) fireTick = tick;
             if (REPLAYS && e.kind == GameEvent::TurnStart && !online && !playing) snap.take(game, tick);
@@ -1435,7 +1447,7 @@ int main(int argc, char **argv) {
         loader = std::thread([&] {
             Loading::pinCore(1), game.start(loadCfg), game.terrain.decodeTextures();
             if (std::string f = Fx::skyFile(game.terrain.theme, game.terrain.time); FileExists(f.c_str())) Models::decode(f.c_str());
-            Audio::preloadVoices(game.teams), loaderDone = true;
+            Audio::preloadVoices(game.teams), Audio::efmvLevel(loadCfg.mission ? loadCfg.mission->bank.c_str() : nullptr), loaderDone = true;
         });
         tick = 0;
         acc = 0;
@@ -1488,13 +1500,13 @@ int main(int argc, char **argv) {
     Progress progress;
     Ui::MissionMenu missionMenu;
     int missionIdx = -1, missionAct = 0;
-    bool missionSaved = false;
+    bool missionSaved = false, eggShown = false;
     auto openMissions = [&] {
-        if (missions.empty()) missions = listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt");
+        if (missions.empty()) missions = listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt"), scriptUnlocks = progress.unlocks;
         screen = Screen::Missions;
     };
     auto startMission = [&](int i) {
-        missionIdx = i, missionSaved = false, online = false;
+        missionIdx = i, missionSaved = eggShown = false, online = false;
         startMatch(missionConfig(missions[i], (uint32_t)(GetTime() * 1000)));
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu
@@ -1517,11 +1529,19 @@ int main(int argc, char **argv) {
         if (REPLAYS && (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback"))) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
         if (REPLAYS && !strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
         // missions | briefing | missionhud | missionend [mission id]
-        if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "briefing")) openMissions(), missionMenu.brief = !strcmp(uiShot, "briefing"), missionMenu.shown = -100;
-        for (size_t i = 0; i < missions.size() && (!strcmp(uiShot, "missionhud") || !strcmp(uiShot, "missionend")); i++)
+        if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "briefing") || !strcmp(uiShot, "movie")) openMissions(), missionMenu.brief = !strcmp(uiShot, "briefing"), missionMenu.shown = -100;
+        // movie <mission id> <Lua function>: that mission, its intro skipped, then the script function (PlayMidtroMovie, PlayOutroMovie)
+        bool movieShot = !strcmp(uiShot, "movie");
+        for (size_t i = 0; i < missions.size() && (!strcmp(uiShot, "missionhud") || !strcmp(uiShot, "missionend") || movieShot); i++)
             if (argc > 3 ? missions[i].id == argv[3] : i == 0) {
                 startMission((int)i);
                 if (!strcmp(uiShot, "missionend")) game.run.result = 1, game.run.ticks = 5000, game.phase = Phase::GameOver;
+                if (movieShot && argc > 4) {
+                    while (loadStep >= 0) prepStep(true);
+                    Input skip;
+                    skip.flags = Input::SKIP_MOVIE;
+                    game.step(skip), scriptEvent(game, argv[4]);
+                }
                 break;
             }
     }
@@ -1830,10 +1850,10 @@ int main(int argc, char **argv) {
         Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, shotBench ? 0 : shotWeapon, !aimShot && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
         if (aimSeq && frame > 40 && frame < 80) in.aim = 127;
         if (utilShot && game.girderOn && frame < 38) in.buttons |= Input::TARGET | (frame % 2 ? Input::PITCH : 0), in.walk = 127, in.aim = frame % 2 ? 127 : 0;
-        if (utilShot && WEAPONS[game.weapon].kind == Kind::Icarus && frame > 100)  // jump, then flap on each window
+        if (utilShot && weaponDef(game.weapon).kind == Kind::Icarus && frame > 100)  // jump, then flap on each window
             in = Input{}, in.walk = 60, in.buttons = (game.icarus == 1 && frame % 30 == 0) || (game.icarus == 2 && game.clock >= game.flapAt && !(prevShotJump & Input::JUMP)) ? Input::JUMP : 0;
         prevShotJump = in.buttons;
-        if (utilShot && (WEAPONS[game.weapon].kind == Kind::Abduction || WEAPONS[game.weapon].kind == Kind::Binoculars)) {  // face the first enemy, FIRE once
+        if (utilShot && (weaponDef(game.weapon).kind == Kind::Abduction || weaponDef(game.weapon).kind == Kind::Binoculars)) {  // face the first enemy, FIRE once
             in = Input{}, in.buttons = frame == 40 || frame == 52 ? Input::FIRE : 0;  // the first press may only end the hot seat
             for (const Worm &e : game.worms)
                 if (frame == 2 && e.alive && e.team != cur.team) {
@@ -1842,7 +1862,7 @@ int main(int argc, char **argv) {
                     break;
                 }
         }
-        if (utilShot && WEAPONS[game.weapon].kind == Kind::Homing && frame >= 60) {  // target view, lock on, then launch
+        if (utilShot && weaponDef(game.weapon).kind == Kind::Homing && frame >= 60) {  // target view, lock on, then launch
             in = Input{};
             if (Controls::targetView(game)) in.buttons = Input::TARGET | (frame == 61 ? Input::FIRE : 0);
             else if (game.locked) in.buttons = frame % 2 ? Input::FIRE : 0;
@@ -1874,9 +1894,11 @@ int main(int argc, char **argv) {
         } else if (!online) {
             // user-requested (2026-10-03): any local key press skips a CPU's hot seat ("Ready")
             bool skipReady = !shot && game.hotSeat > 0 && cpu(game.worms[game.current].team) && (GetGamepadButtonPressed() || GetKeyPressed());
+            bool skipMovie = !shot && !pause.open && scriptMovieOn(game) && Controls::quitMovie();
             for (acc += pause.open ? 0 : dt; acc >= Game::DT; acc -= Game::DT) {
                 Input in = !shot && cpu(game.worms[game.current].team) ? ai.think(game) : local();
                 if (skipReady) in.flags |= Input::CAMERA, skipReady = false;  // any flag ends the hot seat (Game::step)
+                if (skipMovie) in.flags |= Input::SKIP_MOVIE, skipMovie = false;
                 stepOnce(in);
             }
         } else {
@@ -1932,7 +1954,7 @@ int main(int argc, char **argv) {
         lap(T_REMESH);
         // W4M HudClockEntity 0x5efe80 on the displayed seconds (rounded up): ClockFast loops at 5 and under (0x5efd80), ClockSlow from 15
         // at volume min(1, (15 - s) 0.11) (0x5efc40, Event property 1); both stop at 0, past 15 and during EFMV.Active
-        int sec = game.phase == Phase::Aim && !game.hotSeat && cur.alive && !game.abducting() && game.timer > 0 ? (game.timer + 59) / 60 : 0;
+        int sec = game.phase == Phase::Aim && !game.hotSeat && cur.alive && !game.efmvActive() && game.timer > 0 ? (game.timer + 59) / 60 : 0;
         Audio::loop(Audio::Sfx::Tick, sec > 0 && sec <= 5 && !pause.open);
         Audio::loop(Audio::Sfx::TickSlow, sec > 5 && sec <= 15 && !pause.open, nullptr, fminf(1, (15 - sec) * 0.11f));
         if (sec > 0 && sec <= 5 && sec != lastSec) Controls::rumble(livePad, 0.12f, 0.05f);
@@ -1946,7 +1968,7 @@ int main(int argc, char **argv) {
         }
 
         // camera (controls.cpp): free orbit, first person in aim mode, chasing the projectile, sniper scope
-        const WeaponDef &wd = WEAPONS[game.weapon];
+        const WeaponDef &wd = weaponDef(game.weapon);
         // W4M FEV loops: FuseLoop until the stick blows, MineArmLoop while a mine ticks, HolyGrenadeHeld in hand, the crowd at the end
         const Vector3 *stick = nullptr, *mine = nullptr;
         for (const Projectile &s : game.shots) if (WEAPONS[s.weapon].name == "Dynamite") stick = &s.pos;
@@ -1964,7 +1986,7 @@ int main(int argc, char **argv) {
         Audio::loop(Audio::Sfx::HolyHeld, onMatch && game.phase == Phase::Aim && cur.alive && wd.name == "Holy Hand Grenade" && !pause.open, &cur.pos);
         Audio::loop(Audio::Sfx::Cheer, onMatch && game.phase == Phase::GameOver && won(game));
         // W4M PowerbarMeterEntity 0x5f5c70: PoweringUpStart plays the type's sound on the worm, cut at the launch (0x1a = kWeaponPoisonArrow, table 0x90c920)
-        const WeaponDef &sw = WEAPONS[game.weapon];
+        const WeaponDef &sw = weaponDef(game.weapon);
         bool charging = onMatch && game.phase == Phase::Aim && cur.alive && game.power > 0 && powered(sw.kind) && !pause.open;
         Audio::hold(Audio::Sfx::PowerRocket, charging && sw.kind == Kind::Shell && sw.name != "Poison Arrow", &cur.pos);
         Audio::hold(Audio::Sfx::PowerHoming, charging && sw.kind == Kind::Homing, &cur.pos);
@@ -1972,7 +1994,7 @@ int main(int argc, char **argv) {
         static int equipW = -1, equipWorm = -1;
         static double equipAt[256];
         bool aiming = onMatch && game.phase == Phase::Aim && cur.alive, hand = aiming && !pause.open;
-        if (aiming && (game.weapon != equipW || game.current != equipWorm) && (unsigned)game.current < 256 && GetTime() > equipAt[game.current] + 9)
+        if (aiming && game.weapon >= 0 && (game.weapon != equipW || game.current != equipWorm) && (unsigned)game.current < 256 && GetTime() > equipAt[game.current] + 9)
             Audio::equip(customWeapon(game.weapon) ? "Bazooka" : wd.name.c_str(), cur.pos), equipAt[game.current] = GetTime();
         equipW = aiming ? game.weapon : -1, equipWorm = aiming ? game.current : -1;
         // WAE_* Input.TauntPressed (DIK 20, no joypad), state 1 -> 2: the Acting taunt scene plus the WXAnimTaunt clip until it ends.
@@ -2001,6 +2023,7 @@ int main(int argc, char **argv) {
         Controls::camera(cam, game, chase, scope, !pause.open && !hud.open && !(playing && freeCam), dt);
         updateBomber(game, pause.open ? 0 : dt);
         updateUfo(game, pause.open ? 0 : dt);
+        if (Camera3D sc = cam; !(playing && freeCam) && Efmv::camera(game, sc)) cam = sc;  // a level movie's PathCam / TimedPathCam
         if (Camera3D sc = cam; !(playing && freeCam) && (bomberCam(&sc) || ufoCam(&sc))) cam = sc;  // W4M scene cam outranks every logical camera
         Audio::listen(cam);
         bool inside = Vector3Distance(cam.position, cur.pos) < 1.2f;  // the aim camera has flown into the worm
@@ -2209,6 +2232,7 @@ int main(int argc, char **argv) {
             Ui::targetCursor(wd, !hit ? 2 : game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr);
         } else if (ret == Controls::Reticle::Lock && locked) Ui::targetCursor(wd, -1, &lockAt);
         if (pipOn) Ui::pipInset(pipRt, pipShow, pipFull);
+        Efmv::borders(game);
         hud.pipShow = pipOn ? pipShow : 0, hud.pipFull = pipFull;
         hud.quiet = pause.open || playing || irEnd >= 0;  // those draw their own hints
         hud.draw(game, view, tick);
@@ -2220,15 +2244,23 @@ int main(int argc, char **argv) {
             overClock += dt;
             if (overClock > 4.02f && orbitCut < 0 && (GetKeyPressed() || GetGamepadButtonPressed())) orbitCut = overClock;
         }
-        bool overDone = !game.script || scriptOutro(game) || overClock > (orbitCut >= 0 ? orbitCut : 4.02f + 5.02f) + 1.02f;
+        int outro = scriptOutro(game);
+        bool overDone = !game.script || outro == 1 || (outro < 0 && overClock > (orbitCut >= 0 ? orbitCut : 4.02f + 5.02f) + 1.02f);
         if (const MissionSpec *ms = game.cfg.mission; ms && game.phase != Phase::GameOver) {
             if (ms->script.empty()) Ui::missionHud(game, *ms);  // W4M shows no objective box
         } else if (ms && !pause.open && missionIdx >= 0 && overDone) {
-            if (!missionSaved && !uiShot) progress.record(ms->id, game.run.result > 0, game.run.ticks), progress.save(DATA_DIR "progress.txt");
+            ScriptEgg egg = scriptEgg(game);
+            if (!missionSaved && !uiShot) {
+                progress.record(ms->id, game.run.result > 0, game.run.ticks);
+                if (!egg.item.empty() && std::find(progress.unlocks.begin(), progress.unlocks.end(), egg.item) == progress.unlocks.end())
+                    progress.unlocks.push_back(egg.item), scriptUnlocks = progress.unlocks;
+                progress.save(DATA_DIR "progress.txt");
+            }
             missionSaved = true;
             int next = missionIdx + 1;
             bool more = next < (int)missions.size() && missions[next].kind == ms->kind && missions[next].campaign == ms->campaign && progress.unlocked(missions, next);
-            missionAct = Ui::missionEnd(game, *ms, progress.get(ms->id), more);
+            if (!egg.item.empty() && !eggShown) eggShown = Ui::eggFound(egg.name.c_str(), egg.coins);  // GameOver.EasterEgg: WXFE.EasterEggFound over the next menu
+            else missionAct = Ui::missionEnd(game, *ms, progress.get(ms->id), more);
         }
         pause.draw(online);
         if (playing) {

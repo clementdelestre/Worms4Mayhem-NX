@@ -80,13 +80,14 @@ struct Poxel {
     l1: Vec<[f32; 2]>, l2: Vec<[f32; 2]>,
     size: [usize; 3], hm: Vec<f32>, visible: bool, vox: Vec<u32>, kids: Vec<usize>, dets: Vec<usize>,
     tex: [f32; 2], // floor X / wall Y texture vector lengths (texture repeats per local unit)
+    name: usize, code: Option<[u8; 4]>,
 }
 
 fn parse_poxel(d: &[u8]) -> Poxel {
     let mut p = 3;
-    vi(d, &mut p); // name
+    let name = vi(d, &mut p);
     let f = |i: usize| f32le(d, p + 4 * i);
-    let mut x = Poxel { pos: [f(0), f(1), f(2)], rot: [f(3), f(4), f(5)], scale: [f(6), f(7), f(8)], ..Default::default() };
+    let mut x = Poxel { pos: [f(0), f(1), f(2)], rot: [f(3), f(4), f(5)], scale: [f(6), f(7), f(8)], name, ..Default::default() };
     p += 36;
     if d.get(p + 0x4c).copied().unwrap_or(0) == 0 {
         // frame without voxels (root / groups): only the child list follows
@@ -146,7 +147,7 @@ fn local(x: &Poxel, scaled: bool) -> M4 {
 }
 
 // Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index.
-struct Cell { c: [[f32; 3]; 8], mat: u8, tex: [f32; 2] }
+struct Cell { c: [[f32; 3]; 8], mat: u8, tex: [f32; 2], code: u16 }
 
 // Detail entity reference with its poxel's world matrices (with / without the poxel's own scale).
 struct DetRef { ctn: usize, w: M4, wn: M4 }
@@ -195,9 +196,12 @@ fn second_pass(blocks: &mut Vec<[f32; 4]>) {
     }
 }
 
-fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &mut Vec<Cell>, dets: &mut Vec<DetRef>, blocks: &mut Vec<[f32; 4]>, depth: u32) {
+// code: 1 + index in `codes` of the coded frame above (W4M 0x46e1d0: a frame named "...CODE?xxxx" and its whole subtree), 0 none
+fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &mut Vec<Cell>, dets: &mut Vec<DetRef>, blocks: &mut Vec<[f32; 4]>, depth: u32,
+           code: u16, codes: &mut Vec<[u8; 4]>) {
     let Some(x) = px.get(&k) else { return };
     if depth > 64 { return; }
+    let code = match x.code { Some(c) if code == 0 => { codes.push(c); codes.len() as u16 } _ => code };
     let (w, wn) = if root { (*parent, *parent) } else { (mul(parent, &local(x, true)), mul(parent, &local(x, false))) };
     let [sx, sy, sz] = x.size;
     if !x.vox.is_empty() { add_block(blocks, frame_box(x, &w)); }
@@ -218,13 +222,13 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
                     if v & 3 == 0 { continue; }
                     let mut c = [[0.0; 3]; 8];
                     for n in 0..8 { c[n] = corner(xx + (n & 1), y + ((n >> 1) & 1), z + (n >> 2)); }
-                    out.push(Cell { c, mat: ((v >> 2) & 63) as u8, tex: x.tex });
+                    out.push(Cell { c, mat: ((v >> 2) & 63) as u8, tex: x.tex, code });
                 }
             }
         }
     }
     dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w, wn }));
-    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1); }
+    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1, code, codes); }
 }
 
 // Case-insensitive path lookup (game data uses Windows paths).
@@ -391,8 +395,12 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let maps = data.join("Maps");
     let xb = fs::read(maps.join(format!("{stem}.xan"))).map_err(|e| e.to_string())?;
     let xom = read_xom(&xb).ok_or("bad xom")?;
-    let px: HashMap<usize, Poxel> = xom.ctn.iter().enumerate()
+    let mut px: HashMap<usize, Poxel> = xom.ctn.iter().enumerate()
         .filter(|(_, (t, _))| t == "LandFrameStore").map(|(i, (_, d))| (i + 1, parse_poxel(d))).collect();
+    // W4M 0x46e1d0: the code is the 4 bytes 5 past "CODE" in the frame name ("CODE:JEFF", "CODE AAAA")
+    for x in px.values_mut() {
+        x.code = xom.s.get(x.name).and_then(|n| n.find("CODE").and_then(|i| n.as_bytes().get(i + 5..i + 9))).map(|b| [b[0], b[1], b[2], b[3]]);
+    }
     let (mut cells, mut dets, mut blocks) = (Vec::new(), Vec::new(), Vec::new());
 
     // level databank: material file, theme, heightmap textures (value string precedes its key)
@@ -435,7 +443,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         } } }
         if c1 >= 0 { add_block(&mut blocks, [c0 as f32 * 1.6 - HMP_EXTENT, r0 as f32 * 1.6 - HMP_EXTENT, c1 as f32 * 1.6 - HMP_EXTENT, r1 as f32 * 1.6 - HMP_EXTENT]); }
     }
-    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, &mut blocks, 0);
+    let mut codes = Vec::new();
+    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, &mut blocks, 0, 0, &mut codes);
     second_pass(&mut blocks);
     // W4M world bounds of everything solid above the water (the seabed may be cropped)
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
@@ -482,8 +491,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     };
 
     // poxel cells in grid units, bucketed (8 voxels) for point-in-solid queries
-    let hexes: Vec<Hex> = cells.iter().map(|c| Hex::new(c.c.map(to_grid), c.mat + 1))
-        .filter(|h| h.hi[0] >= 0.0 && h.hi[1] >= 0.0 && h.hi[2] >= 0.0 && h.lo[0] < NX as f32 && h.lo[1] < NY as f32 && h.lo[2] < NZ as f32).collect();
+    let (hexes, hex_code): (Vec<Hex>, Vec<u16>) = cells.iter().map(|c| (Hex::new(c.c.map(to_grid), c.mat + 1), c.code))
+        .filter(|(h, _)| h.hi[0] >= 0.0 && h.hi[1] >= 0.0 && h.hi[2] >= 0.0 && h.lo[0] < NX as f32 && h.lo[1] < NY as f32 && h.lo[2] < NZ as f32).unzip();
     const B: usize = 8;
     let (bx, by, bz) = (NX / B, NY / B, NZ / B);
     let bidx = |p: V3| -> Option<usize> {
@@ -498,21 +507,29 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         } } }
     }
     let solid_at = |p: V3, skip: usize| below_hm(p) || bidx(p).map_or(false, |b| buckets[b].iter().any(|&i| i as usize != skip && hexes[i as usize].inside(p)));
+    // Land.ClearCoded 0x475170 empties a coded frame's voxels: per code, the grid points only its cells hold
+    let other = |p: V3, code: u16| below_hm(p) || bidx(p).map_or(false, |b| buckets[b].iter().any(|&i| hex_code[i as usize] != code && hexes[i as usize].inside(p)));
+    let mut coded: Vec<Vec<usize>> = vec![Vec::new(); codes.len()];
 
     // occupancy at grid points; a cell missing every grid point (thin plank, cone tip) still claims its nearest one
     // cells holding at most 2 grid points (ropes, twigs) also go to <stem>.thin: their exact hexahedron, drawn while its first voxel stands
     let mut thin = b"W4T1".to_vec();
     let mut nthin = 0u32;
     thin.extend(0u32.to_le_bytes());
-    for h in &hexes {
+    for (hi, h) in hexes.iter().enumerate() {
         let (mut n, mut first) = (0, None);
+        let code = hex_code[hi];
         for (x, y, z) in points(h.lo, h.hi) {
-            if h.inside([x as f32, y as f32, z as f32]) { grid[gi(x, y, z)] = h.mat; n += 1; first.get_or_insert([x, y, z]); }
+            if h.inside([x as f32, y as f32, z as f32]) {
+                grid[gi(x, y, z)] = h.mat; n += 1; first.get_or_insert([x, y, z]);
+                if code > 0 && !other([x as f32, y as f32, z as f32], code) { coded[code as usize - 1].push(gi(x, y, z)); }
+            }
         }
         let cen = h.c.iter().fold([0.0; 3], |s, p| madd(s, *p, 0.125)).map(|v| v.round());
         if n == 0 && cen.iter().zip([NX, NY, NZ]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
             grid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)] = h.mat;
             first = Some(cen.map(|v| v as usize));
+            if code > 0 && !other(cen, code) { coded[code as usize - 1].push(gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)); }
         }
         if let Some(a) = first.filter(|_| n <= 2) {
             nthin += 1;
@@ -632,7 +649,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         texs.push(format!("[{},{},{:.2},{:.2},{},{}]", f[0], f[1], r[0], r[1], f[2], f[3]));
     }
     // detail objects: "visible" entities whose library names a theme detail mesh (PREHISTORIC18...)
-    let (mut objs, mut marks, mut emits) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut objs, mut marks, mut emits, mut lights) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for r in &dets {
         let Some((_, d)) = xom.ctn.get(r.ctn.wrapping_sub(1)).filter(|c| c.0 == "DetailEntityStore") else { continue };
         let mut p = 3;
@@ -645,9 +662,20 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         if n.starts_with("emitter") {
             emits.push(format!("{{\"fx\":\"{}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.get(8..).unwrap_or("").replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
         }
+        // W4M 0x5cd6c7: upper(name[..7]) == "PNTLGHT": atof of the space-split name[8..] = r g b radius (units), code = token 4's
+        // first 4 bytes; 0x46fbb0 takes the first slot whose colour is 0, switched on
+        if n.starts_with("pntlght") {
+            let (col, r, code) = point_light(&name);
+            if lights.last().is_some_and(|l: &([u8; 3], String)| l.0 == [0; 3]) { lights.pop(); }
+            let s = format!("{{\"pos\":[{:.3},{:.3},{:.3}],\"col\":[{},{},{}],\"r\":{:.4},\"code\":\"{code}\"}}", pos[0], pos[1], pos[2], col[0], col[1], col[2], r / 20.0 * k);
+            if lights.len() < 30 { lights.push((col, s)); }  // 30 slots, else assert and no light
+        }
         if !n.starts_with("visible") {  // W4M 0x5cd27d: upper(name[..7]) == "VISIBLE" only, so the "VISABLE" typos stay hidden
             let t = marker_type(&lib, &n).unwrap_or("locator");  // any named detail: a script's spawn, explosion or effect spot
-            marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
+            // TimedPathCam 0x637510: a knot looks along its detail's local -Z in the world (Maya XYZ angles, land frame included)
+            let rm = mul(&r.wn, &local(&Poxel { rot: [f[3], f[4], f[5]], ..Default::default() }, false));
+            let (dx, dy, dz) = (-rm[0][2], -rm[1][2], -rm[2][2]);
+            marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}],\"dir\":[{dx:.4},{dy:.4},{dz:.4}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
             continue;
         }
         if pos[1] < 0.0 || pos[0] < 0.0 || pos[2] < 0.0 || pos[0] > NX as f32 * VOX || pos[2] > NZ as f32 * VOX { continue; }
@@ -656,7 +684,9 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let m = mul(&r.wn, &rs);
         let b: Vec<String> = (0..9).map(|i| format!("{:.4}", m[i / 3][i % 3] * k)).collect();
         let lib = lib.to_lowercase();
-        objs.push(format!("{{\"model\":\"{lib}\",\"pos\":[{:.2},{:.2},{:.2}],\"basis\":[{}]}}", pos[0], pos[1], pos[2], b.join(",")));
+        // Detail.PlayAnim's FourCC (0x5cd8e1): the 4 bytes 5 past "CODE" in the detail's name
+        let code = name.find("CODE").and_then(|i| name.get(i + 5..i + 9)).map_or(String::new(), |c| format!(",\"code\":\"{}\"", c.replace(['"', '\\'], "")));
+        objs.push(format!("{{\"model\":\"{lib}\",\"pos\":[{:.2},{:.2},{:.2}],\"basis\":[{}]{code}}}", pos[0], pos[1], pos[2], b.join(",")));
         used_libs.insert(lib);
     }
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
@@ -677,14 +707,38 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             .and_then(|(_, a)| match a.get(1) { Some(lua::Val::Num(n)) => Some(*n), _ => None })))
         .map_or(String::new(), |p| format!("  \"rain_prob\": {p},\n"));
     let blk: Vec<String> = blocks.iter().map(|b| format!("[{:.2},{:.2},{:.2},{:.2}]", b[0] * k + ox, b[1] * k + oz, b[2] * k + ox, b[3] * k + oz)).collect();
+    // per code: its cells (the .cells HEX ids) and the voxels (index runs) only they hold; several frames may share a code
+    let mut by_code: Vec<([u8; 4], Vec<usize>, Vec<usize>)> = Vec::new();
+    for (ci, c) in codes.iter().enumerate() {
+        let i = by_code.iter().position(|b| b.0 == *c).unwrap_or_else(|| { by_code.push((*c, Vec::new(), Vec::new())); by_code.len() - 1 });
+        by_code[i].1.extend(hex_code.iter().enumerate().filter(|(_, &h)| h as usize == ci + 1).map(|(j, _)| j));
+        by_code[i].2.extend(coded[ci].iter().copied());
+    }
+    let code_json: Vec<String> = by_code.iter_mut().map(|(c, hex, v)| {
+        v.sort_unstable(); v.dedup();
+        let mut runs: Vec<[usize; 2]> = Vec::new();
+        for &x in v.iter() { match runs.last_mut() { Some(r) if r[0] + r[1] == x => r[1] += 1, _ => runs.push([x, 1]) } }
+        format!("\"{}\": {{\"hex\": [{}], \"vox\": [{}]}}", String::from_utf8_lossy(c).replace(['"', '\\'], ""), hex.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(","),
+            runs.iter().map(|r| format!("[{},{}]", r[0], r[1])).collect::<Vec<_>>().join(","))
+    }).collect();
+    let codes_json = if code_json.is_empty() { String::new() } else { format!("  \"codes\": {{{}}},\n", code_json.join(", ")) };
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"scale\": {k:.4},\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"scale\": {k:.4},\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n{codes_json}  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ],\n  \"lights\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","), blk.join(","),
-        marks.join(",\n    "), objs.join(",\n    "), emits.join(",\n    ")
+        marks.join(",\n    "), objs.join(",\n    "), emits.join(",\n    "), lights.iter().map(|l| l.1.as_str()).collect::<Vec<_>>().join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
     Ok(format!("{} cells, {faces} faces, {exact}, {} objects, {} emitters, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
         cells.len(), objs.len(), emits.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
+}
+
+// W4M 0x5cd6c7: atof of each space-split token of name[8..]: colour bytes, radius (units), code = token 4's first 4 bytes
+fn point_light(name: &str) -> ([u8; 3], f32, String) {
+    let atof = |t: &str| (0..=t.len()).rev().find_map(|i| t.get(..i)?.parse::<f32>().ok()).unwrap_or(0.0);
+    let tok: Vec<&str> = name.get(8..).unwrap_or("").split(' ').collect();
+    let f = |i: usize| tok.get(i).map_or(0.0, |t| atof(t));
+    let code = tok.get(4).map_or("", |t| t.get(..4.min(t.len())).unwrap_or("")).replace(['"', '\\'], "");
+    ([0, 1, 2].map(|i| (f(i) as i32 & 0xff) as u8), f(3), code)
 }
 
 // Script marker types by DetailEntityStore library; every other hidden named detail is a "locator".
@@ -846,6 +900,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn point_light_names() {
+        assert_eq!(point_light("PNTLGHT 100 80 5 100 PL01"), ([100, 80, 5], 100.0, "PL01".into()));
+        assert_eq!(point_light("PNTLGHT_120 50 30 80"), ([120, 50, 30], 80.0, String::new()));
+        assert_eq!(point_light("PNTLGHT 130 05 05 90"), ([130, 5, 5], 90.0, String::new()));
+    }
     #[test]
     fn varint_and_euler() {
         let mut p = 0;

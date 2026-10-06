@@ -538,6 +538,23 @@ static void armWeights(float x, float *c, float *d) {
     *d = x >= 1 ? x - 1 : x >= 0 ? 0 : x >= -1 ? -x : x + 2;
 }
 
+// A viseme clip at weight w on the face bones: its offset from Base added in the parent's frame (XAnim sums the channels, 0x7ac1a0)
+static void lipLayer(const Entry &e, const Transform *L, float w, std::vector<Matrix> &out) {
+    for (int b = 0; e.base && b < (int)out.size() && b < (int)e.face.size(); b++) {
+        int p = e.parent[b];
+        Transform rl, r0;
+        if (!(e.face[b] & 1) || p < 0 || !rel(e, L, b, &rl) || !rel(e, e.base->keyframePoses[0], b, &r0)) continue;
+        Quaternion d = QuaternionMultiply(rl.rotation, QuaternionInvert(r0.rotation));
+        Vector3 dt = Vector3Subtract(rl.translation, r0.translation);
+        if (Vector3Length(dt) < 1e-5f && fabsf(d.w) > 1 - 1e-6f) continue;
+        Vector3 t, sc;
+        Quaternion q;
+        MatrixDecompose(MatrixMultiply(out[b], MatrixInvert(out[p])), &t, &q, &sc);
+        Transform r = {Vector3Add(t, Vector3Scale(dt, w)), QuaternionNormalize(QuaternionMultiply(QuaternionSlerp(QuaternionIdentity(), d, w), q)), sc};
+        out[b] = MatrixMultiply(trs(r), out[p]);
+    }
+}
+
 // Every bone's model-space matrix, with the W4M pose layers over the clip
 static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af, const Models::Layers *ly, std::vector<Matrix> &out) {
     int n = std::min(e.m.skeleton.boneCount, a.boneCount);
@@ -554,6 +571,9 @@ static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnim
         for (int b = 0; b < n && b < 64; b++)
             if ((e.face[b] & 1) && !(own >> b & 1)) out[b] = MatrixMultiply(trs(em->keyframePoses[ff][b]), toHead);
     }
+    for (int k = 0, lf; k < 2; k++)
+        if (const ModelAnimation *L = ly->lip[k] && ly->lipW[k] > 0 ? clipFrame(e, ly->lip[k], ly->lipW[k], false, &lf, false) : nullptr; L && (int)L->boneCount >= n)
+            lipLayer(e, L->keyframePoses[lf], ly->lipW[k], out);
     // the head's frame is HatLocator's, whose origin sits (0, 14, -1) units off the head joint (w4m-models --list)
     Matrix w = out[e.hat];
     Vector3 x = Vector3Normalize({w.m0, w.m1, w.m2}), y = Vector3Normalize({w.m4, w.m5, w.m6});
@@ -675,6 +695,32 @@ static const char *picked = nullptr;
 static float pickedT = 0;
 void Models::pick(const char *clip, float t) { picked = clip, pickedT = t; }
 
+// The Blend node's Translate.z and Scale.x in pose p (main's frame)
+static bool blendZS(const Entry &e, const Transform *p, int n, float *z, float *sx) {
+    if (e.blend < 0 || e.mainB < 0 || e.blend >= n || e.mainB >= n) return false;
+    Matrix r = MatrixMultiply(trs(p[e.blend]), MatrixInvert(trs(p[e.mainB])));
+    return *z = r.m14, *sx = sqrtf(r.m0 * r.m0 + r.m1 * r.m1 + r.m2 * r.m2), true;
+}
+
+// WormPoseManager 0x59db24, Teeth (always at weight 1): open > 0.1 (speaking) at Blend.Scale.x, which only the visemes key (flag 8:
+// weighted mean; none: the stored value); else 1 when Blend.Translate.z, summed over the playing clips (flag 1), is over 0.4, else 0
+static float teethTime(const Entry &e, const char *clip, float t, bool loop, const Models::Layers *ly) {
+    float z0, s0, z, s, dz = 0, sw = 0, ss = 0;
+    int f, n = e.base ? (int)e.base->boneCount : 0;
+    if (!n || !blendZS(e, e.base->keyframePoses[0], n, &z0, &s0)) return 0;
+    if (ly->open > 0.1f) {
+        for (int k = 0; k < 2; k++)
+            if (const ModelAnimation *L = ly->lip[k] && ly->lipW[k] > 0 ? clipFrame(e, ly->lip[k], ly->lipW[k], false, &f, false) : nullptr;
+                L && blendZS(e, L->keyframePoses[f], (int)L->boneCount, &z, &s))
+                ss += ly->lipW[k] * s, sw += ly->lipW[k];
+        return sw > 0 ? ss / sw : s0;
+    }
+    if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f); a && blendZS(e, layered(e, *a, f, ly), (int)a->boneCount, &z, &s)) dz += z - z0;
+    if (const ModelAnimation *em = ly->face ? clipFrame(e, ly->face, ly->faceT, true, &f, false) : nullptr; em && blendZS(e, em->keyframePoses[f], (int)em->boneCount, &z, &s))
+        dz += z - z0;
+    return z0 + dz > 0.4f ? 1 : 0;
+}
+
 // SelectedChild: the largest value the playing clips key (attribute flag 0x10, 0x7ac1a0), truncated (0x6c7243); none keeps the file's 0
 static void select(Entry &e, const char *clip, float t, bool loop, const char *aim, float aimT, const Models::Layers *ly) {
     if (e.sels.empty()) return;
@@ -693,7 +739,7 @@ static void select(Entry &e, const char *clip, float t, bool loop, const char *a
     };
     add(clip, t, loop), add(aim, aimT, false), add(picked, pickedT, true);
     if (ly) {  // the worm's other XAnim layers: Base at weight 1, the acting gestures, the emote
-        add("Base", t, true), add(ly->face, ly->faceT, true);
+        add("Base", t, true), add(ly->face, ly->faceT, true), add("Teeth", teethTime(e, clip, t, loop, ly), false);
         for (int k = 0; k < 2; k++) if (ly->actW[k] > 0) add(ly->act[k], ly->actT[k], false);
     }
     for (size_t i = 0; i < e.sels.size() && i < 32; i++) {
@@ -770,7 +816,8 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
 static bool same(const Models::Layers &a, const Models::Layers &b) {
     return a.face == b.face && (int)(a.faceT * 60) == (int)(b.faceT * 60) && a.lookYaw == b.lookYaw && a.lookPitch == b.lookPitch &&
            a.gestYaw == b.gestYaw && a.gestPitch == b.gestPitch && a.act[0] == b.act[0] && a.act[1] == b.act[1] && a.actW[0] == b.actW[0] &&
-           a.actW[1] == b.actW[1] && a.aimW == b.aimW && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) && (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60);
+           a.actW[1] == b.actW[1] && a.aimW == b.aimW && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) && (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60) &&
+           a.lip[0] == b.lip[0] && a.lip[1] == b.lip[1] && a.lipW[0] == b.lipW[0] && a.lipW[1] == b.lipW[1];
 }
 
 bool Models::blend(const char *name, const char *clip, float t, bool loop, const Layers *ly, Vector3 *out) {

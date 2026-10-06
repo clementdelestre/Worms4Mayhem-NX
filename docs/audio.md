@@ -166,6 +166,33 @@ ends it at 5.03 s, so it is one pass of the 5.85 s clip [ours]: started with a 1
 three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6);
 `FeBookOut` has event volume 0 in W4M (silent); `BubbleLoop` plays one of Bubble1–6 per 500 ms spawn of WXP_Bubbles_Small (FEV spawn 500..500 on a oneshot instance, fmod_event 0x1001a3ec; the emitter starts its event once, 0x5bdcf4).
 
+## Level movies (EFMV) and lip sync
+
+W4M side: docs/w4m/acting.md §19 "Speech, lip-sync, sound banks". Files: docs/import.md (`efmv/`, `voices/*/lip.txt`).
+- **Bank** [data]: `Audio::efmvLevel(mission bank)` at match load (main.cpp loader thread) loads `efmv/<level>/` (directory found
+  case-insensitively, as FMOD's lookup) and `efmv/Failures/`; any other match unloads them. Gains, loop, 3D linear range and play
+  mode per event from `events.txt`; max playbacks 1. Only English exists [data].
+- **Hooks** [ours, on the movie player's events, docs/missions.md]: `GameEvent::MovieSound` -> `efmvSfx` (Looping: the one looping
+  instance, stopped by `movie(false)`; else fire-and-forget, an FEV loop then never stops, as W4M); `MovieStart` / `MovieEnd` ->
+  `movie(true / false)`: music × remaining / 500 ms, then × (1 − remaining / 2000 ms) [disasm 0x605720]. A missing event logs
+  `AUDIO: EFMV sfx <name>: no such event` and is silent, as W4M.
+- **Speech** [disasm, docs/w4m §19]: TriggerSpeech reaches the cast worm through `Acting::movie` -> `say(worm, "*Line")` ->
+  `efmvSpeech` (the speaker's previous line cut, 0x59cc70). The `GameEvent::Speech` hook is not needed.
+- **Time envelopes** [data]: `efmvUpdate` sets the volume at the parameter's position (rate × seconds, held at 1): the whistles' cuts,
+  WaterLap2. The y values are 0 or 1, so the y-to-gain mapping only matters on WaterLap2's 0.4 s ramps (linear, assumed).
+  JukeBoxTune's pitch envelope is not played: no movie triggers that event [data].
+- **Failure narration** [disasm 0x5f90a0]: `Ui::onNarrator = Audio::narrator`, called by the subtitle line display (ui.cpp
+  `drawSubtitle`) for a `Miss.Generic.LoseN` line in subtitle mode.
+- **Lip sync** [disasm, ours in acting.cpp `Actor::Mouth`, `speak`, `mouthStep`]: every worm line (acting lines and main.cpp's
+  Fire / Death / Hurt / Jump / TurnStart through `Acting::speak`) starts the mouth with the played variant's LIP rows (`Audio::voice`
+  returns them); `mouthStep` runs W4M's update once per 20 ms step (`Acting::update`, clock + 0.5 × ticks); `Acting::clip` hands the
+  viseme clips, weights and `open` to `Models::Layers`. models.cpp `lipLayer` adds each viseme's offset from Base on the face bones
+  after the emote (XAnim sum), `teethTime` picks the `Teeth` clip time for the mouth XChildSelector. The worm glb exports the 8
+  viseme clips (w4m-models `WORM_CLIPS`). Render only: nothing reaches the sim or the checksum.
+- **Checks**: `W4NX_LIP="<viseme> <weight> <open>" ./worms4nx --animshot Base` draws a viseme (A open with the teeth image 2, MBP
+  closed, O round, Cons teeth image 1); `W4NX_HIDDEN=1 W4NX_SHOTEND=900 ./worms4nx --ui missionhud MineAllMine` logs
+  `AUDIO: EFMV MineMine_Player1_01 0.0 dB, lip 21 rows` per line (`ACTING: worm N speaks` at debug level).
+
 ## Voice lines [ours, per the coordinator]
 - A line is dropped while any line of the same voice bank still plays: no queue, no gap (`voice()` in audio.cpp).
 

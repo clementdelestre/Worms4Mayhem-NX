@@ -451,21 +451,17 @@ static void checkHoming() {
 }
 
 // W4M: each team gets back the weapon it last had in hand, or the next one with ammo.
-static void checkTeamWeapon() {
+static void checkTeamWeapon() {  // the last weapon is only remembered (AI PreferVariety); each turn starts empty-handed
     Game g;
     g.start({39, 2, 1, "", 0}), g.hotSeat = 0;
     int t0 = g.worms[g.current].team, bat = weaponNamed("Baseball Bat"), sheep = weaponNamed("Sheep");
     auto endTurn = [&] { endSettle(g); };
     g.weapon = sheep;
     endTurn();
-    assert(g.worms[g.current].team != t0 && g.weapon != sheep);
+    assert(g.worms[g.current].team != t0 && g.weapon == -1 && g.picked[t0] == sheep);
     g.weapon = bat;
     endTurn();
-    assert(g.worms[g.current].team == t0 && g.weapon == sheep);
-    g.ammo[t0][bat] = 0, g.delays[t0][bat] = 0;
-    g.ammo[1 - t0][bat] = 0, g.delays[1 - t0][bat] = 0;
-    endTurn();
-    assert(g.weapon != bat && g.ammo[1 - t0][g.weapon]);  // out of ammo: next available
+    assert(g.worms[g.current].team == t0 && g.weapon == -1 && g.picked[1 - t0] == bat);
     uint32_t sum = g.checksum();
     g.picked[t0] = bat;
     assert(g.checksum() != sum);
@@ -1185,7 +1181,7 @@ static void checkEventCameras() {
         int close = 0, fixed = 0;
         float top = g.terrain.colTop.empty() ? 20 : g.terrain.colTop.back() * Terrain::VOX;
         Vector3 liftAt{};
-        for (int t = 0; t < 60 * 40 && g.abducting(); t++) {
+        for (int t = 0; t < 60 * 40 && g.efmvActive(); t++) {
             Controls::camera(cam, g, false, false, false, Game::DT);
             Vector3 u = g.ufo()->pos;
             bool lifting = g.ufo()->stage == Game::ABD_LIFTING;
@@ -2999,24 +2995,57 @@ static void checkToolGaps() {
 
 // W4M Weapon.Create 0x565770: a turn starts on the team's last weapon if still usable (0x50d900), else on the FIRST usable one
 // of the list, Skip Go and Surrender skipped (0x5657bb).
-static void checkFirstWeapon() {
+// W4M gun mask 0x1c3f: a bullet stops on a mine (payload flag 8) or an oil drum (0x10) in its way, not only on worms and crates.
+static void checkGunObjects() {
+    Game g;
+    g.start({29, 2, 1, "", 0});
+    g.objects.clear();
+    g.worms[g.current].pos.y = g.landTop() + 5;  // clear of the land
+    const Worm &a = g.worms[g.current];
+    int b = g.current == 0 ? 1 : 0;
+    g.worms[b].pos = Vector3Add(a.pos, {0, 0, 6});
+    Ray r = {a.pos, {0, 0, 1}};
+    assert(g.gunRay(r, a).worm == b);
+    for (Object::Type t : {Object::Mine, Object::Barrel}) {
+        g.objects = {Object{t, Vector3Add(a.pos, {0, 0, 3}), {0, 0, 0}, -1, -1, false, false}};
+        Game::GunHit h = g.gunRay(r, a);
+        assert(h.worm == -1 && !h.land && fabsf(h.dist - 3) < 0.01f);
+    }
+}
+
+// W4M stdvs Initialise: SchemeData MineFactoryOn creates the factory at a random spot; each DoOncePerTurnFunctions counts it down.
+static void checkSchemeFactory() {
+    GameConfig c{29, 2, 1, "", 0};
+    Game g;
+    g.start(c);
+    assert(!g.factory.on);
+    c.scheme.mineFactory = 1;
+    g.start(c);
+    assert(g.factory.on && g.factory.wait == g.factoryData.inactive);
+    endSettle(g);
+    assert(g.factory.wait == g.factoryData.inactive - 1);
+}
+
+// W4M GameLogic.Turn.Started (0x566d57): every turn starts with the empty hand (kWeaponUndefined); FIRE does nothing.
+static void checkEmptyHand() {
     Game g;
     g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
-    int t = g.worms[g.current].team, other = 1 - t;
-    for (size_t k = 0; k < WEAPONS.size(); k++) g.ammo[other][k] = 0, g.delays[other][k] = 0;
-    int skip = weaponNamed("Skip Go"), b = weaponNamed("Baseball Bat"), s = weaponNamed("Shotgun");
-    g.ammo[other][skip] = -1, g.ammo[other][b] = 1, g.ammo[other][s] = 1;
-    assert(s < b);  // list order decides, not the cycle from the old weapon
-    g.picked[other] = b + 1 < (int)WEAPONS.size() ? b + 1 : 0;
-    g.hotSeat = 0, g.weapon = skip, g.ammo[t][skip] = -1, g.delays[t][skip] = 0;
+    int t = g.worms[g.current].team, other = 1 - t, skip = weaponNamed("Skip Go");
+    assert(g.weapon == -1);
+    g.weapon = skip, g.ammo[t][skip] = -1, g.delays[t][skip] = 0;
     Input fire;
     fire.buttons = Input::FIRE;
     g.step(fire);
     for (int k = 0; k < 60 * 60 && g.worms[g.current].team == t; k++) g.step(Input{});
-    assert(g.worms[g.current].team == other && g.weapon == s);
-    g.ammo[other][s] = g.ammo[other][b] = 0;
-    g.firstWeapon(other);
-    assert(g.weapon == skip);  // nothing else left
+    assert(g.worms[g.current].team == other && g.weapon == -1 && g.picked[t] == skip);
+    std::vector<int> before = g.ammo[other];
+    g.hotSeat = 0;
+    for (int k = 0; k < 30; k++) g.step(k % 2 ? Input{} : fire);
+    assert(g.phase == Phase::Aim && g.ammo[other] == before && g.shots.empty());
+    Input next;
+    next.buttons = Input::NEXT_WEAPON;
+    g.step(next);
+    assert(g.weapon >= 0 && g.usable(other, g.weapon));
 }
 
 // W4M AlienAbductionLogicEntity: the UFO lifts every worm in reach, nearest first, holds them, then spits them out 2.1 s apart at half health.
@@ -3060,7 +3089,7 @@ static void checkAbduction() {
     assert(fabsf(Vector3Length(w1.vel) - Game::ABD_OUT) < 0.5f && Vector3DotProduct(Vector3Normalize(w1.vel), dir) > 0.9f);  // back where it was taken
     for (t = 0; g.aboard(second); t++) g.step(Input{});
     assert(fabsf(t - Game::ABD_SPIT * 60) < 2 && g.worms[second].hp == hp2 - hp2 / 2);
-    for (t = 0; g.abducting(); t++) g.step(Input{});
+    for (t = 0; g.efmvActive(); t++) g.step(Input{});
     assert(fabsf(t - (Game::ABD_SPIT + Game::ABD_LEAVE) * 60) < 3 && g.abductees.empty());  // the next SpitOutWorm finds nobody: AbductEnd
     // an abductee unhurt between two turn starts gets random health; a Zap while it moves (UpdateAbductee)
     Game h;
@@ -3107,7 +3136,7 @@ static void checkAbduction() {
     f.ammo[b.team][f.weapon] = 1, f.delays[b.team][f.weapon] = 0;
     f.step(fire);
     assert(f.ufo() && f.ufo()->stage == Game::ABD_FAILING && f.abductees.empty());
-    for (t = 0; f.abducting(); t++) f.step(Input{});
+    for (t = 0; f.efmvActive(); t++) f.step(Input{});
     assert(fabsf(t - Game::ABD_FAIL * 60) < 3);
     // W4M 0x5488e0 skips a worm with flag 0x20 (nailed) or 0x8 (in a bubble): the same victim, nailed, is out of reach
     for (int nailed = 0; nailed < 2; nailed++) {
@@ -4356,7 +4385,9 @@ int main() {
     checkJetpackSecondary();
     checkJetpackDrown();
     checkToolGaps();
-    checkFirstWeapon();
+    checkEmptyHand();
+    checkSchemeFactory();
+    checkGunObjects();
     checkAbduction();
     checkSuperSheep();
     checkOldWoman();

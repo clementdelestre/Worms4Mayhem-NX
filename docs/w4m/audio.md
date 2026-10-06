@@ -55,6 +55,7 @@ Speech voice groups (31): vodisco vocyber voblues voastro vodoubl vocowbo vodino
 - Data/Audio/EFMV/<Mission>.lsd: same format, one event per block "EFMV/<Mission>/<Line>" with one hash.
 - <game>/speech/<voice>/LIP.txt: "#<hash> <line text>.txt" header then "frame,VISEME,<none>" lip-sync rows; line text (truncated to 29 bytes) = FSB sample name. Exe: "Reading speech file " + ".txt", "Speech/<voice>/LIP".
 - So: speech event Speech/<voice>/<Category> -> bank vo<voice>.fsb; variant pick via lsd hash -> LIP line -> FSB sample (importer already does this).
+- LIP rows drive the worm's lip sync, EFMV event names, failure narration and the movie music fade: acting.md §19 "Speech, lip-sync, sound banks" [disasm].
 
 ## 12. Audio: WormsX.fev per-event data (extends §7)
 

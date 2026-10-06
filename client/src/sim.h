@@ -10,7 +10,7 @@
 struct Input {
     int8_t turn = 0, walk = 0, aim = 0;
     uint8_t buttons = 0, flags = 0;
-    enum : uint8_t { CAMERA = 1, SKIP_COUNT = 2 };  // flags: a camera key this tick (W4M InGame group: its SomeInputFrom ends the hot seat); SKIP_COUNT: observed in W4M by the user 2026-10-03, ends the damage display
+    enum : uint8_t { CAMERA = 1, SKIP_COUNT = 2, SKIP_MOVIE = 4 };  // SKIP_MOVIE: W4M Input.QuitEFMV  // flags: a camera key this tick (W4M InGame group: its SomeInputFrom ends the hot seat); SKIP_COUNT: observed in W4M by the user 2026-10-03, ends the damage display
     enum : uint8_t { FIRE = 1, JUMP = 2, NEXT_WEAPON = 4, HEADING = 8, FUSE_UP = 16, FUSE_DOWN = 32, TARGET = 64, PITCH = 128 };  // HEADING: turn is the wanted yaw, PI * turn / 128 (W4M walk)
     // FUSE_UP/DOWN: W4M FuseUp, the timer of user-fuse weapons (WeaponDef::userFuse) in 1 s steps
     // TARGET: W4M Blimp view; turn yaws the camera, walk / aim move its focus (Game::cursor) forward / right, the worm stays put.
@@ -32,13 +32,14 @@ inline float wrapPi(float a) { return remainderf(a, 2 * PI); }
 enum class Kind : uint8_t { Shell, Sheep, Airstrike, Donkey, Shotgun, Rope, Jetpack, Teleport,
                             SuperSheep, OldWoman, Melee, Homing, Mine, Scouser, Sentry, Abduction, Flood,
                             Parachute, SkipGo, Surrender, ChangeWorm, Armour,
-                            Girder, Binoculars, Bubble, Icarus, DoubleDamage, CrateSpy };  // W4M utilities 34, 43, 42, 41, 44, 46
+                            Girder, Binoculars, Bubble, Icarus, DoubleDamage, CrateSpy,  // W4M utilities 34, 43, 42, 41, 44, 46
+                            None };  // the empty hand (W4M kWeaponUndefined), never in WEAPONS
 inline bool collected(Kind k) { return k == Kind::DoubleDamage || k == Kind::CrateSpy || k == Kind::Armour; }  // W4M crate collect 0x5c9800 (44, 46, 47): applied at once, never in the inventory
 inline bool targeted(Kind k) { return k == Kind::Airstrike || k == Kind::Donkey || k == Kind::Abduction || k == Kind::Teleport; }  // W4M IsTargetingWeapon seen from the Blimp (Homing: see blimped)
 inline bool blimped(Kind k) { return targeted(k) || k == Kind::Homing; }  // seen from the Blimp: also Homing, which locks from there or from the aim view (0x583a10, user-requested A / ZR mapping)
 inline bool powered(Kind k) { return k == Kind::Shell || k == Kind::Homing; }  // hold FIRE to charge, release to fire
 inline bool utility(Kind k) { return k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::ChangeWorm || k == Kind::Armour ||
-                                    k >= Kind::Girder; }  // utility-crate pool
+                                    (k >= Kind::Girder && k != Kind::None); }  // utility-crate pool
 // W4M CanBeUsedWhenTailNailed: no movement tools, animals or melee for a nailed worm
 inline bool nailUsable(Kind k) { return !(utility(k) && k != Kind::ChangeWorm && k != Kind::Girder && k != Kind::Binoculars && k != Kind::Bubble) && k != Kind::Sheep && k != Kind::SuperSheep && k != Kind::OldWoman && k != Kind::Scouser && k != Kind::Melee; }
 
@@ -71,6 +72,7 @@ struct WeaponDef {
     float size = 0, sink = 0, csize = 0, csink = 0, skim[4] = {-1, 0, 0, 0};
     // W4M BombletMaxConeAngle rad, BombletMinSpeed / MaxSpeed m/s: "cluster_cone", "cluster_min_speed", "cluster_max_speed"
     float ccone = 0, cspeed[2] = {0, 0};
+    float spread = 0.3f;  // "cluster_spread": W4M Weapon Factory ClusterSpread 0..1 (WXD.DefaultWeapon 0.3), Weapon Factory weapons only
 };
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
 struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns)
@@ -82,6 +84,8 @@ inline bool dropped(const WeaponDef &d) { return d.kind == Kind::Shell && d.fuse
 // W4M WeaponSelected 0x565d30: with rope, jetpack or parachute out, only Dynamite, Landmine and Sheep (payload case 0) keep it
 inline bool toolDrop(const WeaponDef &d) { return dropped(d) || d.kind == Kind::Mine || d.kind == Kind::Sheep; }
 extern std::vector<WeaponDef> WEAPONS;  // built-in fallback until loadWeapons() succeeds, then + GameConfig::custom
+extern const WeaponDef NO_WEAPON;  // Kind::None
+inline const WeaponDef &weaponDef(int k) { return k < 0 ? NO_WEAPON : WEAPONS[k]; }  // -1: the empty hand
 bool loadWeapons(const char *path);
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out);  // same JSON as weapons.json
 bool customWeapon(int i);  // a Weapon Factory weapon (appended after the loaded table at start())
@@ -205,7 +209,8 @@ enum : int { MY_MINE_LAYER, MY_MINE_TRIPLET, MY_BARREL_TRIPLET, MY_FLOOD, MY_DIS
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
-                          Comment, CommentClear, Emitter, EmitterOff, Shake } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
+                          Comment, CommentClear, Emitter, EmitterOff, Shake,
+                          Movie, Speech, MovieSound, MovieStart, MovieEnd } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;
     const char *fx = nullptr;  // Boom: the PARTTWK effect its W4M caller starts (render only; null: our generic blast)
@@ -235,9 +240,10 @@ struct Scheme {
     uint8_t weapons = 0;                                   // SET_*
     uint8_t waterSpeed = 2;                                // W4M SchemeData WaterSpeed 0..3: Water.RiseSpeed 0 / 4 / 8 / 16 units per turn end
     uint8_t mysteryShare = 0;                              // W4M SchemeData MysteryChance (+0x130), rolled after the other three shares
+    uint8_t mineFactory = 0;                               // W4M SchemeData MineFactoryOn (BnG, All Action, Mega Power)
     enum : uint8_t { FUSE_RANDOM = 6, SD_ONE_HP = 0, SD_NOTHING, SD_DRAW, SET_DEFAULT = 0, SET_BNG, SET_CRATES, SET_UNLIMITED };
 };
-static_assert(sizeof(Scheme) == 19, "Scheme must stay plain bytes");
+static_assert(sizeof(Scheme) == 20, "Scheme must stay plain bytes");
 // W4M Wormpot modes: the ids of SetupModes' jump table (0x5d6bc0, names FETXT.WPotName.* at 0x9205e0); 1 = empty reel.
 // GameConfig::wormpot holds the three reels' ids, reel r in byte r (W4M FE.Wormpot.Reel1..3); 0 = empty too.
 enum WormpotMode : uint8_t {
@@ -399,7 +405,7 @@ struct Game {
     std::vector<int> nextWorm;
     std::vector<std::vector<int>> ammo;  // [team][weapon]
     std::vector<int> lastHitTeam;        // per worm: team index of last attacker, -1 none (highlander)
-    std::vector<int> picked;             // per team: weapon in hand when its last turn ended, reselected next turn (W4M)
+    std::vector<int> picked;             // per team: weapon in hand when its last turn ended (the AI's PreferVariety)
     int teams = 2, perTeam = 1, current = 0, weapon = 0, winner = -1, timer = 0;
     int clock = 0;      // ticks played: sudden death after cfg.scheme.roundTime
     int walkTick = 0;   // ticks into the current walk: its W4M frames (walkFrame) run from its start, whatever the clock
@@ -440,20 +446,20 @@ struct Game {
     bool endlessGun = false;  // W4M Challenge.EndlessGun: a gun never runs out of shots nor ends the turn (0x55cff0)
     std::vector<int> fuses;  // per team: seconds set for userFuse weapons (W4M default 3)
     std::vector<std::vector<int>> delays;  // [team][weapon]: own turns left before it unlocks (W4M InventoryN.WeaponDelays)
-    bool usable(int team, int wi) const { return ammo[team][wi] && !delays[team][wi] && allowed(team, wi); }
+    bool usable(int team, int wi) const { return wi >= 0 && ammo[team][wi] && !delays[team][wi] && allowed(team, wi); }
     bool allowed(int team, int wi) const;  // the team's active worm's WormData Allow* flags (0x50c800): Specialists, Tug O Worms
     std::vector<uint8_t> special;  // per worm: Wormpot.lub SetSpecialistTeam class 1..6, 0 none
+    std::vector<uint8_t> wormCpu;  // per worm: W4M AIParams.WormNN level 1..5 (mission scripts), 0 = the team's (cfg.teamSetup cpu)
     bool artillery() const { return wp(WP_TUG_O_WORMS); }  // WormData.ArtilleryMode (0x5d6a10): no walking, no jump (0x5ac390)
-    bool jetLanded() const { return jetUsed && !jetting && WEAPONS[weapon].kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x562f72: entity kept
+    bool jetLanded() const { return jetUsed && !jetting && weaponDef(weapon).kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x562f72: entity kept
     bool pickable(int team, int wi) const { return wi == weapon || usable(team, wi); }  // a direct pick (pick()) is legal
     bool selectable(int team, int wi) const;  // usable, and with a movement tool out only the tool itself or a toolDrop()
-    bool abducting() const { return ufo(); }  // W4M EFMV.Active (0x548d0b): labels off
+    bool efmvActive() const;  // W4M EFMV.Active: the UFO's scene (0x548d0b) or a level movie: labels off, acting scenes end
     bool toolOut() const;  // rope (or hooked object), jetpack in flight, open parachute in the air: W4M utility mode +0x8d
     // W4M m_eSecondaryWeapon (+0x98, flag +0x8c): a toolDrop() held besides the tool, dropped by Fire.Second; -1 none
     int secondary = -1;
     int launched = -1;  // the weapon use() last fired (a dropped secondary, not the tool kept in hand): its retreat times the turn
     int held() const { return secondary >= 0 ? secondary : weapon; }  // what NEXT_WEAPON and the panel step
-    void firstWeapon(int team);  // W4M Weapon.Create 0x565770: the first usable item, Skip Go / Surrender skipped
     int shotsLeft = 0;
     int ropeShots = 0;  // rope hooks on land this turn
     Phase phase = Phase::Aim;
@@ -586,7 +592,7 @@ struct Game {
     int retreatTicks(const WeaponDef &d) const { return msTicks(d.retreat >= 0 ? d.retreat : cfg.scheme.retreatTime * 1000); }
     int fallDamage(float speed) const;  // W4M FallDamage 0x5ac3e0: hp lost landing at `speed` m/s, scheme and Wormpot included
     struct GunHit { Vector3 at; float dist; int worm; bool land; int obj = -1; };  // at: the struck worm's centre, else the ray's end; worm / obj (a crate) -1: none
-    GunHit gunRay(Ray r, const Worm &shooter) const;  // W4M gun ray 0x55e10f: land, worms, targets, bubbles (dist 60: a miss)
+    GunHit gunRay(Ray r, const Worm &shooter) const;  // W4M gun ray 0x55e10f: land, worms, crates, mines, drums, bubbles (dist 60: a miss)
     Blast gunBlast(int weapon) const;                  // one hit's explosion, Wormpot super firearms included
     bool steered() const;    // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
     bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)
