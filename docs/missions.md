@@ -36,3 +36,9 @@ Score / best time: mission ticks until success (60 per second).
 ## W4M import
 
 `tools/w4m-maps` reads the level list from `Data/Tweak/SCRIPTS.XOM` (story = type 4, challenges = 8, deathmatches = 9), names and briefs from `Data/Language/PC/English.xom`, teams, worms, inventories, crates and triggers from the level databank `Data/<LEVEL>.XOM`, and the setup and win/lose conditions from the level's Lua script (see `docs/w4m-formats.md`). W4M missions are staged scripts (cut-scenes, worms and crates spawned mid-mission, per-index checks); the import keeps the opening setup and turns the callback that sends `GameLogic.*.Success` into one objective (`Crate_Destroyed` -> destroy targets, `Crate_Collected` -> collect crates, `Trigger_Destroyed` -> destroy the trigger spots as targets, `Trigger_Collected` -> reach the first trigger, `Timer_GameTimedOut` -> survive, otherwise kill all). Challenges come out close to W4M; story missions are approximations.
+
+Known gaps against the W4M scripts (docs/w4m/missions.md §23.5) [ours vs data]: the imported objective is wrong for DinerMight (kill all;
+W4M: destroy the 4 trigger zones), NiceToSiegeYou (kill all; W4M: survive the round) and RobInTheHood (kill all at start; W4M: kill Wally,
+who only spawns after 3 enemy deaths), and partial for StormTheCastle (collect only; W4M: + 8 enemies dead) and TheLandThatWormsForgot
+(reach only; W4M: + 8 enemies dead). The round-time failure most story scripts check at turn end is not imported. No mid-mission spawn,
+movie, timer, water or wind change, commentary line or HUD counter runs.
