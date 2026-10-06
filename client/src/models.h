@@ -36,6 +36,7 @@ bool joint(const char *name, const char *joint, const char *clip, float t, bool 
            const Layers *ly = nullptr);
 bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0);  // full world matrix; clip loops
 void shade(Shader s);  // every draw() uses s until shade({})
+void pick(const char *clip, float t = 0);  // every draw() also plays this W4M clip's XChildSelector keys (looped) until pick(nullptr)
 bool visible(Vector3 c, float r);  // sphere vs the current BeginMode3D view frustum
 // Hats (assets/models/hats/*.glb), sorted by file name so every client's list agrees. draw() them by hatName(i).
 int hatCount();

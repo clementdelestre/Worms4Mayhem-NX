@@ -40,16 +40,21 @@ const char *SFX_NAMES[] = {
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
     "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo", "debris", "jetpack", "jetpack_end",
     "fire_loop", "steam_loop", "flies_loop", "elec_arc", "electric_arcing", "storm_cloud", "hose_into_water",
+    "flood_rain", "flood_thunder", "fatkins_bounce", "banana_bounce",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev via tools/w4m-re/fev.py (docs/w4m/audio.md §12): event, dB (event + sounddef + category), loop, 3D rolloff min..max m (0 = 2D), max playbacks,
 // fade s, wave weights (null: equal), sounddef mode (pick), trigger delay / respawn ms (+64/+66, +4/+8), log rolloff, pitch spread (+08, x 4 octaves)
-struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; float pitchRand = 0; };
+// env: emitter() gain over time (Time-param envelope x event fade-in), (s, gain) pairs ending at s < 0; layer: oneshot layer started with it
+struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; float pitchRand = 0;
+             const float *env = nullptr; int layer = -1; };
+// FloodRainLoop: Time 0..15 at 1 unit/s, volume 0.5 to 0.531 x 15 s then 0 at 0.7997 x 15 s, x the 2 s event fade-in (y read as linear gain)
+const float FLOOD_ENV[] = {0, 0, 2, 0.5f, 7.965f, 0.5f, 11.995f, 0, -1};
 // every other multi-wave def has equal weights in the FEV (100 each, 20 on OldWomanMutter)
 const int W_SCOUSER_HELD[] = {100, 300, 100};
 const Def DEFS[] = {
     {"global/ExplosionRegular", -3, false, 0.5f, 50, 4, 0, nullptr, 2},
-    {"weapons/ExplosionLarge", -12, false, 0.5f, 40, 1},  // its 2nd variant is ExplosionBoxed1 (W4M -2 dB, 2D)
+    {"weapons/ExplosionLarge", -12, false, 0.5f, 40, 1},
     {"weapons/RocketRelease", -6, false, 0, 0, 1},
     {"weapons/GrenadeBounce", -2, false, 0.5f, 60, 1, 0, nullptr, 6},
     {"weapons/SplashHeavy", 0, false, 0.5f, 70, 2, 0, nullptr, 2},
@@ -164,6 +169,10 @@ const Def DEFS[] = {
     {"weapons/ElectricArching", 0, true, 0.5f, 25, 1},
     {"weapons/StormCloud", 0, false, 0.5f, 80, 4, 0.5f, nullptr, 2},  // ThunderClaps x 5, 10..1600 units
     {"weapons/HoseIntoWater", 0, true, 0.05f, 35, 1},  // TapIntoWater, 1..700 units
+    {"weapons/FloodRainLoop", -2, true, 0, 0, 1, 0, nullptr, 3, {}, {}, false, 0, FLOOD_ENV, (int)Sfx::FloodThunder},  // 2D, layer RainLoop -2 dB
+    {"weapons/FloodRainLoop (Thunder layer)", 0, false, 0, 0, 1, 0, nullptr, 3, {1500, 1500}},  // oneshot, sounddef delay 1500 ms
+    {"weapons/FatkinsBounce", -3, false, 0, 0, 1, 0, nullptr, 2},  // 2D, FatkinsBounce1-2
+    {"weapons/BananaBombImpact", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
@@ -393,13 +402,20 @@ void stopSfx() {
     pending.clear(), ramps.clear();
 }
 
-struct EmitterVoice { Sfx id; Slot *slot; unsigned born, frame; bool stolen; };
+struct EmitterVoice { Sfx id; Slot *slot; unsigned born, frame; bool stolen; double t0; };
 std::map<int, EmitterVoice> emitters;
 unsigned emitterFrame = 0;
 
 void update() {
     for (auto it = emitters.begin(); it != emitters.end();)  // emitters that stopped calling emitter()
-        if (it->second.frame + 1 < emitterFrame) { if (!it->second.stolen) StopSound(it->second.slot->s); it = emitters.erase(it); }
+        if (it->second.frame + 1 < emitterFrame) {
+            if (!it->second.stolen) StopSound(it->second.slot->s);
+            if (int l = DEFS[(int)it->second.id].layer; l >= 0) {  // the event's layers stop with it
+                for (Slot &k : sfx[l].slot) StopSound(k.s);
+                pending.erase(std::remove_if(pending.begin(), pending.end(), [&](const Pending &p) { return p.id == l; }), pending.end());
+            }
+            it = emitters.erase(it);
+        }
         else ++it;
     emitterFrame++;
     for (size_t i = 0; i < pending.size();)
@@ -494,12 +510,16 @@ void emitter(int key, Sfx id, Vector3 at) {
             if (!used && (!free || x.variant == k)) free = &x;
         }
         if (!free) return;
-        it = emitters.emplace(key, EmitterVoice{id, free, ++plays, emitterFrame, false}).first;
+        it = emitters.emplace(key, EmitterVoice{id, free, ++plays, emitterFrame, false, GetTime()}).first;
+        if (d.layer >= 0) trigger(sfx[d.layer], DEFS[d.layer], 1, &at, d.layer);
     }
     EmitterVoice &e = it->second;
     e.frame = emitterFrame;
     if (e.stolen) return;
-    place(e.slot->s, d, powf(10, d.db / 20), &at);
+    float g = d.env ? d.env[1] : 1, t = (float)(GetTime() - e.t0);
+    for (const float *p = d.env; p && p[2] >= 0; p += 2)  // piecewise linear, held at both ends
+        if (t >= p[0]) g = t < p[2] ? p[1] + (p[3] - p[1]) * (t - p[0]) / (p[2] - p[0]) : p[3];
+    place(e.slot->s, d, g * powf(10, d.db / 20), &at);
     if (!IsSoundPlaying(e.slot->s)) PlaySound(e.slot->s);
 }
 

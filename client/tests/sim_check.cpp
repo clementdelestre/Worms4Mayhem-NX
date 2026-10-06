@@ -2649,6 +2649,7 @@ static void checkJetpack() {
     assert(g.jetting && g.ammo[a.team][jp] == 0);  // a landed jetpack takes off again on its own fuel
     a.vel = {0, -25, 0};
     for (int k = 0; k < 600 && g.jetting; k++) g.step(none);
+    for (int k = 0; k < 30 && !a.grounded; k++) g.step(none);  // the pack lands it Ballistic with its tangential speed (0x5ae17a)
     assert(!g.jetting && a.grounded && a.hp == hp);  // landing ends it; no fall damage under the jetpack
     {  // W4M 0x562f72: a land contact under the feet lands the pack minus the normal speed, so no FallDamage; without the pack it hurts
         int loss[2];

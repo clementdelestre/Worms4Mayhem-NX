@@ -203,9 +203,10 @@ bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd) {
 }
 
 static const Vector2 PROBE[4] = {{0, 0}, {0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};  // W4M 0x91ffc8: centre and foot tripod, world axes
+static constexpr float STANCE = 0.1f;  // a walking worm stands 0.1 to 1.1 units over its highest hit (`probe`): ground within 2 units carries it
 
-// W4M 0x46a070 for a foot ray (down) hitting land at `p`: the flat lattice face it enters (cells of 0.5 m and more). [ours] our field
-// rounds edges and corners over about VOX/2: p unlike both surfaces VOX/2 aside takes the flatter one whose plane passes within VOX of it
+// W4M 0x46a070 for a foot ray (down) at `p`: the flat lattice face it enters. [ours] our field rounds edges over about VOX/2: p unlike both
+// surfaces VOX/2 aside takes the flatter one within VOX, unless a planar 60-84 deg face runs beside it (a down ray enters such a face)
 static Vector3 groundNormal(const Terrain &t, Vector3 p) {
     const float V = Terrain::VOX;
     const Vector3 n = t.normal(p, V / 4);
@@ -223,6 +224,24 @@ static Vector3 groundNormal(const Terrain &t, Vector3 p) {
         const Vector3 q = {a.x, a.y - hi, a.z}, m = t.normal(q, V / 4);
         if (Vector3DotProduct(m, n) > 0.97f) return n;  // p lies on a face
         if (fabsf(Vector3DotProduct(m, Vector3Subtract(p, q))) <= V && m.y > 0.5f && (!face || m.y > best.y)) best = m, face = true;
+    }
+    if (!face) return n;
+    const Vector3 out = Vector3Scale(across, 2 / V);  // unit, out of the land
+    for (float s : {-1.0f, 1.0f}) {  // a planar face sloping 60-84 deg beside the rounding (two heights agree): a down ray enters it
+        Vector3 m[2];
+        int k = 0;
+        for (float dy : {V, 1.5f * V}) {
+            const Vector3 a = {p.x - out.x * V, p.y + s * dy, p.z - out.z * V};
+            if (!t.solid(a)) break;
+            float lo = 0, hi = 0;
+            while (hi < 4 * V && t.solid(Vector3Add(a, Vector3Scale(out, hi)))) lo = hi, hi += V / 8;
+            if (hi >= 4 * V) break;
+            for (int i = 0; i < 5; i++) (t.solid(Vector3Add(a, Vector3Scale(out, (lo + hi) / 2))) ? lo : hi) = (lo + hi) / 2;
+            m[k] = t.normal(Vector3Add(a, Vector3Scale(out, hi)), V / 4);
+            if (m[k].y <= 0.1f || m[k].y >= 0.5f) break;
+            k++;
+        }
+        if (k == 2 && Vector3DotProduct(m[0], m[1]) > 0.97f) return n;
     }
     return best;
 }
@@ -253,8 +272,9 @@ static bool footing(const Terrain &t, Vector3 foot, Vector3 *n = nullptr) {
     return true;
 }
 
-// W4M 0x59ec70 down the 4 foot rays from 20 units above: the highest land, in units over the feet; -99 when none down to -5.
-// [ours] land over an air gap above the feet (a ceiling our relative `fits` lets the head graze) is passed, not hit at once
+// W4M 0x59ec70 down the 4 foot rays from 20 units above, in 1-unit steps (0x5b1092): the highest hit, in units over the feet; -99
+// when none down to -5. A hit is the last step before the land (0x469f6f truncates). [ours] land over an air gap above the feet
+// (a ceiling `rodsFit`'s relative fallback lets the head graze) is passed, not hit at once
 static float probe(const Terrain &t, Vector3 feet) {
     float best = -99;
     for (Vector2 o : PROBE) {
@@ -262,16 +282,13 @@ static float probe(const Terrain &t, Vector3 feet) {
         int h = 20;
         while (h >= 0 && solid(h)) h--;
         if (h < 0) { best = 20; continue; }  // land from the start down to the feet: hit at once
-        for (; h >= -5 && h > best - 1; h--)
-            if (solid(h)) {
-                float lo = h, hi = h + 1;
-                for (int k = 0; k < 5; k++) (solid((lo + hi) / 2) ? lo : hi) = (lo + hi) / 2;
-                best = fmaxf(best, lo);
-                break;
-            }
+        for (; h >= -6 && h + 1 > best; h--)
+            if (solid(h)) { best = h + 1.0f; break; }
     }
     return best;
 }
+
+static bool rodsFit(const Terrain &t, Vector3 from, Vector3 to);
 
 bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault) {
     const float R = Game::R, U = 0.05f;  // U: one W4M unit
@@ -290,25 +307,18 @@ bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vaul
     bool near = false;  // ground within 5 units under the candidate (W4M -5 <= d)
     for (int k = 1; k <= 5 && !near; k++) near = footing(t, {np.x, np.y - R - k * U, np.z}, &n);
     if (climb > Game::STEP) {  // W4M 0x5b1209: walkable (0x4adda0) and Fits, else blocked
-        if (climb <= Game::STEP_UP && n.y >= SLIDE_NY && fits(t, pos, np)) {
+        if (climb <= Game::STEP_UP && n.y >= SLIDE_NY && rodsFit(t, pos, np)) {
             if (vault) { *vault = {pos, np, Vector3Scale(f, copysignf(1, dist)), {}, msTicks(250)}; return false; }  // 0x5b1285: no move this frame
             pos = np;
         }
-    } else {
-        for (int d = 0; near && d < 5 && !footing(t, {np.x, np.y - R - U, np.z}); d++) np.y -= U;  // set on the highest hit
-        if (Vector3DotProduct(n, Vector3Subtract(np, pos)) >= 0 || n.y >= SLIDE_NY) {  // 0x5b1920: into the ground only if walkable
-            // W4M push-out: the step tries +0..+4 units (0x5b194c), a drop +1..+5 after its plain fall (0x5b14e1)
-            int k = near ? 0 : fits(t, pos, np) ? -1 : 1, last = near ? 4 : 5;
-            if (k < 0) pos = np;
-            else {
-                for (; k <= last && !fits(t, pos, {np.x, np.y + k * U, np.z}); k++) {}
-                if (k <= last) { pos = {np.x, np.y + k * U, np.z}; if (k) return false; }
-            }
-        }
+    } else if (Vector3DotProduct(n, Vector3Subtract(np, pos)) >= 0 || n.y >= SLIDE_NY) {  // 0x5b1920: into the ground only if walkable
+        // W4M push-out: the step tries +0..+4 units (0x5b194c), a drop +1..+5 after its plain fall (0x5b14c7, 0x5b14e1)
+        int k = near ? 0 : rodsFit(t, pos, np) ? -1 : 1, last = near ? 4 : 5;
+        if (k < 0) { pos = np; return true; }
+        for (; k <= last && !rodsFit(t, pos, {np.x, np.y + k * U, np.z}); k++) {}
+        if (k <= last) pos = {np.x, np.y + k * U, np.z};
     }
-    int i = 0;
-    for (; i < 12 && !footing(t, {pos.x, pos.y - R - U, pos.z}); i++) pos.y -= U;
-    return i == 12;
+    return false;
 }
 
 // W4M Vaulting 0x5aca80: input along the start input or back to the old pos; pos = (4 pos + target) / 5 per 20 ms (0x5a59f0),
@@ -373,19 +383,18 @@ Vector3 restOn(const Terrain &t, Vector3 p, float r) {
 
 static Vector3 probePoint(Vector3 pos, int i) { return {pos.x + PROBE[i % 4].x, pos.y - Game::R + (i < 4 ? 0 : 1.0f), pos.z + PROBE[i % 4].y}; }
 
-// Rods sampled every VOX/2 from half a voxel over the feet (a foot on the surface samples its soft edge) to the heads. [ours] land
-// counts past 1 unit (0.05 m) deep: our walk (`fits` ring, `clearWalls`) can leave a probe point grazing a wall it then slides along
+// Rods sampled every VOX/2 from half a voxel over the feet (a foot on the surface samples its soft edge) to the heads
 static bool rodsClear(const Terrain &t, Vector3 p) {
     for (int i = 1; i < 4; i++)
         for (int k = 1; k <= 8; k++) {
             Vector3 a = probePoint(p, i);
-            if (t.sample({a.x, a.y + Terrain::VOX / 2 * k, a.z}) > 0.05f) return false;
+            if (t.solid({a.x, a.y + Terrain::VOX / 2 * k, a.z})) return false;
         }
     return true;
 }
 
-// W4M Fits 0x59edf0: the 3 rods (PROBE 1..3, feet to heads) clear of land. [ours] rods already in land at `from` (a stance our walk's
-// `fits` and `clearWalls` allow) fall back to that relative body test, so the worm can move out
+// W4M Fits 0x59edf0 (walk, slide, flight): the 3 rods (PROBE 1..3, feet to heads) clear of land. [ours] rods already in land at
+// `from` (land that appeared around the worm, or a stance `clearWalls` left) fall back to the relative body test, so it can move out
 static bool rodsFit(const Terrain &t, Vector3 from, Vector3 to) { return rodsClear(t, to) || (!rodsClear(t, from) && fits(t, from, to)); }
 
 struct Sweep { int at = -1; float d = 0; Vector3 n{}; };
@@ -498,11 +507,11 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
         m.air = false, m.stuck += 2;
     } else if (d < -5) {  // a drop: the velocity off the ground, Fall() if the body Fits at the old height
         Vector3 c = {cand.x, pos.y, cand.z};
-        if (!fits(t, pos, c)) return landed();
+        if (!rodsFit(t, pos, c)) return landed();
         pos = c, vel = Vector3Subtract(vel, Vector3Scale(n, Vector3DotProduct(vel, n))), m.slide = m.air = false;
     } else {  // follow the ground: the highest hit + 0.1 unit
         Vector3 c = {cand.x, cand.y + (d + 0.1f) * U, cand.z}, nn = n;
-        if (!fits(t, pos, c)) return landed();
+        if (!rodsFit(t, pos, c)) return landed();
         pos = c, m.stuck = std::max(m.stuck - 1, 0);
         footing(t, {c.x, c.y - R - U, c.z}, &nn);
         m.spinTo -= 2 * Vector3DotProduct(Vector3CrossProduct(nn, n), Vector3Scale(vel, 1.0f / 50));
@@ -514,7 +523,7 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
 
 void slideIfSteep(const Terrain &t, Vector3 pos, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot) {
     Vector3 n;
-    if (!m.slide && footing(t, {pos.x, pos.y - Game::R - 0.05f, pos.z}, &n) && n.y < (wpOn(pot, WP_SLIPPY) ? SLIPPY_NY : SLIDE_NY))
+    if (!m.slide && footing(t, {pos.x, pos.y - Game::R - STANCE, pos.z}, &n) && n.y < (wpOn(pot, WP_SLIPPY) ? SLIPPY_NY : SLIDE_NY))
         vel = walk, m.slide = true, m.spin = m.spinTo = 0, m.normal = n;  // event 17 (SupportNormal 0x5b1998); ChangeState zeroes the spin (0x5aaa0c)
 }
 
@@ -540,7 +549,8 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
         m.normal = n;  // SupportNormal 0x5af5ba
     };
     Vector3 n;
-    grounded = vel.y <= 0 && footing(t, {pos.x, pos.y - R - 0.05f, pos.z}, &n);
+    // a flight lands through its sweep (0x5af430); [ours] a worm put down at rest (spawn, teleport) stands where it is
+    grounded = vel.y <= 0 && (was || Vector3LengthSqr(vel) == 0) && footing(t, {pos.x, pos.y - R - STANCE, pos.z}, &n);
     if (grounded && was && Vector3LengthSqr(vel) > 0 && Vector3DotProduct(vel, n) >= 0) grounded = false;  // ImpulseWorm: not into the ground, Ballistic
     // [ours] idle and no fall Fits: W4M would Rebound to a stop, Slide, land with support 0xFFFF and stay (0x5b1a3e); ours stays at once
     if (!grounded && was && Vector3LengthSqr(vel) == 0 && !rodsFit(t, pos, {pos.x, pos.y - 0.05f, pos.z})) grounded = true;
@@ -1948,7 +1958,7 @@ Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
     return d < b.pushReach && d > 1e-4f ? Vector3Scale(to, b.push * 1.2f * (b.pushReach - d) / b.pushReach / d) : Vector3{0, 0, 0};
 }
 
-void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapon) {
+void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapon, const char *fx) {
     Blast b = b0;  // W4M ExplosionMessage 0x518d80: DoubleDamage doubles the radii and the impulse too (hurt() doubles the damage)
     if (doubled()) b.crater *= 2, b.reach *= 2, b.push *= 2, b.pushReach *= 2;
     for (Bubble &bb : bubbles) bb.rest = 0;  // 0x54effa: any Explosion lets it fall again
@@ -1960,7 +1970,7 @@ void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapo
         i++;
     }
     if (b.crater > 0 && !wp(WP_MINE_RESPAWN)) blastLand(p, b.crater);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
-    emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, p, -1, weapon);
+    emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, p, -1, weapon), events.back().fx = fx;
     for (Worm &w : worms) {
         if (!w.alive || int(&w - worms.data()) == dyingWorm || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
         int dmg = blastDamage(b, p, w.pos);
@@ -2343,7 +2353,8 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (smash && !lifeEnd && !wp(WP_MINE_RESPAWN)) blastLand(np, wd.lift * (doubled() ? 2 : 1));
             if (smash && !lifeEnd) at = Vector3Subtract(np, {0, wd.lift, 0});  // 0x553970: a land-only blast of Radius at the centre, then Explode Radius below it
             else if (smash) at = np;  // expiry: Detonate at the entity
-            explode(at, b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0, smash || wd.stick > 0 ? s.weapon : -1);  // kind by container name prefix kWeaponCluster/Factory (0x57f32c); mine Clusters (3) not modelled
+            explode(at, b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0, smash || wd.stick > 0 ? s.weapon : -1,
+                    fatBlast > 0 ? "WXP_ExplosionX_Large" : nullptr);  // Fatkins: its DetonationFx; kind by container name prefix kWeaponCluster/Factory (0x57f32c); mine Clusters (3) not modelled
             if (wd.name == "Starburst" && !s.child && worms[current].alive) vapourize(worms[current]);  // Detonate 0x588dd0: the blast, then Worm.Vapourize
             bool fly = !s.child && ((wd.kind == Kind::Homing && !wd.avoid) || (wd.kind == Kind::SuperSheep && (wd.name == "Starburst" ? !starLit(s) : !wd.walks || s.stage)));
             if (fly) camHold = msTicks(1000);  // the FlyCam's: CAMTWK PauseDuration 1000 (homing, super sheep, starburst)
@@ -2355,7 +2366,7 @@ void Game::stepShots(const Input &in, bool detonate) {
         if (fatBlast > 0) {  // 0x555066: WormDamage / ImpulseMagnitude kept, the three radii scaled, the impulse at the centre
             Blast b = superBlast(blastOf(wd, false), containerOf(s.weapon, false));
             b.crater *= fatBlast, b.reach *= fatBlast, b.pushReach *= fatBlast, b.pushDepth = 0;
-            explode(s.pos, b, 0, 0, s.weapon);
+            explode(s.pos, b, 0, 0, s.weapon, wd.radius * fatBlast < 3 ? "WXP_Explosion_Small" : "WXP_ExplosionX_Med");  // LandDamageRadius x scale < 60 units
         }
         if (!boom && !s.child && wd.name == "Starburst" && !starLit(s) && worms[current].alive) {  // 0x5891e0: attached at launch, takes the rocket's position and velocity
             Worm &r = worms[current];

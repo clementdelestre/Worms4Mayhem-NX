@@ -192,6 +192,7 @@ struct GameEvent {
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart } kind;  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)
     Vector3 pos;
     int worm, weapon;
+    const char *fx = nullptr;  // Boom: the PARTTWK effect its W4M caller starts (render only; null: our generic blast)
 };
 
 // Match options, identical on every client (sent in the network Start message).
@@ -574,7 +575,7 @@ private:
     void vapourize(Worm &w);
     bool underwater(const Worm &w) const;
     void stepShots(const Input &in, bool detonate);
-    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1);  // weapon: carried by the Boom event (the donkey's blast has its own effects)
+    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1, const char *fx = nullptr);  // weapon, fx: carried by the Boom event
     void steal(const Worm &victim);  // old woman ammo theft
     void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies

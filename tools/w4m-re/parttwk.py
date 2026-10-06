@@ -2,7 +2,7 @@
 """Export the PARTTWK effects the client starts from data (level EMITTER_ details, weather) for client/src/fx.cpp.
 
   parttwk.py [ASSETS]   default: client/assets (gitignored: game data, never commit it)
-Reads ASSETS/maps/*.json "emitters", writes ASSETS/fx/parttwk.json (effects: name -> emitter names; emitters: name -> the
+Reads ASSETS/maps/*.json "emitters" (plus ROOTS), writes ASSETS/fx/parttwk.json (effects: name -> emitter names; emitters: name -> the
 ParticleEmitterContainer fields below, W4M names and units) and ASSETS/fx/sets.txt for tools/w4m-models
 ("sprite <SpriteSet>" / "mesh <MeshSet> <clip>[+<clip>]"). Run after w4m-maps, before w4m-models.
 """
@@ -11,8 +11,10 @@ from pe import GAME
 from tweak import dump
 from xom import Xom, varint
 
-# 0x5c0a84: an unknown name falls back to this effect; weather effects (RainGraphicEntity) are not named by maps
-ROOTS = ['XXX_PlaceholderPP', 'WXP_RainFall', 'WXP_RainFallBG']
+# 0x5c0a84: an unknown name falls back to this effect; weather effects (RainGraphicEntity) are not named by maps; the client starts
+# the weapon ones by name (Fatkins blasts and BounceFx, grenade BounceFx, Flood storm)
+ROOTS = ['XXX_PlaceholderPP', 'WXP_RainFall', 'WXP_RainFallBG', 'WXP_ExplosionX_Med', 'WXP_Explosion_Small', 'WXP_ExplosionX_Large',
+         'WXP_Wep_Fatkins', 'WXP_Poof_VFast', 'WXP_StormCloud']
 FIELDS = ['EmitterType', 'SpriteSet', 'MeshSet', 'MeshAnimNodeName', 'EmitterLifeTime', 'EmitterLifeTimeRandomise', 'EmitterMaxParticles',
           'EmitterNumSpawn', 'EmitterNumSpawnRadnomise', 'EmitterOriginOffset', 'EmitterOriginRandomise', 'EmitterParticleExpireFX',
           'EmitterParticleFX', 'EmitterSoundFX', 'EmitterSoundFXVolume', 'EmitterSpawnFreq', 'EmitterSpawnFreqRansomise', 'EmitterStartDelay',

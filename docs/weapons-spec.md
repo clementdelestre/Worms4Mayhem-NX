@@ -111,7 +111,7 @@ For each hit below: direct contact, facing the target.
 
 **Fatkins Strike**
 - Drop point picked.
-- A bomber drops him; the giant worm falls on the target and bounces 3 times. Each bounce makes a large crater.
+- A bomber drops him; the giant worm falls on the target and bounces 3 times. Each bounce makes a large crater (W4M ExplosionX_Med blast, a dust dome and the FatkinsBounce sound); the last one ends in a large explosion.
 - Max damage: 75 HP.
 
 **Concrete Donkey**
@@ -146,7 +146,7 @@ For each hit below: direct contact, facing the target.
 - After 5 s, he bursts: 40 HP for the swallowed worm, which falls. If he swallowed nothing, he bursts without damage.
 
 **Flood**
-- The water level rises by about 2.15 m.
+- The water level rises by about 2.15 m. A storm cloud forms over the island and it rains for 4.7 s (7.7 s from a mystery crate), with thunder.
 
 **Sentry Gun**
 - Placed on the ground, it stays active during enemy turns.

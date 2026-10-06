@@ -34,6 +34,8 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  Debris,  // W4M weapons/Debris: an explosion changed the land (0x4736c7)
                  Jetpack, JetpackEnd,  // W4M weapons/Jetpack (the jet loop, JetpackUtilityLogicEntity +0xf8) and weapons/JetpackEnd (0x562530)
                  FireLoop, SteamLoop, FliesLoop, ElecArc, ElectricArching, StormCloud, HoseIntoWater,  // PARTTWK EmitterSoundFX of map emitters
+                 FloodRain, FloodThunder,  // weapons/FloodRainLoop (WXP_StormClouds): its rain loop and its delayed Thunder layer
+                 FatkinsBounce, BananaBounce,  // WEAPTWK BounceSfx of kWeaponFatkins / kWeaponBananaBomb
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,

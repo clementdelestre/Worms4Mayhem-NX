@@ -104,7 +104,7 @@ fn index(dir: &Path) -> HashMap<String, PathBuf> {
 
 const SFX: &[(&str, &str, &[&str])] = &[
     ("explosion", "global", &["ExplosionRegular1", "ExplosionRegular2", "ExplosionRegular3"]),
-    ("big_explosion", "weapons", &["ExplosionLarge1", "ExplosionBoxed1"]),
+    ("big_explosion", "weapons", &["ExplosionLarge1"]),
     ("fire", "weapons", &["RocketRelease"]),
     ("bounce", "weapons", &["GrenadeImpact1", "GrenadeImpact2", "GrenadeImpact3"]),
     ("splash", "weapons", &["SplashHeavy1", "SplashHeavy2", "SplashHeavy3"]),
@@ -179,6 +179,10 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("bubble_wobble", "weapons", &["BubbleMachineWobble"]),
     ("bubble_loop", "weapons", &["Bubble1", "Bubble2", "Bubble3", "Bubble4", "Bubble5", "Bubble6"]),  // weapons/BubbleMachineLoop
     ("flood", "weapons", &["RainLoopAmb"]),
+    ("flood_rain", "weapons", &["RainLoop"]),  // weapons/FloodRainLoop: the looping layer (WXP_StormClouds' EmitterSoundFX)
+    ("flood_thunder", "weapons", &["Thunder"]),  // its oneshot layer, 1.5 s trigger delay
+    ("fatkins_bounce", "weapons", &["FatkinsBounce1", "FatkinsBounce2"]),  // WEAPTWK BounceSfx of kWeaponFatkins
+    ("banana_bounce", "weapons", &["BananaBombImpact"]),  // kWeaponBananaBomb's
     ("parachute", "weapons", &["ParachuteOpen"]),
     ("mine_beep", "weapons", &["MineArmLoop"]),
     ("crate_land", "weapons", &["CrateSpawn"]),

@@ -23,6 +23,8 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("crate_utility", "Crate.Utility", 0.9, false, &[]),
     ("crate_mystery", "Crate.Mystery", 0.9, false, &[]),
     ("mine", "Landmine", 0.4, false, &[]),
+    // PayloadGraphicEntity 0x57d9dd: drawn instead of Landmine past 300 units from the camera; 0.381 = 0.4 x 9.617 / 10.096 (extents), the mine's scale
+    ("mine_low", "LandmineLow", 0.381, false, &[]),
     ("barrel", "OilDrum", 1.0, false, &[]),
     ("hold_bazooka", "Bazooka.Weapon", 0.0, false, &[]),
     ("hold_grenade", "Grenade.Weapon", 0.0, false, &[]),
@@ -160,7 +162,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
 const WORM_CLIPS: &[&str] = &[
-    "Base", "Walk", "Jump", "Fall", "Land", "Backflip", "Fwdflip", "Blastflight2", "AimBazooka", "AimGrenade", "AimShotgun", "HoldShotgun", "HoldSniper", "HoldBow", "HoldHomingMissile", "JetpackRotLR",
+    "Base", "Walk", "Jump_Start", "Jump", "Fall", "Land", "Backflip", "Fwdflip", "Blastflight2", "AimBazooka", "AimGrenade", "AimShotgun", "HoldShotgun", "HoldSniper", "HoldBow", "HoldHomingMissile", "JetpackRotLR",
     "HoldBazooka", "HoldThrown", "Wounded", "Victorious_Grin", "Hit_Front", "HoldAirstrike", "HoldNinjarope", "Wave",
     "Yawn", "ScratchHead", "HoldBat", "AimSniper", "AimBow", "AimHomingMissile",
     "HoldFirepunch", "HoldProd", "HoldDynamite", "HoldLandmine", "HoldOldWoman", "HoldScouser", "HoldSentrygun", "HoldSurrender",
@@ -488,9 +490,10 @@ fn decompose(m: &M4) -> ([f32; 3], [f32; 4], [f32; 3]) {
 
 struct Group { path: String, xf: usize, parent: Option<usize> }
 // blend: the shader's XBlendModeGL (SourceFactor, DestFactor: W4M BlendFactor enum), None = opaque
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)> }
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)>, sel: Option<usize> }
 #[derive(Default)]
-struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize }
+// alts: per XChildSelector ($animTexN), its children's XImages in child order (a clip keys the child index + 0.5)
+struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize, alts: Vec<(String, Vec<usize>)> }
 
 impl Scene {
     fn walk(&mut self, x: &Xom, i: usize, g: Option<usize>, depth: u32) {
@@ -516,12 +519,29 @@ impl Scene {
                 let mut kids = refs(&mut p);
                 p += 20;
                 let name = if x.t(i) == "XBinModifier" { String::new() } else { x.str(vi(d, &mut p)) };
-                if x.t(xf) == "XChildSelector" { kids.truncate(1); } // texture-animation alternatives: keep the first
+                let mut sel = None;
+                if x.t(xf) == "XChildSelector" {  // children differing only by image (all 19 in the game): child 0's mesh, every child's image
+                    let img = |k: usize| {
+                        let (d, mut q) = (x.d(k), 3);
+                        if x.t(k) == "XSkinShape" { for _ in 0..vi(d, &mut q) { vi(d, &mut q); } }
+                        q += 4;
+                        let sh = vi(d, &mut q);
+                        let mut sp = 3;
+                        let st = if vi(x.d(sh), &mut sp) > 0 { vi(x.d(sh), &mut sp) } else { 0 };
+                        let mut q = 23;
+                        if x.t(st) == "XOglTextureMap" { vi(x.d(st), &mut q) } else { 0 }
+                    };
+                    let imgs: Vec<usize> = kids.iter().map(|&k| img(k)).collect();
+                    if !imgs.is_empty() && imgs.iter().all(|&i| x.t(i) == "XImage") { sel = Some(self.alts.len()); self.alts.push((name.clone(), imgs)); }
+                    kids.truncate(1);
+                }
                 let path = match g { Some(g) if !self.groups[g].path.is_empty() => format!("{}|{name}", self.groups[g].path), _ => name };
                 self.groups.push(Group { path, xf, parent: g });
                 let gi = self.groups.len() - 1;
                 self.seen.insert(i, gi);
+                let first = self.parts.len();
                 for r in kids { self.walk(x, r, Some(gi), depth + 1); }
+                if let Some(k) = sel { for pt in &mut self.parts[first..] { pt.sel = Some(k); } }
             }
             "XSkin" => {
                 let root = vi(d, &mut p);
@@ -597,7 +617,7 @@ impl Scene {
         let img = stages.first().filter(|&&s| x.t(s) == "XOglTextureMap").map_or(0, |&s| { let mut q = 23; vi(x.d(s), &mut q) });
         let attrs: Vec<usize> = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
         let blend = attrs.iter().find(|&&a| x.t(a) == "XBlendModeGL").map(|&a| (u32le(x.d(a), 3), u32le(x.d(a), 7)));
-        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend });
+        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend, sel: None });
     }
 
     // Local matrix of every group, with the clip's curves layered on Base (offsets for keys Base also has).
@@ -826,6 +846,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let mut images: Vec<usize> = s.parts.iter().map(|p| p.img).filter(|&i| i != 0).collect();
     images.sort();
     images.dedup();
+    for (_, l) in &s.alts { for &i in l { if !images.contains(&i) { images.push(i); } } }  // after the used ones: their indices hold
     let mut img_json = Vec::new();
     for &i in &images {
         let (w, h, rgba) = image(x, i).unwrap_or((1, 1, vec![255; 4]));
@@ -833,7 +854,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
     // static parts sharing a texture are merged (one draw call each), skinned ones kept as they are
-    struct Prim { img: usize, blend: Option<(u32, u32)>, anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8> }
+    struct Prim { img: usize, blend: Option<(u32, u32)>, anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize> }
     let mut out: Vec<Prim> = Vec::new();
     for pt in &s.parts {
         let (pos, nrm): (Vec<f32>, Vec<f32>) = if animated {
@@ -852,7 +873,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let skin = if !animated { vec![] } else if pt.skin.len() == n { pt.skin.clone() } else { vec![([0; 4], [1.0, 0.0, 0.0, 0.0]); n] };
         let rgba: Vec<u8> = if pt.rgba.len() == n { pt.rgba.iter().flatten().copied().collect() } else { vec![255; 4 * n] };
         let anim = part_anim(pt);
-        if let Some(o) = out.iter_mut().find(|o| !animated && o.img == pt.img && o.blend == pt.blend && o.anim == anim && o.pos.len() / 3 + n < 65536) {
+        if let Some(o) = out.iter_mut().find(|o| !animated && o.sel.is_none() && pt.sel.is_none() && o.img == pt.img && o.blend == pt.blend && o.anim == anim && o.pos.len() / 3 + n < 65536) {
             let base = (o.pos.len() / 3) as u16;
             o.idx.extend(pt.idx.iter().map(|&i| i + base));
             o.pos.extend(pos);
@@ -860,7 +881,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             o.uv.extend(uv);
             o.rgba.extend(rgba);
         } else {
-            out.push(Prim { img: pt.img, blend: pt.blend, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba });
+            out.push(Prim { img: pt.img, blend: pt.blend, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel });
         }
     }
     let mut prims = Vec::new();
@@ -886,6 +907,29 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         prims.push(format!("{{\"attributes\":{{{attrs}}},\"indices\":{a_idx}{mat}}}"));
     }
     let mats: Vec<String> = (0..images.len()).map(|i| format!("{{\"pbrMetallicRoughness\":{{\"baseColorTexture\":{{\"index\":{i}}},\"metallicFactor\":0}}}}")).collect();
+    // XChildSelectors for Models (root extras "sel", ';'-separated): "S <primitive> <material of each child>", then per clip keying one
+    // "K <clip> <selector> <length s> <SelectedChild value at 60 fps, run-length v*n>" (W4M truncates it to the child, 0x6c7243)
+    let mut sel = String::new();
+    for (si, (_, imgs)) in s.alts.iter().enumerate() {
+        let Some(pi) = out.iter().position(|o| o.sel == Some(si)) else { continue };
+        sel += &format!("S {pi}{};", imgs.iter().map(|im| format!(" {}", images.iter().position(|i| i == im).unwrap())).collect::<String>());
+    }
+    if !sel.is_empty() && s.lib != 0 {
+        for c in clips(x.d(s.lib), &x.s, &mut 0) {
+            for (si, (name, _)) in s.alts.iter().enumerate() {
+                let Some(kf) = c.ch.iter().find(|((n, t), _)| n == name && t & 0xffffff == 0x1100).map(|(_, k)| k) else { continue };
+                let vals: Vec<String> = (0..=(c.dur * 60.0) as usize).map(|f| format!("{:.2}", eval(kf, (f as f32 / 60.0).min(c.dur)))).collect();
+                let mut runs = String::new();
+                let mut i = 0;
+                while i < vals.len() {
+                    let n = vals[i..].iter().take_while(|v| **v == vals[i]).count();
+                    runs += &if n > 1 { format!(" {}*{n}", vals[i]) } else { format!(" {}", vals[i]) };
+                    i += n;
+                }
+                sel += &format!("K {} {si} {}{runs};", c.name, c.dur);
+            }
+        }
+    }
     let texs: Vec<String> = (0..images.len()).map(|i| format!("{{\"source\":{i}}}")).collect();
 
     // joints: flat nodes holding the full skinning matrix (inverse bind = identity), so no shear-prone hierarchy
@@ -962,8 +1006,9 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     }
     let scene_nodes: Vec<String> = (0..nodes.len()).map(|i| i.to_string()).collect();
     let json = format!(
-        "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"w4m-models\"}},\"scene\":0,\"scenes\":[{{\"nodes\":[{}]}}],\"nodes\":[{}],\"meshes\":[{{\"primitives\":[{}]}}],\"materials\":[{}],\"textures\":[{}],\"images\":[{}],\"accessors\":[{}],\"bufferViews\":[{}],\"buffers\":[{{\"byteLength\":{}}}]{extra}}}",
-        scene_nodes.join(","), nodes.join(","), prims.join(","), mats.join(","), texs.join(","), img_json.join(","), g.accs.join(","), g.views.join(","), g.bin.len()
+        "{{\"asset\":{{\"version\":\"2.0\",\"generator\":\"w4m-models\"}},\"scene\":0,\"scenes\":[{{\"nodes\":[{}]}}],\"nodes\":[{}],\"meshes\":[{{\"primitives\":[{}]}}],\"materials\":[{}],\"textures\":[{}],\"images\":[{}],\"accessors\":[{}],\"bufferViews\":[{}],\"buffers\":[{{\"byteLength\":{}}}]{extra}{}}}",
+        scene_nodes.join(","), nodes.join(","), prims.join(","), mats.join(","), texs.join(","), img_json.join(","), g.accs.join(","), g.views.join(","), g.bin.len(),
+        if sel.is_empty() { String::new() } else { format!(",\"extras\":{{\"sel\":\"{sel}\"}}") }
     );
     let mut j = json.into_bytes();
     while j.len() % 4 != 0 { j.push(b' '); }
@@ -1013,6 +1058,7 @@ fn main() {
             let mut s = Scene::default();
             p += 2;
             s.walk(&x, vi(x.d(i), &mut p), None, 0);
+            for (n, l) in &s.alts { println!("  selector {n}: {} children", l.len()); }  // debug: every XChildSelector
             if s.lib != 0 { println!("  clips: {}", clips(x.d(s.lib), &x.s, &mut 0).iter().map(|c| format!("{} {:.2}s", c.name, c.dur)).collect::<Vec<_>>().join(", ")); }
             if let Ok(c) = std::env::var("W4M_CHANNELS") {  // debug: the channels (node, key type) each clip matching c animates
                 for k in clips(x.d(s.lib), &x.s, &mut 0).iter().filter(|k| k.name.contains(&c)) {

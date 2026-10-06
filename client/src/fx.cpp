@@ -190,6 +190,7 @@ struct Emit {
 struct Live {
     const Emit *e; Vector3 at; uint32_t follow = 0; float clock = 0, next = 0, timer = 0, jitter = 0; bool started = false; std::vector<float> ends;
     int key = 0, level = -1; float unit = 0.05f, lifeR = 0; int extra = 0, spawned = 0, batch = 0; bool init = false;  // level: map emitter index
+    int handle = 0;  // its effect's (0x5c1410)
 };
 std::vector<Live> lives, born;  // running emitters; those created while they tick
 uint32_t lastId = 0;
@@ -281,12 +282,19 @@ void tickEmitters(float dt) {
     for (Live &l : born) l.key = ++lastKey, lives.push_back(std::move(l));
     born.clear();
 }
-void effect(const std::vector<const Emit *> &list, Vector3 at, float unit = 0.05f, int level = -1) {  // EffectDetailsContainer: its emitters, all at one point
+void rainStart(const Emit *e, Vector3 origin, bool weather, int level, int handle = 0);
+int lastHandle = 0;
+// ParticleHandlerService 0x5c1410: an EffectDetailsContainer's emitters at one point, kSnow / kRain as SnowParticleEmitterEntity (0x5c0c44);
+// returns the handle kill() takes (0x5bfde0)
+int effect(const std::vector<const Emit *> &list, Vector3 at, float unit = 0.05f, int level = -1) {
+    int h = ++lastHandle;
     for (const Emit *e : list) {
+        if (e->kind == 1 || e->kind == 2) { rainStart(e, at, false, level, h); continue; }
         Live l{e, at};
-        l.key = ++lastKey, l.unit = unit, l.level = level;
+        l.key = ++lastKey, l.unit = unit, l.level = level, l.handle = h;
         lives.push_back(std::move(l));
     }
+    return h;
 }
 // WAE_Jetpack takeoff [data PARTTWK]: WXSprite4 (alpha), (.9, .95, 1) to (.7, .8, 1), orientation 30 +- 20, spin +- 30, thrown flat (normalised)
 const Emit JET_RING = {.tex = PUFF, .add = false, .num = 30, .max = 30, .lifeTime = 1, .life = 1000, .lifeR = 300, .size = 9.5f, .sizeR = 1.5f, .shrink = 0,
@@ -463,7 +471,9 @@ void loadData() {
             {"weapons/fireloop", Audio::Sfx::FireLoop, 1}, {"weapons/steamloop", Audio::Sfx::SteamLoop, 1}, {"weapons/fliesloop", Audio::Sfx::FliesLoop, 1},
             {"weapons/elecarc", Audio::Sfx::ElecArc, 1}, {"weapons/electricarching", Audio::Sfx::ElectricArching, 1},
             {"weapons/hoseintowater", Audio::Sfx::HoseIntoWater, 1}, {"weapons/stormcloud", Audio::Sfx::StormCloud, 0},
-            {"weapons/thud", Audio::Sfx::Land, 0}, {"weapons/bubblemachineloop", Audio::Sfx::BubbleLoop, 2}};
+            {"weapons/thud", Audio::Sfx::Land, 0}, {"weapons/bubblemachineloop", Audio::Sfx::BubbleLoop, 2},
+            {"global/explosionregular", Audio::Sfx::Explosion, 0}, {"weapons/explosionlarge", Audio::Sfx::BigExplosion, 0},
+            {"weapons/floodrainloop", Audio::Sfx::FloodRain, 1}};
         for (const auto &x : SND)
             if (lower(c["EmitterSoundFX"].s()) == x.ev) e.sfx = (int)x.id, e.sfxLoop = x.mode == 1, e.sfxHold = x.mode == 2;
         dataFx[lower(name)] = {&e};
@@ -494,7 +504,7 @@ void loadData() {
 // ---- kRain / kSnow emitters: SnowParticleEmitterEntity (init 0x487140, update 0x486b70) and RainGraphicEntity splashes (0x482910, 0x482530) ----
 struct Drop { Vector3 p; float t; Vector2 S; };  // spawn point (W4M position, not wrapped), s since spawn, half extents m
 struct Splash { Vector3 p; float size, alpha, acc; };  // half extent units, alpha byte, ms toward the next 7 ms step
-struct Rain { const Emit *e; Vector3 origin; std::vector<Drop> d; std::vector<Splash> sp; bool dying = false, weather = false; float fadeB = 255; int level = -1; };
+struct Rain { const Emit *e; Vector3 origin; std::vector<Drop> d; std::vector<Splash> sp; bool dying = false, weather = false; float fadeB = 255; int level = -1, handle = 0; };
 std::vector<Rain> rains;
 constexpr float RU = 0.05f;  // rain is camera-relative: W4M units at 20 per m, not the map scale
 Vector3 camPos{}, camLook{0, 0, 1};
@@ -515,9 +525,9 @@ bool rainWrap(Vector3 &p) {
     wrap(p.x, camPos.x), wrap(p.z, camPos.z);
     return wrap(p.y, camPos.y);
 }
-void rainStart(const Emit *e, Vector3 origin, bool weather, int level) {
+void rainStart(const Emit *e, Vector3 origin, bool weather, int level, int handle) {
     Rain r{e, origin};
-    r.weather = weather, r.level = level;
+    r.weather = weather, r.level = level, r.handle = handle;
     r.d.resize(e->pool());  // the whole pool at once, each wrapped into the box (0x487140)
     for (Drop &d : r.d) rainSpawn(r, d), rainWrap(d.p);
     rains.push_back(std::move(r));
@@ -554,6 +564,16 @@ void rainUpdate(float dt) {
     bool loop = std::any_of(rains.begin(), rains.end(), [](const Rain &r) { return r.e->kind == 2; });
     Audio::loop(Audio::Sfx::Flood, loop);  // RainGraphicEntity's weapons/RainLoop (0x4829cc); kRain never plays its EmitterSoundFX
 }
+void kill(int h) {  // 0x5bfde0 fading delete: the emitters stop, their particles live on; a rain fades
+    if (!h) return;
+    lives.erase(std::remove_if(lives.begin(), lives.end(), [&](const Live &l) { return l.handle == h; }), lives.end());
+    for (Rain &r : rains) if (r.handle == h) r.dying = true;
+}
+// FloodLogicEntity: StartRain once the weapon's LaunchDelay is over (0x555cff), StopRain (0x555420) at floodStop
+const float FLOOD_START = 1;  // kWeaponFlood LaunchDelay 1000 ms
+float floodT = -1, floodStop = 0;
+Vector3 floodAt{};
+int floodRain = 0;
 
 Texture2D loadTex(const char *dir, const char *name, bool mips) {
     const char *f = TextFormat(DATA_DIR "assets/ui/%s/%s.png", dir, name);
@@ -769,15 +789,12 @@ float levelUnit = 0.05f;
 void startLevel() {  // DetailEntity 0x5cd5eb -> 0x5c1410: each live EMITTER_ detail's effect at its position
     for (int i = 0; levelEm && i < (int)levelEm->size(); i++) {
         const Terrain::Emitter &m = (*levelEm)[i];
-        const std::vector<const Emit *> *fx = m.alive ? fxNamed(m.fx) : nullptr;
-        for (size_t k = 0; fx && k < fx->size(); k++)
-            if ((*fx)[k]->kind == 1 || (*fx)[k]->kind == 2) rainStart((*fx)[k], m.pos, false, i);  // SnowParticleEmitterEntity (0x5c0c44)
-            else effect({(*fx)[k]}, m.pos, levelUnit, i);
+        if (const std::vector<const Emit *> *fx = m.alive ? fxNamed(m.fx) : nullptr) effect(*fx, m.pos, levelUnit, i);
     }
 }
 }  // namespace
 void clear() {
-    domes.clear(), ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), rains.clear(), shake = show = 0;
+    domes.clear(), ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), rains.clear(), shake = show = 0, floodT = -1;
     startLevel();  // the map's emitters are part of the level, not of the moment cleared
     rolled = -1;
 }
@@ -920,11 +937,12 @@ void event(const GameEvent &e, Color dirt) {
     abductee(e);
     if (e.kind == GameEvent::BubblePop) bubblePop(e.pos);
     bool big = e.kind == GameEvent::BigBoom;
-    if ((e.kind == GameEvent::Boom || big) && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && domeModel.meshCount) {
-        bool donkey = WEAPONS[e.weapon].clusters == 0;  // WXP_DonkeyStrikeBounce: +10 units, (1.2, 1.3); WXP_FatkinsBounceMesh: 0, (0.6, 0.225)
-        domes.push_back({Vector3Add(e.pos, {0, donkey ? 0.5f : 0, 0}), donkey ? 1.2f : 0.6f, donkey ? 1.3f : 0.225f, 0});
-    }
-    if ((e.kind == GameEvent::Boom || big) && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0) {
+    bool donkey = (e.kind == GameEvent::Boom || big) && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0;
+    if (donkey && domeModel.meshCount) domes.push_back({Vector3Add(e.pos, {0, 0.5f, 0}), 1.2f, 1.3f, 0});  // WXP_DonkeyStrikeBounce: +10 units, (1.2, 1.3)
+    if ((e.kind == GameEvent::Boom || big) && e.fx) {
+        shake = fmaxf(shake, big ? 0.6f : 0.18f);  // its ExplosionMessage shakes the camera like any blast
+        if (const std::vector<const Emit *> *fx = fxNamed(e.fx)) effect(*fx, e.pos);
+    } else if (donkey) {
         shake = fmaxf(shake, 0.6f);  // the Explode ExplosionMessage shakes the camera as any blast; its only effect is DetonationFx
         donkeyDust(e.pos);
     } else if (e.kind == GameEvent::Boom && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun) {
@@ -1107,6 +1125,10 @@ void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c,
 }
 
 void jetStart(Vector3 at) { effect({&JET_RING, &JET_BASE}, at); }
+void start(const char *name, Vector3 at) {
+    if (const std::vector<const Emit *> *fx = fxNamed(name)) effect(*fx, at);
+}
+void flood(Vector3 at, float stop) { floodAt = at, floodStop = stop, floodT = 0; }
 void jetStop() { lives.erase(std::remove_if(lives.begin(), lives.end(), [](const Live &l) { return l.e == &JET_BASE; }), lives.end()); }
 
 void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet) {
@@ -1155,6 +1177,15 @@ void update(float dt) {
     for (tickAcc += show > 0 && show < 5 ? dt : 0; tickAcc >= 0.02f; tickAcc -= 0.02f)
         if (rnd() * 40 < 1) effect(FIREWORKS[(int)(rnd() * 5)], {stageC.x + (rnd() - 0.5f) * stageR, stageTop + rnd() * 1.5f, stageC.z + (rnd() - 0.5f) * stageR});
     show -= dt;
+    if (floodT >= 0) {  // 0x555720: WXP_RainFall (kept to stop it) and WXP_StormCloud (left to its own life)
+        float was = floodT;
+        floodT += dt;
+        if (was < FLOOD_START && floodT >= FLOOD_START) {
+            if (auto *f = fxNamed("WXP_RainFall")) floodRain = effect(*f, floodAt);
+            start("WXP_StormCloud", floodAt);
+        }
+        if (floodT >= floodStop) kill(floodRain), floodT = -1;
+    }
     tickEmitters(dt);
     rainUpdate(dt);
     for (size_t i = 0; i < ps.size();) {

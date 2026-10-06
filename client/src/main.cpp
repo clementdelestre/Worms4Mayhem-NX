@@ -130,7 +130,36 @@ static const char *objectModel(const Object &o) {
     if (o.mystery >= 0) return Models::has("crate_mystery") ? "crate_mystery" : "crate_weapon";
     return o.weapon < 0 ? "crate_health" : utility(WEAPONS[o.weapon].kind) && Models::has("crate_utility") ? "crate_utility" : "crate_weapon";
 }
+// W4M Sentry Gun mesh: the owner's AlliedGroup 0..3 plays its colour clip (table 0x590b54; turret 0x56b2d0, held 0x590356)
+static const char *teamClip(int team) { static const char *const C[] = {"Red", "Blue", "Green", "Yellow"}; return (unsigned)team < 4 ? C[team] : nullptr; }
+static Vector3 viewEye{};  // the render camera, for every pass (PiP, shadows) as W4M picks the mesh once
+// W4M PayloadGraphicEntity: Payload.LogicallyArmed loops AnimArm MineOn from 0 (0x57b150), a dud's Payload.Disarm lets the pass end
+// (0x6a0470 loop off); past 300 units from the camera it shows LandmineLow instead (0x57d9dd), which never plays it
+static bool drawObject(const Game &g, const Object &o) {
+    const char *model = objectModel(o), *clip = o.type == Object::Sentry ? teamClip(o.team) : nullptr;
+    float t = 0;
+    if (o.type == Object::Mine) {
+        static std::vector<std::pair<int, int>> arm;  // per object: tick armed, tick its pass ends (-1: looping); ponytail: by index, a removal shifts a phase
+        size_t i = &o - g.objects.data();
+        if (arm.size() < g.objects.size()) arm.resize(g.objects.size(), {-1, -1});
+        auto &[at, end] = arm[i];
+        int len = std::max(1, (int)ceilf(Models::clipLength(model, "MineOn") / Game::DT));
+        if (o.fuse >= 0 && !o.dead) {
+            if (at < 0 || end >= 0) at = g.clock, end = -1;
+        } else if (at >= 0 && end < 0) end = at + ((g.clock - at) / len + 1) * len;
+        if (at >= 0 && end >= 0 && g.clock >= end) at = end = -1;
+        if (at >= 0) clip = "MineOn", t = (g.clock - at) * Game::DT;
+        if (Vector3Distance(viewEye, o.pos) > 15 && Models::has("mine_low")) model = "mine_low", clip = nullptr;
+    }
+    Models::pick(clip, t);
+    bool ok = Models::draw(model, o.pos, (&o - g.objects.data()) * 1.3f);
+    return Models::pick(nullptr), ok;
+}
 static bool holyNext = false;  // the blast after the Hallelujah is the holy grenade's own
+static void floodFx(const Game &g, float stop) {  // FloodLogicEntity 0x555720: Land.Center x / z, Land.MaxHeight + 800 units
+    Vector3 c = g.landCenter();
+    Fx::flood({c.x, g.landTop() + 800 / 20.f, c.z}, stop);
+}
 static void onEvent(const Game &g, const GameEvent &e) {
     animEvent(g, e);
     Acting::event(g, e);
@@ -141,9 +170,10 @@ static void onEvent(const Game &g, const GameEvent &e) {
     if (e.kind == GameEvent::GameOver && won(g)) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
     Fx::event(e, g.terrain.side);
     switch (e.kind) {
-    case GameEvent::Boom: Audio::play(gunBlast(e) ? Sfx::Shotgun : donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    case GameEvent::Boom: if (!e.fx) Audio::play(gunBlast(e) ? Sfx::Shotgun : donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
     case GameEvent::BigBoom: if (donkeyBlast(e)) { Audio::play(Sfx::DonkeyImpact, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break; }
-        Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion, e.pos), holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+        if (!e.fx) Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion, e.pos);  // fx: its emitters' EmitterSoundFX
+        holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
     case GameEvent::Hallelujah: Audio::play(Sfx::Holy, e.pos), holyNext = true; break;
     case GameEvent::Fire: {
         const WeaponDef &d = WEAPONS[e.weapon];
@@ -158,12 +188,22 @@ static void onEvent(const Game &g, const GameEvent &e) {
         else if (k == Kind::Shotgun && d.name == "Sniper Rifle") s = Sfx::Sniper;
         if (k == Kind::Shell && customWeapon(e.weapon)) s = d.fuse > 0 ? Sfx::Throw : Sfx::SecretLaunch;  // Factory LaunchSfx by launch type
         else if (k == Kind::Sentry && e.worm >= 0) s = Sfx::SentryPlace;  // placing vs. the turret's own shots (worm -1)
-        if (k != Kind::Airstrike && k != Kind::Abduction && k != Kind::Jetpack) Audio::play(s, e.pos);  // chopper / UFO: drawBomber, drawUfo; jetpack: its loop (jetAudio)
+        if (k != Kind::Airstrike && k != Kind::Abduction && k != Kind::Jetpack && k != Kind::Flood) Audio::play(s, e.pos);  // chopper / UFO: drawBomber, drawUfo; jetpack: its loop (jetAudio); Flood: its rain's
+        if (k == Kind::Flood) floodFx(g, 1 + 4.7f);  // FloodWeaponLogicEntity 0x555c90: StopRain with DoFlood, RainDuration 4700 ms after the start
         bool tool = utility(k) || k == Kind::SkipGo;
         if (e.worm >= 0 && !tool) Audio::voice(team, WEAPONS[e.weapon].name == "Fire Punch" ? Voice::Punch : Voice::Fire, e.pos);  // worm -1: sentry gun; MeleeWeaponLogicEntity 0x568270: kMeleeFirepunch says Punch
         break;
     }
-    case GameEvent::Bounce: Audio::play(Sfx::Bounce, e.pos); break;
+    case GameEvent::Bounce: {  // Payload.Bounce: WEAPTWK BounceFx / BounceSfx (none for the others)
+        struct B { const char *weapon, *fx; Sfx sfx; };
+        static const B T[] = {{"Fatkins Strike", "WXP_Wep_Fatkins", Sfx::FatkinsBounce}, {"Banana Bomb", "WXP_Poof_VFast", Sfx::BananaBounce},
+                              {"Grenade", "WXP_Poof_VFast", Sfx::Bounce}, {"Cluster Grenade", "WXP_Poof_VFast", Sfx::Bounce},
+                              {"Holy Hand Grenade", "WXP_Poof_VFast", Sfx::Bounce}, {"Gas Canister", "WXP_Poof_VFast", Sfx::Bounce},
+                              {"Landmine", "WXP_Poof_VFast", Sfx::Bounce}};
+        for (const B &b : T)
+            if (e.weapon >= 0 && WEAPONS[e.weapon].name == b.weapon) Audio::play(b.sfx, e.pos), Fx::start(b.fx, e.pos);
+        break;
+    }
     case GameEvent::Arm: Audio::play(Sfx::BowImpact, e.pos); break;
     case GameEvent::Launch:  // WEAPTWK LaunchSfx; the bomb's ArielFx
         if (WEAPONS[e.weapon].kind == Kind::Donkey) {  // ArielFx WXP_CrateSpawnLARGE at its locator Donkey_L (0, -93, 0) units x Scale 1.2 [scale on the locator assumed]; EmitterSoundFX weapons/Cratespawn
@@ -183,7 +223,10 @@ static void onEvent(const Game &g, const GameEvent &e) {
         Audio::play(e.weapon == -1 ? Sfx::CrateImpactHealth : e.weapon >= 0 && utility(WEAPONS[e.weapon].kind) ? Sfx::CrateImpactUtil : Sfx::CrateImpactWeapon, e.pos);  // mystery (-2): Weapon (0x5ca143)
         break;
     case GameEvent::Collect: Audio::play(Sfx::Pickup, e.pos); break;
-    case GameEvent::Mystery: Audio::play(Sfx::Buffalo, e.pos); break;
+    case GameEvent::Mystery:
+        Audio::play(Sfx::Buffalo, e.pos);
+        if (e.weapon == MY_FLOOD) floodFx(g, 1 + 4.7f + 3);  // CrateLogicEntity 0x5ca6d0: StopRain FloodDuration 3000 ms after DoFlood
+        break;
     case GameEvent::Debris: Audio::play(Sfx::Debris, e.pos); break;
     case GameEvent::JetStart: Fx::jetStart({e.pos.x, e.pos.y - Game::R + 7 / 20.f, e.pos.z}); break;  // worm Position + 7 units (0x58ce7f)
     case GameEvent::MineArm: break;  // MineArmLoop: looped below while a mine ticks
@@ -328,6 +371,7 @@ struct WormAnim {
     // WAE state 1 / 4 (current worm): drawT s since Accessory.Init, drawn: weapon in hand, wind: windup clock (s since FIRE press)
     float drawT = 0, wind = 0; int drawW = -1; bool drawn = false, charging = false;
     float lockT = -1, jlr = 0;  // lockT: s since HUD.Target.Selected (homing), jlr: WXWorm.JetpackLR
+    float jumpT = -1;  // s since kWE 2 (StartJump), -1 outside the DetectJump window
 };
 static std::vector<WormAnim> wormAnims;
 
@@ -376,6 +420,7 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         a.drowned = w.alive ? -1 : fmaxf(a.drowned, 0) + dt;
         bool vaulting = (int)i == g.current && g.vault.t > 0;  // kWE 9: Walking -> Vaulting starts the Vault clip
         a.vaultT = vaulting && !a.vaulting ? 0 : a.vaultT + dt, a.vaulting = vaulting;
+        a.jumpT = (int)i == g.current && g.jumpDelay ? fmaxf(a.jumpT, 0) + dt : -1;
         // WXWorm.ParachuteLR (ParachuteLogicEntity 0x578a40, every 20 ms): lr = (3 lr +- 0.75) / 4 by the stick's turn, (3 lr) / 4 without a stick
         bool chute = (int)i == g.current && g.chute && !w.grounded;
         a.chute = chute ? fmaxf(a.chute, 0) + dt : -1;
@@ -539,7 +584,8 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
     else if (rk) {  // riding it: FireStarburst while the fuse burns 3.5 s (WAE state 5), then FlyStarburst (Starburst.Launched, state 7)
         float el = WEAPONS[rk->weapon].fuse - rk->fuse;
         clip = el < 3.5f ? "FireStarburst" : "FlyStarburst", t = el < 3.5f ? el : el - 3.5f;
-    } else if (a.act.clip && !fp) {
+    } else if (a.jumpT >= 0 && !fp) clip = "Jump_Start", t = a.jumpT, loop = false;  // kWE 2: weapon hidden; the launch event cuts to its clip (0x5a1060)
+    else if (a.act.clip && !fp) {
         clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
         if (a.act.from && ly) {  // WAE_Thrown state 5: Windup at 1 - v, v += clamp((1 - v) / 2, 0.2) per 20 ms (0x595a3b, 0x47a1a0)
             float v = 0;
@@ -596,7 +642,9 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, const Camera3D *
         else if (bow && !strcmp(clip, "WindupBow")) mc = a.act.clip ? "FireBow" : "Windup", mt = a.act.clip ? a.act.t : a.wind;
         else if (!strcmp(held, "hold_homing") && a.lockT >= 0 && !a.act.clip) mc = "AimLockHomingMissile", mt = a.lockT, once = true;
         float ml = Models::clipLength(held, mc);
+        Models::pick(teamClip(w.team));  // WAE_Standard Init: the held Sentry Gun's team clip
         Models::draw(held, !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
+        Models::pick(nullptr);
     }
     bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
     if (tool && !fp && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE,
@@ -1101,7 +1149,9 @@ int main(int argc, char **argv) {
             const char *aim = argc > 5 ? argv[4] : nullptr;
             float aimT = argc > 5 ? atof(argv[5]) : 0;
             ly.actT[0] = L * k / 7;
-            Models::draw(mdl, p, getenv("W4NX_YAW") ? (float)atof(getenv("W4NX_YAW")) : PI / 2, 0, WHITE, argv[2], L * k / 7, false, aim, aimT, layered ? &ly : nullptr);
+            if (float sc = getenv("W4NX_SCALE") ? (float)atof(getenv("W4NX_SCALE")) : 0; sc > 0)  // W4NX_SCALE: a raw-unit model (ufo) at that scale
+                Models::draw(mdl, MatrixMultiply(MatrixScale(sc, sc, sc), MatrixTranslate(p.x, p.y, p.z)), WHITE, argv[2], L * k / 7);
+            else Models::draw(mdl, p, getenv("W4NX_YAW") ? (float)atof(getenv("W4NX_YAW")) : PI / 2, 0, WHITE, argv[2], L * k / 7, false, aim, aimT, layered ? &ly : nullptr);
             const char *loc = getenv("W4NX_LOC") ? getenv("W4NX_LOC") : "WeaponLocator";  // W4NX_LOC: another attach joint (Pack_Locator)
             if (argc > 3 && Models::joint("worm", loc, argv[2], L * k / 7, false, &m, aim, aimT))
                 Models::draw(argv[3], MatrixMultiply(!strcmp(argv[3], "hold_starburst") && !getenv("W4NX_LOC") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))), WHITE, getenv("W4NX_LOC") || Models::clipLength(argv[3], argv[2]) > 0 ? argv[2] : "Rest", L * k / 7);
@@ -1744,7 +1794,7 @@ int main(int argc, char **argv) {
             in = Input{}, in.walk = 60, in.buttons = (game.icarus == 1 && frame % 30 == 0) || (game.icarus == 2 && game.clock >= game.flapAt && !(prevShotJump & Input::JUMP)) ? Input::JUMP : 0;
         prevShotJump = in.buttons;
         if (utilShot && (WEAPONS[game.weapon].kind == Kind::Abduction || WEAPONS[game.weapon].kind == Kind::Binoculars)) {  // face the first enemy, FIRE once
-            in = Input{}, in.buttons = frame == 40 ? Input::FIRE : 0;
+            in = Input{}, in.buttons = frame == 40 || frame == 52 ? Input::FIRE : 0;  // the first press may only end the hot seat
             for (const Worm &e : game.worms)
                 if (frame == 2 && e.alive && e.team != cur.team) {
                     Vector3 d = Vector3Subtract(e.pos, cur.pos);
@@ -1941,6 +1991,7 @@ int main(int argc, char **argv) {
         }
         Vector3 jolt = Vector3Scale({sinf(clock * 53), sinf(clock * 61 + 1) * 0.7f, sinf(clock * 47 + 2)}, Fx::shake);
         view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt), view.up = Controls::viewUp(view);
+        viewEye = view.position;
         lap(T_CAMERA);
         animateWorms(game, dt, view);
         // W4M lighting pass: land and still decor cached until remeshed; clip-played decor, worms, graves, shots and objects every frame
@@ -1950,7 +2001,7 @@ int main(int argc, char **argv) {
                 if (Models::visible(w.pos, 2)) (w.alive || w.counted > 0) ? (void)drawWorm(game, w, clock) : drawGrave(game, w), at.push_back({w.pos.x, w.pos.y, w.pos.z, 2});
             for (const Projectile &s : game.shots) drawShot(s, clock, game.terrain), at.push_back({s.pos.x, s.pos.y, s.pos.z, 3});
             for (const Object &o : game.objects)
-                if (Models::visible(o.pos, 2)) Models::draw(objectModel(o), o.pos, (&o - game.objects.data()) * 1.3f), at.push_back({o.pos.x, o.pos.y, o.pos.z, 2});
+                if (Models::visible(o.pos, 2)) drawObject(game, o), at.push_back({o.pos.x, o.pos.y, o.pos.z, 2});
         });
         lap(T_SHADOW);
         // W4M PiP: the event camera in one low-resolution pass (terrain, worms, shots, objects, water), before the main view
@@ -1969,7 +2020,7 @@ int main(int argc, char **argv) {
             for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawWorm(game, w, clock);
             for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain)) DrawSphere(s.pos, 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
-                if (Models::visible(o.pos, 2)) Models::draw(objectModel(o), o.pos, (&o - game.objects.data()) * 1.3f);
+                if (Models::visible(o.pos, 2)) drawObject(game, o);
             Fx::drawWater(pipView, game.water, clock, 12000 * game.terrain.scale / 20, {game.terrain.origin.x, game.terrain.origin.z});
             game.terrain.drawFringe();
             Fx::draw(pipView);
@@ -2040,11 +2091,11 @@ int main(int argc, char **argv) {
         }
         dudFx(game.objects);
         for (const Object &o : game.objects) {
-            const char *m = objectModel(o);
             if (o.type == Object::Crate) crateChute(o, &o - game.objects.data(), pause.open ? 0 : dt);
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute
-            if (!Models::draw(m, o.pos, (&o - game.objects.data()) * 1.3f)) {
+            if (!drawObject(game, o)) {
                 if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
+                if (o.type == Object::Mine && o.fuse >= 0 && fmodf(clock, 0.3f) < 0.15f) DrawSphere(Vector3Add(o.pos, {0, 0.15f, 0}), 0.08f, RED);
                 else if (o.type == Object::Barrel) DrawCylinder({o.pos.x, o.pos.y - 0.5f, o.pos.z}, 0.35f, 0.35f, 1, 10, MAROON);
                 else if (o.type == Object::Target) {  // bullseye facing the active worm
                     Vector3 f = Vector3Normalize({cur.pos.x - o.pos.x, 0, cur.pos.z - o.pos.z});
@@ -2054,7 +2105,6 @@ int main(int argc, char **argv) {
                 }
                 else DrawCube(o.pos, 0.8f, 0.8f, 0.8f, o.weapon < 0 ? RAYWHITE : BROWN);
             }
-            if (o.type == Object::Mine && o.fuse >= 0 && fmodf(clock, 0.3f) < 0.15f) DrawSphere(Vector3Add(o.pos, {0, 0.15f, 0}), 0.08f, RED);
         }
         if (game.cfg.mission)  // reach objectives: a gold beacon
             for (const MissionSpec::Goal &g : game.cfg.mission->objectives) {

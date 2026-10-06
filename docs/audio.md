@@ -43,8 +43,8 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 
 | Sfx | file | W4M event (FEV) | dB | loop | 3D range m | max | imported from (bank: subsounds) | played from |
 |---|---|---|---|---|---|---|---|---|
-| Explosion | `explosion` | global/ExplosionRegular | -3 |  | 0.5–50 | 4 | global: ExplosionRegular1, ExplosionRegular2, ExplosionRegular3 | main.cpp `onEvent` |
-| BigExplosion | `big_explosion` | weapons/ExplosionLarge | -12 |  | 0.5–40 | 1 | weapons: ExplosionLarge1, ExplosionBoxed1 | main.cpp `onEvent` |
+| Explosion | `explosion` | global/ExplosionRegular | -3 |  | 0.5–50 | 4 | global: ExplosionRegular1, ExplosionRegular2, ExplosionRegular3 | main.cpp `onEvent`; fx.cpp EmitterSoundFX of WXP_ExplosionX_InnerCloud / WXP_Explosion_Small_Cloud |
+| BigExplosion | `big_explosion` | weapons/ExplosionLarge | -12 |  | 0.5–40 | 1 | weapons: ExplosionLarge1 | main.cpp `onEvent`; fx.cpp EmitterSoundFX of WXP_ExplosionX_InnercloudLarge |
 | Fire | `fire` | weapons/RocketRelease | -6 |  | 2D | 1 | weapons: RocketRelease | main.cpp `onEvent` |
 | Bounce | `bounce` | weapons/GrenadeBounce | -2 |  | 0.5–60 | 1 | weapons: GrenadeImpact1, GrenadeImpact2, GrenadeImpact3 | main.cpp `onEvent` |
 | Splash | `splash` | weapons/SplashHeavy | 0 |  | 0.5–70 | 2 | weapons: SplashHeavy1, SplashHeavy2, SplashHeavy3 | main.cpp `onEvent` |
@@ -71,7 +71,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | Dynamite | `dynamite` | weapons/FuseLoop | -4 | yes | 0.5–25 | 1 | weapons: Fuse | main.cpp `onEvent`, main.cpp `main` |
 | Gas | `gas` | weapons/GasLoop | -16 |  | 0.5–15 | 1 | weapons: GasLoop | main.cpp `onEvent` |
 | Abduction | `abduction` | weapons/AlienUfoBeamStart | 0 |  | 0.5–100 | 1 | weapons: AlienUFOBeamStart | main.cpp `onEvent`, main.cpp `updateUfo` |
-| Flood | `flood` | weapons/RainLoop | -6 | yes | 2D | 1 | weapons: RainLoopAmb | main.cpp `onEvent` |
+| Flood | `flood` | weapons/RainLoop | -6 | yes | 2D | 1 | weapons: RainLoopAmb | fx.cpp `rainUpdate`: `Audio::loop` while a kRain runs (weather, map, Flood rain); the Flood's fire plays nothing (WEAPTWK has no LaunchSfx) |
 | Parachute | `parachute` | weapons/ParachuteLoop | -2 |  | 0.5–25 | 1 | weapons: ParachuteOpen | main.cpp `onEvent` |
 | MineBeep | `mine_beep` | weapons/MineArmLoop | 0 | yes | 5–25 | 1 | weapons: MineArmLoop | main.cpp `main` |
 | CrateLand | `crate_land` | weapons/CrateSpawn | -4 |  | 0.5–60 | 1 | weapons: CrateSpawn | main.cpp `onEvent` |
@@ -155,14 +155,22 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | ElectricArching | `electric_arcing` | weapons/ElectricArching | 0 | loop | 0.5–25 | 1 | weapons: ElectricArcing | fx.cpp map emitters (SndRadioFx) |
 | StormCloud | `storm_cloud` | weapons/StormCloud | 0 | fade out 0.5 s | 0.5–80 | 4 | weapons: ThunderClap_1-5 | fx.cpp map emitters (WXPL_TowerClouds): played once when the emitter starts (0x5bb88e) |
 | HoseIntoWater | `hose_into_water` | weapons/HoseIntoWater | 0 | loop | 0.05–35 | 1 | weapons: TapIntoWater | fx.cpp map emitters (Hose_Part1) |
+| FloodRain | `flood_rain` | weapons/FloodRainLoop (RainLoop layer) | -2 | loop, `Def::env`: 0 → 1 over the 2 s fade-in, × 0.5, to 0 from 7.97 to 12.0 s | 2D | 1 | weapons: RainLoop | fx.cpp `tickEmitters` (EmitterSoundFX of WXP_StormClouds): `Audio::emitter`, cut with the emitter (FEV fade-out 0) [data] |
+| FloodThunder | `flood_thunder` | weapons/FloodRainLoop (Thunder layer) | 0 |  | 2D | 1 | weapons: Thunder | started with FloodRain (`Def::layer`), sounddef delay 1500 ms, stopped with it [data] |
+| FatkinsBounce | `fatkins_bounce` | weapons/FatkinsBounce | -3 |  | 2D | 1 | weapons: FatkinsBounce1, FatkinsBounce2 (mode 2) | main.cpp `onEvent` Bounce (WEAPTWK BounceSfx) |
+| BananaBounce | `banana_bounce` | weapons/BananaBombImpact | -6 |  | 0.5–60 | 1 | weapons: BananaBombImpact | main.cpp `onEvent` Bounce (WEAPTWK BounceSfx of kWeaponBananaBomb) |
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 
 Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its Time envelope
 ends it at 5.03 s, so it is one pass of the 5.85 s clip [ours]: started with a 1 s trigger delay when a Bazooka or Homing Missile shot exists, placed on the shot every frame, stopped at 5.03 s of flight or when the shot is gone (no 500 ms fade-out, the blast covers it); the Fire event plays RocketRelease (2D, -6 dB) for both [data + disasm, docs/w4m/audio.md "MissileLoop owners"]; `Parachute` is the Open layer of ParachuteLoop; `Pickup` uses PickupWeapon's −11 dB for all
-three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6); `BigExplosion`'s second variant ExplosionBoxed1 is −2 dB 2D in W4M;
+three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6);
 `FeBookOut` has event volume 0 in W4M (silent); `BubbleLoop` plays one of Bubble1–6 per 500 ms spawn of WXP_Bubbles_Small (FEV spawn 500..500 on a oneshot instance, fmod_event 0x1001a3ec; the emitter starts its event once, 0x5bdcf4).
 
 ## Voice lines [ours, per the coordinator]
 - A line is dropped while any line of the same voice bank still plays: no queue, no gap (`voice()` in audio.cpp).
 
 Map emitter sounds (fx.cpp, docs/w4m/render.md §3): the other EmitterSoundFX of map effects (weapons/ChurchBell, MetalCreak, CreakingTree, FlyingSaucer, HourGlass, Mummy, OldRobot, RustlingLeaves, Tentacles, Windmill, WooWooBeams, BomberEngine) are FEV events without a sound definition: silent in W4M [data, fev.py]. kRain emitters never start their EmitterSoundFX (weapons/FloodRainLoop, weapons/RainLoop); the rain's sound is RainGraphicEntity's weapons/RainLoop (`Flood` above, `Audio::loop` while a rain runs) [disasm 0x4829cc].
+Weapon effects started by name (`GameEvent::fx`, `Fx::start`) play their EmitterSoundFX the same way: an effect-carrying Boom plays no
+sound of its own in `onEvent`. The Fatkins Detonate's DetonationSfx weapons/ExplosionLarge is the same event as its
+WXP_ExplosionX_InnercloudLarge's (max playbacks 1, steal oldest), started a 20 ms update later: only the emitter's is played [data; the
+steal: assumed FMOD behaviour 1].

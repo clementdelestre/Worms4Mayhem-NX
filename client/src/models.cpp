@@ -11,6 +11,7 @@
 #include <mutex>
 #include <cstring>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,31 @@
 #endif
 
 namespace {
+// W4M XChildSelector (w4m-models root extras "sel"): the mesh showing child 0 and each child's material; per clip keying it,
+// its SelectedChild value at 60 fps
+struct Sel { int mesh; std::vector<int> mat; };
+struct SelTrack { int sel; std::vector<float> v; };
+void parseSel(const char *p, std::vector<Sel> &sels, std::map<std::string, std::vector<SelTrack>> &tracks) {
+    while (*p && *p != '"') {  // "S <primitive> <material>...;" then "K <clip> <selector> <length> <value or value*count>...;"
+        const char *end = p + strcspn(p, ";\"");
+        std::istringstream in(std::string(p, end));
+        std::string tag, w;
+        if (in >> tag; tag == "S") {
+            Sel s{};
+            in >> s.mesh;
+            for (int m; in >> m;) s.mat.push_back(m + 1);  // raylib material 0 is its default
+            sels.push_back(s);
+        } else if (tag == "K") {
+            std::string clip;
+            SelTrack t{};
+            float len;
+            in >> clip >> t.sel >> len;
+            while (in >> w) t.v.insert(t.v.end(), w.find('*') == std::string::npos ? 1 : atoi(w.c_str() + w.find('*') + 1), strtof(w.c_str(), nullptr));
+            tracks[clip].push_back(std::move(t));
+        }
+        p = *end == ';' ? end + 1 : end;
+    }
+}
 Matrix trs(const Transform &p) {
     return MatrixMultiply(MatrixMultiply(MatrixScale(p.scale.x, p.scale.y, p.scale.z), QuaternionToMatrix(p.rotation)),
                           MatrixTranslate(p.translation.x, p.translation.y, p.translation.z));
@@ -40,6 +66,8 @@ struct Entry {
     std::vector<uint64_t> owns;  // per clip: the face bones it moves itself, which an emote layer leaves to it
     Models::Layers lay{}; bool layered = false;  // the Layers of the last skin()
     std::vector<int> glow;  // materials drawn as additive light (W4M shader surfaces)
+    std::vector<Sel> sels;
+    std::map<std::string, std::vector<SelTrack>> tracks;  // per W4M clip
     // skinned poses in their own buffers: a worm drawn in the shadow pass then the view is skinned once a frame
     struct Slot { const ModelAnimation *a, *am; int f, af; bool lay; Models::Layers ly; float eyeUV[3]; unsigned long used; std::vector<Mesh> meshes; };
     std::vector<Slot> slots;
@@ -91,6 +119,8 @@ struct Job {
     int next = -1;  // albedo to upload next, -1 before LoadModel()
     bool hasFx = false;
     Vector3 fx{};  // translation of the glb's FxLocator node (WEAPTWK FxLocator: the ArielFx emitters' origin), model space
+    std::vector<Sel> sels;
+    std::map<std::string, std::vector<SelTrack>> tracks;
 };
 std::mutex mu;
 std::deque<Job> jobs;
@@ -204,6 +234,7 @@ Job prepare(const char *path) {
     for (size_t i = 0; i < g->nodes_count; i++)
         if (g->nodes[i].name && !strcmp(g->nodes[i].name, "FxLocator") && g->nodes[i].has_translation)
             j.hasFx = true, j.fx = {g->nodes[i].translation[0], g->nodes[i].translation[1], g->nodes[i].translation[2]};
+    if (const char *x = g->extras.data ? strstr(g->extras.data, "\"sel\":\"") : nullptr) parseSel(x + 7, j.sels, j.tracks);
     cgltf_free(g);
     auto [js, end] = json(j);
     const char *tag = "\"baseColorTexture\"";
@@ -262,7 +293,7 @@ void add(Job &j) {
     if (strstr(j.path.c_str(), "/frontend/")) return (void)(spare[j.path] = e.m);  // FrontBg's scene, freed by FrontBg
     for (int k = 0; k < e.m.materialCount; k++)
         if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
-    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx;
+    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.sels = std::move(j.sels), e.tracks = std::move(j.tracks);
     for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
     for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
         const char *n = e.m.skeleton.bones[b].name;
@@ -382,8 +413,9 @@ void Models::unload() {
 int Models::hatCount() { return (int)hatNames.size(); }
 const char *Models::hatName(int i) { return i >= 0 && i < (int)hatNames.size() ? hatNames[i].c_str() : ""; }
 
-static const ModelAnimation *find(const Entry &e, const char *clip) {
-    for (int i = 0; clip && i < e.count; i++) if (!strcmp(e.anims[i].name, clip)) return &e.anims[i];
+static const ModelAnimation *find(const Entry &e, const char *clip) {  // "A" also finds w4m-models' "A+B" (A over B)
+    size_t n = clip ? strlen(clip) : 0;
+    for (int i = 0; clip && i < e.count; i++) if (!strncmp(e.anims[i].name, clip, n) && (!e.anims[i].name[n] || e.anims[i].name[n] == '+')) return &e.anims[i];
     return nullptr;
 }
 
@@ -399,8 +431,10 @@ float Models::bottom(const char *name) {
 
 float Models::clipLength(const char *name, const char *clip) {
     auto it = models.find(name);
-    const ModelAnimation *a = it == models.end() ? nullptr : find(it->second, clip);
-    return a ? (a->keyframeCount - 1) / 60.0f : 0;  // raylib samples glTF clips at 60 fps
+    if (it == models.end() || !clip) return 0;
+    if (const ModelAnimation *a = find(it->second, clip)) return (a->keyframeCount - 1) / 60.0f;  // raylib samples glTF clips at 60 fps
+    auto k = it->second.tracks.find(clip);  // a clip keying only XChildSelectors
+    return k == it->second.tracks.end() ? 0 : (k->second[0].v.size() - 1) / 60.0f;
 }
 
 static const ModelAnimation *clipFrame(const Entry &e, const char *clip, float t, bool loop, int *f, bool fallback = true) {
@@ -637,6 +671,36 @@ void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse; }
 )";
 static void compileBeam() { scroll = Lit::shader(SCROLL_VS, SCROLL_FS, false); }  // at boot: a compile on the first abduction drops frames
 void Models::shade(Shader s) { over = s; }
+static const char *picked = nullptr;
+static float pickedT = 0;
+void Models::pick(const char *clip, float t) { picked = clip, pickedT = t; }
+
+// SelectedChild: the largest value the playing clips key (attribute flag 0x10, 0x7ac1a0), truncated (0x6c7243); none keeps the file's 0
+static void select(Entry &e, const char *clip, float t, bool loop, const char *aim, float aimT, const Models::Layers *ly) {
+    if (e.sels.empty()) return;
+    float v[32] = {};  // the game has at most 11 per mesh
+    auto add = [&](const char *c, float ct, bool lp) {
+        for (const char *p = c; p && *p;) {
+            size_t n = strcspn(p, "+");
+            if (auto it = e.tracks.find(std::string(p, n)); it != e.tracks.end())
+                for (const SelTrack &k : it->second) {
+                    int f = (int)(ct * 60), last = (int)k.v.size() - 1;
+                    f = lp && last > 0 ? f % last : std::clamp(f, 0, last);
+                    if (k.sel >= 0 && k.sel < 32 && last >= 0) v[k.sel] = fmaxf(v[k.sel], k.v[f]);
+                }
+            p += n + (p[n] == '+');
+        }
+    };
+    add(clip, t, loop), add(aim, aimT, false), add(picked, pickedT, true);
+    if (ly) {  // the worm's other XAnim layers: Base at weight 1, the acting gestures, the emote
+        add("Base", t, true), add(ly->face, ly->faceT, true);
+        for (int k = 0; k < 2; k++) if (ly->actW[k] > 0) add(ly->act[k], ly->actT[k], false);
+    }
+    for (size_t i = 0; i < e.sels.size() && i < 32; i++) {
+        const Sel &s = e.sels[i];
+        if (s.mesh < e.m.meshCount && !s.mat.empty()) e.m.meshMaterial[s.mesh] = s.mat[std::clamp((int)v[i], 0, (int)s.mat.size() - 1)];
+    }
+}
 
 static void drawModel(Entry &e, Vector3 pos, Color tint) {
     Model &m = e.m;
@@ -698,6 +762,7 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
         e.posed = a, e.frame = f, e.aimed = nullptr, e.aimFrame = -1, e.layered = false;
     }
     e.m.transform = m;
+    select(e, clip, t, true, nullptr, 0, nullptr);
     drawModel(e, {0, 0, 0}, tint);
     return true;
 }
@@ -760,6 +825,7 @@ bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color t
     int f, af = -1;
     const ModelAnimation *am = aim ? clipFrame(e, aim, aimT, false, &af, false) : nullptr;
     e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
+    select(e, clip, t, loop, aim, aimT, ly);
     if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f); a && e.m.boneMatrices && a->keyframeCount > 0) {
         Entry::Slot &s = slotFor(e, a, f, am, af, ly);
         eyes(e, ly, s.meshes.data(), s.eyeUV);
