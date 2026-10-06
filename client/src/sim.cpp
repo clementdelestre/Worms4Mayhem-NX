@@ -784,7 +784,7 @@ void Game::start(const GameConfig &c) {
         }
     }
     picked.assign(teams, weapon);
-    idle.assign(teams, 0), surrendered.assign(teams, 0);
+    surrendered.assign(teams, 0);
     special.assign(worms.size(), 0), wormCpu.assign(worms.size(), 0);
     if ((cfg.rules & RULE_SUDDEN_DEATH) && cfg.scheme.roundTime == 0) {  // stdvs Initialise: RoundTime 0 starts sudden death
         suddenDeath = true;
@@ -834,7 +834,7 @@ void Game::beginTurn(int team) {
     const Scheme &sc = cfg.scheme;
     for (int i = 1; i <= teams; i++) {
         int t = (team + i) % teams;
-        if (!has[t] || idle[t]) continue;
+        if (!has[t]) continue;
         for (int k = 0; k < perTeam; k++) {
             int slot = (nextWorm[t] + k) % perTeam, c = t * perTeam + slot;
             if (!worms[c].alive || !worms[c].turns) continue;
@@ -2921,8 +2921,7 @@ uint32_t Game::checksum() const {
     if (wobble.weapon >= 0) mix(&wobble.at, sizeof wobble.at);
     if (mineDet) mix(&mineDet, sizeof mineDet);
     if (cfg.mission) {
-        mix(&run.result, 5 * sizeof(int));
-        mix(run.state.data(), run.state.size()), mix(run.met.data(), run.met.size()), mix(idle.data(), idle.size());
+        mix(&run.result, 2 * sizeof(int));
         if (script) { uint32_t s = scriptChecksum(*this); mix(&s, sizeof s), mix(&indestructible, 1); }
     }
     for (const auto &a : ammo) mix(a.data(), a.size() * sizeof(int));

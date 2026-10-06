@@ -39,7 +39,7 @@ From `client/` (desktop raylib libs built, run from `client/` so `romfs/` and `a
 | `make check` | `tests/sim_check.cpp`: determinism and the sim rules (physics, weapons, camera rules `checkEventCameras`, retreat in flight, death queue...) |
 | `make ai_check` | `tests/ai_check.cpp`: AI vs AI matches deal damage, finish, replay bit-identically, CPU5 beats CPU1, rope race |
 | `make replay_check` | `tests/replay_check.cpp`: saved / loaded / re-simulated replay and instant-replay restore give the same checksum |
-| `make mission_check` | `tests/mission_check.cpp`: every mission (romfs + imported) loads, wins on its objectives, loses when wiped out |
+| `make mission_check` | `tests/mission_check.cpp`: every imported W4M mission runs its script to its end with the AI on every team |
 | `tests/ui_check.cpp` (no make target, build line in its header) | the weapon panel's direct pick (`Input::pick`) lands on the weapon whatever the ticks per frame |
 | `cd server && cargo test` | lobby, start, relay, desync, reconnect replay (`server/tests/relay.rs`) |
 | `--netbot ...` (below) | two or more clients through a server, checksums compared every turn |

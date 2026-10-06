@@ -63,7 +63,7 @@ Multiple Girders (`WP_MULTI_GIRDER`, W4M GirdersDontEndTurn, disasm 0x55ac30).
 
 In order: bubbles age one turn end (W4M Bubble.Lifetime, data); Icarus, girder preview, Double Damage and binoculars reset (W4M
 DoPostActivity `SetData("DoubleDamage", 0)`, data); poison takes `poison` hp from each worm, never below 1 (W4M Worm.Poison, data);
-game over check; sudden death (below); the next team in order with a living worm (`idle` teams skipped: mission captives), its next
+game over check; sudden death (below); the next team in order with a living worm, its next
 worm in rotation (`nextWorm`); turn timer = `turnTime` s, hot seat = `hotSeat` s (W4M HotSeat 10 s, data); wind
 `WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10; HUD meter `Hud::draw`: downwind pointer in the camera frame, "NNm" = round(10 × |wind|), docs/w4m/render.md "Wind meter"; `Ui::windPointer`: W4M's yaw with its -sin(-268 / 640) term, the tip turned by ArrowOrien (0.75, 0, -0.2) in XYZ order and seen down -z, the sprite foreshortened along its axis; ours: the HUD is drawn in 2D with no projection of its own, so it matches W4M only if W4M's HUD camera is orthographic (not traced)); the empty hand: `weapon` -1 (W4M GameLogic.Turn.Started
 0x566d57 sets kWeaponUndefined, disasm; Weapon.Create runs only from scripts); `picked[team]` keeps the weapon held when its last turn

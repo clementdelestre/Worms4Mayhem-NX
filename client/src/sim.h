@@ -280,11 +280,7 @@ struct GameConfig {
 };
 
 // Mission progress, driven by mission.cpp (checksummed). result: 0 running, 1 success, -1 failure.
-struct MissionRun {
-    int result = 0, ticks = 0, collected = 0, destroyed = 0, turns = 0;
-    std::vector<uint8_t> state;  // per spec object: 0 waiting (sequence), 1 placed, 2 collected / destroyed / lost
-    std::vector<uint8_t> met;    // per objective: latched once met
-};
+struct MissionRun { int result = 0, ticks = 0; };
 
 enum class Phase { Aim, Flying, Retreat, Settle, GameOver };
 
@@ -484,7 +480,6 @@ struct Game {
     void factoryStart();
     bool suddenDeath = false;
     Vector3 raceFinish{};  // rope race: terrain.finish, or a deterministic fallback
-    std::vector<uint8_t> idle;  // per team: never takes a turn (mission captives)
     std::vector<uint8_t> surrendered;  // per team: W4M TeamData +0x72 (SurrenderTeam 0x5b4d00): no turn, no longer standing
     // W4M GirderKitLogicEntity 0x55ada0: a preview 2 m ahead at eye level, 0.3 m steps camera-relative, each axis within
     // Weapon.Girder.MaxDistance 300 units of the worm; FIRE welds GirderSmall.xom (4 x 2 x 4 voxels of 1 m, profile 2,1,1,2)
@@ -658,5 +653,5 @@ inline Vector3 arcMove(Vector3 v0, Vector3 v1, float lag = 0, float dt = Game::D
     return {f(v0.x, v1.x), f(v0.y, v1.y), f(v0.z, v1.z)};
 }
 inline float arcLag(const WeaponDef &wd) { return wd.kind == Kind::Homing ? EULER_SI : 0; }  // non-Parabolic payload: v += a, then pos += v
-void missionStart(Game &g);  // mission.cpp: worms, ammo, objects from cfg.mission
-void missionStep(Game &g);   // mission.cpp: sequences, objectives, result
+void missionStart(Game &g);  // mission.cpp: starts cfg.mission's script
+void missionStep(Game &g);   // mission.cpp: mission clock, script step

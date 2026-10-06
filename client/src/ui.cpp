@@ -2662,28 +2662,19 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
     float imgAt = story ? 0.73f : 0.3f;  // Mission Image / IMAGE Level, In_Speech
     if (st.brief && pick >= 0) {
         const MissionSpec &m = list[pick];
+        Progress::Entry e = p.get(m.id);
         if (feItem({640, 355}, &IN_SPEECH, 0.35f, &OUT_SCALEY, since, out)) popup({140, 40, 1000, 630}), rlPopMatrix();  // Paper Back
         auto title = [&] {
-            text(m.name.c_str(), 640, 60, 48, GOLDEN, 1);
+            text(tr(m.nameId.c_str(), m.name.c_str()), 640, 60, 48, GOLDEN, 1);
             text(m.campaign.c_str(), 640, 112, 22, SKYBLUE, 1);
         };
-        auto body = [&] {
-            float y = 150 + paragraph(m.brief, 450, 150, 650, 24, WHITE, 9) + 16;
-            text("Objectives", 450, y, 28, GOLDEN), y += 36;
-            for (const MissionSpec::Goal &g : m.objectives) text(("- " + goalText(m, g, nullptr)).c_str(), 470, y, 24, WHITE), y += 30;
-            for (const MissionSpec::Goal &g : m.fail) text(("- " + goalText(m, g, nullptr)).c_str(), 470, y, 24, ORANGE), y += 30;
-            y = std::max(y + 10, 420.0f);
-            for (size_t k = 0; k < m.teams.size(); k++) {
-                const MissionSpec::TeamSpec &ts = m.teams[k];
-                text(TextFormat("%s: %d worm%s%s", ts.name.c_str(), (int)ts.worms.size(), ts.worms.size() > 1 ? "s" : "", k == 0 ? " (you)" : ts.idle ? "" : TextFormat(" (CPU %d)", ts.cpu)),
-                     180, y, 22, TEAM_COLORS[k % 4]);
-                y += 28;
-            }
-        };
+        auto body = [&] { paragraph(tr(m.briefId.c_str(), m.brief.c_str()), 450, 150, 650, 24, WHITE, 16); };  // Frontend_Briefing
         auto record = [&] {
-            Progress::Entry e = p.get(m.id);
             if (e.done) text(TextFormat("Best time %s", clockText(e.best).c_str()), 1100, 630, 24, GOLDEN, 2);
-            if (m.par) text(TextFormat("Par %d:%02d", m.par / 60, m.par % 60), 180, 630, 24, LIGHTGRAY);
+            if (!story) return;  // Bonus Time text (MissionService 0x733c94): Lock.T.<level> unlocked, else BonusTime as "%um %us"
+            bool won = std::find(p.unlocks.begin(), p.unlocks.end(), "Lock.T." + m.level) != p.unlocks.end();
+            text(won ? tr("FETXT.TimeBonusWon", "Time Bonus Achieved") : TextFormat(tr("FETXT.TimeBonusFormat", "Time Bonus: %um %us"), m.par / 60, m.par % 60),
+                 180, 630, 24, LIGHTGRAY);
         };
         if (feItem({300, 270}, &IN_SPEECH, imgAt, nullptr, since, out, -1300)) {
             if (!image(m.preview.empty() ? preview(m.map) : m.preview, {180, 150, 240, 240})) image(preview(m.map), {180, 150, 240, 240});
@@ -2724,7 +2715,7 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
         Progress::Entry e = p.get(m.id);
         bool lock = !p.unlocked(list, rows[k]);
         panel(r, k == sel);
-        text(m.name.c_str(), r.x + 20, r.y + 11, 28, lock ? GRAY : ink(k == sel));
+        text(tr(m.nameId.c_str(), m.name.c_str()), r.x + 20, r.y + 11, 28, lock ? GRAY : ink(k == sel));
         text(lock ? "Locked" : e.done ? TextFormat("Done  %s", clockText(e.best).c_str()) : "New", r.x + r.width - 20, r.y + 14, 22,
              lock ? GRAY : e.done ? GOLDEN : SKYBLUE, 2);
         rlPopMatrix();
@@ -2741,8 +2732,8 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
         }
         auto body = [&] {
             text(m.campaign.c_str(), 800, 400, 22, SKYBLUE);
-            paragraph(!open ? std::string("Complete the previous mission to unlock") : m.objectives.empty() ? std::string() : goalText(m, m.objectives[0], nullptr), 800, 430, 420, 26, open ? WHITE : GRAY, 2);
-            paragraph(m.brief, 800, 500, 420, 20, LIGHTGRAY, 7);
+            if (!open) paragraph("Complete the previous mission to unlock", 800, 430, 420, 26, GRAY, 2);
+            paragraph(tr(m.briefId.c_str(), m.brief.c_str()), 800, open ? 430 : 500, 420, 20, LIGHTGRAY, open ? 10 : 7);  // Frontend_Briefing
         };
         Vector2 c = {1010, 530};
         if (story && feItem(c, &IN_TOOLTIP, 0.8f, nullptr, since, out, 700)) body(), rlPopMatrix();  // Mission Briefing
@@ -2757,27 +2748,13 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
     return -1;
 }
 
-void missionHud(const Game &g, const MissionSpec &m) {
-    int lines = (int)(m.objectives.size() + m.fail.size());
-    DrawRectangleRounded({390, 78, 500, 34.0f + lines * 26}, 0.2f, 6, Fade(BLACK, 0.45f));
-    text(TextFormat("%s  %s", m.name.c_str(), clockText(g.run.ticks).c_str()), 640, 82, 24, GOLDEN, 1);
-    float y = 110;
-    for (size_t i = 0; i < m.objectives.size(); i++, y += 26)
-        text(((i < g.run.met.size() && g.run.met[i] ? "[x] " : "[ ] ") + goalText(m, m.objectives[i], &g)).c_str(), 410, y, 20, WHITE);
-    for (const MissionSpec::Goal &f : m.fail) {
-        std::string s = goalText(m, f, &g);
-        if (f.type == MissionSpec::Goal::Time) s = "Time left " + clockText(std::max(0, f.seconds * 60 - g.run.ticks));
-        text(("(!) " + s).c_str(), 410, y, 20, ORANGE), y += 26;
-    }
-}
-
 int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best, bool hasNext) {
     bool won = g.run.result > 0;
     DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 110});
     popup({340, 170, 600, 380});
     text(m.kind == "mission" ? (won ? "MISSION COMPLETE!" : "MISSION FAILED") : (won ? "CHALLENGE COMPLETE!" : "CHALLENGE FAILED"), 640, 196, 44, won ? GOLDEN : ORANGE, 1);
-    text(m.name.c_str(), 640, 252, 28, WHITE, 1);
-    paragraph(won ? m.success : m.failure, 380, 300, 520, 22, LIGHTGRAY, 3);
+    text(tr(m.nameId.c_str(), m.name.c_str()), 640, 252, 28, WHITE, 1);
+    paragraph(won ? tr(m.successId.c_str(), m.success.c_str()) : m.failure, 380, 300, 520, 22, LIGHTGRAY, 3);
     text(TextFormat("Time  %s", clockText(g.run.ticks).c_str()), 640, 400, 32, WHITE, 1);
     if (best.done) text(won && best.best == g.run.ticks ? "New best time!" : TextFormat("Best  %s", clockText(best.best).c_str()), 640, 444, 26, GOLDEN, 1);
     if (won && hasNext) hints({{"A", "Enter", "Next"}, {"X", "R", "Retry"}, {"B", "Backspace", "Back to list"}});

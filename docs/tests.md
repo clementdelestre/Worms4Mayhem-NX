@@ -12,7 +12,7 @@ From `client/` (desktop build, raylib in `third_party/raylib-nx/out/desktop`):
 | `make check` | `sim_check` | `romfs/weapons.json` |
 | `make ai_check` | `ai_check` | `romfs/weapons.json`, romfs maps (arabian, wildwest, camelot, jurassic, construction, ropetrack) |
 | `make replay_check` | `replay_check` | `romfs/weapons.json`, romfs map arabian; writes then removes `replay_check.w4r` |
-| `make mission_check` | `mission_check` | `romfs/weapons.json`, `romfs/missions`, imported `assets/missions`; writes then removes `progress_check.txt` |
+| `make mission_check` | `mission_check` | `romfs/weapons.json`, imported `assets/missions`; writes then removes `progress_check.txt` |
 | `make ui_check` | `ui_check` | `romfs/weapons.json` |
 
 `make ai_check replay_check mission_check` runs the three in one go (in parallel). The build is incremental: objects and
@@ -276,15 +276,13 @@ scheme plays with sudden death; rope race reached at levels 1 and 5; Karma + Vam
 
 | Check | Covers |
 |---|---|
-| `forceWin` | Forces every objective each tick (kills, moves, pops targets): the mission ends won. |
-| `forceLose` | Player team wiped out: the mission ends lost. |
-| `checkLot2` | On the W4M scripts: MineAllMine's 4 placed mines (none from its "MineN" details), Surrender emptied, a sunk Mine1 brings Mine2 (Payload_Deleted); DeathMatch6's factory (activation 15) drops mines on its 7th StartMineFactory; DoomCanyon's Water.Level 20; FastFoodDino's InitFuel; Shotgun2's PreSelected shotgun, Sniper's EndlessGun; CPU2 for AI teams with no CPUn copy. |
+| `checkLot2` | On the W4M scripts: MineAllMine's 4 placed mines (none from its "MineN" details), Surrender emptied, a sunk Mine1 brings Mine2 (Payload_Deleted); DeathMatch6's factory (activation 15) drops mines on its 7th StartMineFactory; DoomCanyon's Water.Level 20; FastFoodDino's InitFuel; Shotgun2's PreSelected shotgun, and its shots pop a 25-hit-point Target (HighNoonHiJinx's crate) in the line of fire; Sniper's EndlessGun; TurkishDelights' point lights; CPU2 for AI teams with no CPUn copy. |
 | `checkMovies` (alone: `W4NX_MISSION=movies`) | TinCanWally's Intro plays in the sim for 80.39 s (its last camera's look-at, 600 steps, holds the end); `SKIP_MOVIE` ends it at once; DestructAndServe's `JEFF` coded land frames (the DeLorean) leave no solid voxel once cleared. |
 
-`main` also asserts: every mission (bundled and imported) loads with all its worms, warns on worms in water or missing
-markers; at least 3 bundled; AI on both sides of the first mission ends and replays identically; a shotgun pops a target
-in `10_target_practice`; `Progress` save/load keeps done, best time and the `unlock` lines, the next mission stays locked; an
-easter egg a run unlocks (WXMsg.EasterEggFound) is a `Lock.EasterEgg.N` worth 1000 coins.
+`main` also asserts: `Progress` save/load keeps done, best time and the `unlock` lines; with no imported mission it stops
+there. Every imported mission runs with the AI on every team to its end with no Lua error and no missing data key; DeathMatch1
+replays identically; the next story mission stays locked; an easter egg a run unlocks (WXMsg.EasterEggFound) is a
+`Lock.EasterEgg.N` worth 1000 coins.
 
 ## replay_check.cpp
 

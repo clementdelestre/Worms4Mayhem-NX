@@ -289,7 +289,7 @@ struct ScriptHost {
 
     static Worm blank() { return Worm{{Terrain::NX * Terrain::VOX / 2, -50, Terrain::NZ * Terrain::VOX / 2}, {0, 0, 0}, 0, 0.3f, 0, 0, false, false}; }
     // A slot's worm from its Worm.DataNN: at its Spawn marker if Active (PlaceWormAtSpawnPoint 0x5b4180), dropped onto the ground
-    // below, facing the map centre [ours, as the JSON path]
+    // below, facing the map centre [ours]
     static bool place(Game &g, Worm &w, Ctn *c, int s) {
         const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2;
         w.team = std::min(3, (int)fnum(c, "TeamIndex")), w.turns = fnum(c, "IsAllowedToTakeTurn", 1) != 0;
@@ -373,7 +373,7 @@ struct ScriptHost {
         for (int t = 0; t < teams; t++) g.allied[t] = (int8_t)alliance(t);
         g.nextWorm.assign(teams, 0), g.lastHitTeam.assign(worms.size(), -1), g.fuses.assign(teams, 3), g.picked.assign(teams, g.weapon);
         g.ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0)), g.delays.assign(teams, std::vector<int>(WEAPONS.size(), 0));
-        g.idle.assign(teams, 0), g.surrendered.assign(teams, 0), g.spy.assign(teams, 0), g.special.assign(worms.size(), 0), g.superWeapon.assign(teams, 0);
+        g.surrendered.assign(teams, 0), g.spy.assign(teams, 0), g.special.assign(worms.size(), 0), g.superWeapon.assign(teams, 0);
         S->died.assign(worms.size(), false);
         S->shown.assign(teams, std::vector<int>(WEAPONS.size(), 0)), S->ammoSlot.assign(teams, -1);
         S->built = true;
@@ -1282,6 +1282,6 @@ ScriptHud scriptHud(const Game &g) {
     h.counter = num("HUD.Counter.Active") != 0, h.value = (int)num("HUD.Counter.Value"), h.percent = num("HUD.Counter.Percent") == 1;  // 0x5e57c0
     h.tenths = num("HUD.Clock.DisplayTenths") != 0, h.roundClock = num("HUD.Clock.DisplayRoundTime", 1) != 0, h.defaults = !S->noDefault, h.endless = S->endless;
     h.roundTime = (int)num("RoundTime");  // HudClockEntity 0x5f03f0: RoundTimeRemaining if RoundTime > 0, else ElapsedRoundTime (0 at Timer.StartGame)
-    h.clockMs = h.roundTime > 0 ? std::max<int64_t>(0, h.roundTime - (S->roundOn ? roundMs() : 0)) : roundMs();
+    h.elapsedMs = roundMs(), h.clockMs = h.roundTime > 0 ? std::max<int64_t>(0, h.roundTime - (S->roundOn ? h.elapsedMs : 0)) : h.elapsedMs;
     return h;
 }

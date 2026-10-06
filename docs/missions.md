@@ -1,44 +1,37 @@
 # Missions and challenges
 
-Single player content is `missions/<id>.json`: bundled ones (CC0, ours) in `romfs:/missions/`, W4M ones written by `tools/w4m-maps` to `assets/missions/` (local only). A W4M mission runs its original Lua script ("Scripts" below); the JSON teams, objects and objectives serve the bundled missions. A mission is listed only if its map exists. Team 0 is the player; the rest are CPU teams. Objectives are evaluated in the sim (`missionStep`, checksummed), so a mission plays the same for a given seed and inputs. Progress: `progress.txt` next to `setup.txt` (`<id> <done 0/1> <best ticks>` per line). Missions of a campaign unlock in `order`; challenges are always open.
-
-```json
-{
-  "name": "Storm the Keep", "kind": "mission", "campaign": "Worms4NX", "order": 1, "map": "camelot",
-  "brief": "...", "success": "...", "failure": "...",
-  "turn_time": 45, "mines": 2, "crate_chance": 20,
-  "teams": [
-    {"name": "Knights", "cpu": 0, "worms": [{"name": "Sir Wiggles", "hp": 100, "pos": [40, 30, 12]}]},
-    {"name": "Guards", "cpu": 1, "weapons": {"Bazooka": -1, "Skip Go": -1}, "worms": [{"hp": 60, "pos": "Archer1"}]}
-  ],
-  "objects": [{"type": "crate", "pos": [40, 30, 20], "weapon": "health"}, {"type": "target", "pos": "Targ1"}],
-  "objectives": [{"type": "kill_all"}],
-  "fail": [{"type": "turns", "turns": 12}]
-}
-```
+Single player content is `assets/missions/<id>.json`, written by `tools/w4m-maps` from the user's W4M install (local only, never
+committed). Each mission runs its original Lua script ("Scripts" below), which sets up its worms, objects and goals and decides the
+result. A mission is listed only if its map exists; with none imported the Missions and Challenges tabs show "No missions found" /
+"No challenges found". The mission clock and the script run in the sim (`missionStep`, checksummed), so a mission plays the same for
+a given seed and inputs. Progress: `progress.txt` next to `setup.txt` (`<id> <done 0/1> <best ticks>` per line, `unlock <item>` per
+unlocked W4M WXFE_UnlockableItem). Missions of a campaign unlock in `order`; challenges are always open [ours].
 
 | key | meaning |
 |---|---|
-| `kind` | `mission` (Missions tab) or `challenge` (Challenges tab). `campaign` groups and orders the list (default `Worms4NX`). |
-| `preview` | `assets/ui/<preview>.png`, default: the map's level picture. `par`: W4M target time in s (shown only). |
-| `scheme` | preset name (default `Standard`), then `turn_time` (s, 0 = endless turn), `retreat_time`, `hot_seat`, `wind` 0..3, `crate_chance` %, `fall_damage`, `round_time` (min, default 60: the round clock shown in the HUD), `mines`, `barrels` (random ones, default 0). |
-| `teams[]` | 1..4 teams: `cpu` 0 = human, 1..5 = AI level (W4M CPU1..CPU5, clamped in `mission.cpp`), `idle` (never takes a turn: captives, practice dummies), `weapons` {name: ammo, -1 = infinite} (omitted = scheme default), `worms[]` {`name`, `hp`, `pos`}. |
-| `pos` | `[x, y, z]` metres, or the name of a map marker (map JSON `markers`, imported from W4M). Worms are dropped onto the ground below; explicit object positions too (`drop`, default true for `[x,y,z]`), marker ones stay where the marker is. |
-| `objects[]` | `crate` (`weapon` name or `health`), `target`, `mine`, `barrel`. Crates and targets are pinned (no gravity); crates can't be blown up, any hit pops a target (`Object::hp` 0); a sheep-like shot collects crates for its worm (docs/sim.md "Crates"). |
-| `sequence` | crates / targets appear one at a time, in file order (W4M challenges). |
-| `place_objects` | also put mines and oil drums on the map's `mine` / `oildrum` markers. |
+| `name`, `kind`, `campaign`, `order` | English name; `mission` (Missions tab) or `challenge` (Challenges tab); `campaign` groups and orders the list. |
+| `level` | the W4M WXFE_LevelDetails name (`Story.DinerMight`): `Lock.T.<level>` is its time bonus unlock. |
+| `name_id`, `brief_id`, `success_id` | W4M text keys (Frontend_Name, Frontend_Briefing, `FETXT.MissionCompleteBody` / `ChallengeCompleteBody`), shown in the menu language from `assets/lang`; `name`, `brief`, `success` hold the English text as the fallback. |
+| `map`, `preview` | the map; `assets/ui/<preview>.png` (Frontend_Image), default: the map's level picture. |
+| `par` | W4M BonusTime in s. |
+| `script`, `bank` | the `.lub` name and the level databank (`assets/scripts/`). |
+| `rain_prob` | Initialise's `Particle.Rain.Prob` (render only). |
 
-Objectives (all must be met): `kill_all` (every worm of the other teams), `kill` {`team`, `worm`}, `reach` {`pos`, `radius`} (a player worm gets there), `collect` {`count`} (mission crates picked up by the player), `destroy` {`count`} (targets), `poison_all` (every other worm poisoned), `survive` {`seconds`} or {`turns`}.
-Fail conditions (any): `hurt` (a player worm takes damage), `time` {`seconds`}, `turns` {`turns`} (player turns), `worm_dies` {`team`, `worm`}; losing every player worm always fails.
+Menu (`ui.cpp` `missionMenu`, docs/w4m/frontend.md §17 "Story and Challenges screens"): the list's text and the briefing page show
+the title (Frontend_Name) and the briefing (Frontend_Briefing), as W4M's Mission Title / Mission Briefing (Challenges: Challenge
+Title / Body Text) [data]. The Story briefing page shows W4M's Bonus Time text: `FETXT.TimeBonusWon` once `Lock.T.<level>` is
+unlocked, else `FETXT.TimeBonusFormat` with BonusTime as minutes and seconds [disasm 0x733c94]. A story win with ElapsedRoundTime
+under BonusTime x 1000 ms unlocks `Lock.T.<level>` (GameLogicService 0x4f6f50, from the success path 0x4fb060) [disasm]; main.cpp adds
+it to `progress.txt` with the easter eggs, so the script sees it unlocked too. Best time and the tabs, rows and campaign line are ours.
 
 Score / best time: mission ticks until success (60 per second).
 
 ## W4M import
 
 `tools/w4m-maps <W4M dir> [out]` (or `... client/assets/maps --missions` for the missions and scripts only) reads the level list from
-`Data/Tweak/SCRIPTS.XOM` (story = type 4, challenges = 8, deathmatches = 9) and names and briefs from `Data/Language/PC/English.xom`. Each
-mission JSON carries `script` (the `.lub` name) and `bank` (the level databank), plus the menu fields and `rain_prob` (Initialise's
-`Particle.Rain.Prob`, read before the match, render only). Into `assets/scripts/` (gitignored, never committed) it copies `stdlib.lub`,
+`Data/Tweak/SCRIPTS.XOM` (story = type 4, challenges = 8, deathmatches = 9; the resource name of each WXFE_LevelDetails from its
+XContainerResourceDetails) and the English names and briefs from `Data/Language/PC/English.xom` (the text keys too, for the menu
+language). Each mission JSON carries the keys above. Into `assets/scripts/` (gitignored, never committed) it copies `stdlib.lub`,
 `lib_help.lub` and every level script, and writes:
 - `data.json`: the named resources of LOCAL, LVLSETUP, TWEAK, WEAPTWK, AITWK, HUDTWK, CAMTWK and DEFSAVE: data keys (`keys`, a float
   keeps its `.` so the client tells int from float) and the containers of the classes the scripts use (`containers`, field names and
@@ -72,7 +65,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   Worm.DataNN (Energy, Active; Energy written back), Inventory.TeamNN / AllianceNN (ammo, below), InventoryN.WeaponDelays (delays),
   GM.SchemeData (crate chance and shares), AIParams.WormNN copies (the CPU level).
 - **Worms** (`WormManager.Reinitialise`): the Worm.DataNN slots the script set up, team-major by TeamIndex then slot, at their Spawn
-  marker (dropped onto the ground below, facing the map centre [ours, as the JSON path]); Active 0 slots are unspawned placeholders;
+  marker (dropped onto the ground below, facing the map centre [ours]); Active 0 slots are unspawned placeholders;
   `IsAllowedToTakeTurn` 0 never plays (`Worm::turns`). Team names and CPU levels from Team.DataNN `IsAIControlled` and the AIParams.CPUn
   copied to its worms; none copied: CPU2, the AIService init's copy into every AIParams.WormNN [disasm 0x4b3390]. The AI reads the
   thinking worm's own level (`Game::wormCpu`, kept by `syncCpu` at Reinitialise, Respawn and every AIParams.WormNN copy); the team's
@@ -171,7 +164,8 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
     0.5 m (Camera.Shake.Max x 1000 units).
   - Team bars (ui.cpp): a team's shown hp / the largest team total at the match start (W4M EnergyBarManagerEntity, §23.8), so reserved
     respawn columns and uneven mission teams keep W4M's lengths.
-  - No objective box for a W4M mission (`missionHud` is the JSON missions' only): W4M shows none in game.
+  - No objective box in game: W4M shows none (its Objectives `<key>.A/B/C` texts are the in-game pause menu's WXFEP.MissionBriefing
+    popup, docs/w4m/frontend.md §17).
 - **Crates** (`GameLogic.CreateCrate`, docs/w4m/missions.md §23.10): at the Crate.Spawn marker itself, tag = Crate.Index; Type target ->
   `Object::Target`, health, custom (no contents, `weapon` -2), else Contents (kWeapon* / kUtility*). The keys go to the `Object`: count =
   NumContents, hp = Hitpoints x HitpointsMultiplier, teamCollect / teamDestroy = TeamCollectable / TeamDestructible (AlliedGroups),

@@ -138,7 +138,6 @@ void room(const Net &net, const GameConfig &opt, bool lan, const std::string &st
 // shown: when the list / briefing appeared (-1: opening now); leaving: when its items started out; to: what follows them
 struct MissionMenu { int tab = 0, sel[2] = {}; bool brief = false; float shown = -1, leaving = -1; int to = -1; };
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p);
-void missionHud(const Game &g, const MissionSpec &m);  // objectives and clock during a mission
 // Mission over (drawn over the match): 0 nothing yet, 1 next mission, 2 retry, 3 back to the list
 int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best, bool hasNext);
 bool eggFound(const char *nameId, int coins);  // W4M WXFE.EasterEggFound popup; true once dismissed

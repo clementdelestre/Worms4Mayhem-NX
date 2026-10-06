@@ -2175,13 +2175,6 @@ int main(int argc, char **argv) {
         BeginBlendMode(BLEND_ALPHA), rlDisableDepthMask();
         for (const Game::Trigger &t : game.triggers) if (t.visible && Models::visible(t.pos, t.radius)) DrawSphereEx(t.pos, t.radius, 12, 16, {255, 30, 0, 125});
         rlEnableDepthMask(), EndBlendMode();
-        if (game.cfg.mission)  // reach objectives: a gold beacon
-            for (const MissionSpec::Goal &g : game.cfg.mission->objectives) {
-                if (g.type != MissionSpec::Goal::Reach) continue;
-                Vector3 p = placeOf(game, g.at);
-                DrawCylinderEx(p, Vector3Add(p, {0, 10, 0}), 0.15f, 0.15f, 8, Fade(GOLD, 0.5f));
-                DrawCircle3D(Vector3Add(p, {0, 0.05f, 0}), g.radius, {1, 0, 0}, 90, GOLD);
-            }
         if (game.cfg.rules & RULE_ROPE_RACE) {
             DrawCylinderEx(game.raceFinish, Vector3Add(game.raceFinish, {0, 10, 0}), 0.15f, 0.15f, 8, Fade(GOLD, 0.5f));
             DrawCube(Vector3Add(game.raceFinish, {0, 10.3f, 0}), 1.2f, 0.6f, 0.08f, RED);
@@ -2247,14 +2240,15 @@ int main(int argc, char **argv) {
         }
         int outro = scriptOutro(game);
         bool overDone = !game.script || outro == 1 || (outro < 0 && overClock > (orbitCut >= 0 ? orbitCut : 4.02f + 5.02f) + 1.02f);
-        if (const MissionSpec *ms = game.cfg.mission; ms && game.phase != Phase::GameOver) {
-            if (ms->script.empty()) Ui::missionHud(game, *ms);  // W4M shows no objective box
-        } else if (ms && !pause.open && missionIdx >= 0 && overDone) {
+        if (const MissionSpec *ms = game.cfg.mission; ms && game.phase == Phase::GameOver && !pause.open && missionIdx >= 0 && overDone) {
             ScriptEgg egg = scriptEgg(game);
             if (!missionSaved && !uiShot) {
                 progress.record(ms->id, game.run.result > 0, game.run.ticks);
-                if (!egg.item.empty() && std::find(progress.unlocks.begin(), progress.unlocks.end(), egg.item) == progress.unlocks.end())
-                    progress.unlocks.push_back(egg.item), scriptUnlocks = progress.unlocks;
+                // 0x4f6f50: a win with ElapsedRoundTime under the level's BonusTime unlocks Lock.T.<level>
+                bool bonus = game.run.result > 0 && !ms->level.empty() && scriptHud(game).elapsedMs < ms->par * 1000LL;
+                for (const std::string &u : {egg.item, bonus ? "Lock.T." + ms->level : std::string()})
+                    if (!u.empty() && std::find(progress.unlocks.begin(), progress.unlocks.end(), u) == progress.unlocks.end())
+                        progress.unlocks.push_back(u), scriptUnlocks = progress.unlocks;
                 progress.save(DATA_DIR "progress.txt");
             }
             missionSaved = true;
