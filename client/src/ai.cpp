@@ -215,9 +215,9 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     const float ws = Game::WALK_SPEED * g.walkScale();
     if (m.vault.t) vaultStep(b.pos, m.vault, flat(m.yaw) * (float)in.walk);  // Game::step's vault
     else if (b.grounded && !b.motion.slide && in.walk && !m.jump) {  // Game::step's walk
-        Vector3 walkV = flat(m.yaw) * (in.walk / 127.0f * Game::INPUT_IMPULSE);
-        if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * DT, &m.vault)) b.vel = walkV, b.motion.air = true;
-        else if (!m.vault.t) slideIfSteep(g.terrain, b.pos, b.vel, b.motion, walkV, g.pot);
+        Vector3 walkV = flat(m.yaw) * (in.walk / 127.0f * Game::INPUT_IMPULSE), gn;
+        if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * DT, &m.vault, &gn)) b.vel = walkV, b.motion.air = true;
+        else if (!m.vault.t) slideIfSteep(gn, b.vel, b.motion, walkV, g.pot);
     }
     b.motion.input = flat(m.yaw) * (in.walk / 127.0f);
     Vector3 jv;  // Game::step's jump

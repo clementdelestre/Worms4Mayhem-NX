@@ -104,6 +104,7 @@ struct Terrain {
     void unload();
 
 private:
+    Vector3 startNormal(Vector3 p, size_t c, Vector3 dir) const;  // a cast starting in land, in listed cell c
     void reset(signed char fill);
     void island(float bh, float height, float rough, float rad, unsigned s);
     void buildChunk(int ci);

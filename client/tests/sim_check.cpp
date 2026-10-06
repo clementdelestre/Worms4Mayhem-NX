@@ -1310,7 +1310,8 @@ static void checkDeathBlast() {
 
 static Vector3 facing(const Worm &w) { return {sinf(w.yaw), 0, cosf(w.yaw)}; }
 
-// Concave corner (floor + two walls): walking into it or dropping against a wall leaves the body out of the rock.
+// Concave corner (floor + two walls): walking into it or dropping against a wall leaves W4M's body, the 3 rods (Fits 0x59edf0), out of
+// the rock; the 0.3 m mesh may dip into the walls between them, as in W4M (docs/w4m/physics.md §5 "corners")
 static void checkWallClearance() {
     auto room = [](Game &g) {  // floor y 50, walls x < 10 and z < 10; density = signed distance, clamped like the map's
         for (int z = 24; z < 72; z++)
@@ -1320,12 +1321,11 @@ static void checkWallClearance() {
                     g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(in * Terrain::Q, -127, 127);
                 }
     };
-    auto clear = [](const Game &g, const Worm &w) {  // deepest point of a 0.25 m ring at body heights
-        float worst = -1;
-        for (float h : {0.0f, 0.3f})
-            for (int k = 0; k < 16; k++)
-                worst = fmaxf(worst, g.terrain.sample({w.pos.x + 0.25f * cosf(k * PI / 8), w.pos.y + h, w.pos.z + 0.25f * sinf(k * PI / 8)}));
-        return worst <= 0;
+    auto clear = [](const Game &g, const Worm &w) {
+        for (Vector2 r : {Vector2{0.2f, -0.15f}, Vector2{-0.2f, -0.15f}, Vector2{0, 0.25f}})
+            for (float h = 0; h <= 1; h += 0.05f)
+                if (g.terrain.solid({w.pos.x + r.x, w.pos.y - Game::R + h, w.pos.z + r.y})) return false;
+        return true;
     };
     Game g;
     g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
@@ -1342,7 +1342,7 @@ static void checkWallClearance() {
     f.start({33, 2, 1, "", 0}), f.hotSeat = 0;
     room(f);
     Worm &d = f.worms[f.current];
-    d.pos = {10.05f, 53, 13}, d.vel = {-2, 0, 0};  // falls against the wall
+    d.pos = {10.5f, 53, 13}, d.vel = {-2, 0, 0};  // falls against the wall
     f.hotSeat = 0;
     for (int t = 0; t < 120; t++) f.step(Input{});
     assert(d.grounded && clear(f, d));
@@ -1594,7 +1594,7 @@ static void checkHeading() {
     }
 }
 
-// Walked off a ledge onto a 76 degree face, or head wedged under a sloping ceiling: the worm lands, then walks out.
+// Walked off a ledge onto a 76 degree face: the worm lands, then walks out. Head wedged under a sloping ceiling: W4M's walk stays blocked.
 static void checkWallStuck() {
     auto arena = [](Game &g, auto sdf) {
         for (int z = 16; z < 80; z++)
@@ -1625,14 +1625,14 @@ static void checkWallStuck() {
     walk(g, -PI / 2, 30);
     assert(w.pos.x < at.x - 0.5f);
 
-    Game c;  // ceiling sloping down from y 51.2 at x 12; the head starts 0.05 m in it
+    Game c;  // ceiling sloping down from y 51.2 at x 12; the head starts 0.05 m in it (land appearing around it: no move leads there)
     c.start({33, 2, 1, "", 0}), c.hotSeat = 0;
     arena(c, [](Vector3 p) { return fmaxf(50 - p.y, fminf((p.y - 51.2f + (p.x - 12) * 0.6f) * 0.857f, 54 - p.y)); });
     Worm &u = c.worms[c.current];
     u.pos = {12.5f, 50.5f, 12}, u.vel = {}, u.yaw = PI / 2;
     assert(head(c, u.pos) > 0);
     walk(c, -PI / 2, 60);
-    assert(u.pos.x < 11 && head(c, u.pos) <= 0);
+    assert(u.pos.x == 12.5f && u.pos.y == 50.5f);  // its foot rays start in land: d = 20, the vault 20 units up does not Fit (0x5b1209)
 }
 
 // W4M StartJump 0x5acd40 tests only the button and Flags 0x1000: a worm pressed against a cliff jumps like anywhere else.

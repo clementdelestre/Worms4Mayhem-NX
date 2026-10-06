@@ -25,8 +25,9 @@ struct SharpLand {
     bool load(const std::string &path);  // .cells "W4C1" (docs/w4m/formats.md "Exact land")
     bool mixed(size_t c) const { return on && (bits[c >> 6] >> (c & 63) & 1); }
     const uint32_t *ops(size_t c) const;  // a mixed cell's list: [0] = word count, then the ops
-    // density (> 0 land, m, clamped +-0.5) at p in mixed cell c; *nrm: the deciding primitive's outward normal, 0 when none
-    float eval(Vector3 p, size_t c, Vector3 *nrm) const;
+    // density (> 0 land, m, clamped +-0.5) at p in mixed cell c; *nrm: the deciding primitive's outward normal, 0 when none;
+    // given a ray's *dir, a W4M cell's normal is the face that ray came in by (W4M 0x46a070), not its nearest
+    float eval(Vector3 p, size_t c, Vector3 *nrm, const Vector3 *dir = nullptr) const;
     // the first t in [t0, t1] where a + t dir is land (land = false: out of land) in mixed cell c; -1 when none;
     // grid: a + [t0, t1] dir is an edge of the 0.25 m grid (the heightmap's crossings then solved, not bisected)
     float first(Vector3 a, Vector3 dir, float t0, float t1, size_t c, bool land = true, bool grid = false) const;

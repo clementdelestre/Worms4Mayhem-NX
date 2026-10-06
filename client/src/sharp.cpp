@@ -200,11 +200,11 @@ void SharpLand::setOps(size_t c, const uint32_t *o, uint32_t n) {
     if (dead > 4096 && dead * 2 > pool.size()) compact();
 }
 
-float SharpLand::eval(Vector3 p, size_t c, Vector3 *nrm) const {
+float SharpLand::eval(Vector3 p, size_t c, Vector3 *nrm, const Vector3 *dir) const {
     const uint32_t *o = ops(c), n = o[0];
     Terrain::samples += EVAL_COST;
     float s = -0.5f;
-    uint32_t act = ~0u, sub = 0;
+    uint32_t act = ~0u, sub = 0, actMask = 0;
     for (uint32_t i = 1; i <= n; i++) {
         uint32_t k = o[i] & KIND, id = o[i] & ID;
         if (k == HEX) {  // the convex cell: its nearest cutting plane; a 1e-5 m bias lets land faces win ties
@@ -216,7 +216,7 @@ float SharpLand::eval(Vector3 p, size_t c, Vector3 *nrm) const {
                 float v = pl[q].w - (pl[q].x * p.x + pl[q].y * p.y + pl[q].z * p.z);
                 if (v < m) { m = v, pi = q; if (m + 1e-5f <= s) break; }
             }
-            if (m + 1e-5f > s) s = m + 1e-5f, act = op, sub = pi;
+            if (m + 1e-5f > s) s = m + 1e-5f, act = op, sub = pi, actMask = o[i];
         } else if (k == HM) {
             float v = hm(p.x, p.z) - p.y;
             if (v > s) s = v, act = o[i];
@@ -235,7 +235,18 @@ float SharpLand::eval(Vector3 p, size_t c, Vector3 *nrm) const {
         *nrm = {0, 0, 0};
         uint32_t k = act & KIND, id = act & ID;
         if (act == ~0u) {}
-        else if (k == HEX) { const Vector4 &pl = planes[hexP0[id] + sub]; *nrm = {pl.x, pl.y, pl.z}; }
+        else if (k == HEX) {
+            const Vector4 *pl = &planes[hexP0[id]];
+            for (float best = 1e30f; dir && actMask; actMask &= actMask - 1) {  // the latest entry: least depth over approach speed
+                const uint32_t q = __builtin_ctz(actMask);
+                const float den = pl[q].x * dir->x + pl[q].y * dir->y + pl[q].z * dir->z;
+                if (den < -1e-6f) {
+                    const float t = (pl[q].w - (pl[q].x * p.x + pl[q].y * p.y + pl[q].z * p.z)) / -den;
+                    if (t < best) best = t, sub = q;
+                }
+            }
+            *nrm = {pl[sub].x, pl[sub].y, pl[sub].z};
+        }
         else if (k == HM) *nrm = hmNormal(p.x, p.z);
         else if (k == SPHERE) { const Vector4 &q = sph[id]; Vector3 d = {q.x - p.x, q.y - p.y, q.z - p.z}; if (Vector3LengthSqr(d) > 1e-12f) *nrm = Vector3Normalize(d); }
         else {

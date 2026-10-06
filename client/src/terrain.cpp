@@ -576,9 +576,12 @@ bool Terrain::cast(Vector3 a, Vector3 dir, float len, float *tOut, Vector3 *nOut
             if (c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < NX - 1 && c[1] < NY - 1 && c[2] < NZ - 1) {
                 const size_t ci = idx(c[0], c[1], c[2]);
                 if (!sharp.mixed(ci)) {
-                    if (d[ci] > 0 && (hit = t0) > 0 && entered >= 0) (&n.x)[entered] = -(float)step[entered];
-                } else if ((hit = sharp.first(a, dir, t0, t1, ci)) >= 0)
-                    sharp.eval(Vector3Add(a, Vector3Scale(dir, fminf(hit + 1e-4f, (hit + t1) / 2))), ci, &n);
+                    if (d[ci] > 0 && (hit = t0) >= 0) {
+                        if (hit == 0) n = Vector3Negate(dir);  // inside the land: its neighbours are land too (0x46a070's fallback)
+                        else if (entered >= 0) (&n.x)[entered] = -(float)step[entered];
+                    }
+                } else if ((hit = sharp.first(a, dir, t0, t1, ci)) == 0) n = startNormal(a, ci, dir);
+                else if (hit > 0) sharp.eval(Vector3Add(a, Vector3Scale(dir, fminf(hit + 1e-4f, (hit + t1) / 2))), ci, &n, &dir);
             }
             if (hit >= 0 || tMax[k] > len) break;
             t0 = tMax[k], c[k] += step[k], tMax[k] += tDelta[k], entered = k;
@@ -589,6 +592,29 @@ bool Terrain::cast(Vector3 a, Vector3 dir, float len, float *tOut, Vector3 *nOut
     *tOut = hit;
     if (nOut) *nOut = normal(Vector3Add(a, Vector3Scale(dir, hit + 1e-4f)), VOX / 4);
     return true;
+}
+
+// W4M 0x46a070 on a ray starting in land (0x468490 keeps the start in both records): the nearest face of the start cell whose
+// neighbour is empty, whatever the ray's direction, else -dir [disasm]; nearest by distance, W4M's cell fractions [assumed]
+Vector3 Terrain::startNormal(Vector3 p, size_t c, Vector3 dir) const {
+    const uint32_t *o = sharp.ops(c);
+    for (uint32_t i = 1; i <= o[0]; i++) {
+        const uint32_t k = o[i] & SharpLand::KIND, id = o[i] & SharpLand::ID;
+        if (k != SharpLand::HEX) continue;
+        if (!sharp.inside(id, p)) { i++; continue; }
+        uint32_t p0 = sharp.hexP0[id];
+        const uint32_t p1 = id + 1 < sharp.hexP0.size() ? sharp.hexP0[id + 1] : (uint32_t)sharp.planes.size();
+        Vector3 best = Vector3Negate(dir);
+        for (float bestD = 1e30f; p0 < p1; p0++) {
+            const Vector4 &pl = sharp.planes[p0];
+            const float in = pl.w - (pl.x * p.x + pl.y * p.y + pl.z * p.z);
+            if (in < bestD && !solid(Vector3Add(p, Vector3Scale({pl.x, pl.y, pl.z}, in + 0.02f)))) bestD = in, best = {pl.x, pl.y, pl.z};
+        }
+        return best;
+    }
+    Vector3 n;  // the heightmap's slope (W4M 0x462910), an edit's own normal
+    sharp.eval(p, c, &n);
+    return Vector3LengthSqr(n) > 0 ? n : Vector3Negate(dir);
 }
 
 // W4M GLG_PC 0x451ea0: LightGradient[N.L capped by the sun ray] + SideGradient[normal x] - 128 (GLG_Shadow 0x454e30, 0x451590)

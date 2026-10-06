@@ -108,11 +108,10 @@ struct Worm {
 bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd);  // p inside a's melee hit box (shared with the AI)
 // W4M Vaulting 0x5aca80: t ticks left (0 = walking), dir = the input when it began
 struct Vault { Vector3 from{}, to{}, dir{}, vel{}; int t = 0; };  // vel: the walk velocity, W4M Velocity during the vault
-// Ground walk and wall clearance, shared with the AI's prediction. walkStep: true when it walked off a ledge.
-// A 5..20-unit ledge starts *vault (pos unchanged) when given, else it is climbed at once.
-bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault = nullptr);
+// Ground walk, shared with the AI's prediction. walkStep: true when it walked off a ledge. A 5..20-unit ledge starts *vault
+// (pos unchanged) when given, else it is climbed at once. *ground: the ground normal of a step that moved, else up.
+bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault = nullptr, Vector3 *ground = nullptr);
 void vaultStep(Vector3 &pos, Vault &v, Vector3 input);  // one vault tick
-void clearWalls(const Terrain &t, Vector3 &pos);
 bool fits(const Terrain &t, Vector3 from, Vector3 to);  // the upper body at `to` is out of land, or no deeper than at `from`
 // A tick's move cut into sub-steps of at most VOX/2 (shots, objects, walkers), so nothing skips thin land.
 int substeps(Vector3 vel);
@@ -126,8 +125,8 @@ bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g);  // W4M jet
 // One worm tick (ground slide, fall, flight), shared with the AI; returns the landing speed, 0 if none.
 // wind: the Ballistic acceleration's xz part (W4M SetAcceleration 0x5a6d20, Wormpot WindAffectsWorms), m/s²
 float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float gravity, uint64_t pot, float e = 0.3f, Vector2 wind = {0, 0});
-// W4M UpdateWalking 0x5b19d0: a step onto ground past SlideAngle starts Sliding with the walk velocity
-void slideIfSteep(const Terrain &t, Vector3 pos, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot);
+// W4M UpdateWalking 0x5b19d0: a step onto ground n past SlideAngle starts Sliding with the walk velocity
+void slideIfSteep(Vector3 n, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot);
 void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity);  // sheep, old woman, scouser on foot
 
 // W4M NinjaRopeUtilityLogicEntity: the body (worm feet, or a hooked object) swings in its yaw's vertical plane about the last bend

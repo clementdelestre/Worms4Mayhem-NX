@@ -194,13 +194,13 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkSheepCamera` | W4M SheepChaseCamera: behind and above the sheep, rises when land hides it, never under it; after the sheep the drawn view settles (each step no longer than the first) and never moves back toward the worm. |
 | `checkEventCameras` | W4M event cameras: worm, crate, winner TrackCams, homing FlyCam, shoulder camera occlusion zoom; PiP during the active worm's turn then the grow at EndTurn, chase start yaw (Sheep / Scouser ResetYaw), Donkey camera held. |
 | `checkDeathBlast` | W4M Worm.Death*: the death blast takes up to 35 hp off neighbours, throws them, digs 1.75 m; the settle waits for the thrown worm (W4M Worm Falling is active). |
-| `checkWallClearance` | Concave corner: walking or dropping against a wall leaves the body out of the rock. |
+| `checkWallClearance` | Concave corner: walking into it or flying against a wall leaves W4M's body, the 3 rods (Fits 0x59edf0), out of the rock; the mesh may dip in between them, as in W4M. |
 | `checkWalkW4M` | Density clamped like imported .vox maps: corridors and steps walkable, ledges vaulted up to body height. |
 | `checkLowLedges` | 0.2-0.7 m ledges of exact cells (`Terrain::addCell`, as an imported map's), on and off the voxel grid and diagonal: the front foot finds them (4 foot rays) and the worm steps or vaults on; the walkable test reads the flat top past the lip. |
 | `checkVault` | W4M Vaulting: a 16-unit ledge in 250 ms; stick keeps it going, release drops back, jump ignored. |
 | `checkNarrowSlot` | W4M 8 land probe points, exact cells: a foot lands on the lips of a slot narrower than the stance, and walks across it; a wider slot lets it in. |
 | `checkHeading` | W4M: walking sets the facing to the stick direction at once, whatever the turn angle. |
-| `checkWallStuck` | Off a ledge onto a 76 degree face (pushed into it, it skids up and slides back), or wedged under a sloping ceiling: the worm lands, then walks out. |
+| `checkWallStuck` | Off a ledge onto a 76 degree face (pushed into it, it skids up and slides back): the worm lands, then walks out. Head wedged under a sloping ceiling: its foot rays start in land (d = 20) and the vault 20 units up does not Fit, so W4M's walk stays blocked. |
 | `checkJumpTrajectory` | W4M launch + Integrate: jump 50 units up, 80 along; backflip 80 up, 50.6 back. |
 | `checkLaunchAtWall` | W4M launch from the eye against a thin wall: bazooka on its own side, shotgun on the near face, dynamite ahead. |
 | `checkPointBlankDown` | Fired down at point blank: the shot passes the shooter's body, the floor blast hurts it. |
