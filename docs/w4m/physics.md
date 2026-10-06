@@ -599,3 +599,37 @@ Parenthesised names come from the class, not WEAPTWK. **Class by weapon id [disa
 **Who sends what [disasm].** `Weapon.ActivateAccessory` -> a new WAE + `Accessory.Init` (0x597220, state 1, the Draw from t = 0): LogicalWeaponManagerService (0x565998, 0x56656c: selection, turn start) and UpdateWalking (0x5b1bed) once the worm is back on its feet with its weapon (not after a turn-in-place event 10..12, not for Jetpack / Parachute). `Weapon.Wield` (Payload 0x5862d0, Gun 0x55dbe5, Melee 0x5699bc, Powered 0x586f2f, NinjaRope 0x573ba1) redraws a holstered weapon through the state-0 taunt path (0x58c356: clocks 0, state 1). `Weapon.PlayFireAnim`: the payload launch 0x583160 (0x583302), Melee, Flood, Surrender, BubbleTrouble, SentryGun, Redbull.
 
 The gestures (fidget, victory, hurt reactions, death) are WORMACTING EFMV scenes (docs/worm-reactions.md), cast by WXSceneManagerService. The trigger tokens are in WXActor.cpp strings 0x869950..0x869bbc. `Worm.QueueAnim` / `Worm.ResetAnim` have name objects (0x95c804, 0x95c7fc, 0x95e940) but no subscriber: only static inits and one send (ResetAnim, 0x587f3e, SkipGo/Surrender) use them; the `-w3d` scripts send them [disasm, data]. `Worm.ScriptDrawAnim` and `Worm.SurrenderAnim` are bare strings with no name object. All four do nothing on PC.
+
+## 24. Simulation clock and timestep
+
+Tags: [disasm] = read in `WormsMayhem.exe`, [data], [assumed].
+
+### Main loop and game clock
+- Wall clock 0x63a903: QueryPerformanceCounter (IAT 0x815080) since its first call, × 1000 / QueryPerformanceFrequency, in ms [disasm].
+- Main loop 0x6f5161: per iteration the app's message pump (vfunc +0x8c), dt = wall ms since the previous iteration (0x6f51b6), then `XomTaskAppBase` frame 0x6f51df (WormsXApp vfunc +0x48 0x5111e0 calls it) [disasm].
+- Frame 0x6f51df: dt = **min(dt, 100 ms)** (0x6f51ee); `/FIXEDUPDATETIME n` on the command line (0x6f4e45 → +0x60) replaces it by n; dt × time scale +0x1c (1.0, set once at 0x6f4f94), rounded to int ms (0x6fe6c6). It passes that dt to the +0x54 object's vfunc +0x20 (not traced) and, when +0x5c bit 1 is set, calls 0x6f42b2 [disasm].
+- 0x6f42b2 (`Task.Update`): the game clock `+0x88 += dt` (not while the kernel's pause flag `*(0x96d030)+0x3c` is set, 0x6f436d), then `TaskManager::Update(&clock)` (vtable 0x884ddc slot 6, 0x68d4a8 → 0x68d4d4) [disasm].
+- So a frame slower than 100 ms slows the game instead of running more steps; below that the game clock follows the wall clock exactly [disasm].
+
+### TaskManager: a fixed-time event scheduler
+- 0x68d4d4: t = clock − offset (+4). 0x68d6f1 runs the **timed queues** (4 priority heaps keyed by wake time): while some task's wake time ≤ t, it takes the earliest, sets the game time `*(0x96d030)+0x38` to **that wake time** (0x68d859, not the frame's clock), calls its Update (vfunc +0x18) with it, and reschedules it at wake + return value (0x68d8c1; −1 sleeps, 0 ends) [disasm].
+- Hence every timed task runs at its own exact period, as many times as the clock advanced (up to 5 catch-up steps of 20 ms per rendered frame, from the 100 ms clamp), whatever the frame rate. No task receives a variable dt [disasm].
+- Then two per-frame lists (+0x34, +0x4c; 0x68d91f) run once each with time = clock rounded **up** to a multiple of 20 ms (0x68d57f..0x68d589) [disasm]. Their time is always a 20 ms multiple, so nothing they draw can interpolate between logic frames through it [disasm; that no graphic entity reads the wall clock for motion is assumed].
+
+### Periods
+| task | period | source |
+|---|---|---|
+| Worm logic (physics states, Ballistic, Walking, Sliding) | 20 ms aligned: returns (t/20 + 1)·20 − t (0x5b220a..0x5b221f) | disasm |
+| Worm Integrate 0x5a6e90 | constant 20 ms (literal 20 at 0x5a6ee0, 200 = 20²/2 at 0x5a6e9b), exact constant-acceleration step | disasm |
+| Payload sweeps (0x581dc0) | 20 ms (push 0x14 at 0x581e5b) | disasm |
+| Parabolic payload position | **analytic**: start position +0x28, start velocity +0x34 (`m_vInitialVelocity`, assert 0x57e0bc), acceleration +0x40 (gravity + wind), start time +0x1a0 = game time (0x57708a); re-based only at a contact (0x577430..0x57744a). FindFirstEvent 0x576580 searches the same parabola | disasm |
+| GameLogicService 0x4fa2c0 | 20 ms | disasm (turn.md §14) |
+| TimerLogicEntity 0x50f100 (turn, retreat, hot seat) | 10 ms (−10 per call, returns 10) | disasm (turn.md §14) |
+| Scene players, particles, trails, menu ticker | 20 ms | acting.md §19, render.md §8, frontend.md §17 |
+
+So W4M logic and physics run on a **fixed 20 ms step (50 Hz)**, turn timers on a 10 ms step, both on a game clock that follows the wall clock (clamped to 100 ms per frame), drawn once per loop iteration (present interval 1 unless `/VSYNCH n`, 0x6f4e84) with the latest logic state [disasm; the draw call itself not traced].
+
+### Frame-rate dependence of the results
+- Worm flight: Integrate is exact for constant acceleration, so the sampled points lie on the true parabola for any step; only *when* contacts are tested (each 20 ms chord sweep) depends on the step [disasm].
+- Shells: the parabola is closed-form, so range and apex do not depend on the step at all; contacts are found by the 20 ms sweeps and FindFirstEvent [disasm].
+- Per-frame rules that are not a constant-acceleration step depend on the 20 ms frame: Walk.Speed × 20 ms per walk step with its land rays (§5 UpdateWalking), Ballistic stuck count +2 / −1 per frame (limit 20), SlideFriction × per frame, the 1/5 lerp moves (§11), the 0.001 units/ms-per-frame clamps, Bubble Trouble's explicit Euler (weapons.md §13) [disasm].

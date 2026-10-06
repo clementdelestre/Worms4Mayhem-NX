@@ -9,6 +9,7 @@ is in `docs/w4m/physics.md` §11 and `docs/w4m/turn.md` §14; this file is about
 - **ours**: no W4M source, our own choice.
 
 The sim runs at 60 Hz (`Game::DT`); W4M times are in ms (`msTicks(ms) = ms × 60 / 1000`), W4M lengths in units of 1/20 m.
+W4M runs logic and physics at a fixed 20 ms step (docs/w4m/physics.md §24) [disasm]; per-frame W4M rules are converted per tick (`K = DT / 0.02`, `powf(f, K)`) [ours]. Worm flight steps exactly (`v·DT + ½a·DT²`, like W4M Integrate), but shells, crates and the AI's arc test step semi-implicit Euler (`v += a·DT` then `pos += v·DT`), while W4M shells follow the closed-form parabola: ours fly g·t·DT/2 low, a 32 m/s bazooka lands 0.3 to 0.6 m short on flat ground [ours, measured in a scratch model].
 Same seed + same `Input` stream ⇒ same state on every client; `Game::checksum()` covers every field named here as "checksummed". The checks that
 cover these rules: `tests.md`.
 

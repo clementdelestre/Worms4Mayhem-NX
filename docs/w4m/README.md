@@ -66,6 +66,7 @@ Attributing a function to a class is reliable when the function comes from a vta
 | 21. Not covered | [README.md](README.md) |
 | 22. Exact land export (`<map>.cells`) | [formats.md](formats.md) |
 | 23. Mission scripts: Lua runtime, API use, per-level end conditions | [missions.md](missions.md) |
+| 24. Simulation clock and timestep (main loop, TaskManager, 20 ms step) | [physics.md](physics.md) |
 
 Section numbers are global: "§11" is section 11, in the file listed above.
 
