@@ -358,6 +358,7 @@ static struct { int worm = -1; Vector3 pos; float rest; bool lift; } abd;  // Al
 static struct { int n, of; Vector3 a, b, v, look; float rest; bool served; } sa;  // SuperAirstrikeCamera: drops seen of `of`, first / last drop, bomber heading
 static struct { bool on; float hold, kp; Vector3 end; float kl; } fly;  // FlyCam, then its PauseDuration hold
 static int donkeyCam = 0;  // DonkeyCamera, a SimpleCam: never Finished (slot 7 0x49b8f0), held until replaced (2) or the next turn
+static bool factoryCam = false;  // MineFactoryCamera, a SimpleCam: served as the factory starts (0x5cf8e0), held the same way
 static Vector3 donkeyAt;  // its point, set at the donkey's Init (0x5538d8)
 static struct { int mode; float t, from; } pip;  // PiPService: 1 shown, 2 sliding off, 3 growing to full screen; t s into that move; from: show at the grow
 static Camera3D pipCam;  // the event camera, drawn in the PiP or full screen
@@ -506,7 +507,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     evb = {};  // TrackCam, the base Camera: drawn as placed
     int run = !pip.mode ? 0 : tk.on && (tk.worm >= 0 || !framing) ? tk.prio : framing ? 5 : 0;  // 0x51d408: PiP up (+0x2c2), a lower request is dropped
     if (framing && pend.prio && pend.prio < run) pend.prio = 0;
-    if (overT > 0 && !g.cfg.mission) {  // game over: WormTrackCamera on the winner (current worm first), cut at once, until the orbit
+    if (overT > 0 && (!g.cfg.mission || g.script)) {  // game over (GameOverLogicEntity, W4M levels too): WormTrackCamera on the winner (current worm first), cut at once, until the orbit
         int c = -1;
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].alive && g.worms[i].team == g.winner && (c < 0 || (int)i == g.current)) c = (int)i;
         if (c < 0 || overT > 4) return tk = {}, false;
@@ -555,6 +556,13 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         float c = Terrain::NX * Terrain::VOX / 2, top = g.terrain.colTop.empty() ? 20 : g.terrain.colTop.back() * Terrain::VOX, cloud = top + 22.5f;
         serves += floodT - dt <= 1.4f;
         return simple(cam, {c, cloud - 10, c + fmaxf(c, 150)}, {c, cloud, c}, 0.01f, 0.01f, g.water - 2), true;
+    }
+    if (g.factory.on && g.factory.state && !factoryCam) factoryCam = true, serves++;
+    if (g.phase == Phase::Aim || !g.factory.on) factoryCam = false;
+    if (factoryCam) {  // (1, 0.1): look-at pos + (-8, 45, 0) units, the camera 50 up and 300 along z, clipped by the land (0x51b040)
+        Vector3 look = Vector3Add(g.factory.pos, {-0.4f, 2.25f, 0}), want = Vector3Add(look, {0, 2.5f, 15}), hit, d = Vector3Normalize(Vector3Subtract(want, look));
+        if (g.terrain.raycast({look, d}, Vector3Distance(look, want), &hit)) want = hit;
+        return simple(cam, Vector3Distance(want, look) > 1.5f ? want : cam.position, look, 1, 0.1f, g.water - 2), true;  // kept if over 30 units away
     }
     const Projectile *s = chase && !g.shots.empty() ? &g.shots[0] : nullptr;
     const WeaponDef *wd = s ? &WEAPONS[s->weapon] : nullptr;
@@ -632,7 +640,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     return trackStep(cam, g, dt);
 }
 
-static void resetTrack() { tk = {}, pip = {}, ch = {}, tracked = wasActive = false, donkeyCam = 0, pend = {}, abd.worm = -1, sa = {}, fly.on = false, floodT = sinceTrack = sinceBoom = 99, lastVel.clear(); }
+static void resetTrack() { tk = {}, pip = {}, ch = {}, tracked = wasActive = false, donkeyCam = 0, factoryCam = false, pend = {}, abd.worm = -1, sa = {}, fly.on = false, floodT = sinceTrack = sinceBoom = 99, lastVel.clear(); }
 
 // W4M OccludingCam test (0x52efa0): the centre ray to the camera blocked, and with it >= 90 % of the 10 rays (centre and
 // +-55 units right / up, 5 inner points on a 41.25-unit arc, 9..171 deg); chase cameras: all 5 front rays. hit: the centre's
@@ -834,7 +842,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     const Worm *champ = nullptr;  // W4M game over: the winner 4 s (WormTrackCamera), then the orbit
     for (const Worm &x : g.worms) if (overT > 0 && !focusOn && x.alive && x.team == g.winner && (!champ || &x == &cur)) champ = &x;
     if (champ) chase = false, from = focus = champ->pos;
-    bool orbit = overT > 4 && !g.cfg.mission;
+    bool orbit = overT > 4 && (!g.cfg.mission || g.script);
     if (fpOut == 0 && !chase) cut = true;  // cut out too: backing out passes through the worm's head
     fpOut += dt;
     b = {0.1f, 0.1f};  // ShoulderCamera / NinjaCamera / OrbitCam (0x530fe8): Pos / LookUpdateSpeed 0.1

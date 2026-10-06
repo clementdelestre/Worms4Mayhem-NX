@@ -183,6 +183,7 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("flood_thunder", "weapons", &["Thunder"]),  // its oneshot layer, 1.5 s trigger delay
     ("fatkins_bounce", "weapons", &["FatkinsBounce1", "FatkinsBounce2"]),  // WEAPTWK BounceSfx of kWeaponFatkins
     ("banana_bounce", "weapons", &["BananaBombImpact"]),  // kWeaponBananaBomb's
+    ("mine_machine", "weapons", &["MineMachineOperate"]),  // MineFactoryLogicEntity's loop
     ("parachute", "weapons", &["ParachuteOpen"]),
     ("mine_beep", "weapons", &["MineArmLoop"]),
     ("crate_land", "weapons", &["CrateSpawn"]),

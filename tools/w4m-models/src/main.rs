@@ -26,6 +26,12 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     // PayloadGraphicEntity 0x57d9dd: drawn instead of Landmine past 300 units from the camera; 0.381 = 0.4 x 9.617 / 10.096 (extents), the mine's scale
     ("mine_low", "LandmineLow", 0.381, false, &[]),
     ("barrel", "OilDrum", 1.0, false, &[]),
+    ("target", "Crate.Target", 0.0, false, &[]),  // a target crate (CrateGraphicEntity 0x5c4e69), raw units
+    // MineFactoryLogicEntity's graphic at the factory position, no rotation (0x5cf020); raw units, clips by its messages
+    ("mine_factory", "MineFactory", 0.0, false, &["MineFactoryStart", "MineFactoryFireStart", "MineFactoryFireEnd"]),
+    // script custom crates' Crate.CustomGraphic (CrateGraphicEntity 0x5c4ea1), raw units
+    ("d01_04", "D01_04", 0.0, false, &[]), ("d01_05", "D01_05", 0.0, false, &[]), ("d02_04", "D02_04", 0.0, false, &[]),
+    ("d04_01", "D04_01", 0.0, false, &[]), ("d04_05", "D04_05", 0.0, false, &[]), ("d06_02", "D06_02", 0.0, false, &[]),
     ("hold_bazooka", "Bazooka.Weapon", 0.0, false, &[]),
     ("hold_grenade", "Grenade.Weapon", 0.0, false, &[]),
     ("hold_cluster", "ClusterGrenade", 0.0, false, &[]),

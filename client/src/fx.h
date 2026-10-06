@@ -27,6 +27,10 @@ void soap(Vector3 p);  // one W4M WXP_Bubbles_Small soap bubble, from the Bubble
 void jetStart(Vector3 at);  // W4M WAE_Jetpack PackAccessory.Trigger 0x58ce57: WXP_JetpackStartRing + WXP_JetPackStartBase, worm + 7 units
 void jetStop();  // its StartBase emitter is killed once the thrust stops (0x58cc94); the particles live on
 void start(const char *name, Vector3 at);  // a PARTTWK effect by name (ParticleHandlerService 0x5c1410)
+// mission script emitters by the script's handle: Particle.NewEmitter; DelGraphicalEmitter (now: ...Imm, its particles too)
+void scripted(int handle, const char *name, Vector3 at);
+void scriptedOff(int handle, bool now);
+void shakeFor(float mag, float secs);  // Camera.ShakeStart: Camera.Shake.Magnitude (m per axis), fading linearly over Length
 // Flood (FloodLogicEntity): rain and storm cloud at `at` (Land.Center, Land.MaxHeight + 800 units) 1 s on, the rain stopped `stop` s after the call
 void flood(Vector3 at, float stop);
 void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet);

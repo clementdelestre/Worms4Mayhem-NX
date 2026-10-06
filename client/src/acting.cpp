@@ -4,6 +4,7 @@
 #include "fx.h"
 #include "raylib.h"
 #include "raymath.h"
+#include "script.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -653,10 +654,12 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
             dies |= d > 0 && g.worms[i].hp <= 0;
         }
         bool hurtSelf = actors[cur].hp0 > g.worms[cur].hp, mistake = friendly > enemy / 3;
+        // a script's Turn.Boring 0 / Turn.MaxDamage 1 (TinCanWally) force the MaxDamage branch and drop Boring / Missed
+        bool boring = enemy + friendly == 0 && scriptNum(g, "Turn.Boring", 1) > 0, maxDmg = maxDamage || scriptNum(g, "Turn.MaxDamage", 0) == 1;
         if (mistake && hurtSelf) fire(g, MISTAKE, cur);
         else if (enemy + friendly > 0 && !mistake && dies && !anyDeath) fire(g, FIRST_BLOOD);
-        else if (!mistake && maxDamage) fire(g, MAX_DAMAGE);
-        else if (enemy + friendly == 0) fire(g, fired ? MISSED : BORING);  // Missed: Timer.StartPostActivity 0x50fe0d
+        else if (!mistake && maxDmg) fire(g, MAX_DAMAGE);
+        else if (boring) fire(g, fired ? MISSED : BORING);  // Missed: Timer.StartPostActivity 0x50fe0d
         else fire(g, DAMAGE);
         fired = false;
     }

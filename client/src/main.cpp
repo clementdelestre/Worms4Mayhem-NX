@@ -14,6 +14,7 @@
 #include "models.h"
 #include "net.h"
 #include "replay.h"
+#include "script.h"
 #include "sim.h"
 #include "ui.h"
 #include "xray.h"
@@ -152,7 +153,13 @@ static bool drawObject(const Game &g, const Object &o) {
         if (Vector3Distance(viewEye, o.pos) > 15 && Models::has("mine_low")) model = "mine_low", clip = nullptr;
     }
     Models::pick(clip, t);
-    bool ok = Models::draw(model, o.pos, (&o - g.objects.data()) * 1.3f);
+    float yaw = (&o - g.objects.data()) * 1.3f;
+    static char gfx[16];  // W4M custom crate: its CustomGraphic detail mesh (CrateGraphicEntity 0x5c4ea1), raw units like the target's
+    const char *custom = o.type == Object::Crate && o.weapon < -1 ? scriptCrateGraphic(g, o.tag) : nullptr;
+    for (int k = 0; custom && k < 15; k++) gfx[k] = (char)tolower((unsigned char)custom[k]);
+    if (custom && Models::has(gfx)) model = gfx;
+    float k = (o.type == Object::Crate || o.type == Object::Target ? o.scale : 1) / (model == gfx || o.type == Object::Target ? 20 : 1);  // Crate.Scale
+    bool ok = k == 1 ? Models::draw(model, o.pos, yaw) : Models::draw(model, MatrixMultiply(MatrixMultiply(MatrixScale(k, k, k), MatrixRotateY(yaw)), MatrixTranslate(o.pos.x, o.pos.y, o.pos.z)));
     return Models::pick(nullptr), ok;
 }
 static bool holyNext = false;  // the blast after the Hallelujah is the holy grenade's own
@@ -170,7 +177,8 @@ static void onEvent(const Game &g, const GameEvent &e) {
     if (e.kind == GameEvent::GameOver && won(g)) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
     Fx::event(e, g.terrain.side);
     switch (e.kind) {
-    case GameEvent::Boom: if (!e.fx) Audio::play(gunBlast(e) ? Sfx::Shotgun : donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
+    // fx: its emitters' EmitterSoundFX; WXP_Napalm (a Fire landmine) has none of the landmine's DetonationSfx
+    case GameEvent::Boom: if (!e.fx || !strcmp(e.fx, "WXP_Napalm")) Audio::play(gunBlast(e) ? Sfx::Shotgun : donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
     case GameEvent::BigBoom: if (donkeyBlast(e)) { Audio::play(Sfx::DonkeyImpact, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break; }
         if (!e.fx) Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion, e.pos);  // fx: its emitters' EmitterSoundFX
         holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
@@ -228,7 +236,12 @@ static void onEvent(const Game &g, const GameEvent &e) {
         if (e.weapon == MY_FLOOD) floodFx(g, 1 + 4.7f + 3);  // CrateLogicEntity 0x5ca6d0: StopRain FloodDuration 3000 ms after DoFlood
         break;
     case GameEvent::Debris: Audio::play(Sfx::Debris, e.pos); break;
+    case GameEvent::Deleted: break;  // scripts only (Payload_Deleted)
     case GameEvent::JetStart: Fx::jetStart({e.pos.x, e.pos.y - Game::R + 7 / 20.f, e.pos.z}); break;  // worm Position + 7 units (0x58ce7f)
+    case GameEvent::Emitter: Fx::scripted(e.weapon, e.fx, e.pos); break;
+    case GameEvent::EmitterOff: Fx::scriptedOff(e.weapon, e.pos.x != 0); break;
+    case GameEvent::Shake: Fx::shakeFor(e.pos.x, e.weapon / 1000.f); break;
+    case GameEvent::Comment: case GameEvent::CommentClear: break;  // Ui::hudEvent
     case GameEvent::MineArm: break;  // MineArmLoop: looped below while a mine ticks
     case GameEvent::Zap: Audio::play(Sfx::BatImpact, e.pos); break;  // WXP_AbdTelep_Central's EmitterSoundFX
     case GameEvent::Poof: case GameEvent::AbdDamage: case GameEvent::Abducted: break;  // Fx::event; no sound in their PARTTWK emitters
@@ -723,6 +736,33 @@ uniform vec4 colDiffuse;
 varying vec2 uv;
 void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse; }
 )";
+// MineFactoryLogicEntity's graphic (0x5cf020, its position, no rotation): each message plays the clip of its name once; MineMachineOperate
+// from Start to Fire, at FireEnd WXP_LandMineUpShot per mine and WXP_MineMachineShot at the Payload_Spawn node, weapons/ExplosionLarge
+static void drawFactory(const Game &g, float dt) {
+    static const char *CLIP[] = {"MineFactoryFireEnd", "", "MineFactoryStart", "MineFactoryFireStart", "MineFactoryFireEnd", "MineFactoryFireEnd"};
+    static const int LEN[] = {0, 0, 2000, 291, 708, 0};
+    static int last = 0;
+    static bool fired = false, was = false;
+    static Vector3 at{};
+    const Game::Factory &f = g.factory;
+    if (was && !f.on) Audio::play(Audio::Sfx::BigExplosion, at);  // 0x5cfc70; WXP_Explosion_MineMachine comes with the blast
+    Audio::loop(Audio::Sfx::MineMachine, f.on && f.state == 2 && dt > 0);
+    was = f.on, at = f.pos;
+    if (!f.on) return (void)(fired = false, last = 0);
+    const char *clip = f.state || fired ? CLIP[f.state] : nullptr;
+    float t = f.state >= 2 && f.state <= 4 ? (msTicks(LEN[f.state]) - (f.until - g.clock)) / 60.0f : 1e3f;
+    t = fminf(t, Models::clipLength("mine_factory", clip ? clip : "") - 1e-3f);
+    Matrix m = MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), MatrixTranslate(f.pos.x, f.pos.y, f.pos.z)), j;
+    if (f.state == 4 && last == 3) {
+        Vector3 spawn = Vector3Add(f.pos, {0, 1.5f, 0});
+        if (Models::joint("mine_factory", "Payload_Spawn", clip, 0, false, &j)) spawn = Vector3Transform({j.m12, j.m13, j.m14}, m);
+        for (int k = 0; k < f.toSpawn; k++) Fx::start("WXP_LandMineUpShot", spawn);
+        Fx::start("WXP_MineMachineShot", spawn), fired = true;
+    }
+    last = f.state;
+    Models::draw("mine_factory", m, WHITE, clip, fmaxf(t, 0));
+}
+
 // BubbleTroubleGraphicEntity: the machine at the base, WXP_Bubbles_Small at its "bubble" node (17.66 units up); the bubble
 // plays WXM_Create (1.5 s), then WXM_Bobbing looped, WXM_HitBounce once per hit (0x54e920, 0x54e410, 0x54e480).
 static void drawBubbles(const Game &g, float dt) {
@@ -926,7 +966,7 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     if (n == "Starburst") return true;  // the rider mounts it on its Pack_Locator (drawWorm)
     if (!s.child && d.kind == Kind::Airstrike) return true;  // the plane: drawBomber()
     if (d.kind == Kind::Abduction) return true;  // the saucer: drawUfo()
-    if (n == "Fatkins Strike" && s.stage > 0) return true;  // still in the bomber
+    if ((n == "Fatkins Strike" || s.child) && s.stage > 0) return true;  // still in the bomber; a bomblet before its spawn
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0)
         return Models::draw("airstrike", s.pos, atan2f(s.vel.x, s.vel.z), atan2f(s.vel.y, sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z)), WHITE, "Spin", clock);  // AnimTravel
     if (d.kind == Kind::Airstrike && d.fuse > 0 && drawBovine(s, clock)) return true;
@@ -934,7 +974,7 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
                   : n == "Gas Canister" ? "gas" : d.kind == Kind::SuperSheep ? "supersheep" : d.kind == Kind::OldWoman ? "oldwoman"
                   : d.kind == Kind::Homing ? "homing" : d.kind == Kind::Scouser ? "scouser"
                   : d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
-                  : n == "Cluster Grenade" ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? "banana"  // W4M bananettes reuse the BananaBomb mesh
+                  : n == "Cluster Grenade" || (s.child && d.kind == Kind::Mine) ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? "banana"  // W4M bananettes reuse the BananaBomb mesh
                   : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
     if (!d.model.empty()) m = d.model.c_str();  // Weapon Factory
     Vector3 v = d.stick > 0 && s.stage ? s.aim : s.vel;  // a stuck arrow keeps the heading it hit with
@@ -2091,7 +2131,7 @@ int main(int argc, char **argv) {
         }
         dudFx(game.objects);
         for (const Object &o : game.objects) {
-            if (o.type == Object::Crate) crateChute(o, &o - game.objects.data(), pause.open ? 0 : dt);
+            if (o.type == Object::Crate || o.type == Object::Target) crateChute(o, &o - game.objects.data(), pause.open ? 0 : dt);
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute
             if (!drawObject(game, o)) {
                 if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
@@ -2106,6 +2146,11 @@ int main(int argc, char **argv) {
                 else DrawCube(o.pos, 0.8f, 0.8f, 0.8f, o.weapon < 0 ? RAYWHITE : BROWN);
             }
         }
+        // TriggerGraphicEntity 0x58be60 (Trigger.Visibility 1): the 1-unit Trigger.Ball x its radius, its 8x8 texture one colour,
+        // XBlendModeGL SrcAlpha / InvSrcAlpha (Bundl09)
+        BeginBlendMode(BLEND_ALPHA), rlDisableDepthMask();
+        for (const Game::Trigger &t : game.triggers) if (t.visible && Models::visible(t.pos, t.radius)) DrawSphereEx(t.pos, t.radius, 12, 16, {255, 30, 0, 125});
+        rlEnableDepthMask(), EndBlendMode();
         if (game.cfg.mission)  // reach objectives: a gold beacon
             for (const MissionSpec::Goal &g : game.cfg.mission->objectives) {
                 if (g.type != MissionSpec::Goal::Reach) continue;
@@ -2127,6 +2172,7 @@ int main(int argc, char **argv) {
             if (fxDt > 0 && GetRandomValue(0, 14) == 0)
                 Fx::puff(Vector3Add(c.pos, {GetRandomValue(-40, 40) / 10.0f, GetRandomValue(0, 15) / 10.0f, GetRandomValue(-40, 40) / 10.0f}), {game.wind, 0.2f, game.windZ}, 5, 2, 3.5f, {120, 200, 60, 110});
         drawBubbles(game, fxDt);
+        drawFactory(game, fxDt);
         Fx::setWind({game.wind, 0, game.windZ}), Fx::levelSync(game.terrain.emitters), Fx::weather(game.cfg.seed, game.clock);
         Fx::update(fxDt);
         Fx::draw(view);
@@ -2166,8 +2212,18 @@ int main(int argc, char **argv) {
         hud.pipShow = pipOn ? pipShow : 0, hud.pipFull = pipFull;
         hud.quiet = pause.open || playing || irEnd >= 0;  // those draw their own hints
         hud.draw(game, view, tick);
-        if (const MissionSpec *ms = game.cfg.mission; ms && game.phase != Phase::GameOver) Ui::missionHud(game, *ms);
-        else if (ms && !pause.open && missionIdx >= 0) {
+        // W4M GameOverLogicEntity 0x4ff8d0, when no outro movie: 4 s on a worm, the orbit 5 s (any input ends it), a 1 s fade, then the
+        // front end; each wait a 20 ms count past its mark (game time)
+        static float overClock = 0, orbitCut = -1;
+        if (game.phase != Phase::GameOver) overClock = 0, orbitCut = -1;
+        else if (!pause.open) {
+            overClock += dt;
+            if (overClock > 4.02f && orbitCut < 0 && (GetKeyPressed() || GetGamepadButtonPressed())) orbitCut = overClock;
+        }
+        bool overDone = !game.script || scriptOutro(game) || overClock > (orbitCut >= 0 ? orbitCut : 4.02f + 5.02f) + 1.02f;
+        if (const MissionSpec *ms = game.cfg.mission; ms && game.phase != Phase::GameOver) {
+            if (ms->script.empty()) Ui::missionHud(game, *ms);  // W4M shows no objective box
+        } else if (ms && !pause.open && missionIdx >= 0 && overDone) {
             if (!missionSaved && !uiShot) progress.record(ms->id, game.run.result > 0, game.run.ticks), progress.save(DATA_DIR "progress.txt");
             missionSaved = true;
             int next = missionIdx + 1;
@@ -2224,7 +2280,8 @@ int main(int argc, char **argv) {
             ExportImage(img, TextFormat("aimseq_%03d.png", frame));
             UnloadImage(img);
         }
-        if (uiShot && (loadShot ? std::count(uiFrames.begin(), uiFrames.end(), frame) > 0 : frame == 40)) {
+        const int uiEnd = getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 40;  // in-match --ui shots: ui.png at this frame, then exit
+        if (uiShot && (loadShot ? std::count(uiFrames.begin(), uiFrames.end(), frame) > 0 : frame == uiEnd)) {
             rlDrawRenderBatchActive();
             Image img = LoadImageFromScreen();
             ExportImage(img, loadShot ? TextFormat(DATA_DIR "ui_%d.png", frame) : "ui.png");
@@ -2283,7 +2340,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") ? 40 : 600))) break;
+        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") ? uiEnd : 600))) break;
     }
     if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();

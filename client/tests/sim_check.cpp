@@ -347,6 +347,7 @@ static void checkPoison() {
     Game g;
     g.start({21, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
+    g.objects.clear();  // no mine or drum where the arrow lands
     int victim = 1 - g.current, hp = g.worms[victim].hp, wi = weaponNamed("Poison Arrow");
     Worm &v = g.worms[victim];
     Vector3 v0 = v.vel;
@@ -512,6 +513,37 @@ static void checkSniper() {
     for (const GameEvent &e : g.events) boom |= e.kind == GameEvent::Boom && e.weapon == g.weapon;  // drawn as WXP_ShotgunBlast (fx.cpp), not a BigBoom
     for (const GameEvent &e : g.events) assert(e.kind != GameEvent::BigBoom);
     assert(boom);
+}
+
+// W4M Challenge.EndlessGun (0x55efbf): the sniper keeps firing, one ammo spent, the turn goes on.
+static void checkEndlessGun() {
+    Game g;
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
+    Worm &a = g.worms[g.current];
+    a.pos = {10, 55, 10}, a.yaw = 0, a.pitch = 0;
+    g.endlessGun = true, g.weapon = weaponNamed("Sniper Rifle");
+    int &ammo = g.ammo[a.team][g.weapon];
+    ammo = 3;
+    for (int k = 0; k < 3; k++) {
+        Input in;
+        in.buttons = Input::FIRE;
+        g.step(in), g.step(Input{});
+    }
+    assert(ammo == 2 && g.phase == Phase::Aim);
+}
+
+// W4M MineFactoryLogicEntity: a blast within LandDamageRadius + 40 units of pos + (0, 40, 0) blows it up 100 ms later (0x5cfbc0, 0x5cfc70).
+static void checkFactoryBlast() {
+    Game g;
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
+    g.factoryCreate({20, 60, 20});
+    assert(g.factory.on);
+    g.shots = {{Vector3Add(g.factory.pos, {0, 4, 0}), {0, 0, 0}, weaponNamed("Dynamite"), 0.01f, false, 1}};
+    int t = 0;
+    while (!g.factory.damaged && t++ < 10) g.step(Input{});
+    assert(g.factory.damaged && g.factory.on);
+    for (int k = 0; k < 7; k++) g.step(Input{});
+    assert(!g.factory.on);
 }
 
 // W4M gun hit on land (0x55d8c0 clears one voxel, 0x55e5da LandDamageRadius 0): only the hit cell changes, never a blast crater.
@@ -1930,6 +1962,7 @@ static void checkDynamite() {
     g.start({37, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
+    g.objects.clear();  // no mine on the retreat path
     int first = g.current, dyn = weaponNamed("Dynamite");
     Worm &w = g.worms[first];
     g.weapon = dyn, g.ammo[w.team][dyn] = 2, g.delays[w.team][dyn] = 0;
@@ -3177,18 +3210,25 @@ static void checkDonkey() {
     assert(fabsf(at.back() - Game::DONKEY_LIFE) < 0.1f);
 }
 
-// W4M Mine.DudProbability: about one mine in ten fizzles and stays inert.
+// W4M Mine.DudProbability: about one CreateMine mine in ten fizzles and stays inert; a laid mine never does.
 static void checkMineDuds() {
     Game g;
     g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     g.objects.clear();
     int duds = 0;
     for (int k = 0; k < 400; k++) {
-        g.objects = {{Object::Mine, {5, 60, 5}, {0, 0, 0}, -1, 0.01f, false, false}};
+        g.objects = {g.newMine({5, 60, 5})};  // CreateMine rolls the dud
+        g.objects[0].fuse = 0.01f;
         g.step(Input{});
         duds += !g.objects.empty() && g.objects[0].dud;
     }
     assert(duds > 15 && duds < 70);
+    for (int k = 0; k < 50; k++) {  // a laid mine has no dud roll (only CreateMine sets the flag)
+        g.objects = {{Object::Mine, {5, 60, 5}, {0, 0, 0}, -1, 0.01f, false, false}};
+        g.step(Input{});
+        assert(g.objects.empty() || !g.objects[0].dud);
+    }
+    g.objects = {g.newMine({5, 60, 5})};
     g.objects[0].dud = true, g.objects[0].fuse = -1;
     g.worms[0].pos = g.objects[0].pos;
     g.step(Input{});
@@ -3207,6 +3247,36 @@ static void checkMineBlast() {
     for (Projectile &s : g.shots) s.touching = 0;  // already in flight
     g.step(Input{});
     assert(g.shots.empty() && g.objects.size() == 1 && g.objects[0].fuse < 0 && g.objects[0].vel.y > 1 && g.objects[0].vel.x > 0);
+}
+
+// W4M Detonate 0x580f10 / Explode 0x57f140 for a landmine, Mine.DetonationType forced: BigPush keeps 0.3 of the reach (a worm 2.5 m
+// off is only pushed, harder), Fire swaps the FX, Clusters blasts as kWeaponLandmineCluster (kind 3) then lays 5 bomblets 20 ms apart.
+static void checkMineTypes() {
+    struct Out { int hp; float kick; std::string fx; Game g; };
+    auto blast = [](int type) {
+        Out o;
+        Game &g = o.g;
+        g.start({23, 2, 1, "", 0}), g.hotSeat = 0, g.mineDet = type;
+        Worm &v = g.worms[1 - g.current];
+        g.objects = {{Object::Mine, {5, 60, 5}, {0, 0, 0}, -1, 0.01f, false, false}};
+        v.pos = {7.5f, 60, 5}, v.vel = {0, 0, 0};
+        int hp = v.hp;
+        g.shots.clear(), g.step(Input{});
+        o.hp = hp - v.hp, o.kick = v.vel.x;
+        for (const GameEvent &e : g.events) if ((e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) && e.fx) o.fx = e.fx;
+        return o;
+    };
+    Out normal = blast(Game::DT_NORMAL), push = blast(Game::DT_BIGPUSH), fire = blast(Game::DT_FIRE), cl = blast(Game::DT_CLUSTERS);
+    assert(normal.hp > 0 && normal.fx == "WXP_Explosion_Mine" && fire.hp == normal.hp && fire.fx == "WXP_Napalm");
+    assert(push.hp == 0 && push.kick > normal.kick && push.fx == "WXP_Explosion_Mine");
+    assert(cl.hp > 0 && cl.hp < normal.hp && cl.fx == "WXP_ExplosionX_Med" && cl.g.shots.size() == 5);
+    const int stages[] = {0, 1, 2, 4, 5};
+    for (size_t k = 0; k < 5; k++) {
+        const Projectile &b = cl.g.shots[k];
+        float v = Vector3Length(b.vel);
+        assert(b.child && b.weapon == weaponNamed("Landmine") && b.stage == stages[k] && Vector3Distance(b.pos, {5, 60, 5}) < 0.1f);
+        assert(v >= 5 - 1e-3f && v <= 12 + 1e-3f && acosf(b.vel.y / v) <= 0.27f + 1e-4f);
+    }
 }
 
 // W4M ArmingRadius 45 units: a worm blown past a mine 2 m off arms it; a laid mine ignores worms for ArmingCourtesyTime.
@@ -3666,6 +3736,7 @@ static void checkBinoculars() {
     g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
+    g.objects.clear(), g.wind = g.windZ = 0;  // nothing in the line of fire; the answer is windless (0x54add0)
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
     v.pos = Vector3Add(a.pos, {12, 4, 0}), v.vel = {0, 0, 0};
     Vector3 to = Vector3Subtract(v.pos, a.pos);
@@ -3682,7 +3753,7 @@ static void checkBinoculars() {
     int hp = v.hp;
     g.phase = Phase::Flying, g.timer = 600;
     g.shots = {{launchPoint(WEAPONS[weaponNamed("Bazooka")], a.pos, a.yaw), Vector3Scale(d, WEAPONS[weaponNamed("Bazooka")].speed * power), weaponNamed("Bazooka"), 0, false, 1}};
-    for (int t = 0; t < 600 && !g.shots.empty(); t++) g.step(Input{});
+    for (int t = 0; t < 600 && !g.shots.empty(); t++) v.pos = g.scout.at, v.vel = {}, g.step(Input{});  // held where it was scouted
     assert(v.hp < hp);
 }
 
@@ -4291,8 +4362,11 @@ int main() {
     checkOldWoman();
     checkDonkey();
     checkMineDuds();
+    checkEndlessGun();
+    checkFactoryBlast();
     checkMineBlast();
     checkMineFlyby();
+    checkMineTypes();
     checkRopeShots();
     checkGrapple();
     checkRopeColliders();

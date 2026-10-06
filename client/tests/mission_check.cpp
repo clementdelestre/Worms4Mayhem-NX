@@ -42,21 +42,29 @@ static int forceLose(const MissionSpec &m) {
     return g.run.result;
 }
 
-// Where the AI cannot reach a W4M goal (crates to collect, targets, enemies that never take a turn): the player's turn collects
-// the crates one a tick, pops the targets, then ends with the enemies at 0 hp (they die at the turn's ApplyDamage) and the worms
-// that never play poisoned (hurt at the turn's ApplyPoison: the accuracy dummies)
+// Where the AI cannot reach a W4M goal (crates to collect, targets, triggers, enemies that never take a turn): the player's turn
+// collects the crates and triggers it may one a tick, pops the targets, blasts one trigger it may destroy, then ends with the
+// enemies at 0 hp (they die at the turn's ApplyDamage) and the worms that never play poisoned (hurt at the turn's ApplyPoison:
+// the accuracy dummies)
 static void assist(Game &g) {
     Worm &me = g.worms[g.current];
     if (g.phase != Phase::Aim || me.team != 0 || !me.alive) return;
     for (Object &o : g.objects) if (o.tag >= 0 && o.type == Object::Target) o.dead = true;
-    for (const Object &o : g.objects) if (o.tag >= 0 && o.type == Object::Crate) { me.pos = o.pos, me.vel = {}; return; }
+    for (const Object &o : g.objects)
+        if (o.tag >= 0 && o.type == Object::Crate && (o.teamCollect < 0 || o.teamCollect == g.alliance(0))) { me.pos = o.pos, me.vel = {}; return; }
+    for (const Game::Trigger &t : g.triggers)  // only the kind the script answers: a silent one would be lost
+        if (scriptDefines(g, "Trigger_Collected") && (t.mask & 1) && !t.gone && t.teamCollect <= 0 && (t.wormCollect == -1 || t.wormCollect == g.current)) {
+            me.pos = t.pos, me.vel = {};
+            return;
+        }
+    for (Game::Trigger &t : g.triggers) if (scriptDefines(g, "Trigger_Destroyed") && !t.gone && t.teamDestroy <= 0) { t.gone = Game::TRIG_DESTROYED; break; }
     for (Worm &w : g.worms) if (w.team != 0 && w.alive) w.hp = 0;
     for (Worm &w : g.worms) if (!w.turns && w.alive) w.poison = 5;
     g.timer = 1;
 }
 
 // A W4M mission played by the AI on every team until its script ends it, or `cap` ticks; assisted after 3 minutes
-struct Run { int ticks = 0, result = 0; uint32_t sum = 0; ScriptReport rep; };
+struct Run { int ticks = 0, result = 0; uint32_t sum = 0; ScriptReport rep; int comments = 0, emitters = 0; };
 static Run scripted(const MissionSpec &m, uint32_t seed, int cap) {
     Game g;
     g.start(missionConfig(m, seed));
@@ -66,9 +74,64 @@ static Run scripted(const MissionSpec &m, uint32_t seed, int cap) {
     for (; r.ticks < cap && g.phase != Phase::GameOver; r.ticks++) {
         if (r.ticks > 60 * 60 * 3) assist(g);
         g.step(ai.think(g));
+        for (const GameEvent &e : g.events) r.comments += e.kind == GameEvent::Comment, r.emitters += e.kind == GameEvent::Emitter;
     }
     r.result = g.run.result, r.sum = g.checksum(), r.rep = scriptReport(g);
     return r;
+}
+
+// Lot 2 keys and messages on the real scripts: placed mines and Payload_Deleted, the mine factory, Water.Level, Jetpack.InitFuel,
+// Challenge.EndlessGun, Weapon.PreSelected, the emptied default inventories, the CPU2 default
+static void checkLot2(const std::vector<MissionSpec> &list) {
+    auto run = [&](const char *id, Game &g, int ticks) {
+        for (const MissionSpec &m : list) if (m.id == id) g.start(missionConfig(m, 3));
+        for (int t = 0; t < ticks; t++) g.step(Input{});
+        assert(g.script);
+    };
+    auto mines = [](const Game &g, bool placed) { int n = 0; for (const Object &o : g.objects) n += o.type == Object::Mine && (o.id >= 0) == placed; return n; };
+    {
+        Game g;
+        run("MineAllMine", g, 2);
+        assert(mines(g, true) == 4 && mines(g, false) == 0);  // PlaceMine Mine1/3/5/7; PlaceObjects skips the "MineN" details
+        for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Surrender) assert(g.ammo[0][i] == 0);  // LOCAL's -1 emptied
+        for (Object &o : g.objects) if (o.id == 1) o.pos.y = g.water - 1;  // Mine1 sinks: Payload_Deleted places Mine2
+        g.step(Input{}), g.step(Input{});
+        assert(mines(g, true) == 4 && std::any_of(g.objects.begin(), g.objects.end(), [](const Object &o) { return o.id == 5; }));
+    }
+    {
+        Game g;
+        run("DeathMatch6", g, 2);
+        assert(g.factory.on && g.factoryData.activation == 15);
+        int before = (int)g.objects.size();
+        for (int k = 0; k < 7; k++) g.factoryStart();
+        assert(g.factory.state == 1 && g.active());
+        for (int t = 0; t < 240; t++) g.step(Input{});
+        printf("mine factory: %d mines dropped\n", (int)g.objects.size() - before);
+        assert(g.factory.state == 0 && (int)g.objects.size() > before);
+    }
+    {
+        Game g;
+        run("DoomCanyon", g, 3);  // the skipped intro's EFMV_Terminated: Water.Level 20
+        assert(fabsf(g.water - (g.terrain.origin.y + 20 * g.terrain.scale / 20)) < 1e-3f);
+    }
+    {
+        Game g;
+        run("FastFoodDino", g, 2);
+        assert(g.jetInit == 25 && g.cfg.teamSetup.size() >= 1);
+    }
+    {
+        Game g;
+        run("ChallengeShotgun2", g, 3);  // TurnStarted: WeaponIndex kWeaponShotgun, Weapon.PreSelected
+        assert(!g.endlessGun && WEAPONS[g.weapon].name == "Shotgun");
+        Game h;
+        run("ChallengeSniper", h, 2);
+        assert(h.endlessGun);
+    }
+    for (const char *id : {"GibbonTake", "TraitorousWaters"}) {  // AI teams whose script copies no AIParams.CPUn: the AIService init's CPU2
+        Game g;
+        run(id, g, 1);
+        for (const auto &t : g.cfg.teamSetup) assert(t.cpu == 0 || t.cpu == 2);
+    }
 }
 
 int main() {
@@ -80,16 +143,18 @@ int main() {
         if (m.script.empty() || (only && m.id != only)) continue;
         imported++;
         Run r = scripted(m, 5, 60 * 60 * 60);
-        printf("%-24s %-9s %s after %5d s, Lua errors %d%s%s\n", m.id.c_str(), m.kind.c_str(), r.result > 0 ? "won " : r.result < 0 ? "lost" : "NOT ENDED",
-               r.ticks / 60, r.rep.errors, r.rep.errors ? ": " : "", r.rep.lastError.c_str());
+        printf("%-24s %-9s %s after %5d s, Lua errors %d%s%s, comments %d, emitters %d\n", m.id.c_str(), m.kind.c_str(), r.result > 0 ? "won " : r.result < 0 ? "lost" : "NOT ENDED",
+               r.ticks / 60, r.rep.errors, r.rep.errors ? ": " : "", r.rep.lastError.c_str(), r.comments, r.emitters);
+        if (m.id == "SneakyBridgeThieves") assert(r.emitters >= 8);  // Initialise's emitters reach the events
+        if (m.id == "EscapeFromTreeRex") assert(r.comments >= 1);    // its skipped intro's Critical Comment
         for (auto &k : r.rep.ignored) printf("    not modelled: %s x%d\n", k.first.c_str(), k.second);
         for (auto &k : r.rep.missingKeys) printf("    missing data: %s x%d\n", k.first.c_str(), k.second);
         fflush(stdout);
         assert(r.rep.errors == 0 && r.rep.missingKeys.empty());
-        bool blocked = m.id == "TraitorousWaters";  // ends only on Trigger_Destroyed (guns, houses) and has no round clock: lot 2 triggers
-        ended += r.result != 0 || blocked;
+        ended += r.result != 0;
     }
     if (only) return 0;
+    checkLot2(list);
     for (const MissionSpec &m : list) {
         if (!m.script.empty()) continue;
         ours++;

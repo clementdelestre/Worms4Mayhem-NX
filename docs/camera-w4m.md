@@ -322,7 +322,7 @@ Units are W4M world units (20 per metre). Labels: data = read in CAMTWK/WEAPTWK/
 | Fatkins | Track FatkinsTrackCamera | dist 1000, MinPreferred 500, offsets ±200/100/±500, CutWhenStartOffScreen 0 | data |
 | Alien Abduction | SimpleCam AlienAbductionCamera (1/1) | pos (UFO.x, Land.MaxHeight, UFO.z+200), looks at worm+(0,10,0); later worm+(0,50,50) if collision-free and >10 away | dis 0x547490 |
 | Flood | SimpleCam FloodCamera (0.01/0.01) after 1400 ms | pos (cx, cloudY-200, cz+max(Land.Radius,3000)), cloud at Land.MaxHeight+450, looks at the cloud; FloodDuration 3000, RainDuration 4700 | dis 0x555730 |
-| Mine factory | SimpleCam MineFactoryCamera (1/0.1) | factory+(0,50,300) if collision-free and >30 away | dis 0x5cf930 |
+| Mine factory | SimpleCam MineFactoryCamera (1/0.1) | look-at L = factory + (−8, 45, 0); camera L + (0, 50, 300) clipped by the land (0x51b040), kept only if > 30 units from L | dis 0x5cf930, 0x5cf910 |
 | Starburst | generic payload camera, then FlyCam StarburstCamera after 3500 ms | LagBehind 80, LookAhead 100, LookSpeed 0.2, PosSpeed 0.05, UpSpeed 0.09, PosRate 0.1, Pause 1000, FinalDistance 500 | dis 0x5891e0, data |
 | Super Sheep | Chase SheepChaseCamera (dist 170), FlyCam SuperSheepFlyCamera on take-off (as Starburst, PosRate 1.0), FallCam when the flight ends (look 0.08, pos 0.02) |
 | dis 0x556aa0 |

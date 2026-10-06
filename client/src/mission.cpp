@@ -117,6 +117,7 @@ static int weaponIndex(const std::string &name) {
 void spawnObject(Game &g, Object::Type t, Vector3 pos, int weapon, bool drop, int tag) {
     Object o = {t, pos, {0, 0, 0}, t == Object::Crate ? weapon : -1, -1, false, false};
     o.tag = tag;
+    if (tag >= 0) o.pinned = true, o.teamDestroy = t == Object::Crate ? 5 : -1, o.teamCollect = t == Object::Target ? 5 : -1, o.hp = 0;  // ours: crates stay, a hit pops a target
     Vector3 hit;
     if (drop && g.terrain.raycast({Vector3Add(o.pos, {0, 0.8f, 0}), {0, -1, 0}}, 60, &hit)) o.pos = hit;
     o.pos.y += t == Object::Target ? (drop ? 1.5f : 0) : t == Object::Crate ? 0.45f : 0.3f;  // markers sit on the ground
@@ -130,9 +131,11 @@ static void placeObject(Game &g, size_t i) {
     g.run.state[i] = tracked ? 1 : 2;
 }
 
-void placeMapObjects(Game &g) {
+void placeMapObjects(Game &g) {  // 0x4fb490: detail objects named exactly "mine" (a CreateMine), "oildrum", "minefactory"; "Mine1" is a PlaceMine spot
     for (const Terrain::Marker &k : g.terrain.markers)
-        if (k.type == "mine" || k.type == "oildrum") g.objects.push_back({k.type == "mine" ? Object::Mine : Object::Barrel, k.pos, {0, 0, 0}, -1, -1, false, false});
+        if (k.name == "mine") g.objects.push_back(g.newMine(k.pos));
+        else if (k.name == "oildrum") g.objects.push_back({Object::Barrel, k.pos, {0, 0, 0}, -1, -1, false, false});
+        else if (k.name == "minefactory") g.factoryCreate(k.pos);  // 0x4f64f0
 }
 
 void missionStart(Game &g) {

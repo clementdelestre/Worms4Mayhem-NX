@@ -29,7 +29,7 @@ const FE2: &[(&str, &str, usize, &str)] = &[
     ("Bundl09", "maya:file7/-1", 3, "homing_inner"),    // Homing.Cursor.Mesh: its 4 brush ticks, one per row
 ];
 // Frontend strings -> lang/<code>.txt ("key<TAB>value", \n = newline): (code, Data/Language/PC files)
-const LANGS: &[(&str, &[&str])] = &[("en", &["EngFE.xom", "English.xom", "EngLoading.xom"]), ("fr", &["FreFE.xom", "French.xom", "FreLoading.xom"])];
+const LANGS: &[(&str, &[&str])] = &[("en", &["EngFE.xom", "English.xom", "EngLoading.xom", "EngLS.xom"]), ("fr", &["FreFE.xom", "French.xom", "FreLoading.xom", "FreLS.xom"])];
 const SKY_BUNDLES: &[&str] = &[
     "Bundl93", "Bundl94", "Bundl95", "Bundl96", "Bundl97", "Bundl98", "Bundl99", "Bundl100", "Bundl101", "Bundl102",
     "Bundl103", "Bundl104", "Bundl105", "Bundl106", "Bundl107", "Bundl108", "Bundl109", "Bundl110", "Bundl111", "Bundl112",

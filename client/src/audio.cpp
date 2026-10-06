@@ -40,7 +40,7 @@ const char *SFX_NAMES[] = {
     "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
     "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo", "debris", "jetpack", "jetpack_end",
     "fire_loop", "steam_loop", "flies_loop", "elec_arc", "electric_arcing", "storm_cloud", "hose_into_water",
-    "flood_rain", "flood_thunder", "fatkins_bounce", "banana_bounce",
+    "flood_rain", "flood_thunder", "fatkins_bounce", "banana_bounce", "mine_machine",
 };
 static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
 // W4M WormsX.fev via tools/w4m-re/fev.py (docs/w4m/audio.md §12): event, dB (event + sounddef + category), loop, 3D rolloff min..max m (0 = 2D), max playbacks,
@@ -173,6 +173,7 @@ const Def DEFS[] = {
     {"weapons/FloodRainLoop (Thunder layer)", 0, false, 0, 0, 1, 0, nullptr, 3, {1500, 1500}},  // oneshot, sounddef delay 1500 ms
     {"weapons/FatkinsBounce", -3, false, 0, 0, 1, 0, nullptr, 2},  // 2D, FatkinsBounce1-2
     {"weapons/BananaBombImpact", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
+    {"weapons/MineMachineOperate", -10, true, 0, 0, 1, 0.35f},  // 2D loop, fades 350 ms
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m

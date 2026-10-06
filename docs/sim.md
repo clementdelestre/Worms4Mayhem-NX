@@ -131,6 +131,9 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
 
 ## Weapon in hand
 
+- **Jetpack fuel, endless gun**: `jetInit` (W4M Jetpack.InitFuel, 7.5 s; a script may set it) is a new jetpack entity's fuel, given where
+  our sim makes one (`jetUsed` cleared: turn start, a pick, Weapon.Create / PreSelected); take-off only spends the ammo. `endlessGun` (W4M
+  Challenge.EndlessGun): a gun keeps one shot left, so it spends one ammo and never ends the turn (docs/w4m/missions.md §23.9, disasm).
 - **Selection** (`Game::pick`, W4M LogicalWeaponManagerService::WeaponSelected 0x565d30, disasm): a direct pick (`NEXT_WEAPON` with
   `aim` = index + 1) needs `usable()` (ammo and no delay). `NEXT_WEAPON` with `aim` 0 steps to the next `selectable()` weapon
   (`nextWeapon`, ours: W4M has no next-weapon key on PC). No pick while a shotgun's second shot is pending (`shotsLeft`).
@@ -165,11 +168,42 @@ order, Skip Go / Surrender last, disasm); `GameEvent::TurnStart`. Crates fall be
   (hot seat). `sim_check` `checkCrateBetweenTurns`.
 - **Mid-turn crate**: no hold; the clock and control run (W4M: only EndTurn waits for "Crate Spawn"; TimerLogicEntity freezes on
   nothing else, disasm).
-- **Collect**: any worm whose sphere (10 units, 5 above its feet) meets the crate's (10 units), any time (0x5cb7e0, disasm). Health: + `crateHealth` hp, cures poison and the
-  abductee flag (W4M Worm.Antidote 0x5adecd, disasm). Double Damage, Crate Spy and Armour apply at once and never enter the inventory
-  (`collected()`, W4M crate collect 0x5c9800, disasm). A Super Sheep collects mission crates for its worm.
-- **Mines**: armed by any worm within 2.25 m (W4M Landmine ArmingRadius 45, data) after a 2.5 s courtesy (ArmingCourtesyTime, data);
-  fuse = scheme `mineFuse` or 1..5 s random; 10 % duds (Mine.DudProbability, data). A blast only pushes a mine.
+- **Collect** (`Object` crate fields, docs/w4m/missions.md §23.10, disasm): any worm whose sphere (10 units, 5 above its feet) meets the
+  crate's (10 x `scale` units), any time (0x5cb7e0), or a sheep-like shot (Sheep, Super Sheep, Starburst, Old Woman, Scouser: collider
+  0x88) by its Radius, for the active worm (0x5c9750); with `teamCollect` set, only that AlliedGroup (`Game::alliance`). Health: +
+  `count` hp (NumContents; a random crate's is `crateHealth`, 0x4fa71d; `CRATE_STOCK`: the scheme's), cures poison and the abductee flag
+  (W4M Worm.Antidote 0x5adecd). Weapons: `count` added as a u8 (0xff infinite, 0x5c88bb). Double Damage, Crate Spy and Armour apply at
+  once and never enter the inventory (`collected()`, W4M crate collect 0x5c9800). Targets and custom crates hold nothing.
+- **Damage** (0x5c9a10, 0x5c87a0, disasm): a crate or target takes WormDamageMagnitude (R - d) / R within the blast's LandDamageRadius
+  (crater), x 2 under Double Damage, and bullets their damage (gun ray `GunHit::obj`, 0x5c8a90); `teamDestroy` limits it to the active
+  worm's AlliedGroup. `hp` starts at 12 (TWEAK Crate.Hitpoints 25 x HitpointsMultiplier 0.5); at 0 any crate type blows up with the
+  Crate.* blast (0x5c5810). A pushable crate gets the blast's push / 1.2 (`blastKick`: ImpulseMagnitude (R - e) / R, 0x5c5ae0); a pinned
+  one (Gravity 0) never moves. JSON missions' crates stay pinned and unbreakable, their targets pinned and popped by any hit [ours].
+- **Mines**: armed by any worm within 2.25 m (W4M Landmine ArmingRadius 45, data) after a 2.5 s courtesy (ArmingCourtesyTime, data).
+  `Game::newMine` is W4M CreateMine (docs/w4m/missions.md §23.9, disasm): the dud roll (`mineDud`, Mine.DudProbability 0.1; none under
+  Mine Respawn), then the fuse `mineMin` + trunc((`mineMax` - `mineMin`) r) ms; a match takes Min / Max from the scheme's MineFuse
+  (lib_SetupMinesAndOildrums: -1 -> 0..5000 ms, else MineFuse x 1000 both), a mission script from Mine.* keys. Random, map and
+  respawned mines are CreateMine ones; a mine laid with the Landmine weapon has no dud roll (W4M: only CreateMine and the factory set
+  the flag) and draws its fuse when armed. A blast only pushes a mine. A mine leaving (blast, water) emits `GameEvent::Deleted` with its
+  `id` (Mine.Id of a script-placed one), as every shot but the bomber planes and the UFO: the scripts' Payload_Deleted.
+  Each explosion takes a W4M DetonationType (`Game::mineType`: `mineDet` 1-4 forced, else random 1-4, drawn before the dud test)
+  and `Game::mineBlast` runs it: Normal, Fire (FX only), BigPush (Explode's x2 / x0.3), Clusters (kWeaponLandmineCluster blast,
+  kind 3, then `Game::bomblets`) [disasm + data, docs/w4m/weapons.md "DetonateMultiEffect handling"].
+- **Bomblets** (`Game::bomblets`, W4M ClusterGeneratorLogicEntity 0x5519d0) [disasm + data]: the Cluster Grenade, Banana Bomb and
+  Clusters landmine children leave the blast point 20 ms apart (`Projectile::stage` holds a child in place until its spawn, ticks
+  `msTicks(20 k)`), direction in a cone of `cluster_cone` around up (azimuth 2 pi r, tilt cone r), speed `cluster_min_speed` +
+  (max - min) r; W4M draws each at its spawn, ours all at the blast [ours: our rand is not W4M's]. Weapon Factory weapons get the
+  W4M factory cone 0.28 and speeds with ClusterSpread 0 (`Game::start`) [ours: our factory has no ClusterSpread]. A child's wind
+  under Wind-All follows its own container (`windy(weapon, child)`, Wormpot.lub SetWeaponWind) [data].
+- **Mine factory** (`Game::factory`, `factoryCreate` / `factoryStart` / `stepFactory`; W4M MineFactoryLogicEntity, docs/w4m/missions.md
+  §23.9, disasm + data): made on the level detail "minefactory" (DeathMatch6), snapped to the land below, with its two collision boxes
+  welded (`Terrain::weld`, Land.SpawnPiece). Each GameLogic.StartMineFactory counts NumTurnsInactive (7) down, then, while fewer than
+  NumMineActivation mines are in play, runs Start (2 s) / Fire (291 ms) / FireEnd (708 ms) as an active object, then drops up to 10
+  CreateMine mines at 15 m/s from land top + 0.5 m, 6.4 m from a random worm, on flat land above the water and 6.35 m from every worm (xz),
+  35 tries. A blast within its LandDamageRadius + 2 m of pos + (0, 2, 0), or the water over pos + 0.5 m, blows it up 100 ms later
+  (kMineFactoryData: 100 damage, 5 m radii, impulse 30 m/s). Distances at 20 units per m [ours: our maps are scaled by the import scale,
+  the worms are not]; land top is our `landTop()` (2 m columns). Client: `drawFactory` (model mine_factory, clips by state, its two
+  effects, MineMachineOperate), controls.cpp MineFactoryCamera.
 - **Steep ground**: objects slide past 60° like a worm (`wormBody` law, W4M SlideAngle_Default, data).
 
 ## Wormpot (`WormpotMode`, `Game::pot`, `Game::wp`)
@@ -412,7 +446,8 @@ W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm 
 
 W4M PayloadLogicEntity 0x582050 / Parabolic events 0x577980, docs/w4m/weapons.md "Payload water" [disasm + data]. weapons.json carries
 `size` (Radius), `sink` (SinkDepth), `skim_*` (SkimsOnWater, MinSpeedForSkim, MaxAngleForSkim, SkimDamping), `cluster_size` / `cluster_sink`
-(the bomblets' containers); Weapon Factory weapons get kWeaponFactoryWeapon / Homing / Cluster's in `Game::start`.
+(the bomblets' containers), `cluster_cone` / `cluster_min_speed` / `cluster_max_speed` (the parent's BombletMaxConeAngle,
+BombletMin / MaxSpeed); Weapon Factory weapons get kWeaponFactoryWeapon / Homing / Cluster's in `Game::start`.
 - Crossing Water.Level + Radius: a skim (v × damping, never for bomblets) or a splash (`GameEvent::Splash`); set on that plane either way.
 - Crossing Water.Level − SinkDepth: `Projectile::sunk` (checksummed): speed capped at 5 m/s, xz × k², vy = −max(4, |vy| k), k = speed / 5;
   no acceleration, no fuse, no blast; any contact or Water.ExpiryDepth (absolute, `Terrain::WATER` − 10 m) removes it.

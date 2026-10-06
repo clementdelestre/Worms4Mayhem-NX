@@ -36,6 +36,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  FireLoop, SteamLoop, FliesLoop, ElecArc, ElectricArching, StormCloud, HoseIntoWater,  // PARTTWK EmitterSoundFX of map emitters
                  FloodRain, FloodThunder,  // weapons/FloodRainLoop (WXP_StormClouds): its rain loop and its delayed Thunder layer
                  FatkinsBounce, BananaBounce,  // WEAPTWK BounceSfx of kWeaponFatkins / kWeaponBananaBomb
+                 MineMachine,  // W4M weapons/MineMachineOperate: the mine factory runs, MineFactory.Start to .Fire (0x5cf413, 0x5cf579)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,

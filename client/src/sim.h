@@ -69,6 +69,8 @@ struct WeaponDef {
     // W4M payload water (Game::wet): "size" Radius (the surface is met that high), "sink" SinkDepth, m; "skim_speed" MinSpeedForSkim
     // m/s (-1: SkimsOnWater 0), "skim_angle" MaxAngleForSkim rad, "skim_xz" / "skim_y" SkimDamping; cluster_*: the bomblets' container
     float size = 0, sink = 0, csize = 0, csink = 0, skim[4] = {-1, 0, 0, 0};
+    // W4M BombletMaxConeAngle rad, BombletMinSpeed / MaxSpeed m/s: "cluster_cone", "cluster_min_speed", "cluster_max_speed"
+    float ccone = 0, cspeed[2] = {0, 0};
 };
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
 struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns)
@@ -164,6 +166,8 @@ struct Projectile {
 
 // Battlefield object. Crate: weapon = contents (-1 = health). Mine: fuse < 0 idle, else counting down.
 // Target: mission bullseye, floats until an explosion or a shot reaches it.
+constexpr int CRATE_HP = 12;  // W4M Crate.Hitpoints 25 x Crate.HitpointsMultiplier 0.5, truncated (0x5c7f98)
+constexpr int CRATE_STOCK = INT32_MIN;  // a crate's NumContents left to the scheme: 1 item, Crate.HealthInCrates hp (0x4fa71d)
 struct Object {
     enum Type : uint8_t { Crate, Mine, Barrel, Sentry, Target } type;
     Vector3 pos, vel;
@@ -172,7 +176,7 @@ struct Object {
     bool falling;  // crate under parachute
     bool dead;     // hit by an explosion: detonates (barrel, weapon crate) or vanishes next step
     int team = -1;  // sentry owner (weapon = its WEAPONS index, fuse = reload left)
-    int tag = -1;   // mission object index; tagged crates and targets are pinned in place, crates can't be blown up
+    int tag = -1;   // mission object index (JSON missions, W4M Crate.Index)
     bool dud = false;  // mine whose fuse fizzled (W4M Mine.DudProbability): inert for good
     int courtesy = 0;  // mine: ticks before a worm can arm it (W4M ArmingCourtesyTime)
     bool hooked = false;  // W4M kRopeModeAttachedToObject: swings on Game::rope about the worm's feet
@@ -180,6 +184,13 @@ struct Object {
     float delay = -1;  // mine: fuse s drawn at creation (W4M CreateMine 0x4f97cf); -1: drawn when armed
     bool fizzle = false;  // mine: its dud roll, drawn with delay
     int mystery = -1;  // crate: W4M kMystery item - 0x32 (MYSTERY_ITEMS), drawn at spawn; weapon stays -1
+    int id = -1;  // mine: its W4M Mine.Id when a script placed it (GameLogic.PlaceMine)
+    // crate / target: W4M CrateLogicEntity (0x5c7bb0) from the Crate.* keys; the defaults are a random crate's
+    int hp = CRATE_HP;  // Hitpoints x HitpointsMultiplier: what blasts and bullets take off
+    int count = CRATE_STOCK;  // NumContents: ammo added (8-bit sum, 0xff infinite), hp healed
+    int8_t teamCollect = -1, teamDestroy = -1;  // TeamCollectable / TeamDestructible: the AlliedGroup that may, -1 any
+    bool pinned = false, pushable = true, radar = true, track = true;  // pinned: Gravity 0; radar: Crate.RadarHide / Display; TrackCam
+    float scale = 1;    // Scale: its sphere is 10 x Scale units (0x5c5700)
 };
 
 // W4M mystery crate items (kMysteryMineLayer 0x32 .. kMysteryGoodPoison 0x40): Text.k<name> and the <name>Mystery.Crate weight of the
@@ -190,9 +201,11 @@ enum : int { MY_MINE_LAYER, MY_MINE_TRIPLET, MY_BARREL_TRIPLET, MY_FLOOD, MY_DIS
              MY_HEALTH, MY_DAMAGE, MY_SUPER_HEALTH, MY_SPECIAL_WEAPON, MY_BAD_POISON, MY_GOOD_POISON };
 
 // Things that happened this tick, for audio/fx; not part of the checksum. worm/weapon = -1 when not applicable.
+// Hurt: weapon 6 = W4M damage type 6 (poison, an abductee's roll), else -1.
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
-                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart } kind;  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)
+                          Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
+                          Comment, CommentClear, Emitter, EmitterOff, Shake } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;
     const char *fx = nullptr;  // Boom: the PARTTWK effect its W4M caller starts (render only; null: our generic blast)
@@ -325,6 +338,8 @@ struct Game {
     // W4M kWeaponLandmine, OilDrum.* and Crate.* (TWEAK.XOM); impulse depth: drum 9 units (0x5d13ce), crate its radius 10 x Crate.Scale (0x5c5879)
     static constexpr Blast MINE_BLAST = {2.625f, 3.73f, 40, 12.5f, 5, 2.5f}, BARREL_BLAST = {2.25f, 3.75f, 55, 20, 3.75f, 0.45f},
                            CRATE_BLAST = {3, 3.5f, 60, 9, 2.5f, 0.5f};
+    static constexpr Blast MINE_CLUSTER_BLAST = {2.025f, 2.9f, 25, 10, 4.25f, 2.25f};  // W4M kWeaponLandmineCluster (kDT_Clusters)
+    enum : int { DT_NORMAL = 1, DT_FIRE, DT_CLUSTERS, DT_BIGPUSH };  // W4M DetonationTypeEnum 0x90c8f0
     static constexpr int ROPE_SHOTS = 5;     // W4M Ninja.NumShots: hooks on land per turn (0x573ea3; misses and objects are free)
     static constexpr float HOOK_SPEED = 50;  // 1 unit/ms (0x572800)
     // Ninja rope (W4M 0x574480 per 20 ms; shared with the AI's planner). hang: attach at `hook` (0x573d00); tick: reel by aim's
@@ -421,6 +436,8 @@ struct Game {
     Hook grapple;  // the active worm's hook in flight
     int ropeUsed = -1;  // the rope that hooked this turn: its ammo goes at the cleanup (0x5727b0, +0x7b)
     float fuel = 0, ropeMax = 0, thrust = 0;  // max/thrust: of the tool in use, the hand may hold a weapon
+    float jetInit = 7.5f;     // W4M Jetpack.InitFuel s: a new jetpack entity's fuel (0x563440)
+    bool endlessGun = false;  // W4M Challenge.EndlessGun: a gun never runs out of shots nor ends the turn (0x55cff0)
     std::vector<int> fuses;  // per team: seconds set for userFuse weapons (W4M default 3)
     std::vector<std::vector<int>> delays;  // [team][weapon]: own turns left before it unlocks (W4M InventoryN.WeaponDelays)
     bool usable(int team, int wi) const { return ammo[team][wi] && !delays[team][wi] && allowed(team, wi); }
@@ -443,6 +460,22 @@ struct Game {
     uint8_t prevButtons = 0;
     uint32_t rng = 1;
     float water = Terrain::WATER;    // rises in sudden death; terrain.* keeps using the constant
+    // W4M Mine.MinFuse / MaxFuse ms, Mine.DudProbability: from the scheme (stdvs lib_SetupMinesAndOildrums) or a mission script
+    int mineMin = 1000, mineMax = 5000;
+    float mineDud = MINE_DUD;
+    int mineDet = 0;  // W4M Mine.DetonationType: -1 random, 0 kWeaponLandmine's DetonateMultiEffect, 1..4 that type (Detonate 0x581113)
+    Object newMine(Vector3 p);  // W4M CreateMine 0x4f9630
+    int mineType();  // W4M Detonate 0x581113: the landmine's DetonationType 1..4
+    void mineBlast(Vector3 p, int type);
+    void bomblets(Vector3 at, int weapon, std::vector<Projectile> &out);  // W4M ClusterGeneratorLogicEntity 0x5519d0: the weapon's `clusters` children
+    // W4M MineFactoryLogicEntity (Init 0x5d0170, Update 0x5d0b00): the level detail "minefactory" (PlaceObjects 0x4fb6f2); each
+    // StartMineFactory (0x5cfe40) counts NumTurnsInactive down, then, under NumMineActivation mines in play, drops up to 10 around the worms
+    struct Factory { Vector3 pos{}; bool on = false, damaged = false; int state = 0, wait = 0, toSpawn = 0, until = 0, die = 0; float top = 0; };
+    struct FactoryData { int activation = 20, inactive = 7; float padding = 82, damage = 100, push = 0.6f, reach = 100, crater = 100, pushReach = 100; };  // kMineFactoryData
+    Factory factory;
+    FactoryData factoryData;
+    void factoryCreate(Vector3 p);
+    void factoryStart();
     bool suddenDeath = false;
     Vector3 raceFinish{};  // rope race: terrain.finish, or a deterministic fallback
     std::vector<uint8_t> idle;  // per team: never takes a turn (mission captives)
@@ -483,6 +516,18 @@ struct Game {
     float scoutZoom(float z, float dt) const;  // W4M HeadCam zoom 0x91f31c after dt s, from z (camera only)
     MissionRun run;
     std::shared_ptr<struct ScriptState> script;  // W4M mission script (script.h): it starts and ends the turns
+    // W4M TriggerLogicEntity (scripts' GameLogic.CreateTrigger, 0x5d5360): a sphere at a marker that worms or payloads collect and
+    // blasts destroy. Team fields as W4M (-1 any, else that team; 4 and up: never); wormCollect: our worm index (-1 any, -2 none);
+    // mask: what it collides with (0x5d4b50: 1 worms, 8 payloads, 0x80 sheep-like payloads)
+    struct Trigger { Vector3 pos; float radius; int index, hp, teamCollect, wormCollect, teamDestroy, sheepCollect, payloadCollect; uint16_t mask; bool visible; uint8_t gone = 0; int collector = -1; };
+    enum : uint8_t { TRIG_COLLECTED = 1, TRIG_SHEEP, TRIG_PAYLOAD, TRIG_DESTROYED };  // gone: the message it posts (W4M Trigger.*), once
+    std::vector<Trigger> triggers;
+    void stepTriggers();  // 0x5d5180: worm and payload contacts
+    void stepFactory();
+    bool noTurn = false;  // a mission script before its first turn: W4M CurrentTeamIndex and ActiveWormIndex are -1
+    int turnTeam() const { return noTurn ? -1 : worms[current].team; }
+    std::vector<int8_t> allied;  // per team: W4M TeamData.AlliedGroup (scripts); empty: each team its own
+    int alliance(int team) const { return team >= 0 && team < (int)allied.size() ? allied[team] : team; }
     bool indestructible = false;  // W4M Land.Indestructable (scripts): the Land Explosion handler returns (0x47356d)
     // Settle (W4M stdlib.lub): GameLogic.ApplyDamage starts every hurt worm's damage display at once, then the death queue
     // blows the dead up one by one, each once nothing else is active (0x4f9b30). docs/death-sequence.md
@@ -540,14 +585,14 @@ struct Game {
     Vector3 strikeDir() const { return {-cosf(cursorYaw), 0, sinf(cursorYaw)}; }  // the view's right: bombers cross the screen
     int retreatTicks(const WeaponDef &d) const { return msTicks(d.retreat >= 0 ? d.retreat : cfg.scheme.retreatTime * 1000); }
     int fallDamage(float speed) const;  // W4M FallDamage 0x5ac3e0: hp lost landing at `speed` m/s, scheme and Wormpot included
-    struct GunHit { Vector3 at; float dist; int worm; bool land; };  // at: the struck worm's centre, else the ray's end; worm -1: none
+    struct GunHit { Vector3 at; float dist; int worm; bool land; int obj = -1; };  // at: the struck worm's centre, else the ray's end; worm / obj (a crate) -1: none
     GunHit gunRay(Ray r, const Worm &shooter) const;  // W4M gun ray 0x55e10f: land, worms, targets, bubbles (dist 60: a miss)
     Blast gunBlast(int weapon) const;                  // one hit's explosion, Wormpot super firearms included
     bool steered() const;    // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
     bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)
     bool ambulatory(const Worm &w) const { return w.grounded && !w.motion.slide && !vault.t && !jumpDelay; }  // W4M kWPS_Ambulatory (state 0)
     bool retreating() const;  // Flying / Retreat and the worm may move: W4M timer started (0x549bb0), no FlyCam holding WormMoving
-    bool windy(int weapon) const;  // W4M IsAffectedByWind, Wormpot WindEffectMore included
+    bool windy(int weapon, bool child = false) const;  // W4M IsAffectedByWind, Wormpot WindEffectMore included
     // W4M weapon enum id (0x90c920) of a shot's WEAPTWK container, 0 none
     static constexpr int W4M_LANDMINE = 8, W4M_FACTORY = 21, W4M_SENTRY = 27;
     int containerOf(int weapon, bool child) const;
@@ -595,6 +640,7 @@ private:
     bool addObject(Object::Type t, float lift);
     void stepObjects();
     void openMystery(int item, Worm &w);  // CrateLogicEntity 0x5ca1f0
+    void crateHit(Object &o, float dmg);  // a crate or target takes blast or bullet damage
     void poisonWorm(Worm &w) { if (!w.poison) w.poison = POISON_DEFAULT, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm
     Object *hooked();  // the object on the rope, if any
 };

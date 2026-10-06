@@ -165,20 +165,254 @@ paths below set `EFMV.GameOverMovie` (`Outro`, `OutroSuccess`) first.
 - `RandomNumber.Get` (GameLogicService 0x4ff0aa): `RandomNumber.Uint` = the low 16 bits of one LCG draw (0x68c015: x·0x41c64e6d +
   0x3039), then `RandomNumber.Float` = another draw's low 16 bits / 65536 (0x68c024).
 - Damage (0x5ab7e0): for the active worm (0x95fb98) and damage types other than 5 / 6 (poison) it posts `Worm.Damaged.Current` first,
-  then for every hurt worm sets `DamagedWorm.Id`, `DamageTypeTaken` and posts `Worm.Damaged`.
+  then for every hurt worm sets `DamagedWorm.Id`, `DamageTypeTaken` and posts `Worm.Damaged`. Callers: explosions 0x5ae78b (gun hits are
+  explosions), Damage.Impulse 0x5ae3f7, fall damage 0x5ac3e0 (type 1), poison 0x5ac060 (type 6), Vapourize 0x5ac160, the Mystery Damage
+  crate 0x5cafdc; no phase test, no once-per-turn guard; none at damage 0 (0x5ab805) or with WormData +0xec & 0x800 (0x5ab847, flag not
+  named). Drowning posts Worm.Damaged.Current itself (0x5ad77d).
 - Ammo (0x50d900): Inventory.WormNN[slot] + Inventory.TeamNN[TeamIndex] + Inventory.AllianceNN[TeamData.AlliedGroup], -1 when any of
   the three is -1; delays come from `Inventory%d.WeaponDelays` of the worm's team. Worm slots: kMaxWorms 16 (assert 0x50c24a), teams 4
-  (0x50d350). Defaults [data: LOCAL.XOM]: every Worm / Team / Alliance inventory holds SkipGo and Surrender -1 only; Team.DataNN AlliedGroup NN.
+  (0x50d350). LOCAL.XOM [data] gives every Worm / Team / Alliance inventory SkipGo and Surrender -1, but GameLogicService's init
+  (message 0x40, 0x4f8d4f -> 0x4f5bd0), before the level script loads, empties Inventory.Worm / Team / Alliance.Default and
+  WeaponDelays.Default (0x67cbae) and copies them into Worm00..15, Team00..03, Alliance00..03 and Inventory0..3.WeaponDelays: every
+  inventory starts at 0 [disasm]. 0x50d900 also returns 0 for WeaponIndex 0x43, a delay > 0 or a worm Allow flag 0 (0x50c800).
+- Ammo use, 0x4f4fd0(weapon, worm) (GameLogic.DecrementInventory: the active worm's WeaponIndex; .Id: the message's weapon; DecInventory.
+  IdIndex: Old Woman): nothing when any of the three counts is -1; else the alliance's -1 if > 0, else the team's, else the worm's [disasm].
+  A weapon or utility crate (0x5c8820) adds its amount to Inventory.Alliance[collector's AlliedGroup], or to the collector's
+  Inventory.WormNN when `Crate.AddToWormInventory` was set for it (GameLogicService resets the key per crate, 0x4f2245), unless that
+  target count is -1; the Mystery Disarm takes one of a random weapon from the alliance (0x5ca7d9); `GameLogic.IncrementInventory` +1 on a
+  named container, `GameLogic.AddInventory` adds a container (-1 sticky, 0x67d0d7); the Old Woman takes from the victim as 0x4f4fd0 and
+  gives the thief's alliance +1 (0x592d30, 0x592360). No other writer of a count exists (0x67ce3d callers) [disasm].
 - `GameLogic.ActivateNextWorm` decrements the weapon delays of the team that just played (0x5b5a5f -> 0x4f4df0, turn.md §6).
 - Data the scripts touch live in the Tweak files [data]: LOCAL (most keys and Worm / Team / Inventory containers), LVLSETUP (GM.SchemeData,
   GM.GameInitData), WEAPTWK (Wind.MaxSpeed, Water.Level, Mine.*, kWeaponSuperSheep, kMineFactoryData), AITWK (AIParams.*: CPU1-5,
-  CPUTest; every AIParams.WormNN starts as CPUTest), HUDTWK (HUD.*), CAMTWK (Camera.Shake.*), DEFSAVE (Lock.EasterEgg.N); levels set
+  CPUTest; every AIParams.WormNN is a CPUTest copy in the file), HUDTWK (HUD.*), CAMTWK (Camera.Shake.*), DEFSAVE (Lock.EasterEgg.N); levels set
   RoundTime 3,000,000 (50 min) in five story levels, -1 (no round clock) in TraitorousWaters.
-- Containers decode with the exe's Serialize field lists; `WXFE_UnlockableItem.State` is an enum (0 kUS_Hidden .. 2 kUS_Unlocked), so the
-  scripts' `State == "Unlocked"` tests depend on how enums reach Lua [not traced; ours pushes the number].
+- Containers decode with the exe's Serialize field lists. QueryContainer / EditContainer (XLuaCtrLibrary 0x789acb / 0x789a88) push an
+  8-byte userdata on the container (a live view) with `__index` 0x789872 -> 0x7893e1; an unknown field raises a Lua error ("Unknown
+  field"), a Query write too ("member modification attempted on const container") [disasm]. By field type (0x63e0b3): bool -> boolean,
+  int8..int32 / uint8..uint32 / float32 -> number, string -> string; int64 / uint64 / float64 / pointer / **enum** / interface / bitfields
+  and non-simple types (vectors, structs) -> their ToString string; arrays only through `Get<Field>` / `Set<Field>` / `Append...` closures.
+  An enum's ToString (0x6c7078) is its value name less the shortest common prefix of adjacent names ("Invalid (%d)" past the end):
+  `WXFE_UnlockableItem.State` reads "Hidden" / "Purchasable" / "Unlocked", WormData.WeaponIndex "WeaponBazooka" (WeaponNameEnum's prefix
+  is "k"). Writes go through FromString (numbers as "%f", booleans "true" / "false") [disasm]; whether an enum FromString takes the short
+  name is not traced (the scripts write full names, `"kWeaponShotgun"`).
 
 ### 23.7 Not covered
 
 - The message permission table behind 0x69968b.
-- Handler bodies of Worm.Respawn / DieQuietly (0x5b5e70), CreateTrigger and PlaceMine.
-- `GameToFrontEndDelayTime` (LOCAL.XOM default 3000, 13 script writes) has no exe string: no reader by literal name was found [data].
+- PlaceMine, GameToFrontEndDelayTime: §23.9. Worm.Respawn / DieQuietly and CreateTrigger: §23.10.
+- Telepad details (PlaceObjects "telepad", 0x4fadb0).
+
+### 23.8 What the scripts drive in the UI and render [disasm unless tagged]
+
+Commentary (CommentService 0x5e4ca0, CommentaryBoxGraphicEntity 0x5dce30):
+- `CommentaryPanel.TimedText`: the text of the string id in `CommentaryPanel.Comment` (lookup 0x50b820; unknown: `** INVALID STRING ID: `
+  + id), shown for `CommentaryPanel.Delay` ms (GetData default 1000; LOCAL 1200 [data]). An id starting `Miss.Generic.Lose` also stores its
+  number (+0x148) for SubtitleGraphicEntity 0x5f90a0, which plays `EFMV/Failures/Failures_Narrator_0N` when it shows that line.
+  `CommentaryPanel.ScriptText`: same text (unknown id: the id itself), delay 0. `CommentaryPanel.DebugText`: debug builds only.
+- AddComment 0x5e0680(text, delay, flag): queues `<CLS>` (0x5e0620, outside subtitle mode), then the text cut into lines that fit the
+  FE.Font box (break at a space or '-'), each line its own queue entry with the delay (0 -> 1200 ms, 0x5e087a / 0x5e05aa). The queue
+  holds at most 50 lines (assert 0x5e058a).
+- The box pops `<CLS>` + line 1 (time d1), then line 2 if the next entry is not `<CLS>` (time d2): it shows both for d2 if d2 > d1, else
+  2 x d1 (0x5dd093); one line shows for d1.
+- `Commentary.Clear` (0x5dfed0) empties the waiting queue; the shown box stays. `Commentary.NoDefault` / `EnableDefault` clear / set +0x138,
+  which every default comment checks (deaths 0x5e41e0 / 0x5e4960, Win / Draw, crate spawn and pickup texts, turn start, weapon
+  comments), reset to 1 per game (0x5de730).
+- Subtitle mode (+0x68): `EFMV.Subtitles.On` / `.Off`, sent by EfmvBorderEntity (0x5e6c88, with `HUD.Hide`) when movie borders come up;
+  On / Off both empty the queue. Movie shutdown 0x525540 calls 0x5dff70, which empties it only in subtitle mode. A skipped movie never
+  creates its borders (CreateBorders is not Critical), so its Critical Comment events (fields Comment, Duration: TimedText with Delay =
+  Duration, 0x525dc0) reach the commentary box.
+- Text ids: the mission lines (`M.*`, `C.*`) are in `Language/PC/<Lang>LS.xom` (EngLS 1575 strings), not English.xom [data]. Texts may
+  hold `/*Key*/` placeholders (a text id or a data key): `BriefingText.Name0..5` (lib_SetupWorm writes the player's worm names) is used by
+  one tutorial movie line only (`T1.EFMV2.Dialogue3`) [data].
+
+HUD:
+- CounterGraphicEntity (0x5e5a60 init, 0x5e57c0 update): hidden while `HUD.Counter.Active` is 0; text "%d" of `HUD.Counter.Value`, + "%"
+  when `HUD.Counter.Percent` is 1, FE.Font, TextScale 21, `TextColor` (255, 178, 0), `ShadowColor` black, on `HUD.WindBacking` x BackScale
+  30, at `HUD.Counter.Position` (222, -190), slid by In_Timer / Out_Timer [data: HUDTWK].
+- HudClockEntity (0x5f0ae0 init, 0x5f03f0 round clock): `HUD.Clock.DisplayRoundTime` 0 hides the round time. Shown time: RoundTimeRemaining
+  if RoundTime > 0, else ElapsedRoundTime; text "%02d:%02d" (min, s); `HUD.Clock.DisplayTenths` adds a second text "%02d" of
+  (ms % 1000) / 10 (hundredths) at size 18; RoundTime -1 shows `FXTXT.Infinity`. The turn digits (0x5efe80) draw only while
+  TurnTimeRemaining rounds up to > 0 s, so TurnTime 0 shows none.
+- TimerLogicEntity 0x50f100, every 10 ms: ElapsedRoundTime += 10 and RoundTimeRemaining -= 10 (once Timer.StartGame set it, 0x50fa23,
+  which also zeroes ElapsedRoundTime), both skipped while GameLogic.PauseGame (+0x69: every timer stops), GameLogic.RoundTime.Pause
+  (+0x6f, to .Resume; sent by none of the 51 scripts nor the exe) or while the current logical camera (CameraManagerService [0x95c370]
+  +0x2a0[+0x28c], type +0x2c) is 14 (0x50f15f): the type the Path (0x531580) and TimedPath (0x637880) cameras pass to the Camera
+  constructor 0x51b570, i.e. the movies' PathCamera / TimedPathCamera [disasm].
+- Team energy bars (EnergyBarManagerEntity, 0x5e9f10 at WormManager.Reinitialise): each team's value is the sum over its Active worms of
+  Energy less pending damage (0x5e9a00; a surrendered team 0); a bar is value x `HUD.Energy.MaxLength` / M x 0.5 long (0x5e8250), M the
+  largest team total at that Reinitialise (100 if under 1): the strongest team fills the bar, a later Worm.Respawn changes nothing.
+- `lib_CreateWXBriefingBox` (`GameLogic.CreateBriefingBox`, WXD.BriefingText / BriefingImage) is defined in lib_help but called by none of
+  the 51 scripts: no in-game briefing box in these levels [data].
+
+Particles (ParticleHandlerService 0x5c1530):
+- `Particle.NewEmitter`: looks for the level detail named `Particle.DetailObject` (all detail lists, exact name); found: with
+  `Particle.Locator` empty the effect `Particle.Name` starts at the detail (0x5c09d0) and its handle goes to `Particle.Handle`; not found:
+  nothing, the handle keeps its value. `Particle.NewUserIdEmitter` (movies' CreateEmitter) takes the UserId as the handle.
+- `Particle.DelGraphicalEmitter(handle)` (0x5bfde0 -> ParticleEmitterEffectEntity 0x5bcf50): state 3, the emitter stops; `...Imm` also
+  frees its particle group and kills the entity at once.
+- Level databanks hold their own effects (`WXPL_*`: ParticleEmitterContainer / EffectDetailsContainer, e.g. DINERMIGHT 4 / 1) next to
+  PARTTWK [data].
+
+Camera shake (CameraManagerService 0x522c29, CameraShakeManager):
+- `Camera.ShakeStart` adds a shake object (0x5242e0: Length ms, Magnitude, handle into `Camera.Shake.Handle`). Each frame an object gives
+  (rand % 3 - 1) per axis x Magnitude x (1 - elapsed / Length) (0x5243b0); the sum x 0.02 (0x51dcde) is clamped to `Camera.Shake.Max` 0.01
+  and scaled x 1000 units (0x523e60): Magnitude m per axis, 0.5 m at most. Explosions add objects the same way (0x5241c0).
+
+Point lights:
+- `Land.EnablePointLight` / `DisablePointLight` (LandscapeLogicEntity 0x478e03 -> 0x4757c0): the named detail's light index (+0x58) sets
+  bit 0 of the 48-byte light entry ([0x953344]+0x20) and rebuilds the land chunks it lights (0x470270), the vertex colour term of
+  render.md (col x 500 cos(1 - d / R)). Used by TurkishDelights only (PL01, PL04 in Initialise) [data].
+
+### 23.9 Lot 2 keys and messages: mines, factory, water, weapons, turn keys, end of game [disasm unless tagged]
+
+Mines (GameLogicService, keys bound at 0x4f8b11..0x4f8bed: Mine.DudProbability +0x188, MinFuse +0x18c, MaxFuse +0x190, Mine.Id +0x194,
+Mine.StartsMidAir +0x198):
+- `GameLogic.PlaceMine` (0x4fdf90, string arg): the detail object of that exact name (0x4f9400, strcmp 0x638a62, +0x3c; none: assert
+  "Detail object not found"), then CreateMine 0x4f9630 at its position.
+- CreateMine 0x4f9630: one LCG draw for a debug log (0x4f964e), a ParabolicPayloadLogicEntity of kWeaponLandmine at the point; +0xa0 =
+  !Mine.StartsMidAir (LOCAL 0: the mine is dropped onto the ground, no ArielFx, 0x581978); unless WormPot MineRespawn (+0x45) a dud roll
+  (+0x5d = DudProbability > rand01); then fuse +0x24 = MinFuse + trunc((MaxFuse - MinFuse) x rand01) ms; Mine.Id = the new task id.
+  Callers: PlaceObjects, PlaceMine, CreateRandomMine, RespawnMine. The mine factory's 0x4f9c40 is the same without the debug draw, with a
+  velocity, starting in flight. Only these two set the dud flag (+0x5d writers: 0x4f9818, 0x4f9dec; 0x5804c2 clears it at construction,
+  0x58117f under MineRespawn): a mine laid with the Landmine weapon never fizzles.
+- `GameLogic.PlaceObjects` 0x4fb490 (one LCG draw first): every level detail whose name is exactly "mine" -> CreateMine, "oildrum" ->
+  0x4facb0, "minefactory" -> CreateMineFactory 0x4f64f0, "telepad" -> 0x4fadb0.
+- Mine.DetonationType is read at each landmine Detonate (0x581113): -1 Random, 0 keeps kWeaponLandmine's DetonateMultiEffect (0 =
+  kDT_Random [data]), 1..4 that type; Random -> (rand & 3) + 1 (weapons.md "DetonateMultiEffect handling").
+- `Payload.Deleted` is posted by every payload's teardown (0x580560) with Payload.Deleted.Id = its task id and .LastPosition: GibbonTake
+  and MineAllMine answer it (Payload_Deleted) to put a mine back [data].
+
+Mine factory (MineFactoryLogicEntity 0x5d0510; kMineFactoryData [data]: NumMineActivation 20, NumTurnsInactive 7, SafeRadiusPadding 82,
+DamageMagnitude 100, ImpulseMagnitude 0.6, Worm / Land / Impulse radii 100; MineVelocityX/Y/Z are "Obsolete" and absent):
+- Created by PlaceObjects on the "minefactory" detail (DeathMatch6) or stdvs's CreateRandMineFactory (0x4f26b0: radius 45, offset
+  (0, 40, 0)); one at a time (GLS +0x208). Init 0x5d0170: a 1000-step ray of 1 unit down snaps it to the land; Land.SpawnPiece
+  "MineFacCollisionSmall" / "MineFacCollisionBig" (Bundl09 FactoryCollision1 / 2: solid boxes centred on pos + (18.96, 15.96, 1.08) half
+  (10.5, 16, 8.4) and pos + (-5.28, 20.76, 0.96) half (12, 20, 12) units [data]), never removed; counter = NumTurnsInactive; land maxY kept.
+- `GameLogic.StartMineFactory` (0x5cfe40, DM6's DoOncePerTurnFunctions): counter - 1; at <= 0, if the kWeaponLandmine payloads in play
+  (every mine) are fewer than NumMineActivation (read then), registers the "Mine Factory" active object, toSpawn = min(act - count, 10),
+  counter = NumTurnsInactive, state 1.
+- Update 0x5d0b00 (strict t > deadline): state 1 serves MineFactoryCamera (SimpleCam 1 / 0.1, look-at pos + (-8, 45, 0), camera that +
+  (0, 50, 300) clipped by the land, kept if over 30 units away), posts MineFactory.Start (clip MineFactoryStart, weapons/MineMachineOperate
+  loop), deadline + 2000; state 2 posts MineFactory.Fire (the loop stops), + 291; state 3 spawns WXP_LandMineUpShot x toSpawn at the
+  Payload_Spawn node and posts MineFactory.FireEnd (WXP_MineMachineShot there), + 708; state 4 -> 5; state 5 PlaceMines 0x5d05c0, the active
+  object released. Clip lengths from Bundl09 MineFactory [data].
+- PlaceMines: the alive worms' positions; up to 35 tries: a random one of them, angle = rand x 2 pi, P = (x + sin a x 128, land maxY + 10,
+  z + cos a x 128); a ray down to land minY must hit land above Water.Level with normal y >= 0.9, at >= 127 units (Landmine ArmingRadius
+  45 + SafeRadiusPadding) in xz from every worm; then 0x4f9c40 at P with velocity (0, -0.3, 0) units / ms.
+- Destroyed by any Explosion within its LandDamageRadius + 40 units of pos + (0, 40, 0) (0x5cfbc0), a positive Damage.Impulse, or water over
+  pos + 10 units: 100 ms later an explosion at pos (impulse centre 5 units below) with kMineFactoryData's magnitudes and radii,
+  WXP_Explosion_MineMachine, weapons/ExplosionLarge; MineFactory.Deleted; later StartMineFactory calls do nothing.
+
+Water: `Water.Level` (WEAPTWK 0) is the level the drown test, payload water, camera floors and the AI read through their key handles: a
+SetData moves it at once (the water graphic follows at Water.RiseSpeed.Graphic). The movies' Critical RaiseWater adds its Delta.
+
+Weapons (LogicalWeaponManagerService 0x566b80):
+- `Weapon.Create` 0x565770: keeps the active worm's WeaponIndex if 0x50d900 finds it usable, else writes ids 0, 1, ... (0x26 Skip Go and
+  0x27 Surrender skipped) into Worm.DataNN.WeaponIndex until one is usable, kWeaponUndefined 0x43 when none (0x56582d); then posts
+  Weapon.PreSelected. Only scripts send it: a match's turn start never runs it.
+- `Weapon.PreSelected` 0x566c77: 0x566690(0) deletes the weapon / utility entities (the tool-out rule may keep them), then WeaponSelected
+  0x565d30 builds WeaponIndex's item, no ammo test.
+- `Weapon.Wield`: WeaponAccessoryEntity 0x597739 only: a holstered (+0xb0 0) weapon is drawn (state-0 taunt path, EquipSfx): no gameplay.
+- `Challenge.EndlessGun` (LOCAL 0; Sniper / Sniper2 1): read at the gun's init (0x55d1da): bCanMoveBetweenShots forced on; each batch
+  (0x55efbf) ends the gun only when shots >= NumberOfBullets and EndlessGun == 0: unlimited shots, one ammo (the first FirePressed's
+  DecrementInventory), movement between shots, no Weapon.Fired, no retreat, no turn end.
+- `Jetpack.InitFuel` (TWEAK 7500; FastFoodDino 25000): copied into Jetpack.Fuel by the jetpack entity's init 0x563440, i.e. each time the
+  jetpack is selected (WeaponSelected creates a new entity); Jetpack.Fuel is the live fuel (thrust writes fuel - 20). Jetpack.UpdateFuel
+  only refreshes the stats entity [disasm 0x56428c].
+
+Turn keys:
+- `SameTeamNextTurn` (worm manager +0xd8, 0x5b4bf0): ActivateNextWorm 0x5b59b0 then skips GameLogic.DecrementWeaponDelays and takes the
+  front worm of the last worm's team queue (0x5b5630), the alliance queues untouched; the handler writes 0 back (0x5b60e3).
+- `Turn.Boring` / `Turn.MaxDamage` feed the acting reactions only: damage (0x5ab884) or water (0x5ad6c8) sets Boring 0, a full-strength
+  explosion hit (0x5ae6b5, sentry 0x56d3a2) MaxDamage 1; TimerLogicEntity's StartPostActivity posts Missed when Boring > 0 and a payload
+  was fired; ApplyDamage 0x5b22a0 picks Mistake, FirstBlood, MaxDamage (MaxDamage == 1), Boring / DamageInflicted, then sets MaxDamage 0,
+  Boring 1 if it was 0. TinCanWally's Crate_Destroyed (Boring 0, MaxDamage 1) thus forces the MaxDamage reaction.
+
+AI level: AIService's init (message 0x40, 0x4b3390), before the level script loads, copies AIParams.CPU2 into AIParams.Worm00..15
+(CPUTest never takes effect); WormManager.Reinitialise copies CPU<Team.DataNN.Skill> over a worm's params when Skill is 1..5 (multiplayer
+only, Skill is 0 in the story levels) [disasm 0x4b3820]. An AI worm the script gives no AIParams.CPUn plays at CPU2.
+
+End of game (GameLogicService 0x4fb880 tail 0x4fd27a): Mission / Challenge / Tutorial Success / Failure, Win and Draw end alike.
+- `GameToFrontEndDelayTime` (LOCAL 3000; 13 scripts set 1000) is never read: data keys resolve through a character trie
+  (0x6a3ef0 -> 0x6a2d60), so a reader needs the literal, which no binary of the install holds [disasm + data].
+- RestartGame / QuitGame / DrawImmediately / ReplayRound, or `EFMV.GameOverMovie.Off` != 0: GameLogic.GotoFrontEnd at once.
+- `EFMV.GameOverMovie` non-empty: that movie plays (0x4f52c0); its EFMV.Terminated posts WXMsg.DoStoryMovie (Story with WXD.StoryMovie) or
+  GotoFrontEnd, no extra delay.
+- Else GameOverLogicEntity (init 0x4ffbd0, 20 ms tick 0x4ff8d0; mode 1 failure, 2 success / win with music/victory, cheer and fireworks,
+  0 draw): state 0 on MostRecentlyActiveWorm (or the first active worm) until the count passes 4000 ms, input ignored; state 1 the orbit
+  (unless Script.NoOrbitCamera) for 5000 ms offline (15000 online), any input (Input.SomeInputFrom) ends it; state 2 fades both sounds
+  over 1000 ms, then GotoFrontEnd: about 10.06 s offline. Game time; the world and the scripts keep running (no pause message).
+
+### 23.10 Worms, triggers and crates the scripts drive (lot 2) [disasm unless tagged]
+
+Message delivery:
+- `0x6910e4` hands a message to the relay (0x68b89e -> 0x68cb82), which calls the target task's HandleMessage in line: a callback a
+  script's own SendMessage causes runs before that SendMessage returns. TinCanWally relies on it (`g_bCrateDeletePhase = true`,
+  `Crate.Delete`, `= false` around its own Crate_Destroyed) [disasm + data].
+
+Worms (WXWormManagerService HandleMessage 0x5b5e70):
+- `Worm.DieQuietly` and `WXWormManager.UnspawnWorm` (int slot) both run 0x5b4af0: no worm in the slot logs "request to unspawn a worm
+  which does not exist"; else 0x5aaac0(0) on it, ActiveWormIndex = -1 if it was the active one, WormData.Active (+0x124) = 0, the logical
+  worm is deleted (0x68b927) and the team lists updated (0x5b3f60). No death blast, no gravestone, no Worm.Died.
+- `Worm.Respawn` (int slot < 16) 0x5b4f70: a worm already in the slot logs "A worm which currently exists tried to respawn" and nothing
+  happens. Else PlaceWormAtSpawnPoint 0x5b4180 (WormData.Spawn), and only if WormData.Active: SpawnWorm 0x5b31b0, its speech bank, and
+  with IsAllowedToTakeTurn (+0x12d) its team joins its alliance's list and the worm its team's (+0x128 PositionInTeam = its index).
+- WormManager.Reinitialise (0x5b5bf0) sets CurrentTeamIndex -1 (0x5b5c4c); ActivateNextWorm 0x5b59b0 sets ActiveWormIndex and
+  CurrentTeamIndex; with no worm to activate it asserts `m_nActiveWormIndex!=-1` (0x5b5b0f). Not traced: what the release build does
+  then (ours runs the turn's clocks without a worm, docs/missions.md "Worms").
+- EFMV SpawnWorm {WormId, DataId}: CopyContainer(DataId, Worm.Data<WormId>) (same class asserted), then Worm.Respawn(WormId); UnspawnWorm
+  {WormId}: WXWormManager.UnspawnWorm (EFMVMovieLogicEntity 0x525e7b, 0x525fa0). TheWindyWizard's intro has a Critical UnspawnWorm [data].
+- The AI's allies (0x4a4790, used by the target value 0x4a9260) are the worms whose team has the same AlliedGroup colour (0x50cae0) as
+  the thinking worm's [disasm]; TraitorousWaters' villagers (VillageTeam AlliedGroup 0) are the player's allies [data].
+
+Triggers (TriggerLogicEntity, vtable 0x862c78, HandleMessage 0x5d5730, init 0x5d5360):
+- Keys read at creation: Spawn (the detail object by name, its exact position, 0x5d4f30; none: logs "Couldn't find Trigger Spawn
+  Location" and takes the vector at 0x96e878), Index +0x30, Radius +0x2c (<= 0: "Error Invalid Trigger Radius", then 1), HitPoints +0x34
+  (< 1: 1), TeamDestroy +0x38, TeamCollect +0x3c, WormCollect +0x40, SheepCollect +0x44, PayloadCollect +0x48, AffectsAI +0x4c,
+  GirderCollect (!= 0: +0x52). `Trigger.Visibility` 1, with AppData +0x9c bit 0 (cleared only by the `/TRIGGERSINVISIBLE` switch,
+  0x4dabc6), creates a TriggerGraphicEntity: resource `Trigger.Ball` (TriggerSphere.xom in Bundl09: a 2-unit ball, one 8x8 texture of
+  RGBA (255, 30, 0, 125), XBlendModeGL SrcAlpha / InvSrcAlpha [data]) scaled by the radius (0x58bef8).
+- Its collider is a sphere of Radius; mask 0x5d4b50: 1 (worms) if TeamCollect is in [-1, 3] or WormCollect in [-1, 15], 0x80 if
+  SheepCollect is in [-1, 3], 8 if PayloadCollect is, 0x200 with GirderCollect. Spheres touch when d < r1 + r2 (0x516350).
+- Update 0x5d5180, per overlapping collider: a worm (flags 1, 0x5d4d70) collects if TeamCollect is -1 or its TeamIndex and WormCollect -1
+  or its slot (Collector = the slot); collider flags 0x88 (sheep-like payloads) with SheepCollect < 4 (0x5d4df0) and flags 8 (payloads)
+  with PayloadCollect < 4 (0x5d4e40) need the active worm's team (or -1), Collector = ActiveWormIndex. Then 0x5d49b0: SetData
+  Trigger.Index and Trigger.Collector, the message by kind (table 0x5d4b3c): Trigger.Collected (worm), Trigger.SheepCollected (set by
+  the payload path), Trigger.PayloadCollected (set by the sheep path), Trigger.GirderCollected; the trigger deletes itself.
+- Explosion 0x5d4cb0 (not collected nor destroyed): R = WormDamageRadius + Radius, d² = |trigger - damage epicentre|²; if d² < R²,
+  damage = WormDamageMagnitude (R² - d²) / R², + 1 when it truncates under 1. 0x5d47f0: only if TeamDestroy is -1 or CurrentTeamIndex;
+  HitPoints -= trunc(damage); <= 0: Trigger.Index, Trigger.Destroyed, deleted; else Trigger.Index, Trigger.HitPoints, Trigger.Damaged.
+- GameLogic.DestroyTrigger (int): every trigger of that Index deletes itself (Trigger.Deleted, which no script answers).
+- Data: of the 51 levels' scripts only Trigger_Collected (10) and Trigger_Destroyed (9) are defined; HitPoints is 0 or 1, so one blast
+  in reach destroys [data].
+
+Crates (CrateLogicEntity, vtable 0x8619a0, HandleMessage 0x5cb330, spawn 0x5c9bd0, keys 0x5c7bb0):
+- Keys read at creation: Index +0x24, NumContents +0x48, Hitpoints +0x4c (x Crate.HitpointsMultiplier when > 0, truncated, 0x5c7f88:
+  TWEAK 25 x 0.5 = 12), LifetimeTurns +0x50 (-1 per GameLogic.Turn.Ended, 0 destroys it), Parachute (+0x65), Gravity (+0x64),
+  TeamDestructible +0x70, TeamCollectable +0x6c, AddToWormInventory +0x74, UXB +0x67, Pushable +0x66, DelayMillisec (no collision, fall
+  or blast until then, 0x5cbd91), WaitTillLanded, TrackCam (+0x101: the crate camera once), IsStatue, LifetimeSec (expiry +0x58),
+  FallSpeed (velocity (0, -FallSpeed / 1000, 0) units/ms), Scale (sphere 10 x Scale units, 0x5c5700), CanDropFromChute (+0x100, for
+  Crate.LooseChute).
+- Spawn 0x5c9bd0: the "Crate Spawn" active object (released when WaitTillLanded != 1); RandomSpawnPos 0: the detail named Crate.Spawn,
+  its exact position (0x5c8ed0), 1 random (0x5c6560), 2 Crate.ExplicitSpawnPos. GroundSnap 1 (0x5c80a0): a ray down, the hit + the radius,
+  landed, no chute, no active object; no land below: y = Water.Level, sinking, WXP_WaterSmallSplash.
+- Type 0x5c9200: weapon 0, health 1 (heals NumContents, 100 under the Wormpot flag), utility 2, target 3, mystery 4, custom 5;
+  CrateGraphicEntity 0x5c4d10 draws Crate.Weapon / .Health / .Utility / .Target / .Mystery, a custom crate the Crate.CustomGraphic
+  resource (a level detail mesh: D02_04 gems, D04_05 ...) [disasm + data].
+- Fall 0x5c9420 only with Gravity; Gravity 0 never moves and drops the active object (0x5c96d2).
+- Collision 0x5cb7e0: a worm (flags 1) -> 0x5c8370: TeamCollectable -1 or the worm's team's AlliedGroup (TeamData +0x6c); UXB marks it
+  to detonate; else collected by that worm. Collider flags 0x88 (sheep-like payloads) -> 0x5c9750: the same for the active worm.
+  Collection 0x5cb5a0 by type (table 0x5cb7c4): weapon / utility add NumContents as a u8 to the alliance's inventory (0xff infinite; the
+  worm's with AddToWormInventory, 0x5c8820), health 0x5c8660 (energy + NumContents, ApplyDamage, Worm.Antidote), mystery 0x5ca1f0,
+  target and custom a pickup sound only; then Crate.Index, Crate.Collected.
+- Explosion 0x5c9a10 (active, not collected): d = |crate - damage epicentre|; d < LandDamageRadius: WormDamageMagnitude (R - d) / R to
+  0x5c87a0 (TeamDestructible -1 or the active worm's AlliedGroup; Hitpoints -= trunc; <= 0 destroys). Then a Pushable crate within
+  ImpulseRadius of the impulse epicentre gets v += ImpulseMagnitude (R - e) / R away from it and leaves the ground (0x5c5ae0). Bullets
+  (Damage.Impulse, 0x5c8a90): Hitpoints -= the damage, same team rule.
+- Destroyed 0x5c5810, any type: an ExplosionMessage of Crate.WormDamageMagnitude / ImpulseMagnitude / WormDamageRadius / LandDamageRadius
+  / ImpulseRadius (impulse centre one radius under the crate), WXP_ExpiryExplosion, Crate.Index, Crate.Destroyed.
+- Crate.Delete (int Index) 0x5c5cf0, if not collected or blown: Crate.Index, Crate.Destroyed, deleted, no blast. Crate.RadarHide /
+  RadarDisplay (int Index): +0x86 off / on (on by default, 0x5c61fa), read by the radar 0x5f6aa0.
+- Data: none of the 470 CrateDataContainers of the 51 levels changes LifetimeSec (-1), LifetimeTurns (-1), FallSpeed (0), UXB (0),
+  RandomSpawnPos (0), DelayMillisec (0) or Showered (0) [data].

@@ -59,16 +59,16 @@ static bool stepBody(const Game &g, Body &b, float &yaw) {
     return b.pos.y >= g.water;
 }
 
-// W4M 0x4a9260 target value, once per think (0x4ab730) from where the worm stands: allies (self included) are -v·K, enemies v/K,
-// with K = (enemies / allies)^WormExchange
+// W4M 0x4a9260 target value, once per think (0x4ab730) from where the worm stands: allies (self included; the same AlliedGroup,
+// 0x4a4790) are -v·K, enemies v/K, with K = (enemies / allies)^WormExchange
 static float targetValue(const Game &g, const Level &L, int me, int i) {
     const Worm &w = g.worms[i];
     const int team = g.worms[me].team;
     int left = 0, foes = 0, friends = 0;
-    for (const Worm &x : g.worms) if (x.alive) left += x.team == w.team, (x.team == team ? friends : foes)++;
+    for (const Worm &x : g.worms) if (x.alive) left += x.team == w.team, (g.alliance(x.team) == g.alliance(team) ? friends : foes)++;
     float K = powf((float)std::max(foes, 1) / std::max(friends, 1), L.exchange);
     float v = (1 + 0.04f * w.hp + fmaxf(0.1f, 1 - 0.08f * w.poison)) * (left == 1 ? 2 : 1);
-    if (w.team == team) return -v * K;
+    if (g.alliance(w.team) == g.alliance(team)) return -v * K;
     bool human = w.team >= (int)g.cfg.teamSetup.size() || !g.cfg.teamSetup[w.team].cpu;
     return v / K * powf(10 / fmaxf(Vector3Distance(w.pos, g.worms[me].pos), 10), L.nearby) * (human ? L.humans : 1);
 }
@@ -904,7 +904,7 @@ void Ai::startEval(const Game &g) {
         if (!g.worms[i].alive) continue;
         threats.push_back((int)i);  // rated by unit()
         vals[i] = targetValue(g, L, me, (int)i), sum += fabsf(vals[i]), live++;
-        enemy |= g.worms[i].team != w.team;
+        enemy |= g.alliance(g.worms[i].team) != g.alliance(w.team);
     }
     if (!enemy) return;
     norm = live && sum != 0 ? sum / live : 1;
@@ -928,7 +928,7 @@ void Ai::targetsFor(const Game &g, const Origin &o) {
     tpos.clear(), tworm.clear();
     for (size_t i = 0; i < g.worms.size(); i++) {
         const Worm &e = g.worms[i];
-        if (!e.alive || e.team == g.worms[g.current].team) continue;
+        if (!e.alive || g.alliance(e.team) == g.alliance(g.worms[g.current].team)) continue;
         Vector3 to = e.pos - o.pos;  // also the ground just short of it: a shell there still splashes
         tpos.insert(tpos.end(), {e.pos, e.pos - Vector3Normalize({to.x, 0, to.z}) * 1.5f});
         tworm.insert(tworm.end(), {(int)i, (int)i});
@@ -1354,7 +1354,7 @@ Input Ai::think(const Game &g) {
             const Vector3 e = g.worms[plan.target].pos, n = s.pos + s.vel * DT;
             bool near = k == Kind::SuperSheep && WEAPONS[s.weapon].walks && !s.stage;  // take off at once
             if (k == Kind::SuperSheep)
-                for (const Worm &x : g.worms) near |= x.alive && x.team != w.team && Vector3Distance(s.pos, x.pos) < 1.5f;
+                for (const Worm &x : g.worms) near |= x.alive && g.alliance(x.team) != g.alliance(w.team) && Vector3Distance(s.pos, x.pos) < 1.5f;
             else near = Vector2Distance({n.x, n.z}, {e.x, e.z}) > Vector2Distance({s.pos.x, s.pos.z}, {e.x, e.z});  // 0x57e130: the next step goes away
             if (k == Kind::SuperSheep && g.worms[plan.target].alive) steer(g, s.pos, WEAPONS[s.weapon].walks ? s.vel : s.aim, e, in);  // Starburst: its heading
             if (near && !g.prevButtons) in.buttons = Input::FIRE;

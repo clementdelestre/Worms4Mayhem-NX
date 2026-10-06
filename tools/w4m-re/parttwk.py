@@ -2,11 +2,11 @@
 """Export the PARTTWK effects the client starts from data (level EMITTER_ details, weather) for client/src/fx.cpp.
 
   parttwk.py [ASSETS]   default: client/assets (gitignored: game data, never commit it)
-Reads ASSETS/maps/*.json "emitters" (plus ROOTS), writes ASSETS/fx/parttwk.json (effects: name -> emitter names; emitters: name -> the
+Reads ASSETS/maps/*.json "emitters", the effects ASSETS/scripts start (plus ROOTS), writes ASSETS/fx/parttwk.json (effects: name -> emitter names; emitters: name -> the
 ParticleEmitterContainer fields below, W4M names and units) and ASSETS/fx/sets.txt for tools/w4m-models
 ("sprite <SpriteSet>" / "mesh <MeshSet> <clip>[+<clip>]"). Run after w4m-maps, before w4m-models.
 """
-import glob, json, os, struct, sys, zlib
+import glob, json, os, re, struct, sys, zlib
 from pe import GAME
 from tweak import dump
 from xom import Xom, varint
@@ -14,7 +14,9 @@ from xom import Xom, varint
 # 0x5c0a84: an unknown name falls back to this effect; weather effects (RainGraphicEntity) are not named by maps; the client starts
 # the weapon ones by name (Fatkins blasts and BounceFx, grenade BounceFx, Flood storm)
 ROOTS = ['XXX_PlaceholderPP', 'WXP_RainFall', 'WXP_RainFallBG', 'WXP_ExplosionX_Med', 'WXP_Explosion_Small', 'WXP_ExplosionX_Large',
-         'WXP_Wep_Fatkins', 'WXP_Poof_VFast', 'WXP_StormCloud']
+         'WXP_Wep_Fatkins', 'WXP_Poof_VFast', 'WXP_StormCloud',
+         'WXP_LandMineUpShot', 'WXP_MineMachineShot', 'WXP_Explosion_MineMachine']  # MineFactoryLogicEntity 0x5cf667, 0x5cfc70
+ROOTS += ['WXP_Explosion_Mine', 'WXP_Napalm']  # Landmine DetonationFx; its kDT_Fire FX (Detonate 0x5813cc)
 FIELDS = ['EmitterType', 'SpriteSet', 'MeshSet', 'MeshAnimNodeName', 'EmitterLifeTime', 'EmitterLifeTimeRandomise', 'EmitterMaxParticles',
           'EmitterNumSpawn', 'EmitterNumSpawnRadnomise', 'EmitterOriginOffset', 'EmitterOriginRandomise', 'EmitterParticleExpireFX',
           'EmitterParticleFX', 'EmitterSoundFX', 'EmitterSoundFXVolume', 'EmitterSpawnFreq', 'EmitterSpawnFreqRansomise', 'EmitterStartDelay',
@@ -64,10 +66,18 @@ def sprite(bundles, name):
 def main(a):
     assets = a[0] if a else os.path.join(os.path.dirname(__file__), '..', '..', 'client', 'assets')
     tw = dump(os.path.join(GAME, 'Data', 'Tweak', 'PARTTWK.XOM'))
+    for f in sorted(glob.glob(os.path.join(GAME, 'Data', '*.XOM'))):  # level databanks add their own (WXPL_*) to the same resource store
+        for k, c in dump(f).items():
+            if isinstance(c, dict) and c.get('_type') in ('ParticleEmitterContainer', 'EffectDetailsContainer'): tw.setdefault(k, c)
     folded = {k.lower(): k for k in tw}  # the resource trie folds case (0x6bdff0)
     names = set(ROOTS)
     for f in glob.glob(os.path.join(assets, 'maps', '*.json')):
         names.update(e['fx'] for e in json.load(open(f)).get('emitters', []))
+    for f in glob.glob(os.path.join(assets, 'scripts', '*.lub')):  # mission scripts: Particle.Name / lib_CreateEmitter constants
+        names.update(m.decode() for m in re.findall(rb'WXP[LS]?_[A-Za-z0-9_]+', open(f, 'rb').read()))
+    for f in glob.glob(os.path.join(assets, 'scripts', '*.json')):  # their movies' Critical CreateEmitter / CreateExplosion effects
+        for ev in json.load(open(f)).get('movies', {}).values():
+            names.update(e[i] for e in ev for i in ([1] if e[0] == 'CreateEmitter' else [7] if e[0] == 'CreateExplosion' else []) if e[i])
     effects, emitters, sets = {}, {}, {'sprite Particle.RainSplash'}  # RainGraphicEntity's splashes (0x482910)
     todo = sorted(names)
     while todo:

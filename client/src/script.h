@@ -17,3 +17,10 @@ int scriptPostActivity(const Game &g);       // PostActivityTime, ticks
 // What a run did: messages and Critical movie events not modelled yet (name, count), data keys the store lacks, Lua errors
 struct ScriptReport { std::vector<std::pair<std::string, int>> ignored, missingKeys; int errors = 0; std::string lastError; };
 ScriptReport scriptReport(const Game &g);
+bool scriptDefines(const Game &g, const char *fn);  // the script has this global function (a callback it answers)
+const char *scriptCrateGraphic(const Game &g, int index);  // a custom crate's Crate.CustomGraphic (a detail mesh name), null: none
+// HUD state a script sets (HUDTWK keys, CommentService flag); clock: RoundTime > 0 its remaining ms, 0 the elapsed ms, -1 none (infinity)
+struct ScriptHud { bool counter = false, percent = false, tenths = false, roundClock = true, defaults = true, endless = false; int value = 0, roundTime = 0; int64_t clockMs = 0; };
+ScriptHud scriptHud(const Game &g);
+double scriptNum(const Game &g, const char *key, double def);  // a data key's value, def when the store lacks it
+bool scriptOutro(const Game &g);  // EFMV.GameOverMovie (or .Off) set: the end skips GameOverLogicEntity (0x4fd27a)

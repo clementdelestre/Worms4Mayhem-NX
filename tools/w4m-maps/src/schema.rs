@@ -133,6 +133,10 @@ pub const CLASSES: &[(&str, &str)] = &[
     ("EFMV_CreateExplosionEventContai", "Location:str WormDamageMagnitude:f32 ImpulseMagnitude:f32 WormDamageRadius:f32 LandDamageRadius:f32 ImpulseRadius:f32 \
       ParticleEffect:str ImpulseOffset:f32 Tag:str Time:u32 Critical:bool"),
     ("EFMV_SpawnWormEventContainer", "WormId:u32 DataId:str Tag:str Time:u32 Critical:bool"),
+    ("EFMV_UnspawnWormEventContainer", "WormId:u32 Tag:str Time:u32 Critical:bool"),
     ("EFMV_RaiseWaterEventContainer", "Delta:i32 Tag:str Time:u32 Critical:bool"),
     ("EFMV_DeleteLandframeEventContai", "Code:str Tag:str Time:u32 Critical:bool"),
+    ("EFMV_CommentEventContainer", "Comment:str Duration:u32 Tag:str Time:u32 Critical:bool"),
+    ("EFMV_CreateEmitterEventContaine", "EmitterName:str Location:str Locator:str UserId:u32 Tag:str Time:u32 Critical:bool"),
+    ("EFMV_DeleteEmitterEventContaine", "UserId:u32 Tag:str Time:u32 Critical:bool"),
 ];

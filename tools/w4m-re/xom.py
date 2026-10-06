@@ -190,7 +190,7 @@ class Xom:
         except (ValueError, IndexError, struct.error) as e:
             r['_error'] = str(e)
         if p < len(d): r['_rest'] = d[p:p + 64].hex()
-        r['_exact'] = p == len(d) and bool(fields)
+        r['_exact'] = p == len(d) and bool(fields) and '_error' not in r  # a read past the end also stops at len(d)
         return r
 
 

@@ -35,7 +35,7 @@ W4M units are 20 per metre. "ours" marks a rule with no W4M source.
 | Scenery on the way back (any travel) | nothing of its own: the shoulder camera never rises or turns (W4M OccHeightSpeed / OccYawSpeed 0); our former lift (≤ 30 m at 20 m/s) and the 2 m halt are gone; only the chase fallback (ours) steps up out of land; the orbit has no land test (W4M 0x530e30) | — | — | §5 OccludingCam |
 | A focus dropped for a frame (between two counts, turn start) | kept 0.2 s | — | — | ours (W4M: 200 ms minimum between track requests, §1) |
 
-Not done: FallCam at the end of the Super Sheep flight (our sheep blows up when its flight ends, nothing falls); FlyCam `UpSpeed` (0x527ab0 → +0x54: the up vector eases toward the payload's own up, i.e. its roll; ours have no roll, so the view is the same); mine factory (no such weapon).
+Not done: FallCam at the end of the Super Sheep flight (our sheep blows up when its flight ends, nothing falls); FlyCam `UpSpeed` (0x527ab0 → +0x54: the up vector eases toward the payload's own up, i.e. its roll; ours have no roll, so the view is the same). Mine factory (DeathMatch6): MineFactoryCamera in controls.cpp `track`, a SimpleCam (1, 0.1) at look-at + (0, 2.5, 15) m clipped by the land, look-at the factory + (−0.4, 2.25, 0) m, held until the next turn (docs/w4m/missions.md §23.9).
 
 ## Drawn view and update rate (`present()`, `perFrame`, controls.cpp)
 

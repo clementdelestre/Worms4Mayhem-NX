@@ -3,6 +3,7 @@
 #include <unistd.h>
 #endif
 #include "ui.h"
+#include "script.h"
 #include "controls.h"
 #include "audio.h"
 #include "models.h"
@@ -1908,7 +1909,7 @@ static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
             text(TextFormat("%c", NSEW[i]), p.x, p.y - 11, 22, GOLDEN, 1);
     }
     for (const Object &ob : g.objects) {
-        if (ob.dead || ob.type == Object::Barrel) continue;
+        if (ob.dead || ob.type == Object::Barrel || !ob.radar) continue;  // radar: W4M Crate.RadarHide / RadarDisplay (crate +0x86)
         Kind k = ob.weapon >= 0 && ob.weapon < (int)WEAPONS.size() ? WEAPONS[ob.weapon].kind : Kind::Shell;
         bool util = utility(k);
         int cell = ob.type == Object::Mine ? 5 : ob.type == Object::Sentry ? 4 : ob.weapon < 0 ? 1 : util ? 2 : 0;
@@ -1927,8 +1928,21 @@ static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
 }
 
 // W4M commentary banner (com_panel), queued; crateFocus: seconds the camera follows a dropped crate
-static std::vector<std::string> banners;
+static int bannerClock = 0;  // g.clock of the event being handled
+struct Banner { std::string s; float life = 0; int clock = bannerClock; };  // life s; 0: ours, 3 s (2 s while others wait)
+static std::vector<Banner> banners;
 static float bannerAge = 0, crateFocus = 0;
+static const float BANNER_SIZE = 26, BANNER_W = 680;
+static std::vector<std::string> wrapBanner(const std::string &s) {
+    std::vector<std::string> lines(1);
+    for (size_t i = 0, j; i < s.size(); i = j + 1) {
+        j = std::min(s.find(' ', i), s.size());
+        std::string word = s.substr(i, j - i), line = lines.back().empty() ? word : lines.back() + " " + word;
+        if (textWidth(line.c_str(), BANNER_SIZE) > BANNER_W && !lines.back().empty()) lines.push_back(word);
+        else lines.back() = line;
+    }
+    return lines;
+}
 static uint32_t bannerTick = 0;
 static std::vector<uint8_t> announced;  // per worm death, per team wipe (replays re-emit events)
 
@@ -1940,47 +1954,54 @@ static void comment(const char *cat, const char *name) {
     if (lines.empty()) return;
     std::string s = lines[GetRandomValue(0, (int)lines.size() - 1)];
     if (size_t at = s.find("%s"); at != std::string::npos) s.replace(at, 2, name);
-    banners.push_back(s);
+    banners.push_back({s});
 }
 
 void hudEvent(const Game &g, const GameEvent &e) {
     announced.resize(g.worms.size() + g.teams);
-    if (e.kind == GameEvent::Death && e.worm >= 0 && !announced[e.worm]) {
+    bannerClock = g.clock;
+    bool defaults = scriptHud(g).defaults;  // Commentary.NoDefault: CommentService +0x138 gates every default comment
+    if (e.kind == GameEvent::Comment && e.fx) {  // 0x5e0680: one queue entry per line, 0 ms -> 1200; a box shows two lines for 2 x the delay (0x5dce30)
+        const char *t = tr(e.fx, nullptr);
+        std::string s = t && *t ? t : e.pos.x ? e.fx : std::string("** INVALID STRING ID: ") + e.fx;  // ScriptText keeps an unknown id as text
+        float d = (e.weapon ? e.weapon : 1200) / 1000.f;
+        std::vector<std::string> lines = wrapBanner(s);
+        for (size_t i = 0; i < lines.size(); i += 2) banners.push_back(i + 1 < lines.size() ? Banner{lines[i] + " " + lines[i + 1], 2 * d} : Banner{lines[i], d});
+    } else if (e.kind == GameEvent::CommentClear) {  // 0x5dfed0: the waiting comments go, the shown one stays
+        if (banners.size() > 1) banners.erase(banners.begin() + 1, banners.end());
+    } else if (e.kind == GameEvent::Death && e.worm >= 0 && !announced[e.worm]) {
         const Worm &w = g.worms[e.worm];
         announced[e.worm] = 1;
-        comment(g.drowned(e.worm) ? "WaterDeath" : "LandDeath", wormName(w.team, e.worm % std::max(1, g.perTeam)));
+        if (defaults) comment(g.drowned(e.worm) ? "WaterDeath" : "LandDeath", wormName(w.team, e.worm % std::max(1, g.perTeam)));
         bool left = false;
         for (const Worm &x : g.worms) left |= x.team == w.team && x.alive;
-        if (!left && !announced[g.worms.size() + w.team]) announced[g.worms.size() + w.team] = 1, comment("TeamDeath", teamName(g.cfg, w.team).c_str());
+        if (!left && !announced[g.worms.size() + w.team]) {
+            announced[g.worms.size() + w.team] = 1;
+            if (defaults) comment("TeamDeath", teamName(g.cfg, w.team).c_str());
+        }
     } else if (e.kind == GameEvent::CrateDrop && !g.objects.empty()) {
         int wi = g.objects.back().weapon;
         Kind k = wi >= 0 && wi < (int)WEAPONS.size() ? WEAPONS[wi].kind : Kind::Shell;
         bool util = utility(k);
-        comment(g.objects.back().mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
+        if (defaults) comment(g.objects.back().mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
         crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
     } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15) {  // CommentaryPanel.Comment: the item's Text.k<name>
-        banners.push_back(mysteryText(e.weapon));
-    } else if (e.kind == GameEvent::Collect && e.worm >= 0) {
+        banners.push_back({mysteryText(e.weapon)});
+    } else if (e.kind == GameEvent::Collect && e.worm >= 0 && defaults) {  // CommentaryPanel.CrateText
         const Worm &w = g.worms[e.worm];
         const char *who = wormName(w.team, e.worm % std::max(1, g.perTeam));
-        if (e.weapon == -1) banners.push_back(TextFormat("%s : +%d", who, (int)g.cfg.scheme.crateHealth));
-        else if (e.weapon < (int)WEAPONS.size()) {
-            banners.push_back(TextFormat("%s : %s", who, weaponName(WEAPONS[e.weapon])));
+        if (e.weapon == -1) banners.push_back({TextFormat("%s : +%d", who, (int)g.cfg.scheme.crateHealth)});
+        else if (e.weapon >= 0 && e.weapon < (int)WEAPONS.size()) {
+            banners.push_back({TextFormat("%s : %s", who, weaponName(WEAPONS[e.weapon]))});
         }
     }
 }
 
 static void drawBanner(float dt) {
     if (banners.empty()) return;
-    const float LIFE = banners.size() > 1 ? 2 : 3, SIZE = 26, MAXW = 680;  // queued: keeps pace with the death queue (2 s a worm)
+    const float LIFE = banners[0].life > 0 ? banners[0].life : banners.size() > 1 ? 2 : 3, SIZE = BANNER_SIZE;  // queued: keeps pace with the death queue (2 s a worm)
     if ((bannerAge += dt) > LIFE) { banners.erase(banners.begin()), bannerAge = 0; return; }
-    std::vector<std::string> lines(1);  // word wrap
-    for (size_t i = 0, j; i < banners[0].size(); i = j + 1) {
-        j = std::min(banners[0].find(' ', i), banners[0].size());
-        std::string word = banners[0].substr(i, j - i), line = lines.back().empty() ? word : lines.back() + " " + word;
-        if (textWidth(line.c_str(), SIZE) > MAXW && !lines.back().empty()) lines.push_back(word);
-        else lines.back() = line;
-    }
+    std::vector<std::string> lines = wrapBanner(banners[0].s);
     float w = 0;
     for (const std::string &l : lines) w = fmaxf(w, textWidth(l.c_str(), SIZE));
     w += 80;
@@ -1997,7 +2018,10 @@ static void drawBanner(float dt) {
 
 bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     float dt = fminf((tick - hpTick) * Game::DT, 0.1f);  // sim time: the count stops with the pause menu
-    if (hpt.size() != g.worms.size() || tick < hpTick) announced.assign(g.worms.size() + g.teams, 0), banners.clear(), crateFocus = 0, bannerTick = tick;  // new match
+    if (hpt.size() != g.worms.size() || tick < hpTick) {  // new match: its first tick's comments (a script's Initialise) stay
+        announced.assign(g.worms.size() + g.teams, 0), crateFocus = 0, bannerTick = tick;
+        banners.erase(std::remove_if(banners.begin(), banners.end(), [&](const Banner &b) { return b.clock != g.clock; }), banners.end());
+    }
     if (hpt.size() != g.worms.size() || tick < hpTick || g.clock < hpClock) {  // new match, replay seek or instant replay
         hpt.assign(g.worms.size(), {});
         for (size_t i = 0; i < hpt.size(); i++) hpt[i].seen = g.worms[i].counted, hpt[i].shown = hpt[i].seen;
@@ -2063,7 +2087,7 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
         for (Popup &p : popups) p.live = false;
         static size_t landed = 0;  // last spawned crate: stays framed through the PostActivityTime after it rests
         const Object *crate = nullptr;
-        for (size_t i = 0; i < g.objects.size(); i++) if (g.objects[i].type == Object::Crate && g.objects[i].spawning) crate = &g.objects[i], landed = i;
+        for (size_t i = 0; i < g.objects.size(); i++) if (g.objects[i].type == Object::Crate && g.objects[i].spawning && g.objects[i].track) crate = &g.objects[i], landed = i;  // Crate.TrackCam
         bool post = g.phase == Phase::Settle && g.crated && g.timer < 0;  // W4M: the PostActivityTime after the crate rests
         if (!crate && post && landed < g.objects.size() && g.objects[landed].type == Object::Crate) crate = &g.objects[landed];
         crateFocus = crate ? crateFocus - dt : 0;
@@ -2227,12 +2251,36 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     Vector2 tp = {1180, 612};
     bool urgent = (secs <= 5 && aiming && !g.hotSeat) || retreat;
     if (!sprite("timer_back", tp, 0.62f, {128, 128}, 0, urgent && tick / 15 % 2 ? Color{255, 120, 120, 255} : WHITE)) DrawCircleV(tp, 54, {0, 119, 155, 230});
-    digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);
-    int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
-    digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
+    ScriptHud sh = scriptHud(g);
+    if (!sh.endless) digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);  // TurnTime 0: TurnTimeRemaining 0, no digits (0x5eff0d)
+    if (!g.script) {
+        int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
+        digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
+    } else if (sh.roundClock && sh.roundTime == -1) digits("~", tp.x, tp.y + 18, 26, 1, true);  // FXTXT.Infinity
+    else if (sh.roundClock) {  // HudClockEntity 0x5f03f0: "%02d:%02d" min:s, DisplayTenths adds a "%02d" of hundredths in a second, smaller text
+        int s = (int)(sh.clockMs / 1000);
+        float w = digits(TextFormat("%02d:%02d", s / 60, s % 60), tp.x - (sh.tenths ? 12 : 0), tp.y + 18, 26, 1, true);
+        if (sh.tenths) digits(TextFormat("%02d", (int)(sh.clockMs % 1000) / 10), tp.x - 12 + w / 2 + 2, tp.y + 18 + 26 * 0.4f, 26 * 0.6f, 0, true);
+    }
+    if (sh.counter) {  // CounterGraphicEntity 0x5e57c0: "%d" (+ "%" if Percent) on HUD.WindBacking x BackScale 30, TextScale 21, at the clock's lower left
+        Vector2 cp = {1054, 659};
+        if (!sprite("wind_back", cp, 0.72f * 30 / 25, {64, 64})) DrawCircleV(cp, 55, {0, 104, 138, 220});
+        const char *v = TextFormat(sh.percent ? "%d%%" : "%d", sh.value);
+        text(v, cp.x + 2, cp.y - 19 + 2, 39, BLACK, 1);  // HUD.Counter.ShadowColor
+        text(v, cp.x, cp.y - 19, 39, {255, 178, 0, 255}, 1);  // HUD.Counter.TextColor
+    }
     if (retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
     // team health (bottom centre, above the hints)
-    int maxHp = std::max(1, (int)g.cfg.scheme.health) * std::max(1, g.perTeam);
+    // W4M EnergyBarManagerEntity 0x5e9f10: HUD.Energy.MaxLength is the largest team total (Active worms' energy) at WormManager.Reinitialise
+    static float maxHp = 100;
+    static int lastClock = -1;
+    if (g.clock < lastClock || lastClock < 0) {
+        std::vector<float> sum(g.teams, 0);
+        for (const Worm &w : g.worms) if (w.alive && w.team < g.teams) sum[w.team] += w.hp;
+        maxHp = sum.empty() ? 0 : *std::max_element(sum.begin(), sum.end());
+        if (maxHp < 1) maxHp = 100;
+    }
+    lastClock = g.clock;
     for (int t = 0; t < g.teams; t++) {
         float hp = 0;
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].team == t) hp += hpt[i].shown;  // shrinks with the count
@@ -2268,8 +2316,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (g.roped) text("Rope: stick swings, aim = length, jump releases", 190, 600, 22, WHITE);
     if (g.jetting) {
         text(keyGlyphs() ? "Jetpack: Space thrust, arrows steer, Backspace drop" : "Jetpack: A/ZR thrust, stick steers, B drop", 190, 600, 22, WHITE);  // HelpText.kUtilityJetpack0
-        float full = 0.01f;  // the hand may hold what it drops
-        for (const WeaponDef &d : WEAPONS) if (d.kind == Kind::Jetpack) full = fmaxf(full, d.fuse);
+        float full = fmaxf(g.jetInit, 0.01f);  // Jetpack.InitFuel
         healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / full, 0, 1));
     }
     if (open) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});

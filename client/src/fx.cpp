@@ -786,6 +786,11 @@ float rainProb = 0;
 Vector3 weatherAt{};
 const std::vector<Terrain::Emitter> *levelEm = nullptr;
 float levelUnit = 0.05f;
+std::map<int, int> scriptFx;  // mission script emitter handle -> effect handle; its particles carry level SCRIPT_LEVEL + effect handle
+const int SCRIPT_LEVEL = 1 << 20;
+float shakeLen = 0, shakeT = 0, shakeMag = 0;  // the last Camera.ShakeStart
+// CameraShakeManager 0x523e60: the summed jitter x 0.02 is clamped to Camera.Shake.Max 0.01, then x 1000 units: 0.5 m; our jolt is 1.58 x shake
+const float SHAKE_MAX = 0.5f / 1.58f;
 void startLevel() {  // DetailEntity 0x5cd5eb -> 0x5c1410: each live EMITTER_ detail's effect at its position
     for (int i = 0; levelEm && i < (int)levelEm->size(); i++) {
         const Terrain::Emitter &m = (*levelEm)[i];
@@ -795,6 +800,7 @@ void startLevel() {  // DetailEntity 0x5cd5eb -> 0x5c1410: each live EMITTER_ de
 }  // namespace
 void clear() {
     domes.clear(), ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), rains.clear(), shake = show = 0, floodT = -1;
+    scriptFx.clear(), shakeLen = 0;
     startLevel();  // the map's emitters are part of the level, not of the moment cleared
     rolled = -1;
 }
@@ -1128,6 +1134,20 @@ void jetStart(Vector3 at) { effect({&JET_RING, &JET_BASE}, at); }
 void start(const char *name, Vector3 at) {
     if (const std::vector<const Emit *> *fx = fxNamed(name)) effect(*fx, at);
 }
+void scripted(int handle, const char *name, Vector3 at) {
+    const std::vector<const Emit *> *fx = name ? fxNamed(name) : nullptr;
+    if (!fx) return (void)TraceLog(LOG_WARNING, "fx: no effect '%s'", name ? name : "");
+    scriptedOff(handle, false);
+    scriptFx[handle] = effect(*fx, at, levelUnit, SCRIPT_LEVEL + lastHandle + 1);  // effect() takes lastHandle + 1
+}
+void scriptedOff(int handle, bool now) {
+    auto it = scriptFx.find(handle);
+    if (it == scriptFx.end()) return;
+    int level = SCRIPT_LEVEL + it->second;
+    kill(it->second), scriptFx.erase(it);
+    ps.erase(std::remove_if(ps.begin(), ps.end(), [&](const Particle &p) { return p.level == level && (now || p.immortal); }), ps.end());
+}
+void shakeFor(float mag, float secs) { shakeMag = mag, shakeLen = secs, shakeT = 0; }
 void flood(Vector3 at, float stop) { floodAt = at, floodStop = stop, floodT = 0; }
 void jetStop() { lives.erase(std::remove_if(lives.begin(), lives.end(), [](const Live &l) { return l.e == &JET_BASE; }), lives.end()); }
 
@@ -1172,6 +1192,7 @@ void update(float dt) {
     for (Dome &d : domes) d.age += dt;
     domes.erase(std::remove_if(domes.begin(), domes.end(), [](const Dome &d) { return d.age >= DOME_LIFE; }), domes.end());
     shake *= expf(-dt * 6);
+    if (shakeT < shakeLen) shakeT += dt, shake = fmaxf(shake, fminf(shakeMag * fmaxf(0, 1 - shakeT / shakeLen), SHAKE_MAX));
     // W4M 0x4ffa56, every 20 ms of the 5 s show: rand() % 40 == 0 fires WXPF_Firework<1 + rand() % 5> at Land.Center +- Radius / 2 in x and z,
     // Land.MaxHeight + rand x 30 units (its 100 ms gap test computes last - now, unsigned, so it never holds)
     for (tickAcc += show > 0 && show < 5 ? dt : 0; tickAcc >= 0.02f; tickAcc -= 0.02f)

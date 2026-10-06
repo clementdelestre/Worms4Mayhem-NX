@@ -231,7 +231,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkSuperSheep` | Super Sheep: walks, FIRE takes off (25 s flight), FIRE again blows it up. |
 | `checkOldWoman` | Old Woman: steered, FIRE explodes, each enemy bumped loses 1-8 of a weapon to her team. |
 | `checkDonkey` | Concrete Donkey: smashes down every 0.75 s until its 8 s LifeTime or the water. |
-| `checkMineDuds` | Mine.DudProbability: about one mine in ten fizzles. |
+| `checkMineDuds` | Mine.DudProbability: about one CreateMine mine (`newMine`) in ten fizzles; a laid mine never does. |
 | `checkMineBlast` | A blast only pushes a mine, up and away; it does not arm it. |
 | `checkMineFlyby` | ArmingRadius 45 units: a worm blown past 2 m off arms it; a laid mine waits ArmingCourtesyTime. |
 | `checkRopeShots` | Ninja.NumShots: 5 launches a turn; the hook catches a crate, which swings about the worm's feet at the rope's length while reeled in and out; jump lets go. |
@@ -276,6 +276,7 @@ scheme plays with sudden death; rope race reached at levels 1 and 5; Karma + Vam
 |---|---|
 | `forceWin` | Forces every objective each tick (kills, moves, pops targets): the mission ends won. |
 | `forceLose` | Player team wiped out: the mission ends lost. |
+| `checkLot2` | On the W4M scripts: MineAllMine's 4 placed mines (none from its "MineN" details), Surrender emptied, a sunk Mine1 brings Mine2 (Payload_Deleted); DeathMatch6's factory (activation 15) drops mines on its 7th StartMineFactory; DoomCanyon's Water.Level 20; FastFoodDino's InitFuel; Shotgun2's PreSelected shotgun, Sniper's EndlessGun; CPU2 for AI teams with no CPUn copy. |
 
 `main` also asserts: every mission (bundled and imported) loads with all its worms, warns on worms in water or missing
 markers; at least 3 bundled; AI on both sides of the first mission ends and replays identically; a shotgun pops a target
