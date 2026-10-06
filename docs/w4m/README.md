@@ -35,6 +35,7 @@ User-requested behaviours (kept on purpose; retest only when the user asks):
 - Network protocol stays version 1 until a server is deployed (PROTOCOL.md).
 - Replay disabled (temporary, 2026-10-06): no instant replay, no `.w4r` recording, no Replays menu entry; `REPLAYS` in ui.h restores
   all three (docs/tests.md §replay_check.cpp).
+- Boot shows only the spinning icon on black, then the title opens on the iris (2026-10-07): W4M's Generic loading screen at boot (state 7, 1.8 s minimum) is skipped (`Loading::boot`).
 
 Attributing a function to a class is reliable when the function comes from a vtable. When it was inferred from the nearest `.cpp` assert string, it can be wrong near file boundaries.
 

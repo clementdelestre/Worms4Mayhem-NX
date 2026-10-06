@@ -1167,13 +1167,13 @@ int main(int argc, char **argv) {
         if (!art && !artMs) artMs = (GetTime() - bt[1]) * 1000;
         if (!mdl && !modelMs) modelMs = (GetTime() - bt[1]) * 1000;
         if (!art && !mdl && !bt[2]) bt[2] = GetTime();
-        // W4M's startup icon, then (plain launch) the frontend's loading screen, while a worker decodes and this thread uploads
+        // W4M's startup icon while a worker decodes and this thread uploads
         BeginDrawing();
         bool done = Loading::boot(!art && !mdl, lazy);
         EndDrawing();
         if (done) break;
     }
-    double screenMs = (GetTime() - bt[2]) * 1000;  // the loading screen's minimum past the menu assets
+    double screenMs = (GetTime() - bt[2]) * 1000;  // boot frames past the menu assets
     bt[2] = GetTime();
     sounds.join(), mapList.join();
     std::sort(maps.begin() + 1, maps.end(), [](const std::string &a, const std::string &b) {  // readdir order differs between PC and Switch

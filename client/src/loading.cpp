@@ -188,25 +188,15 @@ std::vector<std::string> list(const std::string &dir, const char *ext, bool recu
     return out;
 }
 
-// FCS startup then state 7 (0x4eded0): the icon alone (mode 1, 0x509ba0: FE.LoadingIcon at (0, 40)) until the loading screen's
-// art is in, then its Generic screen (mode 2) for MIN_LOAD at least; the frontend then opens on the iris (state 7's a4 = 1)
-bool boot(bool loaded, bool screen) {
+// The icon alone on black (W4M mode 1, 0x509ba0: FE.LoadingIcon at (0, 40)) until the menu is loaded, then the title opens on
+// the iris when `iris` (user-requested: no Generic loading screen at boot, W4M state 7 shows it for MIN_LOAD)
+bool boot(bool loaded, bool iris) {
     static Texture2D icon = LoadTexture(DATA_DIR "assets/ui/fe2/loading_worm.png");
     static const double t0 = GetTime();  // double: raw GetTime() is huge on Switch
-    static float full = -1;
-    float now = (float)(GetTime() - t0);
     ClearBackground(BLACK);
-    bool art = Ui::artReady("back/loadbackgeneric") && Ui::artReady("fe2/loading_worm") && Ui::artReady("fe/hintpanel") && Ui::artReady("fe/tournament_vsus");
-    if (full < 0 && screen && (art || loaded)) full = now, back = "back/loadbackgeneric", tip = GetRandomValue(1, TIPS), tipAt = 0;
-    if (full < 0) {
-        if (icon.id) sprite(icon, {640, 360 - 40 * 1.3333f}, 190, now * 360 / 1.166f, WHITE);
-        return loaded && !screen;
-    }
-    tips(now - full);
-    loading(now - full);
-    if (!loaded || now - full < MIN_LOAD) return false;
-    irisT0 = -1;
-    return true;
+    if (icon.id) sprite(icon, {640, 360 - 40 * 1.3333f}, 190, (float)(GetTime() - t0) * 360 / 1.166f, WHITE);
+    if (loaded && iris) irisT0 = -1;
+    return loaded;
 }
 
 void overlay(float dt) {

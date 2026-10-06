@@ -9,8 +9,8 @@ void begin(const GameConfig &c, bool preStart = true);  // preStart false: a res
 bool frame(float dt, float progress);  // inside Begin/EndDrawing; true once loaded (progress 1) and faded out
 bool ready();                          // the loading screen is up: blocking load steps may run between frames
 void overlay(float dt);                // last thing drawn each frame: the match fade-in from black, the frontend's opening iris
-// one boot frame (inside Begin/EndDrawing): the startup icon, then (screen) the loading screen; true once loaded and its minimum is out
-bool boot(bool loaded, bool screen);
+// one boot frame (inside Begin/EndDrawing): the startup icon; true once loaded, then the title opens on the iris if `iris`
+bool boot(bool loaded, bool iris);
 void pinCore(int core);                // Switch: moves the calling worker thread to that CPU core (1 or 2)
 // "dir/name" of the files ending in ext (case-insensitive; "/": the subdirectories instead), readdir order, any thread
 std::vector<std::string> list(const std::string &dir, const char *ext, bool recurse = false);
