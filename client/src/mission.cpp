@@ -41,7 +41,7 @@ bool loadMission(const std::string &path, MissionSpec &m) {
     m.name = j["name"].s(m.id), m.kind = j["kind"].s("mission"), m.campaign = j["campaign"].s("Worms4NX"), m.map = j["map"].s();
     m.preview = j["preview"].s(), m.brief = j["brief"].s(), m.success = j["success"].s(), m.failure = j["failure"].s();
     m.order = (int)j["order"].f(0), m.par = (int)j["par"].f(0);
-    m.script = j["script"].s(), m.bank = j["bank"].s(), m.scriptDir = std::string(GetDirectoryPath(path.c_str())) + "/../scripts/";
+    m.script = j["script"].s(), m.bank = j["bank"].s(), m.scriptDir = path.substr(0, path.rfind('/')) + "/../scripts/";  // raylib GetDirectoryPath prefixes "./" to sdmc:/ paths
     for (const SchemePreset &p : SCHEMES) if (j["scheme"].s("Standard") == p.name) m.scheme = p.s;
     Scheme &s = m.scheme;
     s.mines = (uint8_t)j["mines"].f(0), s.barrels = (uint8_t)j["barrels"].f(0), s.crateChance = (uint8_t)j["crate_chance"].f(s.crateChance);

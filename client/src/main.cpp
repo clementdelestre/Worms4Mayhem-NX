@@ -1792,6 +1792,7 @@ int main(int argc, char **argv) {
         gpuClock.mark(-1);
         game.terrain.remeshWait();  // the meshing thread reads the voxels the sim is about to change
         lap(T_REMESH);
+        if (game.worms.empty()) { screen = Screen::Missions; continue; }  // a mission whose script failed to start places no worm
         const Worm &cur = game.worms[game.current];
         int pad = !online && IsGamepadAvailable(cur.team) ? cur.team : 0;
         bool quit;
