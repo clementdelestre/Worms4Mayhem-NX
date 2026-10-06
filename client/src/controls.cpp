@@ -392,8 +392,9 @@ static void ask(const Game &g, const Camera3D &cam, int i) {
     Vector3 p = w.pos, v = w.vel;
     int prio = 5, t = 0;
     for (; t < 900 && p.y > g.water; t++) {  // 0x515eb0 time to Water.Level, 0x466ae0 land sweep up to it
+        const Vector3 v0 = v;
         v.y -= g.gravity() / 30;
-        Vector3 n = Vector3Add(p, Vector3Scale(v, 1 / 30.0f));
+        Vector3 n = Vector3Add(p, arcMove(v0, v, 0, 1 / 30.0f));
         if (g.terrain.solid(n)) { prio = 3; break; }
         p = n;
     }
@@ -613,9 +614,10 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         float fuse = wd->fuse > 0 && !wd->restFuse && !s->child ? s->fuse : 1e9f;
         int k = 0;
         for (; k < 600 && p.y > g.water && (fuse -= Game::DT) > 0; k++) {
+            const Vector3 v0 = v;
             v.y -= g.gravity() * (s->child ? 1 : wd->grav) * Game::DT;
             if (g.windy(int(wd - WEAPONS.data()))) v.x += g.wind * Game::WIND_ACCEL * Game::DT, v.z += g.windZ * Game::WIND_ACCEL * Game::DT;
-            Vector3 n = Vector3Add(p, Vector3Scale(v, Game::DT));
+            Vector3 n = Vector3Add(p, arcMove(v0, v));
             if (g.terrain.solid(n)) break;
             p = n;
         }

@@ -10,6 +10,7 @@ meshes, animations, sounds, voices, maps, missions, menu art and acting scenes a
 - `client/` C++17 + [raylib-nx](https://github.com/luizpestana/raylib-nx) game: voxel destructible terrain, deterministic lockstep sim, local and online play.
 - `server/` Rust lobby + input relay server (see `server/README.md`, protocol in `PROTOCOL.md`).
 - `third_party/raylib-nx/` (cloned, not committed): `git clone --depth 1 https://github.com/luizpestana/raylib-nx third_party/raylib-nx`.
+- `third_party/lua-5.0.1/` (committed): lua.org's Lua 5.0.1 (MIT), patched by `tools/patches/lua-5.0.1-w4m.patch` (4-byte size_t and instructions, float numbers: the W4M `.lub` format); it runs the W4M mission scripts.
 
 ## Build
 raylib libs (once):

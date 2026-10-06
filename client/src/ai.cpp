@@ -117,11 +117,13 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
     uint64_t touching = ~0ull;
     for (int i = 0; i < 600; i++) {
         uint64_t now = 0;
+        const Vector3 v0 = v;
         if (aim && (fuse += DT) > Game::HOMING_LOCK && fuse < Game::HOMING_LOCK + Game::HOMING_TIME) v = Game::homingStep(v, p, *aim);
         else v.y -= g.gravity() * (child && wd.kind != Kind::Airstrike ? 1 : wd.grav) * DT;
         if (g.windy(int(&wd - WEAPONS.data()))) v.x += wind * Game::WIND_ACCEL * DT, v.z += g.windZ * Game::WIND_ACCEL * DT;
+        const Vector3 d = arcMove(v0, v, arcLag(wd));
         for (int k = 0, n = substeps(v); k < n; k++) {  // Game::stepShots' sub-steps
-            Vector3 np = p + v * (DT / n);
+            Vector3 np = p + d * (1.0f / n);
             out = np;
             if (g.terrain.solid(np)) {
                 if (impact) return true;
@@ -195,7 +197,7 @@ static bool ground(const Game &g, Vector3 p, Vector3 &hit) {
 
 // --- rope race: exact copy of Game::step for the active worm, driven by a parametric swing policy ---
 
-struct Mover { Body b; float yaw, pitch; bool roped; Rope rope; uint8_t prev; int jump = 0; uint8_t kind = 0; Vault vault{}; Hook hook{}; };
+struct Mover { Body b; float yaw, pitch; bool roped; Rope rope; uint8_t prev; int jump = 0; uint8_t kind = 0; Vault vault{}; Hook hook{}; int walkTick = 0; };
 
 static Vector3 feetOf(const Body &b) { return {b.pos.x, b.pos.y - R, b.pos.z}; }
 
@@ -213,10 +215,13 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     bool tool = m.roped;
     if (!m.vault.t && !m.jump && !m.roped) m.yaw += in.turn / 127.0f * 2.5f * DT;
     const float ws = Game::WALK_SPEED * g.walkScale();
+    const int wt = m.walkTick;
+    m.walkTick = 0;
     if (m.vault.t) vaultStep(b.pos, m.vault, flat(m.yaw) * (float)in.walk);  // Game::step's vault
     else if (b.grounded && !b.motion.slide && in.walk && !m.jump) {  // Game::step's walk
         Vector3 walkV = flat(m.yaw) * (in.walk / 127.0f * Game::INPUT_IMPULSE), gn;
-        if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * DT, &m.vault, &gn)) b.vel = walkV, b.motion.air = true;
+        if (!Game::walkFrame(m.walkTick = wt + 1)) {
+        } else if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * Game::WALK_FRAME, &m.vault, &gn)) b.vel = walkV, b.motion.air = true;
         else if (!m.vault.t) slideIfSteep(gn, b.vel, b.motion, walkV, g.pot);
     }
     b.motion.input = flat(m.yaw) * (in.walk / 127.0f);
@@ -277,7 +282,7 @@ Input Ai::race(const Game &g) {
     const Worm &w = g.worms[g.current];
     const float ropeMax = WEAPONS[g.weapon].speed;
     Vector3 fin = g.raceFinish;
-    Mover now{{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, g.roped, g.rope, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, g.grapple};
+    Mover now{{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, g.roped, g.rope, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, g.grapple, g.walkTick};
     if (run.done) {
         // spread over frames: standing it waits; in the air it plans from where it will be once the choice is made
         const bool rest = w.grounded && !g.roped && Vector3LengthSqr(w.vel) < 1e-4f;
@@ -406,7 +411,7 @@ static bool probe(const Game &g, const Grid &gr, int i, int j, float from, float
 
 static Mover moverOf(const Game &g) {
     const Worm &w = g.worms[g.current];
-    return {{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, false, Rope{}, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault};
+    return {{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, false, Rope{}, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, Hook{}, g.walkTick};
 }
 
 // A player's inputs for one path step; r.done once the worm stands still after it.
@@ -421,7 +426,7 @@ static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::Ste
         float h = sqrtf(d.x * d.x + d.z * d.z), dy = wrapPi(atan2f(d.x, d.z) - m.yaw), ws = Game::WALK_SPEED * g.walkScale();
         if (h < 0.05f || !m.b.grounded || r.t > 120) { r.stuck = h >= 0.05f && m.b.grounded; r.air = true; r.done = still; return in; }
         in.turn = q(dy / (2.5f * DT));
-        if (fabsf(dy) < 0.3f) in.walk = (int8_t)Clamp(roundf(127 * h / (ws * DT)), 1, 127);
+        if (fabsf(dy) < 0.3f) in.walk = (int8_t)Clamp(roundf(127 * h / (ws * Game::WALK_FRAME)), 1, 127);
         return in;
     }
     if (m.jump || !m.b.grounded) {  // forward jump pending, or flying
@@ -551,9 +556,11 @@ static int layerOf(const Game &g, const Grid &gr, Moves &mv, Vector3 p) {
 static bool jumpLand(const Game &g, Vector3 p, Vector3 v, Vector3 &land) {
     const Vector3 f = Vector3Normalize({v.x, 0, v.z});
     for (int t = 0; t < 400; t++) {
+        const Vector3 v0 = v;
         v.y -= g.gravity() * DT;
+        const Vector3 d = arcMove(v0, v);  // wormBody's flight: W4M Integrate
         for (int k = 0, n = substeps(v); k < n; k++) {
-            const Vector3 np = p + v * (DT / n);
+            const Vector3 np = p + d * (1.0f / n);
             if (g.terrain.solid({np.x, np.y - R, np.z}) || g.terrain.solid({np.x, np.y + R, np.z}) || g.terrain.solid(np + f * R)) {
                 land = p;
                 return v.y < 0;
@@ -935,9 +942,11 @@ static bool bombLands(const Game &g, const WeaponDef &wd, Vector3 T, Vector3 D, 
     const float grav = g.gravity() * wd.grav, h = top + Game::STRIKE_EXTRA, lead = Game::BOMBER_SPEED * sqrtf(2 * fmaxf(h - T.y, 0) / grav);
     Vector3 p = {T.x - D.x * lead, h, T.z - D.z * lead}, v = D * Game::BOMBER_SPEED;
     for (int i = 0; i < 600 && p.y > g.water; i++) {
+        const Vector3 v0 = v;
         v.y -= grav * DT;
+        const Vector3 d = arcMove(v0, v);
         for (int k = 0, n = substeps(v); k < n; k++)
-            if (p = p + v * (DT / n); g.terrain.solid(p)) return Vector3Distance(p, T) < 0.5f;
+            if (p = p + d * (1.0f / n); g.terrain.solid(p)) return Vector3Distance(p, T) < 0.5f;
     }
     return false;
 }
@@ -1029,11 +1038,11 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
                 Vector3 d = dirOf(yawE, 0), out;
                 if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), d * wd.speed, wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
             }
-            // constant acceleration A: hit T at time t with V = (T - P - A t(t+DT)/2) / t (semi-implicit Euler)
+            // constant acceleration A: hit T at time t with V = (T - P - A t²/2) / t, the shells' closed-form parabola (arcMove)
             for (float t = 0.2f; t < 4.5f; t += 0.43f) {  // 11 arcs, as W4M samples about 11 speeds (0x4ace50)
                 const bool wf = g.windy(int(&wd - WEAPONS.data()));
                 Vector3 A = {wf ? wind * Game::WIND_ACCEL : 0, -g.gravity() * wd.grav, wf ? g.windZ * Game::WIND_ACCEL : 0}, P = launchPoint(wd, w.pos, yawE);
-                Vector3 V = (e - P - A * (0.5f * t * (t + DT))) / t;
+                Vector3 V = (e - P - A * (0.5f * t * t)) / t;
                 float sp = Vector3Length(V), pitch = asinf(V.y / sp), yaw = atan2f(V.x, V.z);
                 const float lo = launchSpeed(wd, 0);
                 if (sp > wd.speed || sp < lo || pitch < -1.2f || pitch > 1.45f || !pick()) continue;

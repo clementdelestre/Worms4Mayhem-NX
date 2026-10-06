@@ -1,0 +1,64 @@
+diff -ru lua-5.0.1/include/lua.h lua-5.0.1/include/lua.h
+--- lua-5.0.1/include/lua.h	2003-10-02 03:15:15.000000000 +0200
++++ lua-5.0.1/include/lua.h	2026-10-06 18:45:10.020881936 +0200
+@@ -84,7 +84,7 @@
+ 
+ /* type of numbers in Lua */
+ #ifndef LUA_NUMBER
+-typedef double lua_Number;
++typedef float lua_Number;  /* W4M: 4-byte float numbers (.lub header) */
+ #else
+ typedef LUA_NUMBER lua_Number;
+ #endif
+@@ -292,7 +292,7 @@
+ 
+ /* formats for Lua numbers */
+ #ifndef LUA_NUMBER_SCAN
+-#define LUA_NUMBER_SCAN		"%lf"
++#define LUA_NUMBER_SCAN		"%f"
+ #endif
+ 
+ #ifndef LUA_NUMBER_FMT
+Only in lua-5.0.1/include: Makefile
+--- lua-5.0.1/src/llimits.h	2003-02-20 20:33:23.000000000 +0100
++++ lua-5.0.1/src/llimits.h	2026-10-06 19:09:07.588516859 +0200
+@@ -69,7 +69,7 @@
+ ** this is for hashing only; there is no problem if the integer
+ ** cannot hold the whole pointer value
+ */
+-#define IntPoint(p)  ((lu_hash)(p))
++#define IntPoint(p)  ((lu_hash)(size_t)(p))
+ 
+ 
+ 
+@@ -114,7 +114,7 @@
+ ** type for virtual-machine instructions
+ ** must be an unsigned with (at least) 4 bytes (see details in lopcodes.h)
+ */
+-typedef unsigned long Instruction;
++typedef unsigned int Instruction;  /* W4M: 4-byte instructions in the chunk, also on LP64 hosts */
+ 
+ 
+ /* maximum depth for calls (unsigned short) */
+--- lua-5.0.1/src/lundump.c	2003-04-07 22:34:20.000000000 +0200
++++ lua-5.0.1/src/lundump.c	2026-10-06 18:45:10.021014491 +0200
+@@ -83,8 +83,8 @@
+ 
+ static size_t LoadSize (LoadState* S)
+ {
+- size_t x;
+- LoadBlock(S,&x,sizeof(x));
++ unsigned int x;  /* W4M: 4-byte size_t in the chunk */
++ LoadBlock(S,&x,4);
+  return x;
+ }
+ 
+@@ -239,7 +239,7 @@
+ 	S->name,V(version),V(VERSION0));
+  S->swap=(luaU_endianness()!=LoadByte(S));	/* need to swap bytes? */
+  TESTSIZE(sizeof(int),"int");
+- TESTSIZE(sizeof(size_t), "size_t");
++ TESTSIZE(4, "size_t");
+  TESTSIZE(sizeof(Instruction), "Instruction");
+  TESTSIZE(SIZE_OP, "OP");
+  TESTSIZE(SIZE_A, "A");

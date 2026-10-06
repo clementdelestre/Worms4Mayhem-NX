@@ -14,9 +14,8 @@ TURNS=${1:-6}
 shift || true
 [ -n "${LAN:-}" ] || (cd "$ROOT/server" && cargo build --release -q) || exit 2
 if [ -z "${W4NX:-}" ]; then
-    W4NX=$W/w4nx
-    (cd "$ROOT/client" && g++ -std=c++17 -O2 -I../third_party/raylib-nx/src src/*.cpp -o "$W4NX" -L../third_party/raylib-nx/out/desktop \
-        -lraylib -lGL -lm -lpthread -ldl -lrt -lX11) || exit 2
+    W4NX=$ROOT/client/worms4nx
+    make -s -C "$ROOT/client" worms4nx > /dev/null || exit 2
 fi
 for d in a b; do mkdir -p "$W/$d"; ln -s "$ROOT/client/romfs" "$W/$d/romfs"; ln -s "$ROOT/client/assets" "$W/$d/assets"; done
 SERVER=

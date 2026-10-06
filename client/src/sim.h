@@ -2,6 +2,7 @@
 #include "terrain.h"
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -86,6 +87,8 @@ bool saveCustomWeapons(const char *path, const std::vector<WeaponDef> &list);
 
 // W4M worm physics state beside Velocity: stuck count (entity +0x12c), air control (Flags bit0), Sliding (state 3) and its
 // spin rate / target (+0x120 / +0x124, rad per 20 ms), SupportNormal (pData +0x80). input: this tick's stick, not state
+// W4M stuck count +2 / -1 per 20 ms frame, landed at 20: kept x6 so our 5/6-frame tick adds whole steps (+10 / -5, at 120)
+enum : int { STUCK_UP = 10, STUCK_DOWN = 5, STUCK_MAX = 120 };
 struct Motion { int stuck = 0; bool air = false, slide = false; float spin = 0, spinTo = 0; Vector3 normal{0, 1, 0}, input{}; };
 struct Worm {
     Vector3 pos, vel;
@@ -104,6 +107,7 @@ struct Worm {
     bool drowned = false;  // W4M kWPS_DrownFloat (0x5ad640): afloat while counted > 0, then its blast
     int floatT = 0;        // DrownFloat timer, ticks: 0 until it reaches the surface, then DROWN_FLOAT down to the blast
     Motion motion;
+    bool turns = true;  // W4M WormData IsAllowedToTakeTurn: false never takes a turn (accuracy dummies)
 };
 bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd);  // p inside a's melee hit box (shared with the AI)
 // W4M Vaulting 0x5aca80: t ticks left (0 = walking), dir = the input when it began
@@ -265,7 +269,8 @@ struct MissionRun {
 
 enum class Phase { Aim, Flying, Retreat, Settle, GameOver };
 
-constexpr int msTicks(int ms) { return ms * 60 / 1000; }  // W4M times are in ms, the sim runs at 60 Hz
+// W4M ms timers fire on its 20 ms frames (the first frame at or past ms): the nearest of our 60 Hz ticks to that frame
+constexpr int msTicks(int ms) { return ((ms + 19) / 20 * 12 + 5) / 10; }
 
 // Deterministic simulation: same seed + same inputs => same state on every client.
 struct Game {
@@ -288,6 +293,9 @@ struct Game {
     static constexpr float JUMP_UP = 7.9057f, JUMP_FWD = 3.1623f, FLIP_UP = 10, FLIP_BACK = -1.5811f, WALK_SPEED = 3.0625f;
     // W4M InputImpulse at full stick: 1/20 unit/ms whatever the walk speed (0x5ab5f3); the walk moves it x Walk.Speed / 0.004 (0x5b0fec)
     static constexpr float INPUT_IMPULSE = 2.5f;
+    // W4M walks Walk.Speed x 20 ms once per 20 ms frame (UpdateWalking 0x5b0da0): on the 5 of 6 ticks in which a frame ends
+    static constexpr float WALK_FRAME = 0.02f;
+    static bool walkFrame(int tick) { return (tick + 1) * 5 / 6 > tick * 5 / 6; }
     static constexpr float FWDFLIP_FWD = 1.5811f, VJUMP_UP = 9.354f;  // W4M forward flip vx 0.031623 (0x95fb88), vertical vy 0.18708 (0x95fb7c)
     // W4M DetectJump 0x5aefa0: release turns held (2) into tapped (0), a second press makes it a flip (1); all launch when the window ends.
     // Returns 0 while waiting, else the W4M event: 3 jump, 4 backflip, 5 forward flip, 6 vertical jump
@@ -379,6 +387,7 @@ struct Game {
     std::vector<int> picked;             // per team: weapon in hand when its last turn ended, reselected next turn (W4M)
     int teams = 2, perTeam = 1, current = 0, weapon = 0, winner = -1, timer = 0;
     int clock = 0;      // ticks played: sudden death after cfg.scheme.roundTime
+    int walkTick = 0;   // ticks into the current walk: its W4M frames (walkFrame) run from its start, whatever the clock
     int hotSeat = 0;    // ticks left before the turn clock starts
     int jumpDelay = 0;  // jump pending: ticks left of the W4M window
     Vault vault;        // the active worm's ledge vault
@@ -473,6 +482,8 @@ struct Game {
     bool scoutSolve(Vector3 at, float &power, float &pitch) const;
     float scoutZoom(float z, float dt) const;  // W4M HeadCam zoom 0x91f31c after dt s, from z (camera only)
     MissionRun run;
+    std::shared_ptr<struct ScriptState> script;  // W4M mission script (script.h): it starts and ends the turns
+    bool indestructible = false;  // W4M Land.Indestructable (scripts): the Land Explosion handler returns (0x47356d)
     // Settle (W4M stdlib.lub): GameLogic.ApplyDamage starts every hurt worm's damage display at once, then the death queue
     // blows the dead up one by one, each once nothing else is active (0x4f9b30). docs/death-sequence.md
     static constexpr int COUNT_DAMAGE = msTicks(2500);     // W4M Worm.DamageComplete posted 2500 ms after the damage (0x5abe94)
@@ -546,6 +557,7 @@ struct Game {
     std::vector<int> superWeapon;  // per team: TeamData.WormpotSuperWeapon (Super Secret Weapons), a container id, 0 none
     float fuseOf(const WeaponDef &wd) const { return wd.userFuse ? fuses[worms[current].team] : wd.fuse; }
 
+    friend struct ScriptHost;  // script.cpp: the stdlib messages run the turn machine below
 private:
     float rand01();
     float mineFuse();  // a new mine's fuse, s (Scheme mineFuse, random: one draw)
@@ -586,5 +598,13 @@ private:
     void poisonWorm(Worm &w) { if (!w.poison) w.poison = POISON_DEFAULT, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm
     Object *hooked();  // the object on the rope, if any
 };
+// A tick's move as the velocity went v0 -> v1: W4M's constant-acceleration path whatever our tick (lag 0: Parabolic payloads,
+// oil drums, sentries; EULER_X / EULER_SI: the 20 ms explicit / semi-implicit Euler of crates, bubbles / Homing, Scouser payloads)
+constexpr float EULER_X = 0.01f, EULER_SI = -0.01f;
+inline Vector3 arcMove(Vector3 v0, Vector3 v1, float lag = 0, float dt = Game::DT) {
+    auto f = [&](float a, float b) { return (a + b) * dt / 2 - (b - a) * lag; };
+    return {f(v0.x, v1.x), f(v0.y, v1.y), f(v0.z, v1.z)};
+}
+inline float arcLag(const WeaponDef &wd) { return wd.kind == Kind::Homing ? EULER_SI : 0; }  // non-Parabolic payload: v += a, then pos += v
 void missionStart(Game &g);  // mission.cpp: worms, ammo, objects from cfg.mission
 void missionStep(Game &g);   // mission.cpp: sequences, objectives, result

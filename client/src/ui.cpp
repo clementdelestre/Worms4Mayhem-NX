@@ -1963,7 +1963,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
     } else if (e.kind == GameEvent::Collect && e.worm >= 0) {
         const Worm &w = g.worms[e.worm];
         const char *who = wormName(w.team, e.worm % std::max(1, g.perTeam));
-        if (e.weapon < 0) banners.push_back(TextFormat("%s : +%d", who, (int)g.cfg.scheme.crateHealth));
+        if (e.weapon == -1) banners.push_back(TextFormat("%s : +%d", who, (int)g.cfg.scheme.crateHealth));
         else if (e.weapon < (int)WEAPONS.size()) {
             banners.push_back(TextFormat("%s : %s", who, weaponName(WEAPONS[e.weapon])));
         }

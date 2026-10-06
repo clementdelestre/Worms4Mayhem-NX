@@ -1,5 +1,6 @@
 #include "mission.h"
 #include "json.h"
+#include "script.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cctype>
@@ -32,7 +33,7 @@ static void goals(const Json &list, std::vector<MissionSpec::Goal> &out) {
 bool loadMission(const std::string &path, MissionSpec &m) {
     char *txt = LoadFileText(path.c_str());
     Json j;
-    bool ok = txt && Json::parse(txt, j) && j.type == Json::Obj && j["teams"].size() > 0;
+    bool ok = txt && Json::parse(txt, j) && j.type == Json::Obj && (j["teams"].size() > 0 || j["script"].type == Json::Str);
     UnloadFileText(txt);
     if (!ok) { TraceLog(LOG_WARNING, "mission %s: invalid", path.c_str()); return false; }
     m = MissionSpec{};
@@ -40,6 +41,7 @@ bool loadMission(const std::string &path, MissionSpec &m) {
     m.name = j["name"].s(m.id), m.kind = j["kind"].s("mission"), m.campaign = j["campaign"].s("Worms4NX"), m.map = j["map"].s();
     m.preview = j["preview"].s(), m.brief = j["brief"].s(), m.success = j["success"].s(), m.failure = j["failure"].s();
     m.order = (int)j["order"].f(0), m.par = (int)j["par"].f(0);
+    m.script = j["script"].s(), m.bank = j["bank"].s(), m.scriptDir = std::string(GetDirectoryPath(path.c_str())) + "/../scripts/";
     for (const SchemePreset &p : SCHEMES) if (j["scheme"].s("Standard") == p.name) m.scheme = p.s;
     Scheme &s = m.scheme;
     s.mines = (uint8_t)j["mines"].f(0), s.barrels = (uint8_t)j["barrels"].f(0), s.crateChance = (uint8_t)j["crate_chance"].f(s.crateChance);
@@ -66,7 +68,7 @@ bool loadMission(const std::string &path, MissionSpec &m) {
     }
     goals(j["objectives"], m.objectives);
     goals(j["fail"], m.fail);
-    if (m.teams.empty() || m.teams.size() > 4 || m.objectives.empty()) { TraceLog(LOG_WARNING, "mission %s: needs 1-4 teams and an objective", path.c_str()); return false; }
+    if (m.script.empty() && (m.teams.empty() || m.teams.size() > 4 || m.objectives.empty())) { TraceLog(LOG_WARNING, "mission %s: needs 1-4 teams and an objective", path.c_str()); return false; }
     return true;
 }
 
@@ -112,20 +114,34 @@ static int weaponIndex(const std::string &name) {
     return -1;
 }
 
+void spawnObject(Game &g, Object::Type t, Vector3 pos, int weapon, bool drop, int tag) {
+    Object o = {t, pos, {0, 0, 0}, t == Object::Crate ? weapon : -1, -1, false, false};
+    o.tag = tag;
+    Vector3 hit;
+    if (drop && g.terrain.raycast({Vector3Add(o.pos, {0, 0.8f, 0}), {0, -1, 0}}, 60, &hit)) o.pos = hit;
+    o.pos.y += t == Object::Target ? (drop ? 1.5f : 0) : t == Object::Crate ? 0.45f : 0.3f;  // markers sit on the ground
+    g.objects.push_back(o);
+}
+
 static void placeObject(Game &g, size_t i) {
     const MissionSpec::ObjectSpec &s = g.cfg.mission->objects[i];
-    Object o = {s.type, placeOf(g, s.at), {0, 0, 0}, s.type == Object::Crate ? weaponIndex(s.weapon) : -1, -1, false, false};
     bool tracked = s.type == Object::Crate || s.type == Object::Target;
-    if (tracked) o.tag = (int)i;
-    Vector3 hit;
-    if (s.drop && g.terrain.raycast({Vector3Add(o.pos, {0, 0.8f, 0}), {0, -1, 0}}, 60, &hit)) o.pos = hit;
-    o.pos.y += s.type == Object::Target ? (s.drop ? 1.5f : 0) : s.type == Object::Crate ? 0.45f : 0.3f;  // markers sit on the ground
-    g.objects.push_back(o);
+    spawnObject(g, s.type, placeOf(g, s.at), weaponIndex(s.weapon), s.drop, tracked ? (int)i : -1);
     g.run.state[i] = tracked ? 1 : 2;
+}
+
+void placeMapObjects(Game &g) {
+    for (const Terrain::Marker &k : g.terrain.markers)
+        if (k.type == "mine" || k.type == "oildrum") g.objects.push_back({k.type == "mine" ? Object::Mine : Object::Barrel, k.pos, {0, 0, 0}, -1, -1, false, false});
 }
 
 void missionStart(Game &g) {
     const MissionSpec &m = *g.cfg.mission;
+    if (!m.script.empty()) {
+        g.phase = Phase::Settle;
+        if (!scriptStart(g, m.scriptDir, m.script, m.bank)) TraceLog(LOG_WARNING, "mission %s: script not started", m.id.c_str()), missionEnd(g, false);
+        return;
+    }
     const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2;
     for (int t = 0; t < g.teams && t < (int)m.teams.size(); t++) {
         const MissionSpec::TeamSpec &ts = m.teams[t];
@@ -157,9 +173,7 @@ void missionStart(Game &g) {
         if (!seq || first) placeObject(g, i);
         first = first && !seq;
     }
-    if (m.placeObjects)
-        for (const Terrain::Marker &k : g.terrain.markers)
-            if (k.type == "mine" || k.type == "oildrum") g.objects.push_back({k.type == "mine" ? Object::Mine : Object::Barrel, k.pos, {0, 0, 0}, -1, -1, false, false});
+    if (m.placeObjects) placeMapObjects(g);
 }
 
 static bool teamDead(const Game &g, int t) {
@@ -171,6 +185,7 @@ void missionStep(Game &g) {
     const MissionSpec &m = *g.cfg.mission;
     MissionRun &r = g.run;
     r.ticks++;
+    if (g.script) return scriptStep(g);
     if (m.endless && g.phase == Phase::Aim) g.timer = std::max(g.timer, 99 * 60);
     bool hurt = false, collect = false;
     for (const GameEvent &e : g.events) {
@@ -223,12 +238,16 @@ void missionStep(Game &g) {
         default: break;
         }
     }
-    if (!win && !lose) return;
-    r.result = lose ? -1 : 1;
+    if (win || lose) missionEnd(g, !lose);
+}
+
+void missionEnd(Game &g, bool won) {
+    if (g.phase == Phase::GameOver) return;
+    g.run.result = won ? 1 : -1;
     g.phase = Phase::GameOver;
     g.winner = -1;
-    for (int t = 0; t < g.teams && g.winner < 0; t++) if (!teamDead(g, t) && (t == 0) == !lose) g.winner = t;
-    g.events.push_back({GameEvent::GameOver, g.worms[g.current].pos, -1, -1});
+    for (int t = 0; t < g.teams && g.winner < 0; t++) if (!teamDead(g, t) && (t == 0) == won) g.winner = t;
+    g.events.push_back({GameEvent::GameOver, g.worms.empty() ? Vector3{} : g.worms[g.current].pos, -1, -1});
 }
 
 std::string goalText(const MissionSpec &m, const MissionSpec::Goal &o, const Game *g) {

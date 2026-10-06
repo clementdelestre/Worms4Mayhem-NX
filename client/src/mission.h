@@ -5,9 +5,11 @@
 
 // Single-player missions and challenges: JSON files (docs/missions.md) from romfs:/missions (ours) and
 // assets/missions (imported from W4M by tools/w4m-maps). Team 0 is the player. Played through the sim, so deterministic.
+// A W4M mission names its Lua script and databank (script.h); the JSON teams, objects and objectives serve the others.
 struct MissionSpec {
     std::string id, name, kind, campaign, map, preview, brief, success, failure;
     int order = 0, par = 0;  // par: W4M target time (s), 0 = none
+    std::string script, bank, scriptDir;  // W4M: <scriptDir><script>.lub and <bank>.json (assets/scripts)
     Scheme scheme;
     bool endless = false;    // turn_time 0: the turn never runs out (challenges)
     bool sequence = false;   // targets / crates appear one at a time, in file order
@@ -35,6 +37,9 @@ std::vector<MissionSpec> listMissions(const char *romfsDir, const char *dataDir)
 GameConfig missionConfig(const MissionSpec &m, uint32_t seed);  // cfg.mission points at m: keep m alive during the match
 std::string goalText(const MissionSpec &m, const MissionSpec::Goal &g, const Game *game);  // "Destroy the targets 3/10"
 Vector3 placeOf(const Game &g, const MissionSpec::Place &p);  // marker / position resolved on the loaded map
+void spawnObject(Game &g, Object::Type t, Vector3 pos, int weapon, bool drop, int tag);  // a mission crate, target, mine or drum
+void placeMapObjects(Game &g);           // W4M GameLogic.PlaceObjects: mines and oil drums on the map's markers
+void missionEnd(Game &g, bool won);      // result, GameOver
 
 // progress.txt: "<mission id> <completed 0/1> <best ticks>" per line
 struct Progress {

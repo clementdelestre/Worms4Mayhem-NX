@@ -8,6 +8,8 @@ mod cells;
 mod lua;
 mod mesh;
 mod mission;
+mod schema;
+mod script;
 
 const NX: usize = 320;
 const NY: usize = 256;
@@ -644,9 +646,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             emits.push(format!("{{\"fx\":\"{}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.get(8..).unwrap_or("").replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
         }
         if !n.starts_with("visible") {  // W4M 0x5cd27d: upper(name[..7]) == "VISIBLE" only, so the "VISABLE" typos stay hidden
-            if let Some(t) = marker_type(&lib, &n) {
-                marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
-            }
+            let t = marker_type(&lib, &n).unwrap_or("locator");  // any named detail: a script's spawn, explosion or effect spot
+            marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
             continue;
         }
         if pos[1] < 0.0 || pos[0] < 0.0 || pos[2] < 0.0 || pos[0] > NX as f32 * VOX || pos[2] > NZ as f32 * VOX { continue; }
@@ -686,7 +687,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         cells.len(), objs.len(), emits.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
 }
 
-// Script markers (DetailEntityStore library) exported for missions; cameras, lights, emitters, sounds are skipped.
+// Script marker types by DetailEntityStore library; every other hidden named detail is a "locator".
 fn marker_type(lib: &str, name: &str) -> Option<&'static str> {
     Some(match lib.to_uppercase().as_str() {
         "CHEESYGRINWORM" => "worm",
@@ -814,12 +815,13 @@ fn png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: w4m-maps <W4M install dir> [out dir = client/assets/maps] [map stems...]");
+        eprintln!("usage: w4m-maps <W4M install dir> [out dir = client/assets/maps] [map stems... | --missions]");
         std::process::exit(1);
     }
     let data = find_ci(Path::new(&args[1]), "Data").unwrap_or_else(|| PathBuf::from(&args[1]));
     let out = PathBuf::from(args.get(2).map_or("client/assets/maps", |s| s.as_str()));
     fs::create_dir_all(&out).expect("create out dir");
+    if args.get(3).map(String::as_str) == Some("--missions") { return mission::import(&data, &out, &out.join("../missions")); }  // missions and scripts only
     let tex = textures(&data.join("Bundles"));
     let light = lights(&data);
     let (mut written, mut libs) = (HashSet::new(), HashSet::new());

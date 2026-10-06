@@ -8,8 +8,8 @@ EFMV movies: [acting.md](acting.md) §19. Level databank containers: `docs/w4m-f
 ### 23.1 Lua runtime [data + disasm]
 
 - Lua **5.0.1** (`$Lua: Lua 5.0.1 ...` 0x8b92d8) [data]. Bytecode header: `\x1bLuaP`, version 0x50, little endian, int / size_t /
-  Instruction 4 bytes, **lua_Number = 4-byte float** [data, every `.lub`]. A stock 64-bit Lua 5.0 build rejects these chunks on the
-  size_t and number sizes [assumed from lundump.c, not tried].
+  Instruction 4 bytes, **lua_Number = 4-byte float** [data, every `.lub`]. A stock 64-bit Lua 5.0.1 build rejects these chunks on the
+  Instruction (unsigned long), size_t and number sizes [tried: lundump.c's header check].
 - C functions registered by 0x6958d2, 14 in all (pushstring / pushcclosure / settable triplets 0x6959e3..0x695cef) [disasm]: `SendMessage`,
   `SendFloatMessage`, `SendIntMessage`, `SendStringMessage`, `GetData`, `SetData`, `StartTimer`, `CancelTimer`, `EditContainer`,
   `CloseContainer`, `QueryContainer`, `CopyContainer`, `echo`, and `log` (0x695cbd, impl 0x69908a; the challenges call it with debug
@@ -145,8 +145,40 @@ paths below set `EFMV.GameOverMovie` (`Outro`, `OutroSuccess`) first.
 | ValleyOfDinoWorms | trigger collected (then outro worms) | ValleyIntro, Midtro, Outro | 4 worms |
 | Challenge* (15) | Crate_Collected / Crate_Destroyed / Worm_Damaged / last target of a sequence (`SpawnNextTarget`); `Worm_Died` or `Worm_Damaged_Current` fails | Intro (+ Outro in 8) | crates or triggers one at a time, HUD counter |
 
-### 23.6 Not covered
+### 23.6 Runtime details for the original bytecode (lot 1) [disasm unless tagged]
 
-- The message permission table behind 0x69968b; the clock behind [0x96d030]+0x38 (game or real time, pauses or not).
+- Libraries: XLuaBaseLibrary and XLuaMathLibrary only (0x6958d2), then `lua_checkstack(L, 128)`; chunks load as `stdlib`, `lib_help`,
+  then the level script (turn.md §6.5).
+- Implementations: SendMessage 0x69638f, SendFloat/Int/StringMessage 0x69655b / 0x696755 / 0x69694b, GetData 0x696b2f, SetData 0x696f64,
+  StartTimer 0x6980fa, CancelTimer 0x6982ae, EditContainer 0x6983fa, CloseContainer 0x6988bc, QueryContainer 0x6986bd, CopyContainer
+  0x6989f3, echo 0x699048, log 0x69908a.
+- Bad calls never raise a Lua error: a wrong argument count, an unknown name (`Incorrect DataID in function 'GetData'`), a non-number
+  for a number key (`Data is not a number`) or a denied key (`%s : Data Access Denied`) are logged by 0x6978b9 and the function returns
+  nothing. Key types: 0 int, 1 uint (numbers truncated by 0x6fe690), 2 float, 4 string.
+- `EditContainer(name)` returns two values, a light userdata lock and the container's fields as a table, counted at +0x158; the
+  scripts write `lock, t = EditContainer(n)` ... `CloseContainer(lock)` [disasm + data: lib_help lib_SetAllWormsEnergy SETGLOBAL order].
+  QueryContainer returns the table only.
+- Timers: each `StartTimer` slot holds a message id (+0xc); the script service's handler 0x6953e9 matches an incoming message against
+  the slots, marks the slot fired (+0x18) and calls the global named by the slot. The deadline is TaskManager logical time
+  [0x96d030]+0x38 (physics.md §24): game time, stopped with the kernel pause flag, not wall time.
+- Engine -> Lua: messages flagged 0x8000 are turned into `A_B_C` by the same handler and called in line (0x698e88).
+- `RandomNumber.Get` (GameLogicService 0x4ff0aa): `RandomNumber.Uint` = the low 16 bits of one LCG draw (0x68c015: x·0x41c64e6d +
+  0x3039), then `RandomNumber.Float` = another draw's low 16 bits / 65536 (0x68c024).
+- Damage (0x5ab7e0): for the active worm (0x95fb98) and damage types other than 5 / 6 (poison) it posts `Worm.Damaged.Current` first,
+  then for every hurt worm sets `DamagedWorm.Id`, `DamageTypeTaken` and posts `Worm.Damaged`.
+- Ammo (0x50d900): Inventory.WormNN[slot] + Inventory.TeamNN[TeamIndex] + Inventory.AllianceNN[TeamData.AlliedGroup], -1 when any of
+  the three is -1; delays come from `Inventory%d.WeaponDelays` of the worm's team. Worm slots: kMaxWorms 16 (assert 0x50c24a), teams 4
+  (0x50d350). Defaults [data: LOCAL.XOM]: every Worm / Team / Alliance inventory holds SkipGo and Surrender -1 only; Team.DataNN AlliedGroup NN.
+- `GameLogic.ActivateNextWorm` decrements the weapon delays of the team that just played (0x5b5a5f -> 0x4f4df0, turn.md §6).
+- Data the scripts touch live in the Tweak files [data]: LOCAL (most keys and Worm / Team / Inventory containers), LVLSETUP (GM.SchemeData,
+  GM.GameInitData), WEAPTWK (Wind.MaxSpeed, Water.Level, Mine.*, kWeaponSuperSheep, kMineFactoryData), AITWK (AIParams.*: CPU1-5,
+  CPUTest; every AIParams.WormNN starts as CPUTest), HUDTWK (HUD.*), CAMTWK (Camera.Shake.*), DEFSAVE (Lock.EasterEgg.N); levels set
+  RoundTime 3,000,000 (50 min) in five story levels, -1 (no round clock) in TraitorousWaters.
+- Containers decode with the exe's Serialize field lists; `WXFE_UnlockableItem.State` is an enum (0 kUS_Hidden .. 2 kUS_Unlocked), so the
+  scripts' `State == "Unlocked"` tests depend on how enums reach Lua [not traced; ours pushes the number].
+
+### 23.7 Not covered
+
+- The message permission table behind 0x69968b.
 - Handler bodies of Worm.Respawn / DieQuietly (0x5b5e70), CreateTrigger and PlaceMine.
 - `GameToFrontEndDelayTime` (LOCAL.XOM default 3000, 13 script writes) has no exe string: no reader by literal name was found [data].

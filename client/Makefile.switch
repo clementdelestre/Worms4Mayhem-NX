@@ -9,6 +9,7 @@ endif
 
 TOPDIR ?= $(CURDIR)
 RAYLIB_NX := $(abspath $(TOPDIR)/../third_party/raylib-nx)
+LUA_C := lapi lcode ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm lundump lvm lzio lauxlib lbaselib lmathlib
 include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
@@ -44,9 +45,9 @@ APP_TITLE	:=	Worms4NX
 APP_AUTHOR	:=	cdelestre
 APP_VERSION	:=	0.1.0
 BUILD		:=	build
-SOURCES		:=	src
+SOURCES		:=	src ../third_party/lua-5.0.1/src ../third_party/lua-5.0.1/src/lib
 DATA		:=	data
-INCLUDES	:=	include
+INCLUDES	:=	include ../third_party/lua-5.0.1/include
 ROMFS		:=	romfs
 
 #---------------------------------------------------------------------------------
@@ -88,7 +89,7 @@ export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
 
 export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 
-CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+CFILES		:=	$(addsuffix .c,$(LUA_C))
 CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
 SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))

@@ -9,7 +9,7 @@
 
 struct Json {
     enum Type { Null, Bool, Num, Str, Arr, Obj } type = Null;
-    bool b = false;
+    bool b = false, frac = false;  // frac: the number was written with a '.' or an exponent
     double num = 0;
     std::string str;
     std::vector<Json> arr;
@@ -62,6 +62,7 @@ private:
             char *e;
             v.num = strtod(p, &e);
             if (e == p) return false;
+            for (const char *q = p; q < e; q++) v.frac |= *q == '.' || *q == 'e' || *q == 'E';
             return p = e, v.type = Num, true;
         }
         v.type = open == '[' ? Arr : Obj;

@@ -623,6 +623,10 @@ Tags: [disasm] = read in `WormsMayhem.exe`, [data], [assumed].
 | Worm Integrate 0x5a6e90 | constant 20 ms (literal 20 at 0x5a6ee0, 200 = 20²/2 at 0x5a6e9b), exact constant-acceleration step | disasm |
 | Payload sweeps (0x581dc0) | 20 ms (push 0x14 at 0x581e5b) | disasm |
 | Parabolic payload position | **analytic**: start position +0x28, start velocity +0x34 (`m_vInitialVelocity`, assert 0x57e0bc), acceleration +0x40 (gravity + wind), start time +0x1a0 = game time (0x57708a); re-based only at a contact (0x577430..0x57744a). FindFirstEvent 0x576580 searches the same parabola | disasm |
+| Crate fall 0x5c9420 | 20 ms, **explicit Euler**: a 20-step parabola cast (0x466ae0), no hit: `pos += v·20` (0x5c961a), then `v += a·20`, or under the chute v.y moves ¼ of the way to −0.055 units/ms while below it | disasm |
+| Oil drum 0x5d1c60, sentry gun 0x56d7f0 | 20 ms, exact constant-acceleration step (`v·20 + a·200`) | disasm |
+| PayloadLogicEntity base update 0x57fae0 (Homing: vtable 0x859e7c keeps slots 25 and 30; other subclasses not checked) | 20 ms, **semi-implicit Euler**: slot 26 0x57e0a0 `v += a·20`, slot 30 0x5827c0 the sweep along `v·20`, no hit: slot 25 0x57fa70 `pos += v·20` | disasm |
+| Bubble Trouble bubble 0x54f160 | 20 ms, explicit Euler (weapons.md §13) | disasm |
 | GameLogicService 0x4fa2c0 | 20 ms | disasm (turn.md §14) |
 | TimerLogicEntity 0x50f100 (turn, retreat, hot seat) | 10 ms (−10 per call, returns 10) | disasm (turn.md §14) |
 | Scene players, particles, trails, menu ticker | 20 ms | acting.md §19, render.md §8, frontend.md §17 |
@@ -632,4 +636,6 @@ So W4M logic and physics run on a **fixed 20 ms step (50 Hz)**, turn timers on a
 ### Frame-rate dependence of the results
 - Worm flight: Integrate is exact for constant acceleration, so the sampled points lie on the true parabola for any step; only *when* contacts are tested (each 20 ms chord sweep) depends on the step [disasm].
 - Shells: the parabola is closed-form, so range and apex do not depend on the step at all; contacts are found by the 20 ms sweeps and FindFirstEvent [disasm].
+- Explicit (crates, bubbles) and semi-implicit (Payload base) Euler at a fixed 20 ms step give the parabola launched with v ∓ a·10 ms: the
+  path is fixed too, offset by a·10 ms·t from the closed form (0.125 m/s × t under standard gravity) [disasm + algebra].
 - Per-frame rules that are not a constant-acceleration step depend on the 20 ms frame: Walk.Speed × 20 ms per walk step with its land rays (§5 UpdateWalking), Ballistic stuck count +2 / −1 per frame (limit 20), SlideFriction × per frame, the 1/5 lerp moves (§11), the 0.001 units/ms-per-frame clamps, Bubble Trouble's explicit Euler (weapons.md §13) [disasm].

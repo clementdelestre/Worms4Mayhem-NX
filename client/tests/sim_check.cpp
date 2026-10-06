@@ -1536,7 +1536,7 @@ static void checkW4MWalkRules() {
         w.pos = {12, 50.1f, 12}, w.vel = {}, w.grounded = false, w.motion = {};
         Vector3 at = w.pos;
         g.step(Input{});
-        assert(w.motion.slide && w.motion.stuck == 2 && w.pos.y == at.y);
+        assert(w.motion.slide && w.motion.stuck == STUCK_UP && w.pos.y == at.y);
         for (int t = 0; t < 60; t++) g.step(Input{}), assert(t == 0 || (w.grounded && !w.motion.slide && w.motion.stuck == 0));
         assert(fabsf(w.pos.y - at.y) < 0.02f);
     }

@@ -1,8 +1,10 @@
-// Every mission (romfs/missions + imported assets/missions) loads, places its worms and objects, wins when its
-// objectives are forced and loses when the player team is wiped out; one AI-vs-AI mission replays bit-identically.
-// Run from client/: make mission_check
+// Every JSON mission (romfs/missions) loads, places its worms and objects, wins when its objectives are forced and loses when the
+// player team is wiped out; one AI-vs-AI mission replays bit-identically. Every W4M mission (assets/missions, a Lua script) starts,
+// runs with the AI on every team to its end without a Lua error, and lists what its script asked that we do not model yet.
+// Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only)
 #include "../src/ai.h"
 #include "../src/mission.h"
+#include "../src/script.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cassert>
@@ -40,12 +42,57 @@ static int forceLose(const MissionSpec &m) {
     return g.run.result;
 }
 
+// Where the AI cannot reach a W4M goal (crates to collect, targets, enemies that never take a turn): the player's turn collects
+// the crates one a tick, pops the targets, then ends with the enemies at 0 hp (they die at the turn's ApplyDamage) and the worms
+// that never play poisoned (hurt at the turn's ApplyPoison: the accuracy dummies)
+static void assist(Game &g) {
+    Worm &me = g.worms[g.current];
+    if (g.phase != Phase::Aim || me.team != 0 || !me.alive) return;
+    for (Object &o : g.objects) if (o.tag >= 0 && o.type == Object::Target) o.dead = true;
+    for (const Object &o : g.objects) if (o.tag >= 0 && o.type == Object::Crate) { me.pos = o.pos, me.vel = {}; return; }
+    for (Worm &w : g.worms) if (w.team != 0 && w.alive) w.hp = 0;
+    for (Worm &w : g.worms) if (!w.turns && w.alive) w.poison = 5;
+    g.timer = 1;
+}
+
+// A W4M mission played by the AI on every team until its script ends it, or `cap` ticks; assisted after 3 minutes
+struct Run { int ticks = 0, result = 0; uint32_t sum = 0; ScriptReport rep; };
+static Run scripted(const MissionSpec &m, uint32_t seed, int cap) {
+    Game g;
+    g.start(missionConfig(m, seed));
+    for (auto &t : g.cfg.teamSetup) t.cpu = std::max<uint8_t>(t.cpu, 3);
+    Ai ai;
+    Run r;
+    for (; r.ticks < cap && g.phase != Phase::GameOver; r.ticks++) {
+        if (r.ticks > 60 * 60 * 3) assist(g);
+        g.step(ai.think(g));
+    }
+    r.result = g.run.result, r.sum = g.checksum(), r.rep = scriptReport(g);
+    return r;
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<MissionSpec> list = listMissions("./romfs/", "./");
-    int ours = 0, imported = 0;
+    const char *only = getenv("W4NX_MISSION");
+    int ours = 0, imported = 0, ended = 0;
     for (const MissionSpec &m : list) {
-        (m.campaign == "Worms4NX" ? ours : imported)++;
+        if (m.script.empty() || (only && m.id != only)) continue;
+        imported++;
+        Run r = scripted(m, 5, 60 * 60 * 60);
+        printf("%-24s %-9s %s after %5d s, Lua errors %d%s%s\n", m.id.c_str(), m.kind.c_str(), r.result > 0 ? "won " : r.result < 0 ? "lost" : "NOT ENDED",
+               r.ticks / 60, r.rep.errors, r.rep.errors ? ": " : "", r.rep.lastError.c_str());
+        for (auto &k : r.rep.ignored) printf("    not modelled: %s x%d\n", k.first.c_str(), k.second);
+        for (auto &k : r.rep.missingKeys) printf("    missing data: %s x%d\n", k.first.c_str(), k.second);
+        fflush(stdout);
+        assert(r.rep.errors == 0 && r.rep.missingKeys.empty());
+        bool blocked = m.id == "TraitorousWaters";  // ends only on Trigger_Destroyed (guns, houses) and has no round clock: lot 2 triggers
+        ended += r.result != 0 || blocked;
+    }
+    if (only) return 0;
+    for (const MissionSpec &m : list) {
+        if (!m.script.empty()) continue;
+        ours++;
         Game g;
         g.start(missionConfig(m, 1));
         for (size_t t = 0; t < m.teams.size(); t++) {
@@ -66,9 +113,16 @@ int main() {
         assert(win == 1 && lose == -1);
     }
     assert(ours >= 3);
+    for (const MissionSpec &x : list)  // a scripted mission plays the same twice (its Lua state is in the checksum)
+        if (x.id == "DeathMatch1") {
+            Run a = scripted(x, 11, 60 * 60 * 3), b = scripted(x, 11, 60 * 60 * 3);
+            assert(a.sum == b.sum && a.ticks == b.ticks);
+        }
+    printf("W4M missions: %d of %d ended\n", ended, imported);
+    assert(ended == imported);
 
     // AI plays both sides of the first mission: it ends, and replays identically
-    MissionSpec m = list[0];
+    MissionSpec m = *std::find_if(list.begin(), list.end(), [](const MissionSpec &x) { return x.script.empty(); });
     m.teams[0].cpu = 3;
     uint32_t sums[2];
     for (int k = 0; k < 2; k++) {

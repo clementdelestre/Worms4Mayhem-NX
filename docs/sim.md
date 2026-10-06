@@ -8,8 +8,33 @@ is in `docs/w4m/physics.md` §11 and `docs/w4m/turn.md` §14; this file is about
 - **assumed**: inferred, not verified in W4M;
 - **ours**: no W4M source, our own choice.
 
-The sim runs at 60 Hz (`Game::DT`); W4M times are in ms (`msTicks(ms) = ms × 60 / 1000`), W4M lengths in units of 1/20 m.
-W4M runs logic and physics at a fixed 20 ms step (docs/w4m/physics.md §24) [disasm]; per-frame W4M rules are converted per tick (`K = DT / 0.02`, `powf(f, K)`) [ours]. Worm flight steps exactly (`v·DT + ½a·DT²`, like W4M Integrate), but shells, crates and the AI's arc test step semi-implicit Euler (`v += a·DT` then `pos += v·DT`), while W4M shells follow the closed-form parabola: ours fly g·t·DT/2 low, a 32 m/s bazooka lands 0.3 to 0.6 m short on flat ground [ours, measured in a scratch model].
+The sim runs at 60 Hz (`Game::DT`); W4M lengths are in units of 1/20 m. W4M runs logic and physics at a fixed 20 ms step
+(docs/w4m/physics.md §24) [disasm]. How ours meets it:
+
+- **Timers**: `msTicks(ms)` = the tick nearest the W4M frame that fires the timer, the first 20 ms frame at or past `ms`:
+  10 ms → 1 tick, 30 ms → 2, 250 ms → 16 (W4M 260 ms), any multiple of 100 ms exact [disasm: the 20 ms tasks; the "at or past"
+  test assumed for each timer]. The turn timers (TimerLogicEntity, 10 ms) are whole seconds in every scheme, weapon and mission script but two
+  missions' `PostActivityTime` 10, 1 tick by either grain, so their 10 ms grain never shows [data: weapons.json, mission `.lub`].
+- **Walking**: one W4M walk step (`Walk.Speed × 20 ms`, 1.225 units) on each tick in which a W4M frame ends (`Game::walkFrame`,
+  5 ticks of 6), counted from the walk's first tick (`Game::walkTick`, the AI's `Mover::walkTick`), so a walk does not depend on
+  when it starts: W4M's frame grid is fixed in game time, and its AI waits whole frames [disasm 0x5b0da0; the phase is ours]. A
+  smaller per-tick step samples other candidate points than W4M and changed the end of 103 of 772 walks (below) [ours, measured].
+- **Constant-acceleration bodies**: `arcMove(v0, v1, lag)` is a tick's move as the velocity went v0 → v1. lag 0 is the closed-form
+  parabola: Parabolic payloads (shells, grenades, bomblets, airstrike bombs, Fatkins, mines), the AI's `fly` / `jumpLand` /
+  `bombLands` and its aim formula (V = (T − P − A t²/2) / t), `scoutSolve`, the camera's FindFirstEvent and worm-track
+  predictions [disasm: Parabolic 0x57708a, oil drum 0x5d1c60, sentry 0x56d7f0 step `v·20 + a·200`]. `EULER_X` (+10 ms) is W4M's
+  20 ms explicit Euler (crates 0x5c961a, bubbles 0x54f160: `pos += v·20` then `v += a·20`) and `EULER_SI` (−10 ms) its semi-implicit
+  Euler (the PayloadLogicEntity base: slot 26 0x57e0a0 `v += a·20`, then slot 25 0x57fa70 `pos += v·20`: Homing, vtable
+  0x859e7c; the Scouser's drift, weapons.md) [disasm]. Either Euler path is the parabola launched with v0 ∓ a·10 ms, so `arcMove` lands every tick on W4M's path
+  whatever our step. Worm flight keeps its own exact step (`flyBody`, W4M Integrate) [disasm].
+  Before (semi-implicit Euler at 1/60 s): a 32 m/s bazooka landed 0.11 to 0.56 m short and peaked up to 0.23 m low; now within
+  2 mm of the closed form, wind ±4.25 m/s² included [ours, scratch model on `arcMove`].
+- **Per-frame rules** are converted per tick (`K = DT / 0.02`, `powf(f, K)` for the decays, caps × K for the capped moves) [ours].
+  Audited: the decays are exact over time; a cap or lerp mixed with a decay (drowning float, chute, vault lerp) differs from W4M's
+  per-frame result by under 1 % of the move, under 1 cm [ours]. The vault snaps after 16 ticks (267 ms) where W4M snaps on its
+  13th frame (260 ms), 0.8 cm of lerp apart [ours, computed]. The stuck count runs ×6 (`STUCK_UP` 10, `STUCK_DOWN` 5,
+  `STUCK_MAX` 120: W4M's +2 / −1 per frame and 20, per 5/6-frame tick), so a worm stuck every tick lands after 200 ms as in W4M [disasm 0x5af821].
+
 Same seed + same `Input` stream ⇒ same state on every client; `Game::checksum()` covers every field named here as "checksummed". The checks that
 cover these rules: `tests.md`.
 
@@ -206,12 +231,12 @@ Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `
 |---|---|---|
 | `footing` | the grounded test: the centre or a foot of the W4M tripod (±4, −3) / (0, 5) units in land; one foot alone carries the worm only on ground under 60°. Its normal, for a worm put down or pushed on the ground, is the mean of the faces the feet's down rays (from 6 units up) enter within 1 unit of the highest | W4M land probe 0x91ffc8, normal 0x59ef90 (disasm) |
 | `feet` | W4M CastRays down the 4 foot rays from 20 units over the feet, 26 units long: d = 20 − the nearest hit in units, each hit the exact crossing less 1e-4 m (W4M's last empty sample, a float); a ray starting in land gives 20; the normal is the mean face entered (0x46a070) of the hits within 1 unit of the nearest | W4M 0x59ec70, 0x468490, 0x59ef90 (disasm) |
-| `walkStep` | one tick of walking, W4M UpdateWalking on `feet` at the candidate: d > 5 vaults (a 5..20-unit ledge, walkable and Fitting at hit + 0.1 unit) when `vault` is given (the AI passes its own), else blocks; −5 ≤ d ≤ 5 steps onto the hit + 0.1 unit unless the uphill rule refuses (n·(cand − pos) < 0 on ground over 60°), pushed out +0..+4 units until the rods Fit, and reports the cast's normal in `ground`; d < −5 falls at once from its height when the rods fit there (returns true; Velocity = InputImpulse 2.5 m/s × stick), else +1..+5 units | W4M UpdateWalking 0x5b0da0, 0x5b1209, 0x5b1920, 0x5b194c, Fall 0x5b14c7 (disasm) |
+| `walkStep` | one W4M frame of walking (`Walk.Speed × 20 ms`, run on `walkFrame` ticks), W4M UpdateWalking on `feet` at the candidate: d > 5 vaults (a 5..20-unit ledge, walkable and Fitting at hit + 0.1 unit) when `vault` is given (the AI passes its own), else blocks; −5 ≤ d ≤ 5 steps onto the hit + 0.1 unit unless the uphill rule refuses (n·(cand − pos) < 0 on ground over 60°), pushed out +0..+4 units until the rods Fit, and reports the cast's normal in `ground`; d < −5 falls at once from its height when the rods fit there (returns true; Velocity = InputImpulse 2.5 m/s × stick), else +1..+5 units | W4M UpdateWalking 0x5b0da0, 0x5b1209, 0x5b1920, 0x5b194c, Fall 0x5b14c7 (disasm) |
 | `vaultStep` | the vault: 250 ms, 1/5 of the way per 20 ms (0x5a59f0), no collision test; releasing or reversing the stick puts the worm back where it started; snapped to the target at the end or when anything else moves it | W4M Vaulting 0x5aca80, ChangeState 0x5aa847 (disasm) |
 | `fits` | the upper body (7 points of radius 0.2 m at 0.7 / 0.95 m over the feet) is out of land at `to`, or no deeper than at `from`: `rodsFit`'s fallback when the rods are already in land | ours |
 | `sweep` | the 8 PROBE points (4 feet, 4 heads 1 m up) `cast` along one tick's move, each stopping 1e-4 m short of its crossing (W4M's last empty sample); earliest first, a foot on a tie; normal = mean of the hits within 1 unit [disasm]. Each hit's normal is the face crossed (W4M 0x46a070, docs/w4m/physics.md §11 "Ballistic"); a cast starting in land takes the start cell's nearest face with an empty neighbour [disasm]. No hit is filtered on imported maps; [ours] maps without cells skip a gradient normal facing along the ray. Shared by `flyBody`, `jetBody` and the slide's wall branch | W4M CastRays 0x59ec70, normal 0x59ef90 (disasm) |
 | `rodsFit` | W4M Fits for the walk, the slide and the flight: the 3 rods, a `cast` from the feet to the heads, clear of land. [ours] rods already in land at `from` fall back to the relative `fits`, so a worm that land appeared around can move out | W4M Fits 0x59edf0 (disasm) |
-| `flyBody` | W4M Ballistic on land, one tick: the `sweep` along `v·DT + ½a·DT²`; no hit Integrates (not Fitting: kept, stuck +2, `rebound` back along the move); a hit moves to the contact if it Fits (else kept, stuck +2, rebound back), stores its normal, then a head or n.y < 0.2 rebounds on it, a foot lands (`wormBody`: vt walks or slides, FallDamage on −vn). `rebound` = Bounce e 0.3, tangent kept, stops under 0.5 m/s (facing up: Sliding) | W4M Ballistic 0x5af430, Rebound 0x5acea0, Bounce 0x518f40 (disasm) |
+| `flyBody` | W4M Ballistic on land, one tick: the `sweep` along `v·DT + ½a·DT²`; no hit Integrates (not Fitting: kept, stuck +2 per W4M frame, `rebound` back along the move); a hit moves to the contact if it Fits (else kept, stuck +2, rebound back), stores its normal, then a head or n.y < 0.2 rebounds on it, a foot lands (`wormBody`: vt walks or slides, FallDamage on −vn). `rebound` = Bounce e 0.3, tangent kept, stops under 0.5 m/s (facing up: Sliding) | W4M Ballistic 0x5af430, Rebound 0x5acea0, Bounce 0x518f40 (disasm) |
 | `jetBody` | the jetpack's own collider, one tick, on the shared `sweep`: a foot whose rods Fit (`rodsFit`) lands the pack (v minus its normal part) whatever the normal, a head or blocked rods bounce v −= 1.8 (v·n) n. [ours] a worm at rest (our take-off tick, thrust starts the tick after) is neither swept nor moved. A landing hands the worm to Ballistic with its tangential speed (0x5ae17a), which lands it through the sweep | W4M 0x59ec70, 0x59ef90 (0x562ecd), 0x59edf0, 0x562f72, 0x5630dc (disasm) |
 | `wormBody` | one worm tick: grounded test (land within 2 units under a worm that stood, or one put down at rest; a flight lands only through its sweep), slide (below 60° and slower than 3 m/s, 10 m/s on landing: stops; else gravity along the slope and friction 0.9582 a tick), a hard landing halves \|vt\|², the flight is `flyBody`; a grounded worm is not moved by its velocity that tick; [ours] an idle worm with no ground under it stays when a 1-unit fall does not Fit (W4M gets there through Rebound → Sliding → Landed with support 0xFFFF) | W4M Sliding 0x5afbe0, Integrate 0x5a6e90 (disasm); SlideFriction 0.95 / 20 ms (data); Wormpot Slippy: each slide value halfway to its Slippy one, 35°, 5.25 / 1.75 m/s, 0.9745 (0x5d59c0); Sticky: blast impulses × 0.5 only (0x5ad1ea) (disasm) |
 | `walkerStep` | sheep, old woman, scouser on foot: steps up 0.6 m, hops at walls, whole-body roof test | ours |
@@ -299,6 +324,17 @@ stopped on any (0, ≤ 0, 0) velocity; the first column is ours against it, as p
 | wall jumps (each walks into the wall by its own rules, then a tap jump): 1 m verdict differs | 23 / 365 | 31 / 368 | 9 / 376 |
 | synthetic bumps (288: 0.1-0.9 m, 60-90° faces, w 0.3 / 1.5 m, off grid, diagonal) differing | 48 | 42 | 9 |
 | map sweep (11 520 runs, DM1, DM3, Clean-w3d, StormTheCastle): body ring over 0.06 m in land / stuck | 37 / 0 | 37 / 0 | 417 / 0 |
+
+Walking at real time (harness `walkTraj`, W4M walker in 20 ms frames against our `walkStep` on game ticks, from the same 128 starts ×
+8 headings, positions compared every 100 ms while both walk, then the event that ends the walk):
+
+| | per tick, `Walk.Speed × DT` (before) | per W4M frame on `walkFrame` ticks (now) |
+|---|---|---|
+| 100 ms marks: xz / y gap, max | 0.6 / 1.0 mm (8 876 marks) | 0.1 / 0.0 mm (8 913 marks) |
+| walk ends: kind differs (vault ↔ block, fall ↔ slide, block ↔ slide) | 103 / 772 | 2 / 771 |
+| same kind, more than 20 ms apart | 4 | 0 (mean 9.7 ms: our step lands up to one tick before W4M's frame) |
+
+The 2 left are the corpus's block ↔ slide rule cases below; stepping ours by whole frames back to back gives the same 2 [ours, measured].
 
 What is left, traced case by case:
 

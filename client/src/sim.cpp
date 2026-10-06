@@ -1,4 +1,5 @@
 #include "sim.h"
+#include "script.h"
 #include "navgrid.h"
 #include "raymath.h"
 #include <algorithm>
@@ -439,7 +440,7 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
         if (s.at < 0) return landed();
         m.spinTo = (m.spinTo + 3 * Vector3DotProduct(n, Vector3CrossProduct(s.n, Vector3Scale(vel, 1.0f / 50)))) / 2;
         rebound(pos, vel, s.n, e, {0, -g, 0});  // already Sliding: a stop on land facing up stays so
-        m.air = false, m.stuck += 2;
+        m.air = false, m.stuck += STUCK_UP;
     } else if (c.d < -5) {  // a drop: the velocity off the ground, Fall() if the body Fits at the old height
         const Vector3 to = {cand.x, pos.y, cand.z};
         if (!rodsFit(t, pos, to)) return landed();
@@ -447,12 +448,12 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
     } else {  // follow the ground: the highest hit + 0.1 unit
         const Vector3 to = {cand.x, cand.y + (c.d + 0.1f) * U, cand.z}, nn = c.n;
         if (!rodsFit(t, pos, to)) return landed();
-        pos = to, m.stuck = std::max(m.stuck - 1, 0);
+        pos = to, m.stuck = std::max(m.stuck - STUCK_DOWN, 0);
         m.spinTo -= 2 * Vector3DotProduct(Vector3CrossProduct(nn, n), Vector3Scale(vel, 1.0f / 50));
         m.normal = nn;  // 0x5b04a1
         if (nn.y >= walkable && Vector3LengthSqr(vel) < stop * stop) return landed();
     }
-    if (m.stuck >= 20) landed();
+    if (m.stuck >= STUCK_MAX) landed();
 }
 
 void slideIfSteep(Vector3 n, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot) {
@@ -491,8 +492,8 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
         else vel = {0, 0, 0};
     } else {
         int c = flyBody(t, pos, vel, {wind.x, -g, wind.y}, e, m.normal);
-        m.stuck = c & FLY_STUCK ? m.stuck + 2 : std::max(m.stuck - 1, 0);
-        if ((c & FLY_STUCK) && m.stuck >= 20) vel = {0, 0, 0}, grounded = true;  // W4M 0x5af821: landed where it is, the count kept
+        m.stuck = c & FLY_STUCK ? m.stuck + STUCK_UP : std::max(m.stuck - STUCK_DOWN, 0);
+        if ((c & FLY_STUCK) && m.stuck >= STUCK_MAX) vel = {0, 0, 0}, grounded = true;  // W4M 0x5af821: landed where it is, the count kept
         else if (c & FLY_LAND) grounded = true, land(m.normal, true);
         else if (c & FLY_SLIDE) grounded = m.slide = true, m.spin = m.spinTo = 0, m.air = false;  // Rebound stopped on land: event 8, Sliding
         else if (c & FLY_REBOUND) m.air = false;
@@ -706,10 +707,10 @@ void Game::start(const GameConfig &c) {
         if (cfg.scheme.sdType == Scheme::SD_ONE_HP) for (Worm &x : worms) x.hp = x.counted = 1;
         if (cfg.scheme.sdType == Scheme::SD_DRAW) { phase = Phase::GameOver, winner = -1; return; }
     }
-    run = MissionRun{};
+    run = MissionRun{}, script.reset(), indestructible = false;
     if (cfg.mission) missionStart(*this);
     for (Worm &x : worms) x.counted = std::max(0, x.hp);
-    beginTurn(teams - 1);
+    if (!script) beginTurn(teams - 1);  // a script starts its first turn itself (stdlib StartFirstTurn)
 }
 
 void Game::beginTurn(int team) {
@@ -735,7 +736,7 @@ void Game::beginTurn(int team) {
         if (!has[t] || idle[t]) continue;
         for (int k = 0; k < perTeam; k++) {
             int slot = (nextWorm[t] + k) % perTeam, c = t * perTeam + slot;
-            if (!worms[c].alive) continue;
+            if (!worms[c].alive || !worms[c].turns) continue;
             current = c;
             nextWorm[t] = (slot + 1) % perTeam;
             phase = Phase::Aim;
@@ -744,7 +745,7 @@ void Game::beginTurn(int team) {
             jumpDelay = 0;
             selfHurt = false;
             power = 0;
-            {  // W4M stdlib SelectRandomWind: Speed = Cap/10 x r² x MaxSpeed, Direction = r2 x 2 x 3.14, an xz vector (0x57eb25)
+            if (!script) {  // W4M stdlib SelectRandomWind (a script runs its own SetWind): Speed = Cap/10 x r² x MaxSpeed, Direction = r2 x 2 x 3.14, an xz vector (0x57eb25)
                 float r = rand01(), sp = WIND_CAP[std::min<int>(sc.wind, 3)] * r * r, dir = rand01() * 2 * 3.14f;
                 wind = sp * cosf(dir), windZ = sp * sinf(dir);
             }
@@ -904,6 +905,7 @@ void Game::stepObjects() {
     for (size_t i = 0; i < objects.size();) {
         Object &o = objects[i];
         float h = halfHeight(o.type);
+        Vector3 v0 = o.vel;
         if (o.hooked || (o.tag >= 0 && (o.type == Object::Crate || o.type == Object::Target))) {  // on the rope (step()), or a pinned mission object
         } else if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
             Vector3 n = terrain.normal({o.pos.x, o.pos.y - h, o.pos.z});
@@ -915,16 +917,17 @@ void Game::stepObjects() {
                 }
             } else if (n.y < SLIDE_NY) o.vel = {(o.vel.x + n.x * n.y * gravity() * DT) * SLIDE_FRICTION, 0, (o.vel.z + n.z * n.y * gravity() * DT) * SLIDE_FRICTION};  // too steep: W4M Sliding, as wormBody
             else o.vel = {o.vel.x * 0.8f, 0, o.vel.z * 0.8f};
-            o.falling = false;
+            o.falling = false, v0 = o.vel;
         } else {
             o.vel.y -= gravity() * DT;  // crates: Gravity x Low.Gravity.Multiplier, no drag, no wind (0x5c9420)
             if (o.falling && o.vel.y < -2.75f) o.vel.y += (-2.75f - o.vel.y) * (1 - powf(0.75f, DT / 0.02f));  // under a chute: toward 0.055 units/ms
         }
         Vector3 face = Vector3Scale(Vector3Normalize({o.vel.x, 0, o.vel.z}), h);  // the leading side meets a wall, not the centre
+        Vector3 d = arcMove(v0, o.vel, o.type == Object::Crate ? EULER_X : 0);  // crates 0x5c961a: pos += v x 20, then v += a x 20
         for (int k = 0, n = o.hooked ? 0 : substeps(o.vel); k < n; k++) {
-            Vector3 np = Vector3Add(o.pos, Vector3Scale(o.vel, DT / n));
-            if (terrain.solid({np.x + face.x, o.pos.y, np.z + face.z})) { o.vel.x = o.vel.z = 0; np.x = o.pos.x; np.z = o.pos.z; }
-            if (o.vel.y > 0 && terrain.solid({np.x, np.y + h, np.z})) { o.vel.y = 0; np.y = o.pos.y; }
+            Vector3 np = Vector3Add(o.pos, Vector3Scale(d, 1.0f / n));
+            if (terrain.solid({np.x + face.x, o.pos.y, np.z + face.z})) { o.vel.x = o.vel.z = d.x = d.z = 0; np.x = o.pos.x; np.z = o.pos.z; }
+            if (o.vel.y > 0 && terrain.solid({np.x, np.y + h, np.z})) { o.vel.y = d.y = 0; np.y = o.pos.y; }
             o.pos = np;
             for (int j = 0; j < 20 && terrain.solid({o.pos.x, o.pos.y - h, o.pos.z}); j++) o.pos.y += 0.05f;
         }
@@ -968,7 +971,8 @@ void Game::stepObjects() {
             for (Worm &w : worms) {
                 if (!(sheep && &w == &worms[current]) && (!w.alive || !touching(w))) continue;
                 if (o.mystery >= 0) opened = o.mystery, opener = int(&w - worms.data()), emit(GameEvent::Mystery, o.pos, opener, o.mystery);
-                else if (o.weapon < 0) w.hp += cfg.scheme.crateHealth, w.counted += cfg.scheme.crateHealth, w.poison = 0, w.abducted = false;  // label jumps on pickup (W4M); Worm.Antidote also clears 0x400 (0x5adecd)
+                else if (o.weapon < -1) {  // a W4M script's custom crate (CrateDataContainer Type "custom"): no contents
+                } else if (o.weapon < 0) w.hp += cfg.scheme.crateHealth, w.counted += cfg.scheme.crateHealth, w.poison = 0, w.abducted = false;  // label jumps on pickup (W4M); Worm.Antidote also clears 0x400 (0x5adecd)
                 else if (WEAPONS[o.weapon].kind == Kind::DoubleDamage) doubleDamage = true;
                 else if (WEAPONS[o.weapon].kind == Kind::CrateSpy) spy[w.team] = 1;  // never reset (0x5c8b20)
                 else if (WEAPONS[o.weapon].kind == Kind::Armour) w.armour = true;  // Armour.Collected: the collector (0x5c9928 -> 0x5ae1ea)
@@ -1898,7 +1902,7 @@ void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapo
         if (Vector3Distance(p, Vector3Add(bubbles[i].pos, {0, BUBBLE_UP, 0})) < b.pushReach + BUBBLE_SHELL) bubbleHit(bubbles[i]);  // Damage.Impulse 0x54fc41
         i++;
     }
-    if (b.crater > 0 && !wp(WP_MINE_RESPAWN)) blastLand(p, b.crater);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
+    if (b.crater > 0 && !wp(WP_MINE_RESPAWN) && !indestructible) blastLand(p, b.crater);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
     emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, p, -1, weapon), events.back().fx = fx;
     for (Worm &w : worms) {
         if (!w.alive || int(&w - worms.data()) == dyingWorm || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
@@ -2165,7 +2169,8 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (hit && s.stage == 3) boom = true;
             else if (!boom) {
                 if (!hit) s.stage = 3;
-                s.vel = Vector3Add(s.vel, Vector3Scale(a, DT)), s.pos = Vector3Add(s.pos, Vector3Scale(s.vel, DT));
+                const Vector3 v0 = s.vel;
+                s.vel = Vector3Add(s.vel, Vector3Scale(a, DT)), s.pos = Vector3Add(s.pos, arcMove(v0, s.vel, EULER_SI));
             }
             np = s.pos;
             if (s.prey >= 0 && worms[s.prey].alive) worms[s.prey].pos = Vector3Add(s.pos, {0, R, 0}), worms[s.prey].vel = s.vel, worms[s.prey].grounded = false;  // its feet at the payload (0x5927ff)
@@ -2195,8 +2200,10 @@ void Game::stepShots(const Input &in, bool detonate) {
             np = s.pos;
             if (!terrain.solid(Vector3Add(s.pos, Vector3Scale(s.aim, Terrain::VOX / 2)))) s.stage = 2;  // Land.NewShape took its voxel: it falls again (0x5777f0)
         } else if (wd.kind == Kind::Donkey) {  // Fatkins 0x554e90: any contact (land, worm, object, bubble) bounces it, whatever DetonatesOn*
+            const Vector3 v0 = s.vel;
             s.vel.y -= gravity() * DT;
             if (windy(s.weapon)) s.vel.x += wind * WIND_ACCEL * DT, s.vel.z += windZ * WIND_ACCEL * DT;
+            const Vector3 d = arcMove(v0, s.vel);
             // its collider is a sphere of Radius (lift): ours samples the voxel land on the half facing the motion
             static const Vector3 DIR[] = {{0, -1, 0}, {0, 1, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}, {.577f, .577f, .577f}, {-.577f, .577f, .577f},
                                           {.577f, .577f, -.577f}, {-.577f, .577f, -.577f}, {.577f, -.577f, .577f}, {-.577f, -.577f, .577f}, {.577f, -.577f, -.577f}, {-.577f, -.577f, -.577f}};
@@ -2205,7 +2212,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             uint64_t now = 0;
             np = s.pos;
             for (int k = 0, ns = substeps(s.vel); k < ns && !hit; k++) {
-                Vector3 q = Vector3Add(np, Vector3Scale(s.vel, DT / ns)), sn;
+                Vector3 q = Vector3Add(np, Vector3Scale(d, 1.0f / ns)), sn;
                 for (const Vector3 &d : DIR)
                     if (!hit && Vector3DotProduct(d, s.vel) > 0 && terrain.solid(Vector3Add(q, Vector3Scale(d, wd.lift)))) hit = true, n = terrain.normal(Vector3Add(q, Vector3Scale(d, wd.lift)));
                 uint64_t m = touches(q, wd.lift + R), fresh = m & ~s.touching;
@@ -2227,6 +2234,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             }
         } else {
             bool homing = wd.kind == Kind::Homing && (s.fuse += DT) > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd);  // fuse: flight time
+            const Vector3 v0 = s.vel;
             if (homing) {  // 0x561730: the step, then the avoidance
                 s.vel = homingStep(s.vel, s.pos, s.aim, wd.avoid ? 12.5f : HOMING_MAX);
                 if (wd.avoid) avoidLand(s);
@@ -2236,8 +2244,9 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (windy(s.weapon)) s.vel.x += wind * WIND_ACCEL * DT, s.vel.z += windZ * WIND_ACCEL * DT;  // 0x57eb25: (cos, 0, sin) Wind.Direction
             bool impact = s.child || wd.fuse == 0;
             uint64_t now = 0;
+            const Vector3 d = arcMove(v0, s.vel, arcLag(wd));
             for (int k = 0, n = substeps(s.vel); k < n && !boom; k++) {  // W4M searches the whole path for the first land contact
-                np = Vector3Add(s.pos, Vector3Scale(s.vel, DT / n));
+                np = Vector3Add(s.pos, Vector3Scale(d, 1.0f / n));
                 Vector3 sn;
                 if (shell(s.pos, np, &sn)) {  // the land bounce response (vtable +0x80), Bubble.Hit
                     if (impact && wd.stick > 0) { stick(s); break; }
@@ -2279,7 +2288,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             Blast b = superBlast(blastOf(wd, s.child), containerOf(s.weapon, s.child));
             Vector3 at = np;
             bool smash = wd.kind == Kind::Donkey && wd.clusters == 0;
-            if (smash && !lifeEnd && !wp(WP_MINE_RESPAWN)) blastLand(np, wd.lift * (doubled() ? 2 : 1));
+            if (smash && !lifeEnd && !wp(WP_MINE_RESPAWN) && !indestructible) blastLand(np, wd.lift * (doubled() ? 2 : 1));
             if (smash && !lifeEnd) at = Vector3Subtract(np, {0, wd.lift, 0});  // 0x553970: a land-only blast of Radius at the centre, then Explode Radius below it
             else if (smash) at = np;  // expiry: Detonate at the entity
             explode(at, b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0, smash || wd.stick > 0 ? s.weapon : -1,
@@ -2354,12 +2363,15 @@ void Game::step(const Input &raw) {
             if (aimCursor) stepGirder(in, pressed);
         } else girderOn = false;
         const float ws = WALK_SPEED * walkScale();
+        const int wt = walkTick;
+        walkTick = 0;
         if (vault.t) {  // W4M 0x5ab3d0: the camera-relative stick, here the heading or the facing
             float y = head ? in.turn * PI / 128 : w.yaw;
             vaultStep(w.pos, vault, aimCursor ? Vector3{} : Vector3Scale(flat(y), in.walk));
         } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed && !artillery()) {  // W4M Sliding: no walking
             Vector3 walkV = Vector3Scale(flat(w.yaw), in.walk / 127.0f * INPUT_IMPULSE), was = w.pos, gn;  // W4M Velocity = InputImpulse (0x546f10)
-            if (walkStep(terrain, w.pos, w.yaw, in.walk / 127.0f * ws * DT, &vault, &gn)) w.vel = walkV, w.motion.air = true;  // Fall(InputImpulse) 0x5b14c7, air control on
+            if (!walkFrame(walkTick = wt + 1)) {
+            } else if (walkStep(terrain, w.pos, w.yaw, in.walk / 127.0f * ws * WALK_FRAME, &vault, &gn)) w.vel = walkV, w.motion.air = true;  // Fall(InputImpulse) 0x5b14c7, air control on
             else if (vault.t) vault.vel = walkVel;  // the vault start writes no Velocity: the last step's
             else {
                 if (!Vector3Equals(was, w.pos)) walkVel = walkV;  // a blocked step leaves Velocity as it was
@@ -2374,7 +2386,7 @@ void Game::step(const Input &raw) {
             emit(GameEvent::Jump, w.pos, current, ev);  // weapon: the W4M kWE code (animation)
         }
     } else {
-        jumpDelay = 0, steerIn = {};
+        jumpDelay = 0, steerIn = {}, walkTick = 0;
         if (vault.t) vaultStep(w.pos, vault, {});  // control gone: no input, back to the old pos
     }
     // rope and jetpack outlast the attack: still steered while the shot flies and during the retreat
@@ -2555,7 +2567,7 @@ void Game::step(const Input &raw) {
                     b.rest = Vector3Distance(c, Vector3Add(b.pos, Vector3Scale(d, t))) < 0.5f;
                 }
             if (!b.rest && b.pos.y < water) { emit(GameEvent::BubblePop, b.pos), bubbles.erase(bubbles.begin() + i); continue; }
-            if (!b.rest) b.pos = Vector3Add(b.pos, Vector3Scale(b.vel, DT)), b.vel.y -= gravity() * DT;
+            if (!b.rest) b.pos = Vector3Add(b.pos, arcMove(b.vel, {b.vel.x, b.vel.y - gravity() * DT, b.vel.z}, EULER_X)), b.vel.y -= gravity() * DT;
         }
         i++;
     }
@@ -2582,23 +2594,28 @@ void Game::step(const Input &raw) {
     for (int t = 0; t < teams; t++) left += standing(t);
     bool over = !cfg.mission && left <= 1;
     switch (phase) {
-    case Phase::Aim:
-        if (!w.alive || selfHurt || over || (!hotSeat && --timer <= 0)) { phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
+    case Phase::Aim:  // a script ends the turn through its Timer_* / Worm_Damaged_Current callbacks (stdlib EndTurn)
+        if (script) { if (!hotSeat && --timer <= 0) scriptEvent(*this, "Timer_TurnTimedOut"); }
+        else if (!w.alive || selfHurt || over || (!hotSeat && --timer <= 0)) { phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
         break;
     case Phase::Flying:
         if (shots.empty()) phase = Phase::Retreat;
         [[fallthrough]];
     case Phase::Retreat:  // W4M Timer_RetreatTimedOut / Worm_Damaged_Current -> EndTurn, which waits for the shots (ObjectCount.Active)
-        if (!w.alive || selfHurt || over || --timer <= 0) phase = Phase::Settle, timer = 1, jumpDelay = 0, roped = jetting = chute = false;
+        if (script) { if (--timer <= 0) scriptEvent(*this, "Timer_RetreatTimedOut"); }
+        else if (!w.alive || selfHurt || over || --timer <= 0) phase = Phase::Settle, timer = 1, jumpDelay = 0, roped = jetting = chute = false;
         break;
     case Phase::Settle:  // stdlib.lub EndTurn: timer > 0 WaitUntilNoActivity, < 0 PostActivityTime; no timeout, as W4M
         if (in.flags & Input::SKIP_COUNT) countT = std::max(countT, COUNT_DAMAGE);  // observed in W4M by the user, 2026-10-03: X ends the display, deaths follow as usual
         if (!countGroup.empty() || !deathQueue.empty() || dyingWorm >= 0) stepCount();  // displays and dying worms are active objects
         else if (timer < 0) {
             if (++timer < 0) break;
-            applyDamage();  // Timer_PostActivityTimedOut: AboutToApplyDamage, ApplyDamage, CheckActivity
-            checkActivity();
-        } else if (shots.empty() && !active()) timer = -POST_ACTIVITY;  // GameLogic_NoActivity -> Timer.StartPostActivity
+            if (script) scriptEvent(*this, "Timer_PostActivityTimedOut");
+            else applyDamage(), checkActivity();  // Timer_PostActivityTimedOut: AboutToApplyDamage, ApplyDamage, CheckActivity
+        } else if (shots.empty() && !active()) {
+            if (script) scriptNoActivity(*this);
+            else timer = -POST_ACTIVITY;  // GameLogic_NoActivity -> Timer.StartPostActivity
+        }
         break;
     case Phase::GameOver: break;
     }
@@ -2684,7 +2701,8 @@ bool Game::scoutSolve(Vector3 at, float &pw, float &pitch) const {
             float T = x / fmaxf(v * cosf(th), 0.01f) - 0.1f;  // 0x54add0: clear until 100 ms before arrival
             bool clear = true;
             for (float t = 0; t < T && clear; t += DT) {
-                vel.y -= g * DT, pos = Vector3Add(pos, Vector3Scale(vel, DT));
+                const Vector3 v0 = vel;
+                vel.y -= g * DT, pos = Vector3Add(pos, arcMove(v0, vel));
                 clear = !terrain.solid(pos);
             }
             if (clear) best = th, pw = p, pitch = th;
@@ -2698,6 +2716,7 @@ uint32_t Game::checksum() const {
     auto mix = [&](const void *p, size_t n) {
         for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t *)p)[i]) * 16777619u;
     };
+    mix(&walkTick, sizeof walkTick);
     for (const Worm &w : worms) { mix(&w.pos, sizeof w.pos); mix(&w.vel, sizeof w.vel); mix(&w.hp, sizeof w.hp); mix(&w.yaw, sizeof w.yaw); mix(&w.pitch, sizeof w.pitch); mix(&w.alive, sizeof w.alive); mix(&w.poison, sizeof w.poison); mix(&w.counted, sizeof w.counted); mix(&w.nailed, 1); mix(&w.armour, 1); mix(&w.motion.stuck, sizeof w.motion.stuck), mix(&w.motion.air, 1), mix(&w.motion.slide, 1), mix(&w.motion.spin, sizeof w.motion.spin), mix(&w.motion.spinTo, sizeof w.motion.spinTo), mix(&w.motion.normal, sizeof w.motion.normal); if (w.drowned) mix(&w.floatT, sizeof w.floatT); if (w.abducted) mix(&w.zap, sizeof w.zap), mix(&w.calm, sizeof w.calm), mix(&w.zapFound, 1), mix(&w.zapSpot, sizeof w.zapSpot); }
     for (const Projectile &s : shots) { mix(&s.pos, sizeof s.pos); mix(&s.vel, sizeof s.vel); mix(&s.weapon, sizeof s.weapon); mix(&s.fuse, sizeof s.fuse); mix(&s.hits, sizeof s.hits); mix(&s.stage, sizeof s.stage); mix(&s.prey, sizeof s.prey); mix(&s.aim, sizeof s.aim); mix(&s.touching, sizeof s.touching); }
     mix(&chute, 1);
@@ -2754,6 +2773,7 @@ uint32_t Game::checksum() const {
     if (cfg.mission) {
         mix(&run.result, 5 * sizeof(int));
         mix(run.state.data(), run.state.size()), mix(run.met.data(), run.met.size()), mix(idle.data(), idle.size());
+        if (script) { uint32_t s = scriptChecksum(*this); mix(&s, sizeof s), mix(&indestructible, 1); }
     }
     for (const auto &a : ammo) mix(a.data(), a.size() * sizeof(int));
     // weapon table: every client must have loaded the same weapons.json

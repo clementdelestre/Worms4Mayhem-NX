@@ -1,12 +1,12 @@
 // Lua 5.0 bytecode (Data/scripts/*.lub, little endian, 4-byte float numbers): just enough to list, per global
-// function, the calls it makes with their constant arguments and the string constants it uses.
+// function, the calls it makes with their constant arguments.
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Val { Str(String), Num(f32), Global(String), Other }
 
 #[derive(Default, Debug)]
-pub struct Func { pub calls: Vec<(String, Vec<Val>)>, pub sets: Vec<(String, Val)>, pub strings: Vec<String> }
+pub struct Func { pub calls: Vec<(String, Vec<Val>)>, pub sets: Vec<(String, Val)> }
 
 struct Proto { k: Vec<Val>, protos: Vec<Proto>, code: Vec<u32> }
 
@@ -44,7 +44,7 @@ impl R<'_> {
 
 // Symbolic pass: registers hold constants / global names; CALL records the callee and its arguments.
 fn walk(p: &Proto) -> Func {
-    let mut f = Func { strings: p.k.iter().filter_map(|v| if let Val::Str(s) = v { Some(s.clone()) } else { None }).collect(), ..Default::default() };
+    let mut f = Func::default();
     let mut reg: HashMap<u32, Val> = HashMap::new();
     let rk = |reg: &HashMap<u32, Val>, x: u32| if x >= 250 { p.k.get((x - 250) as usize).cloned().unwrap_or(Val::Other) } else { reg.get(&x).cloned().unwrap_or(Val::Other) };
     for &i in &p.code {
