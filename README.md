@@ -118,6 +118,8 @@ hold − diagram), main.cpp (perf overlay, replays). Switch names; keyboard in t
 | Game over: back to the menu | A | Space |
 | Replay playback: pause / speed ×1 ×2 ×4 / free camera / next turn / quit | A / R / X / Y / B or + | Space / Tab / C / N / Esc or Backspace |
 
+Replays (instant replay, `.w4r` recording, the Replays menu) are switched off for now: `REPLAYS` in `client/src/ui.h`.
+
 Menus: D-pad or left stick (held = auto-repeat), A confirm, B back (Esc), + starts from match setup, − opens the
 system controller screen (pair / split Joy-Cons), + on the title screen quits. Every screen shows its buttons in a bottom bar;
 the full list is under Options > Controls and in the pause menu.

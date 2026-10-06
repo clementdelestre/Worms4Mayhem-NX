@@ -205,80 +205,40 @@ bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd) {
 static const Vector2 PROBE[4] = {{0, 0}, {0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};  // W4M 0x91ffc8: centre and foot tripod, world axes
 static constexpr float STANCE = 0.1f;  // a walking worm stands 0.1 to 1.1 units over its highest hit (`probe`): ground within 2 units carries it
 
-// W4M 0x46a070 for a foot ray (down) at `p`: the flat lattice face it enters. [ours] our field rounds edges over about VOX/2: p unlike both
-// surfaces VOX/2 aside takes the flatter one within VOX, unless a planar 60-84 deg face runs beside it (a down ray enters such a face)
-static Vector3 groundNormal(const Terrain &t, Vector3 p) {
-    const float V = Terrain::VOX;
-    const Vector3 n = t.normal(p, V / 4);
-    Vector3 across = {n.x, 0, n.z}, best = n;
-    if (Vector3LengthSqr(across) < 1e-6f) return n;
-    across = Vector3Scale(Vector3Normalize(across), V / 2);
-    bool face = false;
-    for (float s : {-1.0f, 1.0f}) {  // the surface VOX/2 to each side, within 1.5 VOX of p's height
-        const Vector3 a = {p.x + s * across.x, p.y + 2 * V, p.z + s * across.z};
-        if (t.solid(a)) continue;
-        float lo = 0, hi = 0;
-        while (hi < 3.5f * V && !t.solid({a.x, a.y - hi, a.z})) lo = hi, hi += V / 8;
-        if (hi < V / 2 || hi >= 3.5f * V) continue;
-        for (int i = 0; i < 4; i++) (t.solid({a.x, a.y - (lo + hi) / 2, a.z}) ? hi : lo) = (lo + hi) / 2;
-        const Vector3 q = {a.x, a.y - hi, a.z}, m = t.normal(q, V / 4);
-        if (Vector3DotProduct(m, n) > 0.97f) return n;  // p lies on a face
-        if (fabsf(Vector3DotProduct(m, Vector3Subtract(p, q))) <= V && m.y > 0.5f && (!face || m.y > best.y)) best = m, face = true;
-    }
-    if (!face) return n;
-    const Vector3 out = Vector3Scale(across, 2 / V);  // unit, out of the land
-    for (float s : {-1.0f, 1.0f}) {  // a planar face sloping 60-84 deg beside the rounding (two heights agree): a down ray enters it
-        Vector3 m[2];
-        int k = 0;
-        for (float dy : {V, 1.5f * V}) {
-            const Vector3 a = {p.x - out.x * V, p.y + s * dy, p.z - out.z * V};
-            if (!t.solid(a)) break;
-            float lo = 0, hi = 0;
-            while (hi < 4 * V && t.solid(Vector3Add(a, Vector3Scale(out, hi)))) lo = hi, hi += V / 8;
-            if (hi >= 4 * V) break;
-            for (int i = 0; i < 5; i++) (t.solid(Vector3Add(a, Vector3Scale(out, (lo + hi) / 2))) ? lo : hi) = (lo + hi) / 2;
-            m[k] = t.normal(Vector3Add(a, Vector3Scale(out, hi)), V / 4);
-            if (m[k].y <= 0.1f || m[k].y >= 0.5f) break;
-            k++;
-        }
-        if (k == 2 && Vector3DotProduct(m[0], m[1]) > 0.97f) return n;
-    }
-    return best;
-}
-
-// W4M land probe 0x91ffc8: the centre and the foot tripod (+-4, -3) (0, 5) units, world axes; any hit carries the worm.
-// *n: the mean land normal of the hits, as W4M 0x59ef90 averages those level with the highest
+// W4M land probe 0x91ffc8: the centre and the foot tripod (+-4, -3) (0, 5) units, world axes; any in land carries the worm.
+// *n: the mean normal of the faces the feet's down rays (from 6 units up) enter, those level with the highest (W4M 0x59ef90)
 static bool footing(const Terrain &t, Vector3 foot, Vector3 *n = nullptr) {
-    const Vector2 *O = PROBE;
-    int top[4], best = -1;  // land above the probe height, in units (5 at most)
+    float h[4], hb = -1e9f;
+    Vector3 hn[4], sum{};
     for (int i = 0; i < 4; i++) {
-        top[i] = -1;
-        while (top[i] < 5 && t.solid({foot.x + O[i].x, foot.y + (top[i] + 1) * 0.05f, foot.z + O[i].y})) top[i]++;
-        if (!n && top[i] >= 0) return true;
-        best = std::max(best, top[i]);
+        const Vector3 a = {foot.x + PROBE[i].x, foot.y + 0.3f, foot.z + PROBE[i].y};
+        h[i] = -1e9f;
+        if (!t.solid({a.x, foot.y, a.z})) continue;
+        if (!n) return true;
+        float th;
+        if (t.cast(a, {0, -1, 0}, 0.3f, &th, &hn[i]) && th > 0) h[i] = a.y - th;
+        else h[i] = a.y, hn[i] = {0, 1, 0};
+        hb = fmaxf(hb, h[i]);
     }
-    if (best < 0) return false;
-    float h[4], hb = -1e9f;  // each hit's crossing; 0x59ef90 keeps those within 1 unit of the highest
-    for (int i = 0; i < 4; i++) {
-        if (top[i] < 0) continue;
-        float lo = foot.y + top[i] * 0.05f, hi = lo + 0.05f;
-        for (int k = 0; k < 4; k++) (t.solid({foot.x + O[i].x, (lo + hi) / 2, foot.z + O[i].y}) ? lo : hi) = (lo + hi) / 2;
-        hb = fmaxf(hb, h[i] = lo);
-    }
-    Vector3 sum{};
+    if (hb < -1e8f) return false;
     for (int i = 0; i < 4; i++)
-        if (top[i] >= 0 && hb - h[i] < 0.05f) sum = Vector3Add(sum, groundNormal(t, {foot.x + O[i].x, h[i], foot.z + O[i].y}));
+        if (h[i] > -1e8f && hb - h[i] < 0.05f) sum = Vector3Add(sum, hn[i]);
     *n = Vector3LengthSqr(sum) > 1e-8f ? Vector3Normalize(sum) : Vector3{0, 1, 0};
     return true;
 }
 
 // W4M 0x59ec70 down the 4 foot rays from 20 units above, in 1-unit steps (0x5b1092): the highest hit, in units over the feet; -99
-// when none down to -5. A hit is the last step before the land (0x469f6f truncates). [ours] land over an air gap above the feet
-// (a ceiling `rodsFit`'s relative fallback lets the head graze) is passed, not hit at once
+// when none down to -5. A hit is the last whole step before the land (0x469f6f truncates). [ours] a ray starting in land walks
+// down past it in steps: land over an air gap above the feet (a ceiling `rodsFit`'s fallback lets the head graze) is not hit at once
 static float probe(const Terrain &t, Vector3 feet) {
     float best = -99;
     for (Vector2 o : PROBE) {
         auto solid = [&](float h) { return t.solid({feet.x + o.x, feet.y + h * 0.05f, feet.z + o.y}); };
+        float th;
+        if (!solid(20)) {  // the exact crossing, truncated to the whole unit over it (0x469f6f)
+            if (t.cast({feet.x + o.x, feet.y + 1.0f, feet.z + o.y}, {0, -1, 0}, 1.3f, &th, nullptr)) best = fmaxf(best, 20 - floorf(th / 0.05f + 1e-4f));
+            continue;
+        }
         int h = 20;
         while (h >= 0 && solid(h)) h--;
         if (h < 0) { best = 20; continue; }  // land from the start down to the feet: hit at once
@@ -383,13 +343,10 @@ Vector3 restOn(const Terrain &t, Vector3 p, float r) {
 
 static Vector3 probePoint(Vector3 pos, int i) { return {pos.x + PROBE[i % 4].x, pos.y - Game::R + (i < 4 ? 0 : 1.0f), pos.z + PROBE[i % 4].y}; }
 
-// Rods sampled every VOX/2 from half a voxel over the feet (a foot on the surface samples its soft edge) to the heads
+// the 3 rods, feet to heads
 static bool rodsClear(const Terrain &t, Vector3 p) {
-    for (int i = 1; i < 4; i++)
-        for (int k = 1; k <= 8; k++) {
-            Vector3 a = probePoint(p, i);
-            if (t.solid({a.x, a.y + Terrain::VOX / 2 * k, a.z})) return false;
-        }
+    float th;
+    for (int i = 1; i < 4; i++) if (t.cast(probePoint(p, i), {0, 1, 0}, 1.0f, &th, nullptr)) return false;
     return true;
 }
 
@@ -409,15 +366,11 @@ static Sweep sweep(const Terrain &t, Vector3 pos, Vector3 m, Vector3 v) {
     float d[8];
     Vector3 hn[8];
     for (int i = 0; i < 8; i++) {
-        Vector3 a = probePoint(pos, i), hit;
+        float th;
         d[i] = -1;
-        if (!t.raycast({a, dir}, l, &hit) && !t.solid(hit = Vector3Add(a, m))) continue;  // raycast steps VOX/2 and stops short of l
-        float hi = Vector3Distance(hit, a), lo = fmaxf(hi - Terrain::VOX / 2, 0);
-        for (int k = 0; k < 4; k++) (t.solid(Vector3Add(a, Vector3Scale(dir, (lo + hi) / 2))) ? hi : lo) = (lo + hi) / 2;  // the surface between the last empty sample and the hit
-        // 0x46a070: the plane of the face crossed; ours the slope at the crossing over VOX/4 (VOX-wide blends a wall with the floor at its foot)
-        if (Vector3DotProduct(v, hn[i] = t.normal(Vector3Add(a, Vector3Scale(dir, hi)), Terrain::VOX / 4)) >= -0.01f) continue;
-        d[i] = lo;
-        if (s.at < 0 || lo < s.d) s.at = i, s.d = lo;
+        if (!t.cast(probePoint(pos, i), dir, l, &th, &hn[i]) || Vector3DotProduct(v, hn[i]) >= -0.01f) continue;  // 0x46a070: the face crossed
+        d[i] = fmaxf(th - 1e-4f, 0);
+        if (s.at < 0 || d[i] < s.d) s.at = i, s.d = d[i];
     }
     for (int i = 0; i < 8 && s.at >= 0; i++)
         if (d[i] >= 0 && d[i] - s.d < 0.05f) s.n = Vector3Add(s.n, hn[i]);

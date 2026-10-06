@@ -1,9 +1,10 @@
 // w4m-maps <W4M dir> [out dir]: converts Worms 4 Mayhem landscapes (.xan poxels + .hmp heightmap)
-// into Worms4NX maps (<name>.json + <name>.vox). Format notes: docs/w4m-formats.md.
+// into Worms4NX maps (<name>.json + <name>.vox + <name>.cells). Format notes: docs/w4m-formats.md.
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 mod anim;
+mod cells;
 mod lua;
 mod mesh;
 mod mission;
@@ -571,10 +572,12 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         i += r;
     }
     // densities: skip codes (< 128) over voxels at the default +-dq, literal runs (128 + n - 1)
-    let q: Vec<i8> = (0..grid.len()).map(|i| {
+    let mut q: Vec<i8> = (0..grid.len()).map(|i| {
         let v = ((dist[i].min(BAND) * VOX * Q).round() as i32).clamp(1, dq);
         (if grid[i] != 0 { v } else { -v }) as i8
     }).collect();
+    let (cells_file, exact) = cells::build(&hexes.iter().map(|h| h.c).collect::<Vec<_>>(), &top, &mut q, dq as i8);
+    fs::write(out_dir.join(format!("{stem}.cells")), &cells_file).map_err(|e| e.to_string())?;
     let mut i = 0;
     while i < q.len() {
         let def = |j: usize| q[j] as i32 == if grid[j] != 0 { dq } else { -dq };
@@ -674,12 +677,12 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         .map_or(String::new(), |p| format!("  \"rain_prob\": {p},\n"));
     let blk: Vec<String> = blocks.iter().map(|b| format!("[{:.2},{:.2},{:.2},{:.2}]", b[0] * k + ox, b[1] * k + oz, b[2] * k + ox, b[3] * k + oz)).collect();
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"scale\": {k:.4},\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"scale\": {k:.4},\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","), blk.join(","),
         marks.join(",\n    "), objs.join(",\n    "), emits.join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
-    Ok(format!("{} cells, {faces} faces, {} objects, {} emitters, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
+    Ok(format!("{} cells, {faces} faces, {exact}, {} objects, {} emitters, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
         cells.len(), objs.len(), emits.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
 }
 

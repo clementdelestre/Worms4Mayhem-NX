@@ -202,7 +202,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
     objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), origin = {40, WATER, 40}, rainProb = -1;
     thin.assign(CX * CY * CZ, {}), thinOnly.clear();
-    hasFinish = false;
+    hasFinish = false, sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
     Json j;
@@ -242,6 +242,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     if (j["voxels"].type == Json::Str) {
         if (!loadVoxels(dir + j["voxels"].s())) TraceLog(LOG_WARNING, "map %s: bad voxel file '%s'", map.c_str(), j["voxels"].s().c_str());
         if (j["thin"].type == Json::Str) loadThin(dir + j["thin"].s());
+        if (j["cells"].type == Json::Str && !sharp.load(dir + j["cells"].s())) TraceLog(LOG_WARNING, "map %s: bad cells file '%s'", map.c_str(), j["cells"].s().c_str());
     } else if (kind != "none") {
         bool isl = kind == "island";
         island(bh, isl ? height : 0, isl ? rough : 0, rad, seed + (unsigned)base["seed"].f(0));
@@ -405,6 +406,14 @@ float Terrain::at(int x, int y, int z) const {
 
 float Terrain::sample(Vector3 p) const {
     samples++;
+    if (sharp.on) {
+        int ix = (int)floorf(p.x / VOX), iy = (int)floorf(p.y / VOX), iz = (int)floorf(p.z / VOX);
+        if (ix >= 0 && iy >= 0 && iz >= 0 && ix < NX - 1 && iy < NY - 1 && iz < NZ - 1 && sharp.mixed(idx(ix, iy, iz))) return sharp.eval(p, idx(ix, iy, iz), nullptr);
+    }
+    return field(p);
+}
+
+float Terrain::field(Vector3 p) const {
     float x = p.x / VOX, y = p.y / VOX, z = p.z / VOX;
     int ix = (int)floorf(x), iy = (int)floorf(y), iz = (int)floorf(z);
     float fx = x - ix, fy = y - iy, fz = z - iz, r = 0;
@@ -425,6 +434,12 @@ float Terrain::sample(Vector3 p) const {
 }
 
 Vector3 Terrain::normal(Vector3 p, float e) const {
+    if (sharp.on) {
+        int ix = (int)floorf(p.x / VOX), iy = (int)floorf(p.y / VOX), iz = (int)floorf(p.z / VOX);
+        Vector3 n{};
+        if (ix >= 0 && iy >= 0 && iz >= 0 && ix < NX - 1 && iy < NY - 1 && iz < NZ - 1 && sharp.mixed(idx(ix, iy, iz)) &&
+            (sharp.eval(p, idx(ix, iy, iz), &n), Vector3LengthSqr(n) > 0)) return n;
+    }
     Vector3 g = {sample({p.x + e, p.y, p.z}) - sample({p.x - e, p.y, p.z}),
                  sample({p.x, p.y + e, p.z}) - sample({p.x, p.y - e, p.z}),
                  sample({p.x, p.y, p.z + e}) - sample({p.x, p.y, p.z - e})};
@@ -433,6 +448,7 @@ Vector3 Terrain::normal(Vector3 p, float e) const {
 }
 
 bool Terrain::carve(Vector3 c, float radius) {
+    sharp.carve(d, c, radius);
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX, NY, NZ};
     for (int a = 0; a < 3; a++) {
@@ -468,6 +484,7 @@ bool Terrain::carve(Vector3 c, float radius) {
 }
 
 void Terrain::weld(Vector3 c, Vector3 half) {
+    sharp.weld(d, c, half);
     if (steel.empty()) steel.assign(TOTAL, false);
     edits++;
     float reach = Vector3Length(half) + 0.5f;
@@ -493,6 +510,22 @@ void Terrain::weld(Vector3 c, Vector3 half) {
             for (int x = std::max(0, lo[0] - 1) / CS; x <= std::min(NX - 1, hi[0] + 1) / CS; x++) dirty[(z * CY + y) * CX + x] = true;
 }
 
+void Terrain::addCell(const Vector3 *c) {
+    const uint32_t id = sharp.add(d, c);
+    Vector3 lo = c[0], hi = c[0];
+    for (int k = 0; k < 8; k++) lo = Vector3Min(lo, c[k]), hi = Vector3Max(hi, c[k]);
+    int a[3] = {std::max(0, (int)ceilf(lo.x / VOX)), std::max(0, (int)ceilf(lo.y / VOX)), std::max(0, (int)ceilf(lo.z / VOX))};
+    int b[3] = {std::min(NX - 1, (int)floorf(hi.x / VOX)), std::min(NY - 1, (int)floorf(hi.y / VOX)), std::min(NZ - 1, (int)floorf(hi.z / VOX))};
+    for (int z = a[2]; z <= b[2]; z++)
+        for (int y = a[1]; y <= b[1]; y++)
+            for (int x = a[0]; x <= b[0]; x++)
+                if (sharp.inside(id, {x * VOX, y * VOX, z * VOX})) d[idx(x, y, z)] = std::max<signed char>(d[idx(x, y, z)], 64);
+    for (int z = std::max(0, a[2] - 1) / CS; z <= std::min(NZ - 1, b[2] + 1) / CS; z++)
+        for (int y = std::max(0, a[1] - 1) / CS; y <= std::min(NY - 1, b[1] + 1) / CS; y++)
+            for (int x = std::max(0, a[0] - 1) / CS; x <= std::min(NX - 1, b[0] + 1) / CS; x++) dirty[(z * CY + y) * CX + x] = true;
+    edits++;
+}
+
 bool Terrain::raycast(Ray r, float maxDist, Vector3 *hit) const {
     // march only inside the grid (+1 voxel, sample's reach): a far or infinite ray would otherwise spin for seconds
     const float step = VOX * 0.5f, o[3] = {r.position.x, r.position.y, r.position.z}, dv[3] = {r.direction.x, r.direction.y, r.direction.z},
@@ -508,6 +541,54 @@ bool Terrain::raycast(Ray r, float maxDist, Vector3 *hit) const {
         if (solid(p)) { *hit = p; return true; }
     }
     return false;
+}
+
+bool Terrain::cast(Vector3 a, Vector3 dir, float len, float *tOut, Vector3 *nOut) const {
+    float hit = -1;
+    if (!sharp.on) {
+        const float step = VOX / 4;
+        float lo = 0;
+        if (solid(a)) hit = 0;
+        for (float t = step; hit < 0; t += step) {
+            const float u = fminf(t, len);
+            if (solid(Vector3Add(a, Vector3Scale(dir, u)))) hit = u;
+            else if ((lo = u) >= len) return false;
+        }
+        for (int k = 0; k < 10 && hit > 0; k++) {
+            const float m = (lo + hit) / 2;
+            (solid(Vector3Add(a, Vector3Scale(dir, m))) ? hit : lo) = m;
+        }
+        if (hit > 0) hit = lo;  // the side out of land, as the exact crossing a contact stops at
+    } else {  // cell by cell along the ray (DDA): a listed cell's exact first land, else the cell's sign
+        int c[3] = {(int)floorf(a.x / VOX), (int)floorf(a.y / VOX), (int)floorf(a.z / VOX)}, step[3];
+        const float o[3] = {a.x, a.y, a.z}, dv[3] = {dir.x, dir.y, dir.z};
+        float tMax[3], tDelta[3], t0 = 0;
+        for (int k = 0; k < 3; k++) {
+            step[k] = dv[k] > 0 ? 1 : -1;
+            if (fabsf(dv[k]) < 1e-12f) tMax[k] = tDelta[k] = 1e30f;
+            else tMax[k] = ((c[k] + (dv[k] > 0)) * VOX - o[k]) / dv[k], tDelta[k] = VOX / fabsf(dv[k]);
+        }
+        Vector3 n{};  // the face entered, judged in the cell it is found in (a face on the cell's border is not listed past it)
+        for (int entered = -1; hit < 0;) {
+            samples += SharpLand::CELL_COST;
+            const int k = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+            const float t1 = fminf(tMax[k], len);
+            if (c[0] >= 0 && c[1] >= 0 && c[2] >= 0 && c[0] < NX - 1 && c[1] < NY - 1 && c[2] < NZ - 1) {
+                const size_t ci = idx(c[0], c[1], c[2]);
+                if (!sharp.mixed(ci)) {
+                    if (d[ci] > 0 && (hit = t0) > 0 && entered >= 0) (&n.x)[entered] = -(float)step[entered];
+                } else if ((hit = sharp.first(a, dir, t0, t1, ci)) >= 0)
+                    sharp.eval(Vector3Add(a, Vector3Scale(dir, fminf(hit + 1e-4f, (hit + t1) / 2))), ci, &n);
+            }
+            if (hit >= 0 || tMax[k] > len) break;
+            t0 = tMax[k], c[k] += step[k], tMax[k] += tDelta[k], entered = k;
+        }
+        if (hit < 0) return false;
+        if (nOut && Vector3LengthSqr(n) > 0) return *tOut = hit, *nOut = n, true;
+    }
+    *tOut = hit;
+    if (nOut) *nOut = normal(Vector3Add(a, Vector3Scale(dir, hit + 1e-4f)), VOX / 4);
+    return true;
 }
 
 // W4M GLG_PC 0x451ea0: LightGradient[N.L capped by the sun ray] + SideGradient[normal x] - 128 (GLG_Shadow 0x454e30, 0x451590)
@@ -553,6 +634,8 @@ struct Scratch {  // one per meshing thread
     uint64_t rows[ML * ML];
     Vector3 cp[MS * MS * MS], cn[MS * MS * MS];
     bool has[MS * MS * MS];
+    struct Cross { Vector3 q, n; unsigned gen; bool ok; } ex[ML * ML * ML * 3];  // exact crossings per grid edge (3 per corner)
+    unsigned gen = 0;
     std::vector<Builder> bs;
     std::vector<FB> fbs;
 };
@@ -633,6 +716,64 @@ void Terrain::buildChunk(int ci) {
     upload(g, parts[ci]);
 }
 
+static const int CELL_EDGES[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+
+// the exact crossing on the grid edge from corner (x, y, z) along axis a (its ends of opposite sign in d), read in the first listed
+// cell around it in a fixed order, so neighbouring chunks agree
+static bool crossing(const SharpLand &s, int x, int y, int z, int a, bool fromLand, Vector3 *q, Vector3 *n) {
+    constexpr float V = Terrain::VOX;
+    const int u = (a + 1) % 3, w = (a + 2) % 3;
+    size_t c = ~(size_t)0;
+    for (int k = 0; k < 4 && c == ~(size_t)0; k++) {
+        int g[3] = {x, y, z};
+        g[u] -= k & 1, g[w] -= k >> 1;
+        if (g[0] >= 0 && g[1] >= 0 && g[2] >= 0 && g[0] < Terrain::NX - 1 && g[1] < Terrain::NY - 1 && g[2] < Terrain::NZ - 1 && s.mixed(idx(g[0], g[1], g[2]))) c = idx(g[0], g[1], g[2]);
+    }
+    if (c == ~(size_t)0) return false;
+    Vector3 o = {x * V, y * V, z * V}, dir = {float(a == 0), float(a == 1), float(a == 2)};
+    if (fromLand) o = Vector3Add(o, Vector3Scale(dir, V)), dir = Vector3Negate(dir);  // from the air end
+    const float t = s.first(o, dir, 0, V, c, true, true);
+    if (t < 0) return false;
+    *q = Vector3Add(o, Vector3Scale(dir, t));
+    const uint32_t *op = s.ops(c);
+    bool hm = false;
+    for (uint32_t i = 1; i <= op[0]; i++) hm |= (op[i] & SharpLand::KIND) == SharpLand::HM, i += (op[i] & SharpLand::KIND) == SharpLand::HEX;
+    if (hm) {  // the heightmap's own normal is a slope over +-1 cell: its level set's gradient here instead (a vertical step where a column is missing)
+        const float e = 1e-3f;
+        Vector3 g = {s.eval({q->x - e, q->y, q->z}, c, nullptr) - s.eval({q->x + e, q->y, q->z}, c, nullptr), s.eval({q->x, q->y - e, q->z}, c, nullptr) - s.eval({q->x, q->y + e, q->z}, c, nullptr),
+                     s.eval({q->x, q->y, q->z - e}, c, nullptr) - s.eval({q->x, q->y, q->z + e}, c, nullptr)};
+        if (Vector3LengthSqr(g) > 1e-12f) return *n = Vector3Normalize(g), true;
+    }
+    s.eval(Vector3Add(o, Vector3Scale(dir, fminf(t + 1e-4f, V))), c, n);
+    return Vector3LengthSqr(*n) > 0;
+}
+
+// Dual contouring in a listed cell (corner o): the vertex minimising the squared distances to the tangent planes at its exact
+// crossings (q, n: m of them), so it lands on the land's edges and corners
+static void exactVertex(Vector3 o, const Vector3 *q, const Vector3 *n, int m, Vector3 *pos, Vector3 *nrm) {
+    constexpr float V = Terrain::VOX;
+    Vector3 mass{}, ns{};
+    for (int k = 0; k < m; k++) mass = Vector3Add(mass, q[k]), ns = Vector3Add(ns, n[k]);
+    mass = Vector3Scale(mass, 1.0f / m);
+    // normal equations about the mass point; the ridge term keeps it where no plane constrains the vertex
+    float A[3][3] = {}, r[3] = {};
+    for (int k = 0; k < m; k++) {
+        const float nk[3] = {n[k].x, n[k].y, n[k].z}, dk = Vector3DotProduct(n[k], Vector3Subtract(q[k], mass));
+        for (int i = 0; i < 3; i++) { r[i] += nk[i] * dk; for (int j = 0; j < 3; j++) A[i][j] += nk[i] * nk[j]; }
+    }
+    for (int i = 0; i < 3; i++) A[i][i] += 0.05f;
+    auto det = [](const float M[3][3]) { return M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]); };
+    const float dA = det(A);
+    float x[3];
+    for (int col = 0; col < 3; col++) {
+        float M[3][3];
+        for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) M[i][j] = j == col ? r[i] : A[i][j];
+        x[col] = det(M) / dA;
+    }
+    *pos = {Clamp(mass.x + x[0], o.x, o.x + V), Clamp(mass.y + x[1], o.y, o.y + V), Clamp(mass.z + x[2], o.z, o.z + V)};
+    *nrm = Vector3LengthSqr(ns) > 1e-6f ? Vector3Normalize(ns) : n[0];  // opposite faces (a slit) cancel out
+}
+
 void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
     int x0 = ci % CX * CS, y0 = ci / CX % CY * CS, z0 = ci / (CX * CY) * CS;
     constexpr int S = MS, L = ML;  // cells x0-1 .. x0+CS-1, their corners x0-1 .. x0+CS
@@ -646,7 +787,8 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
         }
     if (!any[0] || !any[1]) return;
     static thread_local Scratch *scratch = nullptr;
-    if (!scratch) scratch = new Scratch;
+    if (!scratch) scratch = new Scratch();
+    const unsigned long samples0 = samples;  // the exact land's reads are not the AI's work
     float *c = scratch->c;
     unsigned char *mt = scratch->mt;
     uint64_t *rows = scratch->rows;  // bit i: local voxel i of the row is solid
@@ -666,7 +808,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
     Vector3 *cp = scratch->cp, *cn = scratch->cn;
     bool *has = scratch->has;
     memset(has, 0, sizeof scratch->has);
-    static const int E[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    if (++scratch->gen == 0) memset(scratch->ex, 0, sizeof scratch->ex), scratch->gen = 1;
     auto C = [&](int i, int j, int k) { return c[(k * L + j) * L + i]; };
     for (int k = 0; k < S; k++)
         for (int j = 0; j < S; j++) {
@@ -679,7 +821,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
                 has[n] = true;
                 Vector3 p = {0, 0, 0};
                 int cnt = 0;
-                for (auto &e : E) {
+                for (auto &e : CELL_EDGES) {
                     if ((v[e[0]] > 0) == (v[e[1]] > 0)) continue;
                     float t = v[e[0]] / (v[e[0]] - v[e[1]]);
                     Vector3 a = {float(e[0] & 1), float((e[0] >> 1) & 1), float(e[0] >> 2)};
@@ -688,17 +830,29 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
                     cnt++;
                 }
                 cp[n] = Vector3Scale(Vector3Add({float(x0 - 1 + i), float(y0 - 1 + j), float(z0 - 1 + k)}, Vector3Scale(p, 1.0f / cnt)), VOX);
+                const int gx = x0 - 1 + i, gy = y0 - 1 + j, gz = z0 - 1 + k;
+                if (sharp.on && gx >= 0 && gy >= 0 && gz >= 0 && gx < NX - 1 && gy < NY - 1 && gz < NZ - 1 && sharp.mixed(idx(gx, gy, gz))) {
+                    Vector3 eq[12], en[12];
+                    int m = 0;
+                    for (auto &e : CELL_EDGES) {
+                        if ((v[e[0]] > 0) == (v[e[1]] > 0)) continue;
+                        const int ex = i + (e[0] & 1), ey = j + (e[0] >> 1 & 1), ez = k + (e[0] >> 2), ax = (e[1] ^ e[0]) == 1 ? 0 : (e[1] ^ e[0]) == 2 ? 1 : 2;
+                        Scratch::Cross &x = scratch->ex[((ez * L + ey) * L + ex) * 3 + ax];
+                        if (x.gen != scratch->gen)
+                            x.gen = scratch->gen, x.ok = crossing(sharp, x0 - 1 + ex, y0 - 1 + ey, z0 - 1 + ez, ax, v[e[0]] > 0, &x.q, &x.n);
+                        if (x.ok) eq[m] = x.q, en[m] = x.n, m++;
+                    }
+                    if (m) { exactVertex({gx * VOX, gy * VOX, gz * VOX}, eq, en, m, &cp[n], &cn[n]); continue; }
+                }
                 Vector3 g = {(v[1] - v[0]) + (v[3] - v[2]) + (v[5] - v[4]) + (v[7] - v[6]),
                              (v[2] - v[0]) + (v[3] - v[1]) + (v[6] - v[4]) + (v[7] - v[5]),
                              (v[4] - v[0]) + (v[5] - v[1]) + (v[6] - v[2]) + (v[7] - v[3])};
                 cn[n] = Vector3Normalize(Vector3Negate(g));
-                {  // smoother: the gradient over two voxels at the vertex (fewer facets); the AI's sample count stays as it was
-                    unsigned long s0 = samples;
+                {  // smoother: the gradient over two voxels at the vertex (fewer facets)
                     Vector3 q = cp[n];
                     const float h = VOX;
-                    Vector3 g2 = {sample({q.x + h, q.y, q.z}) - sample({q.x - h, q.y, q.z}), sample({q.x, q.y + h, q.z}) - sample({q.x, q.y - h, q.z}),
-                                  sample({q.x, q.y, q.z + h}) - sample({q.x, q.y, q.z - h})};
-                    samples = s0;
+                    Vector3 g2 = {field({q.x + h, q.y, q.z}) - field({q.x - h, q.y, q.z}), field({q.x, q.y + h, q.z}) - field({q.x, q.y - h, q.z}),
+                                  field({q.x, q.y, q.z + h}) - field({q.x, q.y, q.z - h})};
                     if (Vector3Length(g2) > 1e-6f) cn[n] = Vector3Normalize(Vector3Negate(g2));
                 }
             }
@@ -863,6 +1017,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
         Builder &b = bs[bi];
         geo.ms.push_back({b.mat, false, std::move(b.pos), std::move(b.nrm), {}, std::move(b.col), std::move(b.idx)});
     }
+    samples = samples0;
 }
 
 // Triplanar: top texture on up-facing surfaces, side texture elsewhere. Lighting after W4M's CG/Landscape.cg,

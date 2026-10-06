@@ -10,6 +10,7 @@
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -786,12 +787,13 @@ static void subPanel(const char *title, const char *art, float t, float p) {
 }
 
 #ifdef __SWITCH__
-static const int MAIN_ITEMS = 5;  // console games leave through HOME, no Quit entry
+static const int MAIN_ITEMS = 5 - !REPLAYS;  // console games leave through HOME, no Quit entry
 #else
-static const int MAIN_ITEMS = 6;
+static const int MAIN_ITEMS = 6 - !REPLAYS;
 #endif
+static int mainItem(int row) { return row + (!REPLAYS && row >= 3); }  // menu row -> MAIN_ALL index
 // W4M layouts: staggered, tilted, one size per entry
-static const MenuItem MAIN_MENU[] = {
+static const MenuItem MAIN_ALL[] = {
     {"FETXT.LocalGame", "Local Game", "Partie locale", 905, 150, 62, -3},
     {"FETXT.HTPHeader3", "Network Game", "Partie en réseau", 975, 248, 48, 2},
     {"FETXT.MyWorms", "My Worms", "Mes Worms", 880, 334, 56, -2},
@@ -799,6 +801,14 @@ static const MenuItem MAIN_MENU[] = {
     {"FETXT.Help&Options", "Help & Options", "Aide et options", 900, 494, 52, -2},
     {"Lang.Quit", "Quit", "Quitter", 1010, 570, 44, 2},
 };
+static const std::array<MenuItem, 6> MAIN_MENU = [] {
+    std::array<MenuItem, 6> m{};
+    for (int i = 0; i < 6 - !REPLAYS; i++) {  // later rows move up a slot: no hole in the stagger
+        const MenuItem &e = MAIN_ALL[mainItem(i)];
+        m[i] = MAIN_ALL[i], m[i].key = e.key, m[i].en = e.en, m[i].fr = e.fr;
+    }
+    return m;
+}();
 static const MenuItem LOCAL_MENU[] = {
     {"FETXT.QuickGame", "Quick Game", "Partie rapide", 870, 160, 60, -3},
     {nullptr, "Custom match", "Partie personnalisée", 1075, 262, 50, 3},  // W4M calls it Versus: too vague
@@ -1088,7 +1098,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         float a = easeOut(titleIn(t) / 0.4f);  // the title's logo glides to its menu spot (backwards on B)
         float up = leaving >= 0 && next != Title ? easeOut((t - leaving) / LEAVE) : from == Title || leaving >= 0 ? 0 : 1 - easeOut((t - entered) / 0.35f);  // to / from a submenu
         logo(Lerp(640, 330, a), Lerp(90, 40, a) - up * 300, Lerp(760, 560, a), -6 * a);
-        menu(MAIN_MENU, MAIN_ITEMS, mainRow, confirm ? 0 : dy, t, !confirm);
+        menu(MAIN_MENU.data(), MAIN_ITEMS, mainRow, confirm ? 0 : dy, t, !confirm);
         rlPushMatrix();
         rlTranslatef(0, (1 - a) * 110, 0);
         paperStrip(t, false);
@@ -1118,10 +1128,11 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (back) go(Title);
         if (ok) {
             Screen to[] = {Local, Network, MyWorms, Main, HelpOpts, Confirm};
-            if (mainRow == 3) act = Replays;
-            else if (mainRow == 5) screen = Confirm, subRow[4] = 0;
-            else go(to[mainRow]);
-            if (mainRow == 2) online = false, loaded = false;  // the local setup.txt teams
+            int item = mainItem(mainRow);
+            if (item == 3) act = Replays;
+            else if (item == 5) screen = Confirm, subRow[4] = 0;
+            else go(to[item]);
+            if (item == 2) online = false, loaded = false;  // the local setup.txt teams
         }
         break;
     }

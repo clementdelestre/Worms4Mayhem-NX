@@ -252,3 +252,28 @@ See "Bundles numbering" above (unchanged). Additions from this pass [data]:
 - Skips or ignores: DXT images (9/10/11), `XMaterial` colours, render states (blend / alpha test / cull / z), stages after the first, `XTexturePlacement2D` / `0x401` UV animation (parsed as a key type but not exported), `0x200` / `0x403` keys, pre/post infinity (always clamps; cycle `2` ignored), the channel flags, `XCollisionGeometry` / `XCollisionData`, `XBillboardSpriteSet` / `XPlaneAlignedSpriteSet`, `XSceneCamera`, `XEnvironmentMapShader`, `XAnimInfo` / `XExpandedAnimInfo`, and the descriptor trailing bytes.
 - Dead code: the `0x100`/`0x101` channel form and the u16 `0x100` skip (never in data, harmless).
 - `exact()` reads `XBitmapDescriptor` as v,+2,v,+4 and `XTextDescriptor` as v,+1,v,v,...; the second only works because the u16 bundle id 3 has a zero high byte. Read it as name, u16, ref, u16 k.
+
+## 22. Exact land export (`<map>.cells`, tools/w4m-maps)
+
+Source [data]: the visible `LandFrameStore` poxel cells (a hexahedron of 8 lattice corners each) and the `.hmp` heightmap, placed and
+scaled as in docs/w4m-formats.md "Conversion to our grid". W4M collides with that lattice itself: land ray 0x466ae0, face entered 0x46a070
+(physics.md §5, §11) [disasm]. The client's use: docs/sim.md "Exact land".
+
+File [ours]: `"W4C1"`, u32 payload size, then the payload as raw DEFLATE (RFC 1951, one fixed-Huffman block; the client inflates it with
+raylib's `sinflate`). Payload, little-endian:
+
+- u32 hexahedra, u32 heightmap columns (0 or NX·NZ), u32 cells, u32 lists, u32 list bytes, u32 cell bytes.
+- Per hexahedron: 8 corners as 3 f32 (m; corner bit 1 = +x, 2 = +y, 4 = +z), u32 flags: bit t (0..11) triangle t kept (face t / 2 of
+  `{0,2,6,4} {1,3,7,5} {0,1,5,4} {2,3,7,6} {0,1,3,2} {4,5,7,6}`, triangle (f0, f1, f2) for even t, (f0, f2, f3) for odd), bit 12 + t its
+  plane flipped to face out, bit 24 twisted (planes reaching past its corners: also bounded by its box). The client rebuilds the planes
+  from these without deciding anything.
+- Heightmap: f32 top per grid column (m), NaN where none, x fastest.
+- Lists, varints: the word count, then per op `kind | id << 3`: kind 0 = a hexahedron (id = its index minus the list's previous
+  hexahedron's), followed by its plane mask; kind 1 = the heightmap.
+- Cells, varints, ascending: the cell index minus the previous one minus 1, then its list's number. Cell index `(z·NY + y)·NX + x`
+  on the 320 x 256 x 320 grid of 0.25 m cells.
+
+Build [ours]: a cell lists a hexahedron unless one of its planes has the 8 cell corners outside (> 1e-5 m); the mask keeps the planes
+with a corner on or outside (> -1e-5 m), so a face lying on the cell's border stays with the cell it bounds. A cell some hexahedron or the
+heightmap fills is left out; its sign is in the `.vox`, whose grid-point signs are set from the lists (from a listed cell around the
+point, else solid when a filled cell touches it). Identical lists are stored once. 221 maps: 282 MB, 15 KB to 2.6 MB each.

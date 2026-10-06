@@ -208,8 +208,16 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 - `budget` = 20000 `Terrain::samples` per frame (~0.7 ms desktop). Each `unit()` costs its samples + 100; units run while `debt < budget`;
   `debt` carries over, capped at 2 × budget (W4M: 80 units/frame, pathfind and attack plan 100, position 10, **disasm**; scale **ours**).
 - A unit is one of: one threat rating, one row of the move window's layer-0 heights (65 nodes), one window entry's scores (+1000: 625
-  cached nodes), one A* node expansion, one pair to path, one shot candidate. `landTop` (Land.MaxHeight) once for a bomber's drop check.
+  cached nodes), one A* node expansion, one pair to path, one shot candidate (a walker's walk: 300 steps of it, resumed by the next
+  unit; the Old Woman's 30 s fuse took ~170k samples in one unit on the imported maps). `landTop` (Land.MaxHeight) once for a bomber's drop check.
   Raw voxel reads for column tops count 1/8 each. Unusable weapons are skipped for free.
+- Exact land (docs/sim.md "Exact land") counts in the same unit, one `field()` read: each `SharpLand::eval` 4 (+1 through
+  `sample`), each `first()` 6 plus its evals, each cell a `Terrain::cast` steps through 1. Measured on desktop (3 imported maps, warm
+  points): a unit then costs 0.7-1.2 `field()` reads in `sample`, `normal` and casts of 0.3-1.3 m [ours].
+- Measured (desktop, 8 imported maps x CPU1/3/5, 8 turns each) [ours]: before the exact land, worst tick 1.8-2.0 ms, p99.9 1.0 ms,
+  23-25 ns per sample, 35.6 damage per turn; exact land uncounted 2.9-3.9 ms, p99.9 1.3-1.4 ms, 31-34 ns; counted with the walks
+  split 1.8-2.1 ms, p99.9 0.9-1.1 ms, 20-23 ns, 34.3 damage per turn (34.8 uncounted; 21 of 24 matches deal the same damage, the
+  others shift with the fire tick). ai_check's maps have no `.cells`: its output is unchanged.
 - Modes: `Eval` (threats, window, pairs and their paths, shots origin by origin, then `decide`), `Search` (a move plan's or a repath's
   A*), `Walk` (`follow` the path), `Act` (a close-range retreat A* first, then select, aim, wait, charge / fire).
 - In `Flying`: retreat, steer the bomber / super sheep, detonate the sheep as it leaves its target. Roped outside a race: release with JUMP.

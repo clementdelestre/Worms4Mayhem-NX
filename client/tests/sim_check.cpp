@@ -604,9 +604,14 @@ static void checkSheepCamera() {
     assert(g.shots.empty() && g.phase != Phase::Aim);
     Controls::camera(cam, g, false, false, false, Game::DT);
     Vector3 frozen = view().position;  // ChaseCam has no Finished (vtable slot 7 = 0x49b8f0): it stays until another event or the next turn
+    const Vector3 worm = g.worms[g.current].pos;
+    float first = -1;
     for (int t = 0; t < 30 && g.phase != Phase::Aim; t++) {  // the drawn view only settles onto it (0.1 an update), it does not go back to the worm
+        const Vector3 was = view().position;
         g.step(Input{}), Controls::camera(cam, g, false, false, false, Game::DT);
-        assert(g.phase == Phase::Aim || Vector3Distance(view().position, frozen) < 1);
+        const float moved = Vector3Distance(view().position, was);
+        first = first < 0 ? moved : first;
+        assert(g.phase == Phase::Aim || (moved <= first + 1e-3f && Vector3Distance(view().position, worm) > Vector3Distance(frozen, worm) - 0.5f));
     }
 }
 
@@ -1376,21 +1381,33 @@ static void checkWalkW4M() {
     assert(c.x < 10.6f && c.z < 10.6f && worst <= 0);  // in the corner, out of both walls
 }
 
-// W4M UpdateWalking casts the 4 foot rays: the front foot finds a low ledge and the worm steps or vaults onto it. Our field rounds the
-// ledge's edges, where the walkable test reads the flat face beyond (0x46a070); off the voxel grid and across it alike.
+// Exact land as an imported map's cells: a box along unit horizontal eu from o (u), ev = eu turned 90 deg (v), y up; the arena cleared first
+static void landBox(Game &g, Vector3 o, Vector3 eu, float u0, float u1, float y0, float y1, float v0, float v1) {
+    Vector3 c[8];
+    for (int k = 0; k < 8; k++) {
+        float u = k & 1 ? u1 : u0, v = k & 4 ? v1 : v0;
+        c[k] = {o.x + eu.x * u - eu.z * v, k & 2 ? y1 : y0, o.z + eu.z * u + eu.x * v};
+    }
+    g.terrain.addCell(c);
+}
+static void clearArena(Game &g, int x0, int x1, int y0, int y1, int z0, int z1) {
+    for (int z = z0; z < z1; z++)
+        for (int y = y0; y < y1; y++)
+            for (int x = x0; x < x1; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = -64;
+}
+
+// W4M UpdateWalking casts the 4 foot rays: the front foot finds a low ledge and the worm steps or vaults onto it; the walkable test reads
+// the flat face beyond the lip (0x46a070). Exact cells off the voxel grid and across it alike.
 static void checkLowLedges() {
     for (float h : {0.2f, 0.35f, 0.5f, 0.7f})
         for (float off : {0.0f, 0.07f, 0.13f})
             for (int diag = 0; diag < 2; diag++) {
                 Game g;
                 g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
-                for (int z = 16; z < 80; z++)
-                    for (int y = 176; y < 248; y++)
-                        for (int x = 16; x < 176; x++) {
-                            Vector3 p = Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX);
-                            float u = (diag ? (p.x + p.z - 24) * 0.7071f + 12 : p.x) - off;  // across the ledge edge at u = 12
-                            g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(fmaxf(50 - p.y, fminf(50 + h - p.y, u - 12)) * Terrain::Q, -64, 64);
-                        }
+                clearArena(g, 16, 176, 176, 248, 16, 80);
+                landBox(g, {0, 0, 0}, {1, 0, 0}, 4, 44, 48, 50, 4, 20);  // floor y 50
+                const Vector3 e = diag ? Vector3{0.7071f, 0, 0.7071f} : Vector3{1, 0, 0};  // the ledge edge across e at u = 12 + off (diag: x + z = 24)
+                landBox(g, {0, 0, 0}, e, (diag ? 24 * 0.7071f : 12) + off, diag ? 46 : 44, 48, 50 + h, diag ? -29 : 4, diag ? 12 : 20);
                 Worm &w = g.worms[g.current];
                 w.pos = {10, 50.5f, diag ? 10.0f : 12.0f}, w.vel = {}, w.yaw = diag ? PI / 4 : PI / 2;
                 g.hotSeat = 0;
@@ -1530,13 +1547,9 @@ static void checkW4MWalkRules() {
 static void checkNarrowSlot() {
     auto arena = [](Game &g, float w, bool diag) {  // floor y 50, a slot w wide and 1.5 m deep through (40, 40)
         g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
-        for (int z = 120; z < 200; z++)
-            for (int y = 176; y < 210; y++)
-                for (int x = 120; x < 200; x++) {
-                    Vector3 p = Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX);
-                    float u = diag ? (p.x - p.z) * 0.7071f : p.x - 40;
-                    g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(fminf(50 - p.y, fmaxf(48.5f - p.y, fabsf(u) - w / 2)) * Terrain::Q, -64, 64);
-                }
+        clearArena(g, 120, 200, 176, 210, 120, 200);
+        const Vector3 o = {40, 0, 40}, e = diag ? Vector3{0.7071f, 0, -0.7071f} : Vector3{1, 0, 0};
+        landBox(g, o, e, -10, -w / 2, 44, 50, -10, 10), landBox(g, o, e, w / 2, 10, 44, 50, -10, 10), landBox(g, o, e, -10, 10, 44, 48.5f, -10, 10);
         g.hotSeat = 0;
     };
     for (bool diag : {false, true})
@@ -1546,7 +1559,7 @@ static void checkNarrowSlot() {
             Worm &w = g.worms[g.current];
             w.pos = {40 + off, 51.5f, 40 + (diag ? -off : 0)}, w.vel = {}, w.grounded = false;
             for (int t = 0; t < 90; t++) g.step(Input{});
-            assert(w.grounded && w.pos.y > 50.3f);  // on the lips (rounded by the density clamp)
+            assert(w.grounded && w.pos.y > 50.3f);  // on the lips
         }
     Game c;  // walked across it
     arena(c, 0.35f, false);

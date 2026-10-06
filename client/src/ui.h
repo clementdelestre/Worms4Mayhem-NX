@@ -6,6 +6,9 @@
 #include <string>
 #include <vector>
 
+// user-requested, temporary: no instant replay, no .w4r recording, no Replays menu entry. true restores all three.
+constexpr bool REPLAYS = false;
+
 // W4M-styled frontend and HUD. Art: assets/ui/*.png from tools/w4m-ui; missing files fall back to plain shapes.
 namespace Ui {
 extern const Color TEAM_COLORS[4];

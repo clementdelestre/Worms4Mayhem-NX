@@ -191,14 +191,14 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkSniper` | Sniper over 20 m of open sky deals its damage. |
 | `checkScopeCrest` | Sniper at a worm just over a crest, aimed like a player at the scope camera's screen centre. |
 | `checkSentry` | Sentry gun shoots an enemy in range, then reloads. |
-| `checkSheepCamera` | W4M SheepChaseCamera: behind and above the sheep, rises when land hides it, never under it. |
+| `checkSheepCamera` | W4M SheepChaseCamera: behind and above the sheep, rises when land hides it, never under it; after the sheep the drawn view settles (each step no longer than the first) and never moves back toward the worm. |
 | `checkEventCameras` | W4M event cameras: worm, crate, winner TrackCams, homing FlyCam, shoulder camera occlusion zoom; PiP during the active worm's turn then the grow at EndTurn, chase start yaw (Sheep / Scouser ResetYaw), Donkey camera held. |
 | `checkDeathBlast` | W4M Worm.Death*: the death blast takes up to 35 hp off neighbours, throws them, digs 1.75 m; the settle waits for the thrown worm (W4M Worm Falling is active). |
 | `checkWallClearance` | Concave corner: walking or dropping against a wall leaves the body out of the rock. |
 | `checkWalkW4M` | Density clamped like imported .vox maps: corridors and steps walkable, ledges vaulted up to body height. |
-| `checkLowLedges` | 0.2-0.7 m ledges, on and off the voxel grid and diagonal: the front foot finds them (4 foot rays) and the worm steps or vaults on; the walkable test reads the flat top past our rounded lip (`groundNormal`). |
+| `checkLowLedges` | 0.2-0.7 m ledges of exact cells (`Terrain::addCell`, as an imported map's), on and off the voxel grid and diagonal: the front foot finds them (4 foot rays) and the worm steps or vaults on; the walkable test reads the flat top past the lip. |
 | `checkVault` | W4M Vaulting: a 16-unit ledge in 250 ms; stick keeps it going, release drops back, jump ignored. |
-| `checkNarrowSlot` | W4M 8 land probe points: a foot lands on the lips of a slot narrower than the stance; wider slot lets it in. |
+| `checkNarrowSlot` | W4M 8 land probe points, exact cells: a foot lands on the lips of a slot narrower than the stance, and walks across it; a wider slot lets it in. |
 | `checkHeading` | W4M: walking sets the facing to the stick direction at once, whatever the turn angle. |
 | `checkWallStuck` | Off a ledge onto a 76 degree face (pushed into it, it skids up and slides back), or wedged under a sloping ceiling: the worm lands, then walks out. |
 | `checkJumpTrajectory` | W4M launch + Integrate: jump 50 units up, 80 along; backflip 80 up, 50.6 back. |
@@ -287,6 +287,10 @@ No static check: `main` plays a recorded AI match on the island and arabian (dou
 same checksum and voxels; each instant replay lands on the live state: even replays restore the turn snapshot and
 re-simulate, odd ones restore the checkpoint 45 ticks back, re-simulate half way and skip (`Snapshot::forward`). Prints
 step, snapshot, restore and re-sim timings.
+
+The game itself has replays off for now (user-requested, temporary): `constexpr bool REPLAYS = false` in ui.h skips the
+turn snapshots and checkpoints (so no instant replay), the input recording and `.w4r` save, the Replays main-menu row and
+the `--ui replays` / `playback` captures [ours]. `replay_check` drives `Recording` / `Snapshot` directly and still runs.
 
 ## ui_check.cpp
 

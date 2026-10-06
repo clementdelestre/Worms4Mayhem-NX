@@ -1293,7 +1293,7 @@ int main(int argc, char **argv) {
     if (char *t = FileExists(DATA_DIR "replay.txt") ? LoadFileText(DATA_DIR "replay.txt") : nullptr) instant = t[0] != '0', UnloadFileText(t);
     std::thread saver;  // the SD write takes 100+ ms on Switch: off the frame
     auto saveRec = [&] {
-        if (recSaved || playing || rec.inputs.empty() || shot || bench || uiShot || netbot || rec.cfg.mission) return;  // replays don't carry missions
+        if (!REPLAYS || recSaved || playing || rec.inputs.empty() || shot || bench || uiShot || netbot || rec.cfg.mission) return;  // replays don't carry missions
         recSaved = true;
         rec.checksum = irEnd < 0 && rec.inputs.size() == tick ? game.checksum() : 0;
         if (saver.joinable()) saver.join();
@@ -1331,13 +1331,13 @@ int main(int argc, char **argv) {
         bool was = flying();
         game.step(in);
         tick++, stepped++;
-        if (!playing) rec.inputs.push_back(in);
+        if (REPLAYS && !playing) rec.inputs.push_back(in);
         if (was && !flying()) shotDone = true, shotTick = tick;
         for (const GameEvent &e : game.events) {
             onEvent(game, e);
             feel(e);
             if (e.kind == GameEvent::Fire && e.worm >= 0) fireTick = tick;
-            if (e.kind == GameEvent::TurnStart && !online && !playing) snap.take(game, tick);
+            if (REPLAYS && e.kind == GameEvent::TurnStart && !online && !playing) snap.take(game, tick);
             if (e.kind == GameEvent::GameOver) saveRec();
             if (e.kind != GameEvent::TurnStart && e.kind != GameEvent::GameOver) continue;
             if (online) net.turnEnd(tick, game.checksum());
@@ -1474,8 +1474,8 @@ int main(int argc, char **argv) {
         for (auto &m : MENUS) if (!strcmp(uiShot, m.first)) front.screen = m.second;
         if (!strcmp(uiShot, "wormpot")) front.screen = Ui::Frontend::Wormpot, opt.wormpot = WP_DOUBLE_DAMAGE | WP_CRATE_SHOWER << 8 | WP_QUICK_WALK << 16;
         if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
-        if (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback")) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
-        if (!strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
+        if (REPLAYS && (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback"))) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
+        if (REPLAYS && !strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
         // missions | briefing | missionhud | missionend [mission id]
         if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "briefing")) openMissions(), missionMenu.brief = !strcmp(uiShot, "briefing"), missionMenu.shown = -100;
         for (size_t i = 0; i < missions.size() && (!strcmp(uiShot, "missionhud") || !strcmp(uiShot, "missionend")); i++)

@@ -33,6 +33,8 @@ User-requested behaviours (kept on purpose; retest only when the user asks):
 - Story / Challenges screens (2026-10-06): our items with no W4M clip (tabs, mission rows) and every W4M item whose Anim_Outgoing is None
   slide in / fly out like our menu rows (`rowAppear`) instead of appearing / vanishing at once (frontend.md §Story and Challenges).
 - Network protocol stays version 1 until a server is deployed (PROTOCOL.md).
+- Replay disabled (temporary, 2026-10-06): no instant replay, no `.w4r` recording, no Replays menu entry; `REPLAYS` in ui.h restores
+  all three (docs/tests.md §replay_check.cpp).
 
 Attributing a function to a class is reliable when the function comes from a vtable. When it was inferred from the nearest `.cpp` assert string, it can be wrong near file boundaries.
 
@@ -62,6 +64,7 @@ Attributing a function to a class is reliable when the function comes from a vta
 | 19. EFMV cutscenes, acting scenes, FMV | [acting.md](acting.md) |
 | 20. How to search (Comment chercher) | [README.md](README.md) |
 | 21. Not covered | [README.md](README.md) |
+| 22. Exact land export (`<map>.cells`) | [formats.md](formats.md) |
 
 Section numbers are global: "§11" is section 11, in the file listed above.
 

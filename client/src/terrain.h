@@ -1,18 +1,20 @@
 #pragma once
 #include "raylib.h"
+#include "sharp.h"
 #include <map>
 #include <string>
 #include <vector>
 
 struct ChunkGeo;
 
-// Destructible voxel landscape: density field (>0 = solid, ~metres to surface), surface-nets meshed per chunk.
+// Destructible voxel landscape: density field (>0 = solid, ~metres to surface), meshed per chunk (dual contouring where the land is exact).
 struct Terrain {
     static constexpr int NX = 320, NY = 256, NZ = 320, CS = 32;
     static constexpr float VOX = 0.25f, WATER = 3.0f;
     static constexpr float Q = 254;  // density stored as int8 = metres * Q, clamped to +-0.5 m
 
     std::vector<signed char> d;
+    SharpLand sharp;  // imported maps: the exact land where the surface runs (.cells); d keeps its signs elsewhere
     struct Part { int mat; Mesh mesh; bool fringe = false; };  // one mesh per (chunk, material), plus its grass fringe cards
     std::vector<std::vector<Part>> parts;
     std::vector<bool> dirty;
@@ -73,14 +75,19 @@ struct Terrain {
     static std::string mapTheme(const std::string &map);  // the map file's theme without loading it ("" if none)
     void generate(unsigned seed);
     float at(int x, int y, int z) const;
-    float sample(Vector3 p) const;  // trilinear density
-    static inline thread_local unsigned long samples = 0;  // sample() calls: the AI's deterministic measure of its own work
+    float sample(Vector3 p) const;  // density: exact in a listed cell, else trilinear
+    float field(Vector3 p) const;   // trilinear density only (the mesh)
+    static inline thread_local unsigned long samples = 0;  // field() reads (exact-land work in the same unit): the AI's deterministic measure of its own work
     bool solid(Vector3 p) const { return sample(p) > 0; }
-    Vector3 normal(Vector3 p, float e = VOX) const;  // -gradient over +-e; e < VOX falls back to VOX where flat
+    Vector3 normal(Vector3 p, float e = VOX) const;  // the exact face in a listed cell, else -gradient over +-e (e < VOX: VOX where flat)
     bool carve(Vector3 c, float radius);  // true when some voxel changed (W4M Land.Changed)
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
+    void addCell(const Vector3 *c);  // a convex land cell, exact as an imported map's (corners bit 1 +x, 2 +y, 4 +z)
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
+    // the first land along unit dir within len (*t from a, *n its normal); exact where listed, else sampled VOX/4 and bisected to
+    // the last point out of land (6e-5 m)
+    bool cast(Vector3 a, Vector3 dir, float len, float *t, Vector3 *n) const;
     void decodeTextures();  // CPU only (worker thread): moves the PNG decode out of remesh
     int remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call. Returns the chunks rebuilt
     // Match frames: uploads what the meshing thread built, then hands it the dirty chunks with `budget` s to start new ones

@@ -33,6 +33,7 @@ struct Ai {
         bool path = false, close = false, near = false;  // near: targets within 5 m allowed (a re-aim, not a W4M plan)
     };
     long budget = 20000;  // Terrain::samples per frame: ~0.7 ms on desktop, plus at most one unit (< 2.5 ms)
+    struct Walk { static constexpr int STEPS = 300; Vector3 p{}, v{}, best{}; int i = 0; };  // a walker's planned walk, resumed per unit
 
 private:
     enum class Mode { Eval, Search, Walk, Act };
@@ -41,6 +42,7 @@ private:
     Mode mode = Mode::Eval;
     uint32_t salt = 0;  // per turn: seeds the weapon taste
     int worm = -1, lastTimer = -1, lastClock = 0, stage = 0, walks = 0, charged = 0, aimed = 0, wait = 0, afterFire = 0, shotsSeen = 0;
+    Walk walk;
     int sub = 0, thinkTimer = 0;  // sub: candidate of the (weapon, target) pair; thinkTimer: g.timer when the think began
     long debt = 0;                // work done ahead of the per-frame budget
     std::shared_ptr<const struct Grid> grid;  // W4M path node grid and jump reach tables for this match

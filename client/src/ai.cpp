@@ -140,15 +140,12 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
     return false;
 }
 
-// Copy of the sheep/old woman walk: closest approach to `e`, and where its fuse ends.
-static Vector3 sheepWalk(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 f, Vector3 e, Vector3 &end) {
-    Vector3 v = f * wd.speed, best = p;
-    for (int i = 0; i * DT < wd.fuse && p.y > g.water - 2; i++) {
-        walkerStep(g.terrain, p, v, g.gravity());
-        if (Vector3Distance(p, e) < Vector3Distance(best, e)) best = p;
+// Copy of the sheep/old woman walk up to step `to`: its closest approach to `e` so far.
+static void sheepWalk(const Game &g, const WeaponDef &wd, Ai::Walk &k, Vector3 e, int to) {
+    for (; k.i < to && k.i * DT < wd.fuse && k.p.y > g.water - 2; k.i++) {
+        walkerStep(g.terrain, k.p, k.v, g.gravity());
+        if (Vector3Distance(k.p, e) < Vector3Distance(k.best, e)) k.best = k.p;
     }
-    end = p;
-    return best;
 }
 
 // Super sheep autopilot, shared by planning and play: climb over walls, cruise above the target, then dive.
@@ -1087,9 +1084,13 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         case Kind::Sheep:  // W4M CAIPlanAttackAnimal 0x4a4210: the payload's blast where the walker reaches the target
         case Kind::OldWoman:
         case Kind::Scouser: {
-            if (!isWorm || !pick()) break;
-            Vector3 f = flat(yawE), end, p = sheepWalk(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), f, e, end);
-            if (Vector3Distance(p, e) < 2) consider(shell(p), yawE, w.pitch, 0, ti);
+            if (!isWorm) break;
+            for (int c = 0; c * Walk::STEPS * DT < wd.fuse; c++) {  // one candidate per STEPS: a 30 s Old Woman walk is ~8 frame budgets
+                if (!pick()) continue;
+                if (c == 0) walk.p = walk.best = muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), walk.v = flat(yawE) * wd.speed, walk.i = 0;
+                sheepWalk(g, wd, walk, e, (c + 1) * Walk::STEPS);
+                if ((c + 1) * Walk::STEPS * DT >= wd.fuse && Vector3Distance(walk.best, e) < 2) consider(shell(walk.best), yawE, w.pitch, 0, ti);
+            }
             break;
         }
         case Kind::SuperSheep:  // and the Starburst: W4M CAIPlanAttackStarburst 0x4a43a0 adds its rider's death (0x49ed30, all its hp, knock 1)

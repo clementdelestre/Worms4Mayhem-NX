@@ -203,13 +203,13 @@ Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `
 
 | function | does | source |
 |---|---|---|
-| `footing` | ground under the feet: the centre, or the W4M foot tripod (±4, −3) / (0, 5) units; one foot alone carries the worm only on ground under 60°. Its normal is the mean of `groundNormal` over the feet within 1 unit of the highest hit: W4M's flat cell face, read past our rounded edges and corners unless a planar 60-84° face runs beside [ours, docs/w4m/physics.md §11 "UpdateWalking: support"] | W4M land probe 0x91ffc8 (disasm) |
-| `walkStep` | one tick of walking: the candidate is the highest foot's hit + 0.1 unit (the 4 foot rays from 20 units above in 1-unit steps, the hit being the last step above the land, `probe`); steps up to `STEP` 0.25 m (5 units) at once; a 5..20-unit ledge (`STEP_UP` 1 m) starts a **vault** when `vault` is given (the AI passes its own); a face that holds the body back is climbed onto the highest ground the front foot finds; with no land within 5 units it falls at once from its height when the rods fit there (returns true), with Velocity = InputImpulse (`INPUT_IMPULSE` 2.5 m/s × stick); Fits is `rodsFit` | W4M UpdateWalking 0x5b1285, Fall 0x5b14c7, land ray 0x469f6f (disasm) |
+| `footing` | ground under the feet: the centre, or the W4M foot tripod (±4, −3) / (0, 5) units, in land; one foot alone carries the worm only on ground under 60°. Its normal is the mean, over the feet within 1 unit of the highest, of the face each foot's down ray (`cast` from 6 units up) enters: W4M's flat cell face (0x46a070) on imported maps [disasm; exact land, below] | W4M land probe 0x91ffc8, normal 0x59ef90 (disasm) |
+| `walkStep` | one tick of walking: the candidate is the highest foot's hit + 0.1 unit (the 4 foot rays from 20 units above, `probe`: the `cast` crossing truncated to the last whole unit above it, as W4M's 1-unit steps); steps up to `STEP` 0.25 m (5 units) at once; a 5..20-unit ledge (`STEP_UP` 1 m) starts a **vault** when `vault` is given (the AI passes its own); a face that holds the body back is climbed onto the highest ground the front foot finds; with no land within 5 units it falls at once from its height when the rods fit there (returns true), with Velocity = InputImpulse (`INPUT_IMPULSE` 2.5 m/s × stick); Fits is `rodsFit` | W4M UpdateWalking 0x5b1285, Fall 0x5b14c7, land ray 0x469f6f (disasm) |
 | `vaultStep` | the vault: 250 ms, 1/5 of the way per 20 ms (0x5a59f0), no collision test; releasing or reversing the stick puts the worm back where it started; snapped to the target at the end or when anything else moves it | W4M Vaulting 0x5aca80, ChangeState 0x5aa847 (disasm) |
 | `fits` | the upper body (7 points of radius 0.2 m at 0.7 / 0.95 m over the feet) is out of land at `to`, or no deeper than at `from`: `rodsFit`'s fallback when the rods are already in land, and the standing push-up | ours |
 | `clearWalls` | pushes the body out of side walls by the density gradient, ≤ 0.1 m a tick | ours |
-| `sweep` | the 8 PROBE points (4 feet, 4 heads 1 m up) raycast along one tick's move, plus its end point, each hit bisected to the surface; earliest first, a foot on a tie; normal = mean of the hits within 1 unit [disasm]. Each hit's normal is taken at the crossing over ±VOX/4 [ours: W4M 0x46a070 returns the flat face crossed, docs/w4m/physics.md §11 "Ballistic", Land hit; the VOX-wide gradient blends a wall with the floor at its foot]. Hits whose normal faces along v (v·n ≥ −0.01 m/s) are skipped [ours: our feet stand inside the soft surface]. Shared by `flyBody`, `jetBody` and the slide's wall branch | W4M CastRays 0x59ec70, normal 0x59ef90 (disasm) |
-| `rodsFit` | W4M Fits for the walk, the slide and the flight: the 3 rods, sampled every VOX/2 from half a voxel over the feet to the heads, clear of land. [ours] rods already in land at `from` fall back to the relative `fits`, so a worm that land appeared around can move out | W4M Fits 0x59edf0 (disasm) |
+| `sweep` | the 8 PROBE points (4 feet, 4 heads 1 m up) `cast` along one tick's move, each stopping 1e-4 m short of its crossing; earliest first, a foot on a tie; normal = mean of the hits within 1 unit [disasm]. Each hit's normal is the face crossed (W4M 0x46a070, docs/w4m/physics.md §11 "Ballistic", Land hit) [disasm; exact land]. Hits whose normal faces along v (v·n ≥ −0.01 m/s) are skipped [ours]. Shared by `flyBody`, `jetBody` and the slide's wall branch | W4M CastRays 0x59ec70, normal 0x59ef90 (disasm) |
+| `rodsFit` | W4M Fits for the walk, the slide and the flight: the 3 rods, a `cast` from the feet to the heads, clear of land. [ours] rods already in land at `from` fall back to the relative `fits`, so a worm that land appeared around can move out | W4M Fits 0x59edf0 (disasm) |
 | `flyBody` | W4M Ballistic on land, one tick: the `sweep` along `v·DT + ½a·DT²`; no hit Integrates (not Fitting: kept, stuck +2, `rebound` back along the move); a hit moves to the contact if it Fits (else kept, stuck +2, rebound back), stores its normal, then a head or n.y < 0.2 rebounds on it, a foot lands (`wormBody`: vt walks or slides, FallDamage on −vn). `rebound` = Bounce e 0.3, tangent kept, stops under 0.5 m/s (facing up: Sliding) | W4M Ballistic 0x5af430, Rebound 0x5acea0, Bounce 0x518f40 (disasm) |
 | `jetBody` | the jetpack's own collider, one tick, on the shared `sweep`: a foot whose rods Fit (`rodsFit`) lands the pack (v minus its normal part) whatever the normal, a head or blocked rods bounce v −= 1.8 (v·n) n. [ours] a worm at rest (our take-off tick, thrust starts the tick after) is not swept, or the ground under its feet would land it. A landing hands the worm to Ballistic with its tangential speed (0x5ae17a), which lands it through the sweep | W4M 0x59ec70, 0x59ef90 (0x562ecd), 0x59edf0, 0x562f72, 0x5630dc (disasm) |
 | `wormBody` | one worm tick: grounded test (land within 2 units under a worm that stood, or one put down at rest; a flight lands only through its sweep), slide (below 60° and slower than 3 m/s, 10 m/s on landing: stops; else gravity along the slope and friction 0.9582 a tick), a hard landing halves \|vt\|², the flight is `flyBody`; a grounded worm is not moved by its velocity that tick; [ours] an idle worm with no ground under it stays when a 1-unit fall does not Fit (W4M gets there through Rebound → Sliding → Landed with support 0xFFFF) | W4M Sliding 0x5afbe0, Integrate 0x5a6e90 (disasm); SlideFriction 0.95 / 20 ms (data); Wormpot Slippy: each slide value halfway to its Slippy one, 35°, 5.25 / 1.75 m/s, 0.9745 (0x5d59c0); Sticky: blast impulses × 0.5 only (0x5ad1ea) (disasm) |
@@ -224,30 +224,76 @@ pressed twice: backflip (−1.58, 10) with the stick against the facing, else fo
 trunc((v − 15) × 2) + 1 hp (`Game::fallDamage`, shared with the AI; W4M FallDamage 0x5ac3e0, FallDamageRatio 100, data; Max Fall: FallDamageRatio × FallingScale 2, Wormpot.lub, data; none when the scheme has fall damage off or under Wormpot Worms Drown, SetNoFallDamage); no fall
 damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack landing: a foot touching land lands the pack minus its normal speed (W4M 0x562f72, disasm), so `stepWorm` skips `land()` while `jet`; a dry pack falls and hurts as any fall (docs/w4m/physics.md FallDamage); the fall also rumbles the worm's pad: Heavy 100/255 for 500 ms (0x4bc410, disasm; GameEvent::Fall).
 
+### Exact land (`SharpLand`, sharp.h; `Terrain::sample` / `normal` / `cast`)
+
+Imported maps carry `<map>.cells` (format: docs/w4m/formats.md §22): for every 0.25 m cell the surface crosses, the ordered list of the
+primitives reaching it [ours]. The sim reads that land exactly; so does the mesh in listed cells (docs/maps.md "Land mesh").
+
+- Primitives: a W4M poxel cell (`HEX`, a convex hexahedron: its 12 triangle planes, a twisted one bounded by its box too) with the mask of
+  its planes that touch the cell, the heightmap patch (`HM`, bilinear over the grid columns), and the edits: carve spheres (`SPHERE`) and
+  weld boxes (`BOX`) [ours; geometry data, docs/w4m-formats.md "Conversion to our grid"].
+- Density in a listed cell (`eval`): start at −0.5 (air), then in order: a cell or the heightmap is a union (max), a carve a subtraction
+  (min with the distance to the sphere), a weld a union; clamped ±0.5 m. A cell's value is its nearest masked plane (+1e-5 m so land wins
+  ties) [ours]. The normal is the deciding primitive's: a cell's plane, the heightmap's slope, the sphere's radius, the box's face.
+- Every other cell lies wholly in or out of land: `d` (the .vox) holds its sign. The importer makes every grid point's sign exact (from a
+  listed cell around it, else from a filled one), so `d` and the lists agree [ours].
+- `Terrain::sample(p)`: the listed cell's `eval`, else the trilinear `field(p)`. `normal(p)`: the listed cell's face, else the gradient.
+- `Terrain::cast(a, dir, len)`: cell by cell along the ray (DDA); a listed cell returns its exact first land from the candidate crossings
+  of its primitives (plane slabs, sphere roots, the heightmap bracketed and bisected), an unlisted solid cell its entry; the normal is
+  taken in the cell where the land was found, so a face lying on a cell border is read from the cell that lists it [ours]. Maps without
+  `.cells` (the bundled `romfs` maps, the generated island, test fields): sampled every VOX/4 and bisected to the last point out of land,
+  normal = gradient over ±VOX/4 [ours].
+- Edits are incremental, before `d` changes: `carve` appends a sphere to each cell it cuts (a cell it swallows leaves the lists),
+  `weld` a box, `Terrain::addCell` a convex cell (test arenas, `checkLowLedges`); replaced lists become garbage, compacted when it
+  exceeds half the pool. Lists shared by several cells stay shared [ours].
+- The instant replay's undo log does not restore the lists (replay disabled for now, docs/w4m/README.md).
+- Cost: the 221 imported maps' `.cells` take 282 MB on disk (deflated); in memory 12.5 MB (Deathmatch3) to 27.4 MB (DoomCanyon), loaded
+  in 23-46 ms on desktop. AI planning (scratch benchmark, 8 maps x 3 levels): 23.1 ns per terrain sample before, 30.2 after; mean
+  59.8 ms per turn before, 75.3 after; worst tick 2.19 ms before, 3.48 after, back to 1.8-2.1 once the exact land
+  counts in `Terrain::samples` and the walkers' walks are split (docs/ai.md "Per-frame work").
+
+API for a mesher (dual contouring), all on a listed cell `c` (`mixed(c)`; cell index `(z * NY + y) * NX + x`, its box
+`[x, x+1] x [y, y+1] x [z, z+1]` voxels):
+
+| call | gives |
+|---|---|
+| `ops(c)` | the cell's list: `[0]` = word count, then ops `kind \| id` (a `HEX` op is followed by its plane mask; `hexP0[id]` = its first plane in `planes`) |
+| `eval(p, c, &n)` | density at p (> 0 land) and the deciding primitive's outward normal |
+| `edge(c, a, b, &q, &n)` | the surface crossing q on the segment a-b (an edge of the cell, ends on opposite sides) and the normal there |
+| `first(a, dir, t0, t1, c, land, grid)` | the first t in [t0, t1] where the ray enters (`land` = true) or leaves land; `grid`: the segment is a grid edge, the heightmap's crossings solved (linear on each half) instead of bracketed and bisected (mesher only; the sim keeps `grid` = false) |
+
+`d`'s sign at each grid point is exact, so the edges to visit are the sign changes of `d`; the mesher (docs/maps.md "Land mesh") uses them.
+
 ### Movement against W4M, measured
 
-A scratch harness (not in the repo) rebuilds W4M's land exactly: the cells and heightmap of tools/w4m-maps, before voxelization, in map metres [data]. On that land it runs W4M's rules (docs/w4m/physics.md §5 / §11: the foot rays with their 1-unit truncated hits, the 0x59ef90 normal, the uphill rule, push-out, vault, drop, the rods, the Ballistic cast with Rebound and FallDamage's landing split). A W4M walker roams 8 maps (DM1, 2, 3, 5, 7, 9, Clean-w3d, StormTheCastle; 16 runs of 3000 ticks, random headings, stops and jumps); at each of its states our `walkStep` / `slideIfSteep` / `wormBody` decide from the same feet. The corpus does not depend on our code, so runs compare. A decision whose foot land differs by more than 1 unit between the two lands is counted apart ("land differs").
+A scratch harness (not in the repo) rebuilds W4M's land exactly: the cells and heightmap of tools/w4m-maps, before voxelization, in map metres [data]. On that land it runs W4M's rules (docs/w4m/physics.md §5 / §11: the foot rays with their 1-unit truncated hits, the 0x59ef90 normal, the uphill rule, push-out, vault, drop, the rods, the Ballistic cast with Rebound and FallDamage's landing split). A W4M walker roams 8 maps (DM1, 2, 3, 5, 7, 9, Clean-w3d, StormTheCastle; 16 runs of 3000 ticks, random headings, stops and jumps); at each of its states our `walkStep` / `slideIfSteep` / `wormBody` decide from the same feet. The corpus does not depend on our code, so runs compare. A decision whose foot land differs by more than 1 unit between the two lands is counted apart ("land differs"). "Field" is the int8 field with the edge heuristics (`groundNormal`), "exact" the land above.
 
-| | before | after |
-|---|---|---|
-| walk decisions differing (76 385) | 2115 (2.77 %) | 1758 (2.30 %) |
-| of them, on the same land | 624 (0.82 %) | 337 (0.44 %) |
-| W4M moves, ours blocks / W4M blocks, ours moves | 103 / 693 | 102 / 438 |
-| W4M slides, ours moves or blocks | 564 | 421 |
-| W4M falls, ours moves | 91 | 17 |
-| height after a step off by more than 1 unit | 4.60 % | 1.90 % |
-| flight ticks differing (93 059) | 900 (0.97 %) | 751 (0.81 %) |
-| of them, on the same land | 132 | 59 |
-| jumps (990): landing kind differs / lands 0.25 m apart | 122 / 185 | 93 / 169 |
-| wall jumps (each walks into the wall by its own rules, then a tap jump): 1 m verdict differs | 90 / 304 | 79 / 331 |
-| synthetic bumps (288: 0.1-0.9 m, 60-90° faces, w 0.3 / 1.5 m, off grid, diagonal; the importer's own field) differing | 145 | 142 |
-| map sweep (11 520 runs, DM1, DM3, Clean-w3d, StormTheCastle): body over 0.06 m in land | 77 | 21 |
+| | field (first) | field | exact |
+|---|---|---|---|
+| walk decisions differing (76 385) | 2115 (2.77 %) | 1758 (2.30 %) | 272 (0.36 %) |
+| of them, on the same land | 624 (0.82 %) | 337 (0.44 %) | 164 (0.21 %) |
+| W4M moves, ours blocks / W4M blocks, ours moves | 103 / 693 | 102 / 438 | 65 / 22 |
+| W4M slides, ours moves or blocks | 564 | 421 | 53 |
+| W4M falls, ours moves | 91 | 17 | 0 |
+| height after a step off by more than 1 unit | 4.60 % | 1.90 % | 0 % (0 / 74 571) |
+| vault target off by more than 1 unit | | 39 / 71 | 3 / 144 |
+| foot hits more than 1 unit from W4M's | | 7119 / 278 895 | 105 / 280 261 |
+| walkable test (n.y ≥ 0.5) wrong on the foot normals | | 2022 / 278 895 | 45 / 280 261 |
+| flight ticks differing (93 059) | 900 (0.97 %) | 751 (0.81 %) | 84 (0.09 %) |
+| of them, on the same land | 132 | 59 | 43 |
+| jumps (990): landing kind differs / lands 0.25 m apart | 122 / 185 | 93 / 169 | 36 / 44 |
+| wall jumps (each walks into the wall by its own rules, then a tap jump): 1 m verdict differs | 90 / 304 | 79 / 331 | 23 / 365 |
+| synthetic bumps (288: 0.1-0.9 m, 60-90° faces, w 0.3 / 1.5 m, off grid, diagonal) differing | 145 | 142 | 48 |
+| map sweep (11 520 runs, DM1, DM3, Clean-w3d, StormTheCastle): body over 0.06 m in land | 77 | 10 | 37 |
 
-What changed: the foot rays' hits are truncated to whole units like W4M's (0x469f6f), a drop past 5 units falls at once (0x5b14c7) instead of being walked down up to 12 units, the walk and the slide test W4M's rods (any land) instead of our ring, the flight lands only through its sweep, and `groundNormal` keeps a planar 60-84° face.
+The map sweep's depth is `sample` at a 0.2 m ring: the field smooths and caps it at 0.25 m, the exact land gives the true distance, so the
+two columns do not compare; stuck and walked-in runs stay at 0. Its 2 "hover" runs on the exact land are a long fall after a rebound off a
+pillar (DM1) and bounces under the water line (DM3), checked tick by tick.
 
-What stays [ours, voxel terrain], with the reason:
-- Rounded edges. Our 0.25 m field rounds a convex lip about 0.1 m in and fills a wall's foot up to 0.2 m out. 1421 of the 1758 walk differences have a foot whose land differs by more than a unit, and 95 % of the differing foot hits are within 5 units (0.25 m): this rounding. It makes ours fall off a cliff edge a step early (331), step where W4M vaults onto a sharp lip (97), and walk up a 0.3-0.5 m vertical step as a ramp (the synthetic bumps). The field holds exact distances only within a voxel, so a sharp edge can only be guessed back from it.
-- Small steep faces. A 60-84° face under 0.3 m tall is a 1-4 cm strip for a down ray; W4M blocks (uphill rule) when a foot ray lands in it and passes otherwise. Our field cannot place that strip, so ours flattens it and crosses (most of the bump differences).
+What changed with the exact land: the foot rays, the rods and the Ballistic sweep cast the land cells W4M casts (0x466ae0 on the lattice),
+truncated to whole units where W4M truncates (0x469f6f); each hit's normal is the face entered (0x46a070), so `groundNormal`'s edge
+heuristics are gone. What stays [ours]: `clearWalls` and the v·n skip in `sweep`; the remaining differences are mostly geometric (land
+differing by more than a unit: the importer's scale and heightmap fit, docs/w4m-formats.md).
 
 ### Ninja rope (`Rope`, `Game::ropeHang` / `ropeTick` / `ropeRelease`, shared with the AI's `Mover`)
 
