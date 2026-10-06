@@ -21,6 +21,7 @@ void text(const char *t, float x, float y, float size, Color c, int align = 0); 
 float textWidth(const char *t, float size);
 const Font &textFont();  // the font text() draws, for rotated or outline-free text
 Texture2D art(const char *name);  // assets/ui/<name>.png, cached; id 0 when missing
+bool artReady(const char *name);  // art() would not read the SD card for it
 void logo(float cx, float y, float w, float deg = 0);  // W4M logo, top centre at (cx, y), tilted deg
 // one channel of a W4M frontend item clip t s after it started (WXFrontend.Anim keys {time s, value, in tangent x, y, out tangent
 // x, y}, at FE.AnimSpeed), held past its ends
@@ -123,16 +124,22 @@ void hudEvent(const Game &g, const GameEvent &e);  // per sim event: W4M comment
 extern void (*onNarrator)(int n);
 // + menu in a match. Local play stops stepping the sim while open; online it is only an overlay.
 struct Pause {
-    enum Action { None, Quit };
-    bool open = false, help = false;
+    // W4M WXFEP.PauseList rows (TablePopulationService 0x4cd3a0), in its order; Seed needs a generated landscape, which we lack
+    enum Row { Continue, Options, Draw, Restart, Briefing, Quit };
+    enum Action { None, DoQuit, DoRestart, DoDraw };
+    bool open = false, help = false;  // open: the match is paused (the list, a confirm popup, options or the briefing)
     int row = 0;
+    bool canDraw = false, canRestart = false;  // GameOver.GameType Multiplayer / Story, Challenge, Deathmatch
     const MissionSpec *story = nullptr;  // a Story mission: the Briefing row opens W4M WXFEP.MissionBriefing
-    float brief = -1, briefOut = -1;     // that popup: when it opened / began going away (now() s), -1 none
+    int confirm = -1, yes = 0;           // WXFEP.ConfirmDraw / Restart / Quit (a Row), its highlighted answer (0 No, 1 Yes)
+    float brief = -1, shown = -1;        // when the briefing / the current popup opened (now() s), -1 none
     Action update();
-    void draw(bool online) const;
+    void draw() const;
 
 private:
-    float last = 0;  // previous update's clock: the popup's delayed incoming sound
+    float last = 0, veil = 0;  // previous update's clock; FullScreenColour alpha
+    std::vector<int> rows() const;
+    void popUp(int which);
     void briefing() const;
 };
 // Replays list (inside Begin/EndDrawing): picked file index, -1 none yet, -2 back. Y toggles `instant` (instant replay).

@@ -421,13 +421,14 @@ void loadSfx(int first, bool menu, Variants *out) {  // every other sound from f
 
 void init() {
     InitAudioDevice();
+    SetAudioStreamBufferSizeDefault(16384);  // ~370 ms per half: rides out long frames
+    std::thread music([] { openMusic("theme"); });  // mostly SD seeks (the ogg's length): overlaps the decoders
     std::thread odd([] { Loading::pinCore(2), loadSfx(1, true, sfx); });  // core 0 decodes the menu art
     loadSfx(0, true, sfx), odd.join();
     std::vector<std::string> dirs = bankDirs(ASSET_ROOT);
     if (dirs.empty()) dirs = bankDirs(ROMFS_ROOT);
     for (auto &d : dirs) banks.push_back(Bank{d, false, {}});
-    SetAudioStreamBufferSizeDefault(16384);  // ~370 ms per half: rides out long frames
-    openMusic("theme");
+    music.join();
 }
 
 void loadRest() {
@@ -663,8 +664,9 @@ void music(bool on, const char *name) {
     if (name && track != name && !openMusic(name) && track != "theme") openMusic("theme");
     musicOn = on;
     if (!musicLoaded) return;
+    // level tracks fade in (Music.FadeIn, 0x7290b4); femusic (FEV fade-in 0, started by FrontEndService init) and the jingle do not
     if (on && !IsMusicStreamPlaying(theme))
-        fade = track == "victory" ? 1 : 0, SetMusicVolume(theme, fade * duck * powf(10, trackDb(track) / 20)), PlayMusicStream(theme);
+        fade = track == "victory" || track == "theme" ? 1 : 0, SetMusicVolume(theme, fade * duck * powf(10, trackDb(track) / 20)), PlayMusicStream(theme);
     else if (!on && track == "theme" && IsMusicStreamPlaying(theme)) stopping = true;
     else if (!on) StopMusicStream(theme);
     if (on) stopping = false;

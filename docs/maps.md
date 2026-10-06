@@ -58,7 +58,7 @@ Shapes: `pos` is the centre of the shape's bounding box, `yaw` (degrees) rotates
 
 Shape cost is proportional to its bounding box volume; keep total load under ~0.1 s desktop (Switch is ~5x slower).
 
-Imported Worms 4 Mayhem maps: `tools/w4m-maps <W4M dir> client/assets/maps` (see `docs/w4m-formats.md`). They are written to `assets/maps` (local only, never committed).
+Imported Worms 4 Mayhem maps: `tools/w4m-maps <W4M dir> client/assets/maps` (see `docs/w4m-formats.md`). They are written to `assets/maps` (local only, never committed). w4m-maps also writes `assets/maps/index.tsv`, the menu's map heads (`title`, `preview`, `theme` of every json there, tab-separated) read in one go at boot; after editing a json's head by hand, rerun w4m-maps (or delete the index) [ours].
 
 ## Rendering (ours, after docs/w4m/render.md "Level sky, water and land colour")
 

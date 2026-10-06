@@ -22,7 +22,7 @@ Repository-level scripts in `tests/` (run from the repository root, they build t
 
 | Script | Covers |
 |---|---|
-| `tests/quit_check.sh` | Pause → Quit to menu stays on the menu: scripted keys (title, Local, Quick match, pause, Quit, arrows); fails on a second Play. |
+| `tests/quit_check.sh` | Pause → Quit → Yes to menu stays on the menu: scripted keys (title, Local, Quick match, pause, Quit, the ConfirmQuit Yes, arrows); fails on a second Play. |
 | `tests/netbot.sh` | Two real clients (`--netbot`, the AI plays each owner's team) through a local server; fails on a desync. |
 
 Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU match, per-section ms and worst frame);
@@ -92,10 +92,16 @@ Now (ours):
   listing of their directory instead of a `FileExists` per variant.
 - worm.glb's clips are sampled from a copy of the bytes already read, not a second 19 MB read.
 - The map titles the sort needs are read on a thread (`Ui::mapHeads`), not on the main thread after the joins.
+- Those heads come from one file, `assets/maps/index.tsv` (w4m-maps, after every import: `name, title, preview, theme`
+  per line, cut from each json's first 399 bytes as `Ui::mapInfo` does). A map of the listing missing from it (copied by
+  hand) has its own head read, as before. swlog3: `maps 2508`, `join 951` for the 221 per-file reads.
+- The title music opens (`LoadMusicStream`: header, then a seek to the ogg's end for its length, 2.37 -> 2.82 s in swlog3)
+  on its own thread beside the menu sound decoders instead of after them.
 
 Log lines to read on Switch:
-- `BOOT: gl <ms>, menu assets <ms> (art, models, sounds, maps: when each finished), join, menu scene, music, total`: total
-  = black screen + spinner until the title.
+- `BOOT: gl <ms>, menu assets <ms> (art, models, sounds, maps: when each finished), screen +<ms>, join, menu scene, music,
+  total`: total = black screen + startup icon + loading screen until the title; `screen` = the loading screen's 1.8 s minimum
+  past the menu assets (plain launch only, docs/w4m/frontend.md §Boot).
 - `BOOT: so far files <MB> read in <ms> (all threads); models: glb parse, png, mipmaps, clips (worker time, summed),
   upload (main)`: read = every `LoadFileData()` (models, art, sounds), the rest per phase.
 - `BOOT: match assets in <ms> after start; ...`: the same totals once the first loading screen took the background loads.
@@ -215,6 +221,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `run` | Two games, same seed and inputs, stay bit-identical; each turn uses the next weapon of the table. |
 | `runRules` | Same scripted run per rule combo and per preset scheme (sudden death reached): identical checksums. |
 | `checkKing` | King rule: the king dies, then his team through the death queue; the other team untouched. |
+| `checkDrawRound` | Pause > Draw Round: one `Input::DRAW` tick ends the match at once, GameOver with no winner (W4M GameLogic.DrawImmediately). |
 | `checkDeathQueue` | W4M death queue: dead worms of one count blow up one after another. |
 | `checkDrownFloat` | W4M drowning: no hp count, the worm floats a moment with the camera on it, pops at the surface. |
 | `checkDrownPair` | W4M: two worms drowned by one blast pop one after the other, each 2000 ms after its own surface arrival (no queue); a standing worm reached by the water sinks at 0.03 units/ms. |

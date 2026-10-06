@@ -10,7 +10,7 @@
 struct Input {
     int8_t turn = 0, walk = 0, aim = 0;
     uint8_t buttons = 0, flags = 0;
-    enum : uint8_t { CAMERA = 1, SKIP_COUNT = 2, SKIP_MOVIE = 4 };  // SKIP_MOVIE: W4M Input.QuitEFMV  // flags: a camera key this tick (W4M InGame group: its SomeInputFrom ends the hot seat); SKIP_COUNT: observed in W4M by the user 2026-10-03, ends the damage display
+    enum : uint8_t { CAMERA = 1, SKIP_COUNT = 2, SKIP_MOVIE = 4, DRAW = 8 };  // SKIP_MOVIE: W4M Input.QuitEFMV; DRAW: GameLogic.DrawImmediately  // flags: a camera key this tick (W4M InGame group: its SomeInputFrom ends the hot seat); SKIP_COUNT: observed in W4M by the user 2026-10-03, ends the damage display
     enum : uint8_t { FIRE = 1, JUMP = 2, NEXT_WEAPON = 4, HEADING = 8, FUSE_UP = 16, FUSE_DOWN = 32, TARGET = 64, PITCH = 128 };  // HEADING: turn is the wanted yaw, PI * turn / 128 (W4M walk)
     // FUSE_UP/DOWN: W4M FuseUp, the timer of user-fuse weapons (WeaponDef::userFuse) in 1 s steps
     // TARGET: W4M Blimp view; turn yaws the camera, walk / aim move its focus (Game::cursor) forward / right, the worm stays put.

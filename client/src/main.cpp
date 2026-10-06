@@ -1127,18 +1127,7 @@ int main(int argc, char **argv) {
     SetTargetFPS(60);
 #endif
     rlSetClipPlanes(0.5, 500);  // default 0.01 near plane z-fights the water on GLES depth buffers
-    // boot splash: W4M's spinning worm on black while a worker decodes the assets and this thread uploads them
-    static Texture2D bootWorm = LoadTexture(DATA_DIR "assets/ui/fe2/loading_worm.png");
     static const double bootT0 = GetTime();
-    auto boot = [] {
-        BeginDrawing();
-        ClearBackground(BLACK);
-        if (bootWorm.id) {
-            float s = 200, deg = (float)fmod((GetTime() - bootT0) * 180, 360);  // double clock: raw GetTime() is huge on Switch
-            DrawTexturePro(bootWorm, {0, 0, (float)bootWorm.width, (float)bootWorm.height}, {640, 360, s, s}, {s / 2, s / 2}, deg, WHITE);
-        }
-        EndDrawing();
-    };
     // GL-only work first, on black: shader compiles and the font can't run on the workers
     double bt[5] = {GetTime()};  // BOOT log marks
     Ui::load();
@@ -1177,9 +1166,14 @@ int main(int argc, char **argv) {
         bool art = Ui::preload(until), mdl = modelsPending(until);
         if (!art && !artMs) artMs = (GetTime() - bt[1]) * 1000;
         if (!mdl && !modelMs) modelMs = (GetTime() - bt[1]) * 1000;
-        if (!art && !mdl) break;
-        boot();
+        if (!art && !mdl && !bt[2]) bt[2] = GetTime();
+        // W4M's startup icon, then (plain launch) the frontend's loading screen, while a worker decodes and this thread uploads
+        BeginDrawing();
+        bool done = Loading::boot(!art && !mdl, lazy);
+        EndDrawing();
+        if (done) break;
     }
+    double screenMs = (GetTime() - bt[2]) * 1000;  // the loading screen's minimum past the menu assets
     bt[2] = GetTime();
     sounds.join(), mapList.join();
     std::sort(maps.begin() + 1, maps.end(), [](const std::string &a, const std::string &b) {  // readdir order differs between PC and Switch
@@ -1190,8 +1184,8 @@ int main(int argc, char **argv) {
     FrontBg::load();
     bt[4] = GetTime();
     Audio::music(true);
-    TraceLog(LOG_INFO, "BOOT: gl %.0f ms, menu assets %.0f (art %.0f, models %.0f, sounds %.0f, maps %.0f), join %.0f, menu scene %.0f, music %.0f, total %.0f",
-             (bt[1] - bt[0]) * 1000, (bt[2] - bt[1]) * 1000, artMs, modelMs, soundMs, mapMs, (bt[3] - bt[2]) * 1000, (bt[4] - bt[3]) * 1000, (GetTime() - bt[4]) * 1000, (GetTime() - bt[0]) * 1000);
+    TraceLog(LOG_INFO, "BOOT: gl %.0f ms, menu assets %.0f (art %.0f, models %.0f, sounds %.0f, maps %.0f), screen +%.0f, join %.0f, menu scene %.0f, music %.0f, total %.0f",
+             (bt[1] - bt[0]) * 1000, (bt[2] - bt[1]) * 1000 - screenMs, artMs, modelMs, soundMs, mapMs, screenMs, (bt[3] - bt[2]) * 1000, (bt[4] - bt[3]) * 1000, (GetTime() - bt[4]) * 1000, (GetTime() - bt[0]) * 1000);
     TraceLog(LOG_INFO, "BOOT: so far %s", Models::bootStats());
     if (lazy) Models::start();
     Audio::loadRest();
@@ -1464,7 +1458,7 @@ int main(int argc, char **argv) {
         float part = loadStep == 2 && !d.empty() ? 1 - (float)std::count(d.begin(), d.end(), true) / d.size() : 0;
         return (loadStep + part) / 5;
     };
-    auto startMatch = [&](const GameConfig &c) {
+    auto startMatch = [&](const GameConfig &c, bool preStart = true) {
         game.terrain.undo = nullptr;
         snap.valid = false;
         rec = {c, {}, 0};
@@ -1486,7 +1480,7 @@ int main(int argc, char **argv) {
             while (loadStep >= 0) prepStep(true);
             mapMusic();
             screen = Screen::Play;
-        } else Loading::begin(c), screen = Screen::Loading;
+        } else Loading::begin(c, preStart), screen = Screen::Loading;
     };
     bool botStarted = false;
     float botAt = 0, botDone = 1e9f;
@@ -1530,14 +1524,15 @@ int main(int argc, char **argv) {
     Progress progress;
     Ui::MissionMenu missionMenu;
     int missionIdx = -1, missionAct = 0;
+    bool quick = false;  // W4M GameOver.GameType "Quick" (a quick match) rather than "Multiplayer"
     bool missionSaved = false, eggShown = false;
     auto openMissions = [&] {
         if (missions.empty()) missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt"), scriptUnlocks = progress.unlocks;
         screen = Screen::Missions;
     };
-    auto startMission = [&](int i) {
+    auto startMission = [&](int i, bool preStart = true) {
         missionIdx = i, missionSaved = eggShown = false, online = false;
-        startMatch(missionConfig(missions[i], (uint32_t)(GetTime() * 1000)));
+        startMatch(missionConfig(missions[i], (uint32_t)(GetTime() * 1000)), preStart);
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu
     Ui::forceHelp = uiShot && (!strcmp(uiShot, "help") || !strcmp(uiShot, "helpmenu"));
@@ -1566,7 +1561,7 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < missions.size() && (!strcmp(uiShot, "missionhud") || !strcmp(uiShot, "missionend") || movieShot || pauseShot); i++)
             if (argc > 3 ? missions[i].id == argv[3] : i == 0) {
                 startMission((int)i);
-                if (pauseShot) pause.open = true, pause.row = 2, pause.brief = !strcmp(uiShot, "missionbrief") ? 0 : -1;
+                if (pauseShot) pause.open = true, pause.brief = !strcmp(uiShot, "missionbrief") ? 0 : -1;
                 if (!strcmp(uiShot, "missionend")) game.run.result = 1, game.run.ticks = 5000, game.phase = Phase::GameOver;
                 if (movieShot && argc > 4) {
                     while (loadStep >= 0) prepStep(true);
@@ -1665,11 +1660,11 @@ int main(int argc, char **argv) {
                 q.teamSetup[1] = {"CPU", 2, 1, 0};
                 q.map = maps[GetRandomValue(0, (int)maps.size() - 1)];
                 q.seed = (uint32_t)(clock * 1000) + frame;
-                online = lan = false;
+                online = lan = false, quick = true;
                 startMatch(q);
             }
             if (a == Ui::Frontend::StartLocal) {
-                online = false;
+                online = quick = false;
                 opt.seed = (uint32_t)(clock * 1000) + frame;
                 startMatch(opt);
             } else if (a == Ui::Frontend::StartOnline) {
@@ -1828,7 +1823,9 @@ int main(int argc, char **argv) {
         const Worm &cur = game.worms[game.current];
         int pad = !online && IsGamepadAvailable(cur.team) ? cur.team : 0;
         bool quit;
-        pause.story = game.cfg.mission && game.cfg.mission->kind == "mission" ? game.cfg.mission : nullptr;  // W4M GameOver.GameType "Story"
+        const MissionSpec *cm = game.cfg.mission;  // W4M GameOver.GameType: Story (kind "mission"), Challenge / Deathmatch, Quick, Multiplayer, Network
+        pause.story = cm && cm->kind == "mission" && cm->level.find("w3d") == std::string::npos ? cm : nullptr;
+        pause.canRestart = cm && missionIdx >= 0, pause.canDraw = !cm && !online && !quick;
         if (playing) {  // match playback controls
             if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) paused = !paused;
             if (pressed({GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, {KEY_TAB})) speed = speed == 4 ? 1 : speed * 2;
@@ -1845,7 +1842,21 @@ int main(int argc, char **argv) {
                 game.terrain.remesh();
             }
             quit = pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN, GAMEPAD_BUTTON_MIDDLE_RIGHT}, {KEY_ESCAPE, KEY_BACKSPACE});
-        } else quit = !shot && pause.update() == Ui::Pause::Quit;
+        } else {
+            Ui::Pause::Action act = shot ? Ui::Pause::None : pause.update();
+            if (act == Ui::Pause::DoRestart) {  // GameLogic.RestartGame: FCS state 8, the loading screen without PreStart
+                irFinish();
+                Audio::stopSfx(), Audio::music(false);
+                startMission(missionIdx, false);
+                continue;
+            }
+            if (act == Ui::Pause::DoDraw) {  // GameLogic.DrawImmediately, then GotoFrontEnd
+                Input d;
+                d.flags = Input::DRAW;
+                stepOnce(d);
+            }
+            quit = act == Ui::Pause::DoQuit || act == Ui::Pause::DoDraw;
+        }
         if (quit) {
             irFinish();
             saveRec();
@@ -2290,7 +2301,7 @@ int main(int argc, char **argv) {
             if (!egg.item.empty() && !eggShown) eggShown = Ui::eggFound(egg.name.c_str(), egg.coins);  // GameOver.EasterEgg: WXFE.EasterEggFound over the next menu
             else missionAct = Ui::missionEnd(game, *ms, progress.get(ms->id), more);
         }
-        pause.draw(online);
+        pause.draw();
         if (playing) {
             bool end = tick >= play.inputs.size();
             Ui::playbackBar(paused, speed, freeCam, tick * Game::DT, play.inputs.size() * Game::DT,

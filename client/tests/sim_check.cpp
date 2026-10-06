@@ -96,6 +96,18 @@ static void checkKing() {
     assert(g.worms[2].alive && g.worms[3].alive && g.phase == Phase::GameOver && g.winner == 1);
 }
 
+// Pause > Draw Round (GameLogic.DrawImmediately): the match ends at once with no winner
+static void checkDrawRound() {
+    Game g;
+    g.start({1, 2, 2, "", 0}), g.hotSeat = 0;
+    Input d;
+    d.flags = Input::DRAW;
+    g.step(d);
+    bool over = false;
+    for (const GameEvent &e : g.events) over |= e.kind == GameEvent::GameOver;
+    assert(over && g.phase == Phase::GameOver && g.winner == -1);
+}
+
 // W4M death queue: dead worms of one count blow up one after another.
 static void checkDeathQueue() {
     Game g;
@@ -4322,6 +4334,7 @@ int main() {
     assert(runRules(0, 42, SCHEMES[0].s) != runRules(0, 42, SCHEMES[2].s));  // the scheme is part of the checksum
 
     checkKing();
+    checkDrawRound();
     checkDeathQueue();
     checkSheepCamera();
     checkEventCameras();

@@ -28,7 +28,7 @@ it to `progress.txt` with the easter eggs, so the script sees it unlocked too. B
 Score / best time: mission ticks until success (60 per second).
 
 In-game briefing (`ui.cpp` `Pause`, docs/w4m/frontend.md §17 "WXFEP.MissionBriefing"): in a Story mission (`kind` mission) the pause menu
-gets W4M's Briefing row (`FETXT.MissionBriefing`) before Quit; challenges have none [disasm 0x4cd3a0]. It opens on that row only, never at
+gets W4M's Briefing row (`FETXT.MissionBriefing`) after Restart, before Quit; challenges have none [disasm 0x4cd3a0]. It opens on that row only, never at
 the mission start [disasm, data]. The popup draws W4M's items at their FE positions (960 x 540 FE units about the screen centre, Scale as
 half extents): the paper, the divider, the title, one bullet (`teaminfo04` frame 7) and line per existing `<objectives>.A/.B/.C` text
 (missing keys leave the slot empty), and the Return row highlighted; font sizes are FE size x 1280 / 960 px [data]. Animation and sounds:
@@ -40,8 +40,8 @@ line height = font size, and shrink by 1 FE unit while taller than the box, down
 [disasm]. The title's MediumWobble holds each glyph 0.7 FE up or down, picked once per popup (0x6a9920, seed 0: random) [disasm]; ours
 seeds it from the opening time [ours]. The Return row's Click anim is not drawn: the kill removes the popup the same frame [disasm]. Text colours are W4M's gradients (title kGC_Button_Yellow, lines
 kGC_List_Lable_Blue, Return kGC_Solid_White on the charcoal stroke) [disasm 0x754e96]. A level movie's bars are not drawn while the pause
-menu or the briefing is up and come back on its close, as EFMV.Borders.Off / .On (the subtitles already hide with the HUD) [disasm]. The pause menu's own rows now use W4M's text keys
-(`FETXT.ResumeGame`, `FETXT.Help&Options`, `Lang.Quit`, header `FE.Header.Paused`); its layout stays ours.
+menu or the briefing is up and come back on its close, as EFMV.Borders.Off / .On (the subtitles already hide with the HUD) [disasm]. The pause menu's rows, their confirm popups
+and Restart are in docs/w4m/frontend.md §17 ("Ours" after the pause rows); its layout stays ours.
 
 ## W4M import
 

@@ -32,6 +32,7 @@ The active player's per-tick input is the only game data on the wire; replays (`
 | `PITCH` 128 | flag | with `TARGET`: this tick's `aim` tilts the Blimp camera (or raises the girder) instead of moving sideways; the client alternates the two on every other tick at twice the rate when both are held. Without `TARGET`, on a landed jetpack holding a secondary: lay it (W4M Fire.Second) |
 | `flags`: `SKIP_COUNT` 2 | flag | the local active player pressed X while the Settle damage count ran (observed in W4M by the user, 2026-10-03); the sim ends the display at once, deaths follow as usual |
 | `flags`: `CAMERA` 1 | flag | the active player used a follow-camera key this tick (right stick, d-pad zoom, A D X Z, wheel; `Controls::read`); the sim only reads it to end the hot seat (W4M InGame group `Camera.*`, 0x4e1610, disasm) |
+| `flags`: `DRAW` 8 | flag | Pause > Draw Round > Yes (W4M `WXFEP.ConfirmDraw` -> `GameLogic.DrawImmediately`, disasm 0x4cd3a0 / 0x4fd105): the sim ends the match at once with no winner (`winner` -1, GameOver). Only a local Multiplayer match offers it (W4M shows the row for GameType `Multiplayer`, not `Network`), so it reaches replays, never the wire in practice; the byte layout is unchanged |
 
 `Game::step` takes `pressed = buttons & ~prevButtons` for the edge-triggered bits; `prevButtons` is in the checksum. A hot seat
 (`Scheme::hotSeat`) ends on any input but `TARGET` alone, `flags` included (W4M: every control group but Menu, CameraSelect,

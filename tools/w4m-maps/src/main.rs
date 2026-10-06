@@ -866,6 +866,23 @@ fn png(w: usize, h: usize, rgb: &[u8]) -> Vec<u8> {
     out
 }
 
+// The client's map heads (Ui::mapInfo: a field of the json's first 399 bytes) in one file: name, title, preview, theme per line
+fn write_index(out: &Path) {
+    let mut lines: Vec<String> = fs::read_dir(out).into_iter().flatten().flatten().filter_map(|e| {
+        let name = e.file_name().to_str()?.strip_suffix(".json")?.to_string();
+        let mut b = fs::read(e.path()).ok()?;
+        b.truncate(399);
+        let head = String::from_utf8_lossy(&b).into_owned();
+        Some(format!("{name}\t{}\t{}\t{}", head_field(&head, "\"title\": \""), head_field(&head, "\"preview\": \""), head_field(&head, "\"theme\": \"")))
+    }).collect();
+    lines.sort();
+    if let Err(e) = fs::write(out.join("index.tsv"), lines.join("\n") + "\n") { println!("index.tsv: FAILED {e}"); }
+}
+
+fn head_field<'a>(head: &'a str, key: &str) -> &'a str {
+    head.find(key).map(|k| &head[k + key.len()..]).and_then(|v| v.find('"').map(|e| &v[..e])).unwrap_or("")
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -893,6 +910,7 @@ fn main() {
         }
     }
     println!("{ok}/{} maps imported, {} textures", stems.len(), tex.len());
+    write_index(&out);
     mission::import(&data, &out, &out.join("../missions"));
     decor(&data.join("Bundles"), &out.join("../models/decor"), &libs);
 }
@@ -901,6 +919,11 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn index_head_field() {
+        let h = "{\n  \"name\": \"A\",\n  \"title\": \"Text.kX\",\n  \"theme\": \"camelot\",\n  \"preview\": \"map_a";
+        assert_eq!((head_field(h, "\"title\": \""), head_field(h, "\"theme\": \""), head_field(h, "\"preview\": \"")), ("Text.kX", "camelot", ""));
+    }
     #[test]
     fn point_light_names() {
         assert_eq!(point_light("PNTLGHT 100 80 5 100 PL01"), ([100, 80, 5], 100.0, "PL01".into()));

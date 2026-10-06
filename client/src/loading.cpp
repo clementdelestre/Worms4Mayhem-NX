@@ -11,6 +11,9 @@
 #include <string>
 #ifdef __SWITCH__
 #include <switch.h>
+#define DATA_DIR "sdmc:/switch/worms4nx/"
+#else
+#define DATA_DIR "./"
 #endif
 
 namespace {
@@ -21,6 +24,7 @@ const int TIPS = 44;  // FETXT.Tip1..44 (W4M's <lang>Loading.xom)
 float t = 0, out = -1, after = 1e9f, tipAt = 0;  // out: fade-out clock once loaded; after: since the match started
 int tip = 26;
 const char *back = "back/loadbackgeneric";
+double irisT0 = -2;  // TransitionFadeUp: -1 starts at the next overlay(), else its GetTime() start
 
 void sprite(Texture2D x, Vector2 c, float size, float deg, Color tint) {
     DrawTexturePro(x, {0, 0, (float)x.width, (float)x.height}, {c.x, c.y, size, size}, {size / 2, size / 2}, deg, tint);
@@ -53,9 +57,27 @@ void intro() {
     }
 }
 
-// Stage 2: dark-blue panel with the "Loading" watermark, round worm, logo and a tip
-void loading() {
-    float ls = t - INTRO;
+void tips(float now) {  // 0x608100: a new tip every 15 s, never the same twice
+    if (now - tipAt < TIP_EVERY) return;
+    int n = tip;
+    while (n == tip) n = GetRandomValue(1, TIPS);
+    tip = n, tipAt = now;
+}
+
+// TransitionFadeUp (0x510860): TransitionMesh's Circle_Out, a black disc whose texture alpha edge (row 207/256) slides out as its
+// V offset goes 0 -> 0.6 (flat keys at 0.042, 0.958 s); mesh scaled x max(aspect x 0.75, 1) (0x510630), FE units at 1.33 px
+void iris(float ct) {
+    static const float V[] = {0.75909f, 0.60787f, 0.47185f, 0.34496f, 0.23034f}, R[] = {0, 286.37f, 570.74f, 855.11f, 1139.47f};
+    float s = fminf(fmaxf((ct - 0.041656f) / (0.958008f - 0.041656f), 0), 1), v = 207 / 256.0f - 0.59961f * s * s * (3 - 2 * s);
+    if (v <= V[4]) return;
+    int i = 0;
+    while (i < 3 && v < V[i + 1]) i++;
+    float r = v >= V[0] ? 0 : R[i] + (R[i + 1] - R[i]) * (V[i] - v) / (V[i] - V[i + 1]);
+    DrawRing({640, 360}, r * 1.3333f * 1.3333f, 800, 0, 360, 128, BLACK);
+}
+
+// Stage 2: dark-blue panel with the "Loading" watermark, round worm, logo and a tip; ls: s since it opened
+void loading(float ls) {
     Texture2D bg = Ui::art(back);
     if (bg.id) DrawTexturePro(bg, {0, 0, (float)bg.width, (float)bg.height}, {0, 0, 1280, 720}, {}, 0, WHITE);
     else DrawRectangleGradientV(0, 0, 1280, 720, {40, 80, 150, 255}, {120, 170, 220, 255});
@@ -71,7 +93,7 @@ void loading() {
     float x = -30, grow = fminf(fmaxf((ls - 0.4f) / 0.3f, 0), 1);
     for (int col = 0; x < cx + 1665 && grow > 0; col++) {
         float size = SIZES[col % 7], step = MeasureTextEx(f, word, size, 0).x + size * 0.3f;
-        float y0 = 720 + fmodf(col * 211.0f + t * (col % 2 ? 6 : -6), step);  // barely drifting
+        float y0 = 720 + fmodf(col * 211.0f + ls * (col % 2 ? 6 : -6), step);  // barely drifting
         auto draw = [&] { for (float y = y0 + step; y > -step; y -= step) DrawTextPro(f, word, {x, y}, {}, -90, size * grow, 0, {19, 45, 90, 255}); };
         float w = size * 0.8f;
         if (x + w < cx + 1625) draw();  // clear of the curve top to bottom
@@ -107,8 +129,8 @@ void loading() {
 }  // namespace
 
 namespace Loading {
-void begin(const GameConfig &c) {
-    t = 0, out = -1, after = 1e9f, tipAt = INTRO;
+void begin(const GameConfig &c, bool preStart) {
+    t = preStart ? 0 : INTRO, out = -1, after = 1e9f, tipAt = INTRO;
     tip = 1 + (int)(c.seed % TIPS);
     std::string th = Terrain::mapTheme(c.map);  // 0x509c50: LoadBack<theme>.tga, else Generic
     back = th == "arabian" ? "back/loadbackarabian" : th == "wildwest" ? "back/loadbackwildwest" : th == "camelot" ? "back/loadbackcamelot"
@@ -124,13 +146,9 @@ bool frame(float dt, float progress) {
     t += dt;
     if (was < POP && t >= POP) Audio::play(Audio::Sfx::FeGrenade);  // PreStart's Audio_Incoming, with its pop-in
     if (was < INTRO && t >= INTRO) Audio::music(false);  // FrontEndService shutdown 0x7293dd: femusic stop with fade-out
-    if (t - tipAt >= TIP_EVERY) {  // 0x608100: a new tip every 15 s, never the same twice
-        int n = tip;
-        while (n == tip) n = GetRandomValue(1, TIPS);
-        tip = n, tipAt = t;
-    }
+    tips(t);
     if (t < INTRO) intro();
-    else loading();
+    else loading(t - INTRO);
     if (out < 0 && progress >= 1 && t >= INTRO + MIN_LOAD) out = 0;
     if (out >= 0) out += dt;
     // black: in from the menu, through it between the stages, out to the match
@@ -170,7 +188,30 @@ std::vector<std::string> list(const std::string &dir, const char *ext, bool recu
     return out;
 }
 
+// FCS startup then state 7 (0x4eded0): the icon alone (mode 1, 0x509ba0: FE.LoadingIcon at (0, 40)) until the loading screen's
+// art is in, then its Generic screen (mode 2) for MIN_LOAD at least; the frontend then opens on the iris (state 7's a4 = 1)
+bool boot(bool loaded, bool screen) {
+    static Texture2D icon = LoadTexture(DATA_DIR "assets/ui/fe2/loading_worm.png");
+    static const double t0 = GetTime();  // double: raw GetTime() is huge on Switch
+    static float full = -1;
+    float now = (float)(GetTime() - t0);
+    ClearBackground(BLACK);
+    bool art = Ui::artReady("back/loadbackgeneric") && Ui::artReady("fe2/loading_worm") && Ui::artReady("fe/hintpanel") && Ui::artReady("fe/tournament_vsus");
+    if (full < 0 && screen && (art || loaded)) full = now, back = "back/loadbackgeneric", tip = GetRandomValue(1, TIPS), tipAt = 0;
+    if (full < 0) {
+        if (icon.id) sprite(icon, {640, 360 - 40 * 1.3333f}, 190, now * 360 / 1.166f, WHITE);
+        return loaded && !screen;
+    }
+    tips(now - full);
+    loading(now - full);
+    if (!loaded || now - full < MIN_LOAD) return false;
+    irisT0 = -1;
+    return true;
+}
+
 void overlay(float dt) {
+    if (irisT0 == -1) irisT0 = GetTime();
+    if (irisT0 >= 0 && GetTime() - irisT0 < 1) iris((float)(GetTime() - irisT0));
     if (after < IN) DrawRectangle(0, 0, 1280, 720, Fade(BLACK, 1 - after / IN));
     after += dt;
 }

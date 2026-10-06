@@ -2461,6 +2461,7 @@ void Game::step(const Input &raw) {
     events.clear();  // also when over: GameOver must reach the listeners once
     if (phase == Phase::GameOver && !scriptMovieOn(*this)) return;  // the world runs on under the EFMV.GameOverMovie
     if (raw.flags & Input::SKIP_MOVIE) scriptSkipMovie(*this);
+    if (raw.flags & Input::DRAW) { phase = Phase::GameOver, winner = -1, emit(GameEvent::GameOver, {0, 0, 0}); return; }  // the round to "Nobody" (0x4fd105)
     Input in = scriptMovieOn(*this) ? Input{} : raw;  // a movie leaves only its own input group (EFMVMovie, 0x5074a0): no worm control
     if (wp(WP_NO_BLIMP)) in.buttons &= ~Input::TARGET;  // Camera.Disable "Blimp" (0x5d6fea): targeting from the aim view only
     ropeIn = {};

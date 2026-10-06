@@ -113,11 +113,12 @@ Texture2D tex(const std::string &name) {
     return cache[name] = t;
 }
 
-// Frontend art, decoded off the main thread at startup: SD read + PNG decode of these took a frame on menu changes
-const char *const PRELOAD[] = {"fe/bluedivide", "fe2/art_local", "fe2/art_local_static", "fe2/nav_normal", "fe/title_underline", "fe2/art_network",
-                               "fe2/art_help", "fe2/art_myworms", "fe/paperpopup01", "fe/paperpopup02", "fe/buttonbig_highlight", "fe/text_border_charcoal",
-                               "fe/icon_wxpot", "fe2/paper_strip", "fe/icon_splat", "fe2/loading_worm", "fe/hintpanel", "hud/trailparticle",
-                               "back/loadbackgeneric", "fe/tournament_vsus"};
+// Frontend art, decoded off the main thread at startup: SD read + PNG decode of these took a frame on menu changes.
+// The boot loading screen's own art comes first (Loading::boot).
+const char *const PRELOAD[] = {"back/loadbackgeneric", "fe2/loading_worm", "fe/hintpanel", "fe/tournament_vsus", "fe/bluedivide", "fe2/art_local",
+                               "fe2/art_local_static", "fe2/nav_normal", "fe/title_underline", "fe2/art_network", "fe2/art_help", "fe2/art_myworms",
+                               "fe/paperpopup01", "fe/paperpopup02", "fe/buttonbig_highlight", "fe/text_border_charcoal", "fe/icon_wxpot",
+                               "fe2/paper_strip", "fe/icon_splat", "hud/trailparticle"};
 const int NPRE = sizeof PRELOAD / sizeof *PRELOAD;
 Image preImg[NPRE];
 std::atomic<int> preDecoded{0};
@@ -193,8 +194,9 @@ std::string lower(std::string s) {
 // A map json's head fields: "title" (W4M Frontend_Name key), "preview" (W4M Frontend_Image, else w4m-maps' top-down render), "theme"
 struct MapInfo { std::string title, pic, theme; };
 std::mutex mapMu;  // mapHeads() fills the cache off the main thread
+std::map<std::string, MapInfo> mapCache;
 const MapInfo &mapInfo(const std::string &m) {
-    static std::map<std::string, MapInfo> cache;
+    auto &cache = mapCache;
     if (std::lock_guard<std::mutex> l(mapMu); cache.count(m)) return cache[m];
     MapInfo info;
     for (const char *dir : {DATA_DIR "assets/maps/", ROMFS_DIR "maps/"}) {
@@ -234,6 +236,19 @@ std::string preview(const std::string &m) {
 
 // W4M's level name, else from the file name: "EscapeFromTreeRex" -> "Escape From Tree Rex", "Alien-w3d" -> "Alien (W3D)"
 void mapHeads(const std::vector<std::string> &maps) {
+    // w4m-maps' index.tsv holds those heads in one read; a map it lacks (added by hand) has its own head read
+    if (FILE *f = fopen(DATA_DIR "assets/maps/index.tsv", "rb")) {
+        std::map<std::string, MapInfo> idx;
+        for (char l[512]; fgets(l, sizeof l, f);) {
+            std::string c[4];
+            int k = 0;
+            for (char *p = l; *p && *p != '\n' && *p != '\r'; p++) *p == '\t' ? (void)(k < 3 && ++k) : (void)(c[k] += *p);
+            if (k == 3) idx[c[0]] = {c[1], c[2], c[3]};
+        }
+        fclose(f);
+        std::lock_guard<std::mutex> l(mapMu);
+        for (const std::string &m : maps) if (auto i = idx.find(m); i != idx.end()) mapCache.emplace(m, i->second);
+    }
     for (const std::string &m : maps) mapInfo(m);
 }
 
@@ -500,6 +515,7 @@ void text(const char *t, float x, float y, float size, Color c, int align) { tex
 float textWidth(const char *t, float size) { return MeasureTextEx(font, t, size, fontLoaded ? 0 : size / 10).x; }
 const Font &textFont() { return font; }
 Texture2D art(const char *name) { return tex(name); }
+bool artReady(const char *name) { return cache.count(name); }
 
 // W4M menu look: cream text, golden titles over a brush underline, charcoal stroke + orange arrow on the selection
 static const Color CREAM = {238, 226, 186, 255}, BRIGHT = {255, 250, 232, 255}, TITLE = {255, 224, 120, 255};
@@ -955,6 +971,23 @@ static bool feItem(Vector2 c, const FeClip *in, float delay, const FeClip *out, 
     return true;
 }
 
+// W4M WXFEP.Confirm* in our style: the question, then ConfirmList's No (the default) and Yes rows
+static void yesNo(const char *q, int r, float t) {
+    popup({330, 200, 620, 320});
+    float qs = fminf(36, 36 * 560 / textWidth(q, 36)), qw = fmaxf(textWidth(q, qs) + 40, 300);
+    text(q, 640, 236, qs, GOLD_TOP, 1);
+    if (!image("fe/title_underline", {640 - qw / 2, 280, qw, 22})) DrawRectangle(640 - qw / 2, 286, qw, 3, WHITE);
+    for (int i = 0; i < 2; i++) {
+        bool hi = i == r;
+        float sz = hi ? 50 : 42, s = hi ? 1.04f - 0.04f * cosf(t * 4 * PI) : 1;
+        rlPushMatrix();
+        rlTranslatef(640, 360 + i * 78.0f, 0);
+        rlScalef(s, s, 1);
+        text(i ? tr("FETXT.Yes", "Yes", "Oui") : tr("FETXT.No", "No", "Non"), 0, -sz / 2, sz, hi ? WHITE : Color{150, 205, 238, 255}, 1);
+        rlPopMatrix();
+    }
+}
+
 static bool feBack = false;  // last A/B in a menu was B: screen changes play W4M's prev in/out sounds
 // W4M's intro sound for screen s (kAUDIO_In_*), entered from `from`
 static Audio::Sfx enterSfx(Frontend::Screen s, Frontend::Screen from) {
@@ -1196,20 +1229,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             int &r = subRow[4];
             r = clampWrap(r + dy + dx, 2);
             DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 120});
-            popup({330, 200, 620, 320});
-            const char *q = tr("FETXT.ConfirmQuit", "Exit Game? Are You Sure?", "Quitter le jeu ? Vraiment ?");
-            float qw = fmaxf(textWidth(q, 36) + 40, 300);
-            text(q, 640, 236, 36, GOLD_TOP, 1);
-            if (!image("fe/title_underline", {640 - qw / 2, 280, qw, 22})) DrawRectangle(640 - qw / 2, 286, qw, 3, WHITE);
-            for (int i = 0; i < 2; i++) {
-                bool hi = i == r;
-                float sz = hi ? 50 : 42, s = hi ? 1.04f - 0.04f * cosf(t * 4 * PI) : 1;
-                rlPushMatrix();
-                rlTranslatef(640, 360 + i * 78.0f, 0);
-                rlScalef(s, s, 1);
-                text(i ? tr("FETXT.Yes", "Yes", "Oui") : tr("FETXT.No", "No", "Non"), 0, -sz / 2, sz, hi ? WHITE : Color{150, 205, 238, 255}, 1);
-                rlPopMatrix();
-            }
+            yesNo(tr("FETXT.ConfirmQuit", "Exit Game? Are You Sure?", "Quitter le jeu ? Vraiment ?"), r, t);
             if (back || (ok && !r)) screen = Main;
             else if (ok) act = Quit;
             break;
@@ -1488,6 +1508,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     }
     if (helpHeld()) controls(false);
+    Loading::overlay(GetFrameTime());
     if (capture) {
         rlDrawRenderBatchActive();
         Image img = LoadImageFromScreen();
@@ -2521,44 +2542,65 @@ static const float K_IN_SCALEY[7][6] = {{0, 0, 0.00027776f, 0.99951f, 0, 0}, {0.
                                         {0.16663f, 1.0283f, 0.49341f, 0.86963f, 0.61914f, -0.78467f}, {0.20825f, 0.97559f, 0.61914f, -0.78467f, 0.86621f, 0.49951f},
                                         {0.25f, 1, 0.86621f, 0.49951f, 1, 0}};
 static const FeClip IN_SCALEY = {{}, keys(K_IN_SCALEY, false), {}, {}};
-static const float BRIEF_IN = 0.2f, BRIEF_OUT = 0.2f;  // killed (KillPopUpNamed: no Out_ScaleY), only the veil fades out
+// Delay_Incoming of WXFEP.Pause / ConfirmDraw 100 ms, ConfirmRestart / ConfirmQuit / MissionBriefing 200 ms
+static float popupDelay(int confirm, bool brief) { return brief || confirm == Pause::Restart || confirm == Pause::Quit ? 0.2f : 0.1f; }
+
+std::vector<int> Pause::rows() const {
+    std::vector<int> r = {Continue, Options};
+    if (canDraw) r.push_back(Draw);
+    if (canRestart) r.push_back(Restart);
+    if (story) r.push_back(Briefing);
+    r.push_back(Quit);
+    return r;
+}
+
+// WXMsg.CreatePopUp: the list (-1) or a confirm popup; leaving one is a KillPopUpNamed (no Out_* anim, its click3)
+void Pause::popUp(int which) {
+    confirm = which, yes = 0, shown = now();
+    if (which < 0) row = 0;
+}
 
 Pause::Action Pause::update() {
     using S = Audio::Sfx;
-    float t = now();
-    if (briefOut >= 0 && t - briefOut >= BRIEF_OUT) briefOut = -1;
+    float t = now(), dt = t - last;
+    veil = open ? fminf(160, veil + dt * 800) : fmaxf(0, veil - dt * 800);  // 0x7250a9: linear 200 ms fade to the new FullScreenColour
+    bool popped = !help && (brief >= 0 || open), incoming = popped && last < shown + popupDelay(confirm, brief >= 0) && t >= shown + popupDelay(confirm, brief >= 0);
+    if (incoming) Audio::play(brief >= 0 || confirm >= 0 ? S::FeScaleHit : S::FePopupIn);  // Audio_Incoming In_ScaleHitXY / In_ScaleY, with the anim
+    last = t;
     bool plus = P({PLUS}, {KEY_ESCAPE, KEY_P}), ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = plus || P({B}, {KEY_BACKSPACE});
     if (brief >= 0) {  // Return / Cancel kill it; MenuGoingAway: click3, App.Resume (back to the match, not the pause menu)
-        if (last < brief + BRIEF_IN && t >= brief + BRIEF_IN) Audio::play(S::FeScaleHit);  // Audio_Incoming In_ScaleHitXY, with its anim
-        last = t;
-        if (ok || back) brief = -1, briefOut = t, open = false, Audio::play(S::HpTick);
+        if (ok || back) brief = -1, open = false, Audio::play(S::HpTick);
         return None;
     }
     if (!open) {
-        if (plus) open = true, help = false, row = 0, Audio::play(S::FePopupIn);
+        if (plus) open = true, help = false, popUp(-1);
         return None;
     }
     if (help) {
         if (ok || back) help = false, Audio::play(S::FePrevIn);
         return None;
     }
-    int n = story ? 4 : 3;  // TablePopulationService 0x4cd3a0: Briefing (Story only) sits before Quit
-    row = clampWrap(row + P({DOWN}, {}) - P({UP}, {}), n);
-    if (back || (ok && row == 0)) open = false, Audio::play(S::FePopupOut);
-    if (ok && row == 1) help = true, Audio::play(S::FeController);
-    if (ok && story && row == 2) brief = last = t, briefOut = -1, Audio::play(S::HpTick);  // KillPopUpNamed$WXFEP.Pause (its click3), no App.Resume
-    if (ok && row == n - 1) { open = false; return Quit; }
+    if (confirm >= 0) {  // ConfirmList: No / Cancel re-create WXFEP.Pause, Yes resumes and acts
+        yes = clampWrap(yes + P({DOWN}, {}) - P({UP}, {}), 2);
+        if (back || (ok && !yes)) Audio::play(S::HpTick), popUp(-1);
+        if (!ok || !yes) return None;
+        int c = confirm;
+        open = false, confirm = -1, Audio::play(S::HpTick);
+        return c == Draw ? DoDraw : c == Restart ? DoRestart : DoQuit;
+    }
+    std::vector<int> r = rows();
+    row = clampWrap(row + P({DOWN}, {}) - P({UP}, {}), (int)r.size());
+    if (back || (ok && r[row] == Continue)) open = false, Audio::play(S::HpTick);  // KillPopUpNamed$WXFEP.Pause, App.Resume, EFMV.Borders.On
+    else if (ok && r[row] == Options) help = true, Audio::play(S::FeController);
+    else if (ok && r[row] == Briefing) brief = shown = t, Audio::play(S::HpTick);  // the Pause's kill (click3), no App.Resume
+    else if (ok) Audio::play(S::HpTick), popUp(r[row]);
     return None;
 }
 
 // WXFEP.MissionBriefing: FE units (960 x 540, y up) about the screen centre; ImageView / TextBox Scale = half extents
 void Pause::briefing() const {
-    float t = now(), out = briefOut >= 0 ? t - briefOut : -1, since = brief >= 0 ? t - brief : 0;
     const MissionSpec *m = story;
-    if (!m) return;
-    float fade = out >= 0 ? 1 - Clamp(out / BRIEF_OUT, 0, 1) : 1;  // FullScreenColour (40, 40, 60, 160); the last popup's kill fades it over 200 ms
-    DrawRectangle(0, 0, 1280, 720, {40, 40, 60, (unsigned char)(160 * fade)});
-    if (out >= 0 || !feItem({640, 360}, &IN_SCALEY, BRIEF_IN, nullptr, since, -1)) return;
+    if (!m || !feItem({640, 360}, &IN_SCALEY, popupDelay(-1, true), nullptr, now() - brief, -1)) return;
     auto fe = [](float x, float y) { return Vector2{640 + x * FE_PX, 360 - y * FE_PX}; };
     auto box = [&](float x, float y, float hw, float hh) { Vector2 c = fe(x, y); return Rectangle{c.x - hw * FE_PX, c.y - hh * FE_PX, 2 * hw * FE_PX, 2 * hh * FE_PX}; };
     image("fe/paperpopup01", box(0, 0, 180, 140));       // Paper Back, WXFE.PaperPopUp1
@@ -2593,11 +2635,12 @@ void Pause::briefing() const {
     rlPopMatrix();
 }
 
-void Pause::draw(bool online) const {
+void Pause::draw() const {
     menuPage = true;
-    if (brief >= 0 || briefOut >= 0) {
+    DrawRectangle(0, 0, 1280, 720, {40, 40, 60, (unsigned char)veil});  // every pause popup's FullScreenColour (40, 40, 60, 160)
+    if (brief >= 0) {
         briefing();
-        if (brief >= 0) hints({{"A", "Enter", tr("FETXT.ReturnToMenu", "Return", "Retour")}});
+        hints({{"A", "Enter", tr("FETXT.ReturnToMenu", "Return", "Retour")}});
         return;
     }
     if (!open) return;
@@ -2606,15 +2649,30 @@ void Pause::draw(bool online) const {
         hints({{"B", "Esc", "Back"}});
         return;
     }
-    int n = story ? 4 : 3;
+    float t = now();
+    bool in = feItem({640, 360}, &IN_SCALEY, popupDelay(confirm, false), nullptr, t - shown, -1);  // Anim_Incoming In_ScaleY
+    if (confirm >= 0) {
+        const char *q = confirm == Draw ? tr("FETXT.ConfirmDraw", "Draw the round?", "Déclarer le match nul ?")
+                      : confirm == Restart ? tr("FETXT.ConfirmRestart", "You want to restart?", "Voulez-vous recommencer ?")
+                                           : tr("FETXT.ConfirmQuit", "Exit Game? Are You Sure?", "Quitter le jeu ? Vraiment ?");
+        if (in) yesNo(q, yes, t), rlPopMatrix();
+        hints({{"A", "Enter", "Select"}, {"B", "Esc", "Back"}});
+        return;
+    }
+    std::vector<int> r = rows();
+    int n = (int)r.size();
     float y0 = 150 - 36.0f * (n - 3);
-    DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 140});
-    popup({420, y0, 440, 400 + 72.0f * (n - 3)});
-    heading(tr("FE.Header.Paused", "Pause", "Pause"), 640, y0 + 30, 50);
-    const char *items[] = {tr("FETXT.ResumeGame", "Resume"), tr("FETXT.Help&Options", "Help & options"),
-                           story ? tr("FETXT.MissionBriefing", "Mission Objectives") : nullptr, online ? "Leave match" : tr("Lang.Quit", "Quit")};
-    for (int i = 0, k = 0; i < 4; i++) if (items[i]) item(items[i], 640, y0 + 135 + k * 72.0f, fminf(42, 42 * 360 / textWidth(items[i], 42)), k == row), k++;
-    if (online) text("The match keeps running", 640, y0 + 355, 20, CREAM, 1);
+    if (in) {
+        popup({420, y0, 440, 400 + 72.0f * (n - 3)});
+        heading(tr("FE.Header.Paused", "Game Paused", "Pause"), 640, y0 + 30, 50);
+        for (int k = 0; k < n; k++) {  // 0x4cd3a0's row texts
+            const char *s = r[k] == Continue ? tr("FETXT.ResumeGame", "Resume Game") : r[k] == Options ? tr("FETXT.Help&Options", "Help & Options")
+                          : r[k] == Draw ? tr("Lang.DrawRound", "Draw Round") : r[k] == Restart ? tr("FETXT.Restart", "Restart")
+                          : r[k] == Briefing ? tr("FETXT.MissionBriefing", "Mission Objectives") : tr("Lang.Quit", "Quit");
+            item(s, 640, y0 + 135 + k * 72.0f, fminf(42, 42 * 360 / textWidth(s, 42)), k == row);
+        }
+        rlPopMatrix();
+    }
     hints({{"A", "Enter", "Select"}, {"B/+", "Esc", "Resume"}});
 }
 
