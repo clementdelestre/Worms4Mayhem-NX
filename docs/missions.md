@@ -113,7 +113,8 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   Settle calls `GameLogic_NoActivity` while stdlib's `WaitUntilNoActivity` is set; `Worm.ApplyPoison` / `GameLogic.ApplyDamage` run ours.
   So DoPostActivity, DoOncePerTurnFunctions, TurnEnded and StartTurn are the scripts' own.
 - **Callbacks** (end of the tick, `scriptStep`): per Hurt event, Worm_Damaged_Current when the active worm took it (any phase, every hit,
-  poison and abduction rolls aside: damage types 5 / 6, 0x5ab7e0; drowning and vapourising once) then Worm_Damaged with DamagedWorm.Id;
+  poison and abduction rolls aside: damage types 5 / 6, 0x5ab7e0; drowning and vapourising once: `Game::drown` / `vapourize` set
+  `selfHurt` for the active worm only, 0x5ad754) then Worm_Damaged with DamagedWorm.Id;
   Payload_Deleted with Payload.Deleted.Id when a payload goes (every shot but the bomber planes and the UFO, every mine: 0x580560;
   a placed mine gives its Mine.Id, the others a fresh number); Worm_Died with DeadWorm.Id at the death blast (or a vapourised worm); Crate_Collected / Sunk / Destroyed
   with Crate.Index when a crate with an Index leaves; Timer_GameTimedOut when the round clock (from Timer.StartGame) runs out; due timers
@@ -181,6 +182,11 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
     emitters) and returns the handle in Particle.Handle (1, 2, ... per script [ours: W4M's handle counter is the renderer's]); a missing
     detail logs and leaves the handle (TurkishDelights' Flame1-4 exist in no W4M file). DelGraphicalEmitter stops it (particles live on,
     immortal ones go), ...Imm takes all its particles. Movie CreateEmitter / DeleteEmitter use their UserId (handles -1 - UserId).
+    Position and scale audited (SneakyBridgeThieves, GibbonTake, FastFoodDino, GhostHillGraveyard, CarpetCapers, StormTheCastle, TheCrateEscape: every
+    emitter is exactly at its marker, offsets scaled by the map unit as the map's own emitters); the effect never follows the crate [W4M, §23.8].
+    The user-visible "particles too high" was a crate falling through a slab thinner than its sphere (Crate5, a 0.17 m rail 0.24 m under its marker): its
+    bottom-point land test missed it, so the crate sank 2.3 m below the glow. `Game::stepObjects` now also casts from the centre to the bottom and rests the
+    crate on land found there [ours: W4M's sphere resolver, docs/w4m/physics.md]. `W4NX_VIEW="x y z tx ty tz"` fixes the camera of any shot (`--ui missionhud`).
   - Camera.ShakeStart: `Fx::shakeFor` holds the shake at Camera.Shake.Magnitude m per axis, fading linearly over Length ms, clamped to
     0.5 m (Camera.Shake.Max x 1000 units).
   - Team bars (ui.cpp): a team's shown hp / the largest team total at the match start (W4M EnergyBarManagerEntity, §23.8), so reserved
@@ -195,6 +201,15 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   velocity. The sim then treats it as any crate (docs/sim.md "Crates"). CustomGraphic names the detail mesh drawn for a custom crate
   (`scriptCrateGraphic`, models `d01_04` ...). Not used by any W4M crate, so not modelled [data]: LifetimeSec, LifetimeTurns, UXB,
   DelayMillisec, RandomSpawnPos; AddToWormInventory books to the team as every crate [ours: per-team ammo].
+  Placement audit (2026-10-07, W4M docs/w4m/missions.md §23.10 "Position"): the crate is at the marker itself; a pinned crate (Gravity 0) never
+  moves (`stepObjects` no longer pushes it out of land, up to 1 m before: ChallengeJetpack / Icarus / Sheep scale 1.5-2 crates and targets
+  embedded in a wall); GroundSnap puts the centre at hit + 10 x Scale units (0.5 m x Scale, was 0.45) and does not test the water (a land
+  under water still snaps); a falling crate rests at 0.5 m x Scale over the ground (the half height 0.5 x Scale - 0.05 m, plus the 0.05 m
+  probe, [ours: our voxel point test]). `W4NX_MISSION=cratepos make mission_check` (`W4NX_CRATEPOS=<id>`, `W4NX_SEED`) plays every mission 90 s and
+  asserts each rested crate within 0.3 m of that height and each pinned one still at its marker; measured: 0.00 m on all, 0.12 m on the Scale 0.0001
+  targets (the 0.05 m probe margin has no smaller floor). Crates with GroundSnap per mission: DoomCanyon 6, GhostHillGraveyard 6, ChallengeNavigation 20,
+  DeathMatch2 3, DeathMatch3 3, MineAllMine 3, TheLandThatWormsForgot 5, HighNoonHiJinx 2 (all moved 0.05 m up); the other missions' crates fall from their marker.
+  SneakyBridgeThieves Crate5 (marker 0.23 m over a 0.14 m rail) rests on the rail: see docs/sim.md "Crates" (deviation forced by the map scale).
   Crate.Delete removes the crates of that Index and calls Crate_Destroyed at once (W4M dispatch is synchronous); Crate.RadarHide /
   RadarDisplay hide / show them on the radar.
 - **Triggers** (docs/w4m/missions.md §23.10): GameLogic.CreateTrigger adds a `Game::Trigger` at the Trigger.Spawn marker itself with

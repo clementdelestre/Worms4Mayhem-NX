@@ -11,7 +11,6 @@ Credit is not mandatory for CC0 but is appreciated — see www.kenney.nl.
 - `sfx/explosion.ogg`, `sfx/big_explosion.ogg` — Kenney "Sci-fi Sounds" (explosionCrunch_000, lowFrequency_explosion_000)
 - `sfx/fire.ogg` — Kenney "Sci-fi Sounds" (laserSmall_000)
 - `sfx/bounce.ogg` — Kenney "Impact Sounds" (impactGeneric_light_000)
-- `sfx/jump.ogg` — Kenney "Digital Audio" (phaseJump1)
 - `sfx/turn_start.ogg` — Kenney "Interface Sounds" (bong_001)
 - `sfx/tick.ogg` — Kenney "Interface Sounds" (tick_001)
 - `voices/male/*`, `voices/female/*` — Kenney "Voiceover Pack #1"

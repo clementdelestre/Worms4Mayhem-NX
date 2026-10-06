@@ -8,7 +8,7 @@
 namespace Audio {
 
 // Shotgun..SuperSheepFire are per-weapon fire sounds; they fall back to Fire when not imported.
-enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Holy, TurnStart, Tick,
+enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Sheep, Holy, TurnStart, Tick,
                  Shotgun, Airstrike, Donkey, Rope, Teleport,
                  BatSwing, FirePunch, Prod, Sniper, Bow, Homing, OldWomanFire, ScouserFire, SentryPlace, SentryFire,
                  Dynamite, Gas, Abduction, Flood, Parachute, MineBeep, CrateLand, Pickup, SuperSheepFire,
@@ -40,6 +40,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  FatkinsBounce, BananaBounce,  // WEAPTWK BounceSfx of kWeaponFatkins / kWeaponBananaBomb
                  MineMachine,  // W4M weapons/MineMachineOperate: the mine factory runs, MineFactory.Start to .Fire (0x5cf413, 0x5cf579)
                  FeScaleHit,  // W4M kAUDIO_In_ScaleHitXY (global/In_Scalehitxy)
+                 Gong,  // W4M weapons/Gong: Weapon.NotClearToFire (0x552630)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
@@ -71,6 +72,9 @@ void emitter(int key, Sfx id, Vector3 at);
 const Lip *voice(int team, Voice id);
 const Lip *voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
 int voiceBanks();
+const char *sfxFile(Sfx id);   // sfx/<file>.ogg of the sound, and its W4M event path
+const char *sfxEvent(Sfx id);
+unsigned requested();  // Audio::play calls so far, played or not (tests)
 unsigned started();  // sounds started so far (hitch log)
 const char *voiceBankName(int bank);  // folder name, "" if out of range
 void setTeamVoice(int team, int bank);

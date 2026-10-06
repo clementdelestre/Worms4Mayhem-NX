@@ -185,6 +185,7 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("banana_bounce", "weapons", &["BananaBombImpact"]),  // kWeaponBananaBomb's
     ("mine_machine", "weapons", &["MineMachineOperate"]),  // MineFactoryLogicEntity's loop
     ("fe_scalehit", "global", &["In_Scalehitxy"]),
+    ("gong", "weapons", &["Gong"]),  // Weapon.NotClearToFire
     ("parachute", "weapons", &["ParachuteOpen"]),
     ("mine_beep", "weapons", &["MineArmLoop"]),
     ("crate_land", "weapons", &["CrateSpawn"]),

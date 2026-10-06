@@ -169,6 +169,17 @@ paths below set `EFMV.GameOverMovie` (`Outro`, `OutroSuccess`) first.
   explosions), Damage.Impulse 0x5ae3f7, fall damage 0x5ac3e0 (type 1), poison 0x5ac060 (type 6), Vapourize 0x5ac160, the Mystery Damage
   crate 0x5cafdc; no phase test, no once-per-turn guard; none at damage 0 (0x5ab805) or with WormData +0xec & 0x800 (0x5ab847, flag not
   named). Drowning posts Worm.Damaged.Current itself (0x5ad77d).
+- Drowning, 0x5ad640 each frame (not in states 7 / 8, nor with [0x955640] set): once the worm is under Water.Level less its drown
+  offset: `Turn.Boring` 0 if it was > 0; a vital worm (WormData +0xec & 0x100) posts WormManager.SurrenderTeamById; **only if it is
+  the active worm** ([0x95fb98] == this, 0x5ad754) Worm.Damaged.Current (0x5ad77d), whose stdlib handler runs EndTurn; then the active
+  vampire's share (0x5a9710) and Worm.Drowning (0x5ad7ef). A drowning worm that is not the active one ends no turn [disasm].
+- Worm.Died: only WXWormLogicEntity::Cleanup 0x5a6970 posts it (called from the worm's HandleMessage 0x5b07c0 at 0x5b0bbb): SetData
+  `DeadWorm.Id` = the worm's slot (+0x30, 0x5a69ef), then Worm.Died (0x5a6a1f), then ActiveWormIndex cleared if it was the active
+  one. So `Worm_Died` reads its own worm's DeadWorm.Id, whatever killed it (blast, drowning, fall) [disasm].
+- A player's death does not end a story mission by itself: the scripts read GetActiveAlliances / GetSurvivingTeam in their
+  `TurnEnded` override, so the end waits for the turn's end (EndTurn, post activity, DoPostActivity) [data]. BuildingSiteSaboteurs'
+  `TurnEnded` fails on RoundTimeRemaining <= 0, then on AllianceCount 0 or (AllianceCount 1 and SurvivingTeamIndex 1), wins on
+  `EnemyDead` == 2 (its `Worm_Died` counts DeadWorm.Id 1 and 2, the guards), else StartTurn [data: TurnEnded pcs 0-57].
 - Ammo (0x50d900): Inventory.WormNN[slot] + Inventory.TeamNN[TeamIndex] + Inventory.AllianceNN[TeamData.AlliedGroup], -1 when any of
   the three is -1; delays come from `Inventory%d.WeaponDelays` of the worm's team. Worm slots: kMaxWorms 16 (assert 0x50c24a), teams 4
   (0x50d350). LOCAL.XOM [data] gives every Worm / Team / Alliance inventory SkipGo and Surrender -1, but GameLogicService's init
@@ -251,6 +262,7 @@ Particles (ParticleHandlerService 0x5c1530):
 - `Particle.NewEmitter`: looks for the level detail named `Particle.DetailObject` (all detail lists, exact name); found: with
   `Particle.Locator` empty the effect `Particle.Name` starts at the detail (0x5c09d0) and its handle goes to `Particle.Handle`; not found:
   nothing, the handle keeps its value. `Particle.NewUserIdEmitter` (movies' CreateEmitter) takes the UserId as the handle.
+- Emitter position [disasm 0x5c1530 loop, 0x5c09d0 call]: for each effect emitter the detail's own world position (detail +0x8 / +0xc / +0x10, copied to the call's position argument) is passed to 0x5c09d0, with no crate lookup and no offset: the effect stays at the detail for good and never follows an object. The emitter's own `EmitterOriginOffset` / `EmitterOriginRandomise` (PARTTWK, units, 20 per metre) are added by the effect; WXP_CollectableItem has offset 0 and randomise (6, 2, 6) / (0..) units, WXP_TreasureTwinkle (5, 5, 5) and (10, 10, 10) [data PARTTWK]. A SneakyBridgeThieves marker `CrateN` sits 0.24-0.9 m (map metres) above the land; the crate then rests on it, so the glow stays at the marker, above the crate's centre by the crate's own height less the gap [data + ours].
 - `Particle.DelGraphicalEmitter(handle)` (0x5bfde0 -> ParticleEmitterEffectEntity 0x5bcf50): state 3, the emitter stops; `...Imm` also
   frees its particle group and kills the entity at once.
 - Level databanks hold their own effects (`WXPL_*`: ParticleEmitterContainer / EffectDetailsContainer, e.g. DINERMIGHT 4 / 1) next to
@@ -292,6 +304,10 @@ Mine.StartsMidAir +0x198):
   0x58117f under MineRespawn): a mine laid with the Landmine weapon never fizzles.
 - `GameLogic.PlaceObjects` 0x4fb490 (one LCG draw first): every level detail whose name is exactly "mine" -> CreateMine, "oildrum" ->
   0x4facb0, "minefactory" -> CreateMineFactory 0x4f64f0, "telepad" -> 0x4fadb0.
+  Placed objects [disasm]: CreateOildrum 0x4facb0 copies the detail's position into OilDrumLogicEntity +0x20 and does nothing else; the drum's
+  mesh origin is its base (Bundl09 OilDrum y 0..20 units) and its fall 0x5d1c60 casts a point from that position, landing at the hit
+  (position = the ground contact, sphere radius 9 at it), so a map drum rests with its base on the ground. Random mines and drums (0x4f26b0)
+  get hit + (0, r, 0) with r = 3 (Landmine Radius) / 9 (drum), then fall to the ground.
 - Mine.DetonationType is read at each landmine Detonate (0x581113): -1 Random, 0 keeps kWeaponLandmine's DetonateMultiEffect (0 =
   kDT_Random [data]), 1..4 that type; Random -> (rand & 3) + 1 (weapons.md "DetonateMultiEffect handling").
 - `Payload.Deleted` is posted by every payload's teardown (0x580560) with Payload.Deleted.Id = its task id and .LastPosition: GibbonTake
@@ -435,5 +451,16 @@ Crates (CrateLogicEntity, vtable 0x8619a0, HandleMessage 0x5cb330, spawn 0x5c9bd
   / ImpulseRadius (impulse centre one radius under the crate), WXP_ExpiryExplosion, Crate.Index, Crate.Destroyed.
 - Crate.Delete (int Index) 0x5c5cf0, if not collected or blown: Crate.Index, Crate.Destroyed, deleted, no blast. Crate.RadarHide /
   RadarDisplay (int Index): +0x86 off / on (on by default, 0x5c61fa), read by the radar 0x5f6aa0.
+- Position [disasm]: the crate's position (+0x2c) is its sphere centre, radius +0x44 = 10 x Scale units (0x5c5700, asserted > 0). Marker spawn
+  0x5c8ed0 copies the detail's position unchanged (no offset). GroundSnap 0x5c80a0: a land ray down from that position, no limit and no
+  water test; hit: position = hit, then y += radius (0x5c8153), landed (+0x62), chute off (+0x65); no hit: y = Water.Level, sinking (+0x69),
+  WXP_WaterSmallSplash. Fall 0x5c9420 casts a point 1 radius under the centre (0x5c94d0 `y - [+0x44]`, 20 ms parabola 0x466ae0, land only):
+  a hit within 20 ms is a landing and 0x5c8900 gives v = 0.2 (vx, -vy, vz), at rest under 0.02 units/ms position = the hit + radius (0x5c89b1..0x5c89cb).
+  Gravity 0 never casts or moves. RandomSpawnPos 1 (0x5c6560): x, z uniform in the team-0 spawn box (tables 0x955788 centre / 0x955800 half size,
+  both set at Land.Import 0x477060), a land ray from Land.MaxHeight (+0x315c), 100 tries each needing the hit above Water.Level and no worm
+  collider on the column; accepted: position = hit + 300 units (0x5c6792); all failed: the last draw's column top.
+- Data [data: the 470 containers of the 51 scripts]: Scale 1 on 306, 1.5 on 107 (all pinned), 2 on 27, 2.5 on 1, 3 on 4, 0.0001 on 25 (targets);
+  Type strings come capitalised too (Weapon, Utility, Target, Health); GroundSnap 1 on 48 (28 of them with Gravity 1), Gravity 0 on 233,
+  Parachute 0 with Gravity 1 on 21, WaitTillLanded 0 on 69, FallSpeed 0 on all.
 - Data: none of the 470 CrateDataContainers of the 51 levels changes LifetimeSec (-1), LifetimeTurns (-1), FallSpeed (0), UXB (0),
   RandomSpawnPos (0), DelayMillisec (0) or Showered (0) [data].

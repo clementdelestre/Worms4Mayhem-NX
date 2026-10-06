@@ -18,14 +18,15 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("sheep", "Sheep", 0.8, false, &["Run", "Jump"]),
     ("airstrike", "Airstrike.Payload", 1.2, false, &["Spin"]),  // 24 units at 20 per metre; WEAPTWK AnimTravel
     ("donkey", "Donkey", 10.02, false, &[]),  // 167 units tall x WEAPTWK Scale 1.2 at 20 per metre
-    ("crate_health", "Crate.Health", 0.9, false, &[]),
-    ("crate_weapon", "Crate.Weapon", 0.9, false, &[]),
-    ("crate_utility", "Crate.Utility", 0.9, false, &[]),
-    ("crate_mystery", "Crate.Mystery", 0.9, false, &[]),
-    ("mine", "Landmine", 0.4, false, &[]),
+    // size = the raw extent at 20 units per metre (Bundl09 meshes: crate 20-25 units, Landmine 10, OilDrum 22.8)
+    ("crate_health", "Crate.Health", 1.0145, false, &[]),
+    ("crate_weapon", "Crate.Weapon", 1.0565, false, &[]),
+    ("crate_utility", "Crate.Utility", 1.23, false, &[]),
+    ("crate_mystery", "Crate.Mystery", 1.0155, false, &[]),
+    ("mine", "Landmine", 0.505, false, &[]),
     // PayloadGraphicEntity 0x57d9dd: drawn instead of Landmine past 300 units from the camera; 0.381 = 0.4 x 9.617 / 10.096 (extents), the mine's scale
-    ("mine_low", "LandmineLow", 0.381, false, &[]),
-    ("barrel", "OilDrum", 1.0, false, &[]),
+    ("mine_low", "LandmineLow", 0.481, false, &[]),
+    ("barrel", "OilDrum", 1.138, false, &[]),
     ("target", "Crate.Target", 0.0, false, &[]),  // a target crate (CrateGraphicEntity 0x5c4e69), raw units
     // MineFactoryLogicEntity's graphic at the factory position, no rotation (0x5cf020); raw units, clips by its messages
     ("mine_factory", "MineFactory", 0.0, false, &["MineFactoryStart", "MineFactoryFireStart", "MineFactoryFireEnd"]),
@@ -1030,8 +1031,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     o.extend((g.bin.len() as u32).to_le_bytes());
     o.extend(b"BIN\0");
     o.extend(&g.bin);
-    let info = format!("{} parts, {} bones, {} images, {:.0}x{:.0}x{:.0} units -> scale {k:.4}{}{}", s.parts.len(), s.bones.len(), images.len(),
-        hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], if clip_names.is_empty() { "" } else { ", clips: " }, clip_names.join(", "));
+    let info = format!("{} parts, {} bones, {} images, {:.2}x{:.2}x{:.2} units (y {:.1}..{:.1}) -> scale {k:.4}{}{}", s.parts.len(), s.bones.len(), images.len(),
+        hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], lo[1], hi[1], if clip_names.is_empty() { "" } else { ", clips: " }, clip_names.join(", "));
     // per primitive: blend factors (-1 -1 = opaque), clip change of rotate Y (rad), offset U, V, last key time; then the clip
     // length and the Sun locator (SkyBoxEntity: lens flare)
     let mut side: String = out.iter().map(|p| {

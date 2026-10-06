@@ -19,7 +19,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <future>
 #include <map>
+#include <set>
 #include <mutex>
 #include <thread>
 
@@ -87,28 +89,34 @@ bool plOk = false;
 std::map<std::string, Texture2D> cache;
 
 std::mutex predMu;
-std::map<std::string, Image> predecoded;  // predecode() output, uploaded by tex()
+std::map<std::string, Image> predecoded;  // predecode() output with its mipmaps, uploaded by tex()
+std::set<std::string> decoding;           // queued for predecode(), not decoded yet
+std::vector<std::future<void>> decoders;  // under predMu
 
-// assets/ui/<name>.png, loaded once; id 0 when missing
+// assets/ui/<name>.png, loaded once; id 0 when missing or still decoding
 Texture2D tex(const std::string &name) {
     auto it = cache.find(name);
     if (it != cache.end()) return it->second;
     Texture2D t{};
     Image pre{};
-    if (std::lock_guard<std::mutex> l(predMu); predecoded.count(name)) pre = predecoded[name], predecoded.erase(name);
-    if (pre.data) {
+    {
+        std::lock_guard<std::mutex> l(predMu);
+        if (decoding.count(name)) return t;
+        if (predecoded.count(name)) pre = predecoded[name], predecoded.erase(name);
+    }
+    if (pre.data) {  // one texture upload, no SD read, decode or GPU mipmap pass here
         t = LoadTextureFromImage(pre);
         UnloadImage(pre);
-        GenTextureMipmaps(&t);
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
         return cache[name] = t;
     }
     const char *p = TextFormat(DATA_DIR "assets/ui/%s.png", name.c_str());
     if (FileExists(p)) {
-        TraceLog(LOG_INFO, "UI: texture %s loaded on first use", name.c_str());  // a frame-time hitch in a match: warm it at load
+        double start = GetTime();
         t = LoadTexture(p);
         GenTextureMipmaps(&t);
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
+        TraceLog(LOG_INFO, "UI: texture %s loaded on first use, %.1f ms", name.c_str(), (GetTime() - start) * 1000);  // a frame hitch: warm it earlier
     }
     return cache[name] = t;
 }
@@ -180,7 +188,21 @@ void popup(Rectangle d) {
     DrawRectangleRoundedLinesEx(d, 0.08f, 6, 3, BLACK);
 }
 
+// true while name decodes off the main thread; a level picture not decoded yet starts that
+bool pending(const std::string &name) {
+    if (cache.count(name)) return false;
+    {
+        std::lock_guard<std::mutex> l(predMu);
+        if (decoding.count(name)) return true;
+        if (predecoded.count(name) || name.compare(0, 7, "levels/")) return false;
+    }
+    predecode({name});
+    return true;
+}
+
+// a picture still decoding draws nothing until it is in (returns true: no fallback drawn meanwhile)
 bool image(const std::string &name, Rectangle d, Color tint = WHITE) {
+    if (pending(name)) return true;
     Texture2D t = tex(name);
     if (t.id) DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, d, {}, 0, tint);
     return t.id;
@@ -219,6 +241,8 @@ const MapInfo &mapInfo(const std::string &m) {
 }
 
 
+std::set<std::string> levelPics;  // assets/ui/levels/*.png names, listed by mapHeads()
+
 // Level picture: the map's preview, else its theme's picture, else nolevel
 std::string preview(const std::string &m) {
     static std::map<std::string, std::string> cache;
@@ -228,14 +252,15 @@ std::string preview(const std::string &m) {
         {"arabian", "level_arabian"}, {"camelot", "level_camelot"}, {"construction", "level_building"}, {"jurassic", "level_prehistoric"}, {"wildwest", "level_wildwest"}};
     const MapInfo &i = mapInfo(m);
     std::string pv = m.empty() ? "random_camelot" : i.pic;
-    if (!m.empty() && (pv.empty() || !tex("levels/" + pv).id)) pv = THEME.count(i.theme) ? THEME.at(i.theme) : "";
-    return cache[m] = tex("levels/" + pv).id ? "levels/" + pv : "levels/nolevel";
+    if (!m.empty() && !levelPics.count(pv)) pv = THEME.count(i.theme) ? THEME.at(i.theme) : "";
+    return cache[m] = levelPics.count(pv) ? "levels/" + pv : "levels/nolevel";
 }
 
 }  // namespace
 
 // W4M's level name, else from the file name: "EscapeFromTreeRex" -> "Escape From Tree Rex", "Alien-w3d" -> "Alien (W3D)"
 void mapHeads(const std::vector<std::string> &maps) {
+    for (std::string p : Loading::list(DATA_DIR "assets/ui/levels", ".png")) levelPics.insert(p.substr(p.rfind('/') + 1, p.size() - p.rfind('/') - 5));
     // w4m-maps' index.tsv holds those heads in one read; a map it lacks (added by hand) has its own head read
     if (FILE *f = fopen(DATA_DIR "assets/maps/index.tsv", "rb")) {
         std::map<std::string, MapInfo> idx;
@@ -437,19 +462,37 @@ void load() {
     else font = GetFontDefault();
 }
 
-void predecode(const std::string &name) {
-    std::string p = DATA_DIR "assets/ui/" + name + ".png";
-    int n = 0;
-    unsigned char *d = FileExists(p.c_str()) ? LoadFileData(p.c_str(), &n) : nullptr;
-    if (!d) return;
-    Image img = LoadImageFromMemory(".png", d, n);
-    UnloadFileData(d);
+void predecode(const std::vector<std::string> &names) {
+    std::vector<std::string> todo;
+    {
+        std::lock_guard<std::mutex> l(predMu);
+        for (const std::string &n : names) if (!predecoded.count(n) && decoding.insert(n).second) todo.push_back(n);
+    }
+    if (todo.empty()) return;
     std::lock_guard<std::mutex> l(predMu);
-    if (img.data && !predecoded.count(name)) predecoded[name] = img;
-    else UnloadImage(img);
+    decoders.erase(std::remove_if(decoders.begin(), decoders.end(), [](std::future<void> &f) { return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }),
+                   decoders.end());
+    decoders.push_back(std::async(std::launch::async, [todo] {
+#ifdef __SWITCH__
+        svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3F);  // core 0 below the main thread: runs while it waits (vsync, GPU)
+#endif
+        for (const std::string &name : todo) {
+            std::string p = DATA_DIR "assets/ui/" + name + ".png";
+            int n = 0;
+            Image img{};
+            if (unsigned char *d = FileExists(p.c_str()) ? LoadFileData(p.c_str(), &n) : nullptr) img = LoadImageFromMemory(".png", d, n), UnloadFileData(d);
+            if (img.data) ImageMipmaps(&img);
+            std::lock_guard<std::mutex> l(predMu);
+            if (img.data) predecoded[name] = img;
+            decoding.erase(name);
+        }
+    }));
 }
 
 void unload() {
+    std::vector<std::future<void>> d;
+    { std::lock_guard<std::mutex> l(predMu); d.swap(decoders); }
+    d.clear();  // joins them
     for (auto &kv : predecoded) UnloadImage(kv.second);
     predecoded.clear();
     if (preThread.joinable()) preThread.join();
@@ -2567,13 +2610,14 @@ Pause::Action Pause::update() {
     bool popped = !help && (brief >= 0 || open), incoming = popped && last < shown + popupDelay(confirm, brief >= 0) && t >= shown + popupDelay(confirm, brief >= 0);
     if (incoming) Audio::play(brief >= 0 || confirm >= 0 ? S::FeScaleHit : S::FePopupIn);  // Audio_Incoming In_ScaleHitXY / In_ScaleY, with the anim
     last = t;
-    bool plus = P({PLUS}, {KEY_ESCAPE, KEY_P}), ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = plus || P({B}, {KEY_BACKSPACE});
-    if (brief >= 0) {  // Return / Cancel kill it; MenuGoingAway: click3, App.Resume (back to the match, not the pause menu)
-        if (ok || back) brief = -1, open = false, Audio::play(S::HpTick);
+    bool plus = P({PLUS}, {KEY_ESCAPE, KEY_P});
+    if (!open && brief < 0) {  // closed: A / B are the match's, P() would play their menu sounds
+        if (plus) open = true, help = false, popUp(-1);
         return None;
     }
-    if (!open) {
-        if (plus) open = true, help = false, popUp(-1);
+    bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = plus || P({B}, {KEY_BACKSPACE});
+    if (brief >= 0) {  // Return / Cancel kill it; MenuGoingAway: click3, App.Resume (back to the match, not the pause menu)
+        if (ok || back) brief = -1, open = false, Audio::play(S::HpTick);
         return None;
     }
     if (help) {

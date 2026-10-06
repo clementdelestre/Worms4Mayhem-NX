@@ -48,7 +48,6 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | Fire | `fire` | weapons/RocketRelease | -6 |  | 2D | 1 | weapons: RocketRelease | main.cpp `onEvent` |
 | Bounce | `bounce` | weapons/GrenadeBounce | -2 |  | 0.5–60 | 1 | weapons: GrenadeImpact1, GrenadeImpact2, GrenadeImpact3 | main.cpp `onEvent` |
 | Splash | `splash` | weapons/SplashHeavy | 0 |  | 0.5–70 | 2 | weapons: SplashHeavy1, SplashHeavy2, SplashHeavy3 | main.cpp `onEvent` |
-| Jump | `jump` | (none: CC0 jump) | 0 |  | 2D | 1 | — | main.cpp `onEvent` |
 | Sheep | `sheep` | weapons/SheepBaa | -3 |  | 0.5–25 | 1 | weapons: SheepBaa | main.cpp `onEvent` |
 | Holy | `holy` | weapons/Hallelujah | 0 |  | 2D | 1 | weapons: Hallelujah | main.cpp `onEvent` |
 | TurnStart | `turn_start` | weapons/HudAlert | -10 |  | 2D | 1 | weapons: HudAlert | main.cpp `onEvent` |
@@ -88,7 +87,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | FeChange | `fe_change` | global/click2 | 0 |  | 2D | 1 | global: Click2 | ui.cpp `P` |
 | FeClick | `fe_click` | frontendsfx/click | 0 |  | 2D | 1 | frontendsfx: Click | ui.cpp `P`, ui.cpp `Frontend::frame`, ui.cpp `Hud::input` |
 | FeCancel | `fe_cancel` | frontendsfx/Cancel | 0 |  | 2D | 1 | frontendsfx: Cancel | ui.cpp `P`, ui.cpp `Hud::input` |
-| FeError | `fe_error` | global/FEError | 0 |  | 2D | 1 | global: FEError | main.cpp `main`, ui.cpp `Hud::input` |
+| FeError | `fe_error` | global/FEError | 0 |  | 2D | 1 | global: FEError | ui.cpp `Hud::input` |
 | FeType | `fe_type` | global/Typewriter | 0 |  | 2D | 1 | global: Typewriter | ui.cpp `Frontend::frame` |
 | FePage | `fe_page` | frontendsfx/PageTurn | 0 |  | 2D | 1 | frontendsfx: PageTurn | ui.cpp `missionMenu` |
 | FePopupIn | `fe_popup_in` | global/In_ScaleY | 0 |  | 2D | 1 | global: In_ScaleY | ui.cpp `enterSfx`, ui.cpp `Hud::input`, ui.cpp `Pause::update` |
@@ -161,8 +160,9 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | BananaBounce | `banana_bounce` | weapons/BananaBombImpact | -6 |  | 0.5–60 | 1 | weapons: BananaBombImpact | main.cpp `onEvent` Bounce (WEAPTWK BounceSfx of kWeaponBananaBomb) |
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 | FeScaleHit | `fe_scalehit` | global/In_Scalehitxy | 0 |  | 2D | 1 | global: In_Scalehitxy | ui.cpp `Pause::update`: WXFEP.MissionBriefing's Audio_Incoming (kAUDIO_In_ScaleHitXY), at its 200 ms Delay_Incoming [data] |
+| Gong | `gong` | weapons/Gong | -5 |  | 2D | 1 | weapons: Gong | main.cpp `main` (Weapon.NotClearToFire, 0x552630) |
 
-Notes from the code comments: `Jump` has no W4M event (CC0 file only); `Homing` (MissileLoop) loops in FEV but its Time envelope
+Notes from the code comments: `Homing` (MissileLoop) loops in FEV but its Time envelope
 ends it at 5.03 s, so it is one pass of the 5.85 s clip [ours]: started with a 1 s trigger delay when a Bazooka or Homing Missile shot exists, placed on the shot every frame, stopped at 5.03 s of flight or when the shot is gone (no 500 ms fade-out, the blast covers it); the Fire event plays RocketRelease (2D, -6 dB) for both [data + disasm, docs/w4m/audio.md "MissileLoop owners"]; `Parachute` is the Open layer of ParachuteLoop; `Pickup` uses PickupWeapon's −11 dB for all
 three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6);
 `FeBookOut` has event volume 0 in W4M (silent); `BubbleLoop` plays one of Bubble1–6 per 500 ms spawn of WXP_Bubbles_Small (FEV spawn 500..500 on a oneshot instance, fmod_event 0x1001a3ec; the emitter starts its event once, 0x5bdcf4).
@@ -202,3 +202,8 @@ Weapon effects started by name (`GameEvent::fx`, `Fx::start`) play their Emitter
 sound of its own in `onEvent`. The Fatkins Detonate's DetonationSfx weapons/ExplosionLarge is the same event as its
 WXP_ExplosionX_InnercloudLarge's (max playbacks 1, steal oldest), started a 20 ms update later: only the emitter's is played [data; the
 steal: assumed FMOD behaviour 1].
+
+## Sound table integrity [ours]
+- `DEFS` in audio.cpp carries the `Sfx` id and the file name of each row; a `static_assert` fails if row i is not `Sfx` i (a shifted enum could play a menu sound for a game action). `ui_check` also fails if a `fe_*` file maps to a non-frontend event or the reverse.
+- `Jump` had no W4M event (a CC0 file only): removed, a jump plays only its speech line (`Voice::Jump`). `FeError` was misused for `Weapon.NotClearToFire`, whose sound is `weapons/Gong` [disasm, docs/w4m/targeting.md]: now `Gong`.
+- Bug on Switch (menu "back" sound on jump): `Ui::Pause::update` read A / B through `P()` (which plays the menu sounds) every frame, even with the pause menu closed, so B (jump) played `FeCancel` and A `FeClick`. Now A / B are read only while the menu or the briefing is open.

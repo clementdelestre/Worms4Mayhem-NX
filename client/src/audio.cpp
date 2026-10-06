@@ -27,163 +27,148 @@
 namespace Audio {
 namespace {
 
-// importer drops extracted W4M sounds under ASSET_ROOT; bundled CC0 defaults live in ROMFS_ROOT
-const char *SFX_NAMES[] = {
-    "explosion", "big_explosion", "fire", "bounce", "splash", "jump", "sheep", "holy", "turn_start", "tick",
-    "shotgun",   "airstrike",     "donkey", "rope", "teleport",
-    "bat_swing", "fire_punch", "prod", "sniper", "bow", "homing", "old_woman", "scouser", "sentry_place", "sentry_fire",
-    "dynamite", "gas", "abduction", "flood", "parachute", "mine_beep", "crate_land", "pickup", "super_sheep",
-    "step", "land", "hp_tick",
-    "crate_impact_health", "crate_impact_weapon", "crate_impact_util", "cheer",
-    "fe_highlight", "fe_change", "fe_click", "fe_cancel", "fe_error", "fe_type", "fe_page", "fe_popup_in", "fe_popup_out", "fe_next_in", "fe_next_out",
-    "fe_prev_in", "fe_prev_out", "fe_bounce", "fe_slide", "fe_net", "fe_custom", "fe_soundvid", "fe_controller", "fe_factory",
-    "fe_book_in", "fe_book_out", "fe_grenade", "fe_wormpot", "fe_speech", "wormpot_spin", "wormpot_stop",
-    "holy_boom", "holy_held",
-    "bomb_whistle", "cow_fall", "power_rocket", "power_homing", "power_bow",
-    "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
-    "held_sheep", "held_sentry", "held_scouser", "held_old_woman", "lock_on",
-    "ufo_appearing", "ufo_active", "ufo_beam", "ufo_engine", "ufo_takeoff", "bat_impact", "bubble_inflate", "bubble_wobble", "bubble_loop", "throw", "secret_launch",
-    "tick_slow", "bow_impact", "explosion_boxed", "donkey_impact", "fireworks", "buffalo", "debris", "jetpack", "jetpack_end",
-    "fire_loop", "steam_loop", "flies_loop", "elec_arc", "electric_arcing", "storm_cloud", "hose_into_water",
-    "flood_rain", "flood_thunder", "fatkins_bounce", "banana_bounce", "mine_machine", "fe_scalehit",
-};
-static_assert(sizeof SFX_NAMES / sizeof *SFX_NAMES == (size_t)Sfx::Count, "one file per Sfx");
+// importer drops extracted W4M sounds under ASSET_ROOT/sfx/<file>; bundled CC0 defaults live in ROMFS_ROOT
 // W4M WormsX.fev via tools/w4m-re/fev.py (docs/w4m/audio.md §12): event, dB (event + sounddef + category), loop, 3D rolloff min..max m (0 = 2D), max playbacks,
 // fade s, wave weights (null: equal), sounddef mode (pick), trigger delay / respawn ms (+64/+66, +4/+8), log rolloff, pitch spread (+08, x 4 octaves)
 // env: emitter() gain over time (Time-param envelope x event fade-in), (s, gain) pairs ending at s < 0; layer: oneshot layer started with it
-struct Def { const char *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; float pitchRand = 0;
+struct Def { Sfx id; const char *file, *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; float pitchRand = 0;
              const float *env = nullptr; int layer = -1; };
 // FloodRainLoop: Time 0..15 at 1 unit/s, volume 0.5 to 0.531 x 15 s then 0 at 0.7997 x 15 s, x the 2 s event fade-in (y read as linear gain)
-const float FLOOD_ENV[] = {0, 0, 2, 0.5f, 7.965f, 0.5f, 11.995f, 0, -1};
+constexpr float FLOOD_ENV[] = {0, 0, 2, 0.5f, 7.965f, 0.5f, 11.995f, 0, -1};
 // every other multi-wave def has equal weights in the FEV (100 each, 20 on OldWomanMutter)
-const int W_SCOUSER_HELD[] = {100, 300, 100};
-const Def DEFS[] = {
-    {"global/ExplosionRegular", -3, false, 0.5f, 50, 4, 0, nullptr, 2},
-    {"weapons/ExplosionLarge", -12, false, 0.5f, 40, 1},
-    {"weapons/RocketRelease", -6, false, 0, 0, 1},
-    {"weapons/GrenadeBounce", -2, false, 0.5f, 60, 1, 0, nullptr, 6},
-    {"weapons/SplashHeavy", 0, false, 0.5f, 70, 2, 0, nullptr, 2},
-    {"(none: CC0 jump)", 0, false, 0, 0, 1},
-    {"weapons/SheepBaa", -3, false, 0.5f, 25, 1},
-    {"weapons/Hallelujah", 0, false, 0, 0, 1},
-    {"weapons/HudAlert", -10, false, 0, 0, 1},
-    {"weapons/ClockFast", -2, true, 0, 0, 1},
-    {"weapons/ShotgunFire", -5, false, 0, 0, 1, 0, nullptr, 2},
-    {"weapons/Bomber", -9, true, 0.5f, 60, 1, 0.5f},
-    {"weapons/ConcreteDonkeyRelease", -1, false, 0.5f, 100, 1},
-    {"weapons/NinjaRopeFire", 0, false, 0.5f, 25, 1},
-    {"weapons/Teleport", -8, false, 0.5f, 25, 1, 0.35f, nullptr, 2},
-    {"weapons/BaseballBarSwing", 0, false, 0, 0, 1},
-    {"weapons/FirePunch", -6, false, 0.5f, 25, 1},
-    {"weapons/Prod", -4, false, 0, 0, 1},
-    {"weapons/SniperRifleFire", -3, false, 0, 0, 1},
-    {"weapons/BowRelease", 0, false, 0.5f, 60, 1},
-    {"weapons/MissileLoop", 0, false, 5, 75, 1, 0, nullptr, 1, {1000, 1000}},  // FEV loop; the 5.03 s Time envelope is applied by the caller (Bazooka / Homing shot), one pass of the 5.85 s clip
-    {"weapons/OldWomenLaunch", 0, false, 0.5f, 60, 1},
-    {"weapons/ScouserLaunch", 0, false, 0.5f, 60, 1},
-    {"weapons/SentryGunHeld", -8, true, 0.5f, 20, 1},
-    {"weapons/SentryGun", -3, true, 0.5f, 100, 1},
-    {"weapons/FuseLoop", -4, true, 0.5f, 25, 1},
-    {"weapons/GasLoop", -16, false, 0.5f, 15, 1},
-    {"weapons/AlienUfoBeamStart", 0, false, 0.5f, 100, 1},
-    {"weapons/RainLoop", -6, true, 0, 0, 1, 2},
-    {"weapons/ParachuteLoop", -2, false, 0.5f, 25, 1},  // the Open layer, a oneshot
-    {"weapons/MineArmLoop", 0, true, 5, 25, 1},
-    {"weapons/CrateSpawn", -4, false, 0.5f, 60, 1},
-    {"weapons/PickupWeapon", -11, false, 0.5f, 25, 1},  // PickupUtil -11, PickupHealthCrate -6
-    {"weapons/WingFlap", -3, false, 0.5f, 25, 1, 0, nullptr, 2},
-    {"weapons/OldWomenFootsteps", -6, false, 0.5f, 60, 1, 0, nullptr, 2, {120, 120}, {0, 1}},
-    {"weapons/Thud", 0, false, 0.5f, 25, 2, 0, nullptr, 2},
-    {"global/click3", 0, false, 0, 0, 1},
-    {"weapons/CrateImpactHealth", -2, false, 0.5f, 60, 1},
-    {"weapons/CrateImpactWeapon", -2, false, 0.5f, 60, 1},
-    {"weapons/CrateImpactUtil", -3, false, 0.5f, 60, 1},
-    {"cheer/cheer", -12.9f, true, 0, 0, 1},
-    {"global/Highlight", 0, false, 0, 0, 1},
-    {"global/click2", 0, false, 0, 0, 1},
-    {"frontendsfx/click", 0, false, 0, 0, 1},  // priority 64, the only menu sound below 128: irrelevant without a voice limit
-    {"frontendsfx/Cancel", 0, false, 0, 0, 1},
-    {"global/FEError", 0, false, 0, 0, 1},
-    {"global/Typewriter", 0, false, 0, 0, 1},
-    {"frontendsfx/PageTurn", 0, false, 0, 0, 1},
-    {"global/In_ScaleY", 0, false, 0, 0, 1},
-    {"frontendsfx/Out_ScaleY", 0, false, 0, 0, 1},
-    {"frontendsfx/In_Next", 0, false, 0, 0, 1},
-    {"frontendsfx/Out_Next", 0, false, 0, 0, 1},
-    {"frontendsfx/In_Prev", 0, false, 0, 0, 1},
-    {"frontendsfx/Out_Prev", 0, false, 0, 0, 1},
-    {"frontendsfx/In_BigBounce", 0, false, 0, 0, 1},
-    {"frontendsfx/In_SlideX", 0, false, 0, 0, 1},
-    {"frontendsfx/In_Net", 0, false, 0, 0, 1},
-    {"frontendsfx/In_Custom", 0, false, 0, 0, 1},
-    {"frontendsfx/In_SoundVid", 0, false, 0, 0, 1},
-    {"global/In_Controller", 0, false, 0, 0, 1},
-    {"frontendsfx/In_WeaponFactory", 0, false, 0, 0, 1},
-    {"frontendsfx/In_Book", 0, false, 0, 0, 1},
-    {"frontendsfx/Out_Book", -INFINITY, false, 0, 0, 1},  // event volume 0: silent in W4M
-    {"frontendsfx/grenade", 0, false, 0, 0, 1},
-    {"frontendsfx/In_Wormpot", 0, false, 0, 0, 1},
-    {"frontendsfx/In_Speech", 0, false, 0, 0, 1},
-    {"frontendsfx/WormPotLoop", 0, true, 0, 0, 1},
-    {"frontendsfx/WormPotStop", 0, false, 0, 0, 1},
-    {"weapons/HolyGrenadeExplosion", -1, false, 0, 0, 1},
-    {"weapons/HolyGrenadeHeld", -10, true, 0.5f, 25, 1, 0.35f},
-    {"weapons/BombWhistle", -14, false, 0.5f, 40, 6},
-    {"weapons/CowFall", -6, false, 0.5f, 25, 2, 0, nullptr, 2},
-    {"weapons/RocketPowerUp", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
-    {"weapons/HomingMissilePowerUp", -6, false, 0.5f, 25, 1},
-    {"weapons/BowCreak", -2, false, 0.5f, 25, 1},
-    {"weapons/AirEquip", -12, false, 0.5f, 500, 1},  // the Equip events: 3D linear 1..10000 units, sound definition -12 dB
-    {"weapons/BazookaEquip", -12, false, 0.5f, 500, 1},
-    {"weapons/BubbleEquip", -12, false, 0.5f, 500, 1},
-    {"weapons/DefaultEquip", -12, false, 0.5f, 500, 1},
-    {"weapons/PotionEquip", -11, false, 0, 0, 1},  // event -9 dB, 2D
-    {"weapons/ScouserArm", -7, false, 0.5f, 25, 1},
-    {"weapons/ShotgunEquip", -12, false, 0.5f, 500, 1},
-    {"weapons/SniperEquip", -12, false, 0.5f, 500, 1},
-    {"weapons/UmbrellaOpen", -12, false, 0, 0, 1},  // 2D
-    {"weapons/SheepHeld", -9.2f, false, 0.5f, 25, 1, 0, nullptr, 3, {1000, 3000}, {0, 1}, true},
-    {"weapons/SentryGunHeld", -8, true, 0.5f, 20, 1, 0.35f},
-    {"weapons/ScouserHeld", 0, false, 0.5f, 60, 1, 0, W_SCOUSER_HELD, 0, {200, 1200}, {0, 1}},
-    {"weapons/OldWomanHeld", -7, false, 0.5f, 60, 1, 0, nullptr, 0, {200, 1600}, {0, 1}},
-    {"weapons/LockOn", 0, false, 0, 0, 1},  // sample TargetAquired, 2D
-    {"weapons/AlienUfoAppearing", 0, false, 0.5f, 100, 1},  // the UFO events: 3D linear 10..2000 units; TakeOff 2D
-    {"weapons/AlienUfoActive", 0, false, 0.5f, 100, 1},
-    {"weapons/AlienUfoBeamLoop", 0, true, 0.5f, 100, 1, 0.5f},
-    {"weapons/AlienUfoEngineLoop", 0, true, 0.5f, 100, 1, 0.5f},
-    {"weapons/AlienUFOTakeOff", 0, false, 0, 0, 1},
-    {"weapons/BaseballBatImpact", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
-    {"weapons/BubbleMachineInflate", -2, false, 0.5f, 25, 1},  // sample BubbleMachinePlace; both 3D linear 10..500 units
-    {"weapons/BubbleMachineWobble", -2, false, 0.5f, 25, 1},
-    {"weapons/BubbleMachineLoop", -22, false, 0.5f, 20, 1, 0, nullptr, 2, {}, {500, 500}},  // 3D linear 10..400 units; one of Bubble1-6 per 500 ms spawn
-    {"weapons/Throw", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
-    {"weapons/SecretWeapLaunch", 0, false, 0, 0, 1},  // 2D
-    {"weapons/ClockSlow", -2, true, 0, 0, 1},
-    {"weapons/BowImpact", 0, false, 0.5f, 100, 1},  // 3D linear 10..2000 units
-    {"weapons/ExplosionBoxed", -2, false, 0, 0, 4},  // 2D
-    {"weapons/ConcreteDonkeyImpact", 0, false, 0, 0, 1, 0, nullptr, 2},  // 2D, 3 waves
-    {"global/FireWorksExplosion", 0, false, 0.5f, 25, 1, 0, nullptr, 2, {}, {}, true},  // EmitterSoundFX of the WXPF_ / Starburst bangs
-    {"weapons/BuffaloOfLies", -2, false, 0.5f, 25, 1},
-    {"weapons/Debris", -12, false, 0.5f, 100, 1, 0, nullptr, 2, {}, {}, false, 0.025f},
-    {"weapons/JetPack", -3, true, 0.5f, 60, 1},  // 3D linear 10..1200 units
-    {"weapons/JetPackEnd", -3, false, 0.5f, 60, 1},
-    {"weapons/FireLoop", -10, true, 0.5f, 25, 4, 0.5f},  // 3D linear 10..500 units, fade out 500 ms
-    {"weapons/SteamLoop", -15, true, 0.5f, 25, 4, 0.5f},
-    {"weapons/FliesLoop", -12, true, 0.05f, 10, 1},  // 1..200 units
-    {"weapons/ElecArc", -6, true, 0.5f, 15, 1},  // 10..300 units
-    {"weapons/ElectricArching", 0, true, 0.5f, 25, 1},
-    {"weapons/StormCloud", 0, false, 0.5f, 80, 4, 0.5f, nullptr, 2},  // ThunderClaps x 5, 10..1600 units
-    {"weapons/HoseIntoWater", 0, true, 0.05f, 35, 1},  // TapIntoWater, 1..700 units
-    {"weapons/FloodRainLoop", -2, true, 0, 0, 1, 0, nullptr, 3, {}, {}, false, 0, FLOOD_ENV, (int)Sfx::FloodThunder},  // 2D, layer RainLoop -2 dB
-    {"weapons/FloodRainLoop (Thunder layer)", 0, false, 0, 0, 1, 0, nullptr, 3, {1500, 1500}},  // oneshot, sounddef delay 1500 ms
-    {"weapons/FatkinsBounce", -3, false, 0, 0, 1, 0, nullptr, 2},  // 2D, FatkinsBounce1-2
-    {"weapons/BananaBombImpact", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
-    {"weapons/MineMachineOperate", -10, true, 0, 0, 1, 0.35f},  // 2D loop, fades 350 ms
-    {"global/In_Scalehitxy", 0, false, 0, 0, 1},
+constexpr int W_SCOUSER_HELD[] = {100, 300, 100};
+constexpr Def DEFS[] = {
+    {Sfx::Explosion, "explosion", "global/ExplosionRegular", -3, false, 0.5f, 50, 4, 0, nullptr, 2},
+    {Sfx::BigExplosion, "big_explosion", "weapons/ExplosionLarge", -12, false, 0.5f, 40, 1},
+    {Sfx::Fire, "fire", "weapons/RocketRelease", -6, false, 0, 0, 1},
+    {Sfx::Bounce, "bounce", "weapons/GrenadeBounce", -2, false, 0.5f, 60, 1, 0, nullptr, 6},
+    {Sfx::Splash, "splash", "weapons/SplashHeavy", 0, false, 0.5f, 70, 2, 0, nullptr, 2},
+    {Sfx::Sheep, "sheep", "weapons/SheepBaa", -3, false, 0.5f, 25, 1},
+    {Sfx::Holy, "holy", "weapons/Hallelujah", 0, false, 0, 0, 1},
+    {Sfx::TurnStart, "turn_start", "weapons/HudAlert", -10, false, 0, 0, 1},
+    {Sfx::Tick, "tick", "weapons/ClockFast", -2, true, 0, 0, 1},
+    {Sfx::Shotgun, "shotgun", "weapons/ShotgunFire", -5, false, 0, 0, 1, 0, nullptr, 2},
+    {Sfx::Airstrike, "airstrike", "weapons/Bomber", -9, true, 0.5f, 60, 1, 0.5f},
+    {Sfx::Donkey, "donkey", "weapons/ConcreteDonkeyRelease", -1, false, 0.5f, 100, 1},
+    {Sfx::Rope, "rope", "weapons/NinjaRopeFire", 0, false, 0.5f, 25, 1},
+    {Sfx::Teleport, "teleport", "weapons/Teleport", -8, false, 0.5f, 25, 1, 0.35f, nullptr, 2},
+    {Sfx::BatSwing, "bat_swing", "weapons/BaseballBarSwing", 0, false, 0, 0, 1},
+    {Sfx::FirePunch, "fire_punch", "weapons/FirePunch", -6, false, 0.5f, 25, 1},
+    {Sfx::Prod, "prod", "weapons/Prod", -4, false, 0, 0, 1},
+    {Sfx::Sniper, "sniper", "weapons/SniperRifleFire", -3, false, 0, 0, 1},
+    {Sfx::Bow, "bow", "weapons/BowRelease", 0, false, 0.5f, 60, 1},
+    {Sfx::Homing, "homing", "weapons/MissileLoop", 0, false, 5, 75, 1, 0, nullptr, 1, {1000, 1000}},  // FEV loop; the 5.03 s Time envelope is applied by the caller (Bazooka / Homing shot), one pass of the 5.85 s clip
+    {Sfx::OldWomanFire, "old_woman", "weapons/OldWomenLaunch", 0, false, 0.5f, 60, 1},
+    {Sfx::ScouserFire, "scouser", "weapons/ScouserLaunch", 0, false, 0.5f, 60, 1},
+    {Sfx::SentryPlace, "sentry_place", "weapons/SentryGunHeld", -8, true, 0.5f, 20, 1},
+    {Sfx::SentryFire, "sentry_fire", "weapons/SentryGun", -3, true, 0.5f, 100, 1},
+    {Sfx::Dynamite, "dynamite", "weapons/FuseLoop", -4, true, 0.5f, 25, 1},
+    {Sfx::Gas, "gas", "weapons/GasLoop", -16, false, 0.5f, 15, 1},
+    {Sfx::Abduction, "abduction", "weapons/AlienUfoBeamStart", 0, false, 0.5f, 100, 1},
+    {Sfx::Flood, "flood", "weapons/RainLoop", -6, true, 0, 0, 1, 2},
+    {Sfx::Parachute, "parachute", "weapons/ParachuteLoop", -2, false, 0.5f, 25, 1},  // the Open layer, a oneshot
+    {Sfx::MineBeep, "mine_beep", "weapons/MineArmLoop", 0, true, 5, 25, 1},
+    {Sfx::CrateLand, "crate_land", "weapons/CrateSpawn", -4, false, 0.5f, 60, 1},
+    {Sfx::Pickup, "pickup", "weapons/PickupWeapon", -11, false, 0.5f, 25, 1},  // PickupUtil -11, PickupHealthCrate -6
+    {Sfx::SuperSheepFire, "super_sheep", "weapons/WingFlap", -3, false, 0.5f, 25, 1, 0, nullptr, 2},
+    {Sfx::Step, "step", "weapons/OldWomenFootsteps", -6, false, 0.5f, 60, 1, 0, nullptr, 2, {120, 120}, {0, 1}},
+    {Sfx::Land, "land", "weapons/Thud", 0, false, 0.5f, 25, 2, 0, nullptr, 2},
+    {Sfx::HpTick, "hp_tick", "global/click3", 0, false, 0, 0, 1},
+    {Sfx::CrateImpactHealth, "crate_impact_health", "weapons/CrateImpactHealth", -2, false, 0.5f, 60, 1},
+    {Sfx::CrateImpactWeapon, "crate_impact_weapon", "weapons/CrateImpactWeapon", -2, false, 0.5f, 60, 1},
+    {Sfx::CrateImpactUtil, "crate_impact_util", "weapons/CrateImpactUtil", -3, false, 0.5f, 60, 1},
+    {Sfx::Cheer, "cheer", "cheer/cheer", -12.9f, true, 0, 0, 1},
+    {Sfx::FeHighlight, "fe_highlight", "global/Highlight", 0, false, 0, 0, 1},
+    {Sfx::FeChange, "fe_change", "global/click2", 0, false, 0, 0, 1},
+    {Sfx::FeClick, "fe_click", "frontendsfx/click", 0, false, 0, 0, 1},  // priority 64, the only menu sound below 128: irrelevant without a voice limit
+    {Sfx::FeCancel, "fe_cancel", "frontendsfx/Cancel", 0, false, 0, 0, 1},
+    {Sfx::FeError, "fe_error", "global/FEError", 0, false, 0, 0, 1},
+    {Sfx::FeType, "fe_type", "global/Typewriter", 0, false, 0, 0, 1},
+    {Sfx::FePage, "fe_page", "frontendsfx/PageTurn", 0, false, 0, 0, 1},
+    {Sfx::FePopupIn, "fe_popup_in", "global/In_ScaleY", 0, false, 0, 0, 1},
+    {Sfx::FePopupOut, "fe_popup_out", "frontendsfx/Out_ScaleY", 0, false, 0, 0, 1},
+    {Sfx::FeNextIn, "fe_next_in", "frontendsfx/In_Next", 0, false, 0, 0, 1},
+    {Sfx::FeNextOut, "fe_next_out", "frontendsfx/Out_Next", 0, false, 0, 0, 1},
+    {Sfx::FePrevIn, "fe_prev_in", "frontendsfx/In_Prev", 0, false, 0, 0, 1},
+    {Sfx::FePrevOut, "fe_prev_out", "frontendsfx/Out_Prev", 0, false, 0, 0, 1},
+    {Sfx::FeBounce, "fe_bounce", "frontendsfx/In_BigBounce", 0, false, 0, 0, 1},
+    {Sfx::FeSlide, "fe_slide", "frontendsfx/In_SlideX", 0, false, 0, 0, 1},
+    {Sfx::FeNet, "fe_net", "frontendsfx/In_Net", 0, false, 0, 0, 1},
+    {Sfx::FeCustom, "fe_custom", "frontendsfx/In_Custom", 0, false, 0, 0, 1},
+    {Sfx::FeSoundVid, "fe_soundvid", "frontendsfx/In_SoundVid", 0, false, 0, 0, 1},
+    {Sfx::FeController, "fe_controller", "global/In_Controller", 0, false, 0, 0, 1},
+    {Sfx::FeFactory, "fe_factory", "frontendsfx/In_WeaponFactory", 0, false, 0, 0, 1},
+    {Sfx::FeBookIn, "fe_book_in", "frontendsfx/In_Book", 0, false, 0, 0, 1},
+    {Sfx::FeBookOut, "fe_book_out", "frontendsfx/Out_Book", -INFINITY, false, 0, 0, 1},  // event volume 0: silent in W4M
+    {Sfx::FeGrenade, "fe_grenade", "frontendsfx/grenade", 0, false, 0, 0, 1},
+    {Sfx::FeWormpot, "fe_wormpot", "frontendsfx/In_Wormpot", 0, false, 0, 0, 1},
+    {Sfx::FeSpeech, "fe_speech", "frontendsfx/In_Speech", 0, false, 0, 0, 1},
+    {Sfx::WormpotSpin, "wormpot_spin", "frontendsfx/WormPotLoop", 0, true, 0, 0, 1},
+    {Sfx::WormpotStop, "wormpot_stop", "frontendsfx/WormPotStop", 0, false, 0, 0, 1},
+    {Sfx::HolyBoom, "holy_boom", "weapons/HolyGrenadeExplosion", -1, false, 0, 0, 1},
+    {Sfx::HolyHeld, "holy_held", "weapons/HolyGrenadeHeld", -10, true, 0.5f, 25, 1, 0.35f},
+    {Sfx::BombWhistle, "bomb_whistle", "weapons/BombWhistle", -14, false, 0.5f, 40, 6},
+    {Sfx::CowFall, "cow_fall", "weapons/CowFall", -6, false, 0.5f, 25, 2, 0, nullptr, 2},
+    {Sfx::PowerRocket, "power_rocket", "weapons/RocketPowerUp", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
+    {Sfx::PowerHoming, "power_homing", "weapons/HomingMissilePowerUp", -6, false, 0.5f, 25, 1},
+    {Sfx::PowerBow, "power_bow", "weapons/BowCreak", -2, false, 0.5f, 25, 1},
+    {Sfx::EquipAir, "equip_air", "weapons/AirEquip", -12, false, 0.5f, 500, 1},  // the Equip events: 3D linear 1..10000 units, sound definition -12 dB
+    {Sfx::EquipBazooka, "equip_bazooka", "weapons/BazookaEquip", -12, false, 0.5f, 500, 1},
+    {Sfx::EquipBubble, "equip_bubble", "weapons/BubbleEquip", -12, false, 0.5f, 500, 1},
+    {Sfx::EquipDefault, "equip_default", "weapons/DefaultEquip", -12, false, 0.5f, 500, 1},
+    {Sfx::EquipPotion, "equip_potion", "weapons/PotionEquip", -11, false, 0, 0, 1},  // event -9 dB, 2D
+    {Sfx::EquipScouser, "equip_scouser", "weapons/ScouserArm", -7, false, 0.5f, 25, 1},
+    {Sfx::EquipShotgun, "equip_shotgun", "weapons/ShotgunEquip", -12, false, 0.5f, 500, 1},
+    {Sfx::EquipSniper, "equip_sniper", "weapons/SniperEquip", -12, false, 0.5f, 500, 1},
+    {Sfx::EquipUmbrella, "equip_umbrella", "weapons/UmbrellaOpen", -12, false, 0, 0, 1},  // 2D
+    {Sfx::HeldSheep, "held_sheep", "weapons/SheepHeld", -9.2f, false, 0.5f, 25, 1, 0, nullptr, 3, {1000, 3000}, {0, 1}, true},
+    {Sfx::HeldSentry, "held_sentry", "weapons/SentryGunHeld", -8, true, 0.5f, 20, 1, 0.35f},
+    {Sfx::HeldScouser, "held_scouser", "weapons/ScouserHeld", 0, false, 0.5f, 60, 1, 0, W_SCOUSER_HELD, 0, {200, 1200}, {0, 1}},
+    {Sfx::HeldOldWoman, "held_old_woman", "weapons/OldWomanHeld", -7, false, 0.5f, 60, 1, 0, nullptr, 0, {200, 1600}, {0, 1}},
+    {Sfx::LockOn, "lock_on", "weapons/LockOn", 0, false, 0, 0, 1},  // sample TargetAquired, 2D
+    {Sfx::UfoAppearing, "ufo_appearing", "weapons/AlienUfoAppearing", 0, false, 0.5f, 100, 1},  // the UFO events: 3D linear 10..2000 units; TakeOff 2D
+    {Sfx::UfoActive, "ufo_active", "weapons/AlienUfoActive", 0, false, 0.5f, 100, 1},
+    {Sfx::UfoBeamLoop, "ufo_beam", "weapons/AlienUfoBeamLoop", 0, true, 0.5f, 100, 1, 0.5f},
+    {Sfx::UfoEngine, "ufo_engine", "weapons/AlienUfoEngineLoop", 0, true, 0.5f, 100, 1, 0.5f},
+    {Sfx::UfoTakeOff, "ufo_takeoff", "weapons/AlienUFOTakeOff", 0, false, 0, 0, 1},
+    {Sfx::BatImpact, "bat_impact", "weapons/BaseballBatImpact", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
+    {Sfx::BubbleInflate, "bubble_inflate", "weapons/BubbleMachineInflate", -2, false, 0.5f, 25, 1},  // sample BubbleMachinePlace; both 3D linear 10..500 units
+    {Sfx::BubbleWobble, "bubble_wobble", "weapons/BubbleMachineWobble", -2, false, 0.5f, 25, 1},
+    {Sfx::BubbleLoop, "bubble_loop", "weapons/BubbleMachineLoop", -22, false, 0.5f, 20, 1, 0, nullptr, 2, {}, {500, 500}},  // 3D linear 10..400 units; one of Bubble1-6 per 500 ms spawn
+    {Sfx::Throw, "throw", "weapons/Throw", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
+    {Sfx::SecretLaunch, "secret_launch", "weapons/SecretWeapLaunch", 0, false, 0, 0, 1},  // 2D
+    {Sfx::TickSlow, "tick_slow", "weapons/ClockSlow", -2, true, 0, 0, 1},
+    {Sfx::BowImpact, "bow_impact", "weapons/BowImpact", 0, false, 0.5f, 100, 1},  // 3D linear 10..2000 units
+    {Sfx::ExplosionBoxed, "explosion_boxed", "weapons/ExplosionBoxed", -2, false, 0, 0, 4},  // 2D
+    {Sfx::DonkeyImpact, "donkey_impact", "weapons/ConcreteDonkeyImpact", 0, false, 0, 0, 1, 0, nullptr, 2},  // 2D, 3 waves
+    {Sfx::Fireworks, "fireworks", "global/FireWorksExplosion", 0, false, 0.5f, 25, 1, 0, nullptr, 2, {}, {}, true},  // EmitterSoundFX of the WXPF_ / Starburst bangs
+    {Sfx::Buffalo, "buffalo", "weapons/BuffaloOfLies", -2, false, 0.5f, 25, 1},
+    {Sfx::Debris, "debris", "weapons/Debris", -12, false, 0.5f, 100, 1, 0, nullptr, 2, {}, {}, false, 0.025f},
+    {Sfx::Jetpack, "jetpack", "weapons/JetPack", -3, true, 0.5f, 60, 1},  // 3D linear 10..1200 units
+    {Sfx::JetpackEnd, "jetpack_end", "weapons/JetPackEnd", -3, false, 0.5f, 60, 1},
+    {Sfx::FireLoop, "fire_loop", "weapons/FireLoop", -10, true, 0.5f, 25, 4, 0.5f},  // 3D linear 10..500 units, fade out 500 ms
+    {Sfx::SteamLoop, "steam_loop", "weapons/SteamLoop", -15, true, 0.5f, 25, 4, 0.5f},
+    {Sfx::FliesLoop, "flies_loop", "weapons/FliesLoop", -12, true, 0.05f, 10, 1},  // 1..200 units
+    {Sfx::ElecArc, "elec_arc", "weapons/ElecArc", -6, true, 0.5f, 15, 1},  // 10..300 units
+    {Sfx::ElectricArching, "electric_arcing", "weapons/ElectricArching", 0, true, 0.5f, 25, 1},
+    {Sfx::StormCloud, "storm_cloud", "weapons/StormCloud", 0, false, 0.5f, 80, 4, 0.5f, nullptr, 2},  // ThunderClaps x 5, 10..1600 units
+    {Sfx::HoseIntoWater, "hose_into_water", "weapons/HoseIntoWater", 0, true, 0.05f, 35, 1},  // TapIntoWater, 1..700 units
+    {Sfx::FloodRain, "flood_rain", "weapons/FloodRainLoop", -2, true, 0, 0, 1, 0, nullptr, 3, {}, {}, false, 0, FLOOD_ENV, (int)Sfx::FloodThunder},  // 2D, layer RainLoop -2 dB
+    {Sfx::FloodThunder, "flood_thunder", "weapons/FloodRainLoop (Thunder layer)", 0, false, 0, 0, 1, 0, nullptr, 3, {1500, 1500}},  // oneshot, sounddef delay 1500 ms
+    {Sfx::FatkinsBounce, "fatkins_bounce", "weapons/FatkinsBounce", -3, false, 0, 0, 1, 0, nullptr, 2},  // 2D, FatkinsBounce1-2
+    {Sfx::BananaBounce, "banana_bounce", "weapons/BananaBombImpact", -6, false, 0.5f, 60, 1},  // 3D linear 10..1200 units
+    {Sfx::MineMachine, "mine_machine", "weapons/MineMachineOperate", -10, true, 0, 0, 1, 0.35f},  // 2D loop, fades 350 ms
+    {Sfx::FeScaleHit, "fe_scalehit", "global/In_Scalehitxy", 0, false, 0, 0, 1},
+    {Sfx::Gong, "gong", "weapons/Gong", -5, false, 0, 0, 1},  // 2D
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
+constexpr bool inOrder() {
+    for (int i = 0; i < (int)Sfx::Count; i++) if (DEFS[i].id != (Sfx)i) return false;
+    return true;
+}
+static_assert(inOrder(), "DEFS row i must be Sfx i");
 // Speech/<voice>/*: 0 dB, 3D 0.5..50 m, one playback per event; SadSigh and Yawn -2.5 dB, 0.5..22.5 m
-constexpr Def SPEECH = {"Speech/*", 0, false, 0.5f, 50, 1}, SPEECH_SOFT = {"Speech/*/SadSigh|Yawn", -2.5f, false, 0.5f, 22.5f, 1};
+constexpr Def SPEECH = {Sfx::Count, "", "Speech/*", 0, false, 0.5f, 50, 1}, SPEECH_SOFT = {Sfx::Count, "", "Speech/*/SadSigh|Yawn", -2.5f, false, 0.5f, 22.5f, 1};
 // music/<Theme>: sound definition + category music (-6 dB); every track loops but Victory
 struct Track { const char *name; float db; };
 const Track TRACKS[] = {{"theme", -6}, {"victory", -6}, {"arabian", -9}, {"wildwest", -9}, {"suddendeath", -9}};  // others -12
@@ -220,6 +205,7 @@ struct Bank {
 };
 
 Variants sfx[(int)Sfx::Count];
+unsigned asked = 0;
 std::vector<Bank> banks;
 std::vector<int> teamBank;  // team -> bank, -1 = default
 Music theme, outgoing;
@@ -408,12 +394,12 @@ Variants staged[(int)Sfx::Count];
 std::thread rest[2];
 std::atomic<int> restLeft{0};
 std::atomic<bool> stopLoads{false};
-bool menuSfx(int i) { return !strncmp(SFX_NAMES[i], "fe_", 3) || !strncmp(SFX_NAMES[i], "wormpot_", 8); }
+bool menuSfx(int i) { return !strncmp(DEFS[i].file, "fe_", 3) || !strncmp(DEFS[i].file, "wormpot_", 8); }
 void loadSfx(int first, bool menu, Variants *out) {  // every other sound from first: two decoders
     for (int i = first; i < (int)Sfx::Count && !stopLoads; i += 2) {
         if (menuSfx(i) != menu) continue;
-        out[i] = loadVariants(std::string(ASSET_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
-        if (!out[i].n) out[i] = loadVariants(std::string(ROMFS_ROOT "sfx/") + SFX_NAMES[i], DEFS[i].maxpb);
+        out[i] = loadVariants(std::string(ASSET_ROOT "sfx/") + DEFS[i].file, DEFS[i].maxpb);
+        if (!out[i].n) out[i] = loadVariants(std::string(ROMFS_ROOT "sfx/") + DEFS[i].file, DEFS[i].maxpb);
     }
 }
 
@@ -514,7 +500,12 @@ void listen(const Camera3D &cam) {
     earRight = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(cam.target, cam.position), cam.up));
 }
 
+unsigned requested() { return asked; }
+const char *sfxFile(Sfx id) { return DEFS[(int)id].file; }
+const char *sfxEvent(Sfx id) { return DEFS[(int)id].event; }
+
 static void play(Sfx id, float volume, const Vector3 *at) {
+    asked++;
     Variants *v = &sfx[(int)id];
     if (!v->n && id > Sfx::Tick && id <= Sfx::SuperSheepFire) v = &sfx[(int)Sfx::Fire];
     trigger(*v, DEFS[(int)id], volume, at, (int)id);
@@ -702,7 +693,7 @@ void loadEfmv(const std::string &dir, const std::string &group) {
         int loop, play, waves, n = 0;
         float db, mn, mx;
         if (sscanf(l, "%95s %f %d %f %f %d %d%n", name, &db, &loop, &mn, &mx, &play, &waves, &n) != 7) continue;
-        Efmv e{name, {nullptr, db, loop != 0, mn, mx, 1, 0, nullptr, play}};
+        Efmv e{name, {Sfx::Count, "", nullptr, db, loop != 0, mn, mx, 1, 0, nullptr, play}};
         float x, y;
         int k;
         if (sscanf(l + n, " %f%n", &e.rate, &k) == 1)

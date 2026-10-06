@@ -617,7 +617,7 @@ struct ScriptHost {
         Vector3 hit;
         if (num("Crate.GroundSnap") == 1) {  // 0x5c80a0: onto the land below, landed, no chute, no active object; else at the water line
             o.falling = o.spawning = false;
-            if (g.terrain.raycast({p, {0, -1, 0}}, 1000, &hit) && hit.y > g.water) o.pos.y = hit.y + 0.45f * o.scale;
+            if (g.terrain.raycast({p, {0, -1, 0}}, 1000, &hit)) o.pos.y = hit.y + 0.5f * o.scale;  // + the radius, 10 x Scale units (0x5c8137: +0x44)
             else o.pos.y = g.water;
         }
         g.objects.push_back(o);

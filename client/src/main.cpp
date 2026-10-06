@@ -227,7 +227,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
     case GameEvent::Splash: Audio::play(Sfx::Splash, e.pos); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking
     case GameEvent::Death: say(Voice::Death); break;  // worm speech goes through its WormPoseManager: lip sync (0x59cb20)
     case GameEvent::Hurt: say(Voice::Hurt); break;
-    case GameEvent::Jump: Audio::play(Sfx::Jump, e.pos); say(Voice::Jump); break;
+    case GameEvent::Jump: say(Voice::Jump); break;
     case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); say(Voice::Idle); break;
     case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, e.pos); break;
     case GameEvent::CrateLand:
@@ -1190,10 +1190,16 @@ int main(int argc, char **argv) {
     if (lazy) Models::start();
     Audio::loadRest();
     if (!lazy) Audio::finishLoads(true);
+    static const double titleT = GetTime();
+    static double misList = 0, misPics = 0;  // MISSIONS log: when the list / pictures were ready, from the title
     auto missionsF = std::async(std::launch::async, [] {  // the Missions page's list and pictures, read while the title shows
         Loading::pinCore(2);
         std::vector<MissionSpec> l = listMissions(ROMFS_DIR, DATA_DIR);
-        for (const MissionSpec &m : l) Ui::predecode(m.preview);
+        misList = (GetTime() - titleT) * 1000;
+        std::vector<std::string> pics;
+        for (const MissionSpec &m : l) if (!m.preview.empty()) pics.push_back(m.preview);
+        Ui::predecode(pics);  // queued on its own thread: the list is not held behind the pictures
+        misPics = (GetTime() - titleT) * 1000;
         return l;
     });
     // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit; --animshot <weapon>: a turn firing it, anim_<frame>.png
@@ -1306,7 +1312,10 @@ int main(int argc, char **argv) {
     // --view <map> x y z tx ty tz: shot mode from a fixed camera (overview captures)
     bool fixedView = argc > 8 && !strcmp(argv[1], "--view");
     Camera3D viewCam = {{0, 0, 0}, {0, 0, 0}, {0, 1, 0}, Controls::FOV0, CAMERA_PERSPECTIVE};
-    if (fixedView) {
+    // W4NX_VIEW="x y z tx ty tz": that fixed camera in any mode (--ui missionhud captures)
+    if (const char *v = getenv("W4NX_VIEW"); v && !fixedView)
+        fixedView = sscanf(v, "%f %f %f %f %f %f", &viewCam.position.x, &viewCam.position.y, &viewCam.position.z, &viewCam.target.x, &viewCam.target.y, &viewCam.target.z) == 6;
+    else if (fixedView) {
         shotMap = argv[2];
         viewCam.position = {(float)atof(argv[3]), (float)atof(argv[4]), (float)atof(argv[5])};
         viewCam.target = {(float)atof(argv[6]), (float)atof(argv[7]), (float)atof(argv[8])};
@@ -1526,8 +1535,15 @@ int main(int argc, char **argv) {
     int missionIdx = -1, missionAct = 0;
     bool quick = false;  // W4M GameOver.GameType "Quick" (a quick match) rather than "Multiplayer"
     bool missionSaved = false, eggShown = false;
+    int misFrames = -1;  // MISSIONS log: the Missions page's first frames after its first opening
     auto openMissions = [&] {
-        if (missions.empty()) missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt"), scriptUnlocks = progress.unlocks;
+        if (missions.empty()) {
+            double t = GetTime();
+            missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt"), scriptUnlocks = progress.unlocks;
+            TraceLog(LOG_INFO, "MISSIONS: opened +%.0f ms after the title, waited %.1f ms (list at +%.0f, pictures queued at +%.0f)", (t - titleT) * 1000,
+                     (GetTime() - t) * 1000, misList, misPics);
+            misFrames = 0;
+        }
         screen = Screen::Missions;
     };
     auto startMission = [&](int i, bool preStart = true) {
@@ -1700,7 +1716,15 @@ int main(int argc, char **argv) {
         if (screen == Screen::Missions) {
             BeginDrawing();
             Ui::background();
+            double mt = GetTime();
             int pick = Ui::missionMenu(missionMenu, missions, progress);
+            if (misFrames >= 0 && misFrames < 60) {  // its worst page draw over the first second (texture uploads land there)
+                static double first = 0, worst = 0;
+                double ms = (GetTime() - mt) * 1000;
+                if (!misFrames) first = ms;
+                worst = std::max(worst, ms);
+                if (++misFrames == 60) TraceLog(LOG_INFO, "MISSIONS: page draw first %.1f ms, worst of 60 frames %.1f ms", first, worst);
+            }
             if (Ui::helpHeld()) Ui::controls(false);
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
                 rlDrawRenderBatchActive();
@@ -1887,7 +1911,7 @@ int main(int argc, char **argv) {
         if (aimSeq) Controls::forceAim = frame >= 40 && frame < 90;
         Controls::cpuTurn = cpu(cur.team) && ai.striking() && !playing && irEnd < 0;  // the CPU's own Blimp: only for a planned strike
         Input pin = Controls::read(game, pad, aimShot || aimSeq || utilShot || (padTurn && !cpu(cur.team)), dt);
-        if (Controls::fireRefused()) Audio::play(Audio::Sfx::FeError);  // W4M Weapon.NotClearToFire plays weapons/Gong
+        if (Controls::fireRefused()) Audio::play(Audio::Sfx::Gong);  // W4M Weapon.NotClearToFire plays weapons/Gong
         static bool wasLocked = false;  // HomingLockOnGraphicEntity::OnTargetSelected 0x560420
         if (game.locked && !wasLocked) Audio::play(Audio::Sfx::LockOn);
         wasLocked = game.locked;

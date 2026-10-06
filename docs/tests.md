@@ -121,6 +121,22 @@ Title: ~0.3 s GL, then ~0.5 s of decode, 37 MB of reads (~0.7 s) and ~300 small 
 about 2-3.5 s instead of 46.6. The background part (worm.glb's clips ~3.7 s on one core, 64 MB more) ends a few seconds
 after the title; a match started before that waits for it behind the loading screen.
 
+First Story / Challenges opening (ours, 2026-10-07): `MISSIONS: opened +<ms> after the title, waited <ms> (list at, pictures queued at)`
+then `MISSIONS: page draw first / worst of 60 frames`. Desktop (core 0 only, 3 runs): waited 0.0-11 ms, page draw worst 0.7-1.0 ms.
+Before, the main thread did `missionsF.get()` (joined the list AND the decode of every picture, 51 PNGs + a GPU mipmap pass
+each) and the first draw of each picture decoded or uploaded + mipmapped on the main thread. Now (ours):
+- the async only reads the list (51 small JSONs, ~1 s of SD at most on Switch, behind nothing but its own thread) and queues
+  the pictures with `Ui::predecode` on a thread of their own (not behind worm.glb's workers; priority 0x3F on Switch);
+- the worker decodes AND builds the mipmaps (`ImageMipmaps`), so the main thread only does `LoadTextureFromImage`, one per
+  picture drawn, no GPU mipmap pass;
+- a level picture (`levels/*`, mission list, briefing, match setup map preview) not decoded yet is queued on demand and drawn as
+  nothing until it is in (`image()` / `pending()`); `preview()` lists `assets/ui/levels` once (in `mapHeads`) instead of
+  loading a texture to test for existence. W4M's own behaviour when the picture is late: not measured [assumed none].
+- the setup screen's map picture and the Wormpot page use the same path (Wormpot has no art beyond the preloaded
+  `fe/icon_wxpot`). `UI: texture <name> loaded on first use, <ms>` now logs its cost; the others (weapon icons, HUD) are 0.1-0.5 ms.
+Switch estimate [assumed]: a worker decode+mipmaps of a 256x256 PNG ~25 ms, so the 51 pictures are in ~1.3 s on core 0 at low
+priority; the main thread pays one upload (~1-2 ms) per picture shown.
+
 Left as is: the UI PNGs are stored uncompressed (`back/loadbackgeneric` 8.3 MB of the 23.6 MB menu art); a lossless
 recompression at import trades SD reads for inflate time, to be measured on Switch first. Map previews in the setup screen
 and the HUD art (`warmHud`, behind the loading screen) still load on first use.
@@ -329,6 +345,8 @@ scheme plays with sudden death; rope race reached at levels 1 and 5; Karma + Vam
 | Check | Covers |
 |---|---|
 | `checkLot2` | On the W4M scripts: MineAllMine's 4 placed mines (none from its "MineN" details), Surrender emptied, a sunk Mine1 brings Mine2 (Payload_Deleted); DeathMatch6's factory (activation 15) drops mines on its 7th StartMineFactory; DoomCanyon's Water.Level 20; FastFoodDino's InitFuel; Shotgun2's PreSelected shotgun, and its shots pop a 25-hit-point Target (HighNoonHiJinx's crate) in the line of fire; Sniper's EndlessGun; TurkishDelights' point lights; CPU2 for AI teams with no CPUn copy. |
+| `checkCratePlacement` (alone: `W4NX_MISSION=cratepos`, `W4NX_CRATEPOS=<id>`, `W4NX_SEED`) | Every mission 90 s: each rested crate within 0.3 m of 0.5 m x Scale over the ground, each pinned crate still at its marker (a re-created Index may move), SneakyBridgeThieves Crate5 on its bridge rail (y > 13.8) |
+| `checkDeaths` (alone: `W4NX_MISSION=deaths`) | BuildingSiteSaboteurs, NoRoomForError, TheCrateEscape, MineAllMine: the player's last worm drowned, blown up (a mine at its feet, 20 hp) or walked off the map (into the sea) in its own turn: the turn ends and the script's TurnEnded fails the mission; NoRoomForError / MineAllMine: every enemy drowned in the player's turn reaches Worm_Died (DeadWorm.Id) and wins it. |
 | `checkMovies` (alone: `W4NX_MISSION=movies`) | TinCanWally's Intro plays in the sim for 80.39 s (its last camera's look-at, 600 steps, holds the end); `SKIP_MOVIE` ends it at once; DestructAndServe's `JEFF` coded land frames (the DeLorean) leave no solid voxel once cleared. |
 
 `main` also asserts: `Progress` save/load keeps done, best time and the `unlock` lines; with no imported mission it stops

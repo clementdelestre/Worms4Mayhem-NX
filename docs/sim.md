@@ -159,7 +159,14 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
 
 - **Drop**: at the end of each turn, with two teams or more standing, `crateChance` % (W4M SchemeData, data); 6 tries with the Wormpot Crate Shower (W4M
   GameLogic.CrateShower 0x4fb850, disasm). The contents: health / weapon / utility by the scheme's shares (W4M CreateRandomCrate
-  0x4fa4b0, data), then a weapon by `crate_weight` inside its pool. Spawned 15 m (300 units) over a random land point above water, uniform over the land box, whose column misses every worm; no chute, plain gravity; bounces v = 0.2 (vx, −vy, vz), rests under 1 m/s (CreateRandomCrate 0x4fa52a Parachute 0, 0x5c6560, 0x5c9420, 0x5c8900, disasm).
+  0x4fa4b0, data), then a weapon by `crate_weight` inside its pool. Spawned with its centre 15 m (300 units, 0x5c6792) over a random land point above water, uniform over the land box, whose column misses every worm; no chute, plain gravity; bounces v = 0.2 (vx, −vy, vz), rests under 1 m/s (CreateRandomCrate 0x4fa52a Parachute 0, 0x5c6560, 0x5c9420, 0x5c8900, disasm).
+- **Crate size and rest height** [disasm 0x5c5700, 0x5c94d0, 0x5c89b1]: a crate is a sphere of 10 x Scale units (0.5 m x Scale); W4M rests it
+  with the centre at the ground hit + that radius, and its fall casts a point one radius under the centre. Ours: half height `0.5 x Scale - 0.05` m
+  plus the 0.05 m probe under it [ours: the voxel point test needs the margin]; the models are exported at their raw size / 20 (crate 1.0-1.2 m,
+  Landmine 0.5 m, OilDrum 1.14 m tall box; were 0.9 / 0.4 / 1.0 m of no W4M source). Deviation forced by the map scale: our maps are k = 0.52
+  (SneakyBridgeThieves) x the W4M world per unit while crates stay 20 units a metre, so a thin slab W4M's bottom point lies inside (a 0.14 m bridge rail
+  8.9 units under Crate5's marker) falls between our centre and bottom; `stepObjects` casts the centre column down one half height and rests the crate on
+  the first land met there (mission_check `cratepos` keeps Crate5 on the rail). A pinned crate is never pushed out of land (Gravity 0, 0x5c9420).
 - **Between turns** (data + disasm), as W4M: stdvs DoOncePerTurnFunctions sends GameLogic.DropRandomCrate in
   DoPostActivity's first pass, between two turns; CreateRandomCrate 0x4fa4b0 sets Crate.DelayMillisec to its argument, 0 from every
   caller (0x4fa986, 0x4fac16, CrateShower 0x4fb860), and Crate.WaitTillLanded defaults to 1 (0x4f21e9); the crate registers the active

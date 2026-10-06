@@ -14,7 +14,7 @@ namespace Ui {
 extern const Color TEAM_COLORS[4];
 void load();
 bool preload(double until);  // boot: uploads the decoded frontend art until GetTime() reaches until; true while some is pending
-void predecode(const std::string &name);  // any thread: decodes assets/ui/<name>.png for a later first use (no SD read or decode then)
+void predecode(const std::vector<std::string> &names);  // decodes assets/ui/<name>.png in order on a worker; drawn once in, nothing before
 void unload();
 bool warmHud(int &i, double until);  // match prep: loads the HUD art (weapon icons, hud/) until GetTime() reaches until; true while more remain
 void text(const char *t, float x, float y, float size, Color c, int align = 0);  // align: 0 left, 1 centre, 2 right

@@ -1,6 +1,7 @@
 // Every W4M mission (assets/missions, a Lua script) starts, runs with the AI on every team to its end without a Lua error, and lists
 // what its script asked that we do not model yet; a scripted mission replays bit-identically.
 // Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only, W4NX_MISSION=movies / crates those checks)
+#include <map>
 #include "../src/ai.h"
 #include "../src/mission.h"
 #include "../src/script.h"
@@ -219,6 +220,78 @@ static void checkCrates(const std::vector<MissionSpec> &list) {
     }
 }
 
+// Mission crates: every one that falls or snaps ends with its centre 10 x Scale units over the ground (0x5c94d0, GroundSnap 0x5c8137),
+// within the 0.25 m voxel; a pinned one (Gravity 0) stays at its marker
+static void checkCratePlacement(const std::vector<MissionSpec> &list) {
+    const char *only = getenv("W4NX_CRATEPOS");  // one mission id; W4NX_SEED its seed
+    for (const MissionSpec &m : list) {
+        if (only && m.id != only) continue;
+        Game g;
+        g.start(missionConfig(m, getenv("W4NX_SEED") ? atoi(getenv("W4NX_SEED")) : 3));
+        Input skip;
+        skip.flags = Input::SKIP_MOVIE;
+        int n = 0, pinned = 0, rest = 0, over = 0;
+        float worst = 0;
+        std::map<int, Vector3> at;  // a pinned crate's first position: the marker
+        for (int t = 0; t < 60 * 90; t++) {
+            g.step(t % 30 ? Input{} : skip);
+            std::map<int, Vector3> now;  // a tag leaving (Crate.Delete) frees it for the script's next crate of that Index
+            for (const Object &o : g.objects) if ((o.type == Object::Crate || o.type == Object::Target) && o.pinned && o.tag >= 0) now[o.tag] = o.pos;
+            for (auto it = at.begin(); it != at.end();) it = now.count(it->first) ? ++it : at.erase(it);
+            for (auto &[tag, pos] : now) {  // a re-created Index sits elsewhere; the same column must keep its height
+                Vector3 &was = at.emplace(tag, pos).first->second;
+                assert(was.x != pos.x || was.z != pos.z || was.y == pos.y);
+                was = pos;
+            }
+        }
+        for (size_t i = 0; i < g.objects.size(); i++) {
+            const Object &o = g.objects[i];
+            if (o.type != Object::Crate && o.type != Object::Target) continue;
+            n++;
+            if (o.pinned) { pinned++; continue; }
+            Vector3 hit;
+            if (o.vel.x != 0 || o.vel.y != 0 || o.vel.z != 0 || o.spawning || !g.terrain.raycast({o.pos, {0, -1, 0}}, 3, &hit)) { over++; continue; }
+            float gap = o.pos.y - hit.y - 0.5f * o.scale;
+            worst = fmaxf(worst, fabsf(gap)), rest++;
+            if (fabsf(gap) > 0.3f) printf("    %s crate %d: centre %.2f m over the ground, W4M %.2f\n", m.id.c_str(), o.tag, o.pos.y - hit.y, 0.5f * o.scale);
+        }
+        if (n) printf("%-24s crates %2d: pinned %2d, rested %2d (worst %.2f m off 10 x Scale), moving or over water %2d\n", m.id.c_str(), n, pinned, rest, worst, over);
+        assert(worst < 0.3f);
+        if (m.id == "SneakyBridgeThieves") for (const Object &o : g.objects) if (o.tag == 5) assert(o.pos.y > 13.8f);  // Crate5 (marker y 13.72) rests on the bridge rail (top 13.49), not on the ground 2 m under
+    }
+}
+
+// The player's last worm dies in its own turn (drowned, blown up, fallen off the map): the turn ends and the script's TurnEnded fails
+// the mission (GetActiveAlliances 0); the enemies drowned in the player's turn reach Worm_Died (DeadWorm.Id) and win it
+static void checkDeaths(const std::vector<MissionSpec> &list) {
+    for (const char *id : {"BuildingSiteSaboteurs", "NoRoomForError", "TheCrateEscape", "MineAllMine"})
+        for (int how = 0; how < 4; how++) {
+            bool enemies = how == 3;
+            if (enemies && strcmp(id, "NoRoomForError") && strcmp(id, "MineAllMine")) continue;  // 4 enemies dead at a turn's end wins
+            Game g;
+            for (const MissionSpec &m : list) if (m.id == id) g.start(missionConfig(m, 3));
+            Input skip;
+            skip.flags = Input::SKIP_MOVIE;
+            for (int t = 0; t < 60 * 120 && !(g.phase == Phase::Aim && g.worms[g.current].team == 0 && !scriptMovieOn(g)); t++) g.step(t % 30 ? Input{} : skip);
+            assert(g.phase == Phase::Aim && g.worms[g.current].team == 0);
+            Worm &me = g.worms[g.current];
+            for (Worm &w : g.worms) if (w.team == 0 && &w != &me) w.alive = false, w.hp = w.counted = 0;
+            if (how == 0) me.pos.y = g.water - 2;
+            else if (how == 1) me.hp = me.counted = 20, g.objects.push_back({Object::Mine, me.pos, {0, 0, 0}, -1, 0.05f, false, false});
+            else if (how == 2) me.pos.x = -4, me.vel = {}, me.grounded = false;
+            else {
+                for (Worm &w : g.worms) if (w.team != 0 && w.alive) w.pos.y = g.water - 2;
+                g.timer = 1;
+            }
+            int t = 0;
+            for (; t < 60 * 60 && g.phase != Phase::GameOver; t++) g.step(Input{});
+            static const char *const HOW[] = {"player drowned", "player blown up", "player off the map", "enemies drowned"};
+            printf("%-22s %-18s: %s after %d s\n", id, HOW[how], g.phase != Phase::GameOver ? "NOT ENDED" : g.run.result < 0 ? "lost" : "won", t / 60);
+            fflush(stdout);
+            assert(g.phase == Phase::GameOver && (g.run.result > 0) == enemies);
+        }
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<MissionSpec> list = listMissions("./romfs/", "./");
@@ -252,9 +325,13 @@ int main() {
     }
     if (only && !strcmp(only, "movies")) return checkMovies(list), 0;
     if (only && !strcmp(only, "crates")) return checkCrates(list), 0;
+    if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
+    if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
     if (only) return 0;
     checkLot2(list);
     checkCrates(list);
+    checkCratePlacement(list);
+    checkDeaths(list);
     checkMovies(list);
     for (const MissionSpec &x : list)  // a scripted mission plays the same twice (its Lua state is in the checksum)
         if (x.id == "DeathMatch1") {

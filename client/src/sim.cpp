@@ -970,7 +970,7 @@ bool Game::dropPoint(Object::Type t, Vector3 &out, float radius) {
 bool Game::addObject(Object::Type t, float lift) {
     Vector3 p;
     if (!dropPoint(t, p)) return false;
-    Vector3 at = {p.x, p.y + halfHeight(t) + 0.05f + lift, p.z};
+    Vector3 at = {p.x, lift > 0 ? p.y + lift : p.y + halfHeight(t) + 0.05f, p.z};  // CreateRandomCrate 0x5c67a8: the crate centre 300 units over the ground point
     Object o = t == Object::Mine ? newMine(at) : Object{t, at, {0, 0, 0}, -1, -1, false, false};
     o.spawning = t == Object::Crate && lift > 0;
     const Scheme &sc = cfg.scheme;
@@ -994,9 +994,14 @@ bool Game::addObject(Object::Type t, float lift) {
 void Game::stepObjects() {
     for (size_t i = 0; i < objects.size();) {
         Object &o = objects[i];
-        float h = halfHeight(o.type) * (crateLike(o) ? o.scale : 1);
+        float h = crateLike(o) ? fmaxf(0, 0.5f * o.scale - 0.05f) : halfHeight(o.type);  // crate: rests at 10 x Scale units (0x5c94d0), less the 0.05 m probe
         if (o.pinned) o.vel = {};  // Crate.Gravity 0: the fall 0x5c9420 never moves it
         Vector3 v0 = o.vel;
+        // W4M casts the crate's bottom point along its fall (0x5c94ea) at 10 units under the centre, where our maps are k x smaller than the crate (docs/sim.md "Crates"):
+        // a slab W4M's point lies inside lies between our centre and bottom, so land met on the centre column within h is rested on
+        float tl;
+        if (crateLike(o) && !o.hooked && !o.pinned && o.vel.y <= 0 && !terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z}) && terrain.cast(o.pos, {0, -1, 0}, h, &tl, nullptr) && tl > 0)
+            o.pos.y += h - tl;
         if (o.hooked || o.pinned) {  // on the rope (step())
         } else if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
             Vector3 n = terrain.normal({o.pos.x, o.pos.y - h, o.pos.z});
@@ -1020,7 +1025,7 @@ void Game::stepObjects() {
             if (terrain.solid({np.x + face.x, o.pos.y, np.z + face.z})) { o.vel.x = o.vel.z = d.x = d.z = 0; np.x = o.pos.x; np.z = o.pos.z; }
             if (o.vel.y > 0 && terrain.solid({np.x, np.y + h, np.z})) { o.vel.y = d.y = 0; np.y = o.pos.y; }
             o.pos = np;
-            for (int j = 0; j < 20 && terrain.solid({o.pos.x, o.pos.y - h, o.pos.z}); j++) o.pos.y += 0.05f;
+            for (int j = 0; !o.pinned && j < 20 && terrain.solid({o.pos.x, o.pos.y - h, o.pos.z}); j++) o.pos.y += 0.05f;
         }
 
         bool gone = o.pos.y < water, boom = o.dead && (o.type == Object::Barrel || crateLike(o));  // 0x5c5810: every crate type blows up
@@ -1596,6 +1601,7 @@ void Game::drown(Worm &w) {
     if (w.grounded || w.motion.slide) w.vel = {w.vel.x / 2, -1.5f, w.vel.z / 2};  // from Ambulatory / Sliding (0x5ad91f): -0.03 units/ms
     w.alive = false, w.drowned = true, w.floatT = 0;
     w.hp = 0, w.counted = std::max(1, w.counted);  // counted > 0: afloat, drawn until its blast
+    if (wi == current) selfHurt = true;  // 0x5ad75c: the active worm posts Worm.Damaged.Current (stdlib EndTurn)
     emit(GameEvent::Splash, w.pos, wi);
 }
 
