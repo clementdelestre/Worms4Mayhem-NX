@@ -1427,7 +1427,7 @@ int main(int argc, char **argv) {
         if (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback")) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
         if (!strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
         // missions | briefing | missionhud | missionend [mission id]
-        if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "briefing")) openMissions(), missionMenu.brief = !strcmp(uiShot, "briefing");
+        if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "briefing")) openMissions(), missionMenu.brief = !strcmp(uiShot, "briefing"), missionMenu.shown = -100;
         for (size_t i = 0; i < missions.size() && (!strcmp(uiShot, "missionhud") || !strcmp(uiShot, "missionend")); i++)
             if (argc > 3 ? missions[i].id == argv[3] : i == 0) {
                 startMission((int)i);
@@ -1513,7 +1513,7 @@ int main(int argc, char **argv) {
             if (a == Ui::Frontend::Quit) break;
             if (a == Ui::Frontend::Replays && saver.joinable()) saver.join();  // the last match's file complete
             if (a == Ui::Frontend::Replays) replayFiles = listReplays(DATA_DIR "replays"), replaySel = 0, screen = Screen::Replays;
-            if (a == Ui::Frontend::SinglePlayer) missionMenu.tab = front.missionTab, missionMenu.brief = false, openMissions();
+            if (a == Ui::Frontend::SinglePlayer) missionMenu.tab = front.missionTab, missionMenu.brief = false, missionMenu.shown = -1, openMissions();
             if (a == Ui::Frontend::QuickMatch) {  // you vs one level-2 CPU team on a random map, Standard scheme; opt untouched
                 GameConfig q = opt;
                 q.teams = 2, q.wormsPerTeam = 4, q.rules = 0, q.wormpot = 0, q.mission = nullptr, q.scheme = SCHEMES[0].s;
@@ -1565,15 +1565,15 @@ int main(int argc, char **argv) {
             Ui::background();
             int pick = Ui::missionMenu(missionMenu, missions, progress);
             if (Ui::helpHeld()) Ui::controls(false);
-            if (uiShot && frame == 10) {
+            if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
                 rlDrawRenderBatchActive();
                 Image img = LoadImageFromScreen();
-                ExportImage(img, "ui.png");
+                ExportImage(img, uiShot == flagUi ? TextFormat(DATA_DIR "ui_%d.png", frame) : "ui.png");
                 UnloadImage(img);
             }
             EndDrawing();
-            if (uiShot && frame >= 10) break;
-            if (pick == -2) screen = Screen::Menu;
+            if (uiShot && frame >= uiFrames.back()) break;
+            if (pick == -2) screen = Screen::Menu, front.screen = Ui::Frontend::Local;
             else if (pick >= 0) missionMenu.brief = false, startMission(pick);
             continue;
         }

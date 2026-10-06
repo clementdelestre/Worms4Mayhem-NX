@@ -32,7 +32,7 @@ const char *SFX_NAMES[] = {
     "crate_impact_health", "crate_impact_weapon", "crate_impact_util", "cheer",
     "fe_highlight", "fe_change", "fe_click", "fe_cancel", "fe_error", "fe_type", "fe_page", "fe_popup_in", "fe_popup_out", "fe_next_in", "fe_next_out",
     "fe_prev_in", "fe_prev_out", "fe_bounce", "fe_slide", "fe_net", "fe_custom", "fe_soundvid", "fe_controller", "fe_factory",
-    "fe_book_in", "fe_book_out", "fe_grenade", "fe_wormpot", "wormpot_spin", "wormpot_stop",
+    "fe_book_in", "fe_book_out", "fe_grenade", "fe_wormpot", "fe_speech", "wormpot_spin", "wormpot_stop",
     "holy_boom", "holy_held",
     "bomb_whistle", "cow_fall", "power_rocket", "power_homing", "power_bow",
     "equip_air", "equip_bazooka", "equip_bubble", "equip_default", "equip_potion", "equip_scouser", "equip_shotgun", "equip_sniper", "equip_umbrella",
@@ -113,6 +113,7 @@ const Def DEFS[] = {
     {"frontendsfx/Out_Book", -INFINITY, false, 0, 0, 1},  // event volume 0: silent in W4M
     {"frontendsfx/grenade", 0, false, 0, 0, 1},
     {"frontendsfx/In_Wormpot", 0, false, 0, 0, 1},
+    {"frontendsfx/In_Speech", 0, false, 0, 0, 1},
     {"frontendsfx/WormPotLoop", 0, true, 0, 0, 1},
     {"frontendsfx/WormPotStop", 0, false, 0, 0, 1},
     {"weapons/HolyGrenadeExplosion", -1, false, 0, 0, 1},

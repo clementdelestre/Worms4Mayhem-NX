@@ -108,6 +108,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | FeBookOut | `fe_book_out` | frontendsfx/Out_Book | -INFINITY |  | 2D | 1 | frontendsfx: Out_Book | ui.cpp `missionMenu` |
 | FeGrenade | `fe_grenade` | frontendsfx/grenade | 0 |  | 2D | 1 | frontendsfx: Grenade | loading.cpp `Loading::frame` |
 | FeWormpot | `fe_wormpot` | frontendsfx/In_Wormpot | 0 |  | 2D | 1 | frontendsfx: In_WormPot | ui.cpp `enterSfx` |
+| FeSpeech | `fe_speech` | frontendsfx/In_Speech | 0 |  | 2D | 1 | frontendsfx: In_Speech | ui.cpp `missionMenu` |
 | WormpotSpin | `wormpot_spin` | frontendsfx/WormPotLoop | 0 | yes | 2D | 1 | frontendsfx: WormPotLoop | ui.cpp `Frontend::wormpot` |
 | WormpotStop | `wormpot_stop` | frontendsfx/WormPotStop | 0 |  | 2D | 1 | frontendsfx: WormPotStop | ui.cpp `Frontend::wormpot` |
 | HolyBoom | `holy_boom` | weapons/HolyGrenadeExplosion | -1 |  | 2D | 1 | weapons: HolyGrenadeEx | main.cpp `onEvent` |

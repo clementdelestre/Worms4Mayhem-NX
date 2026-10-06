@@ -30,6 +30,8 @@ User-requested behaviours (kept on purpose; retest only when the user asks):
 - Worms 3D maps (`*-w3d`) found in the W4M install stay selectable although W4M never offers them (2026-10-05).
 - Title <-> main menu (2026-10-06): our big title logo glides to its menu spot as the rows fade in (0.6 s, FeBounce); B plays it backwards
   with W4M's FE screen-out sound (Out_Prev) before the title shows, where W4M scales the list in (In_ScaleY) and drops it at once (Out None) (frontend.md §Title).
+- Story / Challenges screens (2026-10-06): our items with no W4M clip (tabs, mission rows) and every W4M item whose Anim_Outgoing is None
+  slide in / fly out like our menu rows (`rowAppear`) instead of appearing / vanishing at once (frontend.md §Story and Challenges).
 - Network protocol stays version 1 until a server is deployed (PROTOCOL.md).
 
 Attributing a function to a class is reliable when the function comes from a vtable. When it was inferred from the nearest `.cpp` assert string, it can be wrong near file boundaries.

@@ -15,7 +15,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Jump, Sheep, Hol
                  Cheer,  // W4M GameOverLogicEntity crowd, over the victory jingle
                  // W4M frontend (kAUDIO_*): cursor, left/right change, A, B, typing, page, popup / screen in-out, per-menu intros
                  FeHighlight, FeChange, FeClick, FeCancel, FeError, FeType, FePage, FePopupIn, FePopupOut, FeNextIn, FeNextOut, FePrevIn, FePrevOut,
-                 FeBounce, FeSlide, FeNet, FeCustom, FeSoundVid, FeController, FeFactory, FeBookIn, FeBookOut, FeGrenade, FeWormpot,
+                 FeBounce, FeSlide, FeNet, FeCustom, FeSoundVid, FeController, FeFactory, FeBookIn, FeBookOut, FeGrenade, FeWormpot, FeSpeech,
                  WormpotSpin, WormpotStop,
                  HolyBoom, HolyHeld,  // W4M HolyGrenadeEx / HolyGrenadeHeld
                  BombWhistle, CowFall,  // W4M LaunchSfx of the air strike bombs and the Bovine Blitz cows

@@ -43,7 +43,7 @@ extern bool forceHelp;      // --ui help captures
 struct MenuItem;  // ui.cpp: one W4M menu entry and its place on screen
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 struct Frontend {
-    enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm } screen = Title;
+    enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm, Missions } screen = Title;  // Missions: hands over to missionMenu()
     enum Action { None, StartLocal, StartOnline, Quit, Replays, StartLan, SinglePlayer, QuickMatch };
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
     int missionTab = 0;             // SinglePlayer: 0 story missions, 1 challenges
@@ -129,7 +129,8 @@ void replayBadge();  // instant replay overlay
 void lanGames(const std::vector<LanGame> &games, int sel, const std::string &status);
 void room(const Net &net, const GameConfig &opt, bool lan, const std::string &status);
 // Single player (inside Begin/EndDrawing): Missions / Challenges list, then the briefing. Mission index to start, -1 none yet, -2 back.
-struct MissionMenu { int tab = 0, sel[2] = {}; bool brief = false; };
+// shown: when the list / briefing appeared (-1: opening now); leaving: when its items started out; to: what follows them
+struct MissionMenu { int tab = 0, sel[2] = {}; bool brief = false; float shown = -1, leaving = -1; int to = -1; };
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p);
 void missionHud(const Game &g, const MissionSpec &m);  // objectives and clock during a mission
 // Mission over (drawn over the match): 0 nothing yet, 1 next mission, 2 retry, 3 back to the list

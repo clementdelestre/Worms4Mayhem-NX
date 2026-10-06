@@ -754,6 +754,13 @@ static void paperStrip(float t, bool back) {
 
 static float backOut(float k) { k = Clamp(k, 0, 1) - 1; return 1 + 2.7f * k * k * k + 1.7f * k * k; }
 
+// W4M's Title Control spot: gold header and its underline, top left; x: the page's offset
+static void titleControl(const char *title, float x) {
+    float tw = textWidth(title, 34);
+    text(title, x + 44, 26, 34, GOLD_TOP);
+    if (!image("fe/title_underline", {x + 36, 62, tw + 24, 18})) DrawRectangle(x + 40, 66, tw + 10, 3, WHITE);
+}
+
 // Submenu page: curved blue panel (slides in from the left) with the title, its vertical watermark and an illustration
 // that pops in after it; p: 0 hidden .. 1 shown (the panel takes the first 0.7)
 static void subPanel(const char *title, const char *art, float t, float p) {
@@ -764,9 +771,7 @@ static void subPanel(const char *title, const char *art, float t, float p) {
     rlRotatef(-90, 0, 0, 1);
     text(title, 0, 0, 150, {255, 255, 255, 22});
     rlPopMatrix();
-    float tw = textWidth(title, 34);
-    text(title, x + 44, 26, 34, GOLD_TOP);
-    if (!image("fe/title_underline", {x + 36, 62, tw + 24, 18})) DrawRectangle(x + 40, 66, tw + 10, 3, WHITE);
+    titleControl(title, x);
     Rectangle r = {x + 70, 140 + 8 * sinf(t * 1.6f), 400, 400};
     rlPushMatrix();
     rlTranslatef(r.x + r.width / 2, r.y + r.height / 2, 0);
@@ -811,6 +816,46 @@ static const MenuItem HELP_MENU[] = {
 };
 
 static const float LEAVE = 0.18f;
+// Our menu row transition: `in` s after the screen showed it eases in over 0.35 s, rows `stagger` s apart; `out` s after
+// leaving began (-1: not leaving) it flies out within LEAVE. 0 hidden .. 1 in place.
+static float rowAppear(float in, float out, int i, float stagger = 0.05f) {
+    return out >= 0 ? 1 - easeOut((out - 0.012f * i) / (LEAVE - 0.06f)) : easeOut((in - stagger * i) / 0.35f);
+}
+
+// Bundl10 WXFrontend.Anim clips (docs/w4m/frontend.md §17): (s, value) keys per channel, translation in FE units (y up)
+struct Keys { const float (*k)[2] = nullptr; int n = 0; };
+template <int N> static constexpr Keys keys(const float (&k)[N][2]) { return {k, N}; }
+struct FeClip { Keys sx, sy, tx, ty; };
+static const float K_SLIDEX[2][2] = {{0, 0}, {0.625f, 1}}, K_SPEECH[4][2] = {{0, 0}, {0.125f, 0.7905f}, {0.4583f, 1}, {0.625f, 1}},
+                   K_TOOLTIP[2][2] = {{0, 0}, {1.041f, 1}}, K_OUT_SCALEY[3][2] = {{0, 1}, {0.2083f, 0.2668f}, {0.2085f, 0}},
+                   K_TITLE_IN_X[2][2] = {{0, -290}, {1.041f, 0}}, K_TITLE_OUT_X[2][2] = {{0, 0}, {0.5f, -454}},
+                   K_TITLE_IN_Y[12][2] = {{0, 0}, {0.0833f, 0.8203f}, {0.125f, -1.3145f}, {0.2083f, 1.4424f}, {0.25f, 0.2854f}, {0.375f, -0.2003f},
+                                          {0.4583f, 0.1445f}, {0.5415f, -0.0546f}, {0.625f, 0.1219f}, {0.708f, -0.0975f}, {0.833f, 0.045f}, {0.958f, 0.0141f}},
+                   K_TITLE_OUT_Y[11][2] = {{0, 0}, {0.0833f, 0.0844f}, {0.125f, -0.1532f}, {0.2083f, 0.132f}, {0.2915f, -0.0795f}, {0.4583f, 0.0807f},
+                                           {0.5415f, -0.0546f}, {0.625f, 0.0469f}, {0.708f, -0.09f}, {0.833f, 0.045f}, {0.958f, 0.0141f}};
+static const FeClip IN_SLIDEX = {keys(K_SLIDEX), {}, {}, {}}, IN_SPEECH = {keys(K_SPEECH), keys(K_SPEECH), {}, {}}, IN_TOOLTIP = {{}, keys(K_TOOLTIP), {}, {}},
+                    IN_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_IN_X), keys(K_TITLE_IN_Y)}, OUT_SCALEY = {{}, keys(K_OUT_SCALEY), {}, {}},
+                    OUT_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_OUT_X), keys(K_TITLE_OUT_Y)};
+static const float FE_PX = 1280 / 960.0f;  // FE units span 960 x 540
+
+// A W4M menu item about its centre c: Anim_Incoming `in` once `delay` s passed since the screen showed (`since`), Anim_Outgoing
+// `out` once leaving (s, -1: not). A null clip (W4M None) takes rowAppear() slid by `slide` px. False: hidden; else rlPopMatrix() after.
+static bool feItem(Vector2 c, const FeClip *in, float delay, const FeClip *out, float since, float leaving, float slide = 0, int row = 0) {
+    if (in && since < delay) return false;  // W4M parks the item off-screen until its delay is up (0x755a78)
+    const FeClip *k = leaving >= 0 ? out : in;
+    float t = leaving >= 0 ? leaving : since - delay, sx = 1, sy = 1, tx = 0, ty = 0;
+    auto at = [&](Keys ch, float rest) { return ch.n ? clipKeys(ch.k, ch.n, t) : rest; };
+    if (k) sx = at(k->sx, 1), sy = at(k->sy, 1), tx = at(k->tx, 0) * FE_PX, ty = -at(k->ty, 0) * FE_PX;
+    else if (float a = rowAppear(since, leaving, row); a > 0) tx = (1 - a) * slide;
+    else return false;
+    if (sx < 0.001f || sy < 0.001f) return false;
+    rlPushMatrix();
+    rlTranslatef(c.x + tx, c.y + ty, 0);
+    rlScalef(sx, sy, 1);
+    rlTranslatef(-c.x, -c.y, 0);
+    return true;
+}
+
 static bool feBack = false;  // last A/B in a menu was B: screen changes play W4M's prev in/out sounds
 // W4M's intro sound for screen s (kAUDIO_In_*), entered from `from`
 static Audio::Sfx enterSfx(Frontend::Screen s, Frontend::Screen from) {
@@ -818,7 +863,7 @@ static Audio::Sfx enterSfx(Frontend::Screen s, Frontend::Screen from) {
     using S = Audio::Sfx;
     if (s == F::Confirm || s == F::SchemeEdit) return S::FePopupIn;
     if (from == F::Confirm || from == F::SchemeEdit) return S::FePopupOut;
-    if (feBack) return S::FePrevIn;
+    if (feBack || from == F::Missions) return S::FePrevIn;
     switch (s) {
     case F::Main: return S::FeBounce;
     case F::Local: case F::HelpOpts: return S::FeSlide;
@@ -833,7 +878,7 @@ static Audio::Sfx enterSfx(Frontend::Screen s, Frontend::Screen from) {
 }
 static int bgPage(Frontend::Screen s, bool online) {
     using F = Frontend;
-    return s <= F::Main || s == F::Confirm ? 0 : s == F::Local || (s == F::Setup && !online) ? 1 : s == F::Network || s == F::Setup ? 2 : 3;
+    return s <= F::Main || s == F::Confirm ? 0 : s == F::Local || s == F::Missions || (s == F::Setup && !online) ? 1 : s == F::Network || s == F::Setup ? 2 : 3;
 }
 
 static const float TITLE_OUT = 0.35f + 0.05f * (MAIN_ITEMS - 1);  // the title glide's length: last menu row in
@@ -852,8 +897,7 @@ void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, boo
     float k = fminf(1, GetFrameTime() * 14);
     for (int i = 0; i < n; i++) {
         const MenuItem &m = items[i];
-        float &g = glow[i], a = !live ? 1 : leaving >= 0 && next != Title ? 1 - easeOut((t - leaving - 0.012f * i) / (LEAVE - 0.06f))
-                                                    : easeOut(((leaving >= 0 || from == Title ? titleIn(t) : t - entered) - 0.05f * i) / 0.35f);
+        float &g = glow[i], a = !live ? 1 : rowAppear(leaving >= 0 || from == Title ? titleIn(t) : t - entered, leaving >= 0 && next != Title ? t - leaving : -1, i);
         g = live ? g + ((i == sel) - g) * k : i == sel;
         menuEntry(tr(m.key, m.en, m.fr), m.x, m.y, m.size, m.deg, g, a, t);
     }
@@ -1016,10 +1060,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     if (ok || back) feBack = back;
     if (screen != shown) {  // W4M menus: slide in (not on the first frame: --ui captures), highlight the current entry
         entered = shown == (Screen)-1 ? -100 : t, from = shown, shown = screen;
-        int sel = screen == Main ? mainRow : screen >= Local ? subRow[screen - Local] : 0;
+        int sel = screen == Main ? mainRow : screen >= Local && screen <= Confirm ? subRow[screen - Local] : 0;
         for (int i = 0; i < 8; i++) glow[i] = i == sel;
         FrontBg::page(bgPage(screen, online));
-        if (from != (Screen)-1) Audio::play(enterSfx(screen, from));
+        if (from != (Screen)-1 && screen != Missions) Audio::play(enterSfx(screen, from));  // missionMenu() plays its own
     }
 
     BeginDrawing();
@@ -1081,6 +1125,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         }
         break;
     }
+    case Missions: act = SinglePlayer; break;
     case Local: case Network: case HelpOpts: {
         int k = screen == Local ? 0 : screen == Network ? 1 : 3, n = k == 0 ? 4 : k == 1 ? 2 : 3;
         const MenuItem *items = k == 0 ? LOCAL_MENU : k == 1 ? NET_MENU : HELP_MENU;
@@ -1095,7 +1140,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (ok && k == 0) {
             if (sel == 0) act = QuickMatch;
             else if (sel == 1) screen = Setup, online = lan = false, row = 0, loaded = false;
-            else act = SinglePlayer, missionTab = sel - 2;
+            else missionTab = sel - 2, go(Missions);
         }
         if (ok && k == 1) screen = Setup, online = true, lan = sel == 0, row = 0, loaded = false;  // reload: net setup has its own file
         if (ok && k == 3) screen = sel == 0 ? Options : sel == 1 ? Controls : Factory, row = 0, facSel = 0;
@@ -1113,7 +1158,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         subPanel(tr("FETXTH.MYWORMS", "MY WORMS", "MES WORMS"), "fe2/art_myworms", t, subIn(t));
         for (int i = 0; i < 4; i++) {
             const GameConfig::Team &m = cfg.teamSetup[i];
-            float a = leaving >= 0 ? 1 - easeOut((t - leaving - 0.012f * i) / (LEAVE - 0.06f)) : easeOut((t - entered - 0.06f * i) / 0.35f);
+            float a = rowAppear(t - entered, leaving >= 0 ? t - leaving : -1, i, 0.06f);
             Rectangle c = {560 + (i % 2) * 355.0f + (1 - a) * 400, 104 + (i / 2) * 250.0f, 335, 220};
             popup(c);
             if (k == i && !nine("fe/buttonbig_highlight", {c.x - 6, c.y - 6, c.width + 12, c.height + 12}, 110, 0.5f)) DrawRectangleRoundedLinesEx(c, 0.1f, 6, 4, GOLDEN);
@@ -2408,78 +2453,140 @@ static float paragraph(const std::string &s, float x, float y, float w, float si
     return std::min(lines, maxLines) * (size + 4);
 }
 
+// WXFE.Story / WXFE.Challenges (docs/w4m/frontend.md §17): each item takes the clips of its W4M counterpart; ours-only items
+// (tabs, rows) and W4M's Out None use our menu rows' rowAppear() (user-requested). The list and the briefing are W4M's one page.
+static const float MISSION_OUT = 0.25f;  // Out_ScaleY is done at 0.21 s; Out_TitleUnderline has the header past the left edge
+
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p) {
+    using S = Audio::Sfx;
     menuPage = true;
     static const char *TABS[2] = {"Missions", "Challenges"};
-    static double seen = -1;  // last frame shown: a gap means the list just opened (W4M's story book)
-    if (GetTime() - seen > 0.5) Audio::play(Audio::Sfx::FeBookIn);
-    seen = GetTime();
+    static float last = 0;  // previous frame's clock: the Challenges image's In_Speech sound at its 300 ms delay
+    float t = now();
+    bool story = st.tab == 0;
+    if (st.shown == -1) {  // the screen's Audio_Incoming In_Controller, and the Story book's In_Book
+        st.shown = t, st.leaving = -1, Audio::play(S::FeController);
+        if (story) Audio::play(S::FeBookIn);
+    }
+    if (st.leaving >= 0 && t - st.leaving >= MISSION_OUT) {  // its items are out: what follows them
+        bool page = st.to == -3 || st.to == -4;
+        st.leaving = -1, st.shown = page ? t : -1;
+        if (!page) return st.to;
+        st.brief = st.to == -3;
+    }
+    if (!story && last - st.shown < 0.3f && t - st.shown >= 0.3f) Audio::play(S::FeSpeech);
+    last = t;
+    float since = t - st.shown, out = st.leaving >= 0 ? t - st.leaving : -1;
+    bool busy = st.leaving >= 0;
+    // to: -2 back, -3 briefing, -4 list, else the mission to start; leaving the screen plays its Audio_Outgoing Out_Next (the book's Out_Book is silent)
+    auto leave = [&](int to) {
+        st.leaving = t, st.to = to;
+        if (to == -3 || to == -4) { Audio::play(S::FePage); return; }
+        Audio::play(S::FeNextOut);
+        if (story) Audio::play(S::FeBookOut);
+    };
     std::vector<int> rows;
-    for (size_t i = 0; i < list.size(); i++) if ((list[i].kind == "mission") == (st.tab == 0)) rows.push_back((int)i);
+    for (size_t i = 0; i < list.size(); i++) if ((list[i].kind == "mission") == story) rows.push_back((int)i);
     int &sel = st.sel[st.tab], n = (int)rows.size();
     sel = n ? clampWrap(sel, n) : 0;
-    bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    bool ok = !busy && P({A}, {KEY_ENTER, KEY_SPACE}), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
     int pick = n ? rows[sel] : -1;
     bool open = pick >= 0 && p.unlocked(list, pick);
+    float imgAt = story ? 0.73f : 0.3f;  // Mission Image / IMAGE Level, In_Speech
     if (st.brief && pick >= 0) {
         const MissionSpec &m = list[pick];
-        popup({140, 40, 1000, 630});
-        text(m.name.c_str(), 640, 60, 48, GOLDEN, 1);
-        text(m.campaign.c_str(), 640, 112, 22, SKYBLUE, 1);
-        if (!image(m.preview.empty() ? preview(m.map) : m.preview, {180, 150, 240, 240})) image(preview(m.map), {180, 150, 240, 240});
-        float y = 150 + paragraph(m.brief, 450, 150, 650, 24, WHITE, 9) + 16;
-        text("Objectives", 450, y, 28, GOLDEN), y += 36;
-        for (const MissionSpec::Goal &g : m.objectives) text(("- " + goalText(m, g, nullptr)).c_str(), 470, y, 24, WHITE), y += 30;
-        for (const MissionSpec::Goal &g : m.fail) text(("- " + goalText(m, g, nullptr)).c_str(), 470, y, 24, ORANGE), y += 30;
-        y = std::max(y + 10, 420.0f);
-        for (size_t t = 0; t < m.teams.size(); t++) {
-            const MissionSpec::TeamSpec &ts = m.teams[t];
-            text(TextFormat("%s: %d worm%s%s", ts.name.c_str(), (int)ts.worms.size(), ts.worms.size() > 1 ? "s" : "", t == 0 ? " (you)" : ts.idle ? "" : TextFormat(" (CPU %d)", ts.cpu)),
-                 180, y, 22, TEAM_COLORS[t % 4]);
-            y += 28;
+        if (feItem({640, 355}, &IN_SPEECH, 0.35f, &OUT_SCALEY, since, out)) popup({140, 40, 1000, 630}), rlPopMatrix();  // Paper Back
+        auto title = [&] {
+            text(m.name.c_str(), 640, 60, 48, GOLDEN, 1);
+            text(m.campaign.c_str(), 640, 112, 22, SKYBLUE, 1);
+        };
+        auto body = [&] {
+            float y = 150 + paragraph(m.brief, 450, 150, 650, 24, WHITE, 9) + 16;
+            text("Objectives", 450, y, 28, GOLDEN), y += 36;
+            for (const MissionSpec::Goal &g : m.objectives) text(("- " + goalText(m, g, nullptr)).c_str(), 470, y, 24, WHITE), y += 30;
+            for (const MissionSpec::Goal &g : m.fail) text(("- " + goalText(m, g, nullptr)).c_str(), 470, y, 24, ORANGE), y += 30;
+            y = std::max(y + 10, 420.0f);
+            for (size_t k = 0; k < m.teams.size(); k++) {
+                const MissionSpec::TeamSpec &ts = m.teams[k];
+                text(TextFormat("%s: %d worm%s%s", ts.name.c_str(), (int)ts.worms.size(), ts.worms.size() > 1 ? "s" : "", k == 0 ? " (you)" : ts.idle ? "" : TextFormat(" (CPU %d)", ts.cpu)),
+                     180, y, 22, TEAM_COLORS[k % 4]);
+                y += 28;
+            }
+        };
+        auto record = [&] {
+            Progress::Entry e = p.get(m.id);
+            if (e.done) text(TextFormat("Best time %s", clockText(e.best).c_str()), 1100, 630, 24, GOLDEN, 2);
+            if (m.par) text(TextFormat("Par %d:%02d", m.par / 60, m.par % 60), 180, 630, 24, LIGHTGRAY);
+        };
+        if (feItem({300, 270}, &IN_SPEECH, imgAt, nullptr, since, out, -1300)) {
+            if (!image(m.preview.empty() ? preview(m.map) : m.preview, {180, 150, 240, 240})) image(preview(m.map), {180, 150, 240, 240});
+            rlPopMatrix();
         }
-        Progress::Entry e = p.get(m.id);
-        if (e.done) text(TextFormat("Best time %s", clockText(e.best).c_str()), 1100, 630, 24, GOLDEN, 2);
-        if (m.par) text(TextFormat("Par %d:%02d", m.par / 60, m.par % 60), 180, 630, 24, LIGHTGRAY);
+        if (story) {  // Mission Title, Mission Briefing, Bonus Time text
+            if (feItem({640, 95}, &IN_SLIDEX, 0.8f, nullptr, since, out, -1300)) title(), rlPopMatrix();
+            if (feItem({640, 400}, &IN_TOOLTIP, 0.8f, nullptr, since, out, -1300)) body(), rlPopMatrix();
+            if (feItem({640, 642}, &IN_SLIDEX, 0.8f, nullptr, since, out, -1300)) record(), rlPopMatrix();
+        } else if (feItem({640, 95}, &IN_SPEECH, 0.35f, nullptr, since, out, -1300)) {  // Challenge Title; Body Text and Mission Record are its children
+            title(), record();
+            if (feItem({640, 400}, &IN_SLIDEX, 0, nullptr, since, out)) body(), rlPopMatrix();
+            rlPopMatrix();
+        }
         hints({{"A", "Enter", "Start"}, {"B", "Esc", "Back"}});
-        if (back) st.brief = false, Audio::play(Audio::Sfx::FePage);
-        return ok ? pick : -1;
+        if (back) leave(-4);
+        else if (ok) leave(pick);
+        return -1;
     }
     int tab = st.tab;
-    st.tab = clampWrap(st.tab + P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT}), 2);
-    if (st.tab != tab) Audio::play(Audio::Sfx::FePage);
-    if (n) sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
-    heading("Single player", 640, 10, 52);
-    for (int t = 0; t < 2; t++) {
-        Rectangle r = {40 + t * 300.0f, 80, 280, 50};
-        panel(r, t == st.tab);
-        text(TABS[t], r.x + r.width / 2, r.y + 10, 30, ink(t == st.tab), 1);
+    if (!busy) st.tab = clampWrap(st.tab + P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT}), 2);
+    if (st.tab != tab) Audio::play(S::FePage);
+    if (n && !busy) sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
+    if (feItem({200, 50}, &IN_TITLEUNDERLINE, 0.3f, &OUT_TITLEUNDERLINE, since, out))
+        titleControl(story ? tr("FETXTH.Story", "STORY", "HISTOIRE") : tr("FETXTH.Challenges", "CHALLENGES", "DÉFIS"), 0), rlPopMatrix();
+    for (int k = 0; k < 2; k++) {
+        Rectangle r = {40 + k * 300.0f, 80, 280, 50};
+        if (!feItem({r.x + r.width / 2, r.y + r.height / 2}, nullptr, 0, nullptr, since, out, -1300, k)) continue;
+        panel(r, k == st.tab);
+        text(TABS[k], r.x + r.width / 2, r.y + 10, 30, ink(k == st.tab), 1);
+        rlPopMatrix();
     }
     int first = std::max(0, std::min(sel - 4, n - 9));
     for (int k = first; k < n && k < first + 9; k++) {
         const MissionSpec &m = list[rows[k]];
         Rectangle r = {40, 146 + (k - first) * 58.0f, 700, 52};
+        if (!feItem({r.x + r.width / 2, r.y + r.height / 2}, nullptr, 0, nullptr, since, out, -1300, 2 + k - first)) continue;
         Progress::Entry e = p.get(m.id);
         bool lock = !p.unlocked(list, rows[k]);
         panel(r, k == sel);
         text(m.name.c_str(), r.x + 20, r.y + 11, 28, lock ? GRAY : ink(k == sel));
         text(lock ? "Locked" : e.done ? TextFormat("Done  %s", clockText(e.best).c_str()) : "New", r.x + r.width - 20, r.y + 14, 22,
              lock ? GRAY : e.done ? GOLDEN : SKYBLUE, 2);
+        rlPopMatrix();
     }
-    if (!n) text(st.tab ? "No challenges found" : "No missions found", 390, 300, 28, LIGHTGRAY, 1);
+    if (!n && feItem({390, 314}, nullptr, 0, nullptr, since, out, -1300, 2)) text(st.tab ? "No challenges found" : "No missions found", 390, 300, 28, LIGHTGRAY, 1), rlPopMatrix();
     if (pick >= 0) {
         const MissionSpec &m = list[pick];
         Rectangle pv = {800, 146, 420, 236};
-        panel({pv.x - 8, pv.y - 8, pv.width + 16, pv.height + 16}, false);
-        std::string img = m.preview.empty() ? preview(m.map) : m.preview;
-        if (!image(img, pv, open ? WHITE : GRAY) && !image(preview(m.map), pv, open ? WHITE : GRAY)) DrawRectangleRec(pv, {30, 60, 40, 255});
-        text(m.campaign.c_str(), 800, 400, 22, SKYBLUE);
-        paragraph(open ? goalText(m, m.objectives[0], nullptr) : "Complete the previous mission to unlock", 800, 430, 420, 26, open ? WHITE : GRAY, 2);
-        paragraph(m.brief, 800, 500, 420, 20, LIGHTGRAY, 7);
+        if (feItem({1010, 264}, &IN_SPEECH, imgAt, nullptr, since, out, 700)) {
+            panel({pv.x - 8, pv.y - 8, pv.width + 16, pv.height + 16}, false);
+            std::string img = m.preview.empty() ? preview(m.map) : m.preview;
+            if (!image(img, pv, open ? WHITE : GRAY) && !image(preview(m.map), pv, open ? WHITE : GRAY)) DrawRectangleRec(pv, {30, 60, 40, 255});
+            rlPopMatrix();
+        }
+        auto body = [&] {
+            text(m.campaign.c_str(), 800, 400, 22, SKYBLUE);
+            paragraph(open ? goalText(m, m.objectives[0], nullptr) : "Complete the previous mission to unlock", 800, 430, 420, 26, open ? WHITE : GRAY, 2);
+            paragraph(m.brief, 800, 500, 420, 20, LIGHTGRAY, 7);
+        };
+        Vector2 c = {1010, 530};
+        if (story && feItem(c, &IN_TOOLTIP, 0.8f, nullptr, since, out, 700)) body(), rlPopMatrix();  // Mission Briefing
+        if (!story && feItem(c, &IN_SPEECH, 0.35f, nullptr, since, out, 700)) {  // Body Text, inside its Challenge Title
+            if (feItem(c, &IN_SLIDEX, 0, nullptr, since, out)) body(), rlPopMatrix();
+            rlPopMatrix();
+        }
     }
     hints({{"D-pad", "Left/Right", TABS[1 - st.tab]}, {"A", "Enter", "Briefing"}, {"B", "Esc", "Back"}});
-    if (back) { Audio::play(Audio::Sfx::FeBookOut); return -2; }
-    if (ok && open) st.brief = true, Audio::play(Audio::Sfx::FePage);
+    if (back) leave(-2);
+    else if (ok && open) leave(-3);
     return -1;
 }
 

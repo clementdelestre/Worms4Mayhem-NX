@@ -217,6 +217,7 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("fe_book_out", "frontendsfx", &["Out_Book"]),
     ("fe_grenade", "frontendsfx", &["Grenade"]),
     ("fe_wormpot", "frontendsfx", &["In_WormPot"]),
+    ("fe_speech", "frontendsfx", &["In_Speech"]),
     ("wormpot_spin", "frontendsfx", &["WormPotLoop"]),
     ("wormpot_stop", "frontendsfx", &["WormPotStop"]),
 ];
