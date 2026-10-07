@@ -200,7 +200,7 @@ std::string Terrain::mapTheme(const std::string &map) {
 
 bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
-    objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {40, WATER, 40}, rainProb = -1;
+    objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
     thin.assign(CX * CY * CZ, {}), thinOnly.clear();
     hasFinish = false, sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
@@ -211,6 +211,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         generate(seed);
         return map.empty();
     }
+    setVox(j["vox"].f(0.25f)), origin = {NX * VOX / 2, WATER, NZ * VOX / 2};
     for (auto &t : THEMES)
         if (j["theme"].s() == t.name) top = t.top, side = t.side, beach = t.beach, sky = t.sky;
     theme = j["theme"].s();
@@ -232,7 +233,6 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         for (int k : {0, 1, 4, 5}) texFiles.push_back(tex[i][k].type == Json::Str ? dir + tex[i][k].s() : "");
         texRepeat.push_back({tex[i][2].f(4), tex[i][3].f(4)});
     }
-    scale = j["scale"].f(1);
 
     reset(-127);
     const Json &base = j["base"];
@@ -389,8 +389,9 @@ void Terrain::mergeBlocks() {
 }
 
 void Terrain::generate(unsigned seed) {
+    setVox(0.25f);
     thin.assign(CX * CY * CZ, {}), thinOnly.clear();
-    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {40, WATER, 40}, rainProb = -1;
+    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
@@ -408,20 +409,20 @@ void Terrain::generate(unsigned seed) {
 
 float Terrain::at(int x, int y, int z) const {
     if (x < 0 || y < 0 || z < 0 || x >= NX || y >= NY || z >= NZ) return -1;
-    return d[idx(x, y, z)] * (1 / Q);
+    return d[idx(x, y, z)] * IQ;
 }
 
 float Terrain::sample(Vector3 p) const {
     samples++;
     if (sharp.on) {
-        int ix = (int)floorf(p.x / VOX), iy = (int)floorf(p.y / VOX), iz = (int)floorf(p.z / VOX);
+        int ix = (int)floorf(p.x * IVOX), iy = (int)floorf(p.y * IVOX), iz = (int)floorf(p.z * IVOX);
         if (ix >= 0 && iy >= 0 && iz >= 0 && ix < NX - 1 && iy < NY - 1 && iz < NZ - 1 && sharp.mixed(idx(ix, iy, iz))) return sharp.eval(p, idx(ix, iy, iz), nullptr);
     }
     return field(p);
 }
 
 float Terrain::field(Vector3 p) const {
-    float x = p.x / VOX, y = p.y / VOX, z = p.z / VOX;
+    float x = p.x * IVOX, y = p.y * IVOX, z = p.z * IVOX;
     int ix = (int)floorf(x), iy = (int)floorf(y), iz = (int)floorf(z);
     float fx = x - ix, fy = y - iy, fz = z - iz, r = 0;
     const float wx[2] = {1 - fx, fx}, wy[2] = {1 - fy, fy}, wz[2] = {1 - fz, fz};
@@ -429,7 +430,7 @@ float Terrain::field(Vector3 p) const {
         const signed char *q = &d[idx(ix, iy, iz)];
         for (int n = 0; n < 8; n++) {
             int a = n & 1, b = (n >> 1) & 1, c = n >> 2;
-            r += q[a + b * NX + c * NX * NY] * (1 / Q) * wx[a] * wy[b] * wz[c];
+            r += q[a + b * NX + c * NX * NY] * IQ * wx[a] * wy[b] * wz[c];
         }
         return r;
     }
@@ -442,7 +443,7 @@ float Terrain::field(Vector3 p) const {
 
 Vector3 Terrain::normal(Vector3 p, float e) const {
     if (sharp.on) {
-        int ix = (int)floorf(p.x / VOX), iy = (int)floorf(p.y / VOX), iz = (int)floorf(p.z / VOX);
+        int ix = (int)floorf(p.x * IVOX), iy = (int)floorf(p.y * IVOX), iz = (int)floorf(p.z * IVOX);
         Vector3 n{};
         if (ix >= 0 && iy >= 0 && iz >= 0 && ix < NX - 1 && iy < NY - 1 && iz < NZ - 1 && sharp.mixed(idx(ix, iy, iz)) &&
             (sharp.eval(p, idx(ix, iy, iz), &n), Vector3LengthSqr(n) > 0)) return n;
@@ -459,8 +460,8 @@ bool Terrain::carve(Vector3 c, float radius) {
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX, NY, NZ};
     for (int a = 0; a < 3; a++) {
-        lo[a] = std::max(0, (int)((cc[a] - radius) / VOX) - 1);
-        hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + radius) / VOX) + 1);
+        lo[a] = std::max(0, (int)((cc[a] - radius) * IVOX) - 1);
+        hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + radius) * IVOX) + 1);
     }
     bool changed = false;
     for (int z = lo[2]; z <= hi[2]; z++)
@@ -497,7 +498,7 @@ void Terrain::weld(Vector3 c, Vector3 half) {
     float reach = Vector3Length(half) + 0.5f;
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX, NY, NZ};
-    for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)((cc[a] - reach) / VOX)), hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + reach) / VOX) + 1);
+    for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)((cc[a] - reach) * IVOX)), hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + reach) * IVOX) + 1);
     for (int z = lo[2]; z <= hi[2]; z++)
         for (int y = lo[1]; y <= hi[1]; y++)
             for (int x = lo[0]; x <= hi[0]; x++) {
@@ -521,8 +522,8 @@ void Terrain::addCell(const Vector3 *c) {
     const uint32_t id = sharp.add(d, c);
     Vector3 lo = c[0], hi = c[0];
     for (int k = 0; k < 8; k++) lo = Vector3Min(lo, c[k]), hi = Vector3Max(hi, c[k]);
-    int a[3] = {std::max(0, (int)ceilf(lo.x / VOX)), std::max(0, (int)ceilf(lo.y / VOX)), std::max(0, (int)ceilf(lo.z / VOX))};
-    int b[3] = {std::min(NX - 1, (int)floorf(hi.x / VOX)), std::min(NY - 1, (int)floorf(hi.y / VOX)), std::min(NZ - 1, (int)floorf(hi.z / VOX))};
+    int a[3] = {std::max(0, (int)ceilf(lo.x * IVOX)), std::max(0, (int)ceilf(lo.y * IVOX)), std::max(0, (int)ceilf(lo.z * IVOX))};
+    int b[3] = {std::min(NX - 1, (int)floorf(hi.x * IVOX)), std::min(NY - 1, (int)floorf(hi.y * IVOX)), std::min(NZ - 1, (int)floorf(hi.z * IVOX))};
     for (int z = a[2]; z <= b[2]; z++)
         for (int y = a[1]; y <= b[1]; y++)
             for (int x = a[0]; x <= b[0]; x++)
@@ -567,7 +568,7 @@ bool Terrain::cast(Vector3 a, Vector3 dir, float len, float *tOut, Vector3 *nOut
         }
         if (hit > 0) hit = lo;  // the side out of land, as the exact crossing a contact stops at
     } else {  // cell by cell along the ray (DDA): a listed cell's exact first land, else the cell's sign
-        int c[3] = {(int)floorf(a.x / VOX), (int)floorf(a.y / VOX), (int)floorf(a.z / VOX)}, step[3];
+        int c[3] = {(int)floorf(a.x * IVOX), (int)floorf(a.y * IVOX), (int)floorf(a.z * IVOX)}, step[3];
         const float o[3] = {a.x, a.y, a.z}, dv[3] = {dir.x, dir.y, dir.z};
         float tMax[3], tDelta[3], t0 = 0;
         for (int k = 0; k < 3; k++) {
@@ -630,7 +631,7 @@ Color Terrain::vertexColour(Vector3 p, Vector3 n) const {
     static const Vector3 L = Vector3Normalize(Lit::LOW_LIGHT);
     if (!hasGrad) return WHITE;
     auto solidAt = [&](Vector3 q) {
-        int x = (int)(q.x * (1 / VOX) + 0.5f), y = (int)(q.y * (1 / VOX) + 0.5f), z = (int)(q.z * (1 / VOX) + 0.5f);
+        int x = (int)(q.x * IVOX + 0.5f), y = (int)(q.y * IVOX + 0.5f), z = (int)(q.z * IVOX + 0.5f);
         return x >= 0 && y >= 0 && z >= 0 && x < NX && z < NZ && y < colTop[z * NX + x] && d[idx(x, y, z)] > 0;
     };
     int b0 = (int)(Vector3DotProduct(n, L) * 127 + 128), b3 = (int)(n.x * 127 + 128);
@@ -648,7 +649,7 @@ Color Terrain::vertexColour(Vector3 p, Vector3 n) const {
     if (!pl || !pl->on) return c;
     // 0x451590: min(255, 500 n.D (1/d - 1/R)) when n.D > 0; 0x451ea0 adds col x that / 256, saturated
     Vector3 D = Vector3Subtract(pl->pos, p);
-    float dist = Vector3Length(D), nd = Vector3DotProduct(n, D), u = scale / 20;  // m per W4M unit
+    float dist = Vector3Length(D), nd = Vector3DotProduct(n, D), u = 1.0f / 20;  // m per W4M unit
     if (nd <= 0) return c;
     // 0x454e30: unlit when a land frame voxel (not the heightmap) is first along P + 20 units .. trunc(d - 20) units towards it
     if (dist > 21 * u) {
@@ -657,7 +658,7 @@ Color Terrain::vertexColour(Vector3 p, Vector3 n) const {
         for (float t = 20 * u; t < end; t += VOX * 0.5f) {
             Vector3 q = Vector3Add(p, Vector3Scale(dir, t));
             if (!solidAt(q)) continue;
-            int x = (int)(q.x * (1 / VOX) + 0.5f), y = (int)(q.y * (1 / VOX) + 0.5f), z = (int)(q.z * (1 / VOX) + 0.5f);
+            int x = (int)(q.x * IVOX + 0.5f), y = (int)(q.y * IVOX + 0.5f), z = (int)(q.z * IVOX + 0.5f);
             if (mats.empty() || mats[idx(x, y, z)] < 65) return c;
             break;
         }
@@ -694,8 +695,8 @@ void Terrain::pointLight(const char *code, bool on) {  // W4M 0x4757c0 -> 0x470a
     for (PointLight &l : lights) {
         if (strncmp(l.code.c_str(), code, 4) || l.on == on) continue;
         l.on = on;
-        int lo[3] = {(int)((l.pos.x - l.r) / VOX) - 1, (int)((l.pos.y - l.r) / VOX) - 1, (int)((l.pos.z - l.r) / VOX) - 1};
-        int hi[3] = {(int)((l.pos.x + l.r) / VOX) + 1, (int)((l.pos.y + l.r) / VOX) + 1, (int)((l.pos.z + l.r) / VOX) + 1};
+        int lo[3] = {(int)((l.pos.x - l.r) * IVOX) - 1, (int)((l.pos.y - l.r) * IVOX) - 1, (int)((l.pos.z - l.r) * IVOX) - 1};
+        int hi[3] = {(int)((l.pos.x + l.r) * IVOX) + 1, (int)((l.pos.y + l.r) * IVOX) + 1, (int)((l.pos.z + l.r) * IVOX) + 1};
         for (int z = std::max(0, lo[2]) / CS; z <= std::min(NZ - 1, hi[2]) / CS; z++)
             for (int y = std::max(0, lo[1]) / CS; y <= std::min(NY - 1, hi[1]) / CS; y++)
                 for (int x = std::max(0, lo[0]) / CS; x <= std::min(NX - 1, hi[0]) / CS; x++) dirty[(z * CY + y) * CX + x] = true;
@@ -812,7 +813,7 @@ static const int CELL_EDGES[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1
 // the exact crossing on the grid edge from corner (x, y, z) along axis a (its ends of opposite sign in d), read in the first listed
 // cell around it in a fixed order, so neighbouring chunks agree
 static bool crossing(const SharpLand &s, int x, int y, int z, int a, bool fromLand, Vector3 *q, Vector3 *n) {
-    constexpr float V = Terrain::VOX;
+    const float V = Terrain::VOX;
     const int u = (a + 1) % 3, w = (a + 2) % 3;
     size_t c = ~(size_t)0;
     for (int k = 0; k < 4 && c == ~(size_t)0; k++) {
@@ -842,7 +843,7 @@ static bool crossing(const SharpLand &s, int x, int y, int z, int a, bool fromLa
 // Dual contouring in a listed cell (corner o): the vertex minimising the squared distances to the tangent planes at its exact
 // crossings (q, n: m of them), so it lands on the land's edges and corners
 static void exactVertex(Vector3 o, const Vector3 *q, const Vector3 *n, int m, Vector3 *pos, Vector3 *nrm) {
-    constexpr float V = Terrain::VOX;
+    const float V = Terrain::VOX;
     Vector3 mass{}, ns{};
     for (int k = 0; k < m; k++) mass = Vector3Add(mass, q[k]), ns = Vector3Add(ns, n[k]);
     mass = Vector3Scale(mass, 1.0f / m);
@@ -890,7 +891,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
             for (int i = 0; i < L; i++, n++) {
                 int x = x0 - 1 + i, y = y0 - 1 + j, z = z0 - 1 + k;
                 bool in = x >= 0 && y >= 0 && z >= 0 && x < NX && y < NY && z < NZ;
-                c[n] = in ? d[idx(x, y, z)] * (1 / Q) : -1;
+                c[n] = in ? d[idx(x, y, z)] * IQ : -1;
                 mt[n] = !in ? 0 : isSteel(idx(x, y, z)) ? HARD : !mats.empty() ? mats[idx(x, y, z)] : 0;
                 r |= (uint64_t)(c[n] > 0) << i;
             }
@@ -1041,8 +1042,8 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
     std::vector<FB> &fbs = scratch->fbs;
     size_t fused = 0;
     if (!fringeMats.empty()) {
-        const float L = 0.4f * scale;
-        const int drop = std::max(1, (int)ceilf(scale / VOX - 0.01f));  // the floor ends where a whole W4M voxel is open
+        const float L = 0.4f;
+        const int drop = std::max(1, (int)IVOX);  // the floor ends where a whole W4M voxel is open
         auto air = [&](int x, int y, int z) { return x < 0 || y < 0 || z < 0 || x >= NX || y >= NY || z >= NZ || d[idx(x, y, z)] <= 0; };
         auto open = [&](int x, int y, int z) { for (int t = 0; t < drop; t++) if (!air(x, y - t, z)) return false; return true; };
         static const int DIR[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
@@ -1076,7 +1077,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
                         }
                         FB &f = fbs[fi];
                         // one 8-cell atlas strip per W4M voxel of edge: split where the edge crosses a voxel boundary [ours: voxel-forced]
-                        float s0 = (px ? v[0].x : v[0].z) / scale, s1 = (px ? v[1].x : v[1].z) / scale;
+                        float s0 = px ? v[0].x : v[0].z, s1 = px ? v[1].x : v[1].z;
                         float cut[3] = {s0, floorf(s1) > floorf(s0) && floorf(s1) > s0 ? floorf(s1) : s1, s1};
                         unsigned line = (unsigned)(px ? gz * 2 + (dz > 0) : gx * 2 + (dx > 0)) * 977u + (unsigned)gy * 131u;
                         for (int q = 0; q < 2; q++) {

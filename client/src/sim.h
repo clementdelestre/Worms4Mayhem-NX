@@ -123,7 +123,7 @@ struct Vault { Vector3 from{}, to{}, dir{}, vel{}; int t = 0; };  // vel: the wa
 bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault = nullptr, Vector3 *ground = nullptr);
 void vaultStep(Vector3 &pos, Vault &v, Vector3 input);  // one vault tick
 bool fits(const Terrain &t, Vector3 from, Vector3 to);  // the upper body at `to` is out of land, or no deeper than at `from`
-// A tick's move cut into sub-steps of at most VOX/2 (shots, objects, walkers), so nothing skips thin land.
+// A tick's move cut into sub-steps of at most Terrain::SUB (shots, objects, walkers), so nothing skips thin land.
 int substeps(Vector3 vel);
 // W4M 0x585a29 launches from the worm's eye (feet + Worm.EyeLevelOffset 15 units): spawn, pulled back to the last free point eye → spawn
 Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn);

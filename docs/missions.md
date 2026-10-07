@@ -163,8 +163,6 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
     `scriptMovieEvent(g, fx, code)` gives any GameEvent::Movie's event.
   - Captures: `--ui missionhud <id>` plays the intro; `--ui movie <id> <Lua function>` skips it then calls that script function
     (`PlayMidtroMovie`, `PlayOutroMovie`), with `W4NX_CAPFRAMES` / `W4NX_SHOTEND`.
-  - Worms in close-ups look bigger than in W4M: the map's import scale (0.59 in TinCanWally) shrinks the land and locators, not the
-    worms [ours: the voxel grid fit, docs/maps.md].
 - **UI and render** (docs/w4m/missions.md §23.8): never read back by the sim or the checksum. The script queues GameEvents (`Comment`,
   `CommentClear`, `Emitter`, `EmitterOff`, `Shake`, worm -1) in `ScriptState::ui`; the end of `scriptStep` appends them to `g.events`, so
   Initialise's (run before the first step clears the events) reach the listeners too. Persistent HUD state is read by `scriptHud()`.
@@ -233,7 +231,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   exactly "mine" (not "Mine1"), an oil drum on "oildrum", the factory on "minefactory" [disasm 0x4fb490]. Mine.* keys go to `Game::mineMin`
   / `mineMax` / `mineDud` / `mineDet`, which a match takes from its scheme (lib_SetupMinesAndOildrums).
 - **Mine factory** (DeathMatch6, `Game::factory*`, docs/sim.md): GameLogic.StartMineFactory, kMineFactoryData edits.
-- **Water.Level** (`Game::water` = origin y + Level x scale / 20 [ours: the map's import scale]), set at once (the drown test reads it);
+- **Water.Level** (`Game::water` = origin y + Level / 20), set at once (the drown test reads it);
   the movies' Critical RaiseWater adds its Delta. Read back when the sim moved it (Flood, sudden death).
 - **Weapons**: Weapon.Create keeps WormData.WeaponIndex if usable, else writes the first usable id from 0 (Skip Go, Surrender skipped;
   none: kWeaponUndefined) back, then PreSelected; Weapon.PreSelected wields WeaponIndex without an ammo test, kWeaponUndefined (or a

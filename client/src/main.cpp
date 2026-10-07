@@ -961,7 +961,7 @@ static void drawUfo(float dt) {
 // The map's particle emitters and weather (render only), after the match's Fx::theme
 static void levelFx(const Game &g) {
     const Terrain &t = g.terrain;
-    Fx::level(t.emitters, t.scale / 20, t.origin, t.theme, t.time, g.water, [&t](Vector3 from, float len, Vector3 *hit, Vector3 *n) {
+    Fx::level(t.emitters, 1.0f / 20, t.origin, t.theme, t.time, g.water, [&t](Vector3 from, float len, Vector3 *hit, Vector3 *n) {
         if (!t.raycast({from, {0, -1, 0}}, len, hit)) return false;
         return *n = t.normal(*hit), true;
     }, g.cfg.mission && g.cfg.mission->rainProb >= 0 ? g.cfg.mission->rainProb : t.rainProb);
@@ -2146,14 +2146,14 @@ int main(int argc, char **argv) {
             BeginTextureMode(pipRt);
             ClearBackground(Fx::fog());
             BeginMode3D(pipView);
-            Fx::drawSky(pipView, game.terrain.origin, game.terrain.scale / 20);
+            Fx::drawSky(pipView, game.terrain.origin, 1.0f / 20);
             game.terrain.setView(pipView.position);
             game.terrain.draw();
             for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawWorm(game, w, clock);
             for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain)) DrawSphere(s.pos, 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) drawObject(game, o);
-            Fx::drawWater(pipView, game.water, clock, 12000 * game.terrain.scale / 20, {game.terrain.origin.x, game.terrain.origin.z});
+            Fx::drawWater(pipView, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
             game.terrain.drawFringe();
             Fx::draw(pipView);
             EndMode3D();
@@ -2164,7 +2164,7 @@ int main(int argc, char **argv) {
         BeginDrawing();
         ClearBackground(Fx::fog());
         BeginMode3D(view);
-        Fx::drawSky(view, game.terrain.origin, game.terrain.scale / 20);
+        Fx::drawSky(view, game.terrain.origin, 1.0f / 20);
         lap(T_SKY);
         game.terrain.setView(view.position);
         game.terrain.draw();
@@ -2248,7 +2248,7 @@ int main(int argc, char **argv) {
             DrawCube(Vector3Add(game.raceFinish, {0, 10.3f, 0}), 1.2f, 0.6f, 0.08f, RED);
         }
         lap(T_MODELS);
-        Fx::drawWater(view, game.water, clock, 12000 * game.terrain.scale / 20, {game.terrain.origin.x, game.terrain.origin.z});
+        Fx::drawWater(view, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
         game.terrain.drawFringe();
         lap(T_SKY);
         float fxDt = pause.open ? 0 : dt;

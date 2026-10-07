@@ -146,7 +146,7 @@ static bool marker(const Game &g, const std::string &name, Vector3 &out) {
     return false;
 }
 
-static float waterY(double units) { return G->terrain.origin.y + (float)units * G->terrain.scale / 20; }  // Water.Level, map units
+static float waterY(double units) { return G->terrain.origin.y + (float)units / 20; }  // Water.Level, map units
 
 static bool crate(const Object &o) { return o.type == Object::Crate || o.type == Object::Target; }  // a W4M CrateLogicEntity
 static int slotOf(int worm) { return worm >= 0 && worm < (int)S->wormSlot.size() ? S->wormSlot[worm] : -1; }
@@ -169,7 +169,7 @@ struct ScriptHost {
         else if (!strcmp(k, "ActiveWormIndex") && S->started) put(k, slotOf(g.current));
         else if (!strcmp(k, "FCS.GameOver")) put(k, g.phase == Phase::GameOver);
         else if (!strcmp(k, "DoubleDamage")) put(k, g.doubleDamage);
-        else if (!strcmp(k, "Water.Level") && fabsf(waterY(num(k)) - g.water) > 1e-4f) put(k, (g.water - g.terrain.origin.y) * 20 / g.terrain.scale);
+        else if (!strcmp(k, "Water.Level") && fabsf(waterY(num(k)) - g.water) > 1e-4f) put(k, (g.water - g.terrain.origin.y) * 20);
     }
 
     static void pushKey(const char *k) {

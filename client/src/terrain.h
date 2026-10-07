@@ -9,9 +9,11 @@ struct ChunkGeo;
 
 // Destructible voxel landscape: density field (>0 = solid, ~metres to surface), meshed per chunk (dual contouring where the land is exact).
 struct Terrain {
-    static constexpr int NX = 320, NY = 256, NZ = 320, CS = 32;
-    static constexpr float VOX = 0.25f, WATER = 3.0f;
-    static constexpr float Q = 254;  // density stored as int8 = metres * Q, clamped to +-0.5 m
+    static constexpr int NX = 352, NY = 256, NZ = 352, CS = 32;
+    static constexpr float WATER = 3.0f, SUB = 0.125f;  // SUB: sim sub-step and march length on every map, half the finest voxel
+    // per map (json "vox"): 0.25 or 0.5 m, powers of two so x * IVOX == x / VOX bit for bit; density int8 = metres * Q (+-0.5 m at 0.25)
+    static inline float VOX = 0.25f, IVOX = 4, Q = 254, IQ = 1 / 254.0f;
+    static void setVox(float v) { VOX = v, IVOX = 1 / v, Q = 254 * 0.25f / v, IQ = 1 / Q; }
 
     std::vector<signed char> d;
     SharpLand sharp;  // imported maps: the exact land where the surface runs (.cells); d keeps its signs elsewhere
@@ -50,7 +52,6 @@ struct Terrain {
     std::vector<std::string> texFiles;  // per material: top, side, roof, fringe (paths, "" = none)
     std::vector<Vector2> texRepeat;     // per material: metres per texture repeat (top, side)
     std::vector<Material> texMats, fringeMats;  // per material, built with the textures on first remesh
-    float scale = 1;  // import scale: metres per W4M land voxel
     struct Thin { int vox; unsigned char mat; Vector3 c[8]; };  // a sub-voxel W4M cell, drawn while voxel `vox` is solid
     std::vector<std::vector<Thin>> thin;  // per chunk
     std::vector<int> thinOnly;  // sorted voxels solid only for thin cells: not meshed
@@ -76,7 +77,7 @@ struct Terrain {
     struct Coded { std::vector<uint32_t> hex; std::vector<std::pair<int, int>> vox; };
     std::map<std::string, Coded> codes;
     bool clearCoded(const char *code);  // Land.ClearCoded 0x475170: the frames of that 4-byte code go at once; false: none
-    Vector3 origin{40, WATER, 40};  // W4M world origin in map metres (map "origin"), for the sky
+    Vector3 origin{};  // W4M world origin in map metres (map "origin"), for the sky
     float rainProb = -1;  // >= 0: the level script's Particle.Rain.Prob (map "rain_prob")
 
     bool load(const std::string &map, unsigned seed);  // empty or missing map => generate(seed)

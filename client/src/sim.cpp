@@ -299,7 +299,7 @@ bool fits(const Terrain &t, Vector3 from, Vector3 to) {  // W4M tests Fits befor
     return d <= 0 || d <= body(t, from);
 }
 
-int substeps(Vector3 vel) { return 1 + (int)(Vector3Length(vel) * Game::DT / (Terrain::VOX / 2)); }
+int substeps(Vector3 vel) { return 1 + (int)(Vector3Length(vel) * Game::DT / Terrain::SUB); }
 
 Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw) {
     float z = dropped(d) ? 13 : d.kind == Kind::Mine ? 10 : d.kind == Kind::Sheep || d.kind == Kind::SuperSheep ? 5 : d.kind == Kind::OldWoman ? 7 : d.kind == Kind::Scouser ? 10 : 0;
@@ -310,7 +310,7 @@ Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw) {
 Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn) {
     const Vector3 eye = {pos.x, pos.y - Game::R + 0.75f, pos.z}, d = Vector3Subtract(spawn, eye);
     Vector3 p = eye;
-    int n = 1 + (int)(Vector3Length(d) / (Terrain::VOX / 2));
+    int n = 1 + (int)(Vector3Length(d) / Terrain::SUB);
     for (int k = 1; k <= n; k++) {
         Vector3 q = Vector3Add(eye, Vector3Scale(d, (float)k / n));
         if (t.solid(q)) return p;
@@ -770,8 +770,9 @@ void Game::start(const GameConfig &c) {
         if (!terrain.hasFinish) {
             // fallback: highest point on a coarse grid, biased away from spawns
             float best = -1e9f;
-            for (int z = 4; z < Terrain::NZ - 4; z += 8)
-                for (int x = 4; x < Terrain::NX - 4; x += 8) {
+            const int s = (int)(2 * Terrain::IVOX);  // 2 m
+            for (int z = s / 2; z < Terrain::NZ - s / 2; z += s)
+                for (int x = s / 2; x < Terrain::NX - s / 2; x += s) {
                     int y = Terrain::NY - 1;
                     while (y > 0 && terrain.at(x, y, z) <= 0) y--;
                     if (y <= 0) continue;
@@ -997,11 +998,6 @@ void Game::stepObjects() {
         float h = crateLike(o) ? fmaxf(0, 0.5f * o.scale - 0.05f) : halfHeight(o.type);  // crate: rests at 10 x Scale units (0x5c94d0), less the 0.05 m probe
         if (o.pinned) o.vel = {};  // Crate.Gravity 0: the fall 0x5c9420 never moves it
         Vector3 v0 = o.vel;
-        // W4M casts the crate's bottom point along its fall (0x5c94ea) at 10 units under the centre, where our maps are k x smaller than the crate (docs/sim.md "Crates"):
-        // a slab W4M's point lies inside lies between our centre and bottom, so land met on the centre column within h is rested on
-        float tl;
-        if (crateLike(o) && !o.hooked && !o.pinned && o.vel.y <= 0 && !terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z}) && terrain.cast(o.pos, {0, -1, 0}, h, &tl, nullptr) && tl > 0)
-            o.pos.y += h - tl;
         if (o.hooked || o.pinned) {  // on the rope (step())
         } else if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
             Vector3 n = terrain.normal({o.pos.x, o.pos.y - h, o.pos.z});
@@ -1313,8 +1309,9 @@ Vector3 Game::landCenter() const { return {Terrain::NX * Terrain::VOX / 2, landT
 
 float Game::landTop() const {
     float top = 0;
-    for (int x = 0; x < Terrain::NX; x += 8)
-        for (int z = 0; z < Terrain::NZ; z += 8)
+    const int s = (int)(2 * Terrain::IVOX);  // 2 m columns
+    for (int x = 0; x < Terrain::NX; x += s)
+        for (int z = 0; z < Terrain::NZ; z += s)
             for (int y = Terrain::NY - 1; y * Terrain::VOX > top; y--)  // on a voxel, solid() is that voxel's density; still counted for the AI
                 if (Terrain::samples++, terrain.at(x, y, z) > 0) { top = y * Terrain::VOX; break; }
     return top;
@@ -1692,12 +1689,12 @@ static uint32_t collider(const Object &o, Vector3 &c, float &r) {
     return o.type == Object::Crate ? (o.weapon < 0 && o.mystery < 0 ? 4 : 2) : o.type == Object::Target ? 0x20 : o.type == Object::Barrel ? 0x10 : o.type == Object::Mine ? 8 : 0;
 }
 
-// 0x56fcb0: the rope's sphere at the body meets a collider of its mask, or Fits 0x59edf0's 1 m rods (ours from half a voxel up) fail. A worm:
+// 0x56fcb0: the rope's sphere at the body meets a collider of its mask, or Fits 0x59edf0's 1 m rods (ours from Terrain::SUB up) fail. A worm:
 // 5 units, mask 0x19 (worms, payloads, drums, bubbles: no crate); a hooked object (0x571d90): 0x3f, a crate its own 10 units (0x5c5fd0)
 bool Game::ropeBlocked(Vector3 f, int self, int body) const {
     static const Vector2 ROD[] = {{0.2f, -0.15f}, {-0.2f, -0.15f}, {0, 0.25f}};
     for (Vector2 r : ROD)
-        for (float h = Terrain::VOX / 2; h < 1; h += Terrain::VOX) if (terrain.solid({f.x + r.x, f.y + h, f.z + r.y})) return true;
+        for (float h = Terrain::SUB; h < 1; h += 2 * Terrain::SUB) if (terrain.solid({f.x + r.x, f.y + h, f.z + r.y})) return true;
     const float r = body >= 0 && objects[body].type == Object::Crate ? 0.5f : 0.25f;
     for (size_t i = 0; i < worms.size(); i++)
         if ((int)i != self && worms[i].alive && Vector3Distance(f, {worms[i].pos.x, worms[i].pos.y - R + 0.25f, worms[i].pos.z}) < r + 0.5f) return true;
@@ -1756,7 +1753,7 @@ void Game::ropeTick(Rope &r, Vector3 &feet, Vector3 &vel, int swing, int8_t aim,
         }
         if (!clear) p = was;
         Vector3 off = Vector3Subtract(p, hit);
-        if (Vector3LengthSqr(off) > 1e-8f) hit = Vector3Add(hit, Vector3Scale(Vector3Normalize(off), 0.05f + Terrain::VOX / 2));  // W4M 1 unit off the land; ours + the march's half voxel
+        if (Vector3LengthSqr(off) > 1e-8f) hit = Vector3Add(hit, Vector3Scale(Vector3Normalize(off), 0.05f + Terrain::SUB));  // W4M 1 unit off the land; ours + the march's half voxel
         if (Vector3Distance(hit, p) <= ROPE_BEND || r.n >= Rope::MAX) r.spin *= -0.9f;
         else {
             Vector3 o = r.pt[last], u = Vector3Subtract(was, o);

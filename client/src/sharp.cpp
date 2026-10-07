@@ -8,7 +8,8 @@
 
 static constexpr int NX = Terrain::NX, NY = Terrain::NY, NZ = Terrain::NZ;
 static constexpr size_t CELLS = (size_t)NX * NY * NZ;
-static constexpr float VOX = Terrain::VOX;
+#define VOX Terrain::VOX
+#define IVOX Terrain::IVOX
 static size_t cid(int x, int y, int z) { return ((size_t)z * NY + y) * NX + x; }
 static uint32_t hashc(size_t c) { return (uint32_t)(c * 2654435761u); }
 
@@ -119,9 +120,9 @@ uint32_t SharpLand::add(const std::vector<signed char> &d, const Vector3 *c) {
     Vector3 lo = c[0], hi = c[0];
     for (int k = 0; k < 8; k++) lo = Vector3Min(lo, c[k]), hi = Vector3Max(hi, c[k]);
     std::vector<uint32_t> o;
-    for (int z = std::max(0, (int)floorf((lo.z - 1e-4f) / VOX)); z <= std::min(NZ - 2, (int)floorf((hi.z + 1e-4f) / VOX)); z++)
-        for (int y = std::max(0, (int)floorf((lo.y - 1e-4f) / VOX)); y <= std::min(NY - 2, (int)floorf((hi.y + 1e-4f) / VOX)); y++)
-            for (int x = std::max(0, (int)floorf((lo.x - 1e-4f) / VOX)); x <= std::min(NX - 2, (int)floorf((hi.x + 1e-4f) / VOX)); x++) {
+    for (int z = std::max(0, (int)floorf((lo.z - 1e-4f) * IVOX)); z <= std::min(NZ - 2, (int)floorf((hi.z + 1e-4f) * IVOX)); z++)
+        for (int y = std::max(0, (int)floorf((lo.y - 1e-4f) * IVOX)); y <= std::min(NY - 2, (int)floorf((hi.y + 1e-4f) * IVOX)); y++)
+            for (int x = std::max(0, (int)floorf((lo.x - 1e-4f) * IVOX)); x <= std::min(NX - 2, (int)floorf((hi.x + 1e-4f) * IVOX)); x++) {
                 uint32_t mask = 0;
                 bool sep = false;
                 for (uint32_t q = 0; q < np && !sep; q++) {
@@ -146,7 +147,7 @@ uint32_t SharpLand::add(const std::vector<signed char> &d, const Vector3 *c) {
 }
 
 float SharpLand::hm(float x, float z) const {  // bilinear, -1e9 none; a missing corner takes the nearest one's height
-    float fx = x / VOX, fz = z / VOX;
+    float fx = x * IVOX, fz = z * IVOX;
     int ix = (int)floorf(fx), iz = (int)floorf(fz);
     if (top.empty() || ix < 0 || iz < 0 || ix >= NX - 1 || iz >= NZ - 1) return -1e9f;
     float tx = fx - ix, tz = fz - iz, v[4] = {top[iz * NX + ix], top[iz * NX + ix + 1], top[(iz + 1) * NX + ix], top[(iz + 1) * NX + ix + 1]};
@@ -358,7 +359,7 @@ void SharpLand::carve(const std::vector<signed char> &d, Vector3 c, float r) {
     sph.push_back({c.x, c.y, c.z, r});
     int lo[3], hi[3];
     const float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX - 1, NY - 1, NZ - 1};
-    for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)floorf((cc[a] - r) / VOX)), hi[a] = std::min((int)dim[a] - 1, (int)floorf((cc[a] + r) / VOX));
+    for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)floorf((cc[a] - r) * IVOX)), hi[a] = std::min((int)dim[a] - 1, (int)floorf((cc[a] + r) * IVOX));
     std::vector<uint32_t> o;
     for (int z = lo[2]; z <= hi[2]; z++)
         for (int y = lo[1]; y <= hi[1]; y++)
@@ -387,7 +388,7 @@ void SharpLand::weld(const std::vector<signed char> &d, Vector3 c, Vector3 half)
     box.push_back(c), box.push_back(half);
     int lo[3], hi[3];
     const float cc[3] = {c.x, c.y, c.z}, hh[3] = {half.x, half.y, half.z}, dim[3] = {NX - 1, NY - 1, NZ - 1};
-    for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)floorf((cc[a] - hh[a]) / VOX)), hi[a] = std::min((int)dim[a] - 1, (int)floorf((cc[a] + hh[a]) / VOX));
+    for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)floorf((cc[a] - hh[a]) * IVOX)), hi[a] = std::min((int)dim[a] - 1, (int)floorf((cc[a] + hh[a]) * IVOX));
     std::vector<uint32_t> o;
     for (int z = lo[2]; z <= hi[2]; z++)
         for (int y = lo[1]; y <= hi[1]; y++)

@@ -3642,7 +3642,7 @@ static void checkNoDelays() {
 // contact with a blast whose radii shrink x 1, 0.8, 0.6, 0.4, and the 4th contact (or a dead stop) rests it: Detonate, then that blast
 static void checkFatkins() {
     Game g;
-    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
     settle(g);
     g.hotSeat = 0;
     Worm &a = g.worms[g.current];

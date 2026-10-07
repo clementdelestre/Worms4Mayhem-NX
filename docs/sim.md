@@ -163,10 +163,8 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
 - **Crate size and rest height** [disasm 0x5c5700, 0x5c94d0, 0x5c89b1]: a crate is a sphere of 10 x Scale units (0.5 m x Scale); W4M rests it
   with the centre at the ground hit + that radius, and its fall casts a point one radius under the centre. Ours: half height `0.5 x Scale - 0.05` m
   plus the 0.05 m probe under it [ours: the voxel point test needs the margin]; the models are exported at their raw size / 20 (crate 1.0-1.2 m,
-  Landmine 0.5 m, OilDrum 1.14 m tall box; were 0.9 / 0.4 / 1.0 m of no W4M source). Deviation forced by the map scale: our maps are k = 0.52
-  (SneakyBridgeThieves) x the W4M world per unit while crates stay 20 units a metre, so a thin slab W4M's bottom point lies inside (a 0.14 m bridge rail
-  8.9 units under Crate5's marker) falls between our centre and bottom; `stepObjects` casts the centre column down one half height and rests the crate on
-  the first land met there (mission_check `cratepos` keeps Crate5 on the rail). A pinned crate is never pushed out of land (Gravity 0, 0x5c9420).
+  Landmine 0.5 m, OilDrum 1.14 m tall box; were 0.9 / 0.4 / 1.0 m of no W4M source). Maps are imported at the W4M
+  scale (docs/maps.md), so a thin slab under that point holds the crate as in W4M (Crate5 on SneakyBridgeThieves' bridge rail: mission_check `cratepos`). A pinned crate is never pushed out of land (Gravity 0, 0x5c9420).
 - **Between turns** (data + disasm), as W4M: stdvs DoOncePerTurnFunctions sends GameLogic.DropRandomCrate in
   DoPostActivity's first pass, between two turns; CreateRandomCrate 0x4fa4b0 sets Crate.DelayMillisec to its argument, 0 from every
   caller (0x4fa986, 0x4fac16, CrateShower 0x4fb860), and Crate.WaitTillLanded defaults to 1 (0x4f21e9); the crate registers the active
@@ -212,8 +210,7 @@ default 0.3 = WXD.DefaultWeapon; editor row "Cluster spread": +-0.1 in 0..1, wra
   NumMineActivation mines are in play, runs Start (2 s) / Fire (291 ms) / FireEnd (708 ms) as an active object, then drops up to 10
   CreateMine mines at 15 m/s from land top + 0.5 m, 6.4 m from a random worm, on flat land above the water and 6.35 m from every worm (xz),
   35 tries. A blast within its LandDamageRadius + 2 m of pos + (0, 2, 0), or the water over pos + 0.5 m, blows it up 100 ms later
-  (kMineFactoryData: 100 damage, 5 m radii, impulse 30 m/s). Distances at 20 units per m [ours: our maps are scaled by the import scale,
-  the worms are not]; land top is our `landTop()` (2 m columns). Client: `drawFactory` (model mine_factory, clips by state, its two
+  (kMineFactoryData: 100 damage, 5 m radii, impulse 30 m/s). Distances at 20 units per m; land top is our `landTop()` (2 m columns). Client: `drawFactory` (model mine_factory, clips by state, its two
   effects, MineMachineOperate), controls.cpp MineFactoryCamera.
 - **Steep ground**: objects slide past 60° like a worm (`wormBody` law, W4M SlideAngle_Default, data).
 
@@ -270,7 +267,8 @@ W4M side: docs/w4m/weapons.md "Mystery crates".
 
 Free functions in sim.cpp, also called by `ai.cpp` (`Mover`, `stepBody`) so the CPU predicts exactly what the sim does.
 Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `Worm.EyeLevelOffset` 15 units = 0.75 m above the feet
-(data). Terrain: 0.25 m voxels (`Terrain::VOX`), water at 3 m (`Terrain::WATER`, rises with Flood and sudden death).
+(data). Terrain: 0.25 or 0.5 m voxels per map (`Terrain::VOX`, docs/maps.md), every sub-step and land march 0.125 m on all maps
+(`Terrain::SUB`, `substeps`) [ours], water at 3 m (`Terrain::WATER`, rises with Flood and sudden death).
 
 | function | does | source |
 |---|---|---|
@@ -297,7 +295,7 @@ damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack lan
 
 ### Exact land (`SharpLand`, sharp.h; `Terrain::sample` / `normal` / `cast`)
 
-Imported maps carry `<map>.cells` (format: docs/w4m/formats.md §22): for every 0.25 m cell the surface crosses, the ordered list of the
+Imported maps carry `<map>.cells` (format: docs/w4m/formats.md §22): for every voxel cell (0.25 or 0.5 m) the surface crosses, the ordered list of the
 primitives reaching it [ours]. The sim reads that land exactly; so does the mesh in listed cells (docs/maps.md "Land mesh").
 
 - Primitives: a W4M poxel cell (`HEX`, a convex hexahedron: its 12 triangle planes, a twisted one bounded by its box too) with the mask of
@@ -321,7 +319,7 @@ primitives reaching it [ours]. The sim reads that land exactly; so does the mesh
   `weld` a box, `Terrain::addCell` a convex cell (test arenas, `checkLowLedges`); replaced lists become garbage, compacted when it
   exceeds half the pool. Lists shared by several cells stay shared [ours].
 - The instant replay's undo log does not restore the lists (replay disabled for now, docs/w4m/README.md).
-- Cost: the 221 imported maps' `.cells` take 282 MB on disk (deflated); in memory 12.5 MB (Deathmatch3) to 27.4 MB (DoomCanyon), loaded
+- Cost (measured at the former 320-voxel grid and k < 1 import): the 221 imported maps' `.cells` take 282 MB on disk (deflated); in memory 12.5 MB (Deathmatch3) to 27.4 MB (DoomCanyon), loaded
   in 23-46 ms on desktop. AI planning (scratch benchmark, 8 maps x 3 levels): 23.1 ns per terrain sample before, 30.2 after; mean
   59.8 ms per turn before, 75.3 after; worst tick 2.19 ms before, 3.48 after, back to 1.8-2.1 once the exact land
   counts in `Terrain::samples` and the walkers' walks are split (docs/ai.md "Per-frame work").

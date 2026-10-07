@@ -19,7 +19,7 @@ std::vector<Vector3> knots(const Game &g, const std::string &list, bool look) {
         const Terrain::Marker *m = nullptr;
         for (const Terrain::Marker &k : g.terrain.markers) if (k.name == n) { m = &k; break; }
         if (!m) { p.push_back(p.empty() ? Vector3{} : p.back()); continue; }  // W4M keeps stack garbage ("Unable to find a knot")
-        p.push_back(look ? Vector3Add(m->pos, Vector3Scale(m->dir, 1000 * g.terrain.scale / 20)) : m->pos);
+        p.push_back(look ? Vector3Add(m->pos, Vector3Scale(m->dir, 1000.0f / 20)) : m->pos);
     }
     return p;
 }

@@ -11,12 +11,13 @@ mod mission;
 mod schema;
 mod script;
 
-const NX: usize = 320;
+const NX: usize = 352;
 const NY: usize = 256;
-const NZ: usize = 320;
-const VOX: f32 = 0.25;
+const NZ: usize = 352;
+thread_local!(static VOXEL: std::cell::Cell<f32> = const { std::cell::Cell::new(0.25) });
+fn voxel() -> f32 { VOXEL.with(|v| v.get()) } // this map's voxel (json "vox"): 0.25 m, or 0.5 m when the land does not fit at 0.25
 const BAND: f32 = 1.0; // exact distances are stored within 1 voxel of the surface (all surface nets reads)
-const Q: f32 = 254.0; // engine density quantization (int8 = metres * Q)
+fn q() -> f32 { 254.0 * 0.25 / voxel() } // engine density quantization (int8 = metres * Q), Terrain::setVox
 const GIRDER_MAT: usize = 61; // theme material of W4M girders (GirderSmall/Large.xom), always exported
 const TEX_REPEAT: f32 = 4.0; // W4M units per texture repeat (poxel texture vectors are 0.25)
 const WATER: f32 = 3.0; // our water height (m); W4M water assumed at y = 0
@@ -458,9 +459,13 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     }
     if lo[0] > hi[0] { return Err("no geometry above water".into()); }
     let span = [hi[0] - lo[0], hi[2] - lo[2]];
-    let k = (78.0 / span[0]).min(78.0 / span[1]).min((NY as f32 * VOX - WATER - 1.0) / hi[1].max(1.0)).min(1.0);
-    let (ox, oz) = (NX as f32 * VOX / 2.0 - (lo[0] + hi[0]) / 2.0 * k, NZ as f32 * VOX / 2.0 - (lo[2] + hi[2]) / 2.0 * k);
-    let to_grid = |p: [f32; 3]| [(p[0] * k + ox) / VOX, (p[1] * k + WATER) / VOX, (p[2] * k + oz) / VOX];
+    // W4M scale (k = 1) at the finest voxel the land fits in; k < 1 only for land too big even at 0.5 m (trial-w3d)
+    let fit = |v: f32| ((NX as f32 * v - 2.0) / span[0]).min((NZ as f32 * v - 2.0) / span[1]).min((NY as f32 * v - WATER - 1.0) / hi[1].max(1.0));
+    let v = if fit(0.25) >= 1.0 { 0.25 } else { 0.5 };
+    VOXEL.with(|c| c.set(v));
+    let k = fit(v).min(1.0);
+    let (ox, oz) = (NX as f32 * voxel() / 2.0 - (lo[0] + hi[0]) / 2.0 * k, NZ as f32 * voxel() / 2.0 - (lo[2] + hi[2]) / 2.0 * k);
+    let to_grid = |p: [f32; 3]| [(p[0] * k + ox) / voxel(), (p[1] * k + WATER) / voxel(), (p[2] * k + oz) / voxel()];
 
     // heightmap surface per grid column (grid units), NaN = none
     let mut top = vec![f32::NAN; NX * NZ];
@@ -469,14 +474,14 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let mask = &hb[40000..];
         for z in 0..NZ { for x in 0..NX {
             // inverse of to_grid, then bilinear in the 100x100 heightmap
-            let (wx, wz) = ((x as f32 * VOX - ox) / k, (z as f32 * VOX - oz) / k);
+            let (wx, wz) = ((x as f32 * voxel() - ox) / k, (z as f32 * voxel() - oz) / k);
             let (fc, fr) = ((wx + HMP_EXTENT) / 1.6 - 0.5, (wz + HMP_EXTENT) / 1.6 - 0.5);
             if fc < 0.0 || fr < 0.0 || fc > 99.0 || fr > 99.0 { continue; }
             let (c, r, tc, tr) = (fc as usize, fr as usize, fc.fract(), fr.fract());
             let h = (hval(c, r) * (1.0 - tc) + hval(c + 1, r) * tc) * (1.0 - tr) + (hval(c, r + 1) * (1.0 - tc) + hval(c + 1, r + 1) * tc) * tr;
-            let t = ((h * HMP_SCALE + HMP_BASE) * k + WATER) / VOX;
+            let t = ((h * HMP_SCALE + HMP_BASE) * k + WATER) / voxel();
             // the coast keeps sloping under water; cut it 0.5 m down (no seabed geometry)
-            if t * VOX < WATER - 0.5 { continue; }
+            if t * voxel() < WATER - 0.5 { continue; }
             top[z * NX + x] = t;
             // bilinear mask, thresholded: smooth borders instead of 1.6 m squares
             let mv = |c: usize, r: usize| mask[r.min(99) * 100 + c.min(99)] as f32;
@@ -535,7 +540,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             nthin += 1;
             for v in a { thin.extend((v as u16).to_le_bytes()); }
             thin.push(h.mat);
-            for p in h.c { for v in p { thin.extend((v * VOX).to_le_bytes()); } }
+            for p in h.c { for v in p { thin.extend((v * voxel()).to_le_bytes()); } }
         }
     }
     thin[4..8].copy_from_slice(&nthin.to_le_bytes());
@@ -578,7 +583,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
 
     let solid = grid.iter().filter(|&&v| v != 0).count();
     if solid == 0 { return Err("empty after resampling".into()); }
-    let dq = (BAND * VOX * Q).round() as i32;
+    let dq = (BAND * voxel() * q()).round() as i32;
     let mut vox = b"W4V2".to_vec();
     for d in [NX, NY, NZ] { vox.extend((d as u16).to_le_bytes()); }
     vox.push(dq as u8);
@@ -592,7 +597,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     }
     // densities: skip codes (< 128) over voxels at the default +-dq, literal runs (128 + n - 1)
     let mut q: Vec<i8> = (0..grid.len()).map(|i| {
-        let v = ((dist[i].min(BAND) * VOX * Q).round() as i32).clamp(1, dq);
+        let v = ((dist[i].min(BAND) * voxel() * q()).round() as i32).clamp(1, dq);
         (if grid[i] != 0 { v } else { -v }) as i8
     }).collect();
     let (cells_file, exact) = cells::build(&hexes.iter().map(|h| h.c).collect::<Vec<_>>(), &top, &mut q, dq as i8);
@@ -618,7 +623,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let mut cur = u8::MAX;
         for (n, c) in cells.iter().enumerate() {
             if c.mat != cur { cur = c.mat; o += &format!("usemtl m{cur}\n"); }
-            for p in c.c { let g = to_grid(p); o += &format!("v {:.3} {:.3} {:.3}\n", g[0] * VOX, g[1] * VOX, g[2] * VOX); }
+            for p in c.c { let g = to_grid(p); o += &format!("v {:.3} {:.3} {:.3}\n", g[0] * voxel(), g[1] * voxel(), g[2] * voxel()); }
             for f in FACES { o += &format!("f {} {} {} {}\n", n * 8 + f[0] + 1, n * 8 + f[1] + 1, n * 8 + f[2] + 1, n * 8 + f[3] + 1); }
         }
         let mtl: String = pal.iter().enumerate().map(|(m, c)| format!("newmtl m{m}\nKd {:.3} {:.3} {:.3}\n", c[3] as f32 / 255.0, c[4] as f32 / 255.0, c[5] as f32 / 255.0)).collect();
@@ -678,7 +683,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}],\"dir\":[{dx:.4},{dy:.4},{dz:.4}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
             continue;
         }
-        if pos[1] < 0.0 || pos[0] < 0.0 || pos[2] < 0.0 || pos[0] > NX as f32 * VOX || pos[2] > NZ as f32 * VOX { continue; }
+        if pos[1] < 0.0 || pos[0] < 0.0 || pos[2] < 0.0 || pos[0] > NX as f32 * voxel() || pos[2] > NZ as f32 * voxel() { continue; }
         // basis = poxel rotation * detail rotation * detail scale * k (row-major 3x3)
         let rs = local(&Poxel { rot: [f[3], f[4], f[5]], scale: [f[9], f[10], f[11]], ..Default::default() }, true);
         let m = mul(&r.wn, &rs);
@@ -723,12 +728,12 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     }).collect();
     let codes_json = if code_json.is_empty() { String::new() } else { format!("  \"codes\": {{{}}},\n", code_json.join(", ")) };
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"scale\": {k:.4},\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n{codes_json}  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ],\n  \"lights\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"vox\": {v},\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n{codes_json}  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ],\n  \"lights\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), palette.join(","), texs.join(","), blk.join(","),
         marks.join(",\n    "), objs.join(",\n    "), emits.join(",\n    "), lights.iter().map(|l| l.1.as_str()).collect::<Vec<_>>().join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
-    Ok(format!("{} cells, {faces} faces, {exact}, {} objects, {} emitters, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
+    Ok(format!("{} cells, {faces} faces, {exact}, {} objects, {} emitters, vox {v}, scale {k:.2}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
         cells.len(), objs.len(), emits.len(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
 }
 
@@ -824,7 +829,7 @@ fn thumbnail(grid: &[u8], pal: &[[u8; 6]]) -> Vec<u8> {
     for py in 0..W { for px in 0..W {
         let (x, z) = (px * NX / W, py * NZ / W);
         let t = h[z * NX + x];
-        if t < WATER / VOX { rgb.extend([38, 104, 158]); continue; }
+        if t < WATER / voxel() { rgb.extend([38, 104, 158]); continue; }
         let g = |xx: usize, zz: usize| h[zz.min(NZ - 1) * NX + xx.min(NX - 1)].max(t - 8.0);
         let (gx, gz) = (g(x + 1, z) - g(x.saturating_sub(1), z), g(x, z + 1) - g(x, z.saturating_sub(1)));
         let shade = (0.8 + 0.12 * (gz - gx) + 0.25 * t / NY as f32).clamp(0.45, 1.25);

@@ -409,7 +409,7 @@ static bool probe(const Game &g, const Grid &gr, int i, int j, float from, float
         for (int b = -1; b <= 1; b++) {
             float y = from;
             const float x = c.x + a * gr.s / 3, z = c.y + b * gr.s / 3;
-            while (y > g.water && !g.terrain.solid({x, y, z})) y -= Terrain::VOX / 2;
+            while (y > g.water && !g.terrain.solid({x, y, z})) y -= Terrain::SUB;
             if (y <= g.water) return false;
             lo = fminf(lo, y), hi = fmaxf(hi, y);
         }
@@ -452,7 +452,7 @@ static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::Ste
 static bool fits(const Terrain &t, Vector3 p) {
     const float k = Game::BODY_R / 4;
     for (Vector2 o : {Vector2{4 * k, -3 * k}, Vector2{-4 * k, -3 * k}, Vector2{0, 5 * k}})
-        for (float y = p.y - R + Game::STEP + 0.05f; y <= p.y + R; y += Terrain::VOX / 2)
+        for (float y = p.y - R + Game::STEP + 0.05f; y <= p.y + R; y += Terrain::SUB)
             if (t.solid({p.x + o.x, y, p.z + o.y})) return false;
     return true;
 }
