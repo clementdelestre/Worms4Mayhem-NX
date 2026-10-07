@@ -105,10 +105,11 @@ Texture2D shadowMap() {
     return {depth[1], SHADOW_SIZE, SHADOW_SIZE, 1, 0};
 }
 
-void shadowPass(BoundingBox box, unsigned ver, const std::function<void()> &statics, const std::function<void(std::vector<Vector4> &)> &casters) {
+void shadowPass(BoundingBox box, unsigned ver, BoundingBox stale, const std::function<void()> &statics, const std::function<void(std::vector<Vector4> &)> &casters) {
     static unsigned had = ~0u;
     static BoundingBox hadBox{};
     static Matrix view, proj;
+    static float ortho[6];  // proj's left, right, bottom, top, near, far
     static std::vector<Vector4> drawn;
     static int dirty[4];  // texel rect of last frame's casters in map 1: only it is restored from map 0 (a full blit costs ~0.35 ms)
     if (shadows) shadowMap();  // may find the depth FBO incomplete
@@ -122,20 +123,44 @@ void shadowPass(BoundingBox box, unsigned ver, const std::function<void()> &stat
             lo = Vector3Min(lo, c), hi = Vector3Max(hi, c);
         }
         Vector3 c = Vector3Scale(Vector3Add(lo, hi), 0.5f), e = Vector3Scale(Vector3Subtract(hi, lo), 0.6f);  // half of 1.2 x the extent
-        proj = MatrixOrtho(c.x - e.x, c.x + e.x, c.y - e.y, c.y + e.y, -(c.z + e.z), -(c.z - e.z));  // near 0, far 1.2 x depth (0x47e351)
+        const float o[6] = {c.x - e.x, c.x + e.x, c.y - e.y, c.y + e.y, -(c.z + e.z), -(c.z - e.z)};  // near 0, far 1.2 x depth (0x47e351)
+        memcpy(ortho, o, sizeof o);
+        proj = MatrixOrtho(o[0], o[1], o[2], o[3], o[4], o[5]);
         shadowMtx = MatrixMultiply(MatrixMultiply(view, proj), MatrixMultiply(MatrixScale(0.5f, 0.5f, 0.5f), MatrixTranslate(0.5f, 0.5f, 0.5f)));
     }
-    auto pass = [&](int k, const std::function<void()> &draw) {
+    // r: the texel rect drawn (x0, y0, x1, y1), through a projection of that part of the map alone, so culling skips the rest
+    auto pass = [&](int k, const std::function<void()> &draw, const int *r = nullptr) {
         BeginTextureMode({fbo[k], {0, SHADOW_SIZE, SHADOW_SIZE, 1, 0}, {depth[k], SHADOW_SIZE, SHADOW_SIZE, 1, 0}});
         rlColorMask(false, false, false, false), rlEnableDepthTest(), rlEnableDepthMask();
+        Matrix p = proj;
+        if (r) {
+            auto at = [](float a, float b, int t) { return a + (b - a) * t / SHADOW_SIZE; };
+            p = MatrixOrtho(at(ortho[0], ortho[1], r[0]), at(ortho[0], ortho[1], r[2]), at(ortho[2], ortho[3], r[1]), at(ortho[2], ortho[3], r[3]), ortho[4], ortho[5]);
+            rlViewport(r[0], r[1], r[2] - r[0], r[3] - r[1]), rlEnableScissorTest(), rlScissor(r[0], r[1], r[2] - r[0], r[3] - r[1]);
+        }
         if (k == 0) rlClearScreenBuffers();
-        rlSetMatrixProjection(proj), rlSetMatrixModelview(view);
+        rlSetMatrixProjection(p), rlSetMatrixModelview(view);
         draw();
         rlDrawRenderBatchActive();
+        if (r) rlDisableScissorTest();
         rlColorMask(true, true, true, true), rlDisableDepthTest();
         EndTextureMode();
     };
     if (fresh) had = ver, hadBox = box, pass(0, statics), dirty[0] = dirty[1] = 0, dirty[2] = dirty[3] = SHADOW_SIZE;
+    else if (ver != had && stale.min.x <= stale.max.x) {  // land rebuilt: only the texels its chunks cover
+        had = ver;
+        int r[4] = {SHADOW_SIZE, SHADOW_SIZE, 0, 0};
+        for (int k = 0; k < 8; k++) {
+            Vector3 c = Vector3Transform({k & 1 ? stale.max.x : stale.min.x, k & 2 ? stale.max.y : stale.min.y, k & 4 ? stale.max.z : stale.min.z}, shadowMtx);
+            r[0] = std::min(r[0], (int)floorf(c.x * SHADOW_SIZE) - 1), r[1] = std::min(r[1], (int)floorf(c.y * SHADOW_SIZE) - 1);
+            r[2] = std::max(r[2], (int)ceilf(c.x * SHADOW_SIZE) + 1), r[3] = std::max(r[3], (int)ceilf(c.y * SHADOW_SIZE) + 1);
+        }
+        r[0] = std::max(r[0], 0), r[1] = std::max(r[1], 0), r[2] = std::min(r[2], SHADOW_SIZE), r[3] = std::min(r[3], SHADOW_SIZE);
+        if (r[2] > r[0] && r[3] > r[1]) {
+            pass(0, statics, r);
+            dirty[0] = std::min(dirty[0], r[0]), dirty[1] = std::min(dirty[1], r[1]), dirty[2] = std::max(dirty[2], r[2]), dirty[3] = std::max(dirty[3], r[3]);
+        }
+    }
     if (int x = dirty[0], y = dirty[1], w = dirty[2] - x, h = dirty[3] - y; w > 0 && h > 0) {
         rlBindFramebuffer(RL_READ_FRAMEBUFFER, fbo[0]), rlBindFramebuffer(RL_DRAW_FRAMEBUFFER, fbo[1]);
 #ifdef __SWITCH__

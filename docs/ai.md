@@ -212,7 +212,7 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
   `debt` carries over, capped at 2 × budget (W4M: 80 units/frame, pathfind and attack plan 100, position 10, **disasm**; scale **ours**).
 - A unit is one of: one threat rating, one row of the move window's layer-0 heights (65 nodes), one window entry's scores (+1000: 625
   cached nodes), one A* node expansion, one pair to path, one shot candidate (a walker's walk: 300 steps of it, resumed by the next
-  unit; the Old Woman's 30 s fuse took ~170k samples in one unit on the imported maps). `landTop` (Land.MaxHeight) once for a bomber's drop check.
+  unit; the Old Woman's 30 s fuse took ~170k samples in one unit on the imported maps).
   Raw voxel reads for column tops count 1/8 each. Unusable weapons are skipped for free.
 - Exact land (docs/sim.md "Exact land") counts in the same unit, one `field()` read: each `SharpLand::eval` 4 (+1 through
   `sample`), each `first()` 6 plus its evals, each cell a `Terrain::cast` steps through 1. Measured on desktop (3 imported maps, warm
@@ -235,4 +235,4 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 - The AI reads `Game` and returns an `Input`, logged, relayed and replayed like a human's (**ours**).
 - Every seed comes from turn-start state: `salt = (g.rng ^ hash(hp)·2654435761) + current`, never `g.clock`; decisions use `thinkTimer`
   (turn time at think start), not the time the think took.
-- The result never depends on slicing: units are evaluated in a fixed order, `stable_sort` on the plans, `landTop` is a max.
+- The result never depends on slicing: units are evaluated in a fixed order, `stable_sort` on the plans.

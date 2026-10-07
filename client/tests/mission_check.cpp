@@ -3,6 +3,7 @@
 // Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only, W4NX_MISSION=movies / crates those checks)
 #include <map>
 #include "../src/ai.h"
+#include "../src/controls.h"
 #include "../src/mission.h"
 #include "../src/script.h"
 #include "raymath.h"
@@ -293,6 +294,39 @@ static void checkDeaths(const std::vector<MissionSpec> &list) {
         }
 }
 
+// A human team that gets no input: no AI drives it, and Controls::read / tick give a zero Input, so nothing walks, turns or slides
+static void idleOn(Game &g) {
+    assert(!g.cfg.teamSetup[0].cpu);
+    Input skip;
+    skip.flags = Input::SKIP_MOVIE;
+    for (int t = 0; t < 60 * 60 && (g.phase != Phase::Aim || scriptMovieOn(g)); t++) g.step(skip);
+    assert(g.phase == Phase::Aim && g.worms[g.current].team == 0);
+    for (int t = 0; t < 120; t++) g.step(Input{});  // settled
+    Worm was = g.worms[g.current];
+    for (int t = 0; t < 60 * 20; t++) {
+        Input in = Controls::tick(Controls::read(g, 0, true, Game::DT));
+        assert(!in.turn && !in.walk && !in.aim && !in.buttons && !in.flags);
+        g.step(in);
+    }
+    const Worm &w = g.worms[g.current];
+    assert(w.team == 0);
+    assert(Vector3Distance(w.pos, was.pos) < 0.01f && w.yaw == was.yaw);
+}
+
+// Games chained in one process (mission, challenge, restart, local): the static Controls and script state carries nothing over
+static void checkIdle(const std::vector<MissionSpec> &list) {
+    for (const char *id : {"ChallengeNavigation2", "DeathMatch1", "SneakyBridgeThieves", "ChallengeNavigation2"})
+        for (const MissionSpec &m : list) {
+            if (m.id != id) continue;
+            Game g;
+            g.start(missionConfig(m, 5));
+            idleOn(g);
+        }
+    Game g;
+    g.start({1234, 2, 2, "", 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
+    idleOn(g);
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<MissionSpec> list = listMissions("./romfs/", "./");
@@ -327,6 +361,7 @@ int main() {
     if (only && !strcmp(only, "movies")) return checkMovies(list), 0;
     if (only && !strcmp(only, "crates")) return checkCrates(list), 0;
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
+    if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
     if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
     if (only) return 0;
     checkLot2(list);

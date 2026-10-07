@@ -25,7 +25,8 @@ struct Terrain {
     struct Part { int mat; Mesh mesh; bool fringe = false; };  // one mesh per (chunk, material), plus its grass fringe cards
     std::vector<std::vector<Part>> parts;
     std::vector<bool> dirty;
-    std::vector<std::pair<int, std::vector<Part>>> pending;  // rebuilt chunks held back until the dirty set is done
+    std::vector<std::pair<int, std::vector<Part>>> pending;  // rebuilt chunks held back until no chunk in view is dirty
+    mutable Matrix shownView{};  // the last draw()'s view-projection (zero: all in view): remeshAsync builds its chunks first
     // Instant replay (Snapshot): the meshes drawn at the snapshot, kept as rebuilt chunks replace them, then the live
     // ones set aside while the replay draws the kept ones (liveDirty: live chunks not meshed yet)
     std::vector<std::pair<int, std::vector<Part>>> kept, liveKept;
@@ -68,6 +69,17 @@ struct Terrain {
     std::vector<uint16_t> colTop;  // per (x, z) column: 1 + highest solid voxel at remesh time (shadow ray early-out); back() = max
     BoundingBox bounds{};  // solid voxels at the first remesh: the shadow map's land box
     static inline unsigned meshVer = 0;  // bumped whenever rebuilt chunks swap in or the land unloads
+    // world box of the chunks swapped in and the decor removed since takeStale(): the shadow map redraws only that
+    BoundingBox stale{{1e9f, 1e9f, 1e9f}, {-1e9f, -1e9f, -1e9f}};
+    BoundingBox takeStale() { BoundingBox b = stale; stale = {{1e9f, 1e9f, 1e9f}, {-1e9f, -1e9f, -1e9f}}; return b; }
+    void staleGrow(Vector3 lo, Vector3 hi);
+    mutable std::vector<float> objR;  // per decor model: its bounding radius (drawObjects loads them)
+    // Draw groups: GxGxG chunks' land parts merged per material on the GPU (a draw call per part cost ~8 us on Switch),
+    // rebuilt from the chunk meshes when one of them swaps
+    static constexpr int G = 4;
+    struct Group { std::vector<Part> parts; std::vector<std::vector<std::pair<int, int>>> segs; bool dirty = true; };  // segs: per part, (chunk, indices) in index order
+    struct Run { int mat; unsigned vao; int first, count; const Mesh *mesh; };  // one draw: consecutive in-view chunks of a group part
+    mutable std::vector<Group> groups;
     // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
     struct Object { int model; Vector3 pos; Matrix m; std::string code; float playFrom = -1; };  // code: Detail.PlayAnim FourCC; playFrom: its one-shot clip's start (render clock, s)
     std::vector<Object> objects;
@@ -104,6 +116,8 @@ struct Terrain {
     // the last point out of land (6e-5 m)
     bool cast(Vector3 a, Vector3 dir, float len, float *t, Vector3 *n) const;
     void decodeTextures();  // CPU only (worker thread): moves the PNG decode out of remesh
+    size_t bytes() const;  // voxels, materials, steel bits, exact cells, shadow columns, the uploaded chunk meshes and draw groups
+    bool meshInitial(double budget);  // loading screen: chunk geometry on 3 workers, uploads within the budget; true when all shown
     int remesh(double budget = 1e30);  // seconds; past it the rest waits for the next call. Returns the chunks rebuilt
     // Match frames: uploads what the meshing thread built, then hands it the dirty chunks with `budget` s to start new ones
     // (it runs while the frame renders). Returns the chunks uploaded. remeshWait() must precede any voxel change.
@@ -119,6 +133,12 @@ struct Terrain {
     void unload();
 
 private:
+    bool inView(int ci, const Matrix *mvp = nullptr) const;  // chunk ci's sphere vs that frustum (the current view's by default)
+    void touch(int ci);  // chunk ci's meshes changed: shadow map texels and draw group stale
+    void touchAll();
+    void buildGroup(int g) const;
+    const std::vector<Run> &runsInView() const;  // the land in the current frustum, by material
+    static void drawRuns(const Run *rs, size_t n, const Material &m);
     Vector3 startNormal(Vector3 p, size_t c, Vector3 dir) const;  // a cast starting in land, in listed cell c
     void reset(signed char fill);
     void island(float bh, float height, float rough, float rad, unsigned s);

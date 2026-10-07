@@ -157,6 +157,11 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
 
 - **Start placement** [disasm, docs/w4m/turn.md "Start placement"]: `Game::placeWorm` per worm in team order over the W4M AI node grid (`navgrid.h` `makeGrid` / `nodeH`, the one builder the AI also uses, built from the start terrain): a discarded draw (0x5b41a8 debug log), the yaw (k/256 turns), then up to 1000 cells from 0x4ae810 (500 draws each of a box by area, a node in it, layer 0 or 1; the first walkable node, flag 0; none ends the search), the point = node mid-height + (0, 10, -5 ZOffset) turned by the yaw + 10 units, a sphere 10 units there clear of placed worm colliders counts, the strictly highest of 3 wins; fallback Land.Center +-2.5 m at Land.MaxHeight + 0.5 m. The point is the worm's feet: it falls up to ~1.25 m onto its node. Then `addObject` mines and drums via `dropPoint` (100 tries, sphere radius + 5 units clear of worms and objects, none created on failure). Map `spawns` no longer exist (ours, removed). Deterministic from `rng` (ours: our LCG, not W4M's rand(); the draw order is W4M's); the team box test is a no-op (default box = the whole land). sim_check `checkPlacement` asserts it over 6 maps x 30 seeds (worms on a walkable node + 20 units, some on layer 1 under an overhang).
 
+- **Land.MaxHeight** (`Game::landMax`, `landTop()`; drops, bombers, Donkey, UFO, blimp, flood cloud, fireworks): W4M keeps the land box
+  (LandscapeLogicEntity +0x314c..+0x3160), grown by 0x4720c0 from each land frame at the import and each SpawnLand block (girders, the
+  mine factory), never lowered by a blast [disasm]. Ours: set once in `start` to the highest solid voxel on a column every 2 m (ours:
+  W4M takes the frames' box), raised by `weldLand` to the welded box top; a read costs nothing, whatever the map size.
+
 - **Drop**: at the end of each turn, with two teams or more standing, `crateChance` % (W4M SchemeData, data); 6 tries with the Wormpot Crate Shower (W4M
   GameLogic.CrateShower 0x4fb850, disasm). The contents: health / weapon / utility by the scheme's shares (W4M CreateRandomCrate
   0x4fa4b0, data), then a weapon by `crate_weight` inside its pool. Spawned with its centre 15 m (300 units, 0x5c6792) over a random land point above water, uniform over the land box, whose column misses every worm; no chute, plain gravity; bounces v = 0.2 (vx, −vy, vz), rests under 1 m/s (CreateRandomCrate 0x4fa52a Parachute 0, 0x5c6560, 0x5c9420, 0x5c8900, disasm).
@@ -210,7 +215,7 @@ default 0.3 = WXD.DefaultWeapon; editor row "Cluster spread": +-0.1 in 0..1, wra
   NumMineActivation mines are in play, runs Start (2 s) / Fire (291 ms) / FireEnd (708 ms) as an active object, then drops up to 10
   CreateMine mines at 15 m/s from land top + 0.5 m, 6.4 m from a random worm, on flat land above the water and 6.35 m from every worm (xz),
   35 tries. A blast within its LandDamageRadius + 2 m of pos + (0, 2, 0), or the water over pos + 0.5 m, blows it up 100 ms later
-  (kMineFactoryData: 100 damage, 5 m radii, impulse 30 m/s). Distances at 20 units per m; land top is our `landTop()` (2 m columns). Client: `drawFactory` (model mine_factory, clips by state, its two
+  (kMineFactoryData: 100 damage, 5 m radii, impulse 30 m/s). Distances at 20 units per m; land top is `landTop()` (Land.MaxHeight, below). Client: `drawFactory` (model mine_factory, clips by state, its two
   effects, MineMachineOperate), controls.cpp MineFactoryCamera.
 - **Steep ground**: objects slide past 60° like a worm (`wormBody` law, W4M SlideAngle_Default, data).
 

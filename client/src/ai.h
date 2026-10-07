@@ -56,7 +56,7 @@ private:
     Origin reaim;                 // the shotgun's next shot, where the worm stands
     int origin = 0, built = -1, pairs = 0, pairM = -1, pairR = -1;  // origin under evaluation, the one tpos was built for
     bool pairing = false, pairOk = false;
-    float pairScore = 0, pairYaw = 0, landTop = -1;
+    float pairScore = 0, pairYaw = 0;
     Vector3 pairAt{};
     std::vector<Step> pairBefore;
     std::vector<Choice> choices;  // ranked plans, tried in order (W4M IsPossible)

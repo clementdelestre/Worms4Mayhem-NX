@@ -902,7 +902,7 @@ void Ai::startEval(const Game &g) {
     const Worm &w = g.worms[me];
     const Level &L = levelOf(g);
     plan = Plan{};
-    threats.clear(), origins.clear(), choices.clear(), choiceAt = 0, moves.reset(), landTop = -1;
+    threats.clear(), origins.clear(), choices.clear(), choiceAt = 0, moves.reset();
     rating.assign(g.worms.size(), 0), away.assign(g.worms.size(), {}), vals.assign(g.worms.size(), 0);
     bool enemy = false;
     float sum = 0;
@@ -1143,8 +1143,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         case Kind::Donkey:     // BlitzDuration 2 s x GroundSpeed + 2 WormDamageRadius, the payload's WormDamageMagnitude
             if (isWorm && pick()) {
                 float view = 0;
-                if (landTop < 0 && (wd.kind == Kind::Airstrike || wd.name == "Fatkins Strike")) landTop = g.landTop();
-                if (!strikeHeading(g, L, wd, ti, vals, rating, away, landTop, view)) break;
+                if (!strikeHeading(g, L, wd, ti, vals, rating, away, g.landTop(), view)) break;
                 Blast b = blastOf(wd, wd.kind == Kind::Airstrike);
                 b.reach = 2 * Game::BOMBER_SPEED + 2 * b.reach;
                 Outcome oc(g, L, me, rating, vals);

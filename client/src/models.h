@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include "raylib.h"
 
 // W4M meshes converted by tools/w4m-models into assets/models/<name>.glb. Missing => draw() returns false
@@ -10,6 +11,7 @@ bool menuReady();             // the menu scene's models (frontend/, seagull) ar
 Model take(const char *path);  // a frontend/ model prepare() or decode() decoded (else loaded now); the caller unloads it
 void decode(const char *path);  // worker thread: reads and decodes one .glb for a later take()
 void unload();
+size_t bytes();  // RAM held by the loaded models: mesh arrays and sampled clips
 const char *bootStats();  // per-phase load times so far, for the BOOT log
 // W4M WormPoseManager layers over the body clip: the emote on the face bones the clip leaves still (WormEmote), the head
 // (HeadRotY/X: WormLookAt), the shoulders (Left/RightArmRotY/X: WormGestureAt or the head, by the clip's Blend node) and the
@@ -42,6 +44,7 @@ bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nul
 void shade(Shader s);  // every draw() uses s until shade({})
 void pick(const char *clip, float t = 0);  // every draw() also plays this W4M clip's XChildSelector keys (looped) until pick(nullptr)
 bool visible(Vector3 c, float r);  // sphere vs the current BeginMode3D view frustum
+bool visible(Vector3 c, float r, const Matrix &mvp);  // sphere vs that view-projection's frustum
 // Hats (assets/models/hats/*.glb), sorted by file name so every client's list agrees. draw() them by hatName(i).
 int hatCount();
 const char *hatName(int i);  // "" if i out of range

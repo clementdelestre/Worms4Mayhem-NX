@@ -171,6 +171,7 @@ static Game arena(const char *weapon, float dist) {
     for (int z = 16; z < 80; z++)
         for (int y = 176; y < 248; y++)
             for (int x = 16; x < 300; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+    g.landMax = fmaxf(g.landMax, 50);  // Land.MaxHeight as the load would set it for this floor
     for (auto &a : g.ammo)
         for (size_t k = 0; k < a.size(); k++) a[k] = WEAPONS[k].name == weapon ? 9 : WEAPONS[k].kind == Kind::SkipGo ? -1 : 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];

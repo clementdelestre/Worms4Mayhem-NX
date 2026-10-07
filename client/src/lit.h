@@ -23,8 +23,9 @@ Shader modelShader(bool worm);
 void frame(Vector3 cam);  // push sun + camera to every Lit shader
 void profile(float frameTime);  // once per frame, before BeginDrawing: picks the Switch framebuffer size
 // W4M lighting pass (docs/maps.md "Rendering"): a 1024² depth map seen along -LOW_LIGHT, fitted to the land box. statics() is
-// redrawn only when `ver` changes, casters() every frame on top of it, listing the spheres (centre, radius) of what it drew.
-void shadowPass(BoundingBox land, unsigned ver, const std::function<void()> &statics, const std::function<void(std::vector<Vector4> &)> &casters);
+// redrawn when `ver` changes (a new land box: all of it, else only the texels of `stale`, the world box rebuilt since), casters()
+// every frame on top of it, listing the spheres (centre, radius) of what it drew.
+void shadowPass(BoundingBox land, unsigned ver, BoundingBox stale, const std::function<void()> &statics, const std::function<void(std::vector<Vector4> &)> &casters);
 Texture2D shadowMap();  // the sampled depth texture (made on first use)
 extern bool shadows;  // false: no shadow map (land shader without sampler2DShadow, or incomplete depth FBO)
 }

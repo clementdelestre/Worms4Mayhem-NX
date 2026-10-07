@@ -528,8 +528,8 @@ void Game::factoryCreate(Vector3 p) {
     factory = {p, true};
     factory.wait = factoryData.inactive, factory.top = landTop();
     const float U = 1 / 20.0f;  // Land.SpawnPiece MineFacCollisionSmall / Big: boxes centred on pos + their frame's Position (Bundl09)
-    terrain.weld(Vector3Add(p, {18.96f * U, 15.96f * U, 1.08f * U}), {10.5f * U, 16 * U, 8.4f * U});
-    terrain.weld(Vector3Add(p, {-5.28f * U, 20.76f * U, 0.96f * U}), {12 * U, 20 * U, 12 * U});
+    weldLand(Vector3Add(p, {18.96f * U, 15.96f * U, 1.08f * U}), {10.5f * U, 16 * U, 8.4f * U});
+    weldLand(Vector3Add(p, {-5.28f * U, 20.76f * U, 0.96f * U}), {12 * U, 20 * U, 12 * U});
 }
 
 void Game::factoryStart() {
@@ -659,6 +659,16 @@ bool Game::allowed(int team, int wi) const {
     return false;
 }
 
+// The load's Land.MaxHeight: the highest solid voxel on a column every 2 m (ours: W4M takes its land frames' box)
+static float scanTop(const Terrain &t) {
+    const int s = (int)(2 * Terrain::IVOX);
+    for (int y = Terrain::NY - 1; y > 0; y--)
+        for (int z = 0; z < Terrain::NZ; z += s)
+            for (int x = 0; x < Terrain::NX; x += s)
+                if (t.at(x, y, z) > 0) return y * Terrain::VOX;
+    return 0;
+}
+
 void Game::start(const GameConfig &c) {
     cfg = c;
     WEAPONS.resize(std::min(WEAPONS.size(), baseWeapons));
@@ -674,6 +684,7 @@ void Game::start(const GameConfig &c) {
     if (wp(WP_LOW_GRAVITY)) cfg.rules |= RULE_LOW_GRAVITY;
     if (wp(WP_VITAL_WORM)) cfg.rules |= RULE_KING;  // flag 0x100 on each team's first worm (0x5d6970)
     terrain.load(c.map, c.seed);
+    landMax = scanTop(terrain);
     rng = c.seed * 2654435761u + 1;
     teams = c.teams;
     perTeam = c.wormsPerTeam;
@@ -1310,14 +1321,9 @@ void Game::stepCount() {
 // W4M LandscapeLogicEntity 0x4720c0: Land.Center = the middle of the land's bounding box (ours: floor 0 to landTop)
 Vector3 Game::landCenter() const { return {Terrain::NX * Terrain::VOX / 2, landTop() / 2, Terrain::NZ * Terrain::VOX / 2}; }
 
-float Game::landTop() const {
-    float top = 0;
-    const int s = (int)(2 * Terrain::IVOX);  // 2 m columns
-    for (int x = 0; x < Terrain::NX; x += s)
-        for (int z = 0; z < Terrain::NZ; z += s)
-            for (int y = Terrain::NY - 1; y * Terrain::VOX > top; y--)  // on a voxel, solid() is that voxel's density; still counted for the AI
-                if (Terrain::samples++, terrain.at(x, y, z) > 0) { top = y * Terrain::VOX; break; }
-    return top;
+void Game::weldLand(Vector3 c, Vector3 half) {
+    terrain.weld(c, half);
+    landMax = fmaxf(landMax, c.y + half.y);
 }
 
 Vector3 Game::blimpFocus(Vector3 ref, float yaw) const {
@@ -1505,8 +1511,8 @@ void Game::use(Worm &w) {
     case Kind::Parachute: break;  // above
     case Kind::Armour: w.armour = true; break;
     case Kind::Girder:  // Land.SpawnPiece GirderSmall.xom: a 4 x 4 m deck 1 m thick on two 1 m legs, axis-aligned
-        terrain.weld(Vector3Add(girder, {0, 0.5f, 0}), {2, 0.5f, 2});  // legs along x at the z ends: BitArray3D word 3 + x + 4 z (0x43dfd0)
-        for (float sz : {-1.5f, 1.5f}) terrain.weld(Vector3Add(girder, {0, -0.5f, sz}), {2, 0.5f, 0.5f});
+        weldLand(Vector3Add(girder, {0, 0.5f, 0}), {2, 0.5f, 2});  // legs along x at the z ends: BitArray3D word 3 + x + 4 z (0x43dfd0)
+        for (float sz : {-1.5f, 1.5f}) weldLand(Vector3Add(girder, {0, -0.5f, sz}), {2, 0.5f, 0.5f});
         girders++;
         if (!wp(WP_MULTI_GIRDER)) phase = Phase::Flying;  // 0x55ac30: Timer.StartRetreatTimer unless GirdersDontEndTurn
         break;
@@ -2497,12 +2503,8 @@ void Game::step(const Input &raw) {
             if (tilt) cursorPitch = Clamp(cursorPitch - in.aim / 127.0f * BLIMP_TILT * DT, 0, PI / 2);  // stick up: RotateUp
             float v = CURSOR_SPEED * DT / 127, y = cursorYaw, side = tilt ? 0 : in.aim;
             cursor.x += (sinf(y) * in.walk - cosf(y) * side) * v, cursor.z += (cosf(y) * in.walk + sinf(y) * side) * v;
-            float dx = cursor.x - Terrain::NX * Terrain::VOX / 2, dz = cursor.z - Terrain::NZ * Terrain::VOX / 2;
-            float dy = fmaxf(fabsf(cursor.y), fabsf(cursor.y - Terrain::NY * Terrain::VOX / 2));  // landCenter().y is in [0, NY VOX / 2]
-            if (dx * dx + dy * dy + dz * dz > (BLIMP_RANGE - 1) * (BLIMP_RANGE - 1)) {  // landTop() costs ~300k samples: only near the edge
-                Vector3 c = landCenter(), off = Vector3Subtract(cursor, c);
-                if (Vector3Length(off) > BLIMP_RANGE) cursor = Vector3Add(c, Vector3Scale(Vector3Normalize(off), BLIMP_RANGE));
-            }
+            Vector3 c = landCenter(), off = Vector3Subtract(cursor, c);
+            if (Vector3Length(off) > BLIMP_RANGE) cursor = Vector3Add(c, Vector3Scale(Vector3Normalize(off), BLIMP_RANGE));
         }
         blimp = aimCursor && blimped(weaponDef(weapon).kind);
         if (phase == Phase::Aim && weaponDef(weapon).kind == Kind::Girder) {

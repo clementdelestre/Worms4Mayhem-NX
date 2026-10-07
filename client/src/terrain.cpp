@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -142,7 +143,10 @@ template <class F> static void paint(Terrain &t, Vector3 lo, Vector3 hi, F f) {
                 f(Vector3{x * V, y * V, z * V}, t.d[idx(x, y, z)]);
 }
 
+void bootStop();
+
 void Terrain::reset(signed char fill) {
+    bootStop();
     unload();
     d.assign(TOTAL, fill);
     d.shrink_to_fit();
@@ -347,6 +351,7 @@ void Terrain::loadThin(const std::string &path) {
 
 // .vox "W4V2": u16 NX NY NZ, u8 D; materials as (material, run 1..255) pairs in d[] order (0 = air);
 // then density codes: h < 128 skips h voxels left at +-D (by material), h >= 128 gives h - 127 int8 values.
+// Decoded by 3 joined workers over voxel ranges that start on a density code (the two streams are only walked to find them).
 bool Terrain::loadVoxels(const std::string &path) {
     int size = 0;
     unsigned char *b = LoadFileData(path.c_str(), &size);
@@ -354,22 +359,51 @@ bool Terrain::loadVoxels(const std::string &path) {
     size_t n = 0;
     int i = 11;
     if (ok) {
-        mats.assign(TOTAL, 0), mats.shrink_to_fit();
-        for (; i + 1 < size && n < TOTAL; i += 2) {
-            size_t r = std::min<size_t>(b[i + 1], TOTAL - n);
-            memset(&mats[n], b[i], r);
-            n += r;
-        }
+        for (; i + 1 < size && n < TOTAL; i += 2) n += std::min<size_t>(b[i + 1], TOTAL - n);
         ok = n == TOTAL;
     }
     if (ok) {
-        signed char D = (signed char)b[10];
-        for (n = 0; n < TOTAL; n++) d[n] = mats[n] ? D : (signed char)-D;
-        for (n = 0; i < size && n < TOTAL;) {
-            int h = b[i++];
+        constexpr int T = 3;
+        struct Cut { size_t pos = 0; int code = 0, pair = 0; size_t runStart = 0; } cut[T + 1];  // voxel, density byte, material pair, that pair's first voxel
+        cut[0].code = i, cut[T] = {TOTAL, size, 0, 0};
+        int t = 1, c = i;
+        for (n = 0; c < size && n < TOTAL && t < T;) {
+            if (n >= TOTAL / T * t) cut[t++] = {n, c, 0, 0};
+            int h = b[c++];
             if (h < 128) n += h;
-            else for (h -= 127; h-- && i < size && n < TOTAL;) d[n++] = (signed char)b[i++];
+            else c += h - 127, n += h - 127;
         }
+        for (; t < T; t++) cut[t] = {TOTAL, size, 0, 0};
+        n = 0;
+        for (int k = 1, p = 11; k < T; k++) {  // the material pair holding each cut's voxel
+            for (; p + 1 < i; p += 2, n += b[p - 1]) {
+                cut[k].pair = p, cut[k].runStart = n;
+                if (n + b[p + 1] > cut[k].pos) break;
+            }
+        }
+        cut[0].pair = 11;
+        mats.assign(TOTAL, 0);
+        const signed char D = (signed char)b[10];
+        const int matEnd = i;
+        auto work = [&](int k) {
+            Loading::pinCore(k);
+            size_t lo = cut[k].pos, hi = cut[k + 1].pos, v = cut[k].runStart;
+            for (int p = cut[k].pair; p < matEnd && v < hi; p += 2) {
+                size_t r = std::min<size_t>(b[p + 1], TOTAL - v), s = std::max(v, lo), e = std::min(v + r, hi);
+                if (s < e) memset(&mats[s], b[p], e - s), memset(&d[s], b[p] ? D : -D, e - s);
+                v += r;
+            }
+            int q = cut[k].code;
+            for (v = lo; q < size && v < hi;) {
+                int h = b[q++];
+                if (h < 128) v += h;
+                else for (h -= 127; h-- && q < size && v < hi;) d[v++] = (signed char)b[q++];
+            }
+        };
+        std::thread th[T - 1];
+        for (int k = 1; k < T; k++) th[k - 1] = std::thread(work, k);
+        work(0);
+        for (std::thread &w : th) w.join();
     }
     UnloadFileData(b);
     if (!ok) mats.clear();
@@ -468,7 +502,8 @@ Vector3 Terrain::normal(Vector3 p, float e) const {
 }
 
 bool Terrain::carve(Vector3 c, float radius) {
-    sharp.carve(d, c, radius);
+    int box[6] = {NX, NY, NZ, -1, -1, -1};  // changed voxels and listed cells: only their chunks remesh
+    sharp.carve(d, c, radius, box);
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {(float)NX, (float)NY, (float)NZ};
     for (int a = 0; a < 3; a++) {
@@ -484,6 +519,8 @@ bool Terrain::carve(Vector3 c, float radius) {
                 if (nv == d[i]) continue;
                 if (undo) undo->emplace_back((int)i, d[i]);
                 d[i] = nv, changed = true;
+                box[0] = std::min(box[0], x), box[1] = std::min(box[1], y), box[2] = std::min(box[2], z);
+                box[3] = std::max(box[3], x), box[4] = std::max(box[4], y), box[5] = std::max(box[5], z);
             }
     // W4M 0x5cc960: a detail (and its emitter, 0x5cc8c0) goes when |pos - blast|² < radius²; decor also goes with the ground under it
     // (0.3 m below its base along its up axis) [ours: W4M removes a detail with its emptied land frame, 0x46c630]
@@ -491,13 +528,16 @@ bool Terrain::carve(Vector3 c, float radius) {
         float dist = Vector3Distance(o.pos, c);
         if (dist > radius + 2) return false;
         Vector3 up = Vector3Normalize({o.m.m4, o.m.m5, o.m.m6});
-        return dist < radius || !solid(Vector3Subtract(o.pos, Vector3Scale(up, 0.3f)));
+        if (dist >= radius && solid(Vector3Subtract(o.pos, Vector3Scale(up, 0.3f)))) return false;
+        float r = o.model < (int)objR.size() ? 2 * objR[o.model] * Vector3Length({o.m.m0, o.m.m1, o.m.m2}) : 1e9f;
+        staleGrow(Vector3SubtractValue(o.pos, r), Vector3AddValue(o.pos, r));
+        return true;
     }), objects.end());
     for (Emitter &e : emitters) e.alive = e.alive && Vector3Distance(e.pos, c) >= radius;
     // chunk cells sample one voxel past their bounds, so neighbours of the box are dirty too
-    for (int z = std::max(0, lo[2] - 1) / CS; z <= std::min(NZ - 1, hi[2] + 1) / CS; z++)
-        for (int y = std::max(0, lo[1] - 1) / CS; y <= std::min(NY - 1, hi[1] + 1) / CS; y++)
-            for (int x = std::max(0, lo[0] - 1) / CS; x <= std::min(NX - 1, hi[0] + 1) / CS; x++)
+    for (int z = std::max(0, box[2] - 1) / CS; z <= std::min(NZ - 1, box[5] + 1) / CS; z++)
+        for (int y = std::max(0, box[1] - 1) / CS; y <= std::min(NY - 1, box[4] + 1) / CS; y++)
+            for (int x = std::max(0, box[0] - 1) / CS; x <= std::min(NX - 1, box[3] + 1) / CS; x++)
                 dirty[(z * CY + y) * CX + x] = true;
     edits += changed;
     return changed;
@@ -751,8 +791,8 @@ struct ChunkGeo {  // a chunk's meshes in RAM: built on any thread, uploaded on 
     std::vector<M> ms;
 };
 
-// The meshing thread: chunk geometry on another core while the main thread renders. The voxels it reads only change in
-// the sim, which first waits for it (remeshWait).
+// The meshing threads (cores 1 and 2): chunk geometry while the main thread renders. The voxels they read only change in
+// the sim, which first waits for them (remeshWait).
 namespace {
 struct Mesher {
     std::mutex mu;
@@ -761,21 +801,25 @@ struct Mesher {
     std::vector<int> todo;
     size_t next = 0;  // todo entries started
     std::vector<ChunkGeo> done;
-    std::chrono::steady_clock::time_point until;  // no chunk starts past it, but the first
-    bool busy = false, quit = false;
-    double spent = 0;  // chunk geometry time since the last REMESH line, s
-    std::thread th;  // joined at exit: libnx has no pthread_detach
+    std::chrono::steady_clock::time_point until;  // no chunk starts past it, but each thread's first
+    int busy = 0;       // threads still on the current todo
+    unsigned gen = 0;   // bumped per todo handed over
+    bool quit = false;
+    double spent = 0;  // chunk geometry time since the last REMESH line, s (both threads)
+    std::vector<std::thread> th;  // joined at exit: libnx has no pthread_detach
 };
-Mesher &mesher = *new Mesher;  // never destroyed: its thread is joined in an atexit handler
+Mesher &mesher = *new Mesher;  // never destroyed: its threads are joined in an atexit handler
 using Clock = std::chrono::steady_clock;
+constexpr int MESHERS = 2;
 
-void mesherLoop() {
-    Loading::pinCore(2);
+void mesherLoop(int core) {
+    Loading::pinCore(core);
     std::unique_lock<std::mutex> l(mesher.mu);
     double cost = 0;  // recent dearest chunk, s
-    for (;;) {
-        mesher.cv.wait(l, [] { return mesher.busy || mesher.quit; });
+    for (unsigned seen = 0;;) {
+        mesher.cv.wait(l, [&] { return mesher.gen != seen || mesher.quit; });
         if (mesher.quit) return;
+        seen = mesher.gen;
         for (bool first = true; mesher.next < mesher.todo.size(); first = false) {
             if (!first && Clock::now() + std::chrono::duration<double>(cost) > mesher.until) break;
             ChunkGeo g;
@@ -790,8 +834,7 @@ void mesherLoop() {
             mesher.spent += took;
             mesher.done.push_back(std::move(g));
         }
-        mesher.busy = false;
-        mesher.cv.notify_all();
+        if (--mesher.busy == 0) mesher.cv.notify_all();
     }
 }
 }  // namespace
@@ -1274,6 +1317,15 @@ void Terrain::decodeTextures() {
         if (!f.empty() && !decoded.count(f) && FileExists(f.c_str())) decoded[f] = LoadImage(f.c_str());
 }
 
+size_t Terrain::bytes() const {
+    size_t n = d.capacity() + mats.capacity() + steel.capacity() / 8 + sharp.bytes() + colTop.capacity() * 2 + thinOnly.capacity() * sizeof(int);
+    for (const std::vector<Part> &ps : parts)
+        for (const Part &p : ps) n += (size_t)p.mesh.vertexCount * 28 + (size_t)p.mesh.triangleCount * 6;  // pos, normal, uv, colour; u16 indices
+    for (const Group &g : groups)
+        for (const Part &p : g.parts) n += (size_t)p.mesh.vertexCount * 28 + (size_t)p.mesh.triangleCount * 6;  // GPU only
+    return n;
+}
+
 void Terrain::setView(Vector3 cam) const { Lit::frame(cam); }  // the land shader is a Lit one
 
 int Terrain::remesh(double budget) {
@@ -1313,15 +1365,99 @@ int Terrain::remesh(double budget) {
     return built;
 }
 
+struct Boot {
+    std::mutex mu;
+    std::vector<ChunkGeo> done;
+    std::vector<int> todo;
+    std::atomic<size_t> next{0};
+    size_t uploaded = 0;
+    const Terrain *t = nullptr;
+    std::vector<std::thread> th;
+};
+static Boot boot;
+
+void bootStop() {  // a new map while the workers run: they stop, their chunks are dropped
+    boot.next = boot.todo.size();
+    for (std::thread &w : boot.th) w.join();
+    boot.th.clear(), boot.todo.clear(), boot.done.clear(), boot.t = nullptr;
+}
+
+// The loading screen's meshing: 3 joined workers (cores 0-2) build the chunk geometry, the calling (GL) thread uploads it
+// within `budget`. Returns true once every chunk is shown.
+bool Terrain::meshInitial(double budget) {
+    if (!boot.t) {
+        remesh(0);  // textures, shadow columns
+        for (int ci = 0; ci < (int)dirty.size(); ci++)
+            if (dirty[ci]) boot.todo.push_back(ci);
+        if (boot.todo.empty()) return true;
+        boot.t = this, boot.next = 0, boot.uploaded = 0;
+        for (int k = 0; k < 3; k++)
+            boot.th.emplace_back([k] {
+                Loading::pinCore(k);
+                for (size_t n; (n = boot.next++) < boot.todo.size();) {
+                    ChunkGeo g;
+                    boot.t->chunkGeometry(boot.todo[n], g);
+                    std::lock_guard<std::mutex> l(boot.mu);
+                    boot.done.push_back(std::move(g));
+                }
+            });
+    }
+    double end = GetTime() + budget;
+    for (;;) {
+        std::vector<ChunkGeo> got;
+        {
+            std::lock_guard<std::mutex> l(boot.mu);
+            got.swap(boot.done);
+        }
+        for (size_t k = 0; k < got.size(); k++) {
+            if (k && GetTime() > end) {  // over the slice: the rest goes back
+                std::lock_guard<std::mutex> l(boot.mu);
+                boot.done.insert(boot.done.end(), std::make_move_iterator(got.begin() + k), std::make_move_iterator(got.end()));
+                return false;
+            }
+            std::vector<Part> ps;
+            upload(got[k], ps);
+            pending.emplace_back(got[k].ci, std::move(ps));
+            dirty[got[k].ci] = false;
+            boot.uploaded++;
+        }
+        if (boot.uploaded == boot.todo.size()) break;
+        if (GetTime() > end) return false;
+        if (got.empty()) {
+            if (budget < 1) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    for (std::thread &w : boot.th) w.join();
+    boot.th.clear(), boot.todo.clear(), boot.t = nullptr;
+    swapPending();
+    return true;
+}
+
 static void unloadParts(std::vector<std::pair<int, std::vector<Terrain::Part>>> &v) {
     for (auto &[ci, ps] : v)
         for (Terrain::Part &p : ps) UnloadMesh(p.mesh);
     v.clear();
 }
 
+void Terrain::staleGrow(Vector3 lo, Vector3 hi) { stale.min = Vector3Min(stale.min, lo), stale.max = Vector3Max(stale.max, hi); }
+
+void Terrain::touch(int ci) {
+    Vector3 lo = {(ci % CX * CS) * VOX - VOX, (ci / CX % CY * CS) * VOX - VOX, (ci / (CX * CY) * CS) * VOX - VOX};  // vertices stay within a voxel
+    staleGrow(lo, Vector3AddValue(lo, CS * VOX + 2 * VOX));
+    const int gx = (CX + G - 1) / G, gy = (CY + G - 1) / G;
+    if (size_t g = (ci / (CX * CY) / G * gy + ci / CX % CY / G) * gx + ci % CX / G; g < groups.size()) groups[g].dirty = true;
+}
+
+void Terrain::touchAll() {
+    staleGrow({-1e9f, -1e9f, -1e9f}, {1e9f, 1e9f, 1e9f});
+    for (Group &g : groups) g.dirty = true;
+}
+
 void Terrain::swapPending() {
     for (auto &[ci, ps] : pending) {  // a chunk rebuilt twice: the later entry wins
         int c = ci;
+        touch(ci);
         if (keep && std::none_of(kept.begin(), kept.end(), [c](const auto &k) { return k.first == c; })) kept.emplace_back(ci, std::move(parts[ci]));
         else for (Part &p : parts[ci]) UnloadMesh(p.mesh);
         parts[ci] = std::move(ps);
@@ -1353,7 +1489,7 @@ bool Terrain::rewindMeshes() {
         if (dirty[ci]) liveDirty.push_back(ci), dirty[ci] = false;
     for (auto &[ci, ps] : kept) liveKept.emplace_back(ci, std::move(parts[ci])), parts[ci] = std::move(ps);
     kept.clear();
-    meshVer++;
+    meshVer++, touchAll();
     return true;
 }
 
@@ -1369,7 +1505,7 @@ bool Terrain::forwardMeshes() {
     liveKept.clear();
     for (int ci : liveDirty) dirty[ci] = true;
     liveDirty.clear();
-    meshVer++;
+    meshVer++, touchAll();
     return true;
 }
 
@@ -1403,69 +1539,172 @@ int Terrain::remeshAsync(double budget) {
     std::vector<int> todo;
     for (int ci = 0; ci < (int)dirty.size(); ci++)
         if (dirty[ci]) todo.push_back(ci), dirty[ci] = false;
-    static double roundT0 = 0;  // a land edit's remesh round: its first dirty chunk until no chunk is left
+    // chunks the last view drew first; once none of them is left the rebuilt ones swap in (seams stay off screen)
+    auto split = std::stable_partition(todo.begin(), todo.end(), [&](int ci) { return inView(ci, &shownView); });
+    static bool round = false;  // a land edit's remesh round: its first dirty chunk until no chunk is left
+    static double roundT0 = 0, shownMs = -1;
     static int roundN = 0;
-    if (todo.empty()) {
+    if (!round && !todo.empty()) round = true, roundT0 = GetTime(), shownMs = -1, roundN = 0;
+    roundN += n;
+    if (split == todo.begin()) {
         swapPending();
-        if (roundN && std::none_of(dirty.begin(), dirty.end(), [](bool b) { return b; })) {
+        if (round && shownMs < 0) shownMs = (GetTime() - roundT0) * 1000;
+    }
+    if (todo.empty()) {
+        if (round) {
             std::lock_guard<std::mutex> l(mesher.mu);
-            TraceLog(LOG_INFO, "REMESH: %d chunks, build %.1f ms (meshing thread), %.1f ms until shown", roundN, mesher.spent * 1000, (GetTime() - roundT0) * 1000);
-            roundN = 0;
+            TraceLog(LOG_INFO, "REMESH: %d chunks, build %.1f ms (meshing threads), %.1f ms until shown, %.1f ms all", roundN, mesher.spent * 1000, shownMs, (GetTime() - roundT0) * 1000);
+            round = false, mesher.spent = 0;
         }
         return n;
     }
-    if (!roundN) roundT0 = GetTime();
-    roundN += (int)todo.size();
     std::lock_guard<std::mutex> l(mesher.mu);
-    if (roundN == (int)todo.size()) mesher.spent = 0;
     mesher.t = this, mesher.todo = std::move(todo), mesher.next = 0;
     mesher.until = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(budget));
-    mesher.busy = true;
-    if (!mesher.th.joinable()) {
-        mesher.th = std::thread(mesherLoop);
+    mesher.busy = MESHERS, mesher.gen++;
+    if (mesher.th.empty()) {
+        for (int k = 0; k < MESHERS; k++) mesher.th.emplace_back(mesherLoop, 2 - k);
         atexit([] {
             { std::lock_guard<std::mutex> q(mesher.mu); mesher.quit = true; }
             mesher.cv.notify_all();
-            mesher.th.join();
+            for (std::thread &t : mesher.th) t.join();
         });
     }
     mesher.cv.notify_all();
     return n;
 }
 
-void Terrain::draw() const {
-    static std::vector<const Part *> vis;
-    vis.clear();
-    for (int ci = 0; ci < (int)parts.size(); ci++) {
-        if (parts[ci].empty()) continue;
-        float h = CS * VOX / 2;  // chunk centre; vertices stay within a voxel of the chunk box
-        if (!Models::visible({(ci % CX * CS) * VOX + h, (ci / CX % CY * CS) * VOX + h, (ci / (CX * CY) * CS) * VOX + h}, h * 1.74f + VOX)) continue;
-        for (const Part &p : parts[ci]) if (!p.fringe) vis.push_back(&p);
+bool Terrain::inView(int ci, const Matrix *mvp) const {
+    const float h = CS * VOX / 2;  // chunk centre; vertices stay within a voxel of the chunk box
+    Vector3 c = {(ci % CX * CS) * VOX + h, (ci / CX % CY * CS) * VOX + h, (ci / (CX * CY) * CS) * VOX + h};
+    return mvp ? Models::visible(c, h * 1.74f + VOX, *mvp) : Models::visible(c, h * 1.74f + VOX);
+}
+
+// One material's runs: DrawMesh without vertices sets the material state and matrices once (uniforms persist in the
+// program), then each run only binds its VAO
+void Terrain::drawRuns(const Run *rs, size_t n, const Material &M) {
+    if (!n) return;
+    Mesh state = *rs[0].mesh;
+    state.vertexCount = state.triangleCount = 0, state.indices = nullptr;
+    DrawMesh(state, M, MatrixIdentity());
+    rlEnableShader(M.shader.id);
+    for (int k = 0; k < 12; k++)  // raylib MAX_MATERIAL_MAPS
+        if (M.maps[k].texture.id) rlActiveTextureSlot(k), rlEnableTexture(M.maps[k].texture.id);
+    for (size_t j = 0; j < n; j++) {
+        rlEnableVertexArray(rs[j].vao);
+        rlDrawVertexArrayElements(rs[j].first, rs[j].count, 0);
     }
-    std::stable_sort(vis.begin(), vis.end(), [](const Part *a, const Part *b) { return a->mat < b->mat; });
-    // per material: DrawMesh sets the full state once; uniforms persist in the program, so the rest only bind their VAO
+    for (int k = 0; k < 12; k++)
+        if (M.maps[k].texture.id) rlActiveTextureSlot(k), rlDisableTexture();
+    rlDisableVertexArray();
+    rlDisableShader();
+}
+
+#ifdef __SWITCH__
+extern "C" void glBindBuffer(unsigned target, unsigned id);
+extern "C" void glCopyBufferSubData(unsigned from, unsigned to, long fromOff, long toOff, long size);
+#else
+extern "C" void (*glad_glBindBuffer)(unsigned, unsigned), (*glad_glCopyBufferSubData)(unsigned, unsigned, long, long, long);
+#define glBindBuffer glad_glBindBuffer
+#define glCopyBufferSubData glad_glCopyBufferSubData
+#endif
+
+// One mesh per material of the group's chunk parts (several past 65535 vertices: 16-bit indices), copied buffer to buffer.
+// Land parts carry positions, normals and colours (chunkGeometry), no texcoords.
+void Terrain::buildGroup(int g) const {
+    Group &gr = groups[g];
+    for (Part &p : gr.parts) UnloadMesh(p.mesh);
+    gr.parts.clear(), gr.segs.clear(), gr.dirty = false;
+    const int gx = (CX + G - 1) / G, gy = (CY + G - 1) / G, x0 = g % gx * G, y0 = g / gx % gy * G, z0 = g / (gx * gy) * G;
+    std::vector<std::pair<const Part *, int>> ps;  // chunk order within a material: runs of neighbours
+    for (int z = z0; z < std::min(z0 + G, CZ); z++)
+        for (int y = y0; y < std::min(y0 + G, CY); y++)
+            for (int x = x0; x < std::min(x0 + G, CX); x++)
+                for (const Part &p : parts[(z * CY + y) * CX + x]) if (!p.fringe) ps.push_back({&p, (z * CY + y) * CX + x});
+    std::stable_sort(ps.begin(), ps.end(), [](const auto &a, const auto &b) { return a.first->mat < b.first->mat; });
+    static const struct { int slot, comps, type, bytes; bool norm; } ATTR[3] = {
+        {RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION, 3, RL_FLOAT, 12, false},
+        {RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL, 3, RL_FLOAT, 12, false},
+        {RL_DEFAULT_SHADER_ATTRIB_LOCATION_COLOR, 4, RL_UNSIGNED_BYTE, 4, true}};
+    for (size_t i = 0, j; i < ps.size(); i = j) {
+        int verts = 0, tris = 0;
+        for (j = i; j < ps.size() && ps[j].first->mat == ps[i].first->mat && verts + ps[j].first->mesh.vertexCount <= 65535; j++)
+            verts += ps[j].first->mesh.vertexCount, tris += ps[j].first->mesh.triangleCount;
+        Mesh m{};
+        m.vertexCount = verts, m.triangleCount = tris;
+        m.vboId = (unsigned *)RL_CALLOC(16, sizeof(unsigned));  // UnloadMesh walks raylib's MAX_MESH_VERTEX_BUFFERS (7 or 9)
+        m.vaoId = rlLoadVertexArray();
+        rlEnableVertexArray(m.vaoId);
+        for (const auto &a : ATTR) {
+            m.vboId[a.slot] = rlLoadVertexBuffer(nullptr, verts * a.bytes, false);
+            glBindBuffer(0x8F37, m.vboId[a.slot]);  // GL_COPY_WRITE_BUFFER
+            long at = 0;
+            for (size_t k = i; k < j; k++) {
+                glBindBuffer(0x8F36, ps[k].first->mesh.vboId[a.slot]);  // GL_COPY_READ_BUFFER
+                glCopyBufferSubData(0x8F36, 0x8F37, 0, at, (long)ps[k].first->mesh.vertexCount * a.bytes);
+                at += (long)ps[k].first->mesh.vertexCount * a.bytes;
+            }
+            rlEnableVertexBuffer(m.vboId[a.slot]);
+            rlSetVertexAttribute(a.slot, a.comps, a.type, a.norm, 0, 0);
+            rlEnableVertexAttribute(a.slot);
+        }
+        const float uv0[2] = {0, 0};  // as UploadMesh without texcoords
+        rlSetVertexAttributeDefault(RL_DEFAULT_SHADER_ATTRIB_LOCATION_TEXCOORD, uv0, SHADER_ATTRIB_VEC2, 2);
+        rlDisableVertexAttribute(RL_DEFAULT_SHADER_ATTRIB_LOCATION_TEXCOORD);
+        static std::vector<unsigned short> idx;
+        idx.resize(tris * 3);
+        unsigned short *out = idx.data(), base = 0;
+        gr.segs.emplace_back();
+        for (size_t k = i; k < j; k++) {
+            const Mesh &c = ps[k].first->mesh;
+            for (int t = 0; t < c.triangleCount * 3; t++) *out++ = c.indices[t] + base;
+            base += c.vertexCount, gr.segs.back().push_back({ps[k].second, c.triangleCount * 3});
+        }
+        m.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_INDICES] = rlLoadVertexBufferElement(idx.data(), tris * 3 * sizeof(unsigned short), false);  // GPU copy only
+        rlDisableVertexArray();
+        gr.parts.push_back({ps[i].first->mat, m, false});
+    }
+}
+
+const std::vector<Terrain::Run> &Terrain::runsInView() const {
+    static std::vector<Run> runs;
+    runs.clear();
+    const int gx = (CX + G - 1) / G, gy = (CY + G - 1) / G, gz = (CZ + G - 1) / G;
+    if ((int)groups.size() != gx * gy * gz) groups.assign(gx * gy * gz, {});  // sized on the first draw, emptied by unload()
+    const float h = G * CS * VOX / 2;
+    for (int g = 0; g < (int)groups.size(); g++) {
+        Vector3 c = {(g % gx * G * CS) * VOX + h, (g / gx % gy * G * CS) * VOX + h, (g / (gx * gy) * G * CS) * VOX + h};
+        if (!Models::visible(c, h * 1.74f + VOX)) continue;  // an edge group's sphere still covers its chunks
+        if (groups[g].dirty) buildGroup(g);
+        const Group &gr = groups[g];
+        for (size_t k = 0; k < gr.parts.size(); k++) {
+            int at = 0;
+            bool open = false;  // the last run takes the next chunk too
+            for (auto [ci, n] : gr.segs[k]) {
+                if (!inView(ci)) open = false;
+                else if (open) runs.back().count += n;
+                else runs.push_back({gr.parts[k].mat, gr.parts[k].mesh.vaoId, at, n, &gr.parts[k].mesh}), open = true;
+                at += n;
+            }
+        }
+    }
+    std::stable_sort(runs.begin(), runs.end(), [](const Run &a, const Run &b) { return a.mat < b.mat; });
+    return runs;
+}
+
+void Terrain::draw() const {
+    shownView = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+    const std::vector<Run> &vis = runsInView();
     for (size_t i = 0, j; i < vis.size(); i = j) {
-        int m = vis[i]->mat - 1;
+        int m = vis[i].mat - 1;
         bool tex = m >= 0 && m < (int)texMats.size() && texMats[m].maps;
         const Material &M = tex ? texMats[m] : mat;
         if (tex) {
             Vector2 s = {1 / texRepeat[m].x, 1 / texRepeat[m].y};
             SetShaderValue(M.shader, scaleLoc, &s, SHADER_UNIFORM_VEC2);
         }
-        DrawMesh(vis[i]->mesh, M, MatrixIdentity());
-        for (j = i + 1; j < vis.size() && vis[j]->mat == vis[i]->mat && !vis[j]->mesh.vaoId; j++) DrawMesh(vis[j]->mesh, M, MatrixIdentity());  // no VAO support
-        if (j == vis.size() || vis[j]->mat != vis[i]->mat) continue;
-        rlEnableShader(M.shader.id);
-        for (int k = 0; k < 12; k++)  // raylib MAX_MATERIAL_MAPS
-            if (M.maps[k].texture.id) rlActiveTextureSlot(k), rlEnableTexture(M.maps[k].texture.id);
-        for (; j < vis.size() && vis[j]->mat == vis[i]->mat; j++) {
-            rlEnableVertexArray(vis[j]->mesh.vaoId);
-            rlDrawVertexArrayElements(0, vis[j]->mesh.triangleCount * 3, 0);
-        }
-        for (int k = 0; k < 12; k++)
-            if (M.maps[k].texture.id) rlActiveTextureSlot(k), rlDisableTexture();
-        rlDisableVertexArray();
-        rlDisableShader();
+        for (j = i + 1; j < vis.size() && vis[j].mat == vis[i].mat;) j++;
+        drawRuns(vis.data() + i, j - i, M);
     }
 }
 
@@ -1487,9 +1726,9 @@ void Terrain::drawShadow() const {
     static const char *SVS = "attribute vec3 vertexPosition;\nuniform mat4 mvp;\nvoid main() { gl_Position = mvp * vec4(vertexPosition, 1.0); }\n";
     static Material m{};
     if (!m.maps) m = LoadMaterialDefault(), m.shader = Lit::shader(SVS, "void main() { gl_FragColor = vec4(1.0); }\n", false);
+    const std::vector<Run> &vis = runsInView();
     rlSetCullFace(RL_CULL_FACE_FRONT);
-    for (const std::vector<Part> &ps : parts)
-        for (const Part &p : ps) if (!p.fringe) DrawMesh(p.mesh, m, MatrixIdentity());
+    drawRuns(vis.data(), vis.size(), m);
     rlSetCullFace(RL_CULL_FACE_BACK);
 }
 
@@ -1581,6 +1820,8 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
         }
         ms.push_back(&it->second);
     }
+    objR.resize(ms.size());
+    for (size_t i = 0; i < ms.size(); i++) objR[i] = ms[i]->r;
     if (!draw) return;
     static const int GL[12] = {RL_ZERO, RL_ONE, RL_DST_COLOR, RL_ONE_MINUS_DST_COLOR, RL_SRC_COLOR, RL_ONE_MINUS_SRC_COLOR, RL_SRC_ALPHA,
                                RL_ONE_MINUS_SRC_ALPHA, RL_DST_ALPHA, RL_ONE_MINUS_DST_ALPHA, RL_SRC_ALPHA_SATURATE, RL_ONE};  // XBlendModeGL kBlendFactor*
@@ -1634,9 +1875,12 @@ void Terrain::unload() {
     for (auto &[ci, ps] : pending)
         for (Part &p : ps) UnloadMesh(p.mesh);
     pending.clear();
+    for (Group &g : groups)
+        for (Part &p : g.parts) UnloadMesh(p.mesh);
+    groups.clear();
     for (Texture2D &t : textures) UnloadTexture(t);
     for (Material &m : texMats) MemFree(m.maps);
     for (Material &m : fringeMats) MemFree(m.maps);
     textures.clear(), texMats.clear(), fringeMats.clear();
-    meshVer++;
+    meshVer++, touchAll();
 }

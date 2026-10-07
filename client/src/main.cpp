@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <malloc.h>
 #include <map>
 #include <mutex>
 #include <string>
@@ -89,6 +90,33 @@ static void logAsync() {  // joined at exit: libnx has no pthread_detach (std::t
     });
     atexit([] { logq.stop = true, logq.writer.join(), logDrain(); });
 }
+// GPU texture bytes raylib reports in its log lines (size x format, a mip chain adding a third), by texture id
+static std::mutex texMu;
+static std::map<int, size_t> texBytes;
+static void texAccount(const char *line) {
+    int id, w, h, mips;
+    char fmt[32];
+    if (!strncmp(line, "TEXTURE: [ID ", 13) || strstr(line, " TEXTURE: [ID ")) {
+        const char *p = strstr(line, "TEXTURE: [ID ");
+        if (sscanf(p, "TEXTURE: [ID %d] Texture loaded successfully (%dx%d | %31s | %d mipmaps)", &id, &w, &h, fmt, &mips) == 5) {
+            static const struct { const char *name; int bpp; } F[] = {{"R32G32B32A32", 16}, {"R32G32B32", 12}, {"R16G16B16A16", 8}, {"R16G16B16", 6}, {"R8G8B8A8", 4},
+                                                                       {"R8G8B8", 3}, {"R5G6B5", 2}, {"R5G5B5A1", 2}, {"R4G4B4A4", 2}, {"GRAY_ALPHA", 2}, {"R32", 4}, {"R16", 2}, {"GRAYSCALE", 1}};
+            int bpp = 4;
+            for (auto &f : F) if (!strcmp(fmt, f.name)) bpp = f.bpp;
+            std::lock_guard<std::mutex> l(texMu);
+            texBytes[id] = (size_t)w * h * bpp * (mips > 1 ? 4 : 3) / 3;
+        } else if (sscanf(p, "TEXTURE: [ID %d] Unloaded texture data", &id) == 1) {
+            std::lock_guard<std::mutex> l(texMu);
+            texBytes.erase(id);
+        }
+    }
+}
+static size_t texTotal() {
+    std::lock_guard<std::mutex> l(texMu);
+    size_t n = 0;
+    for (auto &[id, b] : texBytes) n += b;
+    return n;
+}
 static void logLine(int level, const char *fmt, va_list ap) {
     static const char *const KIND[L_COUNT] = {"TEXTURE:", "SHADER:", "MODEL:", "WAVE:", "IMAGE:", "FBO:"};
     if (strstr(fmt, "loaded successfully") || strstr(fmt, "created successfully"))
@@ -104,6 +132,7 @@ static void logLine(int level, const char *fmt, va_list ap) {
     char b[1024];
     int k = snprintf(b, sizeof b, "%.3f ", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     vsnprintf(b + k, sizeof b - k, fmt, ap);
+    texAccount(b);
     bool now;
     {
         std::lock_guard<std::mutex> l(logq.mu);
@@ -1000,17 +1029,21 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     return Models::draw(m, s.pos, yaw, atan2f(v.y, h));
 }
 
-// Process memory, MB: Switch UsedMemorySize of TotalMemorySize; desktop RSS (*total 0)
-static double processMB(double *total) {
+// malloc heap in use / reserved (newlib mallinfo on Switch, glibc mallinfo2), MB. Switch: UsedMemorySize is the whole heap libnx
+// reserves at start, so it says nothing; the desktop adds the process RSS.
+static void memLine(const Game &game) {
+    double used, arena, rss = 0;
 #ifdef __SWITCH__
-    u64 used = 0, size = 0;
-    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0), svcGetInfo(&size, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
-    return *total = size / 1048576.0, used / 1048576.0;
+    struct mallinfo mi = mallinfo();
 #else
+    struct mallinfo2 mi = mallinfo2();
     long pages = 0;
     if (FILE *f = fopen("/proc/self/statm", "r")) pages = fscanf(f, "%*s %ld", &pages) == 1 ? pages : 0, fclose(f);
-    return *total = 0, pages * 4096 / 1048576.0;
+    rss = pages * 4096 / 1048576.0;
 #endif
+    used = mi.uordblks / 1048576.0 + mi.hblkhd / 1048576.0, arena = mi.arena / 1048576.0 + mi.hblkhd / 1048576.0;
+    double ter = game.terrain.bytes() / 1048576.0, tex = texTotal() / 1048576.0, mod = Models::bytes() / 1048576.0;
+    TraceLog(LOG_INFO, "MEM: malloc in use %.0f MB of %.0f reserved%s%.0f; known: terrain %.0f, textures %.0f, models %.0f = %.0f MB", used, arena, rss ? ", RSS " : "", rss, ter, tex, mod, ter + tex + mod);
 }
 
 enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading };
@@ -1030,7 +1063,7 @@ struct Pace {
         for (int i = 0; i < n; i++) gpuSum[i] += ms[i], t += ms[i];
         gpuFrames++, gpuMax = fmax(gpuMax, t), gpuOver += t > 1000 / 60.0, gpuN = n;
     }
-    void frame(double ms, int ticks, int chunks, const double *cost, const char *const *names, int n) {
+    void frame(double ms, int ticks, int chunks, const double *cost, const char *const *names, int n, const Game &game) {
         unsigned now[L_COUNT], snd = Audio::started();
         memcpy(now, loads, sizeof now);
         if (frames++) jitter += fabs(ms - last);  // the first frame's delta spans the screen change
@@ -1054,8 +1087,7 @@ struct Pace {
         double avg = sum / frames;
         TraceLog(LOG_INFO, "PACE %d frames: ticks/frame 0:%d 1:%d 2:%d 3+:%d | frame avg %.2f sd %.2f max %.1f ms, %d over %.0f ms (%d not logged) | jitter %.2f ms",
                  frames, hist[0], hist[1], hist[2], hist[3], avg, sqrt(fmax(0, sq / frames - avg * avg)), worst, over, limit, dropped, jitter / (frames - 1));
-        double total, used = processMB(&total);
-        TraceLog(LOG_INFO, "MEM: %.0f MB of %.0f", used, total);
+        memLine(game);
         if (gpuFrames) {
             char b[512];
             double t = 0;
@@ -1363,6 +1395,8 @@ int main(int argc, char **argv) {
     int perfOn = bench ? (argc > 4 ? 1 : 2) : 0;  // --bench map frames nosync: real fps, no glFinish
     GpuClock gpuClock;
     TraceLog(LOG_INFO, "GPU: timestamp queries %s", gpuClock.init() ? "on" : "unavailable");
+    double sectionDraws[T_COUNT] = {};  // bench: draw calls per section
+    long drawsAt = 0;
     auto lap = [&](int k) {
         if (perfOn == 2 || gpuClock.gen) rlDrawRenderBatchActive();  // the batch's draws belong to this section
         gpuClock.mark(k);
@@ -1370,6 +1404,7 @@ int main(int argc, char **argv) {
         if (perfOn == 2) glFinish();
         double t = GetTime();
         cpuCost[k] += c - mark, cost[k] += t - mark, mark = t;
+        sectionDraws[k] += glDraws - drawsAt, drawsAt = glDraws;
     };
     Pace pace;
     int paceFrame = -2, stepped = 0;  // stepped: sim ticks this frame
@@ -1465,7 +1500,7 @@ int main(int argc, char **argv) {
             levelFx(game);
             game.terrain.remesh(0);  // texture upload and shadow columns only
             break;
-        case 2: game.terrain.remesh(0.012); break;
+        case 2: game.terrain.meshInitial(wait ? 1e30 : 0.008); break;
         case 3: game.terrain.drawObjects(0, false), Audio::preloadMusic("victory"), Audio::preloadMusic("theme"); break;  // decor models; the match-end tracks
         case 4: if (Ui::warmHud(warmIcon, wait ? 1e30 : GetTime() + 0.008)) return; break;  // ~half a frame of uploads
         }
@@ -1480,7 +1515,7 @@ int main(int argc, char **argv) {
                      t.loadMs[0] + t.loadMs[1] + loadMs[2] + t.loadMs[2], t.loadMs[0], t.loadMs[1], loadMs[2], t.loadMs[2]);
         }
         if (++loadStep == 5)
-            loadStep = -1, TraceLog(LOG_INFO, "LOAD: thread %.0f ms (start, decode, voices), upload %.0f, remesh %.0f, decor %.0f, total %.0f",
+            loadStep = -1, memLine(game), TraceLog(LOG_INFO, "LOAD: thread %.0f ms (start, decode, voices), upload %.0f, remesh %.0f, decor %.0f, total %.0f",
                                     loadMs[1], loadMs[0], loadMs[2], loadMs[3], (GetTime() - loadT0) * 1000);
     };
     auto mapMusic = [&] { Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str()); };  // once the match shows
@@ -2150,7 +2185,7 @@ int main(int argc, char **argv) {
         lap(T_CAMERA);
         animateWorms(game, dt, view);
         // W4M lighting pass: land and still decor cached until remeshed; clip-played decor, worms, graves, shots and objects every frame
-        Lit::shadowPass(game.terrain.bounds, Terrain::meshVer, [&] { game.terrain.drawShadow(), game.terrain.drawObjects(0, true, 1); }, [&](std::vector<Vector4> &at) {
+        Lit::shadowPass(game.terrain.bounds, Terrain::meshVer, game.terrain.takeStale(), [&] { game.terrain.drawShadow(), game.terrain.drawObjects(0, true, 1); }, [&](std::vector<Vector4> &at) {
             game.terrain.drawObjects(clock, true, 2, &at);
             for (const Worm &w : game.worms)
                 if (Models::visible(w.pos, 2)) (w.alive || w.counted > 0) ? (void)drawWorm(game, w, clock) : drawGrave(game, w), at.push_back({w.pos.x, w.pos.y, w.pos.z, 2});
@@ -2411,7 +2446,7 @@ int main(int argc, char **argv) {
         double gpuMs[T_COUNT];
         bool gpuDone = gpuClock.next(gpuMs, T_COUNT);
         if (gpuDone) pace.gpu(gpuMs, T_PRESENT);  // the swap's span is mostly the vblank wait
-        if (paceFrame == frame - 1) pace.frame((mark - paceAt) * 1000, stepped, chunks, cost, NAMES, T_COUNT);
+        if (paceFrame == frame - 1) pace.frame((mark - paceAt) * 1000, stepped, chunks, cost, NAMES, T_COUNT, game);
         paceFrame = frame, paceAt = mark, stepped = 0;
         if (missionAct) {  // end-of-mission choice, outside the frame: next, retry, back to the list
             int act = missionAct;
@@ -2421,7 +2456,7 @@ int main(int argc, char **argv) {
             continue;
         }
         const int warm = aimBench ? 70 : 10;  // skip load / first-use frames
-        if (bench && frame == warm) benchStart = GetTime();
+        if (bench && frame == warm) benchStart = GetTime(), std::fill(sectionDraws, sectionDraws + T_COUNT, 0);
         if (bench && frame > warm) {
             frameMax = fmax(frameMax, GetTime() - frameStart), frameSq += (GetTime() - frameStart) * (GetTime() - frameStart);
             benchDraws += glDraws, benchBinds += glBinds;
@@ -2430,18 +2465,18 @@ int main(int argc, char **argv) {
             benchGpuN += gpuDone;
         }
         frameStart = GetTime();
-        glDraws = glBinds = 0;
+        glDraws = glBinds = drawsAt = 0;
         for (int k = 0; k < T_COUNT; k++) perf[k] = perf[k] * 0.95 + cost[k] * 0.05, cost[k] = 0, cpuCost[k] = 0;
         if (bench && frame == warm + benchFrames) {
             double n = benchFrames, wall = GetTime() - benchStart, cpu = 0, gpu = 0;
             printf("BENCH map=%s frames=%d  %.1f fps (%s)  frame avg %.2f ms sd %.2f max %.2f ms\n", opt.map.empty() ? "(procedural)" : opt.map.c_str(), benchFrames, n / wall, perfOn == 2 ? "gpu-synced" : "no sync",
                    wall / n * 1000, sqrt(fmax(0, frameSq / n - wall / n * wall / n)) * 1000, frameMax * 1000);
-            printf("%-13s %8s %8s %8s %8s %8s\n", "section", "cpu", "sync", "gpu", "syncmax", "timer");
+            printf("%-13s %8s %8s %8s %8s %8s %8s\n", "section", "cpu", "sync", "gpu", "syncmax", "timer", "draws");
             double timer = 0;
             for (int k = 0; k < T_COUNT; k++) {
                 double c = benchCpu[k] / n * 1000, s = benchSum[k] / n * 1000, g = benchGpuN ? benchGpu[k] / benchGpuN : 0;
                 cpu += c, gpu += s - c, timer += k == T_PRESENT ? 0 : g;
-                printf("%-13s %8.3f %8.3f %8.3f %8.2f %8.3f\n", NAMES[k], c, s, s - c, benchMax[k] * 1000, g);
+                printf("%-13s %8.3f %8.3f %8.3f %8.2f %8.3f %8.0f\n", NAMES[k], c, s, s - c, benchMax[k] * 1000, g, sectionDraws[k] / n);
             }
             gpu -= (benchSum[T_PRESENT] - benchCpu[T_PRESENT]) / n * 1000;  // vsync wait, not GPU work
             // Switch handheld 720p, fitted on sw-log3 (docs/tests.md "Render budget"): 7x cpu, 14x the timer GPU of a nosync run

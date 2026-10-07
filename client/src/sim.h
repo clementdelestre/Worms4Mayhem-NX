@@ -584,7 +584,10 @@ struct Game {
     bool blimpHit(Vector3 *hit) const;  // W4M CMS 0x51c910: land, then water, on the camera ray; false: no target
     // W4M Bomber 0x54d460: the plane flies ExtraHeight over all land and drops early, its bombs keep its speed; vel = the plane's
     Vector3 strikeStart(const WeaponDef &wd, Vector3 tgt, Vector3 dir, Vector3 &vel) const;
-    float landTop() const;  // Land.MaxHeight: a column every 2 m
+    // W4M Land.MaxHeight (LandscapeLogicEntity 0x4720c0): the land box top, from the load and grown by spawned land, never lowered
+    float landTop() const { return landMax; }
+    float landMax = 0;
+    void weldLand(Vector3 c, Vector3 half);  // Terrain::weld, raising Land.MaxHeight to the box top (W4M SpawnLand 0x4778c0)
     Vector3 landCenter() const;
     Vector3 strikeDir() const { return {-cosf(cursorYaw), 0, sinf(cursorYaw)}; }  // the view's right: bombers cross the screen
     int retreatTicks(const WeaponDef &d) const { return msTicks(d.retreat >= 0 ? d.retreat : cfg.scheme.retreatTime * 1000); }

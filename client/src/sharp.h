@@ -38,7 +38,7 @@ struct SharpLand {
     // the surface crossing on the segment a-b inside mixed cell c (a and b on opposite sides) and its outward normal
     bool edge(size_t c, Vector3 a, Vector3 b, Vector3 *q, Vector3 *n) const;
     // edits, before the int8 field changes (its signs say which unlisted cells are land)
-    void carve(const std::vector<signed char> &d, Vector3 c, float r);
+    void carve(const std::vector<signed char> &d, Vector3 c, float r, int box[6]);  // box: grown by the cells whose list changed
     void weld(const std::vector<signed char> &d, Vector3 c, Vector3 half);
     // a convex cell (corners bit 1 +x, 2 +y, 4 +z) laid over the land, as the importer's (starts an exact land); its HEX id
     uint32_t add(const std::vector<signed char> &d, const Vector3 *c);

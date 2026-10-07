@@ -353,7 +353,7 @@ void SharpLand::drop(const std::vector<uint32_t> &hexes) {
         }
 }
 
-void SharpLand::carve(const std::vector<signed char> &d, Vector3 c, float r) {
+void SharpLand::carve(const std::vector<signed char> &d, Vector3 c, float r, int box[6]) {
     if (!on) return;
     const uint32_t id = (uint32_t)sph.size();
     sph.push_back({c.x, c.y, c.z, r});
@@ -373,10 +373,12 @@ void SharpLand::carve(const std::vector<signed char> &d, Vector3 c, float r) {
                 if (dn >= r * r) continue;
                 const size_t ci = cid(x, y, z);
                 const bool m = mixed(ci);
-                if (dx <= r * r) { if (m) setOps(ci, nullptr, 0); continue; }
+                if (!m && (dx <= r * r || d[ci] <= 0)) continue;
+                const int at[3] = {x, y, z};
+                for (int a = 0; a < 3; a++) box[a] = std::min(box[a], at[a]), box[a + 3] = std::max(box[a + 3], at[a]);
+                if (dx <= r * r) { setOps(ci, nullptr, 0); continue; }
                 if (m) { const uint32_t *p = ops(ci); o.assign(p + 1, p + 1 + p[0]); }
-                else if (d[ci] > 0) o.assign(1, FULL);
-                else continue;
+                else o.assign(1, FULL);
                 o.push_back(SPHERE | id);
                 setOps(ci, o.data(), (uint32_t)o.size());
             }

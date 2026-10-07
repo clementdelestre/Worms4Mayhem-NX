@@ -25,7 +25,7 @@ Repository-level scripts in `tests/` (run from the repository root, they build t
 | `tests/quit_check.sh` | Pause → Quit → Yes to menu stays on the menu: scripted keys (title, Local, Quick match, pause, Quit, the ConfirmQuit Yes, arrows); fails on a second Play. |
 | `tests/netbot.sh` | Two real clients (`--netbot`, the AI plays each owner's team) through a local server; fails on a desync. |
 
-Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU match, per-section ms and worst frame);
+Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU match, per-section ms, draw calls per frame and worst frame);
 `W4NX_BENCH=<frames> ./worms4nx --shot <weapon index> [map]` (that weapon fired, e.g. 15 Airstrike, 18 Concrete Donkey:
 the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup and match loading.
 
@@ -39,7 +39,7 @@ info lines). A Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer m
 - `HITCH <ms>, <n> ticks, <n> chunks, <n> particles, <n> sounds | <section ms> ... other <ms> | loads tex .. fbo ..`: a
   frame over `W4NX_HITCH_MS` (default 20), 20 per 10 s at most, plus the window's worst frame when the limit held it
   back (`... (worst of the window)`). Sections are the perf overlay's, plus `camera` (logic, audio loops, camera) and
-  `pip`; `remesh` = waiting for the meshing thread + uploading its chunks (`chunks` = chunks uploaded); `other` = input,
+  `pip`; `remesh` = waiting for the meshing threads + uploading their chunks (`chunks` = chunks uploaded); `other` = input,
   audio update, net. Non-zero `loads` = something loaded on first use.
 - `PACE 600 frames: ticks/frame 0:a 1:b 2:c 3+:d | frame avg / sd / max, n over 20 ms | jitter`: every 10 s.
   At 60 Hz, a healthy run is `1:600` (or `2:` only for real missed vblanks), sd and jitter well under 1 ms.
@@ -49,8 +49,13 @@ info lines). A Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer m
   shows the submission gaps too.
 - `MEM: <used> MB of <total>`: every 10 s with PACE; Switch `svcGetInfo` UsedMemorySize of TotalMemorySize (the
   process), desktop RSS (`of 0`).
-- `REMESH: <n> chunks, build <ms> (meshing thread), <ms> until shown`: one per land edit (explosion, girder, ClearCoded):
-  from its first dirty chunk until no chunk is left; build = chunk geometry time on the meshing thread.
+- `STICK: pad <n> (available <0|1>) L <x y> R <x y> raw, no button for <s> s` [ours, diagnostic]: a stick past its dead zone (0.12, Joy-Con 0.18) while
+  no button was down for 3 s on a human turn; at most one per 5 s (`Controls::stickWatch`, raw `GetGamepadAxisMovement`, before the curve).
+- `REMESH: <n> chunks, build <ms> (meshing threads), <ms> until shown, <ms> all`: one per land edit (explosion, girder,
+  ClearCoded), from its first dirty chunk: n = chunk meshes built (a chunk rebuilt twice counts twice), build = their geometry
+  time summed over both threads, until shown = until no chunk the last view drew is left to build (they swap in then), all =
+  until no chunk is left. Before 2026-10-07 the count added the chunks put back each frame past the budget (sw-log4's 32
+  were ~8 chunks counted over 4 frames).
 - `REPLAY: <n> ticks re-simulated, <n> chunks remeshed, <n> kept, <ms>`: an instant replay's start.
 
 sw-log3 spikes (handheld, 2026-10-05) and their fixes [data: the log; ours]:
@@ -71,12 +76,54 @@ at half a tick, so timing noise never makes 0 / 2 tick frames (simulated with 0.
 0 after). No render interpolation: with the sim at the 60 Hz display rate every shown frame lands on a whole tick, so
 interpolated poses would equal the drawn ones. The camera blends are already per-dt (`perFrame`, `expf(-dt k)`).
 
-Explosion frames (ours, 2026-10-05): chunk geometry is built on a meshing thread (core 2) while the frame renders
-(`Terrain::remeshAsync`, after the sim: uploads what the thread built, hands it the dirty chunks; it starts no chunk past
-10 ms but the first), and the frame waits for it before the sim (`remeshWait`: the sim is the only voxel writer). The
-rebuilt chunks still swap in together. sw-log3 measured one chunk at 6-15 ms on Switch (A57), plus 15-25 ms when a
+Explosion frames (ours, 2026-10-05; two threads 2026-10-07): chunk geometry is built on two meshing threads (cores 1 and
+2) while the frame renders (`Terrain::remeshAsync`, after the sim: uploads what they built, hands them the dirty chunks,
+those the last main view drew first; each starts no chunk past 10 ms but its first), and the frame waits for them before
+the sim (`remeshWait`: the sim is the only voxel writer). The rebuilt chunks swap in together once no chunk in view is left
+to build, so a seam with an older chunk stays off screen; the others swap in as they finish. `Terrain::carve` marks only
+the chunks of the voxels and exact cells it changed (plus the one-voxel margin), not its whole box. sw-log3 measured one chunk at 6-15 ms on Switch (A57), plus 15-25 ms when a
 log write landed in it: 26-53 ms `remesh` hitches per explosion frame before. The HUD art (`hud/`, weapon icons, flags) loads during the
 loading screen, the UFO beam shader at boot and the PiP render texture on the first match frame.
+
+### Big maps in play (ours, 2026-10-07, sw-log4: NoRoomForError, 640 x 608 x 640)
+
+sw-log4 (handheld) and what caused it [data: the log; ours: desktop profiles with a SIGPROF-style sampler, `--bench`]:
+- `sim` 137-138 ms on one tick, 4 times: the crate drop's `Game::landTop`, which scanned a column every 2 m from the grid top
+  down (3.9 M voxel reads on this grid, 7.3 ms desktop) on every call. It is now `Game::landMax`, W4M's Land.MaxHeight: set at
+  `start`, raised by welded land (docs/sim.md "Crates and objects"); a read costs nothing. Sim change: after a blast lowers the
+  highest land, drops, bombers, Donkey, UFO and blimp keep the old top, as W4M (disasm, docs/w4m/engine.md).
+- `sim` 10-14 ms over consecutive frames (e.g. 130.0-130.4 s): the CPU think (`Ai::budget` 20000 samples per frame, desktop
+  p50 0.75 ms, p90 1.5 ms, max 2.75 ms per frame); not changed here.
+- `shadow` 18-19 ms on the frames where rebuilt chunks swap in: the whole land redrawn into the shadow map (1008 chunk draws).
+  Now only the swapped chunks' texels (docs/maps.md "Rendering").
+- `shadow` 3.5 ms every frame: the worms, first drawn (and CPU-skinned) in the shadow pass; 20 buffer uploads per worm pose,
+  now 2 ("Render budget").
+- `terrain` 7-9 ms in wide views: one draw per chunk part, 1011 on this map with everything in view (~8 us each on Switch);
+  now draw groups (docs/maps.md "Rendering", Land draw): 227 draws.
+- `sky+water` 8-13 ms every other frame: the wait for a free swap buffer landing at the frame's first draw while the frame is
+  over 16.7 ms (the GPU lines average 7-12 ms, under budget): it follows the CPU frame, not the sky.
+- `other` 14-15 ms about every 1.1 s in quiet play [assumed: the log thread's SD write (each second) blocking the music
+  stream's SD read in `UpdateMusicStream` on the main thread; not reproduced on desktop].
+- `REMESH` 10-32 chunks, 100-135 ms until shown: the count added the chunks put back each frame past the 10 ms budget; one
+  thread built ~2 chunks per frame at ~6 ms each. Now two threads, chunks in view first ("Explosion frames").
+
+Desktop, same binary before / after (`--bench NoRoomForError`, cpu ms per frame; Switch estimate = 7 x cpu, the GPU column
+14 x timer as in "Render budget"):
+
+| | before | after | Switch estimate |
+|---|---|---|---|
+| AI match, 6000 frames: sim max | 7.43 | 2.23 | 52 -> 16 ms |
+| AI match: frame max / cpu total | 10.58 / 2.09 | 6.59 / 1.60 | |
+| AI match: shadow max (swap frames) | 2.8 | 1.0 | 19 -> 7 ms |
+| wide view (80 140 -60 -> 80 30 80): terrain cpu, draws | 0.678, 1011 | 0.237, 227 | 8 -> 3 ms (log: 7-9) |
+| wide view: terrain GPU timer | 1.37 | 1.16 | |
+| close view (80 60 40 -> 80 40 80): terrain cpu, draws | 0.204, 354 | 0.107, 100 | 2 -> 1 ms |
+| shadow cpu (wide / close) | 0.573 / 0.487 | 0.442 / 0.399 | 3.5 -> 2.7 ms |
+| Dynamite crater (`--shot 7`): REMESH until shown | 63.6 ms, "24 chunks" | 29.5 ms, 8 chunks | 100-135 -> ~50 ms |
+
+Chunks per carve on this map (60 surface hits each, old box vs changed voxels): r 1.5 m 2.8 -> 2.0, 3 m 6.4 -> 5.5, 5 m 11.0
+-> 9.9. A chunk build is ~1 ms desktop, mostly the exact land's edge crossings (`SharpLand::first`, `crossing`). Captures of
+the same shots and views before / after are pixel-identical (the FPS counter aside).
 
 ### Boot time (ours, 2026-10-06)
 
@@ -106,13 +153,35 @@ Log lines to read on Switch:
 - `BOOT: gl <ms>, menu assets <ms> (art, models, sounds, maps: when each finished), screen +<ms>, join, menu scene, music,
   total`: total = black screen + startup icon + loading screen until the title; `screen` = the loading screen's 1.8 s minimum
   past the menu assets (plain launch only, docs/w4m/frontend.md §Boot).
-- `BOOT: so far files <MB> read in <ms> (all threads); models: glb parse, png, mipmaps, clips (worker time, summed),
-  upload (main)`: read = every `LoadFileData()` (models, art, sounds), the rest per phase.
+- `BOOT: so far files <MB> read in <ms> (<MB/s>, one reader); models: glb parse, png, mipmaps, clips (worker time, summed),
+  upload (main)`: read = every `LoadFileData()` (models, art, sounds), the rest per phase. Reads go through one mutex, one
+  `read()` loop in blocks up to 4 MB (`readFile` in models.cpp), so the time is the SD's own and MB/s its real throughput.
 - `BOOT: match assets in <ms> after start; ...`: the same totals once the first loading screen took the background loads.
 - `MAP: <name> grid NXxNYxNZ, voxels <MB>, cells <MB>, load <ms> (vox, cells, mesh, navgrid)`: each match's map once its
   chunks are meshed. voxels = density + materials + steel bits, cells = the exact land (`SharpLand::bytes`); vox =
-  `.vox` + `.thin` read and decode, cells = `.cells`, mesh = the loading screen's remesh slices (main thread), navgrid =
+  `.vox` + `.thin` read and decode, cells = `.cells`, mesh = the loading screen's mesh step (main thread), navgrid =
   the node grid and worm placement in `Game::start`; load = their sum.
+- `MEM: malloc in use <MB> of <MB> reserved[, RSS <MB>]; known: terrain, textures, models = <MB>`: after each load and every
+  10 s with PACE. malloc = newlib `mallinfo` (Switch) / glibc `mallinfo2` (desktop): `uordblks` + `hblkhd`, `arena` + `hblkhd`
+  (`svcGetInfo` UsedMemorySize is the whole heap libnx reserves at start, so it is not used). known = what the code can
+  count: terrain = density, materials, steel bits, exact cells, shadow columns, chunk meshes (`Terrain::bytes`); textures =
+  the GPU textures raylib logs (size x format, +1/3 with mips; video memory, shared with RAM on Switch, not in malloc);
+  models = mesh arrays and sampled clips (`Models::bytes`).
+
+Loading screen, 2026-10-07 [ours]: `Terrain::loadVoxels` decodes the `.vox` on 3 joined workers over voxel ranges that start
+on a density code (the streams are only walked to find them; the result is byte-identical, crc32 of `d` and `mats` checked
+against an independent decoder). `Terrain::meshInitial` builds the chunk geometry on 3 joined workers (cores 0-2, an atomic
+chunk counter; all-air / all-solid chunks return after `chunkGeometry`'s sign scan) while the main thread uploads within 8 ms
+per frame; the chunks swap in together at the end. NoRoomForError, desktop, warm cache: vox 253 -> 112-135 ms (now bound by
+the 249 MB `reset` fill + the `mats` zero fill), mesh 555 -> 176-250 ms, load 862 -> 343-458 ms. Switch estimate at 7x:
+vox ~0.8 s, mesh ~1.3 s (3 cores) against 1.3 s and 5.1 s in the log [assumed until a log confirms].
+
+Background load estimate on Switch [assumed until a log confirms]: the 42 s of read time in the log is the sum over 3 threads
+reading at once (146.6 MB, ~3.5 MB/s each); one reader in big blocks at 40-60 MB/s needs 2.5-4 s for the same bytes (`read()`
+in 4 MB blocks also replaces newlib's `fread`, which fills its buffer in `st_blksize` pieces). The CPU phases run on the two
+workers beside the menus: clips 4.3 s (almost all worm.glb, one job) + mipmaps 1.0 s + parse/png, so the background ends in
+~6-8 s; the loading screen then only has the 2.8 s of upload slices left. Precomputed clips or compressed textures would cut
+the CPU phases but were not built: the estimate is already under the 15 s target and both need a w4m-models export change.
 
 Largest map, desktop (2026-10-07, `--bench NoRoomForError 1300` and a scratch AI-vs-AI run of 11 turns, level 5) [ours]:
 `MAP: NoRoomForError grid 640x608x640, voxels 475.0 MB, cells 53.3 MB, load 864 ms (vox 265, cells 52, mesh 544, navgrid 2)`;
@@ -182,7 +251,7 @@ compared shadow taps). Now a triplanar plane under 0.4 % of the blend skips its 
 the shadow uses W4M's own X_XBOX path of `SHADOW_METHOD 2`, 5 taps (docs/w4m/render.md, Landscape.cg): 6-7 fetches.
 
 Worm skinning: a pose drawn in the shadow pass then the view was skinned twice (shared VBOs); poses now live in up to 16
-buffer slots per model (`Models` `Entry::Slot`): `models` cpu 0.15 -> 0.08 ms desktop. The animated normals went to the
+buffer slots per model (`Models` `Entry::Slot`): `models` cpu 0.15 -> 0.08 ms desktop. A slot keeps the skinned positions and normals of all the model's meshes in one buffer each (`Slot::pose`, each mesh's VAO reads its offset): a worm pose is 2 uploads instead of 20 (2026-10-07: `shadow`, where each worm is first drawn and skinned, 0.55 -> 0.43 ms desktop). The animated normals went to the
 colour VBO index (`SHADER_LOC_VERTEX_NORMAL` = 3 is the colour attribute's buffer): now the normal buffer, so worm
 lighting follows the pose.
 
@@ -362,6 +431,7 @@ scheme plays with sudden death; rope race reached at levels 1 and 5; Karma + Vam
 | `checkLot2` | On the W4M scripts: MineAllMine's 4 placed mines (none from its "MineN" details), Surrender emptied, a sunk Mine1 brings Mine2 (Payload_Deleted); DeathMatch6's factory (activation 15) drops mines on its 7th StartMineFactory; DoomCanyon's Water.Level 20; FastFoodDino's InitFuel; Shotgun2's PreSelected shotgun, and its shots pop a 25-hit-point Target (HighNoonHiJinx's crate) in the line of fire; Sniper's EndlessGun; TurkishDelights' point lights; CPU2 for AI teams with no CPUn copy. |
 | `checkCratePlacement` (alone: `W4NX_MISSION=cratepos`, `W4NX_CRATEPOS=<id>`, `W4NX_SEED`) | Every mission 90 s: each rested crate within 0.3 m of 0.5 m x Scale over the ground, each pinned crate still at its marker (a re-created Index may move), SneakyBridgeThieves Crate5 on its bridge rail (y > 23.6) |
 | `checkDeaths` (alone: `W4NX_MISSION=deaths`) | BuildingSiteSaboteurs, NoRoomForError, TheCrateEscape, MineAllMine: the player's last worm drowned, blown up (a mine at its feet, 20 hp) or walked off the map (into the sea) in its own turn: the turn ends and the script's TurnEnded fails the mission; NoRoomForError / MineAllMine: every enemy drowned in the player's turn reaches Worm_Died (DeadWorm.Id) and wins it. |
+| `checkIdle` (alone: `W4NX_MISSION=idle`) | [ours] Games chained in one process (ChallengeNavigation2, DeathMatch1, SneakyBridgeThieves, ChallengeNavigation2 again, a local game): the human team's cpu is 0; with the intro skipped and no input, 20 s of `Controls::tick(Controls::read)` give a zero Input and the worm keeps its position and yaw. |
 | `checkMovies` (alone: `W4NX_MISSION=movies`) | TinCanWally's Intro plays in the sim for 80.39 s (its last camera's look-at, 600 steps, holds the end); `SKIP_MOVIE` ends it at once; DestructAndServe's `JEFF` coded land frames (the DeLorean) leave no solid voxel once cleared. |
 
 `main` also asserts: `Progress` save/load keeps done, best time and the `unlock` lines; with no imported mission it stops

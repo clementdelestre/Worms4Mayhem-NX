@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <fcntl.h>
+#include <unistd.h>
 #include <thread>
 #include <deque>
 #include <mutex>
@@ -70,7 +73,8 @@ struct Entry {
     std::vector<Sel> sels;
     std::map<std::string, std::vector<SelTrack>> tracks;  // per W4M clip
     // skinned poses in their own buffers: a worm drawn in the shadow pass then the view is skinned once a frame
-    struct Slot { const ModelAnimation *a, *am; int f, af; bool lay; Models::Layers ly; float eyeUV[3]; unsigned long used; std::vector<Mesh> meshes; };
+    // pose: the skinned meshes' positions and normals, all meshes in one buffer each (a pose is two uploads)
+    struct Slot { const ModelAnimation *a, *am; int f, af; bool lay; Models::Layers ly; float eyeUV[3]; unsigned long used; std::vector<Mesh> meshes; unsigned pose[2]; };
     std::vector<Slot> slots;
 };
 std::map<std::string, Entry> models;
@@ -82,6 +86,7 @@ static void unloadSlot(Entry::Slot &s) {  // GPU side only: the CPU arrays are t
         UnloadMesh(m);
     }
     s.meshes.clear();
+    rlUnloadVertexBuffer(s.pose[0]), rlUnloadVertexBuffer(s.pose[1]);
 }
 
 // Per clip, the face bones whose offset from the head differs from Base's: W4M channels a gesture animates win over the emote's
@@ -141,16 +146,19 @@ unsigned char *readFile(const char *path, int *size) {
         serve->data = nullptr;
         return *size = serve->size, d;
     }
+    static std::mutex io;  // one read at a time (the SD is slower with concurrent readers), in big blocks; decoding stays parallel
+    std::lock_guard<std::mutex> l(io);
     Span sp{T_READ};
-    FILE *f = fopen(path, "rb");
-    if (!f) return TraceLog(LOG_WARNING, "FILEIO: [%s] Failed to open file", path), nullptr;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return TraceLog(LOG_WARNING, "FILEIO: [%s] Failed to open file", path), nullptr;
+    off_t n = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
     unsigned char *d = n > 0 ? (unsigned char *)malloc(n) : nullptr;
-    if (d && fread(d, 1, n, f) == (size_t)n) *size = (int)n, readBytes += n;
+    off_t got = 0;
+    for (ssize_t r; d && got < n && (r = read(fd, d + got, std::min<off_t>(n - got, 4 << 20))) > 0;) got += r;  // newlib's fread reads in st_blksize pieces
+    if (d && got == n) *size = (int)n, readBytes += n;
     else free(d), d = nullptr;
-    fclose(f);
+    close(fd);
     return d;
 }
 const bool hooked = (SetLoadFileDataCallback(readFile), true);
@@ -408,11 +416,26 @@ bool Models::upload(double until) {
     return false;
 }
 
+size_t Models::bytes() {
+    size_t n = 0;
+    for (const auto &[name, e] : models) {
+        for (int i = 0; i < e.m.meshCount; i++) {
+            const Mesh &me = e.m.meshes[i];
+            size_t v = me.vertexCount;
+            n += v * ((me.vertices ? 12 : 0) + (me.normals ? 12 : 0) + (me.texcoords ? 8 : 0) + (me.texcoords2 ? 8 : 0) + (me.tangents ? 16 : 0) + (me.colors ? 4 : 0) +
+                      (me.boneIndices ? 4 : 0) + (me.boneWeights ? 16 : 0) + (me.animVertices ? 12 : 0) + (me.animNormals ? 12 : 0)) +
+                 (me.indices ? (size_t)me.triangleCount * 6 : 0);
+        }
+        for (int i = 0; i < e.count; i++) n += (size_t)e.anims[i].keyframeCount * e.anims[i].boneCount * sizeof(Transform);
+    }
+    return n;
+}
+
 const char *Models::bootStats() {
-    static char b[256];
+    static char b[320];
     auto ms = [](int k) { return spent[k] / 1e6; };
-    snprintf(b, sizeof b, "files %.1f MB read in %.0f ms (all threads); models: glb parse %.0f, png %.0f, mipmaps %.0f, clips %.0f (workers, summed), upload %.0f (main)",
-             readBytes / 1048576.0, ms(T_READ), ms(T_PARSE), ms(T_PNG), ms(T_MIP), ms(T_CLIPS), ms(T_UPLOAD));
+    snprintf(b, sizeof b, "files %.1f MB read in %.0f ms (%.1f MB/s, one reader); models: glb parse %.0f, png %.0f, mipmaps %.0f, clips %.0f (workers, summed), upload %.0f (main)",
+             readBytes / 1048576.0, ms(T_READ), readBytes / 1048576.0 / fmax(ms(T_READ) / 1e3, 1e-3), ms(T_PARSE), ms(T_PNG), ms(T_MIP), ms(T_CLIPS), ms(T_UPLOAD));
     return b;
 }
 
@@ -688,9 +711,11 @@ bool Models::joint(const char *name, const char *joint, const char *clip, float 
     return true;
 }
 
+static bool skinned(const Mesh &me) { return me.boneWeights && me.boneIndices && me.animVertices && me.animNormals; }
+
 // UpdateModelAnimation() equivalent at an integer frame; raylib inverts a bone matrix per vertex for the normals
-// dst: the meshes whose buffers take the result (the model's own by default)
-static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af, const Models::Layers *ly, Mesh *dst = nullptr) {
+// dst: the meshes whose buffers take the result (the model's own by default); shared: a slot's pose buffers instead
+static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation *aim, int af, const Models::Layers *ly, Mesh *dst = nullptr, const unsigned *shared = nullptr) {
     Model &m = e.m;
     if (!dst) dst = m.meshes;
     static std::vector<Matrix> nm, p;
@@ -700,9 +725,11 @@ static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation 
         m.boneMatrices[b] = MatrixMultiply(e.invBind[b], p[b]);
         nm[b] = MatrixTranspose(MatrixInvert(m.boneMatrices[b]));
     }
+    static std::vector<float> allP, allN;
+    allP.clear(), allN.clear();
     for (int i = 0; i < m.meshCount; i++) {
         Mesh &me = m.meshes[i];
-        if (!me.boneWeights || !me.boneIndices || !me.animVertices || !me.animNormals) continue;
+        if (!skinned(me)) continue;
         for (int v = 0; v < me.vertexCount; v++) {
             Vector3 p = {me.vertices[3 * v], me.vertices[3 * v + 1], me.vertices[3 * v + 2]}, op = {}, on = {};
             Vector3 nr = me.normals ? Vector3{me.normals[3 * v], me.normals[3 * v + 1], me.normals[3 * v + 2]} : Vector3{};
@@ -716,9 +743,15 @@ static void skin(Entry &e, const ModelAnimation &a, int f, const ModelAnimation 
             memcpy(&me.animVertices[3 * v], &op, sizeof op);
             memcpy(&me.animNormals[3 * v], &on, sizeof on);
         }
+        if (shared) {
+            allP.insert(allP.end(), me.animVertices, me.animVertices + 3 * me.vertexCount), allN.insert(allN.end(), me.animNormals, me.animNormals + 3 * me.vertexCount);
+            continue;
+        }
         rlUpdateVertexBuffer(dst[i].vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION], me.animVertices, me.vertexCount * 3 * sizeof(float), 0);
         if (me.normals) rlUpdateVertexBuffer(dst[i].vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL], me.animNormals, me.vertexCount * 3 * sizeof(float), 0);
     }
+    if (shared && !allP.empty())
+        rlUpdateVertexBuffer(shared[0], allP.data(), (int)(allP.size() * sizeof(float)), 0), rlUpdateVertexBuffer(shared[1], allN.data(), (int)(allN.size() * sizeof(float)), 0);
 }
 
 static Shader over{};
@@ -835,8 +868,9 @@ static void drawModel(Entry &e, Vector3 pos, Color tint) {
     for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = keep;
 }
 
-bool Models::visible(Vector3 c, float r) {
-    Matrix m = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+bool Models::visible(Vector3 c, float r) { return visible(c, r, MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection())); }
+
+bool Models::visible(Vector3 c, float r, const Matrix &m) {
     Vector4 w = {m.m3, m.m7, m.m11, m.m15}, rows[3] = {{m.m0, m.m4, m.m8, m.m12}, {m.m1, m.m5, m.m9, m.m13}, {m.m2, m.m6, m.m10, m.m14}};
     for (Vector4 q : rows)
         for (float s : {1.0f, -1.0f}) {  // clip planes row3 + row, row3 - row
@@ -898,15 +932,30 @@ static Entry::Slot &slotFor(Entry &e, const ModelAnimation *a, int f, const Mode
         if (s.a == a && s.f == f && s.am == am && s.af == af && s.lay == lay && (!lay || same(*ly, s.ly))) return s.used = ++seq, s;
     if (e.slots.size() < 16) {
         e.slots.push_back({});
-        for (int i = 0; i < e.m.meshCount; i++) {
+        Entry::Slot &n = e.slots.back();
+        int total = 0;
+        for (int i = 0; i < e.m.meshCount; i++) total += skinned(e.m.meshes[i]) ? e.m.meshes[i].vertexCount : 0;
+        n.pose[0] = rlLoadVertexBuffer(nullptr, total * 3 * sizeof(float), true), n.pose[1] = rlLoadVertexBuffer(nullptr, total * 3 * sizeof(float), true);
+        for (int i = 0, at = 0; i < e.m.meshCount; i++) {
             Mesh c = e.m.meshes[i];
             c.vaoId = 0, c.vboId = nullptr;
             UploadMesh(&c, true);
-            e.slots.back().meshes.push_back(c);
+            if (skinned(c)) {  // its VAO reads the shared buffers at its offset
+                rlEnableVertexArray(c.vaoId);
+                for (int k = 0; k < (c.normals ? 2 : 1); k++) {
+                    int loc = k ? RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL : RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION;
+                    rlEnableVertexBuffer(n.pose[k]);
+                    rlSetVertexAttribute(loc, 3, RL_FLOAT, false, 0, at * 3 * (int)sizeof(float));
+                    rlUnloadVertexBuffer(c.vboId[loc]), c.vboId[loc] = 0;
+                }
+                rlDisableVertexArray();
+                at += c.vertexCount;
+            }
+            n.meshes.push_back(c);
         }
     }
     Entry::Slot &s = *std::min_element(e.slots.begin(), e.slots.end(), [](const Entry::Slot &x, const Entry::Slot &y) { return x.used < y.used; });
-    skin(e, *a, f, am, af, ly, s.meshes.data());
+    skin(e, *a, f, am, af, ly, s.meshes.data(), s.pose);
     s.a = a, s.f = f, s.am = am, s.af = af, s.lay = lay, s.ly = lay ? *ly : Models::Layers{}, s.used = ++seq;
     s.eyeUV[0] = s.eyeUV[1] = s.eyeUV[2] = NAN;  // uploaded below
     return s;

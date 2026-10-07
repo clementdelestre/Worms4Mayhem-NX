@@ -235,6 +235,10 @@ BitArray3D 0x81a6d8, CombineLandscapeAction 0x81ab5c, GenerateLandGeometry 0x81a
 
 #### Examples
 - `Land.Center` str 0x81c84c: LandscapeLogicEntity.cpp 0x4721a7 (GetDescriptor), 0x4ffd8e (Vector by value, 0x50b880), CameraManagerService.cpp 0x51fdc8 (Vector handle 0x47b4c0 -> [ebp+0x238]).
+- Land box [disasm]: LandscapeLogicEntity +0x314c..+0x3154 min xyz, +0x3158..+0x3160 max xyz, zeroed by the constructor 0x471bb0
+  (0x471db8..0x471dd6). 0x4720c0 (box) takes min / max with it, then publishes `Land.Center` (box middle), `Land.Radius` (half the diagonal,
+  0x6fe84c sqrt) and `Land.MaxHeight` (+0x315c). Callers: 0x46e1d0 (LandFramePseudoEntity init, each land frame of the import, via 0x474a30 /
+  0x4765a0) and 0x46cfa0 (from SpawnLand 0x4778c0, a spawned land block). Nothing shrinks it: a blast never lowers Land.MaxHeight.
 - `Camera.Track.EventPosition` 0x854518: 0x51d46c Vector handle 0x50bc40 -> [esi+0x368]; 0x533609 (0x47b4c0).
 - `Worm.Drown.HeightOffset` 0x8553d4: 0x529780, 0x5a992c Float handle 0x465290.
 

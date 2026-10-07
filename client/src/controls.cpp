@@ -155,6 +155,19 @@ static Vector2 gyro(int pad) {
 static bool joyCon(int) { return false; }
 #endif
 
+// Diagnostic: a stick past its dead zone while no button has been down for 3 s on a human turn, logged every 5 s (raw axes, pad, availability)
+static void stickWatch(int pad, bool live, float dt) {
+    static float quiet = 0, next = 0;
+    bool any = false;
+    for (int b = 1; b <= GAMEPAD_BUTTON_RIGHT_THUMB; b++) any |= down(pad, b);
+    quiet = any || !live ? 0 : quiet + dt, next -= dt;
+    Vector2 l = {GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_X), GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_Y)};
+    Vector2 r = {GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_X), GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_Y)};
+    float dead = joyCon(pad) ? JC_DEAD : DEAD;
+    if (quiet > 3 && next <= 0 && (Vector2Length(l) >= dead || Vector2Length(r) >= dead))
+        TraceLog(LOG_INFO, "STICK: pad %d (available %d) L %.3f %.3f R %.3f %.3f raw, no button for %.0f s", pad, IsGamepadAvailable(pad), l.x, l.y, r.x, r.y, quiet), next = 5;
+}
+
 static bool blimpable(const Game &g);
 static bool girdering(const Game &g) {  // W4M GirderKitLogicEntity input group: the sticks move the preview, not the worm
     return g.phase == Phase::Aim && g.worms[g.current].alive && !g.roped && !g.jetting && weaponDef(g.weapon).kind == Kind::Girder;
@@ -163,6 +176,7 @@ static bool fuseKeys(const Game &g) { return g.phase == Phase::Aim && weaponDef(
 
 Input read(const Game &g, int pad, bool live, float dt) {
     padUsed = pad;
+    stickWatch(pad, live, dt);
     const Worm &w = g.worms[g.current];
 #ifdef __SWITCH__
     const bool kb = false;  // raylib-nx mirrors the pad onto keys and mouse buttons: ignore them
