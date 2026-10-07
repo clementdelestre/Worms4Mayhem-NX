@@ -127,6 +127,8 @@ Conf: D = verified from bytes/types this pass, A = assumed from names.
 | Data/FMV/ntsc | 22 (+6 English, +1 Logos) | .wmv | 80.8 + 320.2 + 11.1 MB | ASF/WMV (`30 26 b2 75`): Outtake* + OuttakeRecordingBooth_01-16; English/ Arabian, Camelot, Jurassic, WildWest, Welcome, Meet_The_Professor; Logos/Team17NTSC | **none** | D |
 | Data/{Audio,Frontend,HUD,FMV,Language,Themes} | 0 | – | – | containers only | – | D |
 
+Land extents [data: the 221 `.xan` poxel cells plus `.hmp` tops above Water.Level, read by w4m-maps]: the poxel coordinates are land voxels (20 units); the widest map spans 172.8 x 118.0 voxels (RelayRace), the highest top is 165.8 voxels over the water (trial-w3d, next NoRoomForError 102.4); 57 maps span at most 78 voxels on x and z with their top under 60.
+
 ### Data/*.XOM families (208)
 | family | n | XOM types (sum, files) | role |
 |---|---|---|---|
