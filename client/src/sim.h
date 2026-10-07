@@ -600,6 +600,7 @@ struct Game {
     bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)
     bool ambulatory(const Worm &w) const { return w.grounded && !w.motion.slide && !vault.t && !jumpDelay; }  // W4M kWPS_Ambulatory (state 0)
     bool retreating() const;  // Flying / Retreat and the worm may move: W4M timer started (0x549bb0), no FlyCam holding WormMoving
+    bool wielding() const;    // W4M weapon logic alive: Aim, or fired and its PostLaunchDelay not over (0x549bb0 posts Weapon.Delete)
     bool windy(int weapon, bool child = false) const;  // W4M IsAffectedByWind, Wormpot WindEffectMore included
     // W4M weapon enum id (0x90c920) of a shot's WEAPTWK container, 0 none
     static constexpr int W4M_LANDMINE = 8, W4M_FACTORY = 21, W4M_SENTRY = 27;

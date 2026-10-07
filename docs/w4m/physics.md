@@ -506,7 +506,7 @@ QueueEvent 0x5acb80(code, float) stores the code at entity +0x244. 0x5ac4d0 push
 | +0xf8 | SkidArms |
 | +0xfc | Death |
 | +0x100 | FallDrown |
-| +0x104 / +0x108 / +0x10c | FPX / FPY / FPZ |
+| +0x104 / +0x108 / +0x10c | FPX / FPY / FPZ (first person, docs/camera-w4m.md §11.3a: time FirstPersonOffset + 1) |
 
 Clip API, an XAnim scheduler on the entity at graphic +0x24 (disasm):
 
@@ -572,7 +572,7 @@ Bored clock (0x5a47d0) [disasm]: graphic +0x5c adds the frame's ms (+0x198 = ms 
 
 Parenthesised names come from the class, not WEAPTWK. **Class by weapon id [disasm]**: table 0x95f6d0 (8 bytes per id), filled by 0x596830: 0x5901c0 WAE_Standard (default), 0x595ed0 WAE_Thrown (ids 2, 3, 6, 7, 16), 0x58c060 WAE_Dropped (5, 8), 0x58e6c0 WAE_Melee (10, 12), 0x58d720 WAE_Mechanical (14, 26), 0x5910a0 WAE_Starburst (20), 0x5942d0 the pack class (Jetpack 37, Parachute 36). Factory weapons (21): WAE_Thrown when WeaponType == 4 (kThrown), else WAE_Standard (0x5973e6).
 
-**Slots [disasm].** Init (Standard 0x5901c0, Dropped 0x58c1c5, ...) loads each name as a (worm clip, weapon-mesh clip of the same name, length) slot through 0x594da0: Draw +0x54 -> (+0xe4, +0xe8, length +0xd8, clock +0xdc), Aim +0x58 -> (+0x130, +0x138), AimFP -> (+0x134, +0x13c), Fire +0x5c -> (+0x158, +0x160, +0x148), Holding +0x60 -> (+0x110, +0x114, +0x104, clock +0x108), EndFire +0x64 -> (+0x168, +0x16c, +0x14c), Taunt +0x68 -> (+0xf8, +0xfc, +0xec, clock +0xf0), windup -> (+0x184, +0x188, +0x170 / +0x178, clock +0x17c). 0x594d40 sets a slot's (time, weight) on the worm and on the weapon mesh. Exceptions: WAE_Thrown hardcodes DrawThrown, HoldThrown and WindupThrown (0x59618b..0x596291) and keeps WEAPTWK Aim and Taunt; WAE_Mechanical loads WEAPTWK **Fire into both the windup and the fire slot** (0x58d90e, 0x58d932) and never reads EndFire; WAE_Melee's windup is WEAPTWK Windup (+0xb8). EndFire is non-empty only for PoisonArrow, a Mechanical weapon, so no worm ever plays an EndFire clip.
+**Slots [disasm].** Init (Standard 0x5901c0, Dropped 0x58c1c5, ...) loads each name as a (worm clip, weapon-mesh clip of the same name, length) slot through 0x594da0: Draw +0x54 -> (+0xe4, +0xe8, length +0xd8, clock +0xdc), Aim +0x58 -> (+0x120, +0x128) and `AimFP` -> (+0x124, +0x12c), copied to the Aim slot (+0x130, +0x138) and the AimFP slot (+0x134, +0x13c), swapped in first person by 0x594b50 (docs/camera-w4m.md §11.3a) [disasm], Fire +0x5c -> (+0x158, +0x160, +0x148), Holding +0x60 -> (+0x110, +0x114, +0x104, clock +0x108), EndFire +0x64 -> (+0x168, +0x16c, +0x14c), Taunt +0x68 -> (+0xf8, +0xfc, +0xec, clock +0xf0), windup -> (+0x184, +0x188, +0x170 / +0x178, clock +0x17c). 0x594d40 sets a slot's (time, weight) on the worm and on the weapon mesh. Exceptions: WAE_Thrown hardcodes DrawThrown, HoldThrown and WindupThrown (0x59618b..0x596291) and keeps WEAPTWK Aim and Taunt; WAE_Mechanical loads WEAPTWK **Fire into both the windup and the fire slot** (0x58d90e, 0x58d932) and never reads EndFire; WAE_Melee's windup is WEAPTWK Windup (+0xb8). EndFire is non-empty only for PoisonArrow, a Mechanical weapon, so no worm ever plays an EndFire clip.
 
 **Aim time [disasm 0x58f63d].** t = WormData `WeaponAngle` (+0xd0, radians) / (π/2) + 1, in seconds (the Aim clips are 2 s long).
 

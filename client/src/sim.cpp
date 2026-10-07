@@ -1657,8 +1657,12 @@ bool Game::steered() const {
 }
 
 // W4M: Worm.WeaponDisableMovement from the fire to PostLaunchDelay's end; FlyCam (homing, super sheep) disables WormMoving
+bool Game::wielding() const {
+    return phase == Phase::Aim || ((phase == Phase::Flying || phase == Phase::Retreat) && timer > retreatTicks(weaponDef(launched >= 0 ? launched : weapon)));
+}
+
 bool Game::retreating() const {
-    if ((phase != Phase::Flying && phase != Phase::Retreat) || timer > retreatTicks(weaponDef(launched >= 0 ? launched : weapon))) return false;
+    if ((phase != Phase::Flying && phase != Phase::Retreat) || wielding()) return false;
     for (const Projectile &s : shots) if (!s.child && WEAPONS[s.weapon].kind == Kind::Homing) return false;
     return !steered();  // ours: the stick steers the shot, not the worm
 }

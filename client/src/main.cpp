@@ -294,6 +294,19 @@ static void onEvent(const Game &g, const GameEvent &e) {
     }
 }
 
+// WEAPTWK FirstPersonOffset (non-zero ones), the FPX / FPY / FPZ clip times less 1 in first person (0x5a1940)
+static Vector3 fpOffset(const std::string &n) {
+    static const struct { const char *name; Vector3 o; } T[] = {
+        {"Grenade", {1, -0.2f, 0}}, {"Cluster Grenade", {1, -0.2f, 0}}, {"Banana Bomb", {1, -0.2f, 0}}, {"Gas Canister", {1, -0.2f, 0}},
+        {"Holy Hand Grenade", {0.8f, -0.2f, 0}}, {"Poison Arrow", {0, -1, -0.5f}}, {"Shotgun", {0.3f, -0.2f, 0}}, {"Ninja Rope", {0.3f, 0.2f, 0}},
+        {"Dynamite", {-0.5f, 0.2f, 0.5f}}, {"Landmine", {0, 0.2f, 1}}, {"Sheep", {0, 1, -0.5f}}, {"Super Sheep", {0, 1, -0.5f}},
+        {"Old Woman", {0, 1, 0}}, {"Inflatable Scouser", {0, 1, -0.2f}}, {"Airstrike", {0.5f, 0, 0.5f}}, {"Flood", {0, 1, -0.2f}},
+        {"Baseball Bat", {0, 0, 0.5f}}, {"Fire Punch", {0, 0, 1}}, {"Prod", {0, 0, 1}}, {"Sentry Gun", {0, 0.5f, 0}},
+        {"Bubble Trouble", {0, 1, 0}}, {"Skip Go", {0.8f, 0, -0.5f}}};
+    for (const auto &t : T) if (n == t.name) return t.o;
+    return {};
+}
+
 // Mesh held at the worm's WeaponLocator (WEAPTWK WeaponGraphicsResourceID), *clip its Holding clip, *aim its Aim clip or
 // nullptr (absent from the worm bundle, or the Holding clip itself, whose later 0x594d40 call wins on the shared handle)
 static const char *heldModel(const WeaponDef &d, const char **clip, const char **aim = nullptr) {
@@ -593,10 +606,10 @@ static void toolFx(const Game &g, float dt) {
 }
 
 // W4M worm: team-tinted, animation picked from the sim state (aim clips map pitch to their timeline).
-static bool drawWorm(const Game &g, const Worm &w, float clock, bool fp = false) {  // fp: the held weapon only, at its WeaponLocator
+static bool drawWorm(const Game &g, const Worm &w, float clock) {
     int i = int(&w - g.worms.data()), st = -1;
     for (const Game::Abductee &b : g.abductees) if (b.worm == i) st = b.st;
-    if (st == 2 && !fp) return true;  // aboard the UFO: hidden (AlienAbductionLogicEntity 0x547874)
+    if (st == 2) return true;  // aboard the UFO: hidden (AlienAbductionLogicEntity 0x547874)
     WormAnim a = i < (int)wormAnims.size() ? wormAnims[i] : WormAnim{};
     float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
     const char *clip = "Base", *held = nullptr, *aim = nullptr;
@@ -604,10 +617,10 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool fp = false)
     bool tool = i == g.current && (g.roped || g.jetting || (g.chute && a.air > 0));
     Models::Layers lay;  // W4M pose layers: emote face, LookAt head, GestureAt arms
     float actT = 0;
-    const char *acted = fp ? nullptr : Acting::clip(g, i, clock, &actT, &actLoop, &lay);
+    const char *acted = Acting::clip(g, i, clock, &actT, &actLoop, &lay);
     Models::Layers dying;  // dying: its Death scene gestures only, no face, head, arm or eye layer
     for (int k = 0; k < 2; k++) dying.act[k] = lay.act[k], dying.actT[k] = lay.actT[k], dying.actW[k] = lay.actW[k];
-    const Models::Layers *ly = fp || !w.alive ? nullptr : w.hp <= 0 ? &dying : &lay;  // drowned: FallDrown alone
+    const Models::Layers *ly = !w.alive ? nullptr : w.hp <= 0 ? &dying : &lay;  // drowned: FallDrown alone
     const bool aimNow = i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting;
     const float aimAt = w.pitch / (PI / 2) + 1;  // WAE Aim clip time, s: WeaponAngle / (pi / 2) + 1 (0x58f63d)
     float aimT = aimAt;
@@ -617,7 +630,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool fp = false)
         if (!(held = heldModel(weaponDef(g.weapon), &clip, &ac))) return false;
         float dl = Models::clipLength("worm", dc);
         t = fmaxf(a.drawT - dl, 0), loop = true, aim = ac;  // state 1: Hold loops on its own clock, run from the Draw's end (0x58f8a3)
-        if (fp || !ly) return true;
+        if (!ly) return true;
         if (a.charging && wc) clip = wc, t = a.wind, loop = false;  // state 4: Windup and Aim at 1, Hold 0
         else if (dl > 0 && a.drawT < dl) {  // state 1: Draw at 1, Aim at drawT / length, Hold 0 (0x58f731)
             wl = *ly, wl.aimW = a.drawT / dl, ly = &wl;
@@ -627,15 +640,15 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool fp = false)
     };
     float drown = Models::clipLength("worm", "FallDrown");  // dead and still drawn: drowned, afloat until Settle pops it
     const Projectile *rk = nullptr;  // the Starburst the shooter rides
-    if (!fp && i == g.current && w.alive) for (const Projectile &q : g.shots) if (!q.child && WEAPONS[q.weapon].name == "Starburst") rk = &q;
+    if (i == g.current && w.alive) for (const Projectile &q : g.shots) if (!q.child && WEAPONS[q.weapon].name == "Starburst") rk = &q;
     // W4M kWPS_DrownFloat 0x5a06b0: FallDrown scrubbed by clamp(vy x 10, -1, 1), vy in units/ms (0.02 per m/s); afloat = mid-clip
     if (!w.alive) clip = "FallDrown", t = drown * (1 + Clamp(w.vel.y * 0.2f, -1, 1)) / 2, loop = false;  // the sim's DrownFloat velocity
     else if (st == 1) clip = "BeamUpLoop";  // rising in the beam, weapon hidden (HeldAccessory.Hide)
     else if (rk) {  // riding it: FireStarburst while the fuse burns 3.5 s (WAE state 5), then FlyStarburst (Starburst.Launched, state 7)
         float el = WEAPONS[rk->weapon].fuse - rk->fuse;
         clip = el < 3.5f ? "FireStarburst" : "FlyStarburst", t = el < 3.5f ? el : el - 3.5f;
-    } else if (a.jumpT >= 0 && !fp) clip = "Jump_Start", t = a.jumpT, loop = false;  // kWE 2: weapon hidden; the launch event cuts to its clip (0x5a1060)
-    else if (a.act.clip && !fp) {
+    } else if (a.jumpT >= 0) clip = "Jump_Start", t = a.jumpT, loop = false;  // kWE 2: weapon hidden; the launch event cuts to its clip (0x5a1060)
+    else if (a.act.clip) {
         clip = a.act.clip, t = a.act.t, loop = false, held = a.act.held, aim = a.act.aim;
         if (a.act.from && ly) {  // WAE_Thrown state 5: Windup at 1 - v, v += clamp((1 - v) / 2, 0.2) per 20 ms (0x595a3b, 0x47a1a0)
             float v = 0;
@@ -643,8 +656,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool fp = false)
             wl = *ly, wl.act[1] = a.act.from, wl.actT[1] = a.act.fromT, wl.actW[1] = 1 - v, ly = &wl;
         }
     }
-    else if (fp && aimNow && aimPose()) {  // view-model: the aim pose whatever the body does (turning in place plays Walk)
-    } else if (tool) {
+    else if (tool) {
         clip = g.roped ? "SwingNinjarope" : g.jetting ? "JetpackFly" : "ParachuteLR", held = g.roped ? "hold_rope" : nullptr;
         if (!g.roped && !g.jetting) t = 1 - a.lr, loop = false;  // WAE_Parachute 0x58f2b4: ParachuteLR at 1 - lr, on worm and canopy
         if (g.jetting) aim = "JetpackRotLR", aimT = a.jlr + 1;  // WAE_Jetpack 0x58cd74: over JetpackFly, on worm and pack
@@ -663,6 +675,15 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool fp = false)
     } else if (w.hp < 25) clip = "Wounded";
     if (i == g.current && g.icarus == 2 && w.alive) clip = "FlyRedBull", t = a.air, loop = true;  // RedBullWings wield 0x595437: the worm's clip too
     if (Vector3 bm; ly && Models::blend("worm", clip, t, loop, ly, &bm)) Acting::headMode(i, bm.z);  // read by the next Acting::update
+    // WeaponAccessoryEntity 0x597630 / 0x594b50, each camera update: with the drawn camera within 10 units of the active worm's
+    // Position + 10 units, FP at 1 (the body 30 units back, the arms kept), AimFP in the Aim slot, FPX / FPY / FPZ at the offset + 1
+    Models::Layers fpl = ly ? *ly : Models::Layers{};
+    if (held && i == g.current && Vector3Distance(viewEye, {w.pos.x, w.pos.y - Game::R + 0.5f, w.pos.z}) < 0.5f) {
+        Vector3 o = fpOffset(weaponDef(g.weapon).name);
+        const char *add[4] = {"FP", "FPX", "FPY", "FPZ"};
+        const float at[4] = {0, o.x + 1, o.y + 1, o.z + 1};
+        std::copy(add, add + 4, fpl.add), std::copy(at, at + 4, fpl.addT), ly = &fpl, aim = "AimFP";
+    }
     Color tint = Acting::tint(i, ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f));
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
     // W4M turns the model about its node origin (0x5a26d3): worm.glb origin + the 3 unit lift (0.15 m)
@@ -671,7 +692,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool fp = false)
     const Vector3 ROOT = {0, 0.15f, 0};
     if (roll) p = Vector3Add(p, Vector3Subtract(Vector3Transform(ROOT, MatrixRotateY(w.yaw)), Vector3Transform(ROOT, MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)))));
     Matrix root = MatrixMultiply(MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)), MatrixTranslate(p.x, p.y, p.z));
-    if (fp ? !Models::has("worm") : !Models::draw("worm", p, w.yaw, roll, tint, clip, t, loop, aim, aimT, ly)) return false;
+    if (!Models::draw("worm", p, w.yaw, roll, tint, clip, t, loop, aim, aimT, ly)) return false;
     Matrix m;
     if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly)) {
         m = MatrixMultiply(m, root);
@@ -689,13 +710,13 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool fp = false)
         Models::pick(nullptr);
     }
     bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
-    if (tool && !fp && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE,
+    if (tool && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE,
                                               g.jetting ? "JetpackRotLR" : opening ? "FireParachute" : clip, g.jetting ? fminf(aimT, 2 - 1e-3f) : opening ? a.chute : t);
-    if (rk && !fp && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly)) Models::draw("hold_starburst", MatrixMultiply(m, root), WHITE, "FireStarburst", rk->fuse < WEAPONS[rk->weapon].fuse - 3.5f ? 3.5f : WEAPONS[rk->weapon].fuse - rk->fuse);  // WAE_Starburst 0x5917d0
-    if (i == g.current && g.icarus == 2 && !fp && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly))  // WAE 0x5953d1
+    if (rk && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly)) Models::draw("hold_starburst", MatrixMultiply(m, root), WHITE, "FireStarburst", rk->fuse < WEAPONS[rk->weapon].fuse - 3.5f ? 3.5f : WEAPONS[rk->weapon].fuse - rk->fuse);  // WAE_Starburst 0x5917d0
+    if (i == g.current && g.icarus == 2 && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly))  // WAE 0x5953d1
         Models::draw("wings", MatrixMultiply(m, root), WHITE, "FlyRedBull", t);
-    int hat = !fp && w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
-    const char *hatN = tool && !fp && g.jetting ? "jetpack" : hat ? Models::hatName(hat - 1) : nullptr;  // W4M's jetpack helmet
+    int hat = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
+    const char *hatN = tool && g.jetting ? "jetpack" : hat ? Models::hatName(hat - 1) : nullptr;  // W4M's jetpack helmet
     if (hatN && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
         Models::draw(hatN, MatrixMultiply(m, root));
     return true;
@@ -1165,7 +1186,7 @@ int main(int argc, char **argv) {
 #else
     SetTargetFPS(60);
 #endif
-    rlSetClipPlanes(0.5, 500);  // default 0.01 near plane z-fights the water on GLES depth buffers
+    rlSetClipPlanes(0.125, 750);  // W4M in-game camera: near 2.5, far 15000 units (0x4d8067)
     static const double bootT0 = GetTime();
     // GL-only work first, on black: shader compiles and the font can't run on the workers
     double bt[5] = {GetTime()};  // BOOT log marks
@@ -1308,8 +1329,9 @@ int main(int argc, char **argv) {
     int botTurns = netbot && argc > 6 ? atoi(argv[6]) : 6, turns = 0;
     bool cpuAll = argc > 1 && (!strcmp(argv[1], "--cpu") || bench), shot = !cpuAll && !uiShot && !netbot && (argc > 1 || FileExists(DATA_DIR "shot"));
     int shotWeapon = argc > 2 ? atoi(argv[2]) : 0;  // --shot N: use weapon N
-    // --aimshot <weapon> [map] [fine|shoulder]: shot mode, weapon in hand, held in aim mode (shoulder: the default view), aim.png at frame 60
-    bool aimShot = shot && argc > 2 && !strcmp(argv[1], "--aimshot");
+    // --aimshot <weapon> [map] [fine|shoulder|fire]: shot mode, weapon in hand, held in aim mode (shoulder: the default view), aim.png at frame 60;
+    // fire: FIRE held from frame 41 to 99, aim mode kept after the shot
+    bool aimShot = shot && argc > 2 && !strcmp(argv[1], "--aimshot"), aimFire = aimShot && argc > 4 && !strcmp(argv[4], "fire");
     // --aimseq <weapon> [map]: aim mode from frame 40 to 90, aimseq_NNN.png around the entry and the exit
     bool aimSeq = shot && argc > 2 && !strcmp(argv[1], "--aimseq");
     bool animShot = shot && argc > 2 && !strcmp(argv[1], "--animshot");
@@ -1965,7 +1987,7 @@ int main(int argc, char **argv) {
         if (game.locked && !wasLocked) Audio::play(Audio::Sfx::LockOn);
         wasLocked = game.locked;
         int late = animShot ? 2 * shotWeapon : 0;  // animshot: fire once the weapon cycling is over
-        Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, shotBench || aimShot ? 0 : shotWeapon, !aimShot && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
+        Input in = shot ? (late && frame >= late ? scriptInput(frame - late, 0, true) : scriptInput(frame, shotBench || aimShot ? 0 : shotWeapon, (!aimShot || aimFire) && !aimSeq && !late)) : pause.open || playing || irEnd >= 0 ? Input{} : pin;
         if (aimSeq && frame > 40 && frame < 80) in.aim = 127;
         if (utilShot && game.girderOn && frame < 38) in.buttons |= Input::TARGET | (frame % 2 ? Input::PITCH : 0), in.walk = 127, in.aim = frame % 2 ? 127 : 0;
         if (utilShot && weaponDef(game.weapon).kind == Kind::Icarus && frame > 100)  // jump, then flap on each window
@@ -2131,8 +2153,8 @@ int main(int argc, char **argv) {
         Audio::hold(Audio::Sfx::HeldOldWoman, hand && wd.name == "Old Woman", &cur.pos);
         Audio::hold(Audio::Sfx::PowerBow, charging && sw.name == "Poison Arrow", &cur.pos);
         bool chase = game.phase != Phase::Aim && !game.shots.empty() && !dropped(WEAPONS[game.shots[0].weapon]);  // dynamite: the camera stays on the worm
-        Controls::Reticle ret = Controls::reticle(game, chase);
-        bool scope = !chase && Controls::scoped(game), fp = ret == Controls::Reticle::Aim;  // W4M first-person aim
+        Controls::Reticle ret = Controls::reticle(game);
+        bool scope = !chase && Controls::scoped(game);
         static float minusT = 0;  // - held 1.5 s: perf overlay (user-requested, 2026-10-04); the controls help shows from 0.35 s
         float minusWas = minusT;
         minusT = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_MIDDLE_LEFT) ? minusT + dt : 0;
@@ -2144,9 +2166,7 @@ int main(int argc, char **argv) {
         if (Camera3D sc = cam; !(playing && freeCam) && Efmv::camera(game, sc)) cam = sc;  // a level movie's PathCam / TimedPathCam
         if (Camera3D sc = cam; !(playing && freeCam) && (bomberCam(&sc) || ufoCam(&sc))) cam = sc;  // W4M scene cam outranks every logical camera
         Audio::listen(cam);
-        auto within = [&](const Camera3D &c) { return Vector3Distance(c.position, cur.pos) < 1.2f; };  // a camera that has flown into the active worm (aim view, PiP event camera inherited from it)
-        bool inside = within(cam);
-        hud.fp = fp || Controls::sinceFirstPerson() < 0.3f;
+        hud.fp = Controls::sinceFirstPerson() < 0.3f;
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
         if (fixedView) view = viewCam;
         if (getenv("W4NX_UFOVIEW") && ufo.live) view.target = Vector3Transform({0, 0, 0}, ufo.at), view.position = Vector3Add(view.target, {30, -6, 30}), view.up = {0, 1, 0};  // captures: the saucer from outside
@@ -2174,6 +2194,13 @@ int main(int argc, char **argv) {
         Vector3 jolt = Vector3Scale({sinf(clock * 53), sinf(clock * 61 + 1) * 0.7f, sinf(clock * 47 + 2)}, Fx::shake);
         view.position = Vector3Add(view.position, jolt), view.target = Vector3Add(view.target, jolt), view.up = Controls::viewUp(view);
         viewEye = view.position;
+        // W4M WXWormGraphicEntity 0x5a4420: the active worm's alpha, one post-process value a frame; HeadCam: by its speed (units/ms)^2 / 0.016
+        const float curOp = Controls::headCam(game) ? fmaxf(0, 1 - Vector3LengthSqr(cur.vel) / 40) : Xray::opacity(view.position, cur.pos);
+        auto drawFaded = [&](const Worm &w, float op) {
+            if (op > 0 && op < 1) Xray::depth(), drawWorm(game, w, clock), Xray::fade(op);
+            if (op > 0) drawWorm(game, w, clock);
+            Xray::done();
+        };
         lap(T_CAMERA);
         animateWorms(game, dt, view);
         // W4M lighting pass: land and still decor cached until remeshed; clip-played decor, worms, graves, shots and objects every frame
@@ -2199,7 +2226,7 @@ int main(int argc, char **argv) {
             Fx::drawSky(pipView, game.terrain.origin, 1.0f / 20);
             game.terrain.setView(pipView.position);
             game.terrain.draw();
-            for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && !(within(pipView) && &w == &cur) && Models::visible(w.pos, 2)) drawWorm(game, w, clock);
+            for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawFaded(w, &w == &cur ? curOp : 1);
             for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain)) DrawSphere(s.pos, 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) drawObject(game, o);
@@ -2225,7 +2252,7 @@ int main(int argc, char **argv) {
         jetAudio(game);
         Xray::begin();
         bool blimp = (playing && freeCam) || Controls::targetView(game) || (wd.kind == Kind::Binoculars && Controls::firstPerson(game));  // W4M outlines every live worm in the blimp view and binoculars (camera-w4m.md section 5)
-        auto shown = [&](const Worm &w) { return (w.alive || w.counted > 0) && !(inside && &w == &cur) && Models::visible(w.pos, 2); };
+        auto shown = [&](const Worm &w) { return (w.alive || w.counted > 0) && !(&w == &cur && curOp <= 0) && Models::visible(w.pos, 2); };
         auto outlined = [&](const Worm &w) { return Models::has("worm") && shown(w) && (blimp || &w == &cur); };  // W4M OutlinedWorms1: the active worm only, outside the blimp view
         bool masked = false;  // every outlined worm's depth in one render-target bind
         for (const Worm &w : game.worms)
@@ -2236,10 +2263,7 @@ int main(int argc, char **argv) {
             if (!shown(w)) continue;
             if (Models::has("worm")) {  // the passes below draw the same pose: no re-skin
                 bool bin = masked && outlined(w);
-                float op = &w == &cur && !blimp ? Xray::opacity(view.position, w.pos) : 1;
-                if (op > 0 && op < 1) Xray::depth(), drawWorm(game, w, clock), Xray::fade(op);
-                if (op > 0) drawWorm(game, w, clock);
-                Xray::done();
+                drawFaded(w, &w == &cur ? curOp : 1);
                 if (bin) Xray::hidden(), drawWorm(game, w, clock), Xray::done();
             } else {
                 Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};
@@ -2322,14 +2346,6 @@ int main(int argc, char **argv) {
         lap(T_FX);
         EndMode3D();
         if (blimp) Xray::outline(TEAM_COLORS);
-        if (fp && inside && !scope) {  // held weapon over the scene with its own near plane, never clipped by it or the terrain
-            glClear(0x100);  // GL_DEPTH_BUFFER_BIT
-            rlSetClipPlanes(0.05, 50);
-            BeginMode3D(view);
-            drawWorm(game, cur, clock, true);
-            EndMode3D();
-            rlSetClipPlanes(0.5, 500);
-        }
 
         // HomingLockOnGraphicEntity: on the target until the shot, when in front of the camera
         Vector2 lockAt = GetWorldToScreen(game.lockAt, view);
@@ -2485,7 +2501,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == 60) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") ? uiEnd : 600))) break;
+        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == (aimFire ? 140 : 60)) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") ? uiEnd : 600))) break;
     }
     if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();

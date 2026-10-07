@@ -25,8 +25,9 @@ extern bool cpuTurn;                     // set by main: a CPU plays the turn
 bool aimed(const WeaponDef &wd);         // W4M IsAimedWeapon / Ninja / Binoculars cursor: the weapon has a first-person aim reticle
 bool firstPerson(const Game &g);         // aim mode seen from the worm's eyes, aimed() weapons only
 bool scoped(const Game &g);              // sniper rifle in aim mode: the scope view
+bool headCam(const Game &g);             // the logical camera is W4M's HeadCam: first-person aim or scope, not the Blimp
 enum class Reticle { None, Aim, Blimp, Lock };  // Aim: Ui::reticle; Blimp: Ui::targetCursor; Lock: the homing lock-on mark
-Reticle reticle(const Game &g, bool chase);  // the one place deciding which reticle or cursor is on screen
+Reticle reticle(const Game &g);  // the one place deciding which reticle or cursor is on screen
 float sinceFirstPerson();                 // seconds since the first-person aim view, 0 in it
 extern int forceAim;                     // capture mode: 1 aim, 2 fine aim
 Vector3 eye(const Game &g);              // first-person aim camera position

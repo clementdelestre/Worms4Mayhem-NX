@@ -20,6 +20,7 @@ static void mesherForget(const struct Terrain *t);
 #include <map>
 
 static size_t idx(int x, int y, int z) { return Terrain::idx(x, y, z); }
+static constexpr unsigned char HIDDEN = 67;  // Visible 0 land frame: solid, never drawn (w4m-maps)
 static constexpr unsigned char HARD = 62;  // girder voxels: W4M theme material 61 (GirderSmall.xom), 1-based like mats
 
 // Quantize keeping the sign exact: solid iff v > 0.
@@ -206,7 +207,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
     loadMs[0] = loadMs[1] = loadMs[2] = 0;
     objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
-    thinOnly.clear();
+    thinOnly.clear(), thinVox.clear();
     hasFinish = false, sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -315,29 +316,37 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     return true;
 }
 
-// .thin "W4T2": u32 size, then that many bytes deflated: u32 count, then per cell u16 x y z (its voxel), u8 material (1-based),
-// 8 corners (3 f32, m; bit 1 +x, 2 +y, 4 +z)
+// .thin "W4T3": u32 size, then that many bytes deflated: u32 count, then per cell u16 x y z (its first voxel), u8 material (1-based),
+// 8 corners (3 f32, m; bit 1 +x, 2 +y, 4 +z), u16 k and k more voxels (u16 x y z)
 void Terrain::loadThin(const std::string &path) {
     int size = 0;
     unsigned char *f = LoadFileData(path.c_str(), &size);
     uint32_t raw = 0, count = 0;
-    if (f && size >= 8 && !memcmp(f, "W4T2", 4)) memcpy(&raw, f + 4, 4);
+    if (f && size >= 8 && !memcmp(f, "W4T3", 4)) memcpy(&raw, f + 4, 4);
     std::vector<unsigned char> b(raw < (1u << 28) ? raw : 0);
     if (raw >= 4 && b.size() == raw && sinflate(b.data(), (int)raw, f + 8, size - 8) == (int)raw) memcpy(&count, b.data(), 4);
     UnloadFileData(f);
-    for (uint32_t i = 0; i < count && 4 + (i + 1) * 103 <= raw; i++) {
-        const unsigned char *r = b.data() + 4 + i * 103;
-        uint16_t v[3];
-        memcpy(v, r, 6);
+    thinVox.clear();
+    for (size_t p = 4; count-- && p + 105 <= raw;) {
+        const unsigned char *r = b.data() + p;
+        uint16_t v[3], k;
+        memcpy(v, r, 6), memcpy(&k, r + 103, 2);
+        if (p + 105 + 6 * (size_t)k > raw) break;
+        p += 105 + 6 * (size_t)k;
         if (v[0] >= NX || v[1] >= NY || v[2] >= NZ) continue;
-        Thin t{(int)idx(v[0], v[1], v[2]), r[6], {}};
+        Thin t{(int)thinVox.size(), 1, r[6], {}};
         memcpy(t.c, r + 7, 96);
-        thin[(v[2] / CS * CY + v[1] / CS) * CX + v[0] / CS].push_back(t);
+        thinVox.push_back((int)idx(v[0], v[1], v[2]));
+        for (int i = 0; i < k; i++) {
+            memcpy(v, r + 105 + 6 * i, 6);
+            if (v[0] < NX && v[1] < NY && v[2] < NZ) thinVox.push_back((int)idx(v[0], v[1], v[2])), t.n++;
+        }
+        thin[(thinVox[t.at] >> 15)].push_back(t);
     }
     // voxels standing only for thin cells (no other solid neighbour): their blob is not meshed, the hexahedra show instead
     std::vector<int> anchors;
-    for (auto &ts : thin) for (const Thin &t : ts) anchors.push_back(t.vox);
-    std::sort(anchors.begin(), anchors.end());
+    anchors = thinVox;
+    std::sort(anchors.begin(), anchors.end()), anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
     thinOnly.clear();
     for (int v : anchors) {
         int x, y, z;
@@ -709,7 +718,7 @@ Color Terrain::vertexColour(Vector3 p, Vector3 n) const {
             Vector3 q = Vector3Add(p, Vector3Scale(dir, t));
             if (!solidAt(q)) continue;
             int x = (int)(q.x * IVOX + 0.5f), y = (int)(q.y * IVOX + 0.5f), z = (int)(q.z * IVOX + 0.5f);
-            if (mats.empty() || mats[idx(x, y, z)] < 65) return c;
+            if (mats.empty() || mats[idx(x, y, z)] < 65 || mats[idx(x, y, z)] == HIDDEN) return c;
             break;
         }
     }
@@ -1076,6 +1085,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
                         int sv = in ? (int)idx(x0 - 1 + i, y0 - 1 + j, z0 - 1 + k) : (int)idx(x0 - 1 + i + (a == 0), y0 - 1 + j + (a == 1), z0 - 1 + k + (a == 2));
                         if (std::binary_search(skip.begin(), skip.end(), sv)) continue;
                     }
+                    if (m == HIDDEN) continue;
                     Builder &b = builder(m);
                     unsigned short v[4];
                     for (int q = 0; q < 4; q++) v[q] = (unsigned short)vertex(b, cell[q]);
@@ -1087,7 +1097,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
     // sub-voxel W4M cells (ropes, twigs): their own hexahedron, flat shaded, while their voxel stands [ours: voxel-forced]
     if (ci < (int)thin.size())
         for (const Thin &t : thin[ci]) {
-            if (d[t.vox] <= 0) continue;
+            if (std::none_of(thinVox.begin() + t.at, thinVox.begin() + t.at + t.n, [&](int v) { return d[v] > 0; })) continue;
             Builder &b = builder(t.mat);
             Vector3 cen = {0, 0, 0};
             for (const Vector3 &q : t.c) cen = Vector3Add(cen, Vector3Scale(q, 0.125f));
@@ -1123,7 +1133,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
                     int gx = x0 - 1 + i, gy = y0 - 1 + j, gz = z0 - 1 + k;
                     if (gy + 1 >= NY || air(gx, gy, gz) || !air(gx, gy + 1, gz) || isSteel(idx(gx, gy, gz))) continue;
                     int m = mats.empty() ? -1 : mats[idx(gx, gy, gz)] - 1;
-                    if (m < 0 || m >= (int)fringeMats.size() || !fringeMats[m].maps) continue;
+                    if (m < 0 || m == HIDDEN - 1 || m >= (int)fringeMats.size() || !fringeMats[m].maps) continue;
                     for (int s = 0; s < 4; s++) {
                         int dx = DIR[s][0], dz = DIR[s][1], px = dz != 0, pz = dx != 0;  // (px, pz): along the edge
                         if (!open(gx + dx, gy, gz + dz)) continue;

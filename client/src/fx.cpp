@@ -1217,8 +1217,8 @@ void update(float dt) {
 
 static Vector3 skyOrigin;
 static float skyUnit = 0.05f;
-// Skybox1-3 camera (0x4d927b): the view with its x / z translation zeroed puts the scene origin on the view's up axis, this many units below the eye
-static float skyDrop(const Camera3D &cam, Vector3 up) { return Vector3DotProduct(Vector3Subtract(cam.position, skyOrigin), up) / skyUnit; }
+// Sky camera (0x4d9236..0x4d92ab): the drawn camera's world position with x / z zeroed, so the scene origin sits straight below the eye by its height over the origin (W4M units)
+static float skyDrop(const Camera3D &cam) { return (cam.position.y - skyOrigin.y) / skyUnit; }
 
 void drawSky(const Camera3D &cam, Vector3 origin, float unit) {
     skyOrigin = origin, skyUnit = unit;
@@ -1227,8 +1227,7 @@ void drawSky(const Camera3D &cam, Vector3 origin, float unit) {
         // the ~20000-unit scene shrunk inside the far plane around the camera: opaque parts, then the blended ones in scene
         // order with their XBlendModeGL; depth only sorts the sky's own parts and is cleared after
         static const int GL_FACTOR[11] = {0, 1, 0x306, 0x307, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305, 0x308};  // W4M BlendFactor -> GL, table 0x8b4b5c
-        Matrix v = GetCameraMatrix(cam);
-        Vector3 up = {v.m1, v.m5, v.m9}, at = Vector3Add(cam.position, Vector3Scale(up, -skyDrop(cam, up) * SKY_K));
+        Vector3 at = {cam.position.x, cam.position.y - skyDrop(cam) * SKY_K, cam.position.z};
         Matrix m = MatrixMultiply(MatrixScale(SKY_K, SKY_K, SKY_K), MatrixTranslate(at.x, at.y, at.z));
         float t = skyClip > 0 ? fmodf(skyT, skyClip) : 0;
         rlDisableBackfaceCulling();
@@ -1407,7 +1406,8 @@ void drawFlare(const Camera3D &cam, float dt, const std::function<int(Vector3, V
     if (!hasSun || !flareTex.id) return;
     Matrix v = GetCameraMatrix(cam);
     Vector3 right = {v.m0, v.m4, v.m8}, up = {v.m1, v.m5, v.m9}, fwd = {-v.m2, -v.m6, -v.m10};
-    float x = Vector3DotProduct(sunAt, right), y = Vector3DotProduct(sunAt, up) - skyDrop(cam, up), z = Vector3DotProduct(sunAt, fwd);
+    Vector3 sun = {sunAt.x, sunAt.y - skyDrop(cam), sunAt.z};
+    float x = Vector3DotProduct(sun, right), y = Vector3DotProduct(sun, up), z = Vector3DotProduct(sun, fwd);
     float r = sqrtf(x * x + y * y) / fabsf(z);  // affine transforms only (0x455d30): no projection scale
     if (r >= 1) { flareFade = 1; return; }  // as the exe: full again when it comes back on screen
     int h = hit(cam.position, Vector3Normalize(Vector3Subtract(sunAt, Vector3Scale(Vector3Subtract(cam.position, skyOrigin), 1 / skyUnit))));  // 0x4799e7: sun - eye

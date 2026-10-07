@@ -258,7 +258,7 @@ See "Bundles numbering" above (unchanged). Additions from this pass [data]:
 
 ## 22. Exact land export (`<map>.cells`, tools/w4m-maps)
 
-Source [data]: the visible `LandFrameStore` poxel cells (a hexahedron of 8 lattice corners each) and the `.hmp` heightmap, placed and
+Source [data]: the `LandFrameStore` poxel cells (Visible 0 ones included: solid, not drawn) (a hexahedron of 8 lattice corners each) and the `.hmp` heightmap, placed and
 scaled as in docs/w4m-formats.md "Conversion to our grid". W4M collides with that lattice itself: land ray 0x466ae0, face entered 0x46a070
 (physics.md §5, §11) [disasm]. The client's use: docs/sim.md "Exact land".
 
@@ -284,3 +284,7 @@ Build [ours]: a cell lists a hexahedron unless one of its planes has the 8 cell 
 with a corner on or outside (> -1e-5 m), so a face lying on the cell's border stays with the cell it bounds. A cell some hexahedron or the
 heightmap fills is left out; its sign is in the `.vox`, whose grid-point signs are set from the lists (from a listed cell around the
 point, else solid when a filled cell touches it). Identical lists are stored once.
+
+### Visible 0 land frames [data]
+- 8073 hidden cells in 157 of the 222 maps (w4m-maps log, "(N hidden)"). Largest: treevillage-w3d 966, NoRoomForError 459, ChallengeNavigation2 403, Multi_NoRoomForError 336, LP_Multi_NoRoomForError 299, cherry-w3d 245, beanstalk-w3d 176, Tutorial2 150.
+- NoRoomForError / ChallengeNavigation2: the solid clouds are 111 invisible frames "cloud platformPartA..D" (2x2x2 poxels, 4 solid cells each, no detail) under 17 "DETAIL_Rock" 1x1x1 frames (1 cell, 1 detail each) and 2 5x1x5 frames; the visible cloud is a detail mesh ("cloud platform<n>", "smaller top clouds"), the collision comes only from the hidden frames. WXPL_GenieClouds emitters have no frame: no collision.

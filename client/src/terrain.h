@@ -64,8 +64,9 @@ struct Terrain {
     std::vector<std::string> texFiles;  // per material: top, side, roof, fringe (paths, "" = none)
     std::vector<Vector2> texRepeat;     // per material: metres per texture repeat (top, side)
     std::vector<Material> texMats, fringeMats;  // per material, built with the textures on first remesh
-    struct Thin { int vox; unsigned char mat; Vector3 c[8]; };  // a sub-voxel W4M cell, drawn while voxel `vox` is solid
-    std::vector<std::vector<Thin>> thin;  // per chunk
+    struct Thin { int at, n; unsigned char mat; Vector3 c[8]; };  // a sub-voxel W4M cell, drawn while one of thinVox[at..at+n) is solid
+    std::vector<std::vector<Thin>> thin;  // per chunk of the cell's first voxel
+    std::vector<int> thinVox;
     std::vector<int> thinOnly;  // sorted voxels solid only for thin cells: not meshed
     std::vector<Texture2D> textures;
     std::map<std::string, Image> decoded;  // decodeTextures() output, uploaded by the first remesh

@@ -23,6 +23,7 @@ struct Layers {
     float eyeYaw = 0, eyePitch = 0;                 // pupils, relative to the head
     const char *act[2] = {}; float actT[2] = {}, actW[2] = {};  // acting gestures (new, old) over the body clip at weight actW
     float aimW = 1;  // weight of draw()'s aim clip
+    const char *add[4] = {}; float addT[4] = {};  // clips summed over the pose at weight 1, like the aim clip (W4M FP, FPX, FPY, FPZ)
     // lip sync (0x59d570): viseme clips (new, old) added on the lips at weight = clip time; open (+0x19c) > 0.1 picks the Teeth time
     const char *lip[2] = {}; float lipW[2] = {}, open = 0;
 };

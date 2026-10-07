@@ -22,6 +22,7 @@ fn ny() -> usize { GRID.with(|g| g.get()[1]) }
 fn nz() -> usize { GRID.with(|g| g.get()[2]) }
 const BAND: f32 = 1.0; // exact distances are stored within 1 voxel of the surface (all surface nets reads)
 const Q: f32 = 254.0; // engine density quantization (int8 = metres * Q), Terrain::Q
+const HIDDEN: u8 = 67; // voxel material (1-based) of a Visible 0 frame: solid, never drawn; after the 64 theme and 2 heightmap materials
 const GIRDER_MAT: usize = 61; // theme material of W4M girders (GirderSmall/Large.xom), always exported
 const TEX_REPEAT: f32 = 4.0; // W4M units per texture repeat (poxel texture vectors are 0.25)
 const WATER: f32 = 3.0; // our water height (m); W4M water assumed at y = 0
@@ -152,7 +153,7 @@ fn local(x: &Poxel, scaled: bool) -> M4 {
 }
 
 // Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index.
-struct Cell { c: [[f32; 3]; 8], mat: u8, tex: [f32; 2], code: u16 }
+struct Cell { c: [[f32; 3]; 8], mat: u8, tex: [f32; 2], code: u16, visible: bool }
 
 // Detail entity reference with its poxel's world matrices (with / without the poxel's own scale).
 struct DetRef { ctn: usize, w: M4, wn: M4 }
@@ -210,7 +211,8 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
     let (w, wn) = if root { (*parent, *parent) } else { (mul(parent, &local(x, true)), mul(parent, &local(x, false))) };
     let [sx, sy, sz] = x.size;
     if !x.vox.is_empty() { add_block(blocks, frame_box(x, &w)); }
-    if x.visible && x.vox.len() == sx * sy * sz {
+    // W4M collides with every frame; only rendering reads Visible (0x46e6b9, 0x472380, 0x447810)
+    if x.vox.len() == sx * sy * sz {
         let layer = |l: &Vec<[f32; 2]>, j: usize| *l.get(j).unwrap_or(&[0.0, 0.0]);
         let corner = |i: usize, j: usize, kk: usize| -> [f32; 3] {
             let (a, b) = (layer(&x.l1, j), layer(&x.l2, j));
@@ -227,7 +229,7 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
                     if v & 3 == 0 { continue; }
                     let mut c = [[0.0; 3]; 8];
                     for n in 0..8 { c[n] = corner(xx + (n & 1), y + ((n >> 1) & 1), z + (n >> 2)); }
-                    out.push(Cell { c, mat: ((v >> 2) & 63) as u8, tex: x.tex, code });
+                    out.push(Cell { c, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible });
                 }
             }
         }
@@ -525,33 +527,42 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let mut coded: Vec<Vec<usize>> = vec![Vec::new(); codes.len()];
 
     // occupancy at grid points; a cell missing every grid point (thin plank, cone tip) still claims its nearest one
-    // cells holding at most 2 grid points (ropes, twigs) also go to <stem>.thin: their exact hexahedron, drawn while its first voxel stands
+    // cells holding at most 2 grid points or thinner than a voxel (ropes, twigs, stems, leaves) also go to <stem>.thin:
+    // their exact hexahedron and every voxel they stand on, drawn while one of them stands
     let mut thin = 0u32.to_le_bytes().to_vec();
     let mut nthin = 0u32;
     for (hi, h) in hexes.iter().enumerate() {
-        let (mut n, mut first) = (0, None);
+        let mut vox: Vec<[usize; 3]> = Vec::new();
         let code = hex_code[hi];
         for (x, y, z) in points(h.lo, h.hi) {
             if h.inside([x as f32, y as f32, z as f32]) {
-                grid[gi(x, y, z)] = h.mat; n += 1; first.get_or_insert([x, y, z]);
+                let g = &mut grid[gi(x, y, z)];
+                if h.mat != HIDDEN || *g == 0 { *g = h.mat; }
+                vox.push([x, y, z]);
                 if code > 0 && !other([x as f32, y as f32, z as f32], code) { coded[code as usize - 1].push(ci(x, y, z)); }
             }
         }
         let cen = h.c.iter().fold([0.0; 3], |s, p| madd(s, *p, 0.125)).map(|v| v.round());
-        if n == 0 && cen.iter().zip([nx(), ny(), nz()]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
-            grid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)] = h.mat;
-            first = Some(cen.map(|v| v as usize));
+        if vox.is_empty() && cen.iter().zip([nx(), ny(), nz()]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
+            let g = &mut grid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)];
+            if h.mat != HIDDEN || *g == 0 { *g = h.mat; }
+            vox.push(cen.map(|v| v as usize));
             if code > 0 && !other(cen, code) { coded[code as usize - 1].push(ci(cen[0] as usize, cen[1] as usize, cen[2] as usize)); }
         }
-        if let Some(a) = first.filter(|_| n <= 2) {
+        let (e1, e2, e3) = (sub(h.c[1], h.c[0]), sub(h.c[2], h.c[0]), sub(h.c[4], h.c[0]));
+        let area = |a: V3, b: V3| { let c = cross(a, b); dot(c, c).sqrt() };
+        let thickness = dot(cross(e1, e2), e3).abs() / area(e1, e2).max(area(e2, e3)).max(area(e1, e3)).max(1e-6);  // volume over the widest face
+        if !vox.is_empty() && h.mat != HIDDEN && (vox.len() <= 2 || thickness < 1.0) {
             nthin += 1;
-            for v in a { thin.extend((v as u16).to_le_bytes()); }
+            for v in vox[0] { thin.extend((v as u16).to_le_bytes()); }
             thin.push(h.mat);
             for p in h.c { for v in p { thin.extend((v * VOX).to_le_bytes()); } }
+            thin.extend(((vox.len() - 1) as u16).to_le_bytes());
+            for a in &vox[1..] { for v in a { thin.extend((*v as u16).to_le_bytes()); } }
         }
     }
     thin[0..4].copy_from_slice(&nthin.to_le_bytes());
-    let mut tf = b"W4T2".to_vec();
+    let mut tf = b"W4T3".to_vec();
     tf.extend((thin.len() as u32).to_le_bytes());
     tf.extend(deflate::deflate(&thin));
     fs::write(out_dir.join(format!("{stem}.thin")), &tf).map_err(|e| e.to_string())?;
@@ -629,7 +640,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     if let Ok(dir) = std::env::var("W4M_MAPS_REF") {
         let mut o = String::new();
         let mut cur = u8::MAX;
-        for (n, c) in cells.iter().enumerate() {
+        for (n, c) in cells.iter().filter(|c| c.visible).enumerate() {
             if c.mat != cur { cur = c.mat; o += &format!("usemtl m{cur}\n"); }
             for p in c.c { let g = to_grid(p); o += &format!("v {:.3} {:.3} {:.3}\n", g[0] * VOX, g[1] * VOX, g[2] * VOX); }
             for f in FACES { o += &format!("f {} {} {} {}\n", n * 8 + f[0] + 1, n * 8 + f[1] + 1, n * 8 + f[2] + 1, n * 8 + f[3] + 1); }
@@ -641,7 +652,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
 
     // texture repeat (m) per material and face kind: median over its cells of cell edge / texture vector
     let mut reps: Vec<[Vec<f32>; 2]> = vec![[Vec::new(), Vec::new()]; 66];
-    for c in &cells {
+    for c in cells.iter().filter(|c| c.visible) {
         let e = |a: usize, b: usize| (0..3).map(|i| (c.c[a][i] - c.c[b][i]).powi(2)).sum::<f32>().sqrt();
         for (f, l) in [(0, e(0, 1)), (1, e(0, 2))] {
             if c.tex[f] > 1e-4 && l > 1e-3 { reps[c.mat as usize][f].push((l / c.tex[f]).clamp(0.25, 64.0)); }
@@ -649,7 +660,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     }
     let median = |v: &mut Vec<f32>| if v.is_empty() { TEX_REPEAT } else { v.sort_by(f32::total_cmp); v[v.len() / 2] };
     // textures of the materials actually present, as tex/<stem>.qoi shared by every map
-    let mut used = [false; 67];
+    let mut used = [false; 68];
     for &m in &grid { used[m as usize] = true; }
     fs::create_dir_all(out_dir.join("tex")).map_err(|e| e.to_string())?;
     let mut texs = Vec::new();
@@ -741,8 +752,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         marks.join(",\n    "), objs.join(",\n    "), emits.join(",\n    "), lights.iter().map(|l| l.1.as_str()).collect::<Vec<_>>().join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
-    Ok(format!("{} cells, {faces} faces, {exact}, {} objects, {} emitters, grid {}x{}x{}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
-        cells.len(), objs.len(), emits.len(), nx(), ny(), nz(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
+    Ok(format!("{} cells ({} hidden), {faces} faces, {exact}, {} objects, {} emitters, grid {}x{}x{}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
+        cells.len(), cells.iter().filter(|c| !c.visible).count(), objs.len(), emits.len(), nx(), ny(), nz(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
 }
 
 // W4M 0x5cd6c7: atof of each space-split token of name[8..]: colour bytes, radius (units), code = token 4's first 4 bytes

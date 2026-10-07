@@ -3616,7 +3616,7 @@ static void checkReticles() {
         Controls::reset(), Controls::forceAim = 1;  // ZL held
         Controls::read(g, 0, true, Game::DT);
         Controls::Reticle want = blimped(wd.kind) ? Controls::Reticle::Blimp : Controls::aimed(wd) ? Controls::Reticle::Aim : Controls::Reticle::None;
-        Controls::Reticle r = Controls::reticle(g, false);
+        Controls::Reticle r = Controls::reticle(g);
         if (r != want) printf("reticle: %s in aim mode shows %d, want %d\n", wd.name.c_str(), (int)r, (int)want), bad++;
         Controls::reset(), Controls::forceAim = 0;
         Controls::read(g, 0, true, Game::DT);  // leaves the Blimp
@@ -3625,10 +3625,17 @@ static void checkReticles() {
         for (int t = 0; t < 120 && g.phase == Phase::Aim; t++) {  // FIRE held, then released after 0.5 s
             g.step(t < 30 ? fire : Input{});
             Controls::read(g, 0, true, Game::DT);
-            r = Controls::reticle(g, g.phase == Phase::Flying && !g.shots.empty());
+            r = Controls::reticle(g);
             bool ok = r == Controls::Reticle::None || (g.phase == Phase::Aim && (r == Controls::Reticle::Aim ? Controls::aimed(wd) : r == Controls::Reticle::Lock));
             if (!ok) printf("reticle: %s tick %d phase %d shows %d\n", wd.name.c_str(), t, (int)g.phase, (int)r), bad++;
         }
+        Controls::forceAim = 1;  // ZL held after the shot: the HeadCam stays, the reticle goes with Weapon.Delete (PostLaunchDelay)
+        for (int t = 0; t < 900 && (g.phase == Phase::Flying || g.phase == Phase::Retreat); t++) {
+            g.step(Input{});
+            Controls::read(g, 0, true, Game::DT);
+            if (Controls::reticle(g) == Controls::Reticle::Aim && !g.wielding()) printf("reticle: %s after the shot, tick %d\n", wd.name.c_str(), t), bad++;
+        }
+        Controls::forceAim = 0;
     }
     fflush(stdout);
     assert(!bad);

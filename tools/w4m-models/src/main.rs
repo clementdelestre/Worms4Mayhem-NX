@@ -171,6 +171,8 @@ const WORM_CLIPS: &[&str] = &[
     "Base", "Walk", "Jump_Start", "Jump", "Fall", "Land", "Backflip", "Fwdflip", "Blastflight2", "AimBazooka", "AimGrenade", "AimShotgun", "HoldShotgun", "HoldSniper", "HoldBow", "HoldHomingMissile", "JetpackRotLR",
     "HoldBazooka", "HoldThrown", "Wounded", "Victorious_Grin", "Hit_Front", "HoldAirstrike", "HoldNinjarope", "Wave",
     "Yawn", "ScratchHead", "HoldBat", "AimSniper", "AimBow", "AimHomingMissile",
+    // WeaponAccessoryEntity 0x594b50, first person: FP at 1, AimFP in the Aim slot, FPX / FPY / FPZ at FirstPersonOffset + 1
+    "FP", "AimFP", "FPX", "FPY", "FPZ",
     "HoldFirepunch", "HoldProd", "HoldDynamite", "HoldLandmine", "HoldOldWoman", "HoldScouser", "HoldSentrygun", "HoldSurrender",
     "HoldSkipGo", "HoldGasgrenade", "HoldStarburst", "HoldSheep",
     // WAE fire (Hold weighs 0 there: 0x58fb30), Thrown windup / lob (0x5954f0, 0x596640), Draw* (state 1), Flood's rain dance

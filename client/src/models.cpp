@@ -518,10 +518,9 @@ static const ModelAnimation *clipFrame(const Entry &e, const char *clip, float t
     return a;
 }
 
-// x[b] relative to its parent; false where a scale of 0 (hidden hands) leaves it undefined
+// x[b] relative to its parent; false under a parent scaled to 0 (Base keys the wrists at 0, so their children)
 static bool rel(const Entry &e, const Transform *x, int b, Transform *out) {
     int p = e.parent[b];
-    if (fabsf(x[b].scale.x) < 1e-4f) return false;
     if (p < 0) return *out = x[b], true;
     const Transform &q = x[p];
     if (fabsf(q.scale.x) < 1e-4f || fabsf(q.scale.y) < 1e-4f || fabsf(q.scale.z) < 1e-4f) return false;
@@ -531,9 +530,9 @@ static bool rel(const Entry &e, const Transform *x, int b, Transform *out) {
     return true;
 }
 
-// XAnim sums the clips' channels (0x7ac1a0): layer clip L adds its offset from Base to body joint by joint, translations
+// XAnim sums the clips' channels (0x7ac1a0): each layer clip adds its offset from Base to body joint by joint, translations
 // summed, rotations composed (ours, for W4M's Euler sum: the glb holds baked transforms); joints L leaves at Base keep body's offset
-static void addLayer(const Entry &e, const Transform *body, const Transform *L, float w, std::vector<Matrix> &out) {
+static void addLayers(const Entry &e, const Transform *body, const Transform *const *L, const float *w, int nl, std::vector<Matrix> &out) {
     int n = (int)out.size();
     const Transform *B = e.base ? e.base->keyframePoses[0] : nullptr;
     static std::vector<int> moved;  // the nearest re-posed joint at or above b
@@ -543,13 +542,16 @@ static void addLayer(const Entry &e, const Transform *body, const Transform *L, 
     for (int b = 0; b < n; b++) {
         int p = b < (int)e.parent.size() ? e.parent[b] : -1;
         Transform rb, rl, r0;
-        bool own = B && b < (int)e.base->boneCount && rel(e, L, b, &rl) && rel(e, B, b, &r0) &&
-                   (Vector3Distance(rl.translation, r0.translation) > 1e-4f || fabsf(rl.rotation.x * r0.rotation.x + rl.rotation.y * r0.rotation.y + rl.rotation.z * r0.rotation.z + rl.rotation.w * r0.rotation.w) < 1 - 1e-6f) &&
-                   rel(e, body, b, &rb);
-        if (own) {
-            Quaternion d = QuaternionSlerp(QuaternionIdentity(), QuaternionMultiply(rl.rotation, QuaternionInvert(r0.rotation)), w);
-            Transform r = {Vector3Add(rb.translation, Vector3Scale(Vector3Subtract(rl.translation, r0.translation), w)),
-                           QuaternionNormalize(QuaternionMultiply(d, rb.rotation)), rb.scale};
+        bool own = false;
+        Vector3 dt = {};
+        Quaternion dq = QuaternionIdentity();
+        for (int k = 0; k < nl; k++)  // XAnim sums every clip's channels (0x7ac1a0): the layers' offsets from Base add up
+            if (B && b < (int)e.base->boneCount && rel(e, L[k], b, &rl) && rel(e, B, b, &r0) &&
+                (Vector3Distance(rl.translation, r0.translation) > 1e-4f || fabsf(rl.rotation.x * r0.rotation.x + rl.rotation.y * r0.rotation.y + rl.rotation.z * r0.rotation.z + rl.rotation.w * r0.rotation.w) < 1 - 1e-6f))
+                own = true, dt = Vector3Add(dt, Vector3Scale(Vector3Subtract(rl.translation, r0.translation), w[k])),
+                dq = QuaternionMultiply(QuaternionSlerp(QuaternionIdentity(), QuaternionMultiply(rl.rotation, QuaternionInvert(r0.rotation)), w[k]), dq);
+        if (own && rel(e, body, b, &rb)) {
+            Transform r = {Vector3Add(rb.translation, dt), QuaternionNormalize(QuaternionMultiply(dq, rb.rotation)), rb.scale};
             out[b] = p >= 0 ? MatrixMultiply(trs(r), out[p]) : trs(r), moved[b] = b;
         } else if (int a = p >= 0 ? moved[p] : -1; a >= 0) {
             if (!hasInv[a]) inv[a] = MatrixInvert(trs(body[a])), hasInv[a] = 1;
@@ -631,7 +633,14 @@ static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnim
     int n = std::min(e.m.skeleton.boneCount, a.boneCount);
     out.resize(n);
     const Transform *src = layered(e, a, f, ly);
-    if (aim && (int)aim->boneCount >= n) addLayer(e, src, aim->keyframePoses[af], ly ? ly->aimW : 1, out);
+    const Transform *L[5];
+    float lw[5];
+    int nl = 0;
+    if (aim && (int)aim->boneCount >= n) L[nl] = aim->keyframePoses[af], lw[nl++] = ly ? ly->aimW : 1;
+    for (int k = 0, kf; ly && k < 4; k++)
+        if (const ModelAnimation *c = ly->add[k] ? clipFrame(e, ly->add[k], ly->addT[k], false, &kf, false) : nullptr; c && (int)c->boneCount >= n)
+            L[nl] = c->keyframePoses[kf], lw[nl++] = 1;
+    if (nl) addLayers(e, src, L, lw, nl, out);
     else for (int b = 0; b < n; b++) out[b] = trs(src[b]);
     if (!ly || e.head < 0 || e.head >= n || e.hat < 0 || e.hat >= n) return;
     int ff;
@@ -899,7 +908,8 @@ static bool same(const Models::Layers &a, const Models::Layers &b) {
     return a.face == b.face && (int)(a.faceT * 60) == (int)(b.faceT * 60) && a.lookYaw == b.lookYaw && a.lookPitch == b.lookPitch &&
            a.gestYaw == b.gestYaw && a.gestPitch == b.gestPitch && a.act[0] == b.act[0] && a.act[1] == b.act[1] && a.actW[0] == b.actW[0] &&
            a.actW[1] == b.actW[1] && a.aimW == b.aimW && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) && (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60) &&
-           a.lip[0] == b.lip[0] && a.lip[1] == b.lip[1] && a.lipW[0] == b.lipW[0] && a.lipW[1] == b.lipW[1];
+           a.lip[0] == b.lip[0] && a.lip[1] == b.lip[1] && a.lipW[0] == b.lipW[0] && a.lipW[1] == b.lipW[1] &&
+           std::equal(a.add, a.add + 4, b.add) && std::equal(a.addT, a.addT + 4, b.addT);
 }
 
 bool Models::blend(const char *name, const char *clip, float t, bool loop, const Layers *ly, Vector3 *out) {

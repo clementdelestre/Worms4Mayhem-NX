@@ -30,6 +30,7 @@ static const float UP = -1;
 static float rate[4], carry[4];  // turn, walk, aim, Blimp pitch: int8 units per tick
 static float tilt = 0;           // seconds the aim stick has been at full tilt
 static bool aimMode = false, fine = false;
+static unsigned serves = 0, goneServe = ~0u, aimServes = 0;  // event cameras served (+0x2ac); the one current at PiP.GoneOffScreen; the count at the last Aim tick
 int forceAim = 0;
 static int padUsed = 0;
 static float blimpZoom = 1;  // W4M Camera.Blimp zoom 0.15-2: pan speed and field of view
@@ -231,7 +232,7 @@ Input read(const Game &g, int pad, bool live, float dt) {
         float k = settings.aim * (fine && !solo ? FINE : 1) * Lerp(1, RAMP_MAX, Clamp((tilt - RAMP_DELAY) / RAMP_TIME, 0, 1));
         turn = -a.x * AIM_YAW * k - ls.x * AIM_TURN;
         aim = a.y * AIM_PITCH * k * inv;
-        walk = ls.y;
+        walk = headCam(g) ? 0 : ls.y;  // HeadCam activation 0x529400: Input.DisableGroup WormMoving
 #ifdef __SWITCH__
         if (settings.gyroOn) {
             Vector2 gy = Vector2Scale(gyro(pad), settings.gyro);
@@ -253,13 +254,18 @@ Input read(const Game &g, int pad, bool live, float dt) {
         if (g.jetting && (down(pad, GAMEPAD_BUTTON_LEFT_FACE_UP) || (kb && IsKeyDown(KEY_W)))) walk = 1;  // Input.Jetpack.Forward: RotateUp, AimUp
     }
     if (kb && !tv && !gk) {  // arrows turn and walk, W S aim, right mouse button held: mouse aim
-        if (!rel) turn += (IsKeyDown(KEY_LEFT) - IsKeyDown(KEY_RIGHT)) * SIM_TURN, walk += IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN);
+        if (!rel) turn += (IsKeyDown(KEY_LEFT) - IsKeyDown(KEY_RIGHT)) * SIM_TURN, walk += headCam(g) ? 0 : IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN);
         aim += (IsKeyDown(KEY_W) - IsKeyDown(KEY_S)) * SIM_AIM * (fine ? FINE : 1);
         if (aimMode && IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && dt > 0) {
             Vector2 d = GetMouseDelta();
             turn -= d.x * MOUSE * settings.aim / dt, aim -= d.y * MOUSE * settings.aim * inv / dt;
         }
     }
+    if (g.phase == Phase::Aim) aimServes = serves;
+    static bool wasHead = false;  // HeadCam activation 0x529130: an Ambulatory worm turns to the last view's heading (the AI never enters it)
+    bool hc = live && headCam(g);
+    if (hc && !wasHead && g.ambulatory(w)) heading = true, head = (int8_t)(lroundf(camYaw / PI * 128) & 0xff);
+    wasHead = hc;
     rate[0] = Clamp(turn / SIM_TURN, -1, 1) * 127, rate[1] = Clamp(walk, -1, 1) * 127, rate[2] = Clamp(aim / SIM_AIM, -1, 1) * 127, rate[3] = pitch * 127;
     Input in;
     if (heading) in.buttons |= Input::HEADING, in.turn = head;
@@ -339,14 +345,17 @@ bool aimed(const WeaponDef &wd) {
 
 bool firstPerson(const Game &g) { return aimMode && aimed(weaponDef(g.weapon)); }
 
+bool headCam(const Game &g) { return !targetView(g) && (firstPerson(g) || scoped(g)); }
+
 bool scoped(const Game &g) {
     const Worm &w = g.worms[g.current];
     return g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting && weaponDef(g.weapon).name == "Sniper Rifle" && aimMode;
 }
 
-Reticle reticle(const Game &g, bool chase) {
+Reticle reticle(const Game &g) {
     if (targetView(g)) return Reticle::Blimp;  // camera(): the Blimp view comes before the first-person one
-    if (!chase && (scoped(g) || firstPerson(g))) return Reticle::Aim;
+    // AimedWeaponGraphicEntity 0x5445e0: shown while 0x51cea0 reports the HeadCam (no event camera served), until Weapon.Delete
+    if (headCam(g) && g.wielding() && serves == aimServes) return Reticle::Aim;
     const Worm &w = g.worms[g.current];
     return g.locked && weaponDef(g.weapon).kind == Kind::Homing && g.phase == Phase::Aim && w.alive ? Reticle::Lock : Reticle::None;
 }
@@ -380,7 +389,6 @@ static struct { int mode; float t, from; } pip;  // PiPService: 1 shown, 2 slidi
 static Camera3D pipCam;  // the event camera, drawn in the PiP or full screen
 static bool tracked = false;  // an event camera had the main view last frame
 static bool wasActive = false;  // a worm was active at the last camera update
-static unsigned serves = 0, goneServe = ~0u;  // event cameras served (+0x2ac); the one current at PiP.GoneOffScreen
 
 // W4M per-update lerp factor at our dt: ZCamUpdateFudgeService 0x533c90, a 20 ms task (it returns 20), runs the CMS update 0x51da00 twice
 static float perFrame(float f, float dt) { return 1 - powf(1 - f, dt * 100); }
@@ -828,7 +836,13 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     inBlimp = false, cam.up = {0, 1, 0};
 
     if (!focusOn && (firstPerson(g) || scope)) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
-        Vector3 e = eye(g), f = Vector3Add(e, Vector3Scale(g.aimDir(cur), AIM_FOCUS));
+        // HeadCam +0x8c, the look-at offset (m): at activation the last view's (0x91e8e8) when Ambulatory, else the facing (0x529130);
+        // then eased to the 1-unit aim direction at Camera.Head.LookUpdateSpeed 0.1 an update (0x528faa)
+        static Vector3 look;
+        Vector3 e = eye(g);
+        if (fpOut > 0) look = g.ambulatory(cur) ? Vector3Subtract(cam.target, cam.position) : Vector3Scale(flat(cur.yaw), 0.05f);
+        look = Vector3Lerp(look, Vector3Scale(g.aimDir(cur), 0.05f), perFrame(0.1f, dt));
+        Vector3 f = Vector3Add(e, look);
         float fov = FOV0;  // CMS default projection x the HeadCam zoom
         bool bino = weaponDef(g.weapon).kind == Kind::Binoculars;
         head = bino ? g.scoutZoom(head, dt) : Clamp(head * powf(1.1f, -zin * dt * 100) - 0.08f * wheel, 0.05f, 1);  // HeadCam 0x528e23: / or x ZoomSpeed 1.1 per CMS update (100 / s), - MouseZoomSpeed x wheel
