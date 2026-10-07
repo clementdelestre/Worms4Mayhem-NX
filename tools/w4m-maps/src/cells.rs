@@ -1,6 +1,6 @@
 // <stem>.cells "W4C1": the exact land per 0.25 m cell (client sharp.h, format docs/w4m/formats.md). Each cell a surface crosses
 // lists the primitives that reach it: a W4M poxel cell (with the mask of its planes cutting the cell), or the heightmap patch.
-use super::{cross, dot, sub, voxel, FACES, NX, NY, NZ, V3};
+use super::{cross, dot, sub, nx, ny, nz, FACES, V3, VOX};
 use std::collections::HashMap;
 
 const HEX: u32 = 0;
@@ -9,18 +9,18 @@ const FULL: u32 = 2 << 29;
 const KIND: u32 = 7 << 29;
 const ID: u32 = (1 << 29) - 1;
 
-fn cid(x: usize, y: usize, z: usize) -> usize { (z * NY + y) * NX + x }
+fn cid(x: usize, y: usize, z: usize) -> usize { (z * ny() + y) * nx() + x }
 
 struct Land { planes: Vec<[f32; 4]>, p0: Vec<usize>, top: Vec<f32>, lists: HashMap<u32, u32>, pool: Vec<u32> }
 
 impl Land {
     // bilinear heightmap top (m), -1e9 none; a missing corner takes the nearest one's height
     fn hm(&self, x: f32, z: f32) -> f32 {
-        let (fx, fz) = (x / voxel(), z / voxel());
+        let (fx, fz) = (x / VOX, z / VOX);
         let (ix, iz) = (fx.floor() as i32, fz.floor() as i32);
-        if ix < 0 || iz < 0 || ix >= NX as i32 - 1 || iz >= NZ as i32 - 1 { return -1e9; }
+        if ix < 0 || iz < 0 || ix >= nx() as i32 - 1 || iz >= nz() as i32 - 1 { return -1e9; }
         let (ix, iz, tx, tz) = (ix as usize, iz as usize, fx - ix as f32, fz - iz as f32);
-        let mut v = [self.top[iz * NX + ix], self.top[iz * NX + ix + 1], self.top[(iz + 1) * NX + ix], self.top[(iz + 1) * NX + ix + 1]];
+        let mut v = [self.top[iz * nx() + ix], self.top[iz * nx() + ix + 1], self.top[(iz + 1) * nx() + ix], self.top[(iz + 1) * nx() + ix + 1]];
         let near = v[(if tz < 0.5 { 0 } else { 2 }) + (if tx < 0.5 { 0 } else { 1 })];
         if near.is_nan() { return -1e9; }
         for a in v.iter_mut() { if a.is_nan() { *a = near; } }
@@ -59,7 +59,7 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
     let mut boxes = Vec::new();  // per hexahedron: first plane, plane count, lo, hi (m)
     let (mut twisted, mut out) = (0, Vec::new());
     for c in hexes {
-        let p = c.map(|v| v.map(|a| a * voxel()));
+        let p = c.map(|v| v.map(|a| a * VOX));
         let cen = p.iter().fold([0.0f32; 3], |s, v| [s[0] + v[0] * 0.125, s[1] + v[1] * 0.125, s[2] + v[2] * 0.125]);
         let lo = p.iter().fold(p[0], |m, v| [0, 1, 2].map(|i| m[i].min(v[i])));
         let hi = p.iter().fold(p[0], |m, v| [0, 1, 2].map(|i| m[i].max(v[i])));
@@ -68,7 +68,7 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
         for (t, tri) in FACES.iter().flat_map(|f| [[f[0], f[1], f[2]], [f[0], f[2], f[3]]]).enumerate() {
             let n = cross(sub(p[tri[1]], p[tri[0]]), sub(p[tri[2]], p[tri[0]]));
             let l = dot(n, n).sqrt();
-            if l < 1e-6 * voxel() * voxel() { continue; }
+            if l < 1e-6 * VOX * VOX { continue; }
             let n = n.map(|v| v * (1.0 / l));
             let d = dot(n, p[tri[0]]);
             let flip = dot(n, cen) - d > 0.0;
@@ -87,14 +87,14 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
     }
     // (cell << 32 | op, plane mask): every cell each primitive reaches
     let mut pairs: Vec<(u64, u32)> = Vec::new();
-    let span = |a: f32, b: f32, n: usize| ((a - 1e-4) / voxel()).floor().max(0.0) as usize..=(((b + 1e-4) / voxel()).floor() as i64).min(n as i64 - 2) as usize;
+    let span = |a: f32, b: f32, n: usize| ((a - 1e-4) / VOX).floor().max(0.0) as usize..=(((b + 1e-4) / VOX).floor() as i64).min(n as i64 - 2) as usize;
     for (h, &(p0, np, lo, hi)) in boxes.iter().enumerate() {
         if hi[0] < 0.0 || hi[1] < 0.0 || hi[2] < 0.0 { continue; }
-        for z in span(lo[2], hi[2], NZ) { for y in span(lo[1], hi[1], NY) { for x in span(lo[0], hi[0], NX) {
+        for z in span(lo[2], hi[2], nz()) { for y in span(lo[1], hi[1], ny()) { for x in span(lo[0], hi[0], nx()) {
             let mut mask = 0u32;
             let sep = planes[p0..p0 + np].iter().enumerate().any(|(k, pl)| {
                 let v: Vec<f32> = (0..8).map(|j| {
-                    let c = [(x + (j & 1)) as f32 * voxel(), (y + (j >> 1 & 1)) as f32 * voxel(), (z + (j >> 2)) as f32 * voxel()];
+                    let c = [(x + (j & 1)) as f32 * VOX, (y + (j >> 1 & 1)) as f32 * VOX, (z + (j >> 2)) as f32 * VOX];
                     pl[0] * c[0] + pl[1] * c[1] + pl[2] * c[2] - pl[3]
                 }).collect();
                 // a plane on the cell's border is kept: the face it holds is entered from this cell
@@ -104,22 +104,22 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
             if !sep { pairs.push(((cid(x, y, z) as u64) << 32 | (if mask != 0 { HEX | h as u32 } else { FULL }) as u64, mask)); }
         } } }
     }
-    let top: Vec<f32> = top.iter().map(|t| t * voxel()).collect();
-    for z in 0..NZ - 1 { for x in 0..NX - 1 {
-        let v = [top[z * NX + x], top[z * NX + x + 1], top[(z + 1) * NX + x], top[(z + 1) * NX + x + 1]];
+    let top: Vec<f32> = top.iter().map(|t| t * VOX).collect();
+    for z in 0..nz() - 1 { for x in 0..nx() - 1 {
+        let v = [top[z * nx() + x], top[z * nx() + x + 1], top[(z + 1) * nx() + x], top[(z + 1) * nx() + x + 1]];
         let hi = v.iter().filter(|a| !a.is_nan()).fold(-1e9f32, |m, &a| m.max(a));
         if hi < -1e8 { continue; }
         let lo = if v.iter().any(|a| a.is_nan()) { -1e9 } else { v.iter().fold(1e9f32, |m, &a| m.min(a)) };
         let mut y = 0;
-        while y < NY - 1 && (y as f32) * voxel() < hi {
-            pairs.push(((cid(x, y, z) as u64) << 32 | (if (y + 1) as f32 * voxel() < lo { FULL } else { HM }) as u64, 0));
+        while y < ny() - 1 && (y as f32) * VOX < hi {
+            pairs.push(((cid(x, y, z) as u64) << 32 | (if (y + 1) as f32 * VOX < lo { FULL } else { HM }) as u64, 0));
             y += 1;
         }
     } }
     pairs.sort_unstable_by_key(|p| p.0);
     // lists: count, then the ops (a hexahedron's followed by its mask); a cell some primitive fills is left to the .vox
     let mut land = Land { planes, p0: boxes.iter().map(|b| b.0).collect(), top, lists: HashMap::new(), pool: Vec::new() };
-    let mut full = vec![0u64; (NX * NY * NZ + 63) / 64];
+    let mut full = vec![0u64; (nx() * ny() * nz() + 63) / 64];
     let mut i = 0;
     while i < pairs.len() {
         let c = (pairs[i].0 >> 32) as usize;
@@ -142,14 +142,14 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
     drop(pairs);
     // grid point signs: from a listed cell around it, else solid when a filled cell touches it
     let mut fixed = 0;
-    for z in 0..NZ { for y in 0..NY { for x in 0..NX {
+    for z in 0..nz() { for y in 0..ny() { for x in 0..nx() {
         let i = cid(x, y, z);
         if q[i] == dq || q[i] == -dq { continue; }
         let around = (0..8).filter_map(|k| {
             let (a, b, e) = (x as i64 - (k & 1), y as i64 - (k >> 1 & 1), z as i64 - (k >> 2));
-            (a >= 0 && b >= 0 && e >= 0 && a < NX as i64 - 1 && b < NY as i64 - 1 && e < NZ as i64 - 1).then(|| cid(a as usize, b as usize, e as usize))
+            (a >= 0 && b >= 0 && e >= 0 && a < nx() as i64 - 1 && b < ny() as i64 - 1 && e < nz() as i64 - 1).then(|| cid(a as usize, b as usize, e as usize))
         });
-        let p = [x as f32 * voxel(), y as f32 * voxel(), z as f32 * voxel()];
+        let p = [x as f32 * VOX, y as f32 * VOX, z as f32 * VOX];
         let state = match around.clone().find(|c| land.lists.contains_key(&(*c as u32))) {
             Some(c) => land.eval(p, c) > 0.0,
             None => around.into_iter().any(|c| full[c >> 6] >> (c & 63) & 1 != 0),
@@ -181,7 +181,7 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
     }
     let has_top = land.top.iter().any(|t| !t.is_nan());
     let mut b = Vec::new();
-    for n in [hexes.len(), if has_top { NX * NZ } else { 0 }, cells.len(), nl as usize, lists.len(), cs.len()] { b.extend((n as u32).to_le_bytes()); }
+    for n in [hexes.len(), if has_top { nx() * nz() } else { 0 }, cells.len(), nl as usize, lists.len(), cs.len()] { b.extend((n as u32).to_le_bytes()); }
     b.extend(out);
     if has_top { for v in &land.top { b.extend(v.to_le_bytes()); } }
     b.extend(lists);

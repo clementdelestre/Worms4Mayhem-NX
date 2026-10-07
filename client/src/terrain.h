@@ -9,11 +9,16 @@ struct ChunkGeo;
 
 // Destructible voxel landscape: density field (>0 = solid, ~metres to surface), meshed per chunk (dual contouring where the land is exact).
 struct Terrain {
-    static constexpr int NX = 352, NY = 256, NZ = 352, CS = 32;
-    static constexpr float WATER = 3.0f, SUB = 0.125f;  // SUB: sim sub-step and march length on every map, half the finest voxel
-    // per map (json "vox"): 0.25 or 0.5 m, powers of two so x * IVOX == x / VOX bit for bit; density int8 = metres * Q (+-0.5 m at 0.25)
-    static inline float VOX = 0.25f, IVOX = 4, Q = 254, IQ = 1 / 254.0f;
-    static void setVox(float v) { VOX = v, IVOX = 1 / v, Q = 254 * 0.25f / v, IQ = 1 / Q; }
+    static constexpr int CS = 32;
+    static constexpr float WATER = 3.0f, VOX = 0.25f, IVOX = 4, SUB = 0.125f;  // SUB: sim sub-step and march length, half a voxel
+    static constexpr float Q = 254, IQ = 1 / 254.0f;  // density int8 = metres * Q (+-0.5 m)
+    // per map (json "grid"), multiples of CS; generated islands: 352x256x352. SXY: the z stride of d[]
+    static inline int NX = 352, NY = 256, NZ = 352, CX = 11, CY = 8, CZ = 11;
+    static inline size_t SXY = (size_t)352 * 256, TOTAL = SXY * 352;
+    static void setGrid(int nx, int ny, int nz) {
+        NX = nx, NY = ny, NZ = nz, CX = nx / CS, CY = ny / CS, CZ = nz / CS, SXY = (size_t)nx * ny, TOTAL = SXY * nz;
+    }
+    static size_t idx(int x, int y, int z) { return x + (size_t)y * NX + z * SXY; }
 
     std::vector<signed char> d;
     SharpLand sharp;  // imported maps: the exact land where the surface runs (.cells); d keeps its signs elsewhere
@@ -60,7 +65,7 @@ struct Terrain {
     int scaleLoc = -1;
     Color grad[2][32] = {};  // W4M LightGradient and side gradient, 32 entries each (loaded on first remesh)
     bool hasGrad = false;
-    std::vector<unsigned char> colTop;  // per (x, z) column: 1 + highest solid voxel at remesh time (shadow ray early-out); back() = max
+    std::vector<uint16_t> colTop;  // per (x, z) column: 1 + highest solid voxel at remesh time (shadow ray early-out); back() = max
     BoundingBox bounds{};  // solid voxels at the first remesh: the shadow map's land box
     static inline unsigned meshVer = 0;  // bumped whenever rebuilt chunks swap in or the land unloads
     // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
@@ -77,6 +82,7 @@ struct Terrain {
     struct Coded { std::vector<uint32_t> hex; std::vector<std::pair<int, int>> vox; };
     std::map<std::string, Coded> codes;
     bool clearCoded(const char *code);  // Land.ClearCoded 0x475170: the frames of that 4-byte code go at once; false: none
+    double loadMs[3] = {};  // last load: voxels (.vox + .thin), cells, navgrid (Game::start); for the MAP log line
     Vector3 origin{};  // W4M world origin in map metres (map "origin"), for the sky
     float rainProb = -1;  // >= 0: the level script's Particle.Rain.Prob (map "rain_prob")
 

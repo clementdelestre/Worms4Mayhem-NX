@@ -6,11 +6,11 @@
 #include <cstring>
 #include <unordered_map>
 
-static constexpr int NX = Terrain::NX, NY = Terrain::NY, NZ = Terrain::NZ;
-static constexpr size_t CELLS = (size_t)NX * NY * NZ;
+static const int &NX = Terrain::NX, &NY = Terrain::NY, &NZ = Terrain::NZ;
+static const size_t &CELLS = Terrain::TOTAL;
 #define VOX Terrain::VOX
 #define IVOX Terrain::IVOX
-static size_t cid(int x, int y, int z) { return ((size_t)z * NY + y) * NX + x; }
+static size_t cid(int x, int y, int z) { return Terrain::idx(x, y, z); }
 static uint32_t hashc(size_t c) { return (uint32_t)(c * 2654435761u); }
 
 static float sdBox(Vector3 p, Vector3 c, Vector3 half) {
@@ -358,7 +358,7 @@ void SharpLand::carve(const std::vector<signed char> &d, Vector3 c, float r) {
     const uint32_t id = (uint32_t)sph.size();
     sph.push_back({c.x, c.y, c.z, r});
     int lo[3], hi[3];
-    const float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX - 1, NY - 1, NZ - 1};
+    const float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX - 1.0f, NY - 1.0f, NZ - 1.0f};
     for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)floorf((cc[a] - r) * IVOX)), hi[a] = std::min((int)dim[a] - 1, (int)floorf((cc[a] + r) * IVOX));
     std::vector<uint32_t> o;
     for (int z = lo[2]; z <= hi[2]; z++)
@@ -387,7 +387,7 @@ void SharpLand::weld(const std::vector<signed char> &d, Vector3 c, Vector3 half)
     const uint32_t id = (uint32_t)box.size() / 2;
     box.push_back(c), box.push_back(half);
     int lo[3], hi[3];
-    const float cc[3] = {c.x, c.y, c.z}, hh[3] = {half.x, half.y, half.z}, dim[3] = {NX - 1, NY - 1, NZ - 1};
+    const float cc[3] = {c.x, c.y, c.z}, hh[3] = {half.x, half.y, half.z}, dim[3] = {NX - 1.0f, NY - 1.0f, NZ - 1.0f};
     for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)floorf((cc[a] - hh[a]) * IVOX)), hi[a] = std::min((int)dim[a] - 1, (int)floorf((cc[a] + hh[a]) * IVOX));
     std::vector<uint32_t> o;
     for (int z = lo[2]; z <= hi[2]; z++)

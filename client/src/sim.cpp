@@ -3,6 +3,7 @@
 #include "navgrid.h"
 #include "raymath.h"
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -749,6 +750,7 @@ void Game::start(const GameConfig &c) {
         for (auto &a : ammo) for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Surrender) a[i] = 0;
     }
     const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2;
+    const auto navT0 = std::chrono::steady_clock::now();
     const Grid grid = makeGrid(terrain);
     NodeCache nodes;
     for (int t = 0; t < teams; t++)
@@ -760,6 +762,7 @@ void Game::start(const GameConfig &c) {
             if (wp(WP_ENERGY)) w.poison = POISON_DEFAULT;  // Wormpot.lub EnergyOrEnemy: PoisonRate = Worm.Poison.Default, then Worm.Poison
             worms.push_back(w);
         }
+    terrain.loadMs[2] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - navT0).count();
     if (!(cfg.rules & RULE_ROPE_RACE)) {
         for (int i = 0; i < cfg.scheme.mines; i++) addObject(Object::Mine, 0);
         for (int i = 0; i < cfg.scheme.barrels; i++) addObject(Object::Barrel, 0);

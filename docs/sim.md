@@ -267,7 +267,7 @@ W4M side: docs/w4m/weapons.md "Mystery crates".
 
 Free functions in sim.cpp, also called by `ai.cpp` (`Mover`, `stepBody`) so the CPU predicts exactly what the sim does.
 Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `Worm.EyeLevelOffset` 15 units = 0.75 m above the feet
-(data). Terrain: 0.25 or 0.5 m voxels per map (`Terrain::VOX`, docs/maps.md), every sub-step and land march 0.125 m on all maps
+(data). Terrain: 0.25 m voxels (`Terrain::VOX`) on a grid sized per map (docs/maps.md `grid`), every sub-step and land march 0.125 m
 (`Terrain::SUB`, `substeps`) [ours], water at 3 m (`Terrain::WATER`, rises with Flood and sudden death).
 
 | function | does | source |

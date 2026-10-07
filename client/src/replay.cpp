@@ -114,8 +114,8 @@ void setState(Game &live, const Game &from) {
     live.terrain = std::move(ter);
 }
 void markChunks(Terrain &t, int v) {  // chunk cells sample one voxel past their bounds
-    constexpr int CS = Terrain::CS, CX = Terrain::NX / CS, CY = Terrain::NY / CS;
-    int x = v % Terrain::NX, y = v / Terrain::NX % Terrain::NY, z = v / (Terrain::NX * Terrain::NY);
+    const int CS = Terrain::CS, CX = Terrain::CX, CY = Terrain::CY;
+    int x = v % Terrain::NX, y = v / Terrain::NX % Terrain::NY, z = (int)(v / Terrain::SXY);
     for (int cz = std::max(z - 1, 0) / CS; cz <= std::min(z + 1, Terrain::NZ - 1) / CS; cz++)
         for (int cy = std::max(y - 1, 0) / CS; cy <= std::min(y + 1, Terrain::NY - 1) / CS; cy++)
             for (int cx = std::max(x - 1, 0) / CS; cx <= std::min(x + 1, Terrain::NX - 1) / CS; cx++) t.dirty[(cz * CY + cy) * CX + cx] = true;

@@ -273,7 +273,7 @@ raylib's `sinflate`). Payload, little-endian:
 - Lists, varints: the word count, then per op `kind | id << 3`: kind 0 = a hexahedron (id = its index minus the list's previous
   hexahedron's), followed by its plane mask; kind 1 = the heightmap.
 - Cells, varints, ascending: the cell index minus the previous one minus 1, then its list's number. Cell index `(z·NY + y)·NX + x`
-  on the 352 x 256 x 352 grid of the map's `vox` cells (0.25 or 0.5 m, docs/maps.md) [ours].
+  on the map's `grid` of 0.25 m cells (docs/maps.md) [ours].
 
 Build [ours]: a cell lists a hexahedron unless one of its planes has the 8 cell corners outside (> 1e-5 m); the mask keeps the planes
 with a corner on or outside (> -1e-5 m), so a face lying on the cell's border stays with the cell it bounds. A cell some hexahedron or the

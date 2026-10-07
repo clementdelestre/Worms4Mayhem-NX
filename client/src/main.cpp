@@ -34,6 +34,7 @@
 #include <vector>
 
 #ifdef __SWITCH__
+#include <switch.h>
 #define DATA_DIR "sdmc:/switch/worms4nx/"
 #define ROMFS_DIR "romfs:/"
 #else
@@ -999,6 +1000,19 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     return Models::draw(m, s.pos, yaw, atan2f(v.y, h));
 }
 
+// Process memory, MB: Switch UsedMemorySize of TotalMemorySize; desktop RSS (*total 0)
+static double processMB(double *total) {
+#ifdef __SWITCH__
+    u64 used = 0, size = 0;
+    svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0), svcGetInfo(&size, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
+    return *total = size / 1048576.0, used / 1048576.0;
+#else
+    long pages = 0;
+    if (FILE *f = fopen("/proc/self/statm", "r")) pages = fscanf(f, "%*s %ld", &pages) == 1 ? pages : 0, fclose(f);
+    return *total = 0, pages * 4096 / 1048576.0;
+#endif
+}
+
 enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading };
 
 // Match frames over W4NX_HITCH_MS (default 20) to log.txt with their section ms (20 lines per 10 s at most, plus the
@@ -1040,6 +1054,8 @@ struct Pace {
         double avg = sum / frames;
         TraceLog(LOG_INFO, "PACE %d frames: ticks/frame 0:%d 1:%d 2:%d 3+:%d | frame avg %.2f sd %.2f max %.1f ms, %d over %.0f ms (%d not logged) | jitter %.2f ms",
                  frames, hist[0], hist[1], hist[2], hist[3], avg, sqrt(fmax(0, sq / frames - avg * avg)), worst, over, limit, dropped, jitter / (frames - 1));
+        double total, used = processMB(&total);
+        TraceLog(LOG_INFO, "MEM: %.0f MB of %.0f", used, total);
         if (gpuFrames) {
             char b[512];
             double t = 0;
@@ -1456,6 +1472,13 @@ int main(int argc, char **argv) {
         if (loadStep != 1 || wait) loadMs[loadStep] += (GetTime() - t0) * 1000;
         else loadMs[0] = std::max(loadMs[0], (GetTime() - t0) * 1000);  // longest main-thread block of step 1
         if (loadStep == 2 && std::count(game.terrain.dirty.begin(), game.terrain.dirty.end(), true)) return;
+        if (loadStep == 2) {  // the map's own steps: voxels and cells (Terrain::load), mesh, navgrid (worm placement)
+            const Terrain &t = game.terrain;
+            TraceLog(LOG_INFO, "MAP: %s grid %dx%dx%d, voxels %.1f MB, cells %.1f MB, load %.0f ms (vox %.0f, cells %.0f, mesh %.0f, navgrid %.0f)",
+                     loadCfg.map.empty() ? "(island)" : loadCfg.map.c_str(), Terrain::NX, Terrain::NY, Terrain::NZ,
+                     (t.d.capacity() + t.mats.capacity() + t.steel.capacity() / 8) / 1048576.0, t.sharp.bytes() / 1048576.0,
+                     t.loadMs[0] + t.loadMs[1] + loadMs[2] + t.loadMs[2], t.loadMs[0], t.loadMs[1], loadMs[2], t.loadMs[2]);
+        }
         if (++loadStep == 5)
             loadStep = -1, TraceLog(LOG_INFO, "LOAD: thread %.0f ms (start, decode, voices), upload %.0f, remesh %.0f, decor %.0f, total %.0f",
                                     loadMs[1], loadMs[0], loadMs[2], loadMs[3], (GetTime() - loadT0) * 1000);

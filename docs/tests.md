@@ -47,6 +47,10 @@ info lines). A Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer m
   frames late (no stall; GL 3.3, or GLES with `GL_EXT_disjoint_timer_query`, else the boot line `GPU: timestamp queries
   unavailable`). The swap is left out (its span is the vblank wait). A section the CPU submits slower than the GPU runs
   shows the submission gaps too.
+- `MEM: <used> MB of <total>`: every 10 s with PACE; Switch `svcGetInfo` UsedMemorySize of TotalMemorySize (the
+  process), desktop RSS (`of 0`).
+- `REMESH: <n> chunks, build <ms> (meshing thread), <ms> until shown`: one per land edit (explosion, girder, ClearCoded):
+  from its first dirty chunk until no chunk is left; build = chunk geometry time on the meshing thread.
 - `REPLAY: <n> ticks re-simulated, <n> chunks remeshed, <n> kept, <ms>`: an instant replay's start.
 
 sw-log3 spikes (handheld, 2026-10-05) and their fixes [data: the log; ours]:
@@ -105,6 +109,17 @@ Log lines to read on Switch:
 - `BOOT: so far files <MB> read in <ms> (all threads); models: glb parse, png, mipmaps, clips (worker time, summed),
   upload (main)`: read = every `LoadFileData()` (models, art, sounds), the rest per phase.
 - `BOOT: match assets in <ms> after start; ...`: the same totals once the first loading screen took the background loads.
+- `MAP: <name> grid NXxNYxNZ, voxels <MB>, cells <MB>, load <ms> (vox, cells, mesh, navgrid)`: each match's map once its
+  chunks are meshed. voxels = density + materials + steel bits, cells = the exact land (`SharpLand::bytes`); vox =
+  `.vox` + `.thin` read and decode, cells = `.cells`, mesh = the loading screen's remesh slices (main thread), navgrid =
+  the node grid and worm placement in `Game::start`; load = their sum.
+
+Largest map, desktop (2026-10-07, `--bench NoRoomForError 1300` and a scratch AI-vs-AI run of 11 turns, level 5) [ours]:
+`MAP: NoRoomForError grid 640x608x640, voxels 475.0 MB, cells 53.3 MB, load 864 ms (vox 265, cells 52, mesh 544, navgrid 2)`;
+`MEM: 1027 MB` (RSS); explosions `REMESH` 2-7 chunks, build 1.8-10.5 ms, 29-71 ms until shown; AI max 2.47 ms per tick,
+328 ms per turn; sim step max 6.8 ms. trial-w3d (448x832x576): AI 2.38 ms / 259 ms, step 3.8 ms; Deathmatch1 (480x352x544):
+AI 1.23 ms / 387 ms, step 2.7 ms. Switch estimate at 7x CPU: load ~6 s (vox 1.9, cells 0.4, mesh 3.8), explosion build
+13-74 ms on the meshing thread, AI 17 ms worst tick, step 47 ms worst; memory is not CPU-bound (~1 GB on desktop).
 
 Desktop (warm file cache, 3-5 runs each) [ours]:
 

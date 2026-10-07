@@ -204,6 +204,7 @@ static void checkCrates(const std::vector<MissionSpec> &list) {
         auto [bat, n] = collect(g, 9);  // Crate_9: kWeaponBaseballBat, NumContents -1
         assert(WEAPONS[bat].name == "Baseball Bat" && n == -1);
         g.weapon = bat;
+        for (int t = 0; t < 120 && !g.ambulatory(g.worms[g.current]); t++) g.step(Input{});  // the crate may still be falling: so is the worm put there
         Input fire;
         fire.buttons = Input::FIRE;
         g.step(fire), g.step(Input{});

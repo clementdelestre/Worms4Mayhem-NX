@@ -18,9 +18,7 @@ static void mesherForget(const struct Terrain *t);
 #include <cstring>
 #include <map>
 
-static constexpr int CX = Terrain::NX / Terrain::CS, CY = Terrain::NY / Terrain::CS, CZ = Terrain::NZ / Terrain::CS;
-static constexpr size_t TOTAL = (size_t)Terrain::NX * Terrain::NY * Terrain::NZ;
-static size_t idx(int x, int y, int z) { return ((size_t)z * Terrain::NY + y) * Terrain::NX + x; }
+static size_t idx(int x, int y, int z) { return Terrain::idx(x, y, z); }
 static constexpr unsigned char HARD = 62;  // girder voxels: W4M theme material 61 (GirderSmall.xom), 1-based like mats
 
 // Quantize keeping the sign exact: solid iff v > 0.
@@ -147,7 +145,9 @@ template <class F> static void paint(Terrain &t, Vector3 lo, Vector3 hi, F f) {
 void Terrain::reset(signed char fill) {
     unload();
     d.assign(TOTAL, fill);
-    steel.clear();
+    d.shrink_to_fit();
+    std::vector<bool>().swap(steel);
+    thin.assign(CX * CY * CZ, {});
     parts.assign(CX * CY * CZ, {});
     dirty.assign(CX * CY * CZ, true);
     colTop.clear();
@@ -155,7 +155,7 @@ void Terrain::reset(signed char fill) {
 
 // Noisy hill, evaluated on a 2x coarser grid (the noise is smooth) and trilinearly upsampled: 8x fewer fbm calls.
 void Terrain::island(float bh, float height, float rough, float rad, unsigned s) {
-    constexpr int K = 2, X = NX / K + 1, Y = NY / K + 1, Z = NZ / K + 1;
+    const int K = 2, X = NX / K + 1, Y = NY / K + 1, Z = NZ / K + 1;
     const float cx = NX * VOX / 2, cz = NZ * VOX / 2, step = K * VOX, bound = 1.875f * 0.75f * rough + 0.5f;
     std::vector<float> c((size_t)X * Y * Z), hc((size_t)X * Z);
     for (int z = 0; z < Z; z++)
@@ -200,8 +200,9 @@ std::string Terrain::mapTheme(const std::string &map) {
 
 bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
+    loadMs[0] = loadMs[1] = loadMs[2] = 0;
     objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
-    thin.assign(CX * CY * CZ, {}), thinOnly.clear();
+    thinOnly.clear();
     hasFinish = false, sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -211,7 +212,14 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         generate(seed);
         return map.empty();
     }
-    setVox(j["vox"].f(0.25f)), origin = {NX * VOX / 2, WATER, NZ * VOX / 2};
+    const Json &gd = j["grid"];
+    int nx = (int)gd[0].f(352), ny = (int)gd[1].f(256), nz = (int)gd[2].f(352);
+    if (j["vox"].f(VOX) != VOX || nx <= 0 || ny <= 0 || nz <= 0 || (nx | ny | nz) % CS) {
+        TraceLog(LOG_WARNING, "map %s: grid %dx%dx%d at %.3f m is not a %d-voxel multiple at %.2f m", map.c_str(), nx, ny, nz, j["vox"].f(VOX), CS, VOX);
+        generate(seed);
+        return false;
+    }
+    setGrid(nx, ny, nz), origin = {NX * VOX / 2, WATER, NZ * VOX / 2};
     for (auto &t : THEMES)
         if (j["theme"].s() == t.name) top = t.top, side = t.side, beach = t.beach, sky = t.sky;
     theme = j["theme"].s();
@@ -240,9 +248,13 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     float bh = base["base"].f(6), height = base["height"].f(10), rough = base["roughness"].f(4);
     float rad = base["radius"].f(0.8f) * NX * VOX / 2, cx = NX * VOX / 2, cz = NZ * VOX / 2;
     if (j["voxels"].type == Json::Str) {
+        auto now = [] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+        double t0 = now();
         if (!loadVoxels(dir + j["voxels"].s())) TraceLog(LOG_WARNING, "map %s: bad voxel file '%s'", map.c_str(), j["voxels"].s().c_str());
         if (j["thin"].type == Json::Str) loadThin(dir + j["thin"].s());
+        double t1 = now();
         if (j["cells"].type == Json::Str && !sharp.load(dir + j["cells"].s())) TraceLog(LOG_WARNING, "map %s: bad cells file '%s'", map.c_str(), j["cells"].s().c_str());
+        loadMs[0] = t1 - t0, loadMs[1] = now() - t1;
     } else if (kind != "none") {
         bool isl = kind == "island";
         island(bh, isl ? height : 0, isl ? rough : 0, rad, seed + (unsigned)base["seed"].f(0));
@@ -342,7 +354,7 @@ bool Terrain::loadVoxels(const std::string &path) {
     size_t n = 0;
     int i = 11;
     if (ok) {
-        mats.resize(TOTAL);
+        mats.assign(TOTAL, 0), mats.shrink_to_fit();
         for (; i + 1 < size && n < TOTAL; i += 2) {
             size_t r = std::min<size_t>(b[i + 1], TOTAL - n);
             memset(&mats[n], b[i], r);
@@ -389,8 +401,8 @@ void Terrain::mergeBlocks() {
 }
 
 void Terrain::generate(unsigned seed) {
-    setVox(0.25f);
-    thin.assign(CX * CY * CZ, {}), thinOnly.clear();
+    setGrid(352, 256, 352);
+    thinOnly.clear();
     theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
@@ -458,7 +470,7 @@ Vector3 Terrain::normal(Vector3 p, float e) const {
 bool Terrain::carve(Vector3 c, float radius) {
     sharp.carve(d, c, radius);
     int lo[3], hi[3];
-    float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX, NY, NZ};
+    float cc[3] = {c.x, c.y, c.z}, dim[3] = {(float)NX, (float)NY, (float)NZ};
     for (int a = 0; a < 3; a++) {
         lo[a] = std::max(0, (int)((cc[a] - radius) * IVOX) - 1);
         hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + radius) * IVOX) + 1);
@@ -497,7 +509,7 @@ void Terrain::weld(Vector3 c, Vector3 half) {
     edits++;
     float reach = Vector3Length(half) + 0.5f;
     int lo[3], hi[3];
-    float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX, NY, NZ};
+    float cc[3] = {c.x, c.y, c.z}, dim[3] = {(float)NX, (float)NY, (float)NZ};
     for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)((cc[a] - reach) * IVOX)), hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + reach) * IVOX) + 1);
     for (int z = lo[2]; z <= hi[2]; z++)
         for (int y = lo[1]; y <= hi[1]; y++)
@@ -751,6 +763,7 @@ struct Mesher {
     std::vector<ChunkGeo> done;
     std::chrono::steady_clock::time_point until;  // no chunk starts past it, but the first
     bool busy = false, quit = false;
+    double spent = 0;  // chunk geometry time since the last REMESH line, s
     std::thread th;  // joined at exit: libnx has no pthread_detach
 };
 Mesher &mesher = *new Mesher;  // never destroyed: its thread is joined in an atexit handler
@@ -771,8 +784,10 @@ void mesherLoop() {
             l.unlock();
             auto t0 = Clock::now();
             t->chunkGeometry(ci, g);
-            cost = std::max(std::chrono::duration<double>(Clock::now() - t0).count(), cost * 0.9);
+            double took = std::chrono::duration<double>(Clock::now() - t0).count();
+            cost = std::max(took, cost * 0.9);
             l.lock();
+            mesher.spent += took;
             mesher.done.push_back(std::move(g));
         }
         mesher.busy = false;
@@ -1269,7 +1284,7 @@ int Terrain::remesh(double budget) {
         for (int z = 0; z < NZ; z++)
             for (int y = 0; y < NY; y++)
                 for (int x = 0; x < NX; x++)
-                    if (d[idx(x, y, z)] > 0) colTop[z * NX + x] = (unsigned char)std::min(y + 1, 255), colTop.back() = std::max(colTop.back(), colTop[z * NX + x]);
+                    if (d[idx(x, y, z)] > 0) colTop[z * NX + x] = (uint16_t)(y + 1), colTop.back() = std::max(colTop.back(), colTop[z * NX + x]);
         bounds = {{1e9f, 0, 1e9f}, {0, colTop.back() * VOX, 0}};
         for (int z = 0; z < NZ; z++)
             for (int x = 0; x < NX; x++)
@@ -1388,8 +1403,21 @@ int Terrain::remeshAsync(double budget) {
     std::vector<int> todo;
     for (int ci = 0; ci < (int)dirty.size(); ci++)
         if (dirty[ci]) todo.push_back(ci), dirty[ci] = false;
-    if (todo.empty()) return swapPending(), n;
+    static double roundT0 = 0;  // a land edit's remesh round: its first dirty chunk until no chunk is left
+    static int roundN = 0;
+    if (todo.empty()) {
+        swapPending();
+        if (roundN && std::none_of(dirty.begin(), dirty.end(), [](bool b) { return b; })) {
+            std::lock_guard<std::mutex> l(mesher.mu);
+            TraceLog(LOG_INFO, "REMESH: %d chunks, build %.1f ms (meshing thread), %.1f ms until shown", roundN, mesher.spent * 1000, (GetTime() - roundT0) * 1000);
+            roundN = 0;
+        }
+        return n;
+    }
+    if (!roundN) roundT0 = GetTime();
+    roundN += (int)todo.size();
     std::lock_guard<std::mutex> l(mesher.mu);
+    if (roundN == (int)todo.size()) mesher.spent = 0;
     mesher.t = this, mesher.todo = std::move(todo), mesher.next = 0;
     mesher.until = Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(budget));
     mesher.busy = true;

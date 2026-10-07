@@ -22,6 +22,10 @@ struct SharpLand {
     std::vector<uint32_t> key, val, pool;  // open addressing cell + 1 -> pool offset of: word count, ops (cells may share one)
     size_t used = 0, dead = 0;    // keyed slots; pool words no cell points to
 
+    size_t bytes() const {
+        return planes.capacity() * sizeof(Vector4) + sph.capacity() * sizeof(Vector4) + box.capacity() * sizeof(Vector3) + top.capacity() * 4 +
+               (hexP0.capacity() + key.capacity() + val.capacity() + pool.capacity()) * 4 + bits.capacity() * 8;
+    }
     bool load(const std::string &path);  // .cells "W4C1" (docs/w4m/formats.md "Exact land")
     bool mixed(size_t c) const { return on && (bits[c >> 6] >> (c & 63) & 1); }
     const uint32_t *ops(size_t c) const;  // a mixed cell's list: [0] = word count, then the ops
