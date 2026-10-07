@@ -141,7 +141,7 @@ static void checkCountCamera() {
                              : Camera3D{{0, 60, 0}, {-10, 60, -10}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
         bool one = false;
         for (int t = 0; t < 60; t++, g.countT++) {
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             one |= look(cam, g.worms[1].pos);
             assert(!look(cam, g.worms[2].pos));
         }
@@ -619,6 +619,55 @@ static void checkScopeCrest() {
     assert(v.hp <= 100 - (int)WEAPONS[g.weapon].damage + 1);
 }
 
+// Through the zoomed scope at a worm 80 m off (W4M Range 9999 units): the scope camera's centre ray is the shot and hits it.
+// A miss: SniperCursorGraphicEntity lives with the gun logic and shows in the HeadCam (0x551fa0), so the scope outlasts the shot.
+static void checkScopeFar() {
+    for (bool hit : {true, false}) {
+        Game g;
+        g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
+        Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+        const Vector3 at = {5, 55, 5}, vat = {60, 55, 66};
+        g.weapon = weaponNamed("Sniper Rifle");
+        Controls::reset(), Controls::forceAim = 1;
+        Camera3D cam = {{0, 60, 0}, at, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
+        for (int t = 0; t < 240; t++) {
+            a.pos = at, v.pos = vat, a.vel = v.vel = {};
+            Vector3 d = Vector3Normalize(Vector3Subtract(Vector3Add(v.pos, {0, hit ? 0 : 5.0f, 0}), Controls::eye(g)));
+            a.yaw = atan2f(d.x, d.z), a.pitch = asinf(d.y);
+            Input in = Controls::read(g, 0, true, Game::DT);
+            if (t == 239) in.buttons |= Input::FIRE;
+            g.step(in), Controls::camera(cam, g, false, true, Game::DT);
+            if (t == 238 && hit) {  // the screen centre is on the worm
+                Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position)), c = Vector3Subtract(vat, cam.position);
+                assert(Controls::headCam(g) && Vector3Length(Vector3Subtract(c, Vector3Scale(f, Vector3DotProduct(c, f)))) < 0.1f);
+            }
+        }
+        assert(Vector3Distance(at, vat) > 80 && (v.hp <= 100 - (int)WEAPONS[g.weapon].damage + 1) == hit);
+        for (int t = 0; t < 60 && !hit; t++) {
+            g.step(Controls::read(g, 0, true, Game::DT)), Controls::camera(cam, g, false, true, Game::DT);
+            assert(g.phase != Phase::Aim && Controls::reticle(g) == Controls::Reticle::Aim);
+        }
+        Controls::forceAim = 0;
+    }
+}
+
+// W4M DefaultCam turns on input only (0x5309b0): a worm facing the camera, no input for 6 s (weapon panel open), the view stays
+static void checkCameraHold() {
+    Game g;
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
+    Worm &w = g.worms[g.current];
+    Controls::reset();
+    Camera3D cam = {{0, 60, 0}, {5, 55, 5}, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
+    auto yaw = [&] { return atan2f(cam.target.x - cam.position.x, cam.target.z - cam.position.z); };
+    float before = 0;
+    for (int t = 0; t < 60 * 8; t++) {
+        w.pos = {5, 55, 5}, w.vel = {};
+        if (t == 60 * 2) w.yaw += PI, before = yaw();
+        g.step(Controls::read(g, 0, true, Game::DT)), Controls::camera(cam, g, false, false, Game::DT);
+    }
+    assert(fabsf(wrapPi(yaw() - before)) < 0.05f);
+}
+
 static void checkSentry() {
     Game g;
     g.start({27, 2, 1, "", 0}), g.hotSeat = 0;
@@ -650,19 +699,19 @@ static void checkSheepCamera() {
     for (int t = 0; t < 60 * 8 && g.phase == Phase::Flying; t++) {
         g.step(Input{});
         bool chase = !g.shots.empty();
-        Controls::camera(cam, g, chase, false, false, Game::DT);
+        Controls::camera(cam, g, chase, false, Game::DT);
         if (chase && t > 30) assert(view().position.y > g.shots[0].pos.y), checked++;
     }
     assert(checked > 60);
-    for (int t = 0; t < 60 * 40 && !g.shots.empty(); t++) g.step(Input{}), Controls::camera(cam, g, !g.shots.empty(), false, false, Game::DT);
+    for (int t = 0; t < 60 * 40 && !g.shots.empty(); t++) g.step(Input{}), Controls::camera(cam, g, !g.shots.empty(), false, Game::DT);
     assert(g.shots.empty() && g.phase != Phase::Aim);
-    Controls::camera(cam, g, false, false, false, Game::DT);
+    Controls::camera(cam, g, false, false, Game::DT);
     Vector3 frozen = view().position;  // ChaseCam has no Finished (vtable slot 7 = 0x49b8f0): it stays until another event or the next turn
     const Vector3 worm = g.worms[g.current].pos;
     float first = -1;
     for (int t = 0; t < 30 && g.phase != Phase::Aim; t++) {  // the drawn view only settles onto it (0.1 an update), it does not go back to the worm
         const Vector3 was = view().position;
-        g.step(Input{}), Controls::camera(cam, g, false, false, false, Game::DT);
+        g.step(Input{}), Controls::camera(cam, g, false, false, Game::DT);
         const float moved = Vector3Distance(view().position, was);
         first = first < 0 ? moved : first;
         assert(g.phase == Phase::Aim || (moved <= first + 1e-3f && Vector3Distance(view().position, worm) > Vector3Distance(frozen, worm) - 0.5f));
@@ -693,7 +742,7 @@ static void checkEventCameras() {
         Camera3D cam = away();
         int seen = 0, n = 0;
         for (int t = 0; t < 60 * 3 && !w.grounded; t++, n++) {
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             if (t == 6) assert(Vector3Distance(shown(cam).position, {0, 60, 0}) > 5 && inView(shown(cam), w.pos));  // 2 ViewPoints tried a frame
             seen += inView(shown(cam), w.pos);
             g.step(Input{});
@@ -722,23 +771,23 @@ static void checkEventCameras() {
         for (int t = 0; t < 400; t++) {
             if (t == 200) in = Input{};
             if (t < 200) in.aim = -127;
-            g.step(in), Controls::camera(cam, g, false, false, false, Game::DT), sane();
+            g.step(in), Controls::camera(cam, g, false, false, Game::DT), sane();
         }
         const Vector3 tilt = Vector3Normalize({0.5f, 0.8f, 0.3f});  // an up a TrackCam inherits (0x5337c0), eased back at UpSpeed (0x533b25)
         cam.up = tilt;
         g.objects.push_back({Object::Crate, Vector3Add(a.pos, {0, 40, 0}), {0, 0, 0}, -1, -1, true, false});
         for (int t = 0; t < 200; t++) {
             g.objects.back().pos.y -= 0.2f;
-            Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, false, Game::DT), sane();
+            Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, Game::DT), sane();
             if (t >= 30) assert(level());  // CrateTrackCamera UpSpeed 0.2
         }
-        for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, false, Game::DT), sane();
+        for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, Game::DT), sane();
         cam = away(), cam.up = tilt;
         g.phase = Phase::Flying;
         g.shots.push_back({{a.pos.x, a.pos.y + 12, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
         g.shots.back().touching = 0;
         for (int t = 0; t < 60 * 5 && !g.shots.empty(); t++) {
-            Controls::camera(cam, g, true, false, false, Game::DT), sane();
+            Controls::camera(cam, g, true, false, Game::DT), sane();
             if (t >= 30) assert(level());  // PayloadTrackCamera UpSpeed 0.8
             g.step(Input{});
         }
@@ -752,13 +801,13 @@ static void checkEventCameras() {
         Worm &w = g.worms[g.current];
         g.objects.push_back({Object::Crate, Vector3Add(w.pos, {3, 12, 0}), {0, 0, 0}, -1, -1, true, false});
         Camera3D cam = away();
-        for (int t = 0; t < 6; t++) Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 6; t++) Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, Game::DT);
         float d = Vector3Distance(cam.position, g.objects.back().pos);
         assert(d > 10 && d < 26 && inView(cam, g.objects.back().pos));
         Vector3 at = cam.position, f0 = Vector3Subtract(cam.target, cam.position);  // then fixed, ViewPoints round its landing point: only the pitch follows it down
         for (int t = 0; t < 120; t++) {
             g.objects.back().pos.y -= 0.06f;
-            Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, Game::DT);
             Vector3 f = Vector3Subtract(cam.target, cam.position);
             assert(Vector3Distance(cam.position, at) < 0.3f && fabsf(remainderf(atan2f(f.x, f.z) - atan2f(f0.x, f0.z), 2 * PI)) < 0.05f);
         }
@@ -771,13 +820,13 @@ static void checkEventCameras() {
         Controls::reset();
         Worm &a = g.worms[g.current];
         Camera3D cam = away();
-        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT);
         g.phase = Phase::Retreat, g.timer = 100;
         g.shots.push_back({{a.pos.x, a.pos.y + 12, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
         g.shots.back().touching = 0;
         int inset = 0, grew = 0, end = -1;
         for (int t = 0; t < 60 * 3; t++) {
-            Controls::camera(cam, g, !g.shots.empty(), false, false, Game::DT);
+            Controls::camera(cam, g, !g.shots.empty(), false, Game::DT);
             Camera3D v;
             float show, grow;
             bool in = Controls::inset(v, show, grow);
@@ -798,7 +847,7 @@ static void checkEventCameras() {
         Controls::reset();
         Worm &a = g.worms[g.current];
         Camera3D cam = away();
-        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT);
         g.phase = Phase::Retreat, g.timer = 60 * 60;
         g.shots.push_back({{a.pos.x, a.pos.y + 12, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
         g.shots.back().touching = 0;
@@ -806,7 +855,7 @@ static void checkEventCameras() {
         int t = 0, off = -1;
         Camera3D v;
         for (; t < 60 * 10 && off < 0; t++) {
-            Controls::camera(cam, g, !g.shots.empty(), false, false, Game::DT);
+            Controls::camera(cam, g, !g.shots.empty(), false, Game::DT);
             float show, grow;
             bool in = Controls::inset(v, show, grow);
             if (in && g.shots.empty() && show < last - 1e-4f) off = t;  // PiP.SlideOff after the TrackCam's RestTime
@@ -816,7 +865,7 @@ static void checkEventCameras() {
         assert(off > 0 && g.phase == Phase::Retreat);
         g.shots.push_back({{a.pos.x, a.pos.y + 15, a.pos.z}, {3 * sinf(a.yaw), 0, 3 * cosf(a.yaw)}, weaponNamed("Sheep"), 0, false, 1});
         for (int k = 0; k < 90; k++) {  // the ChaseCam serve during the slide-out: never an inset of its own, never the main view
-            Controls::camera(cam, g, true, false, false, Game::DT);
+            Controls::camera(cam, g, true, false, Game::DT);
             float show, grow;
             bool in = Controls::inset(v, show, grow);
             if (k > 35) assert(!in && Vector3Distance(cam.target, a.pos) < 3);
@@ -824,7 +873,7 @@ static void checkEventCameras() {
         Vector3 crate = Vector3Add(a.pos, {3, 12, 0});
         int in = 0;
         for (int k = 0; k < 10; k++) {  // the next serve slides the PiP on again
-            Controls::focus(&crate, 0, true), Controls::camera(cam, g, true, false, false, Game::DT);
+            Controls::focus(&crate, 0, true), Controls::camera(cam, g, true, false, Game::DT);
             float show, grow;
             in += Controls::inset(v, show, grow);
         }
@@ -839,10 +888,10 @@ static void checkEventCameras() {
             a.yaw = 0, b.yaw = PI / 2;
             Controls::reset();
             Camera3D cam = away();
-            for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+            for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT);
             if (wall) g.terrain.weld(Vector3Add(b.pos, {0, 1, -4}), {2, 4, 0.3f});  // blocks the spot behind on heading 0, not the one at +pi/4
             g.current = 1 - g.current, cam = away();
-            Controls::camera(cam, g, false, false, false, Game::DT);  // off screen: a cut onto the logical view
+            Controls::camera(cam, g, false, false, Game::DT);  // off screen: a cut onto the logical view
             Vector3 d = Vector3Subtract(cam.target, cam.position);
             assert(fabsf(remainderf(atan2f(d.x, d.z) - (wall ? PI / 4 : 0), 2 * PI)) < 0.1f);
         }
@@ -857,10 +906,10 @@ static void checkEventCameras() {
         g.phase = Phase::Flying;
         g.shots.push_back({{a.pos.x, a.pos.y + 12, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
         g.shots.back().touching = 0;
-        for (int t = 0; t < 60 * 6 && !g.shots.empty(); t++) Controls::camera(cam, g, true, false, false, Game::DT), g.step(Input{});
+        for (int t = 0; t < 60 * 6 && !g.shots.empty(); t++) Controls::camera(cam, g, true, false, Game::DT), g.step(Input{});
         g.phase = Phase::Settle;
         for (int t = 0; t < 60 * 3; t++) {
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             float show, full;
             Camera3D v;
             if (!Controls::inset(v, show, full)) assert(Vector3Distance(cam.target, a.pos) > 3);
@@ -873,13 +922,13 @@ static void checkEventCameras() {
         Controls::reset();
         Worm &a = g.worms[g.current];
         Camera3D cam = away();
-        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT);
         g.phase = Phase::Retreat, g.timer = g.retreatTicks(WEAPONS[g.weapon]), g.jetting = k == 1, g.roped = k == 2;
         g.shots.push_back({{a.pos.x, a.pos.y + 12, a.pos.z}, {3 * sinf(a.yaw), 0, 3 * cosf(a.yaw)}, weaponNamed(k == 2 ? "Bazooka" : "Sheep"), 0, false, 1});
         int inset = 0;
         for (int t = 0; t < 60; t++) {
             a.vel = k == 2 ? Vector3{} : Vector3{1, 0, 0};
-            Controls::camera(cam, g, true, false, false, Game::DT);
+            Controls::camera(cam, g, true, false, Game::DT);
             Camera3D v;
             float show, grow;
             inset += Controls::inset(v, show, grow);
@@ -894,11 +943,11 @@ static void checkEventCameras() {
         Controls::reset();
         Worm &a = g.worms[g.current];
         Camera3D cam = away();
-        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT);
         float h = a.yaw + PI / 2;  // heading sideways to the thrower's (and the view's) yaw
         g.phase = Phase::Retreat, g.timer = 600;
         g.shots.push_back({{a.pos.x, a.pos.y + 15, a.pos.z}, {3 * sinf(h), 0, 3 * cosf(h)}, weaponNamed(pet), 0, false, 1});
-        Controls::camera(cam, g, true, false, false, Game::DT);
+        Controls::camera(cam, g, true, false, Game::DT);
         Camera3D v;
         float show, grow;
         assert(Controls::inset(v, show, grow));  // pipView is the chase camera as placed at the serve
@@ -915,10 +964,10 @@ static void checkEventCameras() {
         Camera3D cam = away();
         g.phase = Phase::Settle, g.timer = 1;
         g.shots.push_back({{a.pos.x + 10, a.pos.y + 20, a.pos.z}, {0, -5, 0}, weaponNamed("Concrete Donkey"), 0, false, 1 << 30});
-        for (int t = 0; t < 120; t++) g.shots[0].pos.y -= 0.05f, Controls::camera(cam, g, true, false, false, Game::DT);
+        for (int t = 0; t < 120; t++) g.shots[0].pos.y -= 0.05f, Controls::camera(cam, g, true, false, Game::DT);
         Vector3 pos = cam.position, look = Vector3Add(g.shots[0].pos, {0, 5, 0});
         g.shots.clear();
-        for (int t = 0; t < 60 * 4; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 60 * 4; t++) Controls::camera(cam, g, false, false, Game::DT);
         assert(Vector3Distance(cam.position, pos) < 0.01f && Vector3Distance(cam.target, look) < 0.1f);
     }
     {  // a donkey dropped from the Blimp: served while the worm is active, so in the PiP (0x51c000), grown at once by the EndTurn of its
@@ -933,15 +982,15 @@ static void checkEventCameras() {
         Camera3D cam = {Vector3Add(a.pos, {0, 5, -8}), a.pos, {0, 1, 0}, 30, CAMERA_PERSPECTIVE};  // a zoomed lens before
         Input in;
         in.buttons = Input::TARGET;
-        for (int t = 0; t < 30; t++) g.step(in), Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 30; t++) g.step(in), Controls::camera(cam, g, false, false, Game::DT);
         in.buttons = Input::TARGET | Input::FIRE;
-        for (int t = 0; t < 60 && (g.step(in), g.shots.empty()); t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 60 && (g.step(in), g.shots.empty()); t++) Controls::camera(cam, g, false, false, Game::DT);
         assert(!g.shots.empty() && g.phase != Phase::Aim);
         Vector3 spawn = g.shots[0].pos, eye = Vector3Add(spawn, {0, -Game::DONKEY_EXTRA, 25});
         int frames = 0, inset = 0, grown = 0, framed = 0, held = 0;
         for (int t = 0; t < 60 * 12 && g.phase != Phase::Aim; t++) {
             bool chase = !g.shots.empty();
-            Controls::camera(cam, g, chase, false, false, Game::DT);
+            Controls::camera(cam, g, chase, false, Game::DT);
             float show, full;
             Camera3D v;
             bool in = Controls::inset(v, show, full);
@@ -959,6 +1008,55 @@ static void checkEventCameras() {
         assert(inset >= 25 && inset <= 32 && grown >= inset - 1);  // FullScreenTime 500 ms
         assert(frames > 60 * 6 && framed > frames * 9 / 10 && held > 30);
     }
+    {  // worms drowned while a Blimp donkey falls, the DonkeyCamera full screen: "Worm Dying" 0x5a7190 asks a WormTrackCamera at the drowning
+       // (0x5ad640, 0x51cf20); in clear view of the drawn camera it is dropped (6, 0x51d2cb), else served and it films the pop
+        Game g;
+        g.start({23, 3, 1, "", 0}), g.hotSeat = 0;
+        settle(g);
+        Controls::reset();
+        Worm &a = g.worms[g.current];
+        g.weapon = weaponNamed("Concrete Donkey");
+        g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
+        Camera3D cam = {Vector3Add(a.pos, {0, 5, -8}), a.pos, {0, 1, 0}, 30, CAMERA_PERSPECTIVE};
+        Input in;
+        in.buttons = Input::TARGET;
+        for (int t = 0; t < 30; t++) g.step(in), Controls::camera(cam, g, false, false, Game::DT);
+        in.buttons = Input::TARGET | Input::FIRE;
+        for (int t = 0; t < 60 && (g.step(in), g.shots.empty()); t++) Controls::camera(cam, g, false, false, Game::DT);
+        assert(!g.shots.empty());
+        Vector3 eye = Vector3Add(g.shots[0].pos, {0, -Game::DONKEY_EXTRA, 25});
+        float show, full;
+        Camera3D v;
+        auto shownCam = [&]() -> const Camera3D & { return Controls::inset(v, show, full) ? v : cam; };
+        int ks[2], n = 0, at = -1;
+        for (int k = 0; k < (int)g.worms.size() && n < 2; k++) if (k != g.current && g.worms[k].team != a.team) ks[n++] = k;
+        assert(n == 2);
+        bool seenAtDrown[2] = {}, popped[2] = {};
+        for (int t = 0; t < 60 * 20 && !(popped[0] && popped[1]); t++) {
+            Controls::camera(cam, g, !g.shots.empty(), false, Game::DT);
+            if (at < 0 && !Controls::inset(v, show, full) && g.shots.empty()) at = t;  // the PiP has grown, the donkey is gone
+            for (int j = 0; j < 2; j++) if (at >= 0 && t == at + 300 * j) {  // knocked into the sea, 5 s apart
+                Worm &d = g.worms[ks[j]];
+                d.pos = {d.pos.x, g.water - 0.5f, d.pos.z}, d.vel = {0, 0, 0}, d.grounded = false;
+                for (int q = 0; q < 400 && g.terrain.solid({d.pos.x, d.pos.y - 1.5f, d.pos.z}); q++) d.pos.x += 0.1f;
+                d.pos.x += 15;  // open water: clear viewpoints around it
+                for (float dz : {0.f, 40.f, -40.f, 80.f, -80.f, 120.f, -120.f}) {  // the second worm off screen
+                    Vector3 c = {d.pos.x, d.pos.y, d.pos.z + dz};
+                    if (j == 0 || (!inView(shownCam(), c) && !g.terrain.solid(c) && !g.terrain.solid({c.x, c.y - 1.5f, c.z}))) { d.pos = c; break; }
+                }
+                seenAtDrown[j] = inView(shownCam(), d.pos);
+            }
+            for (const GameEvent &e : g.events) if (e.kind == GameEvent::Pop) {
+                int j = e.worm == ks[1];
+                float dist = Vector3Distance(shownCam().position, e.pos);
+                popped[j] = true;
+                if (seenAtDrown[j]) assert(Vector3Distance(shownCam().position, eye) < 0.01f);
+                else assert(dist < 35 && inView(shownCam(), e.pos));
+            }
+            g.step(Input{});
+        }
+        assert(at > 0 && popped[0] && popped[1]);
+    }
     {  // an event camera held to the next turn: the view eases back to the worm at PosUpdateSpeed 0.1 a frame (CMS 0x51b940), no cut
         Game g;
         g.start({43, 2, 1, "", 0}), g.hotSeat = 0;
@@ -968,13 +1066,13 @@ static void checkEventCameras() {
         g.objects.push_back({Object::Crate, Vector3Add(w.pos, {3, 12, 0}), {0, 0, 0}, -1, -1, true, false});
         Camera3D cam = away();
         g.phase = Phase::Settle, g.timer = 1;
-        for (int t = 0; t < 30; t++) Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 30; t++) Controls::focus(&g.objects.back().pos, 0, true), Controls::camera(cam, g, false, false, Game::DT);
         float gap = Vector3Distance(cam.target, w.pos), jump = 0;
         assert(gap > 3);
         g.phase = Phase::Aim;
         for (int t = 0; t < 90; t++) {
             Vector3 was = cam.target;
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             jump = fmaxf(jump, Vector3Distance(was, cam.target));
         }
         assert(jump < 0.2f * gap && Vector3Distance(cam.target, w.pos) < 0.5f);
@@ -986,10 +1084,10 @@ static void checkEventCameras() {
         Controls::reset();
         Worm &a = g.worms[g.current];
         Camera3D cam = away();
-        if (!lost) for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        if (!lost) for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT);
         float top = a.pos.y + 12;
         g.phase = Phase::Settle, g.timer = 1;  // no worm active: the TrackCam full screen
-        Controls::camera(cam, g, false, false, false, Game::DT);  // the turn ended an update before the shot
+        Controls::camera(cam, g, false, false, Game::DT);  // the turn ended an update before the shot
         g.shots.push_back({{a.pos.x, top, a.pos.z}, {25 * sinf(a.yaw), 6, 25 * cosf(a.yaw)}, weaponNamed("Bazooka"), 0, false, 1});
         g.shots.back().touching = 0;
         Vector3 before = cam.position, cutAt{}, end{};
@@ -998,7 +1096,7 @@ static void checkEventCameras() {
         bool wasIn = false;
         for (int t = 0; t < 60 * 9 && after < 90; t++) {  // the flight (into the sea: a skim, then the sinking), then RestTime 1.5 s
             Vector3 was = ev.position;
-            Controls::camera(cam, g, !g.shots.empty(), false, false, Game::DT);
+            Controls::camera(cam, g, !g.shots.empty(), false, Game::DT);
             float show, full;
             bool in = Controls::inset(ev, show, full);
             if (!in) ev = cam;
@@ -1026,14 +1124,14 @@ static void checkEventCameras() {
         Controls::reset();
         Vector3 at = {d.pos.x, g.water + 0.6f, d.pos.z};
         Camera3D cam = {Vector3Add(at, {6, 3, 6}), at, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
-        for (int t = 0; t < 30; t++) Controls::camera(cam, g, false, false, false, Game::DT);  // settled view of it
+        for (int t = 0; t < 30; t++) Controls::camera(cam, g, false, false, Game::DT);  // settled view of it
         float yaw0 = atan2f(cam.position.x - at.x, cam.position.z - at.z);
         int boom = -1, cuts = 0;
         for (int t = 0; t < 60 * 10 && g.phase == Phase::Settle && (boom < 0 || t < boom + 120); t++) {
             g.step(Input{});
             for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) Controls::impact(e.pos), boom = t;
             Vector3 was = cam.position;
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             if (boom >= 0 && t > boom + 85) continue;  // RestTime over: DefaultCam takes over with a cut
             cuts += Vector3Distance(was, cam.position) > 2;
             assert(fabsf(remainderf(atan2f(cam.position.x - at.x, cam.position.z - at.z) - yaw0, 2 * PI)) < 0.2f);
@@ -1056,7 +1154,7 @@ static void checkEventCameras() {
         bool shown = false;
         for (int t = 0; t < 60 * 8 && !shown; t++) {
             g.step(Input{});
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             for (const GameEvent &e : g.events) if (e.kind == GameEvent::Death && e.worm == k) assert(inView(cam, e.pos)), shown = true;
         }
         assert(shown);
@@ -1068,7 +1166,7 @@ static void checkEventCameras() {
         Controls::reset();
         g.phase = Phase::GameOver, g.winner = g.worms[g.current].team;
         Camera3D cam = away();
-        for (int t = 0; t < 30; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 30; t++) Controls::camera(cam, g, false, false, Game::DT);
         const Worm &w = g.worms[g.current];
         Vector3 to = Vector3Subtract(w.pos, cam.position), hit;
         assert(Vector3Length(to) > 3 && Vector3Length(to) < 17 && inView(cam, w.pos));
@@ -1090,7 +1188,7 @@ static void checkEventCameras() {
         Camera3D cam = {{20, 58, 10}, a.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
         int checked = 0;
         for (int t = 0; t < 60 * 6 && g.phase == Phase::Flying && !g.shots.empty(); t++) {
-            Controls::camera(cam, g, true, false, false, Game::DT);
+            Controls::camera(cam, g, true, false, Game::DT);
             const Projectile &s = g.shots[0];
             if (t > 110) assert(Vector3Distance(cam.position, s.pos) < 18 && Vector3DotProduct(s.vel, Vector3Subtract(s.pos, cam.position)) > 0), checked++;
             g.step(Input{});
@@ -1107,7 +1205,7 @@ static void checkEventCameras() {
                 for (int x = wide ? 40 : 79; x <= (wide ? 120 : 81); x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
         Controls::reset();
         Camera3D cam = {{20, 59, 11}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
-        for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, Game::DT);
         float d = Vector3Distance(cam.position, w.pos);
         assert(wide ? d < 5 : d > 8);
     }
@@ -1123,12 +1221,12 @@ static void checkEventCameras() {
         };
         Controls::reset();
         Camera3D cam = {{20, 59, 11}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
-        for (int t = 0; t < 120; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 120; t++) Controls::camera(cam, g, false, false, Game::DT);
         wall(127);
-        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT);
         assert(Vector3Distance(cam.position, w.pos) < 5);
         wall(0);
-        for (int t = 0; t < 60 * 4; t++) Controls::camera(cam, g, false, false, false, Game::DT), assert(!g.terrain.solid(cam.position));
+        for (int t = 0; t < 60 * 4; t++) Controls::camera(cam, g, false, false, Game::DT), assert(!g.terrain.solid(cam.position));
         assert(Vector3Distance(cam.position, w.pos) > 7.5f);
     }
     {  // the worm backs up against a wall: the ShoulderCamera zooms in to it at once (it never rises or turns: OccHeightSpeed /
@@ -1142,11 +1240,11 @@ static void checkEventCameras() {
                 for (int x = 40; x < 120; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
         Controls::reset();
         Camera3D cam = {{20, 57, 21.5f}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
-        for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+        for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, Game::DT);
         float top = cam.position.y - w.pos.y;
         for (int t = 0; t < 240; t++) {
             w.pos.z = fmaxf(20.2f, w.pos.z - 0.05f);
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             assert(cam.position.y - w.pos.y < top + 0.3f && !g.terrain.solid(cam.position));
         }
         assert(Vector3Distance(cam.position, w.pos) < 2);  // Xray::opacity fades it by that distance
@@ -1163,7 +1261,7 @@ static void checkEventCameras() {
                     if (!inside || (z >= 140 && z < 180)) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
         Controls::reset();
         Camera3D cam = {{20, 55, 40}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
-        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT), w.pos = {40, 55, 40};
+        for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT), w.pos = {40, 55, 40};
         assert(Vector3Distance(cam.position, w.pos) > 15 && !g.terrain.solid(cam.position));
         if (inside) assert(cam.position.z > 45.5f || cam.position.z < 34.5f);  // +-22.5 deg first, past the block's z edge
     }
@@ -1182,7 +1280,7 @@ static void checkEventCameras() {
         int seen = 0, n = 0;
         for (int t = 0; t < 60 * 2 && !w.grounded && w.alive; t++, n++) {
             Controls::focus(&spot, 2);
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             seen += t > 20 && inView(cam, w.pos);
             g.step(Input{});
         }
@@ -1208,7 +1306,7 @@ static void checkEventCameras() {
         float top = g.terrain.colTop.empty() ? 20 : g.terrain.colTop.back() * Terrain::VOX;
         Vector3 liftAt{};
         for (int t = 0; t < 60 * 40 && g.efmvActive(); t++) {
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             Vector3 u = g.ufo()->pos;
             bool lifting = g.ufo()->stage == Game::ABD_LIFTING;
             if (lifting && liftAt.y == 0) liftAt = cam.position, assert(fabsf(Vector3Distance(cam.position, Vector3Add(w.pos, {0, 0.5f, 0})) - 3.536f) < 0.05f);
@@ -1324,7 +1422,7 @@ static void checkEventCameras() {
         Camera3D cam = away();
                 int checked = 0;
         for (int t = 0; t < 60 * 12; t++) {
-            Controls::camera(cam, g, false, false, false, Game::DT);
+            Controls::camera(cam, g, false, false, Game::DT);
             if (t < 60 * 5 || t % 30) continue;
             auto framed = [&](Vector3 p) {
                 Vector2 s = GetWorldToScreenEx(p, cam, 1280, 720);
@@ -2335,6 +2433,17 @@ static void checkWormpotModes() {
     fresh(0).weapon = weaponNamed("Shotgun");
     g.step(Input{}), g.step(Input{});
     assert(g.wobble.f == 1);
+    {  // GunWobble x min(1.5 zoom, 1) of the sender's camera (0x55fbed): the scope at MinZoom 0.05 sways 13x less
+        fresh(0).weapon = weaponNamed("Sniper Rifle");
+        for (int k = 0; k < 60; k++) g.step(Input{});
+        Vector2 full = g.wobble.at;
+        Input in;
+        in.zoom = 13;
+        fresh(0).weapon = weaponNamed("Sniper Rifle");
+        for (int k = 0; k < 60; k++) g.step(in);
+        float z = 1.5f * 13 / 255;
+        assert(full.x != 0 && fabsf(g.wobble.at.x - full.x * z) < 1e-6f && fabsf(g.wobble.at.y - full.y * z) < 1e-6f);
+    }
 }
 
 // Mystery crates (CreateRandomCrate 0x4fa4b0, CrateLogicEntity 0x5ca1f0): drawn at spawn by MysteryChance, opened on collection.
@@ -2545,17 +2654,17 @@ static void checkPayloadFollow() {
             g.weapon = weaponNamed(name);
             g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0, a.pitch = 0.7f;
             Controls::forceAim = aim;
-            for (int t = 0; t < 120; t++) Controls::camera(cam, g, false, false, true, Game::DT), g.step(Controls::read(g, 0, true, Game::DT));
+            for (int t = 0; t < 120; t++) Controls::camera(cam, g, false, true, Game::DT), g.step(Controls::read(g, 0, true, Game::DT));
             for (int t = 0; t < 120 && g.shots.empty(); t++) {
                 Input in = Controls::read(g, 0, true, Game::DT);
                 in.buttons |= Input::FIRE;
                 g.step(in);
-                Controls::camera(cam, g, !g.shots.empty() && g.phase != Phase::Aim, false, true, Game::DT);
+                Controls::camera(cam, g, !g.shots.empty() && g.phase != Phase::Aim, true, Game::DT);
             }
             assert(!g.shots.empty());
             float tail = 1e9f;
             for (int t = 0; t < 60 * 6 && !g.shots.empty() && g.phase == Phase::Flying; t++) {
-                Controls::camera(cam, g, true, false, true, Game::DT);
+                Controls::camera(cam, g, true, true, Game::DT);
                 Camera3D v;
                 float show, grow;
                 const Camera3D &seen = Controls::inset(v, show, grow) ? v : cam;  // a TrackCam served in the turn is the inset (0x51c000)
@@ -2582,7 +2691,7 @@ static void checkRetreatInFlight() {
     a.pitch = 0.7f;
     Controls::reset();
     Camera3D cam = {{0, 60, 0}, a.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
-    for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT);
+    for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, Game::DT);
     Input fire;
     fire.buttons = Input::FIRE;
     for (int t = 0; t < 40; t++) g.step(fire);
@@ -2595,7 +2704,7 @@ static void checkRetreatInFlight() {
     int t = 1, settleAt = -1, inset = 0;
     for (; t < 60 * 20 && !(g.phase == Phase::Aim && g.current != first); t++) {
         bool chase = g.phase != Phase::Aim && !g.shots.empty();
-        Controls::camera(cam, g, chase, false, false, Game::DT);
+        Controls::camera(cam, g, chase, false, Game::DT);
         Camera3D v;
         float show, grow;
         inset += Controls::inset(v, show, grow) && !g.shots.empty() && g.phase == Phase::Flying;
@@ -3036,11 +3145,12 @@ static void checkGunObjects() {
     int b = g.current == 0 ? 1 : 0;
     g.worms[b].pos = Vector3Add(a.pos, {0, 0, 6});
     Ray r = {a.pos, {0, 0, 1}};
-    assert(g.gunRay(r, a).worm == b);
+    const float bullet = WEAPONS[weaponNamed("Sniper Rifle")].size;
+    assert(bullet > 0 && g.gunRay(r, a, bullet).worm == b);
     for (Object::Type t : {Object::Mine, Object::Barrel}) {
         g.objects = {Object{t, Vector3Add(a.pos, {0, 0, 3}), {0, 0, 0}, -1, -1, false, false}};
-        Game::GunHit h = g.gunRay(r, a);
-        assert(h.worm == -1 && !h.land && fabsf(h.dist - 3) < 0.01f);
+        Game::GunHit h = g.gunRay(r, a, bullet);
+        assert(h.worm == -1 && !h.land && fabsf(h.dist - (3 - bullet - (t == Object::Mine ? 0.15f : 0.45f))) < 0.01f);  // the spheres touch
     }
 }
 
@@ -3251,7 +3361,7 @@ static void checkDonkey() {
     g.worms[0].pos = {5, 40, 5};
     g.phase = Phase::Flying, g.timer = 1200;
     Vector3 tgt = {40, g.terrain.raycast({{40, 200, 40}, {0, -1, 0}}, 400, &tgt) ? tgt.y : 0, 40};
-    g.shots = {{{40, tgt.y + fmaxf(Game::DONKEY_MIN_HEIGHT, g.landTop() + Game::DONKEY_EXTRA), 40}, {0, -wd.speed, 0}, wi, 0, false, 1 << 30, {0, tgt.y + 100, 0}}};
+    g.shots = {{{40, tgt.y + fmaxf(Game::DONKEY_MIN_HEIGHT, g.landTop() - Terrain::WATER + Game::DONKEY_EXTRA), 40}, {0, -wd.speed, 0}, wi, 0, false, 1 << 30, {0, tgt.y + 100, 0}}};
     g.shots[0].aim = {0, g.shots[0].pos.y, 0};
     std::vector<float> at;
     float lastY = 0;
@@ -4446,6 +4556,8 @@ int main() {
     checkSniper();
     checkGunLand();
     checkScopeCrest();
+    checkScopeFar();
+    checkCameraHold();
     checkCrateWalk();
     checkShotgun();
     checkHoming();

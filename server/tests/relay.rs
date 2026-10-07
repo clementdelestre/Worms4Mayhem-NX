@@ -42,7 +42,7 @@ async fn server() -> String {
 
 fn inputs(first: u32, n: u8) -> W {
     let mut w = W::new(INPUTS).u32(first).u8(n);
-    for i in 0..n { w = w.bytes(&[i, 1, 2, 3, 0]); }
+    for i in 0..n { w = w.bytes(&[i, 1, 2, 3, 0, 255]); }
     w
 }
 

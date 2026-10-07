@@ -2,6 +2,7 @@
 // From client/: make ui_check
 #include "../src/audio.h"
 #include "../src/fx.h"
+#include "../src/controls.h"
 #include <cstring>
 #include "../src/ui.h"
 #include "raymath.h"
@@ -115,6 +116,16 @@ int main() {
             assert(Vector2Length(v) > sinf(0.75f) - 1e-4f && Vector2Length(v) < 1 + 1e-4f);
             assert(fabsf(v.x + w.x) < 1e-4f && fabsf(v.y + w.y) < 1e-4f);
         }
+    }
+    {  // Text3D (0x5faaa0): HUD camera lens, so the em does not grow with the HeadCam zoom; the centre stays on the zoomed worm
+        Camera3D c = {{0, 0, 0}, {0, 0, -1}, {0, 1, 0}, Controls::FOV0, CAMERA_PERSPECTIVE};
+        Vector3 p = {0.4f, 0.3f, -8};
+        Vector2 a0, a1;
+        float e0 = Ui::text3dPlace(p, 0.25f, c, {0, 0, -1}, {1280, 720}, a0);
+        c.fovy = 2 * atanf(0.48f * 0.05f) * RAD2DEG;
+        float e1 = Ui::text3dPlace(p, 0.25f, c, {0, 0, -1}, {1280, 720}, a1);
+        Vector2 w = GetWorldToScreenEx(p, c, 1280, 720);
+        assert(e0 > 10 && e1 > e0 && e1 < e0 * 1.1f && fabsf(a1.x - 640 - (w.x - 640) * 160 / 159) < 0.5f);
     }
     // FE clips run the exe's key curve at FE.AnimSpeed 0.9: in_scalehitxy scale 0.75 / 1.012 at clip 0.05 / 0.1 s (w4m-models eval)
     assert(fabsf(Ui::clipKeys(Ui::IN_SCALEHIT_S, 6, 0.045f) - 0.75f) < 0.005f && fabsf(Ui::clipKeys(Ui::IN_SCALEHIT_S, 6, 0.09f) - 1.012f) < 0.005f);
