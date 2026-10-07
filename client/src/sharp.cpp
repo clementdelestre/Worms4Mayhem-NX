@@ -7,7 +7,6 @@
 #include <unordered_map>
 
 static const int &NX = Terrain::NX, &NY = Terrain::NY, &NZ = Terrain::NZ;
-static const size_t &CELLS = Terrain::TOTAL;
 #define VOX Terrain::VOX
 #define IVOX Terrain::IVOX
 static size_t cid(int x, int y, int z) { return Terrain::idx(x, y, z); }
@@ -22,14 +21,14 @@ static const int FACES[6][4] = {{0, 2, 6, 4}, {1, 3, 7, 5}, {0, 1, 5, 4}, {2, 3,
 
 extern "C" int sinflate(void *out, int cap, const void *in, int size);  // raylib's DEFLATE decoder (external/sinfl.h)
 
-// "W4C1", u32 size, then that many bytes deflated: u32 hexes, top (0 or NX*NZ), cells, lists, list bytes, cell bytes; then the
-// hexes, top, lists, cells (docs/w4m/formats.md)
+// "W4C2", u32 size, then that many bytes deflated: u32 hexes, top (0 or NX*NZ), cells, lists, list bytes, cell bytes; then the
+// hexes, top (byte planes), lists, cells (docs/w4m/formats.md §22)
 bool SharpLand::load(const std::string &path) {
     *this = SharpLand{};
     int size = 0;
     unsigned char *f = LoadFileData(path.c_str(), &size);
     uint32_t raw = 0, n[6] = {};
-    if (f && size >= 8 && !memcmp(f, "W4C1", 4)) memcpy(&raw, f + 4, 4);
+    if (f && size >= 8 && !memcmp(f, "W4C2", 4)) memcpy(&raw, f + 4, 4);
     std::vector<unsigned char> b(raw < (1u << 30) ? raw : 0);
     bool ok = raw >= 24 && b.size() == raw && sinflate(b.data(), (int)raw, f + 8, size - 8) == (int)raw;
     UnloadFileData(f);
@@ -49,7 +48,9 @@ bool SharpLand::load(const std::string &path) {
             memcpy(c, p, 96), memcpy(&fl, p + 96, 4);
             cell(c, fl);
         }
-        top.resize(n[1]), memcpy(top.data(), p, n[1] * 4), p += n[1] * 4;
+        top.resize(n[1]);
+        for (uint32_t k = 0; k < 4; k++, p += n[1])
+            for (uint32_t i = 0; i < n[1]; i++) ((unsigned char *)top.data())[i * 4 + k] = p[i];
         std::vector<uint32_t> at(n[3]);
         for (uint32_t l = 0; l < n[3] && ok; l++) {
             const uint32_t k = var();
@@ -62,24 +63,32 @@ bool SharpLand::load(const std::string &path) {
                 pool.push_back(HEX | last), pool.push_back(var());
             }
         }
-        bits.assign((CELLS + 63) / 64, 0);
+        bits.assign(Terrain::chunks(), {});
         size_t cap = 1024;
         while (cap < 2 * (size_t)n[2]) cap *= 2;
         key.assign(cap, 0), val.assign(cap, 0);
-        for (uint32_t i = 0, c = ~0u; i < n[2] && ok; i++) {
-            c += var() + 1;
-            const uint32_t l = var();
-            ok = ok && c < CELLS && l < n[3];
+        std::vector<uint32_t> cells(n[2]), recent;  // list codes: 0 the next new list, 1..RECENT a recent one's rank, else its number
+        for (uint32_t i = 0, c = ~0u; i < n[2] && ok; i++) cells[i] = c += var() + 1, ok = c < Terrain::chunks() << 15;
+        for (uint32_t i = 0, fresh = 0; i < n[2] && ok; i++) {
+            const uint32_t v = var(), RECENT = 4096, tail = recent.size() > RECENT ? (uint32_t)recent.size() - RECENT : 0;
+            uint32_t l = v == 0 ? fresh++ : v > RECENT ? v - RECENT - 1 : ~0u;
+            if (v && v <= RECENT && (ok = v <= recent.size() - tail)) {
+                const size_t at = recent.size() - v;
+                l = recent[at], recent.erase(recent.begin() + at);
+            }
+            recent.push_back(l);
+            if (recent.size() > 2 * RECENT) recent.erase(recent.begin(), recent.end() - RECENT);
+            ok = ok && l < n[3] && fresh <= n[3];
             if (!ok) break;
-            uint32_t s = hashc(c) & (cap - 1);
+            uint32_t s = hashc(cells[i]) & (cap - 1);
             while (key[s]) s = (s + 1) & (cap - 1);
-            key[s] = c + 1, val[s] = at[l], bits[c >> 6] |= 1ull << (c & 63);
+            key[s] = cells[i] + 1, val[s] = at[l], mark(cells[i], true);
         }
         used = n[2], on = ok && p == end;
     }
     if (!on) *this = SharpLand{};
     else TraceLog(LOG_INFO, "exact land: %u cells, %u lists, %u hexahedra, %.1f MB", n[2], n[3], n[0],
-                  (planes.size() * 16 + top.size() * 4 + bits.size() * 8 + (hexP0.size() + key.size() + val.size() + pool.size()) * 4) / 1048576.0);
+                  bytes() / 1048576.0);
     return on;
 }
 
@@ -114,8 +123,8 @@ bool SharpLand::inside(uint32_t hex, Vector3 p) const {
     return true;
 }
 
-uint32_t SharpLand::add(const std::vector<signed char> &d, const Vector3 *c) {
-    if (!on) on = true, bits.assign((CELLS + 63) / 64, 0), key.assign(1024, 0), val.assign(1024, 0);
+uint32_t SharpLand::add(const Bricks<signed char> &d, const Vector3 *c) {
+    if (!on) on = true, bits.assign(Terrain::chunks(), {}), key.assign(1024, 0), val.assign(1024, 0);
     const uint32_t id = cell(c, -1), p0 = hexP0[id], np = (uint32_t)planes.size() - p0;
     Vector3 lo = c[0], hi = c[0];
     for (int k = 0; k < 8; k++) lo = Vector3Min(lo, c[k]), hi = Vector3Max(hi, c[k]);
@@ -186,18 +195,21 @@ void SharpLand::compact() {  // drops the dead lists and the slots of cells no l
     key.swap(k2), val.swap(v2), pool.swap(p2), used = live, dead = 0;
 }
 
+void SharpLand::mark(size_t c, bool listed) {
+    std::vector<uint64_t> &b = bits[c >> 15];
+    if (b.empty() && !listed) return;
+    if (b.empty()) b.assign(512, 0);
+    b[(c >> 6) & 511] = (b[(c >> 6) & 511] & ~(1ull << (c & 63))) | (uint64_t)listed << (c & 63);
+}
+
 void SharpLand::setOps(size_t c, const uint32_t *o, uint32_t n) {
     if ((used + 1) * 4 > key.size() * 3) compact();
     uint32_t m = (uint32_t)key.size() - 1, s = hashc(c) & m;
     while (key[s] && key[s] != c + 1) s = (s + 1) & m;
     if (!key[s]) key[s] = (uint32_t)c + 1, used++;
     else if (mixed(c)) dead += pool[val[s]] + 1;
-    if (!n) bits[c >> 6] &= ~(1ull << (c & 63));
-    else {
-        val[s] = (uint32_t)pool.size();
-        pool.push_back(n), pool.insert(pool.end(), o, o + n);
-        bits[c >> 6] |= 1ull << (c & 63);
-    }
+    if (n) val[s] = (uint32_t)pool.size(), pool.push_back(n), pool.insert(pool.end(), o, o + n);
+    mark(c, n);
     if (dead > 4096 && dead * 2 > pool.size()) compact();
 }
 
@@ -339,21 +351,22 @@ void SharpLand::drop(const std::vector<uint32_t> &hexes) {
     std::vector<bool> gone(hexP0.size(), false);
     for (uint32_t h : hexes) if (h < gone.size()) gone[h] = true;
     std::vector<uint32_t> o;
-    for (size_t w = 0; w < bits.size(); w++)
-        for (uint64_t b = bits[w]; b; b &= b - 1) {
-            size_t c = w * 64 + __builtin_ctzll(b);
-            const uint32_t *p = ops(c);
-            o.clear();
-            for (uint32_t i = 1; i <= p[0]; i++) {
-                bool hex = (p[i] & KIND) == HEX;
-                if (!hex || !gone[p[i] & ID]) { o.push_back(p[i]); if (hex) o.push_back(p[i + 1]); }
-                i += hex;
+    for (size_t k = 0; k < bits.size(); k++)
+        for (size_t w = 0; w < bits[k].size(); w++)
+            for (uint64_t b = bits[k][w]; b; b &= b - 1) {
+                size_t c = k << 15 | w * 64 | __builtin_ctzll(b);
+                const uint32_t *p = ops(c);
+                o.clear();
+                for (uint32_t i = 1; i <= p[0]; i++) {
+                    bool hex = (p[i] & KIND) == HEX;
+                    if (!hex || !gone[p[i] & ID]) { o.push_back(p[i]); if (hex) o.push_back(p[i + 1]); }
+                    i += hex;
+                }
+                if (o.size() != p[0]) setOps(c, o.data(), (uint32_t)o.size());
             }
-            if (o.size() != p[0]) setOps(c, o.data(), (uint32_t)o.size());
-        }
 }
 
-void SharpLand::carve(const std::vector<signed char> &d, Vector3 c, float r, int box[6]) {
+void SharpLand::carve(const Bricks<signed char> &d, Vector3 c, float r, int box[6]) {
     if (!on) return;
     const uint32_t id = (uint32_t)sph.size();
     sph.push_back({c.x, c.y, c.z, r});
@@ -384,7 +397,7 @@ void SharpLand::carve(const std::vector<signed char> &d, Vector3 c, float r, int
             }
 }
 
-void SharpLand::weld(const std::vector<signed char> &d, Vector3 c, Vector3 half) {
+void SharpLand::weld(const Bricks<signed char> &d, Vector3 c, Vector3 half) {
     if (!on) return;
     const uint32_t id = (uint32_t)box.size() / 2;
     box.push_back(c), box.push_back(half);

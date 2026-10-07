@@ -115,7 +115,8 @@ void setState(Game &live, const Game &from) {
 }
 void markChunks(Terrain &t, int v) {  // chunk cells sample one voxel past their bounds
     const int CS = Terrain::CS, CX = Terrain::CX, CY = Terrain::CY;
-    int x = v % Terrain::NX, y = v / Terrain::NX % Terrain::NY, z = (int)(v / Terrain::SXY);
+    int x, y, z;
+    Terrain::xyz(v, x, y, z);
     for (int cz = std::max(z - 1, 0) / CS; cz <= std::min(z + 1, Terrain::NZ - 1) / CS; cz++)
         for (int cy = std::max(y - 1, 0) / CS; cy <= std::min(y + 1, Terrain::NY - 1) / CS; cy++)
             for (int cx = std::max(x - 1, 0) / CS; cx <= std::min(x + 1, Terrain::NX - 1) / CS; cx++) t.dirty[(cz * CY + cy) * CX + cx] = true;
@@ -151,8 +152,8 @@ uint32_t Snapshot::restore(Game &live, uint32_t upTo) {
     bool kept = stop == 0 && t.rewindMeshes();  // the meshes drawn at take() are the restored land's
     for (size_t i = log.size(); i-- > stop;) {  // newest first: the oldest value of a voxel wins
         int v = log[i].first < 0 ? -1 - log[i].first : log[i].first;  // negative: a voxel a girder made steel
-        if (log[i].first < 0) t.steel[v] = false;
-        else t.d[v] = log[i].second;
+        if (log[i].first < 0) t.steel.set(v, 0);
+        else t.d.set(v, log[i].second);
         if (!kept) markChunks(t, v);
     }
     log.resize(stop);
@@ -169,8 +170,8 @@ bool Snapshot::forward(Game &live) {
     bool kept = t.forwardMeshes();
     for (auto [v, val] : redo) {
         int i = v < 0 ? -1 - v : v;
-        if (v < 0) t.steel[i] = true;
-        else t.d[i] = val;
+        if (v < 0) t.steel.set(i, 1);
+        else t.d.set(i, val);
         if (!kept) markChunks(t, i);
     }
     redo.clear();

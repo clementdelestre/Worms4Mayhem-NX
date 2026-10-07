@@ -27,7 +27,9 @@ Repository-level scripts in `tests/` (run from the repository root, they build t
 
 Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU match, per-section ms, draw calls per frame and worst frame);
 `W4NX_BENCH=<frames> ./worms4nx --shot <weapon index> [map]` (that weapon fired, e.g. 15 Airstrike, 18 Concrete Donkey:
-the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup and match loading.
+the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup and match loading; `make obj/bin/map_bench` then
+`obj/bin/map_bench <maps...>` (map memory, load steps, mesh, `sample` cost, carve + remesh) and `obj/bin/map_bench all` (per map a
+hash of the land content, unchanged by a format change: see "Map size").
 
 ### Frame pacing and hitch log (ours, 2026-10-05)
 
@@ -158,23 +160,21 @@ Log lines to read on Switch:
   `read()` loop in blocks up to 4 MB (`readFile` in models.cpp), so the time is the SD's own and MB/s its real throughput.
 - `BOOT: match assets in <ms> after start; ...`: the same totals once the first loading screen took the background loads.
 - `MAP: <name> grid NXxNYxNZ, voxels <MB>, cells <MB>, load <ms> (vox, cells, mesh, navgrid)`: each match's map once its
-  chunks are meshed. voxels = density + materials + steel bits, cells = the exact land (`SharpLand::bytes`); vox =
+  chunks are meshed. voxels = the density, material and steel blocks (`Terrain::voxelBytes`), cells = the exact land (`SharpLand::bytes`); vox =
   `.vox` + `.thin` read and decode, cells = `.cells`, mesh = the loading screen's mesh step (main thread), navgrid =
   the node grid and worm placement in `Game::start`; load = their sum.
 - `MEM: malloc in use <MB> of <MB> reserved[, RSS <MB>]; known: terrain, textures, models = <MB>`: after each load and every
   10 s with PACE. malloc = newlib `mallinfo` (Switch) / glibc `mallinfo2` (desktop): `uordblks` + `hblkhd`, `arena` + `hblkhd`
   (`svcGetInfo` UsedMemorySize is the whole heap libnx reserves at start, so it is not used). known = what the code can
-  count: terrain = density, materials, steel bits, exact cells, shadow columns, chunk meshes (`Terrain::bytes`); textures =
+  count: terrain = voxel blocks, exact cells, shadow columns, chunk meshes (`Terrain::bytes`); textures =
   the GPU textures raylib logs (size x format, +1/3 with mips; video memory, shared with RAM on Switch, not in malloc);
   models = mesh arrays and sampled clips (`Models::bytes`).
 
-Loading screen, 2026-10-07 [ours]: `Terrain::loadVoxels` decodes the `.vox` on 3 joined workers over voxel ranges that start
-on a density code (the streams are only walked to find them; the result is byte-identical, crc32 of `d` and `mats` checked
-against an independent decoder). `Terrain::meshInitial` builds the chunk geometry on 3 joined workers (cores 0-2, an atomic
-chunk counter; all-air / all-solid chunks return after `chunkGeometry`'s sign scan) while the main thread uploads within 8 ms
-per frame; the chunks swap in together at the end. NoRoomForError, desktop, warm cache: vox 253 -> 112-135 ms (now bound by
-the 249 MB `reset` fill + the `mats` zero fill), mesh 555 -> 176-250 ms, load 862 -> 343-458 ms. Switch estimate at 7x:
-vox ~0.8 s, mesh ~1.3 s (3 cores) against 1.3 s and 5.1 s in the log [assumed until a log confirms].
+Loading screen, 2026-10-07 [ours]: `Terrain::loadVoxels` decodes the `.vox` chunks on 3 joined workers (docs/maps.md
+`voxels`). `Terrain::meshInitial` builds the chunk geometry on 3 joined workers (cores 0-2, an atomic
+chunk counter; a chunk whose sampled chunks are each one value of one sign returns before any voxel read, other all-air /
+all-solid chunks after `chunkGeometry`'s sign scan) while the main thread uploads within 8 ms
+per frame; the chunks swap in together at the end. Timings: "Map size" below.
 
 Background load estimate on Switch [assumed until a log confirms]: the 42 s of read time in the log is the sum over 3 threads
 reading at once (146.6 MB, ~3.5 MB/s each); one reader in big blocks at 40-60 MB/s needs 2.5-4 s for the same bytes (`read()`
@@ -224,6 +224,41 @@ priority; the main thread pays one upload (~1-2 ms) per picture shown.
 Left as is: the UI PNGs are stored uncompressed (`back/loadbackgeneric` 8.3 MB of the 23.6 MB menu art); a lossless
 recompression at import trades SD reads for inflate time, to be measured on Switch first. Map previews in the setup screen
 and the HUD art (`warmHud`, behind the loading screen) still load on first use.
+
+### Map size (sparse voxels, chunked deflated files; 2026-10-07) [ours]
+
+Voxels stored per 32³ chunk (`Bricks`, docs/sim.md "Movement and collisions"), the exact land's cell bits per chunk, the `.vox`
+deflated per chunk, the `.cells` with dynamic-Huffman deflate, ranked list codes and byte-plane heightmap, the `.thin` deflated
+(docs/maps.md, docs/w4m/formats.md §22). Content unchanged: `map_bench all` (tests/map_bench.cpp: density, materials, exact
+land lists, thin cells in x, y, z order) gives the same 221 hashes before and after the reimport; ai_check and mission_check
+print the same results (the AI's `samples` count and every outcome).
+
+Desktop, warm cache, `map_bench` (2 runs after; voxels = `Terrain::voxelBytes`, terrain = `Terrain::bytes` once meshed):
+
+| | NoRoomForError 640x608x640 | Multi_TheWindyWizard 608x320x608 | Deathmatch3 448x288x608 |
+|---|---|---|---|
+| voxels MB | 475.0 -> 25.7 | 350.3 -> 20.6 | 312.3 -> 18.8 |
+| cells MB | 53.3 -> 25.4 | 37.6 -> 24.8 | 34.5 -> 26.3 |
+| terrain MB | 552.3 -> 75.1 | 404.5 -> 62.1 | 363.5 -> 61.9 |
+| disk .vox + .cells + .thin MB | 7.75 -> 2.90 | -> 2.23 | 4.47 -> 2.46 |
+| vox (read + decode) ms | 115 -> 15-17 | 23 -> 9 | 26 -> 8 |
+| cells ms | 56 -> 55-58 | 43 -> 42-43 | 45 -> 43-44 |
+| `remesh(0)` (textures, shadow columns) ms | 113 -> 40-43 | 124 -> 26-27 | 121 -> 29-32 |
+| mesh (`meshInitial`) ms | 179 -> 162-180 | 122 -> 123-124 | 111 -> 114-116 |
+| carve r 2.5 m ms | 0.39 -> 0.40-0.41 | 0.38 -> 0.39 | 0.42 -> 0.43-0.45 |
+| its remesh ms (16 carves) | 3.6 -> 3.7-3.8 | 3.2 -> 3.5-3.6 | 4.8 -> 5.1-5.3 |
+| `sample` / `field` ns | 51.1 / 29.2 -> 49.9-52.2 / 27.9-28.1 | 53.0 / 27.6 -> 52.2-56.8 / 27.7 | 56.9 / 26.9 -> 58.2-61.8 / 28.0 |
+
+All 221 maps: `.vox` 385.1 -> 125.6 MB, `.cells` 404.4 -> 267.3 MB, `.thin` 11.9 -> 5.4 MB, 801 -> 398 MB; the maps directory 812 ->
+431 MB. Game, `--bench NoRoomForError`: `MAP: ... voxels 25.7 MB, cells 25.4 MB, load 238 ms (vox 17, cells 52, mesh 168,
+navgrid 1)`, `MEM: malloc in use 443 MB, RSS 534; known: terrain 75`. ai_check planning, 4 runs each, same build otherwise:
+413.7, 397.9, 475.7, 423.9 ms per turn before, 435.4, 434.1, 437.0, 434.3 after; worst tick 1.9-2.5 ms before, 1.5-4.9 after
+(the spread of both is the machine's). A carve's first change in a chunk copies its shared block (32 KB): arabian's first 16
+carves 0.06 -> 0.29 ms each, the next 16 0.07.
+
+Switch estimate (7x CPU, SD 9-23 MB/s from swlog5) [assumed until a log confirms]: NoRoomForError's terrain 576 -> ~80 MB of
+malloc (1335 -> ~840 MB in use); its MAP step vox 472 ms -> ~0.15-0.25 s (1.2 MB read, 3 cores decoding), cells 360 ms ->
+~0.3 s (1.7 MB read instead of 2.5), mesh 356 ms unchanged, the shadow columns ~0.5 s shorter; explosions and the AI unchanged.
 
 ### Render budget (ours, `--bench <map> 600`)
 

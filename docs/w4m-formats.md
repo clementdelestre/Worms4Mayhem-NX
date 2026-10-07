@@ -93,7 +93,7 @@ Locations: the worm (`W4.Worm`, 34 bones, 329 clips) is in `Bundl474`; weapons, 
 
 ### Conversion (`tools/w4m-models`)
 
-Each model is normalised (feet or centre at the origin, size from a table) and written as `client/assets/models/<name>.glb` with stored-deflate PNG textures. Static models get their rest pose baked into the vertices. Skinned ones (worm, sheep) get one flat joint node per bone with an identity inverse bind matrix, and every clip is sampled at 30 fps into that joint's full skinning matrix (TRS). raylib then rebuilds `inverse(bind) * pose` without a node hierarchy or shear. raylib-nx skins on the CPU (`SUPPORT_GPU_SKINNING 0`): `Models::draw` poses the shared mesh right before each draw and skips it when the pose has not changed.
+Each static model is normalised (bbox centre at the origin, size from a table); the worm keeps W4M's frame: raw units x 0.05 m, origin at the worm's Position (the mesh node's own origin sits at Position + (0, 3, 0) units, 0x5a00b0) and written as `client/assets/models/<name>.glb` with stored-deflate PNG textures. Static models get their rest pose baked into the vertices. Skinned ones (worm, sheep) get one flat joint node per bone with an identity inverse bind matrix, and every clip is sampled at 30 fps into that joint's full skinning matrix (TRS). raylib then rebuilds `inverse(bind) * pose` without a node hierarchy or shear. raylib-nx skins on the CPU (`SUPPORT_GPU_SKINNING 0`): `Models::draw` poses the shared mesh right before each draw and skips it when the pose has not changed.
 
 ### Frontend title scene (`tools/w4m-models`, `client/src/frontbg.cpp`)
 

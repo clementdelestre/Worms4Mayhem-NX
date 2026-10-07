@@ -5,9 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 // (output name, XMeshDescriptor name, target size in metres (0 = raw units, for meshes held at the worm's WeaponLocator),
-// origin at the feet instead of the centre, clips; none = static)
+// origin at W4M's Position (the worm: raw units x 0.05 m, mesh node at Position + 3 units) instead of the centre, clips; none = static)
 const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
-    ("worm", "W4.Worm", 1.25, true, WORM_CLIPS),
+    ("worm", "W4.Worm", 0.0, true, WORM_CLIPS),
     ("bazooka", "Bazooka.Payload", 0.8, false, &[]),
     ("grenade", "Grenade.Payload", 0.5, false, &[]),
     ("cluster", "ClusterGrenade", 0.5, false, &[]),
@@ -53,7 +53,6 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("scouser", "InflatedScouser", 1.4, false, &[]),
     ("sentry", "SentryGun", 1.0, false, &[]),
     ("hold_bat", "BaseballBat", 0.0, false, &[]),
-    ("wxpmesh7", "Particle.WXPMesh7", 0.0, false, &["WXM_DefSource"]),  // PARTTWK WXP_DonkeyStrikeBounce MeshSet, raw units
     ("hold_sniper", "SniperRifle", 0.0, false, &[]),
     ("hold_bow", "Bow", 0.0, false, &["Rest", "DrawBow", "HoldBow", "TauntBow", "Windup", "FireBow"]),  // WAE_Mechanical plays Windup / FireBow itself (0x58dc1a, 0x58dcd1)
     ("hold_flood", "Flood.Weapon", 0.0, false, &["DrawFlood"]),  // WAE_Mechanical Init plays DrawFlood once on it (0x58d89f)
@@ -840,10 +839,11 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     };
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for pt in &s.parts { for (i, &v) in pt.pos.iter().enumerate() { let q = place(pt, v, 1.0, i); for k in 0..3 { lo[k] = lo[k].min(q[k]); hi[k] = hi[k].max(q[k]); } } }
-    let ext = if feet { hi[1] - lo[1] } else { (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f32::max) };
+    let ext = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f32::max);
     let k = if size > 0.0 { size / ext.max(1e-6) } else { 1.0 };
-    let c = [(lo[0] + hi[0]) / 2.0, if feet { lo[1] } else { (lo[1] + hi[1]) / 2.0 }, (lo[2] + hi[2]) / 2.0];
-    let norm = if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
+    let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
+    // W4M: 20 units per metre, mesh node at Position + (0, 3, 0) units (WXWormGraphicEntity 0x5a00b0)
+    let norm = if feet { mul(&sc([0.05; 3]), &tr([0.0, 3.0, 0.0])) } else if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
     const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate
     // Blend: the worm's WormPoseManager control node (arm modes in Translate.x/y, head/eye mode in Rotate.y)

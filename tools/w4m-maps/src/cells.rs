@@ -1,6 +1,6 @@
-// <stem>.cells "W4C1": the exact land per 0.25 m cell (client sharp.h, format docs/w4m/formats.md). Each cell a surface crosses
+// <stem>.cells "W4C2": the exact land per 0.25 m cell (client sharp.h, format docs/w4m/formats.md). Each cell a surface crosses
 // lists the primitives that reach it: a W4M poxel cell (with the mask of its planes cutting the cell), or the heightmap patch.
-use super::{cross, dot, sub, nx, ny, nz, FACES, V3, VOX};
+use super::{ci, cross, deflate::deflate, dot, sub, nx, ny, nz, FACES, V3, VOX};
 use std::collections::HashMap;
 
 const HEX: u32 = 0;
@@ -10,6 +10,7 @@ const KIND: u32 = 7 << 29;
 const ID: u32 = (1 << 29) - 1;
 
 fn cid(x: usize, y: usize, z: usize) -> usize { (z * ny() + y) * nx() + x }
+const RECENT: usize = 4096;  // list codes: recent lists ranked
 
 struct Land { planes: Vec<[f32; 4]>, p0: Vec<usize>, top: Vec<f32>, lists: HashMap<u32, u32>, pool: Vec<u32> }
 
@@ -156,14 +157,19 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
         };
         if (q[i] > 0) != state { q[i] = if state { 1 } else { -1 }; fixed += 1; }
     } } }
-    // identical lists stored once; varints: a list is its op count, then per op kind | id delta << 3 (a hexahedron's
-    // delta from the list's previous one, then its mask); a cell is its index delta - 1, then its list's number
-    let mut cells: Vec<(u32, u32)> = land.lists.into_iter().collect();
+    // identical lists stored once, numbered by first use; varints: a list is its op count, then per op kind | id delta << 3
+    // (a hexahedron's delta from the list's previous one, then its mask); cells: every index delta - 1, then every list code
+    // (0: the next new list, 1..=RECENT: rank among the recent lists, else RECENT + 1 + number)
+    let mut cells: Vec<(u32, u32)> = land.lists.into_iter().map(|(c, o)| {
+        let c = c as usize;
+        (ci(c % nx(), c / nx() % ny(), c / (nx() * ny())) as u32, o)
+    }).collect();
     cells.sort_unstable();
     let (mut ids, mut lists, mut cs, mut nl) = (HashMap::new(), Vec::new(), Vec::new(), 0u32);
-    let mut prev = -1i64;
+    let (mut prev, mut codes, mut recent) = (-1i64, Vec::new(), Vec::new());
     for &(c, o) in &cells {
         let l = &land.pool[o as usize + 1..o as usize + 1 + land.pool[o as usize] as usize];
+        let fresh = !ids.contains_key(l);
         let id = *ids.entry(l).or_insert_with(|| {
             let (mut ops, mut last, mut j) = (Vec::new(), 0, 0);
             while j < l.len() {
@@ -176,68 +182,29 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
             nl - 1
         });
         varint(&mut cs, (c as i64 - prev - 1) as u32);
-        varint(&mut cs, id);
         prev = c as i64;
+        let tail = recent.len().saturating_sub(RECENT);
+        codes.push(match recent[tail..].iter().rposition(|&r| r == id) {
+            _ if fresh => 0,
+            Some(p) => { recent.remove(tail + p); (recent.len() - tail - p + 1) as u32 }
+            None => (RECENT + 1) as u32 + id,
+        });
+        recent.push(id);
+        if recent.len() > 2 * RECENT { recent.drain(..recent.len() - RECENT); }
     }
+    for v in codes { varint(&mut cs, v); }
     let has_top = land.top.iter().any(|t| !t.is_nan());
     let mut b = Vec::new();
     for n in [hexes.len(), if has_top { nx() * nz() } else { 0 }, cells.len(), nl as usize, lists.len(), cs.len()] { b.extend((n as u32).to_le_bytes()); }
     b.extend(out);
-    if has_top { for v in &land.top { b.extend(v.to_le_bytes()); } }
+    if has_top { for k in 0..4 { b.extend(land.top.iter().map(|v| v.to_le_bytes()[k])); } }  // byte planes: the exponents pack
     b.extend(lists);
     b.extend(cs);
-    let mut f = b"W4C1".to_vec();
+    let mut f = b"W4C2".to_vec();
     f.extend((b.len() as u32).to_le_bytes());
     f.extend(deflate(&b));
     let msg = format!("{} exact cells ({} twisted hexahedra), {fixed} signs fixed, {} KB", cells.len(), twisted, f.len() / 1024);
     (f, msg)
-}
-
-// raw DEFLATE (RFC 1951): one fixed-Huffman block, greedy matches over hash chains (the client inflates it with raylib's sinflate)
-fn deflate(d: &[u8]) -> Vec<u8> {
-    const LBASE: [usize; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
-    const LEXT: [u32; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
-    const DBASE: [usize; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
-    const DEXT: [u32; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
-    let (mut out, mut acc, mut nb) = (Vec::new(), 0u64, 0u32);
-    let mut bits = |v: usize, n: u32| {
-        acc |= (v as u64) << nb;
-        nb += n;
-        while nb >= 8 { out.push(acc as u8); acc >>= 8; nb -= 8; }
-    };
-    let code = |s: usize| match s { 0..=143 => (0x30 + s, 8), 144..=255 => (0x190 + s - 144, 9), 256..=279 => (s - 256, 7), _ => (0xc0 + s - 280, 8) };
-    let rev = |c: usize, n: u32| (c as u32).reverse_bits() as usize >> (32 - n);
-    bits(3, 3);  // last block, fixed codes
-    let hash = |i: usize| ((d[i] as usize) << 10 ^ (d[i + 1] as usize) << 5 ^ d[i + 2] as usize) & 0x7fff;
-    let (mut head, mut prev) = (vec![usize::MAX; 1 << 15], vec![usize::MAX; d.len()]);
-    let link = |i: usize, head: &mut Vec<usize>, prev: &mut Vec<usize>| if i + 3 <= d.len() { let h = hash(i); prev[i] = head[h]; head[h] = i; };
-    let mut i = 0;
-    while i < d.len() {
-        let (mut best, mut dist, mut j, mut chain) = (0, 0, if i + 3 <= d.len() { head[hash(i)] } else { usize::MAX }, 64);
-        while j != usize::MAX && i - j <= 32768 && chain > 0 {
-            let max = 258.min(d.len() - i);
-            let l = (0..max).find(|&l| d[j + l] != d[i + l]).unwrap_or(max);
-            if l > best { best = l; dist = i - j; if l == max { break; } }
-            j = prev[j];
-            chain -= 1;
-        }
-        if best < 3 { best = 1; let (c, n) = code(d[i] as usize); bits(rev(c, n), n); }
-        else {
-            let li = LBASE.iter().rposition(|&b| b <= best).unwrap();
-            let (c, n) = code(257 + li);
-            bits(rev(c, n), n);
-            bits(best - LBASE[li], LEXT[li]);
-            let di = DBASE.iter().rposition(|&b| b <= dist).unwrap();
-            bits(rev(di, 5), 5);
-            bits(dist - DBASE[di], DEXT[di]);
-        }
-        for k in i..i + best { link(k, &mut head, &mut prev); }
-        i += best;
-    }
-    let (c, n) = code(256);
-    bits(rev(c, n), n);
-    bits(0, 7);
-    out
 }
 
 fn varint(out: &mut Vec<u8>, mut v: u32) {

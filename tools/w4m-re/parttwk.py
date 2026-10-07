@@ -16,6 +16,8 @@ from xom import Xom, varint
 ROOTS = ['XXX_PlaceholderPP', 'WXP_RainFall', 'WXP_RainFallBG', 'WXP_ExplosionX_Med', 'WXP_Explosion_Small', 'WXP_ExplosionX_Large',
          'WXP_Wep_Fatkins', 'WXP_Poof_VFast', 'WXP_StormCloud',
          'WXP_LandMineUpShot', 'WXP_MineMachineShot', 'WXP_Explosion_MineMachine']  # MineFactoryLogicEntity 0x5cf667, 0x5cfc70
+ROOTS += ['WXP_DonkeyStrikeBounce']  # Concrete Donkey blast mesh crown (the puffs are hand-written)
+ROOTS += ['WXP_WaterSplash', 'WXP_WaterSmallSplash', 'WXP_WaterLargeSplash', 'WXP_WormDrownPopSplash']  # water: Drowning 0x5ad640, death blast 0x5a9400, crates, WEAPTWK SplashFx / SplishFx
 ROOTS += ['WXP_Explosion_Mine', 'WXP_Napalm']  # Landmine DetonationFx; its kDT_Fire FX (Detonate 0x5813cc)
 FIELDS = ['EmitterType', 'SpriteSet', 'MeshSet', 'MeshAnimNodeName', 'EmitterLifeTime', 'EmitterLifeTimeRandomise', 'EmitterMaxParticles',
           'EmitterNumSpawn', 'EmitterNumSpawnRadnomise', 'EmitterOriginOffset', 'EmitterOriginRandomise', 'EmitterParticleExpireFX',
@@ -76,8 +78,10 @@ def main(a):
     for f in glob.glob(os.path.join(assets, 'scripts', '*.lub')):  # mission scripts: Particle.Name / lib_CreateEmitter constants
         names.update(m.decode() for m in re.findall(rb'WXP[LS]?_[A-Za-z0-9_]+', open(f, 'rb').read()))
     for f in glob.glob(os.path.join(assets, 'scripts', '*.json')):  # their movies' Critical CreateEmitter / CreateExplosion effects
-        for ev in json.load(open(f)).get('movies', {}).values():
-            names.update(e[i] for e in ev for i in ([1] if e[0] == 'CreateEmitter' else [7] if e[0] == 'CreateExplosion' else []) if e[i])
+        for tracks in json.load(open(f)).get('movies', {}).values():  # movie = tracks of events [Type, time, flags, args...]
+            for e in (e for track in tracks for e in track):
+                i = {'CreateEmitter': 3, 'CreateExplosion': 9}.get(e[0])
+                if i is not None and i < len(e) and e[i]: names.add(e[i])
     effects, emitters, sets = {}, {}, {'sprite Particle.RainSplash'}  # RainGraphicEntity's splashes (0x482910)
     todo = sorted(names)
     while todo:

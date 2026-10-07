@@ -21,7 +21,7 @@ static int colTop(const Terrain &t, NodeCache &c, int x, int z) {
     int16_t &top = c.tops[(size_t)z * Terrain::NX + x];
     if (top == -2) {
         top = -1;
-        for (int y = Terrain::NY - 1; y >= 0 && top < 0; y--, c.reads++) if (t.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] > 0) top = (int16_t)y;
+        for (int y = Terrain::NY - 1; y >= 0 && top < 0; y--, c.reads++) if (t.d[Terrain::idx(x, y, z)] > 0) top = (int16_t)y;
     }
     return top;
 }

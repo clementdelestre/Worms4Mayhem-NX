@@ -24,8 +24,8 @@ namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, DROP, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, MIST, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
-const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_005", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
+enum Tex { GLOW, PUFF, FIRE, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, RING, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, MIST, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
+const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
 const int MAX = 1024;
 
 struct Emit;
@@ -110,13 +110,6 @@ Vector3 sunAt{};
 int flareSet = 0;
 float flareFade = 0, flareOwed = 0;
 Texture2D flareTex{};
-// Particle.WXPMesh7 emitters (one particle each): ParticleSize as (xz, y) like the sprites' aspect [assumed]
-Model domeModel{};
-struct Dome { Vector3 p; float sxz, sy, age; };
-std::vector<Dome> domes;
-// WXM_DefSource scales 0 -> 1 then holds (no LOOP:); its material alpha key reaches no CG program (materialDiffuseCol is a constant in
-// FixedFunction.cg), so the dome stays for ParticleLife 5000 ms
-constexpr float DOME_LIFE = 5;
 Color fogCol = {120, 170, 230, 255};
 uint32_t seed = 12345;
 
@@ -358,7 +351,7 @@ const std::vector<const Emit *> STARBURST = {&SB_GLOWS, &SB_TRAILS_A, &SB_TRAILS
 // ---- data effects: assets/fx/parttwk.json (tools/w4m-re/parttwk.py), started by name like ParticleHandlerService 0x5c09d0 ----
 // PARTTWK MeshSet: models/fx/<name>.glb, MeshAnimNodeName clips; its .blend (tools/w4m-models): first part's XBlendModeGL and the clip's
 // texture offset change (u, v over t1 s, 2-key linear)
-struct MeshSet { std::string model, clip, clip2; int src = -1, dst = -1; float u = 0, v = 0, t1 = 0; };
+struct MeshSet { std::string model, clip, clip2; bool loop = false; int src = -1, dst = -1; float u = 0, v = 0, t1 = 0; };
 std::vector<MeshSet> meshes;
 std::deque<Emit> dataEmits;
 int rainSplashTex = -1;
@@ -411,13 +404,15 @@ void loadData() {
         e.head = set.find(',') != std::string::npos;  // "A,B": B drawn at the particles (0x5bc735)
         if (c["MeshSet"].size() && !c["MeshSet"][0].s().empty()) {
             std::string clips = c["MeshAnimNodeName"].s(), c1, c2;
+            bool loop = false;
             for (size_t k = 0, n = 0; k <= clips.size(); k++)
                 if (k == clips.size() || clips[k] == '+') {
                     std::string part = clips.substr(n, k - n);
+                    if (c1.empty()) loop = lower(part).rfind("loop:", 0) == 0;  // `LOOP:` prefix, any case
                     part = part.substr(part.find(':') + 1);
                     (c1.empty() ? c1 : c2) = part, n = k + 1;
                 }
-            MeshSet ms{lower(c["MeshSet"][0].s()), c1, c2};
+            MeshSet ms{lower(c["MeshSet"][0].s()), c1, c2, loop};
             if (char *b = LoadFileText(TextFormat(DATA_DIR "assets/models/fx/%s.blend", ms.model.c_str()))) {
                 float rot;
                 sscanf(b, "%d %d %f %f %f %f", &ms.src, &ms.dst, &rot, &ms.u, &ms.v, &ms.t1);
@@ -471,7 +466,8 @@ void loadData() {
             {"weapons/fireloop", Audio::Sfx::FireLoop, 1}, {"weapons/steamloop", Audio::Sfx::SteamLoop, 1}, {"weapons/fliesloop", Audio::Sfx::FliesLoop, 1},
             {"weapons/elecarc", Audio::Sfx::ElecArc, 1}, {"weapons/electricarching", Audio::Sfx::ElectricArching, 1},
             {"weapons/hoseintowater", Audio::Sfx::HoseIntoWater, 1}, {"weapons/stormcloud", Audio::Sfx::StormCloud, 0},
-            {"weapons/thud", Audio::Sfx::Land, 0}, {"weapons/bubblemachineloop", Audio::Sfx::BubbleLoop, 2},
+            {"weapons/splashheavy", Audio::Sfx::Splash, 0}, {"weapons/splashlight", Audio::Sfx::SplashLight, 0}, {"weapons/watersurge", Audio::Sfx::WaterSurge, 0},
+            {"weapons/waterexplosion", Audio::Sfx::WaterExplosion, 0}, {"weapons/thud", Audio::Sfx::Land, 0}, {"weapons/bubblemachineloop", Audio::Sfx::BubbleLoop, 2},
             {"global/explosionregular", Audio::Sfx::Explosion, 0}, {"weapons/explosionlarge", Audio::Sfx::BigExplosion, 0},
             {"weapons/floodrainloop", Audio::Sfx::FloodRain, 1}};
         for (const auto &x : SND)
@@ -693,8 +689,6 @@ void load() {
     skyMeshSh = shader(SKYMESH_VS, SKYMESH_FS);
     uvOffLoc = GetShaderLocation(skyMeshSh, "uvOff");
     flareTex = loadTex("hud", "lensflares", false);  // W4M Lens.Flares (LensFlares.tga)
-    if (FileExists(DATA_DIR "assets/models/wxpmesh7.glb")) domeModel = LoadModel(DATA_DIR "assets/models/wxpmesh7.glb");  // raw units, rest scale 1
-    for (int i = 0; i < domeModel.materialCount && skyMeshSh.id != rlGetShaderIdDefault(); i++) domeModel.materials[i].shader = skyMeshSh;
     dome = GenMeshSphere(1, 12, 16);
     plane = GenMeshPlane(1, 1, 1, 1);
     skyMat = LoadMaterialDefault(), waterMat = LoadMaterialDefault();
@@ -775,7 +769,6 @@ void unload() {
         if (t.id) UnloadTexture(t);
     UnloadMesh(dome), UnloadMesh(plane);
     UnloadShader(skySh), UnloadShader(waterSh), UnloadShader(skyMeshSh), UnloadTexture(flareTex);
-    if (domeModel.meshCount) UnloadModel(domeModel), domeModel = {};
     MemFree(skyMat.maps), MemFree(waterMat.maps);
 }
 
@@ -799,7 +792,7 @@ void startLevel() {  // DetailEntity 0x5cd5eb -> 0x5c1410: each live EMITTER_ de
 }
 }  // namespace
 void clear() {
-    domes.clear(), ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), rains.clear(), shake = show = 0, floodT = -1;
+    ps.clear(), streaks.clear(), seen.clear(), seenPrev.clear(), lives.clear(), rains.clear(), shake = show = 0, floodT = -1;
     scriptFx.clear(), shakeLen = 0;
     startLevel();  // the map's emitters are part of the level, not of the moment cleared
     rolled = -1;
@@ -944,13 +937,13 @@ void event(const GameEvent &e, Color dirt) {
     if (e.kind == GameEvent::BubblePop) bubblePop(e.pos);
     bool big = e.kind == GameEvent::BigBoom;
     bool donkey = (e.kind == GameEvent::Boom || big) && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0;
-    if (donkey && domeModel.meshCount) domes.push_back({Vector3Add(e.pos, {0, 0.5f, 0}), 1.2f, 1.3f, 0});  // WXP_DonkeyStrikeBounce: +10 units, (1.2, 1.3)
     if ((e.kind == GameEvent::Boom || big) && e.fx) {
         shake = fmaxf(shake, big ? 0.6f : 0.18f);  // its ExplosionMessage shakes the camera like any blast
         if (const std::vector<const Emit *> *fx = fxNamed(e.fx)) effect(*fx, e.pos);
     } else if (donkey) {
         shake = fmaxf(shake, 0.6f);  // the Explode ExplosionMessage shakes the camera as any blast; its only effect is DetonationFx
         donkeyDust(e.pos);
+        if (const std::vector<const Emit *> *fx = fxNamed("WXP_DonkeyStrikeBounce")) effect(*fx, e.pos);
     } else if (e.kind == GameEvent::Boom && e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun) {
         shake = fmaxf(shake, 0.18f);  // the gun's ExplosionMessage shakes the camera like any blast; its only visual is WormCollisionFX / LandCollisionFX
         gunBlast(e.pos);
@@ -1016,14 +1009,6 @@ void event(const GameEvent &e, Color dirt) {
             add({c, Vector3Scale(Vector3Normalize(d), ray ? rnd(9, 14) : rnd(4, 8)), 0, ray ? rnd(0.3f, 0.45f) : rnd(0.6f, 0.9f), ray ? 0.3f : 0.32f, 0.08f, 0,
                  rnd(-6, 6), ray ? 0.0f : 3.0f, ray ? 4.0f : 2.5f, col, (unsigned char)(ray ? TRAIL_W : STAR), true, ray ? 0.07f : 0});
         }
-    } else if (e.kind == GameEvent::Splash) {
-        for (int i = 0; i < 24; i++) {
-            Vector3 d = {rnd(-1, 1), 0, rnd(-1, 1)};
-            add({e.pos, {d.x * 2.5f, rnd(6, 11), d.z * 2.5f}, -rnd(0, 0.15f), rnd(0.8f, 1.2f), rnd(0.4f, 0.7f), 0.2f, 0, 0, 15, 0.2f, {220, 235, 255, 230}, DROP, false});
-        }
-        add({e.pos, {}, 0, 0.9f, 1, 5, 0, 0, 0, 0, {255, 255, 255, 170}, RING, false});
-        for (int i = 0; i < 8; i++)
-            add({e.pos, {rnd(-1, 1), rnd(1, 4), rnd(-1, 1)}, 0, rnd(0.8f, 1.3f), 0.8f, 2.2f, 0, rnd(-1, 1), 2, 1.5f, {235, 245, 255, 170}, PUFF, false});  // spray
     }
 }
 
@@ -1189,8 +1174,6 @@ void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, floa
 
 void update(float dt) {
     skyT += dt;
-    for (Dome &d : domes) d.age += dt;
-    domes.erase(std::remove_if(domes.begin(), domes.end(), [](const Dome &d) { return d.age >= DOME_LIFE; }), domes.end());
     shake *= expf(-dt * 6);
     if (shakeT < shakeLen) shakeT += dt, shake = fmaxf(shake, fminf(shakeMag * fmaxf(0, 1 - shakeT / shakeLen), SHAKE_MAX));
     // W4M 0x4ffa56, every 20 ms of the 5 s show: rand() % 40 == 0 fires WXPF_Firework<1 + rand() % 5> at Land.Center +- Radius / 2 in x and z,
@@ -1298,22 +1281,6 @@ void drawWater(const Camera3D &cam, float level, float time, float HALF, Vector2
 
 void draw(const Camera3D &cam) {
     camPos = cam.position, camLook = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
-    if (!domes.empty()) {  // unlit, SrcAlpha / OneMinusSrcAlpha (lambert2 XBlendModeGL 6 7), no z write, two-sided [assumed]
-        static const float SCALE[3][6] = {{0.1344f, 0.9907f, 0.1344f, 0.9907f, 0, 0}, {0.8091f, 0.5869f, 0.8091f, 0.5869f, 0.16663f, 0.85498f},
-                                          {0.9995f, 0.0215f, 0.9995f, 0.0215f, 0.83301f, 1}};  // WXM_DefSource scale keys
-        Vector2 off = {0, 0};
-        SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2);
-        rlDrawRenderBatchActive();
-        rlDisableDepthMask(), rlDisableBackfaceCulling();
-        BeginBlendMode(BLEND_ALPHA);
-        for (const Dome &d : domes) {
-            float k = Models::curve(SCALE, 3, d.age) / 20;
-            Matrix m = MatrixMultiply(MatrixScale(d.sxz * k, d.sy * k, d.sxz * k), MatrixTranslate(d.p.x, d.p.y, d.p.z));
-            for (int i = 0; i < domeModel.meshCount; i++) DrawMesh(domeModel.meshes[i], domeModel.materials[domeModel.meshMaterial[i]], m);
-        }
-        EndBlendMode();
-        rlEnableDepthMask(), rlEnableBackfaceCulling();
-    }
     // MeshSet particles (0x5bd665): the mesh at the particle, scale (Size.x, Size.y, Size.x), ParticleOrientation (+ velocity) in XYZ order;
     // no alpha reaches a mesh, so AlphaVelocity < 0 shrinks it to 0 at end of life instead (0x5bd69e)
     for (const Particle &p : ps) {
@@ -1323,14 +1290,14 @@ void draw(const Camera3D &cam) {
         Vector3 o = Vector3Add(p.ori, Vector3Scale(p.oriV, p.age));
         Matrix r = MatrixMultiply(MatrixMultiply(MatrixRotateX(o.x), MatrixRotateY(o.y)), MatrixRotateZ(o.z));
         Matrix w = MatrixMultiply(MatrixMultiply(MatrixScale(sz.x, sz.y, sz.x), r), MatrixTranslate(p.p.x, p.p.y, p.p.z));
-        float f = m.t1 > 0 ? fmodf(p.age, m.t1) / m.t1 : 0;
+        float f = m.t1 > 0 ? (m.loop ? fmodf(p.age, m.t1) : fminf(p.age, m.t1)) / m.t1 : 0;
         Vector2 off = {m.u * f, m.v * f};
         SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2);
         static const int GL_FACTOR[11] = {0, 1, 0x306, 0x307, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305, 0x308};
         rlDrawRenderBatchActive();
         if (m.src >= 0 && m.src < 11 && m.dst >= 0 && m.dst < 11) rlSetBlendFactors(GL_FACTOR[m.src], GL_FACTOR[m.dst], 0x8006), rlSetBlendMode(RL_BLEND_CUSTOM), rlDisableDepthMask();
         rlDisableBackfaceCulling();
-        Models::shade(skyMeshSh), Models::draw(m.model.c_str(), w, WHITE, m.clip.empty() ? nullptr : m.clip.c_str(), p.age), Models::shade({});
+        Models::shade(skyMeshSh), Models::draw(m.model.c_str(), w, WHITE, m.clip.empty() ? nullptr : m.clip.c_str(), p.age, m.loop), Models::shade({});
         rlDrawRenderBatchActive();
         rlSetBlendMode(RL_BLEND_ALPHA), rlEnableDepthMask(), rlEnableBackfaceCulling();
     }

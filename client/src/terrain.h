@@ -1,5 +1,6 @@
 #pragma once
 #include "raylib.h"
+#include "bricks.h"
 #include "sharp.h"
 #include <map>
 #include <string>
@@ -12,15 +13,20 @@ struct Terrain {
     static constexpr int CS = 32;
     static constexpr float WATER = 3.0f, VOX = 0.25f, IVOX = 4, SUB = 0.125f;  // SUB: sim sub-step and march length, half a voxel
     static constexpr float Q = 254, IQ = 1 / 254.0f;  // density int8 = metres * Q (+-0.5 m)
-    // per map (json "grid"), multiples of CS; generated islands: 352x256x352. SXY: the z stride of d[]
+    // per map (json "grid"), multiples of CS; generated islands: 352x256x352
     static inline int NX = 352, NY = 256, NZ = 352, CX = 11, CY = 8, CZ = 11;
-    static inline size_t SXY = (size_t)352 * 256, TOTAL = SXY * 352;
-    static void setGrid(int nx, int ny, int nz) {
-        NX = nx, NY = ny, NZ = nz, CX = nx / CS, CY = ny / CS, CZ = nz / CS, SXY = (size_t)nx * ny, TOTAL = SXY * nz;
+    static void setGrid(int nx, int ny, int nz) { NX = nx, NY = ny, NZ = nz, CX = nx / CS, CY = ny / CS, CZ = nz / CS; }
+    static size_t chunks() { return (size_t)CX * CY * CZ; }
+    // voxel index: its chunk ((cz * CY + cy) * CX + cx) << 15, then x + 32 y + 1024 z inside the chunk (Bricks)
+    static size_t idx(int x, int y, int z) {
+        return (((size_t)(z >> 5) * CY + (y >> 5)) * CX + (x >> 5)) << 15 | (x & 31) | (y & 31) << 5 | (z & 31) << 10;
     }
-    static size_t idx(int x, int y, int z) { return x + (size_t)y * NX + z * SXY; }
+    static void xyz(size_t i, int &x, int &y, int &z) {
+        const size_t c = i >> 15;
+        x = (int)(c % CX) * CS + (i & 31), y = (int)(c / CX % CY) * CS + (i >> 5 & 31), z = (int)(c / ((size_t)CX * CY)) * CS + (i >> 10 & 31);
+    }
 
-    std::vector<signed char> d;
+    Bricks<signed char> d;
     SharpLand sharp;  // imported maps: the exact land where the surface runs (.cells); d keeps its signs elsewhere
     struct Part { int mat; Mesh mesh; bool fringe = false; };  // one mesh per (chunk, material), plus its grass fringe cards
     std::vector<std::vector<Part>> parts;
@@ -37,7 +43,7 @@ struct Terrain {
     bool forwardMeshes();  // Snapshot::forward: the live meshes back; false if rewindMeshes() did not run
     std::vector<std::pair<int, signed char>> *undo = nullptr;  // when set, carve() logs (voxel, old density) here
     // girder voxels (W4M kUtilityGirder): ordinary land meshed with theme material 61; empty until a weld()
-    std::vector<bool> steel;  // undo logs a voxel turning steel as (-1 - voxel, 0)
+    Bricks<unsigned char> steel;  // 1: steel; undo logs a voxel turning steel as (-1 - voxel, 0)
     unsigned edits = 0;  // carve() / weld() calls that may have changed a voxel: stamps the AI's per-think caches
     Material mat{};  // loaded on first remesh, so the sim runs without a GL context
 
@@ -53,7 +59,7 @@ struct Terrain {
     std::string theme;  // lowercase theme name (music/<theme>.ogg), empty for the procedural fallback
     std::string time = "day";  // map's "time": day/evening/night (Fx::theme picks the matching sky/water set)
     // Imported maps ("voxels"): per-voxel material (0 = none) indexing palTop/palSide and texture files.
-    std::vector<unsigned char> mats;
+    Bricks<unsigned char> mats;
     std::vector<Color> palTop, palSide;
     std::vector<std::string> texFiles;  // per material: top, side, roof, fringe (paths, "" = none)
     std::vector<Vector2> texRepeat;     // per material: metres per texture repeat (top, side)
@@ -111,6 +117,7 @@ struct Terrain {
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
     void addCell(const Vector3 *c);  // a convex land cell, exact as an imported map's (corners bit 1 +x, 2 +y, 4 +z)
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
+    size_t voxelBytes() const { return d.bytes() + mats.bytes() + steel.bytes(); }  // density, materials, steel
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
     // the first land along unit dir within len (*t from a, *n its normal); exact where listed, else sampled VOX/4 and bisected to
     // the last point out of land (6e-5 m)

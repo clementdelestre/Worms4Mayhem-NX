@@ -202,8 +202,9 @@ Input read(const Game &g, int pad, bool live, float dt) {
         if (homing && blimpOn && zl && !wasZl) blimpOn = false;  // W4M: ZL leaves the Blimp for the first-person aim (lock kept)
     }
     wasY = yDown, wasZl = zl, blimpLive = live;
-    bool canAim = live && g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting, tv = live && blimpable(g) && blimpOn;
-    aimMode = canAim && (forceAim || zl || (g.power > 0 && aimed(weaponDef(g.weapon))));  // a dynamite press charges, it does not aim
+    // HeadCam is left only by Input.FirstPersonReleased or GameLogic.EndTurn (0x528ca0): it outlasts the shot; charging never enters it
+    bool canAim = live && (g.phase == Phase::Aim || g.phase == Phase::Flying || g.phase == Phase::Retreat) && w.alive && !g.roped && !g.jetting, tv = live && blimpable(g) && blimpOn;
+    aimMode = canAim && (forceAim || zl);
     fine = aimMode && (zl || forceAim == 2);
     Vector2 ls = stick(pad, GAMEPAD_AXIS_LEFT_X), rs = stick(pad, GAMEPAD_AXIS_RIGHT_X);
     float turn = 0, walk = 0, aim = 0, inv = settings.invertAim ? -1 : 1;  // rad/s, walk share, rad/s
@@ -350,8 +351,8 @@ Reticle reticle(const Game &g, bool chase) {
     return g.locked && weaponDef(g.weapon).kind == Kind::Homing && g.phase == Phase::Aim && w.alive ? Reticle::Lock : Reticle::None;
 }
 
-// On the sim's shot line (rays and launches start at pos + dir * t): the screen centre is where the shot goes.
-Vector3 eye(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Subtract(w.pos, Vector3Scale(g.aimDir(w), 0.5f)); }
+// HeadCam 0x528ed1: the worm's position + Worm.EyeLevelOffset, where a shot leaves; the screen centre is where it goes.
+Vector3 eye(const Game &g) { const Worm &w = g.worms[g.current]; return {w.pos.x, w.pos.y - Game::R + Game::EYE, w.pos.z}; }
 
 // W4M TrackCam (docs/camera-w4m.md 2), ViewPoints in m (units / 20) around the event point (the predicted impact or landing).
 // Payload: asked at launch only, when its impact point is off screen or its flight to it lasts > 1 s; worm and crate: CutWhenStartOffScreen
@@ -963,7 +964,7 @@ void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, fl
     if (pip.mode) present(pipView, pipCam, evb, g, dt);
 }
 
-Vector3 aimPoint(const Game &g) { const Worm &w = g.worms[g.current]; return Vector3Add(w.pos, Vector3Scale(g.aimDir(w), AIM_FOCUS)); }
+Vector3 aimPoint(const Game &g) { return Vector3Add(eye(g), Vector3Scale(g.aimDir(g.worms[g.current]), AIM_FOCUS)); }
 
 static float amp[4], left[4];
 static bool quiet[4] = {true, true, true, true};

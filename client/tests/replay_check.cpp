@@ -10,7 +10,7 @@
 
 static uint32_t voxels(const Game &g) {
     uint32_t h = 2166136261u;
-    for (signed char v : g.terrain.d) h = (h ^ (uint8_t)v) * 16777619u;
+    for (size_t i = 0; i < g.terrain.d.size(); i++) h = (h ^ (uint8_t)g.terrain.d[i]) * 16777619u;
     return h;
 }
 static double ms(std::chrono::steady_clock::time_point t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }

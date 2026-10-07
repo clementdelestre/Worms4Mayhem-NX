@@ -880,17 +880,17 @@ bool Models::visible(Vector3 c, float r, const Matrix &m) {
     return true;
 }
 
-bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, float t) {
+bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, float t, bool loop) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     Entry &e = it->second;
     int f;
-    if (const ModelAnimation *a = clip ? clipFrame(e, clip, t, true, &f, false) : nullptr) {
+    if (const ModelAnimation *a = clip ? clipFrame(e, clip, t, loop, &f, false) : nullptr) {
         if ((a != e.posed || f != e.frame || e.aimed || e.layered) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, nullptr, -1, nullptr);
         e.posed = a, e.frame = f, e.aimed = nullptr, e.aimFrame = -1, e.layered = false;
     }
     e.m.transform = m;
-    select(e, clip, t, true, nullptr, 0, nullptr);
+    select(e, clip, t, loop, nullptr, 0, nullptr);
     drawModel(e, {0, 0, 0}, tint);
     return true;
 }

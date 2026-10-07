@@ -47,7 +47,7 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | BigExplosion | `big_explosion` | weapons/ExplosionLarge | -12 |  | 0.5–40 | 1 | weapons: ExplosionLarge1 | main.cpp `onEvent`; fx.cpp EmitterSoundFX of WXP_ExplosionX_InnercloudLarge |
 | Fire | `fire` | weapons/RocketRelease | -6 |  | 2D | 1 | weapons: RocketRelease | main.cpp `onEvent` |
 | Bounce | `bounce` | weapons/GrenadeBounce | -2 |  | 0.5–60 | 1 | weapons: GrenadeImpact1, GrenadeImpact2, GrenadeImpact3 | main.cpp `onEvent` |
-| Splash | `splash` | weapons/SplashHeavy | 0 |  | 0.5–70 | 2 | weapons: SplashHeavy1, SplashHeavy2, SplashHeavy3 | main.cpp `onEvent` |
+| Splash | `splash` | weapons/SplashHeavy | 0 |  | 0.5–70 | 2 | weapons: SplashHeavy1, SplashHeavy2, SplashHeavy3 | EmitterSoundFX of WXP_SplashMeshLargeSound / WXP_SplashMeshLarge (`SND`, fx.cpp) |
 | Sheep | `sheep` | weapons/SheepBaa | -3 |  | 0.5–25 | 1 | weapons: SheepBaa | main.cpp `onEvent` |
 | Holy | `holy` | weapons/Hallelujah | 0 |  | 2D | 1 | weapons: Hallelujah | main.cpp `onEvent` |
 | TurnStart | `turn_start` | weapons/HudAlert | -10 |  | 2D | 1 | weapons: HudAlert | main.cpp `onEvent` |
@@ -161,6 +161,10 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | TickSlow | `tick_slow` | weapons/ClockSlow | -2 | yes | 2D | 1 | weapons: ClockSlow | main.cpp `main` (6–15 s, volume min(1, (15 − s) 0.11), 0x5efc40) |
 | FeScaleHit | `fe_scalehit` | global/In_Scalehitxy | 0 |  | 2D | 1 | global: In_Scalehitxy | ui.cpp `Pause::update`: WXFEP.MissionBriefing's Audio_Incoming (kAUDIO_In_ScaleHitXY), at its 200 ms Delay_Incoming [data] |
 | Gong | `gong` | weapons/Gong | -5 |  | 2D | 1 | weapons: Gong | main.cpp `main` (Weapon.NotClearToFire, 0x552630) |
+| SplashLight | `splash_light` | weapons/SplashLight | 0 |  | 0.5–70 | 2 | weapons: SplashLight1..4; layer WaterBounce | EmitterSoundFX of WXP_SplashMesh (`SND`, fx.cpp) |
+| WaterBounce | `water_bounce` | weapons/SplashLight (second sounddef) | 0 |  | 0.5–70 | 2 | weapons: WaterBounce1..3 | started with SplashLight (`Def::layer`, also by `play`) |
+| WaterSurge | `water_surge` | weapons/WaterSurge | 0 |  | 0.5–25 | 1 | weapons: WaterSurge1..3 | EmitterSoundFX of WXP_WaterSplashBaseHoriz |
+| WaterExplosion | `water_explosion` | weapons/WaterExplosion | -4 |  | 0.5–70 | 1 | weapons: WaterExplosion | EmitterSoundFX of WXP_WormPopSplashMesh |
 
 Notes from the code comments: `Homing` (MissileLoop) loops in FEV but its Time envelope
 ends it at 5.03 s, so it is one pass of the 5.85 s clip [ours]: started with a 1 s trigger delay when a Bazooka or Homing Missile shot exists, placed on the shot every frame, stopped at 5.03 s of flight or when the shot is gone (no 500 ms fade-out, the blast covers it); the Fire event plays RocketRelease (2D, -6 dB) for both [data + disasm, docs/w4m/audio.md "MissileLoop owners"]; `Parachute` is the Open layer of ParachuteLoop; `Pickup` uses PickupWeapon's −11 dB for all

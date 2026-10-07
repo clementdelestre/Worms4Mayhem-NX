@@ -59,7 +59,7 @@ language). Each mission JSON carries the keys above. Into `assets/scripts/` (git
 Map markers: every hidden named detail is exported (`locator` when its library is no worm, crate, target, mine, drum, trigger or
 telepad type), so the scripts' spawn, crate and explosion names and the movie camera knots resolve; each carries `dir`, its local -Z in
 the world (TimedPathCam's look, acting.md §19 "Movie cameras"). A map with coded land frames (name "...CODE xxxx", subtree included)
-gets `codes`: per 4-byte code its cells (`hex`, the `.cells` HEX ids) and the voxels only they hold (`vox`, index runs); a detail whose
+gets `codes`: per 4-byte code its cells (`hex`, the `.cells` HEX ids) and the voxels only they hold (`vox`, runs of `Terrain::idx` indices); a detail whose
 name holds a code (Detail.PlayAnim) gets `code` in `objects`; a decor mesh with no Go / GoSync clip lists its first clip in its `.mat`.
 
 ## Scripts

@@ -71,6 +71,7 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
             if (key == "name") w.name = sv;
             if (key == "model") w.model = sv;
             if (key == "icon") w.icon = sv;
+            if (key == "splash") w.splash = sv;
             if (key == "wind") w.wind = b;
             if (key == "avoid_land") w.avoid = b;
             if (key == "user_fuse") w.userFuse = b;
@@ -305,11 +306,11 @@ int substeps(Vector3 vel) { return 1 + (int)(Vector3Length(vel) * Game::DT / Ter
 Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw) {
     float z = dropped(d) ? 13 : d.kind == Kind::Mine ? 10 : d.kind == Kind::Sheep || d.kind == Kind::SuperSheep ? 5 : d.kind == Kind::OldWoman ? 7 : d.kind == Kind::Scouser ? 10 : 0;
     float y = dropped(d) || d.kind == Kind::Mine ? -10 : 0;
-    return {pos.x + sinf(yaw) * z / 20, pos.y - Game::R + (15 + y) / 20, pos.z + cosf(yaw) * z / 20};  // 20 units = 1 m
+    return {pos.x + sinf(yaw) * z / 20, pos.y - Game::R + Game::EYE + y / 20, pos.z + cosf(yaw) * z / 20};  // 20 units = 1 m
 }
 
 Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn) {
-    const Vector3 eye = {pos.x, pos.y - Game::R + 0.75f, pos.z}, d = Vector3Subtract(spawn, eye);
+    const Vector3 eye = {pos.x, pos.y - Game::R + Game::EYE, pos.z}, d = Vector3Subtract(spawn, eye);
     Vector3 p = eye;
     int n = 1 + (int)(Vector3Length(d) / Terrain::SUB);
     for (int k = 1; k <= n; k++) {
@@ -911,6 +912,9 @@ void Game::nextWeapon(int team) {
 // the point a hooked object hangs by: a crate's centre is 10 units above it (0x5cbc86), a drum's collider 9 (0x5d2135)
 static Vector3 ropePoint(const Object &o) { return {o.pos.x, o.pos.y - (o.type == Object::Crate ? 0.5f : o.type == Object::Barrel ? 0.45f : 0), o.pos.z}; }
 static float halfHeight(Object::Type t) { return t == Object::Mine ? 0.15f : t == Object::Barrel || t == Object::Sentry ? 0.5f : 0.45f; }
+// W4M effect height over Water.Level: it quantised to 1/16 unit with the low bit set (0x48b260), plus off units (drown, death blast 1; payload 2)
+static float surfaceY(float water, float off) { return Terrain::WATER + (((int)((water - Terrain::WATER) * 20 * 16) | 1) / 16.0f + off) / 20; }
+
 static bool crateLike(const Object &o) { return o.type == Object::Crate || o.type == Object::Target; }  // W4M CrateLogicEntity: a target is crate type 3
 static bool sheepLike(Kind k) { return k == Kind::Sheep || k == Kind::SuperSheep || k == Kind::OldWoman || k == Kind::Scouser; }  // WEAPTWK ColliderFlags 128: collider 0x88
 
@@ -1039,6 +1043,9 @@ void Game::stepObjects() {
         }
 
         bool gone = o.pos.y < water, boom = o.dead && (o.type == Object::Barrel || crateLike(o));  // 0x5c5810: every crate type blows up
+        if (gone && (crateLike(o) || o.type == Object::Mine))  // crate 0x5c5b70: WaterSmallSplash at y = 1 unit absolute; mine: a Parabolic payload, SplashFx (the drum starts none, 0x5d1e12)
+            emit(GameEvent::Splash, crateLike(o) ? Vector3{o.pos.x, Terrain::WATER + 1.0f / 20, o.pos.z} : Vector3{o.pos.x, surfaceY(water, 2), o.pos.z}),
+                events.back().fx = crateLike(o) ? "WXP_WaterSmallSplash" : "WXP_WaterSplash";
         int det = 0;
         if (o.type == Object::Mine) {
             if (o.courtesy > 0) o.courtesy--;
@@ -1303,8 +1310,7 @@ void Game::stepCount() {
         x.alive = false, x.counted = 0;
         std::vector<int> was;
         for (int j : countGroup) was.push_back(worms[j].hp);
-        explode({x.pos.x, x.pos.y - R, x.pos.z}, DEATH_BLAST);  // 0x5a9400 at the worm's Position (its feet)
-        emit(GameEvent::Death, x.pos, i);
+        deathBlast(x, i);
         for (size_t k = countGroup.size(); k-- > 0;)  // hurt now: shown at the next ApplyDamage
             if (worms[countGroup[k]].hp != was[k]) worms[countGroup[k]].counted = was[k], countGroup.erase(countGroup.begin() + k);
     } else if (shown && !deathQueue.empty() && shots.empty() && !active()) {
@@ -1608,7 +1614,17 @@ void Game::drown(Worm &w) {
     w.alive = false, w.drowned = true, w.floatT = 0;
     w.hp = 0, w.counted = std::max(1, w.counted);  // counted > 0: afloat, drawn until its blast
     if (wi == current) selfHurt = true;  // 0x5ad75c: the active worm posts Worm.Damaged.Current (stdlib EndTurn)
-    emit(GameEvent::Splash, w.pos, wi);
+    emit(GameEvent::Splash, {w.pos.x, surfaceY(water, 1), w.pos.z}, wi), events.back().fx = "WXP_WaterSplash";  // 0x5ad640
+}
+
+// W4M death blast 0x5a9400 at the worm's Position (its feet): WXP_Explosion_Small, lifted to 1 unit over the surface when at or under it;
+// a drowned worm (kWPS_DrownFloat) first starts WXP_WormDrownPopSplash there
+void Game::deathBlast(const Worm &w, int wi) {
+    Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z}, at = feet;
+    if (surfaceY(water, 0) >= feet.y) at.y = surfaceY(water, 1);
+    if (w.drowned) emit(GameEvent::Pop, {w.pos.x, surfaceY(water, 1), w.pos.z}, wi), events.back().fx = "WXP_WormDrownPopSplash";
+    explode(feet, DEATH_BLAST, 0, 0, -1, "WXP_Explosion_Small", &at);
+    emit(GameEvent::Death, w.pos, wi);
 }
 
 // W4M DrownFloat 0x5aa130 per 20 ms, no gravity, toward its feet at Water.Level - 8 units: below and sinking v = (6 v + up) / 7,
@@ -1628,8 +1644,7 @@ void Game::floatStep(Worm &w) {
     w.pos = Vector3Add(w.pos, Vector3Scale(w.vel, DT));
     if (w.floatT && --w.floatT <= 0) {
         w.floatT = 0, w.counted = 0;  // gone: nothing left to draw
-        explode({w.pos.x, w.pos.y - R, w.pos.z}, DEATH_BLAST);
-        emit(GameEvent::Death, w.pos, int(&w - worms.data()));
+        deathBlast(w, int(&w - worms.data()));
     }
 }
 
@@ -2007,7 +2022,7 @@ Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
     return d < b.pushReach && d > 1e-4f ? Vector3Scale(to, b.push * 1.2f * (b.pushReach - d) / b.pushReach / d) : Vector3{0, 0, 0};
 }
 
-void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapon, const char *fx) {
+void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapon, const char *fx, const Vector3 *fxAt) {
     Blast b = b0;  // W4M ExplosionMessage 0x518d80: DoubleDamage doubles the radii and the impulse too (hurt() doubles the damage)
     if (doubled()) b.crater *= 2, b.reach *= 2, b.push *= 2, b.pushReach *= 2;
     for (Bubble &bb : bubbles) bb.rest = 0;  // 0x54effa: any Explosion lets it fall again
@@ -2020,7 +2035,7 @@ void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapo
     }
     if (factory.on && !factory.damaged && Vector3Distance(p, Vector3Add(factory.pos, {0, 2, 0})) < b.crater + 2) factory.damaged = true, factory.die = clock + msTicks(100);
     if (b.crater > 0 && !wp(WP_MINE_RESPAWN) && !indestructible) blastLand(p, b.crater);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
-    emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, p, -1, weapon), events.back().fx = fx;
+    emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, fxAt ? *fxAt : p, -1, weapon), events.back().fx = fx;
     for (Worm &w : worms) {
         if (!w.alive || int(&w - worms.data()) == dyingWorm || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
         int dmg = blastDamage(b, p, w.pos);
@@ -2203,13 +2218,18 @@ void Game::stepShots(const Input &in, bool detonate) {
         const WeaponDef &wd = WEAPONS[s.weapon];
         float size = s.child ? wd.csize : wd.size, sink = s.child ? wd.csink : wd.sink;
         auto crossed = [&](float y) { return was.y > y && s.pos.y <= y; };
+        auto splash = [&](bool skim) {  // slot 19 0x580830: SplishFx on a skim, else SplashFx, 2 units over the surface (0x57eee0)
+            emit(GameEvent::Splash, {s.pos.x, surfaceY(water, 2), s.pos.z}, -1, s.weapon);
+            events.back().fx = skim ? "WXP_WaterSmallSplash" : wd.splash.c_str();
+        };
         if (!sinks) {
-            if (crossed(water)) emit(GameEvent::Splash, {s.pos.x, water, s.pos.z}, -1, s.weapon);
+            if (crossed(water)) splash(false);
         } else if (crossed(water + size)) {
             float v = Vector3Length(s.vel), pitch = v > 0 ? asinf(Clamp(s.vel.y / v, -1, 1)) : 0;
-            if (!s.child && wd.skim[0] >= 0 && v > wd.skim[0] && pitch > wd.skim[1]) s.vel = {s.vel.x * wd.skim[2], s.vel.y * wd.skim[3], s.vel.z * wd.skim[2]};
+            bool skim = !s.child && wd.skim[0] >= 0 && v > wd.skim[0] && pitch > wd.skim[1];
+            if (skim) s.vel = {s.vel.x * wd.skim[2], s.vel.y * wd.skim[3], s.vel.z * wd.skim[2]};
             s.pos.y = water + size;
-            emit(GameEvent::Splash, {s.pos.x, water, s.pos.z}, -1, s.weapon);
+            splash(skim);
         } else if (crossed(water - sink)) {  // Payload.SinkSpeed.Min / Max 0.08 / 0.1 units/ms
             float v = Vector3Length(s.vel), k = fminf(v, SINK_MAX);
             if (k > 0) s.vel = Vector3Scale(s.vel, k / v);

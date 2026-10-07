@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 mod anim;
 mod cells;
+mod deflate;
 mod lua;
 mod mesh;
 mod mission;
@@ -14,7 +15,7 @@ mod script;
 const VOX: f32 = 0.25; // voxel edge (m), every map (json "vox")
 const CS: usize = 32; // the engine's chunk edge: grid sides are multiples of it
 const GIRDER_SKY: f32 = 37.5; // W4M girder ceiling above the land top (m), Game::stepGirder
-const MAX_VOXELS: usize = 256 << 20; // per-map grid bound: d + mats, 2 bytes a voxel (512 MB)
+const MAX_VOXELS: usize = 256 << 20; // per-map grid bound: the importer holds ~6 bytes a voxel (materials, f32 distance, density)
 thread_local!(static GRID: std::cell::Cell<[usize; 3]> = const { std::cell::Cell::new([352, 256, 352]) });
 fn nx() -> usize { GRID.with(|g| g.get()[0]) } // this map's grid (json "grid", .vox header)
 fn ny() -> usize { GRID.with(|g| g.get()[1]) }
@@ -394,6 +395,10 @@ fn points(lo: V3, hi: V3) -> impl Iterator<Item = (usize, usize, usize)> {
     zr.flat_map(move |z| { let xr = xr.clone(); yr.clone().flat_map(move |y| xr.clone().map(move |x| (x, y, z))) })
 }
 fn gi(x: usize, y: usize, z: usize) -> usize { (z * ny() + y) * nx() + x }
+// the client's voxel index (Terrain::idx): 32³ chunk ((cz*CY + cy)*CX + cx) << 15, then x + 32 y + 1024 z inside it
+fn ci(x: usize, y: usize, z: usize) -> usize {
+    (((z / CS * (ny() / CS) + y / CS) * (nx() / CS) + x / CS) << 15) | (x % CS) | (y % CS) << 5 | (z % CS) << 10
+}
 
 fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<String, String>, out_dir: &Path, written: &mut HashSet<String>, used_libs: &mut HashSet<String>) -> Result<String, String> {
     let maps = data.join("Maps");
@@ -521,23 +526,22 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
 
     // occupancy at grid points; a cell missing every grid point (thin plank, cone tip) still claims its nearest one
     // cells holding at most 2 grid points (ropes, twigs) also go to <stem>.thin: their exact hexahedron, drawn while its first voxel stands
-    let mut thin = b"W4T1".to_vec();
+    let mut thin = 0u32.to_le_bytes().to_vec();
     let mut nthin = 0u32;
-    thin.extend(0u32.to_le_bytes());
     for (hi, h) in hexes.iter().enumerate() {
         let (mut n, mut first) = (0, None);
         let code = hex_code[hi];
         for (x, y, z) in points(h.lo, h.hi) {
             if h.inside([x as f32, y as f32, z as f32]) {
                 grid[gi(x, y, z)] = h.mat; n += 1; first.get_or_insert([x, y, z]);
-                if code > 0 && !other([x as f32, y as f32, z as f32], code) { coded[code as usize - 1].push(gi(x, y, z)); }
+                if code > 0 && !other([x as f32, y as f32, z as f32], code) { coded[code as usize - 1].push(ci(x, y, z)); }
             }
         }
         let cen = h.c.iter().fold([0.0; 3], |s, p| madd(s, *p, 0.125)).map(|v| v.round());
         if n == 0 && cen.iter().zip([nx(), ny(), nz()]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
             grid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)] = h.mat;
             first = Some(cen.map(|v| v as usize));
-            if code > 0 && !other(cen, code) { coded[code as usize - 1].push(gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)); }
+            if code > 0 && !other(cen, code) { coded[code as usize - 1].push(ci(cen[0] as usize, cen[1] as usize, cen[2] as usize)); }
         }
         if let Some(a) = first.filter(|_| n <= 2) {
             nthin += 1;
@@ -546,8 +550,11 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             for p in h.c { for v in p { thin.extend((v * VOX).to_le_bytes()); } }
         }
     }
-    thin[4..8].copy_from_slice(&nthin.to_le_bytes());
-    fs::write(out_dir.join(format!("{stem}.thin")), &thin).map_err(|e| e.to_string())?;
+    thin[0..4].copy_from_slice(&nthin.to_le_bytes());
+    let mut tf = b"W4T2".to_vec();
+    tf.extend((thin.len() as u32).to_le_bytes());
+    tf.extend(deflate::deflate(&thin));
+    fs::write(out_dir.join(format!("{stem}.thin")), &tf).map_err(|e| e.to_string())?;
 
     // distance to the exposed faces (not covered by another cell or the heightmap), within BAND
     let mut dist = vec![BAND; nx() * ny() * nz()];
@@ -587,38 +594,36 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let solid = grid.iter().filter(|&&v| v != 0).count();
     if solid == 0 { return Err("empty after resampling".into()); }
     let dq = (BAND * VOX * Q).round() as i32;
-    let mut vox = b"W4V2".to_vec();
-    for d in [nx(), ny(), nz()] { vox.extend((d as u16).to_le_bytes()); }
-    vox.push(dq as u8);
-    // materials run-length: (value, run 1..255)
-    let mut i = 0;
-    while i < grid.len() {
-        let mut r = 1;
-        while i + r < grid.len() && r < 255 && grid[i + r] == grid[i] { r += 1; }
-        vox.extend([grid[i], r as u8]);
-        i += r;
-    }
-    // densities: skip codes (< 128) over voxels at the default +-dq, literal runs (128 + n - 1)
     let mut q: Vec<i8> = (0..grid.len()).map(|i| {
         let v = ((dist[i].min(BAND) * VOX * Q).round() as i32).clamp(1, dq);
         (if grid[i] != 0 { v } else { -v }) as i8
     }).collect();
     let (cells_file, exact) = cells::build(&hexes.iter().map(|h| h.c).collect::<Vec<_>>(), &top, &mut q, dq as i8);
     fs::write(out_dir.join(format!("{stem}.cells")), &cells_file).map_err(|e| e.to_string())?;
-    let mut i = 0;
-    while i < q.len() {
-        let def = |j: usize| q[j] as i32 == if grid[j] != 0 { dq } else { -dq };
-        let mut r = 0;
-        if def(i) {
-            while i + r < q.len() && r < 127 && def(i + r) { r += 1; }
-            vox.push(r as u8);
-        } else {
-            while i + r < q.len() && r < 128 && !def(i + r) { r += 1; }
-            vox.push(127 + r as u8);
-            vox.extend(q[i..i + r].iter().map(|&v| v as u8));
+    // per 32³ chunk: u32 mat << 1 for a chunk of one material at the default density, else deflated size << 1 | 1 and,
+    // after the table, its 32768 materials then 32768 densities minus the default, x fastest
+    let (cx, cy, cz) = (nx() / CS, ny() / CS, nz() / CS);
+    let mut vox = b"W4V3".to_vec();
+    for d in [nx(), ny(), nz()] { vox.extend((d as u16).to_le_bytes()); }
+    vox.push(dq as u8);
+    let mut payload = Vec::new();
+    for c in 0..cx * cy * cz {
+        let (x0, y0, z0) = (c % cx * CS, c / cx % cy * CS, c / (cx * cy) * CS);
+        let mut raw = vec![0u8; 2 << 15];
+        for k in 0..1 << 15 {
+            let g = gi(x0 + (k & 31), y0 + (k >> 5 & 31), z0 + (k >> 10));
+            raw[k] = grid[g];
+            raw[(1 << 15) + k] = (q[g] as i32 - if grid[g] != 0 { dq } else { -dq }) as u8;
         }
-        i += r;
+        if raw[..1 << 15].iter().all(|&m| m == raw[0]) && raw[1 << 15..].iter().all(|&v| v == 0) {
+            vox.extend(((raw[0] as u32) << 1).to_le_bytes());
+        } else {
+            let z = deflate::deflate(&raw);
+            vox.extend(((z.len() as u32) << 1 | 1).to_le_bytes());
+            payload.extend(z);
+        }
     }
+    vox.extend(payload);
     fs::write(out_dir.join(format!("{stem}.vox")), &vox).map_err(|e| e.to_string())?;
     // W4M_MAPS_REF=<dir>: every visible poxel cell as OBJ quads in map metres (reference renders, unclipped)
     if let Ok(dir) = std::env::var("W4M_MAPS_REF") {

@@ -73,6 +73,7 @@ struct WeaponDef {
     // W4M BombletMaxConeAngle rad, BombletMinSpeed / MaxSpeed m/s: "cluster_cone", "cluster_min_speed", "cluster_max_speed"
     float ccone = 0, cspeed[2] = {0, 0};
     float spread = 0.3f;  // "cluster_spread": W4M Weapon Factory ClusterSpread 0..1 (WXD.DefaultWeapon 0.3), Weapon Factory weapons only
+    std::string splash = "WXP_WaterSplash";  // "splash": WEAPTWK SplashFx, the effect when it meets the water (SplishFx WXP_WaterSmallSplash on a skim)
 };
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
 struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns)
@@ -211,11 +212,11 @@ enum : int { MY_MINE_LAYER, MY_MINE_TRIPLET, MY_BARREL_TRIPLET, MY_FLOOD, MY_DIS
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
-                          Comment, CommentClear, Emitter, EmitterOff, Shake,
+                          Comment, CommentClear, Emitter, EmitterOff, Shake, Pop,
                           Movie, Speech, MovieSound, MovieStart, MovieEnd } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;
-    const char *fx = nullptr;  // Boom: the PARTTWK effect its W4M caller starts (render only; null: our generic blast)
+    const char *fx = nullptr;  // Boom, Splash, Pop: the PARTTWK effect its W4M caller starts (render only; Boom null: our generic blast)
     int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories
 };
 
@@ -292,7 +293,7 @@ constexpr int msTicks(int ms) { return ((ms + 19) / 20 * 12 + 5) / 10; }
 
 // Deterministic simulation: same seed + same inputs => same state on every client.
 struct Game {
-    static constexpr float DT = 1.0f / 60, R = 0.5f, BODY_R = 0.3f;  // BODY_R: the worm mesh's half width
+    static constexpr float DT = 1.0f / 60, R = 0.5f, BODY_R = 0.3f, EYE = 0.75f;  // BODY_R: the worm mesh's half width; EYE: Worm.EyeLevelOffset 15 units over the feet
     static constexpr float STEP = 0.25f, STEP_UP = 1.0f;  // W4M UpdateWalking: steps up to 5 units, vaults ledges up to the 20-unit body
     // W4M HomingPayload 0x560aa0: Stage1 1250 ms straight, Stage2 4000 ms homing, Stage3 5000 ms straight, then it expires; no gravity (IsAffectedByGravity 0)
     static constexpr float HOMING_LOCK = 1.25f, HOMING_TIME = 4, HOMING_LIFE = 10.25f, HOMING_ACCEL = 97.5f, HOMING_MAX = 29.5f;
@@ -638,7 +639,8 @@ private:
     void vapourize(Worm &w);
     bool underwater(const Worm &w) const;
     void stepShots(const Input &in, bool detonate);
-    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1, const char *fx = nullptr);  // weapon, fx: carried by the Boom event
+    void deathBlast(const Worm &w, int wi);
+    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1, const char *fx = nullptr, const Vector3 *fxAt = nullptr);  // weapon, fx, fxAt (default p): carried by the Boom event
     void steal(const Worm &victim);  // old woman ammo theft
     void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies

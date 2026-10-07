@@ -144,7 +144,7 @@ static void wallAhead(uint32_t seed, uint8_t level, float x0, bool bazooka) {
     for (int z = 16; z < 80; z++)  // floor at y 50, a one-voxel slab at x 22 m (face at 21.83 m)
         for (int y = 176; y < 248; y++)
             for (int x = 16; x < 300; x++)
-                g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = x == 88 && y > 200 ? 127 : (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+                g.terrain.d.w(Terrain::idx(x, y, z)) = x == 88 && y > 200 ? 127 : (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
     for (auto &a : g.ammo)
         for (size_t k = 0; k < a.size(); k++) a[k] = (bazooka && WEAPONS[k].name == "Bazooka") || WEAPONS[k].name == "Shotgun" ? 9 : WEAPONS[k].kind == Kind::SkipGo ? -1 : 0;
     Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
@@ -170,7 +170,7 @@ static Game arena(const char *weapon, float dist) {
     g.start(c);
     for (int z = 16; z < 80; z++)
         for (int y = 176; y < 248; y++)
-            for (int x = 16; x < 300; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+            for (int x = 16; x < 300; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
     g.landMax = fmaxf(g.landMax, 50);  // Land.MaxHeight as the load would set it for this floor
     for (auto &a : g.ammo)
         for (size_t k = 0; k < a.size(); k++) a[k] = WEAPONS[k].name == weapon ? 9 : WEAPONS[k].kind == Kind::SkipGo ? -1 : 0;

@@ -163,15 +163,27 @@ static void checkDrownFloat() {
     const Vector3 at = d.pos;
     for (int k = 0; k < 1600 && g.terrain.solid({d.pos.x, d.pos.y - 1.5f, d.pos.z}); k++)  // open sea, the nearest along x or z
         d.pos = Vector3Add(at, Vector3Scale(k % 4 < 2 ? Vector3{1, 0, 0} : Vector3{0, 0, 1}, (k % 2 ? -0.1f : 0.1f) * (k / 4)));
-    for (int t = 0; t < 30 && !d.drowned; t++) g.step(Input{});  // its feet 7 units under Water.Level (0x5ad640)
+    const float drownY = g.water + 1.0625f / 20;  // 0x48b260: Water.Level 0 -> 1/16 unit, + 1 unit (drowning, death blast)
+    bool splash = false;
+    for (int t = 0; t < 30 && !d.drowned; t++) {
+        g.step(Input{});
+        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Splash && e.worm == vi) splash = !strcmp(e.fx, "WXP_WaterSplash") && fabsf(e.pos.y - drownY) < 1e-4f;
+    }  // its feet 7 units under Water.Level (0x5ad640)
     assert(!d.alive && d.drowned && d.counted > 0 && g.dying() == vi);
+    assert(splash);
     float low = d.pos.y;
     int died = -1, focus = 0, t = 0;
+    bool pop = false, blast = false;
     for (; t < 60 * 20 && died < 0; t++) {
         g.step(Input{});
         low = fminf(low, d.pos.y), focus += g.dying() == vi;
-        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Death && e.worm == vi) died = t;
+        for (const GameEvent &e : g.events) {
+            if (e.kind == GameEvent::Death && e.worm == vi) died = t;
+            if (e.kind == GameEvent::Pop) pop = !strcmp(e.fx, "WXP_WormDrownPopSplash") && e.worm == vi && fabsf(e.pos.y - drownY) < 1e-4f;
+            if (e.kind == GameEvent::Boom && e.fx && !strcmp(e.fx, "WXP_Explosion_Small") && fabsf(e.pos.y - drownY) < 1e-4f) blast = true;
+        }
     }
+    assert(pop && blast);
     assert(died >= Game::DROWN_FLOAT && focus >= Game::DROWN_FLOAT && low < g.water - 0.3f && g.phase == Phase::Aim);
     assert(fabsf(d.pos.y - Game::R - (g.water - 0.4f)) < 0.2f && d.counted == 0);  // popped at its float height, nothing left to draw
 }
@@ -565,7 +577,7 @@ static void checkGunLand() {
         w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = PI / 2, w.pitch = -0.6f;
         g.weapon = weaponNamed(name);
         for (int t = 0; t < 30; t++) g.step(Input{});
-        std::vector<signed char> before = g.terrain.d;
+        const Bricks<signed char> before = g.terrain.d;
         Input fire;
         fire.buttons = Input::FIRE;
         g.step(fire);
@@ -576,7 +588,9 @@ static void checkGunLand() {
         float far = 0;
         for (size_t i = 0; i < before.size(); i++)
             if (before[i] != g.terrain.d[i]) {
-                Vector3 p = {(float)(i % Terrain::NX) * Terrain::VOX, (float)(i / Terrain::NX % Terrain::NY) * Terrain::VOX, (float)(i / Terrain::NX / Terrain::NY) * Terrain::VOX};
+                int x, y, z;
+                Terrain::xyz(i, x, y, z);
+                Vector3 p = {x * Terrain::VOX, y * Terrain::VOX, z * Terrain::VOX};
                 n++, far = fmaxf(far, Vector3Distance(p, hit));
             }
         printf("%s on land: %d voxels changed, farthest %.2f m from the hit\n", name, n, far);
@@ -593,7 +607,7 @@ static void checkScopeCrest() {
     a.pos = {10, 55, 10}, v.pos = {10, 55, 30};
     for (int z = 100; z <= 104; z++)  // lip at z 25..26 topping out 0.2 m under the worm-to-worm line
         for (int y = 0; y < Terrain::NY; y++)
-            for (int x = 30; x <= 50; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp((54.8f - y * Terrain::VOX) * Terrain::Q, -127, 127);
+            for (int x = 30; x <= 50; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp((54.8f - y * Terrain::VOX) * Terrain::Q, -127, 127);
     for (int i = 0; i < 8; i++) {
         Vector3 d = Vector3Normalize(Vector3Subtract(v.pos, Controls::eye(g)));
         a.yaw = atan2f(d.x, d.z), a.pitch = asinf(d.y);
@@ -1090,7 +1104,7 @@ static void checkEventCameras() {
         w.pos = {20, 55, 20}, w.yaw = 0, w.grounded = true, w.vel = {0, 0, 0};
         for (int z = 60; z <= 62; z++)
             for (int y = 0; y < Terrain::NY; y++)
-                for (int x = wide ? 40 : 79; x <= (wide ? 120 : 81); x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = 127;
+                for (int x = wide ? 40 : 79; x <= (wide ? 120 : 81); x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
         Controls::reset();
         Camera3D cam = {{20, 59, 11}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
         for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, false, Game::DT);
@@ -1105,7 +1119,7 @@ static void checkEventCameras() {
         auto wall = [&](int v) {
             for (int z = 60; z <= 62; z++)
                 for (int y = 0; y < Terrain::NY; y++)
-                    for (int x = 40; x <= 120; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = v;
+                    for (int x = 40; x <= 120; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = v;
         };
         Controls::reset();
         Camera3D cam = {{20, 59, 11}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
@@ -1125,7 +1139,7 @@ static void checkEventCameras() {
         w.pos = {20, 55, 30}, w.yaw = 0, w.grounded = true, w.vel = {0, 0, 0};
         for (int z = 40; z < 78; z++)  // z 10..19.5 m, 2.5 m over the worm: the camera spot ends inside it
             for (int y = 0; y < 230; y++)
-                for (int x = 40; x < 120; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = 127;
+                for (int x = 40; x < 120; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
         Controls::reset();
         Camera3D cam = {{20, 57, 21.5f}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
         for (int t = 0; t < 60; t++) Controls::camera(cam, g, false, false, false, Game::DT);
@@ -1146,7 +1160,7 @@ static void checkEventCameras() {
         for (int z = 120; z < 200; z++)  // side view at yaw + 1.57: the camera sits 20 m off in -x, at (20, 55, 40)
             for (int y = 0; y < Terrain::NY; y++)
                 for (int x = inside ? 60 : 112; x < (inside ? 100 : 120); x++)
-                    if (!inside || (z >= 140 && z < 180)) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = 127;
+                    if (!inside || (z >= 140 && z < 180)) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
         Controls::reset();
         Camera3D cam = {{20, 55, 40}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};
         for (int t = 0; t < 90; t++) Controls::camera(cam, g, false, false, false, Game::DT), w.pos = {40, 55, 40};
@@ -1358,7 +1372,7 @@ static void checkWallClearance() {
             for (int y = 180; y < 240; y++)
                 for (int x = 24; x < 72; x++) {
                     float in = fmaxf(50 - y * Terrain::VOX, fmaxf(10 - x * Terrain::VOX, 10 - z * Terrain::VOX));
-                    g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(in * Terrain::Q, -127, 127);
+                    g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp(in * Terrain::Q, -127, 127);
                 }
     };
     auto clear = [](const Game &g, const Worm &w) {
@@ -1396,7 +1410,7 @@ static void checkWalkW4M() {
         for (int z = 16; z < 80; z++)
             for (int y = 176; y < 248; y++)
                 for (int x = 16; x < 176; x++)
-                    g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(sdf(Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX)) * Terrain::Q, -64, 64);
+                    g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp(sdf(Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX)) * Terrain::Q, -64, 64);
         Worm &w = g.worms[g.current];
         w.pos = from, w.vel = {}, w.yaw = yaw;
         g.hotSeat = 0;
@@ -1433,7 +1447,7 @@ static void landBox(Game &g, Vector3 o, Vector3 eu, float u0, float u1, float y0
 static void clearArena(Game &g, int x0, int x1, int y0, int y1, int z0, int z1) {
     for (int z = z0; z < z1; z++)
         for (int y = y0; y < y1; y++)
-            for (int x = x0; x < x1; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = -64;
+            for (int x = x0; x < x1; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = -64;
 }
 
 // W4M UpdateWalking casts the 4 foot rays: the front foot finds a low ledge and the worm steps or vaults onto it; the walkable test reads
@@ -1467,7 +1481,7 @@ static void checkVault() {
             for (int y = 176; y < 248; y++)
                 for (int x = 16; x < 176; x++) {
                     Vector3 p = Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX);
-                    g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(fmaxf(50 - p.y, fminf(50.8f - p.y, p.x - 12)) * Terrain::Q, -64, 64);
+                    g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp(fmaxf(50 - p.y, fminf(50.8f - p.y, p.x - 12)) * Terrain::Q, -64, 64);
                 }
         Worm &w = g.worms[g.current];
         w.pos = {11, 50.5f, 12}, w.vel = {}, w.yaw = PI / 2;
@@ -1538,7 +1552,7 @@ static void checkW4MWalkRules() {
         for (int z = 16; z < 80; z++)
             for (int y = y0; y < y1; y++)
                 for (int x = 16; x < 176; x++)
-                    g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(sdf(Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX)) * Terrain::Q, -64, 64);
+                    g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp(sdf(Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX)) * Terrain::Q, -64, 64);
         g.hotSeat = 0;
     };
     Input walk;
@@ -1640,7 +1654,7 @@ static void checkWallStuck() {
         for (int z = 16; z < 80; z++)
             for (int y = 176; y < 248; y++)
                 for (int x = 16; x < 176; x++)
-                    g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(sdf(Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX)) * Terrain::Q, -64, 64);
+                    g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp(sdf(Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX)) * Terrain::Q, -64, 64);
         g.hotSeat = 0;
     };
     auto walk = [](Game &g, float yaw, int ticks) {
@@ -1689,7 +1703,7 @@ static void checkJumpAtWall() {
                     for (int x = 16; x < 176; x++) {
                         Vector3 p = Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX);
                         float c = (dir == 0 ? p.x - 12 : dir == 1 ? 12 - p.x : dir == 2 ? p.z - 12 : 12 - p.z) + lean * (p.y - 50);
-                        g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(fmaxf(50 - p.y, c) * Terrain::Q, -64, 64);
+                        g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp(fmaxf(50 - p.y, c) * Terrain::Q, -64, 64);
                     }
             Worm &w = g.worms[g.current];
             w.pos = from[dir], w.vel = {}, w.yaw = yaws[dir];
@@ -1719,7 +1733,7 @@ static void checkJumpTrajectory() {
         for (int z = 16; z < 80; z++)  // flat floor at y 50
             for (int y = 176; y < 248; y++)
                 for (int x = 16; x < 300; x++)
-                    g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+                    g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
         Worm &w = g.worms[g.current];
         w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = flip ? -PI / 2 : PI / 2;
         g.hotSeat = 0;
@@ -1753,7 +1767,7 @@ static void floorAndWall(Game &g, float wall) {
     for (int z = 16; z < 80; z++)
         for (int y = 176; y < 248; y++)
             for (int x = 16; x < 300; x++)
-                g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] =
+                g.terrain.d.w(Terrain::idx(x, y, z)) =
                     x == (int)(wall / Terrain::VOX) && y > 200 ? 127 : (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
 }
 
@@ -1771,7 +1785,7 @@ static void checkDroppedInFront() {
                 for (int z = 16; z < 80; z++)
                     for (int y = 176; y < 248; y++)
                         for (int x = 16; x < 300; x++)
-                            g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] =
+                            g.terrain.d.w(Terrain::idx(x, y, z)) =
                                 (signed char)Clamp((50 + 0.5f * (z * Terrain::VOX - 12) - y * Terrain::VOX) * Terrain::Q, -64, 64);
             Worm &w = g.worms[g.current];
             w.pos = {20, 50.6f, 12}, w.vel = {}, w.yaw = 0, w.pitch = 0;
@@ -2290,7 +2304,7 @@ static void checkWormpotModes() {
     fresh(WP_MINE_RESPAWN);  // Land.Indestructable, the mine back 500 ms later where it went off, never a dud
     {
         Worm &w = g.worms[g.current];
-        std::vector<signed char> land = g.terrain.d;
+        const Bricks<signed char> land = g.terrain.d;
         Object m = {Object::Mine, {w.pos.x + 6, w.pos.y, w.pos.z}, {0, 0, 0}, -1, 0.05f, false, false};
         m.fizzle = true, m.delay = 0;
         g.objects = {m};
@@ -2468,9 +2482,9 @@ static void checkFuse() {
 static void checkParachute() {
     Game g;
     g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
-    std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+    g.terrain.d.fill(-127);
     for (int z = 0; z < Terrain::NZ; z++)  // a floor at 45 m
-        for (int x = 0; x < Terrain::NX; x++) g.terrain.d[((size_t)z * Terrain::NY + 179) * Terrain::NX + x] = 127;
+        for (int x = 0; x < Terrain::NX; x++) g.terrain.d.w(Terrain::idx(x, 179, z)) = 127;
     g.objects.clear(), g.timer = 100000;
     Worm &a = g.worms[g.current];
     for (Worm &o : g.worms) if (&o != &a) o.pos = {5, 46, 5};
@@ -3341,9 +3355,9 @@ static void checkMineFlyby() {
 // open air over a floor at 45 m (voxel row 179), the active worm standing on it at (20, 45.5, 20) facing +z, the rope in hand
 static Worm &ropeFloor(Game &g) {
     g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
-    std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+    g.terrain.d.fill(-127);
     for (int z = 0; z < Terrain::NZ; z++)
-        for (int x = 0; x < Terrain::NX; x++) g.terrain.d[((size_t)z * Terrain::NY + 179) * Terrain::NX + x] = 127;
+        for (int x = 0; x < Terrain::NX; x++) g.terrain.d.w(Terrain::idx(x, 179, z)) = 127;
     g.objects.clear(), g.timer = 100000;
     Worm &a = g.worms[g.current];
     for (Worm &o : g.worms) if (&o != &a) o.pos = {5, 45.5f, 5};
@@ -3407,7 +3421,7 @@ static void checkGrapple() {
         a.pitch = 0;
         for (int z = 118; z < 122; z++)  // a wall 9.5 m ahead, z 29.5 to 30.5 m
             for (int y = 180; y < 240; y++)
-                for (int x = 0; x < Terrain::NX; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = 127;
+                for (int x = 0; x < Terrain::NX; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
         g.step(Input{}), g.step(fire);
         for (t = 1; t < 30 && g.grapple.on; t++) g.step(Input{});
         assert(g.roped && g.ropeShots == 1 && g.ropeUsed == g.weapon && t == 12 && fabsf(g.rope.pt[0].z - 29.5f) < 0.3f);
@@ -3752,7 +3766,7 @@ static void checkGirder() {
         assert(g.terrain.solid(deck) && g.girders == 1 && g.ammo[a.team][g.weapon] == 0);
         assert(wp ? g.phase == Phase::Aim : g.phase != Phase::Aim);  // GirdersDontEndTurn
         int x = (int)roundf(deck.x / Terrain::VOX), y = (int)roundf(deck.y / Terrain::VOX), z = (int)roundf(deck.z / Terrain::VOX);
-        assert(g.terrain.isSteel(((size_t)z * Terrain::NY + y) * Terrain::NX + x));
+        assert(g.terrain.isSteel(Terrain::idx(x, y, z)));
         g.terrain.carve(deck, 4);  // W4M: ordinary land, blasts dig it (landscape-wide Land.Indestructable only)
         assert(!g.terrain.solid(deck));
     }
@@ -3765,8 +3779,8 @@ static void checkGirder() {
     g.terrain.weld(c, {2, 0.5f, 2});
     assert(g.terrain.solid(c));
     for (auto it = log.rbegin(); it != log.rend(); ++it)
-        if (it->first < 0) g.terrain.steel[-1 - it->first] = false;
-        else g.terrain.d[it->first] = it->second;
+        if (it->first < 0) g.terrain.steel.set(-1 - it->first, 0);
+        else g.terrain.d.set(it->first, it->second);
     assert(!g.terrain.solid(c));
     for (size_t i = 0; i < g.terrain.steel.size(); i += 4099) assert(!g.terrain.steel[i]);
 }
@@ -3948,7 +3962,7 @@ static void checkTunnelling() {
         for (int z = 16; z < 80; z++)
             for (int y = 100; y < 250; y++)
                 for (int x = 16; x < 200; x++)
-                    g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = (signed char)Clamp(sdf(Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX)) * Terrain::Q, -64, 64);
+                    g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp(sdf(Vector3Scale({(float)x, (float)y, (float)z}, Terrain::VOX)) * Terrain::Q, -64, 64);
         g.objects.clear(), g.hotSeat = 0;
         for (size_t i = 0; i < g.worms.size(); i++) g.worms[i].pos = {60, 60, 60 + 3.0f * i}, g.worms[i].vel = {};
         return g;
@@ -4034,7 +4048,7 @@ static Vector3 feetOf(const Worm &w) { return {w.pos.x, w.pos.y - Game::R, w.pos
 static void checkRope() {
     auto open = [](Game &g) {
         g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
-        std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+        g.terrain.d.fill(-127);
         g.objects.clear(), g.ropeMax = 22.5f, g.weapon = weaponNamed("Ninja Rope"), g.timer = 100000;
         Worm &w = g.worms[g.current];
         for (Worm &o : g.worms) if (&o != &w) o.pos = {5, 40, 5};
@@ -4112,7 +4126,7 @@ static void checkRope() {
         Game g;
         Worm &w = *open(g);
         Vector3 hook = {40, 56, 40}, peg = {40, 54.5f, 44};
-        for (int x = 140; x < 180; x++) g.terrain.d[((size_t)175 * Terrain::NY + 217) * Terrain::NX + x] = 127;  // a thin bar along x at z 44, y 54.4
+        for (int x = 140; x < 180; x++) g.terrain.d.w(Terrain::idx(x, 217, 175)) = 127;  // a thin bar along x at z 44, y 54.4
         w.pos = {40, 56.5f, 49}, w.yaw = PI;  // the hook ahead: hung behind the facing, the rope level, clear above the bar
         g.ropeOn(hook);
         int most = 1;
@@ -4152,7 +4166,7 @@ static void checkRope() {
 static void checkWaterShots() {
     auto sea = [](Game &g) {
         g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
-        std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+        g.terrain.d.fill(-127);
         g.objects.clear(), g.phase = Phase::Flying, g.timer = 100000, g.wind = g.windZ = 0;
         for (Worm &o : g.worms) o.pos = {5, 40, 5}, o.grounded = true;
     };
@@ -4166,7 +4180,7 @@ static void checkWaterShots() {
         for (int t = 0; t < 10 && !splash; t++) {
             Vector3 was = g.shots[0].vel;
             g.step(Input{});
-            for (const GameEvent &e : g.events) splash = splash || e.kind == GameEvent::Splash;
+            for (const GameEvent &e : g.events) if (e.kind == GameEvent::Splash) splash = true, assert(!strcmp(e.fx, "WXP_WaterSmallSplash") && fabsf(e.pos.y - (g.water + 2.0625f / 20)) < 1e-4f);  // a skim: SplishFx
             if (splash) {
                 const Projectile &s = g.shots[0];
                 was.y -= 12.5f * 0.6f * Game::DT;  // that tick's gravity (IsLowGravity: Gravity.Slow)
@@ -4185,7 +4199,7 @@ static void checkWaterShots() {
         int t = 0;
         for (; t < 30 && !g.shots[0].sunk; t++) {
             g.step(Input{});
-            for (const GameEvent &e : g.events) splash = splash || e.kind == GameEvent::Splash;
+            for (const GameEvent &e : g.events) if (e.kind == GameEvent::Splash) splash = true, assert(!strcmp(e.fx, "WXP_WaterSplash"));
         }
         const Projectile &s = g.shots[0];
         assert(splash && s.sunk && s.pos.y == g.water - 0.3f && s.vel.x == 0 && s.vel.z == 0 && s.vel.y <= -4 && s.vel.y >= -5);
@@ -4195,6 +4209,24 @@ static void checkWaterShots() {
             if (!g.shots.empty()) assert(g.shots[0].pos.y > Terrain::WATER - 10);
         }
         assert(g.shots.empty() && !boom && t > (int)((10 - 0.3f) / 5 / Game::DT) - 2);  // gone at Water.ExpiryDepth -200 units
+    }
+    {  // WEAPTWK SplashFx per weapon (the Donkey's is WXP_WaterLargeSplash), a mine's payload one, a crate's WXP_WaterSmallSplash 1 unit absolute, a drum none
+        Game g;
+        sea(g);
+        g.shots = {{{40, g.water + 5, 40}, {0, -8, 0}, weaponNamed("Concrete Donkey"), 5, false, 3}};
+        g.objects = {{Object::Mine, {20, g.water + 1, 20}, {0, 0, 0}, -1, -1, false, false}, {Object::Crate, {30, g.water + 1, 30}, {0, 0, 0}, -1, -1, false, false},
+                     {Object::Barrel, {50, g.water + 1, 50}, {0, 0, 0}, -1, -1, false, false}};
+        std::vector<std::string> seen;
+        for (int t = 0; t < 120; t++) {
+            g.step(Input{});
+            for (const GameEvent &e : g.events)
+                if (e.kind == GameEvent::Splash) {
+                    seen.push_back(e.fx);
+                    if (!strcmp(e.fx, "WXP_WaterSmallSplash")) assert(e.pos.y == Terrain::WATER + 1.0f / 20 && e.pos.x == 30);
+                }
+        }
+        auto n = [&](const char *fx) { return (int)std::count(seen.begin(), seen.end(), fx); };
+        assert(seen.size() == 3 && n("WXP_WaterLargeSplash") == 1 && n("WXP_WaterSplash") == 1 && n("WXP_WaterSmallSplash") == 1);
     }
     {  // a Homing Missile homing: +0x6e clear, it only splashes and flies on under the water
         Game g;
@@ -4210,10 +4242,10 @@ static void checkWaterShots() {
 static void checkDebris() {
     Game g;
     g.start({29, 2, 1, "", 0});
-    std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+    g.terrain.d.fill(-127);
     for (int z = 150; z < 170; z++)
         for (int y = 190; y < 200; y++)
-            for (int x = 150; x < 170; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = 127;
+            for (int x = 150; x < 170; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
     auto debris = [&](Vector3 p) {
         g.events.clear(), g.explode(p, Game::MINE_BLAST);
         for (const GameEvent &e : g.events) if (e.kind == GameEvent::Debris) return true;
@@ -4227,10 +4259,10 @@ static void checkDebris() {
 static void checkArrowFalls() {
     Game g;
     g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
-    std::fill(g.terrain.d.begin(), g.terrain.d.end(), (signed char)-127);
+    g.terrain.d.fill(-127);
     for (int z = 150; z < 170; z++)
         for (int y = 190; y < 200; y++)
-            for (int x = 150; x < 170; x++) g.terrain.d[((size_t)z * Terrain::NY + y) * Terrain::NX + x] = 127;
+            for (int x = 150; x < 170; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
     for (Worm &o : g.worms) o.pos = {5, 40, 5};
     g.objects.clear(), g.phase = Phase::Flying, g.timer = 100000, g.wind = g.windZ = 0;
     int wi = weaponNamed("Poison Arrow");

@@ -160,6 +160,10 @@ constexpr Def DEFS[] = {
     {Sfx::MineMachine, "mine_machine", "weapons/MineMachineOperate", -10, true, 0, 0, 1, 0.35f},  // 2D loop, fades 350 ms
     {Sfx::FeScaleHit, "fe_scalehit", "global/In_Scalehitxy", 0, false, 0, 0, 1},
     {Sfx::Gong, "gong", "weapons/Gong", -5, false, 0, 0, 1},  // 2D
+    {Sfx::SplashLight, "splash_light", "weapons/SplashLight", 0, false, 0.5f, 70, 2, 0, nullptr, 2, {}, {}, false, 0, nullptr, (int)Sfx::WaterBounce},  // 3D linear 10..1400 units, 4 waves
+    {Sfx::WaterBounce, "water_bounce", "weapons/SplashLight (WaterBounce layer)", 0, false, 0.5f, 70, 2, 0, nullptr, 2},  // 3 waves
+    {Sfx::WaterSurge, "water_surge", "weapons/WaterSurge", 0, false, 0.5f, 25, 1, 0, nullptr, 2},  // 3D linear 10..500 units, 3 waves
+    {Sfx::WaterExplosion, "water_explosion", "weapons/WaterExplosion", -4, false, 0.5f, 70, 1, 0, nullptr, 3},  // sounddef -4 dB
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 constexpr bool inOrder() {
@@ -509,6 +513,7 @@ static void play(Sfx id, float volume, const Vector3 *at) {
     Variants *v = &sfx[(int)id];
     if (!v->n && id > Sfx::Tick && id <= Sfx::SuperSheepFire) v = &sfx[(int)Sfx::Fire];
     trigger(*v, DEFS[(int)id], volume, at, (int)id);
+    if (int l = DEFS[(int)id].layer; l >= 0) trigger(sfx[l], DEFS[l], volume, at, l);
 }
 void play(Sfx id, float volume) { play(id, volume, nullptr); }
 void play(Sfx id, Vector3 at) { play(id, 1, &at); }

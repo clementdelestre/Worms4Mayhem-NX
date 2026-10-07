@@ -274,6 +274,10 @@ Free functions in sim.cpp, also called by `ai.cpp` (`Mover`, `stepBody`) so the 
 Worm body: centre `pos`, radius `R` 0.5 m, mesh half width `BODY_R` 0.3 m; eye `Worm.EyeLevelOffset` 15 units = 0.75 m above the feet
 (data). Terrain: 0.25 m voxels (`Terrain::VOX`) on a grid sized per map (docs/maps.md `grid`), every sub-step and land march 0.125 m
 (`Terrain::SUB`, `substeps`) [ours], water at 3 m (`Terrain::WATER`, rises with Flood and sudden death).
+Voxel storage [ours]: density `d`, materials `mats` and girder `steel` are `Bricks` (bricks.h), one byte a voxel per 32³ chunk; a chunk
+of one value points at a shared read-only block, carve / weld / clearCoded give a chunk its own block on the first change. A voxel's
+index is `Terrain::idx(x, y, z)` = chunk `(cz * CY + cy) * CX + cx` << 15 | `x + 32 y + 1024 z` inside it (the `.cells`, `codes`,
+undo log and `thinOnly` use it too); `field` reads the 8 corners from one block when they share a chunk.
 
 | function | does | source |
 |---|---|---|
@@ -324,12 +328,13 @@ primitives reaching it [ours]. The sim reads that land exactly; so does the mesh
   `weld` a box, `Terrain::addCell` a convex cell (test arenas, `checkLowLedges`); replaced lists become garbage, compacted when it
   exceeds half the pool. Lists shared by several cells stay shared [ours].
 - The instant replay's undo log does not restore the lists (replay disabled for now, docs/w4m/README.md).
-- Cost (measured at the former 320-voxel grid and k < 1 import): the 221 imported maps' `.cells` take 282 MB on disk (deflated); in memory 12.5 MB (Deathmatch3) to 27.4 MB (DoomCanyon), loaded
-  in 23-46 ms on desktop. AI planning (scratch benchmark, 8 maps x 3 levels): 23.1 ns per terrain sample before, 30.2 after; mean
+- Memory: the cell bits are kept per 32³ chunk (`bits`, empty for a chunk without listed cells), the lists in an open-addressing
+  table; NoRoomForError 25.4 MB, 267 MB of `.cells` on disk for the 221 maps (docs/tests.md "Map size") [ours].
+- Cost (measured at the former 320-voxel grid and k < 1 import): loaded in 23-46 ms on desktop. AI planning (scratch benchmark, 8 maps x 3 levels): 23.1 ns per terrain sample before, 30.2 after; mean
   59.8 ms per turn before, 75.3 after; worst tick 2.19 ms before, 3.48 after, back to 1.8-2.1 once the exact land
   counts in `Terrain::samples` and the walkers' walks are split (docs/ai.md "Per-frame work").
 
-API for a mesher (dual contouring), all on a listed cell `c` (`mixed(c)`; cell index `(z * NY + y) * NX + x`, its box
+API for a mesher (dual contouring), all on a listed cell `c` (`mixed(c)`; cell index `Terrain::idx(x, y, z)`, its box
 `[x, x+1] x [y, y+1] x [z, z+1]` voxels):
 
 | call | gives |
@@ -459,14 +464,15 @@ W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm 
 ### Shots in water (`stepShots`' `wet`)
 
 W4M PayloadLogicEntity 0x582050 / Parabolic events 0x577980, docs/w4m/weapons.md "Payload water" [disasm + data]. weapons.json carries
-`size` (Radius), `sink` (SinkDepth), `skim_*` (SkimsOnWater, MinSpeedForSkim, MaxAngleForSkim, SkimDamping), `cluster_size` / `cluster_sink`
+`splash` (SplashFx, default WXP_WaterSplash), `size` (Radius), `sink` (SinkDepth), `skim_*` (SkimsOnWater, MinSpeedForSkim, MaxAngleForSkim, SkimDamping), `cluster_size` / `cluster_sink`
 (the bomblets' containers), `cluster_cone` / `cluster_min_speed` / `cluster_max_speed` (the parent's BombletMaxConeAngle,
 BombletMin / MaxSpeed); Weapon Factory weapons get kWeaponFactoryWeapon / Homing / Cluster's in `Game::start`.
-- Crossing Water.Level + Radius: a skim (v × damping, never for bomblets) or a splash (`GameEvent::Splash`); set on that plane either way.
+- Crossing Water.Level + Radius: a skim (v × damping, never for bomblets) or a splash (`GameEvent::Splash`, `fx` = SplishFx WXP_WaterSmallSplash on a skim, else the weapon's `splash` (SplashFx), at 2 units over the surface); set on that plane either way.
 - Crossing Water.Level − SinkDepth: `Projectile::sunk` (checksummed): speed capped at 5 m/s, xz × k², vy = −max(4, |vy| k), k = speed / 5;
   no acceleration, no fuse, no blast; any contact or Water.ExpiryDepth (absolute, `Terrain::WATER` − 10 m) removes it.
 - A homing missile while homing only splashes at Water.Level. Walking payloads (old woman, scouser) keep their own sinking (0x594002);
   the sheep (W4M JumpingPayload) and the walks-first super sheep use these planes.
+- Water events for the other bodies (`GameEvent::Splash` / `Pop` with `fx`, docs/w4m/render.md "Water effects"): a worm starting to drown (WXP_WaterSplash, `Game::drown`), a drowned worm's death blast (`Pop` WXP_WormDrownPopSplash and the blast's WXP_Explosion_Small, `Game::deathBlast`), a crate or target crate under Water.Level (WXP_WaterSmallSplash, 1 unit absolute), a mine (WXP_WaterSplash); a drum none. Heights: `surfaceY`.
 
 ### Wind on the parachute, the scouser and the gas (W4M docs/w4m/weapons.md "Wind drift")
 

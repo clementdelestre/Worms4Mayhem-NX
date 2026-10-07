@@ -41,6 +41,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Sheep, Holy, Tur
                  MineMachine,  // W4M weapons/MineMachineOperate: the mine factory runs, MineFactory.Start to .Fire (0x5cf413, 0x5cf579)
                  FeScaleHit,  // W4M kAUDIO_In_ScaleHitXY (global/In_Scalehitxy)
                  Gong,  // W4M weapons/Gong: Weapon.NotClearToFire (0x552630)
+                 SplashLight, WaterBounce, WaterSurge, WaterExplosion,  // PARTTWK EmitterSoundFX of the water effects; WaterBounce is SplashLight's second sounddef
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,

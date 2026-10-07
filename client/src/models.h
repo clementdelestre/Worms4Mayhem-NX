@@ -40,7 +40,7 @@ float bottom(const char *name);  // depth of the mesh below its origin, 0 if mis
 // Model-space matrix of a joint (e.g. "WeaponLocator") in that clip pose; false if missing.
 bool joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim = nullptr, float aimT = 0,
            const Layers *ly = nullptr);
-bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0);  // full world matrix; clip loops
+bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true);  // full world matrix; a clip not looping holds its last key
 void shade(Shader s);  // every draw() uses s until shade({})
 void pick(const char *clip, float t = 0);  // every draw() also plays this W4M clip's XChildSelector keys (looped) until pick(nullptr)
 bool visible(Vector3 c, float r);  // sphere vs the current BeginMode3D view frustum

@@ -140,17 +140,17 @@ template <class F> static void paint(Terrain &t, Vector3 lo, Vector3 hi, F f) {
     for (int z = std::max(0, (int)ceilf(lo.z / V)); z <= std::min(Terrain::NZ - 1, (int)(hi.z / V)); z++)
         for (int y = std::max(0, (int)ceilf(lo.y / V)); y <= std::min(Terrain::NY - 1, (int)(hi.y / V)); y++)
             for (int x = std::max(0, (int)ceilf(lo.x / V)); x <= std::min(Terrain::NX - 1, (int)(hi.x / V)); x++)
-                f(Vector3{x * V, y * V, z * V}, t.d[idx(x, y, z)]);
+                f(Vector3{x * V, y * V, z * V}, t.d.w(idx(x, y, z)));
 }
 
 void bootStop();
+extern "C" int sinflate(void *out, int cap, const void *in, int size);  // raylib's DEFLATE decoder (external/sinfl.h)
 
 void Terrain::reset(signed char fill) {
     bootStop();
     unload();
-    d.assign(TOTAL, fill);
-    d.shrink_to_fit();
-    std::vector<bool>().swap(steel);
+    d.assign(chunks(), fill);
+    steel.clear();
     thin.assign(CX * CY * CZ, {});
     parts.assign(CX * CY * CZ, {});
     dirty.assign(CX * CY * CZ, true);
@@ -191,7 +191,7 @@ void Terrain::island(float bh, float height, float rough, float rad, unsigned s)
                 for (int n = 0; n < 8; n++) {
                     float fx = (n & 1) * 0.5f, fy = ((n >> 1) & 1) * 0.5f, fz = (n >> 2) * 0.5f;
                     float a = v[0] + (v[1] - v[0]) * fx, b = v[2] + (v[3] - v[2]) * fx, e = v[4] + (v[5] - v[4]) * fx, f = v[6] + (v[7] - v[6]) * fx;
-                    d[idx(x * K + (n & 1), y * K + ((n >> 1) & 1), z * K + (n >> 2))] = full ? 127 : qd((a + (b - a) * fy) + ((e + (f - e) * fy) - (a + (b - a) * fy)) * fz);
+                    d.w(idx(x * K + (n & 1), y * K + ((n >> 1) & 1), z * K + (n >> 2))) = full ? 127 : qd((a + (b - a) * fy) + ((e + (f - e) * fy) - (a + (b - a) * fy)) * fz);
                 }
             }
 }
@@ -287,6 +287,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
             v = sub ? std::min(v, qd(sd)) : std::max(v, qd(-sd));
         });
     }
+    d.shareAll();  // the island and the shapes gave their chunks own blocks
 
     if (j["finish"].type == Json::Arr) hasFinish = true, finish = vec(j["finish"], {cx, 8, cz});
     for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz}), vec(m["dir"], {0, 0, 0})});
@@ -314,15 +315,18 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     return true;
 }
 
-// .thin "W4T1": u32 count, then per cell u16 x y z (its voxel), u8 material (1-based), 8 corners (3 f32, m; bit 1 +x, 2 +y, 4 +z)
+// .thin "W4T2": u32 size, then that many bytes deflated: u32 count, then per cell u16 x y z (its voxel), u8 material (1-based),
+// 8 corners (3 f32, m; bit 1 +x, 2 +y, 4 +z)
 void Terrain::loadThin(const std::string &path) {
-    int n = 0;
-    unsigned char *b = LoadFileData(path.c_str(), &n);
-    if (!b) return;
-    uint32_t count = 0;
-    if (n >= 8 && !memcmp(b, "W4T1", 4)) memcpy(&count, b + 4, 4);
-    for (uint32_t i = 0; i < count && 8 + (i + 1) * 103 <= (uint32_t)n; i++) {
-        const unsigned char *r = b + 8 + i * 103;
+    int size = 0;
+    unsigned char *f = LoadFileData(path.c_str(), &size);
+    uint32_t raw = 0, count = 0;
+    if (f && size >= 8 && !memcmp(f, "W4T2", 4)) memcpy(&raw, f + 4, 4);
+    std::vector<unsigned char> b(raw < (1u << 28) ? raw : 0);
+    if (raw >= 4 && b.size() == raw && sinflate(b.data(), (int)raw, f + 8, size - 8) == (int)raw) memcpy(&count, b.data(), 4);
+    UnloadFileData(f);
+    for (uint32_t i = 0; i < count && 4 + (i + 1) * 103 <= raw; i++) {
+        const unsigned char *r = b.data() + 4 + i * 103;
         uint16_t v[3];
         memcpy(v, r, 6);
         if (v[0] >= NX || v[1] >= NY || v[2] >= NZ) continue;
@@ -330,14 +334,14 @@ void Terrain::loadThin(const std::string &path) {
         memcpy(t.c, r + 7, 96);
         thin[(v[2] / CS * CY + v[1] / CS) * CX + v[0] / CS].push_back(t);
     }
-    UnloadFileData(b);
     // voxels standing only for thin cells (no other solid neighbour): their blob is not meshed, the hexahedra show instead
     std::vector<int> anchors;
     for (auto &ts : thin) for (const Thin &t : ts) anchors.push_back(t.vox);
     std::sort(anchors.begin(), anchors.end());
     thinOnly.clear();
     for (int v : anchors) {
-        int x = v % NX, y = v / NX % NY, z = v / (NX * NY);
+        int x, y, z;
+        xyz(v, x, y, z);
         bool only = true;
         for (int q = 0; q < 6 && only; q++) {
             int a = x + (q == 0) - (q == 1), c = y + (q == 2) - (q == 3), e = z + (q == 4) - (q == 5);
@@ -349,61 +353,46 @@ void Terrain::loadThin(const std::string &path) {
     }
 }
 
-// .vox "W4V2": u16 NX NY NZ, u8 D; materials as (material, run 1..255) pairs in d[] order (0 = air);
-// then density codes: h < 128 skips h voxels left at +-D (by material), h >= 128 gives h - 127 int8 values.
-// Decoded by 3 joined workers over voxel ranges that start on a density code (the two streams are only walked to find them).
+// .vox "W4V3" (docs/maps.md): u16 NX NY NZ, u8 D, a u32 per chunk (material << 1: that material throughout at density +-D;
+// size << 1 | 1: deflated), then the deflated chunks (32768 materials, then 32768 densities minus +-D). 3 workers take chunks in turn.
 bool Terrain::loadVoxels(const std::string &path) {
     int size = 0;
     unsigned char *b = LoadFileData(path.c_str(), &size);
-    bool ok = b && size >= 11 && !memcmp(b, "W4V2", 4) && (b[4] | b[5] << 8) == NX && (b[6] | b[7] << 8) == NY && (b[8] | b[9] << 8) == NZ;
-    size_t n = 0;
-    int i = 11;
+    const size_t n = chunks(), head = 11 + 4 * n, N = Bricks<signed char>::N;
+    bool ok = b && (size_t)size >= head && !memcmp(b, "W4V3", 4) && (b[4] | b[5] << 8) == NX && (b[6] | b[7] << 8) == NY && (b[8] | b[9] << 8) == NZ;
+    std::vector<uint32_t> tab(ok ? n : 0);
+    std::vector<size_t> at(n + 1, head);
+    if (ok) memcpy(tab.data(), b + 11, 4 * n);
+    for (size_t c = 0; c < tab.size(); c++) at[c + 1] = at[c] + (tab[c] & 1 ? tab[c] >> 1 : 0), ok = ok && (tab[c] & 1 || tab[c] >> 1 < 256);
+    ok = ok && at[n] == (size_t)size;
     if (ok) {
-        for (; i + 1 < size && n < TOTAL; i += 2) n += std::min<size_t>(b[i + 1], TOTAL - n);
-        ok = n == TOTAL;
-    }
-    if (ok) {
-        constexpr int T = 3;
-        struct Cut { size_t pos = 0; int code = 0, pair = 0; size_t runStart = 0; } cut[T + 1];  // voxel, density byte, material pair, that pair's first voxel
-        cut[0].code = i, cut[T] = {TOTAL, size, 0, 0};
-        int t = 1, c = i;
-        for (n = 0; c < size && n < TOTAL && t < T;) {
-            if (n >= TOTAL / T * t) cut[t++] = {n, c, 0, 0};
-            int h = b[c++];
-            if (h < 128) n += h;
-            else c += h - 127, n += h - 127;
-        }
-        for (; t < T; t++) cut[t] = {TOTAL, size, 0, 0};
-        n = 0;
-        for (int k = 1, p = 11; k < T; k++) {  // the material pair holding each cut's voxel
-            for (; p + 1 < i; p += 2, n += b[p - 1]) {
-                cut[k].pair = p, cut[k].runStart = n;
-                if (n + b[p + 1] > cut[k].pos) break;
-            }
-        }
-        cut[0].pair = 11;
-        mats.assign(TOTAL, 0);
+        mats.assign(n, 0);
         const signed char D = (signed char)b[10];
-        const int matEnd = i;
+        std::atomic<size_t> next{0};
+        std::atomic<bool> good{true};
         auto work = [&](int k) {
             Loading::pinCore(k);
-            size_t lo = cut[k].pos, hi = cut[k + 1].pos, v = cut[k].runStart;
-            for (int p = cut[k].pair; p < matEnd && v < hi; p += 2) {
-                size_t r = std::min<size_t>(b[p + 1], TOTAL - v), s = std::max(v, lo), e = std::min(v + r, hi);
-                if (s < e) memset(&mats[s], b[p], e - s), memset(&d[s], b[p] ? D : -D, e - s);
-                v += r;
-            }
-            int q = cut[k].code;
-            for (v = lo; q < size && v < hi;) {
-                int h = b[q++];
-                if (h < 128) v += h;
-                else for (h -= 127; h-- && q < size && v < hi;) d[v++] = (signed char)b[q++];
+            std::vector<unsigned char> raw(2 * N);
+            for (size_t c; (c = next++) < n;) {
+                if (!(tab[c] & 1)) {
+                    const unsigned char m = (unsigned char)(tab[c] >> 1);
+                    mats.fillChunk(c, m), d.fillChunk(c, m ? D : -D);
+                    continue;
+                }
+                if (sinflate(raw.data(), (int)raw.size(), b + at[c], (int)(at[c + 1] - at[c])) != (int)raw.size()) { good = false; continue; }
+                unsigned char *m = mats.overwrite(c);
+                signed char *v = d.overwrite(c);
+                memcpy(m, raw.data(), N);
+                for (size_t i = 0; i < N; i++) v[i] = (signed char)(raw[N + i] + (m[i] ? D : -D));
+                mats.share(c), d.share(c);
             }
         };
+        constexpr int T = 3;
         std::thread th[T - 1];
         for (int k = 1; k < T; k++) th[k - 1] = std::thread(work, k);
         work(0);
         for (std::thread &w : th) w.join();
+        ok = good;
     }
     UnloadFileData(b);
     if (!ok) mats.clear();
@@ -451,6 +440,7 @@ void Terrain::generate(unsigned seed) {
         float tower = fmaxf(sqrtf((p.x - cx - 10) * (p.x - cx - 10) + (p.z - cz + 6) * (p.z - cz + 6)) - 2.5f, p.y - 24);
         v = std::max(v, qd(-tower));
     });
+    d.shareAll();
 }
 
 float Terrain::at(int x, int y, int z) const {
@@ -473,10 +463,18 @@ float Terrain::field(Vector3 p) const {
     float fx = x - ix, fy = y - iy, fz = z - iz, r = 0;
     const float wx[2] = {1 - fx, fx}, wy[2] = {1 - fy, fy}, wz[2] = {1 - fz, fz};
     if (ix >= 0 && iy >= 0 && iz >= 0 && ix < NX - 1 && iy < NY - 1 && iz < NZ - 1) {  // the AI's hot path: no bounds checks, same sum order
-        const signed char *q = &d[idx(ix, iy, iz)];
+        const size_t i = idx(ix, iy, iz);
+        if ((ix & 31) != 31 && (iy & 31) != 31 && (iz & 31) != 31) {  // the 8 corners in one chunk
+            const signed char *q = d.chunk(i >> 15) + (i & 32767);
+            for (int n = 0; n < 8; n++) {
+                int a = n & 1, b = (n >> 1) & 1, c = n >> 2;
+                r += q[a + b * 32 + c * 1024] * IQ * wx[a] * wy[b] * wz[c];
+            }
+            return r;
+        }
         for (int n = 0; n < 8; n++) {
             int a = n & 1, b = (n >> 1) & 1, c = n >> 2;
-            r += q[a + b * NX + c * NX * NY] * IQ * wx[a] * wy[b] * wz[c];
+            r += d[idx(ix + a, iy + b, iz + c)] * IQ * wx[a] * wy[b] * wz[c];
         }
         return r;
     }
@@ -518,7 +516,7 @@ bool Terrain::carve(Vector3 c, float radius) {
                 signed char nv = std::min(d[i], qd(Vector3Distance({x * VOX, y * VOX, z * VOX}, c) - radius));
                 if (nv == d[i]) continue;
                 if (undo) undo->emplace_back((int)i, d[i]);
-                d[i] = nv, changed = true;
+                d.w(i) = nv, changed = true;
                 box[0] = std::min(box[0], x), box[1] = std::min(box[1], y), box[2] = std::min(box[2], z);
                 box[3] = std::max(box[3], x), box[4] = std::max(box[4], y), box[5] = std::max(box[5], z);
             }
@@ -545,7 +543,7 @@ bool Terrain::carve(Vector3 c, float radius) {
 
 void Terrain::weld(Vector3 c, Vector3 half) {
     sharp.weld(d, c, half);
-    if (steel.empty()) steel.assign(TOTAL, false);
+    if (steel.empty()) steel.assign(chunks(), 0);
     edits++;
     float reach = Vector3Length(half) + 0.5f;
     int lo[3], hi[3];
@@ -559,10 +557,10 @@ void Terrain::weld(Vector3 c, Vector3 half) {
                 size_t i = idx(x, y, z);
                 signed char nv = std::max(d[i], qd(-sd));
                 if (undo && nv != d[i]) undo->emplace_back((int)i, d[i]);
-                d[i] = nv;
+                d.set(i, nv);
                 if (sd < 0 && !steel[i]) {
                     if (undo) undo->emplace_back(-1 - (int)i, 0);
-                    steel[i] = true;
+                    steel.w(i) = 1;
                 }
             }
     for (int z = std::max(0, lo[2] - 1) / CS; z <= std::min(NZ - 1, hi[2] + 1) / CS; z++)
@@ -579,7 +577,7 @@ void Terrain::addCell(const Vector3 *c) {
     for (int z = a[2]; z <= b[2]; z++)
         for (int y = a[1]; y <= b[1]; y++)
             for (int x = a[0]; x <= b[0]; x++)
-                if (sharp.inside(id, {x * VOX, y * VOX, z * VOX})) d[idx(x, y, z)] = std::max<signed char>(d[idx(x, y, z)], 64);
+                if (sharp.inside(id, {x * VOX, y * VOX, z * VOX})) d.set(idx(x, y, z), std::max<signed char>(d[idx(x, y, z)], 64));
     for (int z = std::max(0, a[2] - 1) / CS; z <= std::min(NZ - 1, b[2] + 1) / CS; z++)
         for (int y = std::max(0, a[1] - 1) / CS; y <= std::min(NY - 1, b[1] + 1) / CS; y++)
             for (int x = std::max(0, a[0] - 1) / CS; x <= std::min(NX - 1, b[0] + 1) / CS; x++) dirty[(z * CY + y) * CX + x] = true;
@@ -728,8 +726,9 @@ bool Terrain::clearCoded(const char *code) {  // exact on 4 bytes (0x47519c); no
     for (auto [at, n] : it->second.vox)
         for (int i = at; i < at + n && i < (int)d.size(); i++) {
             if (undo && d[i] > 0) undo->emplace_back(i, d[i]);
-            d[i] = std::min(d[i], (signed char)-127), mats[i] = 0;
-            int x = i % NX, y = i / NX % NY, z = i / (NX * NY);
+            d.set(i, std::min(d[i], (signed char)-127)), mats.set(i, 0);
+            int x, y, z;
+            xyz(i, x, y, z);
             for (int dz = -1; dz <= 1; dz++)
                 for (int dy = -1; dy <= 1; dy++)
                     for (int dx = -1; dx <= 1; dx++) {
@@ -929,12 +928,18 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
     constexpr int S = MS, L = ML;  // cells x0-1 .. x0+CS-1, their corners x0-1 .. x0+CS
     geo.ci = ci;
     // most chunks are all air or all solid: a raw sign scan is much cheaper than the full fill below
-    bool any[2] = {x0 == 0 || y0 == 0 || z0 == 0 || x0 + CS >= NX || y0 + CS >= NY || z0 + CS >= NZ, false};
-    for (int z = std::max(z0 - 1, 0); z <= std::min(z0 + CS, NZ - 1) && !(any[0] && any[1]); z++)
-        for (int y = std::max(y0 - 1, 0); y <= std::min(y0 + CS, NY - 1); y++) {
-            const signed char *r = &d[idx(0, y, z)];
-            for (int x = std::max(x0 - 1, 0); x <= std::min(x0 + CS, NX - 1); x++) any[r[x] > 0] = true;
-        }
+    bool any[2] = {x0 == 0 || y0 == 0 || z0 == 0 || x0 + CS >= NX || y0 + CS >= NY || z0 + CS >= NZ, false}, scan = false;
+    const int cx = x0 / CS, cy = y0 / CS, cz = z0 / CS;
+    for (int k = std::max(cz - 1, 0); k <= std::min(cz + 1, CZ - 1); k++)  // the sampled voxels' chunks, one value each
+        for (int j = std::max(cy - 1, 0); j <= std::min(cy + 1, CY - 1); j++)
+            for (int i = std::max(cx - 1, 0); i <= std::min(cx + 1, CX - 1); i++) {
+                const size_t c = ((size_t)k * CY + j) * CX + i;
+                if (d.shared(c)) any[d.chunk(c)[0] > 0] = true;
+                else scan = true;
+            }
+    for (int z = std::max(z0 - 1, 0); scan && z <= std::min(z0 + CS, NZ - 1) && !(any[0] && any[1]); z++)
+        for (int y = std::max(y0 - 1, 0); y <= std::min(y0 + CS, NY - 1); y++)
+            for (int x = std::max(x0 - 1, 0); x <= std::min(x0 + CS, NX - 1); x++) any[d[idx(x, y, z)] > 0] = true;
     if (!any[0] || !any[1]) return;
     static thread_local Scratch *scratch = nullptr;
     if (!scratch) scratch = new Scratch();
@@ -1042,10 +1047,17 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
         return bs[bi];
     };
     std::vector<int> skip;  // thinOnly voxels of this chunk's sample box
-    for (auto it = std::lower_bound(thinOnly.begin(), thinOnly.end(), (int)idx(0, 0, std::max(z0 - 1, 0))); it != thinOnly.end() && *it / (NX * NY) <= z0 + CS; ++it) {
-        int x = *it % NX, y = *it / NX % NY;
-        if (x >= x0 - 1 && x <= x0 + CS && y >= y0 - 1 && y <= y0 + CS) skip.push_back(*it);
-    }
+    for (int k = std::max(cz - 1, 0); k <= std::min(cz + 1, CZ - 1) && !thinOnly.empty(); k++)
+        for (int j = std::max(cy - 1, 0); j <= std::min(cy + 1, CY - 1); j++)
+            for (int i = std::max(cx - 1, 0); i <= std::min(cx + 1, CX - 1); i++) {
+                const int lo = (int)((((size_t)k * CY + j) * CX + i) << 15);
+                for (auto it = std::lower_bound(thinOnly.begin(), thinOnly.end(), lo); it != thinOnly.end() && *it < lo + 32768; ++it) {
+                    int x, y, z;
+                    xyz(*it, x, y, z);
+                    if (x >= x0 - 1 && x <= x0 + CS && y >= y0 - 1 && y <= y0 + CS && z >= z0 - 1 && z <= z0 + CS) skip.push_back(*it);
+                }
+            }
+    std::sort(skip.begin(), skip.end());
     for (int k = 1; k < S; k++)
         for (int j = 1; j < S; j++) {
             uint64_t r = rows[k * L + j], ch[3] = {r ^ r >> 1, r ^ rows[k * L + j + 1], r ^ rows[(k + 1) * L + j]};
@@ -1318,7 +1330,7 @@ void Terrain::decodeTextures() {
 }
 
 size_t Terrain::bytes() const {
-    size_t n = d.capacity() + mats.capacity() + steel.capacity() / 8 + sharp.bytes() + colTop.capacity() * 2 + thinOnly.capacity() * sizeof(int);
+    size_t n = voxelBytes() + sharp.bytes() + colTop.capacity() * 2 + thinOnly.capacity() * sizeof(int);
     for (const std::vector<Part> &ps : parts)
         for (const Part &p : ps) n += (size_t)p.mesh.vertexCount * 28 + (size_t)p.mesh.triangleCount * 6;  // pos, normal, uv, colour; u16 indices
     for (const Group &g : groups)
@@ -1333,10 +1345,14 @@ int Terrain::remesh(double budget) {
     if (texMats.empty() && !texFiles.empty()) loadTextures();
     if (colTop.empty()) {
         colTop.assign(NX * NZ + 1, 0);
-        for (int z = 0; z < NZ; z++)
-            for (int y = 0; y < NY; y++)
-                for (int x = 0; x < NX; x++)
-                    if (d[idx(x, y, z)] > 0) colTop[z * NX + x] = (uint16_t)(y + 1), colTop.back() = std::max(colTop.back(), colTop[z * NX + x]);
+        for (int c = (int)chunks() - 1; c >= 0; c--) {  // top chunks first: a column takes its highest solid voxel
+            if (d.shared(c) && d.chunk(c)[0] <= 0) continue;
+            const int x0 = c % CX * CS, y0 = c / CX % CY * CS, z0 = c / (CX * CY) * CS;
+            for (int z = z0; z < z0 + CS; z++)
+                for (int x = x0; x < x0 + CS; x++)
+                    for (int y = y0 + CS - 1; y >= y0 && !colTop[z * NX + x]; y--)
+                        if (d[idx(x, y, z)] > 0) colTop[z * NX + x] = (uint16_t)(y + 1), colTop.back() = std::max(colTop.back(), colTop[z * NX + x]);
+        }
         bounds = {{1e9f, 0, 1e9f}, {0, colTop.back() * VOX, 0}};
         for (int z = 0; z < NZ; z++)
             for (int x = 0; x < NX; x++)

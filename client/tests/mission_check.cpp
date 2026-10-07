@@ -170,8 +170,11 @@ static void checkMovies(const std::vector<MissionSpec> &list) {
         auto solid = [&] {
             int k = 0, n = 0;
             for (auto [at, len] : jeff.vox)
-                for (int i = at; i < at + len; i++, n++)
-                    k += g.terrain.solid({i % Terrain::NX * Terrain::VOX, i / Terrain::NX % Terrain::NY * Terrain::VOX, i / (Terrain::NX * Terrain::NY) * Terrain::VOX});
+                for (int i = at; i < at + len; i++, n++) {
+                    int x, y, z;
+                    Terrain::xyz(i, x, y, z);
+                    k += g.terrain.solid({x * Terrain::VOX, y * Terrain::VOX, z * Terrain::VOX});
+                }
             return std::make_pair(k, n);
         };
         auto [was, n] = solid();

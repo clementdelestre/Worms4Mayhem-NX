@@ -252,6 +252,7 @@ See "Bundles numbering" above (unchanged). Additions from this pass [data]:
 ### 8. Relation to `tools/w4m-models`
 - Handles: untagged descriptors / graph sets / clip libraries (its `exact()` = the table in 3), schema-sized types up to the next `CTNR`, scene walk (`XGraphSet` -> `XInteriorNode`/`XGroup`/`XSkin`/`XBinModifier`), `XShape`/`XSkinShape`, `XIndexedTriangleSet` + sets, palette weights, `XSimpleShader` first stage -> `XImage` formats 0/1/2, joint/transform/matrix cores, `XChildSelector` (child 0's mesh kept unmerged, every child's image as a material; glb root extras `sel`: per selector its primitive and child materials, per clip keying it the value at 60 fps, read by `Models`), clips with Bezier eval, 30 fps resampling.
 - Skips or ignores: DXT images (9/10/11), `XMaterial` colours, render states (blend / alpha test / cull / z), stages after the first, `XTexturePlacement2D` / `0x401` UV animation (parsed as a key type but not exported), `0x200` / `0x403` keys, pre/post infinity (always clamps; cycle `2` ignored), the channel flags, `XCollisionGeometry` / `XCollisionData`, `XBillboardSpriteSet` / `XPlaneAlignedSpriteSet`, `XSceneCamera`, `XEnvironmentMapShader`, `XAnimInfo` / `XExpandedAnimInfo`, and the descriptor trailing bytes.
+- Worm frame [data + disasm]: `W4.Worm` rest pose (Base t=0) spans x -9.54..9.54, y -5.20..19.98, z -16.66..5.03 units; the raw origin is not the bbox. WXWormGraphicEntity 0x5a00b0 sets the mesh node at Position + (0, 3, 0) units (0x8c1578), Position being the feet (physics.md rods), so the mesh bottom is 2.2 units (11 cm) under Position and the node origin 0.15 m over it. The world scale is 0.05 m per unit. Exported as raw x 0.05 + (0, 3, 0) units (origin = Position); main_bone rest at (0, 0.1914, 0.0634) m in it. Static models (crates, mine, barrel, ...) are still centred on their bbox: raw bbox centre offsets in units are crate_utility y +1.05, crate_health y +0.08, mine y +0.14, barrel y +10.0 (raw y 0..20), others under 0.1 [data]; the W4M node placement of those entities is not traced, so they are unchanged.
 - Dead code: the `0x100`/`0x101` channel form and the u16 `0x100` skip (never in data, harmless).
 - `exact()` reads `XBitmapDescriptor` as v,+2,v,+4 and `XTextDescriptor` as v,+1,v,v,...; the second only works because the u16 bundle id 3 has a zero high byte. Read it as name, u16, ref, u16 k.
 
@@ -261,21 +262,25 @@ Source [data]: the visible `LandFrameStore` poxel cells (a hexahedron of 8 latti
 scaled as in docs/w4m-formats.md "Conversion to our grid". W4M collides with that lattice itself: land ray 0x466ae0, face entered 0x46a070
 (physics.md §5, §11) [disasm]. The client's use: docs/sim.md "Exact land".
 
-File [ours]: `"W4C1"`, u32 payload size, then the payload as raw DEFLATE (RFC 1951, one fixed-Huffman block; the client inflates it with
-raylib's `sinflate`). Payload, little-endian:
+File [ours]: `"W4C2"`, u32 payload size, then the payload as raw DEFLATE (RFC 1951, dynamic-Huffman blocks of 64 Ki tokens, greedy
+hash-chain matches; tools/w4m-maps `deflate.rs`, inflated by raylib's `sinflate`). Payload, little-endian:
 
 - u32 hexahedra, u32 heightmap columns (0 or NX·NZ), u32 cells, u32 lists, u32 list bytes, u32 cell bytes.
 - Per hexahedron: 8 corners as 3 f32 (m; corner bit 1 = +x, 2 = +y, 4 = +z), u32 flags: bit t (0..11) triangle t kept (face t / 2 of
   `{0,2,6,4} {1,3,7,5} {0,1,5,4} {2,3,7,6} {0,1,3,2} {4,5,7,6}`, triangle (f0, f1, f2) for even t, (f0, f2, f3) for odd), bit 12 + t its
   plane flipped to face out, bit 24 twisted (planes reaching past its corners: also bounded by its box). The client rebuilds the planes
   from these without deciding anything.
-- Heightmap: f32 top per grid column (m), NaN where none, x fastest.
+- Heightmap: f32 top per grid column (m), NaN where none, x fastest, stored as 4 byte planes (every value's byte 0, then byte 1...).
 - Lists, varints: the word count, then per op `kind | id << 3`: kind 0 = a hexahedron (id = its index minus the list's previous
   hexahedron's), followed by its plane mask; kind 1 = the heightmap.
-- Cells, varints, ascending: the cell index minus the previous one minus 1, then its list's number. Cell index `(z·NY + y)·NX + x`
-  on the map's `grid` of 0.25 m cells (docs/maps.md) [ours].
+- Cells, varints, ascending by cell index: every cell's index minus the previous one minus 1, then every cell's list code. Lists are
+  numbered by first use in that order; a code is 0 for the next new list, r in 1..4096 for the entry r from the end among the last
+  4096 entries of the recent list, else 4097 + the list's number. Each cell's list is then appended to the recent list (its entry
+  found by rank removed first), which is cut to its last 4096 entries when it passes 8192.
+  Cell index = `Terrain::idx` on the map's `grid` of 0.25 m cells (docs/maps.md): chunk `(cz·CY + cy)·CX + cx` << 15, then
+  `x + 32 y + 1024 z` inside the 32³ chunk [ours].
 
 Build [ours]: a cell lists a hexahedron unless one of its planes has the 8 cell corners outside (> 1e-5 m); the mask keeps the planes
 with a corner on or outside (> -1e-5 m), so a face lying on the cell's border stays with the cell it bounds. A cell some hexahedron or the
 heightmap fills is left out; its sign is in the `.vox`, whose grid-point signs are set from the lists (from a listed cell around the
-point, else solid when a filled cell touches it). Identical lists are stored once. 221 maps: 282 MB, 15 KB to 2.6 MB each.
+point, else solid when a filled cell touches it). Identical lists are stored once.
