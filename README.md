@@ -97,21 +97,21 @@ hold − diagram), main.cpp (perf overlay, replays). Switch names; keyboard in t
 | In a match | Controller | Keyboard / mouse |
 |---|---|---|
 | Walk / turn (camera-relative: the worm faces the stick at once) | left stick | arrows |
-| Aim mode (first person for aimed weapons, scope for the sniper rifle) | hold ZL (precise), aim with the right stick (+ gyro if on); single Joy-Con: hold ZL + stick (not precise) | W / S; hold right mouse button = mouse aim (precise) |
+| Aim mode (first person for aimed weapons, scope for the sniper rifle) | hold L or ZL (precise), aim with the right stick (+ gyro if on); single Joy-Con: hold ZL + stick (not precise) | W / S; hold right mouse button = mouse aim (precise) |
 | Fire (hold = power for powered weapons) / detonate a live shot | A or ZR | Space |
 | Jump (press twice within 0.3 s = backflip, hold = vertical jump) / let go of the rope | B | Enter |
 | Previous / next weapon, weapon panel | D-pad ← / → ; X (D-pad moves, A picks, B or X closes) | Tab / Q (arrows, Enter, Backspace or Q) |
-| Fuse 1–5 s (grenade, cluster, banana) | D-pad ↑ ↓ | = / − |
-| Camera orbit / zoom out, in (every view: normal, sky view, first person) | right stick / L, R | A D / Z X, mouse wheel |
+| Fuse 1–5 s (grenade, cluster, banana; not while aiming) | D-pad ↑ ↓ | = / − |
+| Camera orbit (every view) / zoom in, out (sky view, first person only, as W4M) | right stick / D-pad ↑ ↓ | A D / Z X, mouse wheel |
 | Targeted weapons (airstrike, Bovine Blitz, Fatkins, donkey, abduction, teleport): sky view | Y (toggle); A / ZR then fire | Space or E (toggle) |
-| Homing missile: first-person aim, lock (first press), charge and fire (next press) | hold ZL, then A / ZR | hold right mouse, then Space |
-| Homing missile: sky view (no lock until A / ZR), lock on the cursor, then ZL to aim and fire in first person (lock kept) | Y; then A / ZR; then hold ZL | E (toggle) |
-| Sky view: fire (homing: lock the cursor point, then charge and fire) / leave / pan / look / zoom | A / B (or Y) / left stick / right stick / L, R | Space / Enter or E / arrows / W A S D / Z X, wheel |
-| Rope | stick swings, right stick reels, A fires the held secondary, B lets go | arrows, W S, Space, Enter |
-| Jetpack: take off and thrust / steer / forward thrust / drop the secondary (dynamite, mine, sheep) | hold A or ZR / left stick / D-pad ↑ / B (in flight and once landed) | hold Space / arrows / W / Backspace |
+| Homing missile: first-person aim, lock (first press), charge and fire (next press) | hold L or ZL, then A / ZR | hold right mouse, then Space |
+| Homing missile: sky view (no lock until A / ZR), lock on the cursor, then L or ZL to aim and fire in first person (lock kept) | Y; then A / ZR; then hold L or ZL | E (toggle) |
+| Sky view: fire (homing: lock the cursor point, then charge and fire) / leave / pan / look / zoom | A / B (or Y) / left stick / right stick / D-pad ↑ ↓ | Space / Enter or E / arrows / W A S D / Z X, wheel |
+| Rope | stick swings, right stick reels, A or R fires the held secondary, B lets go | arrows, W S, Space, Enter |
+| Jetpack: take off and thrust / steer / forward thrust / drop the secondary (dynamite, mine, sheep) | hold A or ZR / left stick / D-pad ↑ / R (in flight and once landed; B jumps) | hold Space / arrows / W / Backspace |
 | Steered shot (Super Sheep, Bovine Blitz, Old Woman, Scouser): steer / detonate | left stick (left right: turn, up down: pitch) / A | left right arrows, W S / Space |
 | Girder preview: move / raise, lower, turn the view / place | left stick / right stick / A | arrows / W S, A D / Space |
-| Binoculars: look / pick a target | ZL / A | right mouse button / Space |
+| Binoculars: look / pick a target | L or ZL / A | right mouse button / Space |
 | Taunt with the weapon in hand (client only: acting scene + taunt clip; W4M Input.TauntPressed, no joypad binding) | — | T |
 | Skip the hp count or crate camera | B | Space |
 | Performance overlay (off, CPU, GPU-synced) | hold − for 1.5 s (the controls help shows first) | F3 |

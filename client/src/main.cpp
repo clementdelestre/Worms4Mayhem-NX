@@ -2178,19 +2178,17 @@ int main(int argc, char **argv) {
         Audio::hold(Audio::Sfx::PowerBow, charging && sw.name == "Poison Arrow", &cur.pos);
         bool chase = game.phase != Phase::Aim && !game.shots.empty() && !dropped(WEAPONS[game.shots[0].weapon]);  // dynamite: the camera stays on the worm
         Controls::Reticle ret = Controls::reticle(game);
-        bool scope = !chase && Controls::scoped(game);
         static float minusT = 0;  // - held 1.5 s: perf overlay (user-requested, 2026-10-04); the controls help shows from 0.35 s
         float minusWas = minusT;
         minusT = IsGamepadButtonDown(pad, GAMEPAD_BUTTON_MIDDLE_LEFT) ? minusT + dt : 0;
         if ((minusWas < 1.5f && minusT >= 1.5f) || IsKeyPressed(KEY_F3))
             perfOn = (perfOn + 1) % 3;
-        Controls::camera(cam, game, chase, scope, !pause.open && !hud.open && !(playing && freeCam), dt);
+        Controls::camera(cam, game, chase, !pause.open && !hud.open && !(playing && freeCam), dt);
         updateBomber(game, pause.open ? 0 : dt);
         updateUfo(game, pause.open ? 0 : dt);
         if (Camera3D sc = cam; !(playing && freeCam) && Efmv::camera(game, sc)) cam = sc;  // a level movie's PathCam / TimedPathCam
         if (Camera3D sc = cam; !(playing && freeCam) && (bomberCam(&sc) || ufoCam(&sc))) cam = sc;  // W4M scene cam outranks every logical camera
         Audio::listen(cam);
-        hud.fp = Controls::sinceFirstPerson() < 0.3f;
         Camera3D view = cam;  // shaken copy: the smoothed camera itself never drifts
         if (fixedView) view = viewCam;
         if (getenv("W4NX_UFOVIEW") && ufo.live) view.target = Vector3Transform({0, 0, 0}, ufo.at), view.position = Vector3Add(view.target, {30, -6, 30}), view.up = {0, 1, 0};  // captures: the saucer from outside
@@ -2374,13 +2372,14 @@ int main(int argc, char **argv) {
         EndMode3D();
         if (blimp) Xray::outline(TEAM_COLORS);
 
+        hud.labels(game, view, tick);
         // HomingLockOnGraphicEntity: on the target until the shot, when in front of the camera
         Vector2 lockAt = GetWorldToScreen(game.lockAt, view);
         bool locked = game.locked && wd.kind == Kind::Homing && Vector3DotProduct(Vector3Subtract(game.lockAt, view.position), Vector3Subtract(view.target, view.position)) > 0;
         if (ret == Controls::Reticle::Aim && wd.kind == Kind::Homing) {  // W4M Homing.Cursor in the aim view (observed), not the shell reticle
             Vector2 at = GetWorldToScreen(Controls::aimPoint(game), view);
             Ui::targetCursor(wd, game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr, &at);
-        } else if (ret == Controls::Reticle::Aim) Ui::reticle(wd, GetWorldToScreen(Controls::aimPoint(game), view), scope);  // W4M per-weapon aim reticle
+        } else if (ret == Controls::Reticle::Aim) Ui::reticle(wd, GetWorldToScreen(Controls::aimPoint(game), view));  // W4M per-weapon aim reticle
         else if (ret == Controls::Reticle::Blimp) {
             Vector3 h;
             bool hit = !game.cursorOn || game.blimpHit(&h);

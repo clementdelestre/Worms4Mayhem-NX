@@ -656,11 +656,11 @@ static std::vector<Hint> weaponHints(const WeaponDef &wd) {
         if (r.kind != wd.kind) continue;
         bool drop = dropped(wd);  // dynamite: a Shell, dropped
         if (blimped(wd.kind)) h.push_back({"Y", "E", tr(nullptr, "Sky view", "Vue du ciel")});
-        if (Controls::aimed(wd)) h.push_back({"ZL", "RMB", tr(nullptr, "Aim", "Viser")});
+        if (Controls::aimed(wd)) h.push_back({"L/ZL", "RMB", tr(nullptr, "Aim", "Viser")});
         if (wd.userFuse) h.push_back({"D-pad", "=/-", tr("FETXT.Fuse", "Fuse", "Mèche")});
         if (wd.kind == Kind::Rope) h.push_back({"RS", "WASD", tr(nullptr, "Length", "Longueur")});
         if (r.steer) h.push_back({"LS", "Arrows", tr(nullptr, "Steer", "Diriger")});
-        if (wd.name == "Sniper Rifle") h.push_back({"L/R", "Z/X", tr(nullptr, "Zoom", "Zoom")});
+        if (wd.name == "Sniper Rifle") h.push_back({"D-pad", "Z/X", tr(nullptr, "Zoom (aiming)", "Zoom (en visée)")});
         h.push_back({"A/ZR", "Space", drop ? tr("FETXT.Drop", "Drop", "Lâcher") : tr(nullptr, r.en, r.fr)});
     }
     return h;
@@ -676,10 +676,10 @@ void controls(bool game) {
                                    {160, -112, 6}, {45, -70, 14}, {150, -69, 20}, {116, -35, 20}, {184, -35, 20}, {150, -1, 20}, {75, 35, 40}};  // x, y, radius
     struct Call { int part; float ly; const char *label, *key; };
     static const Call GAME[] = {
-        {ZL, 222, "Hold: first-person aim (precise)\nZL + stick: aim (single Joy-Con)", "RMB"}, {L, 276, "Zoom out (every view)", "Z"}, {MIN, 356, "Hold: controls", "F1"},
-        {LS, 414, "Move (camera-relative)\nAim mode: walk / turn", "Arrows"}, {DPAD, 488, "Left / right: previous / next weapon\nUp / down: fuse time, jetpack forward", "Tab"},
-        {ZR, 232, "Fire", "Space"}, {R, 270, "Zoom in (every view)", "X"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"},
-        {BY, 380, "Toggle the sky view\n(strikes, homing)", "E"}, {BA, 440, "Fire (hold = power)\nSky view: fire / lock", "Space"}, {BB, 482, "Jump (twice = backflip)\nJetpack: drop; sky view: leave", "Enter"},
+        {ZL, 222, "Hold: first-person aim (precise)\nZL + stick: aim (single Joy-Con)", "RMB"}, {L, 276, "Hold: first-person aim (as ZL)", "RMB"}, {MIN, 356, "Hold: controls", "F1"},
+        {LS, 414, "Move (camera-relative)\nAim mode: walk / turn", "Arrows"}, {DPAD, 488, "Left / right: previous / next weapon\nUp / down: fuse time; aiming / sky view: zoom\nJetpack: up = forward", "Tab"},
+        {ZR, 232, "Fire", "Space"}, {R, 270, "Drop dynamite / mine / sheep\n(jetpack, rope, parachute)", "Backspace"}, {PLS, 306, "Pause", "Esc"}, {BX, 342, "Weapon panel", "Q"},
+        {BY, 380, "Toggle the sky view\n(strikes, homing)", "E"}, {BA, 440, "Fire (hold = power)\nSky view: fire / lock", "Space"}, {BB, 482, "Jump (twice = backflip)\nSky view: leave", "Enter"},
         {RS, 530, "Camera orbit\nAim mode: aim (+ gyro)", "A/D/W/S"}};
     static const Call MENU[] = {
         {MIN, 330, "Tap: controllers (setup)\nHold: controls", "F1"}, {LS, 414, "Move", "Arrows"}, {DPAD, 488, "Move / change value", "Arrows"},
@@ -754,9 +754,9 @@ void controls(bool game) {
         }
     }
     if (game) text(keys ? "Hold right mouse button: aim with the mouse  -  F3: performance overlay"
-                        : "Aim mode: hold ZL, or while charging (A)  -  Hold -: controls, longer: performance overlay", 640, 640, 22, LIGHTGRAY, 1);
+                        : "Aim mode: hold L or ZL, or while charging (A)  -  Hold -: controls, longer: performance overlay", 640, 640, 22, LIGHTGRAY, 1);
     if (game) text(keys ? "Jetpack: Space thrusts, arrows steer, Backspace drops dynamite / mine / sheep"  // W4M UtilityFire group
-                        : "Jetpack: A / ZR thrust, left stick steers, B drops dynamite / mine / sheep", 640, 666, 22, LIGHTGRAY, 1);
+                        : "Jetpack: A / ZR thrust, left stick steers, R drops dynamite / mine / sheep", 640, 666, 22, LIGHTGRAY, 1);
     else text("Each screen lists its other buttons at the bottom", 640, 640, 22, LIGHTGRAY, 1);
 }
 
@@ -1859,14 +1859,24 @@ static float text3dK(float depth) {
     return u < 80 ? u / 80 : u > 200 ? u / 200 : 1;
 }
 
-// A Text3D centred on world point p, scale m (HUD.3DText.Scale 5 units unless set) x text3dK; returns its size in px.
-// The scale is the em (XTextInstance SetScale 0x6b6cb0 on em-normalised FE.Font glyphs, 0x6a7f00); our text size is the
-// font's line, 56 px for a 50 px em
-static float text3dAt(const char *t, Vector3 p, float scale, Color c, const Camera3D &cam, Vector3 fwd, Vector3 up) {
-    float s = scale * text3dK(Vector3DotProduct(Vector3Subtract(p, cam.position), fwd));
-    Vector2 a = GetWorldToScreen(p, cam), px = GetWorldToScreen(Vector3Add(p, Vector3Scale(up, s)), cam);
-    float size = Vector2Distance(a, px);
+// Text3D at world point p, em scale m (HUD.3DText.Scale 5 units) x text3dK on a w x h screen; returns its em in px, its centre in at.
+// Drawn by the unzoomed HUD camera (near 5, t 0.48): p keeps its drawn screen spot at HUD depth (0x5faaa0), 1 unit nearer (0.05 under 50, 0x5fb4f0)
+float text3dPlace(Vector3 p, float scale, const Camera3D &cam, Vector3 fwd, Vector2 screen, Vector2 &at) {
+    const float F = 15000, A = (F + 2.5f) / (F - 2.5f), B = 2 * 2.5f * F / (F - 2.5f), Ac = (F + 5) / (F - 5), Bc = 2 * 5 * F / (F - 5);
+    float u = Vector3DotProduct(Vector3Subtract(p, cam.position), fwd) * 20, s = scale * 20 * text3dK(u / 20);
+    bool zoomed = fabsf(cam.fovy - Controls::FOV0) > 0.01f;  // zoomed (0x51e150): both lenses take the logical camera's near
+    float hu = (zoomed ? u : (A * u - B + Bc) / Ac) - (u < 50 ? 0.05f : 1);
+    Vector2 m = Vector2Scale(screen, 0.5f);
+    at = Vector2Add(m, Vector2Scale(Vector2Subtract(GetWorldToScreenEx(p, cam, (int)screen.x, (int)screen.y), m), u / hu));
+    return s / (hu * 0.48f) * m.y;
+}
+
+// Our text size is the font's line, 56 px for a 50 px em
+static float text3dAt(const char *t, Vector3 p, float scale, Color c, const Camera3D &cam, Vector3 fwd, Vector2 *at = nullptr) {
+    Vector2 a;
+    float size = text3dPlace(p, scale, cam, fwd, {(float)GetScreenWidth(), (float)GetScreenHeight()}, a);
     if (t) text3d(t, a.x, a.y, size * 56 / 50, c);
+    if (at) *at = a;
     return size;
 }
 
@@ -1903,8 +1913,8 @@ void pipInset(const RenderTexture2D &scene, float show, float full) {
     rlPopMatrix();
 }
 
-void reticle(const WeaponDef &wd, Vector2 c, bool scope) {
-    if (scope) {  // sniper sight: navy all around a round view, dark tapered cross with three ovals per arm
+void reticle(const WeaponDef &wd, Vector2 c) {
+    if (wd.name == "Sniper Rifle") {  // SniperCursorGraphicEntity (0x5f8de0, Sniper.Cursor.Mesh): navy all around a round view, dark tapered cross with three ovals per arm
         const Color NAVY = {6, 18, 36, 255};
         const float r = 300;
         DrawRing(c, r, 1600, 0, 360, 72, NAVY);
@@ -2319,13 +2329,13 @@ static int sheepFlight(const Game &g) {
     return r;
 }
 
-void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
+void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
     menuPage = false;
     const Worm &cur = g.worms[g.current];
     bool turnStart = g.current != introWorm;
     if (turnStart) introWorm = g.current, introStart = tick;  // turn changed: (re)start the name-banner clock
     bool cinematic = trackHp(g, turnStart, tick);
-    bool ready = !scriptMovie(g).borders && readyScreen(g, cinematic);  // local human's hot seat: W4M full-screen ready pause (killed by the borders, 0x5ee275)
+    bool ready = readyNow = !scriptMovie(g).borders && readyScreen(g, cinematic);  // local human's hot seat: W4M full-screen ready pause (killed by the borders, 0x5ee275)
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
     Vector3 camUp = Vector3Normalize(Vector3CrossProduct(Vector3CrossProduct(fwd, cam.up), fwd));
     const Color TEXT3D_GREY = {200, 200, 200, 255};  // 0x5c4527, 0x563682
@@ -2335,31 +2345,32 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             if (o.type != Object::Crate || Vector3DotProduct(Vector3Subtract(top, cam.position), fwd) < 0.5f) continue;
             const char *what = o.mystery >= 0 ? mysteryText(o.mystery)
                              : o.weapon < 0 ? tr("Text.Health", "Health", "Santé") : WEAPONS[o.weapon].name.c_str();
-            text3dAt(what, top, 0.25f, TEXT3D_GREY, cam, fwd, camUp);
+            text3dAt(what, top, 0.25f, TEXT3D_GREY, cam, fwd);
         }
     if (!ready) for (const Projectile &s : g.shots) {  // W4M 0x57b1e0: ceil(fuse left) in FE.Font, white, while 0 < left <= 5 s
         const WeaponDef &d = WEAPONS[s.weapon];
         Vector3 top = Vector3Add(s.pos, Vector3Scale(camUp, d.fuseHeight));  // the offset along the view's up (0x47a120)
         float dist = Vector3DotProduct(Vector3Subtract(top, cam.position), fwd);
         if (!d.fuseShown || s.child || s.fuse <= 0 || s.fuse > 5 || dist < 0.5f) continue;
-        text3dAt(TextFormat("%d", (int)ceilf(s.fuse - 0.001f)), top, d.fuseSize, WHITE, cam, fwd, camUp);
+        text3dAt(TextFormat("%d", (int)ceilf(s.fuse - 0.001f)), top, d.fuseSize, WHITE, cam, fwd);
     }
     if (!ready && g.jetting) {  // JetpackUtility's Text3D: (2 ms + 500) / 1000 (0x5626e0) at the worm's Position + 28 units (0x5633ca), default scale
         Vector3 at = Vector3Add(cur.pos, {0, 1.4f - Game::R, 0});
-        if (Vector3DotProduct(Vector3Subtract(at, cam.position), fwd) >= 0.5f) text3dAt(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), at, 0.25f, TEXT3D_GREY, cam, fwd, camUp);
+        if (Vector3DotProduct(Vector3Subtract(at, cam.position), fwd) >= 0.5f) text3dAt(TextFormat("%d", (int)(g.fuel * 2 + 0.5f)), at, 0.25f, TEXT3D_GREY, cam, fwd);
     }
     // W4M worm labels: name over hp, team colour, on a Text.Backing; hidden on the ready screen, with the weapon panel open or a UFO out (0x5fd4e0)
     if (!ready && !open && !g.efmvActive()) for (const Worm &w : g.worms) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
         if (!w.alive) continue;  // blown up, or drowned: W4M shows no label afloat
         float dist = Vector3DotProduct(Vector3Subtract(w.pos, cam.position), fwd);
-        if (dist < 0.5f || (fp && &w == &cur) || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // first person: inside it
+        if (dist < 0.5f || &w == &cur || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // 0x5fd4e0: the active worm never has a label
         // 0x5fb170: feet (W4M Position) + 25 units up + 4 along the view's up, then HealthOffset 4 / NameOffset 9 x lens zoom x text3dK
         float q = tanf(cam.fovy * 0.5f * DEG2RAD) / 0.48f, kq = q * text3dK(dist);
         Vector3 base = Vector3Add(Vector3Add(w.pos, {0, 1.25f - Game::R, 0}), Vector3Scale(camUp, 0.2f));
         Vector3 hpAt = Vector3Add(base, Vector3Scale(camUp, 0.2f * kq)), nameAt = Vector3Add(base, Vector3Scale(camUp, 0.45f * kq));
-        float s = text3dAt(nullptr, hpAt, 0.25f, BLANK, cam, fwd, camUp);
-        Vector2 sp = Vector2Add(GetWorldToScreen(hpAt, cam), {0, s / 2});  // bottom of the hp label
+        Vector2 sp;
+        float s = text3dAt(nullptr, hpAt, 0.25f, BLANK, cam, fwd, &sp);
+        sp.y += s / 2;  // bottom of the hp label
         if (pipShow > 0 || pipFull > 0) {  // not over the PiP, growing too
             Vector2 pc, ph;
             float rot;
@@ -2368,8 +2379,8 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         }
         Color c = TEAM_COLORS[w.team % 4];
         const Color POISON = {120, 220, 60, 255};
-        text3dAt(TextFormat("%d", hp), hpAt, 0.25f, i == counting && hpt[i].poison ? POISON : c, cam, fwd, camUp);  // WormHealthNameEntity 0x5fdb70: Text3Ds in FE.Font
-        text3dAt(wormName(w.team, k), nameAt, 0.25f, c, cam, fwd, camUp);
+        text3dAt(TextFormat("%d", hp), hpAt, 0.25f, i == counting && hpt[i].poison ? POISON : c, cam, fwd);  // WormHealthNameEntity 0x5fdb70: Text3Ds in FE.Font
+        text3dAt(wormName(w.team, k), nameAt, 0.25f, c, cam, fwd);
         for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
             if (p.worm != i) continue;
             float a = Clamp(1 - (p.age - 0.5f) / 0.5f, 0, 1), pop = 1 + 0.25f * fmaxf(0, 1 - p.punch / 0.08f) + 0.3f * sinf(fminf(p.age / 0.25f, 1) * PI);
@@ -2390,6 +2401,12 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             if (!sprite("wormlocarrow", {sp.x, sp.y - s * 2 - 18 + b}, 0.22f, {64, 120}, 0, c)) DrawTriangle({sp.x - 8, sp.y - s * 2 - 30 + b}, {sp.x, sp.y - s * 2 - 18 + b}, {sp.x + 8, sp.y - s * 2 - 30 + b}, c);
         }
     }
+}
+
+void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
+    const Worm &cur = g.worms[g.current];
+    const bool ready = readyNow;
+    Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
     syncSubs(g);
     if (!quiet) drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f)), drawSubtitle(fminf((tick - bannerTick) * Game::DT, 0.1f));
     bannerTick = tick;
@@ -2528,7 +2545,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     else if (mine && !quiet && g.girderOn && g.phase == Phase::Aim)  // W4M HelpText.kUtilityGirder0: Movement, GirderRaise / Lower, Fire
         hints({{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}});
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
-        hints({{"ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
+        hints({{"L/ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
     else if (int sheep = mine && !quiet && !aiming ? sheepFlight(g) : 0; sheep) {  // ours: no W4M legend (docs/w4m/weapons.md §13)
         bool walking = sheep == 1;
         std::vector<Hint> h = {{"A/ZR", "Space", walking ? tr(nullptr, "Take off", "Décoller") : tr(nullptr, "Detonate", "Exploser")}};
@@ -2536,12 +2553,12 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         hints(h);
     }
     else if (mine && !quiet && g.secondary >= 0)  // W4M SecondaryWeaponHelpEntity: WXFE.HelpDropConsole, FETXT.Control.Secondry + FETXT.Drop
-        hints({{g.jetting || g.jetLanded() ? "B" : "A", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
+        hints({{"R", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
         hints({{"A", "Space", "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
-               {"L/R", "Z/X", "Zoom"}, {"B/Y", "Enter/E", "Leave"}});
-    else if (mine && !quiet && g.phase == Phase::Aim && (Controls::firstPerson(g) || Controls::scoped(g)))  // HeadCam: FETXT.Control.ZoomIn / ZoomOut
-        hints({{"A", "Space", "Fire"}, {"L/R", "Wheel", "Zoom"}});
+               {"D-pad", "Z/X", "Zoom"}, {"B/Y", "Enter/E", "Leave"}});
+    else if (mine && !quiet && g.phase == Phase::Aim && Controls::firstPerson(g))  // HeadCam: FETXT.Control.ZoomIn / ZoomOut
+        hints({{"A", "Space", "Fire"}, {"D-pad", "Wheel", "Zoom"}});
     else if (mine && !quiet && aiming) hints(weaponHints(wd));
     else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});
     if (!open) return;

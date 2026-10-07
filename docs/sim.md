@@ -40,7 +40,7 @@ cover these rules: `tests.md`.
 
 ## Input
 
-The per-tick `Input` (5 bytes) and its bits are in `PROTOCOL.md` "Input". The client builds it in `Controls::read` (once per frame:
+The per-tick `Input` (6 bytes) and its bits are in `PROTOCOL.md` "Input". The client builds it in `Controls::read` (once per frame:
 buttons and axis rates) and `Controls::tick` (per tick: `diffuse` turns a rate into int8 steps, the rounding error carried to the next
 tick); the CPU builds it in `Ai::think`. Weapon picks from the panel and from the CPU are direct (`Input::pick`, wire version 3).
 
@@ -239,7 +239,7 @@ W4M side: docs/w4m/turn.md §6b.
   Only is on.
 - **Wind Affects Guns** [disasm]: `Wobble` / `wobbleStep` is W4M's GunWobbleObject on the Shotgun and Sniper Rifle. `aimDir` adds it, so the shot
   and the aim camera sway.
-  - [ours] W4M multiplies the wobble by min(1.5 zoom, 1) of the client camera. The zoom is not on the wire, so ours uses 1.
+  - [disasm] Both are scaled by min(1.5 zoom, 1), zoom = the client's logical camera zoom (0x55fbed), sent as `Input::zoom` (HeadCam zoom in the aim view, else 1).
   - [ours] The per-firing-tick kick draw is skipped (KickSize 0, no effect besides the RNG).
 - **No Blimp View** [disasm]: the sim drops TARGET, and `blimpable()` (controls.cpp) refuses the view. Targeting weapons aim from the aim view.
   The AI skips the Homing, Airstrike, Super Airstrike, Concrete Donkey and Fatkins plans.
@@ -467,7 +467,7 @@ W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm 
 ### Shots in water (`stepShots`' `wet`)
 
 W4M PayloadLogicEntity 0x582050 / Parabolic events 0x577980, docs/w4m/weapons.md "Payload water" [disasm + data]. weapons.json carries
-`splash` (SplashFx, default WXP_WaterSplash), `size` (Radius), `sink` (SinkDepth), `skim_*` (SkimsOnWater, MinSpeedForSkim, MaxAngleForSkim, SkimDamping), `cluster_size` / `cluster_sink`
+`splash` (SplashFx, default WXP_WaterSplash), `size` (Radius; guns: BulletRadius), `sink` (SinkDepth), `skim_*` (SkimsOnWater, MinSpeedForSkim, MaxAngleForSkim, SkimDamping), `cluster_size` / `cluster_sink`
 (the bomblets' containers), `cluster_cone` / `cluster_min_speed` / `cluster_max_speed` (the parent's BombletMaxConeAngle,
 BombletMin / MaxSpeed); Weapon Factory weapons get kWeaponFactoryWeapon / Homing / Cluster's in `Game::start`.
 - Crossing Water.Level + Radius: a skim (v × damping, never for bomblets) or a splash (`GameEvent::Splash`, `fx` = SplishFx WXP_WaterSmallSplash on a skim, else the weapon's `splash` (SplashFx), at 2 units over the surface); set on that plane either way.
@@ -502,7 +502,7 @@ BombletMin / MaxSpeed); Weapon Factory weapons get kWeaponFactoryWeapon / Homing
   inherits that velocity (W4M 0x585a52 / 0x585bc5, disasm); walkers get the offset only (ours).
 - `Projectile::touching` (checksummed): the worm contacts of the last tick (bit per worm, 63 = mission target). Only a new contact is a
   hit, and on the first tick every contact counts as old, so a shot leaves its own worm and can hit it once it has left (W4M
-  0x582200 / 0x581dc0, disasm). Guns (shotgun, sniper) fire from the eye and skip the shooter (W4M exclude id 0x5b27e0 → 0x519dd0).
+  0x582200 / 0x581dc0, disasm). Guns (shotgun, sniper) fire from the eye and skip the shooter (W4M exclude id 0x5b27e0 → 0x519dd0); the ray: docs/weapons-audit.md Gun hits.
 - A homing missile flies 1.25 s straight, homes 4 s (+97.5 m/s², ≤ 29.5 m/s), flies 5 s straight and expires at 10.25 s, with no
   gravity (W4M HomingPayload 0x560aa0 / 0x560eb0, data + disasm).
 
@@ -510,8 +510,8 @@ BombletMin / MaxSpeed); Weapon Factory weapons get kWeaponFactoryWeapon / Homing
 
 `targeted()` weapons (airstrike, Bovine Blitz, donkeys, abduction, teleport; not homing) aim from the W4M Blimp view (IsometricCam
 0x52a5e0, disasm). The first `TARGET` tick of the turn places `Game::cursor` (`blimpFocus`: above all land, its centre ray on the aim
-point), then `turn` yaws it at 0.605 rad/s, `walk` / `aim` move it at 25 m/s at full stick (client-scaled by its zoom: W4M MoveSpeed
-250 u/s × MaxZoom 2), `PITCH` + `aim` tilts it at 0.495 rad/s (0..π/2), and it stays within 225 m of `landCenter()` (W4M 4500 units
+point), then `turn` yaws it at 1.21 rad/s, `walk` / `aim` move it at 50 m/s at full stick (client-scaled by its zoom: W4M MoveSpeed
+250 u/s × 2 (dt 0.02 at 100 CMS updates/s) × MaxZoom 2), `PITCH` + `aim` tilts it at 0.99 rad/s (0..π/2), and it stays within 225 m of `landCenter()` (W4M 4500 units
 of Land.Center, data). The target is the land, then the water, under the camera ray (`blimpHit`, W4M CMS 0x51c910); FIRE without a
 target is refused (W4M NotClearToFire). Strikes fly along the view's right (`strikeDir`). Homing (observed: aimed from the worm, no Blimp): FIRE
 in the first-person aim takes the aim ray's target (`locked`, `lockAt = target()`, W4M 0x583a10 accepts any view but Default), then a new press charges. Constants: `BLIMP_*` in sim.h; camera side: camera.md.

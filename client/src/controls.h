@@ -24,17 +24,15 @@ bool fireRefused();                      // this frame's Fire press was dropped:
 extern bool cpuTurn;                     // set by main: a CPU plays the turn
 bool aimed(const WeaponDef &wd);         // W4M IsAimedWeapon / Ninja / Binoculars cursor: the weapon has a first-person aim reticle
 bool firstPerson(const Game &g);         // aim mode seen from the worm's eyes, aimed() weapons only
-bool scoped(const Game &g);              // sniper rifle in aim mode: the scope view
-bool headCam(const Game &g);             // the logical camera is W4M's HeadCam: first-person aim or scope, not the Blimp
+bool headCam(const Game &g);             // the logical camera is W4M's HeadCam: first-person aim, not the Blimp
 enum class Reticle { None, Aim, Blimp, Lock };  // Aim: Ui::reticle; Blimp: Ui::targetCursor; Lock: the homing lock-on mark
 Reticle reticle(const Game &g);  // the one place deciding which reticle or cursor is on screen
-float sinceFirstPerson();                 // seconds since the first-person aim view, 0 in it
 extern int forceAim;                     // capture mode: 1 aim, 2 fine aim
 Vector3 eye(const Game &g);              // first-person aim camera position
 Vector3 aimPoint(const Game &g);         // far point of the active worm's shot line, centred by the aim camera
 // Free orbit while moving, over the shoulder in aim mode, chasing a shot, through the sniper scope.
 void reset();  // new match: camera cut behind the first worm, aim state cleared
-void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt);
+void camera(Camera3D &cam, const Game &g, bool chase, bool input, float dt);
 Vector3 viewUp(const Camera3D &c);  // the up the view is drawn with (XCamera 0x6e1d6c)
 void impact(Vector3 at);  // explosion: no camera move of its own (W4M)
 // W4M PiPService: the event camera while the main view stays the worm's; show 0..1 its slide on / off, full 0..1 its growth to full screen

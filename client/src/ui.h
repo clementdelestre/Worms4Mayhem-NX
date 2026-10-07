@@ -81,11 +81,12 @@ private:
 };
 
 // In-game HUD and W4M weapon panel (X / Q). A pick goes out as Input::pick() until game.held() shows it (a frame may run no tick).
-// First-person aim reticle at screen point c, per weapon like W4M; scope: sniper vignette + cross.
-void reticle(const WeaponDef &wd, Vector2 c, bool scope);
+// First-person aim reticle at screen point c, per weapon like W4M (the Sniper Rifle: its scope).
+void reticle(const WeaponDef &wd, Vector2 c);
 // W4M Blimp-view reticle at the screen centre: Bomber cursor (arrows = the run, left to right) or Targeting cursor.
 void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock = nullptr, const Vector2 *at = nullptr);  // state: 0 valid, 1 water, 2 no target, -1 none; lock: homing marker; at: centre, default screen centre
 Vector2 windPointer(bool live, float wx, float wz, Vector2 fwd);  // wind meter needle on screen (y down), length foreshortened
+float text3dPlace(Vector3 p, float scale, const Camera3D &cam, Vector3 fwd, Vector2 screen, Vector2 &at);  // Text3D em (px) and centre
 // W4M PiP (HUDTWK PiP.*, WXFE_Border_Bubble): the event camera's picture in its tilted inset; show / full as Controls::inset
 void pipInset(const RenderTexture2D &scene, float show, float full);
 struct Hud {
@@ -100,6 +101,7 @@ struct Hud {
     float pipShow = 0, pipFull = 0;   // Controls::inset: labels stay off the PiP, ActWormInfo moves to its PosPiP
     // local: a human here plays the current turn; tick: ticks simulated so far
     void input(const Game &g, Input &in, bool local, int pad, uint32_t tick);
+    void labels(const Game &g, const Camera3D &cam, uint32_t tick);  // W4M bin 3DText (29): Text3Ds, under the reticles and the HUD; first each frame
     void draw(const Game &g, const Camera3D &cam, uint32_t tick);
     void select(int weapon) { pick = weapon, open = false, swallow = true; }
 
@@ -117,6 +119,7 @@ private:
     float wait = 0, tickGap = 0;
     uint32_t hpTick = 0;
     int hpClock = 0;
+    bool readyNow = false;  // labels(): this frame's ready screen
     bool trackHp(const Game &g, bool turnStart, uint32_t tick);  // true while the camera is on a worm or a crate
 };
 void hudEvent(const Game &g, const GameEvent &e);  // per sim event: W4M commentary banners (deaths, crates)

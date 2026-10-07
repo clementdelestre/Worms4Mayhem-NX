@@ -629,7 +629,7 @@ Vector3 Game::aimDir(const Worm &w) const {  // a gun in hand: + GunWobblePitch 
 }
 
 // GunWobble.MaxAmp 0.03, Period 5000 ms, Speed 0.004 (WEAPTWK); Wind Affects Guns / All: f = 1 + 2.5 Wind.Speed / Wind.MaxSpeed, sampled once
-void Game::wobbleStep() {
+void Game::wobbleStep(float zoom) {
     if (weaponDef(weapon).kind != Kind::Shotgun || (phase != Phase::Aim && !shotsLeft)) { wobble.weapon = -1; return; }
     Wobble &o = wobble;
     if (o.weapon != weapon) {
@@ -639,7 +639,8 @@ void Game::wobbleStep() {
     }
     float t = (clock - o.start) * 1000.0f / 60, amp = 0.03f * cosf(t / 5000) * o.f, p = 0, y = 0;
     for (int i = 0; i < 4; i++) p += sinf(o.freq[i] * t + o.phase[i]) * o.w[i], y += sinf(o.freq[i + 4] * t + o.phase[i + 4]) * o.w[i + 4];
-    o.at = {amp * p, amp * y};  // ours: x 1, W4M x min(1.5 zoom, 1) of the client camera, not on the wire
+    float z = fminf(1.5f * zoom, 1);  // 0x55fbed: the current logical camera's zoom, sent in Input::zoom
+    o.at = {amp * p * z, amp * y * z};
 }
 
 // Wormpot.lub SetSpecialistTeam: the ammo of each set, and the sets of each worm class
@@ -1142,25 +1143,25 @@ int Game::fallDamage(float speed) const {
 }
 
 // W4M 0x55e10f: the shooter is skipped by id (0x5b27e0 -> 0x519dd0); gun mask 0x1c3f has the bubble shell's 0x1000, not the 0x2000 it takes with the shooter inside
-Game::GunHit Game::gunRay(Ray r, const Worm &shooter) const {
+Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet) const {
     Vector3 hit, dir = r.direction;
-    GunHit h{{}, terrain.raycast(r, 60, &hit) ? Vector3Distance(r.position, hit) : 60, -1, true};
-    auto across = [&](Vector3 c, float rad) {
-        float t = Vector3DotProduct(Vector3Subtract(c, r.position), dir);
-        return t > 0 && t < h.dist && Vector3Distance(c, Vector3Add(r.position, Vector3Scale(dir, t))) < rad ? t : -1.0f;
+    GunHit h{{}, terrain.raycast(r, GUN_RANGE, &hit) ? Vector3Distance(r.position, hit) : GUN_RANGE, -1, true};
+    auto across = [&](Vector3 c, float rad) {  // 0x519dd0: where the bullet sphere first touches the collider sphere
+        Vector3 o = Vector3Subtract(c, r.position);
+        float t = Vector3DotProduct(o, dir), d2 = Vector3LengthSqr(o) - t * t, R2 = (rad + bullet) * (rad + bullet);
+        float e = d2 < R2 ? t - sqrtf(R2 - d2) : -1;
+        return e > 0 && e < h.dist ? e : -1.0f;
     };
     for (size_t i = 0; i < worms.size(); i++)
-        if (float t = worms[i].alive && &worms[i] != &shooter ? across(worms[i].pos, R + 0.1f) : -1; t > 0) h.dist = t, h.worm = (int)i, h.land = false;
+        if (float t = worms[i].alive && &worms[i] != &shooter ? across(worms[i].pos, R) : -1; t > 0) h.dist = t, h.worm = (int)i, h.land = false;
     for (size_t i = 0; i < objects.size(); i++)  // crate colliders (gun mask 0x1c3f): the crate sphere, 10 x Scale units
         if (float t = crateLike(objects[i]) && !objects[i].dead ? across(objects[i].pos, 0.5f * objects[i].scale) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = (int)i;
     for (const Object &o : objects)  // mines (payload flag 8, Radius 3) and drums (flag 0x10, 9 units): only the hit's Explosion reaches them
         if (float t = (o.type == Object::Mine || o.type == Object::Barrel) && !o.dead ? across(o.pos, o.type == Object::Mine ? 0.15f : 0.45f) : -1; t > 0)
             h.dist = t, h.worm = -1, h.land = false, h.obj = -1;
     for (const Bubble &bb : bubbles) {
-        Vector3 c = Vector3Subtract(Vector3Add(bb.pos, {0, BUBBLE_UP, 0}), r.position);
-        float t = Vector3DotProduct(c, dir), d2 = Vector3LengthSqr(c) - t * t;
-        if (Vector3Length(c) > BUBBLE_SHELL && d2 < BUBBLE_SHELL * BUBBLE_SHELL && t > 0 && t - sqrtf(BUBBLE_SHELL * BUBBLE_SHELL - d2) < h.dist)
-            h.dist = t - sqrtf(BUBBLE_SHELL * BUBBLE_SHELL - d2), h.worm = -1, h.land = false, h.obj = -1;
+        Vector3 c = Vector3Add(bb.pos, {0, BUBBLE_UP, 0});
+        if (float t = Vector3Distance(c, r.position) > BUBBLE_SHELL ? across(c, BUBBLE_SHELL) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = -1;
     }
     h.at = h.worm >= 0 ? worms[h.worm].pos : Vector3Add(r.position, Vector3Scale(dir, h.dist));
     return h;
@@ -1420,7 +1421,7 @@ void Game::use(Worm &w) {
         break;
     case Kind::Donkey: {
         bool fat = wd.clusters > 0;  // Fatkins: the Bomber's one bomb (0x54ddf0), dropped as an airstrike bomb
-        Vector3 v = {0, -wd.speed, 0}, p = fat ? strikeStart(wd, tgt, cursorOn ? strikeDir() : f, v) : Vector3Add(tgt, {0, fmaxf(DONKEY_MIN_HEIGHT, landTop() + DONKEY_EXTRA), 0});
+        Vector3 v = {0, -wd.speed, 0}, p = fat ? strikeStart(wd, tgt, cursorOn ? strikeDir() : f, v) : Vector3Add(tgt, {0, fmaxf(DONKEY_MIN_HEIGHT, landTop() - Terrain::WATER + DONKEY_EXTRA), 0});  // Land.MaxHeight in W4M y (ours - WATER), added to the target
         shots.push_back({p, v, weapon, 0, false, fat ? 1 : 1 << 30, {0, p.y, 0}, fat ? STRIKE_LEAD : 0, 0});  // donkey: smashes until LifeTime or the water
         if (wd.clusters == 0) emit(GameEvent::Launch, p, -1, weapon);  // ArielFx WXP_CrateSpawnLARGE where it appears
     }
@@ -1428,14 +1429,14 @@ void Game::use(Worm &w) {
         break;
     case Kind::Shotgun: {
         if (!shotsLeft) shotsLeft = wd.shots;
-        const GunHit h = gunRay({muzzle(terrain, w.pos, launchPoint(wd, w.pos, w.yaw)), dir}, w);
+        const GunHit h = gunRay({muzzle(terrain, w.pos, launchPoint(wd, w.pos, w.yaw)), dir}, w, wd.size);
         // W4M 0x55e5da / 0x55ea22: one ExplosionMessage per hit (LandDamageRadius 0: no crater), damage centred on the worm or the land hit, push centre 2 units
         // behind the worm (and 2 low) / 1 unit behind the land hit; the worm's own damage and impulse come from that message
         Blast b = gunBlast(weapon);
         b.pushOff = h.worm >= 0 ? Vector3{-dir.x * 0.1f, -0.1f, -dir.z * 0.1f} : Vector3Scale(dir, -0.05f);
         // ours: W4M clears the hit land voxel (0x55d8c0, Land.ClearVoxel, LandDamageMagnitude 25 >= 15); the importer keeps no cell grid, so a 0.5 m sphere 0.5 m deep stands in
-        if (h.land && h.dist < 60) terrain.carve(Vector3Add(h.at, Vector3Scale(dir, 0.5f)), 0.5f);
-        if (h.dist < 60) explode(h.at, b, 0, 0, weapon);
+        if (h.land && h.dist < GUN_RANGE) terrain.carve(Vector3Add(h.at, Vector3Scale(dir, 0.5f)), 0.5f);
+        if (h.dist < GUN_RANGE) explode(h.at, b, 0, 0, weapon);
         if (h.obj >= 0) crateHit(objects[h.obj], b.damage * (doubled() ? 2 : 1));  // DamageImpulseMessage 0x518c20 -> 0x5c8a90, x2 under DoubleDamage
         if (--shotsLeft == 0 && endlessGun) shotsLeft = 1;  // Challenge.EndlessGun (0x55efbf): no last shot, the worm may move (0x55d54f)
         else if (shotsLeft == 0) phase = Phase::Flying;
@@ -2732,7 +2733,7 @@ void Game::step(const Input &raw) {
     stepObjects();
     stepTriggers();
     stepFactory();
-    wobbleStep();
+    wobbleStep(raw.zoom / 255.0f);
     for (size_t i = 0; i < bubbles.size();) {  // 0x54f160: falls until it rests on land, gone under water
         Bubble &b = bubbles[i];
         b.age++;

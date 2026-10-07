@@ -86,6 +86,9 @@ The cursor is chosen in `PayloadWeaponLogicEntity` init, 0x582d70 (from 0x583017
 | +0x19 | ZoomIn held |
 | +0x1a | ZoomOut held |
 
+- Effective rates [disasm]: CMS 0x51da00 passes dt = 0.02 (0x51da9a) to every camera update, and `ZCamUpdateFudgeService` 0x533c90 runs CMS 0x51da00 twice per 20 ms task, so each tweak rate below runs at 2× per real second: full-stick pan 500·zoom u/s (25·zoom m/s), yaw 1.1·s rad/s, pitch 0.9·s rad/s. The move / rotate inputs are on/off bits (no analog share).
+- Console help (data, MENUTWKXINGAME `WXFE.HelpBlimpConsoleList`): `Button.Movement` = `FETXT.Look` (yaw + pitch), `Button.Camera` = `FETXT.Pan`.
+
 These are set by CMS HandleMessage 0x522710, from `Camera.*Pressed/Released`, `Camera.MouseMoved`, `Camera.MouseZoom`, `Camera.MouseMiddle*` and `Camera.ZoomIn/Out*` (0x522e77..0x523381).
 
 | quantity | rule | tweak (CAMTWK, data) |
@@ -155,6 +158,7 @@ The Camera base ctor 0x51b570 binds `Airstrike.WaterTarget` (+0x48) and `Water.L
 | Weapon.CreateBomberCursor (Airstrike, Super Airstrike, Fatkins) | BomberCursorGraphicEntity (0x857f0c) | 0x54c1f0 | `Airstrike.Cursor.Mesh` (AirstrikeCursor.xom), `Airstrike.Cursor.Bitmap` (Airstrike_Outer.tga), 5 × `Airstrike.Cursor.Dot` at `Dot_Null_01..05` (table 0x91f34c) | root `Aimer_Null`; `Airstrike_Intro`, `Cursor_Loop`, `Cursor_Error`; `Dots_Loop` starts at the end of the intro (0x54c380) |
 | Weapon.CreateHomingCursor | HomingCursorGraphicEntity (0x859c84) + HomingLockOnGraphicEntity (0x859d3c) | | `Homing.Cursor.Mesh` (HomingAimerAim.xom), `Homing.Cursor.SquareMesh` (HomingAimerLock.xom); HUD corners `HUD.Homing.Cursor.TL/TR/BL/BR` (Homing TL/TR/BL/BR.tga) | on select: `Lock_Outer` + sound `weapons/LockOn` (0x560420) |
 | Weapon.CreateSuperBomberCursor (from SuperBomberLogicEntity 0x58b4e0, during the flight) | SuperBomberCursorGraphicEntity (0x8674f4) | | `SuperBomber.Cursor.Mesh` (SASCursor.xom), `SuperBomber.Cursor.Bitmap`, `SuperBomber.Cursor.Shadow` | |
+| Weapon.CreateSniperCursor (GunWeaponLogicEntity 0x55d2da, Sniper flag +0x10e; else the gun asks Weapon.CreateAimingCursor) | SniperCursorGraphicEntity (0x867304) | 0x5f8de0 | `Sniper.Cursor.Mesh` (Sniper.xom), scene 34 HUDSniper | `In_Sniper` |
 
 **Teleport.** `Weapon.CreateTeleportCursor` (handle 0x95e160, declared in the NinjaRope unit) has no sender anywhere in the exe, and Teleport is missing from the weapon enum at 0x90c920. Teleport targeting is therefore dead code in W4M PC (disasm).
 

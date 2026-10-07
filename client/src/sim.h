@@ -10,6 +10,7 @@
 struct Input {
     int8_t turn = 0, walk = 0, aim = 0;
     uint8_t buttons = 0, flags = 0;
+    uint8_t zoom = 255;  // the client's logical camera zoom (+0x5c) x 255: GunWobble x min(1.5 zoom, 1) (0x55fbed)
     enum : uint8_t { CAMERA = 1, SKIP_COUNT = 2, SKIP_MOVIE = 4, DRAW = 8 };  // SKIP_MOVIE: W4M Input.QuitEFMV; DRAW: GameLogic.DrawImmediately  // flags: a camera key this tick (W4M InGame group: its SomeInputFrom ends the hot seat); SKIP_COUNT: observed in W4M by the user 2026-10-03, ends the damage display
     enum : uint8_t { FIRE = 1, JUMP = 2, NEXT_WEAPON = 4, HEADING = 8, FUSE_UP = 16, FUSE_DOWN = 32, TARGET = 64, PITCH = 128 };  // HEADING: turn is the wanted yaw, PI * turn / 128 (W4M walk)
     // FUSE_UP/DOWN: W4M FuseUp, the timer of user-fuse weapons (WeaponDef::userFuse) in 1 s steps
@@ -69,7 +70,7 @@ struct WeaponDef {
     int retreat = -1, postLaunch = 0;  // "retreat", "post_launch": W4M RetreatTimeOverride (-1: the scheme's LandTime), PostLaunchDelay, ms
     // W4M payload water (Game::wet): "size" Radius (the surface is met that high), "sink" SinkDepth, m; "skim_speed" MinSpeedForSkim
     // m/s (-1: SkimsOnWater 0), "skim_angle" MaxAngleForSkim rad, "skim_xz" / "skim_y" SkimDamping; cluster_*: the bomblets' container
-    float size = 0, sink = 0, csize = 0, csink = 0, skim[4] = {-1, 0, 0, 0};
+    float size = 0, sink = 0, csize = 0, csink = 0, skim[4] = {-1, 0, 0, 0};  // size: a gun's BulletRadius
     // W4M BombletMaxConeAngle rad, BombletMinSpeed / MaxSpeed m/s: "cluster_cone", "cluster_min_speed", "cluster_max_speed"
     float ccone = 0, cspeed[2] = {0, 0};
     float spread = 0.3f;  // "cluster_spread": W4M Weapon Factory ClusterSpread 0..1 (WXD.DefaultWeapon 0.3), Weapon Factory weapons only
@@ -567,7 +568,7 @@ struct Game {
     // W4M GunWobbleObject (GunWeaponLogicEntity +0x90, ctor 0x55f5b0, update 0x55f9e0): the gun's aim sways from its creation
     struct Wobble { float w[8], phase[8], freq[8], f = 1; int start = 0, weapon = -1; Vector2 at{}; };  // at: (pitch, yaw) rad
     Wobble wobble;
-    void wobbleStep();
+    void wobbleStep(float zoom);
     std::vector<std::pair<Vector3, int>> respawns;  // Mine Respawn: GameLogic.RespawnMine at the mine's last position, ticks left (0x5812af, 500 ms)
     Vector2 wormWind() const { return wp(WP_WIND_WORMS) ? Vector2{wind * WIND_ACCEL * 0.5f, windZ * WIND_ACCEL * 0.5f} : Vector2{0, 0}; }  // x WormPot.WindScale 0.5
     float walkScale() const { return wp(WP_QUICK_WALK) || (mysteryWalk && !wp(WP_JUMPING_ONLY)) ? 2 : wp(WP_JUMPING_ONLY) ? 0 : 1; }  // Worm.VelocityScale, set by SetupModes 0x5d6bc0
@@ -577,10 +578,10 @@ struct Game {
     uint32_t checksum() const;
     Vector3 aimDir(const Worm &w) const;
     Vector3 target() const;  // terrain point under the aim reticle, or at the Blimp view's centre
-    // W4M Blimp: DefaultPitch 1 rad, StickLength 500, HeightAboveLand 6 units; full stick: MoveSpeed 250 u/s x MaxZoom 2,
-    // RotateSpeed 0.55 rad/s x (0.9 + 0.1 MaxZoom). The client scales by its zoom.
-    // PitchSpeed 0.45 x 1.1; the focus stays within 4500 units of Land.Center (0x8556a0).
-    static constexpr float BLIMP_PITCH = 1, BLIMP_STICK = 25, BLIMP_LIFT = 0.3f, CURSOR_SPEED = 25, BLIMP_TURN = 0.605f, BLIMP_TILT = 0.495f, BLIMP_RANGE = 225;
+    // W4M Blimp: DefaultPitch 1 rad, StickLength 500, HeightAboveLand 6 units, focus within 4500 units of Land.Center (0x8556a0).
+    // Full stick at MaxZoom 2: tweak x dt 0.02 x 100 CMS updates/s (0x51da9a, 0x533c90) = MoveSpeed 250 x 2 x 2 u/s,
+    // (RotateSpeed 0.55, PitchSpeed 0.45) x 2 x (0.9 + 0.1 MaxZoom) rad/s. The client scales by its zoom.
+    static constexpr float BLIMP_PITCH = 1, BLIMP_STICK = 25, BLIMP_LIFT = 0.3f, CURSOR_SPEED = 50, BLIMP_TURN = 1.21f, BLIMP_TILT = 0.99f, BLIMP_RANGE = 225;
     static constexpr float BOMBER_SPEED = 7.5f;  // m/s: Bomber.GroundSpeed 0.15 units/ms
     bool cursorOn = false;  // Blimp state, from the first TARGET input of the turn
     bool blimp = false;     // the last tick had TARGET with a targeted weapon: the player is in the Blimp view
@@ -602,7 +603,8 @@ struct Game {
     int retreatTicks(const WeaponDef &d) const { return msTicks(d.retreat >= 0 ? d.retreat : cfg.scheme.retreatTime * 1000); }
     int fallDamage(float speed) const;  // W4M FallDamage 0x5ac3e0: hp lost landing at `speed` m/s, scheme and Wormpot included
     struct GunHit { Vector3 at; float dist; int worm; bool land; int obj = -1; };  // at: the struck worm's centre, else the ray's end; worm / obj (a crate) -1: none
-    GunHit gunRay(Ray r, const Worm &shooter) const;  // W4M gun ray 0x55e10f: land, worms, crates, mines, drums, bubbles (dist 60: a miss)
+    static constexpr float GUN_RANGE = 9999 / 20.0f;  // WEAPTWK Range 9999 units, both guns
+    GunHit gunRay(Ray r, const Worm &shooter, float bullet) const;  // W4M gun sweep 0x55e10f, a BulletRadius sphere: land, worms, crates, mines, drums, bubbles (dist GUN_RANGE: a miss)
     Blast gunBlast(int weapon) const;                  // one hit's explosion, Wormpot super firearms included
     bool steered() const;    // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
     bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)

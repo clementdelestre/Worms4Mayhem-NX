@@ -11,12 +11,12 @@ per-tick `Input` stream gives the same state.
 ## Framing
 
 `u16 len | u8 type | payload` — `len` counts `type + payload` (max 65535). All integers
-little-endian. `str` = `u8 len | bytes` (UTF-8, max 255). `Input` = 5 bytes
-`i8 turn, i8 walk, i8 aim, u8 buttons, u8 flags` (same layout as `struct Input` in `sim.h`, read by `wire::R::input`).
+little-endian. `str` = `u8 len | bytes` (UTF-8, max 255). `Input` = 6 bytes
+`i8 turn, i8 walk, i8 aim, u8 buttons, u8 flags, u8 zoom` (same layout as `struct Input` in `sim.h`, read by `wire::R::input`).
 
 ### Input (`struct Input`, `sim.h`; applied by `Game::step`, built by `Controls::read` / `tick`, `Ai::think`)
 
-The active player's per-tick input is the only game data on the wire; replays (`.w4r` "W4R2") store the same 5 bytes; a "W4R1" replay has 4 and loads with `flags` 0.
+The active player's per-tick input is the only game data on the wire; replays (`.w4r` "W4R3") store the same 6 bytes; a "W4R2" replay has 5 and loads with `zoom` 255, a "W4R1" one has 4 and loads with `flags` 0.
 
 | field / bit | value | meaning (status: ours unless noted) |
 |---|---|---|
@@ -33,6 +33,7 @@ The active player's per-tick input is the only game data on the wire; replays (`
 | `flags`: `SKIP_COUNT` 2 | flag | the local active player pressed X while the Settle damage count ran (observed in W4M by the user, 2026-10-03); the sim ends the display at once, deaths follow as usual |
 | `flags`: `CAMERA` 1 | flag | the active player used a follow-camera key this tick (right stick, d-pad zoom, A D X Z, wheel; `Controls::read`); the sim only reads it to end the hot seat (W4M InGame group `Camera.*`, 0x4e1610, disasm) |
 | `flags`: `DRAW` 8 | flag | Pause > Draw Round > Yes (W4M `WXFEP.ConfirmDraw` -> `GameLogic.DrawImmediately`, disasm 0x4cd3a0 / 0x4fd105): the sim ends the match at once with no winner (`winner` -1, GameOver). Only a local Multiplayer match offers it (W4M shows the row for GameType `Multiplayer`, not `Network`), so it reaches replays, never the wire in practice; the byte layout is unchanged |
+| `zoom` | 0..255 | the sender's logical camera zoom × 255 (HeadCam zoom in the aim view, 255 elsewhere; `Controls::read`); the gun wobble is scaled by min(1.5 zoom, 1) (W4M GunWobbleObject 0x55fbed reads the CMS current camera's +0x5c, disasm) |
 
 `Game::step` takes `pressed = buttons & ~prevButtons` for the edge-triggered bits; `prevButtons` is in the checksum. A hot seat
 (`Scheme::hotSeat`) ends on any input but `TARGET` alone, `flags` included (W4M: every control group but Menu, CameraSelect,

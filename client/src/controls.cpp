@@ -10,13 +10,13 @@
 namespace Controls {
 Settings settings;
 
-// Tuning. Sticks: radial dead zones (Joy-Con sticks are small and noisy), share of |x|^2 in the response curve.
-static const float DEAD = 0.12f, OUTER = 0.95f, JC_DEAD = 0.18f, JC_OUTER = 0.88f, CURVE = 0.7f;
+// Sticks: W4M InputTranslationService +0x68 per-axis dead zone 0.25 (ctor 0x508890); ours: outer reach (Joy-Con), share of |x|^2 in the curve
+static const float DEAD = 0.25f, OUTER = 0.95f, JC_OUTER = 0.88f, CURVE = 0.7f;
 // Aim (rad/s at full tilt), extra |x| share for small-tilt precision, ZL factor, full-tilt acceleration (delay, ramp time, top multiplier).
 static const float AIM_YAW = 1.1f, AIM_PITCH = 0.7f, AIM_TURN = 1.2f, AIM_CURVE = 0.5f, FINE = 0.25f, RAMP_DELAY = 0.45f, RAMP_TIME = 0.8f, RAMP_MAX = 1.5f;
-// Camera: orbit speeds (rad/s), idle seconds before it swings back behind the worm, default elevation.
+// Camera: orbit speeds (rad/s), default elevation.
 static const float AIM_FOCUS = 40;  // aim camera looks at this far point of the shot line (screen centre)
-static const float CAM_YAW = 2.8f, CAM_PITCH = 1.4f, RECENTER_AFTER = 2.5f, EL0 = 0.255f;  // ShoulderCamera DefaultHeight
+static const float CAM_YAW = 2.8f, CAM_PITCH = 1.4f, EL0 = 0.255f;  // ShoulderCamera DefaultHeight
 // Gyro: dead band (rad/s, hand tremor), axis signs (check on hardware), mouse rad per pixel.
 static const float GYRO_FLOOR = 0.06f, GYRO_YAW = 1, GYRO_PITCH = 1, MOUSE = 0.004f;
 static const float SIM_TURN = 2.5f, SIM_AIM = 1.5f;  // sim rad/s at +-127 (Game::step)
@@ -30,6 +30,7 @@ static const float UP = -1;
 static float rate[4], carry[4];  // turn, walk, aim, Blimp pitch: int8 units per tick
 static float tilt = 0;           // seconds the aim stick has been at full tilt
 static bool aimMode = false, fine = false;
+static float head = 1;  // HeadCam zoom +0x5c: CAMTWK Camera.Head.MinZoom 0.05 .. MaxZoom 1, back to 1 on GameLogic.EndTurn only (0x528d1f)
 static unsigned serves = 0, goneServe = ~0u, aimServes = 0;  // event cameras served (+0x2ac); the one current at PiP.GoneOffScreen; the count at the last Aim tick
 int forceAim = 0;
 static int padUsed = 0;
@@ -37,7 +38,7 @@ static float blimpZoom = 1;  // W4M Camera.Blimp zoom 0.15-2: pan speed and fiel
 static bool blimpOn = false, blimpLive = false, refusedNow = false, tiltTick = false;
 static uint8_t prevFire = 0;
 bool cpuTurn = false;
-static float camYaw = 0, camEl = EL0, zoom = 1, idle = 0;
+static float camYaw = 0, camEl = EL0, idle = 0;
 static int lastWorm = -1;
 static float fpOut = 9;     // seconds since the first-person aim view
 static bool cut = true;     // place the camera at once (new match, in and out of first person)
@@ -99,13 +100,14 @@ void save(const char *path) {
 static bool down(int pad, int b) { return IsGamepadButtonDown(pad, b); }
 static bool joyCon(int pad);
 
-// ax: GAMEPAD_AXIS_LEFT_X or RIGHT_X; +y up, magnitude through the dead zones and curve
+// ax: GAMEPAD_AXIS_LEFT_X or RIGHT_X; +y up. W4M 0x5069d0: an axis at or under DEAD reads 0 (a resting Joy-Con drifts past 0.2)
 static Vector2 stick(int pad, int ax) {
     Vector2 v = {GetGamepadAxisMovement(pad, ax), UP * GetGamepadAxisMovement(pad, ax + 1)};
-    bool jc = joyCon(pad);
-    float m = Vector2Length(v), dead = jc ? JC_DEAD : DEAD, outer = jc ? JC_OUTER : OUTER;
-    if (m < dead) return {0, 0};
-    float t = fminf((m - dead) / (outer - dead), 1);
+    if (fabsf(v.x) <= DEAD) v.x = 0;
+    if (fabsf(v.y) <= DEAD) v.y = 0;
+    float m = Vector2Length(v), outer = joyCon(pad) ? JC_OUTER : OUTER;
+    if (m == 0) return {0, 0};
+    float t = fminf((m - DEAD) / (outer - DEAD), 1);
     return Vector2Scale(v, Lerp(t, t * t, CURVE) / m);
 }
 
@@ -164,8 +166,7 @@ static void stickWatch(int pad, bool live, float dt) {
     quiet = any || !live ? 0 : quiet + dt, next -= dt;
     Vector2 l = {GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_X), GetGamepadAxisMovement(pad, GAMEPAD_AXIS_LEFT_Y)};
     Vector2 r = {GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_X), GetGamepadAxisMovement(pad, GAMEPAD_AXIS_RIGHT_Y)};
-    float dead = joyCon(pad) ? JC_DEAD : DEAD;
-    if (quiet > 3 && next <= 0 && (Vector2Length(l) >= dead || Vector2Length(r) >= dead))
+    if (quiet > 3 && next <= 0 && fmaxf(fmaxf(fabsf(l.x), fabsf(l.y)), fmaxf(fabsf(r.x), fabsf(r.y))) > DEAD)
         TraceLog(LOG_INFO, "STICK: pad %d (available %d) L %.3f %.3f R %.3f %.3f raw, no button for %.0f s", pad, IsGamepadAvailable(pad), l.x, l.y, r.x, r.y, quiet), next = 5;
 }
 
@@ -184,7 +185,7 @@ Input read(const Game &g, int pad, bool live, float dt) {
 #else
     const bool kb = true;
 #endif
-    bool zl = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) || (kb && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
+    bool zl = down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_2) || down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || (kb && IsMouseButtonDown(MOUSE_BUTTON_RIGHT));
     bool held = targetHeld(g), homing = weaponDef(g.weapon).kind == Kind::Homing;
     bool fpHoming = homing && zl;  // Homing: ZL / right mouse = first person, where A locks
     // W4M Input.BlimpViewPressed toggles Blimp / Default (E; user-requested: Y on the pad, 2026-10-04). Keyboard Space also enters it
@@ -217,12 +218,12 @@ Input read(const Game &g, int pad, bool live, float dt) {
         Vector2 m = ls, c = rs;
         if (kb) m.x += IsKeyDown(KEY_RIGHT) - IsKeyDown(KEY_LEFT), m.y += IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN), c.x += IsKeyDown(KEY_D) - IsKeyDown(KEY_A), c.y += IsKeyDown(KEY_W) - IsKeyDown(KEY_S);
         walk = Clamp(m.y, -1, 1), aim = Clamp(m.x, -1, 1) * SIM_AIM, turn = -Clamp(c.x, -1, 1) * SIM_TURN, pitch = Clamp(c.y, -1, 1);
-    } else if (tv) {  // W4M Blimp 0x52a5e0: left stick / arrows pan at 250 x zoom u/s, right stick / A D W S look (yaw, pitch).
+    } else if (tv) {  // W4M Blimp 0x52a5e0: left stick / arrows pan at 500 x zoom u/s, right stick / A D W S look (yaw, pitch).
         Vector2 m = ls, l = {-rs.x, rs.y};  // user's choice: W4M HelpBlimpConsole has the sticks the other way round
         if (kb) m.x += IsKeyDown(KEY_RIGHT) - IsKeyDown(KEY_LEFT), m.y += IsKeyDown(KEY_UP) - IsKeyDown(KEY_DOWN), l.x += IsKeyDown(KEY_A) - IsKeyDown(KEY_D), l.y += IsKeyDown(KEY_W) - IsKeyDown(KEY_S);
-        float pan = blimpZoom * 12.5f / Game::CURSOR_SPEED, s = 0.9f + 0.1f * blimpZoom;
-        walk = Clamp(m.y, -1, 1) * pan, aim = Clamp(m.x, -1, 1) * pan * SIM_AIM, turn = Clamp(l.x, -1, 1) * 0.55f * s / Game::BLIMP_TURN * SIM_TURN;
-        pitch = Clamp(l.y, -1, 1) * 0.45f * s / Game::BLIMP_TILT;
+        float pan = blimpZoom / 2, s = (0.9f + 0.1f * blimpZoom) / 1.1f;  // shares of the sim's full-stick rates, set at MaxZoom 2
+        walk = Clamp(m.y, -1, 1) * pan, aim = Clamp(m.x, -1, 1) * pan * SIM_AIM, turn = Clamp(l.x, -1, 1) * s * SIM_TURN;
+        pitch = Clamp(l.y, -1, 1) * s;
     } else if (aimMode) {
         Vector2 a = rs;
         bool solo = zl && !rs.x && !rs.y && !forceAim;  // ZL + left stick: single Joy-Con, no fine aim
@@ -280,25 +281,29 @@ Input read(const Game &g, int pad, bool live, float dt) {
     prevFire = (fireDown ? Input::FIRE : 0) | (jumpDown ? Input::JUMP : 0);
     bool fpFire = homing && (aimMode || g.locked);  // Homing: first person or already locked, FIRE passes
     if (swallowFire || (live && held && !tv && !fpFire)) in.buttons &= ~Input::FIRE;  // W4M 0x583a10: no launch outside the Blimp view
-    bool padB = down(pad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN), dropKey = (kb && IsKeyDown(KEY_BACKSPACE)), landedDrop = g.jetLanded() && g.secondary >= 0 && !tv && !gk;
-    if (g.jetting) { if (padB || dropKey) in.buttons |= Input::JUMP; }  // W4M Fire.Second (user-requested: B on the pad, 2026-10-04): drop; no jump
-    else if (landedDrop) { if (padB || dropKey) in.buttons |= Input::PITCH; }  // Fire.Second landed: B drops, it does not jump
-    else if (jumpDown && !tv && !swallowJump) in.buttons |= Input::JUMP;
+    // W4M Fire.Second: R on the pad (user-requested 2026-10-07), so B only jumps
+    bool drop = down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) || (kb && IsKeyDown(KEY_BACKSPACE));
+    if (g.jetting) { if (drop) in.buttons |= Input::JUMP; }
+    else {
+        if (drop && g.secondary >= 0 && !tv && !gk) in.buttons |= g.jetLanded() ? Input::PITCH : Input::FIRE;  // landed jetpack / rope, parachute
+        if (jumpDown && !tv && !swallowJump) in.buttons |= Input::JUMP;
+    }
     bool dpL = down(pad, GAMEPAD_BUTTON_LEFT_FACE_LEFT), dpR = down(pad, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
     if (dpR || (kb && IsKeyDown(KEY_TAB))) in.buttons |= Input::NEXT_WEAPON;
     else if (dpL && !wasDp && g.phase == Phase::Aim && !g.shotsLeft)  // previous weapon: the sim's direct pick of the selectable one before
         for (int i = 1, n = (int)WEAPONS.size(); i <= n; i++)
             if (int k = (((g.held() < 0 ? n : g.held()) - i) % n + n) % n; g.selectable(w.team, k)) { in.buttons |= Input::NEXT_WEAPON, in.aim = Input::pick(k).aim; break; }
     wasDp = dpL;
-    if (fuseKeys(g)) {  // W4M FuseUp on the d-pad
+    if (fuseKeys(g) && !aimMode) {  // W4M FuseUp on the d-pad; aiming, the d-pad zooms (user-requested)
         if (down(pad, GAMEPAD_BUTTON_LEFT_FACE_UP) || (kb && IsKeyDown(KEY_EQUAL))) in.buttons |= Input::FUSE_UP;
         if (down(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN) || (kb && IsKeyDown(KEY_MINUS))) in.buttons |= Input::FUSE_DOWN;
     }
-    // the follow camera's keys (W4M InGame group Camera.*, 0x4e1610): right stick, L / R zoom, A D X Z, wheel
+    // the follow camera's keys (W4M InGame group Camera.*, 0x4e1610): right stick, d-pad zoom while aiming, A D X Z, wheel
     bool camKeys = (!aimMode && !g.roped && !g.steered() && (rs.x || rs.y)) ||
-                   (down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1) || down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1)) ||
+                   (aimMode && (down(pad, GAMEPAD_BUTTON_LEFT_FACE_UP) || down(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN))) ||
                    (kb && (IsKeyDown(KEY_A) || IsKeyDown(KEY_D) || IsKeyDown(KEY_X) || IsKeyDown(KEY_Z) || GetMouseWheelMove()));
     if (live && !tv && !gk && camKeys) in.flags |= Input::CAMERA;
+    in.zoom = headCam(g) ? (uint8_t)roundf(head * 255) : 255;  // the logical camera's zoom (Default: 1), for the gun wobble
     return in;
 }
 
@@ -330,7 +335,6 @@ bool targetView(const Game &g) {  // the CPU aims from the Blimp too (W4M AI)
     return blimpable(g) && (blimpLive ? blimpOn : (cpuTurn && weaponDef(g.weapon).kind != Kind::Homing) || g.blimp);
 }
 bool fireRefused() { return refusedNow; }
-float sinceFirstPerson() { return fpOut; }
 
 // WEAPTWK IsAimedWeapon: bazooka, grenades, banana, holy, gas, arrow, starburst, homing, shotgun, sniper (not dynamite, mines,
 // sheep, super sheep, old woman, strikes); plus the rope and binoculars cursors. Melee stays third person (the swing is the worm).
@@ -345,12 +349,7 @@ bool aimed(const WeaponDef &wd) {
 
 bool firstPerson(const Game &g) { return aimMode && aimed(weaponDef(g.weapon)); }
 
-bool headCam(const Game &g) { return !targetView(g) && (firstPerson(g) || scoped(g)); }
-
-bool scoped(const Game &g) {
-    const Worm &w = g.worms[g.current];
-    return g.phase == Phase::Aim && w.alive && !g.roped && !g.jetting && weaponDef(g.weapon).name == "Sniper Rifle" && aimMode;
-}
+bool headCam(const Game &g) { return !targetView(g) && firstPerson(g); }
 
 Reticle reticle(const Game &g) {
     if (targetView(g)) return Reticle::Blimp;  // camera(): the Blimp view comes before the first-person one
@@ -529,7 +528,7 @@ static void simple(Camera3D &cam, Vector3 pos, Vector3 look, float kp, float kl,
 // framing: the death or hp-count close-up, W4M's "Worm Dying" / "Worm Displaying Damage Taken" WormTrackCamera (0x51cf20, 5)
 static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool framing) {
     evb = {};  // TrackCam, the base Camera: drawn as placed
-    int run = !pip.mode ? 0 : tk.on && (tk.worm >= 0 || !framing) ? tk.prio : framing ? 5 : 0;  // 0x51d408: PiP up (+0x2c2), a lower request is dropped
+    int run = !pip.mode ? 0 : tk.on && (tk.worm >= 0 || !framing) ? tk.prio : donkeyCam == 1 ? 6 : framing ? 5 : 0;  // 0x51d408: PiP up (+0x2c2), a lower request is dropped
     if (framing && pend.prio && pend.prio < run) pend.prio = 0;
     if (overT > 0 && (!g.cfg.mission || (g.script && scriptOutro(g) < 0))) {  // game over (GameOverLogicEntity, W4M levels too): WormTrackCamera on the winner (current worm first), cut at once, until the orbit
         int c = -1;
@@ -715,7 +714,7 @@ static void chaseCam(Camera3D &cam, const Game &g, const Projectile &p, float dt
     auto at = [&](Vector3 o) {  // 0x52e4c0: the pet + an offset turned by its heading
         return Vector3{p.pos.x + o.x * cosf(petYaw) + o.z * sinf(petYaw), p.pos.y + o.y, p.pos.z - o.x * sinf(petYaw) + o.z * cosf(petYaw)};
     };
-    float back = 8.5f * zoom;
+    float back = 8.5f;
     Vector3 hit;
     if (!ch.on) serves++, ch = {true, 0, 1, 0, 0}, occActivate(g, p.pos, at(cd.head), at(cd.tail), back, cd.hi, petYaw + cd.startYaw, cd.resetYaw, ch.yaw, petEl);
     float sx = pip.mode ? 0 : ch.stick;
@@ -744,7 +743,7 @@ static float lensFov(float fov0, float zoom, float dt) {
 }
 
 // The logical cameras: cam the main one, pipCam the event one; drawn: the view on screen last frame; b: cam's blend factors
-static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chase, bool scope, bool input, float dt, Blend &b) {
+static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chase, bool input, float dt, Blend &b) {
     const Worm &cur = g.worms[g.current];
     int pad = padUsed;
     if ((focusLeft -= dt) <= 0) focusOn = false;
@@ -757,14 +756,14 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     chase = chase || onBlast;
     Vector2 rs = input && !aimMode ? stick(pad, GAMEPAD_AXIS_RIGHT_X) : Vector2{0, 0};
     if (g.roped || g.jetting || g.steered()) rs.y = 0;  // reels the rope, aims from the jetpack, steers the shot
-    float zin = input * (down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) - down(pad, GAMEPAD_BUTTON_LEFT_TRIGGER_1)), wheel = 0;  // R in, L out (user-requested)
+    float zin = input * (down(pad, GAMEPAD_BUTTON_LEFT_FACE_UP) - down(pad, GAMEPAD_BUTTON_LEFT_FACE_DOWN)), wheel = 0;  // d-pad up in, down out: HeadCam and Blimp only (user-requested)
 #ifndef __SWITCH__
     if (input) rs.x += IsKeyDown(KEY_D) - IsKeyDown(KEY_A), zin += IsKeyDown(KEY_X) - IsKeyDown(KEY_Z), wheel = GetMouseWheelMove();
 #endif
     bool moving = input && Vector2Length(stick(pad, GAMEPAD_AXIS_LEFT_X)) > 0;
     static int lastKind = -1;  // the logical camera (SetCamera): 0 Default, 1 Girder, 2 Blimp, 3 Head, 4 Jetpack, 5 Ninja
-    int kind = g.girderOn && girdering(g) ? 1 : targetView(g) ? 2 : firstPerson(g) || scope ? 3 : g.jetting ? 4 : g.roped ? 5 : 0;
-    if (lastWorm < 0) camYaw = cur.yaw, camEl = EL0, zoom = 1, lastWorm = g.current, lastKind = kind, setView = {true, camYaw};  // new match (ours: behind the first worm)
+    int kind = g.girderOn && girdering(g) ? 1 : targetView(g) ? 2 : firstPerson(g) ? 3 : g.jetting ? 4 : g.roped ? 5 : 0;
+    if (lastWorm < 0) camYaw = cur.yaw, camEl = EL0, lastWorm = g.current, lastKind = kind, setView = {true, camYaw};  // new match (ours: behind the first worm)
     bool turn = g.current != lastWorm;
     if (turn) lastWorm = g.current, cut = true, cutView |= !seen(drawn, g, cur.pos);  // 0x51f1b7: a cut unless the new worm is in clear view
     if (turn || kind != lastKind) {  // SetCamera 0x51e4e0 (turn start 0x51f0f7: Camera.StartOfTurnCamera "Default" for a new worm)
@@ -773,7 +772,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         if (kind == 0) {  // DefaultCam: ShoulderCamera StartYaw 0, ResetYaw 0, MaxHeight 1.0; HeadOffset (0, 20, 0), TailOffset (0, 0, -18) units
             Vector3 at = {cur.pos.x, fmaxf(cur.pos.y, g.water - 0.35f), cur.pos.z};
             Vector3 hd = Vector3Add(at, {0, 1, 0}), tl = Vector3Add(at, {-0.9f * sinf(cur.yaw), 0, -0.9f * cosf(cur.yaw)});
-            occActivate(g, at, hd, tl, 8.5f * zoom, 1.0f, cur.yaw, false, camYaw, camEl);
+            occActivate(g, at, hd, tl, 8.5f, 1.0f, cur.yaw, false, camYaw, camEl);
         }
         lastKind = kind;
     }
@@ -783,10 +782,9 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     idle = rs.x || rs.y || moving ? 0 : idle + dt;
     camYaw -= rs.x * CAM_YAW * settings.cam * dt;
     camEl = Clamp(camEl - rs.y * (settings.invertCam ? -1 : 1) * CAM_PITCH * settings.cam * dt, 0.05f, 1.2f);  // stick up: look up
-    float follow = scope || aimMode ? 12 : g.roped ? (rs.x || rs.y ? 0 : 6.3f) : chase ? (idle > 0.5f ? 2.5f : 0) : idle > RECENTER_AFTER ? 1.2f : 0;
+    float follow = aimMode ? 12 : g.roped ? (rs.x || rs.y ? 0 : 6.3f) : chase ? (idle > 0.5f ? 2.5f : 0) : 0;  // DefaultCam: yaw and pitch move on input only (0x5309b0)
     float k = 1 - expf(-dt * follow), err = wrapPi((g.roped ? ropeYaw : cur.yaw) - camYaw);
     camYaw += err * k, camEl += ((g.roped ? 0 : EL0) - camEl) * k;  // NinjaCamera DefaultHeight 0: level side view
-    zoom = Clamp(zoom * expf(-zin * dt * 1.5f - wheel * 0.1f), 0.45f, 2.5f);
     // the event cameras and the PiP run whatever the logical camera (CMS 0x51da00)
     // W4M [0x95fb04], the active worm: from its activation to GameLogic.EndTurn (retreat or turn timed out, worm hurt: 0x5b2610)
     bool active = g.phase == Phase::Aim || g.phase == Phase::Flying || g.phase == Phase::Retreat;
@@ -818,9 +816,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         cut = false, fpOut += dt;
         return;
     }
-    // W4M HeadCam zoom (0x91f31c, .data 1.0): CAMTWK Camera.Head.MinZoom 0.05 .. MaxZoom 1, the player's zoom keys; kept through the turn
-    static float head = 1;
-    if (g.phase != Phase::Aim) head = 1;
+    if (!active) head = 1;
     static bool inBlimp = false;
     if (!focusOn && targetView(g)) {  // W4M Blimp (IsometricCam): the sim's camera, drawn at Camera.Blimp.UpdateSpeed 0.05 (0x52a57d)
         if (!inBlimp) blimpZoom = 1;
@@ -835,7 +831,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     }
     inBlimp = false, cam.up = {0, 1, 0};
 
-    if (!focusOn && (firstPerson(g) || scope)) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
+    if (!focusOn && firstPerson(g)) {  // W4M aim view: first person from the worm's eyes, looking down the shot line
         // HeadCam +0x8c, the look-at offset (m): at activation the last view's (0x91e8e8) when Ambulatory, else the facing (0x529130);
         // then eased to the 1-unit aim direction at Camera.Head.LookUpdateSpeed 0.1 an update (0x528faa)
         static Vector3 look;
@@ -877,7 +873,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     fpOut += dt;
     b = {0.1f, 0.1f};  // ShoulderCamera / NinjaCamera / OrbitCam (0x530fe8): Pos / LookUpdateSpeed 0.1
     {
-        float back = (chase ? 17.5f : g.roped && !focusOn ? 20 : focusOn ? fmaxf(7.5f, focusR * 3 + 4) : 8.5f) * zoom;  // Shoulder DistFromObject 170 units; 3 r fits r
+        float back = chase ? 17.5f : g.roped && !focusOn ? 20 : focusOn ? fmaxf(7.5f, focusR * 3 + 4) : 8.5f;  // Shoulder DistFromObject 170 units, no zoom (Camera.ToggleDistance keeps it, 0x524880); 3 r fits r
         bool group = (focusOn && focusR > 0) || champ;  // hp count of several worms, winner: from higher, around the scenery in the way
         float el = group ? fmaxf(camEl, 0.75f) : camEl;
         for (float dy : {0.0f, 0.8f, -0.8f, 1.6f, -1.6f, 2.4f, -2.4f, 0.0f}) {
@@ -965,13 +961,13 @@ Vector3 viewUp(const Camera3D &c) {
     return {0, 1, 0};
 }
 
-void camera(Camera3D &cam, const Game &g, bool chase, bool scope, bool input, float dt) {
+void camera(Camera3D &cam, const Game &g, bool chase, bool input, float dt) {
     static float acc = 0;
     acc += dt, updates = (int)(acc / 0.01f), acc -= updates * 0.01f;
     if (!lgOk) lg = cam, lgOk = true;
     Blend b;
     swapView = false;
-    logic(lg, cam, g, chase, scope, input, dt, b);
+    logic(lg, cam, g, chase, input, dt, b);
     if (swapView) cam = pipView;
     if (cutView) cam = lg, cutView = false;
     else present(cam, lg, b, g, dt);

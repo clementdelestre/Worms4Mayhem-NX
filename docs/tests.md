@@ -51,7 +51,7 @@ info lines). A Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer m
   shows the submission gaps too.
 - `MEM: <used> MB of <total>`: every 10 s with PACE; Switch `svcGetInfo` UsedMemorySize of TotalMemorySize (the
   process), desktop RSS (`of 0`).
-- `STICK: pad <n> (available <0|1>) L <x y> R <x y> raw, no button for <s> s` [ours, diagnostic]: a stick past its dead zone (0.12, Joy-Con 0.18) while
+- `STICK: pad <n> (available <0|1>) L <x y> R <x y> raw, no button for <s> s` [ours, diagnostic]: a stick axis past the W4M dead zone (0.25) while
   no button was down for 3 s on a human turn; at most one per 5 s (`Controls::stickWatch`, raw `GetGamepadAxisMovement`, before the curve).
 - `REMESH: <n> chunks, build <ms> (meshing threads), <ms> until shown, <ms> all`: one per land edit (explosion, girder,
   ClearCoded), from its first dirty chunk: n = chunk meshes built (a chunk rebuilt twice counts twice), build = their geometry

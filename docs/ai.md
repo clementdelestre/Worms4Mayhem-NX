@@ -199,7 +199,7 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 | before first move | 0 | DelayBeforeFirstMove 0 | data |
 | before a later move | nonFirstMove (CPU1 120 ticks) | same, minus think time (0x4983ef) | data; ours does not subtract |
 | after a path | 30 ticks (0.5 s), then the weapon (attack from a move node) or think again (move plan) | Delay 0.5 s (0x49e6d0), Rethink (0x4a6e00) | disasm |
-| strike heading | the Blimp view turns at BLIMP_TURN (0.6 rad/s) while the cursor moves | SetStrikeDirection sets it at once | ours (the CPU plays inputs) |
+| strike heading | the Blimp view turns at BLIMP_TURN (1.21 rad/s) while the cursor moves | SetStrikeDirection sets it at once | ours (the CPU plays inputs) |
 | aim | turn 2.5 rad/s, pitch 1.5 rad/s through `Input`, aligned within 2e-3 rad | SetAimAngle sets it at once | ours |
 | before fire | fireDelay / DT = 30 ticks (CPU5 12), counted once aimed | DelayBeforeFire (0x49eb8b) | data |
 | charge | FIRE held `plan.charge` ticks (1.5 s full) | exact SetLaunchVelocity, no bar | ours |

@@ -1085,8 +1085,8 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         case Kind::Shotgun: {  // W4M CAIPlanAttackDirect 0x4a0a20: one shot (bCanMoveBetweenShots) as a WormDamageRadius blast, no knock
             if (!pick()) break;
             float pitch = atan2f(to.y - (isWorm ? 0 : 0.3f), horiz);
-            const Game::GunHit hit = g.gunRay({muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), dirOf(yawE, pitch)}, g.worms[me]);
-            if (hit.dist < 60 && pitch > -1.2f && pitch < 1.45f) {  // the sim's ray and hit (0x55e5da): on the struck worm, else the ray's end
+            const Game::GunHit hit = g.gunRay({muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), dirOf(yawE, pitch)}, g.worms[me], wd.size);
+            if (hit.dist < Game::GUN_RANGE && pitch > -1.2f && pitch < 1.45f) {  // the sim's ray and hit (0x55e5da): on the struck worm, else the ray's end
                 Outcome oc(g, L, me, rating, vals);
                 oc.blast(hit.at, g.gunBlast(wi), 0);
                 consider(oc.s + bonus(false), yawE, pitch, 0, ti);

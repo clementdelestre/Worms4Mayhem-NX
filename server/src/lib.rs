@@ -19,8 +19,8 @@ pub const ROOM_STATE: u8 = 0x14;
 pub const LEAVE: u8 = 0x15;
 pub const START: u8 = 0x20;
 pub const INPUTS: u8 = 0x21;
-/// Bytes per Input: turn, walk, aim, buttons, flags.
-pub const INPUT_BYTES: usize = 5;
+/// Bytes per Input: turn, walk, aim, buttons, flags, zoom.
+pub const INPUT_BYTES: usize = 6;
 pub const TURN_END: u8 = 0x22;
 pub const DESYNC: u8 = 0x23;
 pub const REPLAY: u8 = 0x24;
