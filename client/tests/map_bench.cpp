@@ -34,7 +34,10 @@ static void hashes(const Terrain &t, uint64_t out[4]) {
             }
     s.add(t.sharp.planes.data(), t.sharp.planes.size() * 16), s.add(t.sharp.hexP0.data(), t.sharp.hexP0.size() * 4), s.add(t.sharp.top.data(), t.sharp.top.size() * 4);
     for (const auto &c : t.thin)
-        for (const Terrain::Thin &e : c) { int x, y, z; xyzOf(e.vox, x, y, z); th.v(x), th.v(y), th.v(z), th.v(e.mat), th.add(e.c, 96); }
+        for (const Terrain::Thin &e : c) {
+            for (int k = 0; k < e.n; k++) { int x, y, z; xyzOf(t.thinVox[e.at + k], x, y, z); th.v(x), th.v(y), th.v(z); }
+            th.v(e.mat), th.add(e.c, 96);
+        }
     std::vector<long> only;  // linear order, whatever the index layout
     for (int v : t.thinOnly) { int x, y, z; xyzOf(v, x, y, z); only.push_back(((long)z * Terrain::NY + y) * Terrain::NX + x); }
     std::sort(only.begin(), only.end());

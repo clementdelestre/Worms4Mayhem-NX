@@ -154,12 +154,36 @@ fn local(x: &Poxel, scaled: bool) -> M4 {
     [0, 1, 2].map(|i| [r[i][0] * s[0], r[i][1] * s[1], r[i][2] * s[2], x.pos[i]])
 }
 
+// A detail's world orientation (W4M 0x5cccf0): the frame's world matrix (scale included) times the detail's Rz*Ry*Rx, turned back into
+// Euler angles by 0x504170, which reads the matrix's axis directions: a frame with a non-uniform scale skews the result away from
+// R_frame * R_detail. Returns (x, y, z) of T * Rz * Ry * Rx; the mesh is scaled by the detail's own Scale only.
+fn detail_euler(w: &M4, rd: [f32; 3]) -> [f32; 3] {
+    let rot = local(&Poxel { rot: rd, ..Default::default() }, false);
+    let m = mul(w, &rot);
+    let col = |c: usize| [m[0][c] as f64, m[1][c] as f64, m[2][c] as f64];
+    let unit = |v: [f64; 3]| { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); [v[0] / l, v[1] / l, v[2] / l] };
+    let v = unit(col(0));
+    let b = -v[2].clamp(-1.0, 1.0).asin();
+    let s2 = v[0] * v[0] + v[1] * v[1];
+    let a = if s2 == 0.0 { 0.0 } else if v[0] > 0.0 { (v[1] / s2.sqrt()).asin() } else { std::f64::consts::PI - (v[1] / s2.sqrt()).asin() };
+    // undo a about z, then b about y, on the matrix: the second column is then (0, cos c, sin c) up to scale
+    let (ca, sa, cb, sb) = ((-a).cos(), (-a).sin(), (-b).cos(), (-b).sin());
+    let y = unit({
+        let c = col(1);
+        let (x1, y1) = (c[0] * ca - c[1] * sa, c[1] * ca + c[0] * sa);
+        [x1 * cb + c[2] * sb, y1, c[2] * cb - x1 * sb]
+    });
+    let z = y[2].clamp(-1.0, 1.0).asin();
+    let c = if y[1] >= 0.0 { z } else if y[2] > 0.0 { std::f64::consts::PI - z } else { -z - std::f64::consts::PI };
+    [c as f32, b as f32, a as f32]
+}
+
 // Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index; `parts`: the convex pieces of the
 // land W4M samples in it (lattice.rs)
 struct Cell { c: [[f32; 3]; 8], parts: Vec<[[f32; 3]; 8]>, mat: u8, tex: [f32; 2], code: u16, visible: bool }
 
-// Detail entity reference with its poxel's world matrices (with / without the poxel's own scale).
-struct DetRef { ctn: usize, w: M4, wn: M4 }
+// Detail entity reference with its poxel's world matrix (the poxel's own scale included, its parents' not).
+struct DetRef { ctn: usize, w: M4 }
 
 // W4M LandFramePseudoEntity 0x46e1d0: a land frame's box is x [min EdgeOffset1.x, XSize + max EdgeOffset2.x], z likewise,
 // y [min HeightMap, YSize + max HeightMap], less CentreOffset = size / 2; AddLandBlock 0x4b22e0 takes its 8 corners' world AABB.
@@ -216,14 +240,22 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
     if !x.vox.is_empty() { add_block(blocks, frame_box(x, &w)); }
     // W4M collides with every frame; only rendering reads Visible (0x46e6b9, 0x472380, 0x447810)
     if x.vox.len() == sx * sy * sz {
-        let layer = |l: &Vec<[f32; 2]>, j: usize| *l.get(j).unwrap_or(&[0.0, 0.0]);
+        // EdgeOffset1/2 at lattice height y: layers floor(y) (clamped to YSize - 1) and the next, by the fraction past it (W4M 0x468200)
+        let edge = |l: &Vec<[f32; 2]>, y: f32| {
+            let j = (y.floor().max(0.0) as usize).min(sy - 1);
+            let (a, b, t) = (l.get(j).unwrap_or(&[0.0; 2]), l.get(j + 1).unwrap_or(&[0.0; 2]), y - j as f32);
+            [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+        };
+        // the HeightMap lifts every plane of a column (W4M 0x46837f subtracts it from y before the layer is taken), and the edge
+        // offsets are read at the lifted height
         let corner = |i: usize, j: usize, kk: usize| -> [f32; 3] {
-            let (a, b) = (layer(&x.l1, j), layer(&x.l2, j));
+            let hy = x.hm.get(kk * (sx + 1) + i).copied().unwrap_or(0.0);
+            let hy = if hy.is_finite() && hy.abs() < 64.0 { hy } else { 0.0 };
+            let y = j as f32 + hy;
+            let (a, b) = (edge(&x.l1, y), edge(&x.l2, y));
             let px = a[0] + (sx as f32 + b[0] - a[0]) * i as f32 / sx as f32;
             let pz = a[1] + (sz as f32 + b[1] - a[1]) * kk as f32 / sz as f32;
-            let hy = if j == sy { x.hm.get(kk * (sx + 1) + i).copied().unwrap_or(0.0) } else { 0.0 };
-            let hy = if hy.is_finite() && hy.abs() < 64.0 { hy } else { 0.0 };
-            xform(&w, [px - sx as f32 / 2.0, j as f32 + hy - sy as f32 / 2.0, pz - sz as f32 / 2.0])
+            xform(&w, [px - sx as f32 / 2.0, y - sy as f32 / 2.0, pz - sz as f32 / 2.0])
         };
         let solid = |a: i32, b: i32, e: i32| a >= 0 && b >= 0 && e >= 0 && (a as usize) < sx && (b as usize) < sy && (e as usize) < sz && x.vox[b as usize + sy * (a as usize + sx * e as usize)] & 3 != 0;
         for z in 0..sz {
@@ -240,7 +272,7 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
             }
         }
     }
-    dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w, wn }));
+    dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w }));
     for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1, code, codes); }
 }
 
@@ -718,15 +750,14 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         if !n.starts_with("visible") {  // W4M 0x5cd27d: upper(name[..7]) == "VISIBLE" only, so the "VISABLE" typos stay hidden
             let t = marker_type(&lib, &n).unwrap_or("locator");  // any named detail: a script's spawn, explosion or effect spot
             // TimedPathCam 0x637510: a knot looks along its detail's local -Z in the world (Maya XYZ angles, land frame included)
-            let rm = mul(&r.wn, &local(&Poxel { rot: [f[3], f[4], f[5]], ..Default::default() }, false));
+            let rm = local(&Poxel { rot: detail_euler(&r.w, [f[3], f[4], f[5]]), ..Default::default() }, false);
             let (dx, dy, dz) = (-rm[0][2], -rm[1][2], -rm[2][2]);
             marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}],\"dir\":[{dx:.4},{dy:.4},{dz:.4}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
             continue;
         }
         if pos[1] < 0.0 || pos[0] < 0.0 || pos[2] < 0.0 || pos[0] > nx() as f32 * VOX || pos[2] > nz() as f32 * VOX { continue; }
-        // basis = poxel rotation * detail rotation * detail scale (row-major 3x3)
-        let rs = local(&Poxel { rot: [f[3], f[4], f[5]], scale: [f[9], f[10], f[11]], ..Default::default() }, true);
-        let m = mul(&r.wn, &rs);
+        // basis = the detail's world rotation (detail_euler) * its own scale (row-major 3x3)
+        let m = local(&Poxel { rot: detail_euler(&r.w, [f[3], f[4], f[5]]), scale: [f[9], f[10], f[11]], ..Default::default() }, true);
         let b: Vec<String> = (0..9).map(|i| format!("{:.4}", m[i / 3][i % 3])).collect();
         let lib = lib.to_lowercase();
         // Detail.PlayAnim's FourCC (0x5cd8e1): the 4 bytes 5 past "CODE" in the detail's name
@@ -983,6 +1014,21 @@ mod tests {
         let x = Poxel { rot: [std::f32::consts::FRAC_PI_2, 0.0, 0.0], scale: [1.0; 3], ..Default::default() };
         let q = xform(&local(&x, true), [0.0, 1.0, 0.0]);
         assert!(q[1].abs() < 1e-6 && (q[2] - 1.0).abs() < 1e-6);
+    }
+    #[test]
+    fn detail_orientation() {
+        // an unscaled frame: Rz*Ry*Rx of the frame times the detail's, back as Euler angles (angles of 0x504170 run on the exe: same to 1e-5)
+        let f = Poxel { rot: [0.3, -0.7, 1.9], scale: [1.0; 3], ..Default::default() };
+        let e = detail_euler(&local(&f, true), [-1.1, 0.4, 2.6]);
+        let want = mul(&local(&f, false), &local(&Poxel { rot: [-1.1, 0.4, 2.6], ..Default::default() }, false));
+        let got = local(&Poxel { rot: e, ..Default::default() }, false);
+        for i in 0..3 { for j in 0..3 { assert!((want[i][j] - got[i][j]).abs() < 1e-5); } }
+        // a non-uniformly scaled frame skews it; the angles are what 0x504170 returns when the exe's code is run on the same matrices
+        for (rot, scale, rd, want) in [([0.0; 3], [1.5, 0.45, 1.4], [0.2, 0.6, 0.2], [0.271_446_2, 0.576_595_4, 0.060_738_2]),
+                                       ([0.3, -0.7, 1.9], [1.54, 0.45, 1.39], [1.44, 1.38, 1.37], [0.551_246_9, 0.757_935_1, 2.407_684_3])] {
+            let e = detail_euler(&local(&Poxel { rot, scale, ..Default::default() }, true), rd);
+            for k in 0..3 { assert!((e[k] - want[k]).abs() < 1e-4, "{e:?} {want:?}"); }
+        }
     }
     #[test]
     fn png_header_and_crc() {

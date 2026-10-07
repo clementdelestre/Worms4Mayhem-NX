@@ -156,7 +156,7 @@ The `.wmv` files are separate. `MoviePlayerService` plays them full screen.
   look-at: a fixed look). Loop links the ends: never stops (no data uses it).
 - TimedPathCam (0x637b50) reads only `Camera.Path.Knots.Position`, `Loop.Position` and `Camera.TimedPath.Steps.Position` (atoi of each
   " ,"-token: '400.400,400' = 400, 400): the look-at fields are written but never read. Two TimedKnotLists from the same knots and steps:
-  mode 0 the positions, mode 1 each knot 1000 units along its detail's world -Z (Maya XYZ Euler angles, land frame included, 0x6375a1).
+  mode 0 the positions, mode 1 each knot 1000 units along its detail's world -Z (Maya XYZ Euler angles, land frame included, 0x6375a1; the detail's Rotate angles of render.md "Level scenery" 0x5cccf0, skewed by a non-uniformly scaled frame).
   Fixed Catmull-Rom (s 0.5), t += 1 / steps[segment], the segment index past the list read unchecked (NiceToSiegeYou 'Cam_58..61' with
   '200,250'). Both lists end on the same update: `Camera.TimedPath.Stopped`.
 - After Stopped the camera stays current (type 14), on its last knot, until the next camera event or the movie's end (SetCamera

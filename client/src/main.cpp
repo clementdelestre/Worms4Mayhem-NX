@@ -476,8 +476,8 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         const Worm &w = g.worms[i];
         WormAnim &a = wormAnims[i];
         Vector3 d = Vector3Subtract(w.pos, a.pos);
-        float dist = sqrtf(d.x * d.x + d.z * d.z), turn = fabsf(wrapPi(w.yaw - a.yaw));
-        if (!a.init || dist > 2) { WormAnim::Act act = a.act; a = WormAnim{}, a.act = act, a.init = true, dist = turn = 0; }  // spawn, teleport, replay rewind
+        float dist = sqrtf(d.x * d.x + d.z * d.z);
+        if (!a.init || dist > 2) { WormAnim::Act act = a.act; a = WormAnim{}, a.act = act, a.init = true, dist = 0; }  // spawn, teleport, replay rewind
         // WXWorm.JetpackLR (0x561e40, per 20 ms): +-1 while the jetpack turns the worm's yaw up / down, else 0, at
         // v += clamp((to - v) / 2, +-0.03) (0x47a1a0 k 1)
         float yawStep = wrapPi(w.yaw - a.yaw), jto = (int)i == g.current && g.jetting && fabsf(yawStep) > 1e-5f ? (yawStep > 0 ? 1.0f : -1.0f) : 0;
@@ -517,7 +517,7 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         a.spin = -1;
         if (a.air > 0.2f && a.fallV < -4 && w.alive) a.land = 0, Audio::play(Audio::Sfx::Land, w.pos);
         a.air = a.fallV = 0, a.land += dt, a.flip = nullptr;
-        float step = dist + turn * 0.6f;  // turning in place shuffles at half the walk pace
+        float step = dist;  // W4M blends Walk by |Velocity.xz| only: a turn in place (kWE 10..12) keeps the pose and the held weapon
         a.still = step > 1e-4f ? 0 : a.still + dt;
         a.moving = w.alive && a.still < 0.1f;  // bridges render frames that ran no sim tick
         float before = a.walk, B = 0.4f * L;   // one body surge per cycle; B: where it lands
@@ -682,7 +682,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         clip = a.flip ? a.flip : w.vel.y > 0 ? "Jump" : "Fall";
         if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
     } else if (a.vaultT < Models::clipLength("worm", "Vault")) clip = "Vault", t = a.vaultT, loop = false;  // kWE 9: Walking -> Vaulting
-    else if (a.moving || a.walk > 0) clip = "Walk", t = a.walk;
+    else if (a.moving || (a.walk > 0 && !a.drawn)) clip = "Walk", t = a.walk;  // a drawn weapon shows at once on stopping (0x5b1bed), the walk ease is skipped
     else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0 && !(i == g.current && g.phase == Phase::Aim)) clip = "Land", t = a.land, loop = false;
     else if (acted) clip = acted, t = actT, loop = actLoop;  // W4M acting: gestures, emotes
     else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up

@@ -23,12 +23,12 @@ After `CTNR`+3: name (varint), position, orientation (euler radians, matrix `T·
 - 19 f32: floor/wall texture X/Y vectors, floor/wall texture offsets, centre offset (always 0 in shipped maps).
 - `EdgeOffset1`, `EdgeOffset2`: varint count (32) × (f32 x, f32 z): per horizontal lattice plane `j` (0..YSize) the offset of the min / max edge of the slab. This is how cones, spheres, tapering cliffs and sagging rope bridges are made.
 - `XSize, YSize, ZSize`: 3 bytes (voxel counts, ≤ 32 high).
-- height map: varint `(X+1)(Z+1)` f32 vertical offsets of the top plane corners (index `i + (X+1)k`).
+- height map: varint `(X+1)(Z+1)` f32 vertical offsets of the lattice columns, lifting every plane of a column (index `i + (X+1)k`) [disasm 0x46837f, docs/w4m/formats.md §23].
 - 12 B flags: `[0..2]` bools (crinkle / perturb cliffs?), f32 edge falloff, `[6]` visible, `[7]` smooth shading, u32 tint (`ffffffff`).
 - voxels: varint `X·Y·Z` × u32, index `y + Y(x + X z)`. Bits 0-1 = solid (3) or empty (0), bits 2-7 = material 0..63 (theme entry), bits 8+ = unknown per-face/edge flags.
 - detail list (varint count + DetailEntityStore refs), then child list (varint count + refs). Children use the parent matrix without scale [data: on the ChallengeNavigation2 cloud chains the other reading puts a platform's 4 parts over 28..153 m, against the mesh's 6..9 m, docs/w4m/formats.md §22 "Visible 0 land frames"].
 
-Lattice vertex `(i, j, k)` in local voxel units: `x = e1x + (X + e2x − e1x)·i/X`, `z` likewise, `y = j` (+ height map on the top plane), centred by `−(X, Y, Z)/2`. Units ≈ metres-ish; maps span ~60–160 × 30–100 × 60–160 units.
+Lattice vertex `(i, j, k)` in local voxel units: `x = e1x + (X + e2x − e1x)·i/X`, `z` likewise, `y = j + height map(i, k)` on every plane, with `e1`, `e2` read at that lifted `y` (layers `⌊y⌋` clamped to `Y − 1` and the next, by the fraction past it) [disasm 0x468200], centred by `−(X, Y, Z)/2`. Units ≈ metres-ish; maps span ~60–160 × 30–100 × 60–160 units.
 
 ### Heightmap placement (fitted, not found in data)
 
@@ -59,7 +59,7 @@ Referenced from a poxel's detail list (every entity of a map is reachable that w
 - Detail meshes are XOM scenes with RGB8/RGBA8 textures, some with a `Go` / `GoSync` clip; 20 mesh units = 1 world unit (the 25-unit worm mesh ~ 1.25 voxels; lamp pole 54 units -> 2.7).
 - Big set pieces (EscapeFromTreeRex's T-Rex, trees, castle walls) are poxels, not details. Shipped maps hold 0-194 visible details, mostly grass and flowers.
 
-Imported by `tools/w4m-maps` (`src/mesh.rs`, static subset of `w4m-models`; `src/anim.rs` reads the clips): meshes go to `models/decor/<lib lowercase>.glb` in world units with `<lib>.mat` (per glb material: XSimpleShader states, emissive, texture offset track; first line `clip <name> <s> <moves>`), clips that move parts are listed in `decor/anim.txt` for `tools/w4m-models` (`decor/<lib>_anim.glb`, raw mesh units, skinned), placements to the map JSON `objects` (position through the poxel's scaled matrix, basis = poxel rotation · detail rotation · detail scale, then the importer's k / offset).
+Imported by `tools/w4m-maps` (`src/mesh.rs`, static subset of `w4m-models`; `src/anim.rs` reads the clips): meshes go to `models/decor/<lib lowercase>.glb` in world units with `<lib>.mat` (per glb material: XSimpleShader states, emissive, texture offset track; first line `clip <name> <s> <moves>`), clips that move parts are listed in `decor/anim.txt` for `tools/w4m-models` (`decor/<lib>_anim.glb`, raw mesh units, skinned), placements to the map JSON `objects` (position through the poxel's scaled matrix; basis = the detail's world rotation · its own scale, the rotation being W4M's: the Euler angles 0x504170 reads back from the poxel's scaled matrix · the detail's rotation, which is not R_poxel · R_detail when the poxel's scale is not uniform, docs/w4m/render.md "Level scenery"; then the importer's k / offset).
 
 ## Meshes, skeletons and animations (`Data/Bundles/*.xom`)
 
