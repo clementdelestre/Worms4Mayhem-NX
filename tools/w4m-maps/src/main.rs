@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 mod anim;
 mod cells;
 mod deflate;
+mod lattice;
 mod lua;
 mod mesh;
 mod mission;
@@ -84,7 +85,7 @@ fn read_xom(b: &[u8]) -> Option<Xom> {
 struct Poxel {
     pos: [f32; 3], rot: [f32; 3], scale: [f32; 3],
     l1: Vec<[f32; 2]>, l2: Vec<[f32; 2]>,
-    size: [usize; 3], hm: Vec<f32>, visible: bool, vox: Vec<u32>, kids: Vec<usize>, dets: Vec<usize>,
+    size: [usize; 3], hm: Vec<f32>, visible: bool, falloff: bool, vox: Vec<u32>, kids: Vec<usize>, dets: Vec<usize>,
     tex: [f32; 2], // floor X / wall Y texture vector lengths (texture repeats per local unit)
     name: usize, code: Option<[u8; 4]>,
 }
@@ -115,6 +116,7 @@ fn parse_poxel(d: &[u8]) -> Poxel {
     let n = vi(d, &mut p);
     x.hm = (0..n).map(|i| f32le(d, p + 4 * i)).collect();
     p += 4 * n;
+    x.falloff = d.get(p + 1) == Some(&1);  // EdgeFalloff, the byte after EdgeCrinkle (schema order)
     x.visible = d.get(p + 6) == Some(&1);
     p += 12;
     let n = vi(d, &mut p);
@@ -152,8 +154,9 @@ fn local(x: &Poxel, scaled: bool) -> M4 {
     [0, 1, 2].map(|i| [r[i][0] * s[0], r[i][1] * s[1], r[i][2] * s[2], x.pos[i]])
 }
 
-// Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index.
-struct Cell { c: [[f32; 3]; 8], mat: u8, tex: [f32; 2], code: u16, visible: bool }
+// Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index; `parts`: the convex pieces of the
+// land W4M samples in it (lattice.rs)
+struct Cell { c: [[f32; 3]; 8], parts: Vec<[[f32; 3]; 8]>, mat: u8, tex: [f32; 2], code: u16, visible: bool }
 
 // Detail entity reference with its poxel's world matrices (with / without the poxel's own scale).
 struct DetRef { ctn: usize, w: M4, wn: M4 }
@@ -222,6 +225,7 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
             let hy = if hy.is_finite() && hy.abs() < 64.0 { hy } else { 0.0 };
             xform(&w, [px - sx as f32 / 2.0, j as f32 + hy - sy as f32 / 2.0, pz - sz as f32 / 2.0])
         };
+        let solid = |a: i32, b: i32, e: i32| a >= 0 && b >= 0 && e >= 0 && (a as usize) < sx && (b as usize) < sy && (e as usize) < sz && x.vox[b as usize + sy * (a as usize + sx * e as usize)] & 3 != 0;
         for z in 0..sz {
             for xx in 0..sx {
                 for y in 0..sy {
@@ -229,7 +233,9 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
                     if v & 3 == 0 { continue; }
                     let mut c = [[0.0; 3]; 8];
                     for n in 0..8 { c[n] = corner(xx + (n & 1), y + ((n >> 1) & 1), z + (n >> 2)); }
-                    out.push(Cell { c, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible });
+                    let tops = [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(i, k)| lattice::usage(solid, xx as i32 + i, y as i32, z as i32 + k));
+                    let parts = lattice::pieces(&c, tops, x.falloff);
+                    out.push(Cell { c, parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible });
                 }
             }
         }
@@ -505,9 +511,18 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         x >= 0.0 && z >= 0.0 && (x as usize) < nx() && (z as usize) < nz() && p[1] < top[z as usize * nx() + x as usize]
     };
 
-    // poxel cells in grid units, bucketed (8 voxels) for point-in-solid queries
-    let (hexes, hex_code): (Vec<Hex>, Vec<u16>) = cells.iter().map(|c| (Hex::new(c.c.map(to_grid), c.mat + 1), c.code))
-        .filter(|(h, _)| h.hi[0] >= 0.0 && h.hi[1] >= 0.0 && h.hi[2] >= 0.0 && h.lo[0] < nx() as f32 && h.lo[1] < ny() as f32 && h.lo[2] < nz() as f32).unzip();
+    // the pieces of the land in each poxel cell, in grid units, bucketed (8 voxels) for point-in-solid queries; hex_cell: its cell
+    let (mut hexes, mut hex_code, mut hex_cell) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, c) in cells.iter().enumerate() {
+        for part in &c.parts {
+            let h = Hex::new(part.map(to_grid), c.mat + 1);
+            if h.hi[0] >= 0.0 && h.hi[1] >= 0.0 && h.hi[2] >= 0.0 && h.lo[0] < nx() as f32 && h.lo[1] < ny() as f32 && h.lo[2] < nz() as f32 {
+                hexes.push(h);
+                hex_code.push(c.code);
+                hex_cell.push(i);
+            }
+        }
+    }
     const B: usize = 8;
     let (bx, by, bz) = (nx() / B, ny() / B, nz() / B);
     let bidx = |p: V3| -> Option<usize> {
@@ -531,9 +546,10 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     // their exact hexahedron and every voxel they stand on, drawn while one of them stands
     let mut thin = 0u32.to_le_bytes().to_vec();
     let mut nthin = 0u32;
+    let mut vox: Vec<[usize; 3]> = Vec::new();  // the grid points of the current cell's pieces
     for (hi, h) in hexes.iter().enumerate() {
-        let mut vox: Vec<[usize; 3]> = Vec::new();
-        let code = hex_code[hi];
+        if hi == 0 || hex_cell[hi - 1] != hex_cell[hi] { vox.clear(); }
+        let (code, from) = (hex_code[hi], vox.len());
         for (x, y, z) in points(h.lo, h.hi) {
             if h.inside([x as f32, y as f32, z as f32]) {
                 let g = &mut grid[gi(x, y, z)];
@@ -543,20 +559,24 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             }
         }
         let cen = h.c.iter().fold([0.0; 3], |s, p| madd(s, *p, 0.125)).map(|v| v.round());
-        if vox.is_empty() && cen.iter().zip([nx(), ny(), nz()]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
+        if vox.len() == from && cen.iter().zip([nx(), ny(), nz()]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
             let g = &mut grid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)];
             if h.mat != HIDDEN || *g == 0 { *g = h.mat; }
             vox.push(cen.map(|v| v as usize));
             if code > 0 && !other(cen, code) { coded[code as usize - 1].push(ci(cen[0] as usize, cen[1] as usize, cen[2] as usize)); }
         }
-        let (e1, e2, e3) = (sub(h.c[1], h.c[0]), sub(h.c[2], h.c[0]), sub(h.c[4], h.c[0]));
+        if hexes.get(hi + 1).is_some() && hex_cell[hi + 1] == hex_cell[hi] { continue; }
+        vox.sort_unstable();
+        vox.dedup();
+        let c = cells[hex_cell[hi]].c.map(to_grid);
+        let (e1, e2, e3) = (sub(c[1], c[0]), sub(c[2], c[0]), sub(c[4], c[0]));
         let area = |a: V3, b: V3| { let c = cross(a, b); dot(c, c).sqrt() };
         let thickness = dot(cross(e1, e2), e3).abs() / area(e1, e2).max(area(e2, e3)).max(area(e1, e3)).max(1e-6);  // volume over the widest face
         if !vox.is_empty() && h.mat != HIDDEN && (vox.len() <= 2 || thickness < 1.0) {
             nthin += 1;
             for v in vox[0] { thin.extend((v as u16).to_le_bytes()); }
             thin.push(h.mat);
-            for p in h.c { for v in p { thin.extend((v * VOX).to_le_bytes()); } }
+            for p in c { for v in p { thin.extend((v * VOX).to_le_bytes()); } }
             thin.extend(((vox.len() - 1) as u16).to_le_bytes());
             for a in &vox[1..] { for v in a { thin.extend((*v as u16).to_le_bytes()); } }
         }
@@ -609,7 +629,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let v = ((dist[i].min(BAND) * VOX * Q).round() as i32).clamp(1, dq);
         (if grid[i] != 0 { v } else { -v }) as i8
     }).collect();
-    let (cells_file, exact) = cells::build(&hexes.iter().map(|h| h.c).collect::<Vec<_>>(), &top, &mut q, dq as i8);
+    let whole: Vec<_> = hex_cell.iter().map(|&i| (cells[i].parts.len() > 1 || cells[i].parts[0] != cells[i].c).then(|| cells[i].c.map(to_grid))).collect();
+    let (cells_file, exact, hex_id) = cells::build(&hexes.iter().map(|h| h.c).collect::<Vec<_>>(), &whole, &top, &mut q, dq as i8);
     fs::write(out_dir.join(format!("{stem}.cells")), &cells_file).map_err(|e| e.to_string())?;
     // per 32³ chunk: u32 mat << 1 for a chunk of one material at the default density, else deflated size << 1 | 1 and,
     // after the table, its 32768 materials then 32768 densities minus the default, x fastest
@@ -735,7 +756,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let mut by_code: Vec<([u8; 4], Vec<usize>, Vec<usize>)> = Vec::new();
     for (ci, c) in codes.iter().enumerate() {
         let i = by_code.iter().position(|b| b.0 == *c).unwrap_or_else(|| { by_code.push((*c, Vec::new(), Vec::new())); by_code.len() - 1 });
-        by_code[i].1.extend(hex_code.iter().enumerate().filter(|(_, &h)| h as usize == ci + 1).map(|(j, _)| j));
+        by_code[i].1.extend(hex_code.iter().enumerate().filter(|(_, &h)| h as usize == ci + 1).map(|(j, _)| hex_id[j]));
         by_code[i].2.extend(coded[ci].iter().copied());
     }
     let code_json: Vec<String> = by_code.iter_mut().map(|(c, hex, v)| {

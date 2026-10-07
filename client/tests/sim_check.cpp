@@ -2745,6 +2745,11 @@ static void checkJetpack() {
         p = {38, 55, 20}, v = {10, 0, 0};
         for (int k = 0; k < 40 && v.x > 0; k++) assert(!jetBody(u, p, v, 0));
         assert(v.x < -7.5f && v.x > -8.5f);  // 1.8 x (v.n) n: 10 -> -8
+        Terrain c = g.terrain;
+        c.weld({38, fy + 3.0f, 20}, {3, 1, 3});  // a ceiling over the heads: the heads meet it first
+        p = {38, 55, 20}, v = {0, 10, 0};
+        for (int k = 0; k < 40 && v.y > 0; k++) assert(!jetBody(c, p, v, 0));
+        assert(v.y < -7.5f && v.y > -8.5f);
     }
     // with it out, the hand only takes what it drops (W4M 0x565d30 case 0)
     for (const char *w : {"Bazooka", "Shotgun", "Dynamite", "Landmine", "Sheep", "Teleport"}) g.ammo[a.team][weaponNamed(w)] = 1;
@@ -4245,6 +4250,52 @@ static void checkWaterShots() {
     }
 }
 
+
+// A payload that meets the sea must lead to the next turn in bounded time, whatever its family: fired from the shore, then born under the
+// disarm plane (bomblets of a blast in the shallows), where only Water.ExpiryDepth (0x582050) takes it
+static void checkSeaTurn() {
+    const char *names[] = {"Bazooka", "Grenade", "Cluster Grenade", "Sheep", "Super Sheep", "Homing Missile", "Airstrike", "Fatkins Strike", "Concrete Donkey", "Old Woman", "Poison Arrow"};
+    for (const char *name : names) {
+        {
+            Game g;
+            g.start({29, 2, 2, "", 0}), g.hotSeat = 0;
+            for (int t = 0; t < 120; t++) g.step(Input{});
+            int wi = weaponNamed(name);
+            Worm &w = g.worms[g.current];
+            const int cur = g.current, x0 = (int)(w.pos.x * 4), y0 = (int)((w.pos.y - Game::R) * 4), z0 = (int)(w.pos.z * 4);
+            g.terrain.d.fill(-127);
+            for (int z = z0 - 10; z < z0 + 10; z++)
+                for (int y = y0 - 8; y < y0 - 1; y++)
+                    for (int x = x0 - 10; x < x0 + 10; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
+            for (size_t k = 0, n = 0; k < g.worms.size(); k++)
+                if ((int)k != cur) g.worms[k].pos = {w.pos.x + 1.5f * (1 + n % 2) * (n < 2 ? 1 : -1), w.pos.y, w.pos.z + (n < 2 ? 0 : 1.5f)}, g.worms[k].vel = {}, g.worms[k].grounded = true, n++;
+            g.objects.clear(), g.wind = g.windZ = 0;
+            g.ammo[w.team][wi] = 1, g.delays[w.team][wi] = 0, g.weapon = wi, w.pitch = -0.1f;
+            int t = 0;
+            for (; t < 60 * 40 && g.current == cur && g.phase != Phase::GameOver; t++) {
+                Input in;
+                in.buttons = t < 20 || t == 130 || t == 131 ? Input::FIRE : 0;
+                g.step(in);
+            }
+            assert(g.current != cur || g.phase == Phase::GameOver);
+        }
+        int wi = weaponNamed(name);
+        if (WEAPONS[wi].kind == Kind::Airstrike) continue;  // its plane is no payload, it enters from above
+        Game g;
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+        g.terrain.d.fill(-127);
+        for (Worm &o : g.worms) o.pos = {5, 40, 5}, o.grounded = true;
+        g.objects.clear(), g.phase = Phase::Flying, g.timer = 1000000, g.wind = g.windZ = 0;
+        const float born[][3] = {{3, 1, 2}, {0, -4, 0}, {-6, 8, 5}};
+        for (const auto &b : born) {
+            g.shots = {{{40, g.water - 2, 40}, {b[0], b[1], b[2]}, wi, WEAPONS[wi].fuse > 0 ? WEAPONS[wi].fuse : 0.0f, false, 1}};
+            g.shots[0].touching = 0;
+            for (int t = 0; t < 60 * 30 && !g.shots.empty(); t++) g.step(Input{});
+            assert(g.shots.empty());
+        }
+    }
+}
+
 // W4M 0x4736c7: weapons/Debris only when the blast changed the land
 static void checkDebris() {
     Game g;
@@ -4357,6 +4408,7 @@ int main() {
     assert(loadWeapons("romfs/weapons.json"));
     checkRope();
     checkWaterShots();
+    checkSeaTurn();
     checkArrowFalls();
     std::vector<bool> used(WEAPONS.size()), again(WEAPONS.size());
     assert(run(used) == run(again));

@@ -2217,7 +2217,8 @@ void Game::stepShots(const Input &in, bool detonate) {
         emit(GameEvent::Arm, s.pos, -1, s.weapon);
     };
     // W4M 0x582050 on the tick's path: skim or splash at Water.Level + Radius (0x580830), disarmed and sinking under Water.Level -
-    // SinkDepth (0x580aa0); a homing missile homing (+0x6e clear, 0x560bdc) only splashes
+    // SinkDepth (0x580aa0), removed without a blast crossing Water.ExpiryDepth (slot 21); a homing missile homing (+0x6e clear, 0x560bdc) only splashes.
+    // True: the payload is removed
     auto wet = [&](Projectile &s, Vector3 was, bool sinks) {
         const WeaponDef &wd = WEAPONS[s.weapon];
         float size = s.child ? wd.csize : wd.size, sink = s.child ? wd.csink : wd.sink;
@@ -2240,7 +2241,8 @@ void Game::stepShots(const Input &in, bool detonate) {
             k /= SINK_MAX;
             s.vel = {s.vel.x * k * k, -fmaxf(SINK_MIN, fabsf(s.vel.y) * k), s.vel.z * k * k};
             s.pos.y = water - sink, s.sunk = true;
-        }
+        } else if (crossed(WATER_EXPIRY)) return true;
+        return false;
     };
     for (size_t i = 0; i < shots.size();) {
         Projectile &s = shots[i];
@@ -2446,15 +2448,16 @@ void Game::stepShots(const Input &in, bool detonate) {
             s.touching = now;
         }
         if (wd.kind == Kind::Homing && wd.avoid && s.fuse >= 30) boom = true;  // LifeTime 30000, DetonatesOnExpiry (0x598e0c)
+        bool expired = false;
         if (!boom && !bomber && !stuck && wd.kind != Kind::Scouser && wd.kind != Kind::OldWoman) {  // the walking payloads sink their own way (0x594002)
-            wet(s, was, !(wd.kind == Kind::Homing && s.fuse > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd)));
-            timed = timed && !s.sunk;
+            expired = wet(s, was, !(wd.kind == Kind::Homing && s.fuse > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd)));
+            timed = timed && !s.sunk && !expired;
         }
         timed = timed && (!wd.restFuse || s.fuse < wd.fuse || Vector3Length(s.vel) < 1);
         if (timed && wd.restFuse && s.fuse == wd.fuse) emit(GameEvent::Hallelujah, s.pos, -1, s.weapon);  // at rest: the choir, then the blast
         if (timed && (s.fuse -= DT) < DT / 2) boom = true;  // n s = exactly 60 n ticks, whatever the float drift
         // off the map a shot flies on until it falls into the sea
-        bool gone = (wd.kind == Kind::Homing && s.fuse >= HOMING_LIFE) || s.pos.x < -100 || s.pos.z < -100 || s.pos.x > W + 100 || s.pos.z > W + 100;
+        bool gone = expired || (wd.kind == Kind::Homing && s.fuse >= HOMING_LIFE) || s.pos.x < -100 || s.pos.z < -100 || s.pos.x > W + 100 || s.pos.z > W + 100;
         if (boom && bomber) {  // flies off
         } else if (boom && wd.kind == Kind::Scouser) {  // W4M: pops and drops its catch, empty it bursts harmlessly
             emit(GameEvent::Boom, s.pos, -1, s.weapon);

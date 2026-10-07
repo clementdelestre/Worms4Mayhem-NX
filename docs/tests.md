@@ -230,8 +230,9 @@ and the HUD art (`warmHud`, behind the loading screen) still load on first use.
 Voxels stored per 32³ chunk (`Bricks`, docs/sim.md "Movement and collisions"), the exact land's cell bits per chunk, the `.vox`
 deflated per chunk, the `.cells` with dynamic-Huffman deflate, ranked list codes and byte-plane heightmap, the `.thin` deflated
 (docs/maps.md, docs/w4m/formats.md §22). Content unchanged: `map_bench all` (tests/map_bench.cpp: density, materials, exact
-land lists, thin cells in x, y, z order) gives the same 221 hashes before and after the reimport; ai_check and mission_check
-print the same results (the AI's `samples` count and every outcome).
+land lists, thin cells in x, y, z order) gave the same 221 hashes before and after that reimport; ai_check and mission_check
+printed the same results (the AI's `samples` count and every outcome). The later reimport with W4M's land sampler (end of this section)
+changes the land, so its hashes differ by design.
 
 Desktop, warm cache, `map_bench` (2 runs after; voxels = `Terrain::voxelBytes`, terrain = `Terrain::bytes` once meshed):
 
@@ -255,6 +256,10 @@ navgrid 1)`, `MEM: malloc in use 443 MB, RSS 534; known: terrain 75`. ai_check p
 413.7, 397.9, 475.7, 423.9 ms per turn before, 435.4, 434.1, 437.0, 434.3 after; worst tick 1.9-2.5 ms before, 1.5-4.9 after
 (the spread of both is the machine's). A carve's first change in a chunk copies its shared block (32 KB): arabian's first 16
 carves 0.06 -> 0.29 ms each, the next 16 0.07.
+
+After the sampler pieces (docs/w4m/formats.md §23, 2026-10-07) [ours, `Terrain::load` log]: the 221 maps hold `.vox` 118.6, `.cells` 416.7, `.thin` 10.3 MB
+(545.7 in all), the maps directory 596 MB; exact land (`SharpLand::bytes`) NoRoomForError 25.7 -> 40.0 MB (10 352 -> 36 098 hexahedra),
+Multi_TheWindyWizard 24.9 -> 31.0, Deathmatch3 26.4 -> 30.5. A cell is up to 4 pieces plus the whole cell kept for its normals.
 
 Switch estimate (7x CPU, SD 9-23 MB/s from swlog5) [assumed until a log confirms]: NoRoomForError's terrain 576 -> ~80 MB of
 malloc (1335 -> ~840 MB in use); its MAP step vox 472 ms -> ~0.15-0.25 s (1.2 MB read, 3 cores decoding), cells 360 ms ->
@@ -426,6 +431,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkRopeShots` | Ninja.NumShots: 5 launches a turn; the hook catches a crate, which swings about the worm's feet at the rope's length while reeled in and out; jump lets go. |
 | `checkRope` | Ninja rope in the open air: the hook angle and length, the yaw kept, gravity's first pull, the body on the circle, a damped swing past the bottom, the release velocity; the stick's swing (0x571820 thresholds); reel at 10 m/s within MinLength / MaxLength; a wrap round a bar and its unwrap; a bounce off a worm's collider. |
 | `checkWaterShots` | Payload water: a Bazooka skims (SkimDamping, set on the Radius plane); a Grenade splashes, is disarmed at SinkDepth, sinks at 4..5 m/s without a blast and goes at Water.ExpiryDepth; a homing missile homing only splashes. |
+| `checkSeaTurn` | A payload that meets the sea leads to the next turn within 40 s for each family (Bazooka, Grenade, Cluster Grenade, Sheep, Super Sheep, Homing Missile, Airstrike, Fatkins, Donkey, Old Woman, Poison Arrow) fired from a platform, and one born under the disarm plane is gone within 30 s (Water.ExpiryDepth). |
 | `checkArrowFalls` | A stuck Poison Arrow whose land is carved falls again and detonates at its first stop's time. |
 | `checkScouser` | Inflatable Scouser: swallows a worm, floats it up, pops and drops it. |
 | `checkGasCloud` | Gas canister leaves an 8 s cloud that poisons every worm within 5 m. |

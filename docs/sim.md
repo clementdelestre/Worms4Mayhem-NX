@@ -307,9 +307,11 @@ damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack lan
 Imported maps carry `<map>.cells` (format: docs/w4m/formats.md §22): for every voxel cell (0.25 or 0.5 m) the surface crosses, the ordered list of the
 primitives reaching it [ours]. The sim reads that land exactly; so does the mesh in listed cells (docs/maps.md "Land mesh").
 
-- Primitives: a W4M poxel cell (`HEX`, a convex hexahedron: its 12 triangle planes, a twisted one bounded by its box too) with the mask of
+- Primitives: a W4M poxel cell or a piece of one (`HEX`, a convex hexahedron: its 12 triangle planes, a twisted one bounded by its box too;
+  W4M's sampler cuts a cell's corners and rounds its top, docs/w4m/formats.md §23, so a cell is up to 4 pieces) with the mask of
   its planes that touch the cell, the heightmap patch (`HM`, bilinear over the grid columns), and the edits: carve spheres (`SPHERE`) and
-  weld boxes (`BOX`) [ours; geometry data, docs/w4m-formats.md "Conversion to our grid"].
+  weld boxes (`BOX`) [ours; geometry data, docs/w4m-formats.md "Conversion to our grid"]. A piece's normal is a face of its whole cell
+  (`hexFace`: that cell is in the file, in no list), the one the ray came in by, as W4M 0x46a070 (formats.md §23) [disasm].
 - Density in a listed cell (`eval`): start at −0.5 (air), then in order: a cell or the heightmap is a union (max), a carve a subtraction
   (min with the distance to the sphere), a weld a union; clamped ±0.5 m. A cell's value is its nearest masked plane (+1e-5 m so land wins
   ties) [ours]. The normal is the deciding primitive's: a cell's plane, the heightmap's slope, the sphere's radius, the box's face.
@@ -348,8 +350,9 @@ API for a mesher (dual contouring), all on a listed cell `c` (`mixed(c)`; cell i
 
 ### Movement against W4M, measured
 
-A scratch harness (not in the repo) rebuilds W4M's land exactly: the cells and heightmap of tools/w4m-maps, before voxelization, in map
-metres [data]. On that land it runs W4M's rules (docs/w4m/physics.md §5 / §11) [disasm]:
+A scratch harness (not in the repo) rebuilds W4M's land from the whole cells and the heightmap of tools/w4m-maps, before voxelization, in map
+metres [data]; that land is the one before W4M's sampler was decoded (docs/w4m/formats.md §23: corners cut, EdgeFalloff tops), so the figures below
+rank our functions on it, not on W4M's own surface. On that land it runs W4M's rules (docs/w4m/physics.md §5 / §11) [disasm]:
 
 - the foot rays and the Ballistic cast, with float hits on the air side (0x468490's last empty sample, 1e-4 m here);
 - the 0x59ef90 normal over the hits within 1 unit, and the start cell's open face for a ray starting in land;
@@ -470,6 +473,7 @@ BombletMin / MaxSpeed); Weapon Factory weapons get kWeaponFactoryWeapon / Homing
 - Crossing Water.Level + Radius: a skim (v × damping, never for bomblets) or a splash (`GameEvent::Splash`, `fx` = SplishFx WXP_WaterSmallSplash on a skim, else the weapon's `splash` (SplashFx), at 2 units over the surface); set on that plane either way.
 - Crossing Water.Level − SinkDepth: `Projectile::sunk` (checksummed): speed capped at 5 m/s, xz × k², vy = −max(4, |vy| k), k = speed / 5;
   no acceleration, no fuse, no blast; any contact or Water.ExpiryDepth (absolute, `Terrain::WATER` − 10 m) removes it.
+- Crossing Water.ExpiryDepth without having sunk (a payload born under the disarm plane, bomblets of a blast in the shallows): removed at once, no blast, no fuse (the third plane of 0x582050, slot 21) [disasm, ours: `wet` returns true].
 - A homing missile while homing only splashes at Water.Level. Walking payloads (old woman, scouser) keep their own sinking (0x594002);
   the sheep (W4M JumpingPayload) and the walks-first super sheep use these planes.
 - Water events for the other bodies (`GameEvent::Splash` / `Pop` with `fx`, docs/w4m/render.md "Water effects"): a worm starting to drown (WXP_WaterSplash, `Game::drown`), a drowned worm's death blast (`Pop` WXP_WormDrownPopSplash and the blast's WXP_Explosion_Small, `Game::deathBlast`), a crate or target crate under Water.Level (WXP_WaterSmallSplash, 1 unit absolute), a mine (WXP_WaterSplash); a drum none. Heights: `surfaceY`.

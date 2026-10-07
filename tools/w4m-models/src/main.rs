@@ -474,7 +474,7 @@ fn apply(m: &M4, p: [f32; 3], w: f32) -> [f32; 3] { std::array::from_fn(|i| m[i]
 // Translation, rotation quaternion (x, y, z, w), scale of an affine matrix without shear.
 fn decompose(m: &M4) -> ([f32; 3], [f32; 4], [f32; 3]) {
     let col = |j: usize| [m[0][j], m[1][j], m[2][j]];
-    let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-8);
+    let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-30);
     let mut s = [len(col(0)), len(col(1)), len(col(2))];
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
@@ -648,7 +648,8 @@ impl Scene {
                 }
             };
             let v3 = |ty: u32, r: [f32; 3]| -> [f32; 3] { std::array::from_fn(|k| val(ty, k, r[k])) };
-            let size = |r: [f32; 3]| -> [f32; 3] { std::array::from_fn(|k| val(0x904, k, val(0x104, k, r[k]))) };
+            // a scale keyed 0 (Base's wrists) stays 1e-6: the baked matrix keeps its rotation, which layer clips add to
+            let size = |r: [f32; 3]| -> [f32; 3] { std::array::from_fn(|k| { let v = val(0x904, k, val(0x104, k, r[k])); if v.abs() < 1e-6 { 1e-6f32.copysign(v) } else { v } }) };
             match x.t(gr.xf) {
                 "XJointTransform" => {
                     let f = fl::<15>(d, 3);
@@ -847,7 +848,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     // W4M: 20 units per metre, mesh node at Position + (0, 3, 0) units (WXWormGraphicEntity 0x5a00b0)
     let norm = if feet { mul(&sc([0.05; 3]), &tr([0.0, 3.0, 0.0])) } else if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
-    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate
+    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend", "Payload_Spawn"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0)
     // Blend: the worm's WormPoseManager control node (arm modes in Translate.x/y, head/eye mode in Rotate.y)
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();

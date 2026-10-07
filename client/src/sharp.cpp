@@ -92,7 +92,8 @@ bool SharpLand::load(const std::string &path) {
     return on;
 }
 
-// a convex cell's planes; flags (bit t triangle kept, 12 + t flipped, 24 twisted) as the importer decided them, < 0: decided here
+// a convex cell's planes; flags (bit t triangle kept, 12 + t flipped, 24 twisted, 25.. its distance back to its W4M cell) as the
+// importer decided them, < 0: decided here
 uint32_t SharpLand::cell(const Vector3 *c, int64_t flags) {
     Vector3 cen{}, lo = c[0], hi = c[0];
     for (int k = 0; k < 8; k++) cen = Vector3Add(cen, Vector3Scale(c[k], 0.125f)), lo = Vector3Min(lo, c[k]), hi = Vector3Max(hi, c[k]);
@@ -113,11 +114,13 @@ uint32_t SharpLand::cell(const Vector3 *c, int64_t flags) {
         for (int k = 0; k < 8; k++) twisted |= planes[q].x * c[k].x + planes[q].y * c[k].y + planes[q].z * c[k].z - planes[q].w > 1e-4f;
     if (twisted)
         for (Vector4 q : {Vector4{1, 0, 0, hi.x}, {-1, 0, 0, -lo.x}, {0, 1, 0, hi.y}, {0, -1, 0, -lo.y}, {0, 0, 1, hi.z}, {0, 0, -1, -lo.z}}) planes.push_back(q);
-    return (uint32_t)hexP0.size() - 1;
+    const uint32_t id = (uint32_t)hexP0.size() - 1;
+    hexFace.push_back(flags >= 0 ? id - (uint32_t)(flags >> 25) : id);  // the importer writes a piece's distance back to its cell
+    return id;
 }
 
 bool SharpLand::inside(uint32_t hex, Vector3 p) const {
-    const uint32_t end = hex + 1 < hexP0.size() ? hexP0[hex + 1] : (uint32_t)planes.size();
+    const uint32_t end = planeEnd(hex);
     for (uint32_t q = hexP0[hex]; q < end; q++)
         if (planes[q].x * p.x + planes[q].y * p.y + planes[q].z * p.z - planes[q].w > 1e-5f) return false;
     return true;
@@ -249,7 +252,17 @@ float SharpLand::eval(Vector3 p, size_t c, Vector3 *nrm, const Vector3 *dir) con
         uint32_t k = act & KIND, id = act & ID;
         if (act == ~0u) {}
         else if (k == HEX) {
-            const Vector4 *pl = &planes[hexP0[id]];
+            const uint32_t face = hexFace[id];
+            const Vector4 *pl = &planes[hexP0[face]];
+            if (face != id) {  // a piece of a rounded cell: W4M reports the face of the whole cell (0x46a070), not the rounded surface
+                actMask = (uint32_t)((1ull << (planeEnd(face) - hexP0[face])) - 1);
+                float nearest = 1e30f;
+                for (uint32_t m = actMask; m; m &= m - 1) {
+                    const uint32_t q = __builtin_ctz(m);
+                    const float v = pl[q].w - (pl[q].x * p.x + pl[q].y * p.y + pl[q].z * p.z);
+                    if (v < nearest) nearest = v, sub = q;
+                }
+            }
             for (float best = 1e30f; dir && actMask; actMask &= actMask - 1) {  // the latest entry: least depth over approach speed
                 const uint32_t q = __builtin_ctz(actMask);
                 const float den = pl[q].x * dir->x + pl[q].y * dir->y + pl[q].z * dir->z;

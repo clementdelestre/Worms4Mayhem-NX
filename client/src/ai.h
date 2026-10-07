@@ -7,6 +7,7 @@
 // Planning is a state machine sliced over frames by a work budget (W4M 80 cost units per frame); the plan never depends on the slicing.
 struct Ai {
     Input think(const Game &g);
+    static int firstContact(const Game &g, const Projectile &s);  // ticks until a ballistic shot's first contact (land, worm, fuse, water), -1 none in 10 s
     bool striking() const { return mode == Mode::Act && plan.weapon >= 0 && targeted(WEAPONS[plan.weapon].kind); }  // seen from the Blimp
 
     // rank: score x taste; origin: index in origins (-1: re-aimed where the worm stands); view: the Blimp yaw a strike is called with

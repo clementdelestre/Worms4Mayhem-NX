@@ -16,6 +16,7 @@ struct SharpLand {
     bool on = false;
     std::vector<Vector4> planes;  // n, d: n.p - d <= 0 inside
     std::vector<uint32_t> hexP0;  // per W4M cell (HEX id): its first plane
+    std::vector<uint32_t> hexFace;  // per HEX id: the whole W4M cell its normals come from (a piece of a rounded cell: that cell; else itself)
     std::vector<float> top;       // heightmap top per grid column (m), NaN none; empty without a heightmap
     std::vector<Vector4> sph;     // carve spheres: c, r
     std::vector<Vector3> box;     // weld boxes: c, half pairs
@@ -25,7 +26,7 @@ struct SharpLand {
 
     size_t bytes() const {
         return planes.capacity() * sizeof(Vector4) + sph.capacity() * sizeof(Vector4) + box.capacity() * sizeof(Vector3) + top.capacity() * 4 +
-               (hexP0.capacity() + key.capacity() + val.capacity() + pool.capacity()) * 4 + bits.capacity() * sizeof(bits[0]) +
+               (hexP0.capacity() + hexFace.capacity() + key.capacity() + val.capacity() + pool.capacity()) * 4 + bits.capacity() * sizeof(bits[0]) +
                std::count_if(bits.begin(), bits.end(), [](const auto &b) { return !b.empty(); }) * 4096;
     }
     bool load(const std::string &path);  // .cells "W4C2" (docs/w4m/formats.md "Exact land")
@@ -46,6 +47,7 @@ struct SharpLand {
     uint32_t add(const Bricks<signed char> &d, const Vector3 *c);
     void drop(const std::vector<uint32_t> &hexes);  // those W4M cells leave every list (Land.ClearCoded)
     bool inside(uint32_t hex, Vector3 p) const;
+    uint32_t planeEnd(uint32_t hex) const { return hex + 1 < hexP0.size() ? hexP0[hex + 1] : (uint32_t)planes.size(); }
 
 private:
     uint32_t cell(const Vector3 *c, int64_t flags);

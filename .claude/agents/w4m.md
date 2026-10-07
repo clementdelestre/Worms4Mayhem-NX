@@ -16,6 +16,8 @@ The user wants it identical to the real W4M. Report to the coordinator in French
 - Never assume a value. No deviation of our own: anything W4M lacks goes, except user-requested ones (sky-view A/B/hold-L
   controls, swapped sticks). A deviation forced by our voxel terrain may stay only with a precise written justification.
 - A bug on one case: audit the sibling cases, fix once in the shared function, no per-case guards.
+- Clean code, no hacks: fix the root cause, never patch a caller, never add a magic threshold to hide a symptom. If the real
+  fix is larger than planned, do it properly and say so in the report.
 
 ## Finish before reporting
 - Do not report while an item of your task is still assumed / unverified / not done. Trace it, fix it, then report.

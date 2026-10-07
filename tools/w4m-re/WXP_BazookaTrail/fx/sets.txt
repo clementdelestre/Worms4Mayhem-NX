@@ -1,0 +1,17 @@
+mesh Landmine -
+mesh Particle.WXPMesh1 WXM_DefSource
+mesh Particle.WXPMesh2 WXM_DefSource
+mesh Particle.WXPMesh4 WXM_DefSource
+mesh Particle.WXPMesh6 WXM_DefSource
+mesh Particle.WXPMesh7 WXM_DefSource
+mesh Particle.WXPMesh8 DChargeCLSource
+sprite Particle.Fade
+sprite Particle.Rain
+sprite Particle.RainSplash
+sprite Particle.TrailSprite_W
+sprite Particle.WXSprite1
+sprite Particle.WXSprite15
+sprite Particle.WXSprite3
+sprite Particle.WXSprite4
+sprite Particle.Whiteout
+sprite Weapon.Trail

@@ -1012,25 +1012,25 @@ void event(const GameEvent &e, Color dirt) {
     }
 }
 
-void trail(const Projectile &s, float dt, Vector3 wind) {
+void trail(const Projectile &s, Vector3 at, float dt, Vector3 wind) {
     const WeaponDef &d = WEAPONS[s.weapon];
     float age = 0, best = 9;  // emitter clock: carried from the same shot of the previous frame
     for (const Seen &q : seenPrev)
         if (q.weapon == s.weapon && q.child == s.child && Vector3DistanceSqr(q.p, s.pos) < best) best = Vector3DistanceSqr(q.p, s.pos), age = q.age + dt;
     seen.push_back({s.pos, s.weapon, s.child, age});
     if (d.name == "Holy Hand Grenade" && rnd() < dt * 16)  // WXP_HolyHG_Trails: crosses left floating behind
-        add({s.pos, {rnd(-0.2f, 0.2f), rnd(0.1f, 0.4f), rnd(-0.2f, 0.2f)}, 0, rnd(1.8f, 2.2f), 0.35f, 0.05f, 0, rnd(-1, 1), -0.1f, 1, {255, 240, 200, 230}, CROSS, false});
+        add({at, {rnd(-0.2f, 0.2f), rnd(0.1f, 0.4f), rnd(-0.2f, 0.2f)}, 0, rnd(1.8f, 2.2f), 0.35f, 0.05f, 0, rnd(-1, 1), -0.1f, 1, {255, 240, 200, 230}, CROSS, false});
     if (d.name == "Starburst") {  // rocket: WXP_Wep_StarburstRocket flames + orange glow; stars: blue trail + cyan glow
         float v = Vector3Length(s.vel);
         if (!s.child && d.fuse - s.fuse < 2) return;  // the rocket's effect starts on Starburst.FuseLit, 2000 ms in (0x588cba)
-        add({s.pos, {}, 0, 0.06f, s.child ? 0.9f : 0.75f, 0.6f, 0, 0, 0, 0, s.child ? Color{120, 230, 255, 255} : Color{255, 77, 0, 255}, GLOW, true});
-        if (s.child && v > 0.5f) streaks.push_back({s.pos, Vector3Scale(s.vel, -1 / v), fminf(v * 0.15f, 2.5f), 0.3f, TRAIL_B});
+        add({at, {}, 0, 0.06f, s.child ? 0.9f : 0.75f, 0.6f, 0, 0, 0, 0, s.child ? Color{120, 230, 255, 255} : Color{255, 77, 0, 255}, GLOW, true});
+        if (s.child && v > 0.5f) streaks.push_back({at, Vector3Scale(s.vel, -1 / v), fminf(v * 0.15f, 2.5f), 0.3f, TRAIL_B});
         int alive = 0;
         for (const Particle &q : ps) alive += q.ramp == R_STARBURST;
         if (dt > 0)  // WXP_StarBurstRocketFlames: SpawnFreq 1 ms < frame, so one batch of NumSpawn 2 per update; pool MaxParticles 200
             for (int i = 0; i < 2 && alive++ < 200; i++) {
                 float sz = rnd(2.5f, 5.5f) / 20;
-                Particle q = {s.pos, {rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f)}, 0, rnd(0.3f, 0.7f), sz, 0, 0, rnd(-1, 1), 0, 0, WHITE, PUFF, false};
+                Particle q = {at, {rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f), rnd(-0.2f, 0.2f)}, 0, rnd(0.3f, 0.7f), sz, 0, 0, rnd(-1, 1), 0, 0, WHITE, PUFF, false};
                 q.ramp = R_STARBURST;
                 add(q);
             }
@@ -1045,7 +1045,7 @@ void trail(const Projectile &s, float dt, Vector3 wind) {
     Vector3 fx{};
     Models::fxLocator(homing ? "homing" : "bazooka", &fx);
     float hv = sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z);
-    Vector3 tail = Vector3Add(s.pos, Vector3Transform(fx, MatrixMultiply(MatrixRotateX(-atan2f(s.vel.y, hv)), MatrixRotateY(atan2f(s.vel.x, s.vel.z)))));
+    Vector3 tail = Vector3Add(at, Vector3Transform(fx, MatrixMultiply(MatrixRotateX(-atan2f(s.vel.y, hv)), MatrixRotateY(atan2f(s.vel.x, s.vel.z)))));
     // batches due this frame: one per SpawnFreq (a 20 ms logic tick at most, 0x5bab20) while age < EmitterLifeTime
     auto batches = [&](float freq, float life) {
         auto n = [&](float t) { return t < 0 ? 0 : (int)(fminf(t, life) / freq) + (t < life); };

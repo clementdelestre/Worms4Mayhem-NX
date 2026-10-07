@@ -53,27 +53,33 @@ impl Land {
     }
 }
 
-// hexes: poxel cell corners, grid units; top: heightmap per grid column, grid units (NaN none); q: the .vox densities,
-// whose signs at grid points away from the importer's band are made exact (dq: the band's value)
-pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, String) {
+// hexes: cell pieces, grid units; whole[i]: the cell piece i was cut from (None: it is the cell), stored once for normals and in no list.
+// top: heightmap per grid column (NaN none); q: the .vox densities, signs made exact beyond the band (dq). Returns each piece's file index.
+pub fn build(hexes: &[[V3; 8]], whole: &[Option<[V3; 8]>], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, String, Vec<usize>) {
     let mut planes: Vec<[f32; 4]> = Vec::new();
-    let mut boxes = Vec::new();  // per hexahedron: first plane, plane count, lo, hi (m)
+    let mut boxes = Vec::new();  // per hexahedron: first plane, plane count, lo, hi (m), listed in cells
     let (mut twisted, mut out) = (0, Vec::new());
-    for c in hexes {
+    let (mut hex_ids, mut parent) = (Vec::new(), None::<([V3; 8], usize)>);
+    // one record; the client rebuilds the planes from flags: bit t triangle kept, 12 + t flipped, 24 twisted, 25.. distance back to its whole cell
+    let mut emit = |c: &[V3; 8], cell: u32, planes: &mut Vec<[f32; 4]>, boxes: &mut Vec<(usize, usize, V3, V3, bool)>, listed: bool| {
         let p = c.map(|v| v.map(|a| a * VOX));
         let cen = p.iter().fold([0.0f32; 3], |s, v| [s[0] + v[0] * 0.125, s[1] + v[1] * 0.125, s[2] + v[2] * 0.125]);
         let lo = p.iter().fold(p[0], |m, v| [0, 1, 2].map(|i| m[i].min(v[i])));
         let hi = p.iter().fold(p[0], |m, v| [0, 1, 2].map(|i| m[i].max(v[i])));
         let p0 = planes.len();
-        let mut flags = 0u32;  // the client rebuilds the planes without deciding: bit t triangle kept, 12 + t flipped, 24 twisted
+        let mut flags = cell << 25;
+        let mut first = None;  // a face's first triangle plane: the second is dropped when the face is flat within 0.1 mm
         for (t, tri) in FACES.iter().flat_map(|f| [[f[0], f[1], f[2]], [f[0], f[2], f[3]]]).enumerate() {
+            if t % 2 == 0 { first = None; }
             let n = cross(sub(p[tri[1]], p[tri[0]]), sub(p[tri[2]], p[tri[0]]));
             let l = dot(n, n).sqrt();
             if l < 1e-6 * VOX * VOX { continue; }
             let n = n.map(|v| v * (1.0 / l));
             let d = dot(n, p[tri[0]]);
+            if t % 2 == 1 && first.is_some_and(|(a, b): (V3, f32)| (dot(a, p[FACES[t / 2][3]]) - b).abs() < 1e-4) { continue; }
             let flip = dot(n, cen) - d > 0.0;
             flags |= 1 << t | (flip as u32) << (12 + t);
+            if t % 2 == 0 { first = Some((n, d)); }
             planes.push(if flip { [-n[0], -n[1], -n[2], -d] } else { [n[0], n[1], n[2], d] });
         }
         // a twisted cell's planes reach past its corners: bounded by its box too
@@ -84,13 +90,21 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
         }
         for v in p { for a in v { out.extend(a.to_le_bytes()); } }
         out.extend(flags.to_le_bytes());
-        boxes.push((p0, planes.len() - p0, lo, hi));
+        boxes.push((p0, planes.len() - p0, lo, hi, listed));
+        boxes.len() - 1
+    };
+    for (c, w) in hexes.iter().zip(whole) {
+        if let Some(w) = w {
+            if parent.map_or(true, |p| p.0 != *w) { parent = Some((*w, emit(w, 0, &mut planes, &mut boxes, false))); }
+        }
+        let id = emit(c, w.map_or(0, |_| (boxes.len() - parent.unwrap().1) as u32), &mut planes, &mut boxes, true);
+        hex_ids.push(id);
     }
     // (cell << 32 | op, plane mask): every cell each primitive reaches
     let mut pairs: Vec<(u64, u32)> = Vec::new();
     let span = |a: f32, b: f32, n: usize| ((a - 1e-4) / VOX).floor().max(0.0) as usize..=(((b + 1e-4) / VOX).floor() as i64).min(n as i64 - 2) as usize;
-    for (h, &(p0, np, lo, hi)) in boxes.iter().enumerate() {
-        if hi[0] < 0.0 || hi[1] < 0.0 || hi[2] < 0.0 { continue; }
+    for (h, &(p0, np, lo, hi, listed)) in boxes.iter().enumerate() {
+        if !listed || hi[0] < 0.0 || hi[1] < 0.0 || hi[2] < 0.0 { continue; }
         for z in span(lo[2], hi[2], nz()) { for y in span(lo[1], hi[1], ny()) { for x in span(lo[0], hi[0], nx()) {
             let mut mask = 0u32;
             let sep = planes[p0..p0 + np].iter().enumerate().any(|(k, pl)| {
@@ -195,7 +209,7 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
     for v in codes { varint(&mut cs, v); }
     let has_top = land.top.iter().any(|t| !t.is_nan());
     let mut b = Vec::new();
-    for n in [hexes.len(), if has_top { nx() * nz() } else { 0 }, cells.len(), nl as usize, lists.len(), cs.len()] { b.extend((n as u32).to_le_bytes()); }
+    for n in [boxes.len(), if has_top { nx() * nz() } else { 0 }, cells.len(), nl as usize, lists.len(), cs.len()] { b.extend((n as u32).to_le_bytes()); }
     b.extend(out);
     if has_top { for k in 0..4 { b.extend(land.top.iter().map(|v| v.to_le_bytes()[k])); } }  // byte planes: the exponents pack
     b.extend(lists);
@@ -204,7 +218,7 @@ pub fn build(hexes: &[[V3; 8]], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, 
     f.extend((b.len() as u32).to_le_bytes());
     f.extend(deflate(&b));
     let msg = format!("{} exact cells ({} twisted hexahedra), {fixed} signs fixed, {} KB", cells.len(), twisted, f.len() / 1024);
-    (f, msg)
+    (f, msg, hex_ids)
 }
 
 fn varint(out: &mut Vec<u8>, mut v: u32) {

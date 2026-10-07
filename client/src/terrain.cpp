@@ -669,8 +669,9 @@ Vector3 Terrain::startNormal(Vector3 p, size_t c, Vector3 dir) const {
         const uint32_t k = o[i] & SharpLand::KIND, id = o[i] & SharpLand::ID;
         if (k != SharpLand::HEX) continue;
         if (!sharp.inside(id, p)) { i++; continue; }
-        uint32_t p0 = sharp.hexP0[id];
-        const uint32_t p1 = id + 1 < sharp.hexP0.size() ? sharp.hexP0[id + 1] : (uint32_t)sharp.planes.size();
+        const uint32_t face = sharp.hexFace[id];  // the whole W4M cell of a rounded piece
+        uint32_t p0 = sharp.hexP0[face];
+        const uint32_t p1 = sharp.planeEnd(face);
         Vector3 best = Vector3Negate(dir);
         for (float bestD = 1e30f; p0 < p1; p0++) {
             const Vector4 &pl = sharp.planes[p0];

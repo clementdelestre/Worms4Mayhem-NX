@@ -114,13 +114,15 @@ struct Outcome {
 };
 
 // Point copy of Game::stepShots for a ballistic or homing (aim != null) projectile; false when lost.
-static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float wind, bool child, Vector3 &out, const Vector3 *aim = nullptr) {
+// first: stop at the first contact (land, worm, fuse or water) and give its tick, as W4M FindFirstEvent (0x576580)
+static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float wind, bool child, Vector3 &out, const Vector3 *aim = nullptr, int *first = nullptr) {
     bool impact = child || wd.fuse == 0;
     float fuse = aim ? 0 : g.fuseOf(wd);  // the team's current fuse: the AI never changes it
     uint64_t touching = ~0ull;
     for (int i = 0; i < 600; i++) {
         uint64_t now = 0;
         const Vector3 v0 = v;
+        auto at = [&](bool r) { if (first) *first = i + 1; return r; };
         if (aim && (fuse += DT) > Game::HOMING_LOCK && fuse < Game::HOMING_LOCK + Game::HOMING_TIME) v = Game::homingStep(v, p, *aim);
         else v.y -= g.gravity() * (child && wd.kind != Kind::Airstrike ? 1 : wd.grav) * DT;
         if (g.windy(int(&wd - WEAPONS.data()))) v.x += wind * Game::WIND_ACCEL * DT, v.z += g.windZ * Game::WIND_ACCEL * DT;
@@ -129,20 +131,27 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
             Vector3 np = p + d * (1.0f / n);
             out = np;
             if (g.terrain.solid(np)) {
-                if (impact) return true;
+                if (impact || first) return at(true);
                 v = Vector3Reflect(v, g.terrain.normal(np)) * wd.bounce;
                 break;
             }
             p = np;
             uint64_t m = touches(g, np);
             now |= m;
-            if (impact && wd.kind != Kind::Donkey && (m & ~touching)) return true;
+            if ((impact || first) && wd.kind != Kind::Donkey && (m & ~touching)) return at(true);
         }
         touching = now;
-        if (!impact && (!wd.restFuse || fuse < wd.fuse || Vector3Length(v) < 1) && (fuse -= DT) < DT / 2) return true;
-        if (outside(g, p)) return false;
+        if (!impact && (!wd.restFuse || fuse < wd.fuse || Vector3Length(v) < 1) && (fuse -= DT) < DT / 2) return at(true);
+        if (outside(g, p)) return at(false);
     }
     return false;
+}
+
+int Ai::firstContact(const Game &g, const Projectile &s) {
+    int n = -1;
+    Vector3 out;
+    fly(g, WEAPONS[s.weapon], s.pos, s.vel, g.wind, s.child, out, nullptr, &n);
+    return n;
 }
 
 // Copy of the sheep/old woman walk up to step `to`: its closest approach to `e` so far.

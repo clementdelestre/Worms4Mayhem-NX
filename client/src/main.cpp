@@ -164,6 +164,7 @@ static const char *objectModel(const Object &o) {
 }
 // W4M Sentry Gun mesh: the owner's AlliedGroup 0..3 plays its colour clip (table 0x590b54; turret 0x56b2d0, held 0x590356)
 static const char *teamClip(int team) { static const char *const C[] = {"Red", "Blue", "Green", "Yellow"}; return (unsigned)team < 4 ? C[team] : nullptr; }
+static Vector3 launchAt{};  // W4M Weapon.GetLaunchPosition: where the active worm's held weapon was last drawn
 static Vector3 viewEye{};  // the render camera, for every pass (PiP, shadows) as W4M picks the mesh once
 // W4M PayloadGraphicEntity: Payload.LogicallyArmed loops AnimArm MineOn from 0 (0x57b150), a dud's Payload.Disarm lets the pass end
 // (0x6a0470 loop off); past 300 units from the camera it shows LandmineLow instead (0x57d9dd), which never plays it
@@ -605,6 +606,21 @@ static void toolFx(const Game &g, float dt) {
     }
 }
 
+// W4M payload factory 0x585330: a payload a worm fires is drawn from Weapon.GraphicalLaunchLocation, its offset from the logical
+// launch fading to 0 at the first contact (Parabolic FindFirstEvent 0x576580) or after Stage1Duration (Homing 0x560dfd)
+static void markLaunches(Game &g) {
+    bool fired = false;
+    for (const GameEvent &e : g.events) fired |= e.kind == GameEvent::Fire && e.worm >= 0;
+    for (Projectile &s : g.shots) {
+        if (s.shownT0 >= 0) continue;
+        s.shownT0 = s.shownEnd = g.clock;
+        const Kind k = WEAPONS[s.weapon].kind;
+        if (!fired || s.child || (k != Kind::Shell && k != Kind::Mine && k != Kind::Homing)) continue;
+        int n = k == Kind::Homing ? msTicks(1250) : Ai::firstContact(g, s);  // WEAPTWK Stage1Duration 1250 ms
+        s.shownOff = Vector3Subtract(launchAt, s.pos), s.shownEnd = n > 0 ? g.clock + n : -1;
+    }
+}
+
 // W4M worm: team-tinted, animation picked from the sim state (aim clips map pitch to their timeline).
 static bool drawWorm(const Game &g, const Worm &w, float clock) {
     int i = int(&w - g.worms.data()), st = -1;
@@ -676,13 +692,13 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     if (i == g.current && g.icarus == 2 && w.alive) clip = "FlyRedBull", t = a.air, loop = true;  // RedBullWings wield 0x595437: the worm's clip too
     if (Vector3 bm; ly && Models::blend("worm", clip, t, loop, ly, &bm)) Acting::headMode(i, bm.z);  // read by the next Acting::update
     // WeaponAccessoryEntity 0x597630 / 0x594b50, each camera update: with the drawn camera within 10 units of the active worm's
-    // Position + 10 units, FP at 1 (the body 30 units back, the arms kept), AimFP in the Aim slot, FPX / FPY / FPZ at the offset + 1
+    // Position + 10 units, weapon in hand or not, FP at 1 (the body 30 units back, the arms kept), AimFP in the Aim slot, FPX / FPY / FPZ at the offset + 1
     Models::Layers fpl = ly ? *ly : Models::Layers{};
-    if (held && i == g.current && Vector3Distance(viewEye, {w.pos.x, w.pos.y - Game::R + 0.5f, w.pos.z}) < 0.5f) {
+    if (i == g.current && Vector3Distance(viewEye, {w.pos.x, w.pos.y - Game::R + 0.5f, w.pos.z}) < 0.5f) {
         Vector3 o = fpOffset(weaponDef(g.weapon).name);
         const char *add[4] = {"FP", "FPX", "FPY", "FPZ"};
         const float at[4] = {0, o.x + 1, o.y + 1, o.z + 1};
-        std::copy(add, add + 4, fpl.add), std::copy(at, at + 4, fpl.addT), ly = &fpl, aim = "AimFP";
+        std::copy(add, add + 4, fpl.add), std::copy(at, at + 4, fpl.addT), ly = &fpl, aim = aim ? "AimFP" : nullptr;
     }
     Color tint = Acting::tint(i, ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f));
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
@@ -694,7 +710,9 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     Matrix root = MatrixMultiply(MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)), MatrixTranslate(p.x, p.y, p.z));
     if (!Models::draw("worm", p, w.yaw, roll, tint, clip, t, loop, aim, aimT, ly)) return false;
     Matrix m;
-    if (held && Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly)) {
+    bool loc = Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly);
+    if (loc && i == g.current) launchAt = Vector3Transform({}, MatrixMultiply(m, root));  // no held mesh: the worm's WeaponLocator (0x594630)
+    if (held && loc) {
         m = MatrixMultiply(m, root);
         // the mesh plays the worm's clip of the same name at its time and weight (0x594d40); WAE_Mechanical plays DrawFlood,
         // Windup and FireBow itself (0x58d89f, 0x58dc1a, 0x58dcd1), WAE_Standard TargetSelected (0x590ae0); one-shots hold their end (assumed)
@@ -706,8 +724,11 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         else if (!strcmp(held, "hold_homing") && a.lockT >= 0 && !a.act.clip) mc = "AimLockHomingMissile", mt = a.lockT, once = true;
         float ml = Models::clipLength(held, mc);
         Models::pick(teamClip(w.team));  // WAE_Standard Init: the held Sentry Gun's team clip
-        Models::draw(held, !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
+        const Matrix hm = !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m;
+        Models::draw(held, hm, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
         Models::pick(nullptr);
+        // held mesh: its Payload_Spawn node, else its origin (0x594ed0)
+        if (Matrix j; i == g.current) launchAt = Vector3Transform(Models::joint(held, "Payload_Spawn", ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt, false, &j) ? Vector3{j.m12, j.m13, j.m14} : Vector3{}, hm);
     }
     bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
     if (tool && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE,
@@ -1009,7 +1030,8 @@ static void levelFx(const Game &g) {
     }, g.cfg.mission && g.cfg.mission->rainProb >= 0 ? g.cfg.mission->rainProb : t.rainProb);
 }
 
-static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
+static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now) {
+    const Vector3 P = s.shown(now);
     const WeaponDef &d = WEAPONS[s.weapon];
     const std::string &n = d.name;
     if (s.child && d.kind == Kind::SuperSheep) return true;  // starburst stars: particles only (Fx::trail)
@@ -1018,7 +1040,7 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     if (d.kind == Kind::Abduction) return true;  // the saucer: drawUfo()
     if ((n == "Fatkins Strike" || s.child) && s.stage > 0) return true;  // still in the bomber; a bomblet before its spawn
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0)
-        return Models::draw("airstrike", s.pos, atan2f(s.vel.x, s.vel.z), atan2f(s.vel.y, sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z)), WHITE, "Spin", clock);  // AnimTravel
+        return Models::draw("airstrike", P, atan2f(s.vel.x, s.vel.z), atan2f(s.vel.y, sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z)), WHITE, "Spin", clock);  // AnimTravel
     if (d.kind == Kind::Airstrike && d.fuse > 0 && drawBovine(s, clock)) return true;
     const char *m = n == "Fatkins Strike" ? "fatkins" : n == "Poison Arrow" ? "arrow" : n == "Dynamite" ? "dynamite"
                   : n == "Gas Canister" ? "gas" : d.kind == Kind::SuperSheep ? "supersheep" : d.kind == Kind::OldWoman ? "oldwoman"
@@ -1029,16 +1051,16 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t) {
     if (!d.model.empty()) m = d.model.c_str();  // Weapon Factory
     Vector3 v = d.stick > 0 && s.stage ? s.aim : s.vel;  // a stuck arrow keeps the heading it hit with
     float h = sqrtf(v.x * v.x + v.z * v.z), yaw = atan2f(v.x, v.z);
-    if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, s.pos, yaw, 0, WHITE, "Run", clock);
+    if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, P, yaw, 0, WHITE, "Run", clock);
     if (d.kind == Kind::OldWoman)  // AnimIntermediate "Steal" while she stands after a theft (Payload.PlayIntermediateAnim 0x5933c2)
-        return Models::draw(m, {s.pos.x, s.pos.y - 0.3f, s.pos.z}, yaw, 0, WHITE, s.stage > 0 ? "Steal" : "Walk",
+        return Models::draw(m, {P.x, P.y - 0.3f, P.z}, yaw, 0, WHITE, s.stage > 0 ? "Steal" : "Walk",
                             s.stage > 0 ? (msTicks(800) - s.stage) * Game::DT : clock, s.stage <= 0);
-    if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, s.pos, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
-    if (d.kind == Kind::Scouser) return Models::draw(m, s.pos, clock * 0.7f);
-    if (dropped(d)) return Models::draw(m, restOn(t, s.pos, Models::bottom(m)), 0);  // set down standing, it doesn't tumble
-    if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, Vector3Length(s.vel) < 1 ? restOn(t, s.pos, Models::bottom(m)) : s.pos, clock * 6, clock * 4);
-    if (d.stick > 0 && s.stage) return Models::draw(m, s.pos, yaw, atan2f(v.y, h), WHITE, "Hit", d.stick - s.fuse, false);  // AnimImpact, played once on Payload.Impact
-    return Models::draw(m, s.pos, yaw, atan2f(v.y, h));
+    if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, P, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
+    if (d.kind == Kind::Scouser) return Models::draw(m, P, clock * 0.7f);
+    if (dropped(d)) return Models::draw(m, restOn(t, P, Models::bottom(m)), 0);  // set down standing, it doesn't tumble
+    if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, Vector3Length(s.vel) < 1 ? restOn(t, P, Models::bottom(m)) : P, clock * 6, clock * 4);
+    if (d.stick > 0 && s.stage) return Models::draw(m, P, yaw, atan2f(v.y, h), WHITE, "Hit", d.stick - s.fuse, false);  // AnimImpact, played once on Payload.Impact
+    return Models::draw(m, P, yaw, atan2f(v.y, h));
 }
 
 // malloc heap in use / reserved (newlib mallinfo on Switch, glibc mallinfo2), MB. Switch: UsedMemorySize is the whole heap libnx
@@ -1330,7 +1352,7 @@ int main(int argc, char **argv) {
     bool cpuAll = argc > 1 && (!strcmp(argv[1], "--cpu") || bench), shot = !cpuAll && !uiShot && !netbot && (argc > 1 || FileExists(DATA_DIR "shot"));
     int shotWeapon = argc > 2 ? atoi(argv[2]) : 0;  // --shot N: use weapon N
     // --aimshot <weapon> [map] [fine|shoulder|fire]: shot mode, weapon in hand, held in aim mode (shoulder: the default view), aim.png at frame 60;
-    // fire: FIRE held from frame 41 to 99, aim mode kept after the shot
+    // fire: FIRE held from frame 41 to 99, aim mode kept after the shot; W4NX_PITCH=<deg>: that pitch from frame 31; W4NX_SHOTEND: last frame
     bool aimShot = shot && argc > 2 && !strcmp(argv[1], "--aimshot"), aimFire = aimShot && argc > 4 && !strcmp(argv[4], "fire");
     // --aimseq <weapon> [map]: aim mode from frame 40 to 90, aimseq_NNN.png around the entry and the exit
     bool aimSeq = shot && argc > 2 && !strcmp(argv[1], "--aimseq");
@@ -1474,6 +1496,7 @@ int main(int argc, char **argv) {
         auto flying = [&] { return game.phase == Phase::Flying || (game.phase == Phase::Settle && !game.shots.empty()); };  // retreat can end mid-flight
         bool was = flying();
         game.step(in);
+        markLaunches(game);
         tick++, stepped++;
         if (REPLAYS && !playing) rec.inputs.push_back(in);
         if (was && !flying()) shotDone = true, shotTick = tick;
@@ -2009,6 +2032,7 @@ int main(int argc, char **argv) {
         }
         if (aimShot && Controls::targetView(game) && frame > 30)  // Blimp: pan, yaw, then tilt down
             in.buttons |= Input::TARGET | (frame >= 45 ? Input::PITCH : 0), in.walk = frame < 45 ? 127 : 0, in.turn = frame < 45 ? 40 : 0, in.aim = frame >= 45 ? -60 : 0;
+        if (aimShot && frame > 30 && getenv("W4NX_PITCH")) game.worms[game.current].pitch = (float)atof(getenv("W4NX_PITCH")) * DEG2RAD;  // that aim pitch, degrees
         if (aimBench && frame >= 60) in = Input{}, in.buttons = Controls::targetView(game) ? Input::TARGET | (frame == 61 && getenv("W4NX_LOCK") ? Input::FIRE : 0) : 0;
         if (irSwallow) {
             if (in.buttons & (Input::FIRE | Input::JUMP)) in.buttons &= ~(Input::FIRE | Input::JUMP);
@@ -2208,7 +2232,10 @@ int main(int argc, char **argv) {
             game.terrain.drawObjects(clock, true, 2, &at);
             for (const Worm &w : game.worms)
                 if (Models::visible(w.pos, 2)) (w.alive || w.counted > 0) ? (void)drawWorm(game, w, clock) : drawGrave(game, w), at.push_back({w.pos.x, w.pos.y, w.pos.z, 2});
-            for (const Projectile &s : game.shots) drawShot(s, clock, game.terrain), at.push_back({s.pos.x, s.pos.y, s.pos.z, 3});
+            for (const Projectile &s : game.shots) {
+                const Vector3 sp = s.shown(game.clock);
+                drawShot(s, clock, game.terrain, game.clock), at.push_back({sp.x, sp.y, sp.z, 3});
+            }
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) drawObject(game, o), at.push_back({o.pos.x, o.pos.y, o.pos.z, 2});
         });
@@ -2227,7 +2254,7 @@ int main(int argc, char **argv) {
             game.terrain.setView(pipView.position);
             game.terrain.draw();
             for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawFaded(w, &w == &cur ? curOp : 1);
-            for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain)) DrawSphere(s.pos, 0.2f, DARKGRAY);
+            for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain, game.clock)) DrawSphere(s.shown(game.clock), 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) drawObject(game, o);
             Fx::drawWater(pipView, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
@@ -2282,7 +2309,7 @@ int main(int argc, char **argv) {
         drawUfo(pause.open ? 0 : dt);
         for (const Projectile &s : game.shots) {
             const WeaponDef &d = WEAPONS[s.weapon];
-            if (drawShot(s, clock, game.terrain)) continue;
+            if (drawShot(s, clock, game.terrain, game.clock)) continue;
             Vector3 f = Vector3Normalize({s.vel.x, 0, s.vel.z});
             switch (d.kind) {
             case Kind::Sheep:
@@ -2292,7 +2319,7 @@ int main(int argc, char **argv) {
             case Kind::Donkey: DrawCube(s.pos, 1.0f, 1.4f, 0.7f, GRAY); break;
             case Kind::Airstrike: DrawCylinderEx(s.pos, Vector3Add(s.pos, Vector3Scale(Vector3Normalize(s.vel), -1)), 0.15f, 0.15f, 6, MAROON); break;
             default:
-                DrawSphere(s.pos, s.child ? 0.15f : 0.2f, s.child ? ORANGE : d.radius >= 5 ? GOLD : d.clusters ? YELLOW : d.fuse > 0 ? DARKGREEN : DARKGRAY);
+                DrawSphere(s.shown(game.clock), s.child ? 0.15f : 0.2f, s.child ? ORANGE : d.radius >= 5 ? GOLD : d.clusters ? YELLOW : d.fuse > 0 ? DARKGREEN : DARKGRAY);
             }
         }
         dudFx(game.objects);
@@ -2326,7 +2353,7 @@ int main(int argc, char **argv) {
         game.terrain.drawFringe();
         lap(T_SKY);
         float fxDt = pause.open ? 0 : dt;
-        for (const Projectile &s : game.shots) Fx::trail(s, fxDt, {game.wind, 0, game.windZ});
+        for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt, {game.wind, 0, game.windZ});
         for (const Game::Gas &c : game.gas)  // W4M WXP_GasCloudDelayed: green puffs over the cloud, ~4 a second
             if (fxDt > 0 && GetRandomValue(0, 14) == 0)
                 Fx::puff(Vector3Add(c.pos, {GetRandomValue(-40, 40) / 10.0f, GetRandomValue(0, 15) / 10.0f, GetRandomValue(-40, 40) / 10.0f}), {game.wind, 0.2f, game.windZ}, 5, 2, 3.5f, {120, 200, 60, 110});
@@ -2501,7 +2528,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == (aimFire ? 140 : 60)) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") ? uiEnd : 600))) break;
+        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : aimFire ? 140 : 60)) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") ? uiEnd : 600))) break;
     }
     if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();

@@ -17,7 +17,7 @@ void unload();
 void clear();
 void event(const GameEvent &e, Color dirt);
 void fireworks(Vector3 centre, float radius, float top);  // victory show (W4M GameOverLogicEntity: 4 s wait, 5 s) over Land.Center, Radius, MaxHeight
-void trail(const Projectile &s, float dt, Vector3 wind);  // call once per frame per live projectile; wind: (cos, 0, sin) x Wind.Speed / Wind.MaxSpeed
+void trail(const Projectile &s, Vector3 at, float dt, Vector3 wind);  // call once per frame per live projectile, at: where it is drawn (Projectile::shown); wind: (cos, 0, sin) x Wind.Speed / Wind.MaxSpeed
 void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire = false);  // one ambient particle (rises, slows down)
 void wingTrail(Vector3 p);  // one puff of W4M WXP_PlaneWingTrails (Bomber.EffectName)
 void donkeyAriel(Vector3 at);  // W4M WXP_CrateSpawnLARGE rings where the Concrete Donkey appears

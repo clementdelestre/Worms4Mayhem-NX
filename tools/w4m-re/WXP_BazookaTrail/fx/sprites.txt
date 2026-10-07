@@ -1,0 +1,10 @@
+Particle.Fade 6 7 0 0 1 1
+Particle.Rain 6 1 0 0 1 1
+Particle.RainSplash 6 1 0 0 1 1
+Particle.TrailSprite_W 6 7 0 0 1 1
+Particle.WXSprite1 6 1 0 0 1 1
+Particle.WXSprite15 6 7 0 0 1 1
+Particle.WXSprite3 6 7 0 0 1 1
+Particle.WXSprite4 6 7 0 0 1 1
+Particle.Whiteout 6 1 0 0 1 1
+Weapon.Trail 6 1 0 0 1 1

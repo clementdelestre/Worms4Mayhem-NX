@@ -167,6 +167,14 @@ struct Projectile {
     int prey = -1;   // scouser: the worm it carries; old woman: the last worm she robbed
     uint64_t touching = ~0ull;  // W4M 0x582200 / 0x581dc0: last tick's contacts (worm bits, 63 = target) are not hits; all of them on the first tick
     bool sunk = false;  // W4M +0x6f: under the disarm plane, disarmed, sinking to Water.ExpiryDepth
+    // render only (main.cpp, not in the checksum): W4M Weapon.GraphicalLaunchLocation - launch point, fading out linearly
+    // by tick shownEnd (0x585cf2, 0x57de60, 0x57f640); shownT0 -1: not seen by the renderer yet
+    Vector3 shownOff{};
+    int shownT0 = -1, shownEnd = -1;
+    Vector3 shown(int now) const {
+        float k = shownEnd > shownT0 ? 1 - fminf((float)(now - shownT0) / (shownEnd - shownT0), 1) : 1;
+        return {pos.x + shownOff.x * k, pos.y + shownOff.y * k, pos.z + shownOff.z * k};
+    }
 };
 
 // Battlefield object. Crate: weapon = contents (-1 = health). Mine: fuse < 0 idle, else counting down.
