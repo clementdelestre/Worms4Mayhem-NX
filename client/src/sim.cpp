@@ -2776,8 +2776,9 @@ void Game::step(const Input &raw) {
     bool over = !cfg.mission && left <= 1;
     switch (phase) {
     case Phase::Aim:  // a script ends the turn through its Timer_* / Worm_Damaged_Current callbacks (stdlib EndTurn)
-        if (script) { if (!hotSeat && !scriptMovieCamera(*this) && --timer <= 0) scriptEvent(*this, "Timer_TurnTimedOut"); }  // 0x50f383
-        else if (!w.alive || selfHurt || over || (!hotSeat && --timer <= 0)) { phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
+        // 0x586e75: a powered weapon's FirePressed posts Timer.EndTurn (0x549ad0), clearing the turn-running flag +0x6a until the shot
+        if (script) { if (!hotSeat && power <= 0 && !scriptMovieCamera(*this) && --timer <= 0) scriptEvent(*this, "Timer_TurnTimedOut"); }  // 0x50f383
+        else if (!w.alive || selfHurt || over || (!hotSeat && power <= 0 && --timer <= 0)) { phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
         break;
     case Phase::Flying:
         if (shots.empty()) phase = Phase::Retreat;

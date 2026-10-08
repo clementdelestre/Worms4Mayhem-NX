@@ -2548,7 +2548,9 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
         int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
         if (!w.alive) continue;  // blown up, or drowned: W4M shows no label afloat
         float dist = Vector3DotProduct(Vector3Subtract(w.pos, cam.position), fwd);
-        if (dist < 0.5f || &w == &cur || Vector3Distance(w.pos, cam.position) < 1.2f) continue;  // 0x5fd4e0: the active worm never has a label
+        bool popup = std::any_of(popups.begin(), popups.end(), [&](const Popup &p) { return p.worm == i; });
+        bool label = &w != &cur && Vector3Distance(w.pos, cam.position) >= 1.2f;  // 0x5fd4e0: the active worm never has a label
+        if (dist < 0.5f || !(label || popup)) continue;
         // 0x5fb170: feet (W4M Position) + 25 units up + 4 along the view's up, then HealthOffset 4 / NameOffset 9 x lens zoom x text3dK
         float q = tanf(cam.fovy * 0.5f * DEG2RAD) / 0.48f, kq = q * text3dK(dist);
         Vector3 base = Vector3Add(Vector3Add(w.pos, {0, 1.25f - Game::R, 0}), Vector3Scale(camUp, 0.2f));
@@ -2560,20 +2562,23 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
             Vector2 pc, ph;
             float rot;
             pipPlace(pipShow, pipFull, pc, ph, rot);
-            if (fabsf(sp.x - pc.x) < ph.x + 30 && fabsf(sp.y - pc.y) < ph.y + 30) continue;
+            if (fabsf(sp.x - pc.x) < ph.x + 30 && fabsf(sp.y - pc.y) < ph.y + 30) label = false;
         }
         Color c = TEAM_COLORS[w.team % 4];
         const Color POISON = {120, 220, 60, 255};
-        text3dAt(TextFormat("%d", hp), hpAt, 0.25f, i == counting && hpt[i].poison ? POISON : c, cam, fwd);  // WormHealthNameEntity 0x5fdb70: Text3Ds in FE.Font
-        text3dAt(wormName(w.team, k), nameAt, 0.25f, c, cam, fwd);
+        if (label) {
+            text3dAt(TextFormat("%d", hp), hpAt, 0.25f, i == counting && hpt[i].poison ? POISON : c, cam, fwd);  // WormHealthNameEntity 0x5fdb70: Text3Ds in FE.Font
+            text3dAt(wormName(w.team, k), nameAt, 0.25f, c, cam, fwd);
+        }
         for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
             if (p.worm != i) continue;
             float a = Clamp(1 - (p.age - 0.5f) / 0.5f, 0, 1), pop = 1 + 0.25f * fmaxf(0, 1 - p.punch / 0.08f) + 0.3f * sinf(fminf(p.age / 0.25f, 1) * PI);
             float h = fmaxf(36, s * 2.6f) * (1 + fminf(abs(p.amount), 100) * 0.005f) * pop, bw = h * 0.3f;
             Color pc = p.amount > 0 || p.poison ? Color{150, 235, 90, 255} : Color{255, 244, 228, 255};
             const char *n = TextFormat("%d", abs(p.amount));
-            float y = sp.y - s * 2.4f - h - fmaxf(0, p.age - 0.25f) * 60;
-            float x0 = sp.x + bw * 0.6f - digits(n, sp.x + bw * 0.6f, y, h, 1, true, Fade(pc, a)) / 2;
+            float y = Clamp(sp.y - s * 2.4f - h - fmaxf(0, p.age - 0.25f) * 60, 0, GetScreenHeight() - h);
+            float dw = digits(n, 0, -h * 2, h, 1, true, BLANK), cx = Clamp(sp.x + bw * 0.6f, bw * 1.25f + dw / 2, GetScreenWidth() - dw / 2);  // whole counter on screen
+            float x0 = cx - digits(n, cx, y, h, 1, true, Fade(pc, a)) / 2;
             Rectangle bar = {x0 - bw * 1.25f, y + h * 0.42f, bw, h * 0.14f};  // the font has no sign glyphs
             for (int k = 0; k < (p.amount > 0 ? 2 : 1); k++) {
                 Rectangle r = k ? Rectangle{bar.x + bw / 2 - bar.height / 2, bar.y - bw / 2 + bar.height / 2, bar.height, bw} : bar;
@@ -2581,7 +2586,7 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
                 DrawRectangleRec(r, Fade(pc, a));
             }
         }
-        if (&w == &cur && g.phase == Phase::Aim && !g.jetting) {  // bobbing "this one" arrow
+        if (label && &w == &cur && g.phase == Phase::Aim && !g.jetting) {  // bobbing "this one" arrow
             float b = sinf(tick * 0.12f) * 4;
             if (!sprite("wormlocarrow", {sp.x, sp.y - s * 2 - 18 + b}, 0.22f, {64, 120}, 0, c)) DrawTriangle({sp.x - 8, sp.y - s * 2 - 30 + b}, {sp.x, sp.y - s * 2 - 18 + b}, {sp.x + 8, sp.y - s * 2 - 30 + b}, c);
         }

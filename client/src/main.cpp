@@ -630,11 +630,10 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     WormAnim a = i < (int)wormAnims.size() ? wormAnims[i] : WormAnim{};
     float speed = sqrtf(w.vel.x * w.vel.x + w.vel.z * w.vel.z), t = clock;  // shared timeline: idle worms reuse one skinned pose
     const char *clip = "Base", *held = nullptr, *aim = nullptr;
-    bool loop = true, actLoop = true;
+    bool loop = true;
     bool tool = i == g.current && (g.roped || g.jetting || (g.chute && a.air > 0));
     Models::Layers lay;  // W4M pose layers: emote face, LookAt head, GestureAt arms
-    float actT = 0;
-    const char *acted = Acting::clip(g, i, clock, &actT, &actLoop, &lay);
+    Acting::layers(g, i, clock, &lay);
     Models::Layers dying;  // dying: its Death scene gestures only, no face, head, arm or eye layer
     for (int k = 0; k < 2; k++) dying.act[k] = lay.act[k], dying.actT[k] = lay.actT[k], dying.actW[k] = lay.actW[k];
     const Models::Layers *ly = !w.alive ? nullptr : w.hp <= 0 ? &dying : &lay;  // drowned: FallDrown alone
@@ -685,7 +684,6 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     } else if (a.vaultT < Models::clipLength("worm", "Vault")) clip = "Vault", t = a.vaultT, loop = false;  // kWE 9: Walking -> Vaulting
     else if (a.moving || (a.walk > 0 && !a.drawn)) clip = "Walk", t = a.walk;  // a drawn weapon shows at once on stopping (0x5b1bed), the walk ease is skipped
     else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0 && !(i == g.current && g.phase == Phase::Aim)) clip = "Land", t = a.land, loop = false;
-    else if (acted) clip = acted, t = actT, loop = actLoop;  // W4M acting: gestures, emotes
     else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up
     else if (g.phase == Phase::GameOver && w.team == g.winner) clip = "Victorious_Grin";
     else if (aimNow && aimPose()) {
@@ -1767,6 +1765,11 @@ int main(int argc, char **argv) {
             if (a == Ui::Frontend::Replays) replayFiles = listReplays(DATA_DIR "replays"), replaySel = 0, screen = Screen::Replays;
             if (a == Ui::Frontend::SinglePlayer) {
                 missionMenu.tab = front.missionTab, missionMenu.shown = -1, openMissions();
+                if (!missionMenu.tab) {  // Story opens on the next chapter: the first story mission not done, else the last
+                    int k = 0;
+                    for (const MissionSpec &m : missions)
+                        if (m.kind == "mission" && (missionMenu.sel[0] = k++, !progress.get(m.id).done)) break;
+                }
                 // 0x4c3b53: a team with no completed story mission gets the Meet the Professor movie before WXFE.Story; the seen flag is ours (user-requested)
                 if (!missionMenu.tab && !progress.storyIntro && !progress.storyDone(missions) && Movie::has("Meet_The_Professor")) Movie::start("Meet_The_Professor"), screen = Screen::Movie;
             }

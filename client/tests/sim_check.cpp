@@ -1356,6 +1356,24 @@ static void checkEventCameras() {
         }
         assert(v[0] > 17 && v[0] < 19.5f && fabsf(v[1] - 32.5f) < 0.1f);
     }
+    {  // W4M 0x586e75: a powered weapon's FirePressed posts Timer.EndTurn, so the turn clock stops while the power bar charges (the round clock runs on)
+        Game g;
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+        Worm &a = g.worms[g.current];
+        g.weapon = weaponNamed("Bazooka");
+        g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
+        auto hold = [&] { a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true; };
+        Input in;
+        in.buttons = Input::FIRE;
+        hold(), g.step(Input{});
+        int t0 = g.timer, c0 = g.clock;
+        hold(), g.step(Input{});
+        assert(g.timer == t0 - 1);
+        hold(), g.step(in);
+        int t1 = g.timer;
+        for (int i = 0; i < 20; i++) hold(), g.step(in);
+        assert(g.power > 0 && g.timer == t1 && g.clock == c0 + 22);
+    }
     {  // Starburst (W4M Detonate 0x588dd0): one blast, then Worm.Vapourize kills the rider
         Game g;
         g.start({29, 2, 1, "", 0}), g.hotSeat = 0;

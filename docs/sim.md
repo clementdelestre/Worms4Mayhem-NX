@@ -15,6 +15,7 @@ The sim runs at 60 Hz (`Game::DT`); W4M lengths are in units of 1/20 m. W4M runs
   10 ms → 1 tick, 30 ms → 2, 250 ms → 16 (W4M 260 ms), any multiple of 100 ms exact [disasm: the 20 ms tasks; the "at or past"
   test assumed for each timer]. The turn timers (TimerLogicEntity, 10 ms) are whole seconds in every scheme, weapon and mission script but two
   missions' `PostActivityTime` 10, 1 tick by either grain, so their 10 ms grain never shows [data: weapons.json, mission `.lub`].
+- **Turn clock while charging**: `Game::step` Aim does not count `timer` down while `power > 0` (the charge started on FirePressed); the round `clock` runs on. HUD digits read `timer`, so they freeze [W4M disasm 0x586ec0 -> 0x549ad0 Timer.EndTurn; docs/w4m/turn.md]. Local, CPU, network and replay turns share this path (`power` is sim state).
 - **Walking**: one W4M walk step (`Walk.Speed × 20 ms`, 1.225 units) on each tick in which a W4M frame ends (`Game::walkFrame`,
   5 ticks of 6), counted from the walk's first tick (`Game::walkTick`, the AI's `Mover::walkTick`), so a walk does not depend on
   when it starts: W4M's frame grid is fixed in game time, and its AI waits whole frames [disasm 0x5b0da0; the phase is ours]. A

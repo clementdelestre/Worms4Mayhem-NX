@@ -864,8 +864,8 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
     }
 }
 
-const char *Acting::clip(const Game &g, int i, float clock, float *t, bool *loop, Models::Layers *ly) {
-    if (i < 0 || i >= (int)actors.size()) return nullptr;
+void Acting::layers(const Game &g, int i, float clock, Models::Layers *ly) {
+    if (i < 0 || i >= (int)actors.size()) return;
     const Actor &a = actors[i];
     bool sick = g.worms[i].poison > 0 && g.worms[i].hp > 0;
     std::string emote = a.emote.empty() && sick ? "Ill" : a.emote;
@@ -873,7 +873,7 @@ const char *Acting::clip(const Game &g, int i, float clock, float *t, bool *loop
     static std::string keep[64];  // the c_str() handed out must outlive this call
     std::string &e = keep[i % 64];
     e = emote;
-    if (ly) {
+    {
         *ly = {};
         ly->face = face ? (has(face) ? face : nullptr) : e.c_str(), ly->faceT = clock + i * 1.3f;
         float A = poseA(a);
@@ -887,9 +887,6 @@ const char *Acting::clip(const Game &g, int i, float clock, float *t, bool *loop
         for (int k = 0; k < 2; k++) ly->lip[k] = a.mouth.clip[k] > 0 ? VISEME[a.mouth.clip[k]] : nullptr, ly->lipW[k] = a.mouth.w[k];
         ly->open = a.mouth.open;
     }
-    if (face) return nullptr;
-    *t = clock + i * 1.3f, *loop = true;
-    return e.c_str();
 }
 
 void Acting::speak(const Game &g, int worm, Audio::Voice v) { G = &g, line(worm, v); }
