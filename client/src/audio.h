@@ -88,6 +88,7 @@ void efmvLevel(const char *level);
 const Lip *efmvSpeech(const char *line, Vector3 at, int speaker);  // TriggerSpeech "*line": cuts the speaker's last line; null: no such event
 void efmvSfx(const char *name, bool looping, Vector3 at);  // TriggerSoundEffect: EFMV/<level>/<name>; one looping instance at a time
 void movie(bool playing);  // EFMV.Play: music out over 500 ms; EFMV.Terminated: the looping sfx stops, music back over 2000 ms
+void musicLevel(float g);  // W4M FMV: the frontend music at half (FrontEndService 0x726aa3) while a .wmv plays, 1 restores
 void narrator(int n);      // EFMV/Failures/Failures_Narrator_0n, n 1..5  // open the stream now (an SD read of ~40 ms on Switch); its next music() call takes it
 
 }  // namespace Audio

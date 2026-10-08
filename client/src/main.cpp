@@ -13,6 +13,7 @@
 #include "loading.h"
 #include "mission.h"
 #include "models.h"
+#include "movie.h"
 #include "net.h"
 #include "replay.h"
 #include "script.h"
@@ -1080,7 +1081,7 @@ static void memLine(const Game &game) {
     TraceLog(LOG_INFO, "MEM: malloc in use %.0f MB of %.0f reserved%s%.0f; known: terrain %.0f, textures %.0f, models %.0f = %.0f MB", used, arena, rss ? ", RSS " : "", rss, ter, tex, mod, ter + tex + mod);
 }
 
-enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading };
+enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading, Movie };
 
 // Match frames over W4NX_HITCH_MS (default 20) to log.txt with their section ms (20 lines per 10 s at most, plus the
 // window's worst frame), and every 10 s the sim ticks per frame histogram and the frame time spread.
@@ -1638,6 +1639,7 @@ int main(int argc, char **argv) {
                      (GetTime() - t) * 1000, misList, misPics);
             misFrames = 0;
         }
+        missionMenu.team = Ui::teamName(opt, 0);
         screen = Screen::Missions;
     };
     auto startMission = [&](int i, bool preStart = true) {
@@ -1663,8 +1665,11 @@ int main(int argc, char **argv) {
         if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
         if (REPLAYS && (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback"))) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
         if (REPLAYS && !strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
-        // missions | briefing | missionhud | missionend | missionpause | missionbrief [mission id]
-        if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "briefing") || !strcmp(uiShot, "movie")) openMissions(), missionMenu.brief = !strcmp(uiShot, "briefing"), missionMenu.shown = -100;
+        // missions | challenges | missionhud | missionend | missionpause | missionbrief [mission id]
+        if (!strncmp(uiShot, "mission", 7) || !strcmp(uiShot, "challenges") || !strcmp(uiShot, "movie") || !strcmp(uiShot, "storyintro")) openMissions(), missionMenu.tab = !strcmp(uiShot, "challenges"), missionMenu.shown = -100;
+        if (!strcmp(uiShot, "storyintro") && Movie::has("Meet_The_Professor")) Movie::start("Meet_The_Professor"), screen = Screen::Movie;  // the first Story launch
+        for (size_t i = 0, k = 0; argc > 3 && i < missions.size(); i++)  // [mission id]: that page
+            if ((missions[i].kind == "mission") == !missionMenu.tab) { if (missions[i].id == argv[3]) missionMenu.sel[missionMenu.tab] = (int)k; k++; }
         // movie <mission id> <Lua function>: that mission, its intro skipped, then the script function (PlayMidtroMovie, PlayOutroMovie)
         bool movieShot = !strcmp(uiShot, "movie");
         bool pauseShot = !strcmp(uiShot, "missionpause") || !strcmp(uiShot, "missionbrief");
@@ -1760,7 +1765,11 @@ int main(int argc, char **argv) {
             if (a == Ui::Frontend::Quit) break;
             if (a == Ui::Frontend::Replays && saver.joinable()) saver.join();  // the last match's file complete
             if (a == Ui::Frontend::Replays) replayFiles = listReplays(DATA_DIR "replays"), replaySel = 0, screen = Screen::Replays;
-            if (a == Ui::Frontend::SinglePlayer) missionMenu.tab = front.missionTab, missionMenu.brief = false, missionMenu.shown = -1, openMissions();
+            if (a == Ui::Frontend::SinglePlayer) {
+                missionMenu.tab = front.missionTab, missionMenu.shown = -1, openMissions();
+                // 0x4c3b53: a team with no completed story mission gets the Meet the Professor movie before WXFE.Story; the seen flag is ours (user-requested)
+                if (!missionMenu.tab && !progress.storyIntro && !progress.storyDone(missions) && Movie::has("Meet_The_Professor")) Movie::start("Meet_The_Professor"), screen = Screen::Movie;
+            }
             if (a == Ui::Frontend::QuickMatch) {  // you vs one level-2 CPU team on a random map, Standard scheme; opt untouched
                 GameConfig q = opt;
                 q.teams = 2, q.wormsPerTeam = 4, q.rules = 0, q.wormpot = 0, q.mission = nullptr, q.scheme = SCHEMES[0].s;
@@ -1807,6 +1816,21 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        if (screen == Screen::Movie) {
+            BeginDrawing();
+            ClearBackground(BLACK);
+            bool on = Movie::update();
+            if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
+                rlDrawRenderBatchActive();
+                Image img = LoadImageFromScreen();
+                ExportImage(img, uiShot == flagUi ? TextFormat(DATA_DIR "ui_%d.png", frame) : "ui.png");
+                UnloadImage(img);
+            }
+            EndDrawing();
+            if (uiShot && frame >= uiFrames.back()) break;
+            if (!on) progress.storyIntro = true, progress.save(DATA_DIR "progress.txt"), missionMenu.shown = -1, screen = Screen::Missions;
+            continue;
+        }
         if (screen == Screen::Missions) {
             BeginDrawing();
             Ui::background();
@@ -1829,7 +1853,7 @@ int main(int argc, char **argv) {
             EndDrawing();
             if (uiShot && frame >= uiFrames.back()) break;
             if (pick == -2) screen = Screen::Menu, front.screen = Ui::Frontend::Local;
-            else if (pick >= 0) missionMenu.brief = false, startMission(pick);
+            else if (pick >= 0) startMission(pick);
             continue;
         }
 

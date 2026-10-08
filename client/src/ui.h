@@ -33,6 +33,7 @@ extern int language;
 const char *tr(const char *key, const char *en, const char *fr = nullptr);
 void background();
 std::string teamName(const GameConfig &c, int team);
+std::string resultBanner(const Game &g);  // versus game-over text; empty in a mission or challenge (missionEnd shows the result)
 void mapHeads(const std::vector<std::string> &maps);  // any thread: reads the maps' json heads that mapTitle() and the previews use
 std::string mapTitle(const std::string &map);  // display name: W4M's level name, else from the file name
 const char *wormName(int team, int i);
@@ -154,7 +155,7 @@ void lanGames(const std::vector<LanGame> &games, int sel, const std::string &sta
 void room(const Net &net, const GameConfig &opt, bool lan, const std::string &status);
 // Single player (inside Begin/EndDrawing): Missions / Challenges list, then the briefing. Mission index to start, -1 none yet, -2 back.
 // shown: when the list / briefing appeared (-1: opening now); leaving: when its items started out; to: what follows them
-struct MissionMenu { int tab = 0, sel[2] = {}; bool brief = false; float shown = -1, leaving = -1; int to = -1; };
+struct MissionMenu { int tab = 0, sel[2] = {}; float shown = -1, leaving = -1; int to = -1; std::string team; };  // team: User.HumanTeamName
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p);
 // Mission over (drawn over the match): 0 nothing yet, 1 next mission, 2 retry, 3 back to the list
 int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best, bool hasNext);

@@ -164,6 +164,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     // Title screen diorama (Bundl06/10), raw units: island + wreck, cloud dome, seagull (flight path is its Location clip)
     ("frontend/title", "WX.Mesh.Title", 0.0, false, &[]),
     ("frontend/sky", "FRONTEND.Sky", 0.0, false, &[]),
+    ("storybook", "WX.Mesh.StoryBook", 0.0, false, &["Intro_Book", "Outro_Book"]),  // WXFE.Story's MESH Book
     ("seagull", "Particle.WXPMesh31", 0.0, false, &["WXM_SGull_WingFlap+WXM_SGull_Location"]),
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).

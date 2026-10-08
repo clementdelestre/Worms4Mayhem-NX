@@ -135,5 +135,19 @@ int main() {
         if (fe != feEv) printf("sfx %d: file %s / event %s\n", i, Audio::sfxFile(id), Audio::sfxEvent(id));
         assert(fe == feEv);
     }
+    {  // game-over text: versus only; a mission or challenge shows missionEnd's panel alone
+        static MissionSpec ms;
+        Game g;
+        g.start({7, 2, 2, "", 0});
+        g.phase = Phase::GameOver;
+        g.winner = -1;
+        assert(Ui::resultBanner(g) == "DRAW!");
+        g.winner = 1;
+        assert(Ui::resultBanner(g) == "Team 2 WINS!");
+        g.cfg.mission = &ms;
+        assert(Ui::resultBanner(g).empty());
+        g.winner = -1;
+        assert(Ui::resultBanner(g).empty());
+    }
     puts("ui_check ok");
 }

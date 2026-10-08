@@ -198,6 +198,28 @@ W4M side: docs/w4m/acting.md §19 "Speech, lip-sync, sound banks". Files: docs/i
   closed, O round, Cons teeth image 1); `W4NX_HIDDEN=1 W4NX_SHOTEND=900 ./worms4nx --ui missionhud MineAllMine` logs
   `AUDIO: EFMV MineMine_Player1_01 0.0 dB, lip 21 rows` per line (`ACTING: worm N speaks` at debug level).
 
+## Movies (.wmv) [ours; W4M side: docs/w4m/acting.md "FMV (.wmv)"]
+
+`Movie` (`client/src/movie.h`, `movie.cpp`) plays the six English story movies (Meet_The_Professor, Welcome, Camelot, WildWest,
+Arabian, Jurassic) imported by `tools/w4m-import` (`docs/import.md` "Movies") with the subtitle table of `tools/w4m-re/fmv.py`.
+
+- `assets/movies/<name>.mjpg`: "MJPG", u16 w, u16 h, u16 fps (640, 480, 25), then per frame u32 length + a baseline JPEG, read
+  sequentially. `<name>.ogg`: the audio (libvorbis q4, 48 kHz stereo). `subs.txt`: `<movie> <ms> <FETXT key>` rows and `<movie> hold <ms>`
+  (W4M `FMVSubTiles`, hold 5000 ms, 8000 for Welcome and Jurassic) [data]. Sizes: Meet_The_Professor 40.7 MB + 1.6 MB, Welcome 15, Camelot 23, WildWest 21,
+  Arabian 24, Jurassic 70 MB [ours].
+- `Movie::start(name)`: a worker thread reads and decodes (stb_image, JPEG only, static copy in movie.cpp: raylib's own build has JPG
+  off) the frames into a queue of at most 4 (3 bytes x 640 x 480 each), skipping without decoding the frames the clock has passed;
+  the ogg plays as a raylib music stream (updated by `update()`); `Audio::musicLevel(0.5)` halves the frontend music (W4M
+  FrontEndService 0x726aa3) until `stop()`. The clock is the wall clock from `start()` (audio and frames start together) [ours].
+- `Movie::update(dst = 0, rot = 0)`, once per frame inside BeginDrawing: shows the newest frame whose index <= clock x fps (late
+  frames dropped, never waits). dst zero: full screen, 4:3 picture with black bars, the subtitle drawn bottom centre
+  (`Ui::text`, 4% of the height, black shadow) [ours: W4M shows the movie in the `WXFE.MoviePlayer` film frame]; with a dst
+  rectangle (screen px) the picture is drawn there rotated by `rot` rad about its centre and the call site draws `subtitle()` in its
+  `MovieText` box (W4M: FE (-4, -138), 260 x 43). W4M maps the 4:3 frame on a 202 x 112.7 FE quad (rot 0.05 rad), i.e. stretched to 1.79.
+- Skip: Space / Esc / Enter or pad A / B: a press seen during the movie arms, the next release ends it (W4M QuitMovie Pressed arms,
+  Released skips). `update` returns false at the end of the file or on skip, after `stop()`.
+- Check: `make movie_check` (data checks, then a 1.5 s hidden playback; skipped when the movie is not imported).
+
 ## Voice lines [ours, per the coordinator]
 - A line is dropped while any line of the same voice bank still plays: no queue, no gap (`voice()` in audio.cpp).
 

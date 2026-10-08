@@ -379,6 +379,7 @@ End of game (GameLogicService 0x4fb880 tail 0x4fd27a): Mission / Challenge / Tut
   0 draw): state 0 on MostRecentlyActiveWorm (or the first active worm) until the count passes 4000 ms, input ignored; state 1 the orbit
   (unless Script.NoOrbitCamera) for 5000 ms offline (15000 online), any input (Input.SomeInputFrom) ends it; state 2 fades both sounds
   over 1000 ms, then GotoFrontEnd: about 10.06 s offline. Game time; the world and the scripts keep running (no pause message).
+- GameOverLogicEntity shows no result text of its own (its messages: EFMV.Start, FE.DeleteMouse, PiP.SlideOff, WXMsg.AnimDivide, HideInGameMenuBackground, KillAllPopUp, KillMenuNamed, GotoFrontEnd; docs/w4m/engine.md class table) [disasm]. A Mission / Challenge / Tutorial result is the front-end WXFE.WinMission / WinChallenge / WinTutorial screen only [data: frontend.md match flow].
 
 ### 23.10 Worms, triggers and crates the scripts drive (lot 2) [disasm unless tagged]
 

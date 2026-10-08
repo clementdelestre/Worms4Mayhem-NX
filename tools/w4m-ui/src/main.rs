@@ -22,6 +22,9 @@ const FE2: &[(&str, &str, usize, &str)] = &[
     ("Bundl06", "maya:file5/-1", 2, "art_network"),      // globe
     ("Bundl06", "maya:paint_bits/-1", 0, "art_myworms"), // brushes + paint (Mes Worms)
     ("Bundl474", "Nav Normal.tga", 0, "nav_normal"),     // 2x2: grenade, tick, back arrow, cross
+    ("Bundl474", "Nav ArrowPage.tga", 0, "nav_arrowpage"),  // Story / Challenges page arrows (kMT_NavArrow*)
+    ("Bundl474", "Nav Highlight.tga", 0, "nav_highlight"),
+    ("Bundl474", "Nav Disabled.tga", 0, "nav_disabled"),
     ("Bundl474", "watertestdiffuse.tga", 0, "sky/f_water01a"),   // FE.DAYWater, FE.DAYWaterNormal, FE.DAYWaterEnv: the title's water
     ("Bundl474", "watertestnormal.tga", 0, "sky/f_water01b"),
     ("Bundl474", "LightingMap_cam01.tga", 0, "sky/f_water01c"),

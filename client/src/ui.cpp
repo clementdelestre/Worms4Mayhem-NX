@@ -8,6 +8,7 @@
 #include "audio.h"
 #include "models.h"
 #include "frontbg.h"
+#include "lit.h"
 #include "loading.h"
 #include "raymath.h"
 #include "rlgl.h"
@@ -507,13 +508,15 @@ void unload() {
 #endif
 }
 
-// c2: bottom colour of a vertical gradient over the line height (W4M menu items)
-static void textG(const char *t, float x, float y, float size, Color c, Color c2, int align) {
+// c2: bottom colour of a vertical gradient over the line height (W4M menu items); edge: the outline (W4M Colour_Back);
+// pose: per drawn glyph (dy px, scale) of a W4M TextAnim
+static void textG(const char *t, float x, float y, float size, Color c, Color c2, int align, Color edge = {0, 0, 0, 255}, const std::vector<Vector2> *pose = nullptr) {
     float sp = fontLoaded ? 0 : size / 10;
     Vector2 m = MeasureTextEx(font, t, size, sp);
     Vector2 p = {roundf(x - m.x * align / 2), roundf(y)};
     float o = fmaxf(1.5f, size / 14);  // W4M text: black outline
-    Color k = {0, 0, 0, c.a};
+    Color k = edge;
+    k.a = (unsigned char)(edge.a * c.a / 255);
     // DrawTextEx() x6, but its linear glyph lookup and per-glyph batch checks run once per string
     struct G { float ox, oy; int g; };
     static std::vector<G> gs;
@@ -538,10 +541,15 @@ static void textG(const char *t, float x, float y, float size, Color c, Color c2
             rlColor4ub(v.r, v.g, v.b, v.a);
         };
         rlColor4ub(col.r, col.g, col.b, col.a);
-        for (const G &e : gs) {
+        for (size_t gi = 0; gi < gs.size(); gi++) {
+            const G &e = gs[gi];
             const Rectangle &r = font.recs[e.g];
             float x = q.x + e.ox + font.glyphs[e.g].offsetX * s - pad * s, y = q.y + e.oy + font.glyphs[e.g].offsetY * s - pad * s;
             float w = (r.width + 2 * pad) * s, h = (r.height + 2 * pad) * s, u0 = (r.x - pad) / W, v0 = (r.y - pad) / H;
+            if (pose && gi < pose->size()) {
+                float sc = (*pose)[gi].y, cx = x + w / 2, cy = y + h / 2 + (*pose)[gi].x;
+                w *= sc, h *= sc, x = cx - w / 2, y = cy - h / 2;
+            }
             float u1 = (r.x - pad + (r.width + 2 * pad)) / W, v1 = (r.y - pad + (r.height + 2 * pad)) / H;
             at(y), rlTexCoord2f(u0, v0), rlVertex2f(x, y);
             at(y + h), rlTexCoord2f(u0, v1), rlVertex2f(x, y + h);
@@ -871,55 +879,6 @@ static void menuEntry(const char *label, float cx, float cy, float size, float d
     rlPopMatrix();
 }
 
-// Bottom torn paper strip: scrolling ticker, version; back: bobbing back arrow (submenus)
-static void paperStrip(float t, bool back) {
-    const float y = 652;  // paper band y + 16 .. y + 80, flush with the bottom edge
-    Texture2D p = tex("fe2/paper_strip");
-    if (p.id) for (float x = 0; x < 1280; x += 255) DrawTexturePro(p, {0, 0, 256, 128}, {x, y, 256, 128}, {}, 0, WHITE);
-    else DrawRectangle(0, y + 16, 1280, 64, {246, 243, 232, 255}), DrawRectangle(0, y + 12, 1280, 4, BLACK);
-    const char *tick = tr("WXFE.TickerTapeDefault", "Worms4NX - fan-made homebrew                    ");
-    float w = textWidth(tick, 38) + 160;
-    for (float x = -fmodf(t * 90, w); x < 1280; x += w) text(tick, roundf(x), y + 28, 38, INK);  // whole pixels: no shimmer while it scrolls
-    if (!back) return;
-    Rectangle d = {16, 572 + 5 * sinf(t * 3), 96, 96};
-    Texture2D a = tex("fe2/nav_normal");
-    if (a.id) DrawTexturePro(a, {0, a.height / 2.0f, a.width / 2.0f, a.height / 2.0f}, d, {}, 0, WHITE);
-    else tri({d.x + 14, d.y + 52}, {d.x + 60, d.y + 22}, {d.x + 60, d.y + 82}, ORANGE);
-}
-
-static float backOut(float k) { k = Clamp(k, 0, 1) - 1; return 1 + 2.7f * k * k * k + 1.7f * k * k; }
-
-// W4M's Title Control spot: gold header and its underline, top left; x: the page's offset
-static void titleControl(const char *title, float x) {
-    float tw = textWidth(title, 34);
-    text(title, x + 44, 26, 34, GOLD_TOP);
-    if (!image("fe/title_underline", {x + 36, 62, tw + 24, 18})) DrawRectangle(x + 40, 66, tw + 10, 3, WHITE);
-}
-
-// Submenu page: curved blue panel (slides in from the left) with the title, its vertical watermark and an illustration
-// that pops in after it; p: 0 hidden .. 1 shown (the panel takes the first 0.7)
-static void subPanel(const char *title, const char *art, float t, float p) {
-    float x = (1 - easeOut(p / 0.7f)) * -820, pop = backOut((p - 0.3f) / 0.7f);
-    if (!image("fe/bluedivide", {x - 60, -40, 800, 800})) DrawCircleV({x - 260, 360}, 760, BLUE_PANEL);
-    rlPushMatrix();
-    rlTranslatef(x + 40, 700, 0);
-    rlRotatef(-90, 0, 0, 1);
-    text(title, 0, 0, 150, {255, 255, 255, 22});
-    rlPopMatrix();
-    titleControl(title, x);
-    Rectangle r = {x + 70, 140 + 8 * sinf(t * 1.6f), 400, 400};
-    rlPushMatrix();
-    rlTranslatef(r.x + r.width / 2, r.y + r.height / 2, 0);
-    rlRotatef(3 * sinf(t * 1.1f), 0, 0, 1);
-    rlScalef(pop, pop, 1);
-    if (!strcmp(art, "fe2/art_local") && tex(art).id) {  // the TV robot shows noise
-        float o = (float)((int)(t * 12) * 37 % 97);
-        DrawTexturePro(tex("fe2/art_local_static"), {o, o * 0.7f, 128, 128}, {-0.06f * r.width, -0.14f * r.height, 0.34f * r.width, 0.36f * r.height}, {}, 0, WHITE);
-    }
-    image(art, {-r.width / 2, -r.height / 2, r.width, r.height});
-    rlPopMatrix();
-}
-
 #ifdef __SWITCH__
 static const int MAIN_ITEMS = 5 - !REPLAYS;  // console games leave through HOME, no Quit entry
 #else
@@ -969,7 +928,7 @@ static float rowAppear(float in, float out, int i, float stagger = 0.05f) {
 // Bundl10 WXFrontend.Anim clips (docs/w4m/frontend.md §17): (s, value) keys per channel, translation in FE units (y up)
 struct Keys { const float (*k)[6] = nullptr; int n = 0; bool weighted = false; };
 template <int N> static constexpr Keys keys(const float (&k)[N][6], bool w) { return {k, N, w}; }
-struct FeClip { Keys sx, sy, tx, ty; };
+struct FeClip { Keys sx, sy, tx, ty, rz; };
 static const float K_SLIDEX[2][6] = {{0, 0, 0, 3.0723f, 0, 3.0723f}, {0.625f, 1, 1.0625f, 0, 1.0625f, 0}},
                    K_SPEECH[4][6] = {{0, 0, 1, 0, 0, 0}, {0.125f, 0.79053f, 0.00041008f, 1.4258f, 0.00027919f, 0.97021f},
                                      {0.45825f, 1, 0.28711f, -0.094971f, 0.031891f, 0.018967f}, {0.625f, 1, 0.17236f, -0.023331f, 0.17236f, -0.023331f}},
@@ -994,25 +953,246 @@ static const FeClip IN_SLIDEX = {keys(K_SLIDEX, true), {}, {}, {}}, IN_SPEECH = 
                     IN_TOOLTIP = {{}, keys(K_TOOLTIP, true), {}, {}}, OUT_SCALEY = {{}, keys(K_OUT_SCALEY, true), {}, {}},
                     IN_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_IN_X, true), keys(K_TITLE_IN_Y, false)},
                     OUT_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_OUT_X, true), keys(K_TITLE_OUT_Y, false)};
-static const float FE_PX = 1280 / 960.0f;  // FE units span 960 x 540
+// In_Prev / Out_Prev (the back button), In_SpringXY and Out_ScaleXY (the jar): scale XY and rotate Z keys, {time s, value, in tangent x, y, out tangent x, y}
+static const float K_IN_PREV_S[3][6] = {{0, 0, 0.083313f, 0.59961f, 0, 0}, {0.083313f, 0.59961f, 0.078003f, 0.2113f, 0, 1.1338f}, {0.4165f, 1, 0.33325f, 0, 0.33325f, 0}},
+                   K_IN_PREV_R[4][6] = {{0, -1.5703f, 0.0049934f, 0.056641f, 0.025528f, 1.9404f}, {0.375f, 0, 0.61523f, -0.047852f, 0, 0.0016317f},
+                                        {0.4165f, -0.0085526f, 0.041656f, -0.0085526f, 0.041656f, 0.0085526f}, {0.45825f, 0, 0.041656f, 0.0085526f, 1, 0}},
+                   K_OUT_PREV_S[3][6] = {{0, 1, 0.45044f, -0.14087f, 0.45044f, -0.14087f}, {0.25f, 0.48682f, 0.17102f, -1.1035f, 0.00016665f, 0}, {0.25f, 0, 0.00016665f, -0.48682f, 0, 0}},
+                   K_OUT_PREV_R[2][6] = {{0, 0, 0.375f, 0, 0.50049f, 0.13049f}, {0.375f, 0.52344f, 0.23511f, 0.94043f, 0, 0.0016317f}},
+                   K_SPRING[6][6] = {{-0.00016665f, 0, 0.00027776f, 0.99951f, 0, 0}, {0, 0.59961f, 0.94434f, 0.32764f, 0.94434f, 0.32764f},
+                                     {0.083313f, 1.0361f, 0.08844f, 0.99561f, 0.49951f, -0.86621f}, {0.125f, 0.9834f, 0.61475f, -0.78809f, 0.84668f, 0.53174f},
+                                     {0.16663f, 1.0098f, 0.84668f, 0.53174f, 0.97266f, -0.23035f}, {0.20825f, 1, 0.97266f, -0.23035f, 1, 0}},
+                   K_OUT_SCALEXY[3][6] = {{0, 1, 2.0762f, -0.0095673f, 0.45679f, -0.00078344f}, {0.24976f, 0.26685f, 0.055634f, -1.0742f, 0.00016665f, 0}, {0.25f, 0, 0.00016665f, -0.26685f, 0, 0}};
+static const FeClip IN_PREV = {keys(K_IN_PREV_S, true), keys(K_IN_PREV_S, true), {}, {}, keys(K_IN_PREV_R, true)},
+                    OUT_PREV = {keys(K_OUT_PREV_S, true), keys(K_OUT_PREV_S, true), {}, {}, keys(K_OUT_PREV_R, true)},
+                    IN_SPRINGXY = {keys(K_SPRING, false), keys(K_SPRING, false), {}, {}, {}}, OUT_SCALEXY = {keys(K_OUT_SCALEXY, true), keys(K_OUT_SCALEXY, true), {}, {}, {}};
+// FE units about the screen centre, y up: 500 tall at 720 px [observed: WXFE.Story / WXFE.Challenges against the real game; the 3D items are seen by
+// a camera 903.5 units from the z = 0 plane, FOV 0.54 rad: the plane is 500 tall there, the ToolTip strip and the book match]
+static const float FE_S = 720 / 500.0f;
+static const float FE_PX = 1280 / 960.0f;  // the in-game briefing popup's FE unit [assumed 960 x 540; the Story / Challenges pages measure 500 tall: FE_S]
 
 // A W4M menu item about its centre c: Anim_Incoming `in` once `delay` s passed since the screen showed (`since`), Anim_Outgoing
 // `out` once leaving (s, -1: not). A null clip (W4M None) takes rowAppear() slid by `slide` px. False: hidden; else rlPopMatrix() after.
 static bool feItem(Vector2 c, const FeClip *in, float delay, const FeClip *out, float since, float leaving, float slide = 0, int row = 0) {
     if (in && since < delay) return false;  // W4M parks the item off-screen until its delay is up (0x755a78)
     const FeClip *k = leaving >= 0 ? out : in;
-    float t = leaving >= 0 ? leaving : since - delay, sx = 1, sy = 1, tx = 0, ty = 0;
+    float t = leaving >= 0 ? leaving : since - delay, sx = 1, sy = 1, tx = 0, ty = 0, rz = 0;
     auto at = [&](Keys ch, float rest) { return ch.n ? clipKeys(ch.k, ch.n, t, ch.weighted) : rest; };
-    if (k) sx = at(k->sx, 1), sy = at(k->sy, 1), tx = at(k->tx, 0) * FE_PX, ty = -at(k->ty, 0) * FE_PX;
+    if (k) sx = at(k->sx, 1), sy = at(k->sy, 1), tx = at(k->tx, 0) * FE_S, ty = -at(k->ty, 0) * FE_S, rz = at(k->rz, 0);
     else if (float a = rowAppear(since, leaving, row); a > 0) tx = (1 - a) * slide;
     else return false;
     if (sx < 0.001f || sy < 0.001f) return false;
     rlPushMatrix();
     rlTranslatef(c.x + tx, c.y + ty, 0);
+    rlRotatef(-rz * RAD2DEG, 0, 0, 1);
     rlScalef(sx, sy, 1);
     rlTranslatef(-c.x, -c.y, 0);
     return true;
 }
+
+// ---------------------------------------------------------------- W4M frontend layout (docs/w4m/frontend.md §Story and Challenges)
+
+static Vector2 fePos(float x, float y) { return {640 + x * FE_S, 360 - y * FE_S}; }
+
+// WXFE_GradientColours: top -> bottom (docs/w4m/frontend.md "Text colours")
+static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 255}}, GC_LIST_LABLE_BLUE[2] = {{151, 207, 255, 255}, {233, 255, 255, 255}},
+                   GC_SUBHEADER_BLUE[2] = {{128, 210, 255, 255}, {255, 255, 255, 255}}, GC_BOOK_BROWN[2] = {{93, 51, 0, 200}, {93, 51, 0, 200}},
+                   GC_POPUP_RED[2] = {{148, 0, 0, 255}, {148, 0, 0, 255}}, GC_SCROLLTEXT[2] = {{0, 69, 109, 110}, {0, 69, 109, 110}},
+                   GC_WHITE[2] = {WHITE, WHITE};
+// FE text is 1.16 x wider than our font at the same height [observed: briefing, title, ticker lines of the real game, same glyph height]
+static const float TEXT_X = 1.16f;
+static const Color BC_BLACK = BLACK, BC_WHITE = WHITE, BC_NONE = {0, 0, 0, 0}, BC_BOOK_EDGE = {255, 255, 255, 80};  // WXFE_BackgroundColours: the text outline
+
+// W4M TextAnim (docs/w4m/frontend.md "TextBox layout"): per glyph a High / Low pair of the HUD.FontAnim clips, the groups cycling by glyph, the
+// alternative by the LCG; (dy in FE units, y up, scale). kind: 1 LargeWobble, 2 SmallWobble, 3 TitleRandom, 4 MediumWobble
+static std::vector<Vector2> textPose(int kind, const std::string &s) {
+    static const Vector2 CLIPS[5] = {{2, 1}, {0.1f, 1}, {2, 0.9f}, {0.5f, 1.1f}, {0.7f, 1}};  // High1..5 (Low = -dy)
+    static const int GROUPS[5][3] = {{}, {0, 0, 0}, {1, 1, 1}, {0, 2, 3}, {4, 4, 4}};
+    uint32_t st = 2166136261u;
+    for (char c : s) st = (st ^ (unsigned char)c) * 16777619u;
+    std::vector<Vector2> pose;
+    int n = 0;
+    for (char c : s) {
+        if (c == ' ') continue;
+        st = st * 0x41c64e6du + 0x3039;
+        Vector2 k = CLIPS[GROUPS[kind][n++ % 3]];
+        pose.push_back({(st >> 16 & 1 ? 1.0f : -1.0f) * k.x * FE_S * -1, k.y});  // y up -> down in px
+    }
+    return pose;
+}
+
+// A W4M text box: a word-wrapped block in a box about its centre c (half extents hw x hh, FE units), font size `size` FE (line height = size),
+// anchored by `just` (EdgeJustificationEnum), tilted by rot (Orientation z, rad). autoScale shrinks the size until it fits; scrollT >= 0 (s since
+// the box showed) scrolls an overflowing text [AutoScrollSpeed > 0: 0x75e735 moves 0.01 line per 20 ms tick after AutoScrollDelay / 2, back at the end]
+struct FeBox {
+    Vector2 c = {0, 0};
+    float hw = 0, hh = 0, size = 20, rot = 0, scrollT = -1;
+    int just = 4, anim = 0;
+    bool autoScale = false;
+    const Color *grad = GC_WHITE;
+    Color edge = BC_BLACK;
+};
+static std::vector<std::string> feWrap(const std::string &s, float sizePx, float w) {
+    std::vector<std::string> lines;
+    std::string line, word;
+    for (size_t i = 0; i <= s.size(); i++) {
+        char ch = i < s.size() ? s[i] : ' ';
+        if (ch != ' ' && ch != '\n') { word += ch; continue; }
+        std::string t = line.empty() ? word : line + " " + word;
+        if (!line.empty() && textWidth(t.c_str(), sizePx) * TEXT_X > w) lines.push_back(line), t = word;
+        line = t, word.clear();
+        if (ch == '\n') lines.push_back(line), line.clear();
+    }
+    if (!line.empty() || lines.empty()) lines.push_back(line);
+    return lines;
+}
+static void feText(const std::string &s, const FeBox &b) {
+    float size = b.size;
+    std::vector<std::string> lines = feWrap(s, size * FE_S, 2 * b.hw * FE_S);
+    while (b.autoScale && size > 5 && lines.size() * size > 2 * b.hh) lines = feWrap(s, (size -= 1) * FE_S, 2 * b.hw * FE_S);
+    float px = size * FE_S, H = lines.size() * size, over = H - 2 * b.hh;
+    float top = b.just < 3 ? b.c.y + b.hh : b.just < 6 ? b.c.y + H / 2 : b.c.y - b.hh + H, off = 0;  // FE y of the first line's top
+    if (b.scrollT >= 0 && over > 0) {
+        float wait = 2, run = over / 10, p = fmodf(b.scrollT, 2 * run + 2 * wait);
+        off = 10 * (p < wait ? 0 : p < wait + run ? p - wait : p < 2 * wait + run ? run : 2 * run + 2 * wait - p);
+    }
+    Vector2 ctr = fePos(b.c.x, b.c.y);
+    rlPushMatrix();
+    rlTranslatef(ctr.x, ctr.y, 0);
+    rlRotatef(-b.rot * RAD2DEG, 0, 0, 1);
+    rlTranslatef(-ctr.x, -ctr.y, 0);
+    if (b.scrollT >= 0 && over > 0) {
+        Vector2 a = fePos(b.c.x - b.hw, b.c.y + b.hh);
+        rlDrawRenderBatchActive();
+        BeginScissorMode((int)a.x, (int)a.y, (int)(2 * b.hw * FE_S), (int)(2 * b.hh * FE_S));
+    }
+    int align = b.just % 3;
+    float x = align == 0 ? b.c.x - b.hw : align == 1 ? b.c.x : b.c.x + b.hw;
+    for (size_t i = 0; i < lines.size(); i++) {
+        std::vector<Vector2> pose = b.anim ? textPose(b.anim, lines[i]) : std::vector<Vector2>();
+        Vector2 p = fePos(x, top - i * size);
+        rlPushMatrix(), rlTranslatef(p.x, 0, 0), rlScalef(TEXT_X, 1, 1), rlTranslatef(-p.x, 0, 0);
+        textG(lines[i].c_str(), p.x, p.y - off * FE_S, px, b.grad[0], b.grad[1], align, b.edge, b.anim ? &pose : nullptr);
+        rlPopMatrix();
+    }
+    if (b.scrollT >= 0 && over > 0) rlDrawRenderBatchActive(), EndScissorMode();
+    rlPopMatrix();
+}
+
+// The blue curved panel (BlueDivide, In_Curve settled), its left edge at x px
+static void divide(float x) {
+    if (!image("fe/bluedivide", {x - 60, -40, 800, 800})) DrawCircleV({x - 260, 360}, 760, BLUE_PANEL);
+}
+
+// The four scrolling FETXTH watermarks of every submenu (Scrolling 1-4: position, font size, scale, Speed, ScrollForward, Delay_Incoming; In_SlideX
+// along the text), rotated 90 deg [data]; Speed is taken as FE units per 20 ms tick [assumed: the scroller's update was not traced]. since / out:
+// seconds since the screen showed / since it began leaving (-1: not); a page that is in place passes since >= 1
+static void watermark(const char *title, float x, float t, float since = 99, float out = -1) {
+    static const struct { float x, y, size, half, speed, delay; bool fwd; } COLS[4] = {{-308, -30, 30, 270, 0.4f, 0.3f, true}, {-259, 0, 60, 270, 0.3f, 0.35f, false},
+                                                                                           {-211, -10, 30, 260, 0.2f, 0.385f, true}, {-369, 0, 60, 270, 0.15f, 0.35f, false}};
+    std::string tile = std::string(title) + "   ";
+    float shift = out >= 0 ? (1 - rowAppear(99, out, 0)) * -700 : 0;
+    for (const auto &c : COLS) {
+        float px = c.size * FE_S, w = textWidth(tile.c_str(), px), run = fmodf(t * c.speed * 50 * FE_S, w);
+        float k = since < c.delay ? 0 : clipKeys(K_SLIDEX, 2, since - c.delay, true);
+        if (k < 0.001f) continue;
+        Vector2 o = fePos(c.x, c.y);
+        rlPushMatrix();
+        rlTranslatef(o.x + x + shift, o.y, 0);
+        rlRotatef(-90, 0, 0, 1);  // reads bottom to top
+        rlScalef(k, 1, 1);
+        for (float u = -c.half * FE_S - w + (c.fwd ? run : w - run); u < c.half * FE_S; u += w) textG(tile.c_str(), u, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, BC_NONE);
+        rlPopMatrix();
+    }
+}
+
+// WX.Mesh.ToolTip: the torn paper strip at (0, -19.4, 793) scale (0.12, 0.1, 0.12) tilted -0.02 rad [data], seen through the FE camera at 7.2 / 6.2 of
+// its unit [observed: strip centre FE -159 = the ticker's y, 1624 x 97 px]; its picture covers the texture rows 4..104
+static void tooltipStrip() {
+    Texture2D p = tex("fe2/paper_strip");
+    Vector2 c = fePos(0, -159.1f);
+    float w = 1146.7f * 0.12f * 8.2f * FE_S, h = 82 * 0.1f * 8.2f * FE_S;
+    if (p.id) DrawTexturePro(p, {0, 4, 256, 100}, {c.x, c.y, w, h}, {w / 2, h / 2}, 0.02f * RAD2DEG, WHITE);
+    else DrawRectangle(0, c.y - h / 2, 1280, h, {246, 243, 232, 255});
+}
+
+// TickerTapeTXT: black FE.Font 20 on the strip, at (11, -159) in a 406 FE window, tilted -0.029 rad; Speed 0.5 [assumed unit as the watermarks]
+static void tickerText(float t) {
+    const char *tick = tr("WXFE.TickerTapeDefault", "Worms4NX - fan-made homebrew                    ");
+    float px = 20 * FE_S, w = textWidth(tick, px) * TEXT_X;
+    Vector2 c = fePos(11, -159);
+    Rectangle win = {c.x - 203 * FE_S, c.y - 20 * FE_S, 406 * FE_S, 40 * FE_S};
+    rlDrawRenderBatchActive();
+    rlPushMatrix();
+    rlTranslatef(c.x, c.y, 0);
+    rlRotatef(0.029f * RAD2DEG, 0, 0, 1);
+    rlTranslatef(-c.x, -c.y, 0);
+    BeginScissorMode((int)win.x, (int)win.y, (int)win.width, (int)win.height);
+    for (float u = win.x - fmodf(t * 0.5f * 50 * FE_S, w + win.width); u < win.x + win.width; u += w + win.width) { rlPushMatrix(), rlTranslatef(roundf(u), 0, 0), rlScalef(TEXT_X, 1, 1), text(tick, 0, c.y - px / 2, px, INK), rlPopMatrix(); }
+    rlDrawRenderBatchActive();
+    EndScissorMode();
+    rlPopMatrix();
+}
+
+// A NAV button of the WXFE.Nav.Border atlases (kMT_Nav*): which 0 Start (the jar), 1 Tick, 2 Back, 3 Cross; state 0 Normal, 1 Highlight, 2 Disabled;
+// c: FE centre, half: FE half extent
+static void navButton(int which, int state, Vector2 c, float half) {
+    Texture2D a = tex(state == 0 ? "fe2/nav_normal" : state == 1 ? "fe2/nav_highlight" : "fe2/nav_disabled");
+    Vector2 p = fePos(c.x, c.y);
+    float d = 2 * half * FE_S;
+    if (a.id) DrawTexturePro(a, {a.width / 2.0f * (which % 2), a.height / 2.0f * (which / 2), a.width / 2.0f, a.height / 2.0f}, {p.x - d / 2, p.y - d / 2, d, d}, {}, 0, WHITE);
+}
+
+// A page arrow (kMT_NavArrow*): left / right, state as navButton, in a square of half extent `half` FE
+static void pageArrow(bool right, int state, Vector2 c, float half) {
+    Texture2D a = tex("fe2/nav_arrowpage");
+    Vector2 p = fePos(c.x, c.y);
+    float d = 2 * half * FE_S;
+    if (a.id) DrawTexturePro(a, {a.width / 4.0f * state, a.height / 2.0f * !right, a.width / 4.0f, a.height / 2.0f}, {p.x - d / 2, p.y - d / 2, d, d}, {}, 0, WHITE);
+}
+
+// The strip, its ticker and, in a submenu, NAV Prev (the back arrow, (-247, -159) scale 45) with the pad's Back
+static void paperStrip(float t, bool back) {
+    tooltipStrip();
+    tickerText(t);
+    if (back) navButton(2, 0, {-247, -159}, 45);
+}
+
+static float backOut(float k) { k = Clamp(k, 0, 1) - 1; return 1 + 2.7f * k * k * k + 1.7f * k * k; }
+
+// W4M's Title Control (docs/w4m/frontend.md §17): FontSizeOverride 40, Button_Yellow, TitleRandom, over its brush underline; x: the page's offset.
+// The spot is read off the HISTOIRE / DEFIS screens [observed]: text left edge at FE -305, centre y 195, underline from -363, centre y 174
+static void titleControl(const char *title, float x) {
+    float sz = 40 * FE_S, tw = textWidth(title, sz) * TEXT_X;
+    Vector2 l = fePos(-305, 195), u = fePos(-363, 174);
+    std::vector<Vector2> pose = textPose(3, title);
+    rlPushMatrix(), rlTranslatef(l.x + x, 0, 0), rlScalef(TEXT_X, 1, 1);
+    textG(title, 0, l.y - sz / 2, sz, GC_BUTTON_YELLOW[0], GC_BUTTON_YELLOW[1], 0, BC_BLACK, &pose);
+    rlPopMatrix();
+    float w = l.x + tw + 12 * FE_S - u.x;
+    if (!image("fe/title_underline", {u.x + x, u.y - w / 32, w, w / 16})) DrawRectangle(u.x + x, u.y, w, 3, WHITE);
+}
+
+// Submenu page: curved blue panel (slides in from the left) with its scrolling watermarks and Title Control, and an illustration that pops in
+// after it; p: 0 hidden .. 1 shown (the panel takes the first 0.7)
+static void subPanel(const char *title, const char *art, float t, float p) {
+    float x = (1 - easeOut(p / 0.7f)) * -820, pop = backOut((p - 0.3f) / 0.7f);
+    divide(x);
+    watermark(title, x, t);
+    titleControl(title, x);
+    Rectangle r = {x + 70, 140 + 8 * sinf(t * 1.6f), 400, 400};
+    rlPushMatrix();
+    rlTranslatef(r.x + r.width / 2, r.y + r.height / 2, 0);
+    rlRotatef(3 * sinf(t * 1.1f), 0, 0, 1);
+    rlScalef(pop, pop, 1);
+    if (!strcmp(art, "fe2/art_local") && tex(art).id) {  // the TV robot shows noise
+        float o = (float)((int)(t * 12) * 37 % 97);
+        DrawTexturePro(tex("fe2/art_local_static"), {o, o * 0.7f, 128, 128}, {-0.06f * r.width, -0.14f * r.height, 0.34f * r.width, 0.36f * r.height}, {}, 0, WHITE);
+    }
+    image(art, {-r.width / 2, -r.height / 2, r.width, r.height});
+    rlPopMatrix();
+}
+
 
 // W4M WXFEP.Confirm* in our style: the question, then ConfirmList's No (the default) and Yes rows
 static void yesNo(const char *q, int r, float t) {
@@ -1076,6 +1256,11 @@ void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, boo
         g = live ? g + ((i == sel) - g) * k : i == sel;
         menuEntry(tr(m.key, m.en, m.fr), m.x, m.y, m.size, m.deg, g, a, t);
     }
+}
+
+std::string resultBanner(const Game &g) {
+    if (g.cfg.mission || g.phase != Phase::GameOver) return "";
+    return g.winner >= 0 ? teamName(g.cfg, g.winner) + " WINS!" : "DRAW!";
 }
 
 std::string teamName(const GameConfig &c, int team) {
@@ -2412,9 +2597,10 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     bannerTick = tick;
     if (scriptMovie(g).borders) return;  // EFMV.BordersActive: every HUD object leaves (BaseHudObject 0x5daf31) [ours: at once]
     if (g.phase == Phase::GameOver) {
-        if (g.winner >= 0) text(TextFormat("%s WINS!", teamName(g.cfg, g.winner).c_str()), 640, 260, 70, TEAM_COLORS[g.winner % 4], 1);
-        else text("DRAW!", 640, 260, 70, WHITE, 1);
-        if (!g.cfg.mission && !quiet) hints({{"A", "Space", "Continue"}});  // missionEnd() has its own
+        if (!g.cfg.mission) {  // missions and challenges end on missionEnd() only
+            text(resultBanner(g).c_str(), 640, 260, 70, g.winner >= 0 ? TEAM_COLORS[g.winner % 4] : WHITE, 1);
+            if (!quiet) hints({{"A", "Space", "Continue"}});
+        }
         return;
     }
     const WeaponDef &wd = weaponDef(g.weapon);
@@ -2593,8 +2779,6 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
 // ---------------------------------------------------------------- pause
 
 static float paragraph(const std::string &s, float x, float y, float w, float size, Color c, int maxLines = 99, bool draw = true, const Color *c2 = nullptr, float lead = 4);
-// W4M kGC_* text gradients, top and bottom (GradientColour 0x754e96)
-static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 255}}, GC_LIST_LABLE_BLUE[2] = {{151, 207, 255, 255}, {233, 255, 255, 255}};
 
 // MENUTWKXINGAME WXFEP.MissionBriefing (docs/w4m/frontend.md §17): the menu's In_ScaleY after its 200 ms Delay_Incoming
 static const float K_IN_SCALEY[7][6] = {{0, 0, 0.00027776f, 0.99951f, 0, 0}, {0.00016665f, 0.59961f, 0.94434f, 0.32764f, 0.94434f, 0.32764f},
@@ -2843,14 +3027,31 @@ static float paragraph(const std::string &s, float x, float y, float w, float si
     return std::min(lines, maxLines) * (size + lead);
 }
 
-// WXFE.Story / WXFE.Challenges (docs/w4m/frontend.md §17): each item takes the clips of its W4M counterpart; ours-only items
-// (tabs, rows) and W4M's Out None use our menu rows' rowAppear() (user-requested). The list and the briefing are W4M's one page.
+// WXFE.Story / WXFE.Challenges (docs/w4m/frontend.md §17): one page per mission, every item at its FE position with the clip and delay of its W4M
+// counterpart; W4M's Out None items fly out like our menu rows (rowAppear, user-requested)
 static const float MISSION_OUT = 0.25f;  // Out_ScaleY is done at 0.19 s (x FE.AnimSpeed); then the header is cut mid Out_TitleUnderline
+
+// MESH Book: WX.Mesh.StoryBook at (10, 15, 0) scale 0.9 tilted (0.05, 0.03, -0.1), clip Intro_Book (Delay_Out_Mesh 100 ms: Outro_Book is one key that
+// drops the book out of view) through the FE camera [data; camera observed, see FE_S]
+extern "C" void glClear(unsigned int mask);
+static void feBook(float since, float leaving) {
+    Camera3D cam = {{0, 0, 903.5f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
+    glClear(0x100);
+    rlSetClipPlanes(5, 15000);
+    BeginMode3D(cam);
+    Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(0.9f, 0.9f, 0.9f), MatrixRotateZYX({0.05f, 0.03f, -0.1f})), MatrixTranslate(10, 15, 0));
+    if (leaving >= 0.1f) m = MatrixMultiply(m, MatrixTranslate(0, -498.75f, 0));  // Outro_Book's main bone: y -498.75
+    Models::draw("storybook", m, WHITE, "Intro_Book", since / FE_ANIM_SPEED, false);
+    EndMode3D();
+    rlSetClipPlanes(0.01, 1000);
+}
+
+static Rectangle feRect(float x, float y, float hw, float hh) { Vector2 c = fePos(x, y); return {c.x - hw * FE_S, c.y - hh * FE_S, 2 * hw * FE_S, 2 * hh * FE_S}; }
 
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p) {
     using S = Audio::Sfx;
     menuPage = true;
-    static const char *TABS[2] = {"Missions", "Challenges"};
+    FrontBg::page(1);
     static float last = 0;  // previous frame's clock: the Challenges image's In_Speech sound at its 300 ms delay
     float t = now();
     bool story = st.tab == 0;
@@ -2859,115 +3060,122 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
         if (story) Audio::play(S::FeBookIn);
     }
     if (st.leaving >= 0 && t - st.leaving >= MISSION_OUT) {  // its items are out: what follows them
-        bool page = st.to == -3 || st.to == -4;
-        st.leaving = -1, st.shown = page ? t : -1;
-        if (!page) return st.to;
-        st.brief = st.to == -3;
+        st.leaving = -1, st.shown = -1;
+        return st.to;
     }
     if (!story && last - st.shown < 0.3f && t - st.shown >= 0.3f) Audio::play(S::FeSpeech);
     last = t;
     float since = t - st.shown, out = st.leaving >= 0 ? t - st.leaving : -1;
     bool busy = st.leaving >= 0;
-    // to: -2 back, -3 briefing, -4 list, else the mission to start; leaving the screen plays its Audio_Outgoing Out_Next (the book's Out_Book is silent)
+    // to: -2 back, else the mission to start; leaving the screen plays its Audio_Outgoing Out_Next (the book's Out_Book is silent)
     auto leave = [&](int to) {
         st.leaving = t, st.to = to;
-        if (to == -3 || to == -4) { Audio::play(S::FePage); return; }
         Audio::play(S::FeNextOut);
         if (story) Audio::play(S::FeBookOut);
     };
     std::vector<int> rows;
     for (size_t i = 0; i < list.size(); i++) if ((list[i].kind == "mission") == story) rows.push_back((int)i);
     int &sel = st.sel[st.tab], n = (int)rows.size();
-    sel = n ? clampWrap(sel, n) : 0;
-    bool ok = !busy && P({A}, {KEY_ENTER, KEY_SPACE}), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
-    int pick = n ? rows[sel] : -1;
-    bool open = pick >= 0 && p.unlocked(list, pick);
-    float imgAt = story ? 0.73f : 0.3f;  // Mission Image / IMAGE Level, In_Speech
-    if (st.brief && pick >= 0) {
-        const MissionSpec &m = list[pick];
-        Progress::Entry e = p.get(m.id);
-        if (feItem({640, 355}, &IN_SPEECH, 0.35f, &OUT_SCALEY, since, out)) popup({140, 40, 1000, 630}), rlPopMatrix();  // Paper Back
-        auto title = [&] {
-            text(tr(m.nameId.c_str(), m.name.c_str()), 640, 60, 48, GOLDEN, 1);
-            text(m.campaign.c_str(), 640, 112, 22, SKYBLUE, 1);
+    sel = n ? Clamp(sel, 0, n - 1) : 0;
+    if (!busy && n) {  // BUTTON Prev / Next (WXFE.ShowPrevLevel / ShowNextLevel, WXMsg.Challenge^Previous^ / ^Next^): no wrap, disabled at the ends
+        int d = P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
+        if (d && sel + d >= 0 && sel + d < n) sel += d, Audio::play(story ? S::FePage : S::FeNextIn);
+    }
+    const MissionSpec *m = n ? &list[rows[sel]] : nullptr;
+    bool open = m && p.unlocked(list, rows[sel]);
+    bool ok = !busy && open && P({A}, {KEY_ENTER, KEY_SPACE}), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    const char *title = story ? tr("FETXTH.Story", "STORY", "HISTOIRE") : tr("FETXTH.Challenges", "CHALLENGES", "DÉFIS");
+    Progress::Entry e = m ? p.get(m->id) : Progress::Entry{};
+    auto slide = [&](float x, float y, const FeClip *in, float delay, const FeClip *outc, float slideBy = -1300) { return feItem(fePos(x, y), in, delay, outc, since, out, slideBy); };
+
+    divide(0);
+    watermark(title, 0, t, since, out);
+    if (story) feBook(since, out);
+    if (slide(0, -159.1f, &IN_SCALEY, 0.3f, &OUT_SCALEY)) tooltipStrip(), rlPopMatrix();  // ToolTip
+    if (slide(11, -159, &IN_SLIDEX, 0.3f, &OUT_SCALEY)) tickerText(t), rlPopMatrix();  // TickerTapeTXT
+    if (feItem(fePos(-152, 188), &IN_TITLEUNDERLINE, 0.3f, &OUT_TITLEUNDERLINE, since, out)) titleControl(title, 0), rlPopMatrix();
+    if (m) {
+        std::string img = m->preview.empty() ? preview(m->map) : m->preview;
+        auto picture = [&](float x, float y, float hw, float hh, float rot) {
+            Rectangle r = feRect(x, y, hw, hh);
+            Vector2 c = {r.x + r.width / 2, r.y + r.height / 2};
+            rlPushMatrix();
+            rlTranslatef(c.x, c.y, 0);
+            rlRotatef(-rot * RAD2DEG, 0, 0, 1);
+            rlTranslatef(-c.x, -c.y, 0);
+            if (!image(img, r, open ? WHITE : GRAY) && !image(preview(m->map), r, open ? WHITE : GRAY)) DrawRectangleRec(r, {30, 60, 40, 255});
+            rlPopMatrix();
         };
-        auto body = [&] { paragraph(tr(m.briefId.c_str(), m.brief.c_str()), 450, 150, 650, 24, WHITE, 16); };  // Frontend_Briefing
-        auto record = [&] {
-            if (e.done) text(TextFormat("Best time %s", clockText(e.best).c_str()), 1100, 630, 24, GOLDEN, 2);
-            if (!story) return;  // Bonus Time text (MissionService 0x733c94): Lock.T.<level> unlocked, else BonusTime as "%um %us"
-            bool won = std::find(p.unlocks.begin(), p.unlocks.end(), "Lock.T." + m.level) != p.unlocks.end();
-            text(won ? tr("FETXT.TimeBonusWon", "Time Bonus Achieved") : TextFormat(tr("FETXT.TimeBonusFormat", "Time Bonus: %um %us"), m.par / 60, m.par % 60),
-                 180, 630, 24, LIGHTGRAY);
-        };
-        if (feItem({300, 270}, &IN_SPEECH, imgAt, nullptr, since, out, -1300)) {
-            if (!image(m.preview.empty() ? preview(m.map) : m.preview, {180, 150, 240, 240})) image(preview(m.map), {180, 150, 240, 240});
-            rlPopMatrix();
+        std::string name = tr(m->nameId.c_str(), m->name.c_str()), brief = tr(m->briefId.c_str(), m->brief.c_str());
+        if (story) {
+            FeBox b;
+            if (slide(-128, 139, &IN_SLIDEX, 0.8f, nullptr)) {  // Mission Title
+                b = {{-128, 139}, 85, 20, 22, -0.02f, -1, 4, 4, true, GC_POPUP_RED, BC_BOOK_EDGE};
+                feText(name, b), rlPopMatrix();
+            }
+            if (slide(154, 23, &IN_TOOLTIP, 0.8f, nullptr)) {  // Mission Briefing
+                b = {{154, 23}, 111, 108, 18, -0.03f, fmaxf(since - 0.8f, 0), 0, 0, false, GC_BOOK_BROWN, BC_BOOK_EDGE};
+                feText(brief, b), rlPopMatrix();
+            }
+            if (slide(-140, -100, &IN_SLIDEX, 0.8f, nullptr)) {  // LABEL Page
+                b = {{-140, -100}, 50, 10, 20, -0.05f, -1, 4, 0, false, GC_BOOK_BROWN, BC_BOOK_EDGE};
+                feText(TextFormat(tr("FETXT.PageN", "Page %u"), (unsigned)sel + 1), b), rlPopMatrix();
+            }
+            for (int k = 0; k < 2; k++) {  // BUTTON Prev / Next
+                Vector2 c = k ? Vector2{-83, -104} : Vector2{-197, -98};
+                if (slide(c.x, c.y, &IN_SPEECH, 0.75f, nullptr)) pageArrow(k, sel + (k ? 1 : -1) < 0 || sel + (k ? 1 : -1) >= n ? 2 : 0, c, 20), rlPopMatrix();
+            }
+            if (slide(-138, 17, &IN_SPEECH, 0.73f, nullptr)) picture(-138, 17, 100, 100, -0.04f), rlPopMatrix();  // Mission Image
+            if (slide(150, -115, &IN_SLIDEX, 0.8f, nullptr)) {  // Bonus Time text (MissionService 0x733c94)
+                bool won = std::find(p.unlocks.begin(), p.unlocks.end(), "Lock.T." + m->level) != p.unlocks.end();
+                b = {{150, -115}, 97, 20, 18, -0.03f, -1, 4, 0, true, GC_BOOK_BROWN, BC_BOOK_EDGE};
+                feText(won ? tr("FETXT.TimeBonusWon", "Time Bonus Achieved") : TextFormat(tr("FETXT.TimeBonusFormat", "Time Bonus: %um %us"), m->par / 60, m->par % 60), b);
+                rlPopMatrix();
+            }
+            if (slide(-131, 112, &IN_SLIDEX, 0.85f, nullptr)) {  // DIVIDE1
+                Rectangle r = feRect(-131, 112, 70, 8);
+                rlPushMatrix(), rlTranslatef(r.x + r.width / 2, r.y + r.height / 2, 0), rlRotatef(0.05f * RAD2DEG, 0, 0, 1);
+                image("fe/speechpopup_divide", {-r.width / 2, -r.height / 2, r.width, r.height}, {255, 255, 255, 170});
+                rlPopMatrix(), rlPopMatrix();
+            }
+            if (e.done && slide(-210, -20, &IN_SPRINGXY, 1.5f, nullptr)) image("fe/mission_complete", feRect(-210, -20, 60, 60)), rlPopMatrix();  // Mission Completed
+        } else {
+            if (slide(124, 13, &IN_SPEECH, 0.35f, &OUT_SCALEY)) image("fe/paperpopup02", feRect(124, 13, 155, 151)), rlPopMatrix();  // Paper Back
+            if (slide(-164, 8, &IN_SPEECH, 0.3f, nullptr)) picture(-164, 8, 110, 110, 0.02f), rlPopMatrix();  // IMAGE Level
+            if (slide(-181, 147, &IN_TITLEUNDERLINE, 0.35f, &OUT_TITLEUNDERLINE)) {  // SUBHEADER Teamname: User.HumanTeamName
+                FeBox b = {{-181, 147}, 110, 15, 23, 0, -1, 3, 4, true, GC_SUBHEADER_BLUE, BC_BLACK};
+                feText(st.team, b), rlPopMatrix();
+            }
+            if (slide(123, 123, &IN_SPEECH, 0.35f, nullptr)) {  // Challenge Title, and its children: Body Text, BUTTON Prev / Next, Mission Record, LABEL BestTime
+                FeBox b = {{123, 123}, 90, 22, 28, 0, -1, 4, 0, true, GC_SUBHEADER_BLUE, BC_BLACK};
+                feText(name, b);
+                if (feItem(fePos(123, 15), &IN_SLIDEX, 0, nullptr, since - 0.35f, out)) {  // Body Text
+                    b = {{123, 15}, 130, 73, 18, 0, fmaxf(since - 0.35f, 0), 0, 0, true, GC_WHITE, BC_BLACK};
+                    feText(brief, b), rlPopMatrix();
+                }
+                for (int k = 0; k < 2; k++) pageArrow(k, sel + (k ? 1 : -1) < 0 || sel + (k ? 1 : -1) >= n ? 2 : 0, {123.0f + (k ? 110 : -110), 123}, 25);
+                float rec = m->par;  // Mission Record: the preset's time by "Team 17" until a better time is set [assumed: 0x72db00's record store not traced]
+                std::string who = "Team 17";
+                if (e.done && e.best / 60.0f < rec) rec = e.best / 60.0f, who = st.team;
+                int sec = (int)rec;
+                b = {{123, -97}, 123, 15, 18, 0, -1, 4, 0, true, GC_SUBHEADER_BLUE, BC_BLACK};
+                feText(who + " - " + (sec >= 3600 ? TextFormat("%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60) : TextFormat("%d:%02d", sec / 60, sec % 60)), b);
+                b = {{123, -75}, 120, 20, 20, 0, -1, 4, 0, false, GC_WHITE, BC_BLACK};  // LABEL BestTime
+                feText(tr("FETXT.BestTime", "Best Time"), b);
+                float bw = textWidth(tr("FETXT.BestTime", "Best Time"), 20 * FE_S) * TEXT_X / FE_S / 2 + 6;  // the list row's two brush rules
+                image("fe/title_underline", feRect(123 - bw - 20, -75, 19, 2.5f));
+                image("fe/title_underline", feRect(123 + bw + 20, -75, 19, 2.5f));
+                rlPopMatrix();
+            }
         }
-        if (story) {  // Mission Title, Mission Briefing, Bonus Time text
-            if (feItem({640, 95}, &IN_SLIDEX, 0.8f, nullptr, since, out, -1300)) title(), rlPopMatrix();
-            if (feItem({640, 400}, &IN_TOOLTIP, 0.8f, nullptr, since, out, -1300)) body(), rlPopMatrix();
-            if (feItem({640, 642}, &IN_SLIDEX, 0.8f, nullptr, since, out, -1300)) record(), rlPopMatrix();
-        } else if (feItem({640, 95}, &IN_SPEECH, 0.35f, nullptr, since, out, -1300)) {  // Challenge Title; Body Text and Mission Record are its children
-            title(), record();
-            if (feItem({640, 400}, &IN_SLIDEX, 0, nullptr, since, out)) body(), rlPopMatrix();
-            rlPopMatrix();
-        }
-        hints({{"A", "Enter", "Start"}, {"B", "Esc", "Back"}});
-        if (back) leave(-4);
-        else if (ok) leave(pick);
-        return -1;
+    } else {
+        FeBox b = {{0, 0}, 300, 20, 28, 0, -1, 4, 0, false, GC_WHITE, BC_BLACK};
+        if (slide(0, 0, nullptr, 0, nullptr)) feText(story ? "No missions found" : "No challenges found", b), rlPopMatrix();
     }
-    int tab = st.tab;
-    if (!busy) st.tab = clampWrap(st.tab + P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT}), 2);
-    if (st.tab != tab) Audio::play(S::FePage);
-    if (n && !busy) sel = clampWrap(sel + P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n);
-    if (feItem({200, 50}, &IN_TITLEUNDERLINE, 0.3f, &OUT_TITLEUNDERLINE, since, out))
-        titleControl(story ? tr("FETXTH.Story", "STORY", "HISTOIRE") : tr("FETXTH.Challenges", "CHALLENGES", "DÉFIS"), 0), rlPopMatrix();
-    for (int k = 0; k < 2; k++) {
-        Rectangle r = {40 + k * 300.0f, 80, 280, 50};
-        if (!feItem({r.x + r.width / 2, r.y + r.height / 2}, nullptr, 0, nullptr, since, out, -1300, k)) continue;
-        panel(r, k == st.tab);
-        text(TABS[k], r.x + r.width / 2, r.y + 10, 30, ink(k == st.tab), 1);
-        rlPopMatrix();
-    }
-    int first = std::max(0, std::min(sel - 4, n - 9));
-    for (int k = first; k < n && k < first + 9; k++) {
-        const MissionSpec &m = list[rows[k]];
-        Rectangle r = {40, 146 + (k - first) * 58.0f, 700, 52};
-        if (!feItem({r.x + r.width / 2, r.y + r.height / 2}, nullptr, 0, nullptr, since, out, -1300, 2 + k - first)) continue;
-        Progress::Entry e = p.get(m.id);
-        bool lock = !p.unlocked(list, rows[k]);
-        panel(r, k == sel);
-        text(tr(m.nameId.c_str(), m.name.c_str()), r.x + 20, r.y + 11, 28, lock ? GRAY : ink(k == sel));
-        text(lock ? "Locked" : e.done ? TextFormat("Done  %s", clockText(e.best).c_str()) : "New", r.x + r.width - 20, r.y + 14, 22,
-             lock ? GRAY : e.done ? GOLDEN : SKYBLUE, 2);
-        rlPopMatrix();
-    }
-    if (!n && feItem({390, 314}, nullptr, 0, nullptr, since, out, -1300, 2)) text(st.tab ? "No challenges found" : "No missions found", 390, 300, 28, LIGHTGRAY, 1), rlPopMatrix();
-    if (pick >= 0) {
-        const MissionSpec &m = list[pick];
-        Rectangle pv = {800, 146, 420, 236};
-        if (feItem({1010, 264}, &IN_SPEECH, imgAt, nullptr, since, out, 700)) {
-            panel({pv.x - 8, pv.y - 8, pv.width + 16, pv.height + 16}, false);
-            std::string img = m.preview.empty() ? preview(m.map) : m.preview;
-            if (!image(img, pv, open ? WHITE : GRAY) && !image(preview(m.map), pv, open ? WHITE : GRAY)) DrawRectangleRec(pv, {30, 60, 40, 255});
-            rlPopMatrix();
-        }
-        auto body = [&] {
-            text(m.campaign.c_str(), 800, 400, 22, SKYBLUE);
-            if (!open) paragraph("Complete the previous mission to unlock", 800, 430, 420, 26, GRAY, 2);
-            paragraph(tr(m.briefId.c_str(), m.brief.c_str()), 800, open ? 430 : 500, 420, 20, LIGHTGRAY, open ? 10 : 7);  // Frontend_Briefing
-        };
-        Vector2 c = {1010, 530};
-        if (story && feItem(c, &IN_TOOLTIP, 0.8f, nullptr, since, out, 700)) body(), rlPopMatrix();  // Mission Briefing
-        if (!story && feItem(c, &IN_SPEECH, 0.35f, nullptr, since, out, 700)) {  // Body Text, inside its Challenge Title
-            if (feItem(c, &IN_SLIDEX, 0, nullptr, since, out)) body(), rlPopMatrix();
-            rlPopMatrix();
-        }
-    }
-    hints({{"D-pad", "Left/Right", TABS[1 - st.tab]}, {"A", "Enter", "Briefing"}, {"B", "Esc", "Back"}});
+    if (slide(-247, -159, &IN_PREV, 0.3f, &OUT_PREV)) navButton(2, 0, {-247, -159}, 45), rlPopMatrix();  // NAV Prev
+    if (slide(264, -166, &IN_SPRINGXY, 0.3f, &OUT_SCALEXY)) navButton(0, open ? 0 : 2, {264, -166}, 40), rlPopMatrix();  // NAV Start
     if (back) leave(-2);
-    else if (ok && open) leave(-3);
+    else if (ok) leave(rows[sel]);
     return -1;
 }
 

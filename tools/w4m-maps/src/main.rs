@@ -27,9 +27,13 @@ const HIDDEN: u8 = 67; // voxel material (1-based) of a Visible 0 frame: solid, 
 const GIRDER_MAT: usize = 61; // theme material of W4M girders (GirderSmall/Large.xom), always exported
 const TEX_REPEAT: f32 = 4.0; // W4M units per texture repeat (poxel texture vectors are 0.25)
 const WATER: f32 = 3.0; // our water height (m); W4M water assumed at y = 0
-const HMP_EXTENT: f32 = 80.0; // .hmp covers [-80, 80] in x and z
-const HMP_SCALE: f32 = 5.0; // .hmp height 0..1 -> W4M units (fitted, see docs)
-const HMP_BASE: f32 = -1.5;
+// .hmp heightmap box (0x90c440 / 0x90c44c, size 0x463360): x, z in [-75, 75] m, y in [-1.3, 3.5] m; vertex i of the 100 per axis sits at
+// i * 150 / 99 (sampler 0x461dd0), a block cell at 150 / 100 (0x464618)
+const HMP_EXTENT: f32 = 75.0;
+const HMP_SCALE: f32 = 4.8;
+const HMP_BASE: f32 = -1.3;
+const HMP_STEP: f32 = 2.0 * HMP_EXTENT / 99.0;
+const HMP_CELL: f32 = 2.0 * HMP_EXTENT / 100.0;
 const MESH_UNIT: f32 = 0.05; // detail mesh units -> W4M world units (the 25-unit worm mesh is ~1.25 voxels tall)
 
 fn vi(d: &[u8], p: &mut usize) -> usize {
@@ -490,7 +494,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         for r in 0..100 { for c in 0..100 { if hval(c, r) > 0.0 {
             c0 = c0.min(c as i32); r0 = r0.min(r as i32); c1 = c1.max(c as i32); r1 = r1.max(r as i32);
         } } }
-        if c1 >= 0 { add_block(&mut blocks, [c0 as f32 * 1.6 - HMP_EXTENT, r0 as f32 * 1.6 - HMP_EXTENT, c1 as f32 * 1.6 - HMP_EXTENT, r1 as f32 * 1.6 - HMP_EXTENT]); }
+        if c1 >= 0 { add_block(&mut blocks, [c0 as f32 * HMP_CELL - HMP_EXTENT, r0 as f32 * HMP_CELL - HMP_EXTENT, c1 as f32 * HMP_CELL - HMP_EXTENT, r1 as f32 * HMP_CELL - HMP_EXTENT]); }
     }
     let mut codes = Vec::new();
     collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, &mut blocks, 0, 0, &mut codes);
@@ -502,7 +506,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     if hmp.is_some() {
         for r in 0..100 { for c in 0..100 {
             let h = hval(c, r);
-            if h > 0.0 { grow([(c as f32 + 0.5) * 1.6 - HMP_EXTENT, h * HMP_SCALE + HMP_BASE, (r as f32 + 0.5) * 1.6 - HMP_EXTENT]); }
+            if h > 0.0 { grow([c as f32 * HMP_STEP - HMP_EXTENT, h * HMP_SCALE + HMP_BASE, r as f32 * HMP_STEP - HMP_EXTENT]); }
         } }
     }
     if lo[0] > hi[0] { return Err("no geometry above water".into()); }
@@ -523,7 +527,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         for z in 0..nz() { for x in 0..nx() {
             // inverse of to_grid, then bilinear in the 100x100 heightmap
             let (wx, wz) = (x as f32 * VOX - ox, z as f32 * VOX - oz);
-            let (fc, fr) = ((wx + HMP_EXTENT) / 1.6 - 0.5, (wz + HMP_EXTENT) / 1.6 - 0.5);
+            let (fc, fr) = ((wx + HMP_EXTENT) / HMP_STEP, (wz + HMP_EXTENT) / HMP_STEP);
             if fc < 0.0 || fr < 0.0 || fc > 99.0 || fr > 99.0 { continue; }
             let (c, r, tc, tr) = (fc as usize, fr as usize, fc.fract(), fr.fract());
             let h = (hval(c, r) * (1.0 - tc) + hval(c + 1, r) * tc) * (1.0 - tr) + (hval(c, r + 1) * (1.0 - tc) + hval(c + 1, r + 1) * tc) * tr;

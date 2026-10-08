@@ -18,12 +18,12 @@ unlocked W4M WXFE_UnlockableItem). Missions of a campaign unlock in `order`; cha
 | `rain_prob` | Initialise's `Particle.Rain.Prob` (render only). |
 | `objectives` | W4M Objectives (`M.Diner.Obj`): `<key>.A/.B/.C` are the in-game briefing's lines; empty on challenges and deathmatches. |
 
-Menu (`ui.cpp` `missionMenu`, docs/w4m/frontend.md §17 "Story and Challenges screens"): the list's text and the briefing page show
+Menu (`ui.cpp` `missionMenu`, docs/w4m/frontend.md §17 "Story and Challenges screens"): the page shows
 the title (Frontend_Name) and the briefing (Frontend_Briefing), as W4M's Mission Title / Mission Briefing (Challenges: Challenge
 Title / Body Text) [data]. The Story briefing page shows W4M's Bonus Time text: `FETXT.TimeBonusWon` once `Lock.T.<level>` is
 unlocked, else `FETXT.TimeBonusFormat` with BonusTime as minutes and seconds [disasm 0x733c94]. A story win with ElapsedRoundTime
 under BonusTime x 1000 ms unlocks `Lock.T.<level>` (GameLogicService 0x4f6f50, from the success path 0x4fb060) [disasm]; main.cpp adds
-it to `progress.txt` with the easter eggs, so the script sees it unlocked too. Best time and the tabs, rows and campaign line are ours.
+it to `progress.txt` with the easter eggs, so the script sees it unlocked too. The Challenges record is the preset time by "Team 17" until a better time is set [assumed]; `progress.txt` also holds the `intro` line (the Story intro movie played, user-requested).
 
 Score / best time: mission ticks until success (60 per second).
 
@@ -224,6 +224,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   EFMV.GameOverMovie set the result shows after that movie (Movies above), with .Off at once; else GameOverLogicEntity's pace
   (main.cpp `overDone`, the game-over camera of controls.cpp as in a match): 4.02 s on a worm, the orbit 5.02 s (any key or button ends
   it), a 1.02 s fade, then the result [disasm 0x4ff8d0].
+  No "<team> WINS!" / "DRAW!" text is drawn in a mission or challenge (`Ui::resultBanner` is empty there; a lost mission has no winner and read as DRAW!); only the `missionEnd` panel [ours; W4M docs/w4m/missions.md §23.9 end of game].
 - **Round clock**: ElapsedRoundTime counted by 10 game ms (zeroed by Timer.StartGame), held while GameLogic.RoundTime.Pause is on (to
   .Resume) or a movie camera is current (type 14) [disasm 0x50f100, 0x50f173, 0x50f15f].
 - **Mines**: PlaceMine (string: a marker) is a CreateMine there (`Game::newMine`: the dud roll unless Mine Respawn, then the fuse

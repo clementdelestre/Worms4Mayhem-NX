@@ -14,6 +14,7 @@ From `client/` (desktop build, raylib in `third_party/raylib-nx/out/desktop`):
 | `make replay_check` | `replay_check` | `romfs/weapons.json`, romfs map arabian; writes then removes `replay_check.w4r` |
 | `make mission_check` | `mission_check` | `romfs/weapons.json`, imported `assets/missions`; writes then removes `progress_check.txt` |
 | `make ui_check` | `ui_check` | `romfs/weapons.json` |
+| `make movie_check` | `movie_check` | imported `assets/movies` (skipped without) |
 
 `make ai_check replay_check mission_check` runs the three in one go (in parallel). The build is incremental: objects and
 header deps in `obj/`, binaries in `obj/bin/` with `./<test>` linked to them; `make obj/bin/<test>` builds without running.
@@ -495,3 +496,9 @@ the `--ui replays` / `playback` captures [ours]. `replay_check` drives `Recordin
 
 No static check: `main` selects each usable weapon in the HUD panel; the direct pick lands on it whatever the ticks per
 frame (0 to 2).
+
+## movie_check.cpp
+
+Imported Meet_The_Professor: the MJPG header (640 x 480, 25 fps) and frame count (106.12 s), the `FMVSubTiles` timing
+(`Movie::Subs`: Line1 from 11400 ms, hidden at 16400 ms (5000 ms hold), Line20 at 17000, Line2 at 18400; Welcome holds 8000), then a
+1.5 s playback in a hidden window (`start`, `update` true each frame, `stop`, `update` false).

@@ -12,6 +12,7 @@ server.txt
 ai_check
 replay_check
 ui_check
+movie_check
 setup.txt
 ui.png
 build_*/

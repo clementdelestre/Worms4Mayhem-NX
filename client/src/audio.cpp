@@ -762,6 +762,8 @@ void movie(bool on) {
     TraceLog(LOG_INFO, "AUDIO: movie %s", on ? "start: music out 500 ms" : "end: music in 2000 ms");
 }
 
+void musicLevel(float g) { duck = g; }
+
 void narrator(int n) {
     if (Efmv *e = n >= 1 && n <= 5 ? findEfmv(TextFormat("Failures_Narrator_0%d", n)) : nullptr) playEfmv(*e, nullptr);
 }

@@ -17,6 +17,7 @@ Python 3 tools that read the user's own install. They embed no game data, and th
 | `tweak.py [-g REGEX]` | every `Tweak/*.XOM` as JSON, keyed by resource name, refs resolved, written to `$W4M_CACHE/tweaks/` |
 | `fev.py [-g REGEX]`, `--json`, `--check` | `WormsX.fev` (FMOD Ex FEV1) per-event TSV: loop/oneshot, volume dB (event, sound definition, category), 2D/3D, min/max distance, max playbacks, fades, params, sound definitions with bank and FSB sample index; `--json` writes the full parse to `$W4M_CACHE/fev.json`; `--check` asserts the parse ends at EOF |
 | `lua.py FILE.lub [--code] [RE]`, `lua.py --all RE` | Lua 5.0 functions, constants, pseudo-code |
+| `fmv.py [ASSETS]` | `PERSIST.XOM` `FMVSubTiles` -> `ASSETS/movies/subs.txt` (docs/audio.md "Movies") |
 | `acting.py [OUT]` | `WORMACTING.XOM` scenes for the client, to `client/assets/acting.txt` (gitignored; docs/worm-reactions.md) |
 
 How the schema works (see `PE.xclasses` / `PE.schema`):

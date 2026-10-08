@@ -239,6 +239,7 @@ static void checkCratePlacement(const std::vector<MissionSpec> &list) {
         float worst = 0;
         std::map<int, Vector3> at;  // a pinned crate's first position: the marker
         for (int t = 0; t < 60 * 90; t++) {
+            if (t == 600 && m.id == "BuildingSiteSaboteurs") for (auto &tr : g.triggers) tr.gone = Game::TRIG_DESTROYED;  // the 3 diggers down: Midtro spawns Crate1, 2, 5-8
             g.step(t % 30 ? Input{} : skip);
             std::map<int, Vector3> now;  // a tag leaving (Crate.Delete) frees it for the script's next crate of that Index
             for (const Object &o : g.objects) if ((o.type == Object::Crate || o.type == Object::Target) && o.pinned && o.tag >= 0) now[o.tag] = o.pos;
@@ -262,6 +263,12 @@ static void checkCratePlacement(const std::vector<MissionSpec> &list) {
         }
         if (n) printf("%-24s crates %2d: pinned %2d, rested %2d (worst %.2f m off 10 x Scale), moving or over water %2d\n", m.id.c_str(), n, pinned, rest, worst, over);
         assert(worst < 0.3f);
+        if (m.id == "BuildingSiteSaboteurs") {  // the six crates side by side on the heightmap ledge (.hmp vertices at 150 / 99 m): one height
+            float lo = 99, hi = -99;
+            int found = 0;
+            for (const Object &o : g.objects) if (o.type == Object::Crate && (o.tag == 1 || o.tag == 2 || o.tag == 5 || o.tag == 6 || o.tag == 7 || o.tag == 8)) lo = fminf(lo, o.pos.y), hi = fmaxf(hi, o.pos.y), found++;
+            assert(found == 6 && hi - lo < 0.1f);
+        }
         if (m.id == "SneakyBridgeThieves") for (const Object &o : g.objects) if (o.tag == 5) assert(o.pos.y > 23.6f);  // Crate5 (marker y 23.68) rests on the bridge rail, not on the ground under it
     }
 }
@@ -335,12 +342,12 @@ int main() {
     std::vector<MissionSpec> list = listMissions("./romfs/", "./");
     Progress p;
     p.record("a", false, 0), p.record("a", true, 900), p.record("a", true, 1200);
-    p.unlocks = {"Lock.EasterEgg.3"};
+    p.unlocks = {"Lock.EasterEgg.3"}, p.storyIntro = true;
     p.save("progress_check.txt");
     Progress q;
     q.load("progress_check.txt");
     remove("progress_check.txt");
-    assert(q.get("a").done && q.get("a").best == 900 && !q.get("b").done && q.unlocks == p.unlocks);
+    assert(q.get("a").done && q.get("a").best == 900 && !q.get("b").done && q.unlocks == p.unlocks && q.storyIntro);
     if (list.empty()) return puts("mission_check: no W4M mission imported (assets/missions), nothing to run"), 0;
     const char *only = getenv("W4NX_MISSION");
     int imported = 0, ended = 0;

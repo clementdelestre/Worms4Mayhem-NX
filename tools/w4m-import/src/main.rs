@@ -462,6 +462,62 @@ fn to_ogg(j: &Job) -> Result<(), String> {
     fs::rename(&tmp, &j.out).map_err(|e| e.to_string())
 }
 
+// Story movies (Data/FMV/ntsc/English/<name>.wmv) -> movies/<name>.mjpg + .ogg (docs/import.md "Movies").
+const MOVIES: [&str; 6] = ["Meet_The_Professor", "Welcome", "Camelot", "WildWest", "Arabian", "Jurassic"];
+
+// Length of the JPEG at the start of `b`: walks the marker segments to SOS, then the entropy data to EOI (0xFF 0x00 and RSTn stay inside).
+fn jpeg_len(b: &[u8]) -> Option<usize> {
+    if b.get(..2)? != [0xff, 0xd8] { return None; }
+    let mut p = 2;
+    loop {
+        if *b.get(p)? != 0xff { return None; }
+        let m = *b.get(p + 1)?;
+        if m == 0xd9 { return Some(p + 2); }
+        let n = u16::from_be_bytes([*b.get(p + 2)?, *b.get(p + 3)?]) as usize;
+        p += 2 + n;
+        if m == 0xda {
+            while !(*b.get(p)? == 0xff && !matches!(b.get(p + 1)?, 0 | 0xd0..=0xd7)) { p += 1; }
+        }
+    }
+}
+
+// MJPG: "MJPG", u16 w, u16 h, u16 fps, then per frame u32 length + JPEG (little endian), read sequentially.
+fn mjpg(jpegs: &[u8], w: u16, h: u16, fps: u16) -> Result<Vec<u8>, String> {
+    let mut out = [&b"MJPG"[..], &w.to_le_bytes(), &h.to_le_bytes(), &fps.to_le_bytes()].concat();
+    let mut p = 0;
+    while p < jpegs.len() {
+        let n = jpeg_len(&jpegs[p..]).ok_or("bad JPEG from ffmpeg")?;
+        out.extend((n as u32).to_le_bytes());
+        out.extend(&jpegs[p..p + n]);
+        p += n;
+    }
+    Ok(out)
+}
+
+fn movie(src: &Path, out: &Path) -> Result<(), String> {
+    let (jpg, ogg) = (out.with_extension("mjpg"), out.with_extension("ogg"));
+    let ff = |args: &[&str], dst: Option<&Path>| {
+        let mut c = Command::new("ffmpeg");
+        c.args(["-y", "-loglevel", "error", "-i"]).arg(src).args(args);
+        if let Some(d) = dst { c.arg(d); }
+        c.stderr(Stdio::inherit()).output().map_err(|e| format!("ffmpeg: {e}"))
+    };
+    if !ogg.exists() {
+        let tmp = ogg.with_extension("tmp.ogg");
+        if !ff(&["-vn", "-c:a", "libvorbis", "-q:a", "4"], Some(&tmp))?.status.success() { return Err(format!("ffmpeg failed on {}", src.display())); }
+        fs::rename(&tmp, &ogg).map_err(|e| e.to_string())?;
+    }
+    if !jpg.exists() {
+        // 640x480 25 fps as W4M's table 0x9210b8 / the file; q 10 keeps the professor near 40 MB
+        let r = ff(&["-an", "-vf", "fps=25", "-c:v", "mjpeg", "-q:v", "10", "-pix_fmt", "yuvj420p", "-huffman", "optimal", "-f", "image2pipe", "pipe:1"], None)?;
+        if !r.status.success() { return Err(format!("ffmpeg failed on {}", src.display())); }
+        let tmp = jpg.with_extension("tmp");
+        fs::write(&tmp, mjpg(&r.stdout, 640, 480, 25)?).map_err(|e| e.to_string())?;
+        fs::rename(&tmp, &jpg).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |args: &mut Vec<String>, f: &str| args.iter().position(|a| a == f).map(|i| args.remove(i)).is_some();
@@ -576,6 +632,16 @@ fn main() {
         });
     });
 
+    let fmv = game.join("Data/FMV/ntsc/English");
+    let dir = out.join("movies");
+    fs::create_dir_all(&dir).unwrap();
+    let movie_errors: Vec<String> = std::thread::scope(|sc| {
+        let hs: Vec<_> = MOVIES.iter().filter(|n| fmv.join(format!("{n}.wmv")).exists())
+            .map(|n| { let (fmv, dir) = (&fmv, &dir); sc.spawn(move || movie(&fmv.join(format!("{n}.wmv")), &dir.join(n))) }).collect();
+        hs.into_iter().filter_map(|h| h.join().unwrap().err()).collect()
+    });
+    errors.lock().unwrap().extend(movie_errors);
+
     let mut per_dir: std::collections::BTreeMap<String, (usize, f32, f32)> = Default::default();
     for j in &jobs {
         let rel = j.out.strip_prefix(&out).unwrap().parent().unwrap().display().to_string();
@@ -593,6 +659,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jpeg_walk_splits_frames() {
+        let one = [0xff, 0xd8, 0xff, 0xdb, 0, 4, 0xd8, 0xd9, 0xff, 0xda, 0, 3, 1, 0xff, 0, 0xff, 0xd0, 7, 0xff, 0xd9];
+        let two = [&one[..], &one[..]].concat();
+        assert_eq!(jpeg_len(&two), Some(one.len()));
+        let f = mjpg(&two, 640, 480, 25).unwrap();
+        assert_eq!(f.len(), 10 + 2 * (4 + one.len()));
+    }
 
     #[test]
     fn mpeg_padding_is_stripped() {

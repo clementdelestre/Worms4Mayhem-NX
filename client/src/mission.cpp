@@ -107,8 +107,12 @@ bool Progress::unlocked(const std::vector<MissionSpec> &list, size_t i) const {
     return true;
 }
 
+bool Progress::storyDone(const std::vector<MissionSpec> &list) const {
+    for (const MissionSpec &m : list) if (m.kind == "mission" && get(m.id).done) return true;
+    return false;
+}
 void Progress::load(const char *path) {
-    entries.clear(), unlocks.clear();
+    entries.clear(), unlocks.clear(), storyIntro = false;
     char *txt = LoadFileText(path);
     if (!txt) return;
     for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
@@ -116,6 +120,7 @@ void Progress::load(const char *path) {
         int done = 0, best = 0;
         if (sscanf(line, "%127s %d %d", id, &done, &best) == 3) entries.push_back({id, {done != 0, best}});
         else if (sscanf(line, "unlock %127s", id) == 1) unlocks.push_back(id);
+        else if (!strcmp(line, "intro")) storyIntro = true;
     }
     UnloadFileText(txt);
 }
@@ -124,5 +129,6 @@ void Progress::save(const char *path) const {
     std::string s;
     for (const auto &e : entries) s += TextFormat("%s %d %d\n", e.first.c_str(), e.second.done, e.second.best);
     for (const std::string &u : unlocks) s += "unlock " + u + "\n";
+    if (storyIntro) s += "intro\n";
     SaveFileText(path, s.data());
 }

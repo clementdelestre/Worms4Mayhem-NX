@@ -28,6 +28,8 @@ struct Progress {
     struct Entry { bool done = false; int best = 0; };
     std::vector<std::pair<std::string, Entry>> entries;
     std::vector<std::string> unlocks;
+    bool storyIntro = false;  // the Story intro movie has played
+    bool storyDone(const std::vector<MissionSpec> &list) const;  // a story mission is completed
     Entry get(const std::string &id) const;
     void record(const std::string &id, bool done, int ticks);
     bool unlocked(const std::vector<MissionSpec> &list, size_t i) const;  // missions: previous one of the campaign done

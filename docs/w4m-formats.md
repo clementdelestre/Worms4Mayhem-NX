@@ -30,9 +30,9 @@ After `CTNR`+3: name (varint), position, orientation (euler radians, matrix `T·
 
 Lattice vertex `(i, j, k)` in local voxel units: `x = e1x + (X + e2x − e1x)·i/X`, `z` likewise, `y = j + height map(i, k)` on every plane, with `e1`, `e2` read at that lifted `y` (layers `⌊y⌋` clamped to `Y − 1` and the next, by the fraction past it) [disasm 0x468200], centred by `−(X, Y, Z)/2`. Units ≈ metres-ish; maps span ~60–160 × 30–100 × 60–160 units.
 
-### Heightmap placement (fitted, not found in data)
+### Heightmap placement [disasm, 0x463360 / 0x461dd0 / 0x463890 / 0x464330; docs/w4m/formats.md §25]
 
-Covers x, z ∈ [−80, 80] (fits poxel footprints on DoomCanyon/StormTheCastle). Height `y = 5·h − 1.5` was fitted so that poxel floors are not buried; W4M water starts at y = 0: data key `Water.Level` defaults to 0.0 (`WEAPTWK.XOM`), and scripts move it (`SetData("Water.Level", …)`, flood, RaiseWater) [data]. Both constants live at the top of `tools/w4m-maps/src/main.rs`.
+Box (0x90c440 min, 0x90c44c max, size = max - min stored at +0x64): x, z in [-1500, 1500] units = [-75, 75] m, y in [-26, 70] units = [-1.3, 3.5] m; vertex i of the 100 per axis is at `-75 + i * 150 / 99` m, y = `-1.3 + 4.8 h` m (h clamped to 0..1, 0x461250); a block cell is 150 / 100 m (0x464618). W4M water starts at y = 0: data key `Water.Level` defaults to 0.0 (`WEAPTWK.XOM`), and scripts move it (`SetData("Water.Level", ...)`, flood, RaiseWater) [data]. The constants live at the top of `tools/w4m-maps/src/main.rs` (`HMP_*`) [ours: they were [-80, 80] / 5 h - 1.5 / (c + 0.5) * 1.6, fitted to poxel footprints, until 2026-10-08].
 
 ### Conversion to our grid
 
@@ -113,7 +113,7 @@ Plain XOM, containers split on `CTNR`, grouped by type in header order. `X{Int,U
 ## Unknown / not imported
 
 - Detail objects: the poxel's own (non-uniform) scale is not applied to the object basis; animated details (swinging sign) are static.
-- Exact heightmap extent/height scale and water level; possible x mirroring (not verifiable without the game running).
+- Possible x mirroring of the heightmap (not verifiable without the game running).
 - Voxel bits 8+, the `?` theme lines, texture offsets and directions: we texture triplanar in world space; only the vector lengths are used (median repeat per material).
 - Frontend names: `Data/Tweak/SCRIPTS.XOM` `WXFE_LevelDetails` map `Level_FileName` to `FETXT.*` text ids (theme there is always "preselected").
 

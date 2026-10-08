@@ -9,7 +9,7 @@ MAKEFLAGS += -j$(shell nproc)
 SRC := $(wildcard src/*.cpp)
 OBJ := $(SRC:src/%.cpp=obj/%.o) $(LUA_C:%=obj/lua/%.o)
 LIB := $(filter-out obj/main.o,$(OBJ))
-TESTS := sim_check ai_check replay_check mission_check ui_check
+TESTS := sim_check ai_check replay_check mission_check ui_check movie_check
 
 worms4nx: $(OBJ)
 	$(CXX) $^ -o $@ $(LDLIBS)

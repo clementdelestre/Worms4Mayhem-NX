@@ -10,6 +10,7 @@ Default install path in the examples: the Steam `WormsXHD` folder (Worms Ultimat
 | `tools/w4m-maps` | `w4m-maps <W4M dir> [out = client/assets/maps] [map stems...]`; `W4M_MAPS_REF=<dir>` also writes every visible W4M land cell as `<dir>/<map>.obj` (reference renders) | `maps/<name>.json` + `.vox` + `.thin` + `.cells`, textures, `models/decor/` (+ `.mat`, `anim.txt`), `missions/` | `maps.md`, `missions.md`, `w4m-formats.md` |
 | `tools/w4m-ui` | `w4m-ui <W4M dir> [out = client/assets/ui]` | `ui/` (fe, fe2, hud, sky...; `sky/f_water01a/b/c` = FE.DAYWater set) PNGs, `lang/<code>.txt` (`<Lang>FE`, `<Lang>.xom`, `<Lang>Loading`, `<Lang>LS`: the mission lines) | `w4m-formats.md` "Frontend / HUD art" |
 | `tools/w4m-re/parttwk.py` | `parttwk.py [assets = client/assets]`, after w4m-maps, before w4m-models | `fx/parttwk.json` (the PARTTWK effects the maps, the weather, the weapons' Fx and the water (`ROOTS`: WXP_WaterSplash, WXP_WaterSmallSplash, WXP_WaterLargeSplash, WXP_WormDrownPopSplash) and the mission scripts and their movies start; a movie is a list of tracks of `[Type, time, flags, args...]` events, `CreateEmitter` names its effect at index 3, `CreateExplosion` at 9; the level databanks' own `WXPL_*` effects fill names PARTTWK lacks), `fx/<sprite set>.png` + `fx/sprites.txt` (blend factors, frames), `fx/sets.txt` (MeshSet meshes and clips for w4m-models: `models/fx/`) | `maps.md` "Rendering" |
+| `tools/w4m-re/fmv.py` | `fmv.py [assets = client/assets]` | `movies/subs.txt` (the `FMVSubTiles` timing: `<movie>\t<ms>\t<FETXT key>`, `<movie>\thold\t<ms>`) | `docs/audio.md` "Movies" |
 | `tools/w4m-re/acting.py` | `acting.py [out = client/assets/acting.txt]` | the WORMACTING scenes | `worm-reactions.md` |
 
 Order: `w4m-maps`, then `parttwk.py`, then `w4m-models` (it skins the moving decor listed in `models/decor/anim.txt` (`decor/<lib>_anim.glb`) and exports the particle meshes of `fx/sets.txt`). Run w4m-maps on all maps: with map stems it rewrites `anim.txt` for those maps only.
@@ -54,6 +55,7 @@ For the 14 speech events whose parameter is not named `MultiSelect` (`WormsX.fev
 | `voices/<bank>/lip.txt` | per written line (`fire_2`...): its LIP.txt rows, `<frame>:<viseme>` (0 Rest, 1 A, 2 Cons, 3 EI, 4 FV, 5 L, 6 MBP, 7 O, 8 QUW) |
 | `efmv/<group>/<event>[_N].ogg` | every `EFMV/<group>/<event>` FEV event whose waves are on disk (840: 56 groups incl. `Failures`), one file per wave |
 | `efmv/<group>/events.txt` | per event: gain dB (event × sounddef × instance × category), loop, 3D min / max m (0 0: 2D), play mode, wave count, Time volume envelope (rate, x,y points) |
+| `movies/<name>.mjpg`, `movies/<name>.ogg` | `Data/FMV/ntsc/English/<name>.wmv` (Meet_The_Professor, Welcome, Camelot, WildWest, Arabian, Jurassic): ffmpeg, 25 fps MJPEG q 10 in the `MJPG` container (`docs/audio.md` "Movies"), libvorbis q 4; ~200 MB in all |
 | `efmv/<group>/lip.txt` | per event: the LIP rows of its `.lsd` hash (`Data/Audio/EFMV/<group>.lsd`, `EFMV/<group>/LIP.txt`) |
 
 The client picks a random variant on each play; each team speaks with the voice bank chosen in team setup (default `team % banks`).
