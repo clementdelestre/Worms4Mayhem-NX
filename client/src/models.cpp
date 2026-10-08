@@ -871,6 +871,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint) {
             rlSetUniformMatrices(mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS], m.boneMatrices, m.skeleton.boneCount);
         }
         DrawMesh(m.meshes[i], mat, xf);
+        mat.maps[MATERIAL_MAP_DIFFUSE].color = c;  // maps is shared with the model's material
     }
     if (!e.glow.empty()) {  // additive and unlit (BeamCone's WarpgateShader: the grey noise as cyan light)
         rlDrawRenderBatchActive();
