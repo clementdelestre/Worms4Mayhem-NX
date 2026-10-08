@@ -37,6 +37,17 @@ User-requested behaviours (kept on purpose; retest only when the user asks):
   all three (docs/tests.md §replay_check.cpp).
 - Boot shows only the spinning icon on black, then the title opens on the iris (2026-10-07): W4M's Generic loading screen at boot (state 7, 1.8 s minimum) is skipped (`Loading::boot`).
 
+## Open divergences (ours, not W4M, to fix)
+
+Known gaps found 2026-10-08, left for later sessions. Re-check each against the code before acting.
+- **Weapon blasts are hand-written.** `Game::explode` (sim.cpp) passes fx null for weapon payloads, so `Fx::event` draws its own blast (flash, sprite ring, fireballs, smoke, debris) instead of the payload's WEAPTWK DetonationFx (Bazooka/Grenade/Homing `WXP_ExplosionX_Med`, Dynamite `WXP_ExplosionX_Large`, Holy `WXP_Holy_HG_Explosion`, Sheep `WXP_Explosion_Sheep`...). Only Fatkins, mines, mine factory, death blasts and Lua use the data effects. Visible symptom: big opaque yellow shells that hold then vanish (user screenshot of a dynamite). Fix spans fx + audio (the DetonationFx sound) + sim; render.md §"Explosion at or under the water".
+- **Shockring fade not seen in game.** Shape colour animation (render.md §3 "Shape colour animation") now fades `WXP_ExplosionX_ShockRing` (alpha 0.384 → 0 by 0.875 s); checked on WXPMesh7 animshots only. The mine blast tried (`--shot 17`) hid the ring behind land: verify on an airborne blast.
+- **Particle draw order.** W4M draws bin 23 (Particle1: ring + WXSprite4 smoke) in traversal order [assumed]; ours draws mesh particles before sprites (fx.cpp).
+- **Detail alpha clips.** D03_01, LUNAR11/17, WFactory, M.Ghost... carry a shape alpha channel but are not exported with their clip. LUNAR12 is drawn opaque with alpha test 0.5 (Lit MFS), so its fades now pop at 0.5 where W4M blends.
+- **Model rim/specular approximated.** `Lit::MFS` rim is `(0.15 + 0.2·diffuse)(1 − V·N)²`; W4M reads per-material fresnel colour/power and specular (`materialMatrix`, FixedFunction.cg). Needs those values exported by w4m-models; may make worm edges whiter than W4M.
+- **Worm grey band = W4M silhouette** (`Xray::hidden`, 0.25 grey at 50 % where land hides the active worm) and the pale mouth = "Happy" teeth under ambient (0.5, 0.5, 0.6): both match W4M on desktop. If grey shows on an unoccluded worm on Switch, suspect the `Xray::hidden` depth-equality test (polygon offset, 8-bit mask depth).
+- **Explosion frame rate.** A dynamite blast dropped the Switch to 49 FPS (2026-10-08 screenshot); not profiled.
+
 Attributing a function to a class is reliable when the function comes from a vtable. When it was inferred from the nearest `.cpp` assert string, it can be wrong near file boundaries.
 
 ## Files

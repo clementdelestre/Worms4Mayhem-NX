@@ -920,6 +920,18 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         prims.push(format!("{{\"attributes\":{{{attrs}}},\"indices\":{a_idx}{mat}}}"));
     }
     let mats: Vec<String> = (0..images.len()).map(|i| format!("{{\"pbrMetallicRoughness\":{{\"baseColorTexture\":{{\"index\":{i}}},\"metallicFactor\":0}}}}")).collect();
+    // a curve at 60 fps over [0, dur], run-length "v*n"
+    let track = |kf: &[Key], dur: f32| -> String {
+        let vals: Vec<String> = (0..=(dur * 60.0) as usize).map(|f| format!("{:.2}", eval(kf, (f as f32 / 60.0).min(dur)))).collect();
+        let mut runs = String::new();
+        let mut i = 0;
+        while i < vals.len() {
+            let n = vals[i..].iter().take_while(|v| **v == vals[i]).count();
+            runs += &if n > 1 { format!(" {}*{n}", vals[i]) } else { format!(" {}", vals[i]) };
+            i += n;
+        }
+        runs
+    };
     // XChildSelectors for Models (root extras "sel", ';'-separated): "S <primitive> <material of each child>", then per clip keying one
     // "K <clip> <selector> <length s> <SelectedChild value at 60 fps, run-length v*n>" (W4M truncates it to the child, 0x6c7243)
     let mut sel = String::new();
@@ -931,16 +943,20 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         for c in clips(x.d(s.lib), &x.s, &mut 0) {
             for (si, (name, _)) in s.alts.iter().enumerate() {
                 let Some(kf) = c.ch.iter().find(|((n, t), _)| n == name && t & 0xffffff == 0x1100).map(|(_, k)| k) else { continue };
-                let vals: Vec<String> = (0..=(c.dur * 60.0) as usize).map(|f| format!("{:.2}", eval(kf, (f as f32 / 60.0).min(c.dur)))).collect();
-                let mut runs = String::new();
-                let mut i = 0;
-                while i < vals.len() {
-                    let n = vals[i..].iter().take_while(|v| **v == vals[i]).count();
-                    runs += &if n > 1 { format!(" {}*{n}", vals[i]) } else { format!(" {}", vals[i]) };
-                    i += n;
-                }
-                sel += &format!("K {} {si} {}{runs};", c.name, c.dur);
+                sel += &format!("K {} {si} {}{};", c.name, c.dur, track(kf, c.dur));
             }
+        }
+    }
+    // "A <clip> <primitive> <length s> <alpha at 60 fps>": key 0x3000200 on "<shape>_<shader>" is the alpha of the shape's
+    // XConstColorSet (AnimInstance 0x7ad37f: flag 2 -> XShape Geometry -> ColorSet, field 0), which the Col CG programs multiply in;
+    // only a blended shape shows it (GL blend is off unless its shader has an XBlendModeGL, 0x793df0)
+    for (_, layers, cap) in chosen.iter().filter(|_| animated) {
+        let Some(c) = layers.first() else { continue };
+        for (pi, pt) in s.parts.iter().enumerate().filter(|(_, pt)| pt.blend.is_some()) {
+            let shape = pt.group.map(|g| leaf(&s.groups[g].path)).unwrap_or_default();
+            let Some(kf) = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && (shape.is_empty() || leaf(n).starts_with(&format!("{shape}_")))).map(|(_, k)| k) else { continue };
+            let dur = c.dur.min(*cap);
+            sel += &format!("A {} {pi} {dur}{};", c.name, track(kf, dur));
         }
     }
     let texs: Vec<String> = (0..images.len()).map(|i| format!("{{\"source\":{i}}}")).collect();

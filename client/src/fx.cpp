@@ -1281,7 +1281,7 @@ void drawWater(const Camera3D &cam, float level, float time, float HALF, Vector2
 void draw(const Camera3D &cam) {
     camPos = cam.position, camLook = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
     // MeshSet particles (0x5bd665): the mesh at the particle, scale (Size.x, Size.y, Size.x), ParticleOrientation (+ velocity) in XYZ order;
-    // no alpha reaches a mesh, so AlphaVelocity < 0 shrinks it to 0 at end of life instead (0x5bd69e)
+    // the particle alpha reaches no mesh, so AlphaVelocity < 0 shrinks it to 0 at end of life instead (0x5bd69e)
     for (const Particle &p : ps) {
         if (p.mesh < 0 || p.age < 0 || p.mesh >= (int)meshes.size()) continue;
         const MeshSet &m = meshes[p.mesh];
