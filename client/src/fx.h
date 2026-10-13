@@ -9,13 +9,14 @@
 namespace Fx {
 extern float shake;  // camera shake amplitude (m), decays in update()
 void load();
+bool preload(double until);  // the PARTTWK effects' data (decoded on a worker, sprites uploaded until `until`); true while pending
 // per match: level sky scene (levelSky; else the ramp), water textures, clear colour
 void theme(const std::string &theme, Color sky, const std::string &time, bool levelSky = true);
 std::string gradientFile(const std::string &theme, const std::string &time, bool side);  // W4M LightGradient <L>_Sky0n / <L>_SideSky0n
 std::string skyFile(const std::string &theme, const std::string &time);  // the level sky .glb (Models::decode() it ahead)
 void unload();
 void clear();
-void event(const GameEvent &e, Color dirt);
+void event(const GameEvent &e);
 void fireworks(Vector3 centre, float radius, float top);  // victory show (W4M GameOverLogicEntity: 4 s wait, 5 s) over Land.Center, Radius, MaxHeight
 void trail(const Projectile &s, Vector3 at, float dt, Vector3 wind);  // call once per frame per live projectile, at: where it is drawn (Projectile::shown); wind: (cos, 0, sin) x Wind.Speed / Wind.MaxSpeed
 void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire = false);  // one ambient particle (rises, slows down)
@@ -26,7 +27,9 @@ void dud(Vector3 p);  // mine fizzled: W4M ExpiryFx WXP_Wep_MineDudEffect
 void soap(Vector3 p);  // one W4M WXP_Bubbles_Small soap bubble, from the Bubble Trouble machine
 void jetStart(Vector3 at);  // W4M WAE_Jetpack PackAccessory.Trigger 0x58ce57: WXP_JetpackStartRing + WXP_JetPackStartBase, worm + 7 units
 void jetStop();  // its StartBase emitter is killed once the thrust stops (0x58cc94); the particles live on
-void start(const char *name, Vector3 at);  // a PARTTWK effect by name (ParticleHandlerService 0x5c1410)
+int start(const char *name, Vector3 at, float unit = 0.05f);  // a PARTTWK effect by name (ParticleHandlerService 0x5c1410); unit: m per W4M unit; its handle
+void place(int handle, Vector3 at);  // an attached effect follows its locator (0x5c1470)
+void stop(int handle);  // fading delete (0x5bfde0)
 // mission script emitters by the script's handle: Particle.NewEmitter; DelGraphicalEmitter (now: ...Imm, its particles too)
 void scripted(int handle, const char *name, Vector3 at);
 void scriptedOff(int handle, bool now);
@@ -40,7 +43,8 @@ void update(float dt);
 Color fog();  // horizon colour: clear colour and terrain/water fog
 void drawSky(const Camera3D &cam, Vector3 origin, float unit);  // first thing inside BeginMode3D; origin: W4M world origin, unit: m per W4M unit
 void drawWater(const Camera3D &cam, float level, float time, float half = 12000 / 20.f, Vector2 centre = {40, 40});  // half: W4M's 12000-unit quad in m, at the W4M origin
-void draw(const Camera3D &cam);  // particles, after the opaque scene and the water
+void drawUnderWater(const Camera3D &cam);  // bin 11 ParticleUnderWater, right after the water
+void draw(const Camera3D &cam);  // particles, bins 23-27 (Particle1-5), after the worms
 // lens flare, last in the scene; hit(from, dir): 0 clear, 1 land, 2 object between the camera and the sun
 void drawFlare(const Camera3D &cam, float dt, const std::function<int(Vector3, Vector3)> &hit);
 int count();

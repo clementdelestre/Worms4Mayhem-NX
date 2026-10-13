@@ -16,7 +16,7 @@ little-endian. `str` = `u8 len | bytes` (UTF-8, max 255). `Input` = 6 bytes
 
 ### Input (`struct Input`, `sim.h`; applied by `Game::step`, built by `Controls::read` / `tick`, `Ai::think`)
 
-The active player's per-tick input is the only game data on the wire; replays (`.w4r` "W4R3") store the same 6 bytes; a "W4R2" replay has 5 and loads with `zoom` 255, a "W4R1" one has 4 and loads with `flags` 0.
+The active player's per-tick input is the only game data on the wire; replays (`.w4r` "W4R4", "W4R3" before the Weapon Factory sliders) store the same 6 bytes; a "W4R2" replay has 5 and loads with `zoom` 255, a "W4R1" one has 4 and loads with `flags` 0.
 
 | field / bit | value | meaning (status: ours unless noted) |
 |---|---|---|
@@ -81,11 +81,11 @@ C = client → server, S = server → client.
   bytes it does not get (missing block = default scheme) and ignores extra ones. The block is preceded by its length (`u8 k`, 20 today).
   Weapon delays are not sent: every client derives them in `Game::start` from the preset whose bytes equal the scheme (`SCHEMES`), unless rule 128.
 - **Start wormpot / custom weapons** (optional, after the scheme block; absent = 0 / none): `wormpot` holds the three
-  reels: byte r = reel r's W4M mode id (`WormpotMode` of `sim.h`, 0 or 1 = empty). `Weapon` = `str name, u8 kind` (clamped to `Kind::ChangeWorm` on read), 9 × f32 (radius, damage, speed, fuse, bounce,
-  cluster radius, cluster damage, poison, cluster spread), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon`
+  reels: byte r = reel r's W4M mode id (`WormpotMode` of `sim.h`, 0 or 1 = empty). `Weapon` = `str name, u8 kind` (clamped to `Kind::ChangeWorm` on read), 5 × f32 (speed, fuse, bounce, poison,
+  cluster spread), 8 × f32 Weapon Factory sliders (land damage, worm radius, worm damage, blast strength; then the cluster's), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon`
   (f32 = IEEE-754 bits as u32). These are the host's Weapon Factory weapons: every client appends them to its
   `weapons.json` table at start, so the table (part of the checksum) is the same everywhere. Fields not on the wire
-  (`post_launch`, `retreat`, blast keys, `user_fuse`...) are reset by `Game::start` on every peer: PostLaunchDelay 500 ms (homing 0),
+  (`post_launch`, `retreat`, `user_fuse`...) are reset by `Game::start` on every peer, crater / damage / blast keys / detonation from the sliders (`factoryPayload`): PostLaunchDelay 500 ms (homing 0),
   retreat = the scheme's (W4M kWeaponFactoryWeapon / kWeaponFactoryHoming, data).
 - **Inputs**: the match is one input stream indexed by tick (tick 0 = first `step` after
   `start`). The owner of the active team sends an `Input` for *every* tick it steps, batched

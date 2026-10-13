@@ -9,6 +9,7 @@
 #include "models.h"
 #include "frontbg.h"
 #include "lit.h"
+#include "movie.h"
 #include "loading.h"
 #include "raymath.h"
 #include "rlgl.h"
@@ -336,7 +337,9 @@ const float HOLD = 0.35f;
 bool forceHelp = false;
 bool helpHeld() { return forceHelp || minusFor >= HOLD; }
 
+static double cursorFrame = -1;  // when feCursor last drew: the OS pointer comes back on screens that do not
 void pollStick() {
+    if (IsCursorHidden() && GetTime() - cursorFrame > 0.25) ShowCursor();
 #ifdef __SWITCH__
     const float up = 1;  // libnx HID sticks report +y for up, GLFW reports -y
 #else
@@ -488,6 +491,17 @@ void predecode(const std::vector<std::string> &names) {
             decoding.erase(name);
         }
     }));
+}
+
+bool warm(const std::vector<std::string> &names, double until) {
+    for (const std::string &n : names) {
+        if (cache.count(n)) continue;
+        bool decodingNow;
+        { std::lock_guard<std::mutex> l(predMu); decodingNow = decoding.count(n); }
+        if (decodingNow || GetTime() >= until) return true;
+        tex(n);
+    }
+    return false;
 }
 
 void unload() {
@@ -834,16 +848,15 @@ const float IN_SCALEHIT_Y[7][6] = {{0, 0, 0.18823f, -0.98193f, 0.18823f, -0.9819
                                    {0.2915f, 0.66895f, 0.062103f, 0.99805f, 0, 0}};
 
 // tilted deg about its centre
-void logo(float cx, float y, float w, float deg) {
+void logo(float cx, float y, float w, float deg, float stretch) {
     Texture2D t = tex("fe/tournament_vsus");
     Rectangle src = {130, 50, 780, 400};
-    float h = w * src.height / src.width;
+    float h = w * src.height / src.width * stretch;
     rlPushMatrix();
     rlTranslatef(cx, y + h / 2, 0);
     rlRotatef(deg, 0, 0, 1);
     if (t.id) {
         DrawTexturePro(t, src, {-w / 2, -h / 2, w, h}, {}, 0, WHITE);
-        text("NX", w * 0.41f, h * 0.30f, w * 0.09f, GOLDEN, 1);
     } else {
         text("WORMS4NX", 0, -w * 0.08f, w * 0.15f, GOLDEN, 1);
     }
@@ -856,15 +869,25 @@ void logo(float cx, float y, float w, float deg) {
 #define W4NX_VERSION "0.1.0"
 #endif
 // x, y: label centre; deg: tilt
-struct MenuItem { const char *key, *en, *fr; float x, y, size, deg; };
+// FE text is 1.16 x wider than our font at the same height [observed: briefing, title, ticker lines of the real game, same glyph height]
+static const float TEXT_X = 1.16f;
+// FE x positions (not sizes) widen by 16:9 / 4:3 about the screen centre [user-requested, docs/w4m/frontend.md "16:9 spread"]; FeFlat: W4M's own x
+static const float FE_SPREAD = (1280 / 720.0f) / (4 / 3.0f);
+static float feK = FE_SPREAD;
+// Main menu list and logo drawn this much larger than W4M's size [user-requested, docs/w4m/frontend.md "Main menu size"]
+static const float MAIN_BIG = 1.25f;
+struct FeFlat { float old = feK; FeFlat() { feK = 1; } ~FeFlat() { feK = old; } };
+struct MenuItem { const char *key, *en, *fr; float x, y, size, deg, fit, sx = 1; };  // fit: max label width (px, after sx), 0 = none; sx: x stretch
 
 static const Color GOLD_TOP = {255, 240, 130, 255}, GOLD_BOT = {245, 140, 25, 255}, INK = {22, 36, 58, 255}, BLUE_PANEL = {2, 79, 119, 255};
 static float easeOut(float k) { k = Clamp(k, 0, 1); return 1 - (1 - k) * (1 - k) * (1 - k); }
 
 // W4M menu entry: gold gradient label tilted about its centre; glow 0..1 = highlight (white on a black brush stroke, pulsing)
-static void menuEntry(const char *label, float cx, float cy, float size, float deg, float glow, float appear, float t) {
+static void menuEntry(const char *label, float cx, float cy, float size, float deg, float fit, float sx, float glow, float appear, float t) {
     if (appear <= 0) return;
-    float w = textWidth(label, size), s = 1 + glow * (0.04f - 0.04f * cosf(t * 4 * PI));
+    float w = textWidth(label, size) * sx;
+    if (fit > 0 && w > fit) size *= fit / w, w = fit;
+    float s = 1 + glow * (0.04f - 0.04f * cosf(t * 4 * PI));
     cx = fminf(cx, 1250 - w * 0.54f);  // long translations stay on screen
     rlPushMatrix();
     rlTranslatef(cx + (1 - appear) * 260, cy, 0);
@@ -875,6 +898,7 @@ static void menuEntry(const char *label, float cx, float cy, float size, float d
         if (!image("fe/icon_splat", b, Fade(WHITE, glow * appear))) DrawRectangleRounded(b, 0.6f, 6, Fade(BLACK, 0.85f * glow * appear));
     }
     Color top = Fade(ColorLerp(GOLD_TOP, WHITE, glow), appear), bot = Fade(ColorLerp(GOLD_BOT, WHITE, glow), appear);
+    rlScalef(sx, 1, 1);
     textG(label, 0, -size * 0.52f, size, top, bot, 1);
     rlPopMatrix();
 }
@@ -885,23 +909,33 @@ static const int MAIN_ITEMS = 5 - !REPLAYS;  // console games leave through HOME
 static const int MAIN_ITEMS = 6 - !REPLAYS;
 #endif
 static int mainItem(int row) { return row + (!REPLAYS && row >= 3); }  // menu row -> MAIN_ALL index
-// W4M layouts: staggered, tilted, one size per entry
-static const MenuItem MAIN_ALL[] = {
-    {"FETXT.LocalGame", "Local Game", "Partie locale", 905, 150, 62, -3},
-    {"FETXT.HTPHeader3", "Network Game", "Partie en réseau", 975, 248, 48, 2},
-    {"FETXT.MyWorms", "My Worms", "Mes Worms", 880, 334, 56, -2},
-    {nullptr, "Replays", "Replays", 990, 416, 46, 3},
-    {"FETXT.Help&Options", "Help & Options", "Aide et options", 900, 494, 52, -2},
-    {"Lang.Quit", "Quit", "Quitter", 1010, 570, 44, 2},
+// WXFE.MainMenuMenu list [data MENUTWKXPCCOMMON]: centre (155, 19) FE, 236 x 220, tilt 0.06 rad; rows {FontSize, RowHeight, own tilt}
+// stacked from the box top with a 2 gap (rows past the bottom scroll); each label centred (KeepWhiteSpace 0 forces kEdgeJustifyCentreCentre)
+// at min(FontSize, column width / its em width) - 0.1 (ScaleTextToFit, 0x781dfd -> 0x755843) [disasm + data]
+struct MainRow { const char *key, *en, *fr; float font, height, tilt; };
+static const MainRow MAIN_ALL[] = {
+    {"FETXT.LocalGame", "Local Game", "Partie locale", 35, 35, 0},
+    {"FETXT.HTPHeader3", "Network Game", "Partie en réseau", 35, 35, 0},
+    {"FETXT.MyWorms", "My Worms", "Mes Worms", 35, 35, -0.03f},
+    {nullptr, "Replays", "Replays", 35, 35, 0},
+    {"FETXT.Help&Options", "Help & Options", "Aide et options", 27, 25, -0.01f},
+    {"Lang.Quit", "Quit", "Quitter", 35, 35, -0.03f},
 };
-static const std::array<MenuItem, 6> MAIN_MENU = [] {
+static std::array<MenuItem, 6> mainMenu() {
+    // FE text size as feText (TEXT_X); column = row width less its two 2-unit gap columns [assumed]
+    const float COL_W = (236 - 4) * MAIN_BIG, GAP = 2 * MAIN_BIG, TILT = 0.06f;
     std::array<MenuItem, 6> m{};
-    for (int i = 0; i < 6 - !REPLAYS; i++) {  // later rows move up a slot: no hole in the stagger
-        const MenuItem &e = MAIN_ALL[mainItem(i)];
-        m[i] = MAIN_ALL[i], m[i].key = e.key, m[i].en = e.en, m[i].fr = e.fr;
+    float top = 110 * MAIN_BIG;  // y up, from the box centre
+    for (int i = 0; i < MAIN_ITEMS; i++) {
+        const MainRow &r = MAIN_ALL[mainItem(i)];
+        float cy = top - r.height * MAIN_BIG / 2;
+        top -= r.height * MAIN_BIG + GAP;
+        m[i] = {r.key, r.en, r.fr, 640 + (155 - cy * sinf(TILT)) * 720 / 500 * FE_SPREAD, 360 - (19 + cy * cosf(TILT)) * 720 / 500, (r.font - 0.1f) * MAIN_BIG * 720 / 500,
+                -(TILT + r.tilt) * RAD2DEG, COL_W * 720 / 500, TEXT_X};
     }
     return m;
-}();
+}
+static const std::array<MenuItem, 6> MAIN_MENU = mainMenu();
 static const MenuItem LOCAL_MENU[] = {
     {"FETXT.QuickGame", "Quick Game", "Partie rapide", 870, 160, 60, -3},
     {nullptr, "Custom match", "Partie personnalisée", 1075, 262, 50, 3},  // W4M calls it Versus: too vague
@@ -949,6 +983,9 @@ static const float K_SLIDEX[2][6] = {{0, 0, 0, 3.0723f, 0, 3.0723f}, {0.625f, 1,
                                            {0.5415f, -0.054565f, 0.52393f, -0.85107f, 0.63428f, 0.77246f}, {0.625f, 0.046906f, 0.63428f, 0.77246f, 0.51953f, -0.854f},
                                            {0.70801f, -0.089966f, 0.51953f, -0.854f, 0.6792f, 0.7334f}, {0.83301f, 0.044983f, 0.6792f, 0.7334f, 0.9707f, -0.23962f},
                                            {0.95801f, 0.014137f, 0.9707f, -0.23962f, 0, 0}};
+// In_Flipy: scale XY 0 -> 0.69 at 0.04 s, then slowly to 1 at 2.92 s
+static const float K_FLIPY[3][6] = {{0, 0, 0.041656f, 0.69043f, 0, 0}, {0.041656f, 0.69043f, 0, 0.0149f, 0.30249f, 2.3301f}, {2.916f, 1, 7.9102f, 0, 6.7852f, -18.984f}};
+static const FeClip IN_FLIPY = {keys(K_FLIPY, true), keys(K_FLIPY, true), {}, {}, {}};
 static const FeClip IN_SLIDEX = {keys(K_SLIDEX, true), {}, {}, {}}, IN_SPEECH = {keys(K_SPEECH, true), keys(K_SPEECH, true), {}, {}},
                     IN_TOOLTIP = {{}, keys(K_TOOLTIP, true), {}, {}}, OUT_SCALEY = {{}, keys(K_OUT_SCALEY, true), {}, {}},
                     IN_TITLEUNDERLINE = {{}, {}, keys(K_TITLE_IN_X, true), keys(K_TITLE_IN_Y, false)},
@@ -969,7 +1006,6 @@ static const FeClip IN_PREV = {keys(K_IN_PREV_S, true), keys(K_IN_PREV_S, true),
 // FE units about the screen centre, y up: 500 tall at 720 px [observed: WXFE.Story / WXFE.Challenges against the real game; the 3D items are seen by
 // a camera 903.5 units from the z = 0 plane, FOV 0.54 rad: the plane is 500 tall there, the ToolTip strip and the book match]
 static const float FE_S = 720 / 500.0f;
-static const float FE_PX = 1280 / 960.0f;  // the in-game briefing popup's FE unit [assumed 960 x 540; the Story / Challenges pages measure 500 tall: FE_S]
 
 // A W4M menu item about its centre c: Anim_Incoming `in` once `delay` s passed since the screen showed (`since`), Anim_Outgoing
 // `out` once leaving (s, -1: not). A null clip (W4M None) takes rowAppear() slid by `slide` px. False: hidden; else rlPopMatrix() after.
@@ -992,15 +1028,13 @@ static bool feItem(Vector2 c, const FeClip *in, float delay, const FeClip *out, 
 
 // ---------------------------------------------------------------- W4M frontend layout (docs/w4m/frontend.md §Story and Challenges)
 
-static Vector2 fePos(float x, float y) { return {640 + x * FE_S, 360 - y * FE_S}; }
+static Vector2 fePos(float x, float y) { return {640 + x * FE_S * feK, 360 - y * FE_S}; }
 
 // WXFE_GradientColours: top -> bottom (docs/w4m/frontend.md "Text colours")
 static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 255}}, GC_LIST_LABLE_BLUE[2] = {{151, 207, 255, 255}, {233, 255, 255, 255}},
                    GC_SUBHEADER_BLUE[2] = {{128, 210, 255, 255}, {255, 255, 255, 255}}, GC_BOOK_BROWN[2] = {{93, 51, 0, 200}, {93, 51, 0, 200}},
                    GC_POPUP_RED[2] = {{148, 0, 0, 255}, {148, 0, 0, 255}}, GC_SCROLLTEXT[2] = {{0, 69, 109, 110}, {0, 69, 109, 110}},
                    GC_WHITE[2] = {WHITE, WHITE};
-// FE text is 1.16 x wider than our font at the same height [observed: briefing, title, ticker lines of the real game, same glyph height]
-static const float TEXT_X = 1.16f;
 static const Color BC_BLACK = BLACK, BC_WHITE = WHITE, BC_NONE = {0, 0, 0, 0}, BC_BOOK_EDGE = {255, 255, 255, 80};  // WXFE_BackgroundColours: the text outline
 
 // W4M TextAnim (docs/w4m/frontend.md "TextBox layout"): per glyph a High / Low pair of the HUD.FontAnim clips, the groups cycling by glyph, the
@@ -1023,7 +1057,7 @@ static std::vector<Vector2> textPose(int kind, const std::string &s) {
 
 // A W4M text box: a word-wrapped block in a box about its centre c (half extents hw x hh, FE units), font size `size` FE (line height = size),
 // anchored by `just` (EdgeJustificationEnum), tilted by rot (Orientation z, rad). autoScale shrinks the size until it fits; scrollT >= 0 (s since
-// the box showed) scrolls an overflowing text [AutoScrollSpeed > 0: 0x75e735 moves 0.01 line per 20 ms tick after AutoScrollDelay / 2, back at the end]
+// the box showed) scrolls an overflowing text of two lines or more [AutoScrollSpeed > 0: 0x75e735 waits AutoScrollDelay, then 0.01 line per 20 ms tick upward, lines recycling]
 struct FeBox {
     Vector2 c = {0, 0};
     float hw = 0, hh = 0, size = 20, rot = 0, scrollT = -1;
@@ -1032,6 +1066,33 @@ struct FeBox {
     const Color *grad = GC_WHITE;
     Color edge = BC_BLACK;
 };
+// /*FETXT.Control.X*/ tokens: W4M's text table swaps each for the controller's button glyph (0x4de750 aliases MenuSelect / MenuCancel to
+// FETXT.JoyButton1 / 2); here a pill with our pad button (Switch A / B) or the PC key, kept in a line as '\x01' + the label
+static std::string feTokens(const std::string &s) {
+    static const struct { const char *tok, *pad, *key; } MAP[] = {{"FETXT.Control.MenuSelect", "A", "Enter"}, {"FETXT.Control.MenuCancel", "B", "Backspace"}};
+    std::string out;
+    for (size_t i = 0; i < s.size();) {
+        size_t e = s.compare(i, 2, "/*") == 0 ? s.find("*/", i + 2) : std::string::npos;
+        if (e == std::string::npos) { out += s[i++]; continue; }
+        std::string tok = s.substr(i + 2, e - i - 2), label = tok.substr(tok.rfind('.') + 1);
+        for (const auto &m : MAP) if (tok == m.tok) label = keyGlyphs() ? m.key : m.pad;
+        out += '\x01' + label + '\x02', i = e + 2;
+    }
+    return out;
+}
+static float feGlyphH(float px) { return px * 0.95f; }
+// width of a line: text runs measured as is, each button pill as glyphs() draws it
+static float feWidth(const std::string &s, float px) {
+    float w = 0;
+    for (size_t i = 0; i < s.size();) {
+        size_t a = s.find('\x01', i), e = a == std::string::npos ? s.size() : a;
+        w += textWidth(s.substr(i, e - i).c_str(), px);
+        if (a == std::string::npos) break;
+        size_t z = s.find('\x02', a);
+        w += glyphs(s.substr(a + 1, z - a - 1).c_str(), 0, 0, feGlyphH(px), keyGlyphs(), false) + px * 0.15f, i = z + 1;
+    }
+    return w;
+}
 static std::vector<std::string> feWrap(const std::string &s, float sizePx, float w) {
     std::vector<std::string> lines;
     std::string line, word;
@@ -1039,43 +1100,59 @@ static std::vector<std::string> feWrap(const std::string &s, float sizePx, float
         char ch = i < s.size() ? s[i] : ' ';
         if (ch != ' ' && ch != '\n') { word += ch; continue; }
         std::string t = line.empty() ? word : line + " " + word;
-        if (!line.empty() && textWidth(t.c_str(), sizePx) * TEXT_X > w) lines.push_back(line), t = word;
+        if (!line.empty() && feWidth(t, sizePx) * TEXT_X > w) lines.push_back(line), t = word;
         line = t, word.clear();
         if (ch == '\n') lines.push_back(line), line.clear();
     }
     if (!line.empty() || lines.empty()) lines.push_back(line);
     return lines;
 }
-static void feText(const std::string &s, const FeBox &b) {
+static void feText(const std::string &text, const FeBox &b) {
+    std::string s = feTokens(text);
     float size = b.size;
     std::vector<std::string> lines = feWrap(s, size * FE_S, 2 * b.hw * FE_S);
     while (b.autoScale && size > 5 && lines.size() * size > 2 * b.hh) lines = feWrap(s, (size -= 1) * FE_S, 2 * b.hw * FE_S);
     float px = size * FE_S, H = lines.size() * size, over = H - 2 * b.hh;
-    float top = b.just < 3 ? b.c.y + b.hh : b.just < 6 ? b.c.y + H / 2 : b.c.y - b.hh + H, off = 0;  // FE y of the first line's top
-    if (b.scrollT >= 0 && over > 0) {
-        float wait = 2, run = over / 10, p = fmodf(b.scrollT, 2 * run + 2 * wait);
-        off = 10 * (p < wait ? 0 : p < wait + run ? p - wait : p < 2 * wait + run ? run : 2 * run + 2 * wait - p);
-    }
+    bool scroll = b.scrollT >= 0 && over > 0 && lines.size() > 1;
+    float top = scroll || b.just < 3 ? b.c.y + b.hh : b.just < 6 ? b.c.y + H / 2 : b.c.y - b.hh + H, shift = 0;  // FE y of the first line's top
+    if (scroll) shift = fmaxf(floorf(b.scrollT / 0.02f) - 4000 / 20, 0) * 0.01f;  // lines: AutoScrollDelay 4000 ms of 20 ms ticks, then AutoScrollSpeed 0.01 per tick
     Vector2 ctr = fePos(b.c.x, b.c.y);
     rlPushMatrix();
     rlTranslatef(ctr.x, ctr.y, 0);
     rlRotatef(-b.rot * RAD2DEG, 0, 0, 1);
     rlTranslatef(-ctr.x, -ctr.y, 0);
-    if (b.scrollT >= 0 && over > 0) {
-        Vector2 a = fePos(b.c.x - b.hw, b.c.y + b.hh);
-        rlDrawRenderBatchActive();
-        BeginScissorMode((int)a.x, (int)a.y, (int)(2 * b.hw * FE_S), (int)(2 * b.hh * FE_S));
-    }
     int align = b.just % 3;
     float x = align == 0 ? b.c.x - b.hw : align == 1 ? b.c.x : b.c.x + b.hw;
     for (size_t i = 0; i < lines.size(); i++) {
         std::vector<Vector2> pose = b.anim ? textPose(b.anim, lines[i]) : std::vector<Vector2>();
-        Vector2 p = fePos(x, top - i * size);
-        rlPushMatrix(), rlTranslatef(p.x, 0, 0), rlScalef(TEXT_X, 1, 1), rlTranslatef(-p.x, 0, 0);
-        textG(lines[i].c_str(), p.x, p.y - off * FE_S, px, b.grad[0], b.grad[1], align, b.edge, b.anim ? &pose : nullptr);
+        float y = top - i * size, a = 1;
+        if (scroll) {  // 0x75e735 rotates the first line to the end each line scrolled; 0x75d705 squashes and fades a line into the box edges
+            size_t n = lines.size(), slot = (i + n - (size_t)shift % n) % n;
+            y = top + (shift - floorf(shift) - slot) * size;
+            if (y > top) a = 1 - (y - top) / size, y = top;
+            else if (y < b.c.y - b.hh + size) a = (y - (b.c.y - b.hh)) / size;
+            if (a <= 0) continue;
+        }
+        Vector2 p = fePos(x, y);
+        rlPushMatrix(), rlTranslatef(p.x, p.y, 0), rlScalef(TEXT_X, a, 1), rlTranslatef(-p.x, -p.y, 0);
+        Color c0 = b.grad[0], c1 = b.grad[1], e = b.edge;
+        c0.a *= a, c1.a *= a, e.a *= a;
+        const std::string &ln = lines[i];
+        if (ln.find('\x01') == std::string::npos) textG(ln.c_str(), p.x, p.y, px, c0, c1, align, e, b.anim ? &pose : nullptr);
+        else {
+            float cx = p.x - feWidth(ln, px) * align / 2;
+            for (size_t k = 0; k < ln.size();) {
+                size_t a = ln.find('\x01', k), z = a == std::string::npos ? ln.size() : a;
+                std::string run = ln.substr(k, z - k);
+                textG(run.c_str(), cx, p.y, px, c0, c1, 0, e), cx += textWidth(run.c_str(), px);
+                if (a == std::string::npos) break;
+                size_t q = ln.find('\x02', a);
+                float h = feGlyphH(px);
+                cx += glyphs(ln.substr(a + 1, q - a - 1).c_str(), cx, p.y + (px - h) / 2, h, keyGlyphs()) + px * 0.15f, k = q + 1;
+            }
+        }
         rlPopMatrix();
     }
-    if (b.scrollT >= 0 && over > 0) rlDrawRenderBatchActive(), EndScissorMode();
     rlPopMatrix();
 }
 
@@ -1085,15 +1162,16 @@ static void divide(float x) {
 }
 
 // The four scrolling FETXTH watermarks of every submenu (Scrolling 1-4: position, font size, scale, Speed, ScrollForward, Delay_Incoming; In_SlideX
-// along the text), rotated 90 deg [data]; Speed is taken as FE units per 20 ms tick [assumed: the scroller's update was not traced]. since / out:
+// along the text), rotated 90 deg [data]; Speed = FE units per 20 ms tick, the text recycled with one space between copies (0x76df84, 0x76e0a0). since / out:
 // seconds since the screen showed / since it began leaving (-1: not); a page that is in place passes since >= 1
 static void watermark(const char *title, float x, float t, float since = 99, float out = -1) {
     static const struct { float x, y, size, half, speed, delay; bool fwd; } COLS[4] = {{-308, -30, 30, 270, 0.4f, 0.3f, true}, {-259, 0, 60, 270, 0.3f, 0.35f, false},
                                                                                            {-211, -10, 30, 260, 0.2f, 0.385f, true}, {-369, 0, 60, 270, 0.15f, 0.35f, false}};
-    std::string tile = std::string(title) + "   ";
+    FeFlat flat;
+    std::string tile = std::string(title) + " ";
     float shift = out >= 0 ? (1 - rowAppear(99, out, 0)) * -700 : 0;
     for (const auto &c : COLS) {
-        float px = c.size * FE_S, w = textWidth(tile.c_str(), px), run = fmodf(t * c.speed * 50 * FE_S, w);
+        float px = c.size * FE_S, w = textWidth(tile.c_str(), px), run = fmodf(floorf(t * 50) * c.speed * FE_S, w);
         float k = since < c.delay ? 0 : clipKeys(K_SLIDEX, 2, since - c.delay, true);
         if (k < 0.001f) continue;
         Vector2 o = fePos(c.x, c.y);
@@ -1116,19 +1194,23 @@ static void tooltipStrip() {
     else DrawRectangle(0, c.y - h / 2, 1280, h, {246, 243, 232, 255});
 }
 
-// TickerTapeTXT: black FE.Font 20 on the strip, at (11, -159) in a 406 FE window, tilted -0.029 rad; Speed 0.5 [assumed unit as the watermarks]
+// TickerTapeTXT: Solid_Black (Colour_Front 3, Colour_Back 1 Blank: no outline) FE.Font 20 on the strip, at (11, -159) in a 406 FE window, tilted -0.029 rad; Speed 0.5 FE per 20 ms tick, Wrap 0: the text and a copy after one
+// space slide left, then back to the start after one text + space with a 2000 ms wait (0x76df84, 0x76d84b, 0x76e0a0) [disasm]
 static void tickerText(float t) {
     const char *tick = tr("WXFE.TickerTapeDefault", "Worms4NX - fan-made homebrew                    ");
-    float px = 20 * FE_S, w = textWidth(tick, px) * TEXT_X;
-    Vector2 c = fePos(11, -159);
-    Rectangle win = {c.x - 203 * FE_S, c.y - 20 * FE_S, 406 * FE_S, 40 * FE_S};
+    float px = 20 * FE_S, w = textWidth(tick, px) * TEXT_X, period = w + textWidth(" ", px) * TEXT_X;
+    int ticks = (int)(t * 50), steps = (int)(period / (0.5f * FE_S)) + 1, n = ticks % (100 + steps);  // 100 ticks of the 2000 ms wait, then the steps
+    // the gap between NAV Prev (-247, half 45) and NAV Start (264, half 40) less 10 FE each side = W4M's 406 FE window at (11, -159)
+    float l = fePos(-247, 0).x + 55 * FE_S, r = fePos(264, 0).x - 50 * FE_S;
+    Vector2 c = {(l + r) / 2, fePos(0, -159).y};
+    Rectangle win = {l, c.y - 20 * FE_S, r - l, 40 * FE_S};
     rlDrawRenderBatchActive();
     rlPushMatrix();
     rlTranslatef(c.x, c.y, 0);
     rlRotatef(0.029f * RAD2DEG, 0, 0, 1);
     rlTranslatef(-c.x, -c.y, 0);
     BeginScissorMode((int)win.x, (int)win.y, (int)win.width, (int)win.height);
-    for (float u = win.x - fmodf(t * 0.5f * 50 * FE_S, w + win.width); u < win.x + win.width; u += w + win.width) { rlPushMatrix(), rlTranslatef(roundf(u), 0, 0), rlScalef(TEXT_X, 1, 1), text(tick, 0, c.y - px / 2, px, INK), rlPopMatrix(); }
+    for (float u = win.x - fmaxf(n - 100, 0) * 0.5f * FE_S; u < win.x + win.width; u += period) { rlPushMatrix(), rlTranslatef(roundf(u), 0, 0), rlScalef(TEXT_X, 1, 1), textG(tick, 0, c.y - px / 2, px, BLACK, BLACK, 0, BC_NONE), rlPopMatrix(); }
     rlDrawRenderBatchActive();
     EndScissorMode();
     rlPopMatrix();
@@ -1158,11 +1240,34 @@ static void paperStrip(float t, bool back) {
     if (back) navButton(2, 0, {-247, -159}, 45);
 }
 
+// MouseEntity (0x744cfc / 0x744c0e): the FE.Mouse sprite (mouse.tga, FE.MouseSize 20 FE) centred 14 FE right / below the pointer, rotated 0.98 rad
+void feCursor() {
+#ifndef __SWITCH__
+    static Vector2 last = {-1, -1};
+    Vector2 m = GetMousePosition();
+    static bool moved = false;
+    if (last.x >= 0 && (m.x != last.x || m.y != last.y)) moved = true;
+    last = m;
+    if (!moved) return;
+    Texture2D t = tex("fe/mouse");
+    if (!t.id) return;
+    if (!IsCursorHidden()) HideCursor();
+    cursorFrame = GetTime();
+    float d = 20 * FE_S;
+    rlPushMatrix();
+    rlTranslatef(m.x + 14 * FE_S, m.y + 14 * FE_S, 0);
+    rlRotatef(0.98f * RAD2DEG, 0, 0, 1);  // clockwise: the arrow's tip then lands next to the pointer [assumed sign]
+    DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {-d / 2, -d / 2, d, d}, {}, 0, WHITE);
+    rlPopMatrix();
+#endif
+}
+
 static float backOut(float k) { k = Clamp(k, 0, 1) - 1; return 1 + 2.7f * k * k * k + 1.7f * k * k; }
 
 // W4M's Title Control (docs/w4m/frontend.md §17): FontSizeOverride 40, Button_Yellow, TitleRandom, over its brush underline; x: the page's offset.
 // The spot is read off the HISTOIRE / DEFIS screens [observed]: text left edge at FE -305, centre y 195, underline from -363, centre y 174
 static void titleControl(const char *title, float x) {
+    FeFlat flat;
     float sz = 40 * FE_S, tw = textWidth(title, sz) * TEXT_X;
     Vector2 l = fePos(-305, 195), u = fePos(-363, 174);
     std::vector<Vector2> pose = textPose(3, title);
@@ -1254,7 +1359,7 @@ void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, boo
         const MenuItem &m = items[i];
         float &g = glow[i], a = !live ? 1 : rowAppear(leaving >= 0 || from == Title ? titleIn(t) : t - entered, leaving >= 0 && next != Title ? t - leaving : -1, i);
         g = live ? g + ((i == sel) - g) * k : i == sel;
-        menuEntry(tr(m.key, m.en, m.fr), m.x, m.y, m.size, m.deg, g, a, t);
+        menuEntry(tr(m.key, m.en, m.fr), m.x, m.y, m.size, m.deg, m.fit, m.sx, g, a, t);
     }
 }
 
@@ -1447,7 +1552,11 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         bool confirm = screen == Confirm;
         float a = easeOut(titleIn(t) / 0.4f);  // the title's logo glides to its menu spot (backwards on B)
         float up = leaving >= 0 && next != Title ? easeOut((t - leaving) / LEAVE) : from == Title || leaving >= 0 ? 0 : 1 - easeOut((t - entered) / 0.35f);  // to / from a submenu
-        logo(Lerp(640, 330, a), Lerp(90, 40, a) - up * 300, Lerp(760, 560, a), -6 * a);
+        // WXFE.Vs: the 1024 x 512 texture as 440 x 236 FE about (-118, 102) [data], turned 0.145 rad [observed on the real menu; the data says 0.17]
+        const float ROT = 0.145f, w = 440 * 780 / 1024.0f * FE_S * MAIN_BIG, h = w * 400 / 780 * (236 / 220.0f);
+        const Vector2 off = Vector2Rotate({(520 - 512) / 1024.0f * 440, (256 - 250) / 512.0f * 236}, ROT), c = fePos(-118 + off.x, 102 + off.y);  // logo()'s crop centre
+        logo(Lerp(640, c.x, a), Lerp(90, c.y - h / 2, a) - up * 300, Lerp(760, w, a), -ROT * RAD2DEG * a, 236 / 220.0f);
+        text(TextFormat("Ver#%s", W4NX_VERSION), fePos(200, -220).x, fePos(200, -220).y - 20 * FE_S * 0.52f, 20 * FE_S, WHITE, 1);  // BuildNumber (200, -220), size 20, centred (Justification 4) [data]
         menu(MAIN_MENU.data(), MAIN_ITEMS, mainRow, confirm ? 0 : dy, t, !confirm);
         rlPushMatrix();
         rlTranslatef(0, (1 - a) * 110, 0);
@@ -1546,7 +1655,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             text(TextFormat("%s%s", vals[i].c_str(), ed && fmodf(t, 1) < 0.5f ? "_" : ""), r.x + r.width - 24, r.y + 12, 34, ink(i == row), 2);
         }
         if (row == 1 && dx) port = Clamp(port + dx, 1, 65535);
-        if (row == 2 && (dx || ok)) music = !music, Audio::music(music);
+        if (row == 2 && (dx || ok)) music = !music, Audio::music(music, nullptr, true);
         if (row == 3 && (dx || ok)) language = !language, SaveFileText(DATA_DIR "lang.txt", (char *)(language ? "fr\n" : "en\n"));
         if (ok && row == 0) edit(name, "Player name");
         if (ok && row == 1) edit(host, "Server address");
@@ -1744,6 +1853,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         UnloadImage(img);
         capture = nullptr;
     }
+    feCursor();
     EndDrawing();
     if (act != None) {
         for (int k = 0; k < 4; k++) Audio::setTeamVoice(k, cfg.teamSetup[k].voice);
@@ -1873,8 +1983,10 @@ void Frontend::factory(int dx, int dy, bool ok, bool back) {
     }
     hints({{"A", "Enter", facSel == n ? "Create" : "Edit"}, {"Y", "Delete", "Delete"}, {"B", "Esc", "Save & back"}});
     if (ok && facSel == n) {
-        WeaponDef w = {TextFormat("Custom %d", n + 1), Kind::Shell, 3, 45, 30, 0, 0, 1.5f, 15, 1, 0, 1, true, 2};
+        WeaponDef w = {TextFormat("Custom %d", n + 1), Kind::Shell, 0, 0, 30, 0, 0, 0, 0, 1, 0, 1, true, 2};
         w.model = "bazooka", w.icon = "Secret Weapon";
+        for (auto &c : w.slider) c[0] = 0.5f, c[1] = 0.75f, c[2] = 0.5f, c[3] = 0.5f;  // WXD.DefaultWeapon
+        factoryPayload(w);
         customs.push_back(w);
     }
     if (ok) screen = FactoryEdit, facRow = 0;
@@ -1889,15 +2001,21 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
     if (customs.empty()) { screen = Factory; return; }
     WeaponDef &w = customs[std::min<int>(facSel, (int)customs.size() - 1)];
     int launch = launchOf(w);
-    struct Num { const char *label; float *f; int *i; float lo, hi, step; const char *fmt; };
+    bool bomber = launch == 2, noCluster = bomber || !w.clusters;
+    // W4M WXFE.WeaponFactory1List rows (0x73cc5a Launched, 0x73df27 Thrown, 0x73c8b1 Air Strike): the 0..1 sliders are gauges, +-0.1 (0x7409f5)
+    struct Num { const char *label; float *f; int *i; float lo, hi, step; const char *fmt; bool gauge, off; };
     const Num nums[] = {
-        {"Blast radius", &w.radius, nullptr, 0.5f, 8, 0.5f, "%.1f m"}, {"Damage", &w.damage, nullptr, 0, 100, 5, "%.0f"},
-        {"Launch speed", &w.speed, nullptr, 5, 50, 1, "%.0f"}, {"Fuse", &w.fuse, nullptr, 1, 5, 0.5f, "%.1f s"},
-        {"Bounce", &w.bounce, nullptr, 0, 1, 0.05f, "%.2f"}, {launch == 2 ? "Missiles" : "Clusters", nullptr, &w.clusters, 0, 10, 1, "%d"},
-        {launch == 2 ? "Missile radius" : "Cluster radius", &w.cradius, nullptr, 0.5f, 5, 0.5f, "%.1f m"},
-        {launch == 2 ? "Missile damage" : "Cluster damage", &w.cdamage, nullptr, 0, 60, 5, "%.0f"},
-        {"Cluster spread", &w.spread, nullptr, 0, 1, 0.1f, "%.1f"},
-        {"Crate weight", nullptr, &w.weight, 0, 10, 1, "%d"}, {"Ammo", nullptr, &w.count, -1, 9, 1, "%d"},
+        {"Launch speed", &w.speed, nullptr, 5, 50, 1, "%.0f", false, false}, {"Fuse", &w.fuse, nullptr, 1, 5, 0.5f, "%.1f s", false, launch != 1},
+        {tr("FETXT.LandDamage", "Land Damage", "Dégâts au sol"), &w.slider[0][0], nullptr, 0, 1, 0.1f, "%.1f", true, false},
+        {tr("FETXT.WormDamage", "Worm Damage", "Dégâts sur le worm"), &w.slider[0][2], nullptr, 0, 1, 0.1f, "%.1f", true, false},
+        {tr("FETXT.BlastStrength", "Blast Strength", "Force de l'explosion"), &w.slider[0][3], nullptr, 0, 1, 0.1f, "%.1f", true, false},
+        {bomber ? tr("FETXT.NumBomblets", "Bombs", "Bombes") : tr("FETXT.NumClusters", "Clusters", "Fragments"), nullptr, &w.clusters, bomber ? 1.0f : 0, bomber ? 10.0f : 5, 1, "%d", false, false},
+        {tr("FETXT.ClusterSpread", "Cluster Spread", "Propagation des fragments"), &w.spread, nullptr, 0, 1, 0.1f, "%.1f", true, noCluster},
+        {tr("FETXT.LandDamage", "Land Damage", "Dégâts au sol"), &w.slider[1][0], nullptr, 0, 1, 0.1f, "%.1f", true, noCluster},
+        {tr("FETXT.WormDamage", "Worm Damage", "Dégâts sur le worm"), &w.slider[1][2], nullptr, 0, 1, 0.1f, "%.1f", true, noCluster},
+        {tr("FETXT.BlastStrength", "Blast Strength", "Force de l'explosion"), &w.slider[1][3], nullptr, 0, 1, 0.1f, "%.1f", true, noCluster},
+        {"Bounce", &w.bounce, nullptr, 0, 1, 0.05f, "%.2f", false, false},
+        {"Crate weight", nullptr, &w.weight, 0, 10, 1, "%d", false, false}, {"Ammo", nullptr, &w.count, -1, 9, 1, "%d", false, false},
     };
     const int N = 5 + (int)(sizeof nums / sizeof *nums);  // name, launch, model, icon, wind + numbers
     facRow = clampWrap(facRow + dy, N);
@@ -1906,51 +2024,58 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
         launch = clampWrap(launch + dx, 4);
         w.kind = launch == 2 ? Kind::Airstrike : launch == 3 ? Kind::Homing : Kind::Shell;
         w.fuse = launch == 1 ? fmaxf(w.fuse, 3) : 0;
-        if (launch == 2 && !w.clusters) w.clusters = 5;
+        if (launch == 2) w.clusters = Clamp(w.clusters ? w.clusters : 5, 1, 10);  // WXD.DefaultAirStrike 5 bombs
+        else w.clusters = std::min(w.clusters, 5);
         break;
     case 2: w.model = SHOT_MODELS[clampWrap(indexOf(SHOT_MODELS, w.model) + dx, (int)(sizeof SHOT_MODELS / sizeof *SHOT_MODELS))]; break;
     case 3: w.icon = ICONS[clampWrap(indexOf(ICONS, w.icon) + dx, (int)(sizeof ICONS / sizeof *ICONS))]; break;
     case 4: (launch == 3 ? w.avoid : w.wind) ^= 1; break;  // Homing: HomingAvoidLand instead of wind (a W4M Factory homing missile ignores wind)
     default: {
         const Num &k = nums[facRow - 5];
-        if (k.f == &w.fuse && launch != 1) break;  // only grenades have a fuse
-        if (k.f == &w.spread) {  // W4M AdjustFactoryList ClusterSpread (0x740fec -> 0x73447e): +-0.1 in 0..1, wrapping past 0.05 out
-            float v = w.spread + dx * 0.1f;
-            w.spread = v < -0.05f ? 1 : v > 1.05f ? 0 : Clamp(v, 0, 1);
-            break;
+        if (k.off) break;
+        if (k.gauge) {  // 0x73447e: past 0 - 0.05 wraps to 1, past 1 + 0.05 to 0
+            float v = *k.f + dx * 0.1f;
+            *k.f = v < -0.05f ? 1 : v > 1.05f ? 0 : Clamp(v, 0, 1);
+        } else if (k.f) *k.f = Clamp(roundf((*k.f + dx * k.step) / k.step) * k.step, k.lo, k.hi);
+        else {  // NoOfCluster wraps (0x740e97): Bomber 1..10, else 0..5
+            int v = *k.i + dx;
+            *k.i = k.i == &w.clusters ? (v < k.lo ? (int)k.hi : v > k.hi ? (int)k.lo : v) : (int)Clamp(v, k.lo, k.hi);
         }
-        if (k.f) *k.f = Clamp(roundf((*k.f + dx * k.step) / k.step) * k.step, k.lo, k.hi);
-        else *k.i = (int)Clamp(*k.i + dx, k.lo, k.hi);
-        if (k.i == &w.clusters && launch == 2) w.clusters = std::max(w.clusters, 1);
     }
     }
     if (ok && facRow == 0) edit(w.name, "Weapon name");
     if (ok && facRow == 4) (launch == 3 ? w.avoid : w.wind) ^= 1;
+    if (dx || ok) factoryPayload(w);
 
     heading("Weapon Factory", 640, 14, 48);
-    popup({200, 80, 640, 600});
+    popup({200, 64, 640, 616});
     Rectangle pv = {870, 120, 300, 300};
     panel(pv, false);
     if (!image(iconOf(w), {pv.x + 50, pv.y + 30, 200, 200})) text("?", pv.x + 150, pv.y + 80, 90, WHITE, 1);
     text(w.name.c_str(), pv.x + 150, pv.y + 244, 28, GOLDEN, 1);
     wrapped("In every match's weapon panel. Online, the host's weapons are used.", 1020, 444, 300, 20, LIGHTGRAY);
     for (int i = 0; i < N; i++) {
-        Rectangle r = {216, 92 + i * 38.0f, 608, 34};
+        Rectangle r = {216, 76 + i * 33.0f, 608, 31};
         bool hi = i == facRow;
         std::string v;
         const char *label = i == 0 ? "Name" : i == 1 ? "Launch" : i == 2 ? "Model" : i == 3 ? "Icon" : i == 4 ? (launch == 3 ? "Avoid land" : "Wind") : nums[i - 5].label;
+        const Num *k = i >= 5 ? &nums[i - 5] : nullptr;
         if (i == 0) v = w.name + (typing && fmodf(t, 1) < 0.5f ? "_" : "");
         else if (i == 1) v = LAUNCH[launch];
         else if (i == 2) v = w.model;
         else if (i == 3) v = w.icon;
         else if (i == 4) v = launch == 3 ? (w.avoid ? "Yes" : "No") : w.wind ? "Affected" : "Not affected";
-        else {
-            const Num &k = nums[i - 5];
-            v = k.f == &w.fuse && launch != 1 ? "Impact" : k.i == &w.count && w.count < 0 ? "Infinite" : k.f ? TextFormat(k.fmt, *k.f) : TextFormat(k.fmt, *k.i);
-        }
+        else if (k->off) v = k->f == &w.fuse ? "Impact" : "---";
+        else v = k->i == &w.count && w.count < 0 ? "Infinite" : k->f ? TextFormat(k->fmt, *k->f) : TextFormat(k->fmt, *k->i);
         if (hi) brush(r);
-        text(label, r.x + 10, r.y + 5, 24, ink(hi));
-        text(TextFormat(hi && i ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + 5, 24, WHITE, 2);
+        text(label, r.x + 10, r.y + 4, 22, ink(hi));
+        if (k && k->gauge && !k->off) {  // WXFE_PowerColumns
+            Rectangle g = {r.x + r.width - 250, r.y + 9, 180, 13};
+            DrawRectangleRec(g, Fade(BLACK, 0.5f));
+            DrawRectangleRec({g.x, g.y, g.width * *k->f, g.height}, hi ? GOLDEN : LIGHTGRAY);
+            DrawRectangleLinesEx(g, 1, WHITE);
+        }
+        text(TextFormat(hi && i && !(k && k->off) ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + 4, 22, WHITE, 2);
     }
     if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
     else if (facRow == 0) hints({{"A", "Enter", "Rename"}, {"D-pad", "Up/Down", "Move"}, {"B", "Esc", "Back"}});
@@ -2847,15 +2972,15 @@ Pause::Action Pause::update() {
     return None;
 }
 
-// WXFEP.MissionBriefing: FE units (960 x 540, y up) about the screen centre; ImageView / TextBox Scale = half extents
+// WXFEP.MissionBriefing: FE units (500 tall like the Story / Challenges pages, y up) about the screen centre; ImageView / TextBox Scale = half extents
 void Pause::briefing() const {
     const MissionSpec *m = story;
     if (!m || !feItem({640, 360}, &IN_SCALEY, popupDelay(-1, true), nullptr, now() - brief, -1)) return;
-    auto fe = [](float x, float y) { return Vector2{640 + x * FE_PX, 360 - y * FE_PX}; };
-    auto box = [&](float x, float y, float hw, float hh) { Vector2 c = fe(x, y); return Rectangle{c.x - hw * FE_PX, c.y - hh * FE_PX, 2 * hw * FE_PX, 2 * hh * FE_PX}; };
+    auto fe = [](float x, float y) { return Vector2{640 + x * FE_S, 360 - y * FE_S}; };
+    auto box = [&](float x, float y, float hw, float hh) { Vector2 c = fe(x, y); return Rectangle{c.x - hw * FE_S, c.y - hh * FE_S, 2 * hw * FE_S, 2 * hh * FE_S}; };
     image("fe/paperpopup01", box(0, 0, 180, 140));       // Paper Back, WXFE.PaperPopUp1
     image("fe/speechpopup_divide", box(0, 81, 70, 8));   // DIVIDE1, WXFE.PopUpDivide
-    float title = 20 * FE_PX;                            // PopUp Title: FETXT.MissionBriefing, FontSizeOverride 20, centred
+    float title = 20 * FE_S;                            // PopUp Title: FETXT.MissionBriefing, FontSizeOverride 20, centred
     const char *head = tr("FETXT.MissionBriefing", "Mission Objectives", "Objectifs de la mission");
     float hx = 640 - textWidth(head, title) / 2;  // TextAnim MediumWobble: each glyph held at High5 / Low5 (+-0.7 FE), picked once (0x6a9920)
     uint32_t r = (uint32_t)(brief * 1000) | 1;
@@ -2863,7 +2988,7 @@ void Pause::briefing() const {
         GetCodepointNext(head + i, &n);
         std::string g(head + i, n);
         r = r * 0x41c64e6du + 0x3039u;
-        textG(g.c_str(), hx, fe(0, 103).y - title / 2 + (r % 2 ? 0.7f : -0.7f) * FE_PX, title, GC_BUTTON_YELLOW[0], GC_BUTTON_YELLOW[1], 0);
+        textG(g.c_str(), hx, fe(0, 103).y - title / 2 + (r % 2 ? 0.7f : -0.7f) * FE_S, title, GC_BUTTON_YELLOW[0], GC_BUTTON_YELLOW[1], 0);
         hx += textWidth(g.c_str(), title);
     }
     Texture2D bullet = tex("fe/teaminfo04");  // WXFE.HandicapAllies:7, its XTexFont's last frame (u 0.75, v 0, 0.25 x 0.5, GL v up)
@@ -2873,11 +2998,11 @@ void Pause::briefing() const {
         if (!*s) continue;
         Rectangle b = box(15, 40 - 50.0f * i, 140, 20);  // ObjectiveN: top-left justified, FE.TextBoxTextSize 20, AutoScale
         float size = 20;  // AutoScale (0x75f1b2): wrapped, then 1 FE smaller while lines x size > the box, down to 5; one line never shrinks
-        for (float h; size > 5 && (h = paragraph(s, b.x, b.y, b.width, size * FE_PX, WHITE, 99, false, nullptr, 0)) > b.height && h > size * FE_PX;) size -= 1;
-        paragraph(s, b.x, b.y, b.width, size * FE_PX, GC_LIST_LABLE_BLUE[0], 99, true, &GC_LIST_LABLE_BLUE[1], 0);
+        for (float h; size > 5 && (h = paragraph(s, b.x, b.y, b.width, size * FE_S, WHITE, 99, false, nullptr, 0)) > b.height && h > size * FE_S;) size -= 1;
+        paragraph(s, b.x, b.y, b.width, size * FE_S, GC_LIST_LABLE_BLUE[0], 99, true, &GC_LIST_LABLE_BLUE[1], 0);
         if (bullet.id) DrawTexturePro(bullet, {0.75f * bullet.width, 0.5f * bullet.height, 0.25f * bullet.width, 0.5f * bullet.height}, box(-140, 52 - 50.0f * i, 10, 10), {}, 0, WHITE);
     }
-    float row = 20 * FE_PX, y = fe(0, -99).y - row / 2;  // Return: ConfirmList row 26 at FontSize 20, highlighted (default item): charcoal border, kGC_Solid_White
+    float row = 20 * FE_S, y = fe(0, -99).y - row / 2;  // Return: ConfirmList row 26 at FontSize 20, highlighted (default item): charcoal border, kGC_Solid_White
     const char *ret = tr("FETXT.ReturnToMenu", "Return", "Retour");
     float w = textWidth(ret, row) + row * 0.9f;
     mark({640 - w / 2, y - row * 0.1f, w, row * 1.15f}, true);
@@ -3036,22 +3161,56 @@ static float paragraph(const std::string &s, float x, float y, float w, float si
 // counterpart; W4M's Out None items fly out like our menu rows (rowAppear, user-requested)
 static const float MISSION_OUT = 0.25f;  // Out_ScaleY is done at 0.19 s (x FE.AnimSpeed); then the header is cut mid Out_TitleUnderline
 
-// MESH Book: WX.Mesh.StoryBook at (10, 15, 0) scale 0.9 tilted (0.05, 0.03, -0.1), clip Intro_Book (Delay_Out_Mesh 100 ms: Outro_Book is one key that
-// drops the book out of view) through the FE camera [data; camera observed, see FE_S]
+// A WXFE_MeshObjectDesc through the FE camera (0.54 rad at z 903.5 [observed, see FE_S]; Lighting: FrontendMeshLight): position (FE units), scale,
+// orientation (rad) and the mesh clip at t s
 extern "C" void glClear(unsigned int mask);
-static void feBook(float since, float leaving) {
+static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, bool lit, const char *clip, float t) {
     Camera3D cam = {{0, 0, 903.5f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
     glClear(0x100);
     rlSetClipPlanes(5, 15000);
     BeginMode3D(cam);
-    Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(0.9f, 0.9f, 0.9f), MatrixRotateZYX({0.05f, 0.03f, -0.1f})), MatrixTranslate(10, 15, 0));
-    if (leaving >= 0.1f) m = MatrixMultiply(m, MatrixTranslate(0, -498.75f, 0));  // Outro_Book's main bone: y -498.75
-    Models::draw("storybook", m, WHITE, "Intro_Book", since / FE_ANIM_SPEED, false);
+    Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateZYX(rot)), MatrixTranslate(pos.x, pos.y, pos.z));
+    Models::shade(Lit::frontendShader(lit));
+    Models::draw(name, m, WHITE, clip, t / FE_ANIM_SPEED, false);
+    Models::shade({});
     EndMode3D();
     rlSetClipPlanes(0.01, 1000);
 }
 
+// MESH Book: WX.Mesh.StoryBook, Lighting 1, clip Intro_Book (Delay_Out_Mesh 100 ms: Outro_Book is one key that drops the book out of view) [data]
+static void feBook(float since, float leaving) {
+    feMesh("storybook", {10, 15, 0}, {0.9f, 0.9f, 0.9f}, {0.05f, 0.03f, -0.1f}, true, leaving >= 0.1f ? "Outro_Book" : "Intro_Book", since);
+}
+
 static Rectangle feRect(float x, float y, float hw, float hh) { Vector2 c = fePos(x, y); return {c.x - hw * FE_S, c.y - hh * FE_S, 2 * hw * FE_S, 2 * hh * FE_S}; }
+
+// WXFE.MoviePlayer (MENUTWKX; docs/w4m/acting.md): the Logo, the two film frame meshes, the movie in HUD.Video tilted inside them, PanelBacking
+// (Load.Hint.Panel) and the MovieText subtitle under it. False once the movie ended or was skipped.
+bool movieFrame(float t) {
+    menuPage = true;
+    FrontBg::page(1);
+    divide(0);
+    FeFlat flat;
+    if (t >= 0.2f) feMesh("filmtape1", {46, 22, 0}, {0.36f, 0.36f, 1}, {0, 0, 0}, false, "Film01Start", t - 0.2f);
+    if (t >= 0.1f) feMesh("filmtape2", {0, 0, 0}, {0.32f, 0.28f, 1}, {0, 0, 0}, false, "Film02Start", t - 0.1f);
+    bool on = Movie::update(feRect(-2, 42, 202, 112.7f), -0.05f);
+    if (feItem(fePos(-192, 142), &IN_FLIPY, 0.3f, nullptr, t, -1)) logo(fePos(-192, 142).x, fePos(-192, 142).y - 68.2f * FE_S, 266 * FE_S, -0.27f * RAD2DEG), rlPopMatrix();
+    Rectangle r = feRect(0, -140, 280, 120);
+    if (Texture2D panel = tex("fe/hintpanel"); panel.id && t >= 0.1f) {
+        rlPushMatrix();
+        rlTranslatef(r.x + r.width / 2, r.y + r.height / 2, 0);
+        rlRotatef(0.025f * RAD2DEG, 0, 0, 1);
+        DrawTexturePro(panel, {0, 0, (float)panel.width, (float)panel.height}, {-r.width / 2, -r.height / 2, r.width, r.height}, {}, 0, WHITE);
+        rlPopMatrix();
+    }
+    if (feItem(fePos(-4, -138), &IN_TITLEUNDERLINE, 0.08f, nullptr, t, -1)) {
+        FeBox b;
+        b = {{-4, -138}, 260, 43, 20, 0.054f, -1, 4, 0, true, GC_WHITE, BC_BLACK};
+        feText(Movie::subtitle(), b), rlPopMatrix();
+    }
+    return on;
+}
+
 
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p) {
     using S = Audio::Sfx;
@@ -3098,7 +3257,10 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
     if (story) feBook(since, out);
     if (slide(0, -159.1f, &IN_SCALEY, 0.3f, &OUT_SCALEY)) tooltipStrip(), rlPopMatrix();  // ToolTip
     if (slide(11, -159, &IN_SLIDEX, 0.3f, &OUT_SCALEY)) tickerText(t), rlPopMatrix();  // TickerTapeTXT
-    if (feItem(fePos(-152, 188), &IN_TITLEUNDERLINE, 0.3f, &OUT_TITLEUNDERLINE, since, out)) titleControl(title, 0), rlPopMatrix();
+    {
+        FeFlat flat;
+        if (feItem(fePos(-152, 188), &IN_TITLEUNDERLINE, 0.3f, &OUT_TITLEUNDERLINE, since, out)) titleControl(title, 0), rlPopMatrix();
+    }
     if (m) {
         std::string img = m->preview.empty() ? preview(m->map) : m->preview;
         auto picture = [&](float x, float y, float hw, float hh, float rot) {
@@ -3113,6 +3275,7 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
         };
         std::string name = tr(m->nameId.c_str(), m->name.c_str()), brief = tr(m->briefId.c_str(), m->brief.c_str());
         if (story) {
+            FeFlat onBook;  // the book mesh keeps its place
             FeBox b;
             if (slide(-128, 139, &IN_SLIDEX, 0.8f, nullptr)) {  // Mission Title
                 b = {{-128, 139}, 85, 20, 22, -0.02f, -1, 4, 4, true, GC_POPUP_RED, BC_BOOK_EDGE};
@@ -3159,8 +3322,8 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
                     feText(brief, b), rlPopMatrix();
                 }
                 for (int k = 0; k < 2; k++) pageArrow(k, sel + (k ? 1 : -1) < 0 || sel + (k ? 1 : -1) >= n ? 2 : 0, {123.0f + (k ? 110 : -110), 123}, 25);
-                float rec = m->par;  // Mission Record: the preset's time by "Team 17" until a better time is set [assumed: 0x72db00's record store not traced]
-                std::string who = "Team 17";
+                float rec = m->record;  // Mission Record: HighScores[Level_Number] of DEFSAVE.XOM (0x72c28f) until a better time is set [data + disasm]
+                std::string who = m->recordBy;
                 if (e.done && e.best / 60.0f < rec) rec = e.best / 60.0f, who = st.team;
                 int sec = (int)rec;
                 b = {{123, -97}, 123, 15, 18, 0, -1, 4, 0, true, GC_SUBHEADER_BLUE, BC_BLACK};

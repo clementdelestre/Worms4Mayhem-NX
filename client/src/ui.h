@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-// user-requested, temporary: no instant replay, no .w4r recording, no Replays menu entry. true restores all three.
+// false: no instant replay, no .w4r recording, no Replays menu entry.
 constexpr bool REPLAYS = false;
 
 // W4M-styled frontend and HUD. Art: assets/ui/*.png from tools/w4m-ui; missing files fall back to plain shapes.
@@ -14,6 +14,7 @@ namespace Ui {
 extern const Color TEAM_COLORS[4];
 void load();
 bool preload(double until);  // boot: uploads the decoded frontend art until GetTime() reaches until; true while some is pending
+bool warm(const std::vector<std::string> &names, double until);  // uploads the predecoded pictures until GetTime() reaches until; true while some are pending
 void predecode(const std::vector<std::string> &names);  // decodes assets/ui/<name>.png in order on a worker; drawn once in, nothing before
 void unload();
 bool warmHud(int &i, double until);  // match prep: loads the HUD art (weapon icons, hud/) until GetTime() reaches until; true while more remain
@@ -22,7 +23,7 @@ float textWidth(const char *t, float size);
 const Font &textFont();  // the font text() draws, for rotated or outline-free text
 Texture2D art(const char *name);  // assets/ui/<name>.png, cached; id 0 when missing
 bool artReady(const char *name);  // art() would not read the SD card for it
-void logo(float cx, float y, float w, float deg = 0);  // W4M logo, top centre at (cx, y), tilted deg
+void logo(float cx, float y, float w, float deg = 0, float stretch = 1);  // W4M logo, top centre at (cx, y), tilted deg
 // one channel of a W4M frontend item clip t s after it started (WXFrontend.Anim keys {time s, value, in tangent x, y, out tangent
 // x, y}, at FE.AnimSpeed), held past its ends
 float clipKeys(const float (*keys)[6], int n, float t, bool weighted = false);
@@ -159,5 +160,8 @@ struct MissionMenu { int tab = 0, sel[2] = {}; float shown = -1, leaving = -1; i
 int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Progress &p);
 // Mission over (drawn over the match): 0 nothing yet, 1 next mission, 2 retry, 3 back to the list
 int missionEnd(const Game &g, const MissionSpec &m, const Progress::Entry &best, bool hasNext);
+// WXFE.MoviePlayer (inside Begin/EndDrawing): t s since the movie started; false once it ended or was skipped
+bool movieFrame(float t);
+void feCursor();  // W4M MouseEntity pointer, once per frame inside BeginDrawing on a front-end screen
 bool eggFound(const char *nameId, int coins);  // W4M WXFE.EasterEggFound popup; true once dismissed
 }  // namespace Ui

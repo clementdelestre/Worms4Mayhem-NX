@@ -21,15 +21,24 @@ struct Snapshot {
     Game g;
     std::vector<Terrain::Object> decor;
     std::vector<Terrain::Emitter> emit;
+    std::vector<std::vector<char>> frameAlive;
     std::vector<std::pair<int, signed char>> log;
+    std::vector<std::pair<uint32_t, std::vector<uint32_t>>> slog;  // exact-land lists changed (cell, list before)
+    std::vector<std::pair<uint32_t, float>> tlog;  // heightmap tops lowered by blasts (column, top before)
+    SharpLand::Sizes prims;
     uint32_t tick = 0;
     bool valid = false;
-    struct Checkpoint { uint32_t tick; Game g; std::vector<Terrain::Object> decor; std::vector<Terrain::Emitter> emit; size_t log; };
+    struct Checkpoint { uint32_t tick; Game g; std::vector<Terrain::Object> decor; std::vector<Terrain::Emitter> emit; std::vector<std::vector<char>> frameAlive; size_t log, slog, tlog; SharpLand::Sizes prims; };
     std::vector<Checkpoint> cps;
     Game liveG;
     std::vector<Terrain::Object> liveDecor;
     std::vector<Terrain::Emitter> liveEmit;
+    std::vector<std::vector<char>> liveFrameAlive;
     std::vector<std::pair<int, signed char>> redo;  // (voxel, live density); negative voxel: a girder's steel
+    std::vector<std::pair<uint32_t, std::vector<uint32_t>>> sredo;  // (cell, live list)
+    std::vector<std::pair<uint32_t, float>> tredo;  // (column, live top)
+    SharpLand::Sizes pbase;
+    SharpLand::Tail ptail;  // primitives made after the restored state, for forward()
     bool hasLive = false;
     void take(Game &live, uint32_t tick);
     void mark(Game &live, uint32_t tick);  // a checkpoint (the 20 newest are kept)

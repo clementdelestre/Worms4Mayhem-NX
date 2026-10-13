@@ -28,7 +28,7 @@ struct In {
 
 bool Recording::save(const std::string &path) const {
     Out o;
-    o.b = "W4R3";
+    o.b = "W4R4";
     o.u32(cfg.seed), o.u8(cfg.teams), o.u8(cfg.wormsPerTeam), o.str(cfg.map), o.u32(cfg.rules);
     o.u8((uint8_t)cfg.teamSetup.size());
     for (const auto &t : cfg.teamSetup) o.str(t.name), o.u8(t.cpu), o.u8(t.voice), o.u8(t.hat);
@@ -38,7 +38,8 @@ bool Recording::save(const std::string &path) const {
     for (size_t i = 0; i < cfg.custom.size() && i < 255; i++) {
         const WeaponDef &d = cfg.custom[i];
         o.str(d.name), o.u8((uint8_t)d.kind);
-        for (float f : {d.radius, d.damage, d.speed, d.fuse, d.bounce, d.cradius, d.cdamage, d.poison}) o.f32(f);
+        for (float f : {d.speed, d.fuse, d.bounce, d.poison, d.spread}) o.f32(f);
+        for (auto &c : d.slider) for (float f : c) o.f32(f);
         for (int v : {d.count, d.clusters, d.shots, d.weight}) o.u32((uint32_t)v);
         o.u8(d.wind | d.avoid << 1), o.str(d.model), o.str(d.icon);
     }
@@ -57,7 +58,7 @@ bool Recording::load(const std::string &path) {
     char buf[65536];
     for (size_t n; (n = fread(buf, 1, sizeof buf, f));) b.append(buf, n);
     fclose(f);
-    int per = !b.compare(0, 4, "W4R3") ? 6 : !b.compare(0, 4, "W4R2") ? 5 : !b.compare(0, 4, "W4R1") ? 4 : 0;
+    int ver = b.size() >= 4 && !b.compare(0, 3, "W4R") ? b[3] - '0' : 0, per = ver >= 3 && ver <= 4 ? 6 : ver == 2 ? 5 : ver == 1 ? 4 : 0;
     if (!per) return false;
     In r{b, 4};
     cfg = GameConfig{};
@@ -72,7 +73,11 @@ bool Recording::load(const std::string &path) {
     for (int i = 0, n = r.u8(); i < n && r.ok; i++) {
         WeaponDef w{};
         w.name = r.str(), w.kind = (Kind)std::min<int>(r.u8(), (int)Kind::ChangeWorm);
-        for (float *f : {&w.radius, &w.damage, &w.speed, &w.fuse, &w.bounce, &w.cradius, &w.cdamage, &w.poison}) *f = r.f32();
+        if (ver < 4) for (float *f : {&w.radius, &w.damage, &w.speed, &w.fuse, &w.bounce, &w.cradius, &w.cdamage, &w.poison}) *f = r.f32();  // sliders: factoryPayload()
+        else {
+            for (float *f : {&w.speed, &w.fuse, &w.bounce, &w.poison, &w.spread}) *f = r.f32();
+            for (auto &c : w.slider) for (float &f : c) f = r.f32();
+        }
         for (int *v : {&w.count, &w.clusters, &w.shots, &w.weight}) *v = (int32_t)r.u32();
         { uint8_t fl = r.u8(); w.wind = fl & 1, w.avoid = fl & 2; }
         w.model = r.str(), w.icon = r.str();
@@ -121,13 +126,20 @@ void markChunks(Terrain &t, int v) {  // chunk cells sample one voxel past their
         for (int cy = std::max(y - 1, 0) / CS; cy <= std::min(y + 1, Terrain::NY - 1) / CS; cy++)
             for (int cx = std::max(x - 1, 0) / CS; cx <= std::min(x + 1, Terrain::NX - 1) / CS; cx++) t.dirty[(cz * CY + cy) * CX + cx] = true;
 }
+void markColumn(Terrain &t, uint32_t col) {  // a top moved: every chunk of its column (and the neighbours it is sampled from)
+    const int x = col % Terrain::NX, z = col / Terrain::NX;
+    for (int cz = std::max(z - 1, 0) / Terrain::CS; cz <= std::min(z + 1, Terrain::NZ - 1) / Terrain::CS; cz++)
+        for (int cy = 0; cy < Terrain::CY; cy++)
+            for (int cx = std::max(x - 1, 0) / Terrain::CS; cx <= std::min(x + 1, Terrain::NX - 1) / Terrain::CS; cx++) t.dirty[(cz * Terrain::CY + cy) * Terrain::CX + cx] = true;
+}
 }  // namespace
 
 void Snapshot::take(Game &live, uint32_t t) {
     copyState(g, live);
-    decor = live.terrain.objects, emit = live.terrain.emitters;
-    log.clear(), cps.clear(), redo.clear();
-    live.terrain.undo = &log;
+    decor = live.terrain.objects, emit = live.terrain.emitters, frameAlive = live.terrain.frameAlive;
+    log.clear(), slog.clear(), tlog.clear(), cps.clear(), redo.clear();
+    prims = live.terrain.sharp.sizes();
+    live.terrain.undo = &log, live.terrain.sharp.undo = &slog, live.terrain.sharp.topUndo = &tlog;
     live.terrain.keepMeshes();
     tick = t;
     valid = true, hasLive = false;
@@ -135,7 +147,7 @@ void Snapshot::take(Game &live, uint32_t t) {
 
 void Snapshot::mark(Game &live, uint32_t t) {
     if (cps.size() == 20) cps.erase(cps.begin());
-    cps.push_back({t, Game{}, live.terrain.objects, live.terrain.emitters, log.size()});
+    cps.push_back({t, Game{}, live.terrain.objects, live.terrain.emitters, live.terrain.frameAlive, log.size(), slog.size(), tlog.size(), live.terrain.sharp.sizes()});
     copyState(cps.back().g, live);
 }
 
@@ -144,11 +156,15 @@ uint32_t Snapshot::restore(Game &live, uint32_t upTo) {
     t.remeshWait();
     size_t k = cps.size();
     while (k > 0 && cps[k - 1].tick > upTo) k--;
-    size_t stop = k ? cps[k - 1].log : 0;
+    size_t stop = k ? cps[k - 1].log : 0, sstop = k ? cps[k - 1].slog : 0, tstop = k ? cps[k - 1].tlog : 0;
     redo.clear();
     for (size_t i = stop; i < log.size(); i++) redo.push_back({log[i].first, log[i].first < 0 ? (signed char)0 : t.d[log[i].first]});
+    sredo.clear();
+    for (size_t i = sstop; i < slog.size(); i++) sredo.emplace_back(slog[i].first, t.sharp.list(slog[i].first));
+    tredo.clear();
+    for (size_t i = tstop; i < tlog.size(); i++) tredo.emplace_back(tlog[i].first, t.sharp.top[tlog[i].first]);
     copyState(liveG, live);
-    liveDecor = t.objects, liveEmit = t.emitters, hasLive = true;
+    liveDecor = t.objects, liveEmit = t.emitters, liveFrameAlive = t.frameAlive, hasLive = true;
     bool kept = stop == 0 && t.rewindMeshes();  // the meshes drawn at take() are the restored land's
     for (size_t i = log.size(); i-- > stop;) {  // newest first: the oldest value of a voxel wins
         int v = log[i].first < 0 ? -1 - log[i].first : log[i].first;  // negative: a voxel a girder made steel
@@ -156,8 +172,18 @@ uint32_t Snapshot::restore(Game &live, uint32_t upTo) {
         else t.d.set(v, log[i].second);
         if (!kept) markChunks(t, v);
     }
-    log.resize(stop);
-    t.objects = k ? cps[k - 1].decor : decor, t.emitters = k ? cps[k - 1].emit : emit;
+    for (size_t i = slog.size(); i-- > sstop;) {
+        t.sharp.restore(slog[i].first, slog[i].second);
+        if (!kept) markChunks(t, slog[i].first);
+    }
+    for (size_t i = tlog.size(); i-- > tstop;) {
+        t.sharp.top[tlog[i].first] = tlog[i].second;
+        if (!kept) markColumn(t, tlog[i].first);
+    }
+    log.resize(stop), slog.resize(sstop), tlog.resize(tstop);
+    pbase = k ? cps[k - 1].prims : prims;
+    ptail = t.sharp.cut(pbase);
+    t.objects = k ? cps[k - 1].decor : decor, t.emitters = k ? cps[k - 1].emit : emit, t.frameAlive = k ? cps[k - 1].frameAlive : frameAlive;
     setState(live, k ? cps[k - 1].g : g);
     return k ? cps[k - 1].tick : tick;
 }
@@ -175,7 +201,19 @@ bool Snapshot::forward(Game &live) {
         if (!kept) markChunks(t, i);
     }
     redo.clear();
-    t.objects = liveDecor, t.emitters = liveEmit;
+    t.sharp.cut(pbase);  // the re-simulation made its own
+    t.sharp.append(ptail);
+    for (auto &[c, l] : sredo) {
+        t.sharp.restore(c, l);
+        if (!kept) markChunks(t, c);
+    }
+    sredo.clear();
+    for (auto &[c, v] : tredo) {
+        t.sharp.top[c] = v;
+        if (!kept) markColumn(t, c);
+    }
+    tredo.clear();
+    t.objects = liveDecor, t.emitters = liveEmit, t.frameAlive = liveFrameAlive;
     setState(live, liveG);
     return true;
 }

@@ -334,7 +334,7 @@ pub fn convert(x: &Xom, desc: usize, unit: f32) -> Option<(Vec<u8>, String, [f32
         tracks.push((0..=UV_STEPS).map(|i| { let t = c.dur * i as f32 / UV_STEPS as f32; [at(u, t), at(v, t)] }).collect());
         Some(tracks.len() - 1)
     }).collect();
-    let motion = clip.map_or(false, |c| c.ch.keys().any(|(_, t)| matches!(t & 0xffffff, 0x102 | 0x103 | 0x104 | 0x904)));
+    let motion = clip.map_or(false, |c| c.ch.keys().any(|(_, t)| matches!(t & 0xffffff, 0x102 | 0x103 | 0x104 | 0x904) || *t == 0x3000200));
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     let mut g = Glb::default();
     let mut images: Vec<usize> = parts.iter().map(|p| p.img).filter(|&i| i != 0).collect();

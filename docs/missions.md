@@ -14,6 +14,7 @@ unlocked W4M WXFE_UnlockableItem). Missions of a campaign unlock in `order`; cha
 | `name_id`, `brief_id`, `success_id` | W4M text keys (Frontend_Name, Frontend_Briefing, `FETXT.MissionCompleteBody` / `ChallengeCompleteBody`), shown in the menu language from `assets/lang`; `name`, `brief`, `success` hold the English text as the fallback. |
 | `map`, `preview` | the map; `assets/ui/<preview>.png` (Frontend_Image), default: the map's level picture. |
 | `par` | W4M BonusTime in s. |
+| `record`, `record_by` | W4M default Challenge record (DEFSAVE.XOM `HighScoreData` of the level's Level_Number): time in s and name. |
 | `script`, `bank` | the `.lub` name and the level databank (`assets/scripts/`). |
 | `rain_prob` | Initialise's `Particle.Rain.Prob` (render only). |
 | `objectives` | W4M Objectives (`M.Diner.Obj`): `<key>.A/.B/.C` are the in-game briefing's lines; empty on challenges and deathmatches. |

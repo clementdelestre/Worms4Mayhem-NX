@@ -3166,7 +3166,7 @@ static void checkGunObjects() {
     const float bullet = WEAPONS[weaponNamed("Sniper Rifle")].size;
     assert(bullet > 0 && g.gunRay(r, a, bullet).worm == b);
     for (Object::Type t : {Object::Mine, Object::Barrel}) {
-        g.objects = {Object{t, Vector3Add(a.pos, {0, 0, 3}), {0, 0, 0}, -1, -1, false, false}};
+        g.objects = {Object{t, Vector3Add(a.pos, {0, t == Object::Barrel ? -0.45f : 0.0f, 3}), {0, 0, 0}, -1, -1, false, false}};  // drum Position is its base, collider centre +0.45
         Game::GunHit h = g.gunRay(r, a, bullet);
         assert(h.worm == -1 && !h.land && fabsf(h.dist - (3 - bullet - (t == Object::Mine ? 0.15f : 0.45f))) < 0.01f);  // the spheres touch
     }
@@ -3582,8 +3582,8 @@ static void checkRopeColliders() {
     assert(!g.ropeBlocked(f, g.current));
     g.objects.push_back({Object::Crate, {20, 47, 21.5f}, {0, 0, 0}, -1, -1, false, false});
     assert(g.ropeBlocked(g.objects[0].pos - Vector3{0, 0.5f, 0}, -1, 0));  // the crate on the rope meets the other one
-    g.objects = {{Object::Barrel, {20, 47.45f + 0.6f, 20}, {0, 0, 0}, -1, -1, false, false}};
-    assert(g.ropeBlocked(f, g.current));  // drum: 9 units at its Position, 0.6 m off
+    g.objects = {{Object::Barrel, {20, 47.6f - 0.45f, 20}, {0, 0, 0}, -1, -1, false, false}};
+    assert(g.ropeBlocked(f, g.current));  // drum: collider centre 9 units over its Position, 0.6 m off
     g.objects = {{Object::Mine, {20, 47, 20.35f}, {0, 0, 0}, -1, -1, false, false}};
     assert(g.ropeBlocked(f, g.current) && !g.ropeBlocked({20, 47, 19.55f}, g.current));  // 3 + 5 units
     (void)a;
@@ -4357,14 +4357,18 @@ static void checkWaterShots() {
         g.objects = {{Object::Mine, {20, g.water + 1, 20}, {0, 0, 0}, -1, -1, false, false}, {Object::Crate, {30, g.water + 1, 30}, {0, 0, 0}, -1, -1, false, false},
                      {Object::Barrel, {50, g.water + 1, 50}, {0, 0, 0}, -1, -1, false, false}};
         std::vector<std::string> seen;
+        int sinks = 0;
         for (int t = 0; t < 120; t++) {
             g.step(Input{});
-            for (const GameEvent &e : g.events)
+            for (const GameEvent &e : g.events) {
+                sinks += e.kind == GameEvent::Sink && !strcmp(e.fx, "WXP_UnderWaterBubbles");
                 if (e.kind == GameEvent::Splash) {
                     seen.push_back(e.fx);
                     if (!strcmp(e.fx, "WXP_WaterSmallSplash")) assert(e.pos.y == Terrain::WATER + 1.0f / 20 && e.pos.x == 30);
                 }
+            }
         }
+        assert(sinks == 1 && g.objects.size() == 1 && g.objects[0].type == Object::Mine && g.objects[0].sunk && g.objects[0].fuse < 0);  // crate sunk 1 m and removed; mine disarmed, sinking
         auto n = [&](const char *fx) { return (int)std::count(seen.begin(), seen.end(), fx); };
         assert(seen.size() == 3 && n("WXP_WaterLargeSplash") == 1 && n("WXP_WaterSplash") == 1 && n("WXP_WaterSmallSplash") == 1);
     }
@@ -4468,6 +4472,29 @@ static void checkArrowFalls() {
 }
 
 // W4M 0x5b4180 / 0x4f26b0: worms are placed first, then a mine or drum its sphere (radius + 5 units) clear of every worm collider (10 units) and object
+// W4M 0x46c630 / 0x5cc960: a detail goes when its frame loses its own cell, or when its position is inside the blast; never for ground nearby
+static void checkDetailRemoval() {
+    Terrain t;
+    assert(t.load("ChallengeNavigation2", 1));
+    auto find = [&](const char *name, bool framed) {
+        const std::string n = name;
+        for (size_t i = 0; i < t.objects.size(); i++)
+            if (t.objModels[t.objects[i].model] == n && (t.objects[i].frame >= 0) == framed) return (int)i;
+        return -1;
+    };
+    int cloud = find("d07_04", false), rock = find("arabian6", true);
+    assert(cloud >= 0 && rock >= 0);
+    const size_t n0 = t.objects.size();
+    Vector3 cp = t.objects[cloud].pos;
+    Vector3 anchor = t.frameCells[t.objects[rock].frame][t.objects[rock].cell];
+    t.carve({cp.x, cp.y - 4, cp.z}, 1.5f);  // beside the mesh: it stays
+    assert(t.objects.size() == n0);
+    t.carve({anchor.x, anchor.y, anchor.z}, 0.3f);  // the rock's own cell
+    assert(t.objects.size() == n0 - 1);
+    t.carve(cp, 1.5f);  // the mesh position is in the blast
+    assert(t.objects.size() == n0 - 2);
+}
+
 static void checkPlacement() {
     const char *maps[] = {"", "Alien-w3d", "Accuracy", "ArabiaTest", "AssaultAndDefend", "BuildingSiteSaboteurs"};
     int checked = 0, overhang = 0;
@@ -4511,6 +4538,7 @@ static void checkPlacement() {
 }
 
 int main() {
+    checkDetailRemoval();
     checkPlacement();
     checkCountCamera();
     {  // user-requested: SKIP_COUNT ends the damage display at once; hp final

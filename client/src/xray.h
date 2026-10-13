@@ -12,7 +12,7 @@ void begin();               // per frame, inside BeginMode3D, before the worms
 bool mask();                // one bind for all: team() then draw each worm into the mask; false if unavailable
 void team(int team);
 void unmask();              // after the masks, before the worms' own passes
-void hidden();              // after a worm's draw: draw it once more, the grey fill where the scene hides it
+void hidden();              // before a worm's draw: its mask-nearest layer in grey where land (depth GREATER) hides it
 void done();                // back to normal drawing (after any of the above)
 void outline(const Color *teams);  // after EndMode3D: the 4 team colours
 }

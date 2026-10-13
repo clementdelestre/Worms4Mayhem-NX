@@ -184,10 +184,10 @@ fn detail_euler(w: &M4, rd: [f32; 3]) -> [f32; 3] {
 
 // Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index; `parts`: the convex pieces of the
 // land W4M samples in it (lattice.rs)
-struct Cell { c: [[f32; 3]; 8], parts: Vec<[[f32; 3]; 8]>, mat: u8, tex: [f32; 2], code: u16, visible: bool }
+struct Cell { frame: usize, at: [usize; 3], c: [[f32; 3]; 8], parts: Vec<[[f32; 3]; 8]>, mat: u8, tex: [f32; 2], code: u16, visible: bool }
 
 // Detail entity reference with its poxel's world matrix (the poxel's own scale included, its parents' not).
-struct DetRef { ctn: usize, w: M4 }
+struct DetRef { ctn: usize, w: M4, frame: usize }
 
 // W4M LandFramePseudoEntity 0x46e1d0: a land frame's box is x [min EdgeOffset1.x, XSize + max EdgeOffset2.x], z likewise,
 // y [min HeightMap, YSize + max HeightMap], less CentreOffset = size / 2; AddLandBlock 0x4b22e0 takes its 8 corners' world AABB.
@@ -271,12 +271,12 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
                     for n in 0..8 { c[n] = corner(xx + (n & 1), y + ((n >> 1) & 1), z + (n >> 2)); }
                     let tops = [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(i, k)| lattice::usage(solid, xx as i32 + i, y as i32, z as i32 + k));
                     let parts = lattice::pieces(&c, tops, x.falloff);
-                    out.push(Cell { c, parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible });
+                    out.push(Cell { frame: k, at: [xx, y, z], c, parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible });
                 }
             }
         }
     }
-    dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w }));
+    dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w, frame: k }));
     for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1, code, codes); }
 }
 
@@ -509,6 +509,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             if h > 0.0 { grow([c as f32 * HMP_STEP - HMP_EXTENT, h * HMP_SCALE + HMP_BASE, r as f32 * HMP_STEP - HMP_EXTENT]); }
         } }
     }
+    // a .xan of hidden frames only is a Land.SpawnPiece collision mesh (telepad.xan = "TelepadCollision", 0x5d3d8e), not a map
+    if hmp.is_none() && cells.iter().all(|c| !c.visible) { return Err("no visible frame: a collision piece, not a map".into()); }
     if lo[0] > hi[0] { return Err("no geometry above water".into()); }
     let span = [hi[0] - lo[0], hi[2] - lo[2]];
     // W4M scale at VOX: xz span + 2 m, y up to land top + WATER + girder headroom (Land.InitialMaxHeight + 750 = 37.5 m) + 1.5 m
@@ -731,6 +733,16 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     }
     // detail objects: "visible" entities whose library names a theme detail mesh (PREHISTORIC18...)
     let (mut objs, mut marks, mut emits, mut lights) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // W4M 0x46c630: a blast that destroys a cell of a frame removes the frame's details whose own cell (VoxelPos) is no longer solid;
+    // per frame holding such a detail: its solid cells' centres (index = position in its list)
+    let mut frame_cells: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut cell_of: HashMap<(usize, [usize; 3]), usize> = HashMap::new();  // -> index in its frame's list
+    let mut by_frame: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, c) in cells.iter().enumerate() {
+        let l = by_frame.entry(c.frame).or_default();
+        cell_of.insert((c.frame, c.at), l.len());
+        l.push(i);
+    }
     for r in &dets {
         let Some((_, d)) = xom.ctn.get(r.ctn.wrapping_sub(1)).filter(|c| c.0 == "DetailEntityStore") else { continue };
         let mut p = 3;
@@ -766,7 +778,19 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let lib = lib.to_lowercase();
         // Detail.PlayAnim's FourCC (0x5cd8e1): the 4 bytes 5 past "CODE" in the detail's name
         let code = name.find("CODE").and_then(|i| name.get(i + 5..i + 9)).map_or(String::new(), |c| format!(",\"code\":\"{}\"", c.replace(['"', '\\'], "")));
-        objs.push(format!("{{\"model\":\"{lib}\",\"pos\":[{:.2},{:.2},{:.2}],\"basis\":[{}]{code}}}", pos[0], pos[1], pos[2], b.join(",")));
+        let fr = &px[&r.frame];
+        let mut at = String::new();
+        if let Some(list) = by_frame.get(&r.frame) {
+            let fi = frame_cells.iter().position(|f| f.0 == r.frame).unwrap_or_else(|| {
+                frame_cells.push((r.frame, list.clone()));
+                frame_cells.len() - 1
+            });
+            let cell = [f[6], f[7], f[8]].map(|v| v as usize);
+            let cell = (cell[0] < fr.size[0] && cell[1] < fr.size[1] && cell[2] < fr.size[2]).then(|| cell_of.get(&(r.frame, cell))).flatten();
+            let k = cell.map_or(-1, |&c| c as i64);
+            at = format!(",\"frame\":{fi},\"cell\":{k}");
+        }
+        objs.push(format!("{{\"model\":\"{lib}\",\"pos\":[{:.2},{:.2},{:.2}],\"basis\":[{}]{code}{at}}}", pos[0], pos[1], pos[2], b.join(",")));
         used_libs.insert(lib);
     }
     let palette: Vec<String> = pal.iter().map(|c| format!("[{}]", c.map(|v| v.to_string()).join(","))).collect();
@@ -801,11 +825,15 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         format!("\"{}\": {{\"hex\": [{}], \"vox\": [{}]}}", String::from_utf8_lossy(c).replace(['"', '\\'], ""), hex.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(","),
             runs.iter().map(|r| format!("[{},{}]", r[0], r[1])).collect::<Vec<_>>().join(","))
     }).collect();
+    let frames_json: Vec<String> = frame_cells.iter().map(|(_, l)| {
+        let c = l.iter().map(|&i| { let m = cells[i].c.iter().fold([0.0; 3], |s, p| madd(s, *p, 0.125)); format!("{:.2},{:.2},{:.2}", m[0] + ox, m[1] + WATER, m[2] + oz) });
+        format!("[{}]", c.collect::<Vec<_>>().join(","))
+    }).collect();
     let codes_json = if code_json.is_empty() { String::new() } else { format!("  \"codes\": {{{}}},\n", code_json.join(", ")) };
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"vox\": {VOX},\n  \"grid\": [{},{},{}],\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n{codes_json}  \"markers\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ],\n  \"lights\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"vox\": {VOX},\n  \"grid\": [{},{},{}],\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n{codes_json}  \"markers\": [\n    {}\n  ],\n  \"frames\": [{}],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ],\n  \"lights\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), nx(), ny(), nz(), palette.join(","), texs.join(","), blk.join(","),
-        marks.join(",\n    "), objs.join(",\n    "), emits.join(",\n    "), lights.iter().map(|l| l.1.as_str()).collect::<Vec<_>>().join(",\n    ")
+        marks.join(",\n    "), frames_json.join(","), objs.join(",\n    "), emits.join(",\n    "), lights.iter().map(|l| l.1.as_str()).collect::<Vec<_>>().join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
     Ok(format!("{} cells ({} hidden), {faces} faces, {exact}, {} objects, {} emitters, grid {}x{}x{}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",

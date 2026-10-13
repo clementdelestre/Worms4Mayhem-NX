@@ -166,6 +166,7 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("bow_impact", "weapons", &["BowImpact"]),
     ("donkey_impact", "weapons", &["ConcreteDonkeyImpact", "ConcreteDonkeyImpact2", "ConcreteDonkeyImpact3"]),
     ("explosion_boxed", "weapons", &["ExplosionBoxed1"]),  // WXP_ExploArrow_RingDk
+    ("scouser_pop", "weapons", &["ScouserPop"]),  // WXP_ScouserBurstBang
     ("fireworks", "global", &["Firework1", "Firework2", "Firework3"]),  // global/FireWorksExplosion
     ("buffalo", "weapons", &["BuffaloOfLies"]),  // weapons/BuffaloOfLies
     ("debris", "weapons", &["Debris1", "Debris2", "Debris3", "Debris4"]),  // weapons/Debris
@@ -279,7 +280,7 @@ fn speech_categories(lsd: &str, lip: &str, subs: &[Sample]) -> HashMap<String, V
 
 // WormsX.fev (layout: tools/w4m-re/fev.py, docs/w4m/audio.md §12): what the importer needs of each event.
 struct Inst { sd: usize, start: f32, looped: bool, vol: f32 }
-struct Event { path: String, vol: f32, mode: u32, min: f32, max: f32, cat: String, params: Vec<(String, f32)>, insts: Vec<Inst>, envs: Vec<(u32, Vec<(f32, f32)>)> }
+struct Event { path: String, vol: f32, mode: u32, min: f32, max: f32, cat: String, params: Vec<(String, f32)>, insts: Vec<Inst>, envs: Vec<(u32, Vec<(f32, f32, u32)>)> }
 struct Wave { bank: String, index: usize }
 struct SoundDef { play: u32, vol: f32, waves: Vec<Wave> }
 struct Fev { events: Vec<Event>, sds: Vec<SoundDef>, cats: HashMap<String, f32> }
@@ -334,7 +335,7 @@ fn parse_fev(b: &[u8]) -> Fev {
                         r.u(); r.s(); r.u();
                         let flags = r.u();
                         r.u();
-                        let pts = (0..r.u()).map(|_| { let x = r.f(); let y = r.f(); r.u(); (x, y) }).collect();
+                        let pts = (0..r.u()).map(|_| { let x = r.f(); let y = r.f(); (x, y, r.u()) }).collect();
                         r.skip(8);
                         e.envs.push((flags, pts));
                     }
@@ -405,7 +406,7 @@ fn lip_line(name: &str, rows: &[(u16, u8)]) -> String {
 }
 
 // efmv/<group>/events.txt, one line per event: name, gain dB, loop, 3D linear min max (m, 0 0: 2D), sounddef play mode, wave count,
-// then the volume envelope on its Time parameter if any: rate (share of the range per second) and x,y points;
+// then the volume envelope on its Time parameter if any: rate (share of the range per second) and x,y,shape points;
 // efmv/<group>/lip.txt: the event's line (its .lsd hash, the first: no EFMV event has a MultiSelect parameter) as LIP rows
 fn efmv_index(f: &Fev, efmv: &[&Event], game: &Path, out: &Path) {
     let (lsds, lipdirs) = (index(&game.join("Data/Audio/EFMV")), index(&game.join("EFMV")));
@@ -417,7 +418,7 @@ fn efmv_index(f: &Fev, efmv: &[&Event], game: &Path, out: &Path) {
         let (min, max) = if e.mode & 0x10 != 0 { (e.min / 20.0, e.max / 20.0) } else { (0.0, 0.0) };
         let mut l = format!("{} {:.2} {} {min} {max} {} {}", safe(name), if gain > 0.0 { 20.0 * gain.log10() } else { -99.0 }, i.looped as u8, sd.play, sd.waves.len());
         if let (Some((_, rate)), Some((_, pts))) = (e.params.iter().find(|p| p.0 == "Time"), e.envs.iter().find(|v| v.0 == 12)) {
-            l += &pts.iter().fold(format!(" {rate}"), |s, (x, y)| format!("{s} {x},{y}"));
+            l += &pts.iter().fold(format!(" {rate}"), |s, (x, y, sh)| format!("{s} {x},{y},{sh}"));
         }
         groups.entry(group).or_default().0 += &(l + "\n");
     }
@@ -463,7 +464,9 @@ fn to_ogg(j: &Job) -> Result<(), String> {
 }
 
 // Story movies (Data/FMV/ntsc/English/<name>.wmv) -> movies/<name>.mjpg + .ogg (docs/import.md "Movies").
-const MOVIES: [&str; 6] = ["Meet_The_Professor", "Welcome", "Camelot", "WildWest", "Arabian", "Jurassic"];
+const MOVIES: [(&str, &str, u16, u16); 7] = [("English/Meet_The_Professor", "Meet_The_Professor", 640, 480), ("English/Welcome", "Welcome", 640, 480),
+    ("English/Camelot", "Camelot", 640, 480), ("English/WildWest", "WildWest", 640, 480), ("English/Arabian", "Arabian", 640, 480),
+    ("English/Jurassic", "Jurassic", 640, 480), ("Logos/Team17NTSC", "Team17NTSC", 1280, 720)];
 
 // Length of the JPEG at the start of `b`: walks the marker segments to SOS, then the entropy data to EOI (0xFF 0x00 and RSTn stay inside).
 fn jpeg_len(b: &[u8]) -> Option<usize> {
@@ -494,7 +497,7 @@ fn mjpg(jpegs: &[u8], w: u16, h: u16, fps: u16) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn movie(src: &Path, out: &Path) -> Result<(), String> {
+fn movie(src: &Path, out: &Path, w: u16, h: u16) -> Result<(), String> {
     let (jpg, ogg) = (out.with_extension("mjpg"), out.with_extension("ogg"));
     let ff = |args: &[&str], dst: Option<&Path>| {
         let mut c = Command::new("ffmpeg");
@@ -508,11 +511,11 @@ fn movie(src: &Path, out: &Path) -> Result<(), String> {
         fs::rename(&tmp, &ogg).map_err(|e| e.to_string())?;
     }
     if !jpg.exists() {
-        // 640x480 25 fps as W4M's table 0x9210b8 / the file; q 10 keeps the professor near 40 MB
+        // size from W4M's table 0x9210b8, 25 fps; q 10 keeps the professor near 40 MB
         let r = ff(&["-an", "-vf", "fps=25", "-c:v", "mjpeg", "-q:v", "10", "-pix_fmt", "yuvj420p", "-huffman", "optimal", "-f", "image2pipe", "pipe:1"], None)?;
         if !r.status.success() { return Err(format!("ffmpeg failed on {}", src.display())); }
         let tmp = jpg.with_extension("tmp");
-        fs::write(&tmp, mjpg(&r.stdout, 640, 480, 25)?).map_err(|e| e.to_string())?;
+        fs::write(&tmp, mjpg(&r.stdout, w, h, 25)?).map_err(|e| e.to_string())?;
         fs::rename(&tmp, &jpg).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -586,9 +589,13 @@ fn main() {
         }
         if let Some((_, theme)) = MUSIC.iter().find(|(b, _)| b == bank) {
             fs::create_dir_all(out.join("music")).unwrap();
-            // frontendmusic also holds a shorter "FrontendDay" loop; the longest track is the main one
-            let i = (0..subs.len()).max_by_key(|&i| subs[i].samples).unwrap();
-            queue(&subs, i, out.join("music").join(format!("{theme}.ogg")), &mut jobs);
+            // frontendmusic holds femusic (the longest) and the shorter FrontendDay ambience
+            let mut idx: Vec<usize> = (0..subs.len()).collect();
+            idx.sort_by_key(|&i| std::cmp::Reverse(subs[i].samples));
+            queue(&subs, idx[0], out.join("music").join(format!("{theme}.ogg")), &mut jobs);
+            if bank == "frontendmusic" {
+                queue(&subs, idx[1], out.join("music").join("frontendday.ogg"), &mut jobs);
+            }
         }
         if let (Some(lsd), Some(lip)) = (speech_idx.get(&format!("{bank}.lsd")), lip_idx.get(bank.as_str())) {
             let lsd = String::from_utf8_lossy(&fs::read(lsd).unwrap()).into_owned();
@@ -632,12 +639,12 @@ fn main() {
         });
     });
 
-    let fmv = game.join("Data/FMV/ntsc/English");
+    let fmv = game.join("Data/FMV/ntsc");
     let dir = out.join("movies");
     fs::create_dir_all(&dir).unwrap();
     let movie_errors: Vec<String> = std::thread::scope(|sc| {
-        let hs: Vec<_> = MOVIES.iter().filter(|n| fmv.join(format!("{n}.wmv")).exists())
-            .map(|n| { let (fmv, dir) = (&fmv, &dir); sc.spawn(move || movie(&fmv.join(format!("{n}.wmv")), &dir.join(n))) }).collect();
+        let hs: Vec<_> = MOVIES.iter().filter(|m| fmv.join(format!("{}.wmv", m.0)).exists())
+            .map(|&(src, n, w, h)| { let (fmv, dir) = (&fmv, &dir); sc.spawn(move || movie(&fmv.join(format!("{src}.wmv")), &dir.join(n), w, h)) }).collect();
         hs.into_iter().filter_map(|h| h.join().unwrap().err()).collect()
     });
     errors.lock().unwrap().extend(movie_errors);

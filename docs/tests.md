@@ -137,7 +137,7 @@ was hidden under it [data: swlog2 timestamps].
 Now (ours):
 - The log is queued from the first line (above).
 - A plain launch (no argument, no `shot` file) shows the title once the menu's assets are in: frontend art (`Ui::preload`),
-  `models/frontend/` and `seagull.glb`, the `fe_*` / `wormpot_*` sounds, the map list. The other models (worm.glb first),
+  `models/frontend/`, `title.glb` and `seagull.glb`, the `fe_*` / `wormpot_*` sounds, the map list. The other models (worm.glb first),
   the match sounds and the Missions list with its preview pictures load on cores 1-2 while the title and menus run (no
   GPU work there: the menu frames do not change). The first match's loading screen uploads the models in 8 ms slices and
   takes the sounds (prep step 0), before the map steps. Any argument or the `shot` file loads everything at boot, as before.
@@ -488,9 +488,10 @@ same checksum and voxels; each instant replay lands on the live state: even repl
 re-simulate, odd ones restore the checkpoint 45 ticks back, re-simulate half way and skip (`Snapshot::forward`). Prints
 step, snapshot, restore and re-sim timings.
 
-The game itself has replays off for now (user-requested, temporary): `constexpr bool REPLAYS = false` in ui.h skips the
-turn snapshots and checkpoints (so no instant replay), the input recording and `.w4r` save, the Replays main-menu row and
-the `--ui replays` / `playback` captures [ours]. `replay_check` drives `Recording` / `Snapshot` directly and still runs.
+`Snapshot` also journals the exact-land lists (`SharpLand::undo`: cell, list before) and restores/forwards them like the
+voxels; the check hashes them with the voxels and plays the W4M map Accuracy (`.cells`, needs assets) too [ours].
+`constexpr bool REPLAYS` in ui.h (true) gates the turn snapshots and checkpoints, the input recording and `.w4r` save, the
+Replays main-menu row and the `--ui replays` / `playback` captures [ours].
 
 ## ui_check.cpp
 

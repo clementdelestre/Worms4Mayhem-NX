@@ -4,11 +4,11 @@
 #include "rlgl.h"
 #include <cmath>
 
-extern "C" void glDepthFunc(unsigned), glPolygonOffset(float, float), glEnable(unsigned), glDisable(unsigned), glBlendFunc(unsigned, unsigned),
+extern "C" void glDepthFunc(unsigned), glBlendFunc(unsigned, unsigned),
     glBlendColor(float, float, float, float);
 
 namespace {
-const unsigned GL_GREATER_ = 0x204, GL_LEQUAL_ = 0x203, GL_POLYGON_OFFSET_FILL_ = 0x8037, GL_SRC_ALPHA_ = 0x302, GL_ONE_MINUS_SRC_ALPHA_ = 0x303,
+const unsigned GL_GREATER_ = 0x204, GL_LEQUAL_ = 0x203, GL_SRC_ALPHA_ = 0x302, GL_ONE_MINUS_SRC_ALPHA_ = 0x303,
                GL_CONSTANT_ALPHA_ = 0x8003, GL_ONE_MINUS_CONSTANT_ALPHA_ = 0x8004;
 const float OPAQUE_AT = 2.5f, CLEAR_AT = 1.25f;
 const int SLOT = 6;  // MATERIAL_MAP_HEIGHT: never bound by the glb materials
@@ -65,10 +65,6 @@ RenderTexture2D rt{};
 Shader maskS{}, hideS{}, lineS{};
 bool used = false;
 
-void offset(bool on) {
-    if (on) glEnable(GL_POLYGON_OFFSET_FILL_), glPolygonOffset(-1, -2);  // hides ties with the worm's own depth
-    else glDisable(GL_POLYGON_OFFSET_FILL_);
-}
 }  // namespace
 
 void Xray::begin() {
@@ -104,7 +100,6 @@ bool Xray::mask() {
     rlEnableFramebuffer(rt.id);
     rlClearColor(0, 0, 0, 0);
     rlClearScreenBuffers();
-    offset(true);
     Models::shade(maskS);
     return used = true;
 }
@@ -136,7 +131,6 @@ void Xray::done() {
     glBlendFunc(GL_SRC_ALPHA_, GL_ONE_MINUS_SRC_ALPHA_);
     glDepthFunc(GL_LEQUAL_);
     rlEnableDepthMask();
-    offset(false);
     rlActiveTextureSlot(SLOT), rlDisableTexture(), rlActiveTextureSlot(0);
 }
 

@@ -126,7 +126,9 @@ static void logLine(int level, const char *fmt, va_list ap) {
 #ifndef __SWITCH__
     va_list cp;
     va_copy(cp, ap);
+    flockfile(stdout);  // one line per lock: threads log concurrently
     printf("%s: ", level >= LOG_ERROR ? "ERROR" : level == LOG_WARNING ? "WARNING" : "INFO"), vprintf(fmt, cp), putchar('\n'), va_end(cp);
+    funlockfile(stdout);
 #endif
     static const auto t0 = std::chrono::steady_clock::now();  // not GetTime(): GLFW logs an error through here once terminated
     if (!logq.f) return;
@@ -157,7 +159,6 @@ static void animEvent(const Game &g, const GameEvent &e);
 // W4M GameOverLogicEntity +0x2c == 2 (0x4fd5c5: Win, Mission / Challenge / Tutorial Success): victory music, crowd and fireworks; not on a draw or a failure
 static bool won(const Game &g) { return g.cfg.mission ? g.run.result > 0 && scriptOutro(g) < 0 : g.winner >= 0; }  // an EFMV.GameOverMovie replaces it (0x4fd27a)
 static bool gunBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun; }  // EmitterSoundFX weapons/ShotgunFire of WXP_ShotgunBlastHit, no bang
-static bool donkeyBlast(const GameEvent &e) { return e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Donkey && WEAPONS[e.weapon].clusters == 0; }  // its DetonationFx and sound, not a bang
 static const char *objectModel(const Object &o) {
     if (o.type != Object::Crate) return o.type == Object::Mine ? "mine" : o.type == Object::Barrel ? "barrel" : o.type == Object::Sentry ? "sentry" : "target";
     if (o.mystery >= 0) return Models::has("crate_mystery") ? "crate_mystery" : "crate_weapon";
@@ -192,10 +193,10 @@ static bool drawObject(const Game &g, const Object &o) {
     for (int k = 0; custom && k < 15; k++) gfx[k] = (char)tolower((unsigned char)custom[k]);
     if (custom && Models::has(gfx)) model = gfx;
     float k = (o.type == Object::Crate || o.type == Object::Target ? o.scale : 1) / (model == gfx || o.type == Object::Target ? 20 : 1);  // Crate.Scale
-    bool ok = k == 1 ? Models::draw(model, o.pos, yaw) : Models::draw(model, MatrixMultiply(MatrixMultiply(MatrixScale(k, k, k), MatrixRotateY(yaw)), MatrixTranslate(o.pos.x, o.pos.y, o.pos.z)));
+    Vector3 at = o.pos;
+    bool ok = k == 1 ? Models::draw(model, at, yaw) : Models::draw(model, MatrixMultiply(MatrixMultiply(MatrixScale(k, k, k), MatrixRotateY(yaw)), MatrixTranslate(at.x, at.y, at.z)));
     return Models::pick(nullptr), ok;
 }
-static bool holyNext = false;  // the blast after the Hallelujah is the holy grenade's own
 static void floodFx(const Game &g, float stop) {  // FloodLogicEntity 0x555720: Land.Center x / z, Land.MaxHeight + 800 units
     Vector3 c = g.landCenter();
     Fx::flood({c.x, g.landTop() + 800 / 20.f, c.z}, stop);
@@ -210,14 +211,14 @@ static void onEvent(const Game &g, const GameEvent &e) {
     int team = e.worm >= 0 ? g.worms[e.worm].team : 0;
     auto say = [&](Voice v) { e.worm >= 0 ? Acting::speak(g, e.worm, v) : (void)Audio::voice(team, v, e.pos); };
     if (e.kind == GameEvent::GameOver && won(g)) Fx::fireworks(g.landCenter(), Terrain::NX * Terrain::VOX / 2, g.landTop());  // radius as the orbit camera
-    Fx::event(e, g.terrain.side);
+    Fx::event(e);
     switch (e.kind) {
-    // fx: its emitters' EmitterSoundFX; WXP_Napalm (a Fire landmine) has none of the landmine's DetonationSfx
-    case GameEvent::Boom: if (!e.fx || !strcmp(e.fx, "WXP_Napalm")) Audio::play(gunBlast(e) ? Sfx::Shotgun : donkeyBlast(e) ? Sfx::DonkeyImpact : e.weapon >= 0 && WEAPONS[e.weapon].stick > 0 ? Sfx::ExplosionBoxed : Sfx::Explosion, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
-    case GameEvent::BigBoom: if (donkeyBlast(e)) { Audio::play(Sfx::DonkeyImpact, e.pos); if (g.phase != Phase::Aim) Controls::impact(e.pos); break; }
-        if (!e.fx) Audio::play(holyNext ? Sfx::HolyBoom : Sfx::BigExplosion, e.pos);  // fx: its emitters' EmitterSoundFX
-        holyNext = false; if (g.phase != Phase::Aim) Controls::impact(e.pos); break;
-    case GameEvent::Hallelujah: Audio::play(Sfx::Holy, e.pos), holyNext = true; break;
+    case GameEvent::Boom: case GameEvent::BigBoom:  // the effect's emitters play their EmitterSoundFX (Fx::event)
+        if (gunBlast(e)) Audio::play(Sfx::Shotgun, e.pos);
+        else if (Sfx s = e.sfx ? Audio::byEvent(e.sfx) : Sfx::Count; s != Sfx::Count) Audio::play(s, e.pos);
+        if (g.phase != Phase::Aim) Controls::impact(e.pos);
+        break;
+    case GameEvent::Hallelujah: Audio::play(Sfx::Holy, e.pos); break;
     case GameEvent::Fire: {
         const WeaponDef &d = WEAPONS[e.weapon];
         Kind k = d.kind;
@@ -257,7 +258,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
         if (WEAPONS[e.weapon].fuse <= 0) Fx::ariel(e.pos);
         break;
     case GameEvent::Splash: Fx::start(e.fx, e.pos); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking; the sounds are the effect's EmitterSoundFX
-    case GameEvent::Pop: Fx::start(e.fx, e.pos); break;
+    case GameEvent::Pop: case GameEvent::Sink: Fx::start(e.fx, e.pos); break;
     case GameEvent::Death: say(Voice::Death); break;  // worm speech goes through its WormPoseManager: lip sync (0x59cb20)
     case GameEvent::Hurt: say(Voice::Hurt); break;
     case GameEvent::Jump: say(Voice::Jump); break;
@@ -1190,6 +1191,15 @@ struct GpuClock {
     }
 };
 
+// raylib's GetFPS starts from an empty 30-sample history (reads ~1800 for the first frames): count frames per 0.5 s instead
+static int fps() {
+    static double t0 = GetTime();
+    static int n = 0, shown = 0;
+    n++;
+    if (double d = GetTime() - t0; d >= 0.5) shown = (int)(n / d + 0.5), n = 0, t0 += d;
+    return shown;
+}
+
 int main(int argc, char **argv) {
     SetTraceLogCallback(logLine);
     logAsync();
@@ -1218,11 +1228,13 @@ int main(int argc, char **argv) {
     std::vector<std::string> maps = {""};  // "" = procedural island
     Ui::onNarrator = Audio::narrator;  // SubtitleGraphicEntity's failure narration (0x5f90a0)
     double soundMs = 0, mapMs = 0;
+    std::atomic<bool> soundsUp{false};
     std::thread sounds([&] {
         Loading::pinCore(1);
         double t = GetTime();
         Audio::init();
         soundMs = (GetTime() - t) * 1000;
+        soundsUp = true;
     });
     std::thread mapList([&] {
         double t = GetTime();
@@ -1243,46 +1255,75 @@ int main(int argc, char **argv) {
     if (!lazy) Models::start();
     auto modelsPending = [](double until) { return Models::upload(until) && !(lazy && Models::menuReady()); };
     double artMs = 0, modelMs = 0;  // when each finished, from bt[1]
-    for (double until = 0;; until = GetTime() + 0.008) {  // ~half a frame of uploads
-        bool art = Ui::preload(until), mdl = modelsPending(until);
+    // W4M boot: the icon until audio is up, state 4 (Logos/Team17NTSC.wmv) while the assets load behind it, then state 7's Generic
+    // loading screen (min 1.8 s) before the title; any press skips the movie (user-requested)
+    bool plain = lazy && !getenv("W4NX_INPUTSCRIPT") && !getenv("W4NX_CAPFRAMES");
+    bool introLeft = plain && Movie::has("Team17NTSC"), bootMovie = false, bootLoad = false;
+    auto anyPress = [] {
+        bool r = GetKeyPressed() || GetTouchPointCount() || IsMouseButtonPressed(0) || IsMouseButtonPressed(1) || IsMouseButtonPressed(2);
+        for (int p = 0; p < 4 && !r; p++) for (int b = 1; b <= GAMEPAD_BUTTON_RIGHT_THUMB; b++) r |= IsGamepadButtonPressed(p, b);
+        return r;
+    };
+    // Everything the title and its menus need is read and uploaded while the loading screen is up, so the first title frame is cheap
+    double screenMs = 0, joinMs = 0, sceneMs = 0, tailT = 0;
+    static double titleT = 0, misList = 0;  // MISSIONS log: when the list was ready, from the end of the menu assets
+    std::shared_future<std::vector<MissionSpec>> missionsF;
+    std::vector<std::string> pics;
+    bool tailUp = false, picsQueued = false;
+    auto startTail = [&] {
+        tailUp = true, screenMs = (GetTime() - bt[2]) * 1000, bt[2] = GetTime();
+        sounds.join(), mapList.join();
+        std::sort(maps.begin() + 1, maps.end(), [](const std::string &a, const std::string &b) {  // readdir order differs between PC and Switch
+            int c = strcasecmp(Ui::mapTitle(a).c_str(), Ui::mapTitle(b).c_str());
+            return c ? c < 0 : a < b;
+        });
+        bt[3] = GetTime();
+        FrontBg::load();
+        bt[4] = GetTime(), joinMs = (bt[3] - bt[2]) * 1000, sceneMs = (bt[4] - bt[3]) * 1000, tailT = titleT = bt[4];
+        Audio::loadRest();
+        missionsF = std::async(std::launch::async, [] {  // the Missions page's list
+            Loading::pinCore(2);
+            std::vector<MissionSpec> l = listMissions(ROMFS_DIR, DATA_DIR);
+            misList = (GetTime() - titleT) * 1000;
+            return l;
+        }).share();
+    };
+    // true once the sounds, the mission list and its pictures (decoded off thread, uploaded here a few per call) are in
+    auto tailDone = [&] {
+        if (!tailUp || !Audio::finishLoads(false) || missionsF.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+        if (!picsQueued) {
+            for (const MissionSpec &m : missionsF.get()) if (!m.preview.empty()) pics.push_back(m.preview);
+            Ui::predecode(pics), picsQueued = true;
+        }
+        return !Ui::warm(pics, GetTime() + 0.008);
+    };
+    double iconMs = 0, loadScreen = 0;  // BOOT marks: icon alone until the movie starts, loading screen's open time
+    for (double until = 0;; until = introLeft ? 0 : GetTime() + 0.008) {  // ~half a frame of uploads, none while only the icon shows
+        bool art = Ui::preload(until), mdl = modelsPending(until) | Fx::preload(until);
         if (!art && !artMs) artMs = (GetTime() - bt[1]) * 1000;
         if (!mdl && !modelMs) modelMs = (GetTime() - bt[1]) * 1000;
         if (!art && !mdl && !bt[2]) bt[2] = GetTime();
-        // W4M's startup icon while a worker decodes and this thread uploads
+        if (introLeft && soundsUp) introLeft = false, bootMovie = true, iconMs = (GetTime() - bt[0]) * 1000, Movie::start("Team17NTSC");
         BeginDrawing();
-        bool done = Loading::boot(!art && !mdl, lazy);
+        if (bootMovie && (!Movie::update() || anyPress())) bootMovie = false, Movie::stop();
+        bool done = false;
+        if (bootMovie) ClearBackground(BLACK);
+        else if (plain && !introLeft && !art) {  // the loading screen's art is up (first in Ui::preload)
+            if (!bootLoad) bootLoad = true, loadScreen = GetTime(), Loading::beginMenu();
+            if (!art && !mdl && !tailUp && Loading::ready()) startTail();
+            done = Loading::frame(GetFrameTime(), !art && !mdl && tailDone());
+        } else done = Loading::boot(!art && !mdl && !plain);
         EndDrawing();
         if (done) break;
     }
-    double screenMs = (GetTime() - bt[2]) * 1000;  // boot frames past the menu assets
-    bt[2] = GetTime();
-    sounds.join(), mapList.join();
-    std::sort(maps.begin() + 1, maps.end(), [](const std::string &a, const std::string &b) {  // readdir order differs between PC and Switch
-        int c = strcasecmp(Ui::mapTitle(a).c_str(), Ui::mapTitle(b).c_str());
-        return c ? c < 0 : a < b;
-    });
-    bt[3] = GetTime();
-    FrontBg::load();
-    bt[4] = GetTime();
+    if (!tailUp) startTail();
+    if (!tailDone()) Audio::finishLoads(true), missionsF.wait();
     Audio::music(true);
     TraceLog(LOG_INFO, "BOOT: gl %.0f ms, menu assets %.0f (art %.0f, models %.0f, sounds %.0f, maps %.0f), screen +%.0f, join %.0f, menu scene %.0f, music %.0f, total %.0f",
-             (bt[1] - bt[0]) * 1000, (bt[2] - bt[1]) * 1000 - screenMs, artMs, modelMs, soundMs, mapMs, screenMs, (bt[3] - bt[2]) * 1000, (bt[4] - bt[3]) * 1000, (GetTime() - bt[4]) * 1000, (GetTime() - bt[0]) * 1000);
+             (bt[1] - bt[0]) * 1000, (bt[2] - bt[1]) * 1000 - screenMs, artMs, modelMs, soundMs, mapMs, screenMs, joinMs, sceneMs, 0.0, (GetTime() - bt[0]) * 1000);
+    TraceLog(LOG_INFO, "BOOT: icon %.0f ms, loading screen %.0f ms", iconMs, loadScreen ? (GetTime() - loadScreen) * 1000 : 0.0);
     TraceLog(LOG_INFO, "BOOT: so far %s", Models::bootStats());
-    if (lazy) Models::start();
-    Audio::loadRest();
-    if (!lazy) Audio::finishLoads(true);
-    static const double titleT = GetTime();
-    static double misList = 0, misPics = 0;  // MISSIONS log: when the list / pictures were ready, from the title
-    auto missionsF = std::async(std::launch::async, [] {  // the Missions page's list and pictures, read while the title shows
-        Loading::pinCore(2);
-        std::vector<MissionSpec> l = listMissions(ROMFS_DIR, DATA_DIR);
-        misList = (GetTime() - titleT) * 1000;
-        std::vector<std::string> pics;
-        for (const MissionSpec &m : l) if (!m.preview.empty()) pics.push_back(m.preview);
-        Ui::predecode(pics);  // queued on its own thread: the list is not held behind the pictures
-        misPics = (GetTime() - titleT) * 1000;
-        return l;
-    });
+    TraceLog(LOG_INFO, "BOOT: menu data (sounds, missions, pictures) ready %.0f ms after the menu scene", (GetTime() - tailT) * 1000);
     // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit; --animshot <weapon>: a turn firing it, anim_<frame>.png
     if (argc > 2 && !strcmp(argv[1], "--animshot") && (argv[2][0] < '0' || argv[2][0] > '9')) {
         const char *mdl = getenv("W4NX_MODEL") ? getenv("W4NX_MODEL") : "worm";  // W4NX_MODEL / W4NX_ZOOM: another model, camera distance x
@@ -1525,7 +1566,7 @@ int main(int argc, char **argv) {
         case 0:
             if (Models::upload(wait ? 1e30 : GetTime() + 0.008) || !Audio::finishLoads(wait)) return;  // the boot's background loads
             if (static bool once = true; once) once = false, TraceLog(LOG_INFO, "BOOT: match assets in %.0f ms after start; %s", (GetTime() - bootT0) * 1000, Models::bootStats());
-            FrontBg::unload();  // ~9 MB of menu scene; the next menu frame reloads it
+            FrontBg::unload();  // the cloud dome; the next menu frame reloads it
             break;
         case 1:
             if (!loaderDone && !wait) return;
@@ -1553,6 +1594,9 @@ int main(int argc, char **argv) {
             loadStep = -1, memLine(game), TraceLog(LOG_INFO, "LOAD: thread %.0f ms (start, decode, voices), upload %.0f, remesh %.0f, decor %.0f, total %.0f",
                                     loadMs[1], loadMs[0], loadMs[2], loadMs[3], (GetTime() - loadT0) * 1000);
     };
+    Screen afterLoad = Screen::Play;
+    bool restartHeld = false, quitHeld = false;  // a request waiting for the closing iris
+    auto noIris = [&] { return bench || netbot || uiShot || shot || getenv("W4NX_CAPFRAMES"); };
     auto mapMusic = [&] { Audio::music(true, game.terrain.theme.empty() ? "theme" : game.terrain.theme.c_str()); };  // once the match shows
     auto loadProgress = [&] {
         if (loadStep < 0) return 1.0f;
@@ -1582,7 +1626,7 @@ int main(int argc, char **argv) {
             while (loadStep >= 0) prepStep(true);
             mapMusic();
             screen = Screen::Play;
-        } else Loading::begin(c, preStart), screen = Screen::Loading;
+        } else Loading::begin(c, preStart), screen = Screen::Loading, afterLoad = Screen::Play;
     };
     bool botStarted = false;
     float botAt = 0, botDone = 1e9f;
@@ -1628,13 +1672,14 @@ int main(int argc, char **argv) {
     int missionIdx = -1, missionAct = 0;
     bool quick = false;  // W4M GameOver.GameType "Quick" (a quick match) rather than "Multiplayer"
     bool missionSaved = false, eggShown = false;
+    bool welcomeMovie = false;  // the Movie screen plays the Welcome movie
     int misFrames = -1;  // MISSIONS log: the Missions page's first frames after its first opening
     auto openMissions = [&] {
         if (missions.empty()) {
             double t = GetTime();
             missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt"), scriptUnlocks = progress.unlocks;
-            TraceLog(LOG_INFO, "MISSIONS: opened +%.0f ms after the title, waited %.1f ms (list at +%.0f, pictures queued at +%.0f)", (t - titleT) * 1000,
-                     (GetTime() - t) * 1000, misList, misPics);
+            TraceLog(LOG_INFO, "MISSIONS: opened +%.0f ms after the menu scene, waited %.1f ms (list at +%.0f)", (t - titleT) * 1000,
+                     (GetTime() - t) * 1000, misList);
             misFrames = 0;
         }
         missionMenu.team = Ui::teamName(opt, 0);
@@ -1702,7 +1747,14 @@ int main(int argc, char **argv) {
         ExportImage(img, TextFormat("cap_%d.png", frame));
         UnloadImage(img);
     };
+    double titleEnd = GetTime() + 2, titleWorst = 0;  // BOOT log: the frames of the first 2 s after the loading screen
+    bool modelsStarted = !lazy;
     for (int frame = 0; !WindowShouldClose(); frame++) {
+        if (!modelsStarted && !Loading::opening()) modelsStarted = true, Models::start();  // after the opening iris: its SD reads must not slow the first frames
+        if (titleEnd > 0 && GetTime() < titleEnd) {
+            titleWorst = fmax(titleWorst, GetFrameTime() * 1000);
+            if (GetFrameTime() > 0.025f) TraceLog(LOG_INFO, "BOOT: title frame %d took %.0f ms", frame, GetFrameTime() * 1000);
+        } else if (titleEnd > 0) TraceLog(LOG_INFO, "BOOT: title, first 2 s: %d frames, worst %.0f ms", frame, titleWorst), titleEnd = 0;
         // a frame shown for whole vblanks steps exactly that many ticks: timing noise must not make 0 / 2 tick frames at 60 Hz
         float raw = fminf(GetFrameTime(), 0.25f), vblanks = roundf(raw / Game::DT);
         bool fixedDt = bench || shot || uiShot || !capFrames.empty(), paced = !fixedDt && vblanks >= 1 && fabsf(raw - vblanks * Game::DT) < 0.002f;
@@ -1754,6 +1806,14 @@ int main(int argc, char **argv) {
         }
 
         if (screen == Screen::Menu) {
+            // 0x4f10e0: the first update of a profile that has not seen it plays the Welcome movie (StoryMovie "Welcome"), then the menu
+            static bool welcomeChecked = false;
+            if (!welcomeChecked && !uiShot && !inScript && !netbot) {
+                welcomeChecked = true;
+                progress.load(DATA_DIR "progress.txt");
+                if (!progress.welcome && Movie::has("Welcome")) Movie::start("Welcome"), welcomeMovie = true, screen = Screen::Movie;
+            }
+            if (screen == Screen::Movie) continue;
             if (intro && frame == 20) front.screen = Ui::Frontend::Main;
             if (intro && frame == 80) front.go(Ui::Frontend::Local);
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame))
@@ -1815,14 +1875,18 @@ int main(int argc, char **argv) {
             EndDrawing();
             if (loadShot && frame >= uiFrames.back()) break;
             if (Loading::ready() && loadStep >= 0) prepStep(false);  // after EndDrawing: the frame shows while this step blocks
-            if (done) screen = Screen::Play, mapMusic();
+            if (done) screen = afterLoad, afterLoad == Screen::Play ? mapMusic() : void();
             continue;
         }
 
         if (screen == Screen::Movie) {
+            static double movieT0 = -1;
+            if (movieT0 < 0) movieT0 = GetTime();
             BeginDrawing();
-            ClearBackground(BLACK);
-            bool on = Movie::update();
+            Ui::background();
+            bool on = Ui::movieFrame((float)(GetTime() - movieT0));
+            if (!on) movieT0 = -1;
+            Ui::feCursor();
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
                 rlDrawRenderBatchActive();
                 Image img = LoadImageFromScreen();
@@ -1831,7 +1895,8 @@ int main(int argc, char **argv) {
             }
             EndDrawing();
             if (uiShot && frame >= uiFrames.back()) break;
-            if (!on) progress.storyIntro = true, progress.save(DATA_DIR "progress.txt"), missionMenu.shown = -1, screen = Screen::Missions;
+            if (!on && welcomeMovie) welcomeMovie = false, progress.welcome = true, progress.save(DATA_DIR "progress.txt"), screen = Screen::Menu;
+            else if (!on) progress.storyIntro = true, progress.save(DATA_DIR "progress.txt"), missionMenu.shown = -1, screen = Screen::Missions;
             continue;
         }
         if (screen == Screen::Missions) {
@@ -1847,6 +1912,7 @@ int main(int argc, char **argv) {
                 if (++misFrames == 60) TraceLog(LOG_INFO, "MISSIONS: page draw first %.1f ms, worst of 60 frames %.1f ms", first, worst);
             }
             if (Ui::helpHeld()) Ui::controls(false);
+            Ui::feCursor();
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
                 rlDrawRenderBatchActive();
                 Image img = LoadImageFromScreen();
@@ -1989,12 +2055,15 @@ int main(int argc, char **argv) {
             quit = pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN, GAMEPAD_BUTTON_MIDDLE_RIGHT}, {KEY_ESCAPE, KEY_BACKSPACE});
         } else {
             Ui::Pause::Action act = shot ? Ui::Pause::None : pause.update();
-            if (act == Ui::Pause::DoRestart) {  // GameLogic.RestartGame: FCS state 8, the loading screen without PreStart
+            restartHeld |= act == Ui::Pause::DoRestart;
+            if (restartHeld && (noIris() || Loading::shut())) {
+                restartHeld = false;
+                act = Ui::Pause::DoRestart;  // GameLogic.RestartGame: FCS state 8, the loading screen without PreStart
                 irFinish();
                 Audio::stopSfx(), Audio::music(false);
                 startMission(missionIdx, false);
                 continue;
-            }
+            } else if (act == Ui::Pause::DoRestart) act = Ui::Pause::None;
             if (act == Ui::Pause::DoDraw) {  // GameLogic.DrawImmediately, then GotoFrontEnd
                 Input d;
                 d.flags = Input::DRAW;
@@ -2002,6 +2071,9 @@ int main(int argc, char **argv) {
             }
             quit = act == Ui::Pause::DoQuit || act == Ui::Pause::DoDraw;
         }
+        quitHeld |= quit;
+        if (quitHeld && !noIris() && !Loading::shut()) quit = false;  // GotoFrontEnd (7, 1, 1, 1): Circle_In first
+        else quit = quitHeld, quitHeld = false;
         if (quit) {
             irFinish();
             saveRec();
@@ -2011,6 +2083,7 @@ int main(int argc, char **argv) {
             screen = online ? Screen::Lobby : game.cfg.mission ? Screen::Missions : Screen::Menu;
             Audio::music(true, "theme");
             Audio::stopSfx();
+            if (!noIris()) afterLoad = screen, screen = Screen::Loading, Loading::beginMenu();  // Generic loading screen, then the menu
             PollInputEvents();  // no EndDrawing this frame: else the menu sees the same A/Enter press and restarts
             continue;
         }
@@ -2117,7 +2190,8 @@ int main(int argc, char **argv) {
             for (const Worm &w : game.worms) still |= w.alive && (!w.grounded || Vector3LengthSqr(w.vel) > 0.01f);
             for (const Object &o : game.objects) still |= o.falling || Vector3LengthSqr(o.vel) > 0.01f;
             uint32_t since = tick - shotTick;
-            bool ready = since >= 150 || game.phase == Phase::GameOver || (since >= 90 && !still);
+            bool over = game.phase == Phase::Settle || game.phase == Phase::GameOver;  // never during the retreat
+            bool ready = over && (since >= 150 || game.phase == Phase::GameOver || (since >= 90 && !still));
             int dmg = 0;
             bool kill = false;
             for (size_t i = 0; i < game.worms.size() && i < snap.g.worms.size(); i++) {
@@ -2265,7 +2339,7 @@ int main(int argc, char **argv) {
                 if (Models::visible(o.pos, 2)) drawObject(game, o), at.push_back({o.pos.x, o.pos.y, o.pos.z, 2});
         });
         lap(T_SHADOW);
-        // W4M PiP: the event camera in one low-resolution pass (terrain, worms, shots, objects, water), before the main view
+        // W4M PiP: the event camera in one low-resolution pass (terrain, shots, objects, water, fringe, worms, particles), before the main view
         static RenderTexture2D pipRt = {};
         Camera3D pipView;
         float pipShow = 0, pipFull = 0;
@@ -2278,12 +2352,13 @@ int main(int argc, char **argv) {
             Fx::drawSky(pipView, game.terrain.origin, 1.0f / 20);
             game.terrain.setView(pipView.position);
             game.terrain.draw();
-            for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawFaded(w, &w == &cur ? curOp : 1);
             for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain, game.clock)) DrawSphere(s.shown(game.clock), 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) drawObject(game, o);
             Fx::drawWater(pipView, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
+            Fx::drawUnderWater(pipView);
             game.terrain.drawFringe();
+            for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawFaded(w, &w == &cur ? curOp : 1);
             Fx::draw(pipView);
             EndMode3D();
             EndTextureMode();
@@ -2298,34 +2373,8 @@ int main(int argc, char **argv) {
         game.terrain.setView(view.position);
         game.terrain.draw();
         lap(T_TERRAIN);
-        game.terrain.drawObjects(clock);
-        lap(T_DECOR);
-        toolFx(game, dt);
-        jetAudio(game);
-        Xray::begin();
-        bool blimp = (playing && freeCam) || Controls::targetView(game) || (wd.kind == Kind::Binoculars && Controls::firstPerson(game));  // W4M outlines every live worm in the blimp view and binoculars (camera-w4m.md section 5)
-        auto shown = [&](const Worm &w) { return (w.alive || w.counted > 0) && !(&w == &cur && curOp <= 0) && Models::visible(w.pos, 2); };
-        auto outlined = [&](const Worm &w) { return Models::has("worm") && shown(w) && (blimp || &w == &cur); };  // W4M OutlinedWorms1: the active worm only, outside the blimp view
-        bool masked = false;  // every outlined worm's depth in one render-target bind
-        for (const Worm &w : game.worms)
-            if (outlined(w) && (masked || (masked = Xray::mask()))) Xray::team(w.team), drawWorm(game, w, clock);
-        if (masked) Xray::unmask();
-        for (const Worm &w : game.worms) {
-            if (!w.alive && w.counted <= 0) { drawGrave(game, w); continue; }
-            if (!shown(w)) continue;
-            if (Models::has("worm")) {  // the passes below draw the same pose: no re-skin
-                bool bin = masked && outlined(w);
-                drawFaded(w, &w == &cur ? curOp : 1);
-                if (bin) Xray::hidden(), drawWorm(game, w, clock), Xray::done();
-            } else {
-                Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};
-                DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
-                for (float s : {-0.13f, 0.13f})
-                    DrawSphere(Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 0.3f), Vector3Add(Vector3Scale(side, s), {0, 0.4f, 0}))), 0.1f, WHITE);
-            }
-            if ((game.cfg.rules & RULE_KING) && int(&w - game.worms.data()) % game.perTeam == 0)
-                DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
-        }
+        // W4M bin 8 (3D, registry default scene of every shot, crate, mine, barrel, grave): opaque shapes are drawn before the water, a transparent one after it (0x6ee277)
+        for (const Worm &w : game.worms) if (!w.alive && w.counted <= 0) drawGrave(game, w);
         if (game.roped)
             for (int k = 0; k < game.rope.n; k++) DrawLine3D(game.rope.pt[k], k + 1 < game.rope.n ? game.rope.pt[k + 1] : cur.pos, BROWN);
         if (game.grapple.on) DrawLine3D(game.grapple.at, cur.pos, BROWN);  // the hook in flight (rope mode 2)
@@ -2354,7 +2403,7 @@ int main(int argc, char **argv) {
             if (!drawObject(game, o)) {
                 if (o.type == Object::Mine) DrawCylinder({o.pos.x, o.pos.y - 0.1f, o.pos.z}, 0.15f, 0.2f, 0.2f, 8, DARKGRAY);
                 if (o.type == Object::Mine && o.fuse >= 0 && fmodf(clock, 0.3f) < 0.15f) DrawSphere(Vector3Add(o.pos, {0, 0.15f, 0}), 0.08f, RED);
-                else if (o.type == Object::Barrel) DrawCylinder({o.pos.x, o.pos.y - 0.5f, o.pos.z}, 0.35f, 0.35f, 1, 10, MAROON);
+                else if (o.type == Object::Barrel) DrawCylinder(o.pos, 0.35f, 0.35f, 1, 10, MAROON);
                 else if (o.type == Object::Target) {  // bullseye facing the active worm
                     Vector3 f = Vector3Normalize({cur.pos.x - o.pos.x, 0, cur.pos.z - o.pos.z});
                     for (int k = 0; k < 3; k++)
@@ -2363,6 +2412,38 @@ int main(int argc, char **argv) {
                 }
                 else DrawCube(o.pos, 0.8f, 0.8f, 0.8f, o.weapon < 0 ? RAYWHITE : BROWN);
             }
+        }
+        // W4M bins: Land (4-5), 3D (8: opaque, then the transparent water), ParticleUnderWater (11), DetailObjects (16), LandFringe (17), worms (19-21), Particle1-5 (23-27)
+        Fx::drawWater(view, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
+        Fx::drawUnderWater(view);
+        game.terrain.drawObjects(clock);
+        game.terrain.drawFringe();
+        lap(T_DECOR);
+        toolFx(game, dt);
+        jetAudio(game);
+        Xray::begin();
+        bool blimp = (playing && freeCam) || Controls::targetView(game) || (wd.kind == Kind::Binoculars && Controls::firstPerson(game));  // W4M outlines every live worm in the blimp view and binoculars (camera-w4m.md section 5)
+        auto shown = [&](const Worm &w) { return (w.alive || w.counted > 0) && !(&w == &cur && curOp <= 0) && Models::visible(w.pos, 2); };
+        auto outlined = [&](const Worm &w) { return Models::has("worm") && shown(w) && (blimp || &w == &cur); };  // W4M OutlinedWorms1: the active worm only, outside the blimp view
+        bool masked = false;  // every outlined worm's depth in one render-target bind
+        for (const Worm &w : game.worms)
+            if (outlined(w) && (masked || (masked = Xray::mask()))) Xray::team(w.team), drawWorm(game, w, clock);
+        if (masked) Xray::unmask();
+        for (const Worm &w : game.worms) {
+            if (!w.alive && w.counted <= 0) continue;
+            if (!shown(w)) continue;
+            if (Models::has("worm")) {  // the passes below draw the same pose: no re-skin
+                bool bin = masked && outlined(w);
+                if (bin) Xray::hidden(), drawWorm(game, w, clock), Xray::done();  // before the worm: only land (not the worm's own depth) can fail GREATER
+                drawFaded(w, &w == &cur ? curOp : 1);
+            } else {
+                Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};
+                DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
+                for (float s : {-0.13f, 0.13f})
+                    DrawSphere(Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 0.3f), Vector3Add(Vector3Scale(side, s), {0, 0.4f, 0}))), 0.1f, WHITE);
+            }
+            if ((game.cfg.rules & RULE_KING) && int(&w - game.worms.data()) % game.perTeam == 0)
+                DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
         }
         // TriggerGraphicEntity 0x58be60 (Trigger.Visibility 1): the 1-unit Trigger.Ball x its radius, its 8x8 texture one colour,
         // XBlendModeGL SrcAlpha / InvSrcAlpha (Bundl09)
@@ -2374,14 +2455,8 @@ int main(int argc, char **argv) {
             DrawCube(Vector3Add(game.raceFinish, {0, 10.3f, 0}), 1.2f, 0.6f, 0.08f, RED);
         }
         lap(T_MODELS);
-        Fx::drawWater(view, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
-        game.terrain.drawFringe();
-        lap(T_SKY);
-        float fxDt = pause.open ? 0 : dt;
+                float fxDt = pause.open ? 0 : dt;
         for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt, {game.wind, 0, game.windZ});
-        for (const Game::Gas &c : game.gas)  // W4M WXP_GasCloudDelayed: green puffs over the cloud, ~4 a second
-            if (fxDt > 0 && GetRandomValue(0, 14) == 0)
-                Fx::puff(Vector3Add(c.pos, {GetRandomValue(-40, 40) / 10.0f, GetRandomValue(0, 15) / 10.0f, GetRandomValue(-40, 40) / 10.0f}), {game.wind, 0.2f, game.windZ}, 5, 2, 3.5f, {120, 200, 60, 110});
         drawBubbles(game, fxDt);
         drawFactory(game, fxDt);
         Fx::setWind({game.wind, 0, game.windZ}), Fx::levelSync(game.terrain.emitters), Fx::weather(game.cfg.seed, game.clock);
@@ -2444,7 +2519,7 @@ int main(int argc, char **argv) {
             if (!egg.item.empty() && !eggShown) eggShown = Ui::eggFound(egg.name.c_str(), egg.coins);  // GameOver.EasterEgg: WXFE.EasterEggFound over the next menu
             else missionAct = Ui::missionEnd(game, *ms, progress.get(ms->id), more);
         }
-        pause.draw();
+        if (!Loading::closing()) pause.draw();
         if (playing) {
             bool end = tick >= play.inputs.size();
             Ui::playbackBar(paused, speed, freeCam, tick * Game::DT, play.inputs.size() * Game::DT,
@@ -2461,13 +2536,13 @@ int main(int argc, char **argv) {
             DrawRectangle(6, 34, 270, 40 + T_COUNT * 20, Fade(BLACK, 0.6f));
             double total = 0;
             for (double c : perf) total += c;
-            Ui::text(TextFormat("%d fps  %.2f ms %s", GetFPS(), total * 1000, perfOn == 2 ? "gpu sync" : "cpu"), 14, 38, 20, YELLOW);
+            Ui::text(TextFormat("%d fps  %.2f ms %s", fps(), total * 1000, perfOn == 2 ? "gpu sync" : "cpu"), 14, 38, 20, YELLOW);
             for (int k = 0; k < T_COUNT; k++) {
                 Ui::text(NAMES[k], 14, 60 + k * 20, 18, WHITE);
                 Ui::text(TextFormat("%.2f", perf[k] * 1000), 200, 60 + k * 20, 18, WHITE, 2);
             }
             Ui::text(TextFormat("terrain %dk tris  fx %d", tris / 1000, Fx::count()), 14, 62 + T_COUNT * 20, 18, LIGHTGRAY);
-        } else DrawFPS(10, 10);
+        } else Ui::text(TextFormat("%d FPS", fps()), 10, 10, 20, LIME);
         lap(T_UI);
         if (shot && !shotBench && (frame == 35 || frame == 150)) {
             rlDrawRenderBatchActive();

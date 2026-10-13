@@ -194,22 +194,14 @@ fn tga(b: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     Some((w, h, o))
 }
 
-// PNG with stored (uncompressed) deflate blocks: no compressor needed, raylib/stb read it.
+// PNG, zlib level 9 (raylib/stb read it).
 fn png(w: usize, h: usize, rgba: &[u8]) -> Vec<u8> {
+    use std::io::Write;
     let crc_t: Vec<u32> = (0..256u32).map(|n| (0..8).fold(n, |c, _| if c & 1 != 0 { 0xedb88320 ^ (c >> 1) } else { c >> 1 })).collect();
     let crc = |d: &[u8]| !d.iter().fold(!0u32, |c, &b| crc_t[((c ^ b as u32) & 0xff) as usize] ^ (c >> 8));
-    let mut raw = Vec::with_capacity((w * 4 + 1) * h);
-    for r in rgba.chunks(w * 4) { raw.push(0); raw.extend_from_slice(r); }
-    let mut z = vec![0x78, 0x01];
-    let blocks: Vec<&[u8]> = raw.chunks(65535).collect();
-    for (i, b) in blocks.iter().enumerate() {
-        z.push((i + 1 == blocks.len()) as u8);
-        z.extend((b.len() as u16).to_le_bytes());
-        z.extend((!(b.len() as u16)).to_le_bytes());
-        z.extend_from_slice(b);
-    }
-    let (a, bb) = raw.iter().fold((1u32, 0u32), |(a, b), &c| { let a = (a + c as u32) % 65521; (a, (b + a) % 65521) });
-    z.extend(((bb << 16) | a).to_be_bytes());
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    for r in rgba.chunks(w * 4) { enc.write_all(&[0]).unwrap(); enc.write_all(r).unwrap(); }
+    let z = enc.finish().unwrap();
     let mut o = b"\x89PNG\r\n\x1a\n".to_vec();
     let mut chunk = |t: &[u8], d: &[u8]| {
         o.extend((d.len() as u32).to_be_bytes());

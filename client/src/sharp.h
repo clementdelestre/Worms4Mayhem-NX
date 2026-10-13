@@ -41,12 +41,28 @@ struct SharpLand {
     // the surface crossing on the segment a-b inside mixed cell c (a and b on opposite sides) and its outward normal
     bool edge(size_t c, Vector3 a, Vector3 b, Vector3 *q, Vector3 *n) const;
     // edits, before the int8 field changes (its signs say which unlisted cells are land)
-    void carve(const Bricks<signed char> &d, Vector3 c, float r, int box[6]);  // box: grown by the cells whose list changed
+    // box: grown by the cells whose list changed; blast: the carve sphere is placed before the heightmap op, which a blast never cuts (W4M 0x463c90 lowers it instead)
+    void carve(const Bricks<signed char> &d, Vector3 c, float r, int box[6], bool blast = false);
+    struct Col { int x, z; float was, now; };  // a heightmap column a blast moved
+    std::vector<Col> lower(Vector3 c, float r);  // W4M 0x463c90: h = (h + (cy - sqrt(1 - d2) r)) / 2 on the columns under the sphere
+    void relist(const std::vector<Col> &cols, int box[6]);  // the cells whose heightmap state (out / crossing / in) changed get their list again
+    int hmState(int x, int y, int z) const;  // cell (x, y, z) vs the heightmap: 0 out, 1 crossing, 2 in, -1 none
+    std::vector<std::pair<uint32_t, float>> *topUndo = nullptr;  // when set, lower() logs (column, old top)
     void weld(const Bricks<signed char> &d, Vector3 c, Vector3 half);
     // a convex cell (corners bit 1 +x, 2 +y, 4 +z) laid over the land, as the importer's (starts an exact land); its HEX id
     uint32_t add(const Bricks<signed char> &d, const Vector3 *c);
     void drop(const std::vector<uint32_t> &hexes);  // those W4M cells leave every list (Land.ClearCoded)
     bool inside(uint32_t hex, Vector3 p) const;
+    // Snapshot undo: when set, every list change logs (cell, its list before; empty: unlisted)
+    std::vector<std::pair<uint32_t, std::vector<uint32_t>>> *undo = nullptr;
+    std::vector<uint32_t> list(size_t c) const { return mixed(c) ? std::vector<uint32_t>(ops(c) + 1, ops(c) + 1 + ops(c)[0]) : std::vector<uint32_t>{}; }
+    void restore(size_t c, const std::vector<uint32_t> &l);  // a logged list back, unlogged
+    // the primitive tables (lists index them): sizes() to bound a snapshot, cut() takes what was appended since, append() puts it back
+    struct Sizes { size_t planes = 0, hex = 0, sph = 0, box = 0; };
+    struct Tail { std::vector<Vector4> planes, sph; std::vector<uint32_t> hexP0, hexFace; std::vector<Vector3> box; };
+    Sizes sizes() const { return {planes.size(), hexP0.size(), sph.size(), box.size()}; }
+    Tail cut(const Sizes &z);
+    void append(const Tail &t);
     uint32_t planeEnd(uint32_t hex) const { return hex + 1 < hexP0.size() ? hexP0[hex + 1] : (uint32_t)planes.size(); }
 
 private:

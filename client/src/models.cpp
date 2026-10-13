@@ -4,6 +4,7 @@
 #include "raymath.h"
 #include "rlgl.h"
 #include "external/cgltf.h"
+#include <array>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -74,6 +75,8 @@ struct Entry {
     std::vector<Sel> sels;
     Tracks tracks, alphas;
     std::vector<float> alpha;  // per mesh, from the last draw's clip
+    std::vector<std::array<float, 16>> mat;  // per mesh: its W4M materialMatrix rows (w4m-models primitive extras "w4m")
+    std::vector<char> keyed;  // meshes whose shape alpha the clip keys: blended shapes, drawn after the opaque ones
     // skinned poses in their own buffers: a worm drawn in the shadow pass then the view is skinned once a frame
     // pose: the skinned meshes' positions and normals, all meshes in one buffer each (a pose is two uploads)
     struct Slot { const ModelAnimation *a, *am; int f, af; bool lay; Models::Layers ly; float eyeUV[3]; unsigned long used; std::vector<Mesh> meshes; unsigned pose[2]; };
@@ -129,6 +132,7 @@ struct Job {
     Vector3 fx{};  // translation of the glb's FxLocator node (WEAPTWK FxLocator: the ArielFx emitters' origin), model space
     std::vector<Sel> sels;
     Tracks tracks, alphas;
+    std::vector<std::array<float, 16>> mat;
 };
 std::mutex mu;
 std::deque<Job> jobs;
@@ -240,6 +244,12 @@ Job prepare(const char *path) {
     for (size_t i = 0; i < g->meshes_count; i++)
         for (size_t k = 0; k < g->meshes[i].primitives_count; k++) {
             const cgltf_primitive &pr = g->meshes[i].primitives[k];
+            float v[11] = {};  // specular rgb, emissive rgb, fresnel rgb, fresnel power, specular power
+            if (char *x = pr.extras.data ? strstr(pr.extras.data, "\"w4m\":[") : nullptr)
+                for (int c = 0; c < 11; c++) v[c] = strtof(x + (c ? 1 : 7), &x);  // past '"w4m":[', then each ','
+            auto &m = j.mat.emplace_back();
+            for (int r = 0; r < 3; r++) memcpy(&m[4 * r], &v[3 * r], 12);
+            m[12] = v[9], m[13] = v[10];
             use(pr.indices);
             for (size_t a = 0; a < pr.attributes_count; a++) use(pr.attributes[a].data);
             for (size_t t = 0; t < pr.targets_count; t++)
@@ -320,7 +330,7 @@ void add(Job &j) {
     if (strstr(j.path.c_str(), "/frontend/")) return (void)(spare[j.path] = e.m);  // FrontBg's scene, freed by FrontBg
     for (int k = 0; k < e.m.materialCount; k++)
         if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
-    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas);
+    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.mat = std::move(j.mat);
     for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
     for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
         const char *n = e.m.skeleton.bones[b].name;
@@ -361,7 +371,10 @@ static std::atomic<bool> stopWork{false};
 static std::thread workers[2];
 static int menuLeft = 0;  // menu scene jobs not yet added
 static double startT = 0;
-static bool menuFile(const std::string &p) { return p.find("/frontend/") != std::string::npos || p.find("/seagull.glb") != std::string::npos; }
+static bool menuFile(const std::string &p) {  // menu scene: frontend/, the title island, seagull, the Story book and the movie film frames (Ui::feMesh)
+    for (const char *k : {"/frontend/", "/title.glb", "/seagull.glb", "/storybook.glb", "/filmtape1.glb", "/filmtape2.glb"}) if (p.find(k) != std::string::npos) return true;
+    return false;
+}
 
 void Models::start() {
     bool first = files.empty();
@@ -821,11 +834,12 @@ static float trackAt(const SelTrack &k, float t, bool loop) {
 // W4M XConstColorSet alpha of each mesh keyed by the playing clip (0x3000200), which the Col CG programs multiply in; 1 unkeyed
 static void fade(Entry &e, const char *clip, float t, bool loop) {
     e.alpha.assign(e.m.meshCount, 1);
+    e.keyed.assign(e.m.meshCount, 0);
     for (const char *p = clip; p && *p && !e.alphas.empty();) {
         size_t n = strcspn(p, "+");
         if (auto it = e.alphas.find(std::string(p, n)); it != e.alphas.end())
             for (const SelTrack &k : it->second)
-                if (k.sel < e.m.meshCount) e.alpha[k.sel] = std::clamp(trackAt(k, t, loop), 0.0f, 1.0f);
+                if (k.sel < e.m.meshCount) { e.alpha[k.sel] = std::clamp(trackAt(k, t, loop), 0.0f, 1.0f), e.keyed[k.sel] = 1; }
         p += n + (p[n] == '+');
     }
 }
@@ -854,26 +868,38 @@ static void select(Entry &e, const char *clip, float t, bool loop, const char *a
     }
 }
 
-static void drawModel(Entry &e, Vector3 pos, Color tint) {
+static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // part: 0 all, 1 opaque only, 2 blended (keyed shapes, glow) only
     Model &m = e.m;
     Shader keep = m.materials[0].shader;
     for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = over;
     Matrix xf = MatrixMultiply(m.transform, MatrixTranslate(pos.x, pos.y, pos.z));
-    for (int i = 0; i < m.meshCount; i++) {  // DrawModel's loop with each mesh's alpha; the glow materials after
-        int mi = m.meshMaterial[i];
-        if (std::find(e.glow.begin(), e.glow.end(), mi) != e.glow.end()) continue;
-        Material mat = m.materials[mi];
-        Color c = mat.maps[MATERIAL_MAP_DIFFUSE].color;
-        float a = i < (int)e.alpha.size() ? e.alpha[i] : 1;
-        mat.maps[MATERIAL_MAP_DIFFUSE].color = {(unsigned char)(c.r * tint.r / 255), (unsigned char)(c.g * tint.g / 255), (unsigned char)(c.b * tint.b / 255), (unsigned char)(c.a * tint.a / 255 * a)};
-        if (mat.shader.locs && mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS] != -1 && m.boneMatrices) {
-            rlEnableShader(mat.shader.id);
-            rlSetUniformMatrices(mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS], m.boneMatrices, m.skeleton.boneCount);
+    int blendLoc = over.id ? GetShaderLocation(over, "blended") : -1, matLoc = GetShaderLocation(m.materials[0].shader, "material");
+    bool anyKeyed = std::find(e.keyed.begin(), e.keyed.end(), 1) != e.keyed.end();
+    for (int pass = part == 2; pass < (part == 1 ? 1 : 1 + anyKeyed); pass++) {  // DrawModel's loop with each mesh's alpha: opaque, then the keyed blended shapes (z write off, two-sided); the glow materials after
+        if (pass) rlDrawRenderBatchActive(), rlDisableDepthMask(), rlDisableBackfaceCulling();
+        if (blendLoc >= 0) { float v = pass; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
+        for (int i = 0; i < m.meshCount; i++) {
+            if ((i < (int)e.keyed.size() && e.keyed[i]) != (pass == 1)) continue;
+            int mi = m.meshMaterial[i];
+            if (std::find(e.glow.begin(), e.glow.end(), mi) != e.glow.end()) continue;
+            Material mat = m.materials[mi];
+            Color c = mat.maps[MATERIAL_MAP_DIFFUSE].color;
+            float a = i < (int)e.alpha.size() ? e.alpha[i] : 1;
+            mat.maps[MATERIAL_MAP_DIFFUSE].color = {(unsigned char)(c.r * tint.r / 255), (unsigned char)(c.g * tint.g / 255), (unsigned char)(c.b * tint.b / 255), (unsigned char)(c.a * tint.a / 255 * a)};
+            if (mat.shader.locs && mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS] != -1 && m.boneMatrices) {
+                rlEnableShader(mat.shader.id);
+                rlSetUniformMatrices(mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS], m.boneMatrices, m.skeleton.boneCount);
+            }
+            if (matLoc >= 0 && i < (int)e.mat.size()) SetShaderValueV(mat.shader, matLoc, e.mat[i].data(), SHADER_UNIFORM_VEC4, 4);
+            DrawMesh(m.meshes[i], mat, xf);
+            mat.maps[MATERIAL_MAP_DIFFUSE].color = c;  // maps is shared with the model's material
         }
-        DrawMesh(m.meshes[i], mat, xf);
-        mat.maps[MATERIAL_MAP_DIFFUSE].color = c;  // maps is shared with the model's material
     }
-    if (!e.glow.empty()) {  // additive and unlit (BeamCone's WarpgateShader: the grey noise as cyan light)
+    if (anyKeyed && part != 1) {
+        if (blendLoc >= 0) { float v = 0; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
+        rlDrawRenderBatchActive(), rlEnableDepthMask(), rlEnableBackfaceCulling();
+    }
+    if (!e.glow.empty() && part != 1) {  // additive and unlit (BeamCone's WarpgateShader: the grey noise as cyan light)
         rlDrawRenderBatchActive();
         BeginBlendMode(BLEND_ADDITIVE);
         rlDisableDepthMask(), rlDisableBackfaceCulling();
@@ -906,7 +932,7 @@ bool Models::visible(Vector3 c, float r, const Matrix &m) {
     return true;
 }
 
-bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, float t, bool loop) {
+bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, float t, bool loop, int part) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     Entry &e = it->second;
@@ -917,7 +943,7 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
     }
     e.m.transform = m;
     select(e, clip, t, loop, nullptr, 0, nullptr), fade(e, clip, t, loop);
-    drawModel(e, {0, 0, 0}, tint);
+    drawModel(e, {0, 0, 0}, tint, part);
     return true;
 }
 

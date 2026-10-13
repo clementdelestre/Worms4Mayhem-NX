@@ -30,11 +30,23 @@ namespace {
 // importer drops extracted W4M sounds under ASSET_ROOT/sfx/<file>; bundled CC0 defaults live in ROMFS_ROOT
 // W4M WormsX.fev via tools/w4m-re/fev.py (docs/w4m/audio.md §12): event, dB (event + sounddef + category), loop, 3D rolloff min..max m (0 = 2D), max playbacks,
 // fade s, wave weights (null: equal), sounddef mode (pick), trigger delay / respawn ms (+64/+66, +4/+8), log rolloff, pitch spread (+08, x 4 octaves)
-// env: emitter() gain over time (Time-param envelope x event fade-in), (s, gain) pairs ending at s < 0; layer: oneshot layer started with it
+// env: emitter() gain over time (Time-param envelope x event fade-in), (s, gain, shape) triples ending at s < 0; layer: oneshot layer started with it
 struct Def { Sfx id; const char *file, *event; float db; bool loop; float min, max; int maxpb; float fade = 0; const int *w = nullptr; int mode = 1; int delay[2] = {}, spawn[2] = {}; bool log = false; float pitchRand = 0;
              const float *env = nullptr; int layer = -1; };
-// FloodRainLoop: Time 0..15 at 1 unit/s, volume 0.5 to 0.531 x 15 s then 0 at 0.7997 x 15 s, x the 2 s event fade-in (y read as linear gain)
-constexpr float FLOOD_ENV[] = {0, 0, 2, 0.5f, 7.965f, 0.5f, 11.995f, 0, -1};
+// FloodRainLoop: Time 0..15 at 1 unit/s, volume 0.5 to 0.531 x 15 s then 0 at 0.7997 x 15 s, x the 2 s event fade-in (y read as linear gain; envelope points all shape 2 = linear in WormsX.fev)
+constexpr float FLOOD_ENV[] = {0, 0, 2, 2, 0.5f, 2, 7.965f, 0.5f, 2, 11.995f, 0, 2, -1};
+// fmod_event 0x1000f400: x, y, shape triples over [p, end), the later point's shape picks the segment (1 = smoothstep in x, 2 = linear), held past both ends
+float envelope(const float *p, const float *end, float x) {
+    float g = p[1];
+    for (; p + 3 < end; p += 3) {
+        if (x < p[0]) break;
+        if (x >= p[3]) { g = p[4]; continue; }
+        float t = (x - p[0]) / (p[3] - p[0]);
+        g = p[1] + (p[4] - p[1]) * (p[5] == 1 ? t * t * (3 - 2 * t) : t);
+        break;
+    }
+    return g;
+}
 // every other multi-wave def has equal weights in the FEV (100 each, 20 on OldWomanMutter)
 constexpr int W_SCOUSER_HELD[] = {100, 300, 100};
 constexpr Def DEFS[] = {
@@ -164,6 +176,9 @@ constexpr Def DEFS[] = {
     {Sfx::WaterBounce, "water_bounce", "weapons/SplashLight (WaterBounce layer)", 0, false, 0.5f, 70, 2, 0, nullptr, 2},  // 3 waves
     {Sfx::WaterSurge, "water_surge", "weapons/WaterSurge", 0, false, 0.5f, 25, 1, 0, nullptr, 2},  // 3D linear 10..500 units, 3 waves
     {Sfx::WaterExplosion, "water_explosion", "weapons/WaterExplosion", -4, false, 0.5f, 70, 1, 0, nullptr, 3},  // sounddef -4 dB
+    {Sfx::ScouserPop, "scouser_pop", "weapons/ScouserPop", 0, false, 0.5f, 25, 1},  // 3D linear 10..500 units
+    {Sfx::SheepBoom, "explosion", "weapons/ExplosionWithSheep", -3, false, 0, 0, 1, 0, nullptr, 2, {}, {}, false, 0, nullptr, (int)Sfx::SheepBoomBaa},  // 2D, ExplosionRegular1-3
+    {Sfx::SheepBoomBaa, "sheep", "weapons/ExplosionWithSheep (SheepBaa layer)", -3, false, 0, 0, 1},
 };
 static_assert(sizeof DEFS / sizeof *DEFS == (size_t)Sfx::Count, "one W4M event per Sfx");
 constexpr bool inOrder() {
@@ -213,6 +228,10 @@ unsigned asked = 0;
 std::vector<Bank> banks;
 std::vector<int> teamBank;  // team -> bank, -1 = default
 Music theme, outgoing;
+// frontendmusic/FrontendDay: AmbientEffect loop, -3 dB, 2000 ms fade-out, played alongside femusic
+Music day;
+bool dayLoaded = false, dayOn = false;
+float dayFade = 0;
 float outGain = 0;  // femusic fade-out (FEV 2000 ms) of the track being replaced or stopped
 bool stopping = false;
 std::string track;
@@ -412,7 +431,10 @@ void loadSfx(int first, bool menu, Variants *out) {  // every other sound from f
 void init() {
     InitAudioDevice();
     SetAudioStreamBufferSizeDefault(16384);  // ~370 ms per half: rides out long frames
-    std::thread music([] { openMusic("theme"); });  // mostly SD seeks (the ogg's length): overlaps the decoders
+    std::thread music([] {
+        openMusic("theme");
+        day = loadMusic("frontendday"), dayLoaded = IsMusicValid(day), day.looping = true;
+    });  // mostly SD seeks (the ogg's length): overlaps the decoders
     std::thread odd([] { Loading::pinCore(2), loadSfx(1, true, sfx); });  // core 0 decodes the menu art
     loadSfx(0, true, sfx), odd.join();
     std::vector<std::string> dirs = bankDirs(ASSET_ROOT);
@@ -440,6 +462,7 @@ void shutdown() {
     for (auto &b : banks) for (auto &v : b.lines) unload(v);
     banks.clear();
     if (musicLoaded) UnloadMusicStream(theme);
+    if (dayLoaded) UnloadMusicStream(day), dayLoaded = false;
     if (outGain > 0) UnloadMusicStream(outgoing), outGain = 0;
     for (auto &r : ready) UnloadMusicStream(r.second);
     ready.clear();
@@ -479,6 +502,10 @@ void update() {
         if (outGain <= 0) UnloadMusicStream(outgoing), outGain = 0;
         else SetMusicVolume(outgoing, outGain), UpdateMusicStream(outgoing);
     }
+    if (dayLoaded && IsMusicStreamPlaying(day)) {
+        if (!dayOn && (dayFade -= GetFrameTime() / 2) <= 0) dayFade = 0, StopMusicStream(day);
+        else SetMusicVolume(day, dayFade * powf(10, -3.0f / 20)), UpdateMusicStream(day);
+    }
     for (size_t i = 0; i < ramps.size();) {
         Ramp &r = ramps[i];
         float k = (float)((GetTime() - r.t0) / r.len);
@@ -507,6 +534,10 @@ void listen(const Camera3D &cam) {
 unsigned requested() { return asked; }
 const char *sfxFile(Sfx id) { return DEFS[(int)id].file; }
 const char *sfxEvent(Sfx id) { return DEFS[(int)id].event; }
+Sfx byEvent(const char *event) {
+    for (const Def &d : DEFS) if (!strcasecmp(d.event, event)) return d.id;
+    return Sfx::Count;
+}
 
 static void play(Sfx id, float volume, const Vector3 *at) {
     asked++;
@@ -579,9 +610,12 @@ void emitter(int key, Sfx id, Vector3 at) {
     EmitterVoice &e = it->second;
     e.frame = emitterFrame;
     if (e.stolen) return;
-    float g = d.env ? d.env[1] : 1, t = (float)(GetTime() - e.t0);
-    for (const float *p = d.env; p && p[2] >= 0; p += 2)  // piecewise linear, held at both ends
-        if (t >= p[0]) g = t < p[2] ? p[1] + (p[3] - p[1]) * (t - p[0]) / (p[2] - p[0]) : p[3];
+    float g = 1;
+    if (d.env) {
+        const float *end = d.env;
+        while (*end >= 0) end += 3;
+        g = envelope(d.env, end, (float)(GetTime() - e.t0));
+    }
     place(e.slot->s, d, g * powf(10, d.db / 20), &at);
     if (!IsSoundPlaying(e.slot->s)) PlaySound(e.slot->s);
 }
@@ -655,10 +689,16 @@ void preloadMusic(const char *name) {
     if (Music m = loadMusic(name); IsMusicValid(m)) ready.emplace_back(name, m);
 }
 
-void music(bool on, const char *name) {
+void music(bool on, const char *name, bool option) {
     if (name && track != name) loop(Sfx::Cheer, false);  // the crowd leaves with the jingle
     if (name && track != name && !openMusic(name) && track != "theme") openMusic("theme");
     musicOn = on;
+    if (!option && dayLoaded) {  // FrontEndService starts / stops FrontendDay with femusic; the Music option scales only the music category
+        if (dayOn = on && track == "theme"; dayOn) {
+            if (!IsMusicStreamPlaying(day)) PlayMusicStream(day);
+            dayFade = 1;
+        }
+    }
     if (!musicLoaded) return;
     // level tracks fade in (Music.FadeIn, 0x7290b4); femusic (FEV fade-in 0, started by FrontEndService init) and the jingle do not
     if (on && !IsMusicStreamPlaying(theme))
@@ -675,7 +715,7 @@ struct Efmv {
     Def d;
     Variants v;
     float rate = 0;          // envelope parameter speed, share of its range per second; the parameter holds at the end (fmod_event 0x10023bab)
-    std::vector<float> env;  // x, y pairs (y: 0 or 1 in every EFMV event, linear between)
+    std::vector<float> env;  // x, y, shape triples (y: 0 or 1 in every EFMV event)
     Lip lip;
 };
 std::vector<Efmv> efmvs;  // the level's, then EFMV/Failures
@@ -699,10 +739,10 @@ void loadEfmv(const std::string &dir, const std::string &group) {
         float db, mn, mx;
         if (sscanf(l, "%95s %f %d %f %f %d %d%n", name, &db, &loop, &mn, &mx, &play, &waves, &n) != 7) continue;
         Efmv e{name, {Sfx::Count, "", nullptr, db, loop != 0, mn, mx, 1, 0, nullptr, play}};
-        float x, y;
+        float x, y, sh;
         int k;
         if (sscanf(l + n, " %f%n", &e.rate, &k) == 1)
-            for (n += k; sscanf(l + n, " %f,%f%n", &x, &y, &k) == 2; n += k) e.env.push_back(x), e.env.push_back(y);
+            for (n += k; sscanf(l + n, " %f,%f,%f%n", &x, &y, &sh, &k) == 3; n += k) e.env.insert(e.env.end(), {x, y, sh});
         e.v = loadVariants(dir + "/" + name, 1);
         if (auto it = lips.find(name); it != lips.end()) e.lip = it->second;
         efmvs.push_back(std::move(e));
@@ -772,15 +812,13 @@ void efmvStop() {
     for (Efmv &e : efmvs) for (Slot &k : e.v.slot) StopSound(k.s);
 }
 
-// EFMV Time envelopes: gain at the parameter's normalised position, linear between points, held past the ends
+// EFMV Time envelopes through envelope()
 void efmvUpdate() {
     for (size_t i = 0; i < envs.size();) {
         Env &v = envs[i];
         if (!IsSoundPlaying(v.s)) { envs.erase(envs.begin() + i); continue; }
         const std::vector<float> &p = v.e->env;
-        float x = fminf(1, (float)(GetTime() - v.t0) * v.e->rate), g = p[1];
-        for (size_t k = 0; k + 2 < p.size(); k += 2)
-            if (x >= p[k]) g = x < p[k + 2] ? p[k + 1] + (p[k + 3] - p[k + 1]) * (x - p[k]) / (p[k + 2] - p[k]) : p[k + 3];
+        float g = envelope(p.data(), p.data() + p.size(), fminf(1, (float)(GetTime() - v.t0) * v.e->rate));
         SetSoundVolume(v.s, v.gain * g);
         i++;
     }

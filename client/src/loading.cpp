@@ -19,12 +19,14 @@
 namespace {
 // WXFE.PreStart pops in at its 250 ms Delay_Incoming and sends StartGame$NOW once its last item (1500 ms + In_ScaleY 0.25 s)
 // is in; NewLoadingScreenService then shows at least 1800 ms (0x50a4c0 +0x28). MUSIC_OUT: femusic's FEV fade-out.
-const float POP = 0.25f, POOF = 0.3f, INTRO = 1.75f, FADE = 0.25f, MIN_LOAD = 1.8f, IN = 0.4f, MUSIC_OUT = 2, TIP_EVERY = 15;
+const float POP = 0.25f, POOF = 0.3f, INTRO = 1.75f, IRIS = 1, MIN_LOAD = 1.8f, MUSIC_OUT = 2, TIP_EVERY = 15;
 const int TIPS = 44;  // FETXT.Tip1..44 (W4M's <lang>Loading.xom)
-float t = 0, out = -1, after = 1e9f, tipAt = 0;  // out: fade-out clock once loaded; after: since the match started
+float t = 0, s2 = INTRO, tipAt = 0;  // s2: when the loading screen starts (after PreStart's Circle_In)
+double closeT0 = -1;  // TransitionFadeDown (Circle_In) start, GetTime()
+double openT0 = -1;   // menu load: TransitionFadeUp (Circle_Out) start over the first frontend frame, GetTime(); -2 = armed, starts at the next overlay
+bool menuLoad = false;  // FCS state 7: the iris is not drawn by the loading screen's own render
 int tip = 26;
 const char *back = "back/loadbackgeneric";
-double irisT0 = -2;  // TransitionFadeUp: -1 starts at the next overlay(), else its GetTime() start
 
 void sprite(Texture2D x, Vector2 c, float size, float deg, Color tint) {
     DrawTexturePro(x, {0, 0, (float)x.width, (float)x.height}, {c.x, c.y, size, size}, {size / 2, size / 2}, deg, tint);
@@ -130,7 +132,8 @@ void loading(float ls) {
 
 namespace Loading {
 void begin(const GameConfig &c, bool preStart) {
-    t = preStart ? 0 : INTRO, out = -1, after = 1e9f, tipAt = INTRO;
+    menuLoad = false, openT0 = -1;
+    t = preStart ? 0 : INTRO, s2 = preStart ? INTRO + IRIS : INTRO, closeT0 = -1, tipAt = INTRO;
     tip = 1 + (int)(c.seed % TIPS);
     std::string th = Terrain::mapTheme(c.map);  // 0x509c50: LoadBack<theme>.tga, else Generic
     back = th == "arabian" ? "back/loadbackarabian" : th == "wildwest" ? "back/loadbackwildwest" : th == "camelot" ? "back/loadbackcamelot"
@@ -147,18 +150,25 @@ bool frame(float dt, float progress) {
     if (was < POP && t >= POP) Audio::play(Audio::Sfx::FeGrenade);  // PreStart's Audio_Incoming, with its pop-in
     if (was < INTRO && t >= INTRO) Audio::music(false);  // FrontEndService shutdown 0x7293dd: femusic stop with fade-out
     tips(t);
-    if (t < INTRO) intro();
-    else loading(t - INTRO);
-    if (out < 0 && progress >= 1 && t >= INTRO + MIN_LOAD) out = 0;
-    if (out >= 0) out += dt;
-    // black: in from the menu, through it between the stages, out to the match
-    float k = t < FADE ? 1 - t / FADE : t < INTRO ? (t - INTRO + FADE) / FADE : t < INTRO + FADE ? 1 - (t - INTRO) / FADE : 0;
-    k = fmaxf(k, out >= 0 ? out / FADE : 0);
-    DrawRectangle(0, 0, 1280, 720, Fade(BLACK, fminf(fmaxf(k, 0), 1)));
-    if (out < FADE) return false;
-    after = 0;
-    return true;
+    if (t < s2) intro();
+    else loading(t - s2);
+    if (t >= INTRO && t < s2) iris(1 - (t - INTRO) / IRIS);  // TransitionFadeDown over PreStart, then FadeUp opens on the loading screen
+    else if (t >= s2 && t < s2 + IRIS && !menuLoad) iris(t - s2);
+    bool done = progress >= 1 && t >= s2 + MIN_LOAD;
+    if (done && menuLoad && openT0 == -1) openT0 = -2;
+    return done;
 }
+
+void beginMenu() {  // GotoFrontEnd: the Generic loading screen (FCS state 7, mode 2)
+    menuLoad = true, openT0 = -1;
+    t = INTRO, s2 = INTRO, closeT0 = -1, tipAt = INTRO, tip = 1 + GetRandomValue(0, TIPS - 1), back = "back/loadbackgeneric";
+}
+
+bool shut() {
+    if (closeT0 < 0) closeT0 = GetTime();
+    return GetTime() - closeT0 >= IRIS;
+}
+bool closing() { return closeT0 >= 0; }
 
 void pinCore(int core) {
 #ifdef __SWITCH__
@@ -188,21 +198,25 @@ std::vector<std::string> list(const std::string &dir, const char *ext, bool recu
     return out;
 }
 
-// The icon alone on black (W4M mode 1, 0x509ba0: FE.LoadingIcon at (0, 40)) until the menu is loaded, then the title opens on
-// the iris when `iris` (user-requested: no Generic loading screen at boot, W4M state 7 shows it for MIN_LOAD)
-bool boot(bool loaded, bool iris) {
+// The icon alone on black (W4M mode 1, 0x509ba0: FE.LoadingIcon at (0, 40)); true once `loaded`
+bool boot(bool loaded) {
     static Texture2D icon = LoadTexture(DATA_DIR "assets/ui/fe2/loading_worm.png");
     static const double t0 = GetTime();  // double: raw GetTime() is huge on Switch
     ClearBackground(BLACK);
     if (icon.id) sprite(icon, {640, 360 - 40 * 1.3333f}, 190, (float)(GetTime() - t0) * 360 / 1.166f, WHITE);
-    if (loaded && iris) irisT0 = -1;
     return loaded;
 }
 
+// The opening iris counts the time the title was on screen (clamped), from its first presented frame: a slow frame cannot skip it
 void overlay(float dt) {
-    if (irisT0 == -1) irisT0 = GetTime();
-    if (irisT0 >= 0 && GetTime() - irisT0 < 1) iris((float)(GetTime() - irisT0));
-    if (after < IN) DrawRectangle(0, 0, 1280, 720, Fade(BLACK, 1 - after / IN));
-    after += dt;
+    static float seen;
+    if (closeT0 >= 0) iris(fmaxf(1 - (float)(GetTime() - closeT0), 0));
+    else if (openT0 != -1) {
+        seen = openT0 == -2 ? 0 : seen + fminf(GetFrameTime(), 0.05f), openT0 = 0;
+        if (seen < IRIS) iris(seen);
+        else openT0 = -1;
+    }
+    (void)dt;
 }
+bool opening() { return openT0 != -1; }
 }  // namespace Loading

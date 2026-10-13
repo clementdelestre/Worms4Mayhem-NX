@@ -81,7 +81,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   the same key also reaches the worm is not shown by the disasm.
   `Game::clock` (sudden death) does not count hot-seat ticks.
 - **Sudden death** (rule 64): once `clock` reaches `roundTime` minutes, every worm drops to 1 hp (`SD_BOTH`, `SD_ONE_HP`), and with
-  `SD_BOTH` / `SD_WATER` the water rises 1.25 m per turn up to +15 m (W4M Water.RiseAmount 25 units, data).
+  `SD_BOTH` / `SD_WATER` the water rises by `Water.RiseSpeed` (0 / 0.2 / 0.4 / 0.8 m) per turn end, with no ceiling (W4M `Water.Level += RiseSpeed`, stdvs CheckSuddenDeath, docs/w4m/turn.md; the Flood weapon adds `Flood.Delta` the same way, no ceiling).
 
 ### Firing and the retreat
 
@@ -168,8 +168,8 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   0x4fa4b0, data), then a weapon by `crate_weight` inside its pool. Spawned with its centre 15 m (300 units, 0x5c6792) over a random land point above water, uniform over the land box, whose column misses every worm; no chute, plain gravity; bounces v = 0.2 (vx, −vy, vz), rests under 1 m/s (CreateRandomCrate 0x4fa52a Parachute 0, 0x5c6560, 0x5c9420, 0x5c8900, disasm).
 - **Crate size and rest height** [disasm 0x5c5700, 0x5c94d0, 0x5c89b1]: a crate is a sphere of 10 x Scale units (0.5 m x Scale); W4M rests it
   with the centre at the ground hit + that radius, and its fall casts a point one radius under the centre. Ours: half height `0.5 x Scale - 0.05` m
-  plus the 0.05 m probe under it [ours: the voxel point test needs the margin]; the models are exported at their raw size / 20 (crate 1.0-1.2 m,
-  Landmine 0.5 m, OilDrum 1.14 m tall box; were 0.9 / 0.4 / 1.0 m of no W4M source). Maps are imported at the W4M
+  plus the 0.05 m probe under it [ours: the voxel point test needs the margin]; the models are exported at their raw size / 20 about W4M's own origin
+  (crate 1.0-1.2 m and Landmine 0.5 m about their centre, OilDrum 1 m tall from its base); a drum is drawn at its base, `pos.y - restHalf - 0.05`. Maps are imported at the W4M
   scale (docs/maps.md), so a thin slab under that point holds the crate as in W4M (Crate5 on SneakyBridgeThieves' bridge rail: mission_check `cratepos`). A pinned crate is never pushed out of land (Gravity 0, 0x5c9420).
 - **Between turns** (data + disasm), as W4M: stdvs DoOncePerTurnFunctions sends GameLogic.DropRandomCrate in
   DoPostActivity's first pass, between two turns; CreateRandomCrate 0x4fa4b0 sets Crate.DelayMillisec to its argument, 0 from every
@@ -304,6 +304,8 @@ trunc((v − 15) × 2) + 1 hp (`Game::fallDamage`, shared with the AI; W4M FallD
 damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack landing: a foot touching land lands the pack minus its normal speed (W4M 0x562f72, disasm), so `stepWorm` skips `land()` while `jet`; a dry pack falls and hurts as any fall (docs/w4m/physics.md FallDamage); the fall also rumbles the worm's pad: Heavy 100/255 for 500 ms (0x4bc410, disasm; GameEvent::Fall).
 
 ### Exact land (`SharpLand`, sharp.h; `Terrain::sample` / `normal` / `cast`)
+
+Blast on the heightmap: see docs/w4m/formats.md §25 (`SharpLand::lower` / `relist`; `carve(.., blast)` lists its sphere before the `HM` op) [ours].
 
 Imported maps carry `<map>.cells` (format: docs/w4m/formats.md §22): for every voxel cell (0.25 or 0.5 m) the surface crosses, the ordered list of the
 primitives reaching it [ours]. The sim reads that land exactly; so does the mesh in listed cells (docs/maps.md "Land mesh").

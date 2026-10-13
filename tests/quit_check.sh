@@ -20,6 +20,6 @@ tap() { echo "$1 $2 1"; echo "$(($1 + 3)) $2 0"; }
 } > "$W/script"
 (cd "$W" && W4NX_INPUTSCRIPT=script timeout 120 "$W4NX" > log 2>&1)
 grep '^frame' "$W/log"
-# screens: 0 Menu, 5 Loading, 2 Play
-[ "$(grep '^frame' "$W/log" | awk '{print $4}' | tr '\n' ' ')" = "0 5 2 0 " ] && echo PASS && exit 0
+# screens: 0 Menu, 5 Loading (match, then the Generic one after Quit), 2 Play
+[ "$(grep '^frame' "$W/log" | awk '{print $4}' | tr '\n' ' ')" = "0 5 2 5 0 " ] && echo PASS && exit 0
 echo FAIL; exit 1

@@ -75,6 +75,12 @@ struct WeaponDef {
     float ccone = 0, cspeed[2] = {0, 0};
     float spread = 0.3f;  // "cluster_spread": W4M Weapon Factory ClusterSpread 0..1 (WXD.DefaultWeapon 0.3), Weapon Factory weapons only
     std::string splash = "WXP_WaterSplash";  // "splash": WEAPTWK SplashFx, the effect when it meets the water (SplishFx WXP_WaterSmallSplash on a skim)
+    // WEAPTWK DetonationFx / DetonationSfx ("" none): "detonation", "detonation_sfx"; the bomblets' "cluster_detonation", "cluster_detonation_sfx";
+    // the defaults are kWeaponFactoryWeapon / kWeaponFactoryCluster's, the Weapon Factory templates
+    std::string fx = "WXP_ExplosionX_Med", sfx = "global/ExplosionRegular", cfx = "WXP_ExplosionX_Med", csfx = "global/ExplosionRegular";
+    // Weapon Factory: W4M WeaponFactoryContainer LandDamageRadius, WormDamageRadius, WormDamageMagnitude, Push (0..1) of the Weapon [0] and
+    // Cluster [1] containers; "land_damage", "worm_radius", "worm_damage", "blast_strength", cluster_*; factoryPayload() builds the payload
+    float slider[2][4] = {{-1, -1, -1, -1}, {-1, -1, -1, -1}};
 };
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
 struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns)
@@ -92,6 +98,7 @@ bool loadWeapons(const char *path);
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out);  // same JSON as weapons.json
 bool customWeapon(int i);  // a Weapon Factory weapon (appended after the loaded table at start())
 bool saveCustomWeapons(const char *path, const std::vector<WeaponDef> &list);
+void factoryPayload(WeaponDef &w);  // W4M 0x5983f0: sliders -> crater, damage, impulse and DetonationFx of the payload and its clusters
 
 // W4M worm physics state beside Velocity: stuck count (entity +0x12c), air control (Flags bit0), Sliding (state 3) and its
 // spin rate / target (+0x120 / +0x124, rad per 20 ms), SupportNormal (pData +0x80). input: this tick's stick, not state
@@ -199,6 +206,7 @@ struct Object {
     bool spawning = false;  // crate: W4M "Crate Spawn" active object (0x5c9bd0) until a bounce leaves it under 1 m/s (0x5c8900)
     float delay = -1;  // mine: fuse s drawn at creation (W4M CreateMine 0x4f97cf); -1: drawn when armed
     bool fizzle = false;  // mine: its dud roll, drawn with delay
+    bool sunk = false;  // crate: sinking (0x5c81a0); mine: under the disarm plane, disarmed, sinking
     int mystery = -1;  // crate: W4M kMystery item - 0x32 (MYSTERY_ITEMS), drawn at spawn; weapon stays -1
     int id = -1;  // mine: its W4M Mine.Id when a script placed it (GameLogic.PlaceMine)
     // crate / target: W4M CrateLogicEntity (0x5c7bb0) from the Crate.* keys; the defaults are a random crate's
@@ -208,6 +216,7 @@ struct Object {
     bool pinned = false, pushable = true, radar = true, track = true;  // pinned: Gravity 0; radar: Crate.RadarHide / Display; TrackCam
     float scale = 1;    // Scale: its sphere is 10 x Scale units (0x5c5700)
 };
+float restHalf(const Object &o);  // a resting object's centre is restHalf + 0.05 m (the probe) above the ground
 
 // W4M mystery crate items (kMysteryMineLayer 0x32 .. kMysteryGoodPoison 0x40): Text.k<name> and the <name>Mystery.Crate weight of the
 // schemes that drop them (All Action, Mega Power, Mystery, Kitchen Sink, custom WXD.DefaultSchemeData; LOCAL.XOM)
@@ -221,11 +230,12 @@ enum : int { MY_MINE_LAYER, MY_MINE_TRIPLET, MY_BARREL_TRIPLET, MY_FLOOD, MY_DIS
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
-                          Comment, CommentClear, Emitter, EmitterOff, Shake, Pop,
+                          Comment, CommentClear, Emitter, EmitterOff, Shake, Pop, Sink,
                           Movie, Speech, MovieSound, MovieStart, MovieEnd } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;
-    const char *fx = nullptr;  // Boom, Splash, Pop: the PARTTWK effect its W4M caller starts (render only; Boom null: our generic blast)
+    const char *fx = nullptr;  // Boom, Splash, Pop: the PARTTWK effect its W4M caller starts (render only)
+    const char *sfx = nullptr;  // Boom: the FEV event its caller plays besides the effect's own EmitterSoundFX (a payload's DetonationSfx)
     int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories
 };
 
@@ -436,6 +446,7 @@ struct Game {
     // OverCeilingThrustMod, XZWindResThrust / NoThrust per 20 ms; SuperThrust* under -0.15 units/ms (Mod 0.2 per units/ms = 0.004 per m/s)
     static constexpr float JET_OVER = 0.05f, JET_RES = 0.999f, JET_RES_IDLE = 0.95f, JET_FALL = 7.5f, BOOST_MOD = 0.004f, BOOST_ACCEL = 0.3f, BOOST_DECAY = 0.97f, BOOST_OFF = 0.01f;
     bool chute = false;                   // parachute open until the turn ends
+    bool punching = false;                // Fire Punch leap in flight: its rise digs the land the body rods hit
     // W4M ParachuteLogicEntity: 70 ms of (Wind, Gravity x Low.Gravity.Multiplier) read at the opening (0x578db0, +0x88);
     // glide 0.06 units/ms along the facing (0x85bcc0), at most 0.05 units/ms of change a step (0x5792a0)
     Vector3 chuteDrift{};
@@ -651,7 +662,7 @@ private:
     bool underwater(const Worm &w) const;
     void stepShots(const Input &in, bool detonate);
     void deathBlast(const Worm &w, int wi);
-    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1, const char *fx = nullptr, const Vector3 *fxAt = nullptr);  // weapon, fx, fxAt (default p): carried by the Boom event
+    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1, const char *fx = nullptr, const char *sfx = nullptr, const Vector3 *fxAt = nullptr);  // weapon, fx, sfx, fxAt (default p): carried by the Boom event
     void steal(const Worm &victim);  // old woman ammo theft
     void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies

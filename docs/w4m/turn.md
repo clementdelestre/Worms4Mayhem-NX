@@ -263,6 +263,7 @@ Who starts which phase:
 
 ### Other per-turn timers [data unless noted]
 - Sudden death: checked once per turn end, in `DoOncePerTurnFunctions` (stdvs). Once it has started, `Water.Level += Water.RiseSpeed.Current` (4/8/16) every turn end, preceded by `GameLogic.AboutToWaterRise`.
+- **Water ceiling [disasm + data]**: none. `Water.Level` is a plain data float: FloodLogicEntity DoFlood (0x555920) does `Water.Level += Flood.Delta` (WEAPTWK 43 units = 2.15 m; value read once in the ctor 0x555580) with no compare, and CheckSuddenDeath adds `Water.RiseSpeed.Current` the same way; the setters (0x69e130) have no min/max. `Water.RiseAmount` 25 (TWEAK) is read only by the particle emitter entity (0x5beb70, 0x5bf11a) to lift emitters, it is not a limit. Ours: `Game` water has no cap (Flood weapon, mystery Flood, sudden death, AI Flood plan).
 - Crates: one `GameLogic.DropRandomCrate` per turn end. `Crate.DelayMillisec` 0, `Crate.WaitTillLanded` 1, `Crate.Parachute` 1.
 - Mines: `Mine.MinFuse/MaxFuse` in ms; the scheme MineFuse is in s.
 - Game-wide (0x4fa2c0) [disasm]: `FCS.QuitAttractMode` when game time >= 300000 ms with flag `*(0x95a298)+0x160` bit 1 set (the attract demo, assumed). `GameLogic.QuitGame` once at 14,400,000 ms (4 h).

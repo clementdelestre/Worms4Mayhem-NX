@@ -20,7 +20,7 @@ bool loadMission(const std::string &path, MissionSpec &m) {
     m.preview = j["preview"].s(), m.brief = j["brief"].s(), m.success = j["success"].s(), m.failure = j["failure"].s();
     m.level = j["level"].s(), m.nameId = j["name_id"].s(), m.briefId = j["brief_id"].s(), m.successId = j["success_id"].s();
     m.objectives = j["objectives"].s();
-    m.order = (int)j["order"].f(0), m.par = (int)j["par"].f(0);
+    m.order = (int)j["order"].f(0), m.par = (int)j["par"].f(0), m.record = (int)j["record"].f(0), m.recordBy = j["record_by"].s();
     m.script = j["script"].s(), m.bank = j["bank"].s(), m.scriptDir = path.substr(0, path.rfind('/')) + "/../scripts/";  // raylib GetDirectoryPath prefixes "./" to sdmc:/ paths
     for (const SchemePreset &p : SCHEMES) if (j["scheme"].s("Standard") == p.name) m.scheme = p.s;
     Scheme &s = m.scheme;
@@ -112,7 +112,7 @@ bool Progress::storyDone(const std::vector<MissionSpec> &list) const {
     return false;
 }
 void Progress::load(const char *path) {
-    entries.clear(), unlocks.clear(), storyIntro = false;
+    entries.clear(), unlocks.clear(), storyIntro = welcome = false;
     char *txt = LoadFileText(path);
     if (!txt) return;
     for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
@@ -121,6 +121,7 @@ void Progress::load(const char *path) {
         if (sscanf(line, "%127s %d %d", id, &done, &best) == 3) entries.push_back({id, {done != 0, best}});
         else if (sscanf(line, "unlock %127s", id) == 1) unlocks.push_back(id);
         else if (!strcmp(line, "intro")) storyIntro = true;
+        else if (!strcmp(line, "welcome")) welcome = true;
     }
     UnloadFileText(txt);
 }
@@ -130,5 +131,6 @@ void Progress::save(const char *path) const {
     for (const auto &e : entries) s += TextFormat("%s %d %d\n", e.first.c_str(), e.second.done, e.second.best);
     for (const std::string &u : unlocks) s += "unlock " + u + "\n";
     if (storyIntro) s += "intro\n";
+    if (welcome) s += "welcome\n";
     SaveFileText(path, s.data());
 }

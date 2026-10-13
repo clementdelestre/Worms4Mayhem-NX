@@ -205,7 +205,27 @@ void SharpLand::mark(size_t c, bool listed) {
     b[(c >> 6) & 511] = (b[(c >> 6) & 511] & ~(1ull << (c & 63))) | (uint64_t)listed << (c & 63);
 }
 
+void SharpLand::restore(size_t c, const std::vector<uint32_t> &l) {
+    auto *u = undo;
+    undo = nullptr;
+    setOps(c, l.data(), (uint32_t)l.size());
+    undo = u;
+}
+
+SharpLand::Tail SharpLand::cut(const Sizes &z) {
+    Tail t{{planes.begin() + z.planes, planes.end()}, {sph.begin() + z.sph, sph.end()}, {hexP0.begin() + z.hex, hexP0.end()}, {hexFace.begin() + z.hex, hexFace.end()}, {box.begin() + z.box, box.end()}};
+    planes.resize(z.planes), sph.resize(z.sph), hexP0.resize(z.hex), hexFace.resize(z.hex), box.resize(z.box);
+    return t;
+}
+
+void SharpLand::append(const Tail &t) {
+    planes.insert(planes.end(), t.planes.begin(), t.planes.end()), sph.insert(sph.end(), t.sph.begin(), t.sph.end());
+    hexP0.insert(hexP0.end(), t.hexP0.begin(), t.hexP0.end()), hexFace.insert(hexFace.end(), t.hexFace.begin(), t.hexFace.end());
+    box.insert(box.end(), t.box.begin(), t.box.end());
+}
+
 void SharpLand::setOps(size_t c, const uint32_t *o, uint32_t n) {
+    if (undo) undo->emplace_back((uint32_t)c, list(c));
     if ((used + 1) * 4 > key.size() * 3) compact();
     uint32_t m = (uint32_t)key.size() - 1, s = hashc(c) & m;
     while (key[s] && key[s] != c + 1) s = (s + 1) & m;
@@ -379,7 +399,82 @@ void SharpLand::drop(const std::vector<uint32_t> &hexes) {
             }
 }
 
-void SharpLand::carve(const Bricks<signed char> &d, Vector3 c, float r, int box[6]) {
+static int hmSt(const float *t, int y) {
+    const float mn = std::min(std::min(t[0], t[1]), std::min(t[2], t[3])), mx = std::max(std::max(t[0], t[1]), std::max(t[2], t[3]));
+    return mn >= (y + 1) * VOX ? 2 : mx <= y * VOX ? 0 : 1;
+}
+
+int SharpLand::hmState(int x, int y, int z) const {
+    if (top.empty() || x < 0 || z < 0 || x >= NX - 1 || z >= NZ - 1) return -1;
+    const float t[4] = {top[z * NX + x], top[z * NX + x + 1], top[(z + 1) * NX + x], top[(z + 1) * NX + x + 1]};
+    return std::isnan(t[0] + t[1] + t[2] + t[3]) ? -1 : hmSt(t, y);
+}
+
+std::vector<SharpLand::Col> SharpLand::lower(Vector3 c, float r) {
+    std::vector<Col> out;
+    if (top.empty()) return out;
+    const int x0 = std::max(0, (int)floorf((c.x - r) * IVOX)), x1 = std::min(NX - 1, (int)ceilf((c.x + r) * IVOX));
+    const int z0 = std::max(0, (int)floorf((c.z - r) * IVOX)), z1 = std::min(NZ - 1, (int)ceilf((c.z + r) * IVOX));
+    for (int z = z0; z <= z1; z++)
+        for (int x = x0; x <= x1; x++) {
+            float &t = top[z * NX + x];
+            if (std::isnan(t)) continue;
+            const float u = (x * VOX - c.x) / r, w = (z * VOX - c.z) / r, v = (t - c.y) / r;
+            const float d2 = u * u + w * w + (v < 0 ? v * v : 0);
+            if (d2 >= 1) continue;
+            const float nt = (t + (c.y - sqrtf(1 - d2) * r)) * 0.5f;
+            if (nt == t) continue;
+            if (topUndo) topUndo->emplace_back((uint32_t)(z * NX + x), t);
+            out.push_back({x, z, t, nt});
+            t = nt;
+        }
+    return out;
+}
+
+void SharpLand::relist(const std::vector<Col> &cols, int box[6]) {
+    if (cols.empty()) return;
+    int x0 = NX, x1 = -1, z0 = NZ, z1 = -1;
+    float lo = 1e9f, hi = -1e9f;
+    for (const Col &k : cols) {
+        x0 = std::min(x0, k.x), x1 = std::max(x1, k.x), z0 = std::min(z0, k.z), z1 = std::max(z1, k.z);
+        lo = std::min(lo, std::min(k.was, k.now)), hi = std::max(hi, std::max(k.was, k.now));
+    }
+    std::unordered_map<int, float> was;
+    for (const Col &k : cols) was[k.z * NX + k.x] = k.was;
+    auto old = [&](int x, int z) { auto it = was.find(z * NX + x); return it == was.end() ? top[z * NX + x] : it->second; };
+    const int ya = std::max(0, (int)floorf(lo * IVOX) - 1), yb = std::min(NY - 2, (int)ceilf(hi * IVOX) + 1);
+    std::vector<uint32_t> o;
+    for (int z = std::max(0, z0 - 1); z <= std::min(NZ - 2, z1); z++)
+        for (int x = std::max(0, x0 - 1); x <= std::min(NX - 2, x1); x++) {
+            const float a[4] = {old(x, z), old(x + 1, z), old(x, z + 1), old(x + 1, z + 1)};
+            const float b[4] = {top[z * NX + x], top[z * NX + x + 1], top[(z + 1) * NX + x], top[(z + 1) * NX + x + 1]};
+            if (std::isnan(a[0] + a[1] + a[2] + a[3] + b[0] + b[1] + b[2] + b[3])) continue;
+            for (int y = ya; y <= yb; y++) {
+                const int sa = hmSt(a, y), sb = hmSt(b, y);
+                if (sa == sb) continue;
+                const size_t ci = cid(x, y, z);
+                const uint32_t need = sb == 1 ? HM : sb == 2 ? FULL : 0;
+                bool put = false;
+                o.clear();
+                if (mixed(ci)) {
+                    const uint32_t *p = ops(ci);
+                    for (uint32_t i = 1; i <= p[0]; i++) {
+                        const uint32_t k = p[i] & KIND;
+                        if (k == HM || k == FULL) { if (!put && need) o.push_back(need); put = true; continue; }
+                        o.push_back(p[i]);
+                        if (k == HEX) o.push_back(p[++i]);
+                    }
+                }
+                if (!put && need) o.push_back(need);
+                if (o.empty() || (o.size() == 1 && o[0] == FULL)) { if (mixed(ci)) setOps(ci, nullptr, 0); }
+                else setOps(ci, o.data(), (uint32_t)o.size());
+                const int at[3] = {x, y, z};
+                for (int k = 0; k < 3; k++) box[k] = std::min(box[k], at[k]), box[k + 3] = std::max(box[k + 3], at[k]);
+            }
+        }
+}
+
+void SharpLand::carve(const Bricks<signed char> &d, Vector3 c, float r, int box[6], bool blast) {
     if (!on) return;
     const uint32_t id = (uint32_t)sph.size();
     sph.push_back({c.x, c.y, c.z, r});
@@ -397,15 +492,20 @@ void SharpLand::carve(const Bricks<signed char> &d, Vector3 c, float r, int box[
                     dn += u * u, dx += w * w;
                 }
                 if (dn >= r * r) continue;
+                const int hs = blast ? hmState(x, y, z) : -1;
+                if (hs == 2) continue;
                 const size_t ci = cid(x, y, z);
                 const bool m = mixed(ci);
                 if (!m && (dx <= r * r || d[ci] <= 0)) continue;
                 const int at[3] = {x, y, z};
                 for (int a = 0; a < 3; a++) box[a] = std::min(box[a], at[a]), box[a + 3] = std::max(box[a + 3], at[a]);
-                if (dx <= r * r) { setOps(ci, nullptr, 0); continue; }
+                if (dx <= r * r && hs != 1) { setOps(ci, nullptr, 0); continue; }
                 if (m) { const uint32_t *p = ops(ci); o.assign(p + 1, p + 1 + p[0]); }
                 else o.assign(1, FULL);
-                o.push_back(SPHERE | id);
+                // the sphere cuts what precedes it: before the heightmap op, which stays
+                size_t at2 = o.size();
+                if (hs == 1) for (size_t i = 0; i < o.size(); i += 1 + ((o[i] & KIND) == HEX)) if ((o[i] & KIND) == HM) { at2 = i; break; }
+                o.insert(o.begin() + at2, SPHERE | id);
                 setOps(ci, o.data(), (uint32_t)o.size());
             }
 }

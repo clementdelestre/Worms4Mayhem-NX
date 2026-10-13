@@ -16,9 +16,12 @@ from xom import Xom, varint
 ROOTS = ['XXX_PlaceholderPP', 'WXP_RainFall', 'WXP_RainFallBG', 'WXP_ExplosionX_Med', 'WXP_Explosion_Small', 'WXP_ExplosionX_Large',
          'WXP_Wep_Fatkins', 'WXP_Poof_VFast', 'WXP_StormCloud',
          'WXP_LandMineUpShot', 'WXP_MineMachineShot', 'WXP_Explosion_MineMachine']  # MineFactoryLogicEntity 0x5cf667, 0x5cfc70
-ROOTS += ['WXP_DonkeyStrikeBounce']  # Concrete Donkey blast mesh crown (the puffs are hand-written)
+ROOTS += ['WXP_Explosion_OilDrum', 'WXP_ExpiryExplosion']  # OilDrumLogicEntity 0x5d1540, crate destroyed 0x5c59e9
 ROOTS += ['WXP_WaterSplash', 'WXP_WaterSmallSplash', 'WXP_WaterLargeSplash', 'WXP_WormDrownPopSplash']  # water: Drowning 0x5ad640, death blast 0x5a9400, crates, WEAPTWK SplashFx / SplishFx
+ROOTS += ['WXP_UnderWaterBubbles']  # sinking payload / mine (SinkingFx 0x580aa0)
 ROOTS += ['WXP_Explosion_Mine', 'WXP_Napalm']  # Landmine DetonationFx; its kDT_Fire FX (Detonate 0x5813cc)
+ROOTS += ['WXP_FE_CrashBang', 'WXP_FE_BarrelSpark', 'WXP_FE_TreeFire', 'WXP_FE_BarrelPoison', 'WXP_FE_CrashFire', 'WXP_FE_CrashSparks',
+          'WXP_FE_TreeSmoke', 'WXP_FE_Flies']  # MENUTWKXPCCOMMON WXFE.MainMenu Title Mesh EffectNames (WXFE_MeshObjectParticleEntity 0x76d27c)
 FIELDS = ['EmitterType', 'SpriteSet', 'MeshSet', 'MeshAnimNodeName', 'EmitterLifeTime', 'EmitterLifeTimeRandomise', 'EmitterMaxParticles',
           'EmitterNumSpawn', 'EmitterNumSpawnRadnomise', 'EmitterOriginOffset', 'EmitterOriginRandomise', 'EmitterParticleExpireFX',
           'EmitterParticleFX', 'EmitterSoundFX', 'EmitterSoundFXVolume', 'EmitterSpawnFreq', 'EmitterSpawnFreqRansomise', 'EmitterStartDelay',
@@ -66,6 +69,7 @@ def sprite(bundles, name):
 
 
 def main(a):
+    if a and (a[0].startswith('-') or not os.path.isdir(a[0])): sys.exit(__doc__)  # an option or an effect name is not an ASSETS dir
     assets = a[0] if a else os.path.join(os.path.dirname(__file__), '..', '..', 'client', 'assets')
     tw = dump(os.path.join(GAME, 'Data', 'Tweak', 'PARTTWK.XOM'))
     for f in sorted(glob.glob(os.path.join(GAME, 'Data', '*.XOM'))):  # level databanks add their own (WXPL_*) to the same resource store
@@ -73,6 +77,8 @@ def main(a):
             if isinstance(c, dict) and c.get('_type') in ('ParticleEmitterContainer', 'EffectDetailsContainer'): tw.setdefault(k, c)
     folded = {k.lower(): k for k in tw}  # the resource trie folds case (0x6bdff0)
     names = set(ROOTS)
+    for c in dump(os.path.join(GAME, 'Data', 'Tweak', 'WEAPTWK.XOM')).values():  # every payload's DetonationFx (comma list, Detonate 0x581440)
+        if isinstance(c, dict): names.update(n for n in c.get('DetonationFx', '').split(',') if n)
     for f in glob.glob(os.path.join(assets, 'maps', '*.json')):
         names.update(e['fx'] for e in json.load(open(f)).get('emitters', []))
     for f in glob.glob(os.path.join(assets, 'scripts', '*.lub')):  # mission scripts: Particle.Name / lib_CreateEmitter constants

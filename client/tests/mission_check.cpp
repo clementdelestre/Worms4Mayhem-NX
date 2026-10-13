@@ -66,8 +66,8 @@ static void checkLot2(const std::vector<MissionSpec> &list) {
         run("MineAllMine", g, 2);
         assert(mines(g, true) == 4 && mines(g, false) == 0);  // PlaceMine Mine1/3/5/7; PlaceObjects skips the "MineN" details
         for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Surrender) assert(g.ammo[0][i] == 0);  // LOCAL's -1 emptied
-        for (Object &o : g.objects) if (o.id == 1) o.pos.y = g.water - 1;  // Mine1 sinks: Payload_Deleted places Mine2
-        g.step(Input{}), g.step(Input{});
+        for (Object &o : g.objects) if (o.id == 1) o.pos = {-400, g.water + 0.1f, -400}, o.vel.y = -30;  // Mine1 falls through Level - SinkDepth, sinks to ExpiryDepth -200 u (0x582050): Payload_Deleted places Mine2
+        for (int t = 0; t < 300; t++) g.step(Input{});
         assert(mines(g, true) == 4 && std::any_of(g.objects.begin(), g.objects.end(), [](const Object &o) { return o.id == 5; }));
     }
     {

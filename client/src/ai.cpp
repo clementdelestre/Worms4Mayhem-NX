@@ -1142,7 +1142,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
             if (k != 0 || !pick()) break;  // one plan, whatever the target
             {
                 Outcome o(g, L, me, rating, vals);
-                float level = fminf(g.water + wd.speed, Terrain::WATER + 15);
+                float level = g.water + wd.speed;
                 for (size_t i = 0; i < g.worms.size(); i++)
                     if (g.worms[i].alive && g.worms[i].pos.y < level) o.hurt((int)i, 1000, 0);
                 consider(o.s + bonus(false), w.yaw, w.pitch, 0, ti);

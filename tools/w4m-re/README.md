@@ -30,6 +30,7 @@ How the schema works (see `PE.xclasses` / `PE.schema`):
 Notes and known limits:
 
 - Python API: `PE().v2f(va)` / `f2v(off)` (the CLI names are `va2off` / `off2va`), `PE().msgnames()`.
+- DLLs (`fmod_event.dll`...): `mcp__rea__open_binary` + `procedure_pseudo_code` (Ghidra) work well; `open_binary` switches the active program for every REA user, so reopen the DLL before each query, and find a call site by scanning `.text` with capstone (`skipdata`) when `xrefs` finds nothing (indirect/import thunks).
 - `disasm.py` decodes jump tables inline as code; read the table with `pe.py words`.
 - `pe.py schema` prints the value names under each enum field whose record has a descriptor (91 of 161; `PE().enum_values(rec)`). `tweak.py` and `xom.py` still print enum values as numbers.
 - `disasm.py` annotates XOM class descriptors (16-byte GUID, then name pointer at +0x10) pushed before the create call 0x639b83 as `class Name`.

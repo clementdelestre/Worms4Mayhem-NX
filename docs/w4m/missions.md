@@ -308,6 +308,10 @@ Mine.StartsMidAir +0x198):
   mesh origin is its base (Bundl09 OilDrum y 0..20 units) and its fall 0x5d1c60 casts a point from that position, landing at the hit
   (position = the ground contact, sphere radius 9 at it), so a map drum rests with its base on the ground. Random mines and drums (0x4f26b0)
   get hit + (0, r, 0) with r = 3 (Landmine Radius) / 9 (drum), then fall to the ground.
+  OilDrum Position is the base [disasm]: its collider sphere (radius 9) is centred Position + 9 units (0x5d1c60 / 0x5d2070 FUN_00519cd0 call, y + 9.0);
+  the Explosion (0x5d1540) has DamageEpicentre = Position, ImpulseEpicentre = Position - 9 units, WXP_Explosion_OilDrum and the sound at Position.
+  Ours [ours]: Object::pos of a drum is its base (rests 0.05 m, the probe, over the ground); collider centre = pos + 0.45 (colliderCentre, sim.cpp), blast at pos
+  with BARREL_BLAST pushDepth 0.45; the mesh (origin at its base) is drawn at pos; the rope hangs it by pos (0x5d2070).
 - Mine.DetonationType is read at each landmine Detonate (0x581113): -1 Random, 0 keeps kWeaponLandmine's DetonateMultiEffect (0 =
   kDT_Random [data]), 1..4 that type; Random -> (rand & 3) + 1 (weapons.md "DetonateMultiEffect handling").
 - `Payload.Deleted` is posted by every payload's teardown (0x580560) with Payload.Deleted.Id = its task id and .LastPosition: GibbonTake

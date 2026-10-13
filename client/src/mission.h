@@ -11,6 +11,8 @@ struct MissionSpec {
     std::string nameId, briefId, successId;  // W4M text keys (assets/lang): Frontend_Name, Frontend_Briefing, the complete body
     std::string objectives;                  // W4M Objectives: "<key>.A/.B/.C" are the in-game briefing lines
     int order = 0, par = 0;  // par: W4M BonusTime (s), 0 = none
+    int record = 0;          // DEFSAVE HighScoreData WinnerTime (s) of Level_Number, shown until a better time is set
+    std::string recordBy;    // its WinnerName
     std::string script, bank, scriptDir;  // W4M: <scriptDir><script>.lub and <bank>.json (assets/scripts)
     Scheme scheme;
     float rainProb = -1;  // >= 0: Particle.Rain.Prob set by the mission script (weather odds, render only)
@@ -29,6 +31,7 @@ struct Progress {
     std::vector<std::pair<std::string, Entry>> entries;
     std::vector<std::string> unlocks;
     bool storyIntro = false;  // the Story intro movie has played
+    bool welcome = false;     // the Welcome movie has played (W4M profile +0x88)
     bool storyDone(const std::vector<MissionSpec> &list) const;  // a story mission is completed
     Entry get(const std::string &id) const;
     void record(const std::string &id, bool done, int ticks);

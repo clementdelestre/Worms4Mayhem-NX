@@ -46,17 +46,21 @@ uniform vec4 colDiffuse;
 uniform vec3 sunDir;
 uniform vec3 ambient;
 uniform vec3 diffuse;
+uniform vec3 specular;
 uniform vec3 camPos;
+uniform vec4 material[4];  // FixedFunction.cg materialMatrix rows: specular, emissive, fresnel, (fresnel power, specular power)
 varying vec2 uv;
 varying vec3 n;
 varying vec3 wp;
+uniform float blended;
 void main() {
     vec4 c = texture2D(texture0, uv) * colDiffuse;
-    if (c.a < 0.5) discard;
+    if (c.a < (blended > 0.5 ? 0.004 : 0.5)) discard;
     vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
-    vec3 l = (diffuse * max(dot(nn, sunDir), 0.0) + ambient) * c.rgb;
-    float r = 1.0 - max(dot(v, nn), 0.0);
-    gl_FragColor = vec4(l + (0.15 + 0.2 * diffuse) * r * r, 1.0);
+    vec3 base = diffuse * max(dot(nn, sunDir), 0.0) + ambient + material[1].xyz;
+    float sp = material[3].y > 0.0 ? pow(max(dot(nn, normalize(sunDir + v)), 0.0), material[3].y) : 1.0;
+    vec3 add = specular * material[0].xyz * sp + material[2].xyz * clamp(pow(max(1.0 - dot(v, nn), 0.0), material[3].x), 0.0, 1.0);
+    gl_FragColor = vec4(clamp(base * c.rgb + add, 0.0, 1.0), blended > 0.5 ? c.a : 1.0);
 }
 )";
 
@@ -79,6 +83,20 @@ Shader shader(const char *vs, const char *fs, bool lit, bool es3) {
 Shader modelShader(bool worm) {
     Shader s = shader(MVS, MFS);
     if (worm && !shaders.empty() && shaders.back().s.id == s.id) shaders.back().worm = true;
+    return s;
+}
+
+Shader frontendShader(bool lit) {
+    static Shader sh[2];
+    Shader &s = sh[lit];
+    if (s.id) return s;
+    s = shader(MVS, MFS, false);
+    // WXFE.AmbientColour / DiffuseColour; WXFE.LightDirection (0, 0.75, 0.75) is stored unnegated as the light's travel direction (0x729ac9; the world lights negate Sun.LightVector, 0x5b35e8), so sunDir is its opposite [disasm]
+    const Vector3 dir = Vector3Normalize({0, -0.75f, -0.75f}), amb = lit ? Vector3{0.8f, 0.8f, 0.85f} : Vector3{1, 1, 1}, dif = lit ? Vector3{0.15f, 0.15f, 0.2f} : Vector3{0, 0, 0}, cam = {0, 0, 903.5f};
+    SetShaderValue(s, GetShaderLocation(s, "sunDir"), &dir, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, GetShaderLocation(s, "ambient"), &amb, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, GetShaderLocation(s, "diffuse"), &dif, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, GetShaderLocation(s, "camPos"), &cam, SHADER_UNIFORM_VEC3);
     return s;
 }
 

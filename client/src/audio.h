@@ -42,6 +42,7 @@ enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Sheep, Holy, Tur
                  FeScaleHit,  // W4M kAUDIO_In_ScaleHitXY (global/In_Scalehitxy)
                  Gong,  // W4M weapons/Gong: Weapon.NotClearToFire (0x552630)
                  SplashLight, WaterBounce, WaterSurge, WaterExplosion,  // PARTTWK EmitterSoundFX of the water effects; WaterBounce is SplashLight's second sounddef
+                 ScouserPop, SheepBoom, SheepBoomBaa,  // EmitterSoundFX of WXP_ScouserBurstBang / WXP_Explosion_LambChops (Super Sheep DetonationSfx too)
                  Count };
 // Startled..Drown: W4M acting-scene lines (docs/worm-reactions.md), voices/<bank>/<name>.ogg
 enum class Voice { Fire, Hurt, Death, Victory, Jump, Idle,
@@ -75,13 +76,14 @@ const Lip *voice(int team, Voice id, Vector3 at);  // W4M speech is 3D
 int voiceBanks();
 const char *sfxFile(Sfx id);   // sfx/<file>.ogg of the sound, and its W4M event path
 const char *sfxEvent(Sfx id);
+Sfx byEvent(const char *event);  // the Sfx of a W4M FEV event name (case folded), Count if none
 unsigned requested();  // Audio::play calls so far, played or not (tests)
 unsigned started();  // sounds started so far (hitch log)
 const char *voiceBankName(int bank);  // folder name, "" if out of range
 void setTeamVoice(int team, int bank);
 void preloadVoices(int teams);  // load the banks of teams 0..teams-1 now instead of on their first line
 // track = music/<track>.ogg (e.g. the map theme); null keeps the current track, unknown falls back to theme.ogg
-void music(bool on, const char *track = nullptr);
+void music(bool on, const char *track = nullptr, bool option = false);  // option: the Music setting toggle, leaves the FrontendDay ambience alone
 void preloadMusic(const char *track);
 // Level movies (docs/audio.md "EFMV"): the bank EFMV/<level> (efmv/<level>/, any case) and EFMV/Failures; null: none
 void efmvLevel(const char *level);

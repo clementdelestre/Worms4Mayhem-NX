@@ -206,7 +206,7 @@ std::string Terrain::mapTheme(const std::string &map) {
 bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
     loadMs[0] = loadMs[1] = loadMs[2] = 0;
-    objects.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
+    objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
     thinOnly.clear(), thinVox.clear();
     hasFinish = false, sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
@@ -302,6 +302,12 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         if (m == (int)objModels.size()) objModels.push_back(name);
         Vector3 p = vec(o["pos"], {cx, 8, cz});
         objects.push_back({m, p, {b[0].f(1), b[1].f(0), b[2].f(0), p.x, b[3].f(0), b[4].f(1), b[5].f(0), p.y, b[6].f(0), b[7].f(0), b[8].f(1), p.z, 0, 0, 0, 1}, o["code"].s()});
+        if (o["frame"].type == Json::Num) objects.back().frame = (int)o["frame"].f(), objects.back().cell = (int)o["cell"].f();
+    }
+    for (const Json &f : j["frames"].arr) {
+        frameCells.emplace_back();
+        for (size_t k = 0; k + 2 < f.size(); k += 3) frameCells.back().push_back({f[k].f(), f[k + 1].f(), f[k + 2].f()});
+        frameAlive.emplace_back(frameCells.back().size(), 1);
     }
     for (const Json &e : j["emitters"].arr) emitters.push_back({e["fx"].s(), vec(e["pos"], {cx, 8, cz})});
     for (const Json &l : j["lights"].arr)
@@ -435,7 +441,7 @@ void Terrain::mergeBlocks() {
 void Terrain::generate(unsigned seed) {
     setGrid(352, 256, 352);
     thinOnly.clear();
-    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
+    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
@@ -508,39 +514,78 @@ Vector3 Terrain::normal(Vector3 p, float e) const {
     return Vector3Normalize(Vector3Negate(g));
 }
 
-bool Terrain::carve(Vector3 c, float radius) {
+bool Terrain::heightmap(Vector3 p) const {
+    int x = (int)(p.x * IVOX + 0.5f), y = (int)(p.y * IVOX + 0.5f), z = (int)(p.z * IVOX + 0.5f);
+    if (mats.empty() || x < 0 || y < 0 || z < 0 || x >= NX || y >= NY || z >= NZ) return false;
+    return mats[idx(x, y, z)] == 65 || mats[idx(x, y, z)] == 66;
+}
+
+// W4M 0x463c90 (docs/w4m/formats.md §25): the blast lowers the heightmap's columns; their voxels and cell lists follow
+bool Terrain::lowerHeightmap(Vector3 c, float radius, int box[6]) {
+    const std::vector<SharpLand::Col> cols = sharp.lower(c, radius);
+    for (const SharpLand::Col &k : cols) {
+        const int ya = std::max(0, (int)floorf((std::min(k.was, k.now) - 0.5f) * IVOX)), yb = std::min(NY - 1, (int)ceilf((std::max(k.was, k.now) + 0.5f) * IVOX));
+        unsigned char m = 65;  // the column's heightmap material, for voxels a raised top makes land
+        for (int y = std::min(NY - 1, (int)floorf(k.was * IVOX) + 1); y >= 0; y--)
+            if (mats[idx(k.x, y, k.z)] == 65 || mats[idx(k.x, y, k.z)] == 66) { m = mats[idx(k.x, y, k.z)]; break; }
+        for (int y = ya; y <= yb; y++) {
+            const size_t i = idx(k.x, y, k.z);
+            const signed char nd = qd(k.now - y * VOX);
+            signed char nv = d[i];
+            if (k.now < k.was) { if (mats[i] == 65 || mats[i] == 66) nv = nd; else if (nv <= 0) nv = std::min(nv, nd); }
+            else nv = std::max(nv, nd);
+            if (nv == d[i]) continue;
+            if (undo) undo->emplace_back((int)i, d[i]);
+            if (nv > 0 && d[i] <= 0) mats.set(i, m);
+            d.w(i) = nv;
+            box[0] = std::min(box[0], k.x), box[1] = std::min(box[1], y), box[2] = std::min(box[2], k.z);
+            box[3] = std::max(box[3], k.x), box[4] = std::max(box[4], y), box[5] = std::max(box[5], k.z);
+        }
+    }
+    sharp.relist(cols, box);
+    return !cols.empty();
+}
+
+bool Terrain::carve(Vector3 c, float radius, bool blast) {
     int box[6] = {NX, NY, NZ, -1, -1, -1};  // changed voxels and listed cells: only their chunks remesh
-    sharp.carve(d, c, radius, box);
+    bool changed = false;
+    const bool hm = blast && sharp.on && !sharp.top.empty();
+    if (hm) changed = lowerHeightmap(c, radius, box);
+    sharp.carve(d, c, radius, box, hm);
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {(float)NX, (float)NY, (float)NZ};
     for (int a = 0; a < 3; a++) {
         lo[a] = std::max(0, (int)((cc[a] - radius) * IVOX) - 1);
         hi[a] = std::min((int)dim[a] - 1, (int)((cc[a] + radius) * IVOX) + 1);
     }
-    bool changed = false;
     for (int z = lo[2]; z <= hi[2]; z++)
         for (int y = lo[1]; y <= hi[1]; y++)
             for (int x = lo[0]; x <= hi[0]; x++) {
                 size_t i = idx(x, y, z);
                 signed char nv = std::min(d[i], qd(Vector3Distance({x * VOX, y * VOX, z * VOX}, c) - radius));
+                const float t = hm ? sharp.top[z * NX + x] : NAN;
+                if (nv < d[i] && !std::isnan(t)) nv = std::max(nv, std::min(d[i], qd(t - y * VOX)));  // a blast never cuts the heightmap
                 if (nv == d[i]) continue;
                 if (undo) undo->emplace_back((int)i, d[i]);
                 d.w(i) = nv, changed = true;
                 box[0] = std::min(box[0], x), box[1] = std::min(box[1], y), box[2] = std::min(box[2], z);
                 box[3] = std::max(box[3], x), box[4] = std::max(box[4], y), box[5] = std::max(box[5], z);
             }
-    // W4M 0x5cc960: a detail (and its emitter, 0x5cc8c0) goes when |pos - blast|² < radius²; decor also goes with the ground under it
-    // (0.3 m below its base along its up axis) [ours: W4M removes a detail with its emptied land frame, 0x46c630]
+    // W4M 0x46d290: a frame cell whose centre is within the radius is destroyed [assumed: world sphere, W4M tests the frame-space ellipsoid]
+    std::vector<char> hit(frameCells.size(), 0);
+    for (size_t f = 0; f < frameCells.size(); f++)
+        for (size_t k = 0; k < frameCells[f].size(); k++)
+            if (frameAlive[f][k] && Vector3Distance(frameCells[f][k], c) <= radius) frameAlive[f][k] = 0, hit[f] = 1;
+    // W4M 0x5cc960: a detail (and its emitter, 0x5cc8c0) goes when |pos - blast|² < radius²; 0x46c630: or when its frame lost a cell
+    // and the detail's own cell is not solid
     objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const Object &o) {
         float dist = Vector3Distance(o.pos, c);
-        if (dist > radius + 2) return false;
-        Vector3 up = Vector3Normalize({o.m.m4, o.m.m5, o.m.m6});
-        if (dist >= radius && solid(Vector3Subtract(o.pos, Vector3Scale(up, 0.3f)))) return false;
+        if ((!blast || dist >= radius) && !(o.frame >= 0 && hit[o.frame] && (o.cell < 0 || !frameAlive[o.frame][o.cell]))) return false;
         float r = o.model < (int)objR.size() ? 2 * objR[o.model] * Vector3Length({o.m.m0, o.m.m1, o.m.m2}) : 1e9f;
         staleGrow(Vector3SubtractValue(o.pos, r), Vector3AddValue(o.pos, r));
         return true;
     }), objects.end());
-    for (Emitter &e : emitters) e.alive = e.alive && Vector3Distance(e.pos, c) >= radius;
+    for (Emitter &e : emitters) e.alive = e.alive && (!blast || Vector3Distance(e.pos, c) >= radius);
     // chunk cells sample one voxel past their bounds, so neighbours of the box are dirty too
     for (int z = std::max(0, box[2] - 1) / CS; z <= std::min(NZ - 1, box[5] + 1) / CS; z++)
         for (int y = std::max(0, box[1] - 1) / CS; y <= std::min(NY - 1, box[4] + 1) / CS; y++)
@@ -718,8 +763,7 @@ Color Terrain::vertexColour(Vector3 p, Vector3 n) const {
         for (float t = 20 * u; t < end; t += VOX * 0.5f) {
             Vector3 q = Vector3Add(p, Vector3Scale(dir, t));
             if (!solidAt(q)) continue;
-            int x = (int)(q.x * IVOX + 0.5f), y = (int)(q.y * IVOX + 0.5f), z = (int)(q.z * IVOX + 0.5f);
-            if (mats.empty() || mats[idx(x, y, z)] < 65 || mats[idx(x, y, z)] == HIDDEN) return c;
+            if (!heightmap(q)) return c;
             break;
         }
     }
@@ -1863,7 +1907,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
             bool loop = e.clip == "Go" || e.clip == "GoSync";  // another clip waits for Detail.PlayAnim, then plays once and holds its last key (0x7ad288)
             float t = e.len <= 0 ? 0 : !loop ? (o.playFrom < 0 ? 0 : fminf(clock - o.playFrom, e.len)) : fmodf(clock + (e.clip == "Go" ? (hash3((int)(&o - objects.data()), 0, 0, 0x60u) + 1) / 2 * e.len : 0), e.len);
             if (!e.anim.empty()) {  // raw mesh units (20 per W4M unit)
-                if (pass == 0) Models::shade(ash), Models::draw(e.anim.c_str(), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), o.m), WHITE, e.clip.c_str(), t), Models::shade({});
+                Models::shade(ash), Models::draw(e.anim.c_str(), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), o.m), WHITE, e.clip.c_str(), t, true, 1 + pass), Models::shade({});
                 continue;
             }
             for (int i = 0; i < e.m.meshCount; i++) {

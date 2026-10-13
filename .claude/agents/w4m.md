@@ -11,6 +11,8 @@ The user wants it identical to the real W4M. Report to the coordinator in French
 - Check every value in the user's W4M install before coding: tweaks (`Data/Tweak/*.xom`), Lua, FEV/FSB, and disassembly of
   `WormsMayhem.exe` (authorised for analysis only: never copy code or assets into the repo). Tools: `tools/w4m-re/`
   (pe.py, scan.py, xref.py, disasm.py, xom.py, tweak.py, lua.py, fev.py, acting.py).
+- Decompiled C (Ghidra 12.1.4 via the REA MCP, tools `mcp__rea__*`, skill `reverse-engineer-anything`): use it to read a
+  function as pseudocode, its callers/xrefs and types, instead of long disasm reads; addresses are the same VAs.
 - The W4M map is split by domain in `docs/w4m/` (index: `docs/w4m/README.md`). Read only the file of your domain; cite as
   `docs/w4m/<file>.md §N`.
 - Never assume a value. No deviation of our own: anything W4M lacks goes, except user-requested ones (sky-view A/B/hold-L

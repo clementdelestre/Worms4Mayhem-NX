@@ -37,6 +37,8 @@ tools/w4m-import/target/release/w4m-import "$W4M" client/assets   # out dir defa
 - `--list`: dump every bank's subsounds (name, codec, channels, rate, duration) and exit.
 - `--raw`: also write every subsound under `<out>/raw/<bank>/<name>.mp2|.wav`, untranscoded (~300 MB).
 
+- `w4m-ui` PNGs are zlib level 9 via the `flate2` crate (ours): `client/assets/ui` 207.5 MB -> 56.9 MB (fe 23 -> 1.9, hud 19 -> 2.8, sky 27 -> 7.9, levels 59 -> 31, back 48 -> 9.5). Decode is ~4x slower on desktop (0.09 -> 0.38 s for 444 PNGs, page-cached) but the SD read is smaller; first-use hitches are covered by `warmHud` (loading stage 4), the `PRELOAD` list and the async `Ui::predecode` of Missions/level pictures (ours).
+
 ## What it reads
 
 `Data/Audio/PC/*.fsb` are FMOD Ex FSB4 banks: MPEG-1/2 Layer II (mp2) except `voRussian` (PCM16).
@@ -51,11 +53,11 @@ For the 14 speech events whose parameter is not named `MultiSelect` (`WormsX.fev
 |---|---|
 | `sfx/<name>.ogg`, `<name>_2.ogg`, ... | hand-picked `weapons`/`global` subsounds (table `SFX` in `main.rs`) |
 | `voices/<bank>/{fire,hurt,death,victory,jump,idle}[_N].ogg` | speech categories WeaponFired, FireDamage, FriendlyDeath, Victory, Jump, StartTurn of each `vo*` bank |
-| `music/<theme>.ogg` | `mu*` banks; `theme.ogg` = frontend music; map themes use their `docs/maps.md` names (`jurassic` = muPrehistoric) |
+| `music/<theme>.ogg` | `mu*` banks; `theme.ogg` = frontend music, `frontendday.ogg` = frontendmusic/FrontendDay; map themes use their `docs/maps.md` names (`jurassic` = muPrehistoric) |
 | `voices/<bank>/lip.txt` | per written line (`fire_2`...): its LIP.txt rows, `<frame>:<viseme>` (0 Rest, 1 A, 2 Cons, 3 EI, 4 FV, 5 L, 6 MBP, 7 O, 8 QUW) |
 | `efmv/<group>/<event>[_N].ogg` | every `EFMV/<group>/<event>` FEV event whose waves are on disk (840: 56 groups incl. `Failures`), one file per wave |
-| `efmv/<group>/events.txt` | per event: gain dB (event × sounddef × instance × category), loop, 3D min / max m (0 0: 2D), play mode, wave count, Time volume envelope (rate, x,y points) |
-| `movies/<name>.mjpg`, `movies/<name>.ogg` | `Data/FMV/ntsc/English/<name>.wmv` (Meet_The_Professor, Welcome, Camelot, WildWest, Arabian, Jurassic): ffmpeg, 25 fps MJPEG q 10 in the `MJPG` container (`docs/audio.md` "Movies"), libvorbis q 4; ~200 MB in all |
+| `efmv/<group>/events.txt` | per event: gain dB (event × sounddef × instance × category), loop, 3D min / max m (0 0: 2D), play mode, wave count, Time volume envelope (rate, x,y,shape points) |
+| `movies/<name>.mjpg`, `movies/<name>.ogg` | `Data/FMV/ntsc/English/<name>.wmv` (Meet_The_Professor, Welcome, Camelot, WildWest, Arabian, Jurassic; `Data/FMV/ntsc/Logos/Team17NTSC.wmv` 1280x720 = the boot movie, `docs/w4m/frontend.md` §Boot): ffmpeg, 25 fps MJPEG q 10 in the `MJPG` container (`docs/audio.md` "Movies"), libvorbis q 4; ~200 MB in all |
 | `efmv/<group>/lip.txt` | per event: the LIP rows of its `.lsd` hash (`Data/Audio/EFMV/<group>.lsd`, `EFMV/<group>/LIP.txt`) |
 
 The client picks a random variant on each play; each team speaks with the voice bank chosen in team setup (default `team % banks`).

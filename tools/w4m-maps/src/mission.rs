@@ -29,7 +29,7 @@ fn language(data: &Path) -> HashMap<String, String> {
     out
 }
 
-struct Level { id: String, name: String, brief: String, preview: String, file: String, script: String, objectives: String, kind: u32, index: u32, par: u32 }
+struct Level { id: String, name: String, brief: String, preview: String, file: String, script: String, objectives: String, kind: u32, index: u32, par: u32, rec: (String, u32) }
 
 // WXFE_LevelDetails of a level file (`script` holds Level_FileName), with a Frontend_Image: the versus entry (kind 0) wins.
 // Demo (kinds 12, 13) and outtake (16) entries reuse another level's name and image.
@@ -54,7 +54,24 @@ pub fn title_of(data: &Path, stem: &str) -> Option<String> {
     level_of(data, stem).map(|l| l.name.clone()).filter(|n| !n.is_empty())
 }
 
+// DATA.TeamBarracks HighScores of DEFSAVE.XOM (TeamDataColective: Teams refs, HighScores refs; HighScoreData: WinnerName, WinnerTime), indexed by Level_Number
+fn highscores(data: &Path) -> Vec<(String, u32)> {
+    let Some(x) = find_ci(&data.join("Tweak"), "DEFSAVE.XOM").and_then(|p| fs::read(p).ok()).and_then(|b| read_xom(&b)) else { return Vec::new() };
+    let Some((_, d)) = x.ctn.iter().find(|c| c.0 == "TeamDataColective") else { return Vec::new() };
+    let mut p = 3;
+    let teams = vi(d, &mut p);
+    for _ in 0..teams { vi(d, &mut p); }
+    let n = vi(d, &mut p);
+    (0..n).map(|_| {
+        let Some((_, h)) = x.ctn.get(vi(d, &mut p).wrapping_sub(1)) else { return (String::new(), 0) };
+        let mut q = 3;
+        let name = x.s.get(vi(h, &mut q)).cloned().unwrap_or_default();
+        (name, u32le(h, q))
+    }).collect()
+}
+
 fn levels(data: &Path) -> Vec<Level> {
+    let hs = highscores(data);
     let Some(x) = find_ci(&data.join("Tweak"), "SCRIPTS.XOM").and_then(|p| fs::read(p).ok()).and_then(|b| read_xom(&b)) else { return Vec::new() };
     // resource names (XContainerResourceDetails: container ref, name): Story.DinerMight, the Lock.T.<name> key
     let ids: HashMap<usize, String> = x.ctn.iter().filter(|c| c.0 == "XContainerResourceDetails").filter_map(|(_, d)| {
@@ -68,7 +85,7 @@ fn levels(data: &Path) -> Vec<Level> {
         let (index, kind) = (u32le(d, p), u32le(d, p + 4));
         p += 8;
         vi(d, &mut p); // unlock key
-        Level { id: ids.get(&i).cloned().unwrap_or_default(), par: u32le(d, p + 8), name: std::mem::take(&mut s[0]), brief: std::mem::take(&mut s[1]), preview: std::mem::take(&mut s[2]),
+        Level { id: ids.get(&i).cloned().unwrap_or_default(), par: u32le(d, p + 8), rec: hs.get(index as usize).cloned().unwrap_or_default(), name: std::mem::take(&mut s[0]), brief: std::mem::take(&mut s[1]), preview: std::mem::take(&mut s[2]),
                 file: std::mem::take(&mut s[3]), script: std::mem::take(&mut s[4]), objectives: std::mem::take(&mut s[5]), kind, index }
     }).collect()
 }
@@ -93,8 +110,8 @@ fn mission(data: &Path, lv: &Level, lang: &HashMap<String, String>, maps: &Path,
     let done = if lv.kind == 4 { "FETXT.MissionCompleteBody" } else { "FETXT.ChallengeCompleteBody" };
     // the *_id keys: the client shows the language's text (assets/lang), the English one above as the fallback
     Ok(format!(
-        "{{\n  \"name\": {},\n  \"kind\": \"{kindj}\",\n  \"campaign\": \"{campaign}\",\n  \"order\": {order},\n  \"level\": {},\n  \"map\": {},\n  \"preview\": {},\n  \"par\": {},\n  \"brief\": {},\n  \"success\": {},\n  \"name_id\": {},\n  \"brief_id\": {},\n  \"success_id\": \"{done}\",\n  \"objectives\": {},\n{rain}  \"script\": {},\n  \"bank\": {}\n}}\n",
-        esc(&name), esc(&lv.id), esc(&stem), esc(&preview), lv.par, esc(&t(&lv.brief)), esc(&t(done)), esc(&lv.name), esc(&lv.brief), esc(&lv.objectives), esc(&lv.script), esc(&lv.file)))
+        "{{\n  \"name\": {},\n  \"kind\": \"{kindj}\",\n  \"campaign\": \"{campaign}\",\n  \"order\": {order},\n  \"level\": {},\n  \"map\": {},\n  \"preview\": {},\n  \"par\": {},\n  \"record\": {},\n  \"record_by\": {},\n  \"brief\": {},\n  \"success\": {},\n  \"name_id\": {},\n  \"brief_id\": {},\n  \"success_id\": \"{done}\",\n  \"objectives\": {},\n{rain}  \"script\": {},\n  \"bank\": {}\n}}\n",
+        esc(&name), esc(&lv.id), esc(&stem), esc(&preview), lv.par, lv.rec.1, esc(&lv.rec.0), esc(&t(&lv.brief)), esc(&t(done)), esc(&lv.name), esc(&lv.brief), esc(&lv.objectives), esc(&lv.script), esc(&lv.file)))
 }
 
 // Writes <out>/<file>.json for every story mission (W4M type 4), challenge (8) and deathmatch (9) whose map was imported.

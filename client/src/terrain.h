@@ -88,8 +88,12 @@ struct Terrain {
     struct Run { int mat; unsigned vao; int first, count; const Mesh *mesh; };  // one draw: consecutive in-view chunks of a group part
     mutable std::vector<Group> groups;
     // Map decor (W4M detail objects, no collision): models/decor/<name>.glb, removed by carve().
-    struct Object { int model; Vector3 pos; Matrix m; std::string code; float playFrom = -1; };  // code: Detail.PlayAnim FourCC; playFrom: its one-shot clip's start (render clock, s)
+    struct Object { int model; Vector3 pos; Matrix m; std::string code; float playFrom = -1; int frame = -1, cell = -1; };  // code: Detail.PlayAnim FourCC; playFrom: its one-shot clip's start (render clock, s)
     std::vector<Object> objects;
+    // W4M 0x46c630: a blast destroying a solid cell of a land frame removes its details whose own cell (VoxelPos) is no longer solid;
+    // Object::frame / cell index these (cell -1: the detail's cell is empty). frameCells: solid cell centres; frameAlive: not destroyed yet
+    std::vector<std::vector<Vector3>> frameCells;
+    std::vector<std::vector<char>> frameAlive;
     std::vector<std::string> objModels;
     struct Emitter { std::string fx; Vector3 pos; bool alive = true; };  // W4M EMITTER_ details: PARTTWK effect at pos (render only)
     std::vector<Emitter> emitters;
@@ -114,9 +118,12 @@ struct Terrain {
     static inline thread_local unsigned long samples = 0;  // field() reads (exact-land work in the same unit): the AI's deterministic measure of its own work
     bool solid(Vector3 p) const { return sample(p) > 0; }
     Vector3 normal(Vector3 p, float e = VOX) const;  // the exact face in a listed cell, else -gradient over +-e (e < VOX: VOX where flat)
-    bool carve(Vector3 c, float radius);  // true when some voxel changed (W4M Land.Changed)
+    // blast false: Land.ClearVoxel (0x4733b0), the cells inside the sphere and the details of their frames only (no 0x5cc960 radius rule)
+    bool lowerHeightmap(Vector3 c, float radius, int box[6]);  // a blast's heightmap bowl (carve)
+    bool carve(Vector3 c, float radius, bool blast = true);  // true when some voxel changed (W4M Land.Changed)
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
     void addCell(const Vector3 *c);  // a convex land cell, exact as an imported map's (corners bit 1 +x, 2 +y, 4 +z)
+    bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff, which Land.ClearVoxel 0x473470 refuses
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
     size_t voxelBytes() const { return d.bytes() + mats.bytes() + steel.bytes(); }  // density, materials, steel
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;

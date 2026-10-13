@@ -29,6 +29,7 @@ Status: the gains, loop flags, 3D ranges and max playbacks are **data** (FEV, ha
   arabian, wildwest, suddendeath, −12 for the others (FEV sound definition + category music); fades in over 1 s (W4M Music.FadeIn
   0x7290b4 +0.01 a frame). `theme` (frontendmusic/femusic) starts at full volume (FEV fade-in 0, played by FrontEndService init, no Music.FadeIn; docs/w4m/frontend.md §Boot) and fades out over 2 s (its FEV fade-out) when stopped or replaced. The `cheer`
   crowd loop stops when the track changes.
+- **FrontendDay** [ours, after docs/w4m/audio.md §FrontendDay]: `music/frontendday.ogg` (w4m-import: the shorter frontendmusic track) loops at -3 dB with `theme`, starts when `Audio::music(true, "theme")` runs, fades out over 2 s when the theme stops or another track starts; the Menu's Music option (`Audio::music(on, nullptr, true)`) leaves it playing.
 - **Match launch and loading** [ours, after docs/w4m/frontend.md §17 "Pre-match and loading screen"]: `Loading::frame` plays
   FeGrenade 0.25 s into the pre-match intro, with the logo's pop-in (WXFE.PreStart's Audio_Incoming); at the loading screen
   (1.75 s) `theme` stops with its 2 s fade-out (FrontEndService shutdown); the map track fades in once the match shows. The

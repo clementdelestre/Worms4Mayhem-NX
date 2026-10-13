@@ -18,15 +18,15 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("sheep", "Sheep", 0.8, false, &["Run", "Jump"]),
     ("airstrike", "Airstrike.Payload", 1.2, false, &["Spin"]),  // 24 units at 20 per metre; WEAPTWK AnimTravel
     ("donkey", "Donkey", 10.02, false, &[]),  // 167 units tall x WEAPTWK Scale 1.2 at 20 per metre
-    // size = the raw extent at 20 units per metre (Bundl09 meshes: crate 20-25 units, Landmine 10, OilDrum 22.8)
-    ("crate_health", "Crate.Health", 1.0145, false, &[]),
-    ("crate_weapon", "Crate.Weapon", 1.0565, false, &[]),
-    ("crate_utility", "Crate.Utility", 1.23, false, &[]),
-    ("crate_mystery", "Crate.Mystery", 1.0155, false, &[]),
-    ("mine", "Landmine", 0.505, false, &[]),
-    // PayloadGraphicEntity 0x57d9dd: drawn instead of Landmine past 300 units from the camera; 0.381 = 0.4 x 9.617 / 10.096 (extents), the mine's scale
-    ("mine_low", "LandmineLow", 0.481, false, &[]),
-    ("barrel", "OilDrum", 1.138, false, &[]),
+    // size -0.05: 20 units per metre about W4M's own origin (crates and mine at their centre, OilDrum at its base)
+    ("crate_health", "Crate.Health", -0.05, false, &[]),
+    ("crate_weapon", "Crate.Weapon", -0.05, false, &[]),
+    ("crate_utility", "Crate.Utility", -0.05, false, &[]),
+    ("crate_mystery", "Crate.Mystery", -0.05, false, &[]),
+    ("mine", "Landmine", -0.05, false, &[]),
+    // PayloadGraphicEntity 0x57d9dd: drawn instead of Landmine past 300 units from the camera
+    ("mine_low", "LandmineLow", -0.05, false, &[]),
+    ("barrel", "OilDrum", -0.05, false, &[]),
     ("target", "Crate.Target", 0.0, false, &[]),  // a target crate (CrateGraphicEntity 0x5c4e69), raw units
     // MineFactoryLogicEntity's graphic at the factory position, no rotation (0x5cf020); raw units, clips by its messages
     ("mine_factory", "MineFactory", 0.0, false, &["MineFactoryStart", "MineFactoryFireStart", "MineFactoryFireEnd"]),
@@ -162,9 +162,11 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hats/samurai", "Hat.Samurai", 0.0, false, &[]),
     ("hats/polarbear", "Hat.PolarBear", 0.0, false, &[]),
     // Title screen diorama (Bundl06/10), raw units: island + wreck, cloud dome, seagull (flight path is its Location clip)
-    ("frontend/title", "WX.Mesh.Title", 0.0, false, &[]),
+    ("title", "WX.Mesh.Title", 0.0, false, &["Intro_Title", "Loop_Title"]),  // WXFE.MainMenu Title Mesh: Land flies in, the trees sway
     ("frontend/sky", "FRONTEND.Sky", 0.0, false, &[]),
     ("storybook", "WX.Mesh.StoryBook", 0.0, false, &["Intro_Book", "Outro_Book"]),  // WXFE.Story's MESH Book
+    ("filmtape1", "FE.FilmTape001", 0.0, false, &["Film01Start"]),  // WXFE.MoviePlayer's film frame, raw units
+    ("filmtape2", "FE.FilmTape002", 0.0, false, &["Film02Start"]),
     ("seagull", "Particle.WXPMesh31", 0.0, false, &["WXM_SGull_WingFlap+WXM_SGull_Location"]),
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
@@ -501,7 +503,8 @@ fn decompose(m: &M4) -> ([f32; 3], [f32; 4], [f32; 3]) {
 
 struct Group { path: String, xf: usize, parent: Option<usize> }
 // blend: the shader's XBlendModeGL (SourceFactor, DestFactor: W4M BlendFactor enum), None = opaque
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)>, sel: Option<usize> }
+// mat: its XMaterial Specular rgb, Emissive rgb, Fresnel rgb, FresnelPower, Power (FixedFunction.cg materialMatrix, 0x792594)
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)>, mat: [f32; 11], sel: Option<usize> }
 #[derive(Default)]
 // alts: per XChildSelector ($animTexN), its children's XImages in child order (a clip keys the child index + 0.5)
 struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize, alts: Vec<(String, Vec<usize>)> }
@@ -628,7 +631,14 @@ impl Scene {
         let img = stages.first().filter(|&&s| x.t(s) == "XOglTextureMap").map_or(0, |&s| { let mut q = 23; vi(x.d(s), &mut q) });
         let attrs: Vec<usize> = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
         let blend = attrs.iter().find(|&&a| x.t(a) == "XBlendModeGL").map(|&a| (u32le(x.d(a), 3), u32le(x.d(a), 7)));
-        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend, sel: None });
+        let mut mat = [0.0; 11];
+        if let Some(&a) = attrs.iter().find(|&&a| x.t(a) == "XMaterial") {
+            let d = x.d(a);  // 3-byte header, Diffuse, Ambient, Specular, Emissive, Fresnel (rgbaf), 4 enum sources, Power, FresnelPower
+            for (k, o) in [35, 51, 67].iter().enumerate() { mat[3 * k..3 * k + 3].copy_from_slice(&fl::<3>(d, *o)); }
+            mat[9] = f32le(d, 103);
+            mat[10] = f32le(d, 99);
+        }
+        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend, mat, sel: None });
     }
 
     // Local matrix of every group, with the clip's curves layered on Base (offsets for keys Base also has).
@@ -847,9 +857,10 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let k = if size > 0.0 { size / ext.max(1e-6) } else { 1.0 };
     let c = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
     // W4M: 20 units per metre, mesh node at Position + (0, 3, 0) units (WXWormGraphicEntity 0x5a00b0)
-    let norm = if feet { mul(&sc([0.05; 3]), &tr([0.0, 3.0, 0.0])) } else if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
+    let norm = if feet { mul(&sc([0.05; 3]), &tr([0.0, 3.0, 0.0])) } else if size < 0.0 { sc([-size; 3]) } else if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
-    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend", "Payload_Spawn"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0)
+    const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend", "Payload_Spawn",
+        "Tree_Smoke", "Tree_Fire", "Crash_Fire", "Crash_FireSpark", "Crash_Sparks", "Barrel_Poison", "Barrel_Spark", "Flies"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0); Tree_Smoke..Flies: the title island's effect locators
     // Blend: the worm's WormPoseManager control node (arm modes in Translate.x/y, head/eye mode in Rotate.y)
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();
@@ -867,7 +878,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
     // static parts sharing a texture are merged (one draw call each), skinned ones kept as they are
-    struct Prim { img: usize, blend: Option<(u32, u32)>, anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize> }
+    struct Prim { img: usize, blend: Option<(u32, u32)>, mat: [f32; 11], anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize> }
     let mut out: Vec<Prim> = Vec::new();
     for pt in &s.parts {
         let (pos, nrm): (Vec<f32>, Vec<f32>) = if animated {
@@ -886,7 +897,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let skin = if !animated { vec![] } else if pt.skin.len() == n { pt.skin.clone() } else { vec![([0; 4], [1.0, 0.0, 0.0, 0.0]); n] };
         let rgba: Vec<u8> = if pt.rgba.len() == n { pt.rgba.iter().flatten().copied().collect() } else { vec![255; 4 * n] };
         let anim = part_anim(pt);
-        if let Some(o) = out.iter_mut().find(|o| !animated && o.sel.is_none() && pt.sel.is_none() && o.img == pt.img && o.blend == pt.blend && o.anim == anim && o.pos.len() / 3 + n < 65536) {
+        if let Some(o) = out.iter_mut().find(|o| !animated && o.sel.is_none() && pt.sel.is_none() && o.img == pt.img && o.blend == pt.blend && o.mat == pt.mat && o.anim == anim && o.pos.len() / 3 + n < 65536) {
             let base = (o.pos.len() / 3) as u16;
             o.idx.extend(pt.idx.iter().map(|&i| i + base));
             o.pos.extend(pos);
@@ -894,7 +905,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             o.uv.extend(uv);
             o.rgba.extend(rgba);
         } else {
-            out.push(Prim { img: pt.img, blend: pt.blend, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel });
+            out.push(Prim { img: pt.img, blend: pt.blend, mat: pt.mat, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel });
         }
     }
     let mut prims = Vec::new();
@@ -917,7 +928,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             attrs += &format!(",\"JOINTS_0\":{a_j},\"WEIGHTS_0\":{a_w}");
         }
         let mat = images.iter().position(|&i| i == pt.img).map_or(String::new(), |m| format!(",\"material\":{m}"));
-        prims.push(format!("{{\"attributes\":{{{attrs}}},\"indices\":{a_idx}{mat}}}"));
+        let m = if pt.mat == [0.0; 11] { String::new() } else { format!(",\"extras\":{{\"w4m\":[{}]}}", pt.mat.map(|v| v.to_string()).join(",")) };
+        prims.push(format!("{{\"attributes\":{{{attrs}}},\"indices\":{a_idx}{mat}{m}}}"));
     }
     let mats: Vec<String> = (0..images.len()).map(|i| format!("{{\"pbrMetallicRoughness\":{{\"baseColorTexture\":{{\"index\":{i}}},\"metallicFactor\":0}}}}")).collect();
     // a curve at 60 fps over [0, dur], run-length "v*n"
@@ -1105,7 +1117,7 @@ fn main() {
                 let rest = s.worlds(&s.locals(&x, None));
                 for (gi, g) in s.groups.iter().enumerate() {
                     let n: usize = s.parts.iter().filter(|p| p.group == Some(gi)).map(|p| p.idx.len() / 3).sum();
-                    println!("  {} [{}] tris {n} at {:?}", g.path, x.t(g.xf), [rest[gi][0][3], rest[gi][1][3], rest[gi][2][3]].map(|v| v.round()));
+                    println!("  {} [{}] tris {n} at {:?}", g.path, x.t(g.xf), [rest[gi][0][3], rest[gi][1][3], rest[gi][2][3]].map(|v| (v * 100.0).round() / 100.0));
                 }
                 for pt in &s.parts {  // debug: local vertices, uvs and image of each part; W4M_IMG_DIR: the images as png
                     println!("  part img {} pos {:?} uv {:?} rgba {:?}", pt.img, pt.pos, pt.uv, pt.rgba.first());

@@ -11,13 +11,21 @@
 static uint32_t voxels(const Game &g) {
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < g.terrain.d.size(); i++) h = (h ^ (uint8_t)g.terrain.d[i]) * 16777619u;
-    return h;
+    uint32_t ex = 0;  // exact-land lists, order-free
+    const SharpLand &sh = g.terrain.sharp;
+    for (uint32_t k : sh.key) {
+        if (!k || !sh.mixed(k - 1)) continue;
+        uint32_t c = (k - 1) * 2654435761u;
+        for (uint32_t w : sh.list(k - 1)) c = (c ^ w) * 16777619u;
+        ex += c;
+    }
+    return h ^ ex * 31;
 }
 static double ms(std::chrono::steady_clock::time_point t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }
 
 int main() {
     loadWeapons("romfs/weapons.json");
-    for (const char *map : {"", "arabian"}) {
+    for (const char *map : {"", "arabian", "Accuracy", "BuildingSiteSaboteurs"}) {
         Recording rec;
         rec.cfg = GameConfig{77, 2, 3, map};
         rec.cfg.teamSetup = {{"CPU", 2}, {"CPU", 2}};
