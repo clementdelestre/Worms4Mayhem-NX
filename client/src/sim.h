@@ -242,11 +242,8 @@ struct GameEvent {
 // Match options, identical on every client (sent in the network Start message).
 enum Rule : uint32_t {
     RULE_KING = 1,        // one king per team: king dies => team out
-    RULE_HIGHLANDER = 2,  // random weapon each turn, killer inherits the victim's ammo
     RULE_VAMPIRE = 4,     // attacker heals a share of damage dealt
-    RULE_KARMA = 8,       // attacker takes a share of damage dealt
     RULE_LOW_GRAVITY = 16,
-    RULE_ROPE_RACE = 32,  // rope only, first to reach the map's finish wins
     RULE_SUDDEN_DEATH = 64,  // once the scheme's round time is up (see Scheme::sdType)
     RULE_NO_DELAYS = 128,    // test: the scheme's weapon delays (W4M SchemeData) are ignored
 };
@@ -294,7 +291,8 @@ struct GameConfig {
     int teams = 2, wormsPerTeam = 3;
     std::string map;     // romfs maps/<map>.json; empty = procedural island
     uint32_t rules = 0;  // Rule flags
-    struct Team { std::string name; uint8_t cpu = 0, voice = 0, hat = 0; };  // cpu: 0 = human, 1..5 = AI level (W4M CPU1..CPU5)
+    // cpu: 0 = human, 1..5 = AI level (W4M CPU1..CPU5); pad: the local pad that plays the team (ours, not sent, not in the checksum)
+    struct Team { std::string name; uint8_t cpu = 0, voice = 0, hat = 0, pad = 0; };
     std::vector<Team> teamSetup;  // per team; may be shorter than teams (defaults apply)
     Scheme scheme;
     uint32_t wormpot = 0;            // Wormpot reels: mode id per byte (wormpotReel)
@@ -423,7 +421,6 @@ struct Game {
     std::vector<GameEvent> events;  // cleared at the start of each step()
     std::vector<int> nextWorm;
     std::vector<std::vector<int>> ammo;  // [team][weapon]
-    std::vector<int> lastHitTeam;        // per worm: team index of last attacker, -1 none (highlander)
     std::vector<int> picked;             // per team: weapon in hand when its last turn ended (the AI's PreferVariety)
     int teams = 2, perTeam = 1, current = 0, weapon = 0, winner = -1, timer = 0;
     int clock = 0;      // ticks played: sudden death after cfg.scheme.roundTime
@@ -503,7 +500,6 @@ struct Game {
     void factoryCreate(Vector3 p);
     void factoryStart();
     bool suddenDeath = false;
-    Vector3 raceFinish{};  // rope race: terrain.finish, or a deterministic fallback
     std::vector<uint8_t> surrendered;  // per team: W4M TeamData +0x72 (SurrenderTeam 0x5b4d00): no turn, no longer standing
     // W4M GirderKitLogicEntity 0x55ada0: a preview 2 m ahead at eye level, 0.3 m steps camera-relative, each axis within
     // Weapon.Girder.MaxDistance 300 units of the worm; FIRE welds GirderSmall.xom (4 x 2 x 4 voxels of 1 m, profile 2,1,1,2)

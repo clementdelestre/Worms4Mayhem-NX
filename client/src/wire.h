@@ -7,7 +7,7 @@
 
 namespace wire {
 enum : uint8_t {
-    HELLO = 0x01, WELCOME, ERROR_, LIST_ROOMS = 0x10, ROOM_LIST, CREATE_ROOM, JOIN_ROOM, ROOM_STATE, LEAVE,
+    HELLO = 0x01, WELCOME, ERROR_, LIST_ROOMS = 0x10, ROOM_LIST, CREATE_ROOM, JOIN_ROOM, ROOM_STATE, LEAVE, TEAMS, LOBBY, READY,
     START = 0x20, INPUTS, TURN_END, DESYNC, REPLAY, CHAT = 0x30, PING, PONG,
 };
 static const uint16_t VERSION = 1;  // bump on any wire or sim change once a server is deployed
@@ -42,4 +42,23 @@ struct R {
     float f32() { uint32_t v = u32(); float f; memcpy(&f, &v, 4); return f; }
     Input input() { Input in; in.turn = u8(); in.walk = u8(); in.aim = u8(); in.buttons = u8(); in.flags = u8(); in.zoom = u8(); return in; }
 };
+
+// Shared by START, TEAMS and LOBBY.
+inline W &putTeam(W &w, const GameConfig::Team &t) { return w.str(t.name.c_str()).u8(t.cpu).u8(t.voice).u8(t.hat); }
+inline GameConfig::Team getTeam(R &r) { GameConfig::Team t; t.name = r.str(); t.cpu = r.u8(); t.voice = r.u8(); t.hat = r.u8(); return t; }
+inline W &putScheme(W &w, const Scheme &s) {
+    w.u8(sizeof(Scheme));
+    for (size_t i = 0; i < sizeof(Scheme); i++) w.u8(((const uint8_t *)&s)[i]);
+    return w;
+}
+// Missing block = default scheme; extra bytes are ignored.
+inline Scheme getScheme(R &r) {
+    Scheme s;
+    if (r.ok && r.p < r.e)
+        for (size_t i = 0, n = r.u8(); i < n && r.ok; i++) {
+            uint8_t v = r.u8();
+            if (i < sizeof(Scheme)) ((uint8_t *)&s)[i] = v;
+        }
+    return s;
+}
 }  // namespace wire

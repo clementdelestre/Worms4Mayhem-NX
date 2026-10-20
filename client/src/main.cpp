@@ -1244,6 +1244,7 @@ int main(int argc, char **argv) {
                 if (std::find(maps.begin(), maps.end(), m) == maps.end()) maps.push_back(m);
             }
         }
+        Ui::multiplayerMaps(maps);
         Ui::mapHeads(maps);  // the sort's titles
         mapMs = (GetTime() - t) * 1000;
     });
@@ -1424,7 +1425,7 @@ int main(int argc, char **argv) {
     Net net;
     bool online = netbot;
     Screen screen = shot ? Screen::Play : netbot ? Screen::Lobby : Screen::Menu;
-    int roomSel = 0, lastSec = -1;
+    int lastSec = -1;
     GameConfig opt;
     uint32_t tick = 0;
     std::string status;
@@ -1519,12 +1520,16 @@ int main(int argc, char **argv) {
         Audio::stopSfx();  // the skipped ticks' sounds must not outlive the replay
     };
     int livePad = -1;  // pad of the human playing this turn here, -1 none
+    auto teamPad = [&](int team) {  // the pad playing the team; the keyboard (pad 0) when it is absent
+        int p = team < (int)game.cfg.teamSetup.size() ? game.cfg.teamSetup[team].pad : 0;
+        return IsGamepadAvailable(p) ? p : 0;
+    };
     auto feel = [&](const GameEvent &e) {  // HD rumble, local players' own pads only
         if (playing || shot || bench || netbot || uiShot) return;
         auto padOf = [&](int team) {
             if (team < (int)game.cfg.teamSetup.size() && game.cfg.teamSetup[team].cpu) return -1;
             if (online) return team < (int)net.owners.size() && net.owners[team] == net.id ? 0 : -1;
-            return IsGamepadAvailable(team) ? team : 0;
+            return teamPad(team);
         };
         int view = online ? 0 : livePad >= 0 ? livePad : 0;
         if (e.kind == GameEvent::Fire && e.worm >= 0) Controls::rumble(livePad, 0.3f, 0.08f);
@@ -1607,6 +1612,7 @@ int main(int argc, char **argv) {
     auto startMatch = [&](const GameConfig &c, bool preStart = true) {
         game.terrain.undo = nullptr;
         snap.valid = false;
+        if (!c.mission) for (size_t k = 0; k < c.teamSetup.size(); k++) Audio::setTeamVoice((int)k, c.teamSetup[k].voice);  // online: the room's teams
         rec = {c, {}, 0};
         recSaved = shotDone = false;
         irEnd = -1;
@@ -1628,17 +1634,17 @@ int main(int argc, char **argv) {
             screen = Screen::Play;
         } else Loading::begin(c, preStart), screen = Screen::Loading, afterLoad = Screen::Play;
     };
-    bool botStarted = false;
+    bool botStarted = false, botSaw = false, botEdited = false;
+    std::vector<GameConfig::Team> botTeams;
     float botAt = 0, botDone = 1e9f;
     int proxyTurn = -1, botSpeed = getenv("W4NX_SPEED") ? atoi(getenv("W4NX_SPEED")) : 8;  // ticks per frame
     // LAN: this console hosts (embedded relay, its own Net joins over loopback) or joins a game heard on the LAN
     LanHost lanHost;
     LanScan lanScan;
     bool lan = false;
-    int lanSel = 0;
     std::string connHost = host;  // where `net` connects / reconnects (host:port stays the Options server)
     int connPort = port;
-    auto leaveLan = [&] { net.close(), lanHost.close(), net.roomId = 0, net.players.clear(), net.profiles.clear(); };
+    auto leaveLan = [&] { net.close(), lanHost.close(), net.roomId = 0, net.players.clear(), net.consoleTeams.clear(), net.lobby = {}; };
     if (netbot) {  // host "lan": create = host the LAN game on `port`, join = find it by its beacon
         host = argv[2], port = atoi(argv[3]), name = argv[4];
         lan = host == "lan";
@@ -1663,6 +1669,10 @@ int main(int argc, char **argv) {
     }
     Ai ai;
     Ui::Frontend front;
+    front.net = &net;
+    Ui::Salon salonSt;
+    ReadyTimer readyTimer;
+    const double timerLen = getenv("W4NX_LOBBY_TIMER") ? atof(getenv("W4NX_LOBBY_TIMER")) : 30;  // tests shorten the W4M 30 s
     Ui::Hud hud;
     Ui::Pause pause;
     // Single player: missions list (loaded on first use), progress.txt, the end-of-mission screen's choice
@@ -1699,11 +1709,33 @@ int main(int argc, char **argv) {
         pause.open = !strcmp(uiShot, "pause");
         if (!strcmp(uiShot, "gameover")) game.phase = Phase::GameOver, game.winner = 0, onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
     } else if (uiShot) {
-        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::Setup
+        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::SetupTeams
+                     : !strcmp(uiShot, "setupmap") ? Ui::Frontend::SetupMap : !strcmp(uiShot, "setuprules") ? Ui::Frontend::SetupRules
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
         static const std::pair<const char *, Ui::Frontend::Screen> MENUS[] = {{"local", Ui::Frontend::Local}, {"network", Ui::Frontend::Network},
             {"myworms", Ui::Frontend::MyWorms}, {"helpopts", Ui::Frontend::HelpOpts}, {"confirm", Ui::Frontend::Confirm}};
         for (auto &m : MENUS) if (!strcmp(uiShot, m.first)) front.screen = m.second;
+        // netteams | netmap | netrules [_ro]: a network room of 3 consoles seen by the host / by a guest; salon | salonjoin: the lobby list
+        bool guest = strstr(uiShot, "_ro") != nullptr, netShot = !strncmp(uiShot, "net", 3);
+        if (netShot || !strncmp(uiShot, "salon", 5)) {
+            online = true, lan = false, net.id = netShot ? (guest ? 2 : 1) : 1;
+            net.rooms = {{1, "Clem's lobby", 2, 4, false}, {2, "Quick game", 1, 4, false}};
+            salonSt.joining = !strcmp(uiShot, "salonjoin");
+            if (!netShot) screen = Screen::Lobby;
+        }
+        if (netShot) {
+            net.roomId = 1, net.hostId = 1;
+            net.players = {{1, "Clem's Switch", true}, {2, "Living room", true}, {3, "Bedroom", true}};
+            net.consoleTeams[1] = {{"Red Rockets", 0, 0, 12}, {"Pirate Pete", 3, 2, 30}};
+            net.consoleTeams[2] = {{"Blue Bombers", 0, 1, 20}};
+            net.consoleTeams[3] = {{"Green Grubs", 0, 2, 40}};
+            net.lobby.teams = {{1, 0, {}}, {2, 0, {}}, {3, 0, {}}, {1, 1, {}}};
+            net.lobby.map = maps.size() > 6 ? maps[6] : "", net.lobby.rules = 0, net.lobby.wormsPerTeam = 3, net.lobby.scheme = SCHEMES[1].s;
+            net.lobby.ready = {1, 3};
+            net.sendTeams(net.consoleTeams[net.id]);  // resolves the lobby's team slots
+            front.enterRoom(false);
+            front.screen = !strncmp(uiShot, "netmap", 6) ? Ui::Frontend::SetupMap : !strncmp(uiShot, "netrules", 8) ? Ui::Frontend::SetupRules : Ui::Frontend::SetupTeams;
+        }
         if (!strcmp(uiShot, "wormpot")) front.screen = Ui::Frontend::Wormpot, opt.wormpot = WP_DOUBLE_DAMAGE | WP_CRATE_SHOWER << 8 | WP_QUICK_WALK << 16;
         if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
         if (REPLAYS && (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback"))) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
@@ -1784,20 +1816,57 @@ int main(int argc, char **argv) {
                     status = "Connected to " + connHost;
                     break;
                 case Net::RoomList: if (lan && !net.roomId && !net.rooms.empty()) net.joinRoom(net.rooms[0].id); break;
-                case Net::RoomState: if (net.roomId && !opt.teamSetup.empty()) net.sendProfile(opt.teamSetup[0], opt.teams - 1); break;
+                case Net::RoomState:
+                    if (netbot && net.roomId && botTeams.empty()) {  // the bot plays its own teams without the screens: its team, the host's CPU team, a second team on the guest
+                        botTeams = {opt.teamSetup[0]};
+                        for (int k = 1; net.isHost() && k < (int)opt.teamSetup.size(); k++) botTeams.push_back(opt.teamSetup[k]);
+                        if (!net.isHost()) botTeams.push_back({"Bot B2"});
+                        net.sendTeams(botTeams);
+                        if (!net.isHost()) net.setReady(true);  // the host's ready comes from the lobby timer
+                    }
+                    break;
+                case Net::TeamsChanged:  // netbot lobby test: the guest edits its team live, the host sees it then changes the settings live
+                    if (netbot && net.isHost() && !botSaw && std::any_of(net.lobby.teams.begin(), net.lobby.teams.end(), [](const Net::LobbyTeam &t) { return t.team.name.back() == '*' && t.team.hat == 3; })) {
+                        botSaw = true;
+                        net.lobby.map = opt.map, net.lobby.rules = opt.rules, net.lobby.scheme = opt.scheme, net.lobby.wormsPerTeam = opt.wormsPerTeam;
+                        net.pushLobby();
+                        printf("[%s] lobby shows the guest's edited team; settings pushed\n", name.c_str());
+                    }
+                    break;
+                case Net::LobbyChanged:
+                    if (netbot && !net.isHost() && !botSaw && opt.rules && net.lobby.rules == opt.rules) botSaw = true, printf("[%s] lobby shows the host's rules\n", name.c_str());
+                    break;
                 case Net::Error: status = "Server: " + e.text; break;
-                case Net::Start: startMatch(net.cfg); status.clear(); break;
+                case Net::Start:
+                    if (netbot && !net.isHost() && (net.lobby.map != net.cfg.map || net.lobby.rules != net.cfg.rules || net.lobby.teams.size() != net.owners.size() || !net.allReady()))
+                        printf("[%s] LOBBY mirror differs from Start\n", name.c_str()), desynced = true;
+                    for (size_t k = 0, mine = 0; k < net.owners.size() && k < net.cfg.teamSetup.size(); k++)  // each local human keeps its pad
+                        if (net.owners[k] == net.id) net.cfg.teamSetup[k].pad = (uint8_t)front.minePad((int)mine++);
+                    if (netbot && !net.isHost() && opt.rules && !botSaw) printf("[%s] never saw the host's rules in the lobby\n", name.c_str()), desynced = true;
+                    startMatch(net.cfg), status.clear();
+                    break;
                 case Net::Desync: status = TextFormat("DESYNC at tick %u", e.a); desynced = true; break;
                 case Net::Chat: status = e.text; break;
-                case Net::Disconnected: status = "Disconnected: " + e.text; reconnectAt = clock + 3; break;
+                case Net::Disconnected:
+                    status = "Disconnected: " + e.text, reconnectAt = clock + 3;
+                    if (screen == Screen::Menu && net.roomId) {  // in the room's setup: back to the salon
+                        if (lan) leaveLan();
+                        net.roomId = 0, net.players.clear(), net.consoleTeams.clear(), net.lobby = {};
+                        front.dropRoom(), salonSt = {}, screen = Screen::Lobby;
+                    }
+                    break;
                 default: break;
                 }
-                if (!netbot || e.type == Net::RoomList || e.type == Net::RoomState || e.type == Net::Pong) continue;
+                if (!netbot || e.type == Net::RoomList || e.type == Net::RoomState || e.type == Net::Pong || e.type == Net::TeamsChanged || e.type == Net::LobbyChanged) continue;
                 printf("[%s] %s\n", name.c_str(), e.type == Net::Welcome ? "welcome" : e.type == Net::Start ? "start" : status.c_str());
                 fflush(stdout);
                 if (e.type == Net::Welcome)
                     if (FILE *f = fopen("netbot.token", "w")) fprintf(f, "%llx\n", (unsigned long long)net.token), fclose(f);
             }
+            if (net.roomId && (screen == Screen::Menu || (netbot && screen == Screen::Lobby))) {  // W4M lobby timer
+                if (readyTimer.update(clock, (int)net.players.size(), timerLen)) net.setReady(true);
+                front.timer = readyTimer.seconds(clock);
+            } else readyTimer = {};
             // the token kept in `net` resumes the match: server resends Start + the whole input log
             if (!net.online() && (screen == Screen::Play || screen == Screen::Loading) && clock > reconnectAt) {
                 net.connect(connHost.c_str(), connPort, name.c_str());
@@ -1849,15 +1918,19 @@ int main(int argc, char **argv) {
                 online = quick = false;
                 opt.seed = (uint32_t)(clock * 1000) + frame;
                 startMatch(opt);
-            } else if (a == Ui::Frontend::StartOnline) {
-                online = true, lan = false, connHost = host, connPort = port;
-                status = net.connect(host.c_str(), port, name.c_str()) ? "Connecting to " + host + "..." : "Cannot reach " + host;
-                screen = Screen::Lobby;
-            } else if (a == Ui::Frontend::StartLan) {
-                online = lan = true;
+            } else if (a == Ui::Frontend::Salon) {
+                online = true, lan = front.wantLan, connHost = host, connPort = port, salonSt = {}, status.clear();
                 net.close();
-                status = lanScan.open() ? "" : "Network unavailable";
+                if (lan) status = lanScan.open() ? "" : "Network unavailable";
+                else status = net.connect(host.c_str(), port, name.c_str()) ? "Connecting to " + host + "..." : "Cannot reach " + host;
                 screen = Screen::Lobby;
+            } else if (a == Ui::Frontend::RoomStart) {
+                opt.seed = (uint32_t)(clock * 1000) + frame;
+                net.startMatch(opt.seed, opt.custom);
+            } else if (a == Ui::Frontend::LeaveRoom) {
+                if (lan) leaveLan();
+                else net.leave(), net.listRooms();
+                salonSt = {}, screen = Screen::Lobby;
             }
             continue;
         }
@@ -1961,68 +2034,65 @@ int main(int argc, char **argv) {
                 if (!inRoom && botCreate) net.createRoom("netbot", 2);
                 else if (!inRoom) net.rooms.empty() ? net.listRooms() : net.joinRoom(net.rooms[0].id);
             }
-            if (lan && !net.online()) {  // LAN list: games heard by their beacon, or host one here
-                if (!lanHost.running()) lanScan.open();
-                lanScan.poll(clock);
-                const std::vector<LanGame> &games = lanScan.games;
-                int n = (int)games.size();
-                lanSel = n ? (lanSel + pressed({GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {KEY_DOWN}) - pressed({GAMEPAD_BUTTON_LEFT_FACE_UP}, {KEY_UP}) + n) % n : 0;
-                bool join = n && (netbot ? !botCreate : pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER}));
-                if (!netbot && pressed({GAMEPAD_BUTTON_RIGHT_FACE_UP}, {KEY_C})) {
-                    if (lanHost.open(port, (name + "'s game").c_str())) connHost = "127.0.0.1", connPort = port;
-                    else status = TextFormat("Cannot host: port %d busy", port);
-                }
-                if (join) connHost = games[lanSel].ip, connPort = games[lanSel].port;
-                if (join && netbot) printf("[%s] lan game at %s:%d\n", name.c_str(), connHost.c_str(), connPort);
-                if (join || lanHost.running()) {
-                    lanScan.close();
-                    status = net.connect(connHost.c_str(), connPort, name.c_str()) ? "Connecting to " + connHost + "..." : "Cannot reach " + connHost;
-                }
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) { lanScan.close(); online = lan = false; screen = Screen::Menu; }
-                BeginDrawing();
-                Ui::background();
-                Ui::lanGames(games, lanSel, status);
-                if (Ui::helpHeld()) Ui::controls(false);
-                EndDrawing();
+            if (netbot && !isHost && inRoom && !botStarted && !botEdited && net.lobby.teams.size() >= 3 && clock > 2) {  // live edit of the guest's team
+                botEdited = true;
+                botTeams[0].name += '*', botTeams[0].hat = 3;
+                net.sendTeams(botTeams);
+            }
+            if (netbot && isHost && net.lobby.teams.size() >= 3 && !botStarted && botSaw && net.allReady()) {  // the host's ready comes from the lobby timer
+                botStarted = true;
+                GameConfig c = opt;
+                c.seed = (uint32_t)(clock * 1000) + frame;
+                net.lobby.map = c.map, net.lobby.rules = c.rules, net.lobby.scheme = c.scheme, net.lobby.wormpot = c.wormpot, net.lobby.wormsPerTeam = c.wormsPerTeam;
+                net.pushLobby();
+                net.startMatch(c.seed, c.custom);
+            }
+            if (inRoom && !netbot) {  // joined or created: the setup screens in network mode
+                front.enterRoom(lan);
+                screen = Screen::Menu;
                 continue;
             }
-            if (!inRoom) {
-                int n = (int)net.rooms.size();
-                if (n) roomSel = (roomSel + pressed({GAMEPAD_BUTTON_LEFT_FACE_DOWN}, {KEY_DOWN}) - pressed({GAMEPAD_BUTTON_LEFT_FACE_UP}, {KEY_UP}) + n) % n;
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER}) && n) net.joinRoom(net.rooms[roomSel].id);
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_UP}, {KEY_C})) net.createRoom((name + "'s room").c_str(), 4);
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) net.listRooms();
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) {
-                    if (lan) leaveLan();
-                    else net.close(), online = false, screen = Screen::Menu;
-                }
-            } else {
-                if (isHost && net.players.size() >= 2 && (netbot ? !botStarted : pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE, KEY_ENTER}))) {
-                    botStarted = true;
-                    GameConfig c = opt;
-                    c.seed = (uint32_t)(clock * 1000) + frame;
-                    net.startMatch(c);  // one team per console + the host's CPU teams
-                }
-                if (pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN}, {KEY_BACKSPACE, KEY_ESCAPE})) {
-                    if (lan) leaveLan();
-                    else net.leave(), net.listRooms();
-                }
-            }
+            std::vector<std::string> names, info;
+            const bool scanning = lan && !net.online();  // LAN: games heard by their beacon until one is joined or hosted
+            if (scanning) {
+                if (!lanHost.running()) lanScan.open();
+                lanScan.poll(clock);
+                for (const LanGame &g : lanScan.games) names.push_back(g.name), info.push_back(TextFormat("%s  %d/%d%s", g.ip.c_str(), g.players, g.maxPlayers, g.started ? "  playing" : ""));
+            } else
+                for (const NetRoom &r : net.rooms) names.push_back(r.name), info.push_back(TextFormat("%d/%d%s", r.players, r.maxPlayers, r.started ? "  playing" : ""));
+            int pick = 0;
             BeginDrawing();
             Ui::background();
-            if (inRoom) Ui::room(net, opt, lan, status);
-            else {
-                Ui::text(lan ? "JOINING..." : "ONLINE LOBBY", 640, 60, 60, {255, 220, 120, 255}, 1);
-                for (size_t i = 0; i < net.rooms.size(); i++) {
-                    const NetRoom &r = net.rooms[i];
-                    Ui::text(TextFormat("%s %s  (%d/%d)%s", (int)i == roomSel ? ">" : " ", r.name.c_str(), r.players, r.maxPlayers, r.started ? " playing" : ""),
-                                     640, 160 + (int)i * 40, 30, (int)i == roomSel ? YELLOW : WHITE, 1);
-                }
-                if (net.rooms.empty()) Ui::text("No rooms yet", 640, 200, 30, LIGHTGRAY, 1);
-                Ui::text(status.c_str(), 640, 660, 22, ORANGE, 1);
-            }
+            if (!netbot) pick = Ui::salon(salonSt, lan, names, info, status);
             if (Ui::helpHeld()) Ui::controls(false);
+            if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
+                rlDrawRenderBatchActive();
+                Image img = LoadImageFromScreen();
+                ExportImage(img, uiShot == flagUi ? TextFormat(DATA_DIR "ui_%d.png", frame) : "ui.png");
+                UnloadImage(img);
+            }
             EndDrawing();
+            if (uiShot && frame >= uiFrames.back()) break;
+            if (netbot && scanning && !botCreate && !names.empty()) pick = 2;  // the joining bot takes the first game heard
+            const LanGame *heard = scanning && pick == 2 && salonSt.sel < (int)lanScan.games.size() ? &lanScan.games[netbot ? 0 : salonSt.sel] : nullptr;
+            if (pick == 1 && lan && scanning) {
+                if (lanHost.open(port, (name + "'s game").c_str())) connHost = "127.0.0.1", connPort = port;
+                else status = TextFormat("Cannot host: port %d busy", port);
+            } else if (pick == 1 && !lan) net.createRoom((name + "'s room").c_str(), 4);
+            else if (heard) {
+                connHost = heard->ip, connPort = heard->port;
+                if (netbot) printf("[%s] lan game at %s:%d\n", name.c_str(), connHost.c_str(), connPort);
+            } else if (pick == 2 && !scanning && salonSt.sel < (int)net.rooms.size()) net.joinRoom(net.rooms[salonSt.sel].id);
+            if (scanning && (heard || lanHost.running())) {
+                lanScan.close();
+                status = net.connect(connHost.c_str(), connPort, name.c_str()) ? "Connecting to " + connHost + "..." : "Cannot reach " + connHost;
+            }
+            if (!netbot && !scanning && !lan && salonSt.joining && pressedAny(-1, {GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) net.listRooms();
+            if (pick == -1) {
+                if (lan) lanScan.close(), leaveLan();
+                else net.close();
+                online = lan = false, screen = Screen::Menu;
+            }
             continue;
         }
 
@@ -2032,7 +2102,7 @@ int main(int argc, char **argv) {
         lap(T_REMESH);
         if (game.worms.empty()) { screen = Screen::Missions; continue; }  // a mission whose script failed to start places no worm
         const Worm &cur = game.worms[game.current];
-        int pad = !online && IsGamepadAvailable(cur.team) ? cur.team : 0;
+        int pad = teamPad(cur.team);
         bool quit;
         const MissionSpec *cm = game.cfg.mission;  // W4M GameOver.GameType: Story (kind "mission"), Challenge / Deathmatch, Quick, Multiplayer, Network
         pause.story = cm && cm->kind == "mission" && cm->level.find("w3d") == std::string::npos ? cm : nullptr;
@@ -2227,7 +2297,9 @@ int main(int argc, char **argv) {
         if (netbot && botDone > 1e8f && (game.phase == Phase::GameOver || turns >= botTurns)) botDone = clock + 2;  // let the last inputs and sums out
         if (netbot && clock > botDone) break;
         if (game.phase == Phase::GameOver && !pause.open && !playing && irEnd < 0 && !game.cfg.mission && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) {
-            screen = online ? Screen::Lobby : Screen::Menu;
+            screen = Screen::Menu;
+            if (online && net.roomId) front.backToRoom(), net.setReady(false);  // the room's setup again
+            else if (online) screen = Screen::Lobby;
             Audio::music(true, "theme");
             Audio::stopSfx();
         }
@@ -2450,10 +2522,6 @@ int main(int argc, char **argv) {
         BeginBlendMode(BLEND_ALPHA), rlDisableDepthMask();
         for (const Game::Trigger &t : game.triggers) if (t.visible && Models::visible(t.pos, t.radius)) DrawSphereEx(t.pos, t.radius, 12, 16, {255, 30, 0, 125});
         rlEnableDepthMask(), EndBlendMode();
-        if (game.cfg.rules & RULE_ROPE_RACE) {
-            DrawCylinderEx(game.raceFinish, Vector3Add(game.raceFinish, {0, 10, 0}), 0.15f, 0.15f, 8, Fade(GOLD, 0.5f));
-            DrawCube(Vector3Add(game.raceFinish, {0, 10.3f, 0}), 1.2f, 0.6f, 0.08f, RED);
-        }
         lap(T_MODELS);
                 float fxDt = pause.open ? 0 : dt;
         for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt, {game.wind, 0, game.windZ});

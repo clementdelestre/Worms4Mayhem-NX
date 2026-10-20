@@ -6,7 +6,10 @@
 #      KILL=a|b + KILLAT=s + OFFLINE=s: kill that bot mid-match, restart it later (resumes with its token).
 #      LAN=1: no server, bot a hosts the embedded LAN relay on PORT and b finds it by UDP beacon (KILL=b only).
 #      W4NX_CPU=level: the host adds one CPU team.
+#      W4NX_LOBBY_TIMER=s: the W4M lobby timer (default here 4 s, game 30 s): the host is ready only when it ends.
+# With a rules value (3rd argument, non-zero) it also checks the live lobby: b edits its team, a sees it then pushes map and rules, b sees them.
 set -u
+export W4NX_LOBBY_TIMER=${W4NX_LOBBY_TIMER:-4}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 W=$(mktemp -d)
 PORT=${PORT:-7790}
@@ -43,6 +46,10 @@ wait $B; eb=$?
 [ -n "$SERVER" ] && kill "$SERVER"
 grep -h 'turn .* checksum' "$W/a.log" "$W/b.log" | awk '{ if (!($5 in t)) t[$5] = $7; else if (t[$5] != $7) { print "MISMATCH tick", $5, t[$5], "vs", $7; bad = 1 } } END { exit bad }'
 em=$?
+lob=0
+if [ "${botargs[1]:-0}" != 0 ]; then
+    grep -q "lobby shows the guest's edited team" "$W/a.log" && grep -q "lobby shows the host's rules" "$W/b.log" || { echo "LOBBY: live edits not seen"; lob=1; }
+fi
 tail -n 3 "$W/a.log" "$W/b.log"
-echo "exit a=$ea b=$eb checksums=$em  logs: $W"
-[ $ea = 0 ] && [ $eb = 0 ] && [ $em = 0 ]
+echo "exit a=$ea b=$eb checksums=$em lobby=$lob  logs: $W"
+[ $ea = 0 ] && [ $eb = 0 ] && [ $em = 0 ] && [ $lob = 0 ]

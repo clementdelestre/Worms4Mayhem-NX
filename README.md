@@ -38,7 +38,7 @@ From `client/` (desktop raylib libs built, run from `client/` so `romfs/` and `a
 | command | what it checks (file header) |
 |---|---|
 | `make check` | `tests/sim_check.cpp`: determinism and the sim rules (physics, weapons, camera rules `checkEventCameras`, retreat in flight, death queue...) |
-| `make ai_check` | `tests/ai_check.cpp`: AI vs AI matches deal damage, finish, replay bit-identically, CPU5 beats CPU1, rope race |
+| `make ai_check` | `tests/ai_check.cpp`: AI vs AI matches deal damage, finish, replay bit-identically, CPU5 beats CPU1 |
 | `make replay_check` | `tests/replay_check.cpp`: saved / loaded / re-simulated replay and instant-replay restore give the same checksum |
 | `make mission_check` | `tests/mission_check.cpp`: every imported W4M mission runs its script to its end with the AI on every team |
 | `tests/ui_check.cpp` (no make target, build line in its header) | the weapon panel's direct pick (`Input::pick`) lands on the weapon whatever the ticks per frame |
@@ -50,7 +50,7 @@ Copy `worms4nx.nro` to `sdmc:/switch/worms4nx/` (or install the NSP, below). Onl
 `sdmc:/switch/worms4nx/server.txt` (desktop: `client/server.txt`; the Options screen rewrites it).
 Ryubing: open the `.nro`, enable *Guest Internet Access* for online play.
 Data on the SD card (desktop: next to the binary): `assets/` (imported W4M files), `controls.txt` (Options > Controls: aim, camera,
-gyro sensitivities, inverts, gyro, rumble), `setup.txt` / `setup_net.txt` (last match setup, local / online), `custom_weapons.json`
+gyro sensitivities, inverts, gyro, rumble), `setup.txt` (last local match setup, and this console's first team in a network room), `custom_weapons.json`
 (Weapon Factory), `progress.txt` (missions), `lang.txt` (language), `replays/` and `replay.txt`, `log.txt` (Switch: raylib's log).
 
 ### Debug and capture modes (`main()` in `client/src/main.cpp`)
@@ -65,7 +65,7 @@ All captures run at a fixed `Game::DT` per frame (reproducible). Desktop argumen
 | `--animshot <clip> [held model] [aim clip] [aim t]` | 8 poses of a worm clip; `W4NX_MODEL`, `W4NX_ZOOM`, `W4NX_YAW`, `W4NX_LAYERS="<face clip> lookYaw lookPitch [gestYaw gestPitch eyeYaw eyePitch]"`, `W4NX_ACT="<gesture> <weight>"` | `animshot.png` |
 | `--animshot <weapon index>` | a turn firing it, seen from the side | `anim_NNN.png` |
 | `--view <map> x y z tx ty tz` | shot mode from a fixed camera (overviews) | `shot.png` |
-| `--ui <screen> [map or mission id]` | one screen: `title main local network myworms helpopts confirm setup options controls wormpot factory weapon replays playback missions challenges storyintro missionhud missionend hud panel pause help helpmenu ready loading` (hud: 3rd arg map, 4th weapon name) | `ui.png` (loading: `ui_<frame>.png` at 20, 60, 120, 170; in a match at frame 40, `W4NX_SHOTEND` moves it) |
+| `--ui <screen> [map or mission id]` | one screen: `title main local network myworms helpopts confirm setup setupmap setuprules options controls wormpot factory weapon replays playback missions challenges storyintro missionhud missionend hud panel pause help helpmenu ready loading` (hud: 3rd arg map, 4th weapon name) | `ui.png` (loading: `ui_<frame>.png` at 20, 60, 120, 170; in a match at frame 40, `W4NX_SHOTEND` moves it) |
 | `--cpu [map] [level]` | every team played by the AI | — |
 | `--bench <map> [frames] [nosync]` | CPU-vs-CPU match uncapped, per-section ms, draw calls, a Switch estimate; with `--aimshot`: `W4NX_BENCH=<frames>` [`W4NX_LOCK=1`] times that view | stdout |
 | `--netbot host port name create\|join [turns] [map] [rules] [scheme] [roundMin]` | own teams played by the AI online, hidden window, checksums on stdout, exit 1 on desync; token in `./netbot.token`; `W4NX_SPEED` ticks per frame (8), `W4NX_CPU` adds a host CPU team of that level | stdout |
@@ -125,7 +125,7 @@ Replays (instant replay, `.w4r` recording, the Replays menu) are switched off fo
 Menus: D-pad or left stick (held = auto-repeat), A confirm, B back (Esc), + starts from match setup, − opens the
 system controller screen (pair / split Joy-Cons), + on the title screen quits. Every screen shows its buttons in a bottom bar;
 the full list is under Options > Controls and in the pause menu.
-Local play: team N uses controller N when connected, otherwise controller 1 is shared. Single Joy-Cons work held sideways.
+Local play: the Teams screen shows the 4 controller slots; each team picks its controller (Control row, or Y on a controller), one controller may play several teams. Single Joy-Cons work held sideways.
 Starting a local match with 2+ human teams (or fewer pads than human teams) opens the system controller screen first, sized
 to that many players; cancelling it just falls back to sharing controller 1.
 
@@ -135,6 +135,7 @@ to that many players; cancelling it just falls back to sharing controller 1.
 | doc | side | content |
 |---|---|---|
 | `PROTOCOL.md` | ours | network framing, messages, the 5-byte `Input` |
+| `docs/match-setup.md` | ours | local match setup: Lobby state, Teams / Map / Rules screens, pad per team, setup.txt |
 | `docs/sim.md` | ours | turn flow and phases, retreat, settle, input semantics, movement and collisions, launches, secondary weapon, delays, CPU player |
 | `docs/camera.md` | ours | every camera of a match and its W4M source |
 | `docs/death-sequence.md` | both | death queue timing |

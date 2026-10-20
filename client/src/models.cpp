@@ -381,7 +381,7 @@ void Models::start() {
     if (first) {
         for (std::string &p : Loading::list(MODEL_DIR, ".glb", true)) {  // recurses into hats/ and frontend/
             if (p.find("/sky/") != std::string::npos) continue;  // level skies: one per match, Models::decode()
-            if (p.find("/hats/") != std::string::npos) hatNames.push_back(GetFileNameWithoutExt(p.c_str()));
+            if (p.find("/hats/") != std::string::npos && p.find("/jetpack.glb") == std::string::npos) hatNames.push_back(GetFileNameWithoutExt(p.c_str()));  // the jetpack helmet is no WXFE.A.Hat
             files.push_back(p);
         }
         if (files.empty()) return;

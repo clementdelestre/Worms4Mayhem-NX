@@ -1,5 +1,6 @@
 #pragma once
 #include "sim.h"
+#include <algorithm>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -12,8 +13,8 @@ bool netInit();  // sockets (libnx BSD on Switch); every Net / LanHost / LanScan
 
 // Non-blocking TCP client for PROTOCOL.md, no threads: call poll() once per frame.
 struct Net {
-    enum Ev : uint8_t { Welcome, Error, RoomList, RoomState, Start, Desync, Chat, Pong, Disconnected };
-    struct Event { Ev type; uint32_t a = 0; std::string text; };  // a = Desync tick / Chat sender / Pong nonce
+    enum Ev : uint8_t { Welcome, Error, RoomList, RoomState, Start, Desync, Chat, Pong, Disconnected, TeamsChanged, LobbyChanged };
+    struct Event { Ev type; uint32_t a = 0; std::string text; };  // a = Desync tick / Chat sender / Pong nonce / TeamsChanged console
 
     // Server-provided state, valid after the matching event.
     uint32_t id = 0;
@@ -24,9 +25,26 @@ struct Net {
     GameConfig cfg;
     std::vector<uint32_t> owners;  // owners[team] = player id
     uint32_t replay = 0;           // ticks the server replays after Start: never play our own input below it
-    // Each console's team, announced as Chat "\1voice hat cpus name" (no protocol change); cpus = host's CPU teams.
-    struct Profile { GameConfig::Team team; int cpus = 0; };
-    std::map<uint32_t, Profile> profiles;
+    // Lobby mirrored from TEAMS / LOBBY / READY (PROTOCOL.md), valid after the TeamsChanged / LobbyChanged events. The host edits `lobby`
+    // and calls pushLobby(); everyone else only reads it.
+    std::map<uint32_t, std::vector<GameConfig::Team>> consoleTeams;  // console id -> its teams (several, humans and CPU)
+    struct LobbyTeam { uint32_t owner; uint8_t idx; GameConfig::Team team; };  // idx into consoleTeams[owner]
+    struct Lobby {
+        std::vector<LobbyTeam> teams;  // slot = colour, join order, 4 max
+        std::string map;
+        uint32_t rules = 0, wormpot = 0;
+        int wormsPerTeam = 2;
+        Scheme scheme;
+        std::vector<uint32_t> ready;  // consoles that are ready
+    } lobby;
+    bool isHost() const { return roomId && hostId == id; }
+    bool isReady(uint32_t console) const { return std::count(lobby.ready.begin(), lobby.ready.end(), console) > 0; }
+    bool allReady() const;  // every console of the room
+    void sendTeams(const std::vector<GameConfig::Team> &mine);  // this console's teams; CPU teams: host only
+    void pushLobby();      // host: broadcast `lobby`
+    void setReady(bool ready);
+    // Host: START from the lobby (owners[team] = console of each team), seed and Weapon Factory weapons from the caller.
+    void startMatch(uint32_t seed, const std::vector<WeaponDef> &custom = {});
 
     bool connect(const char *host, int port, const char *name);
     void close();
@@ -40,10 +58,6 @@ struct Net {
     void joinRoom(uint32_t room);
     void leave();
     void start(const GameConfig &cfg, const std::vector<uint32_t> &owners);  // owners[team]
-    void sendProfile(const GameConfig::Team &mine, int cpus);
-    // Host: one human team per console in the room (slot order, profile or name), then cfg.teamSetup[1..teams) as
-    // CPU teams owned by the host; 4 teams max.
-    void startMatch(GameConfig cfg);
     void sendInput(uint32_t tick, const Input &in);  // batched, flushed by poll()
     void turnEnd(uint32_t tick, uint32_t checksum);
     void chat(const char *text);
@@ -60,6 +74,7 @@ private:
     int batchAge = 0;
 
     void send(std::string frame);
+    void syncLobby();  // host: keep slots in step with the room's teams; others: re-resolve names
     void flushInputs();
     void fail(const char *why);
     void handle(const uint8_t *p, size_t n);

@@ -207,7 +207,7 @@ static bool ground(const Game &g, Vector3 p, Vector3 &hit) {
     return g.terrain.raycast({p + Vector3{0, 3, 0}, {0, -1, 0}}, 14, &hit);
 }
 
-// --- rope race: exact copy of Game::step for the active worm, driven by a parametric swing policy ---
+// --- the walking mover: an exact copy of Game::step for the active worm ---
 
 struct Mover { Body b; float yaw, pitch; bool roped; Rope rope; uint8_t prev; int jump = 0; uint8_t kind = 0; Vault vault{}; Hook hook{}; int walkTick = 0; };
 
@@ -257,99 +257,6 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     }
     if (!m.roped && !m.hook.on && (b.grounded || m.vault.t)) m.rope.swung = false;
     return ok;
-}
-
-// Aim, fire the rope, swing pushing forward for `release` ticks, let go and fly until landing.
-static Input ropePolicy(const Mover &m, Vector3 finish, const Ai::RopePlan &p, Ai::RopeRun &r) {
-    Input in;
-    r.t++;
-    if (p.release < -1) { r.done = r.t >= 60; return in; }  // stay
-    if (p.release < 0) {
-        in.turn = q(wrapPi(yawTo(m.b.pos, finish) - m.yaw) / (2.5f * DT));
-        in.walk = 127;
-        if (r.t % 30 == 0) in.buttons = Input::JUMP;
-        r.done = r.t >= 60;
-        return in;
-    }
-    if (m.roped) {
-        in.walk = 127;
-        in.aim = p.reel ? 127 : 0;
-        in.turn = q(wrapPi(p.yaw - m.yaw) / (2.5f * DT));
-        if (++r.held >= p.release && !(m.prev & Input::JUMP)) { in.buttons = Input::JUMP; r.after = 0; }
-        return in;
-    }
-    if (r.fired) {
-        if (!m.hook.on) r.done = ++r.after > 20 || (r.after > 1 && m.b.grounded);
-        return in;
-    }
-    float dy = wrapPi(p.yaw - m.yaw), dp = p.pitch - m.pitch;
-    in.turn = q(dy / (2.5f * DT));
-    in.aim = q(dp / (1.5f * DT));
-    if (fabsf(dy) < 0.02f && fabsf(dp) < 0.02f && !m.prev) { in.buttons = Input::FIRE; r.fired = true; }
-    r.done = r.t > 120;  // could not aim in time
-    return in;
-}
-
-Input Ai::race(const Game &g) {
-    const Worm &w = g.worms[g.current];
-    if (weaponDef(g.weapon).kind != Kind::Rope) {  // every turn starts empty-handed
-        int rope = owned(g, w.team, Kind::Rope);
-        return rope >= 0 ? Input::pick(rope) : Input{};
-    }
-    const float ropeMax = weaponDef(g.weapon).speed;
-    Vector3 fin = g.raceFinish;
-    Mover now{{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, g.roped, g.rope, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, g.grapple, g.walkTick};
-    if (run.done) {
-        // spread over frames: standing it waits; in the air it plans from where it will be once the choice is made
-        const bool rest = w.grounded && !g.roped && Vector3LengthSqr(w.vel) < 1e-4f;
-        if (raceAt < 0) raceAt = 0, raceBest = -1e30f, raceWait = rest ? 0 : 12, raceTimer = g.timer - raceWait;
-        Mover from = now;
-        for (int k = 0; k < raceWait; k++) move(g, from, Input{}, ropeMax);
-        const float fy = yawTo(from.b.pos, fin);
-        const bool shots = g.ropeShots < Game::ROPE_SHOTS;  // W4M Ninja.NumShots: with none left, walk or stay
-        std::vector<RopePlan> cands = {{0, 0, -1}};
-        if (!shots) cands.push_back({0, 0, -2});
-        for (float dy : {-0.2f, 0.0f, 0.2f})
-            for (float pitch : {0.7f, 0.85f, 1.0f, 1.15f, 1.3f})
-                for (int rel : {8, 20, 40, 65, 95, 125}) if (shots) cands.push_back({fy + dy, pitch, rel});
-        for (Vector3 o : {Vector3{0, 0, 0}, {1.5f, 1, 0}, {-1.5f, 1, 0}, {0, 1, 1.5f}, {0, 1, -1.5f}, {0, 3, 0}}) {  // climb: hook by the finish, reel in
-            Vector3 to = fin + o - from.b.pos;
-            for (int rel : {40, 90}) if (shots) cands.push_back({atan2f(to.x, to.z), fminf(atan2f(to.y, sqrtf(to.x * to.x + to.z * to.z)), 1.45f), rel, true});
-        }
-        const unsigned long s0 = Terrain::samples;
-        // in the air the rest is due when the wait ends: an even share of it per waiting tick, so that tick takes no burst
-        const int share = rest ? 0 : raceAt + ((int)cands.size() - raceAt + raceWait) / (raceWait + 1);
-        for (; raceAt < (int)cands.size() && ((!rest && !raceWait) || raceAt < share || (long)(Terrain::samples - s0) < budget); raceAt++) {
-            const RopePlan &c = cands[raceAt];
-            Mover m = from;
-            RopeRun r{};
-            r.done = false;
-            float s = 0;
-            int i = 0;
-            bool hooked = false;
-            for (; i < 400 && i < raceTimer - 1 && !r.done && s == 0; i++, hooked |= m.roped) {
-                if (!move(g, m, ropePolicy(m, fin, c, r), ropeMax)) s = -1e20f;
-                else if (Vector3Distance(m.b.pos, fin) < 2) s = 1e6f - i;
-            }
-            // then fall freely: the turn ended (rope dropped) or a new swing may still save a bad landing
-            bool over = i >= raceTimer - 1, rescue = !over && !m.b.grounded && g.ropeShots + hooked < Game::ROPE_SHOTS;  // a rescue needs a shot left
-            float d = Vector3Distance(m.b.pos, fin), hy = m.b.pos.y;
-            if (over) m.roped = false;
-            for (int k = 0; k < 300 && s == 0 && !m.b.grounded; k++) {
-                if (!move(g, m, Input{}, ropeMax)) s = rescue && hy > g.water + 5 ? -d - 40 : -1e20f;
-                else if (Vector3Distance(m.b.pos, fin) < 2) s = 1e6f - i - k;
-            }
-            if (s == 0) s = -Vector3Distance(m.b.pos, fin) - m.b.fall * 0.3f;
-            if (c.release >= 0 && !hooked) s = fminf(s, -1e19f);  // a miss gains nothing
-            if (s > raceBest) { raceBest = s; rope = c; }
-        }
-        if (raceWait > 0) { raceWait--; return Input{}; }
-        if (raceAt < (int)cands.size()) return Input{};
-        raceAt = -1;
-        run = RopeRun{};
-        run.done = false;
-    }
-    return ropePolicy(now, fin, rope, run);
 }
 
 // --- paths: W4M AIPathManager A* (0x492d80) over a node grid; each edge is played with the sim's own walk and jump code ---
@@ -1392,15 +1299,12 @@ Input Ai::think(const Game &g) {
         origins.clear(), choices.clear(), choiceAt = 0;
         path.clear(), afterPath.clear();
         debt = 0;
-        run = RopeRun{};
-        raceAt = -1;
         uint32_t hp = 0;  // not g.clock: how long earlier thinks took must not change this turn's taste
         for (const Worm &x : g.worms) hp = hp * 31 + (uint32_t)x.hp;
         salt = (g.rng ^ hp * 2654435761u) + (uint32_t)g.current;
     }
     lastTimer = g.timer;
     if (wait > 0) { wait--; return in; }  // W4M DelayAtStart is 0: no pause before thinking
-    if (g.cfg.rules & RULE_ROPE_RACE) return race(g);
     if (g.jetting) return in;
     if (g.roped) { in.buttons = g.prevButtons ? 0 : Input::JUMP; return in; }
     switch (mode) {

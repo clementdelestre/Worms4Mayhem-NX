@@ -23,12 +23,12 @@ impl C {
         };
         tokio::time::timeout(Duration::from_secs(2), read).await.expect("timeout")
     }
-    /// Skips RoomState/Chat noise until a frame of type `ty`.
+    /// Skips RoomState/Chat/Teams/Lobby noise until a frame of type `ty`.
     async fn expect(&mut self, ty: u8) -> Vec<u8> {
         loop {
             let (t, b) = self.recv().await;
             if t == ty { return b; }
-            assert!(t == ROOM_STATE || t == CHAT, "got 0x{t:02x} while waiting 0x{ty:02x}");
+            assert!(t == ROOM_STATE || t == CHAT || t == TEAMS || t == LOBBY, "got 0x{t:02x} while waiting 0x{ty:02x}");
         }
     }
 }
@@ -107,4 +107,81 @@ async fn full_match() {
     drop(a);
     let st = b.expect(ROOM_STATE).await;
     assert_eq!(R(&st[4..]).u32(), Some(idb));
+}
+
+fn teams(list: &[(&str, u8)]) -> W {
+    let mut w = W::new(TEAMS).u8(list.len() as u8);
+    for (n, cpu) in list { w = w.str(n).u8(*cpu).u8(1).u8(2); }
+    w
+}
+
+fn lobby(order: &[(u32, u8)], map: &str, ready: &[u32]) -> W {
+    let mut w = W::new(LOBBY).u8(order.len() as u8);
+    for (c, i) in order { w = w.u32(*c).u8(*i); }
+    w = w.str(map).u32(5).u8(2).u8(7).u8(8).u32(0).u8(3).u8(ready.len() as u8);
+    for c in ready { w = w.u32(*c); }
+    w
+}
+
+#[tokio::test]
+async fn lobby_flow() {
+    let addr = server().await;
+    let (mut a, ida, _) = C::new(&addr, "alice", 0).await;
+    let (mut b, idb, _) = C::new(&addr, "bob", 0).await;
+    a.send(W::new(CREATE_ROOM).str("r").u8(4)).await;
+    let rid = R(&a.expect(ROOM_STATE).await).u32().unwrap();
+    b.send(W::new(JOIN_ROOM).u32(rid)).await;
+    a.expect(ROOM_STATE).await;
+
+    // TEAMS reach the other console only, with the sender's id; CPU teams are host-only
+    b.send(teams(&[("Bob1", 0), ("Bob2", 0)])).await;
+    let t = a.expect(TEAMS).await;
+    assert_eq!(R(&t).u32(), Some(idb));
+    assert_eq!(t[4], 2);
+    b.send(teams(&[("Cpu", 2)])).await;
+    b.expect(ERROR).await;
+    a.send(teams(&[("Al", 0), ("Cpu", 2)])).await;
+    assert_eq!(R(&b.expect(TEAMS).await).u32(), Some(ida));
+
+    // LOBBY: host only, relayed to the others, kept for late joiners
+    b.send(lobby(&[], "x", &[])).await;
+    b.expect(ERROR).await;
+    let l = lobby(&[(ida, 0), (idb, 0), (idb, 1)], "Island", &[ida]);
+    let frame = l.0.clone();
+    a.send(l).await;
+    let got = b.expect(LOBBY).await;
+    assert_eq!(got, frame[3..]);
+
+    // READY goes to the host with the console id
+    b.send(W::new(READY).u8(1)).await;
+    let rd = a.expect(READY).await;
+    assert_eq!((R(&rd).u32(), rd[4]), (Some(idb), 1));
+
+    // late joiner gets every console's teams then the lobby
+    let (mut c, idc, _) = C::new(&addr, "carol", 0).await;
+    c.send(W::new(JOIN_ROOM).u32(rid)).await;
+    let mut seen = vec![];
+    loop {
+        let (ty, body) = c.recv().await;
+        if ty == TEAMS { seen.push(R(&body).u32().unwrap()); }
+        if ty == LOBBY { assert_eq!(body, frame[3..]); break; }
+    }
+    assert_eq!(seen, vec![ida, idb]);
+
+    // host leaves: bob (next in slot order) is host, the last LOBBY is kept, alice's teams are gone
+    a.send(W::new(LEAVE)).await;
+    loop {
+        let st = b.expect(ROOM_STATE).await;
+        if R(&st[4..]).u32() == Some(idb) { break; }
+    }
+    let (mut d, _, _) = C::new(&addr, "dave", 0).await;
+    d.send(W::new(JOIN_ROOM).u32(rid)).await;
+    let mut seen = vec![];
+    loop {
+        let (ty, body) = d.recv().await;
+        if ty == TEAMS { seen.push(R(&body).u32().unwrap()); }
+        if ty == LOBBY { assert_eq!(body, frame[3..]); break; }
+    }
+    assert_eq!(seen, vec![idb]);
+    let _ = idc;
 }

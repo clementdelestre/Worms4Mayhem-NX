@@ -14,11 +14,11 @@ struct LanHost {
 
 private:
     struct Conn { std::string in, out; uint32_t player = 0; bool dead = false; };
-    struct Player { std::string name; uint64_t token; int fd; bool inRoom = false; };  // fd -1 = offline
+    struct Player { std::string name; uint64_t token; int fd; bool inRoom = false; std::string teams = std::string(1, '\0'); };  // teams: TEAMS payload last sent  // fd -1 = offline
     int lfd = -1, ufd = -1, port = 0;
     uint32_t next = 0, session = 0, host = 0;
     double beaconAt = 0;
-    std::string name, start, log;  // start: Start frame as broadcast; log: wire::INPUT_BYTES per tick
+    std::string name, start, log, lobby;  // lobby: LOBBY frame as broadcast by the host;   // start: Start frame as broadcast; log: wire::INPUT_BYTES per tick
     std::vector<uint32_t> room;    // players in slot order
     std::map<uint32_t, uint32_t> sums;
     std::map<int, Conn> conns;
@@ -27,6 +27,7 @@ private:
     void send(uint32_t id, const std::string &f);
     void broadcast(const std::string &f, uint32_t except = 0);
     void roomState();
+    void lobbySync(uint32_t id);
     void replay(uint32_t id);
     uint32_t hello(int fd, const uint8_t *p, size_t n);
     bool handle(uint32_t id, const uint8_t *p, size_t n);

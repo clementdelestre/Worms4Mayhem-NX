@@ -12,8 +12,7 @@ World: a grid of 0.25 m voxels (`Terrain::VOX`; int8 density + u8 material), its
   "shapes": [
     {"type": "cylinder", "pos": [30, 17, 30], "radius": 2.2, "height": 10},
     {"type": "box", "pos": [40, 14, 30], "size": [3.5, 4, 3], "subtract": true}
-  ],
-  "finish": [74, 13, 40]
+  ]
 }
 ```
 
@@ -38,7 +37,6 @@ World: a grid of 0.25 m voxels (`Terrain::VOX`; int8 density + u8 material), its
 | `thin` | `<map>.thin` (`"W4T3"`, u32 size, then that many bytes raw DEFLATE: u32 count, then per cell u16 x y z of its first voxel, u8 material, 8 corners as 3 f32 in m, u16 k and k more voxels u16 x y z): the W4M cells the voxels cannot show, drawn exact and flat-shaded with the land material while one of their voxels is solid; a voxel solid only for thin cells gets no surface-nets faces. A cell is listed when it holds at most 2 grid points or is thinner than one voxel (volume over its widest face < 1 voxel): ropes, twigs, plant stems and leaves, carpets [ours: voxel-forced; thinner than a voxel the density cannot cross zero, so surface nets drew stems as chunky blobs and dropped leaf sheets]. Render only: the sim never reads it. |
 | `cells` | `<map>.cells` (imported maps): the exact land per voxel cell the surface crosses, read by the sim's land queries (`docs/sim.md` "Exact land", format `docs/w4m/formats.md` §22). Without it the sim reads the `.vox` field. |
 | `shapes` | applied in order: union, or carve with `"subtract": true` (tunnels, caves, moats). |
-| `finish` | rope race goal (exact point, not dropped). |
 | `markers` | W4M script markers (imported): `[{"name": "Targ1", "type": "target", "pos": [x, y, z]}, …]`, type `worm`, `target`, `crate`, `mine`, `oildrum`, `trigger`, `telepad`. Missions refer to them by name (`docs/missions.md`). |
 | `emitters` | W4M `EMITTER_*` details (imported): `[{"fx": "WXP_OilLamp", "pos": [x, y, z]}, …]`, the PARTTWK effect started at that point at match start (`Fx::level`, render only); stopped when a blast reaches it (`Terrain::carve`: distance < radius, W4M 0x5cc960). |
 | `origin` | W4M world origin in map metres (the import offset, our water level): the sky scene, the water plane and the weather emitter sit there. |

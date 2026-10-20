@@ -54,8 +54,6 @@ const char *APPLET = "-";  // controller applet glyph, Switch only
 const char *APPLET = nullptr;
 #endif
 const Color GOLDEN = {255, 210, 60, 255}, PANEL = {24, 74, 92, 230};  // W4M teal paper
-const char *RULE_LABELS[] = {"King", "Highlander", "Vampire", "Karma", "Low gravity", "Rope race", "Sudden death", nullptr};  // [7]: tr()'d
-const int RULES = 8;
 // Scheme edit page: one row per Scheme byte, in struct order. names: enum labels (min = 0).
 struct SchemeField { const char *label, *fmt; int min, max, step; const char *names[9]; };
 const SchemeField SCHEME_FIELDS[] = {
@@ -279,6 +277,33 @@ void mapHeads(const std::vector<std::string> &maps) {
     for (const std::string &m : maps) mapInfo(m);
 }
 
+// W4M's WXFEP.SelectLandscape2: the Prebuilt landscapes (multimaps.txt, tools/w4m-re/setuplists.py) and, kept on purpose, the Worms 3D maps
+void multiplayerMaps(std::vector<std::string> &maps) {
+    char *txt = FileExists(DATA_DIR "assets/multimaps.txt") ? LoadFileText(DATA_DIR "assets/multimaps.txt") : nullptr;
+    if (!txt) return;
+    std::set<std::string> keep;
+    for (char *l = strtok(txt, "\r\n"); l; l = strtok(nullptr, "\r\n")) keep.insert(l);
+    UnloadFileText(txt);
+    maps.erase(std::remove_if(maps.begin(), maps.end(), [&](const std::string &m) {
+        return !m.empty() && !keep.count(m) && !(m.size() > 4 && lower(m.substr(m.size() - 4)) == "-w3d");
+    }), maps.end());
+}
+
+// W4M's hat name (WXFE.A.Hat.* MeshTextNameID, hats.txt from tools/w4m-re/setuplists.py) of hat file hat
+const char *hatLabel(int hat) {
+    static std::map<std::string, std::string> key;
+    if (key.empty() && FileExists(DATA_DIR "assets/hats.txt")) {
+        char *txt = LoadFileText(DATA_DIR "assets/hats.txt");
+        for (char *l = strtok(txt, "\r\n"); l; l = strtok(nullptr, "\r\n"))
+            if (char *tab = strchr(l, '\t')) key[std::string(l, tab)] = tab + 1;
+        UnloadFileText(txt);
+    }
+    if (!hat) return tr(nullptr, "None", "Aucun");
+    const char *file = Models::hatName(hat - 1);
+    auto it = key.find(file);
+    return tr(it != key.end() ? it->second.c_str() : nullptr, file);
+}
+
 std::string mapTitle(const std::string &m) {
     if (m.empty()) return "Random island";
     if (const std::string &t = mapInfo(m).title; !t.empty()) return tr(t.c_str(), m.c_str());
@@ -401,6 +426,17 @@ const char *tr(const char *key, const char *en, const char *fr) {
 static const char *mysteryText(int item) { return tr(TextFormat("Text.kMystery%s", MYSTERY_ITEMS[item].name), MYSTERY_ITEMS[item].text); }
 
 static const char *potName(int id) { return tr(TextFormat("FETXT.WPotName.%s", WORMPOT_MODES[id].key), WORMPOT_MODES[id].name, nullptr); }
+
+// Match rules left (W4M Wormpot modes and Sudden Death); pot: the Wormpot mode whose name and help text they use
+static const struct { uint32_t bit; int pot; } RULE_ROWS[] = {{RULE_KING, WP_VITAL_WORM}, {RULE_VAMPIRE, WP_VAMPIRE}, {RULE_LOW_GRAVITY, WP_LOW_GRAVITY}, {RULE_SUDDEN_DEATH, 0}};
+static const int RULES = 4;
+static const uint32_t RULE_MASK = RULE_KING | RULE_VAMPIRE | RULE_LOW_GRAVITY | RULE_SUDDEN_DEATH;
+static const char *ruleLabel(int r) { return RULE_ROWS[r].pot ? potName(RULE_ROWS[r].pot) : tr("FETXT.SuddenDeath", "Sudden death", "Mort subite"); }
+static const char *ruleHelp(int r) {
+    const int pot = RULE_ROWS[r].pot;
+    return pot ? tr(TextFormat("FETXT.WPotHelp.%s", WORMPOT_MODES[pot].key), WORMPOT_MODES[pot].help, nullptr)
+               : tr("FETXT.HTPSubtopic7", "When the round time reaches zero, the game enters Sudden Death.", nullptr);
+}
 
 // lang.txt ("en" / "fr"), else the console / desktop locale
 static int systemLanguage() {
@@ -1218,11 +1254,14 @@ static void tickerText(float t) {
 
 // A NAV button of the WXFE.Nav.Border atlases (kMT_Nav*): which 0 Start (the jar), 1 Tick, 2 Back, 3 Cross; state 0 Normal, 1 Highlight, 2 Disabled;
 // c: FE centre, half: FE half extent
-static void navButton(int which, int state, Vector2 c, float half) {
+static void navAt(int which, int state, Rectangle d) {
     Texture2D a = tex(state == 0 ? "fe2/nav_normal" : state == 1 ? "fe2/nav_highlight" : "fe2/nav_disabled");
+    if (a.id) DrawTexturePro(a, {a.width / 2.0f * (which % 2), a.height / 2.0f * (which / 2), a.width / 2.0f, a.height / 2.0f}, d, {}, 0, WHITE);
+}
+static void navButton(int which, int state, Vector2 c, float half) {
     Vector2 p = fePos(c.x, c.y);
     float d = 2 * half * FE_S;
-    if (a.id) DrawTexturePro(a, {a.width / 2.0f * (which % 2), a.height / 2.0f * (which / 2), a.width / 2.0f, a.height / 2.0f}, {p.x - d / 2, p.y - d / 2, d, d}, {}, 0, WHITE);
+    navAt(which, state, {p.x - d / 2, p.y - d / 2, d, d});
 }
 
 // A page arrow (kMT_NavArrow*): left / right, state as navButton, in a square of half extent `half` FE
@@ -1338,7 +1377,7 @@ static Audio::Sfx enterSfx(Frontend::Screen s, Frontend::Screen from) {
 }
 static int bgPage(Frontend::Screen s, bool online) {
     using F = Frontend;
-    return s <= F::Main || s == F::Confirm ? 0 : s == F::Local || s == F::Missions || (s == F::Setup && !online) ? 1 : s == F::Network || s == F::Setup ? 2 : 3;
+    return s <= F::Main || s == F::Confirm ? 0 : s == F::Local || s == F::Missions || s >= F::SetupTeams ? 1 : s == F::Network ? 2 : 3;
 }
 
 static const float TITLE_OUT = 0.35f + 0.05f * (MAIN_ITEMS - 1);  // the title glide's length: last menu row in
@@ -1405,36 +1444,7 @@ static void controllerApplet(int players) {
     for (int i = 0; i < 4; i++) arg.identification_color[i] = {TEAM_COLORS[i].r, TEAM_COLORS[i].g, TEAM_COLORS[i].b, TEAM_COLORS[i].a};
     hidLaShowControllerSupport(&info, &arg);
 }
-
-// human (non-CPU) teams: the applet's player count, each later mapped to the same-index pad
-static int humanTeams(const GameConfig &cfg) {
-    int n = 0;
-    for (int k = 0; k < cfg.teams; k++) if (!cfg.teamSetup[k].cpu) n++;
-    return n;
-}
-static int connectedPads() {
-    int n = 0;
-    for (int i = 0; i < 4; i++) if (IsGamepadAvailable(i)) n++;
-    return n;
-}
-// short device label for the setup card ("Pro Controller", "Joy-Con L"...)
-static const char *padStyle(int pad) {
-    const char *n = GetGamepadName(pad);
-    if (strstr(n, "Pro")) return "Pro Controller";
-    if (strstr(n, "Handheld")) return "Handheld";
-    if (strstr(n, "Dual")) return "Dual Joy-Con";
-    if (strstr(n, "left")) return "Joy-Con L";
-    if (strstr(n, "right")) return "Joy-Con R";
-    return "Controller";
-}
 #endif
-
-// Network setup: card 0 is this console's player, the other cards are the host's CPU teams.
-static void netTeams(GameConfig &cfg, int dx) {
-    cfg.teamSetup[0].cpu = 0;
-    for (size_t k = 1; k < cfg.teamSetup.size(); k++)
-        if (!cfg.teamSetup[k].cpu) cfg.teamSetup[k].cpu = dx < 0 ? 5 : 1;
-}
 
 bool Frontend::edit(std::string &s, const char *hint) {
 #ifdef __SWITCH__
@@ -1447,24 +1457,24 @@ bool Frontend::edit(std::string &s, const char *hint) {
 #endif
 }
 
-// setup.txt: "teams N", "worms N", "map NAME|-", "rules N", "scheme <Scheme bytes>"... then "team <i> <cpu> <hat> <voice bank|-> <name>"
+// setup.txt: "teams N", "worms N", "map NAME|-", "rules N", "scheme <Scheme bytes>"... then "team <i> <cpu> <hat> <voice bank|-> <name>", "pad <i> <pad>"
 void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) {
     loaded = true;
     hats = Models::hatCount();
     cfg.teamSetup.resize(4);
-    for (int t = 0; t < 4; t++) cfg.teamSetup[t] = {DEFAULT_TEAMS[t], 0, (uint8_t)(Audio::voiceBanks() ? t % Audio::voiceBanks() : 0), 0};
+    for (int t = 0; t < 4; t++)  // pad: team t's own pad when it is connected, else the first
+        cfg.teamSetup[t] = {DEFAULT_TEAMS[t], 0, (uint8_t)(Audio::voiceBanks() ? t % Audio::voiceBanks() : 0), 0, (uint8_t)(IsGamepadAvailable(t) ? t : 0)};
     if (!loadCustomWeapons(DATA_DIR "custom_weapons.json", customs)) customs.clear();
     if (customs.size() > (size_t)MAX_CUSTOM) customs.resize(MAX_CUSTOM);
-    bool netFile = online && FileExists(DATA_DIR "setup_net.txt");
-    if (online && !netFile) cfg.teams = 1;
-    char *txt = LoadFileText(netFile ? DATA_DIR "setup_net.txt" : DATA_DIR "setup.txt");
+    netProfile.clear();
+    char *txt = LoadFileText(DATA_DIR "setup.txt");
     if (!txt) return;
     for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
         char s[64] = "", nm[64] = "";
         int a = 0, b = 0, c = 0, n = 0;
-        if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, online ? 1 : 2, 4);
+        if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, 2, 4);
         else if (sscanf(line, "worms %d", &a) == 1) cfg.wormsPerTeam = Clamp(a, 1, 4);
-        else if (sscanf(line, "rules %d", &a) == 1) cfg.rules = (uint32_t)a;
+        else if (sscanf(line, "rules %d", &a) == 1) cfg.rules = (uint32_t)a & RULE_MASK;
         else if (sscanf(line, "reels %d", &a) == 1) cfg.wormpot = (uint32_t)a;
         else if (!strncmp(line, "scheme ", 7)) {
             char *p = line + 7;
@@ -1480,7 +1490,9 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
         else if (sscanf(line, "map %63s", s) == 1) {
             auto it = std::find(maps.begin(), maps.end(), std::string(s) == "-" ? "" : s);
             if (it != maps.end()) mapSel = int(it - maps.begin());
-        } else if (sscanf(line, "team %d %d %d %63s %n", &a, &b, &c, s, &n) == 4 && a >= 0 && a < 4) {
+        } else if (sscanf(line, "pad %d %d", &a, &b) == 2 && a >= 0 && a < 4) cfg.teamSetup[a].pad = (uint8_t)Clamp(b, 0, 3);
+        else if (netProfileLine(line, hats, netProfile)) {}
+        else if (sscanf(line, "team %d %d %d %63s %n", &a, &b, &c, s, &n) == 4 && a >= 0 && a < 4) {
             GameConfig::Team &t = cfg.teamSetup[a];
             t.cpu = (uint8_t)Clamp(b, 0, 5);
             t.hat = (uint8_t)Clamp(c, 0, hats);
@@ -1492,7 +1504,45 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
     UnloadFileText(txt);
 }
 
+// setup.txt "net"/"netpad" lines: this console's network teams, kept across rooms and restarts
+std::string netProfileText(const std::vector<GameConfig::Team> &teams) {
+    std::string s;
+    for (size_t i = 0; i < teams.size(); i++) {
+        const GameConfig::Team &m = teams[i];
+        const char *v = Audio::voiceBankName(m.voice);
+        s += TextFormat("net %d %d %d %s %s\nnetpad %d %d\n", (int)i, m.cpu, m.hat, v[0] ? v : "-", m.name.c_str(), (int)i, m.pad);
+    }
+    return s;
+}
+
+bool netProfileLine(const char *line, int hats, std::vector<GameConfig::Team> &teams) {
+    char s[64] = "";
+    int a = 0, b = 0, c = 0, n = 0;
+    if (sscanf(line, "netpad %d %d", &a, &b) == 2) {
+        if (a >= 0 && a < (int)teams.size()) teams[a].pad = (uint8_t)Clamp(b, 0, 3);
+    } else if (sscanf(line, "net %d %d %d %63s %n", &a, &b, &c, s, &n) == 4) {
+        if (teams.size() >= (size_t)Lobby::MAX_TEAMS) return true;
+        GameConfig::Team t;
+        t.hat = (uint8_t)Clamp(c, 0, hats), t.name = line + n;
+        for (int v = 0; v < Audio::voiceBanks(); v++) if (!strcmp(Audio::voiceBankName(v), s)) t.voice = (uint8_t)v;
+        if (t.name.empty()) t.name = DEFAULT_TEAMS[teams.size()];
+        teams.push_back(t);
+    } else return false;
+    return true;
+}
+
+void Frontend::saveNetTeams() {
+    netProfile = myTeams;
+    std::string out;
+    if (char *txt = LoadFileText(DATA_DIR "setup.txt")) {
+        for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) if (strncmp(line, "net", 3)) out += std::string(line) + "\n";
+        UnloadFileText(txt);
+    }
+    SaveFileText(DATA_DIR "setup.txt", (out + netProfileText(netProfile)).data());
+}
+
 void Frontend::saveSetup(const GameConfig &cfg) const {
+    if (room()) return;  // a room's teams and settings are the room's
     std::string s = TextFormat("teams %d\nworms %d\nrules %u\nreels %u\nmap %s\nscheme", cfg.teams, cfg.wormsPerTeam, cfg.rules, cfg.wormpot,
                                cfg.map.empty() ? "-" : cfg.map.c_str());
     for (size_t i = 0; i < sizeof(Scheme); i++) s += TextFormat(" %d", ((const uint8_t *)&cfg.scheme)[i]);
@@ -1500,19 +1550,39 @@ void Frontend::saveSetup(const GameConfig &cfg) const {
     for (int t = 0; t < (int)cfg.teamSetup.size(); t++) {
         const GameConfig::Team &m = cfg.teamSetup[t];
         const char *v = Audio::voiceBankName(m.voice);
-        s += TextFormat("team %d %d %d %s %s\n", t, m.cpu, m.hat, v[0] ? v : "-", m.name.c_str());
+        s += TextFormat("team %d %d %d %s %s\npad %d %d\n", t, m.cpu, m.hat, v[0] ? v : "-", m.name.c_str(), t, m.pad);
     }
-    SaveFileText(online ? DATA_DIR "setup_net.txt" : DATA_DIR "setup.txt", s.data());
+    SaveFileText(DATA_DIR "setup.txt", (s + netProfileText(netProfile)).data());
 }
 
 Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name) {
     menuPage = true;
-    if (!loaded) loadSetup(cfg, maps);
+    if (!loaded) {
+        loadSetup(cfg, maps);
+        lobby = Lobby{};  // local play: one console owns every team
+        lobby.cfg = cfg, lobby.cfg.teams = Clamp(lobby.cfg.teams, 2, 4);
+        lobby.cfg.map = maps.empty() ? "" : maps[std::min(mapSel, (int)maps.size() - 1)];
+        if (online && net) {  // a fresh room: own team from setup.txt, and as host its settings
+            GameConfig::Team t = cfg.teamSetup[0];
+            t.cpu = 0;
+            myTeams = netProfile.empty() ? std::vector<GameConfig::Team>{t} : netProfile;
+            lobby.cfg.teams = 0;
+            if (net->isHost()) {
+                net->lobby.map = lobby.cfg.map, net->lobby.rules = lobby.cfg.rules, net->lobby.scheme = lobby.cfg.scheme, net->lobby.wormpot = lobby.cfg.wormpot;
+                net->lobby.wormsPerTeam = lobby.cfg.wormsPerTeam;
+                net->pushLobby();
+            }
+            if (auto it = net->consoleTeams.find(net->id); it != net->consoleTeams.end() && !it->second.empty()) myTeams = it->second;  // the room still knows them
+            else net->sendTeams(myTeams);
+        }
+    }
+    if (room()) fromNet(maps);
     if (cfg.teamSetup.size() < 4) cfg.teamSetup.resize(4);
     Action act = None;
     float t = now();
     if (leaving >= 0 && t - leaving >= (next == Title ? TITLE_OUT : LEAVE)) screen = next, leaving = -1;
     bool typing = editing != nullptr, busy = typing || leaving >= 0;  // no input while the menu flies out
+    live = !busy;
     if (editing) {
         for (int c = GetCharPressed(); c; c = GetCharPressed())
             if (c >= 32 && c < 256 && editing->size() < 20) editing->push_back((char)c), Audio::play(Audio::Sfx::FeType);
@@ -1522,6 +1592,8 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     int dy = busy ? 0 : P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP});
     int dx = busy ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
     bool ok = !busy && P({A}, {KEY_ENTER, KEY_SPACE}), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    bool plus = !busy && P({PLUS}, {KEY_N});  // next step / start
+    if (room() && !busy && P({GAMEPAD_BUTTON_RIGHT_TRIGGER_2}, {KEY_R})) net->setReady(!net->isReady(net->id));
     if (ok || back) feBack = back;
     if (screen != shown) {  // W4M menus: slide in (not on the first frame: --ui captures), highlight the current entry
         entered = shown == (Screen)-1 ? -100 : t, from = shown, shown = screen;
@@ -1596,10 +1668,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (back) go(Main);
         if (ok && k == 0) {
             if (sel == 0) act = QuickMatch;
-            else if (sel == 1) screen = Setup, online = lan = false, row = 0, loaded = false;
+            else if (sel == 1) screen = SetupTeams, online = false, teamFocus = teamRow = rulesRow = 0, loaded = false;
             else missionTab = sel - 2, go(Missions);
         }
-        if (ok && k == 1) screen = Setup, online = true, lan = sel == 0, row = 0, loaded = false;  // reload: net setup has its own file
+        if (ok && k == 1) act = Salon, wantLan = sel == 0;
         if (ok && k == 3) screen = sel == 0 ? Options : sel == 1 ? Controls : Factory, row = 0, facSel = 0;
         break;
     }
@@ -1621,7 +1693,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             if (k == i && !nine("fe/buttonbig_highlight", {c.x - 6, c.y - 6, c.width + 12, c.height + 12}, 110, 0.5f)) DrawRectangleRoundedLinesEx(c, 0.1f, 6, 4, GOLDEN);
             DrawRectangleRounded({c.x + 16, c.y + 18, 10, c.height - 36}, 1, 4, TEAM_COLORS[i]);
             const char *vals[3] = {TextFormat("%s%s", m.name.c_str(), editing == &cfg.teamSetup[i].name && fmodf(t, 1) < 0.5f ? "_" : ""),
-                                   nb ? Audio::voiceBankName(m.voice) : "-", !hats ? "-" : m.hat ? Models::hatName(m.hat - 1) : tr(nullptr, "None", "Aucun")};
+                                   nb ? Audio::voiceBankName(m.voice) : "-", !hats ? "-" : hatLabel(m.hat)};
             const char *labels[3] = {nullptr, tr("FETXTSH.Voice", "Voice", "Voix"), tr(nullptr, "Hat", "Chapeau")};
             for (int j = 0; j < 3; j++) {
                 bool hi = k == i && f == j;
@@ -1704,15 +1776,16 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (back) ::Controls::save(DATA_DIR "controls.txt"), screen = HelpOpts;
         break;
     }
-    case Wormpot: wormpot(cfg, dx, dy, ok, back, t); break;
+    case Wormpot: wormpot(lobby.cfg, dx, dy, ok, back, t); break;
     case Factory: factory(dx, dy, ok, back); break;
     case FactoryEdit: factoryEdit(dx, dy, ok, back, typing, t); break;
     case SchemeEdit: {
+        GameConfig &c = lobby.cfg;
         const int n = (int)sizeof(Scheme);
         schemeRow = clampWrap(schemeRow + dy, n + 1);
-        int preset = presetOf(cfg.scheme), np = (int)SCHEMES.size();
-        if (schemeRow == 0 && dx) cfg.scheme = SCHEMES[clampWrap(preset < 0 ? (dx > 0 ? 0 : np - 1) : preset + dx, np)].s;
-        uint8_t *bytes = (uint8_t *)&cfg.scheme;
+        int preset = presetOf(c.scheme), np = (int)SCHEMES.size();
+        if (schemeRow == 0 && dx) c.scheme = SCHEMES[clampWrap(preset < 0 ? (dx > 0 ? 0 : np - 1) : preset + dx, np)].s;
+        uint8_t *bytes = (uint8_t *)&c.scheme;
         if (schemeRow > 0 && dx) {
             const SchemeField &f = SCHEME_FIELDS[schemeRow - 1];
             int v = bytes[schemeRow - 1] + dx * f.step;
@@ -1733,117 +1806,16 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             text(TextFormat(hi ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + 3, 22, WHITE, 2);
         }
         hints({{"D-pad", "Up/Down", "Move"}, {"D-pad", "Left/Right", "Change"}, {"B", "Esc", "Back"}});
-        if (back || ok) screen = Setup;
+        if (back || ok) screen = SetupRules;
         break;
     }
-    case Setup: {
-        // focus order: teams count, 4 fields per visible team, map, worms, rules, start
-        std::vector<int> ids = {0};
-        for (int k = 0; k < cfg.teams; k++) for (int f = 0; f < 4; f++) ids.push_back(100 + k * 4 + f);
-        ids.push_back(201), ids.push_back(200), ids.push_back(299);  // screen order: map above worms
-        for (int r = 0; r < RULES; r++) ids.push_back(300 + r);
-        ids.push_back(350);
-        ids.push_back(400);
-        row = clampWrap(row + dy, (int)ids.size());
-        int id = ids[row];
-        int nb = Audio::voiceBanks();
-        if (id == 0) cfg.teams = Clamp(cfg.teams + dx, online ? 1 : 2, 4);
-        if (id >= 100 && id < 200) {
-            GameConfig::Team &tm = cfg.teamSetup[(id - 100) / 4];
-            int k = (id - 100) / 4;
-            switch ((id - 100) % 4) {
-            case 0: if (ok) edit(tm.name, "Team name"); break;
-            case 1: if (dx || ok) tm.cpu = (uint8_t)clampWrap(tm.cpu + (dx ? dx : 1), 6); break;
-            case 2:
-                if ((dx || ok) && nb) {
-                    tm.voice = (uint8_t)clampWrap(tm.voice + (dx ? dx : 0), nb);
-                    Audio::setTeamVoice(k, tm.voice);
-                }
-                break;
-            case 3: if (dx && hats) tm.hat = (uint8_t)clampWrap(tm.hat + dx, hats + 1); break;
-            }
-        }
-        if (id == 200) cfg.wormsPerTeam = Clamp(cfg.wormsPerTeam + dx, 1, 4);
-        if (id == 201) mapSel = clampWrap(mapSel + dx, (int)maps.size());
-        if (id >= 300 && id < 400 && (dx || ok)) cfg.rules ^= 1u << (id - 300);
-        int preset = presetOf(cfg.scheme), np = (int)SCHEMES.size();
-        if (id == 299 && dx) cfg.scheme = SCHEMES[clampWrap(preset < 0 ? (dx > 0 ? 0 : np - 1) : preset + dx, np)].s;
-        if (id == 299 && ok) screen = SchemeEdit, schemeRow = 0;
-        if (id == 350 && ok) screen = Wormpot, reel = 0;
-        cfg.map = maps.empty() ? "" : maps[std::min(mapSel, (int)maps.size() - 1)];
-        if (online) netTeams(cfg, dx);
-
-        heading(online ? lan ? "LAN match" : "Online match" : "Local match", 640, 14, 48);
-        auto value = [&](int vid, Rectangle r, const char *label, const std::string &v, float size) {
-            bool hi = ids[row] == vid;
-            if (hi) brush(r);
-            text(label, r.x + 10, r.y + (r.height - size) / 2, size, ink(hi));
-            text(TextFormat(hi ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + (r.height - size) / 2, size, ink(hi), 2);
-        };
-        value(0, {40, 86, 600, 40}, "Teams", online ? TextFormat("You + %d CPU", cfg.teams - 1) : TextFormat("%d", cfg.teams), 28);
-        const char *CTRL[] = {tr("FETXT.HumanPlayer", "Human Player", "Joueur humain"), tr("FETXT.CPU1", "CPU Level 1", "I.A. Niveau 1"),
-                              tr("FETXT.CPU2", "CPU Level 2", "I.A. Niveau 2"), tr("FETXT.CPU3", "CPU Level 3", "I.A. Niveau 3"),
-                              tr("FETXT.CPU4", "CPU Level 4", "I.A. Niveau 4"), tr("FETXT.CPU5", "CPU Level 5", "I.A. Niveau 5")};
-        for (int k = 0; k < cfg.teams; k++) {
-            GameConfig::Team &tm = cfg.teamSetup[k];
-            Rectangle card = {40, 134 + k * 134.0f, 600, 126};
-            panel(card, ids[row] >= 100 + k * 4 && ids[row] < 104 + k * 4);
-            DrawRectangleRounded({card.x + 16, card.y + 16, 12, card.height - 32}, 1, 4, TEAM_COLORS[k]);
-            bool hiName = ids[row] == 100 + k * 4, ed = editing == &tm.name;
-            if (hiName) brush({card.x + 36, card.y + 10, 540, 38});
-            text(TextFormat("%s%s", tm.name.c_str(), ed && fmodf(t, 1) < 0.5f ? "_" : ""), card.x + 44, card.y + 12, 32, TEAM_COLORS[k]);
-            if (!online && !tm.cpu) {
-#ifdef __SWITCH__
-                const char *lbl = (!k || IsGamepadAvailable(k)) ? TextFormat("P%d %s", k + 1, padStyle(k)) : "Controller 1 (shared)";
-#else
-                const char *lbl = (!k || IsGamepadAvailable(k)) ? TextFormat("Controller %d", k + 1) : "Controller 1 (shared)";
-#endif
-                text(lbl, card.x + card.width - 24, card.y + 18, 20, LIGHTGRAY, 2);
-            }
-            const char *hat = !hats ? "-" : tm.hat ? Models::hatName(tm.hat - 1) : "None";
-            value(101 + k * 4, {card.x + 36, card.y + 50, 540, 24}, "Player", online && !k ? "You (this console)" : CTRL[tm.cpu], 22);
-            value(102 + k * 4, {card.x + 36, card.y + 74, 540, 24}, "Voice", nb ? Audio::voiceBankName(tm.voice) : "-", 22);
-            value(103 + k * 4, {card.x + 36, card.y + 98, 540, 24}, "Hat", hat, 22);
-        }
-        Rectangle pv = {680, 86, 230, 230};
-        panel({pv.x - 8, pv.y - 8, pv.width + 16, pv.height + 16}, ids[row] == 201);
-        if (!image(preview(cfg.map), pv)) DrawRectangleRec(pv, {30, 60, 40, 255});
-        value(201, {920, 96, 330, 40}, "Map", "", 28);
-        text(mapTitle(cfg.map).c_str(), 930, 140, 28, WHITE);
-        text(TextFormat("%d / %d", mapSel + 1, (int)maps.size()), 930, 176, 20, LIGHTGRAY);
-        value(200, {920, 230, 330, 40}, "Worms", TextFormat("%d", cfg.wormsPerTeam), 28);
-        text(online ? "+1 team per console that joins" : "One controller per team,\nor share one", 930, 280, 18, LIGHTGRAY);
-        popup({672, 330, 584, 270});
-        value(299, {690, 342, 548, 28}, "Scheme", preset < 0 ? "Custom" : SCHEMES[preset].name, 22);
-        for (int r = 0; r < RULES; r++)
-            value(300 + r, {690, 372 + r * 24.0f, 548, 23}, RULE_LABELS[r] ? RULE_LABELS[r] : tr("RULE.NoDelays", "No weapon delays (test)", "Sans délai d'armes (test)"),
-                  cfg.rules & (1u << r) ? "ON" : "off", 22);
-        int pots = 0, pot = 0;
-        for (int b = 0; b < WP_MODES; b++) if (wpOn(wormpotModes(cfg.wormpot), b)) pots++, pot = b;
-        value(350, {690, 372 + RULES * 24.0f, 548, 23}, "Wormpot", !pots ? "None" : pots == 1 ? potName(pot) : TextFormat("%d modes", pots), 22);
-        Rectangle go = {860, 608, 390, 70};
-        panel(go, ids[row] == 400);
-        text(online ? lan ? "FIND GAMES" : "GO ONLINE" : "START", go.x + go.width / 2, go.y + 16, 40, ink(ids[row] == 400), 1);
-        if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
-        else if (id == 299) hints({{"D-pad", "Left/Right", "Preset"}, {"A", "Enter", "Edit scheme"}, {"B", "Esc", "Back"}});
-        else if (id == 350) hints({{"A", "Enter", "Open Wormpot"}, {"B", "Esc", "Back"}});
-        else if (online) hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Go online"}, {"B", "Esc", "Back"}});
-        else hints({{"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Edit/toggle"}, {"+", nullptr, "Start"}, {APPLET, nullptr, "Tap: controllers"}, {"B", "Esc", "Back"}});
-#ifdef __SWITCH__
-        if (!online && minusTap) controllerApplet(humanTeams(cfg));
-#endif
-        if (back) saveSetup(cfg), screen = online ? Network : Local;
-        if ((ok && id == 400) || (!typing && P({PLUS}, {}))) {
-            saveSetup(cfg);
-#ifdef __SWITCH__
-            // 2+ human teams, or not enough pads for them yet: let players pair up before the match starts
-            if (!online) { int hu = humanTeams(cfg); if (hu >= 2 || connectedPads() < hu) controllerApplet(hu); }
-#endif
-            act = online ? lan ? StartLan : StartOnline : StartLocal;
-        }
+    case SetupTeams: if (setupTeams(dx, dy, ok, back, plus, typing, t)) act = LeaveRoom; break;
+    case SetupMap: setupMap(dx, dy, back, plus, maps); break;
+    case SetupRules:
+        if (setupRules(dx, dy, ok, back, plus)) act = online ? RoomStart : StartLocal;
         break;
     }
-    }
+    if (room()) toNet();
     if (helpHeld()) controls(false);
     Loading::overlay(GetFrameTime());
     if (capture) {
@@ -1855,13 +1827,488 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     feCursor();
     EndDrawing();
+    if (act == StartLocal) {
+        const GameConfig &l = lobby.cfg;
+        cfg.teams = l.teams, cfg.wormsPerTeam = l.wormsPerTeam, cfg.map = l.map, cfg.rules = l.rules, cfg.teamSetup = l.teamSetup, cfg.scheme = l.scheme, cfg.wormpot = l.wormpot;
+    }
+    if (act == LeaveRoom) online = false, screen = Network;
     if (act != None) {
         for (int k = 0; k < 4; k++) Audio::setTeamVoice(k, cfg.teamSetup[k].voice);
         cfg.teamSetup.resize(cfg.teams);
         cfg.custom = customs;
-        loaded = false;  // reload (and re-pad to 4 teams) next time the menu shows
+        if (!online) loaded = false;  // reload (and re-pad to 4 teams) next time the menu shows; a room keeps its setup
     }
     return act;
+}
+
+// ---------------------------------------------------------------- local match setup: Teams / Map / Rules (docs/frontend-setup.md)
+
+namespace {
+const Color PAPER = {246, 236, 210, 255}, PAPER_EDGE = {217, 198, 154, 255}, DARK = {58, 42, 24, 255}, SOFT = {122, 100, 72, 255}, HILITE = {255, 138, 31, 255},
+            HILITE_INK = {42, 22, 0, 255}, WARN = {216, 52, 43, 255}, ON_GREEN = {58, 166, 90, 255}, SKY = {27, 79, 128, 255}, CPU_CHIP = {106, 90, 138, 255};
+const int YB = GAMEPAD_BUTTON_RIGHT_FACE_LEFT, L1 = GAMEPAD_BUTTON_LEFT_TRIGGER_1, R1 = GAMEPAD_BUTTON_RIGHT_TRIGGER_1;
+const float TEAM_W = (1200 - 3 * 14) / 4.0f;  // Teams: 4 columns between x = 40 and 1240, 14 apart
+
+bool padPresent(int p) {
+#ifdef __SWITCH__
+    return IsGamepadAvailable(p);
+#else
+    return p == 0 || IsGamepadAvailable(p);  // the desktop keyboard is pad 0
+#endif
+}
+
+// short device name of a present pad ("Pro Controller", "Joy-Con L"...)
+const char *padStyle(int p) {
+    if (p == 0 && !IsGamepadAvailable(0)) return tr(nullptr, "Keyboard", "Clavier");
+    const char *n = GetGamepadName(p);
+    if (strstr(n, "Pro")) return "Pro Controller";
+    if (strstr(n, "Handheld")) return "Handheld";
+    if (strstr(n, "Dual")) return "Dual Joy-Con";
+    if (strstr(n, "left")) return "Joy-Con L";
+    if (strstr(n, "right")) return "Joy-Con R";
+    return "Controller";
+}
+
+// text without the W4M outline, for the dark ink on paper
+void ptext(const char *t, float x, float y, float size, Color c, int align = 0) { textG(t, x, y, size, c, c, align, {0, 0, 0, 0}); }
+
+void paper(Rectangle d, Color fill, Color edge, float edgeW = 3) {
+    DrawRectangleRounded(d, 0.12f, 8, fill);
+    DrawRectangleRoundedLinesEx(d, 0.12f, 8, edgeW, edge);
+}
+
+void pill(Rectangle d, Color c) { DrawRectangleRounded(d, 1, 8, c); }
+
+// the Switch player lights of pad p: the first p + 1 of 4 lit, 8 px squares; width 4 * 8 + 3 * 3
+void led(float x, float y, int p) {
+    for (int i = 0; i < 4; i++) {
+        DrawRectangleRounded({x + i * 11.0f, y, 8, 8}, 0.25f, 4, i <= p ? Color{54, 216, 96, 255} : Color{58, 42, 24, 50});
+    }
+}
+
+int ctrlOf(const GameConfig::Team &t) { return t.cpu ? 3 + t.cpu : t.pad; }  // Contrôle: 0..3 a pad, 4..8 CPU level 1..5
+void setCtrl(GameConfig::Team &t, int v) { t.cpu = v < 4 ? 0 : (uint8_t)(v - 3), t.pad = v < 4 ? (uint8_t)v : t.pad; }
+
+#ifdef __SWITCH__
+bool padMissing(const Lobby &L) {
+    for (int k = 0; k < L.cfg.teams; k++) if (L.canEdit(k) && !L.cfg.teamSetup[k].cpu && !padPresent(L.cfg.teamSetup[k].pad)) return true;
+    return false;
+}
+#endif
+
+// the screen's step pills right of its title
+const char *setupTitle(bool room, bool lan) {
+    return room ? lan ? tr(nullptr, "Local network", "Réseau local") : tr(nullptr, "Online", "En ligne") : tr(nullptr, "Local match", "Partie locale");
+}
+
+void setupHeading(int step, const char *title, int timer) {
+    text(title, 40, 18, 52, {255, 246, 224, 255});
+    float x = 40 + textWidth(title, 52) + 22;
+    const char *steps[3] = {tr(nullptr, "1 Teams", "1 Équipes"), tr(nullptr, "2 Map", "2 Terrain"), tr(nullptr, "3 Rules", "3 Règles")};
+    for (int i = 0; i < 3; i++) {
+        float w = textWidth(steps[i], 18) + 24;
+        pill({x, 40, w, 28}, i == step ? PAPER : Color{0, 0, 0, 51});
+        ptext(steps[i], x + w / 2, 44, 18, i == step ? DARK : Color{232, 244, 255, 204}, 1);
+        x += w + 6;
+    }
+    if (timer != -2) {  // W4M WXNET.Lobby.Timer: "%.2d" seconds, "--" with no deadline
+        DrawCircle(1208, 44, 28, {246, 236, 210, 255}), DrawCircleLines(1208, 44, 28, PAPER_EDGE);
+        ptext(timer < 0 ? "--" : TextFormat("%.2d", timer), 1208, 30, 30, DARK, 1);
+    }
+}
+
+void hintBar(const std::vector<Hint> &h) {
+    DrawRectangle(0, 664, 1280, 56, {11, 42, 70, 204});
+    menuPage = false;
+    hints(h);
+    menuPage = true;
+}
+void hintBar(std::initializer_list<Hint> h) { hintBar(std::vector<Hint>(h)); }
+
+void cta(const char *label, float y = 600) {
+    Rectangle r = {1240 - 250, y, 250, 56};
+    DrawRectangleRounded({r.x, r.y + 5, r.width, r.height}, 0.3f, 8, {184, 90, 0, 255});
+    DrawRectangleRounded(r, 0.3f, 8, HILITE);
+    ptext(label, r.x + r.width / 2, r.y + 9, 34, HILITE_INK, 1);
+}
+
+// word wrap on spaces and newlines; W4M's /*token*/ markup is dropped and space runs (its inline icons) collapse
+std::vector<std::string> wrapLines(const char *s, float size, float w) {
+    std::vector<std::string> out;
+    std::string line, word;
+    for (const char *p = s;; p++) {
+        if (p[0] == '/' && p[1] == '*') {
+            const char *e = strstr(p + 2, "*/");
+            if (e) { p = e + 1; continue; }
+        }
+        if (*p && *p != ' ' && *p != '\n') { word += *p; continue; }
+        if (!word.empty()) {
+            std::string next = line.empty() ? word : line + " " + word;
+            if (!line.empty() && textWidth(next.c_str(), size) > w) out.push_back(line), next = word;
+            line = next, word.clear();
+        }
+        if (*p == '\n') out.push_back(line), line.clear();
+        if (!*p) break;
+    }
+    if (!line.empty()) out.push_back(line);
+    return out;
+}
+
+// a picture cropped to fill d (level pictures are square); false while it is not loaded
+bool cover(const std::string &name, Rectangle d, Color tint = WHITE) {
+    if (pending(name)) return true;
+    Texture2D t = tex(name);
+    if (!t.id) return false;
+    float k = fmaxf(d.width / t.width, d.height / t.height), w = d.width / k, h = d.height / k;
+    DrawTexturePro(t, {(t.width - w) / 2, (t.height - h) / 2, w, h}, d, {}, 0, tint);
+    return true;
+}
+
+}  // namespace
+
+void Frontend::wormPreview(int team, float t) {
+    RenderTexture2D &rt = wormRt[team];
+    if (!rt.id) rt = LoadRenderTexture(256, 346);
+    const GameConfig::Team &tm = lobby.cfg.teamSetup[team];
+    Camera3D cam = {{0, 1.0f, 3.7f}, {0, 0.8f, 0}, {0, 1, 0}, 30, CAMERA_PERSPECTIVE};
+    BeginTextureMode(rt);
+    ClearBackground(BLANK);
+    BeginMode3D(cam);
+    Lit::frame(cam.position);
+    float yaw = 0.7f * sinf(t * 0.6f + team * 1.7f);  // slow turn
+    Models::draw("worm", {0, 0, 0}, yaw, 0, ColorLerp(WHITE, TEAM_COLORS[team], 0.5f), "Base", t);
+    if (Matrix m; tm.hat && Models::joint("worm", "HatLocator", "Base", t, true, &m))
+        Models::draw(Models::hatName(tm.hat - 1), MatrixMultiply(m, MatrixRotateY(yaw)));
+    EndMode3D();
+    EndTextureMode();
+}
+
+bool Frontend::setupTeams(int dx, int dy, bool ok, bool back, bool plus, bool typing, float t) {
+    GameConfig &c = lobby.cfg;
+    const int nb = Audio::voiceBanks();
+    GameConfig::Team *tm = teamFocus < c.teams ? &c.teamSetup[teamFocus] : nullptr;
+    bool mine = tm && lobby.canEdit(teamFocus);
+    if (!typing && tm) teamRow = clampWrap(teamRow + dy, 4);
+    if (!typing) {
+        int shoulder = live ? P({R1}, {}) - P({L1}, {}) : 0;
+        if (!tm || teamRow == 0) shoulder += dx, dx = 0;
+        teamFocus = Clamp(teamFocus + shoulder, 0, Lobby::MAX_TEAMS - 1);
+        if (teamFocus >= c.teams) tm = nullptr, mine = false;
+    }
+    if (mine && !typing) {
+        if (teamRow == 0 && ok) edit(tm->name, "Team name");
+        if (teamRow == 1 && (dx || ok)) setCtrl(*tm, clampWrap(ctrlOf(*tm) + (dx ? dx : 1), room() && !lobby.isHost() ? 4 : 9));  // CPU teams: the host
+        if (teamRow == 2 && (dx || ok) && nb) tm->voice = (uint8_t)clampWrap(tm->voice + dx, nb), Audio::setTeamVoice(teamFocus, tm->voice);
+        if (teamRow == 3 && dx && hats) tm->hat = (uint8_t)clampWrap(tm->hat + dx, hats + 1);
+        for (int p = 0; p < 4; p++)  // Y on any pad: that pad plays the team
+            if (pressed(p, {YB}, p ? std::initializer_list<int>{} : std::initializer_list<int>{KEY_Y})) setCtrl(*tm, p), Audio::play(Audio::Sfx::FeClick);
+    }
+    if (!typing && live && P({X}, {KEY_X})) {
+        auto freePad = [&] {
+            int pad = 0;
+            for (int p = 3; p >= 0; p--) if (padPresent(p) && !(lobby.padsUsed() >> p & 1)) pad = p;
+            return (uint8_t)pad;
+        };
+        if (room()) {  // the slot appears with the host's LOBBY
+            if (!tm && c.teams < Lobby::MAX_TEAMS) {
+                GameConfig::Team n = {DEFAULT_TEAMS[c.teams], 0, (uint8_t)(nb ? c.teams % nb : 0), 0, freePad()};
+                myTeams.push_back(n), net->sendTeams(myTeams), saveNetTeams();
+            } else if (mine && myTeams.size() > 1) {
+                myTeams.erase(myTeams.begin() + net->lobby.teams[teamFocus].idx), net->sendTeams(myTeams), saveNetTeams();
+            }
+        } else if (!tm && lobby.addTeam()) {
+            GameConfig::Team &n = c.teamSetup[c.teams - 1];
+            n.cpu = 0, n.pad = freePad();
+            teamFocus = c.teams - 1, teamRow = 0;
+        } else if (mine) lobby.removeTeam(teamFocus, 2);
+    }
+    bool leave = back && room();
+    if (back && !room()) saveSetup(c), go(Local);
+    if (plus) {
+#ifdef __SWITCH__
+        if (padMissing(lobby)) controllerApplet(__builtin_popcount(lobby.padsUsed()));
+#endif
+        screen = SetupMap;
+    }
+#ifdef __SWITCH__
+    if (minusTap) controllerApplet(__builtin_popcount(lobby.padsUsed()));
+#endif
+
+    setupHeading(0, setupTitle(room(), lan), room() ? timer : -2);
+    // pad strip: the 4 Switch player slots, with the teams each controls
+    for (int p = 0; p < 4; p++) {
+        Rectangle d = {40 + p * (TEAM_W + 14), 92, TEAM_W, 88};
+        bool on = padPresent(p);
+        paper(d, on ? PAPER : Color{246, 236, 210, 170}, PAPER_EDGE);
+        Rectangle g = {d.x + 14, d.y + 21, 46, 46};
+        DrawRectangleRounded(g, 0.25f, 6, DARK);
+        DrawRectangleRounded({g.x + 6, g.y + 14, 34, 21}, 0.5f, 6, PAPER);
+        DrawCircle(g.x + 16, g.y + 24, 3.5f, DARK), DrawCircle(g.x + 30, g.y + 22, 2.5f, DARK), DrawCircle(g.x + 34, g.y + 27, 2.5f, DARK);
+        ptext(TextFormat(tr(nullptr, "Pad %d", "Manette %d"), p + 1), d.x + 72, d.y + 18, 22, DARK);
+        led(d.x + 72 + textWidth(TextFormat(tr(nullptr, "Pad %d", "Manette %d"), p + 1), 22) + 10, d.y + 25, p);
+        ptext(on ? padStyle(p) : tr(nullptr, "Press L + R to join", "Appuie sur L + R pour rejoindre"), d.x + 72, d.y + 50, 15, SOFT);
+        float dot = d.x + d.width - 16 - 22;
+        for (int k = Lobby::MAX_TEAMS - 1; k >= 0; k--) {
+            if (k >= c.teams || !lobby.canEdit(k) || c.teamSetup[k].cpu || c.teamSetup[k].pad != p) continue;
+            DrawCircle(dot + 9, d.y + d.height / 2, 11, WHITE), DrawCircle(dot + 9, d.y + d.height / 2, 9, TEAM_COLORS[k]);
+            dot -= 22;
+        }
+    }
+    // team cards
+    const char *CPU[] = {"", tr("FETXT.CPU1", "CPU Level 1", "I.A. Niveau 1"), tr("FETXT.CPU2", "CPU Level 2", "I.A. Niveau 2"), tr("FETXT.CPU3", "CPU Level 3", "I.A. Niveau 3"),
+                         tr("FETXT.CPU4", "CPU Level 4", "I.A. Niveau 4"), tr("FETXT.CPU5", "CPU Level 5", "I.A. Niveau 5")};
+    for (int k = 0; k < Lobby::MAX_TEAMS; k++) {
+        bool focus = k == teamFocus;
+        Rectangle d = {40 + k * (TEAM_W + 14), 196.0f - (focus ? 4 : 0), TEAM_W, 440};
+        if (k >= c.teams) {
+            paper(d, {246, 236, 210, 85}, focus ? HILITE : Color{246, 236, 210, 200}, focus ? 5 : 3);
+            ptext("+", d.x + d.width / 2, d.y + 150, 80, SKY, 1);
+            ptext(tr(nullptr, "Add a team", "Ajouter une équipe"), d.x + d.width / 2, d.y + 245, 26, SKY, 1);
+            continue;
+        }
+        const GameConfig::Team &m = c.teamSetup[k];
+        if (focus) DrawRectangleRounded({d.x - 4, d.y - 4, d.width + 8, d.height + 8}, 0.12f, 8, {255, 138, 31, 102});
+        paper(d, PAPER, focus ? HILITE : PAPER_EDGE, focus ? 4 : 3);
+        DrawRectangleRounded({d.x + 3, d.y + 3, d.width - 6, 10}, 1, 6, TEAM_COLORS[k]);
+        bool nameSel = focus && teamRow == 0;
+        if (nameSel) DrawRectangleRounded({d.x + 10, d.y + 20, d.width - 20, 40}, 0.3f, 6, HILITE);
+        ptext(TextFormat("%s%s", m.name.c_str(), editing == &c.teamSetup[k].name && fmodf(t, 1) < 0.5f ? "_" : ""), d.x + 18, d.y + 24, 28, nameSel ? HILITE_INK : TEAM_COLORS[k]);
+        const char *labels[3] = {tr(nullptr, "Control", "Contrôle"), tr("FETXTSH.Voice", "Voice", "Voix"), tr(nullptr, "Hat", "Chapeau")};
+        const char *vals[3] = {"", nb ? Audio::voiceBankName(m.voice) : "-", !hats ? "-" : hatLabel(m.hat)};
+        for (int r = 0; r < 3; r++) {
+            Rectangle l = {d.x + 10, d.y + 68 + r * 36.0f, d.width - 20, 32};
+            bool sel = focus && teamRow == r + 1;
+            if (sel) DrawRectangleRounded(l, 0.3f, 6, HILITE);
+            ptext(labels[r], l.x + 8, l.y + 6, 17, sel ? Color{74, 40, 0, 255} : SOFT);
+            float right = l.x + l.width - 8;
+            if (sel) ptext(">", right - 4, l.y + 4, 22, HILITE_INK, 2), right -= 16;
+            if (r == 0) {
+                bool own = lobby.canEdit(k), miss = own && !m.cpu && !padPresent(m.pad), pad = own && !m.cpu;
+                const char *v = m.cpu ? CPU[m.cpu] : own ? TextFormat(tr(nullptr, "Pad %d", "Manette %d"), m.pad + 1) : tr(nullptr, "Human", "Humain");
+                float w = textWidth(v, 15) + 18 + (pad ? 52 : 0);
+                Rectangle ch = {right - w, l.y + 4, w, 24};
+                pill(ch, miss ? WARN : m.cpu ? CPU_CHIP : DARK);
+                if (pad) led(ch.x + 10, ch.y + 8, m.pad);
+                ptext(v, ch.x + (pad ? 52 : 9), ch.y + 4, 15, PAPER);
+                right = ch.x - 4;
+            } else {
+                ptext(vals[r], right, l.y + 6, 17, sel ? HILITE_INK : DARK, 2);
+                right -= textWidth(vals[r], 17) + 6;
+            }
+            if (sel) ptext("<", right - 2, l.y + 4, 22, HILITE_INK, 2);
+        }
+        if (room()) {  // the owner console, and its W4M ready grenade (Team<n>_Ready: Nav Start, Normal when ready, Disabled when not)
+            auto p = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
+            ptext(p == net->players.end() ? "" : (p->name + (p->id == net->id ? tr(nullptr, " (you)", " (vous)") : "")).c_str(), d.x + 18, d.y + 186, 15, SOFT);
+            navAt(0, lobby.ready[k] ? 0 : 2, {d.x + d.width - 38, d.y + 176, 28, 28});
+        }
+        if (lobby.canEdit(k) && !m.cpu && !padPresent(m.pad)) {
+            std::vector<std::string> ls = wrapLines(TextFormat(tr(nullptr, "Pad %d missing: + opens the controller screen", "Manette %d absente : + ouvre l'écran des manettes"), m.pad + 1), 13, d.width - 146);
+            for (size_t i = 0; i < ls.size(); i++) ptext(ls[i].c_str(), d.x + 12, d.y + d.height - 36 - (ls.size() - 1 - i) * 16.0f, 13, WARN);
+        }
+    }
+    for (int k = 0; k < c.teams; k++) {  // the worm stands free in the card's bottom-right corner
+        wormPreview(k, t);
+        Rectangle d = {40 + k * (TEAM_W + 14) + TEAM_W + 26 - 204, 196.0f - (k == teamFocus ? 4 : 0) + 440 + 10 - 0.955f * 276, 204, 276};  // the worm's feet 10 px below the card
+        DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, d, {}, 0, WHITE);
+    }
+    hintBar({{"A", "Enter", tr(nullptr, "Edit", "Modifier")}, {"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")}, {"Y", "Y", tr(nullptr, "Take with my pad", "Prendre avec ma manette")},
+             {"X", "X", tr(nullptr, "Add / remove", "Ajouter / retirer")}, {APPLET, nullptr, tr(nullptr, "Pads", "Manettes")}, {"+", "N", tr(nullptr, "Next", "Suivant")},
+             {"B", "Esc", tr(nullptr, "Back", "Retour")}});
+    return leave;
+}
+
+void Frontend::setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps) {
+    const int n = (int)maps.size();
+    if (n && lobby.canEditMatch()) {
+        mapSel = clampWrap(mapSel + dx + 3 * dy, n);
+        if (live && P({YB}, {KEY_Y})) mapSel = GetRandomValue(0, n - 1);
+        lobby.cfg.map = maps[mapSel];
+    }
+    if (back) screen = SetupTeams;
+    if (plus) screen = SetupRules;
+
+    setupHeading(1, setupTitle(room(), lan), room() ? timer : -2);
+    paper({40, 96, 600, 520}, PAPER, PAPER_EDGE);
+    Rectangle pv = {40 + 85.0f, 96 + 12.0f, 430, 430};
+    if (!cover(preview(lobby.cfg.map), pv)) DrawRectangleRec(pv, {30, 60, 40, 255});
+    DrawRectangleLinesEx(pv, 2, PAPER_EDGE);
+    const std::string title = mapTitle(lobby.cfg.map);
+    text(title.c_str(), pv.x + 16, pv.y + pv.height - 57, 36, WHITE);
+    ptext(TextFormat("%d / %d", mapSel + 1, n), 40 + 22, 96 + 466, 18, SOFT);
+    paper({664, 96, 576, 496}, PAPER, PAPER_EDGE);
+    const int cols = 3, rows = (n + cols - 1) / cols, vis = 5, first = Clamp(mapSel / cols - 2, 0, std::max(0, rows - vis));
+    const float tw = (576 - 24 - 2 * 10) / 3.0f, th = 88;
+    for (int i = first * cols; i < std::min(n, (first + vis) * cols); i++) {
+        Rectangle d = {664 + 12 + (i % cols) * (tw + 10), 96 + 12 + (i / cols - first) * (th + 8), tw, th};
+        if (!cover(preview(maps[i]), d)) DrawRectangleRec(d, {30, 60, 40, 255});
+        DrawRectangleGradientV((int)d.x, (int)d.y + 50, (int)d.width, 38, {0, 0, 0, 0}, {0, 0, 0, 170});
+        std::vector<std::string> ls = wrapLines(mapTitle(maps[i]).c_str(), 13, d.width - 12);
+        for (size_t l = 0; l < ls.size() && l < 2; l++) ptext(ls[l].c_str(), d.x + 6, d.y + th - 6 - (std::min<size_t>(ls.size(), 2) - l) * 15.0f, 13, WHITE);
+        if (i == mapSel) DrawRectangleLinesEx({d.x - 2, d.y - 2, d.width + 4, d.height + 4}, 4, HILITE);
+    }
+    cta(tr(nullptr, "NEXT", "SUIVANT"));
+    if (!lobby.canEditMatch()) ptext(tr(nullptr, "The host picks the map", "L'hôte choisit le terrain"), 664 + 150, 96 + 506, 18, SOFT, 1);
+    std::vector<Hint> h = {{"B", "Esc", tr(nullptr, "Teams", "Équipes")}, {"+", "N", tr(nullptr, "Next", "Suivant")}};
+    if (lobby.canEditMatch()) h.insert(h.begin(), {{"D-pad", "Arrows", tr(nullptr, "Map", "Terrain")}, {"Y", "Y", tr(nullptr, "Random", "Au hasard")}});
+    if (room()) h.push_back({"ZR", "R", tr(nullptr, "Ready", "Prêt")});
+    hintBar(h);
+}
+
+bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
+    GameConfig &c = lobby.cfg;
+    enum { Scheme_, Worms, FirstRule, Pot = FirstRule + RULES, Rows };
+    rulesRow = clampWrap(rulesRow + dy, Rows);
+    int preset = presetOf(c.scheme), np = (int)SCHEMES.size();
+    bool mayEdit = lobby.canEditMatch();
+    if (!mayEdit) dx = 0, ok = false;  // read-only: the rows and their help stay readable
+    if (rulesRow == Scheme_ && dx) c.scheme = SCHEMES[clampWrap(preset < 0 ? (dx > 0 ? 0 : np - 1) : preset + dx, np)].s;
+    if (rulesRow == Scheme_ && ok) screen = SchemeEdit, schemeRow = 0;
+    if (rulesRow == Worms) c.wormsPerTeam = Clamp(c.wormsPerTeam + dx, 1, 4);
+    if (rulesRow >= FirstRule && rulesRow < Pot && (dx || ok)) c.rules ^= RULE_ROWS[rulesRow - FirstRule].bit;
+    if (rulesRow == Pot && ok) screen = Wormpot, reel = 0;
+    if (back) screen = SetupMap;
+    bool start = room() ? plus && mayEdit && net->allReady() && c.teams >= 2 : plus;
+    if (plus && room() && !start) net->setReady(!net->isReady(net->id));
+    if (plus && !room()) {
+        saveSetup(c);
+#ifdef __SWITCH__
+        if (padMissing(lobby)) controllerApplet(__builtin_popcount(lobby.padsUsed()));
+#endif
+    }
+
+    setupHeading(2, setupTitle(room(), lan), room() ? timer : -2);
+    int pots = 0, pot = 0;
+    for (int b = 0; b < WP_MODES; b++) if (wpOn(wormpotModes(c.wormpot), b)) pots++, pot = b;
+    struct Row { const char *label; std::string value; int toggle; };  // toggle: -1 none, else the rule bit's row
+    std::vector<Row> rows = {{tr(nullptr, "Scheme", "Schéma"), preset < 0 ? "Custom" : SCHEMES[preset].name, -1}, {tr(nullptr, "Worms per team", "Vers par équipe"), TextFormat("%d", c.wormsPerTeam), -1}};
+    for (int r = 0; r < RULES; r++) rows.push_back({ruleLabel(r), "", r});
+    rows.push_back({"Wormpot", !pots ? tr(nullptr, "None", "Aucun") : pots == 1 ? potName(pot) : TextFormat(tr(nullptr, "%d modes", "%d modes"), pots), -1});
+    paper({40, 96, 600, 12 + 2 * 38 + 2 * 3 + 14 + RULES * 38 + 14 + 38 + 12 + 24}, PAPER, PAPER_EDGE);
+    float y = 108;
+    for (int i = 0; i < (int)rows.size(); i++) {
+        if (i == FirstRule || i == Pot) DrawRectangle(48, (int)y + 5, 584, 2, PAPER_EDGE), y += 14;
+        Rectangle l = {50, y, 580, 36};
+        bool sel = i == rulesRow;
+        if (sel) DrawRectangleRounded(l, 0.3f, 6, HILITE);
+        ptext(rows[i].label, l.x + 12, l.y + 6, 22, sel ? Color{74, 40, 0, 255} : SOFT);
+        if (rows[i].toggle >= 0) {
+            bool on = c.rules & RULE_ROWS[rows[i].toggle].bit;
+            Rectangle tg = {l.x + l.width - 12 - 56, l.y + 6, 56, 24};
+            pill(tg, on ? ON_GREEN : sel ? Color{255, 255, 255, 102} : Color{58, 42, 24, 24});
+            ptext(on ? "ON" : "off", tg.x + 28, tg.y + 3, 17, on ? WHITE : sel ? HILITE_INK : SOFT, 1);
+        } else ptext(TextFormat(sel && i < Pot ? "< %s >" : "%s", rows[i].value.c_str()), l.x + l.width - 12, l.y + 6, 22, sel ? HILITE_INK : DARK, 2);
+        y += 40;
+    }
+    // the right panel explains the selected row with W4M's own text
+    const char *title = rows[rulesRow].label, *help = nullptr;
+    if (rulesRow == Scheme_) title = tr("FETXT.GameStyle", "Game style", "Style de partie"), help = tr("FETXT.HTPSubtopic24", "Before you begin a game, you must first select a Game Style.", nullptr);
+    else if (rulesRow >= FirstRule && rulesRow < Pot) help = ruleHelp(rulesRow - FirstRule);
+    else if (rulesRow == Pot) help = tr("FETIP.Wormpot", "The Wormpot changes the rules of the game in new ways.", nullptr);
+    paper({664, 96, 576, 480}, PAPER, PAPER_EDGE);
+    ptext(title, 664 + 26, 96 + 20, 38, SKY);
+    if (help) {
+        float size = 21;
+        std::vector<std::string> ls = wrapLines(help, size, 576 - 52);
+        while (size > 13 && ls.size() * size * 1.4f > 480 - 90) ls = wrapLines(help, size -= 1, 576 - 52);
+        for (size_t i = 0; i < ls.size(); i++) ptext(ls[i].c_str(), 664 + 26, 96 + 78 + i * size * 1.4f, size, DARK);
+    }
+    bool ready = room() && net->isReady(net->id), go = room() && mayEdit && net->allReady() && c.teams >= 2;
+    cta(!room() || go ? tr(nullptr, "START", "START") : ready ? tr(nullptr, "NOT READY", "PAS PRÊT") : tr(nullptr, "READY", "PRÊT"));
+    if (!mayEdit) ptext(tr(nullptr, "The host sets the rules", "L'hôte règle la partie"), 40 + 300, 96 + 12 + 2 * 38 + 2 * 3 + 14 + RULES * 38 + 14 + 38 + 12 + 24 + 8, 18, SOFT, 1);
+    std::vector<Hint> h = {{"D-pad", "Up/Down", tr(nullptr, "Choose", "Choisir")}};
+    if (mayEdit) h.push_back({"A", "Enter", tr(nullptr, "Toggle", "Activer")}), h.push_back({"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")});
+    h.push_back({"+", "N", !room() || go ? tr(nullptr, "Start", "Lancer") : ready ? tr(nullptr, "Not ready", "Pas prêt") : tr(nullptr, "Ready", "Prêt")});
+    h.push_back({"B", "Esc", tr(nullptr, "Map", "Terrain")});
+    hintBar(h);
+    return start;
+}
+
+void Frontend::enterRoom(bool l) {
+    online = true, lan = l, loaded = false, screen = SetupTeams, teamFocus = teamRow = rulesRow = 0, teamsDirty = false, editing = nullptr;
+    myTeams.clear();
+}
+
+void Frontend::backToRoom() { screen = SetupTeams, teamFocus = teamRow = rulesRow = 0; }
+
+void Frontend::fromNet(const std::vector<std::string> &maps) {
+    const Net::Lobby &n = net->lobby;
+    GameConfig &c = lobby.cfg;
+    lobby.self = (int)net->id, lobby.host = (int)net->hostId;
+    c.teams = std::min<int>((int)n.teams.size(), Lobby::MAX_TEAMS);
+    c.teamSetup.resize(Lobby::MAX_TEAMS);
+    for (int k = 0; k < c.teams; k++) {
+        const Net::LobbyTeam &t = n.teams[k];
+        lobby.owner[k] = (int)t.owner;
+        c.teamSetup[k] = t.owner == net->id && t.idx < myTeams.size() ? myTeams[t.idx] : t.team;  // own teams: the local copy, with its pad
+        lobby.ready[k] = net->isReady(t.owner);
+    }
+    if (!lobby.isHost()) {  // the host's screens edit the settings; the others mirror them
+        c.map = n.map, c.rules = n.rules, c.scheme = n.scheme, c.wormpot = n.wormpot, c.wormsPerTeam = n.wormsPerTeam;
+        auto it = std::find(maps.begin(), maps.end(), n.map);
+        if (it != maps.end()) mapSel = int(it - maps.begin());
+    }
+}
+
+void Frontend::toNet() {
+    const GameConfig &c = lobby.cfg;
+    for (int k = 0; k < c.teams && k < (int)net->lobby.teams.size(); k++) {
+        const Net::LobbyTeam &t = net->lobby.teams[k];
+        if (t.owner != net->id || t.idx >= myTeams.size()) continue;
+        GameConfig::Team &m = myTeams[t.idx];
+        const GameConfig::Team &e = c.teamSetup[k];
+        teamsDirty |= m.name != e.name || m.cpu != e.cpu || m.voice != e.voice || m.hat != e.hat || m.pad != e.pad;
+        m = e;
+    }
+    if (teamsDirty && now() - teamsSent >= 0.1f) net->sendTeams(myTeams), saveNetTeams(), teamsDirty = false, teamsSent = now();  // typing sends a few times a second
+    Net::Lobby &n = net->lobby;
+    if (lobby.isHost() && (n.map != c.map || n.rules != c.rules || n.wormpot != c.wormpot || n.wormsPerTeam != c.wormsPerTeam || memcmp(&n.scheme, &c.scheme, sizeof(Scheme)))) {
+        n.map = c.map, n.rules = c.rules, n.scheme = c.scheme, n.wormpot = c.wormpot, n.wormsPerTeam = c.wormsPerTeam;
+        net->pushLobby();
+    }
+}
+
+// ---------------------------------------------------------------- network salon: Créer / Rejoindre
+
+int salon(Salon &st, bool lan, const std::vector<std::string> &names, const std::vector<std::string> &info, const std::string &status) {
+    int dy = P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n = (int)names.size(), ret = 0;
+    bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    if (!st.joining) {
+        st.row = clampWrap(st.row + dy, 2);
+        if (ok) st.row == 0 ? ret = 1 : (st.joining = true, st.sel = 0);
+        if (back) ret = -1;
+    } else {
+        st.sel = n ? clampWrap(st.sel + dy, n) : 0;
+        if (ok && n) ret = 2;
+        if (back) st.joining = false;
+    }
+    const char *title = tr(nullptr, "Lobby", "Salon");
+    text(title, 40, 18, 52, {255, 246, 224, 255});
+    text(lan ? tr(nullptr, "Local network", "Réseau local") : tr(nullptr, "Online", "En ligne"), 40 + textWidth(title, 52) + 22, 34, 30, {232, 244, 255, 204});
+    if (!st.joining) {
+        const char *labels[2] = {tr(nullptr, "Create a lobby", "Créer un salon"), tr(nullptr, "Join a lobby", "Rejoindre un salon")};
+        for (int i = 0; i < 2; i++) {
+            Rectangle d = {340, 200.0f + i * 150, 600, 120};
+            if (i == st.row) DrawRectangleRounded({d.x - 5, d.y - 5, d.width + 10, d.height + 10}, 0.12f, 8, {255, 138, 31, 102});
+            paper(d, i == st.row ? HILITE : PAPER, i == st.row ? HILITE : PAPER_EDGE, 4);
+            ptext(labels[i], d.x + d.width / 2, d.y + 34, 46, i == st.row ? HILITE_INK : DARK, 1);
+        }
+    } else {
+        paper({190, 110, 900, 470}, PAPER, PAPER_EDGE);
+        ptext(lan ? tr(nullptr, "Games on this network", "Parties sur ce réseau") : tr(nullptr, "Open lobbies", "Salons ouverts"), 220, 128, 30, SKY);
+        for (int i = 0; i < n && i < 6; i++) {
+            Rectangle r = {214, 186.0f + i * 62, 852, 54};
+            if (i == st.sel) DrawRectangleRounded(r, 0.3f, 6, HILITE);
+            ptext(names[i].c_str(), r.x + 16, r.y + 10, 30, i == st.sel ? HILITE_INK : DARK);
+            ptext(info[i].c_str(), r.x + r.width - 16, r.y + 16, 22, i == st.sel ? HILITE_INK : SOFT, 2);
+        }
+        if (!n) ptext(lan ? tr(nullptr, "Looking for games on this network...", "Recherche de parties sur ce réseau...") : tr(nullptr, "No lobby yet", "Aucun salon pour l'instant"), 640, 300, 28, SOFT, 1);
+    }
+    ptext(status.c_str(), 640, 610, 22, WARN, 1);
+    std::vector<Hint> h = {{"A", "Enter", tr(nullptr, "Select", "Choisir")}, {"B", "Esc", st.joining ? tr(nullptr, "Back", "Retour") : tr(nullptr, "Leave", "Quitter")}};
+    if (st.joining && !lan) h.insert(h.begin() + 1, {"Y", "R", tr(nullptr, "Refresh", "Actualiser")});
+    hintBar(h);
+    return ret;
 }
 
 // ---------------------------------------------------------------- wormpot & weapon factory
@@ -1960,7 +2407,7 @@ void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, floa
     wrapped(tr(TextFormat("FETXT.WPotHelp.%s", mi.key), mi.help, nullptr), 640, 500, 900, 24, WHITE);
     text(spinning ? "Spinning..." : "Spin those reels!", 640, 600, 30, GOLDEN, 1);
     hints({{"D-pad", "Left/Right", "Reel"}, {"D-pad", "Up/Down", "Nudge"}, {"X", "S", "Spin"}, {"Y", "R", "Reset"}, {"B", "Esc", "Back"}});
-    if ((back || ok) && !spinning) screen = Setup;
+    if ((back || ok) && !spinning) screen = SetupRules;
 }
 
 void Frontend::factory(int dx, int dy, bool ok, bool back) {
@@ -2747,7 +3194,6 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     // turn start banner: team/worm name, also briefly for CPU/remote turns that skip the ready screen above
     if (tick - introStart < 90 || (aiming && g.timer > std::max(1, (int)g.cfg.scheme.turnTime) * 60 - 120))
         text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(cur.team, g.current % std::max(1, g.perTeam))), 640, 14, 28, tc, 1);
-    if (g.cfg.rules & RULE_ROPE_RACE) text(TextFormat("Race %ds", tick / 60), 640, 80, 26, GOLDEN, 1);
     if (g.suddenDeath && banners.empty()) text("SUDDEN DEATH!", 640, 46, 26, GOLDEN, 1);  // crate drops: commentary banner
 
     radar(g, {124, 112}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
@@ -3086,54 +3532,6 @@ void replayBadge() {
     if (fmodf(now(), 1) < 0.7f) text("REPLAY", 640, 100, 44, GOLDEN, 1);
     const char *skip = keyGlyphs() ? tr(nullptr, "- Press Enter to skip -", "- Appuyer sur Entrée pour passer -") : tr(nullptr, "- Press A to skip -", "- Appuyer sur A pour passer -");
     text(skip, 640, 56, 30, Fade(CREAM, 0.8f + 0.2f * sinf(now() * 4)), 1);
-}
-
-void lanGames(const std::vector<LanGame> &games, int sel, const std::string &status) {
-    heading("LAN games", 640, 30, 60);
-    for (size_t i = 0; i < games.size() && i < 6; i++) {
-        const LanGame &g = games[i];
-        Rectangle r = {290, 150 + i * 70.0f, 700, 60};
-        panel(r, (int)i == sel);
-        text(g.name.c_str(), r.x + 24, r.y + 14, 30, ink((int)i == sel));
-        text(TextFormat("%s  %d/%d%s", g.ip.c_str(), g.players, g.maxPlayers, g.started ? "  playing" : ""), r.x + r.width - 24, r.y + 18, 24, LIGHTGRAY, 2);
-    }
-    if (games.empty()) text("Looking for games on this network...", 640, 220, 30, LIGHTGRAY, 1);
-    text(status.c_str(), 640, 620, 22, ORANGE, 1);
-    hints({{"A", "Enter", "Join"}, {"X", "C", "Host game"}, {"B", "Esc", "Back"}});
-}
-
-void room(const Net &net, const GameConfig &opt, bool lan, const std::string &status) {
-    bool isHost = net.hostId == net.id;
-    heading(lan ? "LAN game" : "Room", 640, 30, 60);
-    int row = 0, humans = std::min<int>((int)net.players.size(), 4);
-    auto line = [&](const std::string &team, const std::string &who, bool cpu) {
-        Rectangle r = {290, 140 + row * 66.0f, 700, 58};
-        panel(r, false);
-        Color c = row < 4 ? TEAM_COLORS[row] : GRAY;
-        DrawRectangleRounded({r.x + 14, r.y + 12, 10, r.height - 24}, 1, 4, c);
-        text(team.c_str(), r.x + 40, r.y + 12, 30, c);
-        text(who.c_str(), r.x + r.width - 24, r.y + 18, 22, cpu ? SKYBLUE : WHITE, 2);
-        row++;
-    };
-    for (const NetPlayer &p : net.players) {
-        auto it = net.profiles.find(p.id);
-        std::string team = p.id == net.id && !opt.teamSetup.empty() ? opt.teamSetup[0].name : it != net.profiles.end() ? it->second.team.name : p.name;
-        line(team, p.name + (p.id == net.hostId ? " (host)" : "") + (p.id == net.id ? " - you" : "") + (p.online ? "" : " - offline"), false);
-    }
-    auto hp = net.profiles.find(net.hostId);
-    int cpus = isHost ? opt.teams - 1 : hp != net.profiles.end() ? hp->second.cpus : 0;
-    for (int k = 0; k < cpus && humans + k < 4; k++)
-        line(isHost && k + 1 < (int)opt.teamSetup.size() ? opt.teamSetup[k + 1].name : TextFormat("CPU team %d", k + 1),
-             TextFormat("CPU %d", isHost && k + 1 < (int)opt.teamSetup.size() ? std::max<int>(opt.teamSetup[k + 1].cpu, 1) : 2), true);
-    if (humans + cpus > 4) text("4 teams max: extra CPU teams are left out", 640, 140 + row * 66.0f, 20, LIGHTGRAY, 1);
-    text(status.c_str(), 640, 620, 22, ORANGE, 1);
-    if (isHost) {
-        text(net.players.size() >= 2 ? "Ready" : "Waiting for a second console to join...", 640, 580, 24, LIGHTGRAY, 1);
-        hints({{"A", "Enter", "Start (2+ consoles)"}, {"B", "Esc", "Leave"}});
-    } else {
-        text("Waiting for the host to start...", 640, 580, 24, LIGHTGRAY, 1);
-        hints({{"B", "Esc", "Leave"}});
-    }
 }
 
 // ---------------------------------------------------------------- single player

@@ -1,4 +1,4 @@
-// AI vs AI: matches deal damage and finish, replay bit-identically, CPU5 beats CPU1, rope race reaches the finish.
+// AI vs AI: matches deal damage and finish, replay bit-identically, CPU5 beats CPU1.
 // Run from client/ (romfs maps). Prints weapon usage, damage per turn and planning cost.
 #include "../src/ai.h"
 #include "../src/controls.h"
@@ -11,7 +11,7 @@
 static std::vector<int> fires[6];  // [level][weapon], all matches
 static double maxTick = 0, maxTurn = 0;
 
-struct Result { uint32_t sum; int turns, fired, damage, winner; bool over, reached; };
+struct Result { uint32_t sum; int turns, fired, damage, winner; bool over; };
 
 static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint32_t rules = 0, bool quiet = false, int only = -1, int maxTurns = 1000,
                     const Scheme &scheme = Scheme{}) {
@@ -56,7 +56,6 @@ static Result match(const char *map, uint32_t seed, uint8_t l0, uint8_t l1, uint
     r.sum = g.checksum();
     r.over = g.phase == Phase::GameOver;
     r.winner = g.winner;
-    for (const Worm &w : g.worms) r.reached |= w.alive && Vector3Distance(w.pos, g.raceFinish) < 2;
     if (!quiet)
         printf("%-12s seed %3u lvl %d/%d: %3d turns, %3d shots, %5.1f dmg/turn, %s (winner %d)\n", *map ? map : "island", seed, l0, l1, r.turns,
                r.fired, r.turns ? (float)r.damage / r.turns : 0.f, r.over ? "over" : "timeout", g.winner);
@@ -293,10 +292,7 @@ int main() {
         for (size_t i = 0; i < a.size(); i++)
             assert(a[i].weapon == b[i].weapon && Vector3Distance(a[i].pos, b[i].pos) < 1e-4f && fabsf(a[i].yaw - b[i].yaw) < 1e-4f && fabsf(a[i].pitch - b[i].pitch) < 1e-4f);
     }
-    maxTick = maxTurn = 0;
-    for (uint8_t level : {1, 5}) assert(match("ropetrack", 5, level, level, RULE_ROPE_RACE).reached);
-    Result a = match("", 99, 2, 2, RULE_KARMA | RULE_VAMPIRE), b = match("", 99, 2, 2, RULE_KARMA | RULE_VAMPIRE);
+    Result a = match("", 99, 2, 2, RULE_KING | RULE_VAMPIRE), b = match("", 99, 2, 2, RULE_KING | RULE_VAMPIRE);
     assert(a.sum == b.sum);
-    printf("rope race cost: max %.2f ms per tick, %.2f ms per turn\n", maxTick, maxTurn);
     printf("ai_check OK (%d/%d matches over)\n", over, n);
 }

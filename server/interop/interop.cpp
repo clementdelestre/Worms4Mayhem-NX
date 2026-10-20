@@ -16,14 +16,24 @@ int main(int argc, char **argv) {
         net.poll();
         Net::Event e;
         while (net.next(e)) switch (e.type) {
-        case Net::Welcome: host ? net.createRoom("interop", 2) : net.listRooms(); break;
+        case Net::Welcome: host ? net.createRoom("interop", 2), net.setReady(true) : net.listRooms(); break;
         case Net::RoomList:
             if (net.rooms.empty()) net.listRooms(); else net.joinRoom(net.rooms[0].id);
             break;
         case Net::RoomState:
-            if (host && !playing && net.players.size() == 2) net.start({1234, 2, 1, "", 0}, {net.players[0].id, net.players[1].id});
+            if (!net.isHost()) net.sendTeams({{"Guest"}}), net.setReady(true);
+            else {
+                net.sendTeams({{"Host"}});
+                net.lobby.map = "", net.lobby.wormsPerTeam = 1;
+            }
             break;
-        case Net::Start: game.start(net.cfg); playing = true; break;
+        case Net::TeamsChanged:
+        case Net::LobbyChanged:
+            if (host && !playing && net.lobby.teams.size() == 2 && net.allReady()) net.pushLobby(), net.startMatch(1234);
+            break;
+        case Net::Start:
+            if (net.lobby.teams.size() != 2 || net.lobby.wormsPerTeam != 1) return printf("[%s] lobby mirror wrong\n", argv[1]), 1;
+            game.start(net.cfg); playing = true; break;
         case Net::Desync: return printf("[%s] DESYNC at tick %u\n", argv[1], e.a), 1;
         case Net::Error: printf("[%s] server error: %s\n", argv[1], e.text.c_str()); break;
         case Net::Disconnected: return printf("[%s] disconnected: %s\n", argv[1], e.text.c_str()), 1;

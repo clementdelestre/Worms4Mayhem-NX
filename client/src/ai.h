@@ -12,8 +12,6 @@ struct Ai {
 
     // rank: score x taste; origin: index in origins (-1: re-aimed where the worm stands); view: the Blimp yaw a strike is called with
     struct Plan { int weapon = -1, charge = 0, target = -1; float yaw = 0, pitch = 0, score = -1e9f, rank = -1e9f; int origin = -1; float view = 0; };
-    struct RopePlan { float yaw = 0, pitch = 0; int release = -1; bool reel = false; };  // release -1: walk toward the finish, -2: stay
-    struct RopeRun { int t = 0, held = 0, after = -1; bool fired = false, done = true; };
     struct Step { Vector3 to; float yaw = 0; uint8_t move = 0; };  // W4M path move: 0 WALK to `to`, 1 JUMP_FORWARD, 2 JUMP_BACKFLIP along yaw
     struct StepRun { int t = 0; bool air = false, done = false, stuck = false; };  // stuck: a walk held off its node
     // A pathfind request: W4M 0x4942f0 (the whole path, at most `iters` A* iterations, refused past `limit` ticks; -1: no time check)
@@ -81,10 +79,6 @@ private:
     std::vector<Fail> failed;  // W4M AIPlanMemory failed plans: the target neither moved nor lost hp
     Fail recent{-1};           // the last attack, checked at the next think (CheckPlanResult)
     void regress(const Game &g);
-    RopePlan rope;
-    RopeRun run;
-    int raceAt = -1, raceTimer = 0, raceWait = 0;  // rope race: next candidate, turn time left when the run starts, ticks until then
-    float raceBest = 0;
 
     void startEval(const Game &g);
     void targetsFor(const Game &g, const Origin &o);
@@ -102,5 +96,4 @@ private:
     Input act(const Game &g);
     Input blimp(const Game &g) const;
     Input retreat(const Game &g);
-    Input race(const Game &g);
 };

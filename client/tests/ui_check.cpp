@@ -12,6 +12,43 @@
 
 int main() {
     loadWeapons("romfs/weapons.json");
+    {  // Lobby: teams are added at the end, removing one shifts the later ones up, pads in use come from this console's human teams
+        Lobby l;
+        l.cfg.teams = 2, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
+        for (int k = 0; k < Lobby::MAX_TEAMS; k++) l.cfg.teamSetup[k].name = std::to_string(k), l.cfg.teamSetup[k].pad = (uint8_t)k;
+        assert(l.addTeam() && l.addTeam() && !l.addTeam() && l.cfg.teams == 4);
+        l.cfg.teamSetup[3].cpu = 2;
+        assert(l.padsUsed() == 0b0111);  // team 3 is a CPU
+        assert(l.removeTeam(1, 2) && l.cfg.teams == 3 && l.cfg.teamSetup[1].name == "2" && l.cfg.teamSetup[2].name == "3" && l.cfg.teamSetup[3].name == "1");
+        assert(l.removeTeam(0, 2) && !l.removeTeam(0, 3));
+        l.owner[0] = 1;  // another console's team: not editable here, but its pad is not ours either
+        assert(!l.canEdit(0) && !l.removeTeam(0, 1) && l.isHost() && l.canEditMatch());
+        l.self = 1;
+        assert(!l.isHost() && !l.canEditMatch() && l.canEdit(0));
+    }
+    {  // network teams saved in setup.txt: name with spaces, hat, pad and the number of teams come back
+        std::vector<GameConfig::Team> mine = {{"Pirate Pete", 0, 0, 3, 2}, {"Two Words Here", 0, 0, 1, 1}}, back;
+        std::string txt = Ui::netProfileText(mine) + "teams 3\n";
+        size_t at = 0;
+        for (size_t nl; (nl = txt.find('\n', at)) != std::string::npos; at = nl + 1) {
+            bool net = Ui::netProfileLine(txt.substr(at, nl - at).c_str(), 10, back);
+            assert(net == !txt.compare(at, 3, "net"));
+        }
+        assert(back.size() == 2 && back[0].name == "Pirate Pete" && back[0].hat == 3 && back[0].pad == 2 && back[1].name == "Two Words Here" && back[1].pad == 1);
+    }
+    {  // W4M lobby timer: 30 s from the second player, restarted by a join, off under 2 players, everyone ready at its end
+        ReadyTimer t;
+        assert(!t.update(0, 1) && t.seconds(0) == -1);
+        assert(!t.update(10, 2) && t.seconds(10) == 30 && t.seconds(35.5) == 5);
+        assert(!t.update(20, 3) && t.seconds(20) == 30);  // a join restarts it
+        assert(!t.update(49.9, 3) && t.update(50, 3) && !t.update(51, 3) && t.seconds(51) == -1);  // fires once
+        assert(!t.update(60, 1) && !t.update(61, 2) && t.seconds(61) == 30);  // back under 2 players: armed again
+    }
+    {  // W4M names of the hats, the multiplayer landscapes (assets from tools/w4m-re/setuplists.py)
+        std::vector<std::string> maps = {"", "Multi_CarpetCapers", "Accuracy", "Clean-w3d", "ChallengeAccuracy", "ChallengeCrate"};
+        Ui::multiplayerMaps(maps);
+        if (FileExists("assets/multimaps.txt")) assert((maps == std::vector<std::string>{"", "Multi_CarpetCapers", "Clean-w3d", "ChallengeCrate"}));
+    }
     for (int want = 0; want < (int)WEAPONS.size(); want++) {
         Game g;
         g.start({7, 2, 2, "", 0});

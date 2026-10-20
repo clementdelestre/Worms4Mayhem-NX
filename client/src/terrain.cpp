@@ -208,7 +208,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     loadMs[0] = loadMs[1] = loadMs[2] = 0;
     objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
     thinOnly.clear(), thinVox.clear();
-    hasFinish = false, sharp = SharpLand{};
+    sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
     Json j;
@@ -290,7 +290,6 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     }
     d.shareAll();  // the island and the shapes gave their chunks own blocks
 
-    if (j["finish"].type == Json::Arr) hasFinish = true, finish = vec(j["finish"], {cx, 8, cz});
     for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz}), vec(m["dir"], {0, 0, 0})});
     for (const Json &b : j["blocks"].arr) blocks.push_back({b[0].f(), b[1].f(), b[2].f(), b[3].f()});  // imported: already merged
     mergeBlocks();

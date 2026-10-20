@@ -47,9 +47,7 @@ struct Terrain {
     unsigned edits = 0;  // carve() / weld() calls that may have changed a voxel: stamps the AI's per-think caches
     Material mat{};  // loaded on first remesh, so the sim runs without a GL context
 
-    // Filled by load(): fixed spawn points (team-major order), optional race finish, theme palette.
-    bool hasFinish = false;
-    Vector3 finish{};
+    // Filled by load(): fixed spawn points (team-major order), theme palette.
     struct Marker { std::string name, type; Vector3 pos, dir{}; };  // W4M script markers (missions): worm, target, crate, mine...; dir: its local -Z
     std::vector<Marker> markers;
     std::vector<Vector4> blocks;  // W4M AI NodeGrid boxes (x0, z0, x1, z1 in m): heightmap and land pieces, merged (AddLandBlock)

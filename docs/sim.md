@@ -53,7 +53,7 @@ tick); the CPU builds it in `Ai::think`. Weapon picks from the panel and from th
 | `Flying` | a shot is out (`use()`) | may move once `retreating()` (below) | `shots` empty → `Retreat`; timer out, death, `selfHurt`, game decided → `Settle` | W4M 0x5833a0 / 0x54a0e0 (disasm) |
 | `Retreat` | `Flying` with no shot left | may move | timer out (W4M Timer.RetreatTimedOut), death, `selfHurt` → `Settle` | disasm |
 | `Settle` | end of the active part of the turn | no control | everything still, counts and deaths done, `POST_ACTIVITY` over → `beginTurn` | W4M DoPostActivity / WaitUntilNoActivity (stdlib.lub, data) |
-| `GameOver` | `beginTurn` with ≤ 1 team alive (not in missions), rope race finish, mission result | — | — | — |
+| `GameOver` | `beginTurn` with ≤ 1 team alive (not in missions), mission result | — | — | — |
 
 Weapons that keep `Aim` (the turn goes on): Ninja Rope, Jetpack, Teleport, Parachute, Armour, Binoculars, Icarus Potion, Change Worm
 (`use()` sets no phase for them). Surrender goes straight to `Settle`; Skip Go to `Flying`: its PostLaunchDelay 3000 ms with the worm frozen, then a 0 s retreat
@@ -150,7 +150,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   `usable`; the panel dims it with its turns left (W4M FETXT.HTPSubtopic4) and the AI skips it. They count down at the end of each of the
   team's own turns (disasm: ActivateNextWorm 0x5b59b0 sends GameLogic.DecrementWeaponDelays at 0x5b5a5f, before it writes the new
   CurrentTeamIndex at 0x5b5b7c and not on the first turn; the send 0x6910e4 → 0x68cb82 calls the handler at once; 0x4f4df0 takes 1 off
-  every weapon of `Inventory<CurrentTeamIndex>.WeaponDelays`, i.e. the team that just played, and says Comment.NewWeaponAvail at 0). Rule 128 `RULE_NO_DELAYS` (Match setup, "No weapon delays (test)") skips them (ours, for testing).
+  every weapon of `Inventory<CurrentTeamIndex>.WeaponDelays`, i.e. the team that just played, and says Comment.NewWeaponAvail at 0). Rule 128 `RULE_NO_DELAYS` skips them (ours, tests only: no menu row).
 - **Fuses**: `Game::fuses[team]` 1..5 s, default 3, for `user_fuse` weapons (grenade, cluster, banana; W4M FuseUp, data). Timed fuses
   explode on exact multiples of a second.
 
@@ -528,7 +528,7 @@ in the first-person aim takes the aim ray's target (`locked`, `lockAt = target()
   (`budget`, terrain samples; W4M 80 cost units per frame, 0x49b210); the plan never depends on the slicing.
 - Shots are solved with the sim's own flight (`fly()`, `superFly()`, the gun copy, `launchPoint` / `muzzle` / `touches()`), 11 speeds per
   arc (W4M 0x4ace50), error ×(1 ± ShotError) from a game-derived seed (W4M 0x4a4580). Scores: damage, knockback, falls, drowning,
-  chained barrels / crates, poison, karma and vampire (W4M 0x49ed30, 0x4a9260 target values).
+  chained barrels / crates, poison and vampire (W4M 0x49ed30, 0x4a9260 target values).
 - Moves: destination scoring then A* over a 0.5 m node grid (W4M AIPathManager 0x492d80, octile costs, jumps +40, backflips +60);
   each edge is played with `walkStep` / the jump code, vault included. Crates first when they score more (W4M CAIPlanCollectCrate),
   retreat planned with the attack. Strikes are aimed from the Blimp too; a homing missile is locked (one FIRE press, then released) and charged from the worm, like a human.

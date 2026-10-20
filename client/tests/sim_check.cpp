@@ -235,17 +235,6 @@ static void checkPostActivity() {
 }
 
 // Injects a cluster explosion directly into shots[] rather than going through use(), to isolate the damage rule.
-static void checkKarma() {
-    Game g;
-    g.start({5, 2, 1, "", RULE_KARMA}), g.hotSeat = 0;
-    int attacker = g.current, victim = 1 - attacker;
-    g.shots = {{g.worms[victim].pos, {0, 0, 0}, clusterWeapon(), 0, true, 1}};
-    for (Projectile &s : g.shots) s.touching = 0;  // already in flight
-    g.step(Input{});
-    assert(g.worms[attacker].hp < 100);
-    assert(g.worms[attacker].hp > g.worms[victim].hp);  // attacker's cut is smaller than the victim's hit
-}
-
 static void checkVampire() {
     Game g;
     g.start({6, 2, 1, "", RULE_VAMPIRE}), g.hotSeat = 0;
@@ -280,32 +269,6 @@ static void checkSuddenDeath() {
     assert(g.suddenDeath);
     for (const Worm &w : g.worms) if (w.alive) assert(w.hp == 1);
     assert(g.water > before);
-}
-
-static void checkRopeRace() {
-    Game g;
-    g.start({7, 2, 1, "", RULE_ROPE_RACE}), g.hotSeat = 0;
-    int team = g.worms[g.current].team;
-    g.worms[g.current].pos = g.raceFinish;
-    g.step(Input{});
-    assert(g.phase == Phase::GameOver && g.winner == team);
-    g.step(Input{});
-    assert(g.events.empty());  // GameOver (jingle, victory voice) is emitted once, not every tick
-}
-
-static void checkHighlander() {
-    Game g;
-    g.start({13, 2, 1, "", RULE_HIGHLANDER}), g.hotSeat = 0;
-    int wi = clusterWeapon();
-    g.ammo[0][wi] = 0, g.delays[0][wi] = 0;
-    g.ammo[1][wi] = 2, g.delays[1][wi] = 0;
-    g.shots = {{g.worms[1].pos, {0, 0, 0}, wi, 0, true, 1}};
-    for (Projectile &s : g.shots) s.touching = 0;  // already in flight
-    g.step(Input{});  // explode() tags lastHitTeam[1] with the attacker's (team 0) team
-    g.worms[1].hp = 0;
-    endSettle(g);
-    assert(!g.worms[1].alive);
-    assert(g.ammo[0][wi] == 1);  // killer's team inherits the victim's weapon
 }
 
 static void checkObjects() {
@@ -4570,8 +4533,7 @@ int main() {
     assert(run(used) == run(again));
     for (size_t i = 0; i < WEAPONS.size(); i++) printf("%-18s %s\n", WEAPONS[i].name.c_str(), used[i] ? "used" : "-");
 
-    uint32_t combos[] = {0, RULE_KING, RULE_HIGHLANDER, RULE_VAMPIRE, RULE_KARMA, RULE_LOW_GRAVITY,
-                          RULE_ROPE_RACE, RULE_SUDDEN_DEATH, RULE_KARMA | RULE_VAMPIRE};
+    uint32_t combos[] = {0, RULE_KING, RULE_VAMPIRE, RULE_LOW_GRAVITY, RULE_SUDDEN_DEATH, RULE_KING | RULE_VAMPIRE};
     for (uint32_t r : combos) assert(runRules(r, 42) == runRules(r, 42));
     for (const SchemePreset &p : SCHEMES) {
         Scheme sd = p.s;
@@ -4589,13 +4551,10 @@ int main() {
     checkDrownPair();
     checkPostActivity();
     checkDeathBlast();
-    checkKarma();
     checkVampire();
     checkLowGravity();
     checkDebris();
     checkSuddenDeath();
-    checkRopeRace();
-    checkHighlander();
     checkObjects();
     checkPoison();
     checkMelee();

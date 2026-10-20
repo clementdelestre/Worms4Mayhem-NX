@@ -765,7 +765,6 @@ void Game::start(const GameConfig &c) {
     vault = {}, walkVel = {};
     selfHurt = false;
     suddenDeath = false;
-    lastHitTeam.assign(teams * perTeam, -1);
     fuses.assign(teams, 3);
     delays.assign(teams, std::vector<int>(WEAPONS.size()));
     for (const SchemePreset &p : SCHEMES)  // a W4M preset brings its SchemeData delays; custom schemes have none (WXD.DefaultSchemeData)
@@ -787,24 +786,14 @@ void Game::start(const GameConfig &c) {
     spy.assign(teams, 0), scout = Scout{};
 
     ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0));
-    int ropeIdx = 0;
-    for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Rope) ropeIdx = (int)i;
-    if (cfg.rules & RULE_ROPE_RACE) {
-        for (auto &a : ammo) a[ropeIdx] = -1;  // infinite rope, nothing else
-        weapon = ropeIdx;
-    } else if (cfg.rules & RULE_HIGHLANDER) {
-        for (auto &a : ammo)
-            for (int i = 0; i < 3; i++) a[(int)(rand01() * WEAPONS.size())] += 2;  // small random starting set
-    } else {
-        const int set = cfg.scheme.weapons;
-        for (auto &a : ammo)
-            for (size_t i = 0; i < WEAPONS.size(); i++) {
-                Kind k = WEAPONS[i].kind;
-                bool keep = set == Scheme::SET_DEFAULT || k == Kind::SkipGo || k == Kind::Surrender ||
-                            (set == Scheme::SET_BNG && (k == Kind::Shell || k == Kind::Homing));
-                a[i] = set == Scheme::SET_UNLIMITED ? -1 : keep ? WEAPONS[i].count : 0;
-            }
-    }
+    const int set = cfg.scheme.weapons;
+    for (auto &a : ammo)
+        for (size_t i = 0; i < WEAPONS.size(); i++) {
+            Kind k = WEAPONS[i].kind;
+            bool keep = set == Scheme::SET_DEFAULT || k == Kind::SkipGo || k == Kind::Surrender ||
+                        (set == Scheme::SET_BNG && (k == Kind::Shell || k == Kind::Homing));
+            a[i] = set == Scheme::SET_UNLIMITED ? -1 : keep ? WEAPONS[i].count : 0;
+        }
     superWeapon.assign(teams, 0);  // SetupModes runs before the Lua's inventory changes
     for (int t = 0; t < teams && wp(WP_SECRET_WEAPON); t++) {  // 0x5d65c0: rand() % 30 until the team holds it, if it holds any kWeapon
         auto holds = [&](int id) { for (size_t i = 0; i < WEAPONS.size(); i++) if (ammo[t][i] && containerOf((int)i, false) == id) return true; return false; };
@@ -832,30 +821,9 @@ void Game::start(const GameConfig &c) {
             worms.push_back(w);
         }
     terrain.loadMs[2] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - navT0).count();
-    if (!(cfg.rules & RULE_ROPE_RACE)) {
-        for (int i = 0; i < cfg.scheme.mines; i++) addObject(Object::Mine, 0);
-        for (int i = 0; i < cfg.scheme.barrels; i++) addObject(Object::Barrel, 0);
-    }
+    for (int i = 0; i < cfg.scheme.mines; i++) addObject(Object::Mine, 0);
+    for (int i = 0; i < cfg.scheme.barrels; i++) addObject(Object::Barrel, 0);
 
-    if (cfg.rules & RULE_ROPE_RACE) {
-        raceFinish = terrain.finish;
-        if (!terrain.hasFinish) {
-            // fallback: highest point on a coarse grid, biased away from spawns
-            float best = -1e9f;
-            const int s = (int)(2 * Terrain::IVOX);  // 2 m
-            for (int z = s / 2; z < Terrain::NZ - s / 2; z += s)
-                for (int x = s / 2; x < Terrain::NX - s / 2; x += s) {
-                    int y = Terrain::NY - 1;
-                    while (y > 0 && terrain.at(x, y, z) <= 0) y--;
-                    if (y <= 0) continue;
-                    Vector3 p = {x * Terrain::VOX, (y + 1) * Terrain::VOX, z * Terrain::VOX};
-                    float near = 1e9f;
-                    for (const Worm &wo : worms) near = fminf(near, Vector3Distance(p, wo.pos));
-                    float score = p.y + near * 0.5f;
-                    if (score > best) { best = score; raceFinish = p; }
-                }
-        }
-    }
     picked.assign(teams, weapon);
     surrendered.assign(teams, 0);
     special.assign(worms.size(), 0), wormCpu.assign(worms.size(), 0);
@@ -865,7 +833,7 @@ void Game::start(const GameConfig &c) {
         if (cfg.scheme.sdType == Scheme::SD_DRAW) { phase = Phase::GameOver, winner = -1; return; }
     }
     Vector3 fp;  // stdvs Initialise: MineFactoryOn -> CreateRandMineFactory (0x4fe18e), a 40-unit sphere 40 up clear on the ground
-    if (cfg.scheme.mineFactory && !cfg.mission && !(cfg.rules & RULE_ROPE_RACE) && dropPoint(Object::Mine, fp, 40 / 20.0f)) factoryCreate(fp);
+    if (cfg.scheme.mineFactory && !cfg.mission && dropPoint(Object::Mine, fp, 40 / 20.0f)) factoryCreate(fp);
     if (wp(WP_SPECIALIST) && per > 1) {  // Wormpot.lub SetSpecialistTeam: a class per worm by team size and place, the team's ammo set
         static const uint8_t CLASS[7][6] = {{}, {}, {1, 2}, {1, 3, 4}, {5, 6, 3, 4}, {5, 6, 3, 4, 6}, {5, 6, 3, 4, 6, 3}};
         for (size_t i = 0; i < worms.size(); i++) {
@@ -877,10 +845,8 @@ void Game::start(const GameConfig &c) {
         for (size_t x = 0; x < WEAPONS.size(); x++)  // Inventory.WeaponDelays.Default: HomingMissile 1, Airstrike 5, copied to every team
             for (auto &d : delays) if (WEAPONS[x].name == "Homing Missile" || WEAPONS[x].name == "Airstrike") d[x] = WEAPONS[x].name == "Airstrike" ? 5 : 1;
     }
-    if (!(cfg.rules & RULE_ROPE_RACE)) {  // SetWormpotModes: CratesOnly and LotsOfCrates each send a CrateShower
-        if (wp(WP_CRATE_DROPS)) dropCrates(6, false);
-        if (wp(WP_CRATE_SHOWER)) dropCrates(6, false);
-    }
+    if (wp(WP_CRATE_DROPS)) dropCrates(6, false);  // SetWormpotModes: CratesOnly and LotsOfCrates each send a CrateShower
+    if (wp(WP_CRATE_SHOWER)) dropCrates(6, false);
     run = MissionRun{}, script.reset(), indestructible = false;
     if (cfg.mission) missionStart(*this);
     for (Worm &x : worms) x.counted = std::max(0, x.hp);
@@ -1360,11 +1326,9 @@ void Game::doPostActivity() {
             }
             static const float RISE[] = {0, 0.2f, 0.4f, 0.8f};  // Water.RiseSpeed 0 / Slow 4 / Medium 8 / Fast 16 units
             if (suddenDeath) water += RISE[std::min<int>(sc.waterSpeed, 3)];
-            if (!(cfg.rules & RULE_ROPE_RACE)) {
-                dropCrates(1, true);  // GameLogic.DropRandomCrate
-                factoryStart();
-                if (wp(WP_CRATE_SHOWER) || wp(WP_CRATE_DROPS)) dropCrates(6, false);  // DoWormpotOncePerTurnFunctions: one CrateShower
-            }
+            dropCrates(1, true);  // GameLogic.DropRandomCrate
+            factoryStart();
+            if (wp(WP_CRATE_SHOWER) || wp(WP_CRATE_DROPS)) dropCrates(6, false);  // DoWormpotOncePerTurnFunctions: one CrateShower
         }
         checkActivity();
         return;
@@ -1390,9 +1354,6 @@ void Game::stepCount() {
         Worm &x = worms[dyingWorm];
         int i = dyingWorm;
         dyingWorm = -1;
-        if ((cfg.rules & RULE_HIGHLANDER) && lastHitTeam[i] >= 0 && lastHitTeam[i] != x.team)
-            for (size_t wi = 0; wi < WEAPONS.size(); wi++)
-                if (ammo[x.team][wi] && ammo[lastHitTeam[i]][wi] >= 0) ammo[lastHitTeam[i]][wi]++;
         x.alive = false, x.counted = 0;
         std::vector<int> was;
         for (int j : countGroup) was.push_back(worms[j].hp);
@@ -1978,9 +1939,7 @@ void Game::hurt(Worm &w, int dmg, bool blast, int type) {
     emit(GameEvent::Hurt, w.pos, wi);
     if (wi == current) { selfHurt = true; return; }
     Worm &h = worms[current];
-    if (cfg.rules & RULE_KARMA) h.hp -= (int)(dmg * 0.5f + 0.5f);
     if ((cfg.rules & RULE_VAMPIRE) && w.team != h.team) h.hp = std::max(h.hp, std::min(200, h.hp + (int)(dmg * 0.5f + 0.5f)));
-    if (cfg.rules & RULE_HIGHLANDER) lastHitTeam[wi] = h.team;
 }
 
 // W4M StealInventory 0x592d30: 5 single units, each from a random weapon the victim has, those the thief lacks first.
@@ -2862,15 +2821,6 @@ void Game::step(const Input &raw) {
         else i++;
     }
 
-    if ((cfg.rules & RULE_ROPE_RACE) && phase != Phase::GameOver)
-        for (const Worm &x : worms)
-            if (x.alive && Vector3Distance(x.pos, raceFinish) < 2.0f) {
-                phase = Phase::GameOver;
-                winner = x.team;
-                emit(GameEvent::GameOver, raceFinish);
-                break;
-            }
-
     clock++;  // TimerLogicEntity 0x50f17d: the round clock also runs in the hot seat
     // stdvs Worm_Died: the turn ends once fewer than two teams stand (worms die at their blast, not at 0 hp)
     int left = 0;
@@ -3015,7 +2965,6 @@ uint32_t Game::checksum() const {
     for (const Object &o : objects) hook |= o.hooked;
     if (roped || hook) mix(&roped, 1), mix(rope.pt, sizeof(Vector3) * rope.n), mix(rope.side, sizeof(Vector3) * rope.n), mix(rope.len, sizeof(float) * rope.n),
                       mix(&rope.angle, sizeof rope.angle), mix(&rope.spin, sizeof rope.spin), mix(&rope.yaw, sizeof rope.yaw);
-    mix(lastHitTeam.data(), lastHitTeam.size() * sizeof(int));
     mix(&rng, sizeof rng);
     mix(&current, sizeof current);
     mix(&weapon, sizeof weapon);
@@ -3032,7 +2981,6 @@ uint32_t Game::checksum() const {
     mix(&cfg.rules, sizeof cfg.rules);
     mix(&cfg.wormpot, sizeof cfg.wormpot);
     mix(&suddenDeath, sizeof suddenDeath);
-    mix(&raceFinish, sizeof raceFinish);
     if (cursorOn) mix(&cursor, sizeof cursor), mix(&cursorYaw, sizeof cursorYaw), mix(&cursorPitch, sizeof cursorPitch);  // never on in replays from before the cursor: their checksums hold
     if (locked) mix(&lockAt, sizeof lockAt);
     mix(countGroup.data(), countGroup.size() * sizeof(int)), mix(&countT, sizeof countT), mix(deathQueue.data(), deathQueue.size() * sizeof(int));

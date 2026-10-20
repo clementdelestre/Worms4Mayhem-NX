@@ -13,9 +13,10 @@ docker build -t worms4nx-server . && docker run -p 7777:7777 worms4nx-server
 C++ interop check (real sim, two clients through the server):
 
 ```sh
-g++ -std=c++17 -O2 -I../client/src -I../third_party/raylib-nx/src interop/interop.cpp \
-  ../client/src/{net,sim,terrain}.cpp -L../third_party/raylib-nx/out/desktop \
-  -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 -o /tmp/interop
+make -C ../client worms4nx   # builds the objects
+g++ -std=c++17 -O1 -I../client/src -I../third_party/raylib-nx/src interop/interop.cpp \
+  $(ls ../client/obj/*.o | grep -v /main.o) ../client/obj/lua/*.o -L../third_party/raylib-nx/out/desktop \
+  -lraylib -lGL -lm -lpthread -ldl -lrt -lX11 -o /tmp/interop   # run from client/ (romfs)
 cargo run & /tmp/interop host 127.0.0.1 7777 & /tmp/interop guest 127.0.0.1 7777
 ```
 

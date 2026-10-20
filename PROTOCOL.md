@@ -55,6 +55,9 @@ C = client → server, S = server → client.
 | 0x13 | JoinRoom   | C   | `u32 roomId` |
 | 0x14 | RoomState  | S   | `u32 roomId, u32 hostId, u8 n, n × (u32 playerId, str name, u8 online)` — players in slot order |
 | 0x15 | Leave      | C   | — |
+| 0x16 | Teams      | C/S | C: `u8 n, n × team`; S: `u32 consoleId, u8 n, n × team`; `team` = `str name, u8 cpu, u8 voice, u8 hat` (cpu 0 = human, 1..5 = AI level). The sender's whole team list (several per console, humans and CPU); the relay keeps it per console and forwards it to the others (not back to the sender) |
+| 0x17 | Lobby      | C/S | host → relay → the others: `u8 n, n × (u32 consoleId, u8 teamIdx), str map, u32 rules, u8 k, k × u8 scheme, u32 wormpot, u8 wormsPerTeam, u8 r, r × u32 readyConsoleId`. The n pairs are the room's team slots in order (slot = colour); `teamIdx` indexes that console's Teams list |
+| 0x18 | Ready      | C/S | C: `u8 ready`; S → host only: `u32 consoleId, u8 ready` |
 | 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × (str name, u8 cpu, u8 voice, u8 hat), u8 k, k × u8 scheme, u32 wormpot, u8 c, c × Weapon` (server relays the bytes after the owners untouched) |
 | 0x21 | Inputs     | C/S | `u32 firstTick, u8 n, n × Input` |
 | 0x22 | TurnEnd    | C   | `u32 tick, u32 checksum` |
@@ -73,7 +76,7 @@ C = client → server, S = server → client.
 - **Start**: host only. The server stores it, resets the match log and broadcasts it to the
   whole room *including the host*; everyone (host too) starts the game on receipt.
   Sending Start again restarts the match.
-- **Start rules** (`u32 rules`, `enum Rule` in `sim.h`): 1 King, 2 Highlander, 4 Vampire, 8 Karma, 16 Low gravity, 32 Rope race,
+- **Start rules** (`u32 rules`, `enum Rule` in `sim.h`): 1 King, 4 Vampire, 16 Low gravity,
   64 Sudden death, 128 No delays (test: the preset's W4M weapon delays are ignored).
 - **Start scheme**: the `Scheme` struct of `sim.h` as raw bytes in field order (turn, retreat, hot seat time,
   round minutes, worm energy, crate %, weapon/health/utility crate shares, crate hp, mines, barrels, mine fuse,
@@ -101,10 +104,15 @@ C = client → server, S = server → client.
   Inputs frames from tick 0. The client restarts the game and fast-forwards through them; it never
   sends its own input for a tick below the Replay count (the log may arrive over several reads).
   In a lobby that has not started, a disconnect is a Leave.
-- **Teams**: one human team per console. Each client announces its team as a Chat whose text starts with
-  `\x01`: `"\x01<voice> <hat> <cpuTeams> <team name>"` (cpuTeams: CPU teams the host will add), resent on every
-  RoomState; clients hide these chats. The host's Start has one team per room player (slot order, owner = that
-  player), then its CPU teams (`cpu` > 0, owner = host); 4 teams max.
+- **Teams / Lobby / Ready** (before Start): a console sends its Teams on every edit and after every RoomState; only the host may
+  send CPU teams (`cpu` > 0; else Error). The relay stores the last Teams of each console and the host's last Lobby (host only; else
+  Error) and sends them (every console's Teams, then the Lobby) to a console that joins or reconnects. Ready is forwarded to the host,
+  which folds it into the next Lobby (`ready` list); the host's own Ready takes the same path. The host keeps the slot order: join order
+  of the consoles, each console's teams in list order, 4 teams max (extras are dropped), teams of consoles that left removed, then sends
+  Lobby when it changes. A console that leaves the room (or drops from a lobby) takes its Teams with it: clients drop the Teams
+  of every console missing from RoomState. When the host changes, the last Lobby stays and the new host re-sends it as needed.
+- **Start** is built by the host from the Lobby: teams in slot order, `owners[team]` = the console of each team, scheme / wormpot /
+  wormsPerTeam / map / rules from the Lobby. Everything else the clients read from Start, not from the Lobby.
 
 ## LAN
 

@@ -24,7 +24,7 @@ Repository-level scripts in `tests/` (run from the repository root, they build t
 | Script | Covers |
 |---|---|
 | `tests/quit_check.sh` | Pause → Quit → Yes to menu stays on the menu: scripted keys (title, Local, Quick match, pause, Quit, the ConfirmQuit Yes, arrows); fails on a second Play. |
-| `tests/netbot.sh` | Two real clients (`--netbot`, the AI plays each owner's team) through a local server; fails on a desync. |
+| `tests/netbot.sh` | Two real clients (`--netbot`, the AI plays each owner's team) through a local server; fails on a desync. With a rules value it also checks the live lobby (guest edits its team, host pushes map and rules, both sides see them; the host's ready comes from the 4 s `W4NX_LOBBY_TIMER`). |
 
 Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU match, per-section ms, draw calls per frame and worst frame);
 `W4NX_BENCH=<frames> ./worms4nx --shot <weapon index> [map]` (that weapon fired, e.g. 15 Airstrike, 18 Concrete Donkey:
@@ -367,12 +367,9 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkDrownFloat` | W4M drowning: no hp count, the worm floats a moment with the camera on it, pops at the surface. |
 | `checkDrownPair` | W4M: two worms drowned by one blast pop one after the other, each 2000 ms after its own surface arrival (no queue); a standing worm reached by the water sinks at 0.03 units/ms. |
 | `checkPostActivity` | W4M PostActivityTime: 2400 ms between the end of the settle and the next turn. |
-| `checkKarma` | Karma: a cluster explosion injected into `shots[]` hurts the attacker (damage rule in isolation). |
 | `checkVampire` | Vampire: damage dealt to an enemy heals the attacker above full. |
 | `checkLowGravity` | Low gravity: a worm falls slower. |
 | `checkSuddenDeath` | Round time up: sudden death, every worm at 1 hp, the water rises. |
-| `checkRopeRace` | Rope race: reaching the finish ends the match, GameOver emitted once. |
-| `checkHighlander` | Highlander: the killer's team inherits the victim's weapon. |
 | `checkObjects` | Crates heal and add ammo; barrels chain only within reach. |
 | `fireEach` | One scripted turn per weapon (charge, release, steer, detonate): its Fire event shows up. |
 | `checkPoison` | Poison Arrow: a worm hit gives the gas cloud and poison with no damage or knock; land stops it, the cloud comes 2 s later; poison ticks off at the next turn start. |
@@ -457,14 +454,14 @@ AI vs AI. Prints weapon usage, damage per turn and planning cost.
 
 | Check | Covers |
 |---|---|
-| `match` | One CPU-vs-CPU match: checksum, turns, shots (Fire events too: a 0 s retreat goes Aim → Settle in one tick), damage, winner, rope race finish; `main` also asserts the CPU uses Change Worm (W4M worm-select mode) and that Landmine, Scouser and Flood are planned in the single weapon runs. |
+| `match` | One CPU-vs-CPU match: checksum, turns, shots (Fire events too: a 0 s retreat goes Aim → Settle in one tick), damage, winner; `main` also asserts the CPU uses Change Worm (W4M worm-select mode) and that Landmine, Scouser and Flood are planned in the single weapon runs. |
 | `blimpView` | CPU turn shows the Blimp view only while its plan fires a targeted weapon, not on reselect or replay. |
 | `pointBlank` | Enemy right next to the CPU: it attacks (10 of 12 seeds), with a close-range plan where it stands (melee, dropped explosive, mine) or a ranged weapon from over 5 m (W4M targets over 100 units from the move node, 0x49fcf6). |
 | `shots` | First shots with a given planning budget: same plan sliced or in one tick. |
 | `wallAhead` | Thin wall in front, enemy behind: no walk or jump against it, no shot into it, at levels 1, 3, 5. |
 
 `main` also asserts: every map and level deals damage, most matches finish; CPU5 beats CPU1 in 2 of 3 games; every preset
-scheme plays with sudden death; rope race reached at levels 1 and 5; Karma + Vampire match replays bit-identically.
+scheme plays with sudden death; a King + Vampire match replays bit-identically.
 
 ## mission_check.cpp
 
@@ -495,8 +492,9 @@ Replays main-menu row and the `--ui replays` / `playback` captures [ours].
 
 ## ui_check.cpp
 
-No static check: `main` selects each usable weapon in the HUD panel; the direct pick lands on it whatever the ticks per
-frame (0 to 2).
+`main` selects each usable weapon in the HUD panel; the direct pick lands on it whatever the ticks per
+frame (0 to 2). Before that: `Lobby` team add / remove / pads / permissions, `ReadyTimer` (30 s from the 2nd player, restarted by a join,
+off under 2 players, fires once), `Ui::multiplayerMaps` against `assets/multimaps.txt` (docs/match-setup.md).
 
 ## movie_check.cpp
 

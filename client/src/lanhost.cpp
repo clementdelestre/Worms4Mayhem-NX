@@ -48,7 +48,7 @@ void LanHost::close() {
     if (ufd >= 0) ::close(ufd);
     lfd = ufd = -1;
     conns.clear(), players.clear(), room.clear(), sums.clear();
-    start.clear(), log.clear();
+    start.clear(), log.clear(), lobby.clear();
     host = 0;
 }
 
@@ -66,6 +66,13 @@ void LanHost::roomState() {
     w.u32(ROOM).u32(host).u8((uint8_t)room.size());
     for (uint32_t p : room) w.u32(p).str(players[p].name.c_str()).u8(players[p].fd >= 0);
     broadcast(w.done());
+}
+
+// Every console's teams, then the host's last LOBBY: what a late joiner or a reconnecting console missed.
+void LanHost::lobbySync(uint32_t id) {
+    for (uint32_t p : room)
+        if (players[p].teams[0]) { W w(TEAMS); w.u32(p).b += players[p].teams; send(id, w.done()); }
+    if (!lobby.empty()) send(id, lobby);
 }
 
 void LanHost::replay(uint32_t id) {
@@ -98,7 +105,7 @@ uint32_t LanHost::hello(int fd, const uint8_t *p, size_t n) {
     pl.fd = fd;
     conns[fd].player = id;
     send(id, W(WELCOME).u32(id).u64(pl.token).done());
-    if (pl.inRoom) roomState(), replay(id);
+    if (pl.inRoom) roomState(), lobbySync(id), replay(id);
     return id;
 }
 
@@ -120,6 +127,33 @@ bool LanHost::handle(uint32_t id, const uint8_t *p, size_t n) {
         break;
     }
     case LEAVE: leave(id); break;
+    case TEAMS: {
+        int cnt = r.u8();
+        bool cpu = false;
+        for (int i = 0; i < cnt && r.ok; i++) r.str(), cpu |= r.u8() > 0, r.u8(), r.u8();
+        if (!r.ok || !in) return false;
+        if (cpu && host != id) { send(id, error("only the host can add CPU teams")); break; }
+        players[id].teams.assign((const char *)p + 1, n - 1);
+        W w(TEAMS);
+        w.u32(id).b.append((const char *)p + 1, n - 1);
+        broadcast(w.done(), id);
+        break;
+    }
+    case LOBBY: {
+        if (!in) return false;
+        if (host != id) { send(id, error("only the host can edit the lobby")); break; }
+        W w(LOBBY);
+        w.b.append((const char *)p + 1, n - 1);
+        lobby = w.done();
+        broadcast(lobby, id);
+        break;
+    }
+    case READY: {
+        uint8_t flag = r.u8();
+        if (!r.ok || !in) return false;
+        send(host, W(READY).u32(id).u8(flag).done());
+        break;
+    }
     case START: {
         r.u32();
         int teams = r.u8();
@@ -180,12 +214,14 @@ void LanHost::join(uint32_t id) {
     players[id].inRoom = true;
     if (room.size() == 1) host = id;
     roomState();
+    lobbySync(id);
 }
 
 void LanHost::leave(uint32_t id) {
     Player &pl = players[id];
     if (!pl.inRoom) return;
     pl.inRoom = false;
+    pl.teams.assign(1, '\0');
     room.erase(std::remove(room.begin(), room.end(), id), room.end());
     if (host == id && !room.empty()) host = room[0];
     afterChange();
@@ -199,7 +235,7 @@ void LanHost::afterChange() {
             return roomState();
         }
     for (uint32_t p : room) players.erase(p);
-    room.clear(), sums.clear(), start.clear(), log.clear();
+    room.clear(), sums.clear(), start.clear(), log.clear(), lobby.clear();
     host = 0;
 }
 

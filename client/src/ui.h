@@ -2,6 +2,7 @@
 #include "raylib.h"
 #include "mission.h"
 #include "net.h"
+#include "lobby.h"
 #include "sim.h"
 #include <string>
 #include <vector>
@@ -36,6 +37,8 @@ void background();
 std::string teamName(const GameConfig &c, int team);
 std::string resultBanner(const Game &g);  // versus game-over text; empty in a mission or challenge (missionEnd shows the result)
 void mapHeads(const std::vector<std::string> &maps);  // any thread: reads the maps' json heads that mapTitle() and the previews use
+void multiplayerMaps(std::vector<std::string> &maps);  // keeps what W4M's landscape select offers
+const char *hatLabel(int hat);  // hat 0 none, else W4M's name of hat file hat - 1 (Models::hatName)
 std::string mapTitle(const std::string &map);  // display name: W4M's level name, else from the file name
 const char *wormName(int team, int i);
 // pad -1 = any pad. D-pad buttons also fire on left-stick flicks and auto-repeat while held.
@@ -51,11 +54,22 @@ extern bool forceHelp;      // --ui help captures
 
 struct MenuItem;  // ui.cpp: one W4M menu entry and its place on screen
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
+// setup.txt lines of this console's network teams ("net", "netpad"); the parser returns false for any other line
+std::string netProfileText(const std::vector<GameConfig::Team> &teams);
+bool netProfileLine(const char *line, int hats, std::vector<GameConfig::Team> &teams);
+
 struct Frontend {
-    enum Screen { Title, Main, Setup, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm, Missions } screen = Title;  // Missions: hands over to missionMenu()
-    enum Action { None, StartLocal, StartOnline, Quit, Replays, StartLan, SinglePlayer, QuickMatch };
+    enum Screen { Title, Main, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm, Missions, SetupTeams, SetupMap, SetupRules } screen = Title;  // Missions: hands over to missionMenu(); SetupTeams / Map / Rules: the match setup, local or in a network room (lobby)
+    enum Action { None, StartLocal, Quit, Replays, SinglePlayer, QuickMatch, Salon, RoomStart, LeaveRoom };  // Salon: open the network salon (wantLan); RoomStart: the host starts the room's match; LeaveRoom: B on the room's first screen
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
     int missionTab = 0;             // SinglePlayer: 0 story missions, 1 challenges
+    Net *net = nullptr;             // the connection of a network room: SetupTeams / Map / Rules then show net->lobby
+    bool wantLan = false;           // Salon: Réseau local, else En ligne
+    int timer = -1;                 // lobby timer seconds (ReadyTimer::seconds), -1 none
+    void enterRoom(bool lan);       // joined / created a room: the setup screens in network mode, own team from setup.txt
+    void backToRoom();              // a room match is over
+    void dropRoom() { online = false, screen = Network, loaded = false; }  // the connection is gone
+    int minePad(int idx) const { return idx >= 0 && idx < (int)myTeams.size() ? myTeams[idx].pad : 0; }  // local pad of this console's idx-th team
     void go(Screen s);              // W4M menu change: current items fly out, then s slides in
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
 
@@ -70,8 +84,24 @@ private:
     void menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live = true);  // live: animate + take input
     bool online = false, lan = false, loaded = false, music = true, layout = false;  // layout: Controls shows the pad diagram  // online: network setup (LAN or server)
     std::string *editing = nullptr;  // desktop text entry target
+    Lobby lobby;                     // the match being set up (SetupTeams / SetupMap / SetupRules): local, or a view of net->lobby
+    std::vector<GameConfig::Team> myTeams;  // network: this console's teams, with their local pads; sent as TEAMS
+    std::vector<GameConfig::Team> netProfile;  // myTeams as saved in setup.txt, restored in each new room
+    bool teamsDirty = false;         // myTeams changed, not sent yet
+    float teamsSent = 0;
+    bool room() const { return online && net && net->roomId; }
+    void fromNet(const std::vector<std::string> &maps);  // lobby <- net->lobby + myTeams
+    void toNet();                    // lobby -> myTeams / net->lobby (host)
+    int teamFocus = 0, teamRow = 0, rulesRow = 0;  // SetupTeams: focused card (an empty one adds a team) and its row; SetupRules row
+    RenderTexture2D wormRt[Lobby::MAX_TEAMS] = {};  // the cards' worm previews
+    bool live = true;                // this frame takes input (the menu is not flying out, no text entry)
+    bool setupTeams(int dx, int dy, bool ok, bool back, bool plus, bool typing, float t);  // true: leave the room
+    void setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps);
+    bool setupRules(int dx, int dy, bool ok, bool back, bool plus);  // true: START
+    void wormPreview(int team, float t);
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;
+    void saveNetTeams();  // myTeams -> netProfile and setup.txt
     bool edit(std::string &s, const char *hint);  // true when s changed (Switch: swkbd, desktop: starts inline entry)
     // Wormpot slot machine (3 reels) and Weapon Factory (custom_weapons.json, sent to the room in Start)
     int reel = 0, spinTo[3] = {}, facSel = 0, facRow = 0;
@@ -151,9 +181,9 @@ private:
 int replayList(const std::vector<std::string> &files, int &sel, bool &instant);
 void playbackBar(bool paused, int speed, bool freeCam, float sec, float total, const char *note);  // match playback overlay
 void replayBadge();  // instant replay overlay
-// Network lobby (inside Begin/EndDrawing): LAN games heard, or the room's consoles (one team each) and the host's CPU teams.
-void lanGames(const std::vector<LanGame> &games, int sel, const std::string &status);
-void room(const Net &net, const GameConfig &opt, bool lan, const std::string &status);
+// Network salon (inside Begin/EndDrawing): Créer / Rejoindre, then the LAN games heard or the server's rooms. 1 create, 2 join entry sel, -1 back, 0 nothing yet.
+struct Salon { int row = 0, sel = 0; bool joining = false; };
+int salon(Salon &st, bool lan, const std::vector<std::string> &names, const std::vector<std::string> &info, const std::string &status);
 // Single player (inside Begin/EndDrawing): Missions / Challenges list, then the briefing. Mission index to start, -1 none yet, -2 back.
 // shown: when the list / briefing appeared (-1: opening now); leaving: when its items started out; to: what follows them
 struct MissionMenu { int tab = 0, sel[2] = {}; float shown = -1, leaving = -1; int to = -1; std::string team; };  // team: User.HumanTeamName

@@ -155,6 +155,9 @@ void Net::handle(const uint8_t *p, size_t n) {
             pl.online = r.u8();
             players.push_back(pl);
         }
+        auto gone = [&](uint32_t c) { return std::none_of(players.begin(), players.end(), [&](const NetPlayer &p) { return p.id == c; }); };
+        for (auto it = consoleTeams.begin(); it != consoleTeams.end();) it = gone(it->first) ? consoleTeams.erase(it) : std::next(it);
+        syncLobby();
         events.push_back({RoomState});
         break;
     }
@@ -167,13 +170,8 @@ void Net::handle(const uint8_t *p, size_t n) {
         cfg.map = r.str();
         cfg.rules = r.u32();
         cfg.teamSetup.resize(r.u8());
-        for (auto &t : cfg.teamSetup) { t.name = r.str(); t.cpu = r.u8(); t.voice = r.u8(); t.hat = r.u8(); }
-        cfg.scheme = Scheme{};  // absent (older host): defaults; extra bytes from a newer one are ignored
-        if (r.ok && r.p < r.e)
-            for (size_t i = 0, n = r.u8(); i < n && r.ok; i++) {
-                uint8_t v = r.u8();
-                if (i < sizeof(Scheme)) ((uint8_t *)&cfg.scheme)[i] = v;
-            }
+        for (auto &t : cfg.teamSetup) t = getTeam(r);
+        cfg.scheme = getScheme(r);
         cfg.wormpot = r.ok && r.p < r.e ? r.u32() : 0;
         cfg.custom.clear();
         for (int i = 0, n = r.ok && r.p < r.e ? r.u8() : 0; i < n && r.ok; i++) {
@@ -203,11 +201,45 @@ void Net::handle(const uint8_t *p, size_t n) {
     case REPLAY: replay = r.u32(); break;
     case CHAT: {
         uint32_t from = r.u32();
-        std::string text = r.str();
-        int voice = 0, hat = 0, cpus = 0, k = 0;
-        if (text[0] != '\1') events.push_back({Chat, from, text});
-        else if (sscanf(text.c_str() + 1, "%d %d %d %n", &voice, &hat, &cpus, &k) == 3)
-            profiles[from] = {{text.substr(1 + k), 0, (uint8_t)voice, (uint8_t)hat}, cpus};
+        events.push_back({Chat, from, r.str()});
+        break;
+    }
+    case TEAMS: {
+        uint32_t c = r.u32();
+        std::vector<GameConfig::Team> t;
+        for (int i = 0, n = r.u8(); i < n && r.ok; i++) t.push_back(getTeam(r));
+        if (!r.ok) break;
+        consoleTeams[c] = t;
+        syncLobby();
+        events.push_back({TeamsChanged, c});
+        break;
+    }
+    case LOBBY: {
+        Lobby l;
+        std::vector<std::pair<uint32_t, uint8_t>> order;
+        for (int i = 0, n = r.u8(); i < n && r.ok; i++) { uint32_t c = r.u32(); order.push_back({c, r.u8()}); }
+        l.map = r.str();
+        l.rules = r.u32();
+        l.scheme = getScheme(r);
+        l.wormpot = r.u32();
+        l.wormsPerTeam = r.u8();
+        for (int i = 0, n = r.u8(); i < n && r.ok; i++) l.ready.push_back(r.u32());
+        if (!r.ok) break;
+        for (auto &o : order) l.teams.push_back({o.first, o.second, {}});
+        lobby = l;
+        syncLobby();
+        events.push_back({LobbyChanged});
+        break;
+    }
+    case READY: {
+        uint32_t c = r.u32();
+        bool on = r.u8();
+        if (!r.ok || !isHost()) break;
+        auto it = std::find(lobby.ready.begin(), lobby.ready.end(), c);
+        if (on && it == lobby.ready.end()) lobby.ready.push_back(c);
+        if (!on && it != lobby.ready.end()) lobby.ready.erase(it);
+        pushLobby();
+        events.push_back({LobbyChanged});
         break;
     }
     case PONG: events.push_back({Pong, r.u32()}); break;
@@ -233,7 +265,7 @@ void Net::sendInput(uint32_t tick, const Input &i) {
 void Net::listRooms() { send(W(LIST_ROOMS).done()); }
 void Net::createRoom(const char *name, int maxPlayers) { send(W(CREATE_ROOM).str(name).u8(maxPlayers).done()); }
 void Net::joinRoom(uint32_t room) { send(W(JOIN_ROOM).u32(room).done()); }
-void Net::leave() { send(W(LEAVE).done()); roomId = 0; players.clear(); }
+void Net::leave() { send(W(LEAVE).done()); roomId = 0; players.clear(); consoleTeams.clear(); lobby = {}; }
 void Net::turnEnd(uint32_t tick, uint32_t checksum) { send(W(TURN_END).u32(tick).u32(checksum).done()); }
 void Net::chat(const char *text) { send(W(CHAT).str(text).done()); }
 void Net::ping(uint32_t nonce) { send(W(PING).u32(nonce).done()); }
@@ -243,9 +275,8 @@ void Net::start(const GameConfig &c, const std::vector<uint32_t> &own) {
     w.u32(c.seed).u8(c.teams).u8(c.wormsPerTeam);
     for (uint32_t o : own) w.u32(o);
     w.str(c.map.c_str()).u32(c.rules).u8((uint8_t)c.teamSetup.size());
-    for (const auto &t : c.teamSetup) w.str(t.name.c_str()).u8(t.cpu).u8(t.voice).u8(t.hat);
-    w.u8(sizeof(Scheme));
-    for (size_t i = 0; i < sizeof(Scheme); i++) w.u8(((const uint8_t *)&c.scheme)[i]);
+    for (const auto &t : c.teamSetup) putTeam(w, t);
+    putScheme(w, c.scheme);
     w.u32(c.wormpot).u8((uint8_t)std::min<size_t>(c.custom.size(), 255));
     for (size_t i = 0; i < c.custom.size() && i < 255; i++) {
         const WeaponDef &d = c.custom[i];
@@ -258,28 +289,69 @@ void Net::start(const GameConfig &c, const std::vector<uint32_t> &own) {
     send(w.done());
 }
 
-void Net::sendProfile(const GameConfig::Team &t, int cpus) {
-    char b[300];
-    snprintf(b, sizeof b, "\1%d %d %d %s", t.voice, t.hat, cpus, t.name.c_str());
-    chat(b);
+bool Net::allReady() const {
+    return std::all_of(players.begin(), players.end(), [&](const NetPlayer &p) { return isReady(p.id); });
 }
 
-void Net::startMatch(GameConfig c) {
-    std::vector<GameConfig::Team> teams;
-    std::vector<uint32_t> own;
+void Net::sendTeams(const std::vector<GameConfig::Team> &mine) {
+    W w(TEAMS);
+    w.u8((uint8_t)std::min<size_t>(mine.size(), 255));
+    for (size_t i = 0; i < mine.size() && i < 255; i++) putTeam(w, mine[i]);
+    send(w.done());
+    consoleTeams[id] = mine;
+    syncLobby();
+}
+
+void Net::pushLobby() {
+    W w(LOBBY);
+    w.u8((uint8_t)lobby.teams.size());
+    for (const LobbyTeam &t : lobby.teams) w.u32(t.owner).u8(t.idx);
+    w.str(lobby.map.c_str()).u32(lobby.rules);
+    putScheme(w, lobby.scheme);
+    w.u32(lobby.wormpot).u8(lobby.wormsPerTeam).u8((uint8_t)lobby.ready.size());
+    for (uint32_t c : lobby.ready) w.u32(c);
+    send(w.done());
+}
+
+void Net::setReady(bool on) { send(W(READY).u8(on).done()); }
+
+void Net::syncLobby() {
+    auto known = [&](uint32_t c) { return std::any_of(players.begin(), players.end(), [&](const NetPlayer &p) { return p.id == c; }); };
+    auto resolve = [&](LobbyTeam &t) {
+        auto it = consoleTeams.find(t.owner);
+        if (it == consoleTeams.end() || t.idx >= it->second.size()) return false;
+        t.team = it->second[t.idx];
+        return true;
+    };
+    auto before = lobby;
+    lobby.teams.erase(std::remove_if(lobby.teams.begin(), lobby.teams.end(), [&](LobbyTeam &t) { return !known(t.owner) || !resolve(t); }), lobby.teams.end());
+    if (!isHost()) return;
     for (const NetPlayer &p : players) {
-        if (own.size() == 4) break;
-        auto it = profiles.find(p.id);
-        GameConfig::Team t = p.id == id && !c.teamSetup.empty() ? c.teamSetup[0] : it != profiles.end() ? it->second.team : GameConfig::Team{p.name};
-        t.cpu = 0;
-        teams.push_back(t), own.push_back(p.id);
+        auto it = consoleTeams.find(p.id);
+        for (size_t i = 0; it != consoleTeams.end() && i < it->second.size() && lobby.teams.size() < 4; i++) {
+            if (std::any_of(lobby.teams.begin(), lobby.teams.end(), [&](const LobbyTeam &t) { return t.owner == p.id && t.idx == i; })) continue;
+            lobby.teams.push_back({p.id, (uint8_t)i, it->second[i]});
+        }
     }
-    for (int k = 1; k < c.teams && k < (int)c.teamSetup.size() && own.size() < 4; k++) {
-        GameConfig::Team t = c.teamSetup[k];
-        t.cpu = std::max<uint8_t>(t.cpu, 1);
-        teams.push_back(t), own.push_back(id);
-    }
-    c.teamSetup = teams;
+    lobby.ready.erase(std::remove_if(lobby.ready.begin(), lobby.ready.end(), [&](uint32_t c) { return !known(c); }), lobby.ready.end());
+    auto same = [&](const Lobby &a, const Lobby &b) {
+        return a.ready == b.ready && a.teams.size() == b.teams.size() &&
+               std::equal(a.teams.begin(), a.teams.end(), b.teams.begin(), [](const LobbyTeam &x, const LobbyTeam &y) { return x.owner == y.owner && x.idx == y.idx; });
+    };
+    if (!same(before, lobby)) pushLobby();
+}
+
+void Net::startMatch(uint32_t seed, const std::vector<WeaponDef> &custom) {
+    GameConfig c;
+    c.seed = seed;
+    c.map = lobby.map;
+    c.rules = lobby.rules;
+    c.scheme = lobby.scheme;
+    c.wormpot = lobby.wormpot;
+    c.wormsPerTeam = lobby.wormsPerTeam;
+    c.custom = custom;
+    std::vector<uint32_t> own;
+    for (const LobbyTeam &t : lobby.teams) c.teamSetup.push_back(t.team), own.push_back(t.owner);
     c.teams = (int)own.size();
     start(c, own);
 }

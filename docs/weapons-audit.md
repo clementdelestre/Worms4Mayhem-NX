@@ -229,9 +229,3 @@ Not changed, noted: `NumBomblets` is 4 for kWeaponClusterGrenade (weapons.json n
 - `main --utilshot <weapon name> [map]`: that utility in hand, the girder preview stepped ahead and up, then fired (shot_aim.png, shot.png). Also reads Weapon Factory weapons from `custom_weapons.json` (cwd) and, for Homing, goes through the target view, locks on and launches [ours].
 - `SchemePreset::delays`, `Game::delays` and `Game::usable()` (checksummed); `collected(Kind)` now covers Armour; the weapon panel hides `collected()` kinds.
 - Launch points (docs/w4m/weapons.md §13 "Launch point and self-hit exclusion"): every payload starts at the W4M point, the eye plus `LogicalLaunchZ/YOffset` (`launchPoint()`; Bazooka, grenades, Homing Missile, Poison Arrow from the eye, was 1.2 m along the aim), pulled back by `muzzle()` against walls; off its feet and moving, the worm adds 1.5 m along its velocity and its velocity (shells, homing, mines; walkers get the offset only). Guns fire from the eye (was 0.6 m ahead) and skip the shooter (W4M exclude id). `Projectile::touching` (checksummed) holds last tick's worm contacts, all of them on the first tick: only a new contact is a hit (W4M 0x582200 / 0x581dc0), so a shot passes its own worm and can hit it once it has left it. ai.cpp `fly()` / `superFly()` / the solve / the gun copy the same.
-- Ninja Rope race AI (ai.cpp `Ai::race`) [ours]:
-  - a plan whose rope never hooks only spends a shot, so it is scored below every plan that hooks;
-  - with `Game::ropeShots` at `ROPE_SHOTS` (W4M Ninja.NumShots 5), only walking or staying is planned;
-  - a fall counts as recoverable by a later swing only while a shot is left;
-  - pitches 0.7 to 1.3 rad are tried in 0.15 steps, not 0.3.
-  The worm movement changes (tripod support, W4M Sliding, stuck count, docs/w4m/physics.md §11) moved the landings on ropetrack's rails. The coarser plan then aimed at grazing rails and wasted its shots.

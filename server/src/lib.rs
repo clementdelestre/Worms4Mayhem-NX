@@ -17,6 +17,9 @@ pub const CREATE_ROOM: u8 = 0x12;
 pub const JOIN_ROOM: u8 = 0x13;
 pub const ROOM_STATE: u8 = 0x14;
 pub const LEAVE: u8 = 0x15;
+pub const TEAMS: u8 = 0x16;
+pub const LOBBY: u8 = 0x17;
+pub const READY: u8 = 0x18;
 pub const START: u8 = 0x20;
 pub const INPUTS: u8 = 0x21;
 /// Bytes per Input: turn, walk, aim, buttons, flags, zoom.
@@ -75,6 +78,7 @@ struct Player {
     conn: u64,
     tx: Option<Tx>,
     room: Option<u32>,
+    teams: Vec<u8>, // TEAMS payload (u8 n, teams) last sent by this console
 }
 
 struct Room {
@@ -82,6 +86,7 @@ struct Room {
     max: u8,
     host: u32,
     players: Vec<u32>,
+    lobby: Option<Vec<u8>>, // LOBBY frame as broadcast by the host, sent to late joiners
     start: Option<Vec<u8>>, // Start frame as broadcast, replayed on reconnect
     log: Vec<u8>,           // INPUT_BYTES per tick
     sums: HashMap<u32, u32>,
@@ -132,7 +137,7 @@ impl State {
             let mut h = RandomState::new().build_hasher();
             h.write_u32(self.next);
             // ponytail: SipHash with random keys, not a CSPRNG; use getrandom if tokens must resist guessing
-            self.players.insert(self.next, Player { name, token: h.finish() | 1, conn, tx: None, room: None });
+            self.players.insert(self.next, Player { name, token: h.finish() | 1, conn, tx: None, room: None, teams: vec![0] });
             self.next
         });
         let p = self.players.get_mut(&id).unwrap();
@@ -142,9 +147,20 @@ impl State {
         self.send(id, &W::new(WELCOME).u32(id).u64(token).done());
         if let Some(rid) = room {
             self.room_state(rid);
+            self.lobby_sync(id, rid);
             self.replay(id, rid);
         }
         Some(id)
+    }
+
+    /// Every console's teams, then the host's last LOBBY: what a late joiner or a reconnecting console missed.
+    fn lobby_sync(&self, id: u32, rid: u32) {
+        let r = &self.rooms[&rid];
+        for &p in &r.players {
+            let t = &self.players[&p].teams;
+            if t[0] > 0 { self.send(id, &W::new(TEAMS).u32(p).bytes(t).done()); }
+        }
+        if let Some(l) = &r.lobby { self.send(id, l); }
     }
 
     /// Start, then the whole input log: the client restarts the match and fast-forwards.
@@ -180,7 +196,7 @@ impl State {
                 self.leave(id);
                 self.next += 1;
                 let rid = self.next;
-                self.rooms.insert(rid, Room { name, max, host: id, players: vec![], start: None, log: vec![], sums: HashMap::new() });
+                self.rooms.insert(rid, Room { name, max, host: id, players: vec![], lobby: None, start: None, log: vec![], sums: HashMap::new() });
                 self.join(id, rid);
             }
             JOIN_ROOM => {
@@ -198,6 +214,29 @@ impl State {
                 }
             }
             LEAVE => self.leave(id),
+            TEAMS => {
+                let rid = room?;
+                let n = r.u8()?;
+                let mut cpu = false;
+                for _ in 0..n { r.str()?; cpu |= r.u8()? > 0; r.u8()?; r.u8()?; }
+                if cpu && self.rooms[&rid].host != id { self.send(id, &error("only the host can add CPU teams")); return Some(()); }
+                self.players.get_mut(&id)?.teams = buf[1..].to_vec();
+                self.broadcast(rid, &W::new(TEAMS).u32(id).bytes(&buf[1..]).done(), Some(id));
+            }
+            LOBBY => {
+                let rid = room?;
+                let rm = self.rooms.get_mut(&rid)?;
+                if rm.host != id { self.send(id, &error("only the host can edit the lobby")); return Some(()); }
+                let f = W::new(LOBBY).bytes(&buf[1..]).done();
+                rm.lobby = Some(f.clone());
+                self.broadcast(rid, &f, Some(id));
+            }
+            READY => {
+                let rid = room?;
+                let flag = r.u8()?;
+                let host = self.rooms[&rid].host;
+                self.send(host, &W::new(READY).u32(id).u8(flag).done());
+            }
             START => {
                 let rid = room?;
                 let (_seed, teams, _per) = (r.u32()?, r.u8()?, r.u8()?);
@@ -249,10 +288,11 @@ impl State {
         self.rooms.get_mut(&rid).unwrap().players.push(id);
         self.players.get_mut(&id).unwrap().room = Some(rid);
         self.room_state(rid);
+        self.lobby_sync(id, rid);
     }
 
     fn leave(&mut self, id: u32) {
-        let Some(rid) = self.players.get_mut(&id).and_then(|p| p.room.take()) else { return };
+        let Some(rid) = self.players.get_mut(&id).and_then(|p| { p.teams = vec![0]; p.room.take() }) else { return };
         let rm = self.rooms.get_mut(&rid).unwrap();
         rm.players.retain(|&p| p != id);
         if rm.host == id && !rm.players.is_empty() { rm.host = rm.players[0]; }

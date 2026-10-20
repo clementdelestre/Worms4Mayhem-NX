@@ -328,7 +328,7 @@ struct ScriptHost {
         S->slotWorm[s] = i, S->wormSlot[i] = s, S->touched[s] = true;
         Worm w = blank();
         if (!place(g, w, ctn(slotName("Worm.Data%02d", s)), s)) return;
-        g.worms[i] = w, S->died[i] = false, g.lastHitTeam[i] = -1, g.special[i] = 0;
+        g.worms[i] = w, S->died[i] = false, g.special[i] = 0;
         syncCpu();
     }
 
@@ -372,7 +372,7 @@ struct ScriptHost {
         g.worms = worms, g.teams = teams, g.perTeam = per, g.current = 0;
         g.allied.assign(teams, 0);
         for (int t = 0; t < teams; t++) g.allied[t] = (int8_t)alliance(t);
-        g.nextWorm.assign(teams, 0), g.lastHitTeam.assign(worms.size(), -1), g.fuses.assign(teams, 3), g.picked.assign(teams, g.weapon);
+        g.nextWorm.assign(teams, 0), g.fuses.assign(teams, 3), g.picked.assign(teams, g.weapon);
         g.ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0)), g.delays.assign(teams, std::vector<int>(WEAPONS.size(), 0));
         g.surrendered.assign(teams, 0), g.spy.assign(teams, 0), g.special.assign(worms.size(), 0), g.superWeapon.assign(teams, 0);
         S->died.assign(worms.size(), false);

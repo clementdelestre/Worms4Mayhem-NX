@@ -80,7 +80,7 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   Guns: one shot as the sim's: `Game::gunRay` (land, worms, targets, bubbles) and `Game::gunBlast` (Wormpot super firearms), the blast
   on the struck worm's centre or at the ray's end, as `Game::fire` explodes it. Strikes: one blast at the target of reach 2 s × 7.5 m/s + 2·reach.
   Animals (sheep, old woman, scouser): the walker's closest approach within 2 m, blast there. No knockback simulation, chains,
-  poison, karma, vampire or tie-breaker terms (W4M has none).
+  poison, vampire or tie-breaker terms (W4M has none).
 - Bonus (W4M 0x49bd60, **disasm**): +AddScoreMove 10, +AddScoreMoveIfNotMoved 20 while no path ran since the last shot (`moved`, W4M
   0x9560ba), for a plan from a move node (`Origin::path`) and always for a close-range explosive (0x4a2c70 forces it).
 - Dropped shells and landmines spare the thrower (**ours**: W4M walks next to the target first, 0x4a22d0); the thrower then takes the
@@ -138,7 +138,7 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 ## Weapons the AI never uses
 
 - Sentry Gun, Alien Abduction, Bubble Trouble, Girder, Teleport and the other utilities (Armour, Icarus, Double Damage...): no W4M plan (**data**).
-- Ninja Rope: only in `RULE_ROPE_RACE` (`race()`, a parametric swing search, **ours**). W4M never creates NINJA_ROPE, JETPACK or PARACHUTE path moves (**disasm**, see docs/w4m/ai.md §18): no jetpack move either.
+- Ninja Rope: never. W4M never creates NINJA_ROPE, JETPACK or PARACHUTE path moves (**disasm**, see docs/w4m/ai.md §18): no jetpack move either.
 - Change Worm: never (W4M worm-select mode needs ChooseWorm.Enabled, 0 in LOCAL.XOM, **data**).
 - Parachute: no use (W4M has PARACHUTE path moves, **data**). Jetpack: only as a move (below). Fuse is never changed (`fuseOf`, W4M SetWeaponFuse exists).
 - SkipGo when no plan is possible (W4M 0x499ad0, **disasm**); without SkipGo the worm waits for the turn to end ("can't use the skip
@@ -223,10 +223,7 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
   others shift with the fire tick). ai_check's maps have no `.cells`: its output is unchanged.
 - Modes: `Eval` (threats, window, pairs and their paths, shots origin by origin, then `decide`), `Search` (a move plan's or a repath's
   A*), `Walk` (`follow` the path), `Act` (a close-range retreat A* first, then select, aim, wait, charge / fire).
-- In `Flying`: retreat, steer the bomber / super sheep, detonate the sheep as it leaves its target. Roped outside a race: release with JUMP.
-- `race()` (rope race) uses the same budget: 1 + 54 swings + 12 climbs, each simulated up to 400 ticks. In the air it plans from where
-  the worm will be after a 12-tick wait, at least an even share of the candidates per waiting tick; knocked off its feet with no wait
-  left, the rest runs in that tick (~36 ms desktop on ropetrack) [ours].
+- In `Flying`: retreat, steer the bomber / super sheep, detonate the sheep as it leaves its target. Roped: release with JUMP.
 - Caches that keep the slicing: a jump edge's landing (`jumpFrom`, per think, reset on `Terrain::edits`) charges the
   `Terrain::samples` it first cost; the jump reach tables visit only the cells each 1 ms step crosses [ours].
 
