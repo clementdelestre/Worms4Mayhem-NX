@@ -6,10 +6,11 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 #include <vector>
 
 template <class T> struct Bricks {
-    static_assert(sizeof(T) == 1, "one byte per voxel");
+    static_assert(sizeof(T) <= 2, "one or two bytes per voxel");
     static constexpr int B = 15;
     static constexpr size_t N = (size_t)1 << B, M = N - 1;
 
@@ -60,10 +61,10 @@ template <class T> struct Bricks {
 
     static const T *uniform(T v) {  // blocks live for the whole run, one per value used
         static std::mutex mu;
-        static std::unique_ptr<T[]> u[256];
+        static std::unique_ptr<T[]> u[1 << 8 * sizeof(T)];
         std::lock_guard<std::mutex> l(mu);
-        auto &p = u[(uint8_t)v];
-        if (!p) p.reset(new T[N]), memset(p.get(), (uint8_t)v, N);
+        auto &p = u[(std::make_unsigned_t<T>)v];
+        if (!p) p.reset(new T[N]), std::fill(p.get(), p.get() + N, v);
         return p.get();
     }
 

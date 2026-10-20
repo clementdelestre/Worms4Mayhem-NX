@@ -1,6 +1,7 @@
 // Determinism check: two games fed the same seed and inputs must stay bit-identical.
 // Each turn selects the next weapon in the table and uses it, so the whole arsenal gets exercised.
 #define private public  // the cap test calls hurt() directly
+#include <dirent.h>
 #include "../src/sim.h"
 #include "../src/navgrid.h"
 #include "../src/controls.h"
@@ -4458,6 +4459,52 @@ static void checkDetailRemoval() {
     assert(t.objects.size() == n0 - 2);
 }
 
+// W4M GLG 0x457130: uv = floor / wall row . lattice point + offset; a thin cell's corner 1 (4) is its corner 0 one lattice step along x (z)
+static void checkLandUV() {
+    Terrain t;
+    assert(t.load("DestructAndServe", 1) && !t.landUV.empty());
+    int checked = 0;
+    for (const auto &cs : t.thin)
+        for (const Terrain::Thin &c : cs)
+            for (int kind : {Terrain::FLOOR, Terrain::WALL}) {
+                assert(c.uv > 0);
+                const float *r = t.landUV[c.uv - 1].t + (kind == Terrain::WALL ? 8 : 0);
+                if (r[1] || r[5]) continue;  // the HeightMap moves corners along y
+                if (Vector3Distance(c.c[0], c.c[1]) < 0.05f || Vector3Distance(c.c[0], c.c[4]) < 0.05f) continue;  // millimetre cells: float precision of map metres
+                Vector2 u0, ux, uz;
+                assert(t.landTex(c.uv, c.c[0], {}, kind, &u0) == kind);
+                t.landTex(c.uv, c.c[1], {}, kind, &ux), t.landTex(c.uv, c.c[4], {}, kind, &uz);
+                assert(fabsf(ux.x - u0.x - r[0]) < 2e-3f && fabsf(ux.y - u0.y - r[4]) < 2e-3f);
+                assert(fabsf(uz.x - u0.x - r[2]) < 2e-3f && fabsf(uz.y - u0.y - r[6]) < 2e-3f);
+                checked++;
+            }
+    assert(checked > 100);
+}
+
+// 0x5b4180 counts a point only when a 10-unit sphere at the feet is free of every collider, the land's included, on every map
+static void checkPlacementSolid() {
+    DIR *d = opendir("assets/maps");
+    int checked = 0;
+    while (dirent *e = readdir(d)) {
+        std::string m = e->d_name;
+        if (m.size() < 5 || m.substr(m.size() - 4) != ".vox") continue;
+        m.resize(m.size() - 4);
+        for (uint32_t seed = 1; seed <= 6; seed++) {
+            Game g;
+            g.start({seed, 3, 3, m.c_str(), 0});
+            for (const Worm &w : g.worms) {
+                const Vector3 feet = {w.pos.x, w.pos.y - Game::R, w.pos.z};
+                if (fabsf(feet.y - (g.landTop() + 0.5f)) < 1e-3f) continue;  // the no-point fallback (Land.MaxHeight + 10 units)
+                for (float dy : {0.05f, 0.25f, 0.45f})
+                    if (g.terrain.solid({feet.x, feet.y + dy, feet.z})) { printf("%s seed %u: worm in land at %.2f %.2f %.2f\n", m.c_str(), seed, w.pos.x, w.pos.y, w.pos.z); assert(false); }
+                checked++;
+            }
+        }
+    }
+    closedir(d);
+    assert(checked > 0);
+}
+
 static void checkPlacement() {
     const char *maps[] = {"", "Alien-w3d", "Accuracy", "ArabiaTest", "AssaultAndDefend", "BuildingSiteSaboteurs"};
     int checked = 0, overhang = 0;
@@ -4501,7 +4548,9 @@ static void checkPlacement() {
 }
 
 int main() {
+    checkPlacementSolid();
     checkDetailRemoval();
+    checkLandUV();
     checkPlacement();
     checkCountCamera();
     {  // user-requested: SKIP_COUNT ends the damage display at once; hp final
