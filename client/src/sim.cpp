@@ -981,8 +981,17 @@ float restHalf(const Object &o) { return crateLike(o) ? fmaxf(0, 0.5f * o.scale 
 static bool sheepLike(Kind k) { return k == Kind::Sheep || k == Kind::SuperSheep || k == Kind::OldWoman || k == Kind::Scouser; }  // WEAPTWK ColliderFlags 128: collider 0x88
 static const char *named(const std::string &s) { return s.empty() ? nullptr : s.c_str(); }  // an empty WEAPTWK effect or sound starts nothing (0x57fd00)
 
+// the land inside a sphere (0x519e90 tests every collider, the land's included), sampled every half voxel
+static bool sphereInLand(const Terrain &t, Vector3 c, float r) {
+    for (float x = -r; x <= r; x += Terrain::SUB)
+        for (float y = -r; y <= r; y += Terrain::SUB)
+            for (float z = -r; z <= r; z += Terrain::SUB)
+                if (x * x + y * y + z * z <= r * r && t.solid({c.x + x, c.y + y, c.z + z})) return true;
+    return false;
+}
+
 // W4M PlaceWormAtSpawnPoint (0x5b4180, Spawn "spawn"): a random yaw, then up to 1000 random walkable cells (0x4ae810), each
-// at its node + (0, 10, ZOffset -5) turned by the yaw + 10 units up; a point whose sphere (10 units) is free of worms counts, the
+// at its node + (0, 10, ZOffset -5) turned by the yaw + 10 units up; a point whose sphere (10 units) is free of worms and land counts, the
 // highest of 3 counted wins; none: Land.Center +-50 units at Land.MaxHeight + 10 units. Returns the worm's logical position (feet).
 Vector3 Game::placeWorm(const Grid &gr, NodeCache &nc, float &yaw) {
     const float U = 0.05f;
@@ -1013,7 +1022,7 @@ Vector3 Game::placeWorm(const Grid &gr, NodeCache &nc, float &yaw) {
         const Vector3 c = Vector3Add({p.x, (h.lo + h.hi) / 2, p.y}, off);  // node position 0x4aeb00: mid-height
         bool clear = true;
         for (const Worm &o : worms) clear = clear && Vector3Distance({o.pos.x, o.pos.y - R + 5 * U, o.pos.z}, c) >= 20 * U;
-        if (!clear) continue;
+        if (!clear || sphereInLand(terrain, c, 10 * U)) continue;
         found++;
         if (c.y > best.y) best = c;
     }
