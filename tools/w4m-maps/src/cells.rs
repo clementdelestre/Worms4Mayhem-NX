@@ -1,7 +1,7 @@
 // <stem>.cells "W4C2": the exact land per 0.25 m cell (client sharp.h, format docs/w4m/formats.md). Each cell a surface crosses
 // lists the primitives that reach it: a W4M poxel cell (with the mask of its planes cutting the cell), or the heightmap patch.
 use super::{ci, cross, deflate::deflate, dot, sub, nx, ny, nz, FACES, V3, VOX};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const HEX: u32 = 0;
 const HM: u32 = 1 << 29;
@@ -55,7 +55,7 @@ impl Land {
 
 // hexes: cell pieces, grid units; whole[i]: the cell piece i was cut from (None: it is the cell), stored once for normals and in no list.
 // top: heightmap per grid column (NaN none); q: the .vox densities, signs made exact beyond the band (dq). Returns each piece's file index.
-pub fn build(hexes: &[[V3; 8]], whole: &[Option<[V3; 8]>], top: &[f32], q: &mut [i8], dq: i8) -> (Vec<u8>, String, Vec<usize>) {
+pub fn build(hexes: &[[V3; 8]], whole: &[Option<[V3; 8]>], top: &[f32], q: &mut [i8], dq: i8, claimed: &HashSet<usize>) -> (Vec<u8>, String, Vec<usize>) {
     let mut planes: Vec<[f32; 4]> = Vec::new();
     let mut boxes = Vec::new();  // per hexahedron: first plane, plane count, lo, hi (m), listed in cells
     let (mut twisted, mut out) = (0, Vec::new());
@@ -155,20 +155,18 @@ pub fn build(hexes: &[[V3; 8]], whole: &[Option<[V3; 8]>], top: &[f32], q: &mut 
         i = j;
     }
     drop(pairs);
-    // grid point signs: from a listed cell around it, else solid when a filled cell touches it
+    // grid point signs: solid inside a listed cell around it or when a filled cell touches it; a point a sub-voxel cell
+    // claimed (main.rs) stays solid, as the voxel that cell stands on
     let mut fixed = 0;
     for z in 0..nz() { for y in 0..ny() { for x in 0..nx() {
         let i = cid(x, y, z);
-        if q[i] == dq || q[i] == -dq { continue; }
+        if q[i] == dq || q[i] == -dq || claimed.contains(&i) { continue; }
         let around = (0..8).filter_map(|k| {
             let (a, b, e) = (x as i64 - (k & 1), y as i64 - (k >> 1 & 1), z as i64 - (k >> 2));
             (a >= 0 && b >= 0 && e >= 0 && a < nx() as i64 - 1 && b < ny() as i64 - 1 && e < nz() as i64 - 1).then(|| cid(a as usize, b as usize, e as usize))
         });
         let p = [x as f32 * VOX, y as f32 * VOX, z as f32 * VOX];
-        let state = match around.clone().find(|c| land.lists.contains_key(&(*c as u32))) {
-            Some(c) => land.eval(p, c) > 0.0,
-            None => around.into_iter().any(|c| full[c >> 6] >> (c & 63) & 1 != 0),
-        };
+        let state = around.into_iter().any(|c| if land.lists.contains_key(&(c as u32)) { land.eval(p, c) > 0.0 } else { full[c >> 6] >> (c & 63) & 1 != 0 });
         if (q[i] > 0) != state { q[i] = if state { 1 } else { -1 }; fixed += 1; }
     } } }
     // identical lists stored once, numbered by first use; varints: a list is its op count, then per op kind | id delta << 3

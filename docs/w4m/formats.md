@@ -288,8 +288,22 @@ corners onto a triangle; a rounded top makes the quadrant's four top corners the
 the top is full. A grid point is solid inside any piece; the faces the distance field and the exact land keep are the pieces' own. A piece
 lists a hexahedron unless one of its planes has the 8 cell corners outside (> 1e-5 m); the mask keeps the planes
 with a corner on or outside (> -1e-5 m), so a face lying on the cell's border stays with the cell it bounds. A cell some hexahedron or the
-heightmap fills is left out; its sign is in the `.vox`, whose grid-point signs are set from the lists (from a listed cell around the
-point, else solid when a filled cell touches it). Identical lists are stored once.
+heightmap fills is left out; its sign is in the `.vox`, whose grid-point signs are set from the lists (solid when a listed cell around the
+point holds it or a filled cell touches it, any of the 8 cells around: a hexahedron holding the point may be listed in only some of them),
+except a point a hexahedron claimed (it holds no grid point: the point nearest its centre), which stays solid as the voxel that piece
+stands on. Identical lists are stored once.
+
+### Land frame world matrix [disasm]
+- Traversal 0x4765a0(container, vec3, mat43 parent, idx) calls 0x46e1d0(frame, &parent, idx) per child frame. 0x46e1d0 builds the local
+  matrix in row-vector form (p' = p.x row0 + p.y row1 + p.z row2 + t): identity with t = Position x 20 (0x69bf52), then 0x69c1a9 (about x,
+  Orientation.x), 0x69c209 (about y, Orientation.y), 0x69c269 (about z, Orientation.z) post-multiplied, copied unscaled to pseudo +0xf0;
+  rows scaled by Scale x 20 (0x69c050) to +0xc0. 0x46bda0: +0x30 = (+0xc0) x parent (the frame's world matrix), +0x90 = (+0xf0) x parent,
+  +0x60 = the inverse of +0x30. 0x4765a0 hands +0x90 (0x46bd80) to the frame's children. Column form: world = parent_unscaled x T x Rz x Ry
+  x Rx x S, children under the parent's world matrix without its scale: the importer's `collect` (main.rs `local`, `wn`). The root
+  container has no pseudo entity (its own transform is not applied). The vec3 handed down is CentreOffset (+0x180 = size / 2) x 20 x Scale
+  - size x 0.5 x Scale x 20 = 0, and no read of it was found.
+- Checked on ChallengeNavigation2's bamboo (frame 682, a 1x4x1 stem, 7.6 m, with 1x1x1 leaf frames 683..688 and 1x2x1 689, 690 as
+  children): with these matrices every leaf's lower end is 0.015..0.085 m from the stem's lattice axis [data + ours].
 
 ### Visible 0 land frames [data]
 - 8073 hidden cells in 157 of the 222 maps (w4m-maps log, "(N hidden)"). Largest: treevillage-w3d 966, NoRoomForError 459, ChallengeNavigation2 403, Multi_NoRoomForError 336, LP_Multi_NoRoomForError 299, cherry-w3d 245, beanstalk-w3d 176, Tutorial2 150.
@@ -329,7 +343,8 @@ A land sample is not the whole solid cell [disasm + data]. Chain: 0x468490 (latt
 
 ## 26. Land texture mapping and rope cells (DestructAndServe TNT crane, 2026-10-20)
 
-- [data] DestructAndServe's TNT barrel hangs from 2 slings + 1 vertical rope of land cells (palette material 45, 1-based; floor = wall = roof = `b48`, repeat 0.7 m floor, 1.29 m wall): every rope cell is a chained hexahedron of 0.19 x 0.17 m cross-section, 1.2-1.4 m long (leg A hook (39.8, 13.4, 55.4) -> (38.9, 9.9, 56.5); leg B -> (41.0, 10.0, 53.9)). All are `.thin` cells (thickness < 1 voxel); with the thin list emptied only the hook blob (voxels) remains. The chain is complete in the data: no cut.
+- [data] DestructAndServe's TNT barrel hangs from 2 slings + 1 vertical rope of land cells (palette material 45, 1-based; floor = wall = roof = `b48`, repeat 0.7 m floor, 1.29 m wall): every rope cell is a chained hexahedron of 0.19 x 0.17 m cross-section, 1.2-1.4 m long (leg A hook (39.8, 13.4, 55.4) -> (38.9, 9.9, 56.5); leg B -> (41.0, 10.0, 53.9)). All are `.thin` cells (thickness < 1 voxel); with the thin list emptied only the hook blob (voxels) remains. The chain is complete in the data.
+- [ours, 2026-10-21] The cut ropes, reeds, bamboo leaves and zig-zag trunks were thin cells never drawn: a thin cell shows while one of its voxels is solid, and 18 847 of the 174 234 thin cells of the 222 maps (196 maps; DestructAndServe 76 of 1 259, among them the vertical rope above the TNT hook; ChallengeNavigation2 676 of 2 529) had none: 9 in 10 hold no grid point and stand on the point nearest their centre, whose sign the exact land set negative (outside the cell); the rest hold grid points whose sign was taken from one listed cell around the point, which may not list the hexahedron. Both fixed in w4m-maps (§22 Build): 0 undrawn after the re-import. The frame matrices of chained frames were checked against the exe (§22 "Land frame world matrix").
 - [data] The rope voxels' dwords carry bits 8-9 = 3 and bits 10-15 = the voxel's own material (43 voxels 0xb3 for material 44 raw, same for 45 / 46): the "second material" equals the first, so no second texture on the rope.
 - [data, pe.py schema] LandFrameStore +0x54 FloorTexXVec, +0x60 FloorTexYVec, +0x6c WallTexXVec, +0x78 WallTexYVec (vec3), +0x90 FloorTexOffset, +0x98 WallTexOffset (vec2), +0x84 CentreOffset (vec3, 0 in every map): the 76 bytes after the matrix in the file, in that order (floor X, floor Y, wall X, wall Y, floor offset, wall offset, centre). [disasm 0x46e1d0] Copied to the pseudo entity's store +0x150 / +0x15c / +0x168 / +0x174 / +0x190 / +0x198; [REA 0x4467c0] GenerateLandGeometry takes them at +0x228 / +0x234 / +0x240 / +0x24c / +0x258 / +0x260.
 - [data, 222 maps] 93 388 frames with voxels, 2 758 distinct vector sets. The default (40 204 frames): floor X (0.25, 0, 0), floor Y (0, 0, 0.25), wall X (0.147, 0, -0.202) (0.25 along 36 degrees from x), wall Y (0, 0.25, 0); next 5 535 frames with floor = wall = (0.147, 0, -0.202) / (0, 0.25, 0). Vectors are in lattice units (one cell = 1) and per frame: ropes, poles and props carry their own (DestructAndServe frames 485.. floor (0, 0.1, 0) / (0, 0, 0.1), wall (0, 0.45, 0) / (-0.45, 0, 0)).
@@ -339,4 +354,4 @@ A land sample is not the whole solid cell [disasm + data]. Chain: 0x468490 (latt
 - [REA 0x4520c0] GLG_PC merges the chunk's shapes by a slot (shape +0x48) into the index counters 0x9525e8 / 0x9522e8, 384 u16 each [assumed: 128 materials x their floor, wall and roof textures (render.md material file); top faces on the floor texture, bottom faces on the roof one, sides on the wall one. The emission into the 2 index lists +0x9e0 / +0xa28 is not followed].
 - [disasm 0x4566d0, 0x457130] The heightmap land is not meshed here (HeightmapGraphicEntity): its uv is not traced.
 - [ours] w4m-maps exports per lattice frame its `landuv` entry (docs/maps.md: map metres -> centred lattice, size, the 4 uv rows, EdgeOffset1/2 per layer), each voxel's entry (`.vox` W4V4) and each thin cell's (`.thin` W4T4). `Terrain::landTex` inverts the matrix and the EdgeOffset lerp, and returns row . lattice point + offset. Thin cells: the hexahedron's lattice top face (corners bit 2 set) takes the floor rows and texture, its bottom the floor rows and roof texture, the 4 others the wall rows and texture (= 0x456b90's topology). Voxel mesh [ours: voxel-forced, our surface is not W4M's cell mesh]: per quad, the frame of its solid voxel; the face kind from the quad's normal taken into lattice space (n W, then the EdgeOffset Jacobian): top if its lattice y part dominates and is > 0, bottom if it dominates and is < 0, side otherwise; the quad's 4 vertices are made per (cell, kind, frame), so a kind change is a hard seam as in W4M. The kind travels in the vertex colour's alpha (floor 0, wall 85, roof 170); land without a frame (heightmap, steel, alpha 255) keeps the triplanar texturing with the `textures` repeats.
-- [ours, DestructAndServe] With the frame mapping the rope's faces carry one continuous strand texture along each sling (no floor / wall projection switch between neighbour faces).
+- [ours, DestructAndServe] With the frame mapping the rope's faces carry one continuous strand texture along each sling, the same floor / wall projection on neighbour faces.
