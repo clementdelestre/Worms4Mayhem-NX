@@ -93,7 +93,7 @@ private:
     void fromNet(const std::vector<std::string> &maps);  // lobby <- net->lobby + myTeams
     void toNet();                    // lobby -> myTeams / net->lobby (host)
     int teamFocus = 0, teamRow = 0, rulesRow = 0;  // SetupTeams: focused card (an empty one adds a team) and its row; SetupRules row
-    RenderTexture2D wormRt[Lobby::MAX_TEAMS] = {};  // the cards' worm previews
+    RenderTexture2D wormRt = {};     // the focused team's worm preview
     bool live = true;                // this frame takes input (the menu is not flying out, no text entry)
     bool setupTeams(int dx, int dy, bool ok, bool back, bool plus, bool typing, float t);  // true: leave the room
     void setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps);

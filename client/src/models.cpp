@@ -386,7 +386,7 @@ void Models::start() {
         }
         if (files.empty()) return;
         std::sort(hatNames.begin(), hatNames.end());  // same file set on every client -> same order
-        auto rank = [](const std::string &p) { return menuFile(p) ? 0 : p.find("/worm.glb") != std::string::npos ? 1 : 2; };
+        auto rank = [](const std::string &p) { return menuFile(p) ? 0 : p.find("/worm.glb") != std::string::npos || p.find("/hats/") != std::string::npos ? 1 : 2; };  // the match setup shows worm and hats
         std::stable_sort(files.begin(), files.end(), [&](const std::string &a, const std::string &b) { return rank(a) < rank(b); });
         menuLeft = (int)std::count_if(files.begin(), files.end(), menuFile);
         startT = GetTime();

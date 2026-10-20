@@ -1272,11 +1272,28 @@ static void pageArrow(bool right, int state, Vector2 c, float half) {
     if (a.id) DrawTexturePro(a, {a.width / 4.0f * state, a.height / 2.0f * !right, a.width / 4.0f, a.height / 2.0f}, {p.x - d / 2, p.y - d / 2, d, d}, {}, 0, WHITE);
 }
 
-// The strip, its ticker and, in a submenu, NAV Prev (the back arrow, (-247, -159) scale 45) with the pad's Back
-static void paperStrip(float t, bool back) {
+// A tooltip in the ticker's window (W4M copies FETIP.* into FE.ToolTip on a highlight): one line, shrunk to fit, Solid_Black; warn: Error_Red
+static void tipText(const char *tip, bool warn) {
+    float l = fePos(-247, 0).x + 55 * FE_S, r = fePos(264, 0).x - 50 * FE_S, px = 20 * FE_S, tw = textWidth(tip, px) * TEXT_X;
+    if (tw > r - l) px *= (r - l) / tw;
+    Vector2 c = {(l + r) / 2, fePos(0, -159).y};
+    Color k = warn ? Color{200, 20, 10, 255} : BLACK;
+    rlPushMatrix();
+    rlTranslatef(c.x, c.y, 0);
+    rlRotatef(0.029f * RAD2DEG, 0, 0, 1);
+    rlScalef(TEXT_X, 1, 1);
+    textG(tip, 0, -px / 2, px, k, k, 1, BC_NONE);
+    rlPopMatrix();
+}
+
+// The strip with its ticker (or a tooltip) and, in a submenu, NAV Prev (the back arrow, (-247, -159) scale 45) with the pad's Back;
+// start: NAV Start (the jar, (264, -166) scale 40) in state 0 Normal / 2 Disabled, -1 none
+static void paperStrip(float t, bool back, const char *tip = nullptr, bool warn = false, int start = -1) {
     tooltipStrip();
-    tickerText(t);
+    if (tip) tipText(tip, warn);
+    else tickerText(t);
     if (back) navButton(2, 0, {-247, -159}, 45);
+    if (start >= 0) navButton(0, start, {264, -166}, 40);
 }
 
 // MouseEntity (0x744cfc / 0x744c0e): the FE.Mouse sprite (mouse.tga, FE.MouseSize 20 FE) centred 14 FE right / below the pointer, rotated 0.98 rad
@@ -1434,7 +1451,8 @@ static bool swkbd(std::string &s, const char *hint) {
 
 // system controller applet: lets players pair, split or turn single Joy-Cons sideways.
 // players: controllers the match needs; team k always lands on pad k afterwards (padInitialize No1..No4 order).
-static void controllerApplet(int players) {
+// true when the player confirmed with enough pads connected (B / cancel returns a failed Result).
+static bool controllerApplet(int players) {
     HidLaControllerSupportArg arg;
     HidLaControllerSupportResultInfo info;
     hidLaCreateControllerSupportArg(&arg);
@@ -1442,7 +1460,9 @@ static void controllerApplet(int players) {
     arg.hdr.enable_single_mode = players == 1;  // lets 1 player stay in handheld mode
     arg.hdr.enable_identification_color = 1;
     for (int i = 0; i < 4; i++) arg.identification_color[i] = {TEAM_COLORS[i].r, TEAM_COLORS[i].g, TEAM_COLORS[i].b, TEAM_COLORS[i].a};
-    hidLaShowControllerSupport(&info, &arg);
+    info = {};
+    Result rc = hidLaShowControllerSupport(&info, &arg);
+    return R_SUCCEEDED(rc) && info.player_count >= Clamp(players, 1, 4);
 }
 #endif
 
@@ -1844,10 +1864,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
 // ---------------------------------------------------------------- local match setup: Teams / Map / Rules (docs/frontend-setup.md)
 
 namespace {
-const Color PAPER = {246, 236, 210, 255}, PAPER_EDGE = {217, 198, 154, 255}, DARK = {58, 42, 24, 255}, SOFT = {122, 100, 72, 255}, HILITE = {255, 138, 31, 255},
-            HILITE_INK = {42, 22, 0, 255}, WARN = {216, 52, 43, 255}, ON_GREEN = {58, 166, 90, 255}, SKY = {27, 79, 128, 255}, CPU_CHIP = {106, 90, 138, 255};
-const int YB = GAMEPAD_BUTTON_RIGHT_FACE_LEFT, L1 = GAMEPAD_BUTTON_LEFT_TRIGGER_1, R1 = GAMEPAD_BUTTON_RIGHT_TRIGGER_1;
-const float TEAM_W = (1200 - 3 * 14) / 4.0f;  // Teams: 4 columns between x = 40 and 1240, 14 apart
+const int YB = GAMEPAD_BUTTON_RIGHT_FACE_LEFT;
 
 bool padPresent(int p) {
 #ifdef __SWITCH__
@@ -1869,21 +1886,13 @@ const char *padStyle(int p) {
     return "Controller";
 }
 
-// text without the W4M outline, for the dark ink on paper
-void ptext(const char *t, float x, float y, float size, Color c, int align = 0) { textG(t, x, y, size, c, c, align, {0, 0, 0, 0}); }
+// WXFE_GradientColours [data, docs/w4m/frontend.md "Text colours"]: 10 TextBox_Yellow, 12 List_Data_Orange, 19 Disabled_Grey, 31 ERROR_RED, 3 Solid_Black
+const Color GC_TEXTBOX_YELLOW[2] = {{255, 242, 182, 255}, {255, 212, 119, 255}}, GC_LIST_DATA_ORANGE[2] = {{255, 228, 146, 255}, {255, 250, 225, 255}},
+            GC_DISABLED[2] = {{128, 128, 128, 255}, {192, 192, 192, 255}}, GC_ERROR_RED[2] = {{255, 0, 0, 255}, {255, 0, 0, 255}}, GC_BLACK[2] = {BLACK, BLACK};
 
-void paper(Rectangle d, Color fill, Color edge, float edgeW = 3) {
-    DrawRectangleRounded(d, 0.12f, 8, fill);
-    DrawRectangleRoundedLinesEx(d, 0.12f, 8, edgeW, edge);
-}
-
-void pill(Rectangle d, Color c) { DrawRectangleRounded(d, 1, 8, c); }
-
-// the Switch player lights of pad p: the first p + 1 of 4 lit, 8 px squares; width 4 * 8 + 3 * 3
+// The Switch player lights of pad p: the first p + 1 of 4 lit, 8 px squares; width 4 * 8 + 3 * 3 [ours: the Switch has no W4M equivalent]
 void led(float x, float y, int p) {
-    for (int i = 0; i < 4; i++) {
-        DrawRectangleRounded({x + i * 11.0f, y, 8, 8}, 0.25f, 4, i <= p ? Color{54, 216, 96, 255} : Color{58, 42, 24, 50});
-    }
+    for (int i = 0; i < 4; i++) DrawRectangleRounded({x + i * 11.0f, y, 8, 8}, 0.25f, 4, i <= p ? Color{54, 216, 96, 255} : Color{255, 255, 255, 80});
 }
 
 int ctrlOf(const GameConfig::Team &t) { return t.cpu ? 3 + t.cpu : t.pad; }  // Contrôle: 0..3 a pad, 4..8 CPU level 1..5
@@ -1896,62 +1905,25 @@ bool padMissing(const Lobby &L) {
 }
 #endif
 
-// the screen's step pills right of its title
-const char *setupTitle(bool room, bool lan) {
-    return room ? lan ? tr(nullptr, "Local network", "Réseau local") : tr(nullptr, "Online", "En ligne") : tr(nullptr, "Local match", "Partie locale");
+// false while a human team of this console lacks its pad and the controller applet (Switch) did not fix it
+bool padsReady(const Lobby &L) {
+#ifdef __SWITCH__
+    return !padMissing(L) || controllerApplet(__builtin_popcount(L.padsUsed()));
+#else
+    (void)L;
+    return true;
+#endif
 }
 
-void setupHeading(int step, const char *title, int timer) {
-    text(title, 40, 18, 52, {255, 246, 224, 255});
-    float x = 40 + textWidth(title, 52) + 22;
-    const char *steps[3] = {tr(nullptr, "1 Teams", "1 Équipes"), tr(nullptr, "2 Map", "2 Terrain"), tr(nullptr, "3 Rules", "3 Règles")};
-    for (int i = 0; i < 3; i++) {
-        float w = textWidth(steps[i], 18) + 24;
-        pill({x, 40, w, 28}, i == step ? PAPER : Color{0, 0, 0, 51});
-        ptext(steps[i], x + w / 2, 44, 18, i == step ? DARK : Color{232, 244, 255, 204}, 1);
-        x += w + 6;
+// W4M text without its /*token*/ markup and space runs (inline icons)
+std::string plain(const char *s) {
+    std::string o;
+    for (const char *p = s; *p; p++) {
+        if (p[0] == '/' && p[1] == '*')
+            if (const char *e = strstr(p + 2, "*/")) { p = e + 1; continue; }
+        if (*p != ' ' || o.empty() || o.back() != ' ') o += *p;
     }
-    if (timer != -2) {  // W4M WXNET.Lobby.Timer: "%.2d" seconds, "--" with no deadline
-        DrawCircle(1208, 44, 28, {246, 236, 210, 255}), DrawCircleLines(1208, 44, 28, PAPER_EDGE);
-        ptext(timer < 0 ? "--" : TextFormat("%.2d", timer), 1208, 30, 30, DARK, 1);
-    }
-}
-
-void hintBar(const std::vector<Hint> &h) {
-    DrawRectangle(0, 664, 1280, 56, {11, 42, 70, 204});
-    menuPage = false;
-    hints(h);
-    menuPage = true;
-}
-void hintBar(std::initializer_list<Hint> h) { hintBar(std::vector<Hint>(h)); }
-
-void cta(const char *label, float y = 600) {
-    Rectangle r = {1240 - 250, y, 250, 56};
-    DrawRectangleRounded({r.x, r.y + 5, r.width, r.height}, 0.3f, 8, {184, 90, 0, 255});
-    DrawRectangleRounded(r, 0.3f, 8, HILITE);
-    ptext(label, r.x + r.width / 2, r.y + 9, 34, HILITE_INK, 1);
-}
-
-// word wrap on spaces and newlines; W4M's /*token*/ markup is dropped and space runs (its inline icons) collapse
-std::vector<std::string> wrapLines(const char *s, float size, float w) {
-    std::vector<std::string> out;
-    std::string line, word;
-    for (const char *p = s;; p++) {
-        if (p[0] == '/' && p[1] == '*') {
-            const char *e = strstr(p + 2, "*/");
-            if (e) { p = e + 1; continue; }
-        }
-        if (*p && *p != ' ' && *p != '\n') { word += *p; continue; }
-        if (!word.empty()) {
-            std::string next = line.empty() ? word : line + " " + word;
-            if (!line.empty() && textWidth(next.c_str(), size) > w) out.push_back(line), next = word;
-            line = next, word.clear();
-        }
-        if (*p == '\n') out.push_back(line), line.clear();
-        if (!*p) break;
-    }
-    if (!line.empty()) out.push_back(line);
-    return out;
+    return o;
 }
 
 // a picture cropped to fill d (level pictures are square); false while it is not loaded
@@ -1964,14 +1936,120 @@ bool cover(const std::string &name, Rectangle d, Color tint = WHITE) {
     return true;
 }
 
+// ---- W4M list widgets of WXFE.CreateAGame (WXFE.CreateAGameList rows: Border_Normal 6 / Highlight 9 / Disabled 7, GapBetweenItems 2)
+
+// The row border: the halves of fe/border_*'s circle cap a stretched bar; d: the row's inside
+void feBorder(Rectangle d, int state) {
+    static const char *const NAME[3] = {"fe/border_normal", "fe/border_highlight", "fe/border_disabled"};
+    Texture2D t = tex(NAME[state]);
+    if (!t.id) return DrawRectangleRounded(d, 1, 8, state == 1 ? GOLDEN : PANEL);
+    float k = d.height / 92, cap = fminf(64 * k, d.width / 2), x0 = d.x - 8 * k, w = d.width + 16 * k, y0 = d.y - 16 * k, h = 128 * k;
+    DrawTexturePro(t, {8, 0, 64, 128}, {x0, y0, cap, h}, {}, 0, WHITE);
+    DrawTexturePro(t, {72, 0, 64, 128}, {x0 + w - cap, y0, cap, h}, {}, 0, WHITE);
+    DrawTexturePro(t, {200, 0, 200, 128}, {x0 + cap, y0, w - 2 * cap, h}, {}, 0, WHITE);
+}
+
+// FE text in pixels: x anchored by align (0 left, 1 centre, 2 right), yc the line's centre; TEXT_X as every FE text
+void feTextPx(const char *s, float x, float yc, float px, const Color *g, int align, Color edge = BC_BLACK) {
+    rlPushMatrix();
+    rlTranslatef(x, yc, 0);
+    rlScalef(TEXT_X, 1, 1);
+    textG(s, 0, -px / 2, px, g[0], g[1], align, edge);
+    rlPopMatrix();
+}
+float feWidthPx(const char *s, float px) { return textWidth(s, px) * TEXT_X; }
+
+// A one-line FE label at FE (x, y) (centre), tilted rz rad about its anchor
+void feLine(const char *s, float x, float y, float size, const Color *g, int align, float rz = 0) {
+    Vector2 p = fePos(x, y);
+    rlPushMatrix();
+    rlTranslatef(p.x, p.y, 0);
+    rlRotatef(-rz * RAD2DEG, 0, 0, 1);
+    feTextPx(s, 0, 0, size * FE_S, g, align);
+    rlPopMatrix();
+}
+
+// A row box (FE centre, size) in pixels, spread like fePos
+Rectangle feBox(float cx, float cy, float w, float h) {
+    Vector2 a = fePos(cx - w / 2, cy + h / 2);
+    return {a.x, a.y, w * FE_S * feK, h * FE_S};
+}
+
+// Tilts what is drawn while it lives about c, slid right by `slide` px (the row's incoming glide)
+struct Tilt {
+    Tilt(Vector2 c, float rz, float slide = 0) {
+        rlPushMatrix();
+        rlTranslatef(c.x + slide, c.y, 0);
+        rlRotatef(-rz * RAD2DEG, 0, 0, 1);
+        rlTranslatef(-c.x, -c.y, 0);
+    }
+    ~Tilt() { rlPopMatrix(); }
+};
+Vector2 centre(Rectangle r) { return {r.x + r.width / 2, r.y + r.height / 2}; }
+
+// A list row with a label left (List_Lable_Blue) and a value right (List_Data_Orange); Solid_Black on the highlight (state 1), grey when disabled (2).
+// arrows: textitem_arrows around the value; ledPad >= 0: that pad's lights before it; red: ERROR_RED value [ours: W4M rows hold one text column]
+void feRow(Rectangle r, int state, const char *label, const char *value, bool arrows, int ledPad = -1, bool red = false) {
+    feBorder(r, state);
+    bool hi = state == 1;
+    const Color *lg = hi ? GC_BLACK : state == 2 ? GC_DISABLED : GC_LIST_LABLE_BLUE;
+    const Color *vg = red ? GC_ERROR_RED : hi ? GC_BLACK : state == 2 ? GC_DISABLED : GC_LIST_DATA_ORANGE;
+    float px = r.height * 0.62f, pad = r.height * 0.8f, cy = r.y + r.height / 2, ah = r.height * 0.6f, aw = ah * 0.5f, right = r.x + r.width - pad;
+    float lw = feWidthPx(label, px), avail = r.width - 2 * pad - lw - 16 - (arrows ? 2 * aw + 12 : 0) - (ledPad >= 0 ? 53 : 0), vpx = px, vw = feWidthPx(value, vpx);
+    if (vw > avail && avail > 0) vpx *= avail / vw, vw = avail;
+    Texture2D a = tex("fe/textitem_arrows");
+    Color ac = hi ? Color{42, 22, 0, 255} : GC_LIST_DATA_ORANGE[0];
+    if (arrows && a.id) DrawTexturePro(a, {32, 0, 32, 64}, {right - aw, cy - ah / 2, aw, ah}, {}, 0, ac), right -= aw + 6;
+    Color edge = hi ? BC_NONE : BC_BLACK;  // black on the orange bar without the outline [assumed: readability]
+    feTextPx(value, right, cy, vpx, vg, 2, edge);
+    right -= vw;
+    if (ledPad >= 0) led(right - 49, cy - 4, ledPad), right -= 53;
+    if (arrows && a.id) DrawTexturePro(a, {0, 0, 32, 64}, {right - aw - 6, cy - ah / 2, aw, ah}, {}, 0, ac);
+    feTextPx(label, r.x + pad, cy, px, lg, 0, edge);
+}
+
+// Blue divide, scrolling watermark and Title Control of the setup screens [data MENUTWKX WXFE.CreateAGame: AnimDivide$In_Curve, Scrolling 1-4, Title Control]; p: the
+// panel's slide-in. The three steps (top right) are ours: W4M's CreateAGame is a single screen. In a room, W4M's lobby timer disc (WXNET.Lobby.Timer,
+// TimerBack (-120, -105), `%.2d`, `--` with no deadline) sits on the panel's foot.
+void setupBack(const char *title, int step, float t, float p, int timer) {
+    float x = (1 - easeOut(p / 0.7f)) * -820;
+    divide(x);
+    watermark(title, x, t);
+    titleControl(title, x);
+    const char *steps[3] = {tr(nullptr, "1 Teams", "1 Équipes"), tr(nullptr, "2 Map", "2 Terrain"), tr(nullptr, "3 Rules", "3 Règles")};
+    static const Color DIM[2] = {{151, 207, 255, 150}, {233, 255, 255, 150}};
+    float px = 18 * FE_S, right = 1240;
+    for (int i = 2; i >= 0; i--) {
+        right -= feWidthPx(steps[i], px);
+        feTextPx(steps[i], right, 92, px, i == step ? GC_BUTTON_YELLOW : DIM, 0, i == step ? BC_BLACK : Color{0, 0, 0, 90});
+        right -= 26;
+    }
+    if (timer != -2) {
+        Vector2 c = fePos(-120, -105);
+        float r = 40;
+        if (!image("fe/buttonsmall_normal", {c.x - r, c.y - r, 2 * r, 2 * r})) DrawCircleV(c, r, PANEL);
+        feTextPx(timer < 0 ? "--" : TextFormat("%.2d", timer), c.x, c.y, 30 * FE_S * 0.8f, GC_BUTTON_YELLOW, 1);
+    }
+}
+
+// The paper strip with a tooltip (warn: red), NAV Prev and NAV Start (start: 0 Normal, 2 Disabled), then the pad's buttons under it
+// [ours: W4M's ButtonHelp shows Select / Back only]
+void setupFront(float t, const char *tip, bool warn, int start, const std::vector<Hint> &h) {
+    paperStrip(t, true, tip, warn, start);
+    menuPage = false;
+    hints(h);
+    menuPage = true;
+}
+
+// A labelled column head (WXFE.HeaderList entries: FETXT.Teams, Landscape, GameStyle, Wormpot), List_Lable_Blue, tilted
+void head(const char *label, float x, float y, float rz) { feLine(label, x, y, 22, GC_LIST_LABLE_BLUE, 1, rz); }
 }  // namespace
 
 void Frontend::wormPreview(int team, float t) {
-    RenderTexture2D &rt = wormRt[team];
-    if (!rt.id) rt = LoadRenderTexture(256, 346);
+    if (!wormRt.id) wormRt = LoadRenderTexture(256, 346);
     const GameConfig::Team &tm = lobby.cfg.teamSetup[team];
     Camera3D cam = {{0, 1.0f, 3.7f}, {0, 0.8f, 0}, {0, 1, 0}, 30, CAMERA_PERSPECTIVE};
-    BeginTextureMode(rt);
+    BeginTextureMode(wormRt);
     ClearBackground(BLANK);
     BeginMode3D(cam);
     Lit::frame(cam.position);
@@ -1986,15 +2064,21 @@ void Frontend::wormPreview(int team, float t) {
 bool Frontend::setupTeams(int dx, int dy, bool ok, bool back, bool plus, bool typing, float t) {
     GameConfig &c = lobby.cfg;
     const int nb = Audio::voiceBanks();
+    Models::upload(GetTime() + 0.004);  // worm and hats are no menu assets: a plain launch uploads them only here or at the first match
+    // rows shown: the 4 team slots, the focused team's Control / Voice / Hat right under it
+    if (teamFocus >= c.teams) teamRow = 0;
+    std::vector<std::array<int, 2>> vis;
+    for (int k = 0; k < Lobby::MAX_TEAMS; k++) {
+        vis.push_back({k, 0});
+        if (k == teamFocus && k < c.teams) for (int r = 1; r < 4; r++) vis.push_back({k, r});
+    }
+    if (!typing && dy) {
+        int cur = int(std::find(vis.begin(), vis.end(), std::array<int, 2>{teamFocus, teamRow}) - vis.begin());
+        cur = clampWrap(cur + dy, (int)vis.size());
+        teamFocus = vis[cur][0], teamRow = vis[cur][1];
+    }
     GameConfig::Team *tm = teamFocus < c.teams ? &c.teamSetup[teamFocus] : nullptr;
     bool mine = tm && lobby.canEdit(teamFocus);
-    if (!typing && tm) teamRow = clampWrap(teamRow + dy, 4);
-    if (!typing) {
-        int shoulder = live ? P({R1}, {}) - P({L1}, {}) : 0;
-        if (!tm || teamRow == 0) shoulder += dx, dx = 0;
-        teamFocus = Clamp(teamFocus + shoulder, 0, Lobby::MAX_TEAMS - 1);
-        if (teamFocus >= c.teams) tm = nullptr, mine = false;
-    }
     if (mine && !typing) {
         if (teamRow == 0 && ok) edit(tm->name, "Team name");
         if (teamRow == 1 && (dx || ok)) setCtrl(*tm, clampWrap(ctrlOf(*tm) + (dx ? dx : 1), room() && !lobby.isHost() ? 4 : 9));  // CPU teams: the host
@@ -2003,7 +2087,7 @@ bool Frontend::setupTeams(int dx, int dy, bool ok, bool back, bool plus, bool ty
         for (int p = 0; p < 4; p++)  // Y on any pad: that pad plays the team
             if (pressed(p, {YB}, p ? std::initializer_list<int>{} : std::initializer_list<int>{KEY_Y})) setCtrl(*tm, p), Audio::play(Audio::Sfx::FeClick);
     }
-    if (!typing && live && P({X}, {KEY_X})) {
+    if (!typing && live && ((!tm && ok) || P({X}, {KEY_X}))) {  // an empty slot adds a team (A or X); X on an own team removes it
         auto freePad = [&] {
             int pad = 0;
             for (int p = 3; p >= 0; p--) if (padPresent(p) && !(lobby.padsUsed() >> p & 1)) pad = p;
@@ -2024,97 +2108,112 @@ bool Frontend::setupTeams(int dx, int dy, bool ok, bool back, bool plus, bool ty
     }
     bool leave = back && room();
     if (back && !room()) saveSetup(c), go(Local);
-    if (plus) {
-#ifdef __SWITCH__
-        if (padMissing(lobby)) controllerApplet(__builtin_popcount(lobby.padsUsed()));
-#endif
-        screen = SetupMap;
-    }
+    if (plus && padsReady(lobby)) screen = SetupMap;
 #ifdef __SWITCH__
     if (minusTap) controllerApplet(__builtin_popcount(lobby.padsUsed()));
 #endif
 
-    setupHeading(0, setupTitle(room(), lan), room() ? timer : -2);
-    // pad strip: the 4 Switch player slots, with the teams each controls
-    for (int p = 0; p < 4; p++) {
-        Rectangle d = {40 + p * (TEAM_W + 14), 92, TEAM_W, 88};
-        bool on = padPresent(p);
-        paper(d, on ? PAPER : Color{246, 236, 210, 170}, PAPER_EDGE);
-        Rectangle g = {d.x + 14, d.y + 21, 46, 46};
-        DrawRectangleRounded(g, 0.25f, 6, DARK);
-        DrawRectangleRounded({g.x + 6, g.y + 14, 34, 21}, 0.5f, 6, PAPER);
-        DrawCircle(g.x + 16, g.y + 24, 3.5f, DARK), DrawCircle(g.x + 30, g.y + 22, 2.5f, DARK), DrawCircle(g.x + 34, g.y + 27, 2.5f, DARK);
-        ptext(TextFormat(tr(nullptr, "Pad %d", "Manette %d"), p + 1), d.x + 72, d.y + 18, 22, DARK);
-        led(d.x + 72 + textWidth(TextFormat(tr(nullptr, "Pad %d", "Manette %d"), p + 1), 22) + 10, d.y + 25, p);
-        ptext(on ? padStyle(p) : tr(nullptr, "Press L + R to join", "Appuie sur L + R pour rejoindre"), d.x + 72, d.y + 50, 15, SOFT);
-        float dot = d.x + d.width - 16 - 22;
-        for (int k = Lobby::MAX_TEAMS - 1; k >= 0; k--) {
-            if (k >= c.teams || !lobby.canEdit(k) || c.teamSetup[k].cpu || c.teamSetup[k].pad != p) continue;
-            DrawCircle(dot + 9, d.y + d.height / 2, 11, WHITE), DrawCircle(dot + 9, d.y + d.height / 2, 9, TEAM_COLORS[k]);
-            dot -= 22;
+    const bool settled = from >= SetupTeams && from <= SetupRules && leaving < 0;  // coming from a sibling step: no slide-in
+    float since = t - entered, out = leaving >= 0 ? t - leaving : -1;
+    auto glide = [&](int i) { return settled ? 1.0f : rowAppear(since, out, i + 3); };
+    setupBack(room() ? tr("FETXTH.GameLobby", "GAME LOBBY", "SALON") : tr("FETXTH.LOCALGAME", "LOCAL GAME", "PARTIE LOCALE"), 0, t, settled ? 1 : subIn(t), room() ? timer : -2);
+    // the 4 Switch player slots, with the teams each controls [ours]
+    {
+        FeFlat flat;
+        for (int p = 0; p < 4; p++) {
+            float a = glide(p);
+            if (a <= 0) continue;
+            Rectangle d = feBox(-290, 128 - p * 27.0f, 212, 24);
+            Tilt tl(centre(d), 0, (a - 1) * 300);
+            bool on = padPresent(p);
+            feBorder(d, on ? 0 : 2);
+            float px = d.height * 0.55f, cy = d.y + d.height / 2, dots = d.x + d.width - d.height * 0.75f;
+            for (int k = Lobby::MAX_TEAMS - 1; k >= 0; k--) {
+                if (k >= c.teams || !lobby.canEdit(k) || c.teamSetup[k].cpu || c.teamSetup[k].pad != p) continue;
+                DrawCircleV({dots - 8, cy}, 8, WHITE), DrawCircleV({dots - 8, cy}, 6, TEAM_COLORS[k]);
+                dots -= 18;
+            }
+            const char *nm = TextFormat(tr(nullptr, "Pad %d", "Manette %d"), p + 1);
+            float x = d.x + d.height * 0.75f;
+            led(x, cy - 4, p);
+            x += 53;
+            feTextPx(nm, x, cy, px, on ? GC_BUTTON_YELLOW : GC_DISABLED, 0);
+            x += feWidthPx(nm, px) + 10;
+            const char *st = on ? padStyle(p) : tr(nullptr, "L + R to join", "L + R pour rejoindre");
+            float spx = px * 0.82f, w = feWidthPx(st, spx), space = dots - 4 - x;
+            if (w > space && space > 0) spx *= space / w;
+            feTextPx(st, dots - 4, cy, spx, on ? GC_LIST_LABLE_BLUE : GC_DISABLED, 2);
         }
     }
-    // team cards
+    if (tm) {  // the focused team's worm, live, on the panel [user-requested]
+        wormPreview(teamFocus, t);
+        Rectangle d = {128, 268, 215, 290};
+        DrawTexturePro(wormRt.texture, {0, 0, 256, -346}, d, {}, 0, WHITE);
+    }
+    // the teams, W4M's right-hand list: a row per slot (name, control; in a room its console and ready grenade), the focused team's settings under it
     const char *CPU[] = {"", tr("FETXT.CPU1", "CPU Level 1", "I.A. Niveau 1"), tr("FETXT.CPU2", "CPU Level 2", "I.A. Niveau 2"), tr("FETXT.CPU3", "CPU Level 3", "I.A. Niveau 3"),
                          tr("FETXT.CPU4", "CPU Level 4", "I.A. Niveau 4"), tr("FETXT.CPU5", "CPU Level 5", "I.A. Niveau 5")};
+    head(tr("FETXT.Teams", "Teams", "Équipes"), 158, 150, 0.05f);
+    const float TILT[4] = {0.06f, 0.04f, 0.02f, 0.01f};  // WXFE.CreateAGame LIST Team 1..4 [data]
+    float y = 134;
+    int idx = 0;
     for (int k = 0; k < Lobby::MAX_TEAMS; k++) {
-        bool focus = k == teamFocus;
-        Rectangle d = {40 + k * (TEAM_W + 14), 196.0f - (focus ? 4 : 0), TEAM_W, 440};
-        if (k >= c.teams) {
-            paper(d, {246, 236, 210, 85}, focus ? HILITE : Color{246, 236, 210, 200}, focus ? 5 : 3);
-            ptext("+", d.x + d.width / 2, d.y + 150, 80, SKY, 1);
-            ptext(tr(nullptr, "Add a team", "Ajouter une équipe"), d.x + d.width / 2, d.y + 245, 26, SKY, 1);
-            continue;
-        }
-        const GameConfig::Team &m = c.teamSetup[k];
-        if (focus) DrawRectangleRounded({d.x - 4, d.y - 4, d.width + 8, d.height + 8}, 0.12f, 8, {255, 138, 31, 102});
-        paper(d, PAPER, focus ? HILITE : PAPER_EDGE, focus ? 4 : 3);
-        DrawRectangleRounded({d.x + 3, d.y + 3, d.width - 6, 10}, 1, 6, TEAM_COLORS[k]);
-        bool nameSel = focus && teamRow == 0;
-        if (nameSel) DrawRectangleRounded({d.x + 10, d.y + 20, d.width - 20, 40}, 0.3f, 6, HILITE);
-        ptext(TextFormat("%s%s", m.name.c_str(), editing == &c.teamSetup[k].name && fmodf(t, 1) < 0.5f ? "_" : ""), d.x + 18, d.y + 24, 28, nameSel ? HILITE_INK : TEAM_COLORS[k]);
-        const char *labels[3] = {tr(nullptr, "Control", "Contrôle"), tr("FETXTSH.Voice", "Voice", "Voix"), tr(nullptr, "Hat", "Chapeau")};
-        const char *vals[3] = {"", nb ? Audio::voiceBankName(m.voice) : "-", !hats ? "-" : hatLabel(m.hat)};
-        for (int r = 0; r < 3; r++) {
-            Rectangle l = {d.x + 10, d.y + 68 + r * 36.0f, d.width - 20, 32};
-            bool sel = focus && teamRow == r + 1;
-            if (sel) DrawRectangleRounded(l, 0.3f, 6, HILITE);
-            ptext(labels[r], l.x + 8, l.y + 6, 17, sel ? Color{74, 40, 0, 255} : SOFT);
-            float right = l.x + l.width - 8;
-            if (sel) ptext(">", right - 4, l.y + 4, 22, HILITE_INK, 2), right -= 16;
-            if (r == 0) {
-                bool own = lobby.canEdit(k), miss = own && !m.cpu && !padPresent(m.pad), pad = own && !m.cpu;
-                const char *v = m.cpu ? CPU[m.cpu] : own ? TextFormat(tr(nullptr, "Pad %d", "Manette %d"), m.pad + 1) : tr(nullptr, "Human", "Humain");
-                float w = textWidth(v, 15) + 18 + (pad ? 52 : 0);
-                Rectangle ch = {right - w, l.y + 4, w, 24};
-                pill(ch, miss ? WARN : m.cpu ? CPU_CHIP : DARK);
-                if (pad) led(ch.x + 10, ch.y + 8, m.pad);
-                ptext(v, ch.x + (pad ? 52 : 9), ch.y + 4, 15, PAPER);
-                right = ch.x - 4;
-            } else {
-                ptext(vals[r], right, l.y + 6, 17, sel ? HILITE_INK : DARK, 2);
-                right -= textWidth(vals[r], 17) + 6;
+        for (int r = 0; r < (k == teamFocus && k < c.teams ? 4 : 1); r++) {
+            float h = r ? 25 : 30, cy = y - h / 2, a = glide(idx++);
+            y -= h + 5;
+            if (a <= 0) continue;
+            bool sel = k == teamFocus && r == teamRow, own = lobby.canEdit(k);
+            Rectangle d = r ? feBox(167, cy, 264, h) : feBox(158, cy, 282, h);
+            Tilt tl(centre(d), TILT[k], (1 - a) * 260);
+            if (k >= c.teams) {  // an empty slot
+                feBorder(d, sel ? 1 : 0);
+                feTextPx(tr("FETXT.InsertTeam", "- Insert Team -", "- Ajouter une équipe -"), d.x + d.width / 2, d.y + d.height / 2, d.height * 0.62f, sel ? GC_BLACK : GC_TEXTBOX_YELLOW, 1, sel ? BC_NONE : BC_BLACK);
+                continue;
             }
-            if (sel) ptext("<", right - 2, l.y + 4, 22, HILITE_INK, 2);
-        }
-        if (room()) {  // the owner console, and its W4M ready grenade (Team<n>_Ready: Nav Start, Normal when ready, Disabled when not)
-            auto p = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
-            ptext(p == net->players.end() ? "" : (p->name + (p->id == net->id ? tr(nullptr, " (you)", " (vous)") : "")).c_str(), d.x + 18, d.y + 186, 15, SOFT);
-            navAt(0, lobby.ready[k] ? 0 : 2, {d.x + d.width - 38, d.y + 176, 28, 28});
-        }
-        if (lobby.canEdit(k) && !m.cpu && !padPresent(m.pad)) {
-            std::vector<std::string> ls = wrapLines(TextFormat(tr(nullptr, "Pad %d missing: + opens the controller screen", "Manette %d absente : + ouvre l'écran des manettes"), m.pad + 1), 13, d.width - 146);
-            for (size_t i = 0; i < ls.size(); i++) ptext(ls[i].c_str(), d.x + 12, d.y + d.height - 36 - (ls.size() - 1 - i) * 16.0f, 13, WARN);
+            const GameConfig::Team &m = c.teamSetup[k];
+            bool miss = own && !m.cpu && !padPresent(m.pad);
+            if (!r) {
+                feBorder(d, sel ? 1 : 0);
+                float px = d.height * 0.62f, cyp = d.y + d.height / 2, x = d.x + d.height * 0.7f;
+                DrawCircleV({x, cyp}, d.height * 0.26f, BLACK), DrawCircleV({x, cyp}, d.height * 0.2f, TEAM_COLORS[k]);
+                float right = d.x + d.width - d.height * 0.7f;
+                if (room()) {  // the owner console, and its W4M ready grenade (Team<n>_Ready: Nav Start, Normal when ready, Disabled when not)
+                    float g = d.height * 1.0f;
+                    navAt(0, lobby.ready[k] ? 0 : 2, {right - g * 0.8f, cyp - g / 2, g, g});
+                    right -= g + 4;
+                    auto pl = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
+                    if (pl != net->players.end()) {
+                        std::string who = pl->name + (pl->id == net->id ? tr(nullptr, " (you)", " (vous)") : "");
+                        feTextPx(who.c_str(), right, cyp, px * 0.62f, sel ? GC_BLACK : GC_LIST_LABLE_BLUE, 2, sel ? BC_NONE : BC_BLACK);
+                        right -= feWidthPx(who.c_str(), px * 0.62f) + 10;
+                    }
+                } else {
+                    const char *v = m.cpu ? CPU[m.cpu] : TextFormat(tr(nullptr, "Pad %d", "Manette %d"), m.pad + 1);
+                    feTextPx(v, right, cyp, px * 0.7f, miss ? GC_ERROR_RED : sel ? GC_BLACK : GC_LIST_DATA_ORANGE, 2, sel ? BC_NONE : BC_BLACK);
+                    right -= feWidthPx(v, px * 0.7f) + 10;
+                }
+                std::string nameS = m.name + (editing == &c.teamSetup[k].name && fmodf(t, 1) < 0.5f ? "_" : "");
+                float room_ = right - (x + d.height * 0.5f), nw = feWidthPx(nameS.c_str(), px), npx = nw > room_ ? px * room_ / nw : px;
+                feTextPx(nameS.c_str(), x + d.height * 0.5f, cyp, npx, sel ? GC_BLACK : GC_TEXTBOX_YELLOW, 0, sel ? BC_NONE : BC_BLACK);
+                continue;
+            }
+            const char *label = r == 1 ? tr(nullptr, "Control", "Contrôle") : r == 2 ? tr("FETXTSH.Voice", "Voice", "Voix") : tr(nullptr, "Hat", "Chapeau");
+            const char *val = r == 1 ? (m.cpu ? CPU[m.cpu] : own ? TextFormat(tr(nullptr, "Pad %d", "Manette %d"), m.pad + 1) : tr(nullptr, "Human", "Humain"))
+                            : r == 2 ? (nb ? Audio::voiceBankName(m.voice) : "-") : (!hats ? "-" : hatLabel(m.hat));
+            feRow(d, sel ? 1 : own ? 0 : 2, label, val, sel && own, r == 1 && own && !m.cpu ? m.pad : -1, r == 1 && miss);
         }
     }
-    for (int k = 0; k < c.teams; k++) {  // the worm stands free in the card's bottom-right corner
-        wormPreview(k, t);
-        Rectangle d = {40 + k * (TEAM_W + 14) + TEAM_W + 26 - 204, 196.0f - (k == teamFocus ? 4 : 0) + 440 + 10 - 0.955f * 276, 204, 276};  // the worm's feet 10 px below the card
-        DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, d, {}, 0, WHITE);
-    }
-    hintBar({{"A", "Enter", tr(nullptr, "Edit", "Modifier")}, {"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")}, {"Y", "Y", tr(nullptr, "Take with my pad", "Prendre avec ma manette")},
-             {"X", "X", tr(nullptr, "Add / remove", "Ajouter / retirer")}, {APPLET, nullptr, tr(nullptr, "Pads", "Manettes")}, {"+", "N", tr(nullptr, "Next", "Suivant")},
-             {"B", "Esc", tr(nullptr, "Back", "Retour")}});
+    // tooltip: W4M's FETIP.InsertTeam on a team row; a missing pad keeps its red flag [ours]
+    const char *tip = tr("FETIP.InsertTeam", "Insert a team or change team settings.", nullptr);
+    bool warn = false;
+    for (int k = 0; k < c.teams && !warn; k++)
+        if (lobby.canEdit(k) && !c.teamSetup[k].cpu && !padPresent(c.teamSetup[k].pad))
+            warn = true, tip = TextFormat(tr(nullptr, "Pad %d missing: + opens the controller screen", "Manette %d absente : + ouvre l'écran des manettes"), c.teamSetup[k].pad + 1);
+    if (!warn && tm && !mine) tip = tr(nullptr, "Another console edits this team", "Cette équipe est réglée par une autre console");
+    setupFront(t, tip, warn, 0,
+               {{"A", "Enter", tr(nullptr, "Edit", "Modifier")}, {"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")}, {"Y", "Y", tr(nullptr, "Take with my pad", "Prendre avec ma manette")},
+                {"X", "X", tr(nullptr, "Add / remove", "Ajouter / retirer")}, {APPLET, nullptr, tr(nullptr, "Pads", "Manettes")}, {"+", "N", tr(nullptr, "Next", "Suivant")},
+                {"B", "Esc", tr(nullptr, "Back", "Retour")}});
     return leave;
 }
 
@@ -2127,32 +2226,39 @@ void Frontend::setupMap(int dx, int dy, bool back, bool plus, const std::vector<
     }
     if (back) screen = SetupTeams;
     if (plus) screen = SetupRules;
+    float t = now();
 
-    setupHeading(1, setupTitle(room(), lan), room() ? timer : -2);
-    paper({40, 96, 600, 520}, PAPER, PAPER_EDGE);
-    Rectangle pv = {40 + 85.0f, 96 + 12.0f, 430, 430};
-    if (!cover(preview(lobby.cfg.map), pv)) DrawRectangleRec(pv, {30, 60, 40, 255});
-    DrawRectangleLinesEx(pv, 2, PAPER_EDGE);
-    const std::string title = mapTitle(lobby.cfg.map);
-    text(title.c_str(), pv.x + 16, pv.y + pv.height - 57, 36, WHITE);
-    ptext(TextFormat("%d / %d", mapSel + 1, n), 40 + 22, 96 + 466, 18, SOFT);
-    paper({664, 96, 576, 496}, PAPER, PAPER_EDGE);
-    const int cols = 3, rows = (n + cols - 1) / cols, vis = 5, first = Clamp(mapSel / cols - 2, 0, std::max(0, rows - vis));
-    const float tw = (576 - 24 - 2 * 10) / 3.0f, th = 88;
-    for (int i = first * cols; i < std::min(n, (first + vis) * cols); i++) {
-        Rectangle d = {664 + 12 + (i % cols) * (tw + 10), 96 + 12 + (i / cols - first) * (th + 8), tw, th};
-        if (!cover(preview(maps[i]), d)) DrawRectangleRec(d, {30, 60, 40, 255});
-        DrawRectangleGradientV((int)d.x, (int)d.y + 50, (int)d.width, 38, {0, 0, 0, 0}, {0, 0, 0, 170});
-        std::vector<std::string> ls = wrapLines(mapTitle(maps[i]).c_str(), 13, d.width - 12);
-        for (size_t l = 0; l < ls.size() && l < 2; l++) ptext(ls[l].c_str(), d.x + 6, d.y + th - 6 - (std::min<size_t>(ls.size(), 2) - l) * 15.0f, 13, WHITE);
-        if (i == mapSel) DrawRectangleLinesEx({d.x - 2, d.y - 2, d.width + 4, d.height + 4}, 4, HILITE);
+    const bool settled = from >= SetupTeams && from <= SetupRules && leaving < 0;
+    setupBack(room() ? tr("FETXTH.GameLobby", "GAME LOBBY", "SALON") : tr("FETXTH.LOCALGAME", "LOCAL GAME", "PARTIE LOCALE"), 1, t, settled ? 1 : subIn(t), room() ? timer : -2);
+    {  // WXFE.CreateAGame's LandscapeControl: the level picture in its ButtonBig border, the name under it
+        FeFlat flat;
+        head(TextFormat("%s  %d / %d", tr("FETXT.Landscape", "Landscape", "Terrain"), mapSel + 1, n), -200, 156, -0.04f);
+        Rectangle pv = feBox(-200, 16, 196, 196);
+        if (!cover(preview(lobby.cfg.map), pv)) DrawRectangleRec(pv, {30, 60, 40, 255});
+        float k = pv.width / 435;
+        image("fe/buttonbig_normal", {pv.x - 35 * k, pv.y - 40 * k, 512 * k, 512 * k});
+        const std::string title = mapTitle(lobby.cfg.map);
+        float px = 18 * FE_S, w = feWidthPx(title.c_str(), px), room_ = fePos(-120, 0).x - 50 - fePos(-385, 0).x;  // left of the lobby timer disc
+        feTextPx(title.c_str(), fePos(-385, 0).x, fePos(0, -104).y, w > room_ ? px * room_ / w : px, GC_WHITE, 0);
     }
-    cta(tr(nullptr, "NEXT", "SUIVANT"));
-    if (!lobby.canEditMatch()) ptext(tr(nullptr, "The host picks the map", "L'hôte choisit le terrain"), 664 + 150, 96 + 506, 18, SOFT, 1);
+    // the landscape list: 3 columns of tiles, the highlight frame on the selection
+    const int cols = 3, rows = (n + cols - 1) / cols, vis = 4, first = Clamp(mapSel / cols - 1, 0, std::max(0, rows - vis));
+    const float x0 = 585, y0 = 138, tw = (1240 - x0 - 2 * 12) / 3.0f, th = 86;
+    for (int i = first * cols; i < std::min(n, (first + vis) * cols); i++) {
+        Rectangle d = {x0 + (i % cols) * (tw + 12), y0 + (i / cols - first) * (th + 12), tw, th};
+        if (!cover(preview(maps[i]), d)) DrawRectangleRec(d, {30, 60, 40, 255});
+        DrawRectangleGradientV((int)d.x, (int)d.y + 46, (int)d.width, 40, {0, 0, 0, 0}, {0, 0, 0, 170});
+        nine("fe/buttonbig_normal", {d.x - 4, d.y - 4, d.width + 12, d.height + 12}, 44, 0.45f);
+        if (i == mapSel) nine("fe/buttonbig_highlight", {d.x - 8, d.y - 8, d.width + 20, d.height + 20}, 44, 0.55f);
+        float px = 12 * FE_S;
+        const std::string nm = mapTitle(maps[i]);
+        float w = feWidthPx(nm.c_str(), px);
+        feTextPx(nm.c_str(), d.x + 8, d.y + th - 14, w > d.width - 16 ? px * (d.width - 16) / w : px, i == mapSel ? GC_BUTTON_YELLOW : GC_WHITE, 0);
+    }
     std::vector<Hint> h = {{"B", "Esc", tr(nullptr, "Teams", "Équipes")}, {"+", "N", tr(nullptr, "Next", "Suivant")}};
     if (lobby.canEditMatch()) h.insert(h.begin(), {{"D-pad", "Arrows", tr(nullptr, "Map", "Terrain")}, {"Y", "Y", tr(nullptr, "Random", "Au hasard")}});
     if (room()) h.push_back({"ZR", "R", tr(nullptr, "Ready", "Prêt")});
-    hintBar(h);
+    setupFront(t, lobby.canEditMatch() ? tr("FETIP.Landscape2", "Select a landscape to battle on.", nullptr) : tr(nullptr, "The host picks the map", "L'hôte choisit le terrain"), false, 0, h);
 }
 
 bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
@@ -2168,59 +2274,54 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
     if (rulesRow >= FirstRule && rulesRow < Pot && (dx || ok)) c.rules ^= RULE_ROWS[rulesRow - FirstRule].bit;
     if (rulesRow == Pot && ok) screen = Wormpot, reel = 0;
     if (back) screen = SetupMap;
+    plus = plus && padsReady(lobby);
     bool start = room() ? plus && mayEdit && net->allReady() && c.teams >= 2 : plus;
     if (plus && room() && !start) net->setReady(!net->isReady(net->id));
-    if (plus && !room()) {
-        saveSetup(c);
-#ifdef __SWITCH__
-        if (padMissing(lobby)) controllerApplet(__builtin_popcount(lobby.padsUsed()));
-#endif
-    }
+    if (plus && !room()) saveSetup(c);
+    float t = now();
 
-    setupHeading(2, setupTitle(room(), lan), room() ? timer : -2);
+    const bool settled = from >= SetupTeams && from <= SetupRules && leaving < 0;
+    setupBack(room() ? tr("FETXTH.GameLobby", "GAME LOBBY", "SALON") : tr("FETXTH.LOCALGAME", "LOCAL GAME", "PARTIE LOCALE"), 2, t, settled ? 1 : subIn(t), room() ? timer : -2);
     int pots = 0, pot = 0;
     for (int b = 0; b < WP_MODES; b++) if (wpOn(wormpotModes(c.wormpot), b)) pots++, pot = b;
     struct Row { const char *label; std::string value; int toggle; };  // toggle: -1 none, else the rule bit's row
-    std::vector<Row> rows = {{tr(nullptr, "Scheme", "Schéma"), preset < 0 ? "Custom" : SCHEMES[preset].name, -1}, {tr(nullptr, "Worms per team", "Vers par équipe"), TextFormat("%d", c.wormsPerTeam), -1}};
-    for (int r = 0; r < RULES; r++) rows.push_back({ruleLabel(r), "", r});
-    rows.push_back({"Wormpot", !pots ? tr(nullptr, "None", "Aucun") : pots == 1 ? potName(pot) : TextFormat(tr(nullptr, "%d modes", "%d modes"), pots), -1});
-    paper({40, 96, 600, 12 + 2 * 38 + 2 * 3 + 14 + RULES * 38 + 14 + 38 + 12 + 24}, PAPER, PAPER_EDGE);
-    float y = 108;
-    for (int i = 0; i < (int)rows.size(); i++) {
-        if (i == FirstRule || i == Pot) DrawRectangle(48, (int)y + 5, 584, 2, PAPER_EDGE), y += 14;
-        Rectangle l = {50, y, 580, 36};
-        bool sel = i == rulesRow;
-        if (sel) DrawRectangleRounded(l, 0.3f, 6, HILITE);
-        ptext(rows[i].label, l.x + 12, l.y + 6, 22, sel ? Color{74, 40, 0, 255} : SOFT);
-        if (rows[i].toggle >= 0) {
-            bool on = c.rules & RULE_ROWS[rows[i].toggle].bit;
-            Rectangle tg = {l.x + l.width - 12 - 56, l.y + 6, 56, 24};
-            pill(tg, on ? ON_GREEN : sel ? Color{255, 255, 255, 102} : Color{58, 42, 24, 24});
-            ptext(on ? "ON" : "off", tg.x + 28, tg.y + 3, 17, on ? WHITE : sel ? HILITE_INK : SOFT, 1);
-        } else ptext(TextFormat(sel && i < Pot ? "< %s >" : "%s", rows[i].value.c_str()), l.x + l.width - 12, l.y + 6, 22, sel ? HILITE_INK : DARK, 2);
-        y += 40;
-    }
-    // the right panel explains the selected row with W4M's own text
-    const char *title = rows[rulesRow].label, *help = nullptr;
+    std::vector<Row> rows = {{tr("FETXT.Scheme", "Scheme", "Schéma"), preset < 0 ? "Custom" : SCHEMES[preset].name, -1}, {tr(nullptr, "Worms per team", "Vers par équipe"), TextFormat("%d", c.wormsPerTeam), -1}};
+    for (int r = 0; r < RULES; r++) rows.push_back({ruleLabel(r), c.rules & RULE_ROWS[r].bit ? tr("FETXT.On", "On", "Oui") : tr("FETXT.Off", "Off", "Non"), r});
+    rows.push_back({tr("FETXT.Wormpot", "Wormpot", "Wormpot"), !pots ? tr(nullptr, "None", "Aucun") : pots == 1 ? potName(pot) : TextFormat(tr(nullptr, "%d modes", "%d modes"), pots), -1});
+    const char *title = rows[rulesRow].label, *help = nullptr;  // the left panel explains the selected row with W4M's own text
     if (rulesRow == Scheme_) title = tr("FETXT.GameStyle", "Game style", "Style de partie"), help = tr("FETXT.HTPSubtopic24", "Before you begin a game, you must first select a Game Style.", nullptr);
     else if (rulesRow >= FirstRule && rulesRow < Pot) help = ruleHelp(rulesRow - FirstRule);
     else if (rulesRow == Pot) help = tr("FETIP.Wormpot", "The Wormpot changes the rules of the game in new ways.", nullptr);
-    paper({664, 96, 576, 480}, PAPER, PAPER_EDGE);
-    ptext(title, 664 + 26, 96 + 20, 38, SKY);
+    static int helpRow = -1;
+    static float helpSince = 0;
+    if (rulesRow != helpRow) helpRow = rulesRow, helpSince = t;
     if (help) {
-        float size = 21;
-        std::vector<std::string> ls = wrapLines(help, size, 576 - 52);
-        while (size > 13 && ls.size() * size * 1.4f > 480 - 90) ls = wrapLines(help, size -= 1, 576 - 52);
-        for (size_t i = 0; i < ls.size(); i++) ptext(ls[i].c_str(), 664 + 26, 96 + 78 + i * size * 1.4f, size, DARK);
+        FeFlat flat;
+        feLine(title, -290, 124, 22, GC_SUBHEADER_BLUE, 1);
+        FeBox b;
+        b.c = {-290, -6}, b.hw = 100, b.hh = 104, b.size = 14, b.just = 0, b.scrollT = t - helpSince;  // W4M text box: scrolls an overflowing text (AutoScrollSpeed)
+        feText(plain(help), b);
+    }
+    float y = 134;
+    for (int i = 0; i < (int)rows.size(); i++) {
+        if (i == FirstRule || i == Pot) y -= 8;
+        float cy = y - 14, a = settled ? 1.0f : rowAppear(t - entered, leaving >= 0 ? t - leaving : -1, i + 3);
+        y -= 31;
+        if (a <= 0) continue;
+        bool sel = i == rulesRow;
+        Rectangle d = feBox(150, cy, 260, 28);
+        Tilt tl(centre(d), i % 2 ? -0.015f : 0.015f, (1 - a) * 260);  // ours: a small alternating tilt
+        feRow(d, sel ? 1 : 0, rows[i].label, rows[i].value.c_str(), sel && mayEdit && i < FirstRule);
+        if (i == Pot) image("fe/icon_wxpot", {d.x - 40, d.y - 6, 40, 40});
     }
     bool ready = room() && net->isReady(net->id), go = room() && mayEdit && net->allReady() && c.teams >= 2;
-    cta(!room() || go ? tr(nullptr, "START", "START") : ready ? tr(nullptr, "NOT READY", "PAS PRÊT") : tr(nullptr, "READY", "PRÊT"));
-    if (!mayEdit) ptext(tr(nullptr, "The host sets the rules", "L'hôte règle la partie"), 40 + 300, 96 + 12 + 2 * 38 + 2 * 3 + 14 + RULES * 38 + 14 + 38 + 12 + 24 + 8, 18, SOFT, 1);
     std::vector<Hint> h = {{"D-pad", "Up/Down", tr(nullptr, "Choose", "Choisir")}};
     if (mayEdit) h.push_back({"A", "Enter", tr(nullptr, "Toggle", "Activer")}), h.push_back({"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")});
     h.push_back({"+", "N", !room() || go ? tr(nullptr, "Start", "Lancer") : ready ? tr(nullptr, "Not ready", "Pas prêt") : tr(nullptr, "Ready", "Prêt")});
     h.push_back({"B", "Esc", tr(nullptr, "Map", "Terrain")});
-    hintBar(h);
+    const char *tip = !mayEdit ? tr(nullptr, "The host sets the rules", "L'hôte règle la partie") : rulesRow == Scheme_ ? tr("FETIP.GameStyle", "Game styles contain game and weapon settings.", nullptr)
+                      : rulesRow == Pot ? tr("FETIP.Wormpot", "Wormpot modifies the game rules to create new ways to play.", nullptr) : nullptr;
+    setupFront(t, tip, false, 0, h);
     return start;
 }
 
@@ -2282,32 +2383,32 @@ int salon(Salon &st, bool lan, const std::vector<std::string> &names, const std:
         if (ok && n) ret = 2;
         if (back) st.joining = false;
     }
-    const char *title = tr(nullptr, "Lobby", "Salon");
-    text(title, 40, 18, 52, {255, 246, 224, 255});
-    text(lan ? tr(nullptr, "Local network", "Réseau local") : tr(nullptr, "Online", "En ligne"), 40 + textWidth(title, 52) + 22, 34, 30, {232, 244, 255, 204});
-    if (!st.joining) {
-        const char *labels[2] = {tr(nullptr, "Create a lobby", "Créer un salon"), tr(nullptr, "Join a lobby", "Rejoindre un salon")};
+    float t = now();
+    const char *title = tr("FETXTH.NetworkPlay", "NETWORK PLAY", "JEU EN RÉSEAU");
+    divide(0);
+    watermark(title, 0, t);
+    titleControl(title, 0);
+    feTextPx(lan ? tr(nullptr, "Local network", "Réseau local") : tr(nullptr, "Online", "En ligne"), 1240 - feWidthPx(lan ? tr(nullptr, "Local network", "Réseau local") : tr(nullptr, "Online", "En ligne"), 18 * FE_S), 92, 18 * FE_S, GC_BUTTON_YELLOW, 0);
+    if (!st.joining) {  // W4M's menu entries (WXNET.MainMenu): gold labels, the highlight a black brush stroke
+        static const MenuItem ITEMS[2] = {{nullptr, "Create a lobby", "Créer un salon", 900, 220, 60, -3}, {nullptr, "Join a lobby", "Rejoindre un salon", 1040, 360, 58, 2}};
+        static float glow[2] = {1, 0};
         for (int i = 0; i < 2; i++) {
-            Rectangle d = {340, 200.0f + i * 150, 600, 120};
-            if (i == st.row) DrawRectangleRounded({d.x - 5, d.y - 5, d.width + 10, d.height + 10}, 0.12f, 8, {255, 138, 31, 102});
-            paper(d, i == st.row ? HILITE : PAPER, i == st.row ? HILITE : PAPER_EDGE, 4);
-            ptext(labels[i], d.x + d.width / 2, d.y + 34, 46, i == st.row ? HILITE_INK : DARK, 1);
+            glow[i] += ((i == st.row) - glow[i]) * fminf(1, GetFrameTime() * 14);
+            menuEntry(tr(ITEMS[i].key, ITEMS[i].en, ITEMS[i].fr), ITEMS[i].x, ITEMS[i].y, ITEMS[i].size, ITEMS[i].deg, ITEMS[i].fit, ITEMS[i].sx, glow[i], 1, t);
         }
-    } else {
-        paper({190, 110, 900, 470}, PAPER, PAPER_EDGE);
-        ptext(lan ? tr(nullptr, "Games on this network", "Parties sur ce réseau") : tr(nullptr, "Open lobbies", "Salons ouverts"), 220, 128, 30, SKY);
-        for (int i = 0; i < n && i < 6; i++) {
-            Rectangle r = {214, 186.0f + i * 62, 852, 54};
-            if (i == st.sel) DrawRectangleRounded(r, 0.3f, 6, HILITE);
-            ptext(names[i].c_str(), r.x + 16, r.y + 10, 30, i == st.sel ? HILITE_INK : DARK);
-            ptext(info[i].c_str(), r.x + r.width - 16, r.y + 16, 22, i == st.sel ? HILITE_INK : SOFT, 2);
+    } else {  // the games heard / the server's rooms as W4M list rows (WXNET.GameList)
+        head(lan ? tr(nullptr, "Games on this network", "Parties sur ce réseau") : tr(nullptr, "Open lobbies", "Salons ouverts"), 150, 150, 0.05f);
+        const int vis = 6, first = Clamp(st.sel - vis + 1, 0, std::max(0, n - vis));
+        for (int i = first; i < n && i < first + vis; i++) {
+            Rectangle d = feBox(150, 116 - (i - first) * 36.0f, 270, 32);
+            Tilt tl(centre(d), 0.06f - 0.04f * ((i - first) % 4));
+            feRow(d, i == st.sel ? 1 : 0, names[i].c_str(), info[i].c_str(), false);
         }
-        if (!n) ptext(lan ? tr(nullptr, "Looking for games on this network...", "Recherche de parties sur ce réseau...") : tr(nullptr, "No lobby yet", "Aucun salon pour l'instant"), 640, 300, 28, SOFT, 1);
+        if (!n) feLine(lan ? tr(nullptr, "Looking for games on this network...", "Recherche de parties sur ce réseau...") : tr(nullptr, "No lobby yet", "Aucun salon pour l'instant"), 150, 40, 20, GC_WHITE, 1);
     }
-    ptext(status.c_str(), 640, 610, 22, WARN, 1);
     std::vector<Hint> h = {{"A", "Enter", tr(nullptr, "Select", "Choisir")}, {"B", "Esc", st.joining ? tr(nullptr, "Back", "Retour") : tr(nullptr, "Leave", "Quitter")}};
     if (st.joining && !lan) h.insert(h.begin() + 1, {"Y", "R", tr(nullptr, "Refresh", "Actualiser")});
-    hintBar(h);
+    setupFront(t, status.empty() ? nullptr : status.c_str(), !status.empty(), -1, h);
     return ret;
 }
 

@@ -154,6 +154,29 @@ The main menu list (row font, row height, gap, column width, box top) and the `W
 
 W4M lays the FE out about the screen centre in a 4:3 band [data]. Ours multiplies the x of every FE position by 1.333 (`FE_SPREAD`), keeping sizes [user-requested]. The ticker window runs between NAV Prev (-247, half 45) and NAV Start (264, half 40) less 10 FE each side: 406 FE at spread 1 (W4M's window at (11, -159)) [data / ours]. `FeFlat` keeps W4M's x for the left panel (divide, watermarks, Title Control), the Story book items and the movie frames, which sit on fixed art / 3D meshes [ours].
 
+### Match setup screens (WXFE.CreateAGame, WXFEP.InsertTeam / SelectScheme / SelectLandscape2)
+
+- `WXFE.CreateAGame` (MENUTWKX, `xom.py dump Tweak/MENUTWKX.XOM WXFE.CreateAGame`) [data]: BeforeMenuDisplayed `AnimDivide$In_Curve`, `FE.PopulateTable$WXCreateAGame`; Cancel -> `Request^Leave^WXFE.CreateAGame`; default
+  item `LIST Team 1`. Children (FE units, y up; `Position` / `Scale`, rz = Orientation z rad, in = Anim_Incoming / Delay_Incoming ms):
+  - `ToolTip` mesh (0, -19.4, 793) scale 0.12 x 0.1 rz -0.02 (In_ToolTip 300 ms); `TickerTapeTXT` (11, -159) 200 x 20 rz -0.029; `NAV Prev` (-247, -159) 45 (borders 24-26, tooltip `FETIP.Return`); `NAV Start` (264, -166) 40 (borders 18-20,
+    `EnableId FE.CanGameStart`, `StartGame$Multiplayer`, tooltip `FETIP.Start`); `Hint_Select` (115, -189) `FETXT.Generic.Select`, `Hint_Back` (-115, -181) `FETXT.Generic.Back` (ButtonHelp, size 100 x 50 rz -0.03).
+  - `Title Control` (-152, 188) 140 x 20, `WXD.MultiGameName`, TitleRandom; `Scrolling 1-4` (-308 / -259 / -211 / -369) the same text rotated 1.58 rad (the usual watermark).
+  - `LandscapeControl` (WXFE_LandscapeBoxDesc, `WXD.Level.Current` / `WXD.Level.Seed`) (-174, 38) 95 x 95, borders 15 / 17 / 16 (ButtonBig Normal / Highlight / Disabled), tooltip `FETIP.Landscape2`, Selected `Request^Menu^Landscape`
+    (-> popup `WXFEP.SelectLandscape2`), RightMouse = random `WXD.Level.Seed` + `LandscapeChanged`; `LABEL Landscape` (-174, 144) rz -0.04 (`WXFE.HeaderList` 3).
+  - `LIST Scheme` (-168, -104) 115 x 10 rz 0.05 (tooltip `FETIP.GameStyle`, row 4 of `WXFE.CreateAGameList`: Selected `PopulateTable$Schemes` + popup `WXFEP.SelectScheme`); `LABEL Scheme` (-174, -73) rz 0.06.
+  - `LIST Team 1..4` (147, 121) / (149, 77) / (152, 34) / (151, -8), 115 x 10, rz 0.06 / 0.04 / 0.02 / 0.01, in 9 at 550 / 600 / 650 / 700 ms (tooltip `FETIP.InsertTeam`, Selected `PopulateTable$WXAllTeamAvailable` + popup
+    `WXFEP.InsertTeam`); `LABEL Teams` (147, 155) rz 0.05; `LABEL Wormpot` (152, -50) rz -0.04; `BUTTON Wormpot` (248, -96) 35 (`WXFE.WPotIcon`, borders 12-14, -> `WXFE.Wormpot`) with `Wormpot 1..3` TextBoxes (120, -74) / (112, -98) / (123, -120) rz -0.05 / 0.01 / 0.06
+    (`WXFE.Wormpot.Name1..3`, Justification 5, colour 9, 12 FE high) [data].
+- `WXFE.CreateAGameList` rows [data]: 5 `WXFE_ListBoxRows` (4 teams + Scheme), `Border_Normal` 6 (TextNormal) / `Border_Highlight` 9 / `Border_Disabled` 7, `BorderFitContents` 1, `RowHeight` 42, `GapBetweenItems` 2, `BorderWidthAdjust` 0.15; the
+  columns are a gap column, a gap column, a `WXFE_StringTableColumns` `FETXT.InsertTeam` (FE.Font 20, width 190, ScaleTextToFit, KeepWhiteSpace 1, Justification 4, colours Front Normal 10 / Highlight 3 / Disabled 19, Back 2 / 3 / 2) and a gap column
+  (GapWidth 2, colour alpha 200 / 255 / 100). The scheme row has 3 columns.
+- Border pictures [observed in the imported `assets/ui/fe/border_normal / highlight / disabled / active / edit.png`, 512 x 128]: a circle on the left (x 8..136) and a bar (x 160..500): blue (Normal), orange (Highlight), purple (Disabled), brown with a yellow edge (Active),
+  teal (Edit). `textitem_arrows.png` (64 x 64): the left and the right arrow as halves. `buttonbig_normal / highlight.png` (512 x 512): a hand-drawn square frame.
+- Popups [data]: `WXFEP.InsertTeam` (centre (75, 0), 115 x 125, BorderType 36 bubble, list `InsertTeamList` `WXFEP.SelectTeamList` at (0, -22), title `FETXT.SelectTeam` (0, 105) Button_Yellow, `PopUpDivide` at (0, 77), 5 scratches),
+  `WXFEP.SelectScheme` (centre (75, 0), 100 x 130, list `SelectSchemeList` at (0, -32), title `FETXT.SelectSettings`), `WXFEP.SelectLandscape2` (centre (0, 25), 200 x 125, BorderType 37, list `SelectLandscapeList` at (95, -20) 95 x 78,
+  picture `LandscapeControl` (-96, -20) 90 x 90 `WXD.Level.Copy` with `Paper Back` (-92, -24) `WXFE.PaperPopUp2` tinted (255, 70, 70)); list arrows 32 x 12, Arrow colours (165, 214, 252) / white, shadows black.
+- Ours (ui.cpp `setupBack` / `setupFront` / `feRow` / `feBorder`, docs/match-setup.md "Look"): the three steps reuse this look; the team list, landscape box and tooltip strip are W4M's, the grid of map tiles, the label / value rows and the 3 steps are ours.
+
 ### Landscape select and hat names (match setup)
 
 - `WXFEP.SelectLandscape2` (MENUTWKX / MENUTWKXINGAME) [data, disasm 0x4cf620 REA decompile]: list `WXFEP.SelectLandscapeListX`, filled by TablePopulationService 0x4cf620 in 4 passes (tabs), each a heading entry then the entries: pass 0 `FETXT.Random2` (`FETXT.Themes` for the fort modes), 1 `FETXT.Prebuilt`, 2 `FETXT.Saved` (the `AllSavedGames` SavedLevelCollective, skipped when empty), 3 `FETXT.Worms3DSection`; an extra first entry `FETXT.DontCare` when param_2 is set. Each entry's messages set `WXD.Level.Current` / `WXD.Level.PrettyName` / `WXD.Level.Copy` then `WXMsg.LandscapeChanged`.
