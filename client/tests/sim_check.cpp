@@ -4495,6 +4495,28 @@ static void checkDetailRemoval() {
     assert(t.objects.size() == n0 - 2);
 }
 
+// W4M GLG 0x457130: uv = floor / wall row . lattice point + offset; a thin cell's corner 1 (4) is its corner 0 one lattice step along x (z)
+static void checkLandUV() {
+    Terrain t;
+    assert(t.load("DestructAndServe", 1) && !t.landUV.empty());
+    int checked = 0;
+    for (const auto &cs : t.thin)
+        for (const Terrain::Thin &c : cs)
+            for (int kind : {Terrain::FLOOR, Terrain::WALL}) {
+                assert(c.uv > 0);
+                const float *r = t.landUV[c.uv - 1].t + (kind == Terrain::WALL ? 8 : 0);
+                if (r[1] || r[5]) continue;  // the HeightMap moves corners along y
+                if (Vector3Distance(c.c[0], c.c[1]) < 0.05f || Vector3Distance(c.c[0], c.c[4]) < 0.05f) continue;  // millimetre cells: float precision of map metres
+                Vector2 u0, ux, uz;
+                assert(t.landTex(c.uv, c.c[0], {}, kind, &u0) == kind);
+                t.landTex(c.uv, c.c[1], {}, kind, &ux), t.landTex(c.uv, c.c[4], {}, kind, &uz);
+                assert(fabsf(ux.x - u0.x - r[0]) < 2e-3f && fabsf(ux.y - u0.y - r[4]) < 2e-3f);
+                assert(fabsf(uz.x - u0.x - r[2]) < 2e-3f && fabsf(uz.y - u0.y - r[6]) < 2e-3f);
+                checked++;
+            }
+    assert(checked > 100);
+}
+
 static void checkPlacement() {
     const char *maps[] = {"", "Alien-w3d", "Accuracy", "ArabiaTest", "AssaultAndDefend", "BuildingSiteSaboteurs"};
     int checked = 0, overhang = 0;
@@ -4539,6 +4561,7 @@ static void checkPlacement() {
 
 int main() {
     checkDetailRemoval();
+    checkLandUV();
     checkPlacement();
     checkCountCamera();
     {  // user-requested: SKIP_COUNT ends the damage display at once; hp final

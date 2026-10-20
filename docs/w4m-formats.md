@@ -114,7 +114,7 @@ Plain XOM, containers split on `CTNR`, grouped by type in header order. `X{Int,U
 
 - Detail objects: the poxel's own (non-uniform) scale is not applied to the object basis; animated details (swinging sign) are static.
 - Possible x mirroring of the heightmap (not verifiable without the game running).
-- Voxel bits 8+, the `?` theme lines, texture offsets and directions: we texture triplanar in world space; only the vector lengths are used (median repeat per material).
+- Voxel bits 8+ (a second material, docs/w4m/formats.md §23), the `?` theme lines.
 - Frontend names: `Data/Tweak/SCRIPTS.XOM` `WXFE_LevelDetails` map `Level_FileName` to `FETXT.*` text ids (theme there is always "preselected").
 
 ## Frontend / HUD art (`tools/w4m-ui`)

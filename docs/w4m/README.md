@@ -86,6 +86,7 @@ Attributing a function to a class is reliable when the function comes from a vta
 | 23. Mission scripts: Lua runtime, API use, per-level end conditions | [missions.md](missions.md) |
 | 24. Simulation clock and timestep (main loop, TaskManager, 20 ms step) | [physics.md](physics.md) |
 | 25. Heightmap land (`.hmp` box, vertex spacing, sampler) | [formats.md](formats.md) |
+| 26. Land texture mapping (per-frame uv rows, floor / wall / roof faces) and the DestructAndServe rope cells | [formats.md](formats.md) |
 
 Section numbers are global: "§11" is section 11, in the file listed above.
 

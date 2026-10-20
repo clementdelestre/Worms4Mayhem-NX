@@ -64,7 +64,15 @@ struct Terrain {
     std::vector<std::string> texFiles;  // per material: top, side, roof, fringe (paths, "" = none)
     std::vector<Vector2> texRepeat;     // per material: metres per texture repeat (top, side)
     std::vector<Material> texMats, fringeMats;  // per material, built with the textures on first remesh
-    struct Thin { int at, n; unsigned char mat; Vector3 c[8]; };  // a sub-voxel W4M cell, drawn while one of thinVox[at..at+n) is solid
+    struct Thin { int at, n; unsigned char mat; uint16_t uv; Vector3 c[8]; };  // a sub-voxel W4M cell, drawn while one of thinVox[at..at+n) is solid
+    // W4M land texture mapping of a lattice frame (GLG 0x446be0 / 0x457130): uv = row . lattice point + offset, floor (top and
+    // roof faces) or wall rows; a: map metres -> frame-centred lattice before EdgeOffset, w: its inverse's 3x3, e: EdgeOffset1/2 per layer
+    struct LandUV { float a[12], w[9], t[16]; int n[3]; std::vector<Vector4> e; };
+    std::vector<LandUV> landUV;
+    Bricks<uint16_t> uvOf;  // per voxel: landUV index + 1 of the frame its material came from, 0 none (heightmap, steel)
+    enum Face { FLOOR, WALL, ROOF, TRIPLANAR };
+    // the W4M uv of point p of frame f (landUV index + 1) on a face of that kind; kind < 0: from normal n (its dominant lattice axis)
+    Face landTex(int f, Vector3 p, Vector3 n, int kind, Vector2 *uv) const;
     std::vector<std::vector<Thin>> thin;  // per chunk of the cell's first voxel
     std::vector<int> thinVox;
     std::vector<int> thinOnly;  // sorted voxels solid only for thin cells: not meshed
@@ -125,7 +133,7 @@ struct Terrain {
     void addCell(const Vector3 *c);  // a convex land cell, exact as an imported map's (corners bit 1 +x, 2 +y, 4 +z)
     bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff, which Land.ClearVoxel 0x473470 refuses
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
-    size_t voxelBytes() const { return d.bytes() + mats.bytes() + steel.bytes(); }  // density, materials, steel
+    size_t voxelBytes() const { return d.bytes() + mats.bytes() + uvOf.bytes() + steel.bytes(); }  // density, materials, uv frames, steel
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
     // the first land along unit dir within len (*t from a, *n its normal); exact where listed, else sampled VOX/4 and bisected to
     // the last point out of land (6e-5 m)

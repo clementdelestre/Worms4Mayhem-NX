@@ -209,7 +209,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
     thinOnly.clear(), thinVox.clear();
     hasFinish = false, sharp = SharpLand{};
-    theme.clear(), time = "day", mats.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
+    theme.clear(), time = "day", mats.clear(), uvOf.clear(), landUV.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
     Json j;
     std::string dir;
@@ -309,6 +309,19 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         for (size_t k = 0; k + 2 < f.size(); k += 3) frameCells.back().push_back({f[k].f(), f[k + 1].f(), f[k + 2].f()});
         frameAlive.emplace_back(frameCells.back().size(), 1);
     }
+    for (const Json &u : j["landuv"].arr) {
+        LandUV l{};
+        for (int k = 0; k < 12; k++) l.a[k] = u["a"][k].f();
+        for (int k = 0; k < 16; k++) l.t[k] = u["t"][k].f();
+        for (int k = 0; k < 3; k++) l.n[k] = std::max(1, (int)u["n"][k].f(1));
+        for (size_t k = 0; k + 3 < u["e"].size(); k += 4) l.e.push_back({u["e"][k].f(), u["e"][k + 1].f(), u["e"][k + 2].f(), u["e"][k + 3].f()});
+        l.e.resize(l.n[1] + 1);
+        const float *a = l.a;
+        auto c = [&](int i, int j) { return a[(j + 1) % 3 * 4 + (i + 1) % 3] * a[(j + 2) % 3 * 4 + (i + 2) % 3] - a[(j + 1) % 3 * 4 + (i + 2) % 3] * a[(j + 2) % 3 * 4 + (i + 1) % 3]; };
+        const float det = a[0] * c(0, 0) + a[1] * c(1, 0) + a[2] * c(2, 0);
+        for (int i = 0; i < 3; i++) for (int k = 0; k < 3; k++) l.w[i * 3 + k] = det ? c(i, k) / det : 0;
+        landUV.push_back(std::move(l));
+    }
     for (const Json &e : j["emitters"].arr) emitters.push_back({e["fx"].s(), vec(e["pos"], {cx, 8, cz})});
     for (const Json &l : j["lights"].arr)
         lights.push_back({vec(l["pos"], {cx, 8, cz}), {(unsigned char)l["col"][0].f(), (unsigned char)l["col"][1].f(), (unsigned char)l["col"][2].f(), 255}, l["r"].f(), l["code"].s()});
@@ -322,29 +335,29 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     return true;
 }
 
-// .thin "W4T3": u32 size, then that many bytes deflated: u32 count, then per cell u16 x y z (its first voxel), u8 material (1-based),
-// 8 corners (3 f32, m; bit 1 +x, 2 +y, 4 +z), u16 k and k more voxels (u16 x y z)
+// .thin "W4T4": u32 size, then that many bytes deflated: u32 count, then per cell u16 x y z (its first voxel), u8 material (1-based),
+// u16 landuv entry + 1, 8 corners (3 f32, m; bit 1 +x, 2 +y, 4 +z), u16 k and k more voxels (u16 x y z)
 void Terrain::loadThin(const std::string &path) {
     int size = 0;
     unsigned char *f = LoadFileData(path.c_str(), &size);
     uint32_t raw = 0, count = 0;
-    if (f && size >= 8 && !memcmp(f, "W4T3", 4)) memcpy(&raw, f + 4, 4);
+    if (f && size >= 8 && !memcmp(f, "W4T4", 4)) memcpy(&raw, f + 4, 4);
     std::vector<unsigned char> b(raw < (1u << 28) ? raw : 0);
     if (raw >= 4 && b.size() == raw && sinflate(b.data(), (int)raw, f + 8, size - 8) == (int)raw) memcpy(&count, b.data(), 4);
     UnloadFileData(f);
     thinVox.clear();
-    for (size_t p = 4; count-- && p + 105 <= raw;) {
+    for (size_t p = 4; count-- && p + 107 <= raw;) {
         const unsigned char *r = b.data() + p;
         uint16_t v[3], k;
-        memcpy(v, r, 6), memcpy(&k, r + 103, 2);
-        if (p + 105 + 6 * (size_t)k > raw) break;
-        p += 105 + 6 * (size_t)k;
+        memcpy(v, r, 6), memcpy(&k, r + 105, 2);
+        if (p + 107 + 6 * (size_t)k > raw) break;
+        p += 107 + 6 * (size_t)k;
         if (v[0] >= NX || v[1] >= NY || v[2] >= NZ) continue;
-        Thin t{(int)thinVox.size(), 1, r[6], {}};
-        memcpy(t.c, r + 7, 96);
+        Thin t{(int)thinVox.size(), 1, r[6], (uint16_t)(r[7] | r[8] << 8), {}};
+        memcpy(t.c, r + 9, 96);
         thinVox.push_back((int)idx(v[0], v[1], v[2]));
         for (int i = 0; i < k; i++) {
-            memcpy(v, r + 105 + 6 * i, 6);
+            memcpy(v, r + 107 + 6 * i, 6);
             if (v[0] < NX && v[1] < NY && v[2] < NZ) thinVox.push_back((int)idx(v[0], v[1], v[2])), t.n++;
         }
         thin[(thinVox[t.at] >> 15)].push_back(t);
@@ -368,38 +381,40 @@ void Terrain::loadThin(const std::string &path) {
     }
 }
 
-// .vox "W4V3" (docs/maps.md): u16 NX NY NZ, u8 D, a u32 per chunk (material << 1: that material throughout at density +-D;
-// size << 1 | 1: deflated), then the deflated chunks (32768 materials, then 32768 densities minus +-D). 3 workers take chunks in turn.
+// .vox "W4V4" (docs/maps.md): u16 NX NY NZ, u8 D, a u32 per chunk ((material | landuv << 8) << 1: those throughout at density
+// +-D; size << 1 | 1: deflated), then the deflated chunks (32768 materials, 32768 densities minus +-D, landuv low bytes, high
+// bytes). 3 workers take chunks in turn.
 bool Terrain::loadVoxels(const std::string &path) {
     int size = 0;
     unsigned char *b = LoadFileData(path.c_str(), &size);
     const size_t n = chunks(), head = 11 + 4 * n, N = Bricks<signed char>::N;
-    bool ok = b && (size_t)size >= head && !memcmp(b, "W4V3", 4) && (b[4] | b[5] << 8) == NX && (b[6] | b[7] << 8) == NY && (b[8] | b[9] << 8) == NZ;
+    bool ok = b && (size_t)size >= head && !memcmp(b, "W4V4", 4) && (b[4] | b[5] << 8) == NX && (b[6] | b[7] << 8) == NY && (b[8] | b[9] << 8) == NZ;
     std::vector<uint32_t> tab(ok ? n : 0);
     std::vector<size_t> at(n + 1, head);
     if (ok) memcpy(tab.data(), b + 11, 4 * n);
-    for (size_t c = 0; c < tab.size(); c++) at[c + 1] = at[c] + (tab[c] & 1 ? tab[c] >> 1 : 0), ok = ok && (tab[c] & 1 || tab[c] >> 1 < 256);
+    for (size_t c = 0; c < tab.size(); c++) at[c + 1] = at[c] + (tab[c] & 1 ? tab[c] >> 1 : 0), ok = ok && (tab[c] & 1 || tab[c] >> 9 < 65536);
     ok = ok && at[n] == (size_t)size;
     if (ok) {
-        mats.assign(n, 0);
+        mats.assign(n, 0), uvOf.assign(n, 0);
         const signed char D = (signed char)b[10];
         std::atomic<size_t> next{0};
         std::atomic<bool> good{true};
         auto work = [&](int k) {
             Loading::pinCore(k);
-            std::vector<unsigned char> raw(2 * N);
+            std::vector<unsigned char> raw(4 * N);
             for (size_t c; (c = next++) < n;) {
                 if (!(tab[c] & 1)) {
                     const unsigned char m = (unsigned char)(tab[c] >> 1);
-                    mats.fillChunk(c, m), d.fillChunk(c, m ? D : -D);
+                    mats.fillChunk(c, m), d.fillChunk(c, m ? D : -D), uvOf.fillChunk(c, (uint16_t)(tab[c] >> 9));
                     continue;
                 }
                 if (sinflate(raw.data(), (int)raw.size(), b + at[c], (int)(at[c + 1] - at[c])) != (int)raw.size()) { good = false; continue; }
                 unsigned char *m = mats.overwrite(c);
                 signed char *v = d.overwrite(c);
+                uint16_t *u = uvOf.overwrite(c);
                 memcpy(m, raw.data(), N);
-                for (size_t i = 0; i < N; i++) v[i] = (signed char)(raw[N + i] + (m[i] ? D : -D));
-                mats.share(c), d.share(c);
+                for (size_t i = 0; i < N; i++) v[i] = (signed char)(raw[N + i] + (m[i] ? D : -D)), u[i] = (uint16_t)(raw[2 * N + i] | raw[3 * N + i] << 8);
+                mats.share(c), d.share(c), uvOf.share(c);
             }
         };
         constexpr int T = 3;
@@ -410,8 +425,35 @@ bool Terrain::loadVoxels(const std::string &path) {
         ok = good;
     }
     UnloadFileData(b);
-    if (!ok) mats.clear();
+    if (!ok) mats.clear(), uvOf.clear();
     return ok;
+}
+
+// W4M GLG: a vertex's uv is the lattice point (before EdgeOffset and the frame matrix, 0x4566d0) dotted with the frame's floor rows
+// (top and bottom faces) or wall rows, plus the offset (0x446be0, 0x457130); the chunk's RoofFloor / WallTextureCentre it subtracts
+// is not traced [assumed: whole repeats]. Inverts the EdgeOffset lerp of 0x4566d0 per layer.
+Terrain::Face Terrain::landTex(int f, Vector3 p, Vector3 n, int kind, Vector2 *uv) const {
+    *uv = {0, 0};
+    if (f <= 0 || f > (int)landUV.size()) return TRIPLANAR;
+    const LandUV &L = landUV[f - 1];
+    const float *a = L.a;
+    const Vector3 l = {a[0] * p.x + a[1] * p.y + a[2] * p.z + a[3], a[4] * p.x + a[5] * p.y + a[6] * p.z + a[7], a[8] * p.x + a[9] * p.y + a[10] * p.z + a[11]};
+    const float sx = (float)L.n[0], sz = (float)L.n[2], y = l.y + L.n[1] * 0.5f;
+    const int j = std::min(std::max((int)floorf(y), 0), L.n[1] - 1);
+    const Vector4 e0 = L.e[j], de = {L.e[j + 1].x - e0.x, L.e[j + 1].y - e0.y, L.e[j + 1].z - e0.z, L.e[j + 1].w - e0.w};
+    const float t = y - j;
+    const Vector4 e = {e0.x + de.x * t, e0.y + de.y * t, e0.z + de.z * t, e0.w + de.w * t};
+    const float wx = (sx + e.z - e.x) / sx, wz = (sz + e.w - e.y) / sz;  // d local / d lattice along x and z
+    const float i = (l.x + sx * 0.5f - e.x) / wx, k = (l.z + sz * 0.5f - e.y) / wz;
+    if (kind < 0) {  // the normal in lattice space: the face of the lattice it lies on
+        const float *w = L.w;
+        const Vector3 nl = {w[0] * n.x + w[3] * n.y + w[6] * n.z, w[1] * n.x + w[4] * n.y + w[7] * n.z, w[2] * n.x + w[5] * n.y + w[8] * n.z};
+        const float ny = (de.x + (de.z - de.x) * i / sx) * nl.x + nl.y + (de.y + (de.w - de.y) * k / sz) * nl.z;
+        kind = fabsf(ny) >= fmaxf(fabsf(wx * nl.x), fabsf(wz * nl.z)) ? ny >= 0 ? FLOOR : ROOF : WALL;
+    }
+    const float *r = L.t + (kind == WALL ? 8 : 0);
+    *uv = {r[0] * i + r[1] * y + r[2] * k + r[3], r[4] * i + r[5] * y + r[6] * k + r[7]};
+    return (Face)kind;
 }
 
 // Thresholds at 20 W4M units per m: area 250 units² (0x4b24c5), merge when the gap is under 40 units on x and z (0x4ae3aa).
@@ -441,7 +483,7 @@ void Terrain::mergeBlocks() {
 void Terrain::generate(unsigned seed) {
     setGrid(352, 256, 352);
     thinOnly.clear();
-    theme.clear(), mats.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
+    theme.clear(), mats.clear(), uvOf.clear(), landUV.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
@@ -823,7 +865,8 @@ void Terrain::loadGradients() {
 
 namespace {
 constexpr int MS = Terrain::CS + 1, ML = Terrain::CS + 2;  // a chunk's cells, their corners (one voxel border)
-struct Builder { int mat; std::vector<int> vid; std::vector<float> pos, nrm; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
+constexpr unsigned char FACE_ALPHA[4] = {0, 85, 170, 255};  // Terrain::Face in the land vertex colour's alpha
+struct Builder { int mat; std::vector<int> vid, vuv; std::vector<float> pos, nrm, uv; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
 struct FB { int mat; std::vector<float> pos, uv; std::vector<unsigned char> col; std::vector<unsigned short> idx; };
 struct Scratch {  // one per meshing thread
     float c[ML * ML * ML];
@@ -1081,14 +1124,21 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
         auto ch = [&](unsigned char c, float k, unsigned char v) { return (unsigned char)fminf(255, c * k * v / 255); };
         return {ch(base.r, l.x, vc.r), ch(base.g, l.y, vc.g), ch(base.b, l.z, vc.b), 255};
     };
-    auto vertex = [&](Builder &b, int n) {
-        if (b.vid[n] >= 0) return b.vid[n];
+    auto texd = [&](int m) { return m >= 0 && m < (int)texMats.size() && texMats[m].maps; };
+    // the vertex of cell n on a face of that kind in frame f (W4M has one per uv mapping, 0x457130); colour alpha: the face kind
+    auto vertex = [&](Builder &b, int n, int f, Face kind) {
+        int &v = b.vid[n * 4 + kind];
+        if (v >= 0 && b.vuv[n * 4 + kind] == f) return v;
         Vector3 p = cp[n], nr = cn[n];
         Color c = colour(b.mat - 1, p, nr);
+        Vector2 uv;
+        landTex(f, p, nr, kind, &uv);
         b.pos.insert(b.pos.end(), {p.x, p.y, p.z});
         b.nrm.insert(b.nrm.end(), {nr.x, nr.y, nr.z});
-        b.col.insert(b.col.end(), {c.r, c.g, c.b, 255});
-        return b.vid[n] = (int)b.pos.size() / 3 - 1;
+        b.uv.insert(b.uv.end(), {uv.x, uv.y});
+        b.col.insert(b.col.end(), {c.r, c.g, c.b, texd(b.mat - 1) ? FACE_ALPHA[kind] : (unsigned char)255});
+        b.vuv[n * 4 + kind] = f;
+        return v = (int)b.pos.size() / 3 - 1;
     };
     auto builder = [&](int m) -> Builder & {
         size_t bi = 0;
@@ -1096,7 +1146,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
         if (bi == used) {
             if (used == bs.size()) bs.emplace_back();
             Builder &b = bs[used++];
-            b.mat = m, b.vid.assign(S * S * S, -1), b.pos.clear(), b.nrm.clear(), b.col.clear(), b.idx.clear();
+            b.mat = m, b.vid.assign(S * S * S * 4, -1), b.vuv.assign(S * S * S * 4, 0), b.pos.clear(), b.nrm.clear(), b.uv.clear(), b.col.clear(), b.idx.clear();
         }
         return bs[bi];
     };
@@ -1126,14 +1176,19 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
                     }
                     if (!has[cell[0]] || !has[cell[1]] || !has[cell[2]] || !has[cell[3]]) continue;
                     int m = in ? mt[(k * L + j) * L + i] : mt[((k + (a == 2)) * L + j + (a == 1)) * L + i + (a == 0)];
-                    if (!skip.empty()) {
-                        int sv = in ? (int)idx(x0 - 1 + i, y0 - 1 + j, z0 - 1 + k) : (int)idx(x0 - 1 + i + (a == 0), y0 - 1 + j + (a == 1), z0 - 1 + k + (a == 2));
-                        if (std::binary_search(skip.begin(), skip.end(), sv)) continue;
-                    }
+                    const int sx = x0 - 1 + i + (!in && a == 0), sy = y0 - 1 + j + (!in && a == 1), sz = z0 - 1 + k + (!in && a == 2);
+                    const bool inside = sx < NX && sy < NY && sz < NZ;
+                    const int sv = inside ? (int)idx(sx, sy, sz) : -1;
+                    if (!skip.empty() && std::binary_search(skip.begin(), skip.end(), sv)) continue;
                     if (m == HIDDEN) continue;
                     Builder &b = builder(m);
+                    const int f = inside && !uvOf.empty() && m != HARD ? uvOf[sv] : 0;  // a girder is not its voxel's frame
+                    Vector3 qn = Vector3Add(Vector3Add(cn[cell[0]], cn[cell[1]]), Vector3Add(cn[cell[2]], cn[cell[3]])), qp = Vector3Scale(Vector3Add(Vector3Add(cp[cell[0]], cp[cell[1]]), Vector3Add(cp[cell[2]], cp[cell[3]])), 0.25f);
+                    if (Vector3LengthSqr(qn) < 1e-8f) qn = {float(a == 0) * (in ? 1 : -1), float(a == 1) * (in ? 1 : -1), float(a == 2) * (in ? 1 : -1)};
+                    Vector2 quv;
+                    const Face kind = landTex(f, qp, qn, -1, &quv);
                     unsigned short v[4];
-                    for (int q = 0; q < 4; q++) v[q] = (unsigned short)vertex(b, cell[q]);
+                    for (int q = 0; q < 4; q++) v[q] = (unsigned short)vertex(b, cell[q], f, kind);
                     if (in) b.idx.insert(b.idx.end(), {v[0], v[1], v[2], v[0], v[2], v[3]});
                     else b.idx.insert(b.idx.end(), {v[0], v[3], v[2], v[0], v[2], v[1]});
                 }
@@ -1147,16 +1202,21 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
             Vector3 cen = {0, 0, 0};
             for (const Vector3 &q : t.c) cen = Vector3Add(cen, Vector3Scale(q, 0.125f));
             static const int F[6][4] = {{0, 2, 6, 4}, {1, 3, 7, 5}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 1, 3, 2}, {4, 5, 7, 6}};
-            for (const auto &f : F) {
+            for (int fi = 0; fi < 6; fi++) {
+                const int *f = F[fi];
                 Vector3 nr = Vector3CrossProduct(Vector3Subtract(t.c[f[2]], t.c[f[0]]), Vector3Subtract(t.c[f[3]], t.c[f[1]]));
                 if (Vector3Length(nr) < 1e-8f) continue;
                 bool flip = Vector3DotProduct(nr, Vector3Subtract(Vector3Scale(Vector3Add(t.c[f[0]], t.c[f[2]]), 0.5f), cen)) < 0;
                 nr = Vector3Normalize(flip ? Vector3Negate(nr) : nr);
                 Color c = colour(t.mat - 1, cen, nr);
+                const Face kind = fi == 3 ? FLOOR : fi == 2 ? ROOF : WALL;  // the cell's lattice top / bottom faces, as W4M's (0x456b90)
                 unsigned short n0 = (unsigned short)(b.pos.size() / 3);
                 for (int q = 0; q < 4; q++) {
                     const Vector3 &p = t.c[f[flip ? 3 - q : q]];
-                    b.pos.insert(b.pos.end(), {p.x, p.y, p.z}), b.nrm.insert(b.nrm.end(), {nr.x, nr.y, nr.z}), b.col.insert(b.col.end(), {c.r, c.g, c.b, 255});
+                    Vector2 uv;
+                    const Face k = landTex(t.uv, p, nr, kind, &uv);
+                    b.pos.insert(b.pos.end(), {p.x, p.y, p.z}), b.nrm.insert(b.nrm.end(), {nr.x, nr.y, nr.z}), b.uv.insert(b.uv.end(), {uv.x, uv.y});
+                    b.col.insert(b.col.end(), {c.r, c.g, c.b, texd(t.mat - 1) ? FACE_ALPHA[k] : (unsigned char)255});
                 }
                 b.idx.insert(b.idx.end(), {n0, (unsigned short)(n0 + 1), (unsigned short)(n0 + 2), n0, (unsigned short)(n0 + 2), (unsigned short)(n0 + 3)});
             }
@@ -1232,25 +1292,29 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
     }
     for (size_t bi = 0; bi < used; bi++) {
         Builder &b = bs[bi];
-        geo.ms.push_back({b.mat, false, std::move(b.pos), std::move(b.nrm), {}, std::move(b.col), std::move(b.idx)});
+        geo.ms.push_back({b.mat, false, std::move(b.pos), std::move(b.nrm), std::move(b.uv), std::move(b.col), std::move(b.idx)});
     }
     samples = samples0;
 }
 
-// Triplanar: top texture on up-facing surfaces, side texture elsewhere. Lighting after W4M's CG/Landscape.cg,
-// whose whole output is multiplied by the vertex colour (Terrain::vertexColour).
+// W4M land frames: the frame's uv on the face kind's texture (colour alpha: floor 0, wall 1/3, roof 2/3, Terrain::landTex). Land
+// without a frame (heightmap, steel): triplanar, top texture on up-facing surfaces, side texture elsewhere. Lighting after W4M's
+// CG/Landscape.cg, whose whole output is multiplied by the vertex colour (Terrain::vertexColour).
 static const char *VS = R"(
 attribute vec3 vertexPosition;
 attribute vec3 vertexNormal;
+attribute vec2 vertexTexCoord;
 attribute vec4 vertexColor;
 uniform mat4 mvp;
 uniform mat4 shadowMatrix;
 varying vec3 vPos;
 varying vec3 vN;
 varying vec3 vC;
+varying vec2 vUV;
+varying float vK;
 varying vec4 vS;
 void main() {
-    vPos = vertexPosition; vN = vertexNormal; vC = vertexColor.rgb; vS = shadowMatrix * vec4(vertexPosition, 1.0);
+    vPos = vertexPosition; vN = vertexNormal; vC = vertexColor.rgb; vUV = vertexTexCoord; vK = vertexColor.a; vS = shadowMatrix * vec4(vertexPosition, 1.0);
     gl_Position = mvp * vec4(vertexPosition, 1.0);
 }
 )";
@@ -1267,6 +1331,8 @@ uniform vec3 camPos;
 varying vec3 vPos;
 varying vec3 vN;
 varying vec3 vC;
+varying vec2 vUV;
+varying float vK;
 #ifdef SHADOW
 uniform SHADOW_SAMPLER shadowMap;
 varying vec4 vS;
@@ -1287,17 +1353,22 @@ float shadowScale() {
 float shadowScale() { return 1.0; }
 #endif
 void main() {
-    vec3 n = normalize(vN), w = n * n * n * n;
-    w *= step(0.004 * (w.x + w.y + w.z), w);  // planes under 0.4 % of the blend skip their fetch (most land is flat)
-    w /= w.x + w.y + w.z;
-    vec3 p = vPos * scale.y;
-    vec2 t = vPos.xz * scale.x, tx = vec2(p.z, -p.y), tz = vec2(p.x, -p.y);
-    vec3 c = vec3(0.0);
-    if (w.x > 0.0) c += texture2D(texture1, tx).rgb * w.x;
-    if (w.z > 0.0) c += texture2D(texture1, tz).rgb * w.z;
-    if (w.y > 0.0) {
-        if (n.y >= 0.0) c += texture2D(texture0, t).rgb * w.y;
-        else c += texture2D(texture2, t).rgb * w.y;
+    vec3 n = normalize(vN), c = vec3(0.0);
+    if (vK < 0.17) c = texture2D(texture0, vUV).rgb;
+    else if (vK < 0.5) c = texture2D(texture1, vUV).rgb;
+    else if (vK < 0.83) c = texture2D(texture2, vUV).rgb;
+    else {
+        vec3 w = n * n * n * n;
+        w *= step(0.004 * (w.x + w.y + w.z), w);  // planes under 0.4 % of the blend skip their fetch (most land is flat)
+        w /= w.x + w.y + w.z;
+        vec3 p = vPos * scale.y;
+        vec2 t = vPos.xz * scale.x, tx = vec2(p.z, -p.y), tz = vec2(p.x, -p.y);
+        if (w.x > 0.0) c += texture2D(texture1, tx).rgb * w.x;
+        if (w.z > 0.0) c += texture2D(texture1, tz).rgb * w.z;
+        if (w.y > 0.0) {
+            if (n.y >= 0.0) c += texture2D(texture0, t).rgb * w.y;
+            else c += texture2D(texture2, t).rgb * w.y;
+        }
     }
     vec3 e = camPos - vPos, v = normalize(e);
     float nv = max(dot(n, v), 0.0), fs = shadowScale(), d = 0.0, s = 0.0;
@@ -1387,9 +1458,9 @@ void Terrain::decodeTextures() {
 size_t Terrain::bytes() const {
     size_t n = voxelBytes() + sharp.bytes() + colTop.capacity() * 2 + thinOnly.capacity() * sizeof(int);
     for (const std::vector<Part> &ps : parts)
-        for (const Part &p : ps) n += (size_t)p.mesh.vertexCount * 28 + (size_t)p.mesh.triangleCount * 6;  // pos, normal, uv, colour; u16 indices
+        for (const Part &p : ps) n += (size_t)p.mesh.vertexCount * 36 + (size_t)p.mesh.triangleCount * 6;  // pos, normal, uv, colour; u16 indices
     for (const Group &g : groups)
-        for (const Part &p : g.parts) n += (size_t)p.mesh.vertexCount * 28 + (size_t)p.mesh.triangleCount * 6;  // GPU only
+        for (const Part &p : g.parts) n += (size_t)p.mesh.vertexCount * 36 + (size_t)p.mesh.triangleCount * 6;  // GPU only
     return n;
 }
 
@@ -1681,7 +1752,7 @@ extern "C" void (*glad_glBindBuffer)(unsigned, unsigned), (*glad_glCopyBufferSub
 #endif
 
 // One mesh per material of the group's chunk parts (several past 65535 vertices: 16-bit indices), copied buffer to buffer.
-// Land parts carry positions, normals and colours (chunkGeometry), no texcoords.
+// Land parts carry positions, normals, W4M texcoords and colours (chunkGeometry).
 void Terrain::buildGroup(int g) const {
     Group &gr = groups[g];
     for (Part &p : gr.parts) UnloadMesh(p.mesh);
@@ -1693,8 +1764,9 @@ void Terrain::buildGroup(int g) const {
             for (int x = x0; x < std::min(x0 + G, CX); x++)
                 for (const Part &p : parts[(z * CY + y) * CX + x]) if (!p.fringe) ps.push_back({&p, (z * CY + y) * CX + x});
     std::stable_sort(ps.begin(), ps.end(), [](const auto &a, const auto &b) { return a.first->mat < b.first->mat; });
-    static const struct { int slot, comps, type, bytes; bool norm; } ATTR[3] = {
+    static const struct { int slot, comps, type, bytes; bool norm; } ATTR[4] = {
         {RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION, 3, RL_FLOAT, 12, false},
+        {RL_DEFAULT_SHADER_ATTRIB_LOCATION_TEXCOORD, 2, RL_FLOAT, 8, false},
         {RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL, 3, RL_FLOAT, 12, false},
         {RL_DEFAULT_SHADER_ATTRIB_LOCATION_COLOR, 4, RL_UNSIGNED_BYTE, 4, true}};
     for (size_t i = 0, j; i < ps.size(); i = j) {
@@ -1719,9 +1791,6 @@ void Terrain::buildGroup(int g) const {
             rlSetVertexAttribute(a.slot, a.comps, a.type, a.norm, 0, 0);
             rlEnableVertexAttribute(a.slot);
         }
-        const float uv0[2] = {0, 0};  // as UploadMesh without texcoords
-        rlSetVertexAttributeDefault(RL_DEFAULT_SHADER_ATTRIB_LOCATION_TEXCOORD, uv0, SHADER_ATTRIB_VEC2, 2);
-        rlDisableVertexAttribute(RL_DEFAULT_SHADER_ATTRIB_LOCATION_TEXCOORD);
         static std::vector<unsigned short> idx;
         idx.resize(tris * 3);
         unsigned short *out = idx.data(), base = 0;
