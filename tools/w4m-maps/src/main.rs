@@ -600,6 +600,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let mut thin = 0u32.to_le_bytes().to_vec();
     let mut nthin = 0u32;
     let mut vox: Vec<[usize; 3]> = Vec::new();  // the grid points of the current cell's pieces
+    let mut claimed = HashSet::new();
     for (hi, h) in hexes.iter().enumerate() {
         if hi == 0 || hex_cell[hi - 1] != hex_cell[hi] { vox.clear(); }
         let (code, from, uv) = (hex_code[hi], vox.len(), uv_of[&cells[hex_cell[hi]].frame]);
@@ -616,6 +617,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             let g = &mut grid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)];
             if h.mat != HIDDEN || *g == 0 { *g = h.mat; fgrid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)] = uv; }
             vox.push(cen.map(|v| v as usize));
+            claimed.insert(gi(cen[0] as usize, cen[1] as usize, cen[2] as usize));
             if code > 0 && !other(cen, code) { coded[code as usize - 1].push(ci(cen[0] as usize, cen[1] as usize, cen[2] as usize)); }
         }
         if hexes.get(hi + 1).is_some() && hex_cell[hi + 1] == hex_cell[hi] { continue; }
@@ -684,7 +686,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         (if grid[i] != 0 { v } else { -v }) as i8
     }).collect();
     let whole: Vec<_> = hex_cell.iter().map(|&i| (cells[i].parts.len() > 1 || cells[i].parts[0] != cells[i].c).then(|| cells[i].c.map(to_grid))).collect();
-    let (cells_file, exact, hex_id) = cells::build(&hexes.iter().map(|h| h.c).collect::<Vec<_>>(), &whole, &top, &mut q, dq as i8);
+    let (cells_file, exact, hex_id) = cells::build(&hexes.iter().map(|h| h.c).collect::<Vec<_>>(), &whole, &top, &mut q, dq as i8, &claimed);
     fs::write(out_dir.join(format!("{stem}.cells")), &cells_file).map_err(|e| e.to_string())?;
     // per 32³ chunk: u32 (mat | landuv << 8) << 1 for a chunk of one material and frame at the default density, else deflated
     // size << 1 | 1 and, after the table, its 32768 materials, 32768 densities minus the default, landuv low then high bytes, x fastest
