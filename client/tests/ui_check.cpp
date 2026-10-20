@@ -26,6 +26,22 @@ int main() {
         l.self = 1;
         assert(!l.isHost() && !l.canEditMatch() && l.canEdit(0));
     }
+    {  // Teams screen: two pad cursors move and edit different teams at once, and follow their team when another is removed
+        Lobby l;
+        l.cfg.teams = 3, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
+        TeamCursors c;
+        c.card(1, 2, l.cfg.teams), c.row(0, 1, l.cfg.teams), c.row(1, 3, l.cfg.teams);
+        assert(c.at[0].card == 0 && c.at[0].row == 1 && c.at[1].card == 2 && c.at[1].row == 3);
+        assert(l.cycle(0, 1, 1, 9, 5, 7) && l.cycle(2, 3, 1, 9, 5, 7) && l.cfg.teamSetup[0].pad == 1 && l.cfg.teamSetup[2].hat == 1);  // both edits land
+        c.card(1, 1, l.cfg.teams);  // the empty card has the name row only
+        assert(c.at[1].card == 3 && c.at[1].row == 0);
+        c.card(1, -1, l.cfg.teams), c.row(1, 0, l.cfg.teams);
+        assert(l.removeTeam(1, 2));
+        c.removed(1, l.cfg.teams);
+        assert(c.at[1].card == 1 && c.at[0].card == 0);  // pad 2's team moved up with it
+        l.owner[0] = 7;
+        assert(!l.cycle(0, 1, 1, 9, 5, 7) && l.cycle(1, 2, -1, 9, 5, 7) && l.cfg.teamSetup[1].voice == 4);  // another console's team is read-only; voice wraps
+    }
     {  // network teams saved in setup.txt: name with spaces, hat, pad and the number of teams come back
         std::vector<GameConfig::Team> mine = {{"Pirate Pete", 0, 0, 3, 2}, {"Two Words Here", 0, 0, 1, 1}}, back;
         std::string txt = Ui::netProfileText(mine) + "teams 3\n";

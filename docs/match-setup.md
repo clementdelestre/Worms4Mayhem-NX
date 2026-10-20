@@ -11,11 +11,10 @@ slots (`WXFEP.InsertTeam`), then `WXFEP.SelectLandscape2` (docs/w4m/frontend.md)
   The strip carries the tooltip of the highlighted row (W4M copies `FETIP.*` into `FE.ToolTip`: `FETIP.InsertTeam`, `FETIP.Landscape2`, `FETIP.GameStyle`, `FETIP.Wormpot`) [data], NAV Prev
   (back arrow) and NAV Start (the jar, Normal) at W4M's (264, -166) [data]. The pad's buttons (Switch glyphs / PC keys) are drawn under the strip, white FE text [ours: W4M has
   Select / Back only]. The 3 steps ("1 Équipes", "2 Terrain", "3 Règles", the current one `Button_Yellow`) sit at the top right [ours: CreateAGame is one screen].
-- Rows (`feRow` / `feBorder`): W4M's list rows, `fe/border_normal` (Border_Normal 6) / `border_highlight` (9) / `border_disabled` (7), RowHeight 42, tilts 0.06 / 0.04 / 0.02 / 0.01 for the 4
-  team rows [data]; the halves of the sprite's circle cap a stretched bar [assumed: how W4M cuts the border]. Label `List_Lable_Blue`, value `List_Data_Orange`, team names `TextBox_Yellow`, the
+- Rows (`feRow` / `feBorder`): W4M's list rows, `fe/border_normal` (Border_Normal 6) / `border_highlight` (9) / `border_disabled` (7), RowHeight 42 [data]; the halves of the sprite's circle cap a stretched bar [assumed: how W4M cuts the border]. Label `List_Lable_Blue`, value `List_Data_Orange`, team names `TextBox_Yellow`, the
   highlight `Solid_Black` on the orange bar, `ERROR_RED` for a missing pad [data: WXFE.CreateAGameList columns, gradients]; no outline on the black highlight text [assumed: readability].
   Arrows are `fe/textitem_arrows` halves around an editable value [data: Arrow_* of the list control; their colour assumed].
-- Team colour dot at the row's left cap, the label / value split of a row, the alternating tilt of the Rules rows and the pad capsules (disabled border when no pad) [ours].
+- Team colour dot at the name row's left cap, the label / value split of a row, the alternating tilt of the Rules rows and the pad capsules (disabled border when no pad) [ours].
 
 ## State (`Lobby`, client/src/lobby.h) [ours]
 - `Lobby::cfg` (a `GameConfig`): teams, `teamSetup[]` (name, cpu, voice, hat, local pad), map, rules, scheme, wormpot, wormsPerTeam.
@@ -30,27 +29,39 @@ slots (`WXFEP.InsertTeam`), then `WXFEP.SelectLandscape2` (docs/w4m/frontend.md)
 `teams`, `worms`, `rules`, `reels`, `map`, `scheme`, then per team `team <i> <cpu> <hat> <voice|-> <name>` and `pad <i> <pad>`. A file without `pad` lines:
 team i on pad i when that pad is connected, else pad 0. `rules` is masked to the rows the Rules screen shows (King, Vampire, Low gravity, Sudden death).
 
-## Screen 1, Teams [user-requested]
-- Left panel: 4 capsules, the 4 Switch player slots: LEDs (pad i lights i + 1 of 4), "Manette i", `padStyle()` name when present, else "L + R pour rejoindre" (disabled border), and one dot per
-  team the pad plays (team colour) [ours]. Under them the focused team's worm (below).
-- Right: W4M's team list (head `FETXT.Teams`): 4 slots, each a row with the team's colour dot, its name (`TextBox_Yellow`) and its control (local) or its console and ready grenade (room);
-  an empty slot reads `FETXT.InsertTeam` (A or X adds a team). The focused team's rows Contrôle (Manette 1..4, then `FETXT.CPU1..5`), Voix (`FETXTSH.Voice`) and Chapeau open right under
-  it (list of the visible rows: D-pad up / down walks it; A on the team row edits its name; left / right change a value, or A for Contrôle) [ours].
-- X adds a team (empty slot) or removes the focused one (2 teams least). Y on any pad: that pad plays the focused team.
-- A human team whose pad is absent: red control value and a red tooltip on the strip. `+` then opens the system controller applet (Switch) with the number of distinct pads used, `-` opens it any
+## Screen 1, Teams [user-requested layout, W4M skin]
+Layout of the user's mockup, in the W4M frontend skin (pixels of the 1280 x 720 screen):
+- Pad strip across the top (y 120, 4 capsules of 291 x 54, `feBorder`, disabled border without a pad): the pad's LEDs (pad i lights i + 1 of 4), "Manette i", `padStyle()` name or "L + R pour rejoindre",
+  and one dot per team the pad plays (team colour) [ours].
+- 4 team cards side by side (y 190, 289 x 334): backdrop = W4M's blue text box (blue half of `fe/text_border_list`, 9-slice) [data: sprite, assumed: its use as a card]; inside, W4M list rows
+  (`feRow`): the name (team colour dot, `TextBox_Yellow`), Contrôle (Manette 1..4, then `FETXT.CPU1..5`), Voix (`FETXTSH.Voice`) and Chapeau; rows of a team another console owns use the disabled border.
+- Each card has its own live worm (`worm.glb`, clip `Base`, team tint, hat on `HatLocator`, one `RenderTexture` 256 x 346 rendered per card, turning slowly), 170 x 230 in its bottom-right corner,
+  overflowing the card by 12 px, behind the rows [user-requested]. `Frontend::setupTeams` uploads the pending models each frame (`Models::upload`): a plain launch (Switch) only uploads the menu assets at boot.
+- Footer of a card (bottom-left): "Manette n absente" in `ERROR_RED` for a human team of this console without its pad; in a room, the owner console's name and its ready grenade [ours].
+- An empty slot is a card with a big "+" and `FETXT.InsertTeam`; step indicator 1 / 2 / 3 top right and the tooltip strip with the pad's buttons under it as on every setup screen.
+- One cursor per pad (`TeamCursors`, lobby.h): a present pad has its own cursor (card + row: 0 name, 1 Contrôle, 2 Voix, 3 Chapeau; an empty card has row 0 only), marked on its row by a disc in the
+  player-light green with the pad's number (left margin of the card, the second cursor of a row on the right margin; on an empty card under the "+"). A card with a cursor is raised 4 px and gets the
+  ButtonBig highlight frame; a row with a cursor is the orange highlight row [ours]. All the cursors act in the same frame: D-pad up / down changes row, left / right changes the value (on the name row
+  it moves to the next card), L / R (PageUp / PageDown on the keyboard = pad 0) move between cards, A edits the name or cycles the value, Y: the card's team is played by this pad, X: remove an own
+  team (2 teams least locally, 1 in a room) or, on an empty card, add a team played by this pad. Two cursors may share a card or a row. Each pad starts on the first team it plays, else on this
+  console's first team. While a name is typed on the keyboard, pad 0 and the typing pad wait; the other pads keep moving [ours].
+- Why one cursor per pad: several people share the console and each edits their own team at the same time; Map and Rules are single match-wide choices, so every pad drives one shared cursor
+  there (as in v2), and only the host edits them in a room [ours].
+- A human team whose pad is absent: red value and red tooltip on the strip. `+` then opens the system controller applet (Switch) with the number of distinct pads used, `-` opens it any
   time; `+` / START open it while a pad is absent and only go on when the applet confirmed with enough pads (`controllerApplet` returns false on a cancel or too few pads, `padsReady`). Then `+` goes to Terrain.
-- The focused team's worm model (`worm.glb`, clip `Base`, team tint, hat on `HatLocator`) is drawn live in one `RenderTexture` (256x346), turning slowly, on the left panel [user-requested].
-  `Frontend::setupTeams` uploads the pending models each frame (`Models::upload`): a plain launch (Switch) only uploads the menu assets at boot, so the worm and the hats (ranked right after them in
-  `Models::start`) were never in `Models` before the first match; `--ui` captures load everything and hid it.
+- Tests: `--ui setup2` scripts two pads (`Frontend::simPads` / `Frontend::sim`): pad 1 on Control of team 1, pad 2 on Hat of team 2, after pad 2 took that team with Y; `ui_check` covers `TeamCursors` and `Lobby::cycle`.
 
-## Screen 2, Terrain [user-requested]
-Left: W4M's `LandscapeControl` (head `FETXT.Landscape` and the count): the level picture in its ButtonBig border (`fe/buttonbig_normal`, Border_Normal 15) and the map's name. Right: the maps as a grid of tiles (3 columns,
-4 rows visible, scrolls with the selection; no theme filter), each in the same border, the selection in `fe/buttonbig_highlight` (17); D-pad moves, Y a random map (W4M: right mouse = random seed), `+` next, B back.
+## Screen 2, Terrain [user-requested layout, W4M skin]
+Left: `FETXT.Landscape` and the count, the big level picture (430 x 280, cropped to fill) in its ButtonBig frame with the map's name on its foot (white, over a dark gradient). Right: the maps as a grid of tiles (3 columns,
+4 rows visible, scrolls with the selection; no theme filter), each with its own frame, the selection in the highlight frame; D-pad moves, Y a random map (W4M: right mouse = random seed), `+` next, B back.
+The frame (`pictureFrame`) is the sprite `fe/buttonbig_normal / highlight` (512 x 512, frame 33 / 37 / 41 / 40 px thick, 44 / 46 / 52 / 50 highlighted, picture hole 420 px) cut as a 9-slice and fitted so its
+hole is the picture's rect, scale = picture's short side / 420 [data: sprite measurements; assumed: W4M's border placement around the picture]. W4M's LandscapeControl is 95 x 95 FE at (-174, 38) with borders 15 / 17 / 16 (docs/w4m/frontend.md) [data];
+how `WXFE_Border` sizes the sprite to a rect is not decoded. The jar (NAV Start) of the strip is the "next" button.
 The grid lists the random island, the W4M Prebuilt landscapes and the Worms 3D maps (user-requested to stay selectable) [data, below]. W4M's list is text with the 4 tab headings, ours a picture grid [user-requested].
 
-## Screen 3, Règles [user-requested]
-Right: list rows Schéma (left / right: preset, A: scheme editor), Vers par équipe (1..4), Worm vital (`RULE_KING`), Vampire (`RULE_VAMPIRE`), Gravité basse (`RULE_LOW_GRAVITY`), Mort subite
-(`RULE_SUDDEN_DEATH`) as `FETXT.On` / `FETXT.Off`, Wormpot (A: reels, with `fe/icon_wxpot`). The left panel explains the selected row with W4M's text in a FE text box (scrolls when it overflows, like W4M's
+## Screen 3, Règles [user-requested layout, W4M skin]
+Left: list rows (`feRow`, 580 x 34) Schéma (left / right: preset, A: scheme editor), Vers par équipe (1..4), Worm vital (`RULE_KING`), Vampire (`RULE_VAMPIRE`), Gravité basse (`RULE_LOW_GRAVITY`), Mort subite
+(`RULE_SUDDEN_DEATH`) as `FETXT.On` / `FETXT.Off`, Wormpot (A: reels, with `fe/icon_wxpot`). Right: the help panel (`fe/com_panel`) with the selected row's title and W4M's text in a FE text box (scrolls when it overflows, like W4M's
 `AutoScrollSpeed` boxes): `FETXT.HTPSubtopic24` (scheme, title `FETXT.GameStyle`), `FETXT.WPotHelp.VitalWorm`, `.Vampire`, `.Lowgravity`, `FETXT.HTPSubtopic7`, `FETIP.Wormpot`; Vers par équipe has none.
 W4M's `/*token*/` markup is dropped and space runs collapse (`plain`). `+` starts the match (network: below). `RULE_NO_DELAYS` (tests) has no row. The house rules Highlander, Karma and Rope race are removed
 [user-requested]; their bits (2, 8, 32) stay unused.
@@ -73,7 +84,7 @@ W4M's `/*token*/` markup is dropped and space runs collapse (`plain`). `+` start
   every 0.1 s (`Frontend::toNet`), so remote edits (name, hat, voice) show live on every console. A console edits only its own teams (`canEdit`); CPU control is
   offered to the host only. X adds a team to this console (4 in the room) or removes the focused own one (1 least); several local humans keep one pad each (`GameConfig::Team::pad`,
   re-attached to the match config at Start by `Frontend::minePad`).
-- Team rows show the owner console's name ("(vous)" for this one) and the W4M ready grenade: `Nav Start` of `fe2/nav_normal` when the console is ready, `fe2/nav_disabled` when not
+- Team cards show, bottom-left, the owner console's name ("(vous)" for this one) and the W4M ready grenade: `Nav Start` of `fe2/nav_normal` when the console is ready, `fe2/nav_disabled` when not
   (WXNET `Team<n>_Ready`, docs/w4m/network.md) [data, flag-to-state rule assumed there].
 - Terrain and Règles: the host edits (host edits `net->lobby`, `pushLobby()` when it changed); the others see them read-only with a note, and the help panel stays readable.
 - Ready: ZR / R on any screen, or `+` on Règles for a non-host; Règles' button reads PRÊT / PAS PRÊT, and START for the host once `Net::allReady()` and at least 2 teams

@@ -1709,7 +1709,7 @@ int main(int argc, char **argv) {
         pause.open = !strcmp(uiShot, "pause");
         if (!strcmp(uiShot, "gameover")) game.phase = Phase::GameOver, game.winner = 0, onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
     } else if (uiShot) {
-        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") ? Ui::Frontend::SetupTeams
+        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strcmp(uiShot, "setup2") ? Ui::Frontend::SetupTeams
                      : !strcmp(uiShot, "setupmap") ? Ui::Frontend::SetupMap : !strcmp(uiShot, "setuprules") ? Ui::Frontend::SetupRules
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
         static const std::pair<const char *, Ui::Frontend::Screen> MENUS[] = {{"local", Ui::Frontend::Local}, {"network", Ui::Frontend::Network},
@@ -1888,6 +1888,13 @@ int main(int argc, char **argv) {
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame))
                 snprintf(capPath, sizeof capPath, uiShot == flagUi ? DATA_DIR "ui_%d.png" : "ui.png", frame), front.capture = capPath, TraceLog(LOG_INFO, "UI: frame %d", frame);
             if (uiShot && frame > uiFrames.back()) break;
+            if (uiShot && !strcmp(uiShot, "setup2")) {  // two pads: pad 1 walks to the Control row of team 1, pad 2 to the Hat row of team 2 and takes that team
+                Ui::Frontend::simPads = 3;
+                if (frame == 2) Ui::Frontend::sim[0].dy = 1;
+                if (frame == 3) Ui::Frontend::sim[1].card = 1;
+                if (frame >= 5 && frame <= 7) Ui::Frontend::sim[1].dy = 1;
+                if (frame == 8) Ui::Frontend::sim[1].take = true;
+            }
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;
             if (a == Ui::Frontend::Replays && saver.joinable()) saver.join();  // the last match's file complete
