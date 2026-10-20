@@ -1199,8 +1199,8 @@ static void checkEventCameras() {
         g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
         Worm &w = g.worms[g.current];
         w.pos = {20, 55, 30}, w.yaw = 0, w.grounded = true, w.vel = {0, 0, 0};
-        for (int z = 40; z < 78; z++)  // z 10..19.5 m, 2.5 m over the worm: the camera spot ends inside it
-            for (int y = 0; y < 230; y++)
+        for (int z = 40; z < 78; z++)  // a wall z 10..19.5 m to the top of the grid: the camera spot ends inside it
+            for (int y = 0; y < Terrain::NY; y++)
                 for (int x = 40; x < 120; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
         Controls::reset();
         Camera3D cam = {{20, 57, 21.5f}, w.pos, {0, 1, 0}, 50, CAMERA_PERSPECTIVE};

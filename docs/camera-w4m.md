@@ -188,7 +188,10 @@ Addresses below are disasm; values are data unless marked otherwise.
   - Desired distance is `DistFromObject` 170.
 - **Pitch input** (0x52de20 / 0x52df30):
   - Pitch moves at `HeightSpeed` 0.45; mouse input is scaled by `MouseX/YSpeed` 0.25.
-  - Below `MinHeight`, the excess becomes look-above: ×`LkAboveSpdScale` 80, capped at `MaxLookAboveObj` 80. The camera tilts up instead of going lower.
+  - Look-above (+0xdc, units): Reset 0x52d870 sets it to `LookAboveObject` 5. Pitch down (0x52df30) past `MinHeight` pins the pitch there and adds excess × `LkAboveSpdScale` 80 to it, capped at `MaxLookAboveObj` 80; pitch up (0x52de20) first pays it back down to 5 at the same rate, only the rest raises the pitch, capped at `MaxHeight` [disasm, data].
+  - Update 0x530690 adds it to the y of the target point (+0x74) before the placement 0x52e2f0, so the orbit centre and the look-at rise by it (up to 80 units, 4 m at 20 units a metre) while the pitch stays at `MinHeight` [disasm].
+  - NinjaCamera: MinHeight -1.57, MaxHeight 1.57, LkAboveSpdScale / LookAboveObject / MaxLookAboveObj 0 (no look-above) [data].
+  - Ours: `pitchStep` and `lookUp` in controls.cpp, the same rule; the Default camera's centre is raised by `lookUp` (not the chase, focus, game-over or Ninja cameras). Our idle easing back to DefaultHeight (chase only) brings the look-above back to 5 too [ours].
 - **Yaw input** (0x5309b0): yaw += YawSpeed·2π·dt per left/right flag, mouse x·YawSpeed·MouseXSpeed; pitch through 0x52df30 / 0x52de20. Yaw is otherwise written only by the activation Reset (0x52da00), the occlusion response (OccYawSpeed) and the clear-spot yaw search after 60 ms without input (0x52fd6a); `DefaultHeight` (+0x2c) is read only by Reset 0x52d870. So the ShoulderCamera never swings back behind the worm by itself [disasm].
 - **Occlusion test** (0x52efa0, every frame):
   - 5 forward points plus `OccInnerTestPoints` (Shoulder: 5, so 10 rays). Limits: inner points are 0 or at least 3, at most 10; at most 15 in total.

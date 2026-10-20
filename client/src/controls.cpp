@@ -39,6 +39,20 @@ static bool blimpOn = false, blimpLive = false, refusedNow = false, tiltTick = f
 static uint8_t prevFire = 0;
 bool cpuTurn = false;
 static float camYaw = 0, camEl = EL0, idle = 0;
+static const float LOOK0 = 0.25f, LOOK_MAX = 4, LOOK_SCALE = 4;  // LookAboveObject 5 / MaxLookAboveObj 80 units (20 per m), LkAboveSpdScale 80 units = 4 m per rad
+static float lookUp = LOOK0;  // ShoulderCamera look-above: the orbit centre rises when the pitch hits MinHeight
+
+// OccludingCam 0x52de20 (d > 0, pitch up) / 0x52df30 (d < 0): the pitch stops at Min / MaxHeight, the excess goes to / comes from the look-above
+static void pitchStep(float d, float &el, float &up, float lo, float hi, float scale, float up0, float upMax) {
+    if (d > 0) {
+        if (up > up0) {
+            float n = up - d * scale;
+            if (n >= up0) up = n, d = 0;
+            else d -= (up0 - n) / scale, up = up0;
+        }
+        el = fminf(el + d, hi);
+    } else if ((el += d) < lo) up = fminf(up + (lo - el) * scale, upMax), el = lo;
+}
 static int lastWorm = -1;
 static float fpOut = 9;     // seconds since the first-person aim view
 static bool cut = true;     // place the camera at once (new match, in and out of first person)
@@ -763,7 +777,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     bool moving = input && Vector2Length(stick(pad, GAMEPAD_AXIS_LEFT_X)) > 0;
     static int lastKind = -1;  // the logical camera (SetCamera): 0 Default, 1 Girder, 2 Blimp, 3 Head, 4 Jetpack, 5 Ninja
     int kind = g.girderOn && girdering(g) ? 1 : targetView(g) ? 2 : firstPerson(g) ? 3 : g.jetting ? 4 : g.roped ? 5 : 0;
-    if (lastWorm < 0) camYaw = cur.yaw, camEl = EL0, lastWorm = g.current, lastKind = kind, setView = {true, camYaw};  // new match (ours: behind the first worm)
+    if (lastWorm < 0) camYaw = cur.yaw, camEl = EL0, lookUp = LOOK0, lastWorm = g.current, lastKind = kind, setView = {true, camYaw};  // new match (ours: behind the first worm)
     bool turn = g.current != lastWorm;
     if (turn) lastWorm = g.current, cut = true, cutView |= !seen(drawn, g, cur.pos);  // 0x51f1b7: a cut unless the new worm is in clear view
     if (turn || kind != lastKind) {  // SetCamera 0x51e4e0 (turn start 0x51f0f7: Camera.StartOfTurnCamera "Default" for a new worm)
@@ -772,7 +786,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
         if (kind == 0) {  // DefaultCam: ShoulderCamera StartYaw 0, ResetYaw 0, MaxHeight 1.0; HeadOffset (0, 20, 0), TailOffset (0, 0, -18) units
             Vector3 at = {cur.pos.x, fmaxf(cur.pos.y, g.water - 0.35f), cur.pos.z};
             Vector3 hd = Vector3Add(at, {0, 1, 0}), tl = Vector3Add(at, {-0.9f * sinf(cur.yaw), 0, -0.9f * cosf(cur.yaw)});
-            occActivate(g, at, hd, tl, 8.5f, 1.0f, cur.yaw, false, camYaw, camEl);
+            occActivate(g, at, hd, tl, 8.5f, 1.0f, cur.yaw, false, camYaw, camEl), lookUp = LOOK0;
         }
         lastKind = kind;
     }
@@ -781,10 +795,12 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     if (ch.stick) rs.x = 0;
     idle = rs.x || rs.y || moving ? 0 : idle + dt;
     camYaw -= rs.x * CAM_YAW * settings.cam * dt;
-    camEl = Clamp(camEl - rs.y * (settings.invertCam ? -1 : 1) * CAM_PITCH * settings.cam * dt, 0.05f, 1.2f);  // stick up: look up
+    float dEl = -rs.y * (settings.invertCam ? -1 : 1) * CAM_PITCH * settings.cam * dt;  // stick up: look up
+    if (g.roped) pitchStep(dEl, camEl, lookUp, -1.57f, 1.57f, 0, 0, 0);  // NinjaCamera MinHeight / MaxHeight, no look-above
+    else pitchStep(dEl, camEl, lookUp, 0.1f, 1.0f, LOOK_SCALE, LOOK0, LOOK_MAX);  // ShoulderCamera MinHeight 0.1, MaxHeight 1
     float follow = aimMode ? 12 : g.roped ? (rs.x || rs.y ? 0 : 6.3f) : chase ? (idle > 0.5f ? 2.5f : 0) : 0;  // DefaultCam: yaw and pitch move on input only (0x5309b0)
     float k = 1 - expf(-dt * follow), err = wrapPi((g.roped ? ropeYaw : cur.yaw) - camYaw);
-    camYaw += err * k, camEl += ((g.roped ? 0 : EL0) - camEl) * k;  // NinjaCamera DefaultHeight 0: level side view
+    camYaw += err * k, camEl += ((g.roped ? 0 : EL0) - camEl) * k, lookUp += ((g.roped ? 0 : LOOK0) - lookUp) * k;  // NinjaCamera DefaultHeight 0: level side view
     // the event cameras and the PiP run whatever the logical camera (CMS 0x51da00)
     // W4M [0x95fb04], the active worm: from its activation to GameLogic.EndTurn (retreat or turn timed out, worm hurt: 0x5b2610)
     bool active = g.phase == Phase::Aim || g.phase == Phase::Flying || g.phase == Phase::Retreat;
@@ -869,6 +885,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     for (const Worm &x : g.worms) if (overT > 0 && !focusOn && x.alive && x.team == g.winner && (!champ || &x == &cur)) champ = &x;
     if (champ) chase = false, from = focus = champ->pos;
     bool orbit = overT > 4 && (!g.cfg.mission || g.script);
+    if (!g.roped && !focusOn && !chase && !champ && !orbit) focus.y += lookUp;  // 0x530690: the centre and look-at rise by the look-above
     if (fpOut == 0 && !chase) cut = true;  // cut out too: backing out passes through the worm's head
     fpOut += dt;
     b = {0.1f, 0.1f};  // ShoulderCamera / NinjaCamera / OrbitCam (0x530fe8): Pos / LookUpdateSpeed 0.1
