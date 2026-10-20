@@ -1281,6 +1281,7 @@ static void particles(const Camera3D &cam, int bin) {
             if (m.src >= 0 && m.src < 11 && m.dst >= 0 && m.dst < 11) rlSetBlendFactors(GL_FACTOR[m.src], GL_FACTOR[m.dst], 0x8006), rlSetBlendMode(RL_BLEND_CUSTOM);
             else rlSetBlendMode(RL_BLEND_ALPHA);
             Models::shade(skyMeshSh), Models::draw(m.model.c_str(), w, WHITE, m.clip.empty() ? nullptr : m.clip.c_str(), p.age, m.loop), Models::shade({});
+            rlDrawRenderBatchActive(), rlDisableDepthMask(), rlDisableBackfaceCulling();  // Models::draw leaves both on after keyed shapes
             continue;
         }
         bool body = tex[p.tex].id != 0, head = p.head && tex[GLOW].id;
