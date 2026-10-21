@@ -1320,7 +1320,7 @@ static void feText(const std::string &text, const FeBox &b) {
     rlRotatef(-b.rot * RAD2DEG, 0, 0, 1);
     rlTranslatef(-ctr.x, -ctr.y, 0);
     int align = b.just % 3;
-    float x = align == 0 ? b.c.x - b.hw : align == 1 ? b.c.x : b.c.x + b.hw;
+    float x = align == 0 ? b.c.x - b.hw / feK : align == 1 ? b.c.x : b.c.x + b.hw / feK;  // the spread moves the box, not its width
     for (size_t i = 0; i < lines.size(); i++) {
         std::vector<Vector2> pose = b.anim ? textPose(b.anim, lines[i]) : std::vector<Vector2>();
         float y = top - i * size, a = 1;
