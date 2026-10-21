@@ -970,7 +970,7 @@ void event(const GameEvent &e) {
     }
 }
 
-void trail(const Projectile &s, Vector3 at, float dt) {
+void trail(const Projectile &s, Vector3 at, float dt, Vector3 fxAt) {
     const WeaponDef &d = WEAPONS[s.weapon];
     float age = 0, best = 9;  // emitter clock: carried from the same shot of the previous frame
     Seen *prev = nullptr;
@@ -978,8 +978,6 @@ void trail(const Projectile &s, Vector3 at, float dt) {
         if (q.weapon == s.weapon && q.child == s.child && Vector3DistanceSqr(q.p, s.pos) < best) best = Vector3DistanceSqr(q.p, s.pos), age = q.age + dt, prev = &q;
     if (prev) prev->kept = true;
     seen.push_back({s.pos, s.weapon, s.child, age, prev ? prev->fx : 0});
-    if (d.name == "Holy Hand Grenade" && rnd() < dt * 16)  // WXP_HolyHG_Trails: crosses left floating behind
-        add({at, {rnd(-0.2f, 0.2f), rnd(0.1f, 0.4f), rnd(-0.2f, 0.2f)}, 0, rnd(1.8f, 2.2f), 0.35f, 0.05f, 0, rnd(-1, 1), -0.1f, 1, {255, 240, 200, 230}, CROSS, false});
     if (d.name == "Starburst") {  // rocket: WXP_Wep_StarburstRocket flames + orange glow; stars: blue trail + cyan glow
         float v = Vector3Length(s.vel);
         if (!s.child && d.fuse - s.fuse < 2) return;  // the rocket's effect starts on Starburst.FuseLit, 2000 ms in (0x588cba)
@@ -998,14 +996,16 @@ void trail(const Projectile &s, Vector3 at, float dt) {
     }
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0) return;  // WEAPTWK: no TrailBitmap; its ArielFx is a one-off (ariel())
     // ArielFx emitters: Bazooka WXP_BazookaTrailPack (Main + Puffs), Homing Missile WXP_HomingMissileTrail (Smoke + Glow); a Weapon Factory payload
-    // its own (0x598b0e), stopped at rest (the templates' StopFxAtRest 1), none on its bomblets
+    // its own (0x598b0e), none on its bomblets; a data ArielFx stops at rest unless StopFxAtRest is 0 (Dynamite, Gas Canister)
     const bool factory = customWeapon(s.weapon);
     if (factory && (s.child || d.ariel.empty())) return;
     Seen &me = seen.back();
-    if (factory && d.ariel != "WXP_BazookaTrailPack" && d.ariel != "WXP_HomingMissileTrail") {  // data emitters (WXP_ExplosionG_Tail), at the payload
-        if (me.fx > 0 && Vector3Length(s.vel) < 1) stop(me.fx), me.fx = -1;
-        if (!me.fx) me.fx = start(d.ariel.c_str(), at);
-        if (me.fx > 0) place(me.fx, at);
+    if (d.ariel != "WXP_BazookaTrailPack" && d.ariel != "WXP_HomingMissileTrail" && !d.ariel.empty()) {  // data emitters (WXP_FuseLarge...), attached at the FxLocator
+        if (s.child) return;
+        const Vector3 where = factory ? at : fxAt;
+        if (me.fx > 0 && !d.keepFx && Vector3Length(s.vel) < 1) stop(me.fx), me.fx = -1;
+        if (!me.fx) me.fx = start(d.ariel.c_str(), where);
+        if (me.fx > 0) place(me.fx, where);
         return;
     }
     if (factory && Vector3Length(s.vel) < 1) return;

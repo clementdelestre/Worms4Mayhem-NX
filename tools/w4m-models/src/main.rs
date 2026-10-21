@@ -989,8 +989,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
 
     // joints: flat nodes holding the full skinning matrix (inverse bind = identity), so no shear-prone hierarchy
     let mut nodes = vec![format!("{{\"name\":\"mesh\",\"mesh\":0{}}}", if animated { ",\"skin\":0" } else { "" })];
-    // WEAPTWK FxLocator (bazookarocket, homingmissile; a Weapon Factory payload's `fuse`, 0x5993ec): where the ArielFx emitters sit on a static payload, in the baked model's space
-    for (gi, _) in s.groups.iter().enumerate().filter(|(_, g)| !animated && matches!(g.path.as_str(), "bazookarocket" | "homingmissile" | "fuse")) {
+    // WEAPTWK FxLocator (bazookarocket, homingmissile, Dynamite Spark, hollyhandgrenade, gascannister; a Weapon Factory payload's `fuse`, 0x5993ec): where the ArielFx emitters sit on a static payload, in the baked model's space
+    for (gi, _) in s.groups.iter().enumerate().filter(|(_, g)| !animated && matches!(leaf(&g.path).as_str(), "bazookarocket" | "homingmissile" | "fuse" | "Spark" | "hollyhandgrenade" | "gascannister")) {
         let t = apply(&norm, apply(&rest[gi], [0.0; 3], 1.0), 1.0);
         nodes.push(format!("{{\"name\":\"FxLocator\",\"translation\":{t:?}}}"));
     }

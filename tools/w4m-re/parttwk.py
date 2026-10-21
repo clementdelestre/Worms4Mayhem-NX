@@ -79,8 +79,8 @@ def main(a):
             if isinstance(c, dict) and c.get('_type') in ('ParticleEmitterContainer', 'EffectDetailsContainer'): tw.setdefault(k, c)
     folded = {k.lower(): k for k in tw}  # the resource trie folds case (0x6bdff0)
     names = set(ROOTS)
-    for c in dump(os.path.join(GAME, 'Data', 'Tweak', 'WEAPTWK.XOM')).values():  # every payload's DetonationFx (comma list, Detonate 0x581440)
-        if isinstance(c, dict): names.update(n for n in c.get('DetonationFx', '').split(',') if n)
+    for c in dump(os.path.join(GAME, 'Data', 'Tweak', 'WEAPTWK.XOM')).values():  # every payload's DetonationFx (comma list, Detonate 0x581440) and ArielFx
+        if isinstance(c, dict): names.update(n for k in ('DetonationFx', 'ArielFx') for n in c.get(k, '').split(',') if n)  # + the payload's attached ArielFx (0x581890)
     for f in glob.glob(os.path.join(assets, 'maps', '*.json')):
         names.update(e['fx'] for e in json.load(open(f)).get('emitters', []))
     for f in glob.glob(os.path.join(assets, 'scripts', '*.lub')):  # mission scripts: Particle.Name / lib_CreateEmitter constants
