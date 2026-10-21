@@ -720,6 +720,28 @@ static void checkSentry() {
     g.objects[0].turret.state = T::Scan, g.objects[0].turret.target = -1, g.objects[0].turret.fresh = true;
     for (t = 0; t < 60 * 6; t++) tick({home.x + (t % 2) * 2.0f, home.y, home.z});
     assert(g.objects[0].turret.state == T::Scan);
+
+    // 0x56d2a0: an Explosion takes WormDamageMagnitude off WeaponHealth with the worms' falloff and stops it; at 0 hp it dies 5 s later (0x56bfb0)
+    Object &s = g.objects[0];
+    s.hp = WEAPONS[s.weapon].health, s.id = 7;
+    assert(s.hp == 75);
+    const Vector3 base = sentryBase(s);
+    const Blast bazooka = blastOf(WEAPONS[weaponNamed("Bazooka")], false);
+    g.events.clear();
+    g.explode(Vector3Add(base, {0, 0.8f, 0}), bazooka);
+    assert(s.hp == 75 - (int)bazooka.damage && s.turret.state == T::Done);
+    assert(g.events.size() >= 2 && g.events.back().kind == GameEvent::SentryHit && g.events.back().count == 7 && g.events.back().weapon == 1);
+    assert(g.gunRay({Vector3Add(base, {-5, 0.8f, 0}), {1, 0, 0}}, Worm{}, 0).sentry == 0);  // a bullet stops on its 16-unit sphere
+    while (s.hp >= 1) g.explode(Vector3Add(base, {0, 0.8f, 0}), bazooka);
+    assert(s.turret.state == T::Dying);
+    w.pos = {home.x - 6, home.y, home.z};
+    for (t = 0; t < 60 * 6 && !g.objects.empty(); t++) tick(w.pos);
+    assert(g.objects.empty() && t > 60 * 5 - 5 && t < 60 * 5 + 5);
+    // 0x56df94: Water.Level 10 units over its base blows it up at once
+    g.objects = {sentry};
+    g.water = sentryBase(g.objects[0]).y + 0.6f;
+    tick(w.pos);
+    assert(g.objects.empty());
 }
 
 // W4M SheepChaseCamera: behind and above the sheep (it rises when the land hides it), never under it.

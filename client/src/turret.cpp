@@ -4,14 +4,14 @@
 #include "models.h"
 #include "raymath.h"
 #include <algorithm>
-#include <vector>
+#include <map>
 
 namespace {
 constexpr float U = 1 / 20.f;  // m per W4M unit
 constexpr int TRACERS = 30, DIVS = 6;  // TrailGraphicEntity(TrailSprite_W, 6 divisions, 30 trails) (0x56b5c6)
 const char *const AIM_LR = "AimSentrygunLR", *const AIM_UD = "AimSentrygunUD", *const SHOOT = "Shoot";
 
-float rand01() { return GetRandomValue(0, 65535) / 65536.f; }  // ours: render-side; W4M draws its one LCG (0x68c07b)
+float rand01() { return GetRandomValue(0, 65535) / 65536.f; }  // W4M 0x68c07b: the graphical LCG (0x96d040), never the logic one, 16 bits / 65536
 float wrap2pi(float a) { while (a >= 2 * PI) a -= 2 * PI; while (a < 0) a += 2 * PI; return a; }
 float wrapPi(float a) { return a > PI ? a - 2 * PI : a < -PI ? a + 2 * PI : a; }
 // 0x47a1a0: (target + k cur) / (k + 1), at most step
@@ -33,7 +33,9 @@ struct Graphic {
     int mode = 0;  // +0x150: 0 none, 1 scan, 2 rest, 3 fire
     bool fast = false, aimed = false, firing = false;  // +0xe0; the Aim clips set (a mode ran); the trail and FireSound (+0x164, +0x160)
     float idle = 0, shootT = 0, acc = 0, fxAge = -1;  // +0x154 frames; +0x15c s; 20 ms accumulator; WXP_Wep_Sentry_Fire's age, s
-    int fx = -1;
+    int fx = -1, smoke[2] = {-1, -1};  // WXP_Wep_Sentry_Fire, the damage smoke at Smoke1 / Smoke2 (+0xec, +0xf0); -2: started at the next draw
+    float health = 0;  // +0x14c, from command 7 (WeaponHealth)
+    bool live = false;  // its sentry was seen this frame
     struct Shot { const char *clip; float t; } shots[4] = {};  // one-shot clips (0x6a03d0), one instance each
     Tracer tr[TRACERS] = {};
     int trN = 0, trI = 0;
@@ -41,7 +43,7 @@ struct Graphic {
     bool moving = false, wake = false;
     int timer = 0;
 };
-std::vector<Graphic> gfx;  // ponytail: by object index, sentries are never removed mid-match
+std::map<int, Graphic> gfx;  // by Object::id
 Vector3 lastHand{};
 
 Vector3 meshPos(const Graphic &s) { return Vector3Lerp(s.hand, s.base, s.lerp); }
@@ -61,12 +63,20 @@ void stopFire(Graphic &s, Vector3 at) {
     s.firing = false, s.trN = 0;
     Audio::play(Audio::Sfx::SentryEnd, at);
 }
-// the command queue 0x56b7b0
-void command(Graphic &s, int c) {
+// 0x56b0b0: the damage smoke starts as the health crosses 50, then 25
+void damage(Graphic &s, float dmg) {
+    float was = s.health;
+    s.health -= dmg;
+    if (was > 50 && s.health <= 50) s.smoke[0] = -2;
+    if (was > 25 && s.health <= 25) s.smoke[1] = -2;
+}
+// the command queue 0x56b7b0; v: its float (4: the damage)
+void command(Graphic &s, int c, float v = 0) {
     stopFire(s, s.base);
     switch (c) {
     case 1: play(s, "DeploySentrygun"), s.fast = false; break;
     case 3: s.mode = 1, s.idle = rand01() * 300, s.fast = false; break;
+    case 4: play(s, "Hit"), s.mode = 2, s.spin = v * 40 * DEG2RAD * 0.02f, damage(s, v), s.fast = false; break;
     case 5: s.spin = 0, s.mode = 2, s.fast = false; break;
     case 6: play(s, "Hit"); break;
     case 8: s.fast = true, Fx::start("WXP_Wep_Sentry_Warmup", Vector3Add(s.base, s.up)); break;  // its EmitterSoundFX: SentryGunActivation
@@ -152,13 +162,13 @@ void follow(Graphic &s, const Game &g, const Object &o) {
     if (t.state == Object::Turret::Track && s.state == Object::Turret::Track && s.timer * 1000 / 60 > 260 && t.timer * 1000 / 60 <= 260) command(s, 11);  // 250..269 ms left
     s.wake = false, s.state = t.state, s.timer = t.timer;
 }
-Graphic &graphic(const Object &o, size_t i) {
-    if (gfx.size() <= i) gfx.resize(i + 1);
-    Graphic &s = gfx[i];
+Graphic &graphic(const Object &o) {
+    Graphic &s = gfx[o.id];
     if (!s.init) {  // 0x56d150 -> 0x56b2d0: at the WeaponLocator, up (0, 1, 0), +z = (cos p, 0, sin p), p = -(worm angle + pi/2)
-        s = {};
         s.init = true, s.hand = lastHand, s.base = sentryBase(o), s.state = o.turret.state, s.moving = Vector3LengthSqr(o.vel) >= 0.01f;
+        s.health = WEAPONS[o.weapon].health;  // command 7 (0x56d0ef)
         s.place = -(atan2f(o.turret.face.x, o.turret.face.z) + PI / 2), s.fwd = {cosf(s.place), 0, sinf(s.place)};
+        command(s, 5);  // 0x56d279: queued at placement, the aim clips at yaw pi turn the barrel away from the worm
     }
     return s;
 }
@@ -174,17 +184,23 @@ namespace Turret {
 void clear() { gfx.clear(); }
 
 void event(const Game &g, const GameEvent &e) {
-    if (e.kind != GameEvent::TurnStart) return;
-    for (size_t i = 0; i < g.objects.size() && i < gfx.size(); i++) if (g.objects[i].type == Object::Sentry && gfx[i].init) gfx[i].wake = true;
+    if (e.kind == GameEvent::TurnStart) for (auto &[id, s] : gfx) s.wake = true;
+    if (e.kind != GameEvent::SentryHit) return;
+    for (const Object &o : g.objects)  // 0x56d4bc: command 4 alone, whatever state the hit left
+        if (o.type == Object::Sentry && o.id == e.count) {
+            Graphic &s = graphic(o);
+            command(s, 4, e.amount), s.state = o.turret.state, s.timer = o.turret.timer;
+        }
 }
 
 void update(const Game &g, float dt, Vector3 hand) {
     lastHand = hand;
     const Vector3 *firing = nullptr;
-    for (size_t i = 0; i < g.objects.size(); i++) {
-        const Object &o = g.objects[i];
+    for (auto &[id, s] : gfx) s.live = false;
+    for (const Object &o : g.objects) {
         if (o.type != Object::Sentry) continue;
-        Graphic &s = graphic(o, i);
+        Graphic &s = graphic(o);
+        s.live = true;
         follow(s, g, o);
         for (s.acc += dt; s.acc >= 0.02f; s.acc -= 0.02f) step(s, g, o, 1);
         if (s.firing) {
@@ -197,25 +213,32 @@ void update(const Game &g, float dt, Vector3 hand) {
             }
         }
     }
+    for (auto it = gfx.begin(); it != gfx.end();) {  // its sentry blew up: 0x56b020 fades the smoke out
+        if (it->second.live) { ++it; continue; }
+        for (int h : it->second.smoke) if (h >= 0) Fx::stop(h);
+        it = gfx.erase(it);
+    }
     Audio::loop(Audio::Sfx::SentryFire, firing, firing);  // ponytail: one FireSound for every firing turret, at the first one
 }
 
-bool draw(const Game &g, const Object &o) {
-    Graphic &s = graphic(o, &o - g.objects.data());
+bool draw(const Game &, const Object &o) {
+    Graphic &s = graphic(o);
     Models::Layers ly;
     int n = 0;
     if (s.aimed) ly.add[n] = AIM_LR, ly.addT[n++] = s.yaw / PI;
     if (s.firing) ly.add[n] = SHOOT, ly.addT[n++] = s.shootT;
     for (const auto &k : s.shots) if (k.clip) ly.add[n] = k.clip, ly.addT[n++] = k.t;
     const Matrix m = world(s);
-    if (s.fx != -1 && s.fxAge >= 0) {  // attached to the mesh's "effect" node (0x5c1470)
+    auto attach = [&](int &h, const char *node, const char *fx) {  // an effect on a mesh node (0x5c1470)
         Matrix j;
-        if (Models::joint("sentry", "barrel|effect", "Base", 0, true, &j, s.aimed ? AIM_UD : nullptr, s.pitch / (PI / 2), &ly)) {
-            Vector3 at = Vector3Transform({0, 0, 0}, MatrixMultiply(j, m));
-            if (s.fx == -2) s.fx = Fx::start("WXP_Wep_Sentry_Fire", at);
-            else Fx::place(s.fx, at);
-        }
-    }
+        if (!Models::joint("sentry", node, "Base", 0, true, &j, s.aimed ? AIM_UD : nullptr, s.pitch / (PI / 2), &ly)) return;
+        Vector3 at = Vector3Transform({0, 0, 0}, MatrixMultiply(j, m));
+        if (h == -2) h = Fx::start(fx, at);
+        else Fx::place(h, at);
+    };
+    if (s.fx != -1 && s.fxAge >= 0) attach(s.fx, "barrel|effect", "WXP_Wep_Sentry_Fire");
+    if (s.smoke[0] != -1) attach(s.smoke[0], "gun|Smoke1", "WXP_Smoke_ThinBase_Light");
+    if (s.smoke[1] != -1) attach(s.smoke[1], "gun|Smoke2", "WXP_Smoke_ThinBase_Light");
     return Models::draw("sentry", m, "Base", 0, true, s.aimed ? AIM_UD : nullptr, s.pitch / (PI / 2), ly);
 }
 }  // namespace Turret

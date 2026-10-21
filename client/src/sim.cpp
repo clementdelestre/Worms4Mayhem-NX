@@ -57,7 +57,7 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
             {"land_damage", &w.slider[0][0]}, {"worm_radius", &w.slider[0][1]}, {"worm_damage", &w.slider[0][2]}, {"blast_strength", &w.slider[0][3]},
             {"cluster_land_damage", &w.slider[1][0]}, {"cluster_worm_radius", &w.slider[1][1]}, {"cluster_worm_damage", &w.slider[1][2]}, {"cluster_blast_strength", &w.slider[1][3]},
             {"max_power", &w.maxPower}, {"collision", &w.collision[0]}, {"cluster_collision", &w.collision[1]}};
-        const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}, {"crate_weight", &w.weight}, {"retreat", &w.retreat}, {"post_launch", &w.postLaunch},
+        const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}, {"crate_weight", &w.weight}, {"retreat", &w.retreat}, {"post_launch", &w.postLaunch}, {"health", &w.health},
             {"launch", &w.launch}, {"detonate", &w.detonate[0]}, {"cluster_detonate", &w.detonate[1]}, {"fuse_time", &w.fuseTime}};
         std::string key, sv;
         while (str(key) && eat(':')) {
@@ -823,7 +823,7 @@ void Game::start(const GameConfig &c) {
     for (int t = 0; t < teams; t++) teamFirst.push_back(teamFirst.back() + c.teamWorms(t));
     worms.clear();
     shots.clear();
-    objects.clear(), triggers.clear(), allied.clear(), noTurn = false;
+    objects.clear(), triggers.clear(), allied.clear(), noTurn = false, sentries = 0;
     factory = {}, factoryData = {};
     gas.clear();
     nextWorm.assign(teams, 0);
@@ -1163,10 +1163,12 @@ bool Game::addObject(Object::Type t, float lift) {
 // W4M NewSentryGunLogicEntity: Turn.Started re-arms it (0x56dc30); it scans, tracks 2 s, fires 100 ms bullets for WeaponReloadTime, then rests until the next turn
 void Game::stepSentry(Object &o) {
     Object::Turret &s = o.turret;
+    const Vector3 base = sentryBase(o);
+    if (water > base.y + 10 / 20.f) { o.dead = true; return; }  // 0x56df94, any state: Water.Level over the base + 10 units blows it up (0x56bfb0)
     if (Vector3LengthSqr(o.vel) >= 0.01f) { s.fresh = s.state == Object::Turret::Scan; return; }  // falling (state 1): the state resumes on landing, a scan afresh (0x56cce0 case 2)
     const WeaponDef &sd = WEAPONS[o.weapon];
     auto feet = [&](int i) { return Vector3{worms[i].pos.x, worms[i].pos.y - R, worms[i].pos.z}; };  // WormData Position +0x38
-    const Vector3 base = sentryBase(o), up = sentryUp(terrain, o);
+    const Vector3 up = sentryUp(terrain, o);
     auto rollScan = [&] { s.scan = msTicks(1000 + (int)(rand01() * 2000)); };
     auto aimAtTarget = [&] { s.look = Vector3Add(feet(s.target), {0, 0.5f, 0}); };  // 0x56d680 / 0x56d4d0: 10 units over Position
     switch (s.state) {
@@ -1212,9 +1214,30 @@ void Game::stepSentry(Object &o) {
         if (s.timer < msTicks(3000) && Vector3DistanceSqr(feet(s.target), base) > (sd.radius + 25) * (sd.radius + 25)) { s.state = Object::Turret::Done; break; }  // MaxWeaponRange + 500 units
         aimAtTarget();
         break;
+    case Object::Turret::Dying:
+        if (--s.timer <= 0) o.dead = true;  // 0x56df23: 5000 ms after the hit that took its last hp, it blows up (0x56bfb0)
+        break;
     default: break;
     }
 }
+
+// 0x56d2a0: within WormDamageRadius of a 16-unit sphere 16 units up its normal, the worms' falloff (at least 1 hp); the turret stops for this
+// turn (state 6), or at 0 hp starts dying (state 5, 5000 ms, restarted by each hit); never pushed
+void Game::sentryHit(Object &o, Vector3 p, const Blast &b) {
+    const float d = fmaxf(0, Vector3Distance(p, Vector3Add(sentryBase(o), Vector3Scale(sentryUp(terrain, o), 0.8f))) - 0.8f);
+    if (!(d < b.reach)) return;
+    const float f = fminf((b.reach - d) * 1.2f, b.reach) / b.reach;
+    float dmg = f * b.damage * (doubled() ? 2 : 1);
+    if (dmg > 0 && dmg < 1) dmg = 1;
+    o.hp -= (int)dmg;
+    Object::Turret &s = o.turret;
+    s.state = o.hp < 1 ? Object::Turret::Dying : Object::Turret::Done;
+    if (s.state == Object::Turret::Dying) s.timer = msTicks(5000);
+    emit(GameEvent::SentryHit, sentryBase(o), -1, f >= 1), events.back().count = o.id, events.back().amount = dmg;  // f 1: Turn.MaxDamage (0x56d3a2)
+}
+
+// ours: W4M clears the hit land voxel (Land.ClearVoxel: guns 0x55d8c0, sentry 0x56cb43); the importer keeps no cell grid, so a 0.5 m sphere 0.5 m deep stands in
+void Game::clearVoxel(Vector3 at, Vector3 dir) { terrain.carve(Vector3Add(at, Vector3Scale(dir, 0.5f)), 0.5f, false); }
 
 // one bullet: a cone of 0.4 r^2 around the aim (10 units over the feet), the nearest hit within 3000 units takes the Shot* ExplosionMessage
 void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
@@ -1225,14 +1248,15 @@ void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
     const float ang = rand01() * 2 * PI, r = rand01(), m = r * r * 0.4f;
     const Vector3 dir = Vector3Normalize(Vector3Add(v, Vector3Add(Vector3Scale(a, cosf(ang) * m), Vector3Scale(b, sinf(ang) * m))));
     const Worm none{};
-    const GunHit h = gunRay({from, dir}, none, 0);
+    const GunHit h = gunRay({from, dir}, none, 0, int(&o - objects.data()));
     Vector3 land;
     if (terrain.raycast({from, dir}, 150, &land)) emit(GameEvent::Pop, land), events.back().fx = "WXP_Wep_Sentry_Hit";  // at the land hit even past a nearer worm
     if (h.dist >= 150) return;
+    if (h.land) return clearVoxel(h.at, dir);  // 0x56cb43: land first, no Explosion
     Blast bl = blastOf(sd, false);
     bl.crater = 0;  // ShotLandDamageRadius 0.1 units: no crater
     bl.pushOff = {-dir.x * 0.1f, -0.1f, -dir.z * 0.1f};  // 0x56c110: the impulse centre 2 units behind the hit and 2 low
-    explode(h.at, bl, 0, 0, o.weapon);
+    explode(h.at, bl, 0, 0, o.weapon, nullptr, nullptr, nullptr, int(&o - objects.data()));
     if (h.obj >= 0) crateHit(objects[h.obj], bl.damage * (doubled() ? 2 : 1));
 }
 
@@ -1277,7 +1301,8 @@ void Game::stepObjects() {
             for (int j = 0; !o.pinned && j < 20 && terrain.solid({o.pos.x, o.pos.y - h, o.pos.z}); j++) o.pos.y += 0.05f;
         }
 
-        bool gone = !crateLike(o) && o.type != Object::Mine && o.pos.y < water, boom = o.dead && (o.type == Object::Barrel || crateLike(o));  // 0x5c5810: every crate type blows up
+        if (o.type == Object::Sentry) stepSentry(o);
+        bool gone = !crateLike(o) && o.type != Object::Mine && o.type != Object::Sentry && o.pos.y < water, boom = o.dead && (o.type == Object::Barrel || o.type == Object::Sentry || crateLike(o));  // 0x5c5810: every crate type blows up
         if (crateLike(o)) {  // 0x5c5b70: at or under Water.Level it sinks, chute off, WaterSmallSplash at y = 1 unit absolute; 20 units under: Crate.Sunk (0x5c81a0)
             if (!o.sunk && o.pos.y <= water) {
                 o.sunk = true, o.falling = false;
@@ -1308,7 +1333,6 @@ void Game::stepObjects() {
                 else boom = true;
             }
         }
-        if (o.type == Object::Sentry) stepSentry(o);
         // 0x5cb7e0: the crate sphere (10 x Scale units) meets a worm's (10 units, 5 above its feet), any worm, any time, or a sheep-like
         // payload's for the active worm (0x5c9750); the collector's AlliedGroup must be TeamCollectable's (0x5c8370)
         bool sheep = false;
@@ -1342,6 +1366,7 @@ void Game::stepObjects() {
         if (boom && !gone) {
             if (x.type == Object::Mine) mineBlast(x.pos, det);
             else if (x.type == Object::Barrel) explode(x.pos, BARREL_BLAST, 0, 0, -1, "WXP_Explosion_OilDrum", "weapons/ExplosionLarge");  // 0x5d1540
+            else if (x.type == Object::Sentry) explode(sentryBase(x), blastOf(WEAPONS[x.weapon], true), 0, 0, -1, named(WEAPONS[x.weapon].cfx));  // 0x56bfb0: Death*, ExplosionFx, no ExplosionSfx
             else explode(x.pos, CRATE_BLAST, 0, 0, -1, "WXP_ExpiryExplosion");  // 0x5c59e9
             if (x.type == Object::Mine && wp(WP_MINE_RESPAWN)) respawns.push_back({x.pos, msTicks(500)});
         }
@@ -1375,7 +1400,7 @@ int Game::fallDamage(float speed) const {
 }
 
 // W4M 0x55e10f: the shooter is skipped by id (0x5b27e0 -> 0x519dd0); gun mask 0x1c3f has the bubble shell's 0x1000, not the 0x2000 it takes with the shooter inside
-Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet) const {
+Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet, int self) const {
     Vector3 hit, dir = r.direction;
     GunHit h{{}, terrain.raycast(r, GUN_RANGE, &hit) ? Vector3Distance(r.position, hit) : GUN_RANGE, -1, true};
     auto across = [&](Vector3 c, float rad) {  // 0x519dd0: where the bullet sphere first touches the collider sphere
@@ -1391,11 +1416,14 @@ Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet) const {
     for (const Object &o : objects)  // mines (payload flag 8, Radius 3) and drums (flag 0x10, 9 units): only the hit's Explosion reaches them
         if (float t = (o.type == Object::Mine || o.type == Object::Barrel) && !o.dead ? across(colliderCentre(o), o.type == Object::Mine ? 0.15f : DRUM_R) : -1; t > 0)
             h.dist = t, h.worm = -1, h.land = false, h.obj = -1;
+    for (size_t i = 0; i < objects.size(); i++)  // sentries: 16 units, 16 up the normal, flag 0x800 (0x56cec0, 0x56df8f)
+        if (float t = objects[i].type == Object::Sentry && (int)i != self ? across(Vector3Add(sentryBase(objects[i]), Vector3Scale(sentryUp(terrain, objects[i]), 0.8f)), 0.8f) : -1; t > 0)
+            h.dist = t, h.worm = -1, h.land = false, h.obj = -1, h.sentry = (int)i;
     for (const Bubble &bb : bubbles) {
         Vector3 c = Vector3Add(bb.pos, {0, BUBBLE_UP, 0});
-        if (float t = Vector3Distance(c, r.position) > BUBBLE_SHELL ? across(c, BUBBLE_SHELL) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = -1;
+        if (float t = Vector3Distance(c, r.position) > BUBBLE_SHELL ? across(c, BUBBLE_SHELL) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = -1, h.sentry = -1;
     }
-    h.at = h.worm >= 0 ? worms[h.worm].pos : Vector3Add(r.position, Vector3Scale(dir, h.dist));
+    h.at = h.worm >= 0 ? worms[h.worm].pos : h.sentry >= 0 ? sentryBase(objects[h.sentry]) : Vector3Add(r.position, Vector3Scale(dir, h.dist));  // 0x55e7d0: a sentry's Explosion at its base
     return h;
 }
 
@@ -1416,14 +1444,14 @@ Vector3 Game::strikeStart(const WeaponDef &wd, Vector3 tgt, Vector3 dir, Vector3
 
 // W4M active objects (0x4d3af0 callers): worms falling or sliding (0x5aa996, 0x5aaa04), a drowned worm afloat ("Worm Dying"
 // 0x5a7190), a crate till it rests (0x5c9bd0), an armed or moving mine (payload 0x57ee73, 0x5778f0), a drum about to blow
-// (0x5d1f86), a falling sentry (0x56cdc3), the FlyCam hold (0x528457). The only emitter of interest, WeaponGasCanJet, is never spawned.
+// (0x5d1f86), a sentry falling (0x56cdc3), tracking or firing (0x56ce5e, released in state 6) or dying (0x56d456), the FlyCam hold (0x528457). The only emitter of interest, WeaponGasCanJet, is never spawned.
 bool Game::efmvActive() const { return ufo() || scriptMovieOn(*this); }
 
 bool Game::active() const {
     for (const Worm &x : worms) if ((x.alive && (!x.grounded || Vector3LengthSqr(x.vel) >= 0.01f)) || (x.drowned && x.counted > 0)) return true;
     for (const Object &o : objects) {
         bool moving = Vector3LengthSqr(o.vel) >= 0.01f;
-        if ((o.type == Object::Mine && (o.fuse >= 0 || moving)) || (o.type == Object::Crate && o.spawning) || o.dead || (o.type == Object::Sentry && moving))
+        if ((o.type == Object::Mine && (o.fuse >= 0 || moving)) || (o.type == Object::Crate && o.spawning) || o.dead || (o.type == Object::Sentry && (moving || o.turret.state == Object::Turret::Track || o.turret.state == Object::Turret::Fire || o.turret.state == Object::Turret::Dying)))
             return true;
     }
     return camHold > 0 || (factory.on && factory.state);
@@ -1705,9 +1733,8 @@ void Game::use(Worm &w) {
         // W4M 0x55e5da / 0x55ea22: one ExplosionMessage per hit (LandDamageRadius 0: no crater), damage centred on the worm or the land hit, push centre 2 units
         // behind the worm (and 2 low) / 1 unit behind the land hit; the worm's own damage and impulse come from that message
         Blast b = gunBlast(weapon);
-        b.pushOff = h.worm >= 0 ? Vector3{-dir.x * 0.1f, -0.1f, -dir.z * 0.1f} : Vector3Scale(dir, -0.05f);
-        // ours: W4M clears the hit land voxel (0x55d8c0, Land.ClearVoxel, LandDamageMagnitude 25 >= 15); the importer keeps no cell grid, so a 0.5 m sphere 0.5 m deep stands in
-        if (h.land && h.dist < GUN_RANGE) terrain.carve(Vector3Add(h.at, Vector3Scale(dir, 0.5f)), 0.5f, false);
+        b.pushOff = h.worm >= 0 || h.sentry >= 0 ? Vector3{-dir.x * 0.1f, -0.1f, -dir.z * 0.1f} : Vector3Scale(dir, -0.05f);
+        if (h.land && h.dist < GUN_RANGE) clearVoxel(h.at, dir);  // LandDamageMagnitude 25 >= 15: every land hit (0x55d8c0)
         if (h.dist < GUN_RANGE) explode(h.at, b, 0, 0, weapon);
         if (h.obj >= 0) crateHit(objects[h.obj], b.damage * (doubled() ? 2 : 1));  // DamageImpulseMessage 0x518c20 -> 0x5c8a90, x2 under DoubleDamage
         if (--shotsLeft == 0 && endlessGun) shotsLeft = 1;  // Challenge.EndlessGun (0x55efbf): no last shot, the worm may move (0x55d54f)
@@ -1760,6 +1787,7 @@ void Game::use(Worm &w) {
         break;
     case Kind::Sentry:
         objects.push_back({Object::Sentry, {}, {0, 0, 0}, weapon, -1, false, false, w.team});
+        objects.back().hp = wd.health, objects.back().id = sentries++;  // 0x56d0e5: +0x7c = WeaponHealth
         objects.back().pos = muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 26 / 20.f), {0, 10 / 20.f - R + restHalf(objects.back()) + 0.05f, 0})));  // 0x56e9ee: base 26 units ahead of Position, 10 up
         objects.back().turret.face = f, objects.back().turret.look = Vector3Add(sentryBase(objects.back()), Vector3Add(Vector3Scale(f, 50), {0, 0.75f, 0}));  // ours: W4M leaves +0x38 unset (0x56bda0)
         phase = Phase::Flying;
@@ -2319,7 +2347,7 @@ Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
     return d < b.pushReach && d > 1e-4f ? Vector3Scale(to, b.push * 1.2f * (b.pushReach - d) / b.pushReach / d) : Vector3{0, 0, 0};
 }
 
-void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapon, const char *fx, const char *sfx, const Vector3 *fxAt) {
+void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapon, const char *fx, const char *sfx, const Vector3 *fxAt, int self) {
     Blast b = b0;  // W4M ExplosionMessage 0x518d80: DoubleDamage doubles the radii and the impulse too (hurt() doubles the damage)
     if (doubled()) b.crater *= 2, b.reach *= 2, b.push *= 2, b.pushReach *= 2;
     for (Bubble &bb : bubbles) bb.rest = 0;  // 0x54effa: any Explosion lets it fall again
@@ -2355,6 +2383,8 @@ void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapo
             float d = Vector3Distance(o.pos, p);
             if (d < b.crater) crateHit(o, b.damage * (doubled() ? 2 : 1) * (b.crater - d) / b.crater);
             if (o.pushable && !o.pinned) o.vel = Vector3Add(o.vel, Vector3Scale(blastKick(b, p, o.pos), 1 / 1.2f));
+        } else if (o.type == Object::Sentry) {
+            if (int(&o - objects.data()) != self) sentryHit(o, p, b);
         } else if (Vector3Distance(o.pos, p) < b.reach) o.dead = true;
     }
     for (Trigger &t : triggers) {  // 0x5d4cb0: within WormDamageRadius + its radius, WormDamageMagnitude (1 - d²/R²), at least 1
@@ -3230,7 +3260,7 @@ uint32_t Game::checksum() const {
     mix(&bubbleAt, sizeof bubbleAt);
     mix(&icarus, sizeof icarus), mix(&flapAt, sizeof flapAt), mix(&drift, sizeof drift), mix(&doubleDamage, 1), mix(&changing, 1), mix(spy.data(), spy.size());
     mix(&scout.t, sizeof scout.t), mix(&scout.power, sizeof scout.power), mix(&scout.pitch, sizeof scout.pitch);
-    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); mix(&o.dud, 1); mix(&o.courtesy, sizeof o.courtesy); mix(&o.hooked, 1); mix(&o.spawning, 1); mix(&o.delay, sizeof o.delay); mix(&o.fizzle, 1); if (o.type == Object::Sentry) mix(&o.turret.state, 1), mix(&o.turret.target, 1), mix(&o.turret.timer, sizeof o.turret.timer), mix(&o.turret.scan, sizeof o.turret.scan); if (o.mystery >= 0) mix(&o.mystery, sizeof o.mystery); if (o.id >= 0) mix(&o.id, sizeof o.id); if (crateLike(o)) mix(&o.hp, sizeof o.hp), mix(&o.count, sizeof o.count), mix(&o.teamCollect, 2), mix(&o.pinned, 1), mix(&o.pushable, 1), mix(&o.scale, sizeof o.scale); }
+    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); mix(&o.dud, 1); mix(&o.courtesy, sizeof o.courtesy); mix(&o.hooked, 1); mix(&o.spawning, 1); mix(&o.delay, sizeof o.delay); mix(&o.fizzle, 1); if (o.type == Object::Sentry) mix(&o.turret.state, 1), mix(&o.turret.target, 1), mix(&o.turret.timer, sizeof o.turret.timer), mix(&o.turret.scan, sizeof o.turret.scan), mix(&o.hp, sizeof o.hp); if (o.mystery >= 0) mix(&o.mystery, sizeof o.mystery); if (o.id >= 0) mix(&o.id, sizeof o.id); if (crateLike(o)) mix(&o.hp, sizeof o.hp), mix(&o.count, sizeof o.count), mix(&o.teamCollect, 2), mix(&o.pinned, 1), mix(&o.pushable, 1), mix(&o.scale, sizeof o.scale); }
     if (factory.on) {
         const Factory &f = factory;
         mix(&f.pos, sizeof f.pos), mix(&f.damaged, 1), mix(&f.state, sizeof f.state), mix(&f.wait, sizeof f.wait), mix(&f.toSpawn, sizeof f.toSpawn), mix(&f.until, sizeof f.until), mix(&f.die, sizeof f.die);
