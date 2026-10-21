@@ -1991,14 +1991,14 @@ bool cover(const std::string &name, Rectangle d, Color tint = WHITE) {
 
 // ---- W4M list widgets of WXFE.CreateAGame (WXFE.CreateAGameList rows: Border_Normal 6 / Highlight 9 / Disabled 7, GapBetweenItems 2)
 
-// The row border: the halves of fe/border_*'s circle cap a stretched bar; d: the row's inside
+// The row border: the halves of fe/border_*'s circle (x 10..138, cut at its centre 74) cap the bar (x 162..496, whose ends match that centre column) stretched; d: the row's inside
 void feBorderSprite(Rectangle d, const char *sprite) {
     Texture2D t = tex(sprite);
     if (!t.id) return DrawRectangleRounded(d, 1, 8, PANEL);
-    float k = d.height / 92, cap = fminf(64 * k, d.width / 2), x0 = d.x - 8 * k, w = d.width + 16 * k, y0 = d.y - 16 * k, h = 128 * k;
-    DrawTexturePro(t, {8, 0, 64, 128}, {x0, y0, cap, h}, {}, 0, WHITE);
-    DrawTexturePro(t, {72, 0, 64, 128}, {x0 + w - cap, y0, cap, h}, {}, 0, WHITE);
-    DrawTexturePro(t, {200, 0, 200, 128}, {x0 + cap, y0, w - 2 * cap, h}, {}, 0, WHITE);
+    float k = d.height / 92, cap = fminf(64 * k, d.width / 2), x0 = d.x - 10 * k, w = d.width + 20 * k, y0 = d.y - 16 * k, h = 128 * k;
+    DrawTexturePro(t, {10, 0, 64, 128}, {x0, y0, cap, h}, {}, 0, WHITE);
+    DrawTexturePro(t, {74, 0, 64, 128}, {x0 + w - cap, y0, cap, h}, {}, 0, WHITE);
+    DrawTexturePro(t, {162, 0, 334, 128}, {x0 + cap, y0, w - 2 * cap, h}, {}, 0, WHITE);
 }
 void feBorder(Rectangle d, int state) {
     static const char *const NAME[3] = {"fe/border_normal", "fe/border_highlight", "fe/border_disabled"};
