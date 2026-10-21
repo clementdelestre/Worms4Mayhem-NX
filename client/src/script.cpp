@@ -69,6 +69,7 @@ struct ScriptState {
     std::vector<GameEvent> ui;  // UI-only events (commentary, emitters, shake), into g.events at the end of the tick
     int emitters = 0;           // Particle.Handle of the last script emitter
     bool noDefault = false;     // Commentary.NoDefault: CommentService +0x138
+    bool hideTurn = false;      // HUD.HideTurnTime: HudClockEntity +0xe0 cleared (0x5f0fc8), the turn digits never come back
     std::string egg;            // WXMsg.EasterEggFound: the WXFE_UnlockableItem it unlocked (GameOver.EasterEgg)
     std::map<std::string, int> ignored, missing;
     int errors = 0;
@@ -767,6 +768,7 @@ struct ScriptHost {
             comment(c ? c->s : "", is("CommentaryPanel.ScriptText") ? 0 : (int)num("CommentaryPanel.Delay", 1000), is("CommentaryPanel.ScriptText"));
         } else if (is("Commentary.Clear")) ui(GameEvent::CommentClear, {}, 0);
         else if (is("Commentary.NoDefault") || is("Commentary.EnableDefault")) S->noDefault = is("Commentary.NoDefault");
+        else if (is("HUD.HideTurnTime")) S->hideTurn = true;
         else if (is("Particle.NewEmitter")) {
             const Val *at = key("Particle.DetailObject"), *fx = key("Particle.Name");
             emitter(fx ? fx->s : "", at ? at->s : "", ++S->emitters);
@@ -1280,7 +1282,7 @@ ScriptHud scriptHud(const Game &g) {
     if (!g.script) return h;
     Using u(g);
     h.counter = num("HUD.Counter.Active") != 0, h.value = (int)num("HUD.Counter.Value"), h.percent = num("HUD.Counter.Percent") == 1;  // 0x5e57c0
-    h.tenths = num("HUD.Clock.DisplayTenths") != 0, h.roundClock = num("HUD.Clock.DisplayRoundTime", 1) != 0, h.defaults = !S->noDefault, h.endless = S->endless;
+    h.tenths = num("HUD.Clock.DisplayTenths") != 0, h.roundClock = num("HUD.Clock.DisplayRoundTime", 1) != 0, h.defaults = !S->noDefault, h.endless = S->endless, h.hideTurn = S->hideTurn;
     h.roundTime = (int)num("RoundTime");  // HudClockEntity 0x5f03f0: RoundTimeRemaining if RoundTime > 0, else ElapsedRoundTime (0 at Timer.StartGame)
     h.elapsedMs = roundMs(), h.clockMs = h.roundTime > 0 ? std::max<int64_t>(0, h.roundTime - (S->roundOn ? h.elapsedMs : 0)) : h.elapsedMs;
     return h;

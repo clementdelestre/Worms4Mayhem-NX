@@ -167,7 +167,7 @@ Tags: **data** = WEAPTWK.XOM or tables stored in the exe; **disasm** = traced co
 #### Stage 2: PayloadWeaponLogicEntity children and payload class (disasm)
 - **Start 0x582d70** (reached from HM 0x586040 -> 0x5837a0) reads the PayloadWeaponPropertiesContainer:
   - `IsAimedWeapon +0x1e0`: checks Min/MaxAimAngle against ±pi/2 and publishes `Weapon.MinAimAngle` / `Weapon.MaxAimAngle`. If not targeting, it also publishes `Weapon.ParabolicRetical` (from `UseParabolicRetical +0x1d5`).
-  - `HasAdjustableFuse +0x1d0`: creates AdjustableFuseWeaponLogicEntity (vt 0x857058, HM 0x543ad0).
+  - `HasAdjustableFuse +0x1d0`: creates AdjustableFuseWeaponLogicEntity (vt 0x857058, HM 0x543ad0); a fuse change posts `Weapon.FuseBounceChanged`, whose only listener is CommentService: the box shows "<weapon>, N secs" (docs/w4m/missions.md Commentary), there is no HUD text for the fuse [disasm].
   - `HasAdjustableHerd +0x1d2`: creates AdjustableHerdWeaponLogicEntity (vt 0x8570c8, HM 0x5441e0). It asserts that the two flags are not both set.
   - `HasAdjustableBounce +0x1d1`: never read here. AdjustableBounceWeaponLogicEntity (0x856fe8) has **no creation site**, so the ClusterGrenade/Grenade flag is dead. (disasm: negative search)
   - `IsTargetingWeapon +0x1c9`: sets `this+0x38=1` and sends `Weapon.CreateHomingCursor` (if `IsHoming +0x1cd`), else `Weapon.CreateBomberCursor` (if `IsBomberWeapon +0x1cb`), else `Weapon.CreateTargetingCursor`.

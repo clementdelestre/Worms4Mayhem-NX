@@ -3809,10 +3809,24 @@ void reticle(const WeaponDef &wd, Vector2 c) {
 }
 
 // W4M HUD digits: "0-9 . m", '~' = infinity, ':' = two dots; h = cell height. Falls back to text().
+static const char *const HF_ROW[2] = {"012345.", "6789~m"};
+static const short HF_COL[2][7][2] = {{{6, 78}, {87, 131}, {142, 211}, {218, 290}, {300, 376}, {384, 455}, {463, 500}},
+                                      {{6, 78}, {86, 149}, {158, 233}, {238, 312}, {319, 418}, {428, 508}}};
+// HUD.Font glyph widths 0x920a78 (0x5f1430): index 0-9 digits, 10 infinity, 11 '.', 12 'm'
+static const float HF_W[13] = {0.629f, 0.4032f, 0.5968f, 0.629f, 0.6613f, 0.629f, 0.629f, 0.5645f, 0.629f, 0.6129f, 0.8548f, 0.3226f, 0.6774f};
+// One HUD.Font glyph as the clock and health preview build it: a quad of half extent (S x width, S) about (cx, cy), the picture the glyph plus the width's padding
+static void hudGlyph(char c, float cx, float cy, float S, Color tint, bool grey) {
+    static const char ORDER[] = "0123456789~.m";  // glyph index of HF_W
+    Texture2D t = tex(grey ? "hud/hud_font_grey" : "hud/hud_font");
+    const char *o = c ? strchr(ORDER, c) : nullptr;
+    if (!o || !t.id) return;
+    int gi = (int)(o - ORDER), r = strchr(HF_ROW[0], c) ? 0 : 1, col = (int)(strchr(HF_ROW[r], c) - HF_ROW[r]);
+    float k = t.width / 512.0f, x0 = HF_COL[r][col][0], gw = HF_COL[r][col][1] - x0, pad = (HF_W[gi] * 128 - gw) / 2;
+    DrawTexturePro(t, {(x0 - pad) * k, r * 128.0f * k, (gw + 2 * pad) * k, 128 * k}, {cx - S * HF_W[gi], cy - S, 2 * S * HF_W[gi], 2 * S}, {}, 0, tint);
+}
 static float digits(const char *s, float x, float y, float h, int align, bool grey = false, Color tint = WHITE) {  // returns the width
-    static const char *ROW[2] = {"012345.", "6789~m"};
-    static const short COL[2][7][2] = {{{6, 78}, {87, 131}, {142, 211}, {218, 290}, {300, 376}, {384, 455}, {463, 500}},
-                                       {{6, 78}, {86, 149}, {158, 233}, {238, 312}, {319, 418}, {428, 508}}};
+    const char *const *ROW = HF_ROW;
+    const short(*COL)[7][2] = HF_COL;
     Texture2D t = tex(grey ? "hud/hud_font_grey" : "hud/hud_font");
     if (!t.id) return text(s, x, y + h * 0.1f, h * 0.75f, grey ? tint : GOLDEN, align), textWidth(s, h * 0.75f);
     float k = h / 128, w = 0;
@@ -4311,6 +4325,8 @@ static void drawHst(const std::string &worm, const std::string &team, Color tc, 
 
 // HUD units: 480 tall, centre origin, y up; drawn in px under rl matrices
 static const float HU = 720 / 480.0f;
+// A HUD root entity's centre in px: HUDTWK position x 0x4d4cc0 (x 4/3, y 1 at 16:9), 480 units high, centre origin, y up [disasm 0x4d4cc0]
+static Vector2 hudAt(float x, float y) { return {640 + x * 4 / 3.0f * HU, 360 - y * HU}; }
 
 // HUD.WP.Anims clips {time, value, in tangent x, y, out tangent x, y}, played at speed 1 (0x6a0730)
 static const float K_INWP_X[2][6] = {{0, 350, 0.20422f, -661, 0.20422f, -661}, {0.4165f, 0, 1.1465f, 0, 1.1465f, 0}},
@@ -4497,6 +4513,7 @@ static void miniBar(int colour, float w, float h, float frac, Color tint) {
     }
 }
 
+static const float PANEL_K = 1.07f, PANEL_DX = 167;  // 433 units of panel (-215 .. 218) fill 696 of 720 px; right edge (140 + 146) x 1.605 at 1266 px
 void Hud::drawPanel(const Game &g, int secs) {
     double now = GetTime();
     if (open != panelShown) panelShown = open, panelSince = now;
@@ -4512,7 +4529,8 @@ void Hud::drawPanel(const Game &g, int secs) {
     int w = panelWeapon(cursor);
     bool has = w >= 0 && g.stock(team, w) && g.allowed(team, w);  // 0x602c70
     rlPushMatrix();
-    rlTranslatef(640, 360, 0);
+    rlTranslatef(640 + PANEL_DX, 360, 0);  // [ours, user-requested] the panel and its help box 1.07 x bigger, pushed right to a 14 px margin
+    rlScalef(PANEL_K, PANEL_K, 1);
     helpPanel(open ? hudPose(IN_WH, t) : hudPose(OUT_WH, t), has ? &WEAPONS[w] : nullptr, has && customWeapon(w));
 
     hudNode(140 + wp.x, -10 + wp.y, wp.rz, wp.sx, wp.sy);  // the HUD.WP.Anims instance at (140, -10), its locator1
@@ -4614,6 +4632,17 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         return;
     }
 
+    {  // CommentService 0x5e11b0 (Weapon.Selected, Weapon.FuseBounceChanged): the weapon's name, with ", N secs" for an adjustable fuse, replaces the box's text (0x5e1090: 1200 ms)
+        static int cw = -1, cf = 0;
+        const int fuse = wd.userFuse ? g.fuses[cur.team] : 0;
+        if (g.weapon >= 0 && (g.weapon != cw || fuse != cf) && !subMode) {
+            std::string c = weaponName(wd);
+            if (wd.userFuse) c = TextFormat("%s, %d %s", c.c_str(), fuse, tr("Text.Seconds", "secs", "secondes"));
+            banners.assign(1, Banner{c, 1.2f});
+            bannerAge = 0;
+        }
+        cw = g.weapon, cf = fuse;
+    }
     radar(g, {124, 112}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
     // W4M WindMeterEntity (docs/w4m/render.md): downwind arrow in the camera frame, tilted 0.75 rad; grey and fixed under 0.05
     Vector2 wc = {58, 236};
@@ -4628,16 +4657,16 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     else DrawLineEx(wc, Vector2Add(wc, Vector2Scale(v, 24)), 5, ac);
     float dw = digits(TextFormat("%02d", speed), wc.x + 54, wc.y - 11, 22, 0, speed == 0);  // HUD.Wind.TextOffset / SpeedScale, x 1.84 px per unit
     digits("m", wc.x + 54 + dw, wc.y - 11 + 22 * 0.3f, 22 * 0.8f, 0, speed == 0);
-    // current weapon (top right) + ammo
-    Vector2 wp = {1176, 92 - (300 - 174) * 1.5f * pipShow * (1 - pipFull)};  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
-    if (g.weapon >= 0) {  // W4M ActiveWormHudInfoEntity 0x5d7bb0: hidden for kWeaponUndefined
-        int ammo = g.stock(cur.team, g.weapon);
-        if (!sprite("secondback", wp, 0.5f, {128, 128})) DrawCircleV(wp, 44, {0, 119, 155, 230});
-        if (!image(iconOf(wd), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
-        digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
-        text(weaponName(wd), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
+    // ActiveWormHudInfoEntity (0x5d8320 init, 0x5d7bb0): HUD.WormInfoBack always, HUD.WeaponIcon only for a weapon; both half extent 44 (BackScale / WeapScale), no text
+    const Vector2 wp = hudAt(253, 174 - (300 - 174) * pipShow * (1 - pipFull));  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
+    {
+        const float hs = 44 * HU;
+        Texture2D back = tex("hud/secondback");
+        if (open) {  // WeaponPanel.Open hides every BaseHudObject
+        } else if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {wp.x - hs, wp.y - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
+        else DrawCircleV(wp, 0.7f * hs, {0, 119, 155, 230});
+        if (g.weapon >= 0 && !open) image(iconOf(wd), {wp.x - hs, wp.y - hs, 2 * hs, 2 * hs});
     }
-    if (wd.userFuse) text(TextFormat("%s %ds", tr("FETXT.Fuse", "Fuse", "Mèche"), (int)g.fuseOf(wd)), wp.x - 54, wp.y + 16, 22, GOLDEN, 2);  // d-pad up/down
     // SecondaryWeaponGraphicEntity 0x5f82f0 (no text): root (220, 200) HUD units x (4/3, 1) from the centre, i.e. (253 - 220, 174 - 200) from the ActWormInfo spot;
     // HUD.SecondWeapon.Back half 25, HUD.SecondWeaponIcon half 20; In_WPreview while held, Out_MeleeHit when it goes [disasm + data]
     if (g.secondary != secIcon) {
@@ -4646,7 +4675,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     if (open || ready) secOut = -1;
     auto secondary = [&](int wi, float x, float y, float rz, float k) {
-        const Vector2 c = {1176 - (253 - 220) * 4 / 3.0f * HU, 92 - (200 - 174) * HU};
+        const Vector2 c = hudAt(220, 200);
         rlPushMatrix();
         rlTranslatef(c.x + x * HU, c.y - y * HU, 0);
         rlRotatef(-rz * RAD2DEG, 0, 0, 1);
@@ -4667,33 +4696,62 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float t = (tick - secSince) * Game::DT;
         secondary(g.secondary, xanimKeys(K_SW_IN_X, 2, t, true), xanimKeys(K_SW_IN_Y, 2, t, true), xanimKeys(K_SW_IN_R, 2, t, true), 1);
     }
-    // turn timer (bottom right): turn seconds, round clock below
-    bool retreat = g.phase == Phase::Flying || g.phase == Phase::Retreat;  // W4M: the retreat clock runs from the launch
-    int left = aiming && g.hotSeat ? g.hotSeat : aiming ? g.timer : retreat ? std::min(g.timer, g.retreatTicks(weaponDef(g.weapon))) : 0, secs = (left + 59) / 60;
-    Vector2 tp = {1180, 612};
-    bool urgent = (secs <= 5 && aiming && !g.hotSeat) || retreat;
-    ScriptHud sh = scriptHud(g);
-    if (!panelShown) {  // the open weapon panel shows the turn clock in its box [observed: the real game hides this one meanwhile]
-        if (!sprite("timer_back", tp, 0.62f, {128, 128}, 0, urgent && tick / 15 % 2 ? Color{255, 120, 120, 255} : WHITE)) DrawCircleV(tp, 54, {0, 119, 155, 230});
-        if (!sh.endless) digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);  // TurnTime 0: TurnTimeRemaining 0, no digits (0x5eff0d)
-        if (!g.script) {
-            int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
-            digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
-        } else if (sh.roundClock && sh.roundTime == -1) digits("~", tp.x, tp.y + 18, 26, 1, true);  // FXTXT.Infinity
-        else if (sh.roundClock) {  // HudClockEntity 0x5f03f0: "%02d:%02d" min:s, DisplayTenths adds a "%02d" of hundredths in a second, smaller text
-            int s = (int)(sh.clockMs / 1000);
-            float w = digits(TextFormat("%02d:%02d", s / 60, s % 60), tp.x - (sh.tenths ? 12 : 0), tp.y + 18, 26, 1, true);
-            if (sh.tenths) digits(TextFormat("%02d", (int)(sh.clockMs % 1000) / 10), tp.x - 12 + w / 2 + 2, tp.y + 18 + 26 * 0.4f, 26 * 0.6f, 0, true);
+    // HudClockEntity (0x5f0ae0 init, 0x5f0a60 update): root HUD.Clock.Position (254, -170) tilted HUD.Clock.Orientation z -0.1, disc HUD.Clock.Back half 44 (Clock.Scale)
+    const ScriptHud sh = scriptHud(g);
+    const int ms = aiming && !g.hotSeat ? g.timer * 50 / 3 : 0, secs = (ms + 999) / 1000;
+    if (!panelShown) {  // WeaponPanel.Open hides every BaseHudObject (0x5dad00)
+        // ClockDisplayMode 2 (a running turn): the turn digits (0x5efe80) while the shown seconds > 0 and HUD.HideTurnTime was not sent; retreat and post-activity are mode 0
+        const bool digitsOn = secs > 0 && !sh.endless && !sh.hideTurn;
+        static float clockY = -44 / 3.0f, clockW = 22;  // the round text's offset and "00:00" width, eased 0.25 a 20 ms frame (0x5f03f0); init Scale / 3 and Scale x 0.5
+        static uint32_t clockF = 0;
+        const uint32_t frame = (uint32_t)(tick * Game::DT / 0.02f);
+        for (uint32_t i = 0, n = std::min<uint32_t>(frame - std::min(frame, clockF), 50); i < n; i++) {
+            const float ty = digitsOn ? -44 / 3.0f : 0, tw = digitsOn ? 44 / 1.16f : 44 * 1.4f;
+            clockY = fabsf(ty - clockY) >= 0.01f ? clockY * 0.75f + ty * 0.25f : ty;
+            clockW = fabsf(tw - clockW) >= 0.01f ? clockW * 0.75f + tw * 0.25f : tw;
         }
+        clockF = frame;
+        const Vector2 c = hudAt(254, -170);
+        rlPushMatrix();
+        rlTranslatef(c.x, c.y, 0);
+        rlRotatef(0.1f * RAD2DEG, 0, 0, 1);
+        const float hs = 44 * HU;
+        Texture2D back = tex("hud/timer_back");
+        if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {-hs, -hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
+        else DrawCircleV({}, 0.7f * hs, {0, 119, 155, 230});
+        if (digitsOn) {
+            const float f = (ms % 1000) / 1000.0f, S = 44 * (secs < 6 ? 1 + f * 0.3f : 1.0f) / 2.2f;  // the pulse of the last 5 s
+            const int tens = std::min(secs / 10, 9), units = secs % 10;
+            const float d = 0.85f * S * (HF_W[tens] + HF_W[units]), y = -(sh.roundClock ? 44 / 2.8f : 0) * HU;
+            const Color tc = secs < 6 ? Color{255, (unsigned char)(255 - 200 * f), (unsigned char)(255 - 200 * f), 255} : WHITE;  // white -> HUD.Clock.ColourTurnEnd
+            hudGlyph('0' + tens, -d / 2 * HU, y, S * HU, tc, true);
+            hudGlyph('0' + units, d / 2 * HU, y, S * HU, tc, true);
+        }
+        if (sh.roundClock) {  // the "mm:ss" text in FE.Font, ColourGameTime; its "00:00" width is clockW units at a y offset clockY
+            std::string rt;
+            if (!g.script) {
+                int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
+                rt = TextFormat("%02d:%02d", round / 60, round % 60);
+            } else if (sh.roundTime == -1) rt = "~";  // FXTXT.Infinity
+            else rt = TextFormat("%02d:%02d", (int)(sh.clockMs / 1000) / 60, (int)(sh.clockMs / 1000) % 60);
+            static const Color GT[2] = {{190, 215, 255, 255}, {190, 215, 255, 255}};
+            const float units = clockW / (textWidth("00:00", 1000) / 1000 * 56 / 50);
+            const bool tenths = sh.tenths && g.script && sh.roundTime != -1;
+            hudText(rt.c_str(), 0, clockY, units, GT, BLANK, 1);
+            if (tenths) hudText(TextFormat("%02d", (int)(sh.clockMs % 1000) / 10), clockW / 2 + 6, clockY - 4, 18, GT, BLANK, 1);  // [assumed: the tenths text's offset is not traced]
+        }
+        rlPopMatrix();
     }
-    if (sh.counter) {  // CounterGraphicEntity 0x5e57c0: "%d" (+ "%" if Percent) on HUD.WindBacking x BackScale 30, TextScale 21, at the clock's lower left
-        Vector2 cp = {1054, 659};
-        if (!sprite("wind_back", cp, 0.72f * 30 / 25, {64, 64})) DrawCircleV(cp, 55, {0, 104, 138, 220});
+    if (sh.counter) {  // CounterGraphicEntity 0x5e57c0: "%d" (+ "%" if Percent) on HUD.WindBacking x BackScale 30, TextScale 21, HUD.Counter.Position (222, -190)
+        const Vector2 cp = hudAt(222, -190);
+        const float hs = 30 * HU;
+        Texture2D wb = tex("hud/wind_back");
+        if (wb.id) DrawTexturePro(wb, {0, 0, (float)wb.width, (float)wb.height}, {cp.x - hs, cp.y - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
+        else DrawCircleV(cp, 0.7f * hs, {0, 104, 138, 220});
         const char *v = TextFormat(sh.percent ? "%d%%" : "%d", sh.value);
         text(v, cp.x + 2, cp.y - 19 + 2, 39, BLACK, 1);  // HUD.Counter.ShadowColor
         text(v, cp.x, cp.y - 19, 39, {255, 178, 0, 255}, 1);  // HUD.Counter.TextColor
     }
-    if (retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
     // team health: EnergyBarManagerEntity 0x5e9f10 / 0x5e97f0 / 0x5e9a00 (bottom centre) and HealthPreviewEntity 0x5ebe40 (top right)
     static float maxHp = 100;
     static int lastClock = -1;
@@ -4756,7 +4814,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (open) cpv.on = false;
     else {
         const float f = tick * Game::DT / 0.02f;  // W4M updates on 20 ms frames
-        const float ty = 92 + (174 - 88) * HU + (pipShow > 0 ? (300 - 174) * HU : 0);
+        const float ty = hudAt(252, pipShow > 0 ? 0 : 88).y;  // Position / PositionPiP
         if (!cpv.on) cpv.on = true, cpv.since = tick, cpv.tick = (uint32_t)f, cpv.y = ty;
         int steps = std::clamp((int)f - (int)cpv.tick, 0, 50);
         cpv.tick = (uint32_t)f;
@@ -4779,7 +4837,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         const int n = (int)present.size();
         float age = (tick - cpv.since) * Game::DT;
         rlPushMatrix();
-        rlTranslatef(1176 + (252 - 253) * 4 / 3.0f * HU, cpv.y, 0);
+        rlTranslatef(hudAt(252, 0).x, cpv.y, 0);
         if (n) {  // locator2: the bars (MiniBackResource, BarScale 8.8)
             hudNode(xanimKeys(K_PV_IN_X2, 2, age, true), xanimKeys(K_PV_IN_Y2, 2, age, true), xanimKeys(K_PV_IN_R2, 2, age, true));
             static const float A[5][4] = {{}, {-0.055f}, {-0.065f, 0.065f}, {-0.06f, 0.06f, -0.04f}, {-0.15f, 0, 0, 0.1f}},
