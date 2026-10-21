@@ -7,7 +7,7 @@
 #include <ctime>
 #include <utility>
 
-// .w4r: "W4R7", config (Start message layout minus owners), u32 final checksum, u32 ticks, 6 bytes per tick (W4R2: 5, no zoom; W4R1: 4, no flags).
+// .w4r: "W4R8", config (Start message layout minus owners), u32 final checksum, u32 ticks, 6 bytes per tick (W4R2: 5, no zoom; W4R1: 4, no flags).
 // W4R1..4 teams: str name, u8 cpu, u8 voice, u8 hat, played as then: team order from team 0, each team its own alliance.
 namespace {
 struct Out {
@@ -30,7 +30,7 @@ struct In {
 
 bool Recording::save(const std::string &path) const {
     Out o;
-    o.b = "W4R7";
+    o.b = "W4R8";
     o.u32(cfg.seed), o.u8(cfg.teams), o.u8(cfg.wormsPerTeam), o.str(cfg.map), o.u32(cfg.rules);
     o.u8((uint8_t)cfg.teamSetup.size());
     for (const auto &t : cfg.teamSetup) { wire::W w(0); putTeam(w, t), o.b.append(w.b, 3, std::string::npos); }
@@ -52,7 +52,7 @@ bool Recording::load(const std::string &path) {
     char buf[65536];
     for (size_t n; (n = fread(buf, 1, sizeof buf, f));) b.append(buf, n);
     fclose(f);
-    int ver = b.size() >= 4 && !b.compare(0, 3, "W4R") ? b[3] - '0' : 0, per = ver >= 3 && ver <= 7 ? 6 : ver == 2 ? 5 : ver == 1 ? 4 : 0;
+    int ver = b.size() >= 4 && !b.compare(0, 3, "W4R") ? b[3] - '0' : 0, per = ver >= 3 && ver <= 8 ? 6 : ver == 2 ? 5 : ver == 1 ? 4 : 0;
     if (!per) return false;
     In r{b, 4};
     cfg = GameConfig{};
@@ -61,7 +61,7 @@ bool Recording::load(const std::string &path) {
     for (auto &t : cfg.teamSetup)
         if (ver >= 5) {
             wire::R w{(const uint8_t *)b.data() + r.p, (const uint8_t *)b.data() + b.size()};
-            t = wire::getTeam(w, ver >= 7 ? 2 : ver == 6), r.ok &= w.ok, r.p = w.p - (const uint8_t *)b.data();
+            t = wire::getTeam(w, ver >= 6 ? ver - 5 : 0), r.ok &= w.ok, r.p = w.p - (const uint8_t *)b.data();
             if (ver == 6 && t.secret) return false;  // W4R6 Weapon Factory payloads predate the template clone (0x598160): not replayable
         } else t.name = r.str(), t.cpu = r.u8(), r.u8(), r.u8();
     if (ver < 5) cfg.allyToStart = 0;

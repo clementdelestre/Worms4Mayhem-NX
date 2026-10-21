@@ -2536,6 +2536,7 @@ static void checkStockWeapons() {
         assert(w.clusters == 3 && !w.crest && near(w.ccone, 0.28f) && near(w.cspeed[0], 0.7f / 7 * 50) && near(w.cspeed[1], 0.35f * 50));
         assert(near(w.cradius, 40 / 3.0f * 0.5f / 0.65f / 20) && near(w.cdamage, 40 / 3.0f / 0.65f * 0.3f) && w.cfx == "WXP_Explosion_Small");
         assert(w.model == "proj_poo" && w.cmodel == "proj_poo" && w.ariel.empty() && near(w.size, 0.05f) && g.ammo[0][base] == 1);  // Standard Ammo 1
+        assert(w.graphic == "Factory.Proj.Poo,,");  // no GraphicalResourceID: the payload mesh (0x5984a0)
         Scheme custom = SCHEMES[0].s;
         custom.turnTime++;
         start(g, "FETXT.AFewProblems", custom);
@@ -2550,6 +2551,8 @@ static void checkStockWeapons() {
         assert(w.kind == Kind::Homing && w.clone == "Homing Missile" && !w.powered && !powered(w) && near(w.base, 17.5f) && near(launchSpeed(w, 1), 17.5f));
         assert(!w.wind && !g.windy((int)base) && w.ariel == "WXP_HomingMissileTrail" && w.damage == 0 && w.fx == "WXP_Explosion_Small");
         assert(w.clusters == 5 && w.crest && w.cfx == "WXP_Explosion_Small" && w.cmodel == "proj_classic" && near(w.cdamage, 40 / 5.0f / 0.65f));
+        assert(w.graphic == "Factory.RayGunBody1,RAY_GUN_body_locator,Factory.RayGunBarrel1,RAY_GUN_barrel_root_locator,Factory.RayGunButt1,RAY_GUN_butt_root_locator,"
+                            "Factory.RayGunSight1,RAY_GUN_sight_root_locator,");
     }
     {  // Launched, Poison: the Bazooka's clone, ArielFx WXP_ExplosionG_Tail, DetonationFx + WXP_Explosion_Gas
         WeaponDef w = start(g, "FETXT.ThePeaceBreaker");
@@ -2558,12 +2561,22 @@ static void checkStockWeapons() {
     }
     {  // Bomber, 1 bomb, Poison: divider 1, k 0.35, Push > the others: WXP_Explosion_Mine + gas; Radius and Scale x 1.95; no ArielFx
         WeaponDef w = start(g, "FETXT.TheBrownSofa");
-        assert(w.kind == Kind::Airstrike && w.clone == "Airstrike" && w.clusters == 1 && !w.crest && w.ariel.empty() && w.retreat == 0);
+        assert(w.kind == Kind::Airstrike && w.clone == "Airstrike" && w.clusters == 1 && !w.crest && w.ariel.empty() && w.retreat == 0 && w.graphic == "Radio,,");
         assert(near(w.cdamage, 25 / 0.35f * 0.2f) && w.cradius == 0 && w.cfx == "WXP_Explosion_Mine,WXP_Explosion_Gas" && near(w.csize, 1.95f / 20) && near(w.scale[1], 1.95f));
     }
     {  // Launched, wind, Poison, 5 bomblets at rest
         WeaponDef w = start(g, "FETXT.Factory.Blaster");
         assert(w.clone == "Bazooka" && w.wind && g.windy((int)base) && !g.windy((int)base, true) && w.clusters == 5 && w.crest && near(w.cspeed[1], 0.35f / 2 * 50));
+    }
+    {  // our editor's weapons hold their launch type's WXD.Default* graphic
+        WeaponDef w{};
+        w.name = "ours", w.kind = Kind::Shell;
+        factoryPayload(w);
+        assert(w.graphic.rfind("Factory.TankGunBody,TANK_body_locator,", 0) == 0);
+        w = WeaponDef{}, w.kind = Kind::Shell, w.fuse = 3, factoryPayload(w);
+        assert(w.graphic == "Factory.Proj.Grenade,,");
+        w = WeaponDef{}, w.kind = Kind::Airstrike, factoryPayload(w);
+        assert(w.graphic == "Radio,,");
     }
     {  // Bomber, 10 bombs AtRest: divider 3, WXP_ExploCluster (n >= 6), the bombs bounce (the Grenade's damping) and rest
         WeaponDef w = start(g, "FETXT.WipeOut");

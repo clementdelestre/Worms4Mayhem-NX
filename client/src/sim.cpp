@@ -83,6 +83,7 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
             if (key == "cluster_detonation_sfx") w.csfx = sv;
             if (key == "cluster_model") w.cmodel = sv;
             if (key == "ariel") w.ariel = sv;
+            if (key == "graphic") w.graphic = sv;
             if (key == "pre_detonation_sfx") w.preSfx = sv;
             if (key == "powers_up") w.powersUp = b;
             if (key == "powered") w.powered = b;
@@ -113,7 +114,7 @@ static WeaponDef editorFields(const WeaponDef &d) {
     memcpy(w.slider, d.slider, sizeof w.slider);
     w.count = d.count, w.clusters = d.clusters, w.shots = d.shots, w.weight = d.weight, w.wind = d.wind, w.avoid = d.avoid, w.model = d.model, w.icon = d.icon;
     w.launch = d.launch, w.detonate[0] = d.detonate[0], w.detonate[1] = d.detonate[1], w.fuseTime = d.fuseTime, w.powersUp = d.powersUp, w.cpoison = d.cpoison;
-    w.maxPower = d.maxPower, w.collision[0] = d.collision[0], w.collision[1] = d.collision[1], w.cmodel = d.cmodel, w.ariel = d.ariel;
+    w.maxPower = d.maxPower, w.collision[0] = d.collision[0], w.collision[1] = d.collision[1], w.cmodel = d.cmodel, w.ariel = d.ariel, w.graphic = d.graphic;
     return w;
 }
 
@@ -135,6 +136,10 @@ static FactoryTemplate templateOf(const WeaponDef &t, bool child) {
 }
 // 0x598160: ProjectileLaunchType 0 Bomber, 1 Launched, 2 Thrown, 3 Dropped clones kWeaponAirstrike / Bazooka / Grenade / Dynamite, Homing kWeaponHomingMissile
 static const char *const CLONE[] = {"Airstrike", "Bazooka", "Grenade", "Dynamite"};
+// MENUTWKX WXD.DefaultAirStrike / DefaultWeapon / DefaultThrown WeaponGraphicsResourceID: the held weapon of our editor's weapons by launch type
+static const char *const TEMPLATE_GRAPHIC[] = {"Radio,,",
+    "Factory.TankGunBody,TANK_body_locator,Factory.TankGunBarrel,TANK_barrel_root_locator,Factory.TankGunButt,TANK_butt_root_locator,Factory.TankGunSight,TANK_sight_root_locator,",
+    "Factory.Proj.Grenade,,"};
 static int factoryLaunch(const WeaponDef &w) { return w.launch >= 0 ? w.launch : w.kind == Kind::Airstrike ? 0 : w.kind == Kind::Shell && w.fuse > 0 ? 2 : 1; }
 
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out) {
@@ -165,6 +170,7 @@ void factoryPayload(WeaponDef &w) {
             w.slider[c][0] = grid((child ? w.cradius : w.radius) * 20 * 0.65f * div[c] / T[c].land), w.slider[c][1] = 0.75f;
             w.slider[c][2] = grid((child ? w.cdamage : w.damage) * div[c] * k[c] / T[c].dmg), w.slider[c][3] = 0.5f;
         }
+    p.graphic = ours ? TEMPLATE_GRAPHIC[L] : w.graphic;
     p.name = w.name, p.clone = clone, p.model = w.model, p.cmodel = w.cmodel, p.icon = w.icon, p.count = w.count, p.shots = w.shots, p.weight = w.weight;
     memcpy(p.slider, w.slider, sizeof p.slider);
     p.launch = w.launch, p.detonate[0] = w.detonate[0], p.detonate[1] = w.detonate[1], p.fuseTime = w.fuseTime, p.powersUp = w.powersUp, p.maxPower = w.maxPower;

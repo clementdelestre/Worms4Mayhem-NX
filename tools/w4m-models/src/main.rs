@@ -187,6 +187,7 @@ const WORM_CLIPS: &[&str] = &[
     "TauntStarburst+HoldStarburst", "FireStarburst", "FlyStarburst", "TauntDynamite+HoldDynamite", "TauntBat+HoldBat", "TauntFirepunch+HoldFirepunch", "TauntProd+HoldProd",
     "TauntNMN+HoldNMN", "TauntHomingMissile+HoldHomingMissile", "TauntNinjarope+HoldNinjarope", "SwingNinjarope", "JetpackFly", "FlyRedBull", "ParachuteWobble", "TelepadAppear", "BeamUpLoop",
     "FallDrown", "Nailed", "NailedHitFront", "DrawBT", "HoldBT", "FireBT", "TauntBT+HoldBT", "DrawRedbull", "HoldRedbull", "FireRedbull", "TauntRedbull+HoldRedbull",
+    "DrawWFGun", "HoldWFGun", "FireWFGun", "TauntWFGun+HoldWFGun",  // a Launched Weapon Factory weapon (0x5983f0)
     // WORMACTING.XOM scene emotes (looped) and gestures, docs/worm-reactions.md
     // emotes: face (eyebrows, eyelids, head and shoulder offsets) + its *Mouth clip (lips)
     "Scared+ScaredMouth", "Terror+TerrorMouth", "Nervous+NervousMouth", "CowerEmote+CowerEmoteMouth", "CantLook+CantLookMouth",
@@ -987,6 +988,11 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let t = apply(&norm, apply(&rest[gi], [0.0; 3], 1.0), 1.0);
         nodes.push(format!("{{\"name\":\"FxLocator\",\"translation\":{t:?}}}"));
     }
+    // `*_locator` nodes of a static mesh (a Weapon Factory gun body's part sockets, WAE_Standard 0x58fe80), in the baked model's space
+    for (gi, g) in s.groups.iter().enumerate().filter(|(_, g)| !animated && g.path.ends_with("_locator")) {
+        let (t, r, sc) = decompose(&mul(&norm, &rest[gi]));
+        nodes.push(format!("{{\"name\":\"{}\",\"translation\":{t:?},\"rotation\":{r:?},\"scale\":{sc:?}}}", leaf(&g.path)));
+    }
     let mut extra = String::new();
     let mut clip_names = Vec::new();
     if animated {
@@ -1140,7 +1146,7 @@ fn main() {
     }
     let data = find_ci(Path::new(&args[1]), "Data").unwrap_or_else(|| PathBuf::from(&args[1]));
     let out = PathBuf::from(args.get(2).map_or("client/assets/models", |s| s.as_str()));
-    for d in ["hats", "gloves", "glasses", "tash", "graves", "frontend", "sky", "fx"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
+    for d in ["hats", "gloves", "glasses", "tash", "graves", "frontend", "sky", "fx", "factory"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
     let mut bundles: Vec<PathBuf> = fs::read_dir(data.join("Bundles")).expect("Data/Bundles").flatten().map(|e| e.path()).collect();
     bundles.sort_by_key(|p| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok()).unwrap_or(u32::MAX));
     // level skies (SkyBoxEntity, Land.SkyBoxResource "<THEME>.<TIME>Sky"), raw units, named like the ramps in ui/sky
@@ -1170,6 +1176,10 @@ fn main() {
     // the stock Weapon Factory payload meshes (Factory.Proj.*), listed by setuplists.py: 20 units per metre about their origin
     for l in fs::read_to_string(out.join("../stockmodels.txt")).unwrap_or_default().lines() {
         if let Some((name, desc)) = l.split_once('\t') { todo.push((name.to_string(), desc.to_string(), -0.05, false, &[][..])); }
+    }
+    // Weapon Factory held meshes (WeaponGraphicsResourceID: gun parts, Radio, payloads), listed by setuplists.py: raw units, at the WeaponLocator
+    for l in fs::read_to_string(out.join("../factorymodels.txt")).unwrap_or_default().lines() {
+        if let Some((name, desc)) = l.split_once('\t') { todo.push((name.to_string(), desc.to_string(), 0.0, false, &[][..])); }
     }
     for path in bundles {
         if todo.is_empty() { break; }

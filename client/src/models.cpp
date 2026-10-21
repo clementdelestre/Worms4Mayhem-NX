@@ -68,6 +68,7 @@ struct Entry {
     std::vector<uint8_t> face;  // per bone: 1 lips, eyelid or eyebrow (W4M emote bones), 2 turns with the head
     bool hasFx = false;
     Vector3 fx{};
+    std::vector<std::pair<std::string, Matrix>> locs;  // a static mesh's `*_locator` nodes, model space
     int head = -1, hat = -1, sh[2] = {-1, -1}, mainB = -1, blend = -1;  // sh: right, left shoulder
     const ModelAnimation *base = nullptr;
     std::vector<int> pupil;  // meshes of the pupils (the eyes' layer W4M's Eyes_LR/UD offset), left eye first
@@ -134,6 +135,7 @@ struct Job {
     int next = -1;  // albedo to upload next, -1 before LoadModel()
     bool hasFx = false;
     Vector3 fx{};  // translation of the glb's FxLocator node (WEAPTWK FxLocator: the ArielFx emitters' origin), model space
+    std::vector<std::pair<std::string, Matrix>> locs;
     std::vector<Sel> sels;
     Tracks tracks, alphas;
     std::vector<int> hands;
@@ -269,6 +271,11 @@ Job prepare(const char *path) {
     for (size_t i = 0; i < g->nodes_count; i++)
         if (g->nodes[i].name && !strcmp(g->nodes[i].name, "FxLocator") && g->nodes[i].has_translation)
             j.hasFx = true, j.fx = {g->nodes[i].translation[0], g->nodes[i].translation[1], g->nodes[i].translation[2]};
+        else if (const char *n = g->nodes[i].name; !skinned && n && strlen(n) > 8 && !strcmp(n + strlen(n) - 8, "_locator")) {
+            float m[16];  // column-major
+            cgltf_node_transform_local(&g->nodes[i], m);
+            j.locs.push_back({n, {m[0], m[4], m[8], m[12], m[1], m[5], m[9], m[13], m[2], m[6], m[10], m[14], m[3], m[7], m[11], m[15]}});
+        }
     if (const char *x = g->extras.data ? strstr(g->extras.data, "\"sel\":\"") : nullptr) parseSel(x + 7, j.sels, j.tracks, j.alphas, j.hands);
     cgltf_free(g);
     auto [js, end] = json(j);
@@ -335,7 +342,7 @@ void add(Job &j) {
     if (strstr(j.path.c_str(), "/frontend/")) return (void)(spare[j.path] = e.m);  // FrontBg's scene, freed by FrontBg
     for (int k = 0; k < e.m.materialCount; k++)
         if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
-    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.hands = std::move(j.hands), e.mat = std::move(j.mat);
+    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.locs = std::move(j.locs), e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.hands = std::move(j.hands), e.mat = std::move(j.mat);
     for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
     for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
         const char *n = e.m.skeleton.bones[b].name;
@@ -356,7 +363,7 @@ void add(Job &j) {
     owners(e);
     for (int i = 0; i < e.count; i++) if (!strcmp(e.anims[i].name, "Base")) e.base = &e.anims[i];
     std::string name = GetFileNameWithoutExt(j.path.c_str());
-    for (const char *d : {"/gloves/", "/glasses/", "/tash/", "/graves/"})  // their file names repeat other models' (graves/worm, tash/cowboy)
+    for (const char *d : {"/gloves/", "/glasses/", "/tash/", "/graves/", "/factory/"})  // their file names repeat other models' (graves/worm, tash/cowboy, factory/radio)
         if (strstr(j.path.c_str(), d)) name = std::string(d + 1) + name;
     if (name == "ufo") e.glow = {2};  // BeamConeShape's noise image (raylib material 0 is the default)
     for (int i = 0; name == "worm" && i < e.m.meshCount; i++) {  // glb material 1: boggy*eye, whose shadercolor2 the Eyes clips key
@@ -508,6 +515,32 @@ static const ModelAnimation *find(const Entry &e, const char *clip) {  // "A" al
 }
 
 bool Models::has(const char *name) { return models.count(name) > 0; }
+
+std::string Models::factoryMesh(const std::string &res) {
+    std::string f = "factory/" + res;
+    for (size_t i = 8; i < f.size(); i++) f[i] = f[i] == '.' ? '_' : (char)tolower((unsigned char)f[i]);
+    return f;
+}
+
+// WAE_Standard 0x58fe80: the first mesh at the WeaponLocator, each next one at its locator of the first; each instance scaled 1.2
+bool Models::drawWeaponGraphic(const std::string &graphic, Matrix at, Color tint) {
+    std::vector<std::string> tok;
+    for (size_t b = 0, e; (e = graphic.find(',', b)) != std::string::npos; b = e + 1) tok.push_back(graphic.substr(b, e - b));
+    const Matrix S = MatrixScale(1.2f, 1.2f, 1.2f), body = MatrixMultiply(S, at);
+    bool any = false;
+    for (size_t i = 0; i + 1 < tok.size() && !tok[i].empty(); i += 2) {
+        Matrix m = body;
+        if (i) {
+            auto it = models.find(factoryMesh(tok[0]));
+            if (it == models.end()) continue;
+            auto l = std::find_if(it->second.locs.begin(), it->second.locs.end(), [&](const auto &x) { return x.first == tok[i + 1]; });
+            if (l == it->second.locs.end()) continue;
+            m = MatrixMultiply(S, MatrixMultiply(l->second, body));
+        }
+        any |= draw(factoryMesh(tok[i]).c_str(), m, tint);
+    }
+    return any;
+}
 bool Models::fxLocator(const char *name, Vector3 *out) {
     auto it = models.find(name);
     return it != models.end() && it->second.hasFx && (*out = it->second.fx, true);
