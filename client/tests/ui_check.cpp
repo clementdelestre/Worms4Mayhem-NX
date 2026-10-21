@@ -38,6 +38,10 @@ int main() {
         assert(c.slot[0] == 1 && c.slot[1] == 0 && c.slot[2] == 3);
         c.slot[1] = 2, c.removed(1);
         assert(c.slot[0] == 1 && c.slot[1] == 1);
+        // a card is open for one pad at a time; each pad may have its own open
+        assert(c.claim(0, 2) && c.claim(1, 3) && !c.claim(1, 2) && c.open[1] == 3 && c.claim(0, 2));
+        c.unclaim(0);
+        assert(c.open[0] == -1 && c.claim(1, 2));
     }
     {  // a Joy-Con pair's colour is the average of its two colours: blue + red = purple
         Color p = mixColors({58, 123, 255, 255}, {255, 60, 40, 255});

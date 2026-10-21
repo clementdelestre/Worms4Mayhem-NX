@@ -113,7 +113,7 @@ private:
     // W4M popups (docs/w4m/frontend.md "Saved teams"): one at a time, modal; the Teams screen's belong to a pad, the others to any pad
     struct Pop {
         enum Kind { None, Teams, Ask, Cpu, Name, Slot, Confirm, Pick } kind = None;
-        enum Use { Insert, Mission, Online, Edit, Delete, Create, Soundbank, Head, Eyes, Face, Hands, Weapon, Flag, Grave, Quit, NoField } use = Insert;
+        enum Use { Insert, Mission, Edit, Delete, Create, Soundbank, Head, Eyes, Face, Hands, Weapon, Flag, Grave, Quit, NoField } use = Insert;
         int pad = -1, row = 0, slot = 0, arg = 0, skill = 0, top = 0;  // top: Pick's first visible row
         std::vector<int> ids;            // Teams: barracks indexes, -1 the Create Team row
         std::vector<std::string> vals;   // Pick: the ids of its rows
@@ -121,6 +121,12 @@ private:
         bool typing = false, err = false;
         float t0 = 0;
     } pop;
+    Pop cardPop[4];                  // Teams screen: the slot options / team list each pad has open inside a card (several pads at once), not modal
+    float cardFade[Lobby::MAX_TEAMS] = {};  // 0..1: a card's content faded out for its open list
+    Pop teamsPop(Pop::Use use, int pad, int slot, int arg) const;
+    bool pickBlocked(int slot) const;
+    const Pop *cardOf(int k) const;
+    void cardList(Rectangle d, const Pop &c);
     struct Editor {  // WXFE.TeamOptions: the working copy of a saved team
         int index = -1, page = 0, row = 0, placeSlot = -1, placePad = 0;
         SavedTeam t;
@@ -136,8 +142,6 @@ private:
     void pickDraw();
     static int pickRows(Pop::Use u);
     void editorWorm(const char *clip, float ct, bool loop, float slide);
-    Action pending = None;
-    std::string onlineTeam;          // the saved team this console brings to a room
     void teamSlot(Rectangle d, int k, float t);
     void openTeams(Pop::Use use, int pad, int slot, int arg = 0);
     int reopen = -1, reopenArg = 0;  // a Pop::Use whose list opens again when the editor's screen change is done (after Create Team)
@@ -162,7 +166,8 @@ private:
     void setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps);
     bool setupRules(int dx, int dy, bool ok, bool back, bool plus);  // true: START
     void wormPreview(int k, const GameConfig::Team &tm, float t);
-    bool slotTake() const;  // the slot popup offers "Control with this pad": the team is a human one another pad plays
+    bool slotTake() const { return slotTake(pop); }
+    bool slotTake(const Pop &p) const;  // the slot popup offers "Control with this pad": the team is a human one another pad plays
     void loadTeams();
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;

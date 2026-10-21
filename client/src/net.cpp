@@ -291,7 +291,10 @@ void Net::pushLobby() {
     send(w.done());
 }
 
-void Net::setReady(bool on) { send(W(READY).u8(on).done()); }
+void Net::setReady(bool on) {
+    if (on && consoleTeams[id].empty()) return;  // a console is ready only with a team
+    send(W(READY).u8(on).done());
+}
 
 void Net::syncLobby() {
     auto known = [&](uint32_t c) { return std::any_of(players.begin(), players.end(), [&](const NetPlayer &p) { return p.id == c; }); };

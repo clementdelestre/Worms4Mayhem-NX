@@ -74,6 +74,9 @@ inline Color mixColors(Color a, Color b) { return {(unsigned char)((a.r + b.r) /
 struct TeamCursors {
     int slot[4] = {};
     bool placed = false;  // the tokens were put on their first slots
+    int open[4] = {-1, -1, -1, -1};  // the slot whose options / team list each pad has open inside its card (-1 none); a card is open for one pad at a time
+    bool claim(int p, int k) { for (int q = 0; q < 4; q++) if (q != p && open[q] == k) return false; return open[p] = k, true; }
+    void unclaim(int p) { open[p] = -1; }
     void move(int p, int d) { slot[p] = std::clamp(slot[p] + d, 0, Lobby::MAX_TEAMS - 1); }
     void removed(int k) { for (int &s : slot) if (s > k) s--; }  // a room's later slots shift up
 };

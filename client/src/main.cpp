@@ -1984,8 +1984,12 @@ int main(int argc, char **argv) {
                 if (frame == 14) Ui::Frontend::sim[1].card = 1;
                 if (frame == 16) Ui::Frontend::sim[1].ok = true;
                 if (frame == 18 || frame == 20) Ui::Frontend::sim[1].dy = 1;
-                if (frame == 22 && !list) Ui::Frontend::sim[1].ok = true;
-                if (frame == 24 && !list) Ui::Frontend::sim[1].card = 1;
+                const bool cards = !strcmp(uiShot, "setup3cards");  // pad 2's team list stays open (scrolled down) while pad 1 edits slot 1's options at the same time
+                if (cards && frame == 22) Ui::Frontend::sim[0].ok = true;
+                if (cards && (frame == 24 || frame == 26)) Ui::Frontend::sim[0].dy = 1;
+                if (cards && frame >= 24 && frame <= 30 && frame % 2 == 0) Ui::Frontend::sim[1].dy = 1;
+                if (frame == 22 && !list && !cards) Ui::Frontend::sim[1].ok = true;
+                if (frame == 24 && !list && !cards) Ui::Frontend::sim[1].card = 1;
                 const bool foreign = !strcmp(uiShot, "setup3foreign");
                 if (frame == 26 && foreign) Ui::Frontend::sim[0].card = 1;
                 if (frame == 28 && (foreign || !strcmp(uiShot, "setup3slot"))) Ui::Frontend::sim[0].ok = true;
