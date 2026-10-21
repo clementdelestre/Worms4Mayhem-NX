@@ -107,7 +107,8 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   reset per crate, 0x4f2245) [disasm]; then every team is recomputed (a shared alliance, another worm's inventory). So a NumContents -1
   crate on a count of 0 gives an infinite weapon: SneakyBridgeThieves' Crate_9-11 (bat, dynamite, bazooka), CarpetCapers' 2/4/7/8,
   StormTheCastle's girder [data]. No shipped script spawns an AddToWormInventory crate (TraitorousWaters' Crate3-9 are never passed to
-  lib_SpawnCrate) [data].
+  lib_SpawnCrate) [data]; `mission_check` (W4NX_MISSION=wormcrate) makes one through the Lua API (Crate.* keys + GameLogic.CreateCrate) and checks the
+  worm's count (+3), the alliance's untouched, the key reset for the next crate, NumContents -1 on 0 giving -1 [ours: test].
 - **Turns**: the script drives them. `GameLogic.ActivateNextWorm` is our `beginTurn` (delays of the team that played -1 first; turn and
   hot-seat clocks from TurnTime / HotSeatTime, TurnTime 0 = no turn clock), the script's own `SetWind` sets the wind (`beginTurn` draws
   none), `GameLogic.EndTurn` ends control. Our clocks call `Timer_TurnTimedOut`, `Timer_RetreatTimedOut`, `Timer_PostActivityTimedOut`;
