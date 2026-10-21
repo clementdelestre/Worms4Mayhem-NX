@@ -130,8 +130,12 @@ struct Pad { u32 style = 0; int nsix = 0, nvib = 0; HidSixAxisSensorHandle six[2
 static Pad pads[4];
 
 // raylib's pad 0 reads No1 and Handheld (padInitializeDefault), pad i reads No(i+1)
+static HidNpadIdType npadId(int pad) {
+    return pad ? HidNpadIdType(HidNpadIdType_No1 + pad) : hidGetNpadStyleSet(HidNpadIdType_Handheld) ? HidNpadIdType_Handheld : HidNpadIdType_No1;
+}
+
 static Pad &sync(int pad) {
-    HidNpadIdType id = pad ? HidNpadIdType(HidNpadIdType_No1 + pad) : hidGetNpadStyleSet(HidNpadIdType_No1) ? HidNpadIdType_No1 : HidNpadIdType_Handheld;
+    HidNpadIdType id = npadId(pad);
     u32 set = hidGetNpadStyleSet(id);
     u32 tag = id == HidNpadIdType_Handheld ? set & HidNpadStyleTag_NpadHandheld
             : set & HidNpadStyleTag_NpadFullKey ? HidNpadStyleTag_NpadFullKey : set & HidNpadStyleTag_NpadJoyDual ? HidNpadStyleTag_NpadJoyDual
@@ -1019,12 +1023,12 @@ void update(float dt) {
 
 bool padColors(int pad, Color &l, Color &r) {
 #ifdef __SWITCH__
-    HidNpadIdType id = pad ? HidNpadIdType(HidNpadIdType_No1 + pad) : hidGetNpadStyleSet(HidNpadIdType_No1) ? HidNpadIdType_No1 : HidNpadIdType_Handheld;
+    HidNpadIdType id = npadId(pad);
     auto rgb = [](u32 c) { return Color{(unsigned char)(c & 255), (unsigned char)(c >> 8 & 255), (unsigned char)(c >> 16 & 255), 255}; };  // RGBA8, R lowest
     HidNpadControllerColor a = {}, b = {};
-    bool ok = hidGetNpadStyleSet(id) & HidNpadStyleTag_NpadJoyDual ? R_SUCCEEDED(hidGetNpadControllerColorSplit(id, &a, &b))
-                                                                  : R_SUCCEEDED(hidGetNpadControllerColorSingle(id, &a));
-    if (ok) return l = rgb(a.main), r = rgb(hidGetNpadStyleSet(id) & HidNpadStyleTag_NpadJoyDual ? b.main : a.main), true;
+    bool split = hidGetNpadStyleSet(id) & (HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadHandheld);  // both Joy-Con colours: grip, detached pair, handheld
+    bool ok = split ? R_SUCCEEDED(hidGetNpadControllerColorSplit(id, &a, &b)) : R_SUCCEEDED(hidGetNpadControllerColorSingle(id, &a));
+    if (ok) return l = rgb(a.main), r = rgb(split ? b.main : a.main), true;
 #else
     (void)pad, (void)l, (void)r;
 #endif
