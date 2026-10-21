@@ -19,6 +19,7 @@ ROOTS = ['XXX_PlaceholderPP', 'WXP_RainFall', 'WXP_RainFallBG', 'WXP_ExplosionX_
 ROOTS += ['WXP_Explosion_OilDrum', 'WXP_ExpiryExplosion']  # OilDrumLogicEntity 0x5d1540, crate destroyed 0x5c59e9
 ROOTS += ['WXP_WaterSplash', 'WXP_WaterSmallSplash', 'WXP_WaterLargeSplash', 'WXP_WormDrownPopSplash']  # water: Drowning 0x5ad640, death blast 0x5a9400, crates, WEAPTWK SplashFx / SplishFx
 ROOTS += ['WXP_UnderWaterBubbles']  # sinking payload / mine (SinkingFx 0x580aa0)
+ROOTS += ['WXP_Wep_Sentry_Fire', 'WXP_Wep_Sentry_Warmup', 'WXP_Wep_Sentry_Hit']  # NewSentryGunGraphicEntity 0x56b5d6, 0x56b9f3; bullet 0x56ca6a
 ROOTS += ['WXP_Explosion_Mine', 'WXP_Napalm']  # Landmine DetonationFx; its kDT_Fire FX (Detonate 0x5813cc)
 ROOTS += ['WXP_FE_CrashBang', 'WXP_FE_BarrelSpark', 'WXP_FE_TreeFire', 'WXP_FE_BarrelPoison', 'WXP_FE_CrashFire', 'WXP_FE_CrashSparks',
           'WXP_FE_TreeSmoke', 'WXP_FE_Flies']  # MENUTWKXPCCOMMON WXFE.MainMenu Title Mesh EffectNames (WXFE_MeshObjectParticleEntity 0x76d27c)

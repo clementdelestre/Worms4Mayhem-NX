@@ -51,7 +51,8 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("starburst", "Starburst", 0.8, false, &[]),  // Weapon Factory shot model only
     ("fatkins", "Fatkins.Fatboy", 2.2, false, &[]),
     ("scouser", "InflatedScouser", 1.4, false, &[]),
-    ("sentry", "SentryGun", 1.0, false, &[]),
+    // NewSentryGunGraphicEntity: raw units at its ground point (mesh scale untouched, 0x56bb40), Reset at weight 1 under its clips (0x56aeb0)
+    ("sentry", "SentryGun", -0.05, false, &["Base=Reset", "AimSentrygunLR", "AimSentrygunUD", "DeploySentrygun", "Hit", "Idle", "Shoot", "ShootStart", "ShootEnd"]),
     ("hold_bat", "BaseballBat", 0.0, false, &[]),
     ("hold_sniper", "SniperRifle", 0.0, false, &[]),
     ("hold_bow", "Bow", 0.0, false, &["Rest", "DrawBow", "HoldBow", "TauntBow", "Windup", "FireBow"]),  // WAE_Mechanical plays Windup / FireBow itself (0x58dc1a, 0x58dcd1)
@@ -807,7 +808,9 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         }
     }
     let lib = if s.lib != 0 { clips(x.d(s.lib), &x.s, &mut 0) } else { vec![] };
-    let base = lib.iter().find(|c| c.name == "Base");
+    // "Base=X": clip X plays the role of Base (written as "Base", the other clips layered on it)
+    let base_name = wanted.iter().find_map(|w| w.strip_prefix("Base=")).unwrap_or("Base");
+    let base = lib.iter().find(|c| c.name == base_name);
     let animated = s.parts.iter().any(|p| !p.skin.is_empty()) && (!lib.is_empty() || wanted.contains(&"Rest"));
     // "A+B": clip A layered over B (channels A lacks come from B, then Base); "A@s": only A's first s seconds;
     // "Rest": one frame of Base, else of the stored transforms (a held mesh with no slot clip playing)
@@ -815,6 +818,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         wanted.iter().map(|n| {
             let (n, cap) = n.split_once('@').map_or((*n, f32::MAX), |(n, c)| (n, c.parse().unwrap_or(f32::MAX)));
             if n == "Rest" { return (n, base.into_iter().collect(), 0.0); }
+            if n.starts_with("Base=") { return ("Base", base.into_iter().collect(), cap); }
             (n, n.split('+').filter_map(|n| lib.iter().find(|c| c.name == n)).collect::<Vec<_>>(), cap)
         }).filter(|l| !l.1.is_empty() || l.0 == "Rest").collect()
     };
@@ -869,7 +873,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let norm = if feet { mul(&sc([0.05; 3]), &tr([0.0, 3.0, 0.0])) } else if size < 0.0 { sc([-size; 3]) } else if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
     const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend", "Payload_Spawn",
-        "Tree_Smoke", "Tree_Fire", "Crash_Fire", "Crash_FireSpark", "Crash_Sparks", "Barrel_Poison", "Barrel_Spark", "Flies"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0); Tree_Smoke..Flies: the title island's effect locators
+        "Tree_Smoke", "Tree_Fire", "Crash_Fire", "Crash_FireSpark", "Crash_Sparks", "Barrel_Poison", "Barrel_Spark", "Flies", "barrel|effect"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0); Tree_Smoke..Flies: the title island's effect locators; barrel|effect: the sentry gun's muzzle (0x56b5e1)
     // Blend: the worm's WormPoseManager control node (arm modes in Translate.x/y, head/eye mode in Rotate.y)
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();
@@ -976,7 +980,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let Some(c) = layers.first() else { continue };
         for (pi, pt) in s.parts.iter().enumerate().filter(|(_, pt)| pt.blend.is_some()) {
             let shape = pt.group.map(|g| leaf(&s.groups[g].path)).unwrap_or_default();
-            let Some(kf) = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && (shape.is_empty() || leaf(n).starts_with(&format!("{shape}_")))).map(|(_, k)| k);
+            let kf = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && (shape.is_empty() || leaf(n).starts_with(&format!("{shape}_")))).map(|(_, k)| k);
             let dur = c.dur.min(*cap);
             sel += &format!("A {} {pi} {dur}{};", c.name, kf.map_or(" 1".to_string(), |kf| track(kf, dur)));  // no alpha key: still blended, at alpha 1
         }

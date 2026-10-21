@@ -702,18 +702,22 @@ static void checkSentry() {
     assert(g.objects[0].turret.state == T::Done);  // a sentry set down this turn rests
     for (int t = 0; t < 60 * 4; t++) tick(home);
     assert(g.objects[0].turret.state == T::Done && w.hp == 100);
-    g.objects[0].turret = {T::Scan, -1, true};
+    g.objects[0].turret.state = T::Scan, g.objects[0].turret.target = -1, g.objects[0].turret.fresh = true;
     for (int t = 0; t < 60 * 4; t++) tick(home);
     assert(g.objects[0].turret.state == T::Scan && w.hp == 100);  // standing still: never counted as moved
+    float look = Vector3Distance(g.objects[0].turret.look, sentryBase(g.objects[0]));
+    assert(look > 49.9f && look < 56.1f);  // its look-around point (0x56d9e0): 1000 units across the normal, [-0.49, 0.51) along it
     int t = 0;
     for (; t < 60 * 4 && g.objects[0].turret.state == T::Scan; t++) tick({home.x + 0.3f + 0.3f * (t % 2), home.y, home.z});
     assert(g.objects[0].turret.state == T::Track && g.objects[0].turret.target == g.current && w.hp == 100);
+    tick({home.x + 0.3f, home.y, home.z});
+    assert(Vector3Distance(g.objects[0].turret.look, {w.pos.x, w.pos.y - Game::R + 0.5f, w.pos.z}) < 1e-4f);  // 10 units over the target's Position
     for (t = 0; t < 60 * 3 && g.objects[0].turret.state == T::Track; t++) tick({home.x + 0.3f, home.y, home.z});
     assert(t > 100 && t < 130 && g.objects[0].turret.state == T::Fire);  // 2000 ms
     for (t = 0; t < 60 * 12 && g.objects[0].turret.state == T::Fire; t++) tick({home.x + 0.3f, home.y, home.z});
     assert(g.objects[0].turret.state == T::Done && w.hp < 100 && t > 60 * 9 && t < 60 * 11);  // WeaponReloadTime 10 s
     g.objects[0].team = w.team;  // an ally of the active worm: never targeted
-    g.objects[0].turret = {T::Scan, -1, true};
+    g.objects[0].turret.state = T::Scan, g.objects[0].turret.target = -1, g.objects[0].turret.fresh = true;
     for (t = 0; t < 60 * 6; t++) tick({home.x + (t % 2) * 2.0f, home.y, home.z});
     assert(g.objects[0].turret.state == T::Scan);
 }

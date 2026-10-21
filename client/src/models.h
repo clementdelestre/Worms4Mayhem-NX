@@ -24,7 +24,7 @@ struct Layers {
     float eyeYaw = 0, eyePitch = 0;                 // pupils, relative to the head
     const char *act[2] = {}; float actT[2] = {}, actW[2] = {};  // acting gestures (new, old) over the body clip at weight actW
     float aimW = 1;  // weight of draw()'s aim clip
-    const char *add[4] = {}; float addT[4] = {};  // clips summed over the pose at weight 1, like the aim clip (W4M FP, FPX, FPY, FPZ)
+    const char *add[6] = {}; float addT[6] = {};  // clips summed over the pose at weight 1, like the aim clip (W4M FP, FPX, FPY, FPZ; the sentry gun's)
     // lip sync (0x59d570): viseme clips (new, old) added on the lips at weight = clip time; open (+0x19c) > 0.1 picks the Teeth time
     const char *lip[2] = {}; float lipW[2] = {}, open = 0;
 };
@@ -46,6 +46,7 @@ float bottom(const char *name);  // depth of the mesh below its origin, 0 if mis
 bool joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim = nullptr, float aimT = 0,
            const Layers *ly = nullptr);
 bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true, int part = 0);  // full world matrix; a clip not looping holds its last key; part 1 = opaque meshes only, 2 = blended ones only (W4M bins them after every opaque draw)
+bool draw(const char *name, Matrix m, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers &ly);  // world matrix, with layers
 void shade(Shader s);  // every draw() uses s until shade({})
 void pick(const char *clip, float t = 0);
 void texture(const Texture2D *t);  // every draw() shows t in place of each material's diffuse map (the W4M flag cloth's TGA), until texture(nullptr)

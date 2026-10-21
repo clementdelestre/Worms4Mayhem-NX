@@ -67,7 +67,9 @@ Generated from `SFX_NAMES` / `DEFS` (audio.cpp), the `SFX` table of `tools/w4m-i
 | OldWomanFire | `old_woman` | weapons/OldWomenLaunch | 0 |  | 0.5–60 | 1 | weapons: OldWomanLaunch, OldWomanMutter1, OldWomanMutter2, OldWomanMutter3, OldWomanMutter4, OldWomanMutter5 | main.cpp `onEvent` |
 | ScouserFire | `scouser` | weapons/ScouserLaunch | 0 |  | 0.5–60 | 1 | weapons: ScouserLaunch, ScouserJump1, ScouserJump2, ScouserJump3 | main.cpp `onEvent` |
 | SentryPlace | `sentry_place` | weapons/SentryGunHeld | -8 | yes | 0.5–20 | 1 | weapons: SentryGunHeld | main.cpp `onEvent` |
-| SentryFire | `sentry_fire` | weapons/SentryGun | -3 | yes | 0.5–100 | 1 | weapons: SentryGunLoop | main.cpp `onEvent` |
+| SentryFire | `sentry_fire` | weapons/SentryGun | -3 | yes | 0.5–100 | 1 | weapons: SentryGunLoop | turret.cpp `Turret::update` (the graphic's FireSound while firing) |
+| SentryEnd | `sentry_end` | weapons/SentryGun | -3 |  | 0.5–100 | 1 | weapons: SentryGunEnd | turret.cpp (the FireSound released, 135 ms later) |
+| SentryActivation | `sentry_activation` | weapons/SentryGunActivation | -6 |  | 0.5–25 | 1 | weapons: SentryGunActivation | fx.cpp (EmitterSoundFX of WXP_WarmupAlert) |
 | Dynamite | `dynamite` | weapons/FuseLoop | -4 | yes | 0.5–25 | 1 | weapons: Fuse | main.cpp `onEvent`, main.cpp `main` |
 | Gas | `gas` | weapons/GasLoop | -16 |  | 0.5–15 | 1 | weapons: GasLoop | main.cpp `onEvent` |
 | Abduction | `abduction` | weapons/AlienUfoBeamStart | 0 |  | 0.5–100 | 1 | weapons: AlienUFOBeamStart | main.cpp `onEvent`, main.cpp `updateUfo` |

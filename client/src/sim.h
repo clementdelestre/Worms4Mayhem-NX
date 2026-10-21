@@ -234,9 +234,12 @@ struct Object {
     float scale = 1;    // Scale: its sphere is 10 x Scale units (0x5c5700)
     mutable int bubbles = 0;  // render only: a mine's SinkingFx handle while sunk (0x5c1470)
     // sentry: W4M NewSentryGunLogicEntity states 2 / 3 / 4 / 6 (0x56de80); ticks (msTicks); `seen` = +0xbc, each worm's position when last counted as moved
-    struct Turret { enum : int8_t { Scan = 2, Track = 3, Fire = 4, Done = 6 } state = Done; int8_t target = -1; bool fresh = false; int timer = 0, scan = 0, shot = 0; Vector3 seen[16] = {}; } turret;
+    // look = +0x38, the aim point its graphic turns to (render only); face = the placing worm's facing (0x56e9ee: the mesh's +z is -face)
+    struct Turret { enum : int8_t { Scan = 2, Track = 3, Fire = 4, Done = 6 } state = Done; int8_t target = -1; bool fresh = false; int timer = 0, scan = 0, shot = 0; Vector3 seen[16] = {}; Vector3 look{}, face{0, 0, 1}; } turret;
 };
 float restHalf(const Object &o);  // a resting object's centre is restHalf + 0.05 m (the probe) above the ground
+Vector3 sentryBase(const Object &o);  // W4M sentry position +0x20: its one collider vertex at the origin (0x56cf05), the ground point
+Vector3 sentryUp(const Terrain &t, const Object &o);  // +0x60: the surface normal (ours: read at the base)
 
 // W4M mystery crate items (kMysteryMineLayer 0x32 .. kMysteryGoodPoison 0x40): Text.k<name> and the <name>Mystery.Crate weight of the
 // schemes that drop them (All Action, Mega Power, Mystery, Kitchen Sink, custom WXD.DefaultSchemeData; LOCAL.XOM)

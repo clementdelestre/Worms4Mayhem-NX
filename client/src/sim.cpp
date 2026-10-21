@@ -996,7 +996,7 @@ void Game::beginTurn(int last, bool sameTeam) {
         for (Object &o : objects) o.hooked = false;
         shotsLeft = ropeShots = 0, rope.swung = false;
         weapon = -1;  // W4M GameLogic.Turn.Started (0x566d57): kWeaponUndefined, the empty hand
-        for (Object &o : objects) if (o.type == Object::Sentry) o.turret = {Object::Turret::Scan, -1, true};  // GameLogic.Turn.Started 0x56dc30: scan afresh, a burst under way is cut
+        for (Object &o : objects) if (o.type == Object::Sentry) o.turret.state = Object::Turret::Scan, o.turret.target = -1, o.turret.fresh = true;  // GameLogic.Turn.Started 0x56dc30: scan afresh, a burst under way is cut
         emit(GameEvent::TurnStart, worms[c].pos, c);
         return;
     }
@@ -1047,6 +1047,8 @@ static float surfaceY(float water, float off) { return Terrain::WATER + (((int)(
 static bool crateLike(const Object &o) { return o.type == Object::Crate || o.type == Object::Target; }  // W4M CrateLogicEntity: a target is crate type 3
 // crate: rests at 10 x Scale units (0x5c94d0), less the 0.05 m probe; drum: its base on the ground (0x5d1c60)
 float restHalf(const Object &o) { return crateLike(o) ? fmaxf(0, 0.5f * o.scale - 0.05f) : halfHeight(o.type); }
+Vector3 sentryBase(const Object &o) { return {o.pos.x, o.pos.y - restHalf(o) - 0.05f, o.pos.z}; }
+Vector3 sentryUp(const Terrain &t, const Object &o) { return t.normal(sentryBase(o)); }
 static bool sheepLike(Kind k) { return k == Kind::Sheep || k == Kind::SuperSheep || k == Kind::OldWoman || k == Kind::Scouser; }  // WEAPTWK ColliderFlags 128: collider 0x88
 static const char *named(const std::string &s) { return s.empty() ? nullptr : s.c_str(); }  // an empty WEAPTWK effect or sound starts nothing (0x57fd00)
 // PARTTWK: the DetonationFx effects holding the WXP_GasCloud emitter, whose particle poisons the worms it touches
@@ -1164,26 +1166,32 @@ void Game::stepSentry(Object &o) {
     if (Vector3LengthSqr(o.vel) >= 0.01f) { s.fresh = s.state == Object::Turret::Scan; return; }  // falling (state 1): the state resumes on landing, a scan afresh (0x56cce0 case 2)
     const WeaponDef &sd = WEAPONS[o.weapon];
     auto feet = [&](int i) { return Vector3{worms[i].pos.x, worms[i].pos.y - R, worms[i].pos.z}; };  // WormData Position +0x38
-    const Vector3 up = terrain.normal({o.pos.x, o.pos.y - restHalf(o), o.pos.z});  // +0x60: the surface normal (ours: read at the foot)
+    const Vector3 base = sentryBase(o), up = sentryUp(terrain, o);
     auto rollScan = [&] { s.scan = msTicks(1000 + (int)(rand01() * 2000)); };
+    auto aimAtTarget = [&] { s.look = Vector3Add(feet(s.target), {0, 0.5f, 0}); };  // 0x56d680 / 0x56d4d0: 10 units over Position
     switch (s.state) {
     case Object::Turret::Scan:
         if (s.fresh) {
             s.fresh = false, s.target = -1;
             rollScan();
             for (int i = 0; i < 16; i++) s.seen[i] = i < (int)worms.size() ? feet(i) : Vector3{};  // 0x56c3f0
-        } else if (s.scan <= 0) rollScan();
+        } else if (s.scan <= 0) {  // 0x56d9e0: a new look-around point 1000 units off, across the normal, its height along it in [-0.49, 0.51)
+            rollScan();
+            Vector3 v = {(rand01() - 0.5f) * 1000, (rand01() - 0.5f) * 1000, (rand01() - 0.5f) * 1000};
+            v = Vector3Subtract(v, Vector3Scale(up, Vector3DotProduct(v, up)));
+            if (Vector3LengthSqr(v) > 0) s.look = Vector3Add(base, Vector3Scale(Vector3Add(Vector3Normalize(v), Vector3Scale(up, rand01() - 0.5f + 0.01f)), 1000 / 20.f));
+        }
         else if (s.scan--, s.target < 0) {  // 0x56c440
             int cand[16], n = 0;
             for (int i = 0; i < 16 && i < (int)worms.size(); i++) {
                 if (!worms[i].alive || alliance(worms[i].team) == alliance(o.team)) continue;  // WormData.Active, another AlliedGroup
                 if (Vector3DistanceSqr(feet(i), s.seen[i]) <= 25 / 400.0f) continue;  // not 5 units from where it was last counted
                 s.seen[i] = feet(i);
-                if (Vector3DistanceSqr(feet(i), o.pos) <= sd.radius * sd.radius) cand[n++] = i;
+                if (Vector3DistanceSqr(feet(i), base) <= sd.radius * sd.radius) cand[n++] = i;
             }
             if (!n) return;
             s.target = (int8_t)cand[std::min((int)(rand01() * n), n - 1)];
-            const Vector3 from = Vector3Add(o.pos, Vector3Scale(up, 0.8f)), to = Vector3Subtract(Vector3Add(feet(s.target), {0, 0.6f, 0}), from);
+            const Vector3 from = Vector3Add(base, Vector3Scale(up, 0.8f)), to = Vector3Subtract(Vector3Add(feet(s.target), {0, 0.6f, 0}), from);
             const float d = Vector3Length(to);
             Vector3 hit;
             if (d < 1e-4f || terrain.raycast({from, Vector3Scale(to, 1 / d)}, d, &hit)) { s.target = -1; return; }  // 12 units over the feet, 16 along the normal
@@ -1196,11 +1204,13 @@ void Game::stepSentry(Object &o) {
             s.state = Object::Turret::Fire, s.timer = msTicks((int)(sd.fuse * 1000)), s.shot = 0;
             emit(GameEvent::Fire, o.pos, -1, o.weapon);
         }
+        if (s.target >= 0) aimAtTarget();
         break;
     case Object::Turret::Fire:
         if (s.target < 0 || --s.timer <= 0) { s.state = Object::Turret::Done; break; }
         if (++s.shot >= msTicks(100)) s.shot = 0, sentryShot(o, up, s.target);
-        if (s.timer < msTicks(3000) && Vector3DistanceSqr(feet(s.target), o.pos) > (sd.radius + 25) * (sd.radius + 25)) s.state = Object::Turret::Done;  // MaxWeaponRange + 500 units
+        if (s.timer < msTicks(3000) && Vector3DistanceSqr(feet(s.target), base) > (sd.radius + 25) * (sd.radius + 25)) { s.state = Object::Turret::Done; break; }  // MaxWeaponRange + 500 units
+        aimAtTarget();
         break;
     default: break;
     }
@@ -1209,13 +1219,15 @@ void Game::stepSentry(Object &o) {
 // one bullet: a cone of 0.4 r^2 around the aim (10 units over the feet), the nearest hit within 3000 units takes the Shot* ExplosionMessage
 void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
     const WeaponDef &sd = WEAPONS[o.weapon];
-    const Vector3 from = Vector3Add(o.pos, Vector3Scale(up, 1.0f));
+    const Vector3 from = Vector3Add(sentryBase(o), Vector3Scale(up, 1.0f));
     const Vector3 v = Vector3Normalize(Vector3Subtract(Vector3Add({worms[target].pos.x, worms[target].pos.y - R, worms[target].pos.z}, {0, 0.5f, 0}), from));
     const Vector3 a = Vector3Normalize(Vector3CrossProduct(v, fabsf(v.y) < 0.9f ? Vector3{0, 1, 0} : Vector3{1, 0, 0})), b = Vector3CrossProduct(v, a);
     const float ang = rand01() * 2 * PI, r = rand01(), m = r * r * 0.4f;
     const Vector3 dir = Vector3Normalize(Vector3Add(v, Vector3Add(Vector3Scale(a, cosf(ang) * m), Vector3Scale(b, sinf(ang) * m))));
     const Worm none{};
     const GunHit h = gunRay({from, dir}, none, 0);
+    Vector3 land;
+    if (terrain.raycast({from, dir}, 150, &land)) emit(GameEvent::Pop, land), events.back().fx = "WXP_Wep_Sentry_Hit";  // at the land hit even past a nearer worm
     if (h.dist >= 150) return;
     Blast bl = blastOf(sd, false);
     bl.crater = 0;  // ShotLandDamageRadius 0.1 units: no crater
@@ -1747,7 +1759,9 @@ void Game::use(Worm &w) {
         phase = Phase::Flying;
         break;
     case Kind::Sentry:
-        objects.push_back({Object::Sentry, muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 1.3f), {0, 0.3f, 0}))), {0, 0, 0}, weapon, -1, false, false, w.team});
+        objects.push_back({Object::Sentry, {}, {0, 0, 0}, weapon, -1, false, false, w.team});
+        objects.back().pos = muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 26 / 20.f), {0, 10 / 20.f - R + restHalf(objects.back()) + 0.05f, 0})));  // 0x56e9ee: base 26 units ahead of Position, 10 up
+        objects.back().turret.face = f, objects.back().turret.look = Vector3Add(sentryBase(objects.back()), Vector3Add(Vector3Scale(f, 50), {0, 0.75f, 0}));  // ours: W4M leaves +0x38 unset (0x56bda0)
         phase = Phase::Flying;
         break;
     case Kind::Abduction: {  // W4M 0x548aa0: AbductStart, or AbductFail with nobody in reach; stepUfo runs the rest

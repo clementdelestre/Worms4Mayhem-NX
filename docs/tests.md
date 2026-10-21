@@ -27,6 +27,8 @@ Repository-level scripts in `tests/` (run from the repository root, they build t
 | `tests/quit_check.sh` | Pause → Quit → Yes to menu stays on the menu: scripted keys (title, Local, Quick match, pause, Quit, the ConfirmQuit Yes, arrows); fails on a second Play. |
 | `tests/netbot.sh` | Two real clients (`--netbot`, the AI plays each owner's team) through a local server; fails on a desync. With a rules value it also checks the live lobby (guest edits its team, host pushes map and rules, both sides see them; the host's ready comes from the 4 s `W4NX_LOBBY_TIMER`). |
 
+Sentry Gun capture (ours): `W4NX_HIDDEN=1 W4NX_SHOTEND=940 W4NX_WALK="800 812" W4NX_VIEW="24.5 5.6 22.0 22.05 4.3 18.45" W4NX_CAPFRAMES="120 800 860 930" ./worms4nx --aimshot 27 AssaultAndDefend fire`: placed and deployed, scanning at the next turn, tracking the worm that walked (`W4NX_WALK="from to [walk]"`: the active worm walks between those frames, out of the forced aim), firing.
+
 Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU match, per-section ms, draw calls per frame and worst frame);
 `W4NX_BENCH=<frames> ./worms4nx --shot <weapon index> [map]` (that weapon fired, e.g. 15 Airstrike, 18 Concrete Donkey:
 the fire and explosion spikes); the log's `BOOT:` and `LOAD:` lines time startup and match loading; `make obj/bin/map_bench` then
