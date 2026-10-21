@@ -128,7 +128,7 @@ void FrontBg::page(int id) {
     cur = id;
 }
 
-void FrontBg::draw(float dt) {
+void FrontBg::draw(float dt, bool particles) {
     if (!tried) load();
     if (!ok) return;
     if (GetTime() - lastDraw > 1) {  // back from a match
@@ -142,7 +142,7 @@ void FrontBg::draw(float dt) {
     if (!cur) introT += dt;
     if (!cur && introT <= dt) titleEffects(false, 0);  // the menu reopened: the item and its effects are new
     titleEffects(!cur, introT);  // the island and its effects exist on the main menu only (Outro_Title 0.04 s)
-    Fx::update(dt);
+    if (particles) Fx::update(dt);
 
     ClearBackground(Fx::fog());
     Lit::frame(cam.position);
@@ -164,6 +164,6 @@ void FrontBg::draw(float dt) {
     }
     rlEnableBackfaceCulling();
     Fx::drawWater(cam, -WATER_DROP * S, elapsed, 12000 * S);
-    Fx::draw(cam);
+    if (particles) Fx::draw(cam);
     EndMode3D();
 }

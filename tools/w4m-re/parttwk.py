@@ -22,6 +22,7 @@ ROOTS += ['WXP_UnderWaterBubbles']  # sinking payload / mine (SinkingFx 0x580aa0
 ROOTS += ['WXP_Explosion_Mine', 'WXP_Napalm']  # Landmine DetonationFx; its kDT_Fire FX (Detonate 0x5813cc)
 ROOTS += ['WXP_FE_CrashBang', 'WXP_FE_BarrelSpark', 'WXP_FE_TreeFire', 'WXP_FE_BarrelPoison', 'WXP_FE_CrashFire', 'WXP_FE_CrashSparks',
           'WXP_FE_TreeSmoke', 'WXP_FE_Flies']  # MENUTWKXPCCOMMON WXFE.MainMenu Title Mesh EffectNames (WXFE_MeshObjectParticleEntity 0x76d27c)
+ROOTS += ['WXP_FE_Firework%d' % n for n in range(1, 7)]  # WXFE.WinMatch / WinRound Firework1..7 EffectNames
 FIELDS = ['EmitterType', 'SpriteSet', 'MeshSet', 'MeshAnimNodeName', 'EmitterLifeTime', 'EmitterLifeTimeRandomise', 'EmitterMaxParticles',
           'EmitterNumSpawn', 'EmitterNumSpawnRadnomise', 'EmitterOriginOffset', 'EmitterOriginRandomise', 'EmitterParticleExpireFX',
           'EmitterParticleFX', 'EmitterSoundFX', 'EmitterSoundFXVolume', 'EmitterSpawnFreq', 'EmitterSpawnFreqRansomise', 'EmitterStartDelay',

@@ -3,6 +3,8 @@
 #include <unistd.h>
 #endif
 #include "ui.h"
+#include "results.h"
+#include "fx.h"
 #include "script.h"
 #include "controls.h"
 #include "audio.h"
@@ -69,6 +71,7 @@ const SchemeField SCHEME_FIELDS[] = {
     {"Water rise", nullptr, 0, 3, 1, {"None", "Slow", "Medium", "Fast"}},  // FETXT.WaterNoRise / Slow / Medium / FastRise
     {"Mystery crates", "%d", 0, 100, 10, {}},  // SchemeData MysteryChance
     {"Mine factory", nullptr, 0, 1, 1, {"Off", "On"}},  // SchemeData MineFactoryOn
+    {"Number of Rounds", "%d", 1, 9, 1, {}},  // SchemeData Wins: Scheme^Wins^ steps 1..9 and wraps (0x752b9b)
 };
 static_assert(sizeof SCHEME_FIELDS / sizeof *SCHEME_FIELDS == sizeof(Scheme), "one row per Scheme byte");
 
@@ -1928,9 +1931,9 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             bytes[schemeRow - 1] = (uint8_t)(f.names[0] ? clampWrap(v, f.max + 1) : Clamp(v, f.min, f.max));
         }
         heading("Game scheme", 640, 14, 48);
-        popup({300, 80, 680, 590});
+        popup({300, 80, 680, 632});
         for (int i = 0; i <= n; i++) {
-            Rectangle r = {320, 92 + i * 31.0f, 640, 29};
+            Rectangle r = {320, 90 + i * 28.0f, 640, 26};
             bool hi = i == schemeRow;
             std::string v = !i ? (preset < 0 ? "Custom" : SCHEMES[preset].name) : "";
             if (i) {
@@ -4220,7 +4223,6 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             // HeaderTop FE.WinString in Header_Orange, the line under it in Solid_White
             textG(resultBanner(g).c_str(), 640, 230, 70, {255, 241, 174, 255}, {255, 163, 73, 255}, 1);
             text(resultLine(g), 640, 314, 42, WHITE, 1);
-            if (!quiet) hints({{"A", "Space", "Continue"}});
         }
         return;
     }
@@ -4793,5 +4795,7 @@ bool eggFound(const char *nameId, int coins) {
     hints({{"A", "Enter", "Return"}});
     return P({A}, {KEY_ENTER, KEY_SPACE}) || P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
 }
+
+#include "results.inc"
 
 }  // namespace Ui

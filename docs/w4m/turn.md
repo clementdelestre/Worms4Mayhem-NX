@@ -324,7 +324,7 @@ Who starts which phase:
   it; the winner's round wins < SchemeData `Wins` (+0x114) -> `GameOver.NextRoundMenu` `WXFE.WinRound`, else `GameOver.GameCompletedMenu`
   `WXFE.WinMatch` (network: `WXNET.WinRound` / `WXNET.WinMatch`, one win ends it); `Stats.Populate.Round` (+ `.Match` at the match end),
   then per team of the alliance 0x4fa150 (0x4f3350, 0x4f7b10) and at the match end 0x4fa1a0 (eight per-team stat writers, not decoded).
-  A draw (`GameLogic.Draw`, local) writes `FETXT.Nobody` "Nobody" and shows `WXFE.WinRound` [disasm].
+  A draw (`GameLogic.Draw`, local) writes `FETXT.Nobody` "Nobody", also adds 1 to `GameOver.RoundNumber` and shows `WXFE.WinRound`; a network draw shows `WXNET.DrawMatch` (`AppDataService` 0x4d3ed0 false) [disasm]. Screens: docs/w4m/frontend.md "Match-end screens".
 - Team colours [disasm, REA decompile]: 0x50cae0(team) = table 0x90f820[TeamData AlliedGroup] (RGBA bytes (255, 78, 60) red, (108, 127, 255)
   blue, (59, 244, 123) green, (255, 218, 77) yellow); 0x50d820(worm) = that of the worm's team. Readers: the scanner dots (ScannerHudEntity
   0x5f7cf0 / 0x5f6970, through LOCAL `AllianceColourMap` IntegerArray {0, 1, 2, 3}), the blimp / binoculars outline per team stencil bit

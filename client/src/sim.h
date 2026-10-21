@@ -256,7 +256,7 @@ struct GameEvent {
     int worm, weapon;
     const char *fx = nullptr;  // Boom, Splash, Pop: the PARTTWK effect its W4M caller starts (render only)
     const char *sfx = nullptr;  // Boom: the FEV event its caller plays besides the effect's own EmitterSoundFX (a payload's DetonationSfx)
-    int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories
+    int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories; Hurt (Game::hurt): the hp lost
 };
 
 // Match options, identical on every client (sent in the network Start message).
@@ -281,9 +281,10 @@ struct Scheme {
     uint8_t waterSpeed = 2;                                // W4M SchemeData WaterSpeed 0..3: Water.RiseSpeed 0 / 4 / 8 / 16 units per turn end
     uint8_t mysteryShare = 0;                              // W4M SchemeData MysteryChance (+0x130), rolled after the other three shares
     uint8_t mineFactory = 0;                               // W4M SchemeData MineFactoryOn (BnG, All Action, Mega Power)
+    uint8_t wins = 2;                                      // W4M SchemeData Wins (+0x114, editor 1..9): round wins that take the match
     enum : uint8_t { FUSE_RANDOM = 6, SD_ONE_HP = 0, SD_NOTHING, SD_DRAW, SET_DEFAULT = 0, SET_BNG, SET_CRATES, SET_UNLIMITED };
 };
-static_assert(sizeof(Scheme) == 20, "Scheme must stay plain bytes");
+static_assert(sizeof(Scheme) == 21, "Scheme must stay plain bytes");
 // W4M Wormpot modes: the ids of SetupModes' jump table (0x5d6bc0, names FETXT.WPotName.* at 0x9205e0); 1 = empty reel.
 // GameConfig::wormpot holds the three reels' ids, reel r in byte r (W4M FE.Wormpot.Reel1..3); 0 = empty too.
 enum WormpotMode : uint8_t {
@@ -332,6 +333,7 @@ struct GameConfig {
     Scheme scheme;
     uint32_t wormpot = 0;            // Wormpot reels: mode id per byte (wormpotReel)
     const struct MissionSpec *mission = nullptr;  // single-player mission (mission.h), owned by the caller
+    uint8_t round = 0;  // versus: rounds already played; mixes into the game RNG (the landscape keeps the seed), not sent
     int8_t allyToStart = -1;  // W4M AllyToStart: the first alliance to play; -1 = drawn from the seed (SetUpStartGame 0x4e8580)
 };
 int handicapHealth(int health, int handicap);  // a worm's start energy (lib_SetupMultiplayerTeam)

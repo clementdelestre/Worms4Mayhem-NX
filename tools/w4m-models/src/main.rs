@@ -162,6 +162,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("title", "WX.Mesh.Title", 0.0, false, &["Intro_Title", "Loop_Title"]),  // WXFE.MainMenu Title Mesh: Land flies in, the trees sway
     ("frontend/sky", "FRONTEND.Sky", 0.0, false, &[]),
     ("storybook", "WX.Mesh.StoryBook", 0.0, false, &["Intro_Book", "Outro_Book"]),  // WXFE.Story's MESH Book
+    ("bluedivide", "WX.Mesh.BlueDivide", 0.0, false, &["In_Split", "Out_Split"]),  // FrontEndService's background panel, Split shape (match results, PreRound)
     ("filmtape1", "FE.FilmTape001", 0.0, false, &["Film01Start"]),  // WXFE.MoviePlayer's film frame, raw units
     ("filmtape2", "FE.FilmTape002", 0.0, false, &["Film02Start"]),
     ("seagull", "Particle.WXPMesh31", 0.0, false, &["WXM_SGull_WingFlap+WXM_SGull_Location"]),

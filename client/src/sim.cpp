@@ -299,7 +299,7 @@ const std::vector<SchemePreset> SCHEMES = {
     {"Shopping", {60, 5, 10, 20, 100, 100, 60, 20, 20, 25, 0, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_CRATES, 1}, "", 0},
     {"All Action", {30, 5, 10, 10, 200, 40, 30, 30, 20, 25, 15, 10, 1, 1, 1, 1, 0, 1, 20, 1}, "Airstrike 5|Banana Bomb 5|Homing Missile 2|Super Sheep 3|Super Airstrike 6", 2},
     {"Strategy", {30, 0, 10, 30, 100, 40, 10, 10, 50, 25, 15, 10, 5, 0, 1, 3, 0, 3}, "Airstrike 6|Baseball Bat 2|Dynamite 4|Jetpack 4|Shotgun 3|Icarus Potion 4|Sniper Rifle 4|* 4", 1},
-    {"Family", {90, 8, 10, 20, 125, 50, 30, 30, 20, 50, 15, 10, 8, 0, 1, 0, 0, 1}, "", 2},
+    {"Family", {90, 8, 10, 20, 125, 50, 30, 30, 20, 50, 15, 10, 8, 0, 1, 0, 0, 1, 0, 0, 1}, "", 2},
     {"Mega Power", {30, 5, 10, 10, 200, 50, 40, 40, 20, 100, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_UNLIMITED, 1, 30, 1}, "Concrete Donkey 8|Alien Abduction 8|Fatkins Strike 8|Sentry Gun 8|Super Airstrike 8", 2},
     {"Holy Grail", {45, 5, 10, 30, 100, 60, 30, 30, 30, 50, 15, 10, 1, 0, 1, 1, 0, 2}, "Concrete Donkey 16|Super Sheep 4", 2},
     {"Darksider", {45, 5, 10, 30, 100, 50, 10, 10, 50, 25, 15, 10, 5, 0, 1, 1, 0, 1}, "Airstrike 4|Cluster Grenade 2|Dynamite 2|Homing Missile 6|Landmine 2|Shotgun 2|Flood 2|Tail Nail 2|Poison Arrow 2|Sniper Rifle 2|Starburst 2|* 2", 2},
@@ -817,7 +817,7 @@ void Game::start(const GameConfig &c) {
     if (wp(WP_VITAL_WORM)) cfg.rules |= RULE_KING;  // flag 0x100 on each team's first worm (0x5d6970)
     terrain.load(c.map, c.seed);
     landMax = scanTop(terrain);
-    rng = c.seed * 2654435761u + 1;
+    rng = (c.seed + c.round * 0x9e3779b9u) * 2654435761u + 1;
     teams = c.teams;
     teamFirst.assign(1, 0);
     for (int t = 0; t < teams; t++) teamFirst.push_back(teamFirst.back() + c.teamWorms(t));
@@ -830,7 +830,7 @@ void Game::start(const GameConfig &c) {
     allied.clear();
     for (int t = 0; t < teams; t++) allied.push_back((int8_t)c.alliance(t));
     // SetUpStartGame 0x4e8580 draws AllyToStart and each alliance's first team with rand(); ours from the seed, off the match rng
-    uint32_t pick = c.seed * 2246822519u + 3266489917u;
+    uint32_t pick = (c.seed + c.round * 0x9e3779b9u) * 2246822519u + 3266489917u;
     auto draw = [&] { return (pick = pick * 1103515245u + 12345u) >> 16; };
     initQueues();
     for (auto &q : allyQueue)  // AllyTeam[g] first, the others in team order (0x5b52b0)
@@ -1821,7 +1821,7 @@ void Game::stepWorm(Worm &w) {
     auto land = [&](float speed) {
         bool winged = icarus == 2 && &w == &worms[current];  // W4M Redbull sets flag 0x40 each flight frame (0x587446)
         int dmg = winged ? 0 : fallDamage(speed), wi = int(&w - worms.data());
-        if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi), emit(GameEvent::Fall, w.pos, wi); }
+        if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi), events.back().count = dmg, emit(GameEvent::Fall, w.pos, wi); }
     };
     bool jet = jetting && &w == &worms[current];  // W4M jetpack contact 0x5633e9: walls and ceilings bounce at 0.8; it lands itself, no Ballistic
     w.motion.input = &w == &worms[current] ? steerIn : Vector3{};
@@ -2150,6 +2150,7 @@ void Game::hurt(Worm &w, int dmg, bool blast, int type) {
     w.hp -= dmg;
     int wi = int(&w - worms.data());
     emit(GameEvent::Hurt, w.pos, wi);
+    events.back().count = dmg;
     if (wi == current) { selfHurt = true; return; }
     Worm &h = worms[current];
     if (cfg.rules & RULE_VAMPIRE) h.hp = std::max(h.hp, std::min(200, h.hp + (int)(dmg * 0.5f + 0.5f)));

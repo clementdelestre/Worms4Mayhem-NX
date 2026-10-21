@@ -19,6 +19,7 @@
 #include "script.h"
 #include "sim.h"
 #include "ui.h"
+#include "results.h"
 #include "barracks.h"
 #include "xray.h"
 #include <algorithm>
@@ -1135,7 +1136,7 @@ static void memLine(const Game &game) {
     TraceLog(LOG_INFO, "MEM: malloc in use %.0f MB of %.0f reserved%s%.0f; known: terrain %.0f, textures %.0f, models %.0f = %.0f MB", used, arena, rss ? ", RSS " : "", rss, ter, tex, mod, ter + tex + mod);
 }
 
-enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading, Movie };
+enum class Screen { Menu, Lobby, Play, Replays, Missions, Loading, Movie, Results };
 
 // Match frames over W4NX_HITCH_MS (default 20) to log.txt with their section ms (20 lines per 10 s at most, plus the
 // window's worst frame), and every 10 s the sim ticks per frame histogram and the frame time spread.
@@ -1603,6 +1604,9 @@ int main(int argc, char **argv) {
             Controls::rumble(view, (e.kind == GameEvent::BigBoom ? 1 : 0.8f) * Clamp(1 - Vector3Distance(e.pos, cam.target) / 30, 0, 1), 0.3f);
         if (e.kind == GameEvent::Fall && e.worm >= 0) Controls::rumble(padOf(game.worms[e.worm].team), 100 / 255.0f, 0.5f);  // W4M 0x5ac3e0: RumbleService Heavy 100, 500 ms
     };
+    Results results;  // the rounds and stats of the versus match being played
+    Ui::ResultsScreen resScreen;
+    bool nextRound = false;  // the coming startMatch is StartGame$NextRound
     auto stepOnce = [&](const Input &in) {
         auto flying = [&] { return game.phase == Phase::Flying || (game.phase == Phase::Settle && !game.shots.empty()); };  // retreat can end mid-flight
         bool was = flying();
@@ -1613,6 +1617,8 @@ int main(int argc, char **argv) {
         if (was && !flying()) shotDone = true, shotTick = tick;
         for (const GameEvent &e : game.events) {
             onEvent(game, e);
+            if (!game.cfg.mission) results.event(game, e);
+            if (!game.cfg.mission && e.kind == GameEvent::GameOver) results.finish(game);
             Efmv::event(game, e, clock);
             feel(e);
             if (e.kind == GameEvent::Fire && e.worm >= 0) fireTick = tick;
@@ -1675,7 +1681,12 @@ int main(int argc, char **argv) {
         float part = loadStep == 2 && !d.empty() ? 1 - (float)std::count(d.begin(), d.end(), true) / d.size() : 0;
         return (loadStep + part) / 5;
     };
-    auto startMatch = [&](const GameConfig &c, bool preStart = true) {
+    auto startMatch = [&](GameConfig c, bool preStart = true) {
+        if (!c.mission) {  // a new match, or its next round with the same teams and landscape (a new game RNG)
+            if (nextRound) c.round = (uint8_t)(results.round), results.nextRound();
+            else c.round = 0, results.begin(c);
+            nextRound = false;
+        }
         game.terrain.undo = nullptr;
         snap.valid = false;
         if (!c.mission) for (size_t k = 0; k < c.teamSetup.size(); k++) Audio::setTeamVoice((int)k, Ui::voiceBankOf(c.teamSetup[k].speech));  // online: the room's teams
@@ -1777,7 +1788,32 @@ int main(int argc, char **argv) {
         for (size_t i = 0; argc > 4 && i < WEAPONS.size(); i++) if (WEAPONS[i].name == argv[4]) game.weapon = (int)i;  // --ui hud <map> <weapon>
         hud.open = !strcmp(uiShot, "panel");
         pause.open = !strcmp(uiShot, "pause");
-        if (!strncmp(uiShot, "gameover", 8)) game.phase = Phase::GameOver, game.winner = 0, onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
+        if (!strncmp(uiShot, "gameover", 8)) game.phase = Phase::GameOver, game.winner = 0, results.finish(game), onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
+    } else if (uiShot && (!strncmp(uiShot, "winmatch", 8) || !strncmp(uiShot, "winround", 8) || !strncmp(uiShot, "preround", 8))) {
+        // end-of-match screens on made-up stats: winmatch / winround / preround, + "ally" (teams 1 and 3 allied win), + "net" (WXNET.WinMatch)
+        const bool ally = strstr(uiShot, "ally");
+        GameConfig sc{1234, ally ? 3 : 2, 2, argc > 3 ? argv[3] : flagMap, 0u, {{"Red Rockets"}, {"Blue Bombers"}}};
+        if (ally) sc.teamSetup.push_back({"Green Grubs"}), sc.teamSetup[0].alliance = sc.teamSetup[2].alliance = 0, sc.teamSetup[1].alliance = 1;
+        results.begin(sc);
+        game.cfg = sc, game.teams = sc.teams, game.phase = Phase::GameOver, game.winner = 0, game.allied.clear(), game.surrendered.assign(sc.teams, 0);
+        for (int t = 0; t < sc.teams; t++) game.allied.push_back((int8_t)sc.alliance(t));
+        results.round = 1, results.winner = 0, results.winString = Ui::resultBanner(game), results.roundWins[0] = results.roundWins[2] = ally ? 1 : 1;
+        results.over = !strncmp(uiShot, "winmatch", 8);
+        if (results.over) results.round = 2, results.roundWins[0] = results.roundWins[2] = ally ? 2 : 2, results.roundWins[1] = 1;
+        for (int w = 0; w < sc.teams * 2; w++) {
+            Results::Worm &x = results.current.worm[w];
+            x.damage = 40 + 37 * w * (w % 3 + 1), x.kills = w % 3, x.teamKills = w == 4, x.shots = 4 + w, x.damaging = 2 + w / 2, x.crates = w == 1 ? 3 : w % 2, x.boring = w == 2, x.survived = 100 + 41 * w;
+        }
+        results.current.seconds = 205, results.current.weaponShots.assign(sc.teams, std::vector<int>(31));
+        for (int t = 0; t < sc.teams; t++) results.current.weaponShots[t][1 + 2 * t] = 5, results.current.weaponShots[t][3] = 2;
+        results.match = results.current, results.match.seconds = results.over ? 431 : 205;
+        results.summarise(7);
+        resScreen = {};
+        resScreen.kind = results.over ? Ui::ResultsScreen::WinMatch : !strncmp(uiShot, "winround", 8) ? Ui::ResultsScreen::WinRound : Ui::ResultsScreen::PreRound;
+        resScreen.net = strstr(uiShot, "net");
+        if (!strncmp(uiShot, "preround", 8)) resScreen.kind = Ui::ResultsScreen::PreRound;
+        if (strstr(uiShot, "land")) resScreen.land = 2, resScreen.landShown = -9;  // WXFEP.SelectLandscape2 open
+        screen = Screen::Results;
     } else if (uiShot) {
         front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strcmp(uiShot, "setupslot") || !strcmp(uiShot, "setupcards") || !strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) ? Ui::Frontend::SetupTeams
                      : !strcmp(uiShot, "setupmap") ? Ui::Frontend::SetupMap : !strcmp(uiShot, "setuprules") ? Ui::Frontend::SetupRules
@@ -2111,6 +2147,31 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        if (screen == Screen::Results) {
+            BeginDrawing();
+            int act = Ui::results(resScreen, results, maps);
+            Ui::feCursor();
+            capture(frame);
+            if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
+                rlDrawRenderBatchActive();
+                Image img = LoadImageFromScreen();
+                ExportImage(img, uiShot == flagUi ? TextFormat(DATA_DIR "ui_%d.png", frame) : "ui.png");
+                UnloadImage(img);
+            }
+            EndDrawing();
+            if (uiShot && frame >= uiFrames.back()) break;
+            if (act == Ui::ResultsScreen::NextRound) nextRound = true, startMatch(results.cfg);
+            else if (act == Ui::ResultsScreen::Leave) {
+                screen = Screen::Menu;
+                if (!online) front.screen = Ui::Frontend::Main;  // FCS.LeaveWinMatchScreen / ConfirmMatchQuit Yes: FE.ChangeMenu$WXFE.MainMenu
+                if (online && net.roomId) front.backToRoom(), net.setReady(false);  // the room's setup again
+                else if (online) screen = Screen::Lobby;
+                Audio::music(true, "theme");
+                Audio::stopSfx();
+            }
+            continue;
+        }
+
         if (screen == Screen::Replays) {
             bool was = instant;
             BeginDrawing();
@@ -2408,13 +2469,6 @@ int main(int argc, char **argv) {
         lastSec = sec;
         if (netbot && botDone > 1e8f && (game.phase == Phase::GameOver || turns >= botTurns)) botDone = clock + 2;  // let the last inputs and sums out
         if (netbot && clock > botDone) break;
-        if (game.phase == Phase::GameOver && !pause.open && !playing && irEnd < 0 && !game.cfg.mission && pressed({GAMEPAD_BUTTON_RIGHT_FACE_RIGHT}, {KEY_SPACE})) {
-            screen = Screen::Menu;
-            if (online && net.roomId) front.backToRoom(), net.setReady(false);  // the room's setup again
-            else if (online) screen = Screen::Lobby;
-            Audio::music(true, "theme");
-            Audio::stopSfx();
-        }
 
         // camera (controls.cpp): free orbit, first person in aim mode, chasing the projectile, sniper scope
         const WeaponDef &wd = weaponDef(game.weapon);
@@ -2688,6 +2742,13 @@ int main(int argc, char **argv) {
         }
         int outro = scriptOutro(game);
         bool overDone = !game.script || outro == 1 || (outro < 0 && overClock > (orbitCut >= 0 ? orbitCut : 4.02f + 5.02f) + 1.02f);
+        if (!game.cfg.mission && game.phase == Phase::GameOver && !pause.open && !playing && irEnd < 0 && overClock > (orbitCut >= 0 ? orbitCut : 4.02f + 5.02f) + 1.02f) {
+            resScreen = {};  // FE.ChangeMenu$ NextRoundMenu / GameCompletedMenu (GameLogicService 0x4fb880): the end of the round
+            resScreen.kind = online ? (results.winner < 0 ? Ui::ResultsScreen::DrawMatch : Ui::ResultsScreen::WinMatch) : results.over ? Ui::ResultsScreen::WinMatch : Ui::ResultsScreen::WinRound;
+            resScreen.net = online;
+            screen = Screen::Results;
+            Audio::stopSfx();
+        }
         if (const MissionSpec *ms = game.cfg.mission; ms && game.phase == Phase::GameOver && !pause.open && missionIdx >= 0 && overDone) {
             ScriptEgg egg = scriptEgg(game);
             if (!missionSaved && !uiShot) {
@@ -2815,7 +2876,7 @@ int main(int argc, char **argv) {
             fflush(stdout);
             break;
         }
-        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : aimFire ? 140 : 60)) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") ? uiEnd : 600))) break;
+        if ((shot && !shotBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : 150) + (animShot ? 2 * shotWeapon + 30 : 0)) || (aimShot && !aimBench && frame == (getenv("W4NX_SHOTEND") ? atoi(getenv("W4NX_SHOTEND")) : aimFire ? 140 : 60)) || (aimSeq && frame == 106) || (uiShot && frame == (loadShot ? uiFrames.back() : strcmp(uiShot, "gameover") || getenv("W4NX_SHOTEND") ? uiEnd : 600))) break;
     }
     if (loader.joinable()) loader.join();
     if (screen == Screen::Play) irFinish(), saveRec();
