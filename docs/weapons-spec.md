@@ -150,8 +150,7 @@ For each hit below: direct contact, facing the target.
 
 **Sentry Gun**
 - Placed on the ground, it stays active during enemy turns.
-- It fires a burst at a visible enemy worm within 15 m.
-- Damage: 25 HP per burst. Reload: 10 s.
+- Armed at each turn start, it fires at a random visible enemy worm within 15 m that moved over 5 units: 2 s of tracking, then bullets every 100 ms (5 HP each) for 10 s, once per turn.
 
 ## 5. Utilities and movement
 

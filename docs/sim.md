@@ -92,8 +92,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   team's (`teamAmmo`, Inventory.TeamNN, Specialist only), -1 when either is; `spend` takes the alliance's while > 0, else the team's; crates,
   the Mystery Special Weapon and the Old Woman's loot go to the alliance (`gain`), Disarm takes from it. Under a script `row(team)` is the team
   (script.cpp computes each team's view from the W4M containers). Delays stay per team (Inventory%d.WeaponDelays).
-- The Sentry Gun fires at the active worm of another alliance; the binoculars' ray skips the shooter's alliance [disasm 0x56c440, 0x54b583].
-  W4M's sentry picks a random active enemy worm that moved over 5 units (docs/w4m/turn.md "Allies in play") [open: ours aims at the active worm only].
+- The Sentry Gun (`Game::stepSentry`): armed at each turn start, it picks a random enemy-alliance worm that moved over 5 units, tracks it 2 s and fires 100 ms bullets for 10 s, once per turn (docs/w4m/weapons.md "Sentry Gun" [disasm 0x56de80, 0x56c440]); the binoculars' ray skips the shooter's alliance [disasm 0x54b583].
 - `use()` spends the ammo and creates the shot. The phase becomes `Flying` and the timer = `post_launch` + retreat
   (`retreatTicks()`: the weapon's `retreat` ms, W4M RetreatTimeOverride, or the scheme's `retreatTime` s, W4M LandTime; data).
 - `retreating()`: in `Flying` / `Retreat`, the worm may walk and jump once the timer is at most the retreat time, i.e. after

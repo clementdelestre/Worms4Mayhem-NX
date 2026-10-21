@@ -996,6 +996,7 @@ void Game::beginTurn(int last, bool sameTeam) {
         for (Object &o : objects) o.hooked = false;
         shotsLeft = ropeShots = 0, rope.swung = false;
         weapon = -1;  // W4M GameLogic.Turn.Started (0x566d57): kWeaponUndefined, the empty hand
+        for (Object &o : objects) if (o.type == Object::Sentry) o.turret = {Object::Turret::Scan, -1, true};  // GameLogic.Turn.Started 0x56dc30: scan afresh, a burst under way is cut
         emit(GameEvent::TurnStart, worms[c].pos, c);
         return;
     }
@@ -1157,6 +1158,72 @@ bool Game::addObject(Object::Type t, float lift) {
     return true;
 }
 
+// W4M NewSentryGunLogicEntity: Turn.Started re-arms it (0x56dc30); it scans, tracks 2 s, fires 100 ms bullets for WeaponReloadTime, then rests until the next turn
+void Game::stepSentry(Object &o) {
+    Object::Turret &s = o.turret;
+    if (Vector3LengthSqr(o.vel) >= 0.01f) { s.fresh = s.state == Object::Turret::Scan; return; }  // falling (state 1): the state resumes on landing, a scan afresh (0x56cce0 case 2)
+    const WeaponDef &sd = WEAPONS[o.weapon];
+    auto feet = [&](int i) { return Vector3{worms[i].pos.x, worms[i].pos.y - R, worms[i].pos.z}; };  // WormData Position +0x38
+    const Vector3 up = terrain.normal({o.pos.x, o.pos.y - restHalf(o), o.pos.z});  // +0x60: the surface normal (ours: read at the foot)
+    auto rollScan = [&] { s.scan = msTicks(1000 + (int)(rand01() * 2000)); };
+    switch (s.state) {
+    case Object::Turret::Scan:
+        if (s.fresh) {
+            s.fresh = false, s.target = -1;
+            rollScan();
+            for (int i = 0; i < 16; i++) s.seen[i] = i < (int)worms.size() ? feet(i) : Vector3{};  // 0x56c3f0
+        } else if (s.scan <= 0) rollScan();
+        else if (s.scan--, s.target < 0) {  // 0x56c440
+            int cand[16], n = 0;
+            for (int i = 0; i < 16 && i < (int)worms.size(); i++) {
+                if (!worms[i].alive || alliance(worms[i].team) == alliance(o.team)) continue;  // WormData.Active, another AlliedGroup
+                if (Vector3DistanceSqr(feet(i), s.seen[i]) <= 25 / 400.0f) continue;  // not 5 units from where it was last counted
+                s.seen[i] = feet(i);
+                if (Vector3DistanceSqr(feet(i), o.pos) <= sd.radius * sd.radius) cand[n++] = i;
+            }
+            if (!n) return;
+            s.target = (int8_t)cand[std::min((int)(rand01() * n), n - 1)];
+            const Vector3 from = Vector3Add(o.pos, Vector3Scale(up, 0.8f)), to = Vector3Subtract(Vector3Add(feet(s.target), {0, 0.6f, 0}), from);
+            const float d = Vector3Length(to);
+            Vector3 hit;
+            if (d < 1e-4f || terrain.raycast({from, Vector3Scale(to, 1 / d)}, d, &hit)) { s.target = -1; return; }  // 12 units over the feet, 16 along the normal
+            s.state = Object::Turret::Track, s.timer = msTicks(2000);
+        }
+        break;
+    case Object::Turret::Track:
+        if (s.target < 0) s.state = Object::Turret::Done;
+        else if (--s.timer <= 0) {
+            s.state = Object::Turret::Fire, s.timer = msTicks((int)(sd.fuse * 1000)), s.shot = 0;
+            emit(GameEvent::Fire, o.pos, -1, o.weapon);
+        }
+        break;
+    case Object::Turret::Fire:
+        if (s.target < 0 || --s.timer <= 0) { s.state = Object::Turret::Done; break; }
+        if (++s.shot >= msTicks(100)) s.shot = 0, sentryShot(o, up, s.target);
+        if (s.timer < msTicks(3000) && Vector3DistanceSqr(feet(s.target), o.pos) > (sd.radius + 25) * (sd.radius + 25)) s.state = Object::Turret::Done;  // MaxWeaponRange + 500 units
+        break;
+    default: break;
+    }
+}
+
+// one bullet: a cone of 0.4 r^2 around the aim (10 units over the feet), the nearest hit within 3000 units takes the Shot* ExplosionMessage
+void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
+    const WeaponDef &sd = WEAPONS[o.weapon];
+    const Vector3 from = Vector3Add(o.pos, Vector3Scale(up, 1.0f));
+    const Vector3 v = Vector3Normalize(Vector3Subtract(Vector3Add({worms[target].pos.x, worms[target].pos.y - R, worms[target].pos.z}, {0, 0.5f, 0}), from));
+    const Vector3 a = Vector3Normalize(Vector3CrossProduct(v, fabsf(v.y) < 0.9f ? Vector3{0, 1, 0} : Vector3{1, 0, 0})), b = Vector3CrossProduct(v, a);
+    const float ang = rand01() * 2 * PI, r = rand01(), m = r * r * 0.4f;
+    const Vector3 dir = Vector3Normalize(Vector3Add(v, Vector3Add(Vector3Scale(a, cosf(ang) * m), Vector3Scale(b, sinf(ang) * m))));
+    const Worm none{};
+    const GunHit h = gunRay({from, dir}, none, 0);
+    if (h.dist >= 150) return;
+    Blast bl = blastOf(sd, false);
+    bl.crater = 0;  // ShotLandDamageRadius 0.1 units: no crater
+    bl.pushOff = {-dir.x * 0.1f, -0.1f, -dir.z * 0.1f};  // 0x56c110: the impulse centre 2 units behind the hit and 2 low
+    explode(h.at, bl, 0, 0, o.weapon);
+    if (h.obj >= 0) crateHit(objects[h.obj], bl.damage * (doubled() ? 2 : 1));
+}
+
 void Game::stepObjects() {
     for (size_t i = 0; i < objects.size();) {
         Object &o = objects[i];
@@ -1229,22 +1296,7 @@ void Game::stepObjects() {
                 else boom = true;
             }
         }
-        if (o.type == Object::Sentry) {
-            if (o.fuse >= 0 && (o.fuse -= DT) < 0) o.fuse = -1;
-            Worm &t = worms[current];
-            const WeaponDef &sd = WEAPONS[o.weapon];
-            Vector3 eye = Vector3Add(o.pos, {0, 0.4f, 0}), to = Vector3Subtract(t.pos, eye), hit;
-            float dist = Vector3Length(to);
-            bool seen = dist > 0.1f && !terrain.raycast({eye, Vector3Scale(to, 1 / dist)}, dist - 0.6f, &hit);
-            if (o.fuse < 0 && phase != Phase::Settle && t.alive && alliance(t.team) != alliance(o.team) && dist < sd.radius && seen) {  // 0x56c440: another AlliedGroup
-                o.fuse = sd.fuse;
-                emit(GameEvent::Fire, o.pos, -1, o.weapon);
-                if (!shielded(t, o.pos)) {  // 0x56c140: its bullets stop on a bubble
-                    hurt(t, (int)sd.damage);
-                    t.vel = Vector3Add(t.vel, Vector3Add(Vector3Scale(to, 4 / dist), {0, 2, 0}));
-                }
-            }
-        }
+        if (o.type == Object::Sentry) stepSentry(o);
         // 0x5cb7e0: the crate sphere (10 x Scale units) meets a worm's (10 units, 5 above its feet), any worm, any time, or a sheep-like
         // payload's for the active worm (0x5c9750); the collector's AlliedGroup must be TeamCollectable's (0x5c8370)
         bool sheep = false;
@@ -3163,7 +3215,7 @@ uint32_t Game::checksum() const {
     mix(&bubbleAt, sizeof bubbleAt);
     mix(&icarus, sizeof icarus), mix(&flapAt, sizeof flapAt), mix(&drift, sizeof drift), mix(&doubleDamage, 1), mix(&changing, 1), mix(spy.data(), spy.size());
     mix(&scout.t, sizeof scout.t), mix(&scout.power, sizeof scout.power), mix(&scout.pitch, sizeof scout.pitch);
-    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); mix(&o.dud, 1); mix(&o.courtesy, sizeof o.courtesy); mix(&o.hooked, 1); mix(&o.spawning, 1); mix(&o.delay, sizeof o.delay); mix(&o.fizzle, 1); if (o.mystery >= 0) mix(&o.mystery, sizeof o.mystery); if (o.id >= 0) mix(&o.id, sizeof o.id); if (crateLike(o)) mix(&o.hp, sizeof o.hp), mix(&o.count, sizeof o.count), mix(&o.teamCollect, 2), mix(&o.pinned, 1), mix(&o.pushable, 1), mix(&o.scale, sizeof o.scale); }
+    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); mix(&o.dud, 1); mix(&o.courtesy, sizeof o.courtesy); mix(&o.hooked, 1); mix(&o.spawning, 1); mix(&o.delay, sizeof o.delay); mix(&o.fizzle, 1); if (o.type == Object::Sentry) mix(&o.turret.state, 1), mix(&o.turret.target, 1), mix(&o.turret.timer, sizeof o.turret.timer), mix(&o.turret.scan, sizeof o.turret.scan); if (o.mystery >= 0) mix(&o.mystery, sizeof o.mystery); if (o.id >= 0) mix(&o.id, sizeof o.id); if (crateLike(o)) mix(&o.hp, sizeof o.hp), mix(&o.count, sizeof o.count), mix(&o.teamCollect, 2), mix(&o.pinned, 1), mix(&o.pushable, 1), mix(&o.scale, sizeof o.scale); }
     if (factory.on) {
         const Factory &f = factory;
         mix(&f.pos, sizeof f.pos), mix(&f.damaged, 1), mix(&f.state, sizeof f.state), mix(&f.wait, sizeof f.wait), mix(&f.toSpawn, sizeof f.toSpawn), mix(&f.until, sizeof f.until), mix(&f.die, sizeof f.die);

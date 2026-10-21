@@ -687,15 +687,35 @@ static void checkCameraHold() {
     assert(fabsf(wrapPi(yaw() - before)) < 0.05f);
 }
 
+// W4M NewSentryGunLogicEntity (docs/w4m/weapons.md "Sentry Gun"): armed at Turn.Started, it counts an enemy worm only once it moved over
+// 5 units, tracks 2 s, fires 100 ms bullets for WeaponReloadTime, then rests until the next turn; allies are never targeted
 static void checkSentry() {
     Game g;
     g.start({27, 2, 1, "", 0}), g.hotSeat = 0;
     Worm &w = g.worms[g.current];
-    w.pos = {10, 55, 10};
+    const Vector3 home = {10, 55, 10};
     Object sentry = {Object::Sentry, {10, 55, 14}, {0, 0, 0}, weaponNamed("Sentry Gun"), -1, false, false, 1 - w.team};
+    sentry.pinned = true;
     g.objects = {sentry};
-    g.step(Input{});
-    assert(w.hp < 100 && g.objects[0].fuse > 0);  // shot the enemy in range, now reloading
+    using T = Object::Turret;
+    auto tick = [&](Vector3 at) { w.pos = at, w.vel = {}, g.step(Input{}); };
+    assert(g.objects[0].turret.state == T::Done);  // a sentry set down this turn rests
+    for (int t = 0; t < 60 * 4; t++) tick(home);
+    assert(g.objects[0].turret.state == T::Done && w.hp == 100);
+    g.objects[0].turret = {T::Scan, -1, true};
+    for (int t = 0; t < 60 * 4; t++) tick(home);
+    assert(g.objects[0].turret.state == T::Scan && w.hp == 100);  // standing still: never counted as moved
+    int t = 0;
+    for (; t < 60 * 4 && g.objects[0].turret.state == T::Scan; t++) tick({home.x + 0.3f + 0.3f * (t % 2), home.y, home.z});
+    assert(g.objects[0].turret.state == T::Track && g.objects[0].turret.target == g.current && w.hp == 100);
+    for (t = 0; t < 60 * 3 && g.objects[0].turret.state == T::Track; t++) tick({home.x + 0.3f, home.y, home.z});
+    assert(t > 100 && t < 130 && g.objects[0].turret.state == T::Fire);  // 2000 ms
+    for (t = 0; t < 60 * 12 && g.objects[0].turret.state == T::Fire; t++) tick({home.x + 0.3f, home.y, home.z});
+    assert(g.objects[0].turret.state == T::Done && w.hp < 100 && t > 60 * 9 && t < 60 * 11);  // WeaponReloadTime 10 s
+    g.objects[0].team = w.team;  // an ally of the active worm: never targeted
+    g.objects[0].turret = {T::Scan, -1, true};
+    for (t = 0; t < 60 * 6; t++) tick({home.x + (t % 2) * 2.0f, home.y, home.z});
+    assert(g.objects[0].turret.state == T::Scan);
 }
 
 // W4M SheepChaseCamera: behind and above the sheep (it rises when the land hides it), never under it.
