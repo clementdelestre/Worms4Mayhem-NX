@@ -4656,15 +4656,22 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     Vector2 wc = {rc.x + (-268 + 241) * 4 / 3.0f * HU, rc.y + (167 - 90) * HU};  // exe: Wind.OnScreenPos (-268, 90) from Scanner.Position (-241, 167)
     float ratio = hypotf(g.wind, g.windZ);
     int speed = (int)(ratio * 10 + 0.5f);
-    if (!sprite(g.cfg.scheme.wind ? "wind_back" : "wind_backdisabled", wc, 0.72f, {64, 64})) DrawCircleV(wc, 30, {0, 104, 138, 220});
+    if (!sprite(g.cfg.scheme.wind ? "wind_back" : "wind_backdisabled", wc, 2 * 25 * HU / 128, {64, 64})) DrawCircleV(wc, 25 * HU, {0, 104, 138, 220});
     Vector2 v = windPointer(ratio >= 0.05f, g.wind, g.windZ, {fwd.x + cam.up.x, fwd.z + cam.up.z});
     Color ac = ratio >= 0.05f ? Color{255, 170, 30, 255} : Color{150, 150, 150, 255};
+    const float AK = (26.8f + 16) * 0.8f * HU / 117;  // arrow mesh tip -26.8 / tail +16 x Wind.Scale 0.8, over the sprite's 117 px of arrow
     if (Texture2D t = tex("hud/wormlocarrow"); t.id)  // the needle's length foreshortened by its tilt
-        DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {wc.x, wc.y, t.width * 0.2f, t.height * 0.2f * Vector2Length(v)}, {64 * 0.2f, 64 * 0.2f * Vector2Length(v)},
+        DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {wc.x, wc.y, t.width * AK, t.height * AK * Vector2Length(v)}, {64 * AK, 64 * AK * Vector2Length(v)},
                        atan2f(v.y, v.x) * RAD2DEG - 90, ac);
     else DrawLineEx(wc, Vector2Add(wc, Vector2Scale(v, 24)), 5, ac);
-    float dw = digits(TextFormat("%02d", speed), wc.x + 54, wc.y - 11, 22, 0, speed == 0);  // HUD.Wind.TextOffset / SpeedScale, x 1.84 px per unit
-    digits("m", wc.x + 54 + dw, wc.y - 11 + 22 * 0.3f, 22 * 0.8f, 0, speed == 0);
+    {  // WindMeterEntity 0x5fc0e0: tens at Wind.TextOffset, units after it, 'm' at 0.8 lowered 0.3 glyph; glyph size Wind.SpeedScale 12
+        const float S = 12 * HU, bx = wc.x + 33 * HU, by = wc.y + 2 * HU;
+        const int t = speed / 10, u = speed % 10;
+        const float ux = bx + S * (HF_W[t] + 0.6f * HF_W[u]), mx = ux + S * HF_W[u] + 0.48f * S * HF_W[12];
+        hudGlyph('0' + t, bx, by, S, WHITE, speed == 0);
+        hudGlyph('0' + u, ux, by, S, WHITE, speed == 0);
+        hudGlyph('m', mx, by + 0.3f * S, 0.8f * S, WHITE, speed == 0);
+    }
     // ActiveWormHudInfoEntity (0x5d8320 init, 0x5d7bb0): HUD.WormInfoBack always, HUD.WeaponIcon only for a weapon; both half extent 44 (BackScale / WeapScale), no text
     const Vector2 wp = Vector2Add(hudAt(253, 174 - (300 - 174) * pipShow * (1 - pipFull)), discNudge());  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
     {
