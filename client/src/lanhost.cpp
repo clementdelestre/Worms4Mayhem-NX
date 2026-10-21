@@ -186,6 +186,14 @@ bool LanHost::handle(uint32_t id, const uint8_t *p, size_t n) {
         broadcast(w.done(), id);
         break;
     }
+    case PANEL: {  // view only: relayed, never logged
+        r.take(6);
+        if (!r.ok || !in || start.empty()) return false;
+        W w(PANEL);
+        w.b.append((const char *)p + 1, 6);
+        broadcast(w.done(), id);
+        break;
+    }
     case TURN_END: {
         uint32_t tick = r.u32(), sum = r.u32();
         if (!r.ok || !in) return false;

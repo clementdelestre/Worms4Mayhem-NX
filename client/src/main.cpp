@@ -580,6 +580,7 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
 }
 
 // W4M jetpack/parachute meshes sit on the worm's root in raw units; WORM_K: worm.glb's export scale (tools/w4m-models).
+static const int NET_PLAYOUT = 6;  // ticks (100 ms) a remote tick waits after a starved buffer: LAN / relay jitter
 static const float WORM_K = 0.0496f;
 static Matrix rootMatrix(const Worm &w, Vector3 raw) {
     return MatrixMultiply(MatrixMultiply(MatrixTranslate(raw.x, raw.y, raw.z), MatrixScale(WORM_K, WORM_K, WORM_K)),
@@ -1714,6 +1715,9 @@ int main(int argc, char **argv) {
     bool botStarted = false, botSaw = false, botEdited = false;
     std::vector<GameConfig::Team> botTeams;
     float botAt = 0, botDone = 1e9f;
+    int botAim = 0;  // netbot: frames of its own Aim
+    float playout = 0;  // remote input waits this many ticks before it plays
+    int remoteFrames[5] = {};  // netbot: frames of the remote turns by remote ticks stepped (smoothness)
     int proxyTurn = -1, botSpeed = getenv("W4NX_SPEED") ? atoi(getenv("W4NX_SPEED")) : 8;  // ticks per frame
     // LAN: this console hosts (embedded relay, its own Net joins over loopback) or joins a game heard on the LAN
     LanHost lanHost;
@@ -2381,7 +2385,15 @@ int main(int argc, char **argv) {
             if (in.buttons & (Input::FIRE | Input::JUMP)) in.buttons &= ~(Input::FIRE | Input::JUMP);
             else irSwallow = false;
         }
+        bool panelOpen;
+        int panelSlot;
+        while (online && net.remotePanel(tick, panelOpen, panelSlot)) hud.view(panelOpen, panelSlot);
+        botAim = netbot && padTurn && game.phase == Phase::Aim ? botAim + 1 : 0;
+        hud.forceX = botAim == 10 || botAim == 40;  // netbot: the bot's own panel opens then closes, for the watcher's check
+        bool panelWas = hud.open;
         hud.input(game, in, padTurn, pad, tick);
+        if (netbot && hud.open && !panelWas) printf("[%s] %s panel open, slot %d\n", name.c_str(), hud.mine ? "own" : "sees the remote", hud.slot());
+        if (online && !remoteTurn && !cpu(cur.team)) net.sendPanel(tick, hud.open, hud.slot());
         bool feedPad = padTurn && !hud.open;
         auto local = [&] { return feedPad ? Controls::tick(in) : in; };  // stick rates spread over ticks
         livePad = padTurn && !cpu(cur.team) ? pad : -1;
@@ -2411,11 +2423,27 @@ int main(int argc, char **argv) {
         } else {
             // remote/replayed inputs first, then ours when we own the active team; otherwise wait
             acc = netbot ? Game::DT * botSpeed : fminf(acc + dt, Game::DT * 4);
+            playout -= netbot ? botSpeed : dt / Game::DT;
+            bool spare = true;
+            uint32_t from = tick;
             for (int budget = 240; budget > 0 && !(netbot && turns >= botTurns); budget--) {
                 Input r;
-                if (net.remoteInput(tick, r)) { stepOnce(r); continue; }
+                if (int held = net.held(tick)) {
+                    // W4M plays remote input behind its sender (NetThrottle 0x7082ca); ours: NET_PLAYOUT ticks behind, one tick per DT,
+                    // a spare one per frame past twice that (docs/sim.md "Remote playout"). The server's replay plays at once.
+                    if (tick >= net.replay) {
+                        if (playout > 0) { acc = 0; break; }
+                        if (acc >= Game::DT) acc -= Game::DT;
+                        else if (spare && held > 2 * NET_PLAYOUT) spare = false;
+                        else break;
+                    }
+                    net.remoteInput(tick, r);
+                    stepOnce(r);
+                    continue;
+                }
                 bool mine = game.phase != Phase::GameOver && tick >= net.replay && owns(game.worms[game.current].team);
-                if (!mine || acc < Game::DT) break;
+                if (!mine) { playout = NET_PLAYOUT, acc = 0; break; }  // starved: wait NET_PLAYOUT ticks once input flows again
+                if (acc < Game::DT) break;
                 int team = game.worms[game.current].team;
                 bool bot = netbot && team < (int)net.owners.size() && net.owners[team] == net.id;
                 Input mineIn = cpu(team) || bot ? ai.think(game) : proxied(team) ? Input{} : local();
@@ -2424,6 +2452,7 @@ int main(int argc, char **argv) {
                 stepOnce(mineIn);
                 acc -= Game::DT;
             }
+            if (netbot && remoteTurn && from >= net.replay && turns < botTurns) remoteFrames[std::min<uint32_t>(tick - from, 4)]++;
         }
         if (shotDone && game.phase == Phase::Aim) shotDone = false;
         bool wait = false;
@@ -2468,7 +2497,16 @@ int main(int argc, char **argv) {
         if (sec > 0 && sec <= 5 && sec != lastSec) Controls::rumble(livePad, 0.12f, 0.05f);
         lastSec = sec;
         if (netbot && botDone > 1e8f && (game.phase == Phase::GameOver || turns >= botTurns)) botDone = clock + 2;  // let the last inputs and sums out
-        if (netbot && clock > botDone) break;
+        if (netbot && clock > botDone) {
+            int n = 0;
+            double m = 0, v = 0;
+            for (int k = 0; k < 5; k++) n += remoteFrames[k], m += k * remoteFrames[k];
+            m /= std::max(n, 1);
+            for (int k = 0; k < 5; k++) v += remoteFrames[k] * (k - m) * (k - m);
+            printf("[%s] remote ticks/frame over %d frames: 0:%d 1:%d 2:%d 3:%d 4+:%d mean %.3f var %.3f\n", name.c_str(), n, remoteFrames[0], remoteFrames[1],
+                   remoteFrames[2], remoteFrames[3], remoteFrames[4], m, v / std::max(n, 1));
+            break;
+        }
 
         // camera (controls.cpp): free orbit, first person in aim mode, chasing the projectile, sniper scope
         const WeaponDef &wd = weaponDef(game.weapon);

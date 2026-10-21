@@ -52,6 +52,10 @@ struct Net {
     void poll();
     bool next(Event &e);
     bool remoteInput(uint32_t tick, Input &out);  // input for `tick` from the server, consumed
+    int held(uint32_t tick) const;                // remote inputs held from `tick` on, without a gap
+    // The active player's weapon panel (PANEL, PROTOCOL.md): view only, never in the sim.
+    void sendPanel(uint32_t tick, bool open, int slot);  // sent when it changes
+    bool remotePanel(uint32_t tick, bool &open, int &slot);  // the next state due by `tick`, consumed
 
     void listRooms();
     void createRoom(const char *name, int maxPlayers);
@@ -69,9 +73,10 @@ private:
     std::string out, in;
     std::deque<Event> events;
     std::map<uint32_t, Input> inbox;
+    std::map<uint32_t, uint16_t> panels;  // tick -> open << 8 | slot
     std::vector<Input> batch;
     uint32_t batchTick = 0;
-    int batchAge = 0;
+    int panelSent = -1;
 
     void send(std::string frame);
     void syncLobby();  // host: keep slots in step with the room's teams; others: re-resolve names

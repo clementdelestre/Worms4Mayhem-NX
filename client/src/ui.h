@@ -205,9 +205,13 @@ struct Hud {
     void labels(const Game &g, const Camera3D &cam, uint32_t tick);  // W4M bin 3DText (29): Text3Ds, under the reticles and the HUD; first each frame
     void draw(const Game &g, const Camera3D &cam, uint32_t tick);
     void select(int weapon) { pick = weapon, open = false, swallow = true; }
+    int slot() const { return cursor; }
+    void view(bool o, int slot) { viewOpen = o, viewSlot = slot; }  // the remote active player's panel (PANEL), shown read-only
 
 private:
     int cursor = 0, pick = -1;  // pick: sent until it lands
+    bool viewOpen = false;
+    int viewSlot = 0;
     bool swallow = true;  // a held A (weapon pick, menu START) must not fire
     int introWorm = -1;       // turn-start name banner (CPU/remote): current worm and the tick it became current
     uint32_t introStart = 0;

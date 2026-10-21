@@ -63,6 +63,7 @@ C = client → server, S = server → client.
 | 0x22 | TurnEnd    | C   | `u32 tick, u32 checksum` |
 | 0x23 | Desync     | S   | `u32 tick` |
 | 0x24 | Replay     | S   | `u32 ticks` — length of the input log about to be replayed |
+| 0x25 | Panel      | C/S | `u32 tick, u8 open, u8 slot` — the active player's weapon panel (open, highlighted weapon) from that tick on |
 | 0x30 | Chat       | C/S | C: `str text`; S: `u32 fromPlayerId, str text` |
 | 0x31 | Ping       | C   | `u32 nonce` |
 | 0x32 | Pong       | S   | `u32 nonce` |
@@ -94,11 +95,15 @@ C = client → server, S = server → client.
   peer from the launch type's `weapons.json` weapon (W4M 0x598160 clone) and the sliders (docs/w4m/weapons.md "Template clone").
 - **Inputs**: the match is one input stream indexed by tick (tick 0 = first `step` after
   `start`). The owner of the active team sends an `Input` for *every* tick it steps, batched
-  (~3 ticks per frame). The server requires `firstTick == ticks logged so far`; otherwise it
+  per frame (about one tick). The server requires `firstTick == ticks logged so far`; otherwise it
   drops the frame and answers Error then a resync (Start, Replay, log, as on reconnect), since that
   client already stepped inputs the log does not hold. Accepted inputs are appended to the log and relays to the rest of the room. Remote clients step tick
   `t` only once they hold input `t`; turn hand-off is implicit: the next owner starts sending
   when its own sim reaches its turn.
+- **Panel**: the console of the active human team sends it whenever its weapon panel opens, closes or moves its highlight
+  (`tick` = the next tick it steps). The relay forwards it to the rest of the room during a match and never logs it; the others
+  show that panel read-only once their own sim reaches `tick` (W4M replays the active player's `Input.Menu.*` on every machine,
+  docs/w4m/network.md). It is view state only: no sim field, no checksum, not in replays.
 - **TurnEnd**: every client sends it when a turn ends (tick = ticks stepped so far). The
   server keeps the first checksum per tick; any different one → Desync broadcast to the room.
 - **Reconnect**: a dropped player stays in a started match (`online = 0`). Hello with the

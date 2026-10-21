@@ -45,6 +45,21 @@ The per-tick `Input` (6 bytes) and its bits are in `PROTOCOL.md` "Input". The cl
 buttons and axis rates) and `Controls::tick` (per tick: `diffuse` turns a rate into int8 steps, the rounding error carried to the next
 tick); the CPU builds it in `Ai::think`. Weapon picks from the panel and from the CPU are direct (`Input::pick`, wire version 3).
 
+### Remote playout (online, `main.cpp` net loop)
+
+W4M plays remote input behind its sender: messages are stamped with a future logical time and spectators are throttled to stay
+2 to 5 s behind the active player's clock (`NetThrottle::Update` 0x7082ca, docs/w4m/network.md "Time sync and throttle") [disasm].
+Ours, per tick instead of sparse messages:
+
+- The sender flushes its batch every frame (`Net::poll`), about one tick per frame at 60 Hz, like W4M's store pass 0x542f00 [disasm]. All sockets set `TCP_NODELAY` (client, LanHost, Rust relay) [ours].
+- The receiver plays a held remote tick once per `Game::DT` of frame time (the same accumulator as local play). When it runs out of
+  input it waits `NET_PLAYOUT` ticks (6, 100 ms) after input flows again, and takes one spare tick per frame while more than
+  2 × `NET_PLAYOUT` ticks are held. The server's replay (ticks below `Net::replay`) plays at once [ours: W4M's 2000 / 3000 / 5000 ms
+  margins follow its 1000 ms time sync, ours sees each tick arrive; the playout delay covers LAN and relay jitter].
+- Measured with `tests/netbot.sh` at `W4NX_SPEED=1` (one tick per frame), remote turns, ticks stepped per frame: before (3-frame
+  batches, every held tick at once) 2/3 of frames 0 and 1/3 of frames 3, variance 2.0; after, LAN: 99.7 % of frames 1 tick,
+  the 0-tick frames are the playout waits at turn start, variance 0.003 [ours, measured].
+
 ## Phases (`enum class Phase`)
 
 | phase | entered | the worm | leaves when | source |
