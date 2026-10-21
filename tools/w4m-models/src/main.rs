@@ -873,7 +873,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let norm = if feet { mul(&sc([0.05; 3]), &tr([0.0, 3.0, 0.0])) } else if size < 0.0 { sc([-size; 3]) } else if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
     const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend", "Payload_Spawn",
-        "Tree_Smoke", "Tree_Fire", "Crash_Fire", "Crash_FireSpark", "Crash_Sparks", "Barrel_Poison", "Barrel_Spark", "Flies", "barrel|effect"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0); Tree_Smoke..Flies: the title island's effect locators; barrel|effect: the sentry gun's muzzle (0x56b5e1)
+        "Tree_Smoke", "Tree_Fire", "Crash_Fire", "Crash_FireSpark", "Crash_Sparks", "Barrel_Poison", "Barrel_Spark", "Flies", "barrel|effect", "gun|Smoke1", "gun|Smoke2"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0); Tree_Smoke..Flies: the title island's effect locators; barrel|effect: the sentry gun's muzzle (0x56b5e1); gun|Smoke*: its damage smoke (0x56b0b0)
     // Blend: the worm's WormPoseManager control node (arm modes in Translate.x/y, head/eye mode in Rotate.y)
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();

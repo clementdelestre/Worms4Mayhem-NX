@@ -28,7 +28,7 @@ inline float yawTo(Vector3 a, Vector3 b) { return atan2f(b.x - a.x, b.z - a.z); 
 inline float wrapPi(float a) { return remainderf(a, 2 * PI); }
 
 // Shell covers bazooka/grenades/clusters; speed = rope length or jetpack thrust, fuse = sheep timeout or jetpack fuel.
-// Melee: speed = knock along the aim, bounce = upward knock, fuse = attacker's leap. Sentry: radius = range, fuse = burst length (WeaponReloadTime), damage / reach / push = one bullet's ExplosionMessage.
+// Melee: speed = knock along the aim, bounce = upward knock, fuse = attacker's leap. Sentry: radius = range, fuse = burst length (WeaponReloadTime), damage / reach / push = one bullet's ExplosionMessage, cluster_* = its Death* blast.
 // Abduction: radius = W4M Abduction.AreaOfEffect (xz), speed = NormalSpeed, m/s.
 // Airstrike with fuse > 0: W4M controlled bomber (Bovine Blitz), flies fuse s at speed, FIRE drops one of `clusters` payloads.
 enum class Kind : uint8_t { Shell, Sheep, Airstrike, Donkey, Shotgun, Rope, Jetpack, Teleport,
@@ -68,6 +68,7 @@ struct WeaponDef {
     float base = -1;  // "min_speed": W4M BasePower in m/s, speed = BasePower + MaxPower; -1: 0.15 x speed
     bool avoid = false;  // "avoid_land": W4M Factory HomingAvoidLand (+0x69): the homing missile steers off land, 30 s life, 12.5 m/s, detonates on expiry, ChaseCamera
     int retreat = -1, postLaunch = 0;  // "retreat", "post_launch": W4M RetreatTimeOverride (-1: the scheme's LandTime), PostLaunchDelay, ms
+    int health = 0;  // "health": a Sentry Gun's WeaponHealth
     // W4M payload water (Game::wet): "size" Radius (the surface is met that high), "sink" SinkDepth, m; "skim_speed" MinSpeedForSkim
     // m/s (-1: SkimsOnWater 0), "skim_angle" MaxAngleForSkim rad, "skim_xz" / "skim_y" SkimDamping; cluster_*: the bomblets' container
     float size = 0, sink = 0, csize = 0, csink = 0, skim[4] = {-1, 0, 0, 0};  // size: a gun's BulletRadius
@@ -225,7 +226,7 @@ struct Object {
     bool fizzle = false;  // mine: its dud roll, drawn with delay
     bool sunk = false;  // crate: sinking (0x5c81a0); mine: under the disarm plane, disarmed, sinking
     int mystery = -1;  // crate: W4M kMystery item - 0x32 (MYSTERY_ITEMS), drawn at spawn; weapon stays -1
-    int id = -1;  // mine: its W4M Mine.Id when a script placed it (GameLogic.PlaceMine)
+    int id = -1;  // mine: its W4M Mine.Id when a script placed it (GameLogic.PlaceMine); sentry: its placement number (Game::sentries)
     // crate / target: W4M CrateLogicEntity (0x5c7bb0) from the Crate.* keys; the defaults are a random crate's
     int hp = CRATE_HP;  // Hitpoints x HitpointsMultiplier: what blasts and bullets take off
     int count = CRATE_STOCK;  // NumContents: ammo added (8-bit sum, 0xff infinite), hp healed
@@ -233,9 +234,9 @@ struct Object {
     bool pinned = false, pushable = true, radar = true, track = true;  // pinned: Gravity 0; radar: Crate.RadarHide / Display; TrackCam
     float scale = 1;    // Scale: its sphere is 10 x Scale units (0x5c5700)
     mutable int bubbles = 0;  // render only: a mine's SinkingFx handle while sunk (0x5c1470)
-    // sentry: W4M NewSentryGunLogicEntity states 2 / 3 / 4 / 6 (0x56de80); ticks (msTicks); `seen` = +0xbc, each worm's position when last counted as moved
+    // sentry: W4M NewSentryGunLogicEntity states 2 / 3 / 4 / 5 / 6 (0x56de80), hp = +0x7c; ticks (msTicks); `seen` = +0xbc, each worm's position when last counted as moved
     // look = +0x38, the aim point its graphic turns to (render only); face = the placing worm's facing (0x56e9ee: the mesh's +z is -face)
-    struct Turret { enum : int8_t { Scan = 2, Track = 3, Fire = 4, Done = 6 } state = Done; int8_t target = -1; bool fresh = false; int timer = 0, scan = 0, shot = 0; Vector3 seen[16] = {}; Vector3 look{}, face{0, 0, 1}; } turret;
+    struct Turret { enum : int8_t { Scan = 2, Track = 3, Fire = 4, Dying = 5, Done = 6 } state = Done; int8_t target = -1; bool fresh = false; int timer = 0, scan = 0, shot = 0; Vector3 seen[16] = {}; Vector3 look{}, face{0, 0, 1}; } turret;
 };
 float restHalf(const Object &o);  // a resting object's centre is restHalf + 0.05 m (the probe) above the ground
 Vector3 sentryBase(const Object &o);  // W4M sentry position +0x20: its one collider vertex at the origin (0x56cf05), the ground point
@@ -254,12 +255,13 @@ struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
                           Comment, CommentClear, Emitter, EmitterOff, Shake, Pop,
-                          Movie, Speech, MovieSound, MovieStart, MovieEnd, SuddenDeath } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
+                          Movie, Speech, MovieSound, MovieStart, MovieEnd, SuddenDeath, SentryHit } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;
     const char *fx = nullptr;  // Boom, Splash, Pop: the PARTTWK effect its W4M caller starts (render only)
     const char *sfx = nullptr;  // Boom: the FEV event its caller plays besides the effect's own EmitterSoundFX (a payload's DetonationSfx)
-    int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories; Hurt (Game::hurt): the hp lost
+    int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories; Hurt (Game::hurt): the hp lost; SentryHit: the sentry's id
+    float amount = 0;  // SentryHit (0x56d2a0): the damage its graphic takes (command 4); weapon = 1 in the full-damage core (Turn.MaxDamage)
 };
 
 // Match options, identical on every client (sent in the network Start message).
@@ -513,6 +515,7 @@ struct Game {
     static int chuteSteer(Vector3 in, float yaw);
     Rope rope;  // the active worm's rope, or the hooked object's
     Hook grapple;  // the active worm's hook in flight
+    int sentries = 0;  // Sentry Guns placed this match: the next one's id
     int ropeUsed = -1;  // the rope that hooked this turn: its ammo goes at the cleanup (0x5727b0, +0x7b)
     float fuel = 0, ropeMax = 0, thrust = 0;  // max/thrust: of the tool in use, the hand may hold a weapon
     float jetInit = 7.5f;     // W4M Jetpack.InitFuel s: a new jetpack entity's fuel (0x563440)
@@ -665,9 +668,9 @@ struct Game {
     Vector3 strikeDir() const { return {-cosf(cursorYaw), 0, sinf(cursorYaw)}; }  // the view's right: bombers cross the screen
     int retreatTicks(const WeaponDef &d) const { return msTicks(d.retreat >= 0 ? d.retreat : cfg.scheme.retreatTime * 1000); }
     int fallDamage(float speed) const;  // W4M FallDamage 0x5ac3e0: hp lost landing at `speed` m/s, scheme and Wormpot included
-    struct GunHit { Vector3 at; float dist; int worm; bool land; int obj = -1; };  // at: the struck worm's centre, else the ray's end; worm / obj (a crate) -1: none
+    struct GunHit { Vector3 at; float dist; int worm; bool land; int obj = -1, sentry = -1; };  // at: the struck worm's centre or sentry's base, else the ray's end; worm / obj (a crate) / sentry -1: none
     static constexpr float GUN_RANGE = 9999 / 20.0f;  // WEAPTWK Range 9999 units, both guns
-    GunHit gunRay(Ray r, const Worm &shooter, float bullet) const;  // W4M gun sweep 0x55e10f, a BulletRadius sphere: land, worms, crates, mines, drums, bubbles (dist GUN_RANGE: a miss)
+    GunHit gunRay(Ray r, const Worm &shooter, float bullet, int self = -1) const;  // W4M gun sweep 0x55e10f, a BulletRadius sphere: land, worms, crates, mines, drums, sentries but `self`, bubbles (dist GUN_RANGE: a miss)
     Blast gunBlast(int weapon) const;                  // one hit's explosion, Wormpot super firearms included
     bool steered() const;    // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
     bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)
@@ -717,7 +720,7 @@ private:
     bool underwater(const Worm &w) const;
     void stepShots(const Input &in, bool detonate);
     void deathBlast(const Worm &w, int wi);
-    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1, const char *fx = nullptr, const char *sfx = nullptr, const Vector3 *fxAt = nullptr);  // weapon, fx, sfx, fxAt (default p): carried by the Boom event
+    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1, const char *fx = nullptr, const char *sfx = nullptr, const Vector3 *fxAt = nullptr, int self = -1);  // weapon, fx, sfx, fxAt (default p): carried by the Boom event; self: the sentry whose bullet it is (0x56dc30 skips its own)
     void steal(const Worm &victim);  // old woman ammo theft
     void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies
@@ -727,6 +730,8 @@ private:
     void stepObjects();
     void stepSentry(Object &o);  // NewSentryGunLogicEntity update 0x56de80
     void sentryShot(const Object &o, const Vector3 &up, int target);  // 0x56c810
+    void sentryHit(Object &o, Vector3 p, const Blast &b);  // Explosion 0x56d2a0
+    void clearVoxel(Vector3 at, Vector3 dir);  // a bullet's Land.ClearVoxel on the land it hit
     void openMystery(int item, Worm &w);  // CrateLogicEntity 0x5ca1f0
     void crateHit(Object &o, float dmg);  // a crate or target takes blast or bullet damage
     void poisonWorm(Worm &w) { if (!w.poison) w.poison = POISON_DEFAULT, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm

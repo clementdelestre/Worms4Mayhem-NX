@@ -629,6 +629,7 @@ void Acting::event(const Game &g, const GameEvent &e) {
             }
         break;
     }
+    case GameEvent::SentryHit: maxDamage |= e.weapon == 1; break;  // a sentry in the full-damage core: Turn.MaxDamage (0x56d3a2)
     case GameEvent::Death:
         if (cur == NONE || e.worm < 0) break;
         if (tm != curTeam && anyDeath) line(cur, V::EnemyDeath);  // lsd category, no scene
