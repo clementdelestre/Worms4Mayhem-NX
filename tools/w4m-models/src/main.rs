@@ -989,11 +989,12 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
 
     // joints: flat nodes holding the full skinning matrix (inverse bind = identity), so no shear-prone hierarchy
     let mut nodes = vec![format!("{{\"name\":\"mesh\",\"mesh\":0{}}}", if animated { ",\"skin\":0" } else { "" })];
-    // WEAPTWK FxLocator (bazookarocket, homingmissile, Dynamite Spark, hollyhandgrenade, gascannister; a Weapon Factory payload's `fuse`, 0x5993ec): where the ArielFx emitters sit on a static payload, in the baked model's space
-    for (gi, _) in s.groups.iter().enumerate().filter(|(_, g)| !animated && matches!(leaf(&g.path).as_str(), "bazookarocket" | "homingmissile" | "fuse" | "Spark" | "hollyhandgrenade" | "gascannister")) {
-        let t = apply(&norm, apply(&rest[gi], [0.0; 3], 1.0), 1.0);
-        nodes.push(format!("{{\"name\":\"FxLocator\",\"translation\":{t:?}}}"));
-    }
+    // WEAPTWK FxLocator (bazookarocket, homingmissile, Dynamite Spark, hollyhandgrenade, gascannister, landmine, Old Woman hips; a Weapon Factory payload's `fuse`, 0x5993ec): where the ArielFx emitters sit, in the baked model's rest pose
+    let fx_nodes = || -> Vec<String> {
+        s.groups.iter().enumerate().filter(|(_, g)| matches!(leaf(&g.path).as_str(), "bazookarocket" | "homingmissile" | "fuse" | "Spark" | "hollyhandgrenade" | "gascannister" | "landmine" | "hips"))
+            .map(|(gi, _)| format!("{{\"name\":\"FxLocator\",\"translation\":{:?}}}", apply(&norm, apply(&rest[gi], [0.0; 3], 1.0), 1.0))).collect()
+    };
+    if !animated { nodes.extend(fx_nodes()); }
     // `*_locator` nodes of a static mesh (a Weapon Factory gun body's part sockets, WAE_Standard 0x58fe80), in the baked model's space
     for (gi, g) in s.groups.iter().enumerate().filter(|(_, g)| !animated && g.path.ends_with("_locator")) {
         let (t, r, sc) = decompose(&mul(&norm, &rest[gi]));
@@ -1021,6 +1022,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             q += 20;
             nodes.push(format!("{{\"name\":\"{}\",\"translation\":{t:?},\"rotation\":{r:?},\"scale\":{sc:?}}}", x.str(vi(d, &mut q))));
         }
+        nodes.extend(fx_nodes());  // after the joints, which are nodes 1..=nb
         let nb = s.bones.len() + sockets.len();
         let ibm: Vec<f32> = (0..nb).flat_map(|_| [1.0, 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.]).collect();
         let a_ibm = g.floats(&ibm, "MAT4", nb, false);
