@@ -970,8 +970,10 @@ void logo(float cx, float y, float w, float deg, float stretch) {
 #define W4NX_VERSION "0.1.0"
 #endif
 // x, y: label centre; deg: tilt
-// FE text is 1.16 x wider than our font at the same height [observed: briefing, title, ticker lines of the real game, same glyph height]
-static const float TEXT_X = 1.16f;
+// FE text is FE.Font at em x FontSize, as HUD text (56 / 50 of our font's em, both axes) [disasm 0x6b6cb0 / 0x6a7f00, docs/w4m/render.md §140]
+static const float FE_EM = 56 / 50.0f;
+// FE units about the screen centre, y up: the HUD camera's z = 0 plane is 480 units tall, 1.5 px at 720 [disasm 0x4d8bd6..0x4d8cc9, docs/w4m/frontend.md "FE camera"]
+static const float FE_S = 720 / 480.0f;
 // FE x positions (not sizes) widen by 16:9 / 4:3 about the screen centre [user-requested, docs/w4m/frontend.md "16:9 spread"]; FeFlat: W4M's own x
 static const float FE_SPREAD = (1280 / 720.0f) / (4 / 3.0f);
 static float feK = FE_SPREAD;
@@ -1023,7 +1025,7 @@ static const MainRow MAIN_ALL[] = {
     {"Lang.Quit", "Quit", "Quitter", 35, 35, -0.03f},
 };
 static std::array<MenuItem, 6> mainMenu() {
-    // FE text size as feText (TEXT_X); column = row width less its two 2-unit gap columns [assumed]
+    // FE text size as feText (FE_EM); column = row width less its two 2-unit gap columns [assumed]
     const float COL_W = (236 - 4) * MAIN_BIG, GAP = 2 * MAIN_BIG, TILT = 0.06f;
     std::array<MenuItem, 6> m{};
     float top = 110 * MAIN_BIG;  // y up, from the box centre
@@ -1031,8 +1033,8 @@ static std::array<MenuItem, 6> mainMenu() {
         const MainRow &r = MAIN_ALL[mainItem(i)];
         float cy = top - r.height * MAIN_BIG / 2;
         top -= r.height * MAIN_BIG + GAP;
-        m[i] = {r.key, r.en, r.fr, 640 + (155 - cy * sinf(TILT)) * 720 / 500 * FE_SPREAD, 360 - (19 + cy * cosf(TILT)) * 720 / 500, (r.font - 0.1f) * MAIN_BIG * 720 / 500,
-                -(TILT + r.tilt) * RAD2DEG, COL_W * 720 / 500, TEXT_X};
+        m[i] = {r.key, r.en, r.fr, 640 + (155 - cy * sinf(TILT)) * FE_S * FE_SPREAD, 360 - (19 + cy * cosf(TILT)) * FE_S, (r.font - 0.1f) * MAIN_BIG * FE_S * FE_EM,
+                -(TILT + r.tilt) * RAD2DEG, COL_W * FE_S};
     }
     return m;
 }
@@ -1110,9 +1112,6 @@ static const float K_IN_PREV_S[3][6] = {{0, 0, 0.083313f, 0.59961f, 0, 0}, {0.08
 static const FeClip IN_PREV = {keys(K_IN_PREV_S, true), keys(K_IN_PREV_S, true), {}, {}, keys(K_IN_PREV_R, true)},
                     OUT_PREV = {keys(K_OUT_PREV_S, true), keys(K_OUT_PREV_S, true), {}, {}, keys(K_OUT_PREV_R, true)},
                     IN_SPRINGXY = {keys(K_SPRING, false), keys(K_SPRING, false), {}, {}, {}}, OUT_SCALEXY = {keys(K_OUT_SCALEXY, true), keys(K_OUT_SCALEXY, true), {}, {}, {}};
-// FE units about the screen centre, y up: 500 tall at 720 px [observed: WXFE.Story / WXFE.Challenges against the real game; the 3D items are seen by
-// a camera 903.5 units from the z = 0 plane, FOV 0.54 rad: the plane is 500 tall there, the ToolTip strip and the book match]
-static const float FE_S = 720 / 500.0f;
 
 // A W4M menu item about its centre c: Anim_Incoming `in` once `delay` s passed since the screen showed (`since`), Anim_Outgoing
 // `out` once leaving (s, -1: not). A null clip (W4M None) takes rowAppear() slid by `slide` px. False: hidden; else rlPopMatrix() after.
@@ -1138,14 +1137,17 @@ static bool feItem(Vector2 c, const FeClip *in, float delay, const FeClip *out, 
 static Vector2 fePos(float x, float y) { return {640 + x * FE_S * feK, 360 - y * FE_S}; }
 static Rectangle feRect(float x, float y, float hw, float hh) { Vector2 c = fePos(x, y); return {c.x - hw * FE_S, c.y - hh * FE_S, 2 * hw * FE_S, 2 * hh * FE_S}; }
 
-// A WXFE_MeshObjectDesc through the FE camera (0.54 rad at z 903.5 [observed, see FE_S]; Lighting: FrontendMeshLight): position (FE units), scale,
+// The HUD camera at distance d from the z = 0 plane, 480 units tall there (t = 0.48 * 500 / d); raylib takes the aspect from the target
+static Camera3D feCamera(float d) { return {{0, 0, d}, {0, 0, 0}, {0, 1, 0}, 2 * atanf(0.48f * 500 / d) * RAD2DEG, CAMERA_PERSPECTIVE}; }
+
+// A WXFE_MeshObjectDesc through the FE camera (Lighting: FrontendMeshLight): position (FE units), scale,
 // orientation (rad) and the mesh clip at t s
 extern "C" void glClear(unsigned int mask);
 static const int FE_DIVIDE_LIGHT = 2;  // feMesh light: 0 none, 1 the item's Lighting (FrontendMeshLight), 2 the BlueDivide's
 static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, int light, const char *clip, float t) {
-    // the BlueDivide sits in bin 0x24, a HUD bin: the HUD camera (0, 0, 500), t 0.48 [disasm 0x51f740, 0x4d81e0]
+    // every FE item sits in a HUD bin: the HUD camera (0, 0, 900), t 0.48 / 1.8 [disasm 0x4d8bd6..0x4d8cc9, 0x4d81e0]; the BlueDivide's pose is (0, 0, 500), t 0.48 [0x51f740]
     const bool hudBin = light == FE_DIVIDE_LIGHT;
-    Camera3D cam = {{0, 0, hudBin ? 500.0f : 903.5f}, {0, 0, 0}, {0, 1, 0}, hudBin ? 2 * atanf(0.48f) * RAD2DEG : 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
+    Camera3D cam = feCamera(hudBin ? 500.0f : 900.0f);
     glClear(0x100);
     rlSetClipPlanes(5, 15000);
     BeginMode3D(cam);
@@ -1159,7 +1161,7 @@ static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, in
 
 // a Weapon Factory weapon's held graphic (gun parts, Radio or payload) in the FE 3D space, like feMesh
 static void feWeapon(const std::string &graphic, Vector3 pos, float scale, Vector3 rot) {
-    Camera3D cam = {{0, 0, 903.5f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
+    Camera3D cam = feCamera(900);
     glClear(0x100);
     rlSetClipPlanes(5, 15000);
     BeginMode3D(cam);
@@ -1277,7 +1279,7 @@ static std::vector<std::string> feWrap(const std::string &s, float sizePx, float
         char ch = i < s.size() ? s[i] : ' ';
         if (ch != ' ' && ch != '\n') { word += ch; continue; }
         std::string t = line.empty() ? word : line + " " + word;
-        if (!line.empty() && feWidth(t, sizePx) * TEXT_X > w) lines.push_back(line), t = word;
+        if (!line.empty() && feWidth(t, sizePx) * FE_EM > w) lines.push_back(line), t = word;
         line = t, word.clear();
         if (ch == '\n') lines.push_back(line), line.clear();
     }
@@ -1327,7 +1329,7 @@ static void feText(const std::string &text, const FeBox &b) {
             if (a <= 0) continue;
         }
         Vector2 p = fePos(x, y);
-        rlPushMatrix(), rlTranslatef(p.x, p.y, 0), rlScalef(TEXT_X, a, 1), rlTranslatef(-p.x, -p.y, 0);
+        rlPushMatrix(), rlTranslatef(p.x, p.y, 0), rlScalef(FE_EM, a * FE_EM, 1), rlTranslatef(-p.x, -p.y, 0);
         Color c0 = b.grad[0], c1 = b.grad[1], e = b.edge;
         c0.a *= a, c1.a *= a, e.a *= a;
         feLine(lines[i], p.x, p.y, px, c0, c1, align, e, b.anim ? &pose : nullptr);
@@ -1382,11 +1384,11 @@ float marqueeShift(float period, float t, bool loop) {
     return loop ? fmodf(fmaxf(t, 0) * 25 * FE_S, period) : fmaxf(n - 100, 0) * 0.5f * FE_S;  // loop: no wait, the copies glide by without a stop
 }
 static void marquee(const char *s, Rectangle win, float px, const Color *g, int align, Color edge, float t, bool loop = false) {
-    float w = textWidth(s, px) * TEXT_X, cy = win.y + win.height / 2;
-    auto line = [&](float x, int al) { rlPushMatrix(), rlTranslatef(roundf(x), cy, 0), rlScalef(TEXT_X, 1, 1), textG(s, 0, -px / 2, px, g[0], g[1], al, edge), rlPopMatrix(); };
+    float w = textWidth(s, px) * FE_EM, cy = win.y + win.height / 2;
+    auto line = [&](float x, int al) { rlPushMatrix(), rlTranslatef(roundf(x), cy, 0), rlScalef(FE_EM, FE_EM, 1), textG(s, 0, -px / 2, px, g[0], g[1], al, edge), rlPopMatrix(); };
     if (roundf(w) <= roundf(win.width) && !loop)  // whole pixels: a window sized from the text's own width still fits it
         return line(align == 0 ? win.x : align == 1 ? win.x + win.width / 2 : win.x + win.width, align);
-    float period = fmaxf(w + textWidth(" ", px) * TEXT_X, loop ? win.width : 0);  // loop: a short text still crosses the whole window
+    float period = fmaxf(w + textWidth(" ", px) * FE_EM, loop ? win.width : 0);  // loop: a short text still crosses the whole window
     rlDrawRenderBatchActive();
     BeginScissorMode((int)win.x, (int)(cy - px), (int)win.width, (int)(2 * px));
     const float shift = marqueeShift(period, t, loop);
@@ -1478,11 +1480,11 @@ static float backOut(float k) { k = Clamp(k, 0, 1) - 1; return 1 + 2.7f * k * k 
 // The spot is read off the HISTOIRE / DEFIS screens [observed]: text left edge at FE -305, centre y 195, underline from -363, centre y 174
 static void titleControl(const char *title, float x) {
     FeFlat flat;
-    float sz = 40 * FE_S, tw = textWidth(title, sz) * TEXT_X;
+    float sz = 40 * FE_S, tw = textWidth(title, sz) * FE_EM;
     Vector2 l = fePos(-305, 195), u = fePos(-363, 174);
     std::vector<Vector2> pose = textPose(3, title);
-    rlPushMatrix(), rlTranslatef(l.x + x, 0, 0), rlScalef(TEXT_X, 1, 1);
-    textG(title, 0, l.y - sz / 2, sz, GC_BUTTON_YELLOW[0], GC_BUTTON_YELLOW[1], 0, BC_BLACK, &pose);
+    rlPushMatrix(), rlTranslatef(l.x + x, l.y, 0), rlScalef(FE_EM, FE_EM, 1);
+    textG(title, 0, -sz / 2, sz, GC_BUTTON_YELLOW[0], GC_BUTTON_YELLOW[1], 0, BC_BLACK, &pose);
     rlPopMatrix();
     float w = l.x + tw + 12 * FE_S - u.x;
     if (!image("fe/title_underline", {u.x + x, u.y - w / 32, w, w / 16})) DrawRectangle(u.x + x, u.y, w, 3, WHITE);
@@ -2083,15 +2085,15 @@ void feBorder(Rectangle d, int state) {
     feBorderSprite(d, NAME[state]);
 }
 
-// FE text in pixels: x anchored by align (0 left, 1 centre, 2 right), yc the line's centre; TEXT_X as every FE text
+// FE text in pixels: x anchored by align (0 left, 1 centre, 2 right), yc the line's centre; FE_EM as every FE text
 void feTextPx(const char *s, float x, float yc, float px, const Color *g, int align, Color edge = BC_BLACK) {
     rlPushMatrix();
     rlTranslatef(x, yc, 0);
-    rlScalef(TEXT_X, 1, 1);
+    rlScalef(FE_EM, FE_EM, 1);
     textG(s, 0, -px / 2, px, g[0], g[1], align, edge);
     rlPopMatrix();
 }
-float feWidthPx(const char *s, float px) { return textWidth(s, px) * TEXT_X; }
+float feWidthPx(const char *s, float px) { return textWidth(s, px) * FE_EM; }
 // one cell of a W4M icon sheet (cols x rows cells, row-major: :0 top-left)
 void feIcon(const char *sheet, int cols, int rows, int cell, Rectangle d, Color tint = WHITE) {
     Texture2D t = tex(sheet);
@@ -2745,7 +2747,7 @@ void edText(const char *s, Vector2 p, float size, const Color *g, int align, flo
     float px = size * FE_S, w = feWidthPx(s, px);
     if (maxW > 0 && w > maxW * FE_S) px *= maxW * FE_S / w;
     std::vector<Vector2> pose = anim ? textPose(anim, s) : std::vector<Vector2>();
-    rlPushMatrix(), rlTranslatef(p.x, p.y, 0), rlScalef(TEXT_X, 1, 1);
+    rlPushMatrix(), rlTranslatef(p.x, p.y, 0), rlScalef(FE_EM, FE_EM, 1);
     textG(s, 0, -px / 2, px, g[0], g[1], align, edge, anim ? &pose : nullptr);
     rlPopMatrix();
 }
@@ -2824,7 +2826,7 @@ void scratches(Vector2 c, const Scratch *s, int n) {
 // TheWorm (WXFE_WormDesc: Position (-155, -60, 100), Scale 120, Orientation y 0.4) through the FE camera. 0x758553 hangs the worm under a node at
 // -Position, a chain not decoded: placed (-115, -105, 100) x 195 turned 0.9 rad to match the reference shots [observed]; slide: In_TitleUnderline's x (FE)
 void Frontend::editorWorm(const char *clip, float ct, bool loop, float slide) {
-    Camera3D cam = {{0, 0, 903.5f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
+    Camera3D cam = feCamera(900);
     glClear(0x100);
     rlSetClipPlanes(5, 15000);
     BeginMode3D(cam);
@@ -4380,7 +4382,6 @@ static void hudBitmap(Texture2D t, Rectangle src, float x, float y, float hw, fl
 }
 
 // an FE.Font HUD text centred on local y, em `units` high, x scaled by xs, its width squeezed to `fit` units (0x755843: x scale only).
-// Not TEXT_X wide like WXFE text [observed: the real panel title is 192 units wide at em 24]
 static void hudText(const char *t, float x, float y, float units, const Color *grad, Color edge, int align, float fit = 0, float xs = 1,
                     const std::vector<Vector2> *pose = nullptr) {
     float px = units * HU * 56 / 50, w = textWidth(t, px) * xs, sx = xs * (fit > 0 && w > fit * HU ? fit * HU / w : 1);
@@ -4456,7 +4457,7 @@ static void helpPanel(const HudPose &p, const WeaponDef *w, bool factory) {
             float px = size * HU;
             rlPushMatrix();
             rlTranslatef(-78 * HU, (-51 + i * size) * HU, 0);
-            rlScalef(TEXT_X, 1, 1);
+            rlScalef(FE_EM, FE_EM, 1);
             feLine(lines[i], 0, 0, px, WHITE, WHITE, 0, BLACK);
             rlPopMatrix();
         }
@@ -5281,7 +5282,7 @@ int missionMenu(MissionMenu &st, const std::vector<MissionSpec> &list, const Pro
                 feText(who + " - " + (sec >= 3600 ? TextFormat("%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60) : TextFormat("%d:%02d", sec / 60, sec % 60)), b);
                 b = {{123, -75}, 120, 20, 20, 0, -1, 4, 0, false, GC_WHITE, BC_BLACK};  // LABEL BestTime
                 feText(tr("FETXT.BestTime", "Best Time"), b);
-                float bw = textWidth(tr("FETXT.BestTime", "Best Time"), 20 * FE_S) * TEXT_X / FE_S / 2 + 6;  // the list row's two brush rules
+                float bw = textWidth(tr("FETXT.BestTime", "Best Time"), 20 * FE_S) * FE_EM / FE_S / 2 + 6;  // the list row's two brush rules
                 image("fe/title_underline", feRect(123 - bw - 20, -75, 19, 2.5f));
                 image("fe/title_underline", feRect(123 + bw + 20, -75, 19, 2.5f));
                 rlPopMatrix();

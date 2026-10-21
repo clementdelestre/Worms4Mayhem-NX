@@ -15,9 +15,9 @@
 
 namespace {
 const float S = 0.05f;  // metres per FE unit
-// FE camera [observed, docs/w4m/frontend.md §FE camera]: z 903.5 looking down -z, FOV 0.54 rad; Title Mesh item of WXFE.MainMenu [data]
-const Vector3 FE_EYE = {0, 0, 903.5f}, TITLE_POS = {-25, -131, 500}, TITLE_ROT = {-0.15f, 0.15f, -0.01f};
-const float FE_FOV = 0.54f, TITLE_SCALE = 7.3f;
+// FE camera = the app-init HUD camera [disasm 0x4d8bd6..0x4d8cc9, docs/w4m/frontend.md §FE camera]: z 900 looking down -z, fovy 2 atan(0.48 / 1.8); Title Mesh item of WXFE.MainMenu [data]
+const Vector3 FE_EYE = {0, 0, 900}, TITLE_POS = {-25, -131, 500}, TITLE_ROT = {-0.15f, 0.15f, -0.01f};
+const float FE_FOV = 0.5216f, TITLE_SCALE = 7.3f;
 const float WATER_DROP = 735;  // FE units under the eye [observed: fits the real menu's horizon; the camera placing Water.Level not found]
 const float ANIM_SPEED = 0.9f;  // mesh clips play at FE.AnimSpeed (0x778c91) [disasm + data]
 // Intro_Title (11.664 s) moves Land from its rest (-5.71, 15.78125, 1.5039) to (y 17.921875, z -23.78125); Loop_Title keys only the trees,
