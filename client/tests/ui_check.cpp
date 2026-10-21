@@ -9,6 +9,8 @@
 #include "raymath.h"
 #include <algorithm>
 #include <cassert>
+#include <set>
+#include <string_view>
 #include <cstdio>
 
 int main() {
@@ -70,6 +72,20 @@ int main() {
         std::vector<std::string> maps = {"", "Multi_CarpetCapers", "Accuracy", "Clean-w3d", "ChallengeAccuracy", "ChallengeCrate"};
         Ui::multiplayerMaps(maps);
         if (FileExists("assets/multimaps.txt")) assert((maps == std::vector<std::string>{"", "Multi_CarpetCapers", "Clean-w3d", "ChallengeCrate"}));
+        if (FileExists("assets/multimaps.txt")) {  // one entry per landscape: no two offered maps share their terrain data
+            std::vector<std::string> all;
+            FilePathList fl = LoadDirectoryFilesEx("assets/maps", ".cells", false);
+            for (unsigned i = 0; i < fl.count; i++) all.push_back(GetFileNameWithoutExt(fl.paths[i]));
+            UnloadDirectoryFiles(fl);
+            Ui::multiplayerMaps(all);
+            std::set<size_t> seen;
+            for (const std::string &m : all) {
+                int n = 0;
+                unsigned char *d = LoadFileData(TextFormat("assets/maps/%s.cells", m.c_str()), &n);
+                assert(d && seen.insert(std::hash<std::string_view>()({(char *)d, (size_t)n})).second);
+                UnloadFileData(d);
+            }
+        }
     }
     for (int want = 0; want < (int)WEAPONS.size(); want++) {
         Game g;
