@@ -13,58 +13,63 @@ struct Lobby {
     bool isHost() const { return self == host; }
     bool canEdit(int team) const { return team >= 0 && team < cfg.teams && owner[team] == self; }  // name, control, voice, hat
     bool canEditMatch() const { return isHost(); }  // map, scheme, rules, worms per team, wormpot
-    // a team is added at the end; removing one shifts the later teams up (colour = slot)
-    bool addTeam() {
-        if (cfg.teams >= MAX_TEAMS) return false;
-        owner[cfg.teams++] = self;
+    // Slots: local play keeps cfg.teams = MAX_TEAMS and fills slots sparsely (`used`); a room's teams are the slots 0..teams-1
+    unsigned used = 0;
+    bool playing(int k) const { return k >= 0 && k < MAX_TEAMS && (used >> k & 1); }
+    int count() const { return __builtin_popcount(used); }
+    // slot k is a human team of this console played by pad p
+    bool ownedBy(int k, int p) const { return playing(k) && canEdit(k) && !cfg.teamSetup[k].cpu && cfg.teamSetup[k].pad == p; }
+    bool take(int k, int p) {  // pad p takes the free slot k
+        if (!canEdit(k) || playing(k)) return false;
+        used |= 1u << k, cfg.teamSetup[k].cpu = 0, cfg.teamSetup[k].pad = (uint8_t)p;
         return true;
     }
-    bool removeTeam(int k, int least) {
-        if (cfg.teams <= least || !canEdit(k)) return false;
-        GameConfig::Team gone = cfg.teamSetup[k];
-        for (int i = k; i < MAX_TEAMS - 1; i++) cfg.teamSetup[i] = cfg.teamSetup[i + 1], owner[i] = owner[i + 1];
-        cfg.teamSetup[MAX_TEAMS - 1] = gone, owner[MAX_TEAMS - 1] = self, cfg.teams--;
+    bool release(int k) {  // a human or CPU slot of this console becomes free
+        if (!playing(k) || !canEdit(k)) return false;
+        used &= ~(1u << k), cfg.teamSetup[k].cpu = 0;
         return true;
     }
-    // Contrôle: 0..3 a pad, 4..8 CPU level 1..5
-    static int ctrlOf(const GameConfig::Team &t) { return t.cpu ? 3 + t.cpu : t.pad; }
-    static void setCtrl(GameConfig::Team &t, int v) { t.cpu = v < 4 ? 0 : (uint8_t)(v - 3), t.pad = v < 4 ? (uint8_t)v : t.pad; }
-    // One edit of team k's row (1 Control, 2 Voice, 3 Hat) by d steps; ctrls: how many Control values are offered; false when nothing may change
-    bool cycle(int k, int row, int d, int ctrls, int voices, int hats) {
-        if (!canEdit(k) || !d) return false;
+    bool cpuStep(int k) {  // a free slot becomes CPU level 1, a CPU slot goes up one level (5 wraps to 1)
         GameConfig::Team &t = cfg.teamSetup[k];
-        auto wrap = [d](int v, int n) { return n ? ((v + d) % n + n) % n : 0; };
-        if (row == 1) setCtrl(t, wrap(ctrlOf(t), ctrls));
-        else if (row == 2 && voices) t.voice = (uint8_t)wrap(t.voice, voices);
-        else if (row == 3 && hats) t.hat = (uint8_t)wrap(t.hat, hats + 1);
-        else return false;
+        if (!canEdit(k) || (playing(k) && !t.cpu)) return false;
+        used |= 1u << k, t.cpu = t.cpu % 5 + 1;
         return true;
+    }
+    // voice / hat of team k by d steps (hat 0 = none); false when nothing may change
+    bool voice(int k, int d, int banks) {
+        if (!canEdit(k) || !d || !banks) return false;
+        uint8_t &v = cfg.teamSetup[k].voice;
+        return v = (uint8_t)(((v + d) % banks + banks) % banks), true;
+    }
+    bool hat(int k, int d, int hats) {
+        if (!canEdit(k) || !d || !hats) return false;
+        uint8_t &h = cfg.teamSetup[k].hat;
+        return h = (uint8_t)(((h + d) % (hats + 1) + hats + 1) % (hats + 1)), true;
     }
     // the pads that human teams of this console use, as a bit set
     unsigned padsUsed() const {
         unsigned m = 0;
-        for (int k = 0; k < cfg.teams; k++) if (canEdit(k) && !cfg.teamSetup[k].cpu) m |= 1u << cfg.teamSetup[k].pad;
+        for (int k = 0; k < MAX_TEAMS; k++) if (playing(k) && canEdit(k) && !cfg.teamSetup[k].cpu) m |= 1u << cfg.teamSetup[k].pad;
         return m;
+    }
+    // the match: the playing slots in order, colour = rank
+    GameConfig match() const {
+        GameConfig c = cfg;
+        c.teams = 0, c.teamSetup.clear();
+        for (int k = 0; k < MAX_TEAMS; k++) if (playing(k)) c.teamSetup.push_back(cfg.teamSetup[k]), c.teams++;
+        return c;
     }
 };
 
-// The Teams screen's cursors, one per pad: each walks the MAX_TEAMS cards (rows 0 name, 1 Control, 2 Voice, 3 Hat; an empty card has row 0 only) on its own [ours]
+// Average of two body colours (a Joy-Con pair): red + blue = purple
+inline Color mixColors(Color a, Color b) { return {(unsigned char)((a.r + b.r) / 2), (unsigned char)((a.g + b.g) / 2), (unsigned char)((a.b + b.b) / 2), 255}; }
+
+// The Teams screen's tokens, one per pad: the slot each pad is on, moved independently [ours]
 struct TeamCursors {
-    struct At { int card = 0, row = 0; } at[4];
-    bool placed = false;  // the cursors were put on their first teams
-    static int rows(int card, int teams) { return card < teams ? 4 : 1; }
-    void row(int p, int d, int teams) { int n = rows(at[p].card, teams); at[p].row = ((at[p].row + d) % n + n) % n; }
-    void card(int p, int d, int teams) {
-        at[p].card = ((at[p].card + d) % Lobby::MAX_TEAMS + Lobby::MAX_TEAMS) % Lobby::MAX_TEAMS;
-        at[p].row = std::min(at[p].row, rows(at[p].card, teams) - 1);
-    }
-    // team k was removed: the cursors on later cards follow their team up; every row is clamped to the new count
-    void removed(int k, int teams) {
-        for (At &a : at) {
-            if (a.card > k) a.card--;
-            a.row = std::min(a.row, rows(a.card, teams) - 1);
-        }
-    }
+    int slot[4] = {};
+    bool placed = false;  // the tokens were put on their first slots
+    void move(int p, int d) { slot[p] = ((slot[p] + d) % Lobby::MAX_TEAMS + Lobby::MAX_TEAMS) % Lobby::MAX_TEAMS; }
+    void removed(int k) { for (int &s : slot) if (s > k) s--; }  // a room's later slots shift up
 };
 
 // W4M lobby timer (docs/w4m/network.md "Lobby flow"): 30 s from the moment a second player is there, restarted by each join, off under 2 players;

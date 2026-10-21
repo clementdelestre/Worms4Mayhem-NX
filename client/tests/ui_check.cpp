@@ -12,35 +12,34 @@
 
 int main() {
     loadWeapons("romfs/weapons.json");
-    {  // Lobby: teams are added at the end, removing one shifts the later ones up, pads in use come from this console's human teams
+    {  // Lobby slots: a pad takes a free slot only, a pad may take several, release frees it, Y makes a CPU then cycles its level, pads in use are this console's human slots
         Lobby l;
-        l.cfg.teams = 2, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
-        for (int k = 0; k < Lobby::MAX_TEAMS; k++) l.cfg.teamSetup[k].name = std::to_string(k), l.cfg.teamSetup[k].pad = (uint8_t)k;
-        assert(l.addTeam() && l.addTeam() && !l.addTeam() && l.cfg.teams == 4);
-        l.cfg.teamSetup[3].cpu = 2;
-        assert(l.padsUsed() == 0b0111);  // team 3 is a CPU
-        assert(l.removeTeam(1, 2) && l.cfg.teams == 3 && l.cfg.teamSetup[1].name == "2" && l.cfg.teamSetup[2].name == "3" && l.cfg.teamSetup[3].name == "1");
-        assert(l.removeTeam(0, 2) && !l.removeTeam(0, 3));
-        l.owner[0] = 1;  // another console's team: not editable here, but its pad is not ours either
-        assert(!l.canEdit(0) && !l.removeTeam(0, 1) && l.isHost() && l.canEditMatch());
-        l.self = 1;
-        assert(!l.isHost() && !l.canEditMatch() && l.canEdit(0));
+        l.cfg.teams = Lobby::MAX_TEAMS, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
+        assert(l.count() == 0 && l.take(2, 1) && !l.take(2, 0) && l.take(0, 1) && l.playing(0) && l.playing(2) && !l.playing(1) && l.padsUsed() == 0b10);
+        assert(l.ownedBy(2, 1) && !l.ownedBy(2, 0) && !l.ownedBy(1, 1));
+        assert(l.cpuStep(3) && l.cfg.teamSetup[3].cpu == 1 && !l.cpuStep(2) && l.padsUsed() == 0b10);  // a human slot is no CPU
+        for (int i = 0; i < 5; i++) assert(l.cpuStep(3));
+        assert(l.cfg.teamSetup[3].cpu == 1);  // level 5 wraps to 1 (1 + 5 steps)
+        assert(l.release(3) && !l.playing(3) && l.cfg.teamSetup[3].cpu == 0 && !l.release(3) && l.cpuStep(3) && l.cfg.teamSetup[3].cpu == 1);
+        l.cfg.teamSetup[0].name = "A", l.cfg.teamSetup[2].name = "C", l.cfg.teamSetup[3].name = "D";
+        GameConfig m = l.match();  // playing slots 0, 2, 3 in order
+        assert(m.teams == 3 && m.teamSetup.size() == 3 && m.teamSetup[0].name == "A" && m.teamSetup[1].name == "C" && m.teamSetup[2].name == "D");
+        assert(l.hat(0, -1, 7) && l.cfg.teamSetup[0].hat == 7 && l.voice(0, -1, 5) && l.cfg.teamSetup[0].voice == 4);  // wrap
+        l.owner[0] = 7;  // another console's slot is read-only
+        assert(!l.hat(0, 1, 7) && !l.ownedBy(0, 1) && !l.release(0) && l.padsUsed() == 0b10);
     }
-    {  // Teams screen: two pad cursors move and edit different teams at once, and follow their team when another is removed
-        Lobby l;
-        l.cfg.teams = 3, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
+    {  // Teams screen tokens move on their own and a room's later slots shift up on a release
         TeamCursors c;
-        c.card(1, 2, l.cfg.teams), c.row(0, 1, l.cfg.teams), c.row(1, 3, l.cfg.teams);
-        assert(c.at[0].card == 0 && c.at[0].row == 1 && c.at[1].card == 2 && c.at[1].row == 3);
-        assert(l.cycle(0, 1, 1, 9, 5, 7) && l.cycle(2, 3, 1, 9, 5, 7) && l.cfg.teamSetup[0].pad == 1 && l.cfg.teamSetup[2].hat == 1);  // both edits land
-        c.card(1, 1, l.cfg.teams);  // the empty card has the name row only
-        assert(c.at[1].card == 3 && c.at[1].row == 0);
-        c.card(1, -1, l.cfg.teams), c.row(1, 0, l.cfg.teams);
-        assert(l.removeTeam(1, 2));
-        c.removed(1, l.cfg.teams);
-        assert(c.at[1].card == 1 && c.at[0].card == 0);  // pad 2's team moved up with it
-        l.owner[0] = 7;
-        assert(!l.cycle(0, 1, 1, 9, 5, 7) && l.cycle(1, 2, -1, 9, 5, 7) && l.cfg.teamSetup[1].voice == 4);  // another console's team is read-only; voice wraps
+        c.move(0, 1), c.move(1, -1);
+        assert(c.slot[0] == 1 && c.slot[1] == 3 && c.slot[2] == 0);
+        c.removed(1);
+        assert(c.slot[0] == 1 && c.slot[1] == 2);
+    }
+    {  // a Joy-Con pair's colour is the average of its two colours: blue + red = purple
+        Color p = mixColors({58, 123, 255, 255}, {255, 60, 40, 255});
+        assert(p.r == 156 && p.g == 91 && p.b == 147 && p.a == 255);
+        Color w = mixColors(WHITE, WHITE);
+        assert(w.r == 255 && w.g == 255 && w.b == 255);
     }
     {  // network teams saved in setup.txt: name with spaces, hat, pad and the number of teams come back
         std::vector<GameConfig::Team> mine = {{"Pirate Pete", 0, 0, 3, 2}, {"Two Words Here", 0, 0, 1, 1}}, back;

@@ -66,7 +66,7 @@ struct Frontend {
     Net *net = nullptr;             // the connection of a network room: SetupTeams / Map / Rules then show net->lobby
     bool wantLan = false;           // Salon: Réseau local, else En ligne
     int timer = -1;                 // lobby timer seconds (ReadyTimer::seconds), -1 none
-    struct PadIn { int dx = 0, dy = 0, card = 0; bool ok = false, back = false, take = false, add = false, plus = false; };
+    struct PadIn { int dx = 0, dy = 0, card = 0; bool ok = false, back = false, cpu = false, plus = false; };
     static unsigned simPads;        // tests (--ui setup2): pads that count as connected and take `sim` instead of the real pad
     static PadIn sim[4];
     void enterRoom(bool lan);       // joined / created a room: the setup screens in network mode, own team from setup.txt
@@ -95,12 +95,14 @@ private:
     bool room() const { return online && net && net->roomId; }
     void fromNet(const std::vector<std::string> &maps);  // lobby <- net->lobby + myTeams
     void toNet();                    // lobby -> myTeams / net->lobby (host)
-    TeamCursors cursors;             // SetupTeams: one cursor per pad
+    TeamCursors cursors;             // SetupTeams: one token per pad
+    Vector2 tokenAt[4] = {};         // where each token is drawn (it glides to its slot)
+    int panelPad = -1, panelSlot = 0, panelRow = 0;  // SetupTeams: the pad editing a player's name / voice, its slot and row
     int rulesRow = 0, editPad = 0;   // SetupRules row; the pad that is typing a team name
     RenderTexture2D wormRt = {};     // the focused team's worm preview
     bool live = true;                // this frame takes input (the menu is not flying out, no text entry)
     PadIn padIn(int p);        // pad p's presses this frame (a scripted pad replaces them)
-    void teamCard(Rectangle d, int k, float t);
+    void teamSlot(Rectangle d, int k, float t);
     bool setupTeams(bool plus, float t);  // true: leave the room
     void setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps);
     bool setupRules(int dx, int dy, bool ok, bool back, bool plus);  // true: START
