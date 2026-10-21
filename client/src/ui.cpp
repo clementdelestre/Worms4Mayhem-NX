@@ -1136,6 +1136,19 @@ static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, bo
     rlSetClipPlanes(0.01, 1000);
 }
 
+// a Weapon Factory weapon's held graphic (gun parts, Radio or payload) in the FE 3D space, like feMesh
+static void feWeapon(const std::string &graphic, Vector3 pos, float scale, Vector3 rot) {
+    Camera3D cam = {{0, 0, 903.5f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
+    glClear(0x100);
+    rlSetClipPlanes(5, 15000);
+    BeginMode3D(cam);
+    Models::shade(Lit::frontendShader(true));
+    Models::drawWeaponGraphic(graphic, MatrixMultiply(MatrixMultiply(MatrixScale(scale, scale, scale), MatrixRotateZYX(rot)), MatrixTranslate(pos.x, pos.y, pos.z)));
+    Models::shade({});
+    EndMode3D();
+    rlSetClipPlanes(0.01, 1000);
+}
+
 
 // WXFE_GradientColours: top -> bottom (docs/w4m/frontend.md "Text colours")
 static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 255}}, GC_LIST_LABLE_BLUE[2] = {{151, 207, 255, 255}, {233, 255, 255, 255}},
@@ -2734,6 +2747,11 @@ void Frontend::pickDraw() {
     } else if (u == Pop::Grave) {  // Grave Mesh: WXD.CurrentMesh at (0, 22) scale 4, orientation (-0.29, -2.43, 0.2); our grave models are in metres (W4M units x 0.05)
         size_t g = (size_t)atoi(cur.c_str());
         if (g < cat.graves.size()) feMesh(cat.graves[g].model.c_str(), {-125 * feK, 22, 0}, {80, 80, 80}, {-0.29f, -2.43f, 0.2f}, true, nullptr, 0);
+    } else if (u == Pop::Weapon) {  // the weapon's held graphic [assumed: W4M picker placement not decoded; position and scale picked to fill the preview area]
+        const WeaponDef *w = nullptr;
+        for (const WeaponDef &d : cat.stock) if (d.name == cur) w = &d;
+        for (const WeaponDef &d : customs) if (!w && d.name == cur) w = &d;
+        if (w && !w->graphic.empty() && since >= 0.225f) feWeapon(w->graphic, {-125 * feK, 35, 0}, 3, {0.2f, -0.6f, 0});
     } else if (u == Pop::Flag) {  // Flag Mesh: WXFE_FlagObject (the HUD.Flag cloth) at (19, 59) 70 x 40; ours shows the flag picture there [the HUD.Flag mesh is not exported]
         if (const Catalog::Item *f = cat.flag(cur)) {
             Vector2 p = {c.x + 19 * FE_S, c.y - 59 * FE_S};
