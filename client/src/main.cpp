@@ -2851,7 +2851,7 @@ int main(int argc, char **argv) {
                 Ui::text(TextFormat("%.2f", perf[k] * 1000), 200, 60 + k * 20, 18, WHITE, 2);
             }
             Ui::text(TextFormat("terrain %dk tris  fx %d", tris / 1000, Fx::count()), 14, 62 + T_COUNT * 20, 18, LIGHTGRAY);
-        } else Ui::text(TextFormat("%d FPS", fps()), 10, 10, 20, LIME);
+        } else Ui::text(TextFormat("%d FPS", fps()), 640, 10, 20, LIME, 1);
         lap(T_UI);
         if (shot && !shotBench && (frame == 35 || frame == 150)) {
             rlDrawRenderBatchActive();
