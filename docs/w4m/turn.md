@@ -317,12 +317,34 @@ Who starts which phase:
 - GetActiveAlliances 0x5b4030: AllianceCount = the non-empty alliance queues, 0 if no worm is active (+0x124). GetSurvivingTeam 0x5b3d40:
   SurvivingTeamIndex = the team (+0x127) of the last active worm (worm order 0..15) whose team has not surrendered (TeamData +0x72); it also
   sets `Achv.JoinMeLuke.HighestHealth` and `Achv.FeelThePowerOfTheDarkside.Survivors`. CheckOneTeamVictory wins that team: allies share the win.
+- The win (GameLogicService 0x4fb880 on `GameLogic.Win` with SurvivingTeamIndex, local game) [disasm, REA decompile]: `GameOver.RoundNumber` + 1;
+  0x4f51f0 gives +1 round win (team stats record 0x50c160 +0x14) to every team of the winner's AlliedGroup, so allies count their round wins
+  together; `FE.WinString` = the winner's team name, replaced by `FE.Red` / `FE.Blue` / `FE.Green` / `FE.Yellow` ("Red" .. "Yellow", French
+  "Rouge" / "Bleu" / "Vert" / "Jaune") for AlliedGroup 0..3 when 0x4f5280 counts more than one non-surrendered (TeamData +0x72 0) team in
+  it; the winner's round wins < SchemeData `Wins` (+0x114) -> `GameOver.NextRoundMenu` `WXFE.WinRound`, else `GameOver.GameCompletedMenu`
+  `WXFE.WinMatch` (network: `WXNET.WinRound` / `WXNET.WinMatch`, one win ends it); `Stats.Populate.Round` (+ `.Match` at the match end),
+  then per team of the alliance 0x4fa150 (0x4f3350, 0x4f7b10) and at the match end 0x4fa1a0 (eight per-team stat writers, not decoded).
+  A draw (`GameLogic.Draw`, local) writes `FETXT.Nobody` "Nobody" and shows `WXFE.WinRound` [disasm].
+- Team colours [disasm, REA decompile]: 0x50cae0(team) = table 0x90f820[TeamData AlliedGroup] (RGBA bytes (255, 78, 60) red, (108, 127, 255)
+  blue, (59, 244, 123) green, (255, 218, 77) yellow); 0x50d820(worm) = that of the worm's team. Readers: the scanner dots (ScannerHudEntity
+  0x5f7cf0 / 0x5f6970, through LOCAL `AllianceColourMap` IntegerArray {0, 1, 2, 3}), the blimp / binoculars outline per team stencil bit
+  (PCPostProcess 0x61e0e0), ChooseWormArrowEntity 0x5dbf50, 0x5ee9b0 (near HudClock, the active worm's colour), 0x5fe560, the parachute
+  trails (0x58ee20), the AI's ally test (0x4a4790). 0x50cb90(team) = text colour 15 + AlliedGroup (Team_Red / Blue / Green / Yellow,
+  frontend.md "Text colours"), 19 Disabled_Grey once the team surrendered: the worm name / health labels (WormHealthNameEntity 0x5fd390,
+  `AllianceColourMap` too), the energy bars (EnergyBarEntity 0x5e8300 / 0x5e84e0 / 0x5e8fa0), HotSeatTimeGraphicEntity 0x5ed990. Allies
+  therefore share one colour everywhere. The worm skin is not tinted by team (0x5a1bb1: 1 + 2 (sick + abducted) only).
+- Allies in play [disasm]: the sentry gun picks a random active worm of another AlliedGroup than its own (+0x6d) that moved more than
+  5 units since it last saw it (squared distance 25 to +0xbc[i]) and is within range, then needs a clear line (0x56c440); the binoculars'
+  10-unit ray skips the shooter's AlliedGroup (0x54b583); the Wormpot vampire share (0x5a9710) goes to the active worm from any other
+  worm, allies and team mates included (no team test).
 - Handicap [data: lib_help.lub lib_SetupMultiplayerTeam raw bytecode]: each worm's Energy = WormHealth + Handicap x step, step 25 when
   WormHealth is 50 or 100, 50 at 150, 100 at 200, else 0.
 - Ours (`Game::beginTurn`, `allyQueue`, `allyStart`, `activeAlliances`, `survivingTeam`, `handicapHealth`; docs/sim.md "Turn start"): the same
   queues; a dead team is skipped where W4M removes it [ours: equal order]; one round per match, so AllyToStart and the first teams are drawn
   once, from the seed (`GameConfig::allyToStart` -1) instead of rand() [ours: deterministic over the network]; scripts start with alliance 0
-  and each alliance's lowest team.
+  and each alliance's lowest team. Inventories (`Game::ammo` rows = AllianceNN in versus, `teamAmmo` = TeamNN for Specialist, `stock` /
+  `spend` / `gain`), the colours (`Ui::teamColor` / `teamTextColor`), the win text (`Ui::resultBanner` / `resultLine`, one round: a win
+  shows "Wins the match!", a draw "Wins the round!") and the sentry / binoculars / vampire rules follow the above [ours: docs/sim.md].
 
 ### Start placement: worms, then mines and drums [disasm + data]
 - Order [data]: `stdvs Initialise` runs `lib_SetupMultiplayerWormsAndTeams` (each worm `Spawn = "spawn"`, lib_help.lub `lib_SetupMultiplayerWorm`), sends `WormManager.Reinitialise` (worms placed), then `lib_SetupMinesAndOildrums`: Objects 1 or 3 sends `GameLogic.CreateRandomMine`, 2 or 3 `GameLogic.CreateRandomOildrum`. Worms first.

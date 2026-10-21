@@ -19,6 +19,12 @@ struct Lobby {
     unsigned used = 0;
     bool playing(int k) const { return k >= 0 && k < MAX_TEAMS && (used >> k & 1); }
     int count() const { return __builtin_popcount(used); }
+    // FE.CanGameStart (TeamControlService 0x737bf9): 2+ teams in 2+ distinct AlliedGroups
+    bool canStart() const {
+        unsigned m = 0;
+        for (int k = 0; k < MAX_TEAMS; k++) if (playing(k)) m |= 1u << cfg.alliance(k);
+        return count() >= 2 && __builtin_popcount(m) >= 2;
+    }
     // slot k is a human team of this console played by pad p
     bool ownedBy(int k, int p) const { return playing(k) && canEdit(k) && !cfg.teamSetup[k].cpu && cfg.teamSetup[k].pad == p; }
     bool place(int k, int p, const GameConfig::Team &t) {  // pad p puts the saved team t in the free slot k
@@ -52,7 +58,7 @@ struct Lobby {
         for (int k = 0; k < MAX_TEAMS; k++) if (playing(k) && canEdit(k) && !cfg.teamSetup[k].cpu) m |= 1u << cfg.teamSetup[k].pad;
         return m;
     }
-    // the match: the playing slots in order, colour = rank
+    // the match: the playing slots in order
     GameConfig match() const {
         GameConfig c = cfg;
         c.teams = 0, c.teamSetup.clear();

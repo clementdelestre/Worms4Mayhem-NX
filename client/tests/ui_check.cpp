@@ -187,9 +187,13 @@ int main() {
         g.start({7, 2, 2, "", 0});
         g.phase = Phase::GameOver;
         g.winner = -1;
-        assert(Ui::resultBanner(g) == "DRAW!");
+        assert(Ui::resultBanner(g) == "Nobody" && !strcmp(Ui::resultLine(g), "Wins the round!"));
         g.winner = 1;
-        assert(Ui::resultBanner(g) == "Team 2 WINS!");
+        assert(Ui::resultBanner(g) == "Team 2" && !strcmp(Ui::resultLine(g), "Wins the match!"));
+        g.allied = {2, 2};  // an alliance of two standing teams wins under its colour name (0x4f5280 > 1)
+        assert(Ui::resultBanner(g) == "Green");
+        g.surrendered[0] = 1;
+        assert(Ui::resultBanner(g) == "Team 2");
         g.cfg.mission = &ms;
         assert(Ui::resultBanner(g).empty());
         g.winner = -1;

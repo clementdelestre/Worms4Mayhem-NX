@@ -869,7 +869,9 @@ void Game::start(const GameConfig &c) {
     roped = jetting = jetUsed = chute = false, fuel = jetInit, boost = 0, secondary = launched = -1;
     spy.assign(teams, 0), scout = Scout{};
 
-    ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0));
+    int rows = teams;  // stdvs SetupInventoriesAndDelays: Inventory.Alliance.Default into every AllianceNN
+    for (int t = 0; t < teams; t++) rows = std::max(rows, alliance(t) + 1);
+    ammo.assign(rows, std::vector<int>(WEAPONS.size(), 0)), teamAmmo.clear();
     const int set = cfg.scheme.weapons;
     for (int t = 0; t < teams; t++)
         for (size_t i = 0; i < WEAPONS.size(); i++) {
@@ -878,11 +880,12 @@ void Game::start(const GameConfig &c) {
             bool keep = set == Scheme::SET_DEFAULT || k == Kind::SkipGo || k == Kind::Surrender ||
                         (set == Scheme::SET_BNG && (k == Kind::Shell || k == Kind::Homing));
             const int count = customWeapon((int)i) && preset ? preset->factoryAmmo : d.count;  // SchemeData WeaponFactoryWeapon.Ammo
-            ammo[t][i] = d.name.empty() ? 0 : set == Scheme::SET_UNLIMITED ? -1 : keep ? count : 0;
+            int &r = ammo[row(t)][i];  // allies share the row: a team without a factory weapon leaves its ally's count
+            if (!r) r = d.name.empty() ? 0 : set == Scheme::SET_UNLIMITED ? -1 : keep ? count : 0;
         }
     superWeapon.assign(teams, 0);  // SetupModes runs before the Lua's inventory changes
     for (int t = 0; t < teams && wp(WP_SECRET_WEAPON); t++) {  // 0x5d65c0: rand() % 30 until the team holds it, if it holds any kWeapon
-        auto holds = [&](int id) { for (size_t i = 0; i < WEAPONS.size(); i++) if (ammo[t][i] && containerOf((int)i, false) == id) return true; return false; };
+        auto holds = [&](int id) { for (size_t i = 0; i < WEAPONS.size(); i++) if (stock(t, (int)i) && containerOf((int)i, false) == id) return true; return false; };
         bool any = false;
         for (int id = 1; id < 32; id++) any |= holds(id);
         while (any && !holds(superWeapon[t] = (int)(rand01() * 30))) {}
@@ -891,7 +894,7 @@ void Game::start(const GameConfig &c) {
         for (auto &a : ammo) for (size_t i = 0; i < WEAPONS.size(); i++) a[i] = WEAPONS[i].kind == Kind::SkipGo || WEAPONS[i].kind == Kind::Surrender ? -1 : 0;
     if (wp(WP_NO_COWARDS)) {  // Wormpot.lub NoRetreatTime: DefaultRetreatTime 0 (weapon overrides stay), no Surrender
         cfg.scheme.retreatTime = 0;
-        for (auto &a : ammo) for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Surrender) a[i] = 0;
+        for (auto *inv : {&ammo, &teamAmmo}) for (auto &a : *inv) for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Surrender) a[i] = 0;
     }
     const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2;
     const auto navT0 = std::chrono::steady_clock::now();
@@ -923,13 +926,14 @@ void Game::start(const GameConfig &c) {
     }
     Vector3 fp;  // stdvs Initialise: MineFactoryOn -> CreateRandMineFactory (0x4fe18e), a 40-unit sphere 40 up clear on the ground
     if (cfg.scheme.mineFactory && !cfg.mission && dropPoint(Object::Mine, fp, 40 / 20.0f)) factoryCreate(fp);
-    if (wp(WP_SPECIALIST) && most > 1) {  // Wormpot.lub SetSpecialistTeam(n, team), teams of n > 1: a class per worm by team size and place, the team's ammo set
+    if (wp(WP_SPECIALIST) && most > 1) {
+        teamAmmo.assign(teams, std::vector<int>(WEAPONS.size(), 0));  // Wormpot.lub SetSpecialistTeam(n, team), teams of n > 1: a class per worm by team size and place, the team's ammo set
         static const uint8_t CLASS[7][6] = {{}, {}, {1, 2}, {1, 3, 4}, {5, 6, 3, 4}, {5, 6, 3, 4, 6}, {5, 6, 3, 4, 6, 3}};
         for (size_t i = 0; i < worms.size(); i++) {
             int c = special[i] = CLASS[std::min(teamSize(worms[i].team), 6)][wormSlot((int)i)];
             for (int k = 0; k < 4; k++)
                 for (int j = 0; j < 7 && (SPEC_SETS[c] >> k & 1) && SPEC_AMMO[k][j].first; j++)
-                    for (size_t x = 0; x < WEAPONS.size(); x++) if (WEAPONS[x].name == SPEC_AMMO[k][j].first) ammo[worms[i].team][x] = SPEC_AMMO[k][j].second;
+                    for (size_t x = 0; x < WEAPONS.size(); x++) if (WEAPONS[x].name == SPEC_AMMO[k][j].first) teamAmmo[worms[i].team][x] = SPEC_AMMO[k][j].second;
         }
         for (size_t x = 0; x < WEAPONS.size(); x++)  // Inventory.WeaponDelays.Default: HomingMissile 1, Airstrike 5, copied to every team
             for (auto &d : delays) if (WEAPONS[x].name == "Homing Missile" || WEAPONS[x].name == "Airstrike") d[x] = WEAPONS[x].name == "Airstrike" ? 5 : 1;
@@ -1232,7 +1236,7 @@ void Game::stepObjects() {
             Vector3 eye = Vector3Add(o.pos, {0, 0.4f, 0}), to = Vector3Subtract(t.pos, eye), hit;
             float dist = Vector3Length(to);
             bool seen = dist > 0.1f && !terrain.raycast({eye, Vector3Scale(to, 1 / dist)}, dist - 0.6f, &hit);
-            if (o.fuse < 0 && phase != Phase::Settle && t.alive && t.team != o.team && dist < sd.radius && seen) {
+            if (o.fuse < 0 && phase != Phase::Settle && t.alive && alliance(t.team) != alliance(o.team) && dist < sd.radius && seen) {  // 0x56c440: another AlliedGroup
                 o.fuse = sd.fuse;
                 emit(GameEvent::Fire, o.pos, -1, o.weapon);
                 if (!shielded(t, o.pos)) {  // 0x56c140: its bullets stop on a bubble
@@ -1261,7 +1265,7 @@ void Game::stepObjects() {
                 else if (WEAPONS[o.weapon].kind == Kind::DoubleDamage) doubleDamage = true;
                 else if (WEAPONS[o.weapon].kind == Kind::CrateSpy) spy[w.team] = 1;  // never reset (0x5c8b20)
                 else if (WEAPONS[o.weapon].kind == Kind::Armour) w.armour = true;  // Armour.Collected: the collector (0x5c9928 -> 0x5ae1ea)
-                else ammo[w.team][o.weapon] = crateAdd(ammo[w.team][o.weapon], o.count), add = o.count;
+                else gain(w.team, o.weapon, o.count), add = o.count;
                 if (o.mystery < 0) emit(GameEvent::Collect, o.pos, int(&w - worms.data()), o.weapon), events.back().count = add;  // mystery: no pickup sound, the reveal's
                 gone = true;
                 break;
@@ -1384,6 +1388,20 @@ int Game::survivingTeam() const {
     for (int t = 0; t < teams; t++) if (standing(t)) s = t;
     return s;
 }
+
+int Game::stock(int team, int wi) const {
+    int a = ammo[row(team)][wi], t = teamAmmo.empty() ? 0 : teamAmmo[team][wi];
+    return a < 0 || t < 0 ? -1 : a + t;
+}
+
+void Game::spend(int team, int wi) {
+    int &a = ammo[row(team)][wi];
+    if (stock(team, wi) < 0) return;
+    if (a > 0) a--;
+    else if (!teamAmmo.empty() && teamAmmo[team][wi] > 0) teamAmmo[team][wi]--;
+}
+
+void Game::gain(int team, int wi, int n) { int &a = ammo[row(team)][wi]; a = crateAdd(a, n); }
 
 // InitialiseAlliedGroups 0x5b52b0: each alliance's queue holds its teams in team order
 void Game::initQueues() {
@@ -1542,10 +1560,9 @@ Vector3 Game::target() const {
 void Game::use(Worm &w) {
     launched = weapon;
     const WeaponDef &wd = weaponDef(weapon);
-    int &n = ammo[w.team][weapon];
     if (wd.kind == Kind::Parachute) {  // 0x578db0 on FireUtil: opens only in Ballistic (+0x60), spending the ammo; open, it closes
         if (chute) chute = false;
-        else if (!w.grounded && !vault.t) n -= n > 0, chuteOpen(w), emit(GameEvent::Fire, w.pos, current, weapon);
+        else if (!w.grounded && !vault.t) spend(w.team, weapon), chuteOpen(w), emit(GameEvent::Fire, w.pos, current, weapon);
         return;
     }
     if (wd.kind == Kind::Rope) {  // 0x573790: FIRE launches the hook (NumShots left) or retracts it in flight
@@ -1562,7 +1579,7 @@ void Game::use(Worm &w) {
         float far = terrain.raycast({w.pos, d}, 200, &hit) ? Vector3Distance(w.pos, hit) : 200;
         for (const Worm &o : worms) {  // ray radius 10 units; the shooter's alliance is skipped
             float t = Vector3DotProduct(Vector3Subtract(o.pos, w.pos), d);
-            if (o.alive && o.team != w.team && t > 0 && t < far && Vector3Distance(o.pos, Vector3Add(w.pos, Vector3Scale(d, t))) < R + 0.5f) far = t;
+            if (o.alive && alliance(o.team) != alliance(w.team) && t > 0 && t < far && Vector3Distance(o.pos, Vector3Add(w.pos, Vector3Scale(d, t))) < R + 0.5f) far = t;
         }
         if (far >= 200) return;
         scout = {Vector3Add(w.pos, Vector3Scale(d, far)), 0, 0, 0, false};
@@ -1571,7 +1588,7 @@ void Game::use(Worm &w) {
         return;
     }
     if (wd.kind == Kind::Jetpack) {  // W4M FireUtilPressed 0x562270: takes off with fuel > 20 ms, the first take-off spends the ammo
-        if (!jetUsed) jetUsed = true, n -= n > 0;  // the fuel is the entity's since its selection
+        if (!jetUsed) jetUsed = true, spend(w.team, weapon);  // the fuel is the entity's since its selection
         if (fuel > JET_DRY) {
             if (ambulatory(w)) emit(GameEvent::JetStart, w.pos, current, weapon);
             jetting = true, thrust = wd.speed, boost = 0, emit(GameEvent::Fire, w.pos, current, weapon);
@@ -1583,7 +1600,7 @@ void Game::use(Worm &w) {
         emit(GameEvent::Fire, w.pos, current, weapon);
         return;
     }
-    if (n > 0 && !shotsLeft && !(wd.kind == Kind::ChangeWorm && changing)) n--;
+    if (!shotsLeft && !(wd.kind == Kind::ChangeWorm && changing)) spend(w.team, weapon);
     Vector3 dir = aimDir(w), f = flat(w.yaw), tgt = target();
     // W4M 0x585a52 / 0x585bc5: off its feet and moving, a payload starts 30 units further along the worm's velocity and inherits it
     const bool carried = (!w.grounded && Vector3LengthSqr(w.vel) > 0) || (vault.t && Vector3LengthSqr(vault.vel) > 0);  // a vault is state 4, off its feet
@@ -2062,8 +2079,7 @@ int Game::grappleStep(Hook &h, Vector3 feet, float maxLen, bool standing, Vector
 
 void Game::ropeCleanup() {  // 0x572620: a rope that hooked (+0x7b) decrements the inventory as it goes
     if (ropeUsed < 0) return;
-    int &n = ammo[worms[current].team][ropeUsed];
-    n -= n > 0, ropeUsed = -1;
+    spend(worms[current].team, ropeUsed), ropeUsed = -1;
 }
 
 // W4M DamageImpulseMessage 0x518cbf: a direct hit (gun, melee) sets the worm's velocity, doubled under Double Damage, and launches it
@@ -2084,21 +2100,20 @@ void Game::hurt(Worm &w, int dmg, bool blast, int type) {
     emit(GameEvent::Hurt, w.pos, wi);
     if (wi == current) { selfHurt = true; return; }
     Worm &h = worms[current];
-    if ((cfg.rules & RULE_VAMPIRE) && w.team != h.team) h.hp = std::max(h.hp, std::min(200, h.hp + (int)(dmg * 0.5f + 0.5f)));
+    if (cfg.rules & RULE_VAMPIRE) h.hp = std::max(h.hp, std::min(200, h.hp + (int)(dmg * 0.5f + 0.5f)));
 }
 
 // W4M StealInventory 0x592d30: 5 single units, each from a random weapon the victim has, those the thief lacks first.
 void Game::steal(const Worm &v) {
     int thief = worms[current].team, first = -1;
-    std::vector<int> &from = ammo[v.team], &to = ammo[thief];
     for (int round = 0; round < 5; round++) {
         std::vector<int> a, b;
-        for (int k = 0; k < (int)from.size(); k++) if (from[k]) (to[k] ? b : a).push_back(k);
+        for (int k = 0; k < (int)WEAPONS.size(); k++) if (stock(v.team, k)) (stock(thief, k) ? b : a).push_back(k);
         std::vector<int> &pool = a.empty() ? b : a;
         if (pool.empty()) break;
-        int k = pool[(int)(rand01() * pool.size())];
-        if (from[k] > 0) from[k]--;
-        if (to[k] >= 0) to[k]++;
+        int k = pool[(int)(rand01() * pool.size())], &to = ammo[row(thief)][k];  // taken as 0x4f4fd0, given to the thief's alliance
+        spend(v.team, k);
+        if (to >= 0) to++;
         if (first < 0) first = k;
     }
     if (first >= 0) emit(GameEvent::Collect, v.pos, current, first);
@@ -2174,8 +2189,8 @@ void Game::openMystery(int item, Worm &w) {
         int start = (int)(rand01() * 66);
         for (int k = 0; k < 66; k++) {
             int slot = (start + k) % 66, hit = -1;
-            for (size_t i = 0; i < WEAPONS.size() && hit < 0; i++) if (ammo[w.team][i] > 0 && inventoryId((int)i) == slot) hit = (int)i;
-            if (hit >= 0) { ammo[w.team][hit]--; break; }
+            for (size_t i = 0; i < WEAPONS.size() && hit < 0; i++) if (ammo[row(w.team)][i] > 0 && inventoryId((int)i) == slot) hit = (int)i;
+            if (hit >= 0) { ammo[row(w.team)][hit]--; break; }
         }
         break;
     }
@@ -2209,7 +2224,7 @@ void Game::openMystery(int item, Worm &w) {
     case MY_SPECIAL_WEAPON: {  // rand % 3 of Concrete Donkey, Holy Hand Grenade, Super Airstrike: +1 unless infinite
         static const char *BIG[] = {"Concrete Donkey", "Holy Hand Grenade", "Super Airstrike"};
         int k = named(BIG[(int)(rand01() * 3)]);
-        if (k >= 0 && ammo[w.team][k] >= 0) ammo[w.team][k]++;
+        if (k >= 0) gain(w.team, k, 1);  // 0x5c8820, as a crate
         break;
     }
     case MY_BAD_POISON: case MY_GOOD_POISON:  // the collector's team (itself included) / every other team, by team not alliance
@@ -2835,7 +2850,7 @@ void Game::step(const Input &raw) {
                 weapon = secondary, secondary = -1, power = 0;
                 use(w);
                 weapon = tool;
-            } else if (armed && weapon >= 0 && ((ammo[w.team][weapon] && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(weaponDef(weapon).kind))) {
+            } else if (armed && weapon >= 0 && ((stock(w.team, weapon) && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(weaponDef(weapon).kind))) {
                 Vector3 h;
                 // W4M CanFire is asked on Input.FirePressed only (0x586092); a charge started goes on to its release
                 if (!powered(weaponDef(weapon))) { if ((pressed & Input::FIRE) && fireable(w) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
@@ -2861,8 +2876,7 @@ void Game::step(const Input &raw) {
         // velocity 0.02 units/ms along (forward - up), orientation yaw + 1.3439 rad (0x55021d, 0x55031c)
         bubbles.push_back({Vector3Add(w.pos, Vector3Add(Vector3Add(Vector3Scale(f, 0.623f), Vector3Scale(side, -0.097f)), {0, 0.47f, 0})), {f.x, -1, f.z}, 6, w.yaw + 1.3439f});
         emit(GameEvent::BubbleNew, bubbles.back().pos);
-        int &n = ammo[w.team][weapon];
-        n -= n > 0, bubbleAt = -1;
+        spend(w.team, weapon), bubbleAt = -1;
     }
     if (icarus == 3 && clock >= flapAt) {  // 0x587750 at the PostLaunchDelay: Worm.Antidote; its heal up to WormData InitialEnergy never
         w.poison = 0, w.abducted = false;     // fires: no code writes that field (only the serializer, data default 0), so hp >= it
@@ -2888,7 +2902,7 @@ void Game::step(const Input &raw) {
     if (scout.t >= 0) scout.t = weaponDef(weapon).kind == Kind::Binoculars && phase == Phase::Aim ? scout.t + 1 : -1;  // LeaveBinocularsVision
     // W4M 0x579720: the parachute in hand opens by itself under -0.3 x 0.75 units/ms
     if (!chute && !tool && w.alive && !w.grounded && w.vel.y < -FALL_SAFE * 0.75f && (phase == Phase::Aim || retreating()) &&
-        weaponDef(weapon).kind == Kind::Parachute && ammo[w.team][weapon])
+        weaponDef(weapon).kind == Kind::Parachute && stock(w.team, weapon))
         use(w);
     // W4M 0x5833a0 / 0x54a0e0: PostLaunchDelay, then StartRetreatTimer (RetreatTimeOverride or DefaultRetreatTime), the shot still flying
     if (before != phase && phase == Phase::Flying) timer = msTicks(weaponDef(launched >= 0 ? launched : weapon).postLaunch) + retreatTicks(weaponDef(launched >= 0 ? launched : weapon));
@@ -3164,7 +3178,7 @@ uint32_t Game::checksum() const {
         mix(&run.result, 2 * sizeof(int));
         if (script) { uint32_t s = scriptChecksum(*this); mix(&s, sizeof s), mix(&indestructible, 1); }
     }
-    for (const auto &a : ammo) mix(a.data(), a.size() * sizeof(int));
+    for (const auto *inv : {&ammo, &teamAmmo}) for (const auto &a : *inv) mix(a.data(), a.size() * sizeof(int));
     // weapon table: every client must have loaded the same weapons.json
     for (const WeaponDef &wd : WEAPONS) {
         mix(wd.name.data(), wd.name.size());

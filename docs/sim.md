@@ -88,6 +88,12 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
 
 ### Firing and the retreat
 
+- Ammo [disasm 0x50d900, 0x4f4fd0]: `stock(team, w)` = the alliance row (`ammo[row(team)]`, W4M Inventory.AllianceNN: allies share it) + the
+  team's (`teamAmmo`, Inventory.TeamNN, Specialist only), -1 when either is; `spend` takes the alliance's while > 0, else the team's; crates,
+  the Mystery Special Weapon and the Old Woman's loot go to the alliance (`gain`), Disarm takes from it. Under a script `row(team)` is the team
+  (script.cpp computes each team's view from the W4M containers). Delays stay per team (Inventory%d.WeaponDelays).
+- The Sentry Gun fires at the active worm of another alliance; the binoculars' ray skips the shooter's alliance [disasm 0x56c440, 0x54b583].
+  W4M's sentry picks a random active enemy worm that moved over 5 units (docs/w4m/turn.md "Allies in play") [open: ours aims at the active worm only].
 - `use()` spends the ammo and creates the shot. The phase becomes `Flying` and the timer = `post_launch` + retreat
   (`retreatTicks()`: the weapon's `retreat` ms, W4M RetreatTimeOverride, or the scheme's `retreatTime` s, W4M LandTime; data).
 - `retreating()`: in `Flying` / `Retreat`, the worm may walk and jump once the timer is at most the retreat time, i.e. after
@@ -129,7 +135,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   the Wormpot crate shower; then CheckActivity. Pass 2: delays, `beginTurn` (victory check, Turn.Ended).
 - A team stands until its last worm died (its blast) or it surrendered (`surrendered`, SurrenderTeam 0x5b4d00: the Surrender utility
   and a vital worm, RULE_KING / Wormpot Vital Worm, flag 0x100 on each team's first worm; its worms stay). The turn ends once fewer
-  than two alliances stand (stdvs Worm_Died, AllianceCount < 2). Wormpot Vampire: the active team's first worm gains half of every other worm's damage at
+  than two alliances stand (stdvs Worm_Died, AllianceCount < 2). Wormpot Vampire: the active worm gains half of every other worm's damage, its allies' and team mates' included (no team test), at
   ApplyDamage (0x5a9710), poison included, and half a drowning worm's energy (0x5ad7c9).
 - The round clock (`clock`) runs in the hot seat too (TimerLogicEntity 0x50f17d).
 
@@ -186,7 +192,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   crate's (10 x `scale` units), any time (0x5cb7e0), or a sheep-like shot (Sheep, Super Sheep, Starburst, Old Woman, Scouser: collider
   0x88) by its Radius, for the active worm (0x5c9750); with `teamCollect` set, only that AlliedGroup (`Game::alliance`). Health: +
   `count` hp (NumContents; a random crate's is `crateHealth`, 0x4fa71d; `CRATE_STOCK`: the scheme's), cures poison and the abductee flag
-  (W4M Worm.Antidote 0x5adecd). Weapons: `count` added as a u8 (`crateAdd`: 0xff infinite, an infinite count stays, 0x5c88bb) [disasm]; in a
+  (W4M Worm.Antidote 0x5adecd). Weapons: `count` added as a u8 to the collector's alliance (`gain`, `crateAdd`: 0xff infinite, an infinite count stays, 0x5c88bb) [disasm]; in a
   mission the Collect event carries `count` for the W4M inventories (missions.md "Ammo") [ours]. Double Damage, Crate Spy and Armour apply at
   once and never enter the inventory (`collected()`, W4M crate collect 0x5c9800). Targets and custom crates hold nothing.
 - **Damage** (0x5c9a10, 0x5c87a0, disasm): a crate or target takes WormDamageMagnitude (R - d) / R within the blast's LandDamageRadius

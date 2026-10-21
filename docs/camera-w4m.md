@@ -239,7 +239,7 @@ Addresses below are disasm; values are data unless marked otherwise.
    - So the see-through view of the active worm is a **flat 50 % grey** tint, not team colour.
 2. **`Outline`**, only when the outline flag is set (binoculars / blimp).
    - One pass per team, stencil EQUAL on that team's bit, depth off.
-   - Colour = team colour / 255 with alpha 0.247. The team table at 0x90f820 holds 0xff3c4eff, 0xffff7f6c, 0xff7bf43b, 0xff4ddaff.
+   - Colour = team colour / 255 with alpha 0.247: the team table at 0x90f820 (0xff3c4eff, 0xffff7f6c, 0xff7bf43b, 0xff4ddaff) at the team's AlliedGroup (0x50cae0): allies share it.
    - A pixel is drawn if one of its 4 diagonal neighbours, 1 texel away, is off the worm. The line is 1 pixel wide, on the inner edge.
 3. **`RecombineWorms`**: `lerp(scene, worm, opacity)` where there is a worm pixel.
    - Opacity is the fade above, forced to 1 when the outline pass ran.

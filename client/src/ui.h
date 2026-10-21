@@ -13,7 +13,9 @@ constexpr bool REPLAYS = false;
 
 // W4M-styled frontend and HUD. Art: assets/ui/*.png from tools/w4m-ui; missing files fall back to plain shapes.
 namespace Ui {
-extern const Color TEAM_COLORS[4];
+extern const Color TEAM_COLORS[4];  // W4M team colour table 0x90f820, by AlliedGroup 0..3
+Color teamColor(const Game &g, int team);      // 0x50cae0: the team's AlliedGroup colour (scanner, outline, worm arrow, labels)
+Color teamTextColor(const Game &g, int team);  // 0x50cb90: as teamColor, Disabled_Grey once the team surrendered
 float marqueeShift(float period, float t, bool loop);  // px an overflowing text has slid t s after it showed: waits 2 s, then glides on (loop: no wait)
 void load();
 bool preload(double until);  // boot: uploads the decoded frontend art until GetTime() reaches until; true while some is pending
@@ -37,7 +39,8 @@ extern int language;
 const char *tr(const char *key, const char *en, const char *fr = nullptr);
 void background();
 std::string teamName(const GameConfig &c, int team);
-std::string resultBanner(const Game &g);  // versus game-over text; empty in a mission or challenge (missionEnd shows the result)
+std::string resultBanner(const Game &g);  // versus game-over FE.WinString; empty in a mission or challenge (missionEnd shows the result)
+const char *resultLine(const Game &g);    // the line under it: FETXT.WinsTheMatch, or FETXT.WinsTheRound after a draw
 void mapHeads(const std::vector<std::string> &maps);  // any thread: reads the maps' json heads that mapTitle() and the previews use
 void multiplayerMaps(std::vector<std::string> &maps);  // keeps what W4M's landscape select offers
 const char *hatLabel(const std::string &id);  // W4M's name of an attachment id, "None" for ""

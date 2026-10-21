@@ -220,8 +220,9 @@ W4M lays the FE out about the screen centre in a 4:3 band [data]. Ours multiplie
 - Filled slot settings `WXFEP.TeamSettingsList` [disasm 0x4c0640 `WXTeamSettings`; data]: title = `WXFE.TeamSelectedName`; three ◀ ▶ rows: worms `WXFE.TeamSelectedWorms` 1..6, wrapping, capped so the match's worms stay
   <= 16 [assumed: the stack slot holding 16 is the cap]; a team enters with min(4, 16 - the worms already in) (0x73620f; 15 for 16 online when
   `WXNET.Value.MaxPlayers` is 4 and 2 teams are in) and the lowest alliance no team in holds (0x737633), handicap 0 [disasm, docs/w4m/turn.md
-  "Alliances and turn order"]; alliance `WXFE.TeamSelectedAlliedGroup` 0..3 wrapping (its icons not traced; `WXFE.TeamInfo01:0..3` / `02:0..1` are the worm count's x1..x6, below); handicap
-  `WXFE.TeamSelectedHandicap` -1 / 0 / +1 wrapping (icons `WXFE.HandicapAllies:1 / :2 / :0`), the alliance and handicap rows only when "Allies" / "Handicap" hold [assumed: the row gating, from the queries' use in this function]. Then Remove Team
+  "Alliances and turn order"]; alliance `WXFE.TeamSelectedAlliedGroup` 0..3 wrapping, shown as the
+  icon `WXFE.HandicapAllies:3 / :4 / :5 / :6` (TeamInfo04.tga's red / blue / green / yellow squares, 0x4c0640) [disasm, REA decompile]; handicap
+  `WXFE.TeamSelectedHandicap` -1 / 0 / +1 wrapping (icons `WXFE.HandicapAllies:1 / :2 / :0`); the worms row shows `WXFE.TeamInfo01:0..3` / `02:0..1` (x1..x6): all three values are icons, the alliance and handicap rows only when "Allies" / "Handicap" hold [assumed: the row gating, from the queries' use in this function]. Then Remove Team
   (`PrepareTeam$RemoveTeam`, `FETXT.RemoveTeam`) and Accept (`PrepareTeam$Update`). Handicap: each worm starts with WormHealth + Handicap x 25 / 25 /
   50 / 100 at WormHealth 50 / 100 / 150 / 200, else unchanged [data: lib_SetupMultiplayerTeam bytecode]. Allies share the turns' alternation and
   the win (docs/w4m/turn.md "Alliances and turn order").
@@ -237,10 +238,21 @@ W4M lays the FE out about the screen centre in a 4:3 band [data]. Ours multiplie
   `WXD.WormAnim` InspectHands. `TeamPage3List`: 3 rows RowHeight 30, Border 6 / 9 / 7: Weapon (`WXFEP.SelectWeapon`), Flag (`WXFEP.SelectFlag`, highlight WormAnim Salute), Grave (`WXFEP.SelectGrave`, highlight WormAnim Pray). `TeamSettingsList` rows RowHeight 30,
   Border_Highlight 11: worms / allied group / handicap (Left / Right and Selected step them, `PopulateTable$WXTeamSettings`), Remove Team, Accept.
 - Filled CreateAGame slot row 0x4be910 (`FE.PopulateTable$WXCreateAGame`, TablePopulationService) [disasm, REA decompile]: per team in a slot, the name (StringColumns, width 190, 174 for a CPU team with the
-  `WXFE.BlackSplodge1` icon behind, font colour 15 + the team's GameInitData +0x1a word: Team_Red / Blue / Green / Yellow) then three 17 x 17 icon columns: the controller (Skill 0 `WXFE.TeamInfo03:3` the worm,
+  `WXFE.BlackSplodge1` icon behind, font colour 15 + the slot's `Tn_AlliedGroup` (dword index 0x1a = T1 +0x68, stride 0x68: Team_Red / Blue / Green / Yellow): the name takes the alliance's colour) then three 17 x 17 icon columns: the controller (Skill 0 `WXFE.TeamInfo03:3` the worm,
   1..5 `02:2`, `02:3`, `03:0`, `03:1`, `03:2` the CPU bars), the handicap (`WXFE.HandicapAllies` :1 for -1, :2 for 0, :0 for +1) and the worm count (`WXFE.TeamInfo01:0..3`, `02:0..1` = the "x1".."x6"
   pictures); Selected: PopulateTable$WXTeamSettings and `WXFEP.TeamSettings` (`...NoHandicap` / `...NoAlly` when those queries are false). An empty slot shows `FETXT.InsertTeam` (Border 6 / 9, or 7 disabled
   at 16 worms: the sum of the slots' counts) [disasm].
+- `FE.CheckGameStart$LocalGame` (TeamControlService 0x737bf9) [disasm, REA decompile]: `FE.CanGameStart` = 1 only with NumberOfTeams >= 2 and
+  the slots' `Tn_AlliedGroup` covering 2+ groups; else 0 and `FE.Tip.Please` would go to `Game.Start.Text` (with `FE.Tip.StartGame` when it
+  can), but neither key exists in the data (LOCAL.XOM has `Game.Start.Text` "" only), so the lookup fails and the text stays: every team in
+  one alliance leaves the Start button (`EnableId FE.CanGameStart`) disabled with no message. `FE.CanWeAddTeam` = 1 at 4 teams or more
+  than 15 worms [data + disasm].
+- `WXFE.WinMatch` / `WXFE.WinRound` (MENUTWKXPCCOMMON) [data]: `HeaderTop` `FE.WinString` (Colour_Front 8 Header_Orange, size 40, LayerOffset
+  1) over `HeaderBottom` the same text (Colour_Front 1 Blank, Colour_Back 1), `WinsMatchTEXT` `FETXT.WinsTheMatch` "Wins the match!" /
+  `WinsRoundTEXT` `FETXT.WinsTheRound` "Wins the round!" (French "Gagne le match !" / "Gagne le round !"; Solid_White, size 24, TextAnim 4),
+  `Scrolling 1..3` `FE.WinString` watermarks (ScrollText, 30 / 60 / 30), fireworks, a ticker; WinMatch adds the per-team stats list
+  (`WXFE.MatchStatsList.Team1`, `WXFE.MatchStatsDetail.Team0..4`, `ViewTeamsLABEL` `FETXT.Teams`, Previous / Next Team) [data; the stats
+  rows are not decoded].
 - FE picture table 0x948f40 (.data, 20-byte records: flags, image id, type, file, grid) [data]: e.g. `WXFE.Shadow` shadow.tga, `WXFE.PaperPopUp1/2` PaperPopup01/02.tga, `WXFE.IconSpeech` Icon_SpeechTest.tga,
   `WXFE.ListGapLine` TextItem Seperation.tga, `WXFE.ListLRArrows` TextItem Arrows.tga (2 cells), `WXFE.ListSubDivide` SubTitle Divide.tga (2 cells), `WXFE.TitleUnderline`, `WXFE.PopUpDivide` SpeechPopup
   Divide.tga, `WXFE.BlackSplodge1` TeamInfo00.tga, `WXFE.TeamInfo01..03` (2 x 2 cells), `WXFE.HandicapAllies` TeamInfo04.tga (4 x 2: plus, minus, blank, red, blue, green, yellow, white dot),

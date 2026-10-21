@@ -117,6 +117,7 @@ static void checkTeamSlots() {
     for (int k = 0; k < 5; k++) g.worms[g.teamFirst[1] + k].alive = false;  // the lone enemy alliance is gone: teams 0 and 2 win together
     g.beginTurn(g.current);
     assert(g.phase == Phase::GameOver && g.winner == 2);
+    assert(Ui::resultBanner(g) == "Red" && Ui::teamColor(g, 0).r == Ui::teamColor(g, 2).r);  // FE.WinString: alliance 0's colour name
     GameConfig d{5, 4, 1, "", 0};  // no alliance set: each its own (AddTeam's lowest free group); random start from the seed, same every time
     assert(d.alliance(0) == 0 && d.alliance(3) == 3);
     d.teamSetup.resize(4), d.teamSetup[1].alliance = 0;
@@ -124,6 +125,31 @@ static void checkTeamSlots() {
     Game a, b;
     a.start(d), b.start(d);
     assert(a.current == b.current && a.allyStart == b.allyStart);
+}
+
+// Allies share Inventory.AllianceNN (0x50d900 / 0x4f4fd0 / crate 0x5c8820); the match needs 2 alliances (FE.CanGameStart 0x737bf9)
+static void checkAlliances() {
+    GameConfig c{5, 3, 2, "", RULE_NO_DELAYS};
+    c.teamSetup.resize(3), c.teamSetup[0].alliance = 1, c.teamSetup[1].alliance = 0, c.teamSetup[2].alliance = 1;
+    Game g;
+    g.start(c), g.hotSeat = 0;
+    int bz = -1;
+    for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].name == "Grenade" && bz < 0) bz = (int)i;
+    assert(bz >= 0);
+    g.ammo[g.row(0)][bz] = 3, g.ammo[g.row(1)][bz] = 0;
+    assert(g.stock(0, bz) == 3 && g.stock(2, bz) == 3 && g.stock(1, bz) == 0);
+    g.spend(2, bz);
+    assert(g.stock(0, bz) == 2);
+    g.gain(0, bz, 2);
+    assert(g.stock(2, bz) == 4);
+    Lobby l;
+    l.cfg.teams = Lobby::MAX_TEAMS, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
+    l.used = 0b0101, l.cfg.teamSetup[0].alliance = 2, l.cfg.teamSetup[2].alliance = 2;
+    assert(!l.canStart());  // every team in one alliance: Start stays disabled
+    l.cfg.teamSetup[2].alliance = 3;
+    assert(l.canStart());
+    l.used = 0b0001;
+    assert(!l.canStart());
 }
 
 // Pause > Draw Round (GameLogic.DrawImmediately): the match ends at once with no winner
@@ -2430,7 +2456,9 @@ static void checkWormpotModes() {
 
     fresh(WP_SPECIALIST, 31, 4);  // 4 worms: classes 5 6 3 4 (Bazooka / Grenade / Shotgun / Rope sets)
     assert(g.special[0] == 5 && g.special[1] == 6 && g.special[2] == 3 && g.special[3] == 4);
-    assert(g.ammo[0][weaponNamed("Bazooka")] == -1 && g.ammo[0][weaponNamed("Cluster Grenade")] == 3 && g.ammo[0][weaponNamed("Ninja Rope")] == 5);
+    // into Inventory.TeamNN, on top of the alliance's (0x50d900 sums them)
+    assert(g.teamAmmo[0][weaponNamed("Bazooka")] == -1 && g.teamAmmo[0][weaponNamed("Cluster Grenade")] == 3 && g.teamAmmo[0][weaponNamed("Ninja Rope")] == 5);
+    assert(g.stock(0, weaponNamed("Bazooka")) == -1 && g.stock(0, weaponNamed("Ninja Rope")) == (g.ammo[g.row(0)][weaponNamed("Ninja Rope")] < 0 ? -1 : g.ammo[g.row(0)][weaponNamed("Ninja Rope")] + 5));
     assert(g.delays[1][weaponNamed("Airstrike")] == 5 && g.delays[1][weaponNamed("Homing Missile")] == 1);
     {
         int t = g.worms[g.current].team, cls = g.special[g.current];
@@ -4738,6 +4766,7 @@ static void checkPlacement() {
 
 int main() {
     checkTeamSlots();
+    checkAlliances();
     checkPlacementSolid();
     checkDetailRemoval();
     checkHiddenLand();

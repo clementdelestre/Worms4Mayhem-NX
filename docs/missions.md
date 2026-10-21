@@ -225,7 +225,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   EFMV.GameOverMovie set the result shows after that movie (Movies above), with .Off at once; else GameOverLogicEntity's pace
   (main.cpp `overDone`, the game-over camera of controls.cpp as in a match): 4.02 s on a worm, the orbit 5.02 s (any key or button ends
   it), a 1.02 s fade, then the result [disasm 0x4ff8d0].
-  No "<team> WINS!" / "DRAW!" text is drawn in a mission or challenge (`Ui::resultBanner` is empty there; a lost mission has no winner and read as DRAW!); only the `missionEnd` panel [ours; W4M docs/w4m/missions.md §23.9 end of game].
+  No win text (`Ui::resultBanner` FE.WinString, `resultLine`) is drawn in a mission or challenge (`resultBanner` is empty there; a lost mission has no winner and would read as Nobody); only the `missionEnd` panel [ours; W4M docs/w4m/missions.md §23.9 end of game].
 - **Round clock**: ElapsedRoundTime counted by 10 game ms (zeroed by Timer.StartGame), held while GameLogic.RoundTime.Pause is on (to
   .Resume) or a movie camera is current (type 14) [disasm 0x50f100, 0x50f173, 0x50f15f].
 - **Mines**: PlaceMine (string: a marker) is a CreateMine there (`Game::newMine`: the dud roll unless Mine Respawn, then the fuse

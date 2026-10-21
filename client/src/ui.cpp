@@ -43,7 +43,11 @@
 
 namespace Ui {
 
-const Color TEAM_COLORS[4] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60, 190, 70, 255}, {240, 200, 40, 255}};
+const Color TEAM_COLORS[4] = {{255, 78, 60, 255}, {108, 127, 255, 255}, {59, 244, 123, 255}, {255, 218, 77, 255}};
+Color teamColor(const Game &g, int team) { return TEAM_COLORS[g.alliance(team) & 3]; }
+Color teamTextColor(const Game &g, int team) {
+    return team < (int)g.surrendered.size() && g.surrendered[team] ? Color{128, 128, 128, 255} : teamColor(g, team);
+}
 
 namespace {
 const int A = GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, B = GAMEPAD_BUTTON_RIGHT_FACE_DOWN, X = GAMEPAD_BUTTON_RIGHT_FACE_UP,
@@ -1516,9 +1520,20 @@ void Frontend::menu(const MenuItem *items, int n, int &sel, int dy, float t, boo
     }
 }
 
+// GameLogicService 0x4fb880 FE.WinString: the winner's name, its AlliedGroup's colour name when 2+ teams of it have not surrendered
+// (0x4f5280), FETXT.Nobody on a draw
 std::string resultBanner(const Game &g) {
     if (g.cfg.mission || g.phase != Phase::GameOver) return "";
-    return g.winner >= 0 ? teamName(g.cfg, g.winner) + " WINS!" : "DRAW!";
+    if (g.winner < 0) return tr("FETXT.Nobody", "Nobody", "Personne");
+    int al = g.alliance(g.winner) & 3, allies = 0;
+    for (int t = 0; t < g.teams; t++) allies += g.alliance(t) == g.alliance(g.winner) && !(t < (int)g.surrendered.size() && g.surrendered[t]);
+    static const char *const KEY[4][3] = {{"FE.Red", "Red", "Rouge"}, {"FE.Blue", "Blue", "Bleu"}, {"FE.Green", "Green", "Vert"}, {"FE.Yellow", "Yellow", "Jaune"}};
+    return allies > 1 ? tr(KEY[al][0], KEY[al][1], KEY[al][2]) : teamName(g.cfg, g.winner);
+}
+
+// WXFE.WinMatch WinsMatchTEXT after a win (one round: the match), WXFE.WinRound WinsRoundTEXT after a draw (GameOver.NextRoundMenu)
+const char *resultLine(const Game &g) {
+    return g.winner >= 0 ? tr("FETXT.WinsTheMatch", "Wins the match!", "Gagne le match !") : tr("FETXT.WinsTheRound", "Wins the round!", "Gagne le round !");
 }
 
 std::string teamName(const GameConfig &c, int team) {
@@ -2050,19 +2065,21 @@ struct Tilt {
 Vector2 centre(Rectangle r) { return {r.x + r.width / 2, r.y + r.height / 2}; }
 
 // A list row with a label left (List_Lable_Blue) and a value right (List_Data_Orange); Solid_Black on the highlight (state 1), grey when disabled (2).
-// arrows: textitem_arrows around the value
-void feRow(Rectangle r, int state, const char *label, const char *value, bool arrows) {
+// arrows: textitem_arrows around the value; icon: a sheet cell drawn in place of the value
+struct FeCell { const char *sheet; int cols, rows, cell; };
+void feRow(Rectangle r, int state, const char *label, const char *value, bool arrows, const FeCell *icon = nullptr) {
     feBorder(r, state);
     bool hi = state == 1;
     const Color *lg = hi ? GC_BLACK : state == 2 ? GC_DISABLED : GC_LIST_LABLE_BLUE;
     const Color *vg = hi ? GC_BLACK : state == 2 ? GC_DISABLED : GC_LIST_DATA_ORANGE;
     float px = r.height * 0.62f, pad = r.height * 0.8f, cy = r.y + r.height / 2, ah = r.height * 0.6f, aw = ah * 0.5f, right = r.x + r.width - pad;
-    float lw = feWidthPx(label, px), avail = r.width - 2 * pad - lw - 16 - (arrows ? 2 * aw + 8 : 0), vw = fminf(feWidthPx(value, px), fmaxf(avail, 0));
+    float lw = feWidthPx(label, px), avail = r.width - 2 * pad - lw - 16 - (arrows ? 2 * aw + 8 : 0), vw = icon ? r.height * 0.8f : fminf(feWidthPx(value, px), fmaxf(avail, 0));
     Texture2D a = tex("fe/textitem_arrows");
     Color ac = hi ? Color{42, 22, 0, 255} : GC_LIST_DATA_ORANGE[0];
     if (arrows && a.id) DrawTexturePro(a, {32, 0, 32, 64}, {right - aw, cy - ah / 2, aw, ah}, {}, 0, ac), right -= aw + 6;
     Color edge = hi ? BC_NONE : BC_BLACK;  // black on the orange bar without the outline [assumed: readability]
-    marquee(value, {right - vw, cy - px, vw, 2 * px}, px, vg, 2, edge, now());  // a long value scrolls, never shrinks [user-requested]
+    if (icon) feIcon(icon->sheet, icon->cols, icon->rows, icon->cell, {right - vw, cy - vw / 2, vw, vw});
+    else marquee(value, {right - vw, cy - px, vw, 2 * px}, px, vg, 2, edge, now());  // a long value scrolls, never shrinks [user-requested]
     right -= vw;
     if (arrows && a.id) DrawTexturePro(a, {0, 0, 32, 64}, {right - aw - 6, cy - ah / 2, aw, ah}, {}, 0, ac);
     float room = fminf(lw, right - 16 - (r.x + pad));
@@ -2181,15 +2198,13 @@ Frontend::PadIn Frontend::padIn(int p) {
     return in;
 }
 
-// One player slot (d) of the Teams screen: the ribbon in the team's match colour carrying its name ("Joueur N" on a free slot), who plays it (the pad's disc left of the ribbon on the frame's top edge,
+// One player slot (d) of the Teams screen: the ribbon in the team's alliance colour carrying its name ("Joueur N" on a free slot), who plays it (the pad's disc left of the ribbon on the frame's top edge,
 // the CPU level, another console's name), its live worm in its outfit free at the bottom and the slot settings in the right margin, in a room the ready grenade. A free slot shows how to pick a team.
 void Frontend::teamSlot(Rectangle d, int k, float t) {
     (void)t;
     const GameConfig &c = lobby.cfg;
     const GameConfig::Team &m = c.teamSetup[k];
     const bool play = lobby.playing(k), cpu = play && m.cpu, mine = play && lobby.canEdit(k) && !m.cpu;
-    int rank = 0;  // the match colour: the rank among the playing slots
-    for (int j = 0; j < k; j++) rank += lobby.playing(j);
     const float cx = d.x + d.width / 2;
     auto line = [](const char *s, float px, float x0, float x1, float cy, const Color *g, int align) { marquee(s, {x0, cy - px, x1 - x0, 2 * px}, px, g, align, BC_BLACK, now()); };
     if (!cardPanel(d)) DrawRectangleRounded(d, 0.1f, 6, PANEL);
@@ -2200,7 +2215,7 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
         Rectangle r = {cx - w / 2, d.y - 20, w, 36};
         Tilt tl(centre(r), 0.035f);
         DrawRectangleRounded({r.x - 3, r.y - 3, r.width + 6, r.height + 6}, 0.5f, 8, BLACK);
-        DrawRectangleRounded(r, 0.5f, 8, play ? TEAM_COLORS[rank] : Color{110, 120, 130, 255});
+        DrawRectangleRounded(r, 0.5f, 8, play ? TEAM_COLORS[c.alliance(k) & 3] : Color{110, 120, 130, 255});  // 0x4be910: the name in its alliance's colour
         line(rb, 24, r.x + 20, r.x + r.width - 20, r.y + r.height / 2, GC_WHITE, 1);
     }
     if (!play) {  // "A to pick a team": the text wraps on two lines in the room the glyph leaves
@@ -2232,14 +2247,11 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
     }
     DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, {cx - 92.5f, d.y + d.height + 36 - 250, 185, 250}, {}, 0, WHITE);
     // the slot settings as W4M's filled CreateAGame row shows them (0x4be910): the worm count icon (WXFE.TeamInfo01:0..3 / 02:0..1 = x1..x6) and the
-    // handicap icon (WXFE.HandicapAllies :1 -1, :2 0, :0 +1), stacked in the right margin clear of the worm; the shared group as text is ours (W4M colours the name by alliance)
-    const int nw = c.teamWorms(k), al = c.alliance(k);
-    bool shared = false;
-    for (int j = 0; j < Lobby::MAX_TEAMS; j++) shared |= j != k && lobby.playing(j) && c.alliance(j) == al;
+    // handicap icon (WXFE.HandicapAllies :1 -1, :2 0, :0 +1), stacked in the right margin clear of the worm
+    const int nw = c.teamWorms(k);
     const float ic = 30, ix = d.x + d.width - ic - 10, iy = d.y + 96;
     feIcon(nw <= 4 ? "fe/teaminfo01" : "fe/teaminfo02", 2, 2, (nw - 1) % 4, {ix, iy, ic, ic});
     feIcon("fe/teaminfo04", 4, 2, m.handicap < 0 ? 1 : m.handicap > 0 ? 0 : 2, {ix, iy + ic + 6, ic, ic});
-    if (shared) feTextPx(TextFormat("G%d", al + 1), ix + ic / 2, iy + 2 * ic + 22, 18, GC_WHITE, 1);
     if (room()) navAt(0, lobby.ready[k] ? 0 : 2, {d.x + 10, d.y + 8, 34, 34});  // Team<n>_Ready: Nav Start, Normal when ready, Disabled when not
 }
 
@@ -2493,10 +2505,13 @@ void Frontend::popDraw(float t) {
         popup(d);
         feTextPx(m.name.c_str(), 640, d.y + 44, 30, GC_BUTTON_YELLOW, 1);
         if (!image("fe/title_underline", {640 - 200, d.y + 66, 400, 22})) DrawRectangle(640 - 200, d.y + 76, 400, 3, WHITE);
-        for (int i = 0; i < (int)lab.size(); i++) {
-            std::string v = i == 0 ? TextFormat("%d", lobby.cfg.teamWorms(pop.slot)) : i == 1 ? TextFormat("%d", lobby.cfg.alliance(pop.slot) + 1) : i == 2 ? (m.handicap ? TextFormat("%+d", m.handicap) : "0") : "";
-            feRow({d.x + 40, d.y + 108 + i * 54.0f, d.width - 80, 44}, i == pop.row ? 1 : 0, lab[i], v.c_str(), i < 3 && i == pop.row);
-        }
+        // 0x4c0640: the rows' values are icons: x1..x6 (WXFE.TeamInfo01:0..3, 02:0..1), the alliance's colour (WXFE.HandicapAllies:3..6),
+        // the handicap (HandicapAllies :1 -1, :2 0, :0 +1)
+        const int nw = lobby.cfg.teamWorms(pop.slot);
+        const FeCell cell[3] = {{nw <= 4 ? "fe/teaminfo01" : "fe/teaminfo02", 2, 2, (nw - 1) % 4}, {"fe/teaminfo04", 4, 2, 3 + (lobby.cfg.alliance(pop.slot) & 3)},
+                                {"fe/teaminfo04", 4, 2, m.handicap < 0 ? 1 : m.handicap > 0 ? 0 : 2}};
+        for (int i = 0; i < (int)lab.size(); i++)
+            feRow({d.x + 40, d.y + 108 + i * 54.0f, d.width - 80, 44}, i == pop.row ? 1 : 0, lab[i], "", i < 3 && i == pop.row, i < 3 ? &cell[i] : nullptr);
         break;
     }
     case Pop::Confirm: yesNo(pop.use == Pop::Delete ? tr("FETXT.ConfirmDeleteThis", "Are you sure you want to delete this?", nullptr) : tr(nullptr, "Discard the changes?", "Abandonner les modifications ?"), pop.row, t); break;
@@ -2967,7 +2982,7 @@ bool Frontend::setupTeams(bool plus, float t) {
     }
     leave = back && room();
     if (back && !room()) saveSetup(c), go(Local);
-    if (plus && padsReady(lobby) && (room() || lobby.count() >= 2)) screen = SetupMap;
+    if (plus && padsReady(lobby) && (room() || lobby.canStart())) screen = SetupMap;
 #ifdef __SWITCH__
     if (minusTap) controllerApplet(__builtin_popcount(lobby.padsUsed()));
 #endif
@@ -3003,6 +3018,7 @@ bool Frontend::setupTeams(bool plus, float t) {
     const char *tip = tr("FETIP.InsertTeam", "Select a team to play.", nullptr);
     bool warn = false;
     if (!room() && lobby.count() < 2) warn = true, tip = tr(nullptr, "Two players are needed to play", "Il faut deux joueurs pour jouer");
+    else if (!room() && !lobby.canStart()) warn = true, tip = tr(nullptr, "The teams need two alliances at least", "Il faut au moins deux alliances");
     for (int k = 0; k < Lobby::MAX_TEAMS && !warn; k++)
         if (lobby.playing(k) && lobby.canEdit(k) && !c.teamSetup[k].cpu && !padPresent(c.teamSetup[k].pad))
             warn = true, tip = TextFormat(tr(nullptr, "Pad %d missing: + opens the controller screen", "Manette %d absente : + ouvre l'écran des manettes"), c.teamSetup[k].pad + 1);
@@ -3061,7 +3077,7 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
     if (rulesRow == Pot && ok) screen = Wormpot, reel = 0;
     if (back) screen = SetupMap;
     plus = plus && padsReady(lobby);
-    bool start = room() ? plus && mayEdit && net->allReady() && c.teams >= 2 : plus;
+    bool start = room() ? plus && mayEdit && net->allReady() && lobby.canStart() : plus;
     if (plus && room() && !start) net->setReady(!net->isReady(net->id));
     if (plus && !room()) saveSetup(c);
     float t = now();
@@ -3636,15 +3652,15 @@ static float digits(const char *s, float x, float y, float h, int align, bool gr
     return w;
 }
 
-static void healthBar(int team, float x, float y, float w, float h, float frac) {
+static void healthBar(int colour, float x, float y, float w, float h, float frac) {
     Texture2D t = tex("fe/team_health");
     DrawRectangleRounded({x - 3, y - 3, w + 6, h + 6}, 0.3f, 4, {20, 20, 20, 230});
     DrawRectangleRounded({x, y, w, h}, 0.3f, 4, {170, 150, 110, 255});
     if (t.id) {
-        float row = 4 + HEALTH_ROW[team % 4] * 102.0f, sw = 489 * frac;
+        float row = 4 + HEALTH_ROW[colour] * 102.0f, sw = 489 * frac;
         DrawTexturePro(t, {11, row, sw, 97}, {x, y, w * frac, h}, {}, 0, WHITE);
     } else {
-        DrawRectangleRounded({x, y, w * frac, h}, 0.3f, 4, TEAM_COLORS[team % 4]);
+        DrawRectangleRounded({x, y, w * frac, h}, 0.3f, 4, TEAM_COLORS[colour]);
     }
 }
 
@@ -3750,7 +3766,7 @@ static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
         Vector2 p = at(w.pos);
         float r = &w == &g.worms[g.current] ? 6 : 4.5f;
         DrawCircleV(p, r + 1.5f, &w == &g.worms[g.current] ? WHITE : BLACK);
-        DrawCircleV(p, r, TEAM_COLORS[w.team % 4]);
+        DrawCircleV(p, r, teamColor(g, w.team));
     }
     if (aiming && !sprite("radar_objects", at(g.target()), 0.5f, {16, 16}, 0, WHITE, {96, 0, 32, 32})) DrawCircleLinesV(at(g.target()), 5, WHITE);
 }
@@ -4036,7 +4052,7 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
             pipPlace(pipShow, pipFull, pc, ph, rot);
             if (fabsf(sp.x - pc.x) < ph.x + 30 && fabsf(sp.y - pc.y) < ph.y + 30) label = false;
         }
-        Color c = TEAM_COLORS[w.team % 4];
+        Color c = teamTextColor(g, w.team);
         const Color POISON = {120, 220, 60, 255};
         if (label) {
             text3dAt(TextFormat("%d", hp), hpAt, 0.25f, i == counting && hpt[i].poison ? POISON : c, cam, fwd);  // WormHealthNameEntity 0x5fdb70: Text3Ds in FE.Font
@@ -4075,13 +4091,15 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (scriptMovie(g).borders) return;  // EFMV.BordersActive: every HUD object leaves (BaseHudObject 0x5daf31) [ours: at once]
     if (g.phase == Phase::GameOver) {
         if (!g.cfg.mission) {  // missions and challenges end on missionEnd() only
-            text(resultBanner(g).c_str(), 640, 260, 70, g.winner >= 0 ? TEAM_COLORS[g.winner % 4] : WHITE, 1);
+            // HeaderTop FE.WinString in Header_Orange, the line under it in Solid_White
+            textG(resultBanner(g).c_str(), 640, 230, 70, {255, 241, 174, 255}, {255, 163, 73, 255}, 1);
+            text(resultLine(g), 640, 314, 42, WHITE, 1);
             if (!quiet) hints({{"A", "Space", "Continue"}});
         }
         return;
     }
     const WeaponDef &wd = weaponDef(g.weapon);
-    Color tc = TEAM_COLORS[cur.team % 4];
+    Color tc = teamColor(g, cur.team);
     bool aiming = g.phase == Phase::Aim;
     if (ready) {  // W4M ready screen: big worm + team name, "Ready?" + countdown, rest of the HUD hidden
         const Color CREAM = {255, 244, 228, 255};
@@ -4113,7 +4131,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     // current weapon (top right) + ammo
     Vector2 wp = {1176, 92 - (300 - 174) * 1.5f * pipShow * (1 - pipFull)};  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
     if (g.weapon >= 0) {  // W4M ActiveWormHudInfoEntity 0x5d7bb0: hidden for kWeaponUndefined
-        int ammo = g.ammo[cur.team][g.weapon];
+        int ammo = g.stock(cur.team, g.weapon);
         if (!sprite("secondback", wp, 0.5f, {128, 128})) DrawCircleV(wp, 44, {0, 119, 155, 230});
         if (!image(iconOf(wd), {wp.x - 34, wp.y - 34, 68, 68}, ammo ? WHITE : GRAY)) text(wd.name.substr(0, 4).c_str(), wp.x, wp.y - 12, 22, WHITE, 1);
         digits(ammo < 0 ? "~" : TextFormat("%d", ammo), wp.x, wp.y + 44, 40, 1);
@@ -4122,7 +4140,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (wd.userFuse) text(TextFormat("%s %ds", tr("FETXT.Fuse", "Fuse", "Mèche"), (int)g.fuseOf(wd)), wp.x - 54, wp.y + 16, 22, GOLDEN, 2);  // d-pad up/down
     if (g.secondary >= 0) {  // W4M SecondaryWeaponGraphicEntity 0x5f82f0: dynamite / landmine / sheep icon under the tool's
         const WeaponDef &sd = WEAPONS[g.secondary];
-        int sa = g.ammo[cur.team][g.secondary];
+        int sa = g.stock(cur.team, g.secondary);
         Vector2 sp2 = {wp.x, wp.y + 140};
         if (!sprite("secondback", sp2, 0.34f, {128, 128})) DrawCircleV(sp2, 30, {0, 119, 155, 230});
         if (!image(iconOf(sd), {sp2.x - 23, sp2.y - 23, 46, 46}, WHITE)) text(sd.name.substr(0, 4).c_str(), sp2.x, sp2.y - 10, 18, WHITE, 1);
@@ -4169,10 +4187,10 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float hp = 0;
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].team == t) hp += hpt[i].shown;  // shrinks with the count
         float y = 646 - (g.teams - 1 - t) * 38.0f;
-        text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, TEAM_COLORS[t % 4], 2);
+        text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, teamTextColor(g, t), 2);
         const Catalog::Item *flag = t < (int)g.cfg.teamSetup.size() ? catalog().flag(g.cfg.teamSetup[t].flag) : nullptr;  // HUD.Energy.Flag*: the team's FlagGfxName
-        if (!flag || !image(flag->model.c_str(), {584, y - 4, 32, 32})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, TEAM_COLORS[t % 4]);
-        healthBar(t, 628, y, 240, 24, Clamp(hp / maxHp, 0, 1));
+        if (!flag || !image(flag->model.c_str(), {584, y - 4, 32, 32})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, teamColor(g, t));
+        healthBar(g.alliance(t) & 3, 628, y, 240, 24, Clamp(hp / maxHp, 0, 1));
     }
     // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)
     Vector2 pb = {22, 520};
@@ -4236,7 +4254,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     for (int k = 0; k < n; k++) {
         int i = slots[k];
         Rectangle c = {pr.x + 30 + (k % cols) * cell, pr.y + 80 + (k / cols) * cell, cell - 8, cell - 8};
-        int a = g.ammo[cur.team][i], late = g.delays[cur.team][i];
+        int a = g.stock(cur.team, i), late = g.delays[cur.team][i];
         if (late) a = 0;  // W4M FETXT.HTPSubtopic4: a delayed weapon is dimmed, its number the turns left
         bool lit = a && g.pickable(cur.team, i);
         if (i == cursor && !nine("fe/buttonbig_highlight", c, 64, 0.25f)) DrawRectangleRoundedLinesEx(c, 0.2f, 4, 4, GOLDEN);
@@ -4249,7 +4267,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         if (late) text(TextFormat("%d", late), c.x + c.width / 2, c.y + c.height / 2 - 20, 40, GOLDEN, 1);
     }
     const WeaponDef &sel = WEAPONS[cursor];
-    int sa = g.ammo[cur.team][cursor];
+    int sa = g.stock(cur.team, cursor);
     text(TextFormat("%s  %s", weaponName(sel), sa < 0 ? "(infinite)" : TextFormat("x%d", sa)), 640, pr.y + ph - 58, 30, sa ? WHITE : GRAY, 1);
 }
 

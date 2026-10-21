@@ -455,7 +455,13 @@ struct Game {
     std::vector<Gas> gas;  // poison clouds: drift with the wind, poison every worm inside
     std::vector<GameEvent> events;  // cleared at the start of each step()
     std::vector<int> nextWorm;
-    std::vector<std::vector<int>> ammo;  // [team][weapon]
+    // W4M inventories (0x50d900): ammo rows are Inventory.AllianceNN in versus (row = alliance), a script's per-team view under a script;
+    // teamAmmo [team][weapon] Inventory.TeamNN (versus Specialist only, empty otherwise)
+    std::vector<std::vector<int>> ammo, teamAmmo;
+    int row(int team) const { return script ? team : alliance(team); }
+    int stock(int team, int wi) const;      // alliance + team, -1 when either is -1
+    void spend(int team, int wi);           // 0x4f4fd0: the alliance's when > 0, else the team's
+    void gain(int team, int wi, int n);     // crate 0x5c8820: into the alliance's count (crateAdd)
     std::vector<int> picked;             // per team: weapon in hand when its last turn ended (the AI's PreferVariety)
     // per team: its Weapon Factory weapon (factoryPayload applied), "" none; the one WEAPONS slot holds the playing team's (0x597ec0)
     std::vector<WeaponDef> secrets;
@@ -506,7 +512,7 @@ struct Game {
     bool endlessGun = false;  // W4M Challenge.EndlessGun: a gun never runs out of shots nor ends the turn (0x55cff0)
     std::vector<int> fuses;  // per team: seconds set for userFuse weapons (W4M default 3)
     std::vector<std::vector<int>> delays;  // [team][weapon]: own turns left before it unlocks (W4M InventoryN.WeaponDelays)
-    bool usable(int team, int wi) const { return wi >= 0 && ammo[team][wi] && !delays[team][wi] && allowed(team, wi); }
+    bool usable(int team, int wi) const { return wi >= 0 && stock(team, wi) && !delays[team][wi] && allowed(team, wi); }
     bool allowed(int team, int wi) const;  // the team's active worm's WormData Allow* flags (0x50c800): Specialists, Tug O Worms
     std::vector<uint8_t> special;  // per worm: Wormpot.lub SetSpecialistTeam class 1..6, 0 none
     std::vector<uint8_t> wormCpu;  // per worm: W4M AIParams.WormNN level 1..5 (mission scripts), 0 = the team's (cfg.teamSetup cpu)

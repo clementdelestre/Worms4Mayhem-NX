@@ -65,7 +65,6 @@ static long glDraws, glBinds;
 static void countGl() {}
 #endif
 
-static const Color TEAM_COLORS[] = {{220, 50, 50, 255}, {50, 110, 230, 255}, {60, 190, 70, 255}, {240, 200, 40, 255}};
 
 static bool pressedAny(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys) { return Ui::pressed(pad, buttons, keys); }
 
@@ -730,7 +729,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         const float at[4] = {0, o.x + 1, o.y + 1, o.z + 1};
         std::copy(add, add + 4, fpl.add), std::copy(at, at + 4, fpl.addT), ly = &fpl, aim = aim ? "AimFP" : nullptr;
     }
-    Color tint = Acting::tint(i, ColorLerp(WHITE, TEAM_COLORS[w.team], 0.5f));
+    Color tint = Acting::tint(i, WHITE);  // 0x5a1bb1: sick / abducted only, no team colour
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
     // W4M turns the model about its node origin (0x5a26d3): worm.glb origin + the 3 unit lift (0.15 m)
     // rider (0x588fd0, once launched): pitch = the rocket's elevation; during the fuse the worm stands, not attached (0x5891e0)
@@ -1446,7 +1445,7 @@ int main(int argc, char **argv) {
     bool intro = uiShot && !strcmp(uiShot, "intro");
     bool loadShot = uiShot && !strcmp(uiShot, "loading");
     if (uiFrames.empty() && loadShot) uiFrames = {20, 60, 120, 170};  // intro, intro, loading screen x2
-    if (uiFrames.empty()) uiFrames.push_back(uiShot && (!strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6)) ? 34 : 10);
+    if (uiFrames.empty()) uiFrames.push_back(uiShot && (!strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) || !strcmp(uiShot, "setupslot")) ? 34 : 10);
     // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
     bool bench = argc > 2 && !strcmp(argv[1], "--bench");
     int benchFrames = bench && argc > 3 ? atoi(argv[3]) : 1200;
@@ -1526,7 +1525,7 @@ int main(int argc, char **argv) {
         levelFx(game);
     }
     for (size_t i = 0; (utilShot || shotBench || aimShot) && i < WEAPONS.size(); i++)
-        if ((utilShot && WEAPONS[i].name == utilShot) || ((shotBench || aimShot) && (int)i == shotWeapon)) game.ammo[game.worms[game.current].team][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
+        if ((utilShot && WEAPONS[i].name == utilShot) || ((shotBench || aimShot) && (int)i == shotWeapon)) game.ammo[game.row(game.worms[game.current].team)][i] = 1, game.delays[game.worms[game.current].team][i] = 0, game.weapon = (int)i, game.picked.assign(game.teams, (int)i);
 
     Camera3D cam = {{40, 30, 0}, {40, 8, 40}, {0, 1, 0}, Controls::FOV0, CAMERA_PERSPECTIVE};
     float acc = 0, clock = 0, reconnectAt = 0;
@@ -1769,15 +1768,18 @@ int main(int argc, char **argv) {
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu
     Ui::forceHelp = uiShot && (!strcmp(uiShot, "help") || !strcmp(uiShot, "helpmenu"));
-    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready") || !strcmp(uiShot, "loading") || !strcmp(uiShot, "gameover"))) {
-        startMatch({1234, 2, 2, argc > 3 ? argv[3] : flagMap, 0u, {{"Red Rockets"}, {"Blue Bombers"}}});
+    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready") || !strcmp(uiShot, "loading") || !strncmp(uiShot, "gameover", 8))) {
+        GameConfig sc{1234, 2, 2, argc > 3 ? argv[3] : flagMap, 0u, {{"Red Rockets"}, {"Blue Bombers"}}};
+        if (!strcmp(uiShot, "gameoverally"))  // teams 1 and 3 allied: the win under their alliance's name
+            sc.teams = 3, sc.teamSetup.push_back({"Green Grubs"}), sc.teamSetup[0].alliance = sc.teamSetup[2].alliance = 0, sc.teamSetup[1].alliance = 1;
+        startMatch(sc);
         if (strcmp(uiShot, "ready")) game.hotSeat = 0;  // every shot but "ready" skips the hot-seat pause
         for (size_t i = 0; argc > 4 && i < WEAPONS.size(); i++) if (WEAPONS[i].name == argv[4]) game.weapon = (int)i;  // --ui hud <map> <weapon>
         hud.open = !strcmp(uiShot, "panel");
         pause.open = !strcmp(uiShot, "pause");
-        if (!strcmp(uiShot, "gameover")) game.phase = Phase::GameOver, game.winner = 0, onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
+        if (!strncmp(uiShot, "gameover", 8)) game.phase = Phase::GameOver, game.winner = 0, onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
     } else if (uiShot) {
-        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) ? Ui::Frontend::SetupTeams
+        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strcmp(uiShot, "setupslot") || !strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) ? Ui::Frontend::SetupTeams
                      : !strcmp(uiShot, "setupmap") ? Ui::Frontend::SetupMap : !strcmp(uiShot, "setuprules") ? Ui::Frontend::SetupRules
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
         static const std::pair<const char *, Ui::Frontend::Screen> MENUS[] = {{"local", Ui::Frontend::Local}, {"network", Ui::Frontend::Network},
@@ -1987,6 +1989,11 @@ int main(int argc, char **argv) {
                 const bool foreign = !strcmp(uiShot, "setup3foreign");
                 if (frame == 26 && foreign) Ui::Frontend::sim[0].card = 1;
                 if (frame == 28 && (foreign || !strcmp(uiShot, "setup3slot"))) Ui::Frontend::sim[0].ok = true;
+            }
+            if (uiShot && !strcmp(uiShot, "setupslot")) {  // slot 1's settings (pad 1), on its alliance row
+                Ui::Frontend::simPads = 1;
+                if (frame == 4) Ui::Frontend::sim[0].ok = true;
+                if (frame == 6) Ui::Frontend::sim[0].dy = 1;
             }
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;
@@ -2610,7 +2617,7 @@ int main(int argc, char **argv) {
                 drawFaded(w, &w == &cur ? curOp : 1);
             } else {
                 Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};
-                DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, TEAM_COLORS[w.team]);
+                DrawCapsule({w.pos.x, w.pos.y - 0.2f, w.pos.z}, {w.pos.x, w.pos.y + 0.3f, w.pos.z}, 0.35f, 8, 6, Ui::teamColor(game, w.team));
                 for (float s : {-0.13f, 0.13f})
                     DrawSphere(Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 0.3f), Vector3Add(Vector3Scale(side, s), {0, 0.4f, 0}))), 0.1f, WHITE);
             }
@@ -2641,7 +2648,11 @@ int main(int argc, char **argv) {
         });
         lap(T_FX);
         EndMode3D();
-        if (blimp) Xray::outline(TEAM_COLORS);
+        if (blimp) {  // PCPostProcess 0x61e0e0: team t's stencil bit drawn in its AlliedGroup colour
+            Color tc[4];
+            for (int t = 0; t < 4; t++) tc[t] = Ui::teamColor(game, t);
+            Xray::outline(tc);
+        }
 
         hud.labels(game, view, tick);
         // HomingLockOnGraphicEntity: on the target until the shot, when in front of the camera
