@@ -74,8 +74,14 @@ struct Lobby {
     }
 };
 
-// Average of two body colours (a Joy-Con pair): red + blue = purple
-inline Color mixColors(Color a, Color b) { return {(unsigned char)((a.r + b.r) / 2), (unsigned char)((a.g + b.g) / 2), (unsigned char)((a.b + b.b) / 2), 255}; }
+// Mix of two body colours (a Joy-Con pair): halfway round the shorter hue arc, so blue + red = purple (an RGB average turns grey);
+// with a near-grey colour (white, black) the plain average
+inline Color mixColors(Color a, Color b) {
+    Vector3 x = ColorToHSV(a), y = ColorToHSV(b);
+    if (x.y < 0.15f || y.y < 0.15f) return {(unsigned char)((a.r + b.r) / 2), (unsigned char)((a.g + b.g) / 2), (unsigned char)((a.b + b.b) / 2), 255};
+    float d = fmodf(y.x - x.x + 540.0f, 360.0f) - 180.0f;
+    return ColorFromHSV(fmodf(x.x + d / 2 + 360.0f, 360.0f), (x.y + y.y) / 2, (x.z + y.z) / 2);
+}
 
 // The Teams screen's tokens, one per pad: the slot each pad is on, moved independently [ours]
 struct TeamCursors {

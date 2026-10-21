@@ -51,9 +51,10 @@ int main() {
         c.unclaim(0);
         assert(c.open[0] == -1 && c.claim(1, 2));
     }
-    {  // a Joy-Con pair's colour is the average of its two colours: blue + red = purple
-        Color p = mixColors({58, 123, 255, 255}, {255, 60, 40, 255});
-        assert(p.r == 156 && p.g == 91 && p.b == 147 && p.a == 255);
+    {  // a Joy-Con pair's colour: neon blue + neon red = purple (hue halfway on the shorter arc), not the grey RGB average
+        Color p = mixColors({10, 185, 230, 255}, {255, 60, 40, 255});
+        Vector3 h = ColorToHSV(p);
+        assert(h.x > 250 && h.x < 310 && h.y > 0.7f && p.a == 255);
         Color w = mixColors(WHITE, WHITE);
         assert(w.r == 255 && w.g == 255 && w.b == 255);
     }
