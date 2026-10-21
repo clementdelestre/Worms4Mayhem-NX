@@ -16,7 +16,7 @@ little-endian. `str` = `u8 len | bytes` (UTF-8, max 255). `Input` = 6 bytes
 
 ### Input (`struct Input`, `sim.h`; applied by `Game::step`, built by `Controls::read` / `tick`, `Ai::think`)
 
-The active player's per-tick input is the only game data on the wire; replays (`.w4r` "W4R4", "W4R3" before the Weapon Factory sliders) store the same 6 bytes; a "W4R2" replay has 5 and loads with `zoom` 255, a "W4R1" one has 4 and loads with `flags` 0.
+The active player's per-tick input is the only game data on the wire; replays (`.w4r` "W4R7"; "W4R6" before the Weapon Factory container fields, refused with a team weapon; "W4R3" before the Weapon Factory sliders) store the same 6 bytes; a "W4R2" replay has 5 and loads with `zoom` 255, a "W4R1" one has 4 and loads with `flags` 0.
 
 | field / bit | value | meaning (status: ours unless noted) |
 |---|---|---|
@@ -86,11 +86,12 @@ C = client → server, S = server → client.
 - **Start wormpot** (optional, after the scheme block; absent = 0): `wormpot` holds the three
   reels: byte r = reel r's W4M mode id (`WormpotMode` of `sim.h`, 0 or 1 = empty).
 - **Weapon** (a team's Weapon Factory weapon, in its `team` record) = `str name, u8 kind` (clamped to `Kind::ChangeWorm` on read), 5 × f32 (speed, fuse, bounce, poison,
-  cluster spread), 8 × f32 Weapon Factory sliders (land damage, worm radius, worm damage, blast strength; then the cluster's), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon`
-  (f32 = IEEE-754 bits as u32). Every client puts them in the one Weapon Factory slot after its `weapons.json` table, the playing
-  team's at each turn start (`Game::wieldSecret`), so the table (part of the checksum) is the same everywhere. Fields not on the wire
-  (`post_launch`, `retreat`, `user_fuse`...) are reset by `Game::start` on every peer, crater / damage / blast keys / detonation from the sliders (`factoryPayload`): PostLaunchDelay 500 ms (homing 0),
-  retreat = the scheme's (W4M kWeaponFactoryWeapon / kWeaponFactoryHoming, data).
+  cluster spread), 8 × f32 Weapon Factory sliders (land damage, worm radius, worm damage, blast strength; then the cluster's), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon,
+  then the W4M WeaponFactoryContainer fields: i8 launch, i8 detonate, i8 cluster detonate, i32 fuse time, u8 flags (bit 0 powers up, bit 1 cluster poison),
+  3 × f32 (max power, collision, cluster collision), str cluster model, str ariel` (f32 = IEEE-754 bits as u32; -1 launch / detonate: our editor's weapon).
+  Every client puts them in the one Weapon Factory slot after its `weapons.json` table, the playing
+  team's at each turn start (`Game::wieldSecret`), so the table (part of the checksum) is the same everywhere. `factoryPayload` builds the rest on every
+  peer from the launch type's `weapons.json` weapon (W4M 0x598160 clone) and the sliders (docs/w4m/weapons.md "Template clone").
 - **Inputs**: the match is one input stream indexed by tick (tick 0 = first `step` after
   `start`). The owner of the active team sends an `Input` for *every* tick it steps, batched
   (~3 ticks per frame). The server requires `firstTick == ticks logged so far`; otherwise it

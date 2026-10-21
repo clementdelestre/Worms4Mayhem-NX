@@ -642,7 +642,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
     if (ch.on && !s && g.phase != Phase::Aim) return evb = {0.1f, 0.1f, 1, false}, true;  // ChaseCam: no Finished (0x49b8f0), a gone target is skipped (0x5245e0): frozen
     ch.on = false;
     if (donkeyCam == 1 && !s && g.phase != Phase::Aim) return evb = {1, 0.1f}, true;
-    bool fat = wd && (wd->name == "Fatkins Strike" || (customWeapon(s->weapon) && wd->kind == Kind::Airstrike && s->child));  // FatkinsTrackCamera (0x5993e0: also the Factory airstrike)
+    bool fat = wd && (wd->name == "Fatkins Strike" || (customWeapon(s->weapon) && wd->kind == Kind::Airstrike && s->child && wd->crest));  // FatkinsTrackCamera (0x5993e0: a Factory Bomber's AtRest bombs)
     if (wd && wd->kind == Kind::Donkey && !fat) {  // DonkeyCamera: fixed at the spawn point - Donkey.ExtraHeight on y, + 500 units on z (0x5538d8), look-at donkey + 100 units at 0.1/frame
         if (donkeyCam == 2) return chase = false, false;  // served once, at its Init: the camera that replaced it stays
         if (!donkeyCam) donkeyAt = Vector3Add(s->pos, {0, -Game::DONKEY_EXTRA, 25}), donkeyCam = 1, serves++;

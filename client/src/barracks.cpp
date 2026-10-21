@@ -17,7 +17,8 @@ GameConfig::Team SavedTeam::slot(int count, int alliance, int handicap, const st
     t.name = name, t.cpu = (uint8_t)std::clamp(skill, 0, 5), t.speech = speech, t.hat = hat, t.gloves = gloves, t.glasses = glasses, t.tash = tash;
     t.flag = flag, t.grave = (uint8_t)std::clamp(grave, 0, 255), t.wormNames = worms;
     t.worms = (uint8_t)std::clamp(count, 0, 6), t.alliance = (int8_t)(alliance < 0 ? -1 : alliance & 3), t.handicap = (int8_t)std::clamp(handicap, -1, 1);
-    for (const WeaponDef &w : factory) if (!weapon.empty() && w.name == weapon) t.secret = w;
+    for (const std::vector<WeaponDef> *list : {&catalog().stock, &factory})
+        for (const WeaponDef &w : *list) if (!weapon.empty() && w.name == weapon) t.secret = w;
     return t;
 }
 
@@ -147,7 +148,8 @@ void Catalog::load(const char *dir) {
     rows("graves.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 3) graves.push_back({f[1], f[0], f[2]}); });
     rows("flags.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 3) flags.push_back({f[0], "flags/" + f[1], f[2]}); });
     rows("speech.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 2) speech.push_back({f[0], "", f[1]}); });
-    rows("stockweapons.txt", [&](const std::vector<std::string> &f) { if (!f.empty() && !f[0].empty()) stockWeapons.push_back(f[0]); });
+    loadCustomWeapons((std::string(dir) + "stockweapons.json").c_str(), stock);
+    for (const WeaponDef &w : stock) stockWeapons.push_back(w.name);
 }
 
 const Catalog::Item *Catalog::attachment(const std::string &id) const {

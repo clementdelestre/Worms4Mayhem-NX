@@ -19,8 +19,8 @@ Status: the gains, loop flags, 3D ranges and max playbacks are **data** (FEV, ha
 - **Max playbacks**: each variant is loaded `max` times (aliases); past `max` voices playing, the oldest is cut (FMOD steal oldest).
 - **Kinds of call**: `play` (one shot), `hold` (one W4M event instance from the rising edge, cut at the falling edge: held weapons,
   charge sounds; a spawning def (`Def::spawn`, FEV "oneshot" instance) starts its next sound once the last has ended), `loop` (replayed while on, FEV fade in / out when it has one), `equip` (W4M WeaponAccessoryEntity 0x5950c0: the weapon's
-  WEAPTWK EquipSfx; none for Sheep, Starburst, Fire Punch, Prod, Armour, Binoculars, Teleport, Change Worm, Skip Go; Weapon Factory
-  weapons use the Bazooka's, as kWeaponFactoryWeapon).
+  WEAPTWK EquipSfx; none for Sheep, Starburst, Fire Punch, Prod, Armour, Binoculars, Teleport, Change Worm, Skip Go; a Weapon Factory
+  weapon its clone's, `kindName`: Bazooka / Homing Missile BazookaEquip, Grenade / Dynamite DefaultEquip, Airstrike AirstrikeEquip (docs/w4m/weapons.md "Template clone")).
 - **Voices**: `voices/<bank>/<line>.ogg`, one bank per team (`setTeamVoice`, picked in team setup; default team % banks), banks
   under `assets/voices/` else `romfs/voices/`, loaded lazily (`preloadVoices` at match start). Speech is 3D 0.5–50 m at 0 dB, one
   playback per line; SadSigh and Yawn −2.5 dB, 0.5–22.5 m (FEV `Speech/*`). A bank without a line falls back along `FALLBACK`

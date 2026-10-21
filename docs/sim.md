@@ -98,7 +98,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   ends at the timer whatever the shot does; `Settle` then waits for the shots (W4M EndTurn waits for ObjectCount.Active, disasm).
 - Rope and jetpack stay steerable in `Flying` / `Retreat` (W4M utilities outlast the attack, disasm).
 - Weapon `post_launch` values (weapons.json, WEAPTWK PostLaunchDelay, data): Bazooka, grenades, gas 500 ms; Shotgun, Baseball Bat,
-  Tail Nail 1000; Sniper Rifle 2000; Sentry Gun 420; Skip Go 3000; Weapon Factory weapons 500 (homing 0), forced in `Game::start`.
+  Tail Nail 1000; Sniper Rifle 2000; Sentry Gun 420; Skip Go 3000; Weapon Factory weapons their clone's (`factoryPayload`: Bazooka, Grenade 500, Homing Missile, Airstrike 0).
   `retreat` overrides: Dynamite and Landmine 5000 ms; strikes, donkeys, abduction, flood, old woman, scouser, Starburst 0; Skip Go 0
   (W4M sets RetreatTime 0, 0x588160). Every value matches `tweak.py` WEAPTWK; Homing, Poison Arrow, Sheep, Super Sheep, Fire Punch and
   Prod are 0 / -1 there. Icarus Potion 500: the drink (`icarus` 3), worm frozen and no weapon change, then the cure and the
@@ -208,7 +208,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   Clusters landmine children leave the blast point 20 ms apart (`Projectile::stage` holds a child in place until its spawn, ticks
   `msTicks(20 k)`), direction in a cone of `cluster_cone` around up (azimuth 2 pi r, tilt cone r), speed `cluster_min_speed` +
   (max - min) r; W4M draws each at its spawn, ours all at the blast [ours: our rand is not W4M's]. Weapon Factory weapons get the
-  W4M factory cone 0.28 and speeds k / 7 .. k / 2 units/ms, k = 0.5 ClusterSpread + 0.3 (`Game::start`, weapons JSON `cluster_spread`,
+  W4M factory cone 0.28 and speeds k / 7 .. k / 2 units/ms, k = 0.5 ClusterSpread + 0.3 (`factoryPayload`, weapons JSON `cluster_spread`,
 default 0.3 = WXD.DefaultWeapon; editor row "Cluster spread": +-0.1 in 0..1, wrapping) [disasm 0x5995dd, 0x740fec; data MENUTWKX]. A child's wind
   under Wind-All follows its own container (`windy(weapon, child)`, Wormpot.lub SetWeaponWind) [data].
 - **Mine factory** (`Game::factory`, `factoryCreate` / `factoryStart` / `stepFactory`; W4M MineFactoryLogicEntity, docs/w4m/missions.md
@@ -475,7 +475,7 @@ W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm 
 W4M PayloadLogicEntity 0x582050 / Parabolic events 0x577980, docs/w4m/weapons.md "Payload water" [disasm + data]. weapons.json carries
 `splash` (SplashFx, default WXP_WaterSplash), `size` (Radius; guns: BulletRadius), `sink` (SinkDepth), `skim_*` (SkimsOnWater, MinSpeedForSkim, MaxAngleForSkim, SkimDamping), `cluster_size` / `cluster_sink`
 (the bomblets' containers), `cluster_cone` / `cluster_min_speed` / `cluster_max_speed` (the parent's BombletMaxConeAngle,
-BombletMin / MaxSpeed); Weapon Factory weapons get kWeaponFactoryWeapon / Homing / Cluster's in `Game::start`.
+BombletMin / MaxSpeed); Weapon Factory weapons get their clone's, Radius = ProjectileCollisionRadius and WXD.DefaultCluster's SinkDepth 5 for the bomblets (`factoryPayload`, docs/weapons-audit.md "Weapon Factory weapons").
 - Crossing Water.Level + Radius: a skim (v × damping, never for bomblets) or a splash (`GameEvent::Splash`, `fx` = SplishFx WXP_WaterSmallSplash on a skim, else the weapon's `splash` (SplashFx), at 2 units over the surface); set on that plane either way.
 - Crossing Water.Level − SinkDepth: `Projectile::sunk` (checksummed): speed capped at 5 m/s, xz × k², vy = −max(4, |vy| k), k = speed / 5;
   no acceleration, no fuse, no blast; any contact or Water.ExpiryDepth (absolute, `Terrain::WATER` − 10 m) removes it.

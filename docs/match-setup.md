@@ -34,8 +34,8 @@ API for the Teams / My Worms / Story select screens and the network:
 - `SavedTeam` = W4M StoredTeamData: `name`, `worms[6]` (names), `skill` (0 human, 1..5 CPU, fixed at creation), `grave` (graves.txt row),
   `flag` (`Flag.*`), `speech` (`vocowbo`...), `weapon` (CustomWeapon: the team's Weapon Factory weapon name), `hat` / `gloves` / `glasses` / `tash`
   (`WXFE.A.*` ids, "" none). `slot(count, alliance, handicap, factory)` gives the match's `GameConfig::Team`, its `secret` = the `factory` weapon
-  (the player's custom_weapons.json list) named `weapon` [disasm: AddTeam copies SecretWeapon; ours: only the player's own weapons, the stock
-  ones (LOCAL DATA.LockedWeapons, `Catalog::stockWeapons`) have no WeaponDef: a team naming one gets none].
+  named `weapon`: a stock one (LOCAL DATA.LockedWeapons, `Catalog::stock`, assets/stockweapons.json) or the player's (custom_weapons.json, first
+  if both have the name) [disasm: AddTeam copies SecretWeapon; data: the 7 default teams name the 7 stock weapons].
 - `Barracks` (`Frontend::barracks`, loaded by `loadSetup`): `teams` (W4M order, at most `Barracks::MAX` 20), `load(path, defaults, setup)`: `teams.txt`
   (DATA_DIR, beside setup.txt); missing: the W4M defaults `assets/defteams.txt` (DEFSAVE's 7: Gunslingers, Funky Dudes, Spacemen, Scots, CPU Easy 1,
   CPU Normal 3, CPU Hard 5), then once the old setup.txt `team` / `net` teams not already there (no worm names nor flag: ours as before), and
@@ -50,7 +50,7 @@ API for the Teams / My Worms / Story select screens and the network:
   `Ui::hatIds()`, `Ui::speechIds()` (the banks we have), `Ui::voiceBankOf(speech)` (for `Audio::setTeamVoice`).
 - `GameConfig::Team` (sim.h; on the wire and in replays as `wire::putTeam`): name, cpu, speech, hat, gloves, glasses, tash, flag, grave, wormNames,
   `worms` (1..6, 0 = `cfg.wormsPerTeam`), `alliance` (0..3, -1 = W4M AddTeam's lowest group no earlier team holds: `GameConfig::alliance(t)`),
-  `handicap` (-1..1), `secret` (its Weapon Factory weapon, W4M Tn_CustomWeapon; replays W4R6), and the local `pad`. W4M's slot rows: worms 1..6 with the match total <= `MAX_MATCH_WORMS` 16, a new slot min(4, 16 - the
+  `handicap` (-1..1), `secret` (its Weapon Factory weapon, W4M Tn_CustomWeapon; replays W4R7), and the local `pad`. W4M's slot rows: worms 1..6 with the match total <= `MAX_MATCH_WORMS` 16, a new slot min(4, 16 - the
   others), alliance 0..3, handicap -1 / 0 / +1; the Allies and Handicap rows only where W4M allows them (not Destruction, Statue, Fort; Allies not
   Survivor either) [assumed: the row gating, docs/w4m/frontend.md]. The screens agent enforces the cap; the sim takes the counts as given.
 - Sim [disasm + data, docs/sim.md "Turn start"]: team-major worms (`Game::teamFirst`, `teamSize`, `wormSlot`), start energy `handicapHealth`,
@@ -64,7 +64,8 @@ API for the Teams / My Worms / Story select screens and the network:
   in the glb `sel` extras [observed: `--animshot Fire2Firepunch` / `HoldBazooka` / `WindupThrown` with gloves/cowboy / white / spacesuit, on the fists in every pose; Base keeps the hands hidden, as without gloves].
 - Weapon Factory weapon per team [disasm: docs/w4m/weapons.md "Whose weapon"]: one inventory slot after the weapons.json table, present when a
   team has a `secret`; `Game::secrets[t]` holds each team's (factoryPayload applied) and `beginTurn` puts the playing team's in the slot
-  (`wieldSecret`). Ammo: the team's own weapon's `count` under the scheme set (ours: the editor's Ammo row, W4M SchemeData WeaponFactoryWeapon.Ammo);
+  (`wieldSecret`). Ammo: a W4M preset's SchemeData WeaponFactoryWeapon.Ammo (`SchemePreset::factoryAmmo`, Standard 1) under the scheme set; a custom
+  scheme: the weapon's `count` (ours: the editor's Ammo row; the stock ones 0, WXD.DefaultSchemeData);
   a crate holding the slot credits the collector's slot, which fires the collector's own weapon. A team without one never fires it (`allowed`) [ours].
 - Story progress per team [W4M StoredTeamData StoryChapter / StoryMissionsCompleted, docs/w4m/frontend.md; ours: the files]: `Progress::open(profile, teamFile)`: `progress.txt` keeps the profile's `unlock <Lock.*>`, `intro`,
   `welcome` lines (W4M Lock.* and movie flags are the profile's), the mission entries of the picked team are in `progress_<team>.txt` (`Progress::teamFile`: name bytes outside A-Za-z0-9_- as `%XX`); `save()`

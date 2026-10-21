@@ -9,11 +9,13 @@ attachments.txt "<type>\t<WXFE.A id>\t<model>\t<MeshID>\t<text key>\t<lock>\t<st
 graves.txt      "<model>\t<mesh>\t<text key>\t<name>" per WXFEP.SelectGraveList row, in User.Grave order (0x725eda: index -> Grave.* mesh)
 flags.txt       "<Flag id>\t<ui png>\t<text key>" per WXFEP.SelectFlagList row (LOCAL FlagDataContainer: TargaName, TextResource)
 speech.txt      "<speech bank>\t<text key>" per WXFEP.SelectSoundbankList row (the bank is our voices/<bank without 'vo'>)
-stockweapons.txt the Name of every LOCAL DATA.LockedWeapons stock Weapon Factory weapon (StockWeapon 1)
+stockweapons.json every LOCAL DATA.LockedWeapons stock Weapon Factory weapon (StockWeapon 1) in the client's weapons JSON: its
+                WeaponFactoryContainer pair (docs/w4m/weapons.md "Stock weapons"), meshes proj_<Factory.Proj name>
+stockmodels.txt "<model>\t<Factory.Proj mesh>" per payload those weapons use, for w4m-models
 defteams.txt    DEFSAVE DATA.TeamBarracks in the client's teams.txt format (client/src/barracks.h)
 """
-import os, sys
-from pe import GAME
+import json, os, sys
+from pe import GAME, PE
 from tweak import dump
 
 DIRS = {0: 'hats', 1: 'gloves', 2: 'glasses', 3: 'tash', 4: 'hats'}  # 4: Hat.Terminator alone
@@ -25,6 +27,28 @@ def model(mesh):  # w4m-models file name: the MeshID without its category prefix
 
 def column_text(r):
     return next((c['Text'] for c in r['Columns'] if c['_type'] in ('WXFE_StringTableColumns', 'WXFE_StringColumns')), '')
+
+
+PAYLOAD_MESHES = 0x91fda8  # WeaponPayLoadEnum -> Factory.Proj.* mesh (0x5983f0 at 0x599486)
+GAS_POISON = 10  # PARTTWK WXP_GasCloud ParticleCollisionWormPoisonMagnitude: the Poison payload's cloud
+
+
+def proj_model(pe, payload):
+    return 'proj_' + pe.cstr(pe.u32(PAYLOAD_MESHES + 4 * payload)).split('Factory.Proj.', 1)[1].lower().replace('.', '_')
+
+
+def stock_weapon(w, c, pe=PE()):
+    assert w['Detonate'] in (0, 1, 3) and c['Detonate'] in (0, 3), w['Name']  # FirePress: no stock weapon
+    kind = 'airstrike' if w['ProjectileLaunchType'] == 0 else 'homing' if w['Homing'] else 'shell'
+    d = {'name': w['Name'], 'kind': kind, 'launch': w['ProjectileLaunchType'], 'detonate': w['Detonate'], 'cluster_detonate': c['Detonate'],
+         'fuse_time': w['FuseTime'], 'powers_up': bool(w['ProjectilePowersUp']), 'max_power': w['ProjectileMaxPower'], 'wind': bool(w['EffectedByWind']),
+         'avoid_land': bool(w['HomingAvoidLand']), 'poison': GAS_POISON if w['Poison'] else 0, 'cluster_poison': bool(c['Poison']),
+         'clusters': w['ProjectileNumClusters'], 'cluster_spread': w['ClusterSpread'], 'collision': w['ProjectileCollisionRadius'],
+         'cluster_collision': c['ProjectileCollisionRadius'], 'model': proj_model(pe, w['PayloadResourceId']), 'cluster_model': proj_model(pe, c['PayloadResourceId']),
+         'ariel': w['ArielFX'], 'count': 0, 'icon': 'Secret Weapon'}  # count: WXD.DefaultSchemeData WeaponFactoryWeapon.Ammo
+    for p, x in (('', w), ('cluster_', c)):
+        d.update({p + 'land_damage': x['LandDamageRadius'], p + 'worm_radius': x['WormDamageRadius'], p + 'worm_damage': x['WormDamageMagnitude'], p + 'blast_strength': x['Push']})
+    return d
 
 
 def main(a):
@@ -54,9 +78,13 @@ def main(a):
     speech = menu['WXFEP.SelectSoundbankList']['Rows']
     with open(os.path.join(out, 'speech.txt'), 'w') as f:
         for r in speech: f.write('%s\t%s\n' % (r['Index'], column_text(r)))
-    stock = [w['Weapon']['Name'] for w in local['DATA.LockedWeapons']['Weapons'] if w['StockWeapon']]
-    with open(os.path.join(out, 'stockweapons.txt'), 'w') as f:
-        f.write('\n'.join(stock) + '\n')
+    stock = [stock_weapon(w['Weapon'], w['Cluster']) for w in local['DATA.LockedWeapons']['Weapons'] if w['StockWeapon']]
+    with open(os.path.join(out, 'stockweapons.json'), 'w') as f:
+        f.write('[\n' + ',\n'.join('  ' + json.dumps(w) for w in stock) + '\n]\n')
+    pe = PE()
+    with open(os.path.join(out, 'stockmodels.txt'), 'w') as f:
+        for p in sorted({x[k] for w in local['DATA.LockedWeapons']['Weapons'] if w['StockWeapon'] for x in (w['Weapon'], w['Cluster']) for k in ('PayloadResourceId',)}):
+            f.write('%s\t%s\n' % (proj_model(pe, p), pe.cstr(pe.u32(PAYLOAD_MESHES + 4 * p))))
     teams = dump(os.path.join(tw, 'DEFSAVE.XOM'))['DATA.TeamBarracks']['Teams']
     with open(os.path.join(out, 'defteams.txt'), 'w') as f:
         for t in teams:

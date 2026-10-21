@@ -1109,12 +1109,12 @@ void Ai::finish(const Game &g, bool again) {
     }
     else if (k != Kind::Melee && k != Kind::Mine && k != Kind::Flood && !dropped(WEAPONS[plan.weapon])) {  // direct weapons aim statically: ShotErrorDirectNonStrafe
         float e = (k == Kind::Shotgun ? L.directErr : L.shotErr) / recall;
-        Vector3 v = dirOf(plan.yaw, plan.pitch) * (powered(k) ? plan.charge / 90.0f : 1);
+        Vector3 v = dirOf(plan.yaw, plan.pitch) * (powered(WEAPONS[plan.weapon]) ? plan.charge / 90.0f : 1);
         v = {v.x * (1 + e * noise(r)), v.y * (1 + e * noise(r)), v.z * (1 + e * noise(r))};
         float sp = Vector3Length(v);
         plan.yaw = atan2f(v.x, v.z);
         plan.pitch = Clamp(asinf(Clamp(v.y / sp, -1, 1)), -1.2f, 1.45f);
-        if (powered(k)) plan.charge = (int)Clamp(roundf(sp * 90), 1, 90);
+        if (powered(WEAPONS[plan.weapon])) plan.charge = (int)Clamp(roundf(sp * 90), 1, 90);
     }
     mode = Mode::Act;
     charged = aimed = 0;
@@ -1223,7 +1223,7 @@ Input Ai::act(const Game &g) {
     if (aimed++ < levelOf(g).fireDelay / DT) return in;  // W4M DelayBeforeFire
     if (blimped(k) && !g.locked) return blimp(g);
     moved = false;  // W4M FireWeapon 0x496a42
-    if (powered(k)) { if (k == Kind::Homing && !charged && g.prevButtons) return in; if (charged++ < plan.charge) in.buttons = Input::FIRE; }  // release fires
+    if (powered(weaponDef(g.weapon))) { if (k == Kind::Homing && !charged && g.prevButtons) return in; if (charged++ < plan.charge) in.buttons = Input::FIRE; }  // release fires
     else if (!g.prevButtons) in.buttons = Input::FIRE;
     return in;
 }

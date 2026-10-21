@@ -28,7 +28,7 @@ namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, MIST, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
+enum Tex { GLOW, PUFF, FIRE, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
 const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
 const int MAX = 1024;
 float waterY = 0;  // Water.Level, m
@@ -74,7 +74,7 @@ const Ramp RAMPS[] = {
     {2, {{230, 242, 255, 255}, {179, 204, 255, 255}}, {0, 1}},  // WXP_BazookaTrail_Puffs, WXP_JetpackStartRing / StartBase
     {4, {{255, 255, 255, 255}, {191, 230, 255, 255}, {179, 191, 255, 255}, {255, 255, 255, 255}}, {0, 0.1f, 0.2f, 1}},  // WXP_HomingMissileSmoke
     {1, {{0, 128, 255, 255}}, {0, 1}},  // WXP_HomingMissileGlow
-    {1, {{255, 255, 255, 255}}, {0, 1}},  // WeaponBazookaPuff
+    {1, {{255, 255, 255, 255}}, {0, 1}},  // white
     {2, {{242, 255, 255, 255}, {153, 204, 255, 255}}, {0, 1}},  // WXP_CrateSpawnLGRings
     {1, {{77, 255, 255, 255}}, {0, 1}},  // WXP_StarburstGlowBangs / EXPGlowBang1
     {1, {{128, 230, 255, 255}}, {0, 1}},  // WXP_StarB_ManyGlows
@@ -84,15 +84,15 @@ const Ramp RAMPS[] = {
     {1, {{255, 255, 128, 255}}, {0, 1}},  // WXPF_ExploderGreen, GreenTrail1
     {2, {{255, 255, 64, 255}, {0, 204, 0, 255}}, {0, 1}},  // WXPF_EndGlowGreen
 };
-enum RampId { R_NONE, R_STARBURST, R_BAZ_MAIN, R_BAZ_PUFF, R_HOM_SMOKE, R_HOM_GLOW, R_MIST, R_DONKEY_RING,
-              R_SB_CYAN, R_SB_GLOW, R_FW_RED, R_FW_GREEN, R_FW_STAR, R_FW_PALE, R_FW_ENDGREEN, R_WHITE = R_MIST };
+enum RampId { R_NONE, R_STARBURST, R_BAZ_MAIN, R_BAZ_PUFF, R_HOM_SMOKE, R_HOM_GLOW, R_WHITE, R_DONKEY_RING,
+              R_SB_CYAN, R_SB_GLOW, R_FW_RED, R_FW_GREEN, R_FW_STAR, R_FW_PALE, R_FW_ENDGREEN };
 struct Streak { Vector3 p, dir; float len, width; unsigned char tex; };
 
 std::vector<Texture2D> tex(TEX_COUNT);  // past TEX_COUNT: the data sprite sets (sprites.txt)
 std::vector<Ramp> ramps(std::begin(RAMPS), std::end(RAMPS));
 std::vector<Particle> ps;
 std::vector<Streak> streaks;
-struct Seen { Vector3 p; int weapon; bool child; float age; };  // age: s since the rocket's emitters started
+struct Seen { Vector3 p; int weapon; bool child; float age; int fx = 0; bool kept = false; };  // age: s since the rocket's emitters started; fx: its data ArielFx (-1 stopped at rest)
 std::vector<Seen> seen, seenPrev;  // live shots of this / the previous frame: which weapon blew up where
 float show = 0, tickAcc = 0;  // victory fireworks: s left of W4M GameOverLogicEntity's 4 s wait + 5 s show
 Vector3 stageC{};  // Land.Center, Land.Radius, Land.MaxHeight of the match that ended
@@ -706,7 +706,6 @@ void load() {
     tex[JET] = loadTex("hud", "jetfire", true), tex[TOON] = loadTex("hud", "toonfire", true), tex[CROSS] = loadTex("hud", "wxp_sprite_006", true);
     tex[QUESTION] = loadTex("hud", "wxp_sprite_022", true), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", true);  // W4M Particle.WXSprite22/23
     tex[SOAP] = loadTex("hud", "wxp_sprite_011", true);  // Particle.WXSprite11, the soap bubbles
-    tex[MIST] = loadTex("hud", "mist_puff", true);  // Particle.MistPuff (Mist_Puff.tga)
     tex[WHITEOUT] = loadTex("fe", "whiteout", false);  // Particle.Whiteout: flat white, additive
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
@@ -966,12 +965,14 @@ void event(const GameEvent &e) {
     }
 }
 
-void trail(const Projectile &s, Vector3 at, float dt, Vector3 wind) {
+void trail(const Projectile &s, Vector3 at, float dt) {
     const WeaponDef &d = WEAPONS[s.weapon];
     float age = 0, best = 9;  // emitter clock: carried from the same shot of the previous frame
-    for (const Seen &q : seenPrev)
-        if (q.weapon == s.weapon && q.child == s.child && Vector3DistanceSqr(q.p, s.pos) < best) best = Vector3DistanceSqr(q.p, s.pos), age = q.age + dt;
-    seen.push_back({s.pos, s.weapon, s.child, age});
+    Seen *prev = nullptr;
+    for (Seen &q : seenPrev)
+        if (q.weapon == s.weapon && q.child == s.child && Vector3DistanceSqr(q.p, s.pos) < best) best = Vector3DistanceSqr(q.p, s.pos), age = q.age + dt, prev = &q;
+    if (prev) prev->kept = true;
+    seen.push_back({s.pos, s.weapon, s.child, age, prev ? prev->fx : 0});
     if (d.name == "Holy Hand Grenade" && rnd() < dt * 16)  // WXP_HolyHG_Trails: crosses left floating behind
         add({at, {rnd(-0.2f, 0.2f), rnd(0.1f, 0.4f), rnd(-0.2f, 0.2f)}, 0, rnd(1.8f, 2.2f), 0.35f, 0.05f, 0, rnd(-1, 1), -0.1f, 1, {255, 240, 200, 230}, CROSS, false});
     if (d.name == "Starburst") {  // rocket: WXP_Wep_StarburstRocket flames + orange glow; stars: blue trail + cyan glow
@@ -991,13 +992,23 @@ void trail(const Projectile &s, Vector3 at, float dt, Vector3 wind) {
         return;
     }
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0) return;  // WEAPTWK: no TrailBitmap; its ArielFx is a one-off (ariel())
-    // ArielFx emitters: Bazooka WXP_BazookaTrailPack (Main + Puffs), Homing Missile WXP_HomingMissileTrail (Smoke + Glow), Factory bazooka WeaponBazooka (MistPuff)
-    bool homing = d.kind == Kind::Homing;
-    if (!homing && !(d.kind == Kind::Shell && d.fuse <= 0 && d.name != "Poison Arrow")) return;
-    if (homing && customWeapon(s.weapon)) return;  // Factory homing WeaponHomingTail: sprite set Particle.Additive4 exists in no bundle
-    // emitters sit at the payload model's FxLocator (WEAPTWK: bazookarocket / homingmissile), posed as drawShot poses the model
+    // ArielFx emitters: Bazooka WXP_BazookaTrailPack (Main + Puffs), Homing Missile WXP_HomingMissileTrail (Smoke + Glow); a Weapon Factory payload
+    // its own (0x598b0e), stopped at rest (the templates' StopFxAtRest 1), none on its bomblets
+    const bool factory = customWeapon(s.weapon);
+    if (factory && (s.child || d.ariel.empty())) return;
+    Seen &me = seen.back();
+    if (factory && d.ariel != "WXP_BazookaTrailPack" && d.ariel != "WXP_HomingMissileTrail") {  // data emitters (WXP_ExplosionG_Tail), at the payload
+        if (me.fx > 0 && Vector3Length(s.vel) < 1) stop(me.fx), me.fx = -1;
+        if (!me.fx) me.fx = start(d.ariel.c_str(), at);
+        if (me.fx > 0) place(me.fx, at);
+        return;
+    }
+    if (factory && Vector3Length(s.vel) < 1) return;
+    bool homing = factory ? d.ariel == "WXP_HomingMissileTrail" : d.kind == Kind::Homing;
+    if (!factory && !homing && !(d.kind == Kind::Shell && d.fuse <= 0 && d.name != "Poison Arrow")) return;
+    // emitters sit at the payload model's FxLocator (WEAPTWK: bazookarocket / homingmissile, a Factory payload `fuse`), posed as drawShot poses the model
     Vector3 fx{};
-    Models::fxLocator(homing ? "homing" : "bazooka", &fx);
+    Models::fxLocator(factory ? d.model.c_str() : homing ? "homing" : "bazooka", &fx);
     float hv = sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z);
     Vector3 tail = Vector3Add(at, Vector3Transform(fx, MatrixMultiply(MatrixRotateX(-atan2f(s.vel.y, hv)), MatrixRotateY(atan2f(s.vel.x, s.vel.z)))));
     // batches due this frame: one per SpawnFreq (a 20 ms logic tick at most, 0x5bab20) while age < EmitterLifeTime
@@ -1022,15 +1033,6 @@ void trail(const Projectile &s, Vector3 at, float dt, Vector3 wind) {
     if (homing) {
         for (int i = batches(0.02f, 20); i > 0; i--) emit(R_HOM_GLOW, 10, 1, 0.08f, 0, 12, 5, 0, 0, 0, 0, true, GLOW, 0, 360, 0);
         for (int i = batches(0.02f, 50); i > 0; i--) emit(R_HOM_SMOKE, 50, 2, 0.4f, 0.03f, 2.5f, 1.5f, 0.2f, 0.5f, 0.04f, 0, false, PUFF);
-        return;
-    }
-    if (customWeapon(s.weapon)) {  // WeaponBazookaPuff: one MistPuff per update (SpawnFreq 0), 200 ms, rising with Mass 2 x (0.2 + wind)
-        for (int i = batches(0.02f, 65.535f), alive = count(R_MIST); i > 0 && alive++ < 20; i--) {
-            Particle q = {tail, {}, 0, 0.2f, 7.0f / 20, 0, rnd(-2 * PI, 2 * PI), rnd(-30, 30) * DEG2RAD * 10, -2.0f, 0, WHITE, MIST, false};
-            q.ramp = R_MIST, q.delay = 0.3f, q.alpha = 0.5f, q.fadeA = 0;
-            q.acc = {wind.x * 8.5f, 0, wind.z * 8.5f};  // Wind.MaxSpeed 8.5e-5 units/ms² = 4.25 m/s², x Mass 2
-            add(q);
-        }
         return;
     }
     for (int i = batches(0.02f, 12); i > 0; i--) emit(R_BAZ_MAIN, 150, 1, 2, 0.2f, 4, 1.5f, 0.2f, 0.2f, 0.1f, 0.04f, false, PUFF);
@@ -1378,6 +1380,7 @@ void draw(const Camera3D &cam) {
         EndBlendMode();
     }
     streaks.clear();
+    for (const Seen &q : seenPrev) if (q.fx > 0 && !q.kept) stop(q.fx);  // the payload is gone
     seenPrev.swap(seen), seen.clear();
     rlEnableDepthMask();
     rlEnableBackfaceCulling();

@@ -7,6 +7,7 @@
 #include "../src/controls.h"
 #include "../src/ai.h"
 #include "../src/ui.h"
+#include "../src/barracks.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cassert>
@@ -45,7 +46,7 @@ static uint32_t run(std::vector<bool> &used) {
     }
     int dead = 0;
     for (const Worm &w : g.worms) dead += !w.alive;
-    printf("checksum %08x, %d turns, %d/%zu worms dead, phase %d\n", g.checksum(), turn + 1, dead, g.worms.size(), (int)g.phase);
+    printf("checksum %08x, %d turns, %d/%zu worms dead, phase %d\n", g.checksum(), turn + 1, dead, g.worms.size(), (int)g.phase, g.shots[0].stage, (int)g.shots[0].sunk);
     return g.checksum();
 }
 
@@ -2499,6 +2500,112 @@ static void checkMystery() {
 }
 
 // Weapon Factory: custom weapons append to the table at start(), survive a save/load, and fire.
+// W4M stock Weapon Factory weapons (LOCAL DATA.LockedWeapons, docs/w4m/weapons.md "Stock weapons"): every default team finds its CustomWeapon,
+// and each payload is its launch type's clone (0x598160) with 0x5983f0's container overrides; the numbers follow from WEAPTWK and the containers
+static void checkStockWeapons() {
+    const Catalog &k = catalog();
+    assert(k.stock.size() == 7 && k.stockWeapons.size() == 7);
+    Barracks bk;
+    bk.load("no_such_teams.txt", "assets/defteams.txt");
+    assert(bk.teams.size() == 7);
+    for (const SavedTeam &t : bk.teams) {
+        GameConfig::Team s = t.slot();
+        assert(s.secret && s.secret->name == t.weapon);
+    }
+    const size_t base = WEAPONS.size();
+    auto stock = [&](const char *n) {
+        for (const WeaponDef &w : k.stock) if (w.name == n) return w;
+        assert(!"stock weapon missing");
+        return WeaponDef{};
+    };
+    auto start = [&](Game &g, const char *n, Scheme s = SCHEMES[0].s) {
+        GameConfig c{51, 2, 2, "", 0};
+        c.scheme = s, c.teamSetup.resize(2);
+        for (auto &t : c.teamSetup) t.secret = stock(n);
+        g.start(c), g.hotSeat = 0;
+        assert(WEAPONS.size() == base + 1 && WEAPONS[base].name == n);
+        return WEAPONS[base];
+    };
+    auto near = [](float a, float b) { return fabsf(a - b) < 2e-3f; };
+    Game g;
+    {  // Thrown, Fused FuseTime -1: the Grenade's clone with HasAdjustableFuse, LifeTime 6000; 3 Poo bomblets on impact
+        WeaponDef w = start(g, "FETXT.AFewProblems");
+        assert(w.kind == Kind::Shell && w.clone == "Grenade" && w.userFuse && w.fuse == 6 && !w.restFuse && w.wind && w.powered && w.postLaunch == 500);
+        assert(near(w.base, 5) && near(w.speed, 5 + 5 + (26.65f - 5) * 0.9f) && w.bounce == WEAPONS[weaponNamed("Grenade")].bounce);
+        assert(near(w.radius, 51.5f * 0.1f / 0.65f / 20) && near(w.damage, 55 / 0.65f * 0.5f) && w.fx == "WXP_ExplosionX_Med");
+        assert(w.clusters == 3 && !w.crest && near(w.ccone, 0.28f) && near(w.cspeed[0], 0.7f / 7 * 50) && near(w.cspeed[1], 0.35f * 50));
+        assert(near(w.cradius, 40 / 3.0f * 0.5f / 0.65f / 20) && near(w.cdamage, 40 / 3.0f / 0.65f * 0.3f) && w.cfx == "WXP_Explosion_Small");
+        assert(w.model == "proj_poo" && w.cmodel == "proj_poo" && w.ariel.empty() && near(w.size, 0.05f) && g.ammo[0][base] == 1);  // Standard Ammo 1
+        Scheme custom = SCHEMES[0].s;
+        custom.turnTime++;
+        start(g, "FETXT.AFewProblems", custom);
+        assert(g.ammo[0][base] == 0);  // no preset: WXD.DefaultSchemeData Ammo 0
+    }
+    {  // Thrown, Impact
+        WeaponDef w = start(g, "FETXT.ChatterBomb");
+        assert(w.clone == "Grenade" && w.fuse == 0 && !w.userFuse && !w.restFuse && near(w.speed, 5 + 5 + (26.65f - 5) * 0.5f) && w.fx == "WXP_ExplosionX_Large");
+    }
+    {  // Launched + Homing, no power-up: kWeaponHomingMissile's clone fired at BasePower = M', never windy; 5 Classic bomblets at rest
+        WeaponDef w = start(g, "FETXT.KneeTrembler");
+        assert(w.kind == Kind::Homing && w.clone == "Homing Missile" && !w.powered && !powered(w) && near(w.base, 17.5f) && near(launchSpeed(w, 1), 17.5f));
+        assert(!w.wind && !g.windy((int)base) && w.ariel == "WXP_HomingMissileTrail" && w.damage == 0 && w.fx == "WXP_Explosion_Small");
+        assert(w.clusters == 5 && w.crest && w.cfx == "WXP_Explosion_Small" && w.cmodel == "proj_classic" && near(w.cdamage, 40 / 5.0f / 0.65f));
+    }
+    {  // Launched, Poison: the Bazooka's clone, ArielFx WXP_ExplosionG_Tail, DetonationFx + WXP_Explosion_Gas
+        WeaponDef w = start(g, "FETXT.ThePeaceBreaker");
+        assert(w.kind == Kind::Shell && w.clone == "Bazooka" && w.powered && near(w.speed, 5 + 5 + (26.65f - 5) * 0.5f) && !w.wind && w.clusters == 0);
+        assert(w.fx == "WXP_ExplosionX_Med,WXP_Explosion_Gas" && w.ariel == "WXP_ExplosionG_Tail" && near(w.damage, 50 / 0.65f * 0.7f) && w.radius == 0);
+    }
+    {  // Bomber, 1 bomb, Poison: divider 1, k 0.35, Push > the others: WXP_Explosion_Mine + gas; Radius and Scale x 1.95; no ArielFx
+        WeaponDef w = start(g, "FETXT.TheBrownSofa");
+        assert(w.kind == Kind::Airstrike && w.clone == "Airstrike" && w.clusters == 1 && !w.crest && w.ariel.empty() && w.retreat == 0);
+        assert(near(w.cdamage, 25 / 0.35f * 0.2f) && w.cradius == 0 && w.cfx == "WXP_Explosion_Mine,WXP_Explosion_Gas" && near(w.csize, 1.95f / 20) && near(w.scale[1], 1.95f));
+    }
+    {  // Launched, wind, Poison, 5 bomblets at rest
+        WeaponDef w = start(g, "FETXT.Factory.Blaster");
+        assert(w.clone == "Bazooka" && w.wind && g.windy((int)base) && !g.windy((int)base, true) && w.clusters == 5 && w.crest && near(w.cspeed[1], 0.35f / 2 * 50));
+    }
+    {  // Bomber, 10 bombs AtRest: divider 3, WXP_ExploCluster (n >= 6), the bombs bounce (the Grenade's damping) and rest
+        WeaponDef w = start(g, "FETXT.WipeOut");
+        assert(w.clusters == 10 && w.crest && w.cfx == "WXP_ExploCluster" && near(w.cdamage, 25 / 3.0f / 0.35f) && near(w.cradius, 58 / 3.0f / 0.65f / 20));
+        assert(w.bounce == WEAPONS[weaponNamed("Grenade")].bounce && near(w.scale[1], 1.5f));
+    }
+    {  // AtRest bomblet (0x5758c0): it bounces off the land and only detonates once it rests
+        start(g, "FETXT.KneeTrembler");
+        g.objects.clear();
+        Vector3 hit, p = g.worms[0].pos;
+        assert(g.terrain.raycast({Vector3Add(p, {0, 20, 0}), {0, -1, 0}}, 40, &hit));
+        g.worms[1].pos = g.worms[0].pos = Vector3Add(hit, {30, 0, 0});
+        g.shots = {{Vector3Add(hit, {0, 1, 0}), {4, -6, 0}, (int)base, 0, true, 1}};
+        g.phase = Phase::Flying, g.timer = 600;
+        int bounces = 0, boomAt = -1;
+        for (int t = 0; t < 600 && boomAt < 0; t++) {
+            g.step(Input{});
+            for (const GameEvent &e : g.events) bounces += e.kind == GameEvent::Bounce, boomAt = e.kind == GameEvent::Boom ? t : boomAt;
+        }
+        assert(bounces > 0 && boomAt > 5);
+    }
+    {  // Poison: the WXP_GasCloud of the payload's WXP_Explosion_Gas poisons (10)
+        start(g, "FETXT.ThePeaceBreaker");
+        Vector3 hit, p = g.worms[0].pos;
+        assert(g.terrain.raycast({Vector3Add(p, {0, 20, 0}), {0, -1, 0}}, 40, &hit));
+        g.shots = {{Vector3Add(hit, {0, 0.5f, 0}), {0, -10, 0}, (int)base, 0, false, 1}};
+        g.phase = Phase::Flying, g.timer = 600;
+        for (int t = 0; t < 10 && g.gas.empty(); t++) g.step(Input{});
+        assert(!g.gas.empty() && g.gas[0].poison == Game::GAS_POISON);
+    }
+    for (const WeaponDef &s : k.stock) {  // each fired by a scripted turn, twice the same
+        GameConfig c{99, 2, 2, "", 0};
+        c.teamSetup.resize(2), c.teamSetup[0].secret = c.teamSetup[1].secret = s;
+        bool fired, again;
+        uint32_t x = fireEach((int)base, fired, &c), y = fireEach((int)base, again, &c);
+        assert(fired && again && x == y);
+    }
+    GameConfig none{51, 2, 2, "", 0};
+    g.start(none);
+    assert(WEAPONS.size() == base);
+}
+
 static void checkCustomWeapons() {
     size_t base = WEAPONS.size();
     WeaponDef w = {"Test Lobber", Kind::Shell, 4, 70, 25, 2, 0.5f, 1.5f, 20, 2, 3, 1, false, 4};
@@ -2524,9 +2631,9 @@ static void checkCustomWeapons() {
     g.start(c), g.hotSeat = 0;
     int t0 = g.worms[g.current].team;
     // one inventory slot, each team its own weapon in it on its turns (0x597ec0: the worm's team's Tn_CustomWeapon)
-    assert(WEAPONS.size() == base + 1 && WEAPONS[base].name == list[t0].name && g.ammo[0][base] == 2 && g.ammo[1][base] == 2);
+    assert(WEAPONS.size() == base + 1 && WEAPONS[base].name == list[t0].name && g.ammo[0][base] == 1 && g.ammo[1][base] == 1);  // Standard SchemeData Ammo 1
     assert(customWeapon((int)base) && !customWeapon((int)base - 1));
-    assert(WEAPONS[base].postLaunch == 500 && WEAPONS[base].retreat == -1);  // kWeaponFactoryWeapon
+    assert(WEAPONS[base].postLaunch == 500 && WEAPONS[base].retreat == -1 && WEAPONS[base].clone == "Grenade");  // a Thrown weapon: kWeaponGrenade's clone
     g.wieldSecret(1 - t0);
     assert(WEAPONS[base].name == list[1 - t0].name && WEAPONS[base].kind == list[1 - t0].kind);
     {  // a team without one never fires the slot
@@ -2534,12 +2641,12 @@ static void checkCustomWeapons() {
         n.teamSetup[1].secret.reset();
         Game h;
         h.start(n);
-        assert(h.ammo[1][base] == 0 && !h.allowed(1, (int)base) && h.ammo[0][base] == 2);
+        assert(h.ammo[1][base] == 0 && !h.allowed(1, (int)base) && h.ammo[0][base] == 1);
     }
     WeaponDef &s1 = *c.teamSetup[1].secret;
     s1.kind = Kind::Homing;
     g.start(c), g.hotSeat = 0, g.wieldSecret(1);
-    assert(WEAPONS[base].postLaunch == 0);  // kWeaponFactoryHoming
+    assert(WEAPONS[base].postLaunch == 0 && WEAPONS[base].clone == "Homing Missile");  // kWeaponHomingMissile's clone
     {  // HomingAvoidLand (0x5611b0): heading at the ground 3 m away, the forward probe hits and the missile is pushed up, within MaxHomingSpeed 0.25
         float vy[2];
         for (int avoid = 0; avoid < 2; avoid++) {
@@ -4690,6 +4797,7 @@ int main() {
     checkWormpotModes();
     checkMystery();
     checkCustomWeapons();
+    checkStockWeapons();
     checkFuse();
     checkParachute();
     checkRetreatInFlight();

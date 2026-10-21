@@ -55,8 +55,10 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
             {"size", &w.size}, {"sink", &w.sink}, {"cluster_size", &w.csize}, {"cluster_sink", &w.csink}, {"skim_speed", &w.skim[0]}, {"skim_angle", &w.skim[1]},
             {"skim_xz", &w.skim[2]}, {"skim_y", &w.skim[3]}, {"cluster_cone", &w.ccone}, {"cluster_min_speed", &w.cspeed[0]}, {"cluster_max_speed", &w.cspeed[1]}, {"cluster_spread", &w.spread},
             {"land_damage", &w.slider[0][0]}, {"worm_radius", &w.slider[0][1]}, {"worm_damage", &w.slider[0][2]}, {"blast_strength", &w.slider[0][3]},
-            {"cluster_land_damage", &w.slider[1][0]}, {"cluster_worm_radius", &w.slider[1][1]}, {"cluster_worm_damage", &w.slider[1][2]}, {"cluster_blast_strength", &w.slider[1][3]}};
-        const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}, {"crate_weight", &w.weight}, {"retreat", &w.retreat}, {"post_launch", &w.postLaunch}};
+            {"cluster_land_damage", &w.slider[1][0]}, {"cluster_worm_radius", &w.slider[1][1]}, {"cluster_worm_damage", &w.slider[1][2]}, {"cluster_blast_strength", &w.slider[1][3]},
+            {"max_power", &w.maxPower}, {"collision", &w.collision[0]}, {"cluster_collision", &w.collision[1]}};
+        const struct { const char *k; int *v; } ints[] = {{"count", &w.count}, {"clusters", &w.clusters}, {"shots", &w.shots}, {"crate_weight", &w.weight}, {"retreat", &w.retreat}, {"post_launch", &w.postLaunch},
+            {"launch", &w.launch}, {"detonate", &w.detonate[0]}, {"cluster_detonate", &w.detonate[1]}, {"fuse_time", &w.fuseTime}};
         std::string key, sv;
         while (str(key) && eat(':')) {
             float num = 0;
@@ -79,6 +81,12 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
             if (key == "detonation_sfx") w.sfx = sv;
             if (key == "cluster_detonation") w.cfx = sv;
             if (key == "cluster_detonation_sfx") w.csfx = sv;
+            if (key == "cluster_model") w.cmodel = sv;
+            if (key == "ariel") w.ariel = sv;
+            if (key == "pre_detonation_sfx") w.preSfx = sv;
+            if (key == "powers_up") w.powersUp = b;
+            if (key == "powered") w.powered = b;
+            if (key == "cluster_poison") w.cpoison = b;
             if (key == "wind") w.wind = b;
             if (key == "avoid_land") w.avoid = b;
             if (key == "user_fuse") w.userFuse = b;
@@ -98,12 +106,14 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
     return eat(']');
 }
 
-// a Weapon Factory weapon from its editor fields alone (those wire::putWeapon carries), so every peer builds the same one
+// a Weapon Factory weapon from its container fields alone (those wire::putWeapon carries), so every peer builds the same one
 static WeaponDef editorFields(const WeaponDef &d) {
     WeaponDef w = JSON_DEFAULT;
     w.name = d.name, w.kind = d.kind, w.speed = d.speed, w.fuse = d.fuse, w.bounce = d.bounce, w.poison = d.poison, w.spread = d.spread;
     memcpy(w.slider, d.slider, sizeof w.slider);
     w.count = d.count, w.clusters = d.clusters, w.shots = d.shots, w.weight = d.weight, w.wind = d.wind, w.avoid = d.avoid, w.model = d.model, w.icon = d.icon;
+    w.launch = d.launch, w.detonate[0] = d.detonate[0], w.detonate[1] = d.detonate[1], w.fuseTime = d.fuseTime, w.powersUp = d.powersUp, w.cpoison = d.cpoison;
+    w.maxPower = d.maxPower, w.collision[0] = d.collision[0], w.collision[1] = d.collision[1], w.cmodel = d.cmodel, w.ariel = d.ariel;
     return w;
 }
 
@@ -115,17 +125,17 @@ bool loadWeapons(const char *path) {
     return true;
 }
 
-// W4M WEAPTWK templates in units: WormDamageMagnitude, WormDamageRadius, LandDamageRadius, ImpulseMagnitude (units/ms), ImpulseRadius, -ImpulseOffset
+// W4M WEAPTWK values in units: WormDamageMagnitude, WormDamageRadius, LandDamageRadius, ImpulseMagnitude (units/ms), ImpulseRadius, -ImpulseOffset
 struct FactoryTemplate { float dmg, reach, land, push, pushReach, pushDepth; };
-static const FactoryTemplate FACTORY_WEAPON = {55, 97.5f, 69, 0.3f, 75, 30}, FACTORY_HOMING = {55, 97, 69, 0.35f, 70, 40}, FACTORY_CLUSTER = {15, 49, 30, 0.05f, 35, 20};
-struct FactoryCall { const FactoryTemplate *t; const float *s; float div, k; };
-// 0x599990's two 0x5983f0 calls: the Weapon container (kWeaponFactoryHoming if Homing; Bomber divider 1 + 2 (n - 1) / 9, WormDamage k 0.35)
-// and, with clusters, the Cluster container into kWeaponFactoryCluster with divider n; our Airstrike's bombs are the Weapon payload
-static FactoryCall factoryCall(const WeaponDef &w, bool cluster) {
-    bool bomber = w.kind == Kind::Airstrike;
-    if (cluster) return {&FACTORY_CLUSTER, w.slider[1], (float)std::max(w.clusters, 1), 0.65f};
-    return {w.kind == Kind::Homing ? &FACTORY_HOMING : &FACTORY_WEAPON, w.slider[0], bomber ? 1 + 2.0f * (std::max(w.clusters, 1) - 1) / 9 : 1, bomber ? 0.35f : 0.65f};
+static const FactoryTemplate DEFAULT_CLUSTER = {40, 40, 40, 0.2f, 80, 20};  // MENUTWKXINGAME WXD.DefaultCluster
+static const char *const FACTORY_CLUSTER_BOUNCE = "WXP_Poof_VFast";  // its BounceFx (no BounceSfx)
+static FactoryTemplate templateOf(const WeaponDef &t, bool child) {
+    const float *b = child ? t.cblast : t.blast;
+    return {child ? t.cdamage : t.damage, b[0] * 20, (child ? t.cradius : t.radius) * 20, b[1] / 50, b[2] * 20, b[3] * 20};
 }
+// 0x598160: ProjectileLaunchType 0 Bomber, 1 Launched, 2 Thrown, 3 Dropped clones kWeaponAirstrike / Bazooka / Grenade / Dynamite, Homing kWeaponHomingMissile
+static const char *const CLONE[] = {"Airstrike", "Bazooka", "Grenade", "Dynamite"};
+static int factoryLaunch(const WeaponDef &w) { return w.launch >= 0 ? w.launch : w.kind == Kind::Airstrike ? 0 : w.kind == Kind::Shell && w.fuse > 0 ? 2 : 1; }
 
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out) {
     if (!parseWeapons(path, out)) return false;
@@ -133,28 +143,70 @@ bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out) {
     return true;
 }
 
-// W4M 0x5983f0 (docs/w4m/weapons.md "Weapon Factory payload"): units / 20 = m, units/ms x 50 = m/s; P x 0.8 for the cluster too (its
-// bool is the container pointer's low byte); DetonationSfx and ImpulseOffset stay the template's
+// W4M 0x599990 (docs/w4m/weapons.md "Template clone", "Launch branch"): the launch type's weapon, then 0x5983f0 for the Weapon container
+// and, with clusters off a Bomber, the Cluster one into kWeaponFactoryCluster (WXD.DefaultCluster); our Air Strike's bombs are the Weapon
+// payload. Units / 20 = m, units/ms x 50 = m/s; P x 0.8 for the cluster too (its bool is the container pointer's low byte)
 void factoryPayload(WeaponDef &w) {
-    for (int c = 0; c < 2; c++) {
-        bool child = c || w.kind == Kind::Airstrike;
-        if (c && w.kind == Kind::Airstrike) break;
-        FactoryCall f = factoryCall(w, c);
-        const FactoryTemplate &t = *f.t;
-        if (w.slider[c][0] < 0) {  // saved before the sliders: invert the old crater and damage, WXD.DefaultWeapon for the rest
-            auto grid = [](float v) { return Clamp(roundf(v * 20) / 20, 0, 1); };
-            w.slider[c][0] = grid((child ? w.cradius : w.radius) * 20 * 0.65f * f.div / t.land), w.slider[c][1] = 0.75f;
-            w.slider[c][2] = grid((child ? w.cdamage : w.damage) * f.div * f.k / t.dmg), w.slider[c][3] = 0.5f;
-        }
-        float L = f.s[0], W = f.s[2], P = f.s[3], p = 0.8f * P, m = fmaxf(fmaxf(L, P), W);
-        (child ? w.cradius : w.radius) = t.land / f.div * L / 0.65f / 20;
-        (child ? w.cdamage : w.damage) = t.dmg / f.div / f.k * W;
-        float *b = child ? w.cblast : w.blast;
-        b[0] = t.reach * f.s[1] / f.k / 20, b[1] = t.push / f.div / f.k * p * 50, b[2] = fmaxf(t.pushReach * p / f.k, 48) / 20, b[3] = t.pushDepth / 20;
-        std::string fx = w.kind == Kind::Airstrike && w.clusters >= 6 ? "WXP_ExploCluster" : (L + P + W) / f.div > 2.2f ? "WXP_Wep_Donkey"
-                       : m / f.div < 0.4f ? "WXP_Explosion_Small" : P > L && P > W ? "WXP_Explosion_Mine" : m / f.div > 0.7f ? "WXP_ExplosionX_Large" : "WXP_ExplosionX_Med";
-        (child ? w.cfx : w.fx) = w.poison > 0 ? fx + ",WXP_Explosion_Gas" : fx;
+    const int L = factoryLaunch(w);
+    const bool homing = w.kind == Kind::Homing, bomber = L == 0, ours = w.launch < 0;
+    const char *clone = homing ? "Homing Missile" : CLONE[L & 3];
+    WeaponDef p = w;
+    const WeaponDef *grenade = nullptr;
+    for (size_t i = 0; i < baseWeapons; i++) {
+        if (WEAPONS[i].name == clone) p = WEAPONS[i];
+        if (WEAPONS[i].name == "Grenade") grenade = &WEAPONS[i];
     }
+    const float div[2] = {bomber ? 1 + 2.0f * (std::max(w.clusters, 1) - 1) / 9 : 1, (float)std::max(w.clusters, 1)}, k[2] = {bomber ? 0.35f : 0.65f, 0.65f};
+    const FactoryTemplate T[2] = {templateOf(p, bomber), DEFAULT_CLUSTER};
+    for (int c = 0; c < 2; c++)
+        if (w.slider[c][0] < 0) {  // saved before the sliders: invert the old crater and damage, WXD.DefaultWeapon for the rest
+            bool child = c || bomber;
+            auto grid = [](float v) { return Clamp(roundf(v * 20) / 20, 0, 1); };
+            w.slider[c][0] = grid((child ? w.cradius : w.radius) * 20 * 0.65f * div[c] / T[c].land), w.slider[c][1] = 0.75f;
+            w.slider[c][2] = grid((child ? w.cdamage : w.damage) * div[c] * k[c] / T[c].dmg), w.slider[c][3] = 0.5f;
+        }
+    p.name = w.name, p.clone = clone, p.model = w.model, p.cmodel = w.cmodel, p.icon = w.icon, p.count = w.count, p.shots = w.shots, p.weight = w.weight;
+    memcpy(p.slider, w.slider, sizeof p.slider);
+    p.launch = w.launch, p.detonate[0] = w.detonate[0], p.detonate[1] = w.detonate[1], p.fuseTime = w.fuseTime, p.powersUp = w.powersUp, p.maxPower = w.maxPower;
+    p.collision[0] = w.collision[0], p.collision[1] = w.collision[1], p.cpoison = w.cpoison, p.spread = w.spread, p.avoid = w.avoid, p.poison = w.poison;
+    p.clusters = w.clusters, p.wind = w.wind && !homing;  // 0x5985c3: a Homing Weapon container is never windy
+    // ArielFx: the container's (ours: WXD.DefaultWeapon / DefaultThrown), Poison WXP_ExplosionG_Tail, Homing WXP_HomingMissileTrail, Bomber none
+    p.ariel = ours ? (L == 1 ? "WXP_BazookaTrailPack" : "") : w.ariel;
+    if (w.poison > 0) p.ariel = "WXP_ExplosionG_Tail";
+    if (homing) p.ariel = "WXP_HomingMissileTrail";
+    if (bomber) p.ariel = "";
+    for (int c = 0; c < 2 && !(c && bomber); c++) {
+        const bool child = c || bomber;
+        const FactoryTemplate &t = T[c];
+        const float *s = w.slider[c], d = div[c], L = s[0], W = s[2], P = s[3], pp = 0.8f * P, m = fmaxf(fmaxf(L, P), W);
+        (child ? p.cradius : p.radius) = t.land / d * L / 0.65f / 20;
+        (child ? p.cdamage : p.damage) = t.dmg / d / k[c] * W;
+        float *b = child ? p.cblast : p.blast;
+        b[0] = t.reach * s[1] / k[c] / 20, b[1] = t.push / d / k[c] * pp * 50, b[2] = fmaxf(t.pushReach * pp / k[c], 48) / 20, b[3] = t.pushDepth / 20;
+        std::string fx = bomber && w.clusters >= 6 ? "WXP_ExploCluster" : (L + P + W) / d > 2.2f ? "WXP_Wep_Donkey"
+                       : m / d < 0.4f ? "WXP_Explosion_Small" : P > L && P > W ? "WXP_Explosion_Mine" : m / d > 0.7f ? "WXP_ExplosionX_Large" : "WXP_ExplosionX_Med";
+        (child ? p.cfx : p.fx) = (c ? w.cpoison : w.poison > 0) ? fx + ",WXP_Explosion_Gas" : fx;
+        // Detonate switch 0x5998b4 (the bombs: the Weapon container's): Fused / AtRest set the damping 0.7 / 0.35 / 0.8 / 0.8, the Grenade's
+        const int det = ours && !c ? (w.fuse > 0 ? 1 : 0) : w.detonate[c];
+        if (det && grenade && !ours) p.bounce = grenade->bounce;
+        if (child) { p.crest = det == 3; continue; }
+        p.restFuse = det == 3, p.userFuse = det == 1 && w.fuseTime < 0 && !ours;
+        p.fuse = det == 1 ? (ours ? w.fuse : w.fuseTime < 0 ? 6 : w.fuseTime / 1000.0f) : 0;  // LifeTime FuseTime, or 6000 with HasAdjustableFuse
+        if (ours) p.bounce = w.bounce;
+    }
+    // Radius = ProjectileCollisionRadius; a Bomber's bombs: Radius and Scale x (2 - 0.05 n)
+    if (bomber) p.csize = w.collision[0] * (2 - 0.05f * w.clusters) / 20, p.scale[1] = 2 - 0.05f * w.clusters;
+    else p.size = w.collision[0] / 20, p.csize = w.collision[1] / 20, p.csink = 0.25f, p.csfx = "global/ExplosionRegular";  // WXD.DefaultCluster SinkDepth 5
+    if (L == 1 || L == 2) {  // M' = BasePower + (MaxPower - BasePower) x ProjectileMaxPower; ours: the editor's launch speed
+        const float B = p.base, M = p.speed - p.base, Mp = B + (M - B) * w.maxPower;
+        p.powered = L == 2 || w.powersUp;
+        p.speed = ours ? w.speed : p.powered ? B + Mp : Mp;
+        if (!p.powered) p.base = Mp;
+    }
+    if (!bomber && w.clusters > 0) {  // 0x5995dd: cone 0.28, speeds k/7 .. k/2 units/ms, k = 0.5 ClusterSpread + 0.3
+        p.ccone = 0.28f, p.cspeed[0] = (0.5f * w.spread + 0.3f) / 7 * 50, p.cspeed[1] = (0.5f * w.spread + 0.3f) / 2 * 50;
+    }
+    w = p;
 }
 
 bool customWeapon(int i) { return i >= (int)baseWeapons; }
@@ -231,19 +283,20 @@ const std::vector<int> WORMPOT_REEL[3] = {{2, 3, 4, 5, 6, 11, 10, 17, 9, 16, 15,
 
 
 // Order: turn, retreat (LandTime), hot seat (10 s in every W4M scheme), round (min), energy, crate %, weapon/health/utility shares, crate hp, mines, barrels
-// (Objects: 3 = 15 mines + 10 drums, 2 = drums only), mine fuse, sudden death, fall damage, wind, weapon set (ours), water speed, mystery share (*Chance, 0x4fa4b0).
+// (Objects: 3 = 15 mines + 10 drums, 2 = drums only), mine fuse, sudden death, fall damage, wind, weapon set (ours), water speed, mystery share (*Chance, 0x4fa4b0);
+// then the SchemeData delays and WeaponFactoryWeapon.Ammo (LOCAL DATA.LockedSchemes).
 const std::vector<SchemePreset> SCHEMES = {
-    {"Standard", {45, 5, 10, 20, 100, 40, 30, 30, 20, 25, 15, 10, 3, 1, 1, 1, 0, 2}, "Airstrike 5|Banana Bomb 8|Holy Hand Grenade 3|Homing Missile 2|Super Sheep 5|Icarus Potion 2|Binoculars 2|* 3"},
-    {"Beginner", {90, 5, 10, 20, 100, 50, 30, 30, 20, 50, 15, 10, 5, 0, 1, 0, 0, 1}, "Homing Missile 2"},
-    {"Pro", {30, 0, 10, 20, 100, 30, 10, 30, 50, 25, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 3, 0, 3}, "Icarus Potion 4|Sentry Gun 5|Sniper Rifle 3|Starburst 4|Binoculars 3"},
-    {"BnG", {30, 5, 10, 10, 150, 40, 40, 10, 40, 25, 15, 10, 5, 1, 1, 1, Scheme::SET_BNG, 2, 0, 1}, "Concrete Donkey 3|Icarus Potion 2|Bubble Trouble 3|* 8"},
-    {"Shopping", {60, 5, 10, 20, 100, 100, 60, 20, 20, 25, 0, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_CRATES, 1}, ""},
-    {"All Action", {30, 5, 10, 10, 200, 40, 30, 30, 20, 25, 15, 10, 1, 1, 1, 1, 0, 1, 20, 1}, "Airstrike 5|Banana Bomb 5|Homing Missile 2|Super Sheep 3|Super Airstrike 6"},
-    {"Strategy", {30, 0, 10, 30, 100, 40, 10, 10, 50, 25, 15, 10, 5, 0, 1, 3, 0, 3}, "Airstrike 6|Baseball Bat 2|Dynamite 4|Jetpack 4|Shotgun 3|Icarus Potion 4|Sniper Rifle 4|* 4"},
-    {"Family", {90, 8, 10, 20, 125, 50, 30, 30, 20, 50, 15, 10, 8, 0, 1, 0, 0, 1}, ""},
-    {"Mega Power", {30, 5, 10, 10, 200, 50, 40, 40, 20, 100, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_UNLIMITED, 1, 30, 1}, "Concrete Donkey 8|Alien Abduction 8|Fatkins Strike 8|Sentry Gun 8|Super Airstrike 8"},
-    {"Holy Grail", {45, 5, 10, 30, 100, 60, 30, 30, 30, 50, 15, 10, 1, 0, 1, 1, 0, 2}, "Concrete Donkey 16|Super Sheep 4"},
-    {"Darksider", {45, 5, 10, 30, 100, 50, 10, 10, 50, 25, 15, 10, 5, 0, 1, 1, 0, 1}, "Airstrike 4|Cluster Grenade 2|Dynamite 2|Homing Missile 6|Landmine 2|Shotgun 2|Flood 2|Tail Nail 2|Poison Arrow 2|Sniper Rifle 2|Starburst 2|* 2"},
+    {"Standard", {45, 5, 10, 20, 100, 40, 30, 30, 20, 25, 15, 10, 3, 1, 1, 1, 0, 2}, "Airstrike 5|Banana Bomb 8|Holy Hand Grenade 3|Homing Missile 2|Super Sheep 5|Icarus Potion 2|Binoculars 2|* 3", 1},
+    {"Beginner", {90, 5, 10, 20, 100, 50, 30, 30, 20, 50, 15, 10, 5, 0, 1, 0, 0, 1}, "Homing Missile 2", 2},
+    {"Pro", {30, 0, 10, 20, 100, 30, 10, 30, 50, 25, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 3, 0, 3}, "Icarus Potion 4|Sentry Gun 5|Sniper Rifle 3|Starburst 4|Binoculars 3", 2},
+    {"BnG", {30, 5, 10, 10, 150, 40, 40, 10, 40, 25, 15, 10, 5, 1, 1, 1, Scheme::SET_BNG, 2, 0, 1}, "Concrete Donkey 3|Icarus Potion 2|Bubble Trouble 3|* 8", 1},
+    {"Shopping", {60, 5, 10, 20, 100, 100, 60, 20, 20, 25, 0, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_CRATES, 1}, "", 0},
+    {"All Action", {30, 5, 10, 10, 200, 40, 30, 30, 20, 25, 15, 10, 1, 1, 1, 1, 0, 1, 20, 1}, "Airstrike 5|Banana Bomb 5|Homing Missile 2|Super Sheep 3|Super Airstrike 6", 2},
+    {"Strategy", {30, 0, 10, 30, 100, 40, 10, 10, 50, 25, 15, 10, 5, 0, 1, 3, 0, 3}, "Airstrike 6|Baseball Bat 2|Dynamite 4|Jetpack 4|Shotgun 3|Icarus Potion 4|Sniper Rifle 4|* 4", 1},
+    {"Family", {90, 8, 10, 20, 125, 50, 30, 30, 20, 50, 15, 10, 8, 0, 1, 0, 0, 1}, "", 2},
+    {"Mega Power", {30, 5, 10, 10, 200, 50, 40, 40, 20, 100, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_UNLIMITED, 1, 30, 1}, "Concrete Donkey 8|Alien Abduction 8|Fatkins Strike 8|Sentry Gun 8|Super Airstrike 8", 2},
+    {"Holy Grail", {45, 5, 10, 30, 100, 60, 30, 30, 30, 50, 15, 10, 1, 0, 1, 1, 0, 2}, "Concrete Donkey 16|Super Sheep 4", 2},
+    {"Darksider", {45, 5, 10, 30, 100, 50, 10, 10, 50, 25, 15, 10, 5, 0, 1, 1, 0, 1}, "Airstrike 4|Cluster Grenade 2|Dynamite 2|Homing Missile 6|Landmine 2|Shotgun 2|Flood 2|Tail Nail 2|Poison Arrow 2|Sniper Rifle 2|Starburst 2|* 2", 2},
 };
 
 static constexpr float GRAVITY = 12.5f;  // W4M Gravity -0.00025 units/ms² (WEAPTWK), 20 units = 1 m
@@ -749,11 +802,7 @@ void Game::start(const GameConfig &c) {
     for (int t = 0; t < c.teams && t < (int)c.teamSetup.size(); t++) {
         if (!c.teamSetup[t].secret) continue;
         WeaponDef &w = secrets[t] = editorFields(*c.teamSetup[t].secret);
-        // WEAPTWK kWeaponFactoryWeapon PostLaunchDelay 500, kWeaponFactoryHoming 0; water: Radius 5, SinkDepth 5, FactoryCluster 4 / 5 units
-        w.postLaunch = w.kind == Kind::Homing ? 0 : 500, w.retreat = -1, w.size = w.sink = w.csink = 0.25f, w.csize = 0.2f;
-        w.skim[0] = w.kind == Kind::Homing ? -1 : 5, w.skim[1] = -0.4f, w.skim[2] = 0.45f, w.skim[3] = -0.3f;
-        // 0x5995dd: cone 0.28, speeds k/7 .. k/2 units/ms, k = 0.5 ClusterSpread + 0.3
-        factoryPayload(w), w.ccone = 0.28f, w.cspeed[0] = (0.5f * w.spread + 0.3f) / 7 * 50, w.cspeed[1] = (0.5f * w.spread + 0.3f) / 2 * 50;
+        factoryPayload(w);
         if (WEAPONS.size() == baseWeapons) WEAPONS.push_back(w);  // one inventory slot (stdvs WeaponFactoryWeapon), each team firing its own
     }
     // Wormpot modes that are existing rules or scheme values: set them on our copy, which the checksum covers
@@ -795,9 +844,10 @@ void Game::start(const GameConfig &c) {
     suddenDeath = false;
     fuses.assign(teams, 3);
     delays.assign(teams, std::vector<int>(WEAPONS.size()));
-    for (const SchemePreset &p : SCHEMES)  // a W4M preset brings its SchemeData delays; custom schemes have none (WXD.DefaultSchemeData)
-        if (!(cfg.rules & RULE_NO_DELAYS) && !memcmp(&p.s, &cfg.scheme, sizeof(Scheme)))
-            for (const char *q = p.delays; *q;) {
+    const SchemePreset *preset = nullptr;  // a W4M preset brings its SchemeData; custom schemes have none (WXD.DefaultSchemeData)
+    for (const SchemePreset &p : SCHEMES) if (!memcmp(&p.s, &cfg.scheme, sizeof(Scheme))) preset = &p;
+    if (preset && !(cfg.rules & RULE_NO_DELAYS))
+            for (const char *q = preset->delays; *q;) {
                 const char *e = strchr(q, '|'), *end = e ? e : q + strlen(q), *sp = end;
                 while (sp > q && sp[-1] != ' ') sp--;
                 std::string n(q, sp - 1);
@@ -821,7 +871,8 @@ void Game::start(const GameConfig &c) {
             Kind k = d.kind;
             bool keep = set == Scheme::SET_DEFAULT || k == Kind::SkipGo || k == Kind::Surrender ||
                         (set == Scheme::SET_BNG && (k == Kind::Shell || k == Kind::Homing));
-            ammo[t][i] = d.name.empty() ? 0 : set == Scheme::SET_UNLIMITED ? -1 : keep ? d.count : 0;
+            const int count = customWeapon((int)i) && preset ? preset->factoryAmmo : d.count;  // SchemeData WeaponFactoryWeapon.Ammo
+            ammo[t][i] = d.name.empty() ? 0 : set == Scheme::SET_UNLIMITED ? -1 : keep ? count : 0;
         }
     superWeapon.assign(teams, 0);  // SetupModes runs before the Lua's inventory changes
     for (int t = 0; t < teams && wp(WP_SECRET_WEAPON); t++) {  // 0x5d65c0: rand() % 30 until the team holds it, if it holds any kWeapon
@@ -987,6 +1038,13 @@ static bool crateLike(const Object &o) { return o.type == Object::Crate || o.typ
 float restHalf(const Object &o) { return crateLike(o) ? fmaxf(0, 0.5f * o.scale - 0.05f) : halfHeight(o.type); }
 static bool sheepLike(Kind k) { return k == Kind::Sheep || k == Kind::SuperSheep || k == Kind::OldWoman || k == Kind::Scouser; }  // WEAPTWK ColliderFlags 128: collider 0x88
 static const char *named(const std::string &s) { return s.empty() ? nullptr : s.c_str(); }  // an empty WEAPTWK effect or sound starts nothing (0x57fd00)
+// PARTTWK: the DetonationFx effects holding the WXP_GasCloud emitter, whose particle poisons the worms it touches
+static bool gasCloud(const std::string &fx) {
+    for (const char *e : {"WXP_Explosion_Gas", "WXP_PoisonArrowPuffOut", "WXP_Napalm"})
+        for (size_t i = fx.find(e); i != std::string::npos; i = fx.find(e, i + 1))
+            if ((i == 0 || fx[i - 1] == ',') && (i + strlen(e) == fx.size() || fx[i + strlen(e)] == ',')) return true;
+    return false;
+}
 
 // the land inside a sphere (0x519e90 tests every collider, the land's included), sampled every half voxel
 static bool sphereInLand(const Terrain &t, Vector3 c, float r) {
@@ -2045,6 +2103,8 @@ void Game::steal(const Worm &v) {
 bool Game::windy(int wi, bool child) const {
     static const int ALL[] = {4, 7, 31, 30, 3, 18, 16, 2, 6, 17, 15, 24, 23, 26, W4M_FACTORY, 5, 8, 29};  // Wormpot.lub SetWeaponWind containers
     const WeaponDef &wd = WEAPONS[wi];
+    // Weapon Factory 0x5985a3: WormPot wind, else the container's EffectedByWind (a Cluster container's is 0 in every data); never a Homing Weapon
+    if (customWeapon(wi)) return child && wd.kind != Kind::Airstrike ? wp(WP_WIND_ALL) : !(wd.kind == Kind::Homing) && (wd.wind || wp(WP_WIND_ALL));
     if (wd.wind || !wp(WP_WIND_ALL)) return wd.wind;
     return std::count(std::begin(ALL), std::end(ALL), containerOf(wi, child)) > 0;
 }
@@ -2391,7 +2451,10 @@ void Game::stepShots(const Input &in, bool detonate) {
         Projectile &s = shots[i];
         const WeaponDef &wd = WEAPONS[s.weapon];
         float fatBlast = 0;  // Fatkins: this contact's blast scale
-        bool boom = false, lifeEnd = false, stuck = wd.stick > 0 && s.stage == 1 && !s.child, timed = (wd.fuse > 0 || (wd.stick > 0 && s.stage)) && !s.child;
+        bool boom = false, lifeEnd = false, stuck = wd.stick > 0 && s.stage == 1 && !s.child;
+        // W4M DetonatesAtRest: the shell's restFuse (PreDetonationTime = fuse), a Weapon Factory bomblet's crest (0 ms)
+        const bool rests = s.child ? wd.crest : wd.restFuse, missile = wd.kind == Kind::Homing && !s.child;  // a homing weapon's bomblets fly as shells
+        bool timed = s.child ? wd.crest : wd.fuse > 0 || wd.restFuse || (wd.stick > 0 && s.stage);
         Vector3 np, was = s.pos;
         bool bomber = wd.kind == Kind::Airstrike && !s.child;  // the plane; fuse > 0: the steered Bovine Blitz
         if (wd.kind == Kind::Abduction) {
@@ -2555,7 +2618,7 @@ void Game::stepShots(const Input &in, bool detonate) {
                 fatBlast = 1 - 0.2f * (s.prey - 1);  // radii x 1, 0.8, 0.6, 0.4: blasted after the Detonate (0x555066)
             }
         } else {
-            bool homing = wd.kind == Kind::Homing && (s.fuse += DT) > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd);  // fuse: flight time
+            bool homing = missile && (s.fuse += DT) > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd);  // fuse: flight time
             const Vector3 v0 = s.vel;
             if (homing) {  // 0x561730: the step, then the avoidance
                 s.vel = homingStep(s.vel, s.pos, s.aim, wd.avoid ? 12.5f : HOMING_MAX);
@@ -2564,7 +2627,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             else s.vel.y -= gravity() * (s.child && wd.kind != Kind::Airstrike ? 1 : wd.grav) * DT;  // W4M bomblets: IsLowGravity 0
             if (wd.kind == Kind::Airstrike && wd.fuse > 0) s.vel.y = fmaxf(s.vel.y, -COW_CHUTE);  // the bomber's cows come down under a chute
             if (windy(s.weapon, s.child)) s.vel.x += wind * WIND_ACCEL * DT, s.vel.z += windZ * WIND_ACCEL * DT;  // 0x57eb25: (cos, 0, sin) Wind.Direction
-            bool impact = s.child || wd.fuse == 0;
+            bool impact = !rests && (s.child || wd.fuse == 0);
             uint64_t now = 0;
             const Vector3 d = arcMove(v0, s.vel, arcLag(wd));
             for (int k = 0, n = substeps(s.vel); k < n && !boom; k++) {  // W4M searches the whole path for the first land contact
@@ -2580,7 +2643,10 @@ void Game::stepShots(const Input &in, bool detonate) {
                     if (impact && wd.stick > 0) { stick(s); break; }
                     if (impact) { boom = true; break; }
                     s.vel = Vector3Scale(Vector3Reflect(s.vel, terrain.normal(np)), wd.bounce);
-                    if (Vector3Length(s.vel) > 2) emit(GameEvent::Bounce, np, -1, s.weapon);
+                    if (Vector3Length(s.vel) > 2) {
+                        emit(GameEvent::Bounce, np, -1, s.weapon);
+                        if (s.child && customWeapon(s.weapon) && wd.kind != Kind::Airstrike) events.back().fx = FACTORY_CLUSTER_BOUNCE;
+                    }
                     break;
                 }
                 s.pos = np;
@@ -2590,17 +2656,17 @@ void Game::stepShots(const Input &in, bool detonate) {
             }
             s.touching = now;
         }
-        if (wd.kind == Kind::Homing && wd.avoid && s.fuse >= 30) boom = true;  // LifeTime 30000, DetonatesOnExpiry (0x598e0c)
+        if (missile && wd.avoid && s.fuse >= 30) boom = true;  // LifeTime 30000, DetonatesOnExpiry (0x598e0c)
         bool expired = false;
         if (!boom && !bomber && !stuck && wd.kind != Kind::Scouser && wd.kind != Kind::OldWoman) {  // the walking payloads sink their own way (0x594002)
-            expired = wet(s, was, !(wd.kind == Kind::Homing && s.fuse > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd)));
+            expired = wet(s, was, !(missile && s.fuse > HOMING_LOCK && s.fuse < HOMING_LOCK + homingTime(wd)));
             timed = timed && !s.sunk && !expired;
         }
-        timed = timed && (!wd.restFuse || s.fuse < wd.fuse || Vector3Length(s.vel) < 1);
-        if (timed && wd.restFuse && s.fuse == wd.fuse) emit(GameEvent::Hallelujah, s.pos, -1, s.weapon);  // at rest: the choir, then the blast
+        timed = timed && (!rests || s.fuse < (s.child ? 0 : wd.fuse) || Vector3Length(s.vel) < 1);
+        if (timed && !s.child && !wd.preSfx.empty() && s.fuse == wd.fuse) emit(GameEvent::Hallelujah, s.pos, -1, s.weapon), events.back().sfx = named(wd.preSfx);
         if (timed && (s.fuse -= DT) < DT / 2) boom = true;  // n s = exactly 60 n ticks, whatever the float drift
         // off the map a shot flies on until it falls into the sea
-        bool gone = expired || (wd.kind == Kind::Homing && s.fuse >= HOMING_LIFE) || s.pos.x < -100 || s.pos.z < -100 || s.pos.x > W + 100 || s.pos.z > W + 100;
+        bool gone = expired || (missile && s.fuse >= HOMING_LIFE) || s.pos.x < -100 || s.pos.z < -100 || s.pos.x > W + 100 || s.pos.z > W + 100;
         if (boom && bomber) {  // flies off
         } else if (boom && wd.kind == Kind::Scouser) {  // W4M: pops and drops its catch, empty it bursts harmlessly
             emit(GameEvent::Boom, s.pos, -1, s.weapon), events.back().fx = named(wd.fx);
@@ -2620,7 +2686,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (wd.name == "Starburst" && !s.child && worms[current].alive) vapourize(worms[current]);  // Detonate 0x588dd0: the blast, then Worm.Vapourize
             bool fly = !s.child && ((wd.kind == Kind::Homing && !wd.avoid) || (wd.kind == Kind::SuperSheep && (wd.name == "Starburst" ? !starLit(s) : !wd.walks || s.stage)));
             if (fly) camHold = msTicks(1000);  // the FlyCam's: CAMTWK PauseDuration 1000 (homing, super sheep, starburst)
-            if (!s.child && wd.poison > 0 && (wd.fuse > 0 || wd.stick > 0)) gas.push_back({Vector3Add(np, {0, 0.5f, 0}), GAS_LIFE, wd.poison});  // timed poison shell: the gas canister; collider offset (0, 10, 0) units
+            if (gasCloud(s.child ? wd.cfx : wd.fx)) gas.push_back({Vector3Add(np, {0, 0.5f, 0}), GAS_LIFE, GAS_POISON});  // collider offset (0, 10, 0) units
             if (!s.child && wd.kind != Kind::Airstrike && wd.kind != Kind::Donkey) bomblets(np, s.weapon, spawned);
         }
         if (fatBlast > 0) {  // 0x555066: WormDamage / ImpulseMagnitude kept, the three radii scaled, the impulse at the centre
@@ -2767,7 +2833,7 @@ void Game::step(const Input &raw) {
             } else if (armed && weapon >= 0 && ((ammo[w.team][weapon] && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(weaponDef(weapon).kind))) {
                 Vector3 h;
                 // W4M CanFire is asked on Input.FirePressed only (0x586092); a charge started goes on to its release
-                if (!powered(weaponDef(weapon).kind)) { if ((pressed & Input::FIRE) && fireable(w) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
+                if (!powered(weaponDef(weapon))) { if ((pressed & Input::FIRE) && fireable(w) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
                 else if (weaponDef(weapon).kind == Kind::Homing && !locked) {  // W4M state 1: FIRE takes the aim ray's target, no charge
                     if ((pressed & Input::FIRE) && fireable(w)) {  // from the Blimp the cursor point, else the aim ray
                         if (!aimCursor) locked = true, lockAt = target();
@@ -3104,6 +3170,8 @@ uint32_t Game::checksum() const {
         mix(&wd.weight, sizeof wd.weight);
         mix(&wd.poison, sizeof wd.poison), mix(wd.blast, sizeof wd.blast), mix(wd.cblast, sizeof wd.cblast), mix(&wd.lift, sizeof wd.lift), mix(&wd.stick, sizeof wd.stick), mix(&wd.grav, sizeof wd.grav), mix(&wd.base, sizeof wd.base);
         if (wd.avoid) mix(&wd.avoid, 1);
+        if (wd.crest) mix(&wd.crest, 1);
+        if (!wd.powered) mix(&wd.powered, 1);
         mix(&wd.size, sizeof wd.size), mix(&wd.sink, sizeof wd.sink), mix(&wd.csize, sizeof wd.csize), mix(&wd.csink, sizeof wd.csink), mix(wd.skim, sizeof wd.skim), mix(&wd.ccone, sizeof wd.ccone), mix(wd.cspeed, sizeof wd.cspeed);
         mix(&wd.userFuse, sizeof wd.userFuse), mix(&wd.restFuse, sizeof wd.restFuse), mix(&wd.walks, 1), mix(&wd.pins, 1);
     }
