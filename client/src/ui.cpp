@@ -363,7 +363,7 @@ int voiceBankOf(const std::string &speech) {
 static std::string wireOf(const GameConfig::Team &t) { wire::W w(0); return putTeam(w, t).b; }
 
 std::string mapTitle(const std::string &m) {
-    if (m.empty()) return "Random island";
+    if (m.empty()) return tr("FETXT.Random", "Random island", "Aléatoire");  // W4M FETXT.Random, the random-landscape entry [assumed: the entry text of pass 0 not decoded]
     if (const std::string &t = mapInfo(m).title; !t.empty()) return tr(t.c_str(), m.c_str());
     std::string s, b = m;
     bool w3d = b.size() > 4 && lower(b.substr(b.size() - 4)) == "-w3d";
@@ -869,10 +869,13 @@ void controls(bool game) {
             e = lines.find('\n', s);
             if (e == std::string::npos) e = lines.size();
             std::string ln = lines.substr(s, e - s);
-            text(ln.c_str(), x, y, 22, WHITE, left ? 2 : 0);
-            if (keys && calls[i].key && y == calls[i].ly) {
-                float w = textWidth(ln.c_str(), 22) + 10;
-                glyphs(calls[i].key, left ? x - w - glyphs(calls[i].key, 0, 0, 24, true, false) : x + w, y - 1, 24, true);
+            const bool cap = keys && calls[i].key && y == calls[i].ly;
+            const float kw = cap ? glyphs(calls[i].key, 0, 0, 24, true, false) : 0, room = (left ? x : 1280 - x) - 16 - (cap ? kw + 10 : 0);
+            const float sz = fminf(22, 22 * room / textWidth(ln.c_str(), 22));  // a long label shrinks to stay on screen
+            text(ln.c_str(), x, y + (22 - sz) / 2, sz, WHITE, left ? 2 : 0);
+            if (cap) {
+                float w = textWidth(ln.c_str(), sz) + 10;
+                glyphs(calls[i].key, left ? x - w - kw : x + w, y - 1, 24, true);
             }
         }
     }
@@ -1317,7 +1320,7 @@ static void feText(const std::string &text, const FeBox &b) {
     rlRotatef(-b.rot * RAD2DEG, 0, 0, 1);
     rlTranslatef(-ctr.x, -ctr.y, 0);
     int align = b.just % 3;
-    float x = align == 0 ? b.c.x - b.hw : align == 1 ? b.c.x : b.c.x + b.hw;
+    float x = align == 0 ? b.c.x - b.hw / feK : align == 1 ? b.c.x : b.c.x + b.hw / feK;  // the spread moves the box, not its width
     for (size_t i = 0; i < lines.size(); i++) {
         std::vector<Vector2> pose = b.anim ? textPose(b.anim, lines[i]) : std::vector<Vector2>();
         float y = top - i * size, a = 1;
@@ -1477,11 +1480,11 @@ void feCursor() {
 static float backOut(float k) { k = Clamp(k, 0, 1) - 1; return 1 + 2.7f * k * k * k + 1.7f * k * k; }
 
 // W4M's Title Control (docs/w4m/frontend.md §17): FontSizeOverride 40, Button_Yellow, TitleRandom, over its brush underline; x: the page's offset.
-// The spot is read off the HISTOIRE / DEFIS screens [observed]: text left edge at FE -305, centre y 195, underline from -363, centre y 174
+// The spot is read off the HISTOIRE / DEFIS screens [observed at 1.44 px per unit, x 0.96]: text left edge at FE -293 (data: Position -152 less Scale 140), centre y 188 (data), underline from -348, centre y 167
 static void titleControl(const char *title, float x) {
     FeFlat flat;
     float sz = 40 * FE_S, tw = textWidth(title, sz) * FE_EM;
-    Vector2 l = fePos(-305, 195), u = fePos(-363, 174);
+    Vector2 l = fePos(-293, 188), u = fePos(-348, 167);
     std::vector<Vector2> pose = textPose(3, title);
     rlPushMatrix(), rlTranslatef(l.x + x, l.y, 0), rlScalef(FE_EM, FE_EM, 1);
     textG(title, 0, -sz / 2, sz, GC_BUTTON_YELLOW[0], GC_BUTTON_YELLOW[1], 0, BC_BLACK, &pose);
@@ -2762,7 +2765,7 @@ void edHeader(const char *s, float x, float y, float hw, float rz) {
     edText(s, c, 20, GC_WHITE, 1, 2 * hw * 0.8f, BC_BLACK, 4);
 }
 
-// a W4M text border (kMT_Text*: fe/border_<name>) whose drawn sprite spans outer (FE) about c [observed: the box sizes of the reference shots]
+// a W4M text border (kMT_Text*: fe/border_<name>) whose drawn sprite spans outer (FE) about c [observed at 1.44 px per unit, x 0.96: the box sizes of the reference shots]
 void edBox(Vector2 c, float outW, float outH, const char *sprite) {
     float h = outH * FE_S * 92 / 128, w = outW * FE_S - 16 * h / 92;
     feBorderSprite({c.x - w / 2, c.y - h / 2, w, h}, sprite);
@@ -2774,7 +2777,7 @@ void edBox(Vector2 c, float outW, float outH, const char *sprite) {
 void edRow(float x, float y, float rz, const char *label, const char *value, bool hi, bool off, bool arrows, Color line, float maxL = 0.4f, float maxV = 0.75f) {
     Vector2 c = fePos(x, y);
     Tilt tl(c, rz);
-    const float hw = 130 * FE_S, in = 5 * FE_S, px = 20 * FE_S, l = c.x - hw + in, r = c.x + hw - in;  // texts 5 FE inside the row [observed]
+    const float hw = 130 * FE_S, in = 4.8f * FE_S, px = 20 * FE_S, l = c.x - hw + in, r = c.x + hw - in;  // texts 5 FE inside the row [observed at 1.44 px per unit, x 0.96]
     if (hi) brush({c.x - hw, c.y - 12.5f * FE_S, 2 * hw, 25 * FE_S});
     const Color *lg = off ? GC_DISABLED : hi ? GC_WHITE : GC_LIST_LABLE_BLUE, *vg = off ? GC_DISABLED : hi ? GC_WHITE : GC_LIST_DATA_ORANGE;
     // the value keeps its size, the label fits in what is left [observed: the reference Soundbank row's label is the one scaled down]
@@ -2824,7 +2827,7 @@ void scratches(Vector2 c, const Scratch *s, int n) {
 }  // namespace
 
 // TheWorm (WXFE_WormDesc: Position (-155, -60, 100), Scale 120, Orientation y 0.4) through the FE camera. 0x758553 hangs the worm under a node at
-// -Position, a chain not decoded: placed (-115, -105, 100) x 195 turned 0.9 rad to match the reference shots [observed]; slide: In_TitleUnderline's x (FE)
+// -Position, a chain not decoded: placed (-110, -101, 100) x 187 turned 0.9 rad to match the reference shots [observed at 1.44 px per unit, x 0.96]; slide: In_TitleUnderline's x (FE)
 void Frontend::editorWorm(const char *clip, float ct, bool loop, float slide) {
     Camera3D cam = feCamera(900);
     glClear(0x100);
@@ -2832,8 +2835,8 @@ void Frontend::editorWorm(const char *clip, float ct, bool loop, float slide) {
     BeginMode3D(cam);
     Lit::frame(cam.position);
     rlPushMatrix();
-    rlTranslatef(-115 + slide, -105, 100);
-    rlScalef(195, 195, 195);
+    rlTranslatef(-110 + slide, -101, 100);
+    rlScalef(187, 187, 187);
     drawTeamWorm(ed.t.slot(), 0.9f, clip, ct, loop);
     rlPopMatrix();
     EndMode3D();
@@ -2853,7 +2856,7 @@ void Frontend::pickDraw() {
     DrawRectangle(0, 0, 1280, 720, outfit ? Color{0, 0, 0, 100} : Color{40, 40, 60, 160});  // FullScreenColour
     // the row that opened it: TeamPage2 Detail 2 / 6..First, TeamPage3 DETAIL Weapon / Flag / First
     const float srcY = u == Pop::Soundbank ? 90 : u == Pop::Head ? -4 : u == Pop::Eyes ? -26 : u == Pop::Face ? -48 : u == Pop::Hands ? -70 : u == Pop::Weapon ? 102 : u == Pop::Flag ? 25 : -57;
-    const Vector2 c = fePos(-125, 0);  // [observed: the reference shots put the pickers' centre at FE x -125, their data Position is (75, 0)]
+    const Vector2 c = fePos(-120, 0);  // [observed at 1.44 px per unit, x 0.96: the reference shots put the pickers' centre at FE x -120, their data Position is (75, 0)]
     const float since = now() - pop.t0;
     if (!feItem(c, &IN_SCALEY, 0, nullptr, since, -1)) return;
     bubble(c, 110 + 16, k.hh + 16, srcY);
@@ -2891,21 +2894,21 @@ void Frontend::pickDraw() {
     if (outfit && since >= 0.225f) {  // Attachment (In_ScaleHitXY at 225 ms): WXD.CurrentAttachment at (0, 90) scale 6, moved / scaled / turned by the row's FrontEndOffsets (0x738e38); Nothing: (0, -30)
         // gloves show their FrontEndMeshID (Gloves.<x>P), the others their worn mesh
         if (const Catalog::Item *a = cur.empty() ? nullptr : cat.attachment(cur))
-            feMesh(a->type == 1 ? a->feModel.c_str() : cat.drawName(cur), {-125 * feK + a->fePos[0], 90 + a->fePos[1], a->fePos[2]}, {6 * a->feScale[0], 6 * a->feScale[1], 6 * a->feScale[2]},
+            feMesh(a->type == 1 ? a->feModel.c_str() : cat.drawName(cur), {-120 * feK + a->fePos[0], 90 + a->fePos[1], a->fePos[2]}, {6 * a->feScale[0], 6 * a->feScale[1], 6 * a->feScale[2]},
                    {a->feRot[0], a->feRot[1], a->feRot[2]}, true, nullptr, 0);
     } else if (u == Pop::Grave) {  // Grave Mesh: WXD.CurrentMesh at (0, 22) scale 4, orientation (-0.29, -2.43, 0.2); our grave models are in metres (W4M units x 0.05)
         size_t g = (size_t)atoi(cur.c_str());
-        if (g < cat.graves.size()) feMesh(cat.graves[g].model.c_str(), {-125 * feK, 22, 0}, {80, 80, 80}, {-0.29f, -2.43f, 0.2f}, true, nullptr, 0);
+        if (g < cat.graves.size()) feMesh(cat.graves[g].model.c_str(), {-120 * feK, 22, 0}, {80, 80, 80}, {-0.29f, -2.43f, 0.2f}, true, nullptr, 0);
     } else if (u == Pop::Weapon) {  // the weapon's held graphic [assumed: W4M picker placement not decoded; position and scale picked to fill the preview area]
         const WeaponDef *w = nullptr;
         for (const WeaponDef &d : cat.stock) if (d.name == cur) w = &d;
         for (const WeaponDef &d : customs) if (!w && d.name == cur) w = &d;
-        if (w && !w->graphic.empty() && since >= 0.225f) feWeapon(w->graphic, {-125 * feK, 35, 0}, 3, {0.2f, -0.6f, 0});
+        if (w && !w->graphic.empty() && since >= 0.225f) feWeapon(w->graphic, {-120 * feK, 35, 0}, 3, {0.2f, -0.6f, 0});
     } else if (u == Pop::Flag) {  // Flag Mesh: WXFE_FlagObject at (19, 59), orientation (0.35, -0.2, -0.1), FlagScale (9, 8, 8): the HUD.Flag cloth, clip Go looped, the flag's TGA on it
         if (const Catalog::Item *f = cat.flag(cur)) {
             Texture2D ft = flagTex(f->model);
             Models::texture(&ft);
-            feMesh("hud_flag", {-125 * feK + 19, 59, 0}, {9, 8, 8}, {0.35f, -0.2f, -0.1f}, false, "Go", fmodf((float)GetTime(), 1.5f) * FE_ANIM_SPEED);
+            feMesh("hud_flag", {-120 * feK + 19, 59, 0}, {9, 8, 8}, {0.35f, -0.2f, -0.1f}, false, "Go", fmodf((float)GetTime(), 1.5f) * FE_ANIM_SPEED);
             Models::texture(nullptr);
         }
     }
@@ -3008,7 +3011,7 @@ void Frontend::editor(PadIn in, float t) {
                 {
                     Tilt tl(q, W[i][2]);
                     const bool hi = i == ed.row, typing = editing == &ed.t.worms[i];
-                    edBox(q, 220, 39, typing ? "fe/border_active" : hi ? "fe/border_highlight" : "fe/border_edit");
+                    edBox(q, 211, 37.4f, typing ? "fe/border_active" : hi ? "fe/border_highlight" : "fe/border_edit");
                     std::string v = ed.t.worms[i] + (typing && fmodf(t, 1) < 0.5f ? "_" : "");
                     edText(v.c_str(), q, 20, hi && !typing ? GC_BLACK : GC_TEXTEDIT_TURQUOISE, 1, 180, hi && !typing ? BC_NONE : BC_BLACK);
                 }
@@ -3048,7 +3051,7 @@ void Frontend::editor(PadIn in, float t) {
                 {  // TeamPage3List row: Border 6 / 9, the value centred, TextBox_Yellow (Solid_Black highlighted), ScaleTextToFit
                     Tilt tl(q, D[i][2]);
                     const bool hi = i == ed.row;
-                    edBox(q, 214, 29, hi ? "fe/border_highlight" : "fe/border_normal");
+                    edBox(q, 205, 27.8f, hi ? "fe/border_highlight" : "fe/border_normal");
                     edText(fieldLabel(P3[i], getField(P3[i])).c_str(), q, 20, hi ? GC_BLACK : GC_TEXTBOX_YELLOW, 1, 180, hi ? BC_NONE : BC_BLACK);
                 }
                 rlPopMatrix();
@@ -3481,7 +3484,9 @@ void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, floa
         BeginScissorMode((int)box.x, (int)box.y + 4, (int)box.width, (int)box.height - 8);
         for (int k = -2; k <= 2; k++) {
             float y = box.y + box.height / 2 - 14 + (k - scroll) * 90;
-            text(modeName(r, clampWrap(cur + k, n) - 1), box.x + box.width / 2, y, 24, k ? Fade(LIGHTGRAY, 0.6f) : WHITE, 1);
+            const char *nm = modeName(r, clampWrap(cur + k, n) - 1);
+            const float sz = fminf(24, 24 * (box.width - 16) / textWidth(nm, 24));  // a long name shrinks to its reel
+            text(nm, box.x + box.width / 2, y + (24 - sz) / 2, sz, k ? Fade(LIGHTGRAY, 0.6f) : WHITE, 1);
         }
         EndScissorMode();
         DrawRectangleLinesEx({box.x, box.y + box.height / 2 - 40, box.width, 80}, 3, GOLDEN);
