@@ -1154,6 +1154,35 @@ static void feWeapon(const std::string &graphic, Vector3 pos, float scale, Vecto
 }
 
 
+// The flag's TGA as the HUD.Flag cloth shows it: our PNGs are top-down, the mesh's UVs expect the TGA's bottom-up rows
+static Texture2D flagTex(const std::string &png) {
+    static std::map<std::string, Texture2D> flipped;
+    if (auto it = flipped.find(png); it != flipped.end()) return it->second;
+    Texture2D t = tex(png);
+    if (!t.id) return t;
+    Image im = LoadImageFromTexture(t);
+    ImageFlipVertical(&im);
+    Texture2D f = LoadTextureFromImage(im);
+    UnloadImage(im);
+    SetTextureFilter(f, TEXTURE_FILTER_BILINEAR);
+    return flipped[png] = f;
+}
+
+// EnergyBarEntity 0x5e8620: the HUD.Flag cloth at HUD.Energy.FlagXScale / FlagYScale 2.2 (HUD units, 480 high = 1.5 px), the flag's TGA on it, clip Go looped;
+// c = its centre in screen pixels (the HUD draws on the 1280 x 720 target)
+static bool hudFlag(const std::string &png, Vector2 c) {
+    Texture2D ft = flagTex(png);
+    if (!Models::has("hud_flag") || !ft.id) return false;
+    Camera3D cam = {{640, -360, 10}, {640, -360, 0}, {0, 1, 0}, 720, CAMERA_ORTHOGRAPHIC};
+    glClear(0x100);
+    BeginMode3D(cam);
+    Models::texture(&ft);
+    Models::draw("hud_flag", MatrixMultiply(MatrixScale(3.3f, 3.3f, 3.3f), MatrixTranslate(c.x, -c.y, 0)), WHITE, "Go", fmodf((float)GetTime(), 1.5f), true);
+    Models::texture(nullptr);
+    EndMode3D();
+    return true;
+}
+
 // WXFE_GradientColours: top -> bottom (docs/w4m/frontend.md "Text colours")
 static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 255}}, GC_LIST_LABLE_BLUE[2] = {{151, 207, 255, 255}, {233, 255, 255, 255}},
                    GC_SUBHEADER_BLUE[2] = {{128, 210, 255, 255}, {255, 255, 255, 255}}, GC_BOOK_BROWN[2] = {{93, 51, 0, 200}, {93, 51, 0, 200}},
@@ -2755,9 +2784,9 @@ void Frontend::pickDraw() {
     const std::string cur = pop.row < (int)pop.vals.size() ? pop.vals[pop.row] : "";
     const Catalog &cat = catalog();
     if (outfit && since >= 0.225f) {  // Attachment (In_ScaleHitXY at 225 ms): WXD.CurrentAttachment at (0, 90) scale 6, moved / scaled / turned by the row's FrontEndOffsets (0x738e38); Nothing: (0, -30)
-        // gloves show their FrontEndMeshID (Gloves.<x>P), which w4m-models does not export: none here
-        if (const Catalog::Item *a = cur.empty() ? nullptr : cat.attachment(cur); a && a->type != 1)
-            feMesh(cat.drawName(cur), {-125 * feK + a->fePos[0], 90 + a->fePos[1], a->fePos[2]}, {6 * a->feScale[0], 6 * a->feScale[1], 6 * a->feScale[2]},
+        // gloves show their FrontEndMeshID (Gloves.<x>P), the others their worn mesh
+        if (const Catalog::Item *a = cur.empty() ? nullptr : cat.attachment(cur))
+            feMesh(a->type == 1 ? a->feModel.c_str() : cat.drawName(cur), {-125 * feK + a->fePos[0], 90 + a->fePos[1], a->fePos[2]}, {6 * a->feScale[0], 6 * a->feScale[1], 6 * a->feScale[2]},
                    {a->feRot[0], a->feRot[1], a->feRot[2]}, true, nullptr, 0);
     } else if (u == Pop::Grave) {  // Grave Mesh: WXD.CurrentMesh at (0, 22) scale 4, orientation (-0.29, -2.43, 0.2); our grave models are in metres (W4M units x 0.05)
         size_t g = (size_t)atoi(cur.c_str());
@@ -2767,11 +2796,12 @@ void Frontend::pickDraw() {
         for (const WeaponDef &d : cat.stock) if (d.name == cur) w = &d;
         for (const WeaponDef &d : customs) if (!w && d.name == cur) w = &d;
         if (w && !w->graphic.empty() && since >= 0.225f) feWeapon(w->graphic, {-125 * feK, 35, 0}, 3, {0.2f, -0.6f, 0});
-    } else if (u == Pop::Flag) {  // Flag Mesh: WXFE_FlagObject (the HUD.Flag cloth) at (19, 59) 70 x 40; ours shows the flag picture there [the HUD.Flag mesh is not exported]
+    } else if (u == Pop::Flag) {  // Flag Mesh: WXFE_FlagObject at (19, 59), orientation (0.35, -0.2, -0.1), FlagScale (9, 8, 8): the HUD.Flag cloth, clip Go looped, the flag's TGA on it
         if (const Catalog::Item *f = cat.flag(cur)) {
-            Vector2 p = {c.x + 19 * FE_S, c.y - 59 * FE_S};
-            Tilt tl(p, -0.1f);
-            image(f->model, {p.x - 56 * FE_S, p.y - 40 * FE_S, 112 * FE_S, 80 * FE_S});
+            Texture2D ft = flagTex(f->model);
+            Models::texture(&ft);
+            feMesh("hud_flag", {-125 * feK + 19, 59, 0}, {9, 8, 8}, {0.35f, -0.2f, -0.1f}, false, "Go", fmodf((float)GetTime(), 1.5f) * FE_ANIM_SPEED);
+            Models::texture(nullptr);
         }
     }
 }
@@ -4189,7 +4219,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float y = 646 - (g.teams - 1 - t) * 38.0f;
         text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, teamTextColor(g, t), 2);
         const Catalog::Item *flag = t < (int)g.cfg.teamSetup.size() ? catalog().flag(g.cfg.teamSetup[t].flag) : nullptr;  // HUD.Energy.Flag*: the team's FlagGfxName
-        if (!flag || !image(flag->model.c_str(), {584, y - 4, 32, 32})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, teamColor(g, t));
+        if (!flag || !hudFlag(flag->model, {606, y + 12})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, teamColor(g, t));
         healthBar(g.alliance(t) & 3, 628, y, 240, 24, Clamp(hp / maxHp, 0, 1));
     }
     // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)

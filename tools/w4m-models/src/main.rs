@@ -65,6 +65,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("hold_scouser", "Scouser", 0.0, false, &["Rest", "DrawScouser", "FireScouser", "HoldScouser", "TauntScouser"]),
     ("hold_sentry", "SentryGun", 0.0, false, &["Rest", "DrawSentrygun", "FireSentrygun", "HoldSentrygun", "TauntSentrygun"]),
     ("hold_flag", "SurrenderFlag", 0.0, false, &["Rest", "DrawSurrender", "HoldSurrender", "TauntSurrender"]),
+    ("hud_flag", "HUD.Flag", 0.0, false, &["Go"]),  // HUD.Flag cloth (EnergyBarEntity 0x5e8620, WXFE_FlagObjectEntity 0x76fdb4), looping clip "Go" (0x861f20)
     ("hold_jetpack", "Jetpack", 0.0, false, &["Rest", "JetpackRotLR"]),  // WAE_Jetpack 0x58cd74: at WXWorm.JetpackLR + 1
     ("hold_chute", "Worm.Chute", 0.0, false, &["ParachuteWobble", "FireParachute", "ParachuteLR"]),  // WAE_Parachute 0x58f180
     ("crate_chute", "Crate.Chute", 0.0, false, &["Open", "Fall", "Close"]),
@@ -969,14 +970,14 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     }
     // "A <clip> <primitive> <length s> <alpha at 60 fps>": key 0x3000200 on "<shape>_<shader>" is the alpha of the shape's
     // XConstColorSet (AnimInstance 0x7ad37f: flag 2 -> XShape Geometry -> ColorSet, field 0), which the Col CG programs multiply in;
-    // only a blended shape shows it (GL blend is off unless its shader has an XBlendModeGL, 0x793df0)
+    // only a blended shape shows it (GL blend is off unless its shader has an XBlendModeGL, 0x793df0); a blended shape without the key is "1"
     for (_, layers, cap) in chosen.iter().filter(|_| animated) {
         let Some(c) = layers.first() else { continue };
         for (pi, pt) in s.parts.iter().enumerate().filter(|(_, pt)| pt.blend.is_some()) {
             let shape = pt.group.map(|g| leaf(&s.groups[g].path)).unwrap_or_default();
-            let Some(kf) = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && (shape.is_empty() || leaf(n).starts_with(&format!("{shape}_")))).map(|(_, k)| k) else { continue };
+            let Some(kf) = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && (shape.is_empty() || leaf(n).starts_with(&format!("{shape}_")))).map(|(_, k)| k);
             let dur = c.dur.min(*cap);
-            sel += &format!("A {} {pi} {dur}{};", c.name, track(kf, dur));
+            sel += &format!("A {} {pi} {dur}{};", c.name, kf.map_or(" 1".to_string(), |kf| track(kf, dur)));  // no alpha key: still blended, at alpha 1
         }
     }
     let texs: Vec<String> = (0..images.len()).map(|i| format!("{{\"source\":{i}}}")).collect();
@@ -1168,6 +1169,7 @@ fn main() {
     for l in fs::read_to_string(out.join("../attachments.txt")).unwrap_or_default().lines() {
         let f: Vec<&str> = l.split('\t').collect();
         if f.len() > 3 && f[0] != "0" && f[0] != "4" { todo.push((f[2].to_string(), f[3].to_string(), 0.0, false, if f[0] == "1" { &["Rest"][..] } else { &[][..] })); }  // hats: MODELS; gloves skinned, on the worm's bones
+        if f.len() > 14 && !f[13].is_empty() { todo.push((f[13].to_string(), f[14].to_string(), 0.0, false, &[][..])); }  // gloves' FrontEndMeshID (Gloves.<x>P), the picker preview
     }
     for l in fs::read_to_string(out.join("../graves.txt")).unwrap_or_default().lines() {
         let f: Vec<&str> = l.split('\t').collect();

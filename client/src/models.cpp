@@ -903,6 +903,7 @@ static void select(Entry &e, const char *clip, float t, bool loop, const char *a
     }
 }
 
+static const Texture2D *overTex = nullptr;
 static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // part: 0 all, 1 opaque only, 2 blended (keyed shapes, glow) only
     Model &m = e.m;
     Shader keep = m.materials[0].shader;
@@ -920,6 +921,8 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
             if (std::find(e.glow.begin(), e.glow.end(), mi) != e.glow.end()) continue;
             Material mat = m.materials[mi];
             Color c = mat.maps[MATERIAL_MAP_DIFFUSE].color;
+            Texture2D keepTex = mat.maps[MATERIAL_MAP_DIFFUSE].texture;
+            if (overTex) mat.maps[MATERIAL_MAP_DIFFUSE].texture = *overTex;
             float a = i < (int)e.alpha.size() ? e.alpha[i] : 1;
             mat.maps[MATERIAL_MAP_DIFFUSE].color = {(unsigned char)(c.r * tint.r / 255), (unsigned char)(c.g * tint.g / 255), (unsigned char)(c.b * tint.b / 255), (unsigned char)(c.a * tint.a / 255 * a)};
             if (mat.shader.locs && mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS] != -1 && m.boneMatrices) {
@@ -929,6 +932,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
             if (matLoc >= 0 && i < (int)e.mat.size()) SetShaderValueV(mat.shader, matLoc, e.mat[i].data(), SHADER_UNIFORM_VEC4, 4);
             DrawMesh(m.meshes[i], mat, xf);
             mat.maps[MATERIAL_MAP_DIFFUSE].color = c;  // maps is shared with the model's material
+            mat.maps[MATERIAL_MAP_DIFFUSE].texture = keepTex;
         }
     }
     if (anyKeyed && part != 1) {
@@ -1051,6 +1055,7 @@ static Entry::Slot &slotFor(Entry &e, const ModelAnimation *a, int f, const Mode
     return s;
 }
 
+void Models::texture(const Texture2D *t) { overTex = t; }
 static const char *gloveName = nullptr;
 void Models::gloves(const char *name) { gloveName = name; }
 
