@@ -20,7 +20,7 @@ extern const char *MVS;  // the model vertex shader: other passes reuse it so th
 Shader shader(const char *vs, const char *fs, bool lit = true, bool es3 = false);
 // Textured, alpha-tested, two-sided lambert + rim. worm: W4M's fixed worm light, else the map light.
 Shader modelShader(bool worm);
-// FrontendMeshLight (FrontEndService 0x729662, WXFE.* TWEAK.XOM): the menu meshes' shader, drawn from the FE camera at (0, 0, 903.5); lit = the mesh item's Lighting flag
+// FrontendMeshLight (FrontEndService 0x729662, WXFE.* TWEAK.XOM): the menu meshes' shader, drawn from the FE camera at (0, 0, 900); lit = the mesh item's Lighting flag
 Shader frontendShader(bool lit);
 // WX.Mesh.BlueDivide's own light (FrontEndService 0x729942): it travels (0, -0.75, -0.75), the opposite of the FE layers' light
 Shader divideShader();

@@ -133,7 +133,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
         for (int i = 0; i < 7; i++)
             if (out < 0 && since >= FW[i].delay && (!fired[i] || since >= firedAt[i] + FW[i].loop)) fired[i] = 1, firedAt[i] = since, Fx::start(FW[i].fx, {FW[i].x * 0.05f, FW[i].y * 0.05f, 0}, 0.05f);
         Fx::update(dt);
-        Camera3D cam = {{0, 0, 903.5f * 0.05f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
+        Camera3D cam = feCamera(900 * 0.05f);
         BeginMode3D(cam);
         Fx::draw(cam);
         EndMode3D();
@@ -143,11 +143,11 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
         const std::string tile = (pre ? std::string(TextFormat(tr("FETXT.Round", "Round %u"), (unsigned)r.round + 1)) : r.winString) + " ";
         for (const auto &c : SC) {
             if (!feItem(fePos(c.x, c.y), &IN_SLIDEX, c.delay, nullptr, since, out)) continue;
-            float px = c.size * FE_S * 0.85f, w = textWidth(tile.c_str(), px) * TEXT_X, shift = fmodf(floorf(t * 50) * c.speed * FE_S, w);
+            float px = c.size * FE_S * 0.85f, w = textWidth(tile.c_str(), px) * FE_EM, shift = fmodf(floorf(t * 50) * c.speed * FE_S, w);
             Vector2 o = fePos(c.x, c.y);
             rlPushMatrix(), rlTranslatef(o.x, o.y, 0), rlRotatef(-0.026f * RAD2DEG, 0, 0, 1);
             BeginScissorMode(0, (int)(o.y - px), 1280, (int)(2 * px));
-            for (float u = -1300 - shift; u < 1300; u += w) rlPushMatrix(), rlTranslatef(u, 0, 0), rlScalef(TEXT_X, 1, 1), textG(tile.c_str(), 0, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, BC_SCROLLTEXT), rlPopMatrix();
+            for (float u = -1300 - shift; u < 1300; u += w) rlPushMatrix(), rlTranslatef(u, 0, 0), rlScalef(FE_EM, FE_EM, 1), textG(tile.c_str(), 0, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, BC_SCROLLTEXT), rlPopMatrix();
             rlDrawRenderBatchActive();
             EndScissorMode();
             rlPopMatrix(), rlPopMatrix();
