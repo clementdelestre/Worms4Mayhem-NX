@@ -513,7 +513,7 @@ fn shape_name(x: &Xom, d: &[u8], mut p: usize) -> String {
 // blend: the shader's XBlendModeGL (SourceFactor, DestFactor: W4M BlendFactor enum), None = opaque
 // mat: its XMaterial Specular rgb, Emissive rgb, Fresnel rgb, FresnelPower, Power (FixedFunction.cg materialMatrix, 0x792594)
 // hand: a W4M hand shape (worm boggyhand_*, glove hand_*), whose geometry a glove swaps in (0x5a33a0)
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)>, mat: [f32; 11], sel: Option<usize>, hand: bool }
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)>, mat: [f32; 11], sel: Option<usize>, hand: bool, cset: usize, shape: String }
 #[derive(Default)]
 // alts: per XChildSelector ($animTexN), its children's XImages in child order (a clip keys the child index + 0.5)
 struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize, alts: Vec<(String, Vec<usize>)> }
@@ -647,7 +647,7 @@ impl Scene {
             mat[9] = f32le(d, 103);
             mat[10] = f32le(d, 99);
         }
-        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend, mat, sel: None, hand: name.starts_with("boggyhand_") || name.starts_with("hand_") });
+        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend, mat, sel: None, hand: name.starts_with("boggyhand_") || name.starts_with("hand_"), cset: cl, shape: name.to_string() });
     }
 
     // Local matrix of every group, with the clip's curves layered on Base (offsets for keys Base also has).
@@ -975,8 +975,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     for (_, layers, cap) in chosen.iter().filter(|_| animated) {
         let Some(c) = layers.first() else { continue };
         for (pi, pt) in s.parts.iter().enumerate().filter(|(_, pt)| pt.blend.is_some()) {
-            let shape = pt.group.map(|g| leaf(&s.groups[g].path)).unwrap_or_default();
-            let Some(kf) = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && (shape.is_empty() || leaf(n).starts_with(&format!("{shape}_")))).map(|(_, k)| k);
+            // shapes sharing one XConstColorSet share its animated alpha (SplashFirst / SplashSecond)
+            let kf = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && s.parts.iter().any(|q| q.shape == leaf(n) && q.cset == pt.cset)).map(|(_, k)| k);
             let dur = c.dur.min(*cap);
             sel += &format!("A {} {pi} {dur}{};", c.name, kf.map_or(" 1".to_string(), |kf| track(kf, dur)));  // no alpha key: still blended, at alpha 1
         }
