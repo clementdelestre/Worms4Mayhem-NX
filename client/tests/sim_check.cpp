@@ -3373,6 +3373,79 @@ static void checkGunObjects() {
     }
 }
 
+// W4M payload mask 0x3c37 (0x582200, 0x581dc0): payloads meet crates, drums, targets and sentries; 0x577da0 gives them the land's
+// response (DetonatesOnObjectImpact = OnLandImpact) about the collider's centre; sheep meet a drum like land (0x565080); bullets by mask
+static void checkObjectCollisions() {
+    Game g;
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    g.objects.clear();
+    const Vector3 P = {20, g.landTop() + 8, 20};  // a slab in clear air, top at P.y + 0.5
+    const float top = P.y + 0.5f;
+    auto fly = [&](Projectile s, int ticks, const std::function<bool()> &done) {
+        g.weldLand(P, {4, 0.5f, 4});  // whole again after the last blast
+        g.phase = Phase::Flying, g.timer = 6000;
+        s.touching = 0;
+        g.shots = {s};
+        g.events.clear();
+        for (int t = 0; t < ticks && !done(); t++) g.step(Input{});
+    };
+    auto boomAt = [&](Vector3 &at) {
+        for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom) return at = e.pos, true;
+        return false;
+    };
+    const int bazooka = weaponNamed("Bazooka");
+    const float bR = WEAPONS[bazooka].size;
+    {  // bazooka into a crate (10 units): detonates where the spheres touch
+        Object crate = {Object::Crate, {P.x, top + 2, P.z}, {0, 0, 0}, bazooka, -1, false, false};
+        crate.pinned = true;
+        g.objects = {crate};
+        Vector3 at;
+        fly({{P.x - 3, top + 2, P.z}, {20, 0, 0}, bazooka, 0, false, 1}, 60, [&] { return g.shots.empty(); });
+        assert(boomAt(at) && at.x > P.x - 0.5f - bR - 0.4f && at.x < P.x - 0.5f);
+    }
+    {  // bazooka into an oil drum (9 units, centred 9 over its base)
+        g.objects = {{Object::Barrel, {P.x, top, P.z}, {0, 0, 0}, -1, -1, false, false}};
+        Vector3 at;
+        fly({{P.x - 3, top + 0.45f, P.z}, {20, 0, 0}, bazooka, 0, false, 1}, 60, [&] { return g.shots.empty(); });
+        assert(boomAt(at) && at.x > P.x - 0.45f - bR - 0.4f && at.x < P.x - 0.45f);
+    }
+    {  // a grenade bounces off a sentry's 16-unit sphere, damped like on land
+        Object sentry = {Object::Sentry, {P.x, top + 0.55f, P.z}, {0, 0, 0}, weaponNamed("Sentry Gun"), -1, false, false, 1 - g.worms[g.current].team};
+        g.objects = {sentry};
+        g.weldLand(P, {4, 0.5f, 4});
+        const Vector3 c = Vector3Add(sentryBase(g.objects[0]), Vector3Scale(sentryUp(g.terrain, g.objects[0]), 0.8f));
+        const int gren = weaponNamed("Grenade");
+        fly({{c.x - 2, c.y, c.z}, {10, 0, 0}, gren, WEAPONS[gren].fuse, false, 1}, 30, [&] { return g.shots.empty() || g.shots[0].vel.x < 0; });
+        assert(g.shots.size() == 1 && g.shots[0].vel.x < 0 && g.shots[0].pos.x < c.x - 0.8f);
+    }
+    {  // a sheep meets a drum like a wall (0x564a30): it hops, never walks into it
+        g.objects = {{Object::Barrel, {P.x + 0.5f, top, P.z}, {0, 0, 0}, -1, -1, false, false}};
+        const int sheep = weaponNamed("Sheep");
+        const Vector3 dc = {P.x + 0.5f, top + 0.45f, P.z};
+        bool hop = false;
+        fly({{P.x - 2.5f, top + 0.35f, P.z}, {WEAPONS[sheep].speed, 0, 0}, sheep, WEAPONS[sheep].fuse, false, 1}, 120, [&] {
+            if (g.shots.empty()) return true;
+            const Projectile &s = g.shots[0];
+            assert(Vector3Distance(s.pos, dc) > 0.45f + WEAPONS[sheep].size - 0.01f);
+            hop = hop || (s.vel.y > 0 && s.pos.x > P.x - 1.5f);
+            return false;
+        });
+        assert(hop);
+    }
+    {  // bullets: the gun mask 0x1c3f stops on any crate; the sentry's 0x381b passes a health crate (4) and a target (0x20)
+        Worm shooter{};
+        shooter.alive = false;
+        const Ray r = {{P.x - 3, top + 2, P.z}, {1, 0, 0}};
+        for (int w : {-1, bazooka}) {
+            g.objects = {{Object::Crate, {P.x, top + 2, P.z}, {0, 0, 0}, w, -1, false, false}};
+            assert(g.gunRay(r, shooter, WEAPONS[weaponNamed("Shotgun")].size).obj == 0);
+            assert((g.gunRay(r, shooter, 0, -1, Game::SENTRY_SHOT_MASK).obj == 0) == (w >= 0));
+        }
+        g.objects = {{Object::Target, {P.x, top + 2, P.z}, {0, 0, 0}, -1, -1, false, false}};
+        assert(g.gunRay(r, shooter, 0).obj == 0 && g.gunRay(r, shooter, 0, -1, Game::SENTRY_SHOT_MASK).obj == -1);
+    }
+}
+
 // W4M stdvs Initialise: SchemeData MineFactoryOn creates the factory at a random spot; each DoOncePerTurnFunctions counts it down.
 static void checkSchemeFactory() {
     GameConfig c{29, 2, 1, "", 0};
@@ -4925,6 +4998,7 @@ int main() {
     checkEmptyHand();
     checkSchemeFactory();
     checkGunObjects();
+    checkObjectCollisions();
     checkAbduction();
     checkSuperSheep();
     checkOldWoman();
