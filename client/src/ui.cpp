@@ -624,14 +624,15 @@ void unload() {
 }
 
 // c2: bottom colour of a vertical gradient over the line height (W4M menu items); edge: the outline (W4M Colour_Back);
-// pose: per drawn glyph (dy px, scale) of a W4M TextAnim
-static void textG(const char *t, float x, float y, float size, Color c, Color c2, int align, Color edge = {0, 0, 0, 255}, const std::vector<Vector2> *pose = nullptr) {
+// pose: per drawn glyph (dy px, scale) of a W4M TextAnim; fade: our own fade-in/out factor on every colour, the colours' own alpha stays the exe's
+static void textG(const char *t, float x, float y, float size, Color c, Color c2, int align, Color edge = {0, 0, 0, 255}, const std::vector<Vector2> *pose = nullptr, float fade = 1) {
+    c.a = (unsigned char)(c.a * fade), c2.a = (unsigned char)(c2.a * fade);
     float sp = fontLoaded ? 0 : size / 10;
     Vector2 m = MeasureTextEx(font, t, size, sp);
     Vector2 p = {roundf(x - m.x * align / 2), roundf(y)};
     float o = fmaxf(1.5f, size / 14);  // W4M text: black outline
     Color k = edge;
-    k.a = (unsigned char)(edge.a * c.a / 255);
+    k.a = (unsigned char)(edge.a * fade);
     // DrawTextEx() x6, but its linear glyph lookup and per-glyph batch checks run once per string
     struct G { float ox, oy; int g; };
     static std::vector<G> gs;
@@ -676,7 +677,11 @@ static void textG(const char *t, float x, float y, float size, Color c, Color c2
     rlSetTexture(0);
 }
 
-void text(const char *t, float x, float y, float size, Color c, int align) { textG(t, x, y, size, c, c, align); }
+void text(const char *t, float x, float y, float size, Color c, int align) {
+    float fade = c.a / 255.0f;
+    c.a = 255;
+    textG(t, x, y, size, c, c, align, BLACK, nullptr, fade);
+}
 
 float textWidth(const char *t, float size) { return MeasureTextEx(font, t, size, fontLoaded ? 0 : size / 10).x; }
 const Font &textFont() { return font; }
@@ -1003,9 +1008,9 @@ static void menuEntry(const char *label, float cx, float cy, float size, float d
         Rectangle b = {-w / 2 - size * 0.55f, -size * 0.8f, w + size * 1.1f, size * 1.55f};
         if (!image("fe/icon_splat", b, Fade(WHITE, glow * appear))) DrawRectangleRounded(b, 0.6f, 6, Fade(BLACK, 0.85f * glow * appear));
     }
-    Color top = Fade(ColorLerp(GOLD_TOP, WHITE, glow), appear), bot = Fade(ColorLerp(GOLD_BOT, WHITE, glow), appear);
+    Color top = ColorLerp(GOLD_TOP, WHITE, glow), bot = ColorLerp(GOLD_BOT, WHITE, glow);
     rlScalef(sx, 1, 1);
-    textG(label, 0, -size * 0.52f, size, top, bot, 1);
+    textG(label, 0, -size * 0.52f, size, top, bot, 1, BLACK, nullptr, appear);
     rlPopMatrix();
 }
 
@@ -1290,13 +1295,13 @@ static std::vector<std::string> feWrap(const std::string &s, float sizePx, float
     return lines;
 }
 // one feWrap() line at (x, y) top, its button pills drawn as glyphs
-static void feLine(const std::string &ln, float x, float y, float px, Color c0, Color c1, int align, Color e, const std::vector<Vector2> *pose = nullptr) {
-    if (ln.find('\x01') == std::string::npos) return textG(ln.c_str(), x, y, px, c0, c1, align, e, pose);
+static void feLine(const std::string &ln, float x, float y, float px, Color c0, Color c1, int align, Color e, const std::vector<Vector2> *pose = nullptr, float fade = 1) {
+    if (ln.find('\x01') == std::string::npos) return textG(ln.c_str(), x, y, px, c0, c1, align, e, pose, fade);
     float cx = x - feWidth(ln, px) * align / 2;
     for (size_t k = 0; k < ln.size();) {
         size_t a = ln.find('\x01', k), z = a == std::string::npos ? ln.size() : a;
         std::string run = ln.substr(k, z - k);
-        textG(run.c_str(), cx, y, px, c0, c1, 0, e), cx += textWidth(run.c_str(), px);
+        textG(run.c_str(), cx, y, px, c0, c1, 0, e, nullptr, fade), cx += textWidth(run.c_str(), px);
         if (a == std::string::npos) break;
         size_t q = ln.find('\x02', a);
         float h = feGlyphH(px);
@@ -1333,9 +1338,8 @@ static void feText(const std::string &text, const FeBox &b) {
         }
         Vector2 p = fePos(x, y);
         rlPushMatrix(), rlTranslatef(p.x, p.y, 0), rlScalef(FE_EM, a * FE_EM, 1), rlTranslatef(-p.x, -p.y, 0);
-        Color c0 = b.grad[0], c1 = b.grad[1], e = b.edge;
-        c0.a *= a, c1.a *= a, e.a *= a;
-        feLine(lines[i], p.x, p.y, px, c0, c1, align, e, b.anim ? &pose : nullptr);
+        Color c0 = b.grad[0], c1 = b.grad[1], e = b.edge;  // scroll fade a goes to feLine
+        feLine(lines[i], p.x, p.y, px, c0, c1, align, e, b.anim ? &pose : nullptr, a);
         rlPopMatrix();
     }
     rlPopMatrix();
