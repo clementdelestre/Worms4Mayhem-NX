@@ -2300,7 +2300,7 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
         auto pl = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
         if (pl != net->players.end()) line(pl->name.c_str(), 18, x0, d.x + d.width - 16, wy, GC_DISABLED, 0);
     }
-    DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, {cx - 107.5f, d.y + d.height + 24 - 290, 215, 290}, {}, 0, Fade(WHITE, 1 - fade));
+    DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, {cx - 107.5f, d.y + d.height + 4 - 290, 215, 290}, {}, 0, Fade(WHITE, 1 - fade));
     if (m.handicap) {  // the handicap's real effect (lib_SetupMultiplayerTeam) with W4M's plus / minus icon (HandicapAllies:0 / 1), plain text on the card
         const int e = handicapHealth(c.scheme.health, m.handicap) - c.scheme.health;
         const char *txt = TextFormat(tr(nullptr, "%+d health", "%+d points de vie"), e);
