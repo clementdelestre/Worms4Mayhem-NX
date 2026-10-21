@@ -1783,12 +1783,13 @@ int main(int argc, char **argv) {
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu
     Ui::forceHelp = uiShot && (!strcmp(uiShot, "help") || !strcmp(uiShot, "helpmenu"));
-    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strcmp(uiShot, "ready") || !strcmp(uiShot, "loading") || !strncmp(uiShot, "gameover", 8))) {
+    if (uiShot && (!strcmp(uiShot, "hud") || !strcmp(uiShot, "panel") || !strcmp(uiShot, "pause") || !strcmp(uiShot, "help") || !strncmp(uiShot, "ready", 5) || !strcmp(uiShot, "loading") || !strncmp(uiShot, "gameover", 8))) {
         GameConfig sc{1234, 2, 2, argc > 3 ? argv[3] : flagMap, 0u, {{"Red Rockets"}, {"Blue Bombers"}}};
         if (!strcmp(uiShot, "gameoverally"))  // teams 1 and 3 allied: the win under their alliance's name
             sc.teams = 3, sc.teamSetup.push_back({"Green Grubs"}), sc.teamSetup[0].alliance = sc.teamSetup[2].alliance = 0, sc.teamSetup[1].alliance = 1;
+        if (!strcmp(uiShot, "readycpu")) sc.teamSetup[0].cpu = sc.teamSetup[1].cpu = 1;  // a CPU team's turn: the same ready screen
         startMatch(sc);
-        if (strcmp(uiShot, "ready")) game.hotSeat = 0;  // every shot but "ready" skips the hot-seat pause
+        if (strncmp(uiShot, "ready", 5)) game.hotSeat = 0;  // every shot but "ready" skips the hot-seat pause
         for (size_t i = 0; argc > 4 && i < WEAPONS.size(); i++) if (WEAPONS[i].name == argv[4]) game.weapon = (int)i;  // --ui hud <map> <weapon>
         hud.open = !strcmp(uiShot, "panel");
         pause.open = !strcmp(uiShot, "pause");
@@ -2810,7 +2811,6 @@ int main(int argc, char **argv) {
             Ui::playbackBar(paused, speed, freeCam, tick * Game::DT, play.inputs.size() * Game::DT,
                             !end ? "" : play.checksum && game.checksum() != play.checksum ? "Replay out of sync (other game version?)" : "End of replay");
         } else if (irEnd >= 0) Ui::replayBadge();
-        if (remoteTurn) Ui::text("Remote player's turn", 640, 90, 24, WHITE, 1);
         if (online && !status.empty()) Ui::text(status.c_str(), 640, 120, 24, ORANGE, 1);
         Loading::overlay(dt);
         if (Ui::helpHeld()) Ui::controls(true);

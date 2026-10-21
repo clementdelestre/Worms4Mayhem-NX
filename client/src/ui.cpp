@@ -4005,6 +4005,8 @@ void hudEvent(const Game &g, const GameEvent &e) {
             announced[g.worms.size() + w.team] = 1;
             if (defaults) comment("TeamDeath", teamName(g.cfg, w.team).c_str());
         }
+    } else if (e.kind == GameEvent::TurnStart && e.worm >= 0) {  // CommentService GameLogic.Turn.Started (0x5e1e80): Comment.StartTurn.1-17, %s = the active worm, every turn
+        if (defaults) comment("StartTurn", wormName(g.cfg, g.worms[e.worm].team, g.wormSlot(e.worm)));
     } else if (e.kind == GameEvent::SuddenDeath) {  // StartSuddenDeath: Comment.SuddenDeath through the CommentService queue
         if (defaults) banners.push_back({tr("Comment.SuddenDeath", "SUDDEN DEATH!")});
     } else if (e.kind == GameEvent::CrateDrop && !g.objects.empty()) {
@@ -4139,7 +4141,7 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
 }
 
 // An open panel is always drawn: the ready screen yields to it.
-bool Hud::readyScreen(const Game &g, bool cinematic) const { return mine && g.phase == Phase::Aim && g.hotSeat > 0 && !cinematic && !open; }
+bool Hud::readyScreen(const Game &g, bool cinematic) const { return g.phase == Phase::Aim && g.hotSeat > 0 && !cinematic && !open; }
 
 // Payload.Input.FirePressed of a live Super Sheep (walk, take off, detonate): 0 none, 1 one still walking, 2 flying
 static int sheepFlight(const Game &g) {
@@ -4155,7 +4157,7 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
     bool turnStart = g.current != introWorm;
     if (turnStart) introWorm = g.current;
     bool cinematic = trackHp(g, turnStart, tick);
-    bool ready = readyNow = !scriptMovie(g).borders && readyScreen(g, cinematic);  // local human's hot seat: W4M full-screen ready pause (killed by the borders, 0x5ee275)
+    bool ready = readyNow = !scriptMovie(g).borders && readyScreen(g, cinematic);  // every turn's hot seat (local, CPU, remote): W4M HotSeatTimeGraphicEntity, spawned by Timer.StartHotSeatTimer for any worm (killed by the borders, 0x5ee275)
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
     Vector3 camUp = Vector3Normalize(Vector3CrossProduct(Vector3CrossProduct(fwd, cam.up), fwd));
     const Color TEXT3D_GREY = {200, 200, 200, 255};  // 0x5c4527, 0x563682
@@ -4251,7 +4253,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         const Color CREAM = {255, 244, 228, 255};
         text(wormName(g.cfg, cur.team, g.wormSlot(g.current)), 640, 64, 64, tc, 1);
         text(teamName(g.cfg, cur.team).c_str(), 640, 136, 38, CREAM, 1);
-        text("Ready?", 640, 560, 32, CREAM, 1);
+        text(tr("Text.Ready", "Ready?"), 640, 560, 32, CREAM, 1);  // HST_Ready: Text.Ready (0x5edf1a)
         text(TextFormat("%d", (g.hotSeat + 59) / 60), 640, 596, 110, tc, 1);
         return;
     }
