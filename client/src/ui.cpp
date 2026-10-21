@@ -379,6 +379,7 @@ std::string weaponIcon(const std::string &n) {
 
 // W4M WEAPTWK DisplayName: the language's Text.kWeapon* / Text.kUtility* text ("Super Airstrike" -> Bovine Blitz), else our name
 const char *weaponName(const WeaponDef &w) {
+    if (w.name.rfind("FETXT.", 0) == 0) return tr(w.name.c_str(), w.name.c_str());  // container Name is the DisplayName (0x599513)
     static const std::map<std::string, std::string> ALIAS = {{"TailNail", "NoMoreNails"}, {"FatkinsStrike", "Fatkins"}, {"InflatableScouser", "Scouser"}};
     std::string k;
     for (char c : w.name) if (c != ' ') k += c;
