@@ -1143,7 +1143,9 @@ static Rectangle feRect(float x, float y, float hw, float hh) { Vector2 c = fePo
 extern "C" void glClear(unsigned int mask);
 static const int FE_DIVIDE_LIGHT = 2;  // feMesh light: 0 none, 1 the item's Lighting (FrontendMeshLight), 2 the BlueDivide's
 static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, int light, const char *clip, float t) {
-    Camera3D cam = {{0, 0, 903.5f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
+    // the BlueDivide sits in bin 0x24, a HUD bin: the HUD camera (0, 0, 500), t 0.48 [disasm 0x51f740, 0x4d81e0]
+    const bool hudBin = light == FE_DIVIDE_LIGHT;
+    Camera3D cam = {{0, 0, hudBin ? 500.0f : 903.5f}, {0, 0, 0}, {0, 1, 0}, hudBin ? 2 * atanf(0.48f) * RAD2DEG : 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
     glClear(0x100);
     rlSetClipPlanes(5, 15000);
     BeginMode3D(cam);
