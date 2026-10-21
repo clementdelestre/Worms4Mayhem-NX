@@ -143,7 +143,17 @@ void Catalog::load(const char *dir) {
         }
     };
     *this = Catalog{};
-    rows("attachments.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 5) attachments.push_back({f[1], f[2], f[4], f.size() > 5 ? f[5] : "", atoi(f[0].c_str()), f.size() > 6 ? atoi(f[6].c_str()) : 2}); });
+    rows("attachments.txt", [&](const std::vector<std::string> &f) {
+        if (f.size() < 5) return;
+        Item a{f[1], f[2], f[4], f.size() > 5 ? f[5] : "", atoi(f[0].c_str()), f.size() > 6 ? atoi(f[6].c_str()) : 2};
+        if (f.size() >= 12) {
+            a.glasses = f[7] != "0", a.tash = f[8] != "0";
+            sscanf(f[9].c_str(), "%f %f %f", &a.fePos[0], &a.fePos[1], &a.fePos[2]);
+            sscanf(f[10].c_str(), "%f %f %f", &a.feRot[0], &a.feRot[1], &a.feRot[2]);
+            sscanf(f[11].c_str(), "%f %f %f", &a.feScale[0], &a.feScale[1], &a.feScale[2]);
+        }
+        attachments.push_back(a);
+    });
     rows("graves.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 3) graves.push_back({f[1], f[0], f[2]}); });
     rows("flags.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 3) flags.push_back({f[0], "flags/" + f[1], f[2]}); });
     rows("speech.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 2) speech.push_back({f[0], "", f[1]}); });

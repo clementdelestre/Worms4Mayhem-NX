@@ -110,10 +110,10 @@ private:
     struct Pop {
         enum Kind { None, Teams, Ask, Cpu, Name, Slot, Confirm, Pick } kind = None;
         enum Use { Insert, Mission, Online, Edit, Delete, Create, Soundbank, Head, Eyes, Face, Hands, Weapon, Flag, Grave, Quit, NoField } use = Insert;
-        int pad = -1, row = 0, slot = 0, arg = 0, skill = 0;
+        int pad = -1, row = 0, slot = 0, arg = 0, skill = 0, top = 0;  // top: Pick's first visible row
         std::vector<int> ids;            // Teams: barracks indexes, -1 the Create Team row
         std::vector<std::string> vals;   // Pick: the ids of its rows
-        std::string name, undo;          // Name: what is typed; Pick: the value to restore on B
+        std::string name;                // Name: what is typed
         bool typing = false, err = false;
         float t0 = 0;
     } pop;
@@ -122,9 +122,16 @@ private:
         SavedTeam t;
         Screen ret = MyWorms;
         Pop::Use after = Pop::Edit;      // after a create: Insert places the team, Mission / Online reopen their list
-        bool changed = false;
+        bool changed = false;            // W4M TM.Accept: Accept enabled, B asks first
         std::vector<std::string> unlocks;
+        float pageT = -100;              // the page's AddItem (0x7398ee): its In_ScaleY and In_Next start 200 ms later
+        bool pageSfx = false;
+        std::string anim = "Base";       // WXFE_WormDesc: WXD.WormAnim or one of its RandomAnims, from animT
+        float animT = 0, idleUntil = 0;
     } ed;
+    void pickDraw();
+    static int pickRows(Pop::Use u);
+    void editorWorm(const char *clip, float ct, bool loop, float slide);
     Action pending = None;
     std::string onlineTeam;          // the saved team this console brings to a room
     void teamSlot(Rectangle d, int k, float t);

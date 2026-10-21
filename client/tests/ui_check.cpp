@@ -286,6 +286,10 @@ int main() {
         assert(k.speech.size() == 30 && k.stockWeapons.size() == 7 && k.stockWeapons[0] == "FETXT.AFewProblems");
         assert(k.attachment("WXFE.A.Mustache.Cowboy") && k.attachment("WXFE.A.Mustache.Cowboy")->type == 3 && !strcmp(k.drawName("WXFE.A.Hat.Cowboy"), "cowboy"));
         assert(!strcmp(k.drawName("WXFE.A.Glasses.Star"), "glasses/star") && !k.drawName(""));
+        // the hat's Glasses / Tash bools and the Outfit preview's FrontEndOffsets
+        const Catalog::Item *suit = k.attachment("WXFE.A.Hat.Spacesuit"), *star = k.attachment("WXFE.A.Glasses.Star");
+        assert(suit && !suit->glasses && !suit->tash && k.attachment("WXFE.A.Hat.Afro")->glasses);
+        assert(star && star->fePos[0] == 7 && star->feRot[0] == -0.3f && star->feScale[1] == 1.5f);
     }
     puts("ui_check ok");
 }

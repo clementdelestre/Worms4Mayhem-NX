@@ -41,7 +41,14 @@ struct Barracks {
 
 // The editor's lists, W4M order. Item id: attachment / flag / speech id; model: assets/models path (attachments, graves) or ui png (flags)
 struct Catalog {
-    struct Item { std::string id, model, text, lock; int type = 0, state = 2; };  // lock / state: an attachment's Lock.* key and its default State (0 Hidden, 1 Purchasable, 2 Unlocked)
+    // lock / state: an attachment's Lock.* key and its default State (0 Hidden, 1 Purchasable, 2 Unlocked); glasses / tash: a hat lets them be worn;
+    // fePos / feRot / feScale: its FrontEndOffsets, the WXFEP.Outfit preview's placement
+    struct Item {
+        std::string id, model, text, lock;
+        int type = 0, state = 2;
+        bool glasses = true, tash = true;
+        float fePos[3] = {0, 0, 0}, feRot[3] = {0, 0, 0}, feScale[3] = {1, 1, 1};
+    };
     std::vector<Item> attachments;  // WORMATTACHMENTS: type 0 hat, 1 gloves, 2 glasses, 3 tash, 4 the Terminator hat
     std::vector<Item> graves;       // SelectGraveList, by GraveIndex (id = its Grave.* mesh)
     std::vector<Item> flags;        // SelectFlagList

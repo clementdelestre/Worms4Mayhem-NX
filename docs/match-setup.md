@@ -8,11 +8,13 @@ slots (`WXFEP.InsertTeam`), then `WXFEP.SelectLandscape2` (docs/w4m/frontend.md)
 ## Look [data + ours]
 - Frame of the 3 screens and the Salon (`setupBack` / `setupFront`, ui.cpp): `divide` + `watermark` + `titleControl` as every submenu (title `FETXTH.LOCALGAME` locally, `FETXTH.GameLobby` in a room,
   `FETXTH.NetworkPlay` in the Salon) [data: CreateAGame's AnimDivide$In_Curve, Scrolling 1-4, Title Control]; the panel slides in once, then the 3 steps of the match setup keep it [ours].
-  The strip carries the tooltip of the highlighted row (W4M copies `FETIP.*` into `FE.ToolTip`: `FETIP.InsertTeam`, `FETIP.Landscape2`, `FETIP.GameStyle`, `FETIP.Wormpot`) [data], NAV Prev
+  The strip carries the tooltip of the highlighted row (`FETIP.InsertTeam`, `FETIP.Landscape2`, `FETIP.GameStyle`, `FETIP.Wormpot`) [ours: W4M copies them into `FE.ToolTip`, which no PC Euro item shows; its
+  strip runs the default ticker], through W4M's ticker scroller (`marquee`: still when it fits, else sliding 0.5 FE per 20 ms after a 2 s wait, restarted on a new text) [disasm 0x76e1c1, 0x76df84], NAV Prev
   (back arrow) and NAV Start (the jar, Normal) at W4M's (264, -166) [data]. No button bar under the strip: the tooltip and NAV Prev / Start carry it, as W4M's ButtonHelp (Select / Back) [ours]. The 3 steps ("1 Équipes", "2 Terrain", "3 Règles", the current one `Button_Yellow`) sit at the top right [ours: CreateAGame is one screen].
 - Rows (`feRow` / `feBorder`): W4M's list rows, `fe/border_normal` (Border_Normal 6) / `border_highlight` (9) / `border_disabled` (7), RowHeight 42 [data]; the halves of the sprite's circle cap a stretched bar [assumed: how W4M cuts the border]. Label `List_Lable_Blue`, value `List_Data_Orange`, team names `TextBox_Yellow`, the
   highlight `Solid_Black` on the orange bar, `ERROR_RED` for a missing pad [data: WXFE.CreateAGameList columns, gradients]; no outline on the black highlight text [assumed: readability].
-  Arrows are `fe/textitem_arrows` halves around an editable value [data: Arrow_* of the list control; their colour assumed].
+  Arrows are `fe/textitem_arrows` halves around an editable value [data: Arrow_* of the list control; their colour assumed]. A value wider than the room the label leaves scrolls (`marquee`) [user-requested];
+  so do the map tiles' names (16 px) and the big picture's title on Terrain.
 - The label / value split of a row and the alternating tilt of the Rules rows [ours].
 
 ## State (`Lobby`, client/src/lobby.h) [ours]
@@ -89,7 +91,9 @@ Pixels of the 1280 x 720 screen. 4 player slots side by side (`Frontend::teamSlo
   The match is `Lobby::match()`: the playing slots in order, so the colours are the ranks [ours].
 - Slot content: "Manette N - <device>" (`padStyle`, with the `padDot` of the controller colour; "Manette N absente" in `ERROR_RED` when the pad of this console's human slot is gone) or the `FETXT.CPU1..5` text; the saved team's flag (`flags/<x>`)
   and name (`TextBox_Yellow`); its own live worm (`worm.glb`, clip `Base`, untinted, the team's hat / glasses / tash on `HatLocator`, one `RenderTexture` 256 x 346 per frame, turning slowly) 185 x 250 centred, overflowing the slot by 36 px below;
-  a black tag at the foot: the worm count, "Groupe N" when another slot shares the alliance, the handicap when set. A free slot: the A glyph (key cap on desktop) with "pour choisir une équipe".
+  a dark tag at the foot with W4M's filled-row icons (0x4be910): the worm count (`fe/teaminfo01 / 02`, x1..x6) and the handicap (`fe/teaminfo04` minus / blank / plus) [data], then "Groupe N" when another slot
+  shares the alliance [ours: W4M colours the name by alliance]. A free slot: the A glyph (key cap on desktop) with "pour choisir une équipe". A line wider than its room scrolls (W4M's TextScroller, `marquee`)
+  instead of shrinking [user-requested].
   `Frontend::setupTeams` uploads the pending models each frame (`Models::upload`): a plain launch (Switch) only uploads the menu assets at boot [ours]. The gloves are not drawn on the preview (their skinned model is the models agent's) [open].
 - Slot settings [W4M `WXFEP.TeamSettingsList`, docs/w4m/frontend.md]: title = the team's name; rows worms (1..`maxWorms`, wrapping, the match stays <= 16), allies group (1..4, `FETXT.AlliedColour`; the row text "1".."4" stands for the
   `WXFE.TeamInfo01:0..3` icons [assumed]), handicap (-1 / 0 / +1), Remove Team, Accept. Changes apply at once; in a room they go out with the team card. Allies and Handicap are always offered [the modes that hide them do not exist here].
@@ -106,13 +110,29 @@ Pixels of the 1280 x 720 screen. 4 player slots side by side (`Frontend::teamSlo
 ## Mes Worms and the team editor [W4M `WXFE.Customise`, `WXFE.TeamOptions`; docs/w4m/frontend.md "Saved teams"]
 - Mes Worms (`MyWorms`): three gold entries Créer une équipe / Éditer une équipe / Supprimer une équipe (`FETXT.CreateTeam / EditTeam / DeleteTeam`). Create runs the create flow above; Edit lists every team (CPU ones too, `FETXT.SelectTeamEdit`); Delete
   lists the teams but the last human one (`FETXT.SelectTeamDelete`) and asks `FETXT.ConfirmDeleteThis`. The CPU level is chosen at creation only; the editor has no controller row [data].
-- Editor (`TeamEdit`, `Frontend::editor`, the title `FETXTH.TeamDesign` [assumed], the divide and watermark of the submenus): the team's name (SUBHEADER Teamname) and its live worm on the left, a paper panel on the right with the page's rows [data: items of
-  `WXFE.TeamOptions`; the right-hand positions are ours], `n/3` and the page arrows at W4M's (60 / 124 / 190, -116). L / R (PgUp / PgDn) change page, up / down the row, ◀ ▶ change a value, A edits a worm name (page 1) or opens the row's list, `+` (NAV Start) accepts,
-  B cancels (asks `Abandonner les modifications ?` when something changed). It edits a copy; Accept writes the saved team and teams.txt.
-  Page 1: the 6 worm names. Page 2: Soundbank (`WXFEP.SelectSoundbank`: the banks we have, one row per bank; the rows W4M shares between banks show the plain `FETXT.SB.<bank>` name [assumed]), Test Speech (`FE.PlayRandomSpeech`: a random line of the
-  bank on team 0), Head / Eyes / Face / Hands (hat / glasses / tash / gloves, `Catalog::usable`: the Lock.* of attachments.txt apply). Page 3: Team Weapon (the stock Weapon Factory names and ours), Flag (`FETXT.Flag.*`, its picture below), Grave (`FETXT.Grave.*`).
-  Lists scroll, the row under the highlight shows live on the worm, B restores the old value. The worm plays `Salute` on the Flag row and `Pray` on the Grave row [data: the rows' Highlighted messages `WXD.WormAnim`]; `InspectHands` (Hands row) is not played.
-  The gloves are not drawn on the worm (skinned model: the models agent's) [open]. The grave has no preview [assumed: not needed].
+- Editor (`TeamEdit`, `Frontend::editor`, title `FETXTH.TeamDesign`) [data: MENUTWKX `WXFE.TeamOptions`, `TeamPage1..3`, docs/w4m/frontend.md "Team editor pages", "Team editor page items"]: the divide,
+  watermarks and Title Control of a submenu, TheWorm (`Frontend::editorWorm`: the team's worm through the FE camera, In_TitleUnderline at 300 ms, under Title Control and the team name) on W4M's Shadow,
+  SUBHEADER Teamname (SubHeader_Blue, MediumWobble, 23), the page, LABEL Page (`FETXT.Page<n>` + "/3", FeBox 50 x 20, AutoScale), BUTTON Prev / Next (`fe2/nav_arrowpage`, Disabled on the first / last page),
+  the strip with W4M's default ticker (the editor's FETIP is not shown: no PC Euro item shows `FE.ToolTip`), Cancel Edit (NAV Prev) and Accept Changes (NAV Tick, Disabled until something changed: `TM.Accept`).
+  FE positions spread (fePos) except the left items (FeFlat), sizes in FE units [docs/w4m/frontend.md "16:9 spread"]. TheWorm is placed (-115, -105, 100), scale 195, turned 0.9 rad [observed: the reference
+  shots; W4M's (-155, -60, 100) / 120 / 0.4 pass through a node chain not decoded]; it plays Base, the rows' `WXD.WormAnim` (Salute on Flag, Pray on Grave; `InspectHands` is no worm.glb clip) once, and
+  every 5..12 s one of its RandomAnims; glasses and tash only where the hat allows them (the hat's Glasses / Tash bools, attachments.txt columns 8 / 9; `drawTeamWorm`, also the Teams slots' preview).
+- Pages [data]: page 1: Paper Back, the "— Worms —" header, the six worm-name edit boxes (Border Edit / Highlight / Active while typing, TextEdit_Turquoise, centred, each tilted and staggered as W4M's);
+  page 2: the "Paramètres de dialogue" / "Paramètres des Worms" headers (`edHeader`: ListSubDivide dashes around the MediumWobble text), Soundbank (label scaled to fit, value full size [observed]),
+  Test Speech (+ IconSpeech), Head / Eyes / Face / Hands (`edRow`: label left, the PaddedLine leader, value right, the charcoal brush highlighted, Disabled_Grey when the hat forbids the row);
+  page 3: the three headers and one Border 6 / 9 button per value (weapon, flag, grave, TextBox_Yellow). The box outer sizes (page 1 220 x 39, page 3 214 x 29 FE) and the texts 5 FE inside a row are
+  [observed: the reference shots]. W4M's ScaleTextToFit shrinks a text to its W4M-sized column (kept mild by those sizes).
+- Input: L / R (PgUp / PgDn) change page (no wrap), up / down the row (skipping disabled rows), ◀ ▶ step Head / Eyes / Face (PrepareTeam$Hat+- / Glasses+- / Tash+-; Hands, Soundbank and page 3 have none),
+  A edits a worm name, plays Test Speech (`FE.PlayRandomSpeech`: a random line of the bank on team 0) or opens the row's picker, `+` accepts when something changed, B leaves at once, or asks
+  `Abandonner les modifications ?` when something changed. It edits a copy; Accept writes the saved team and teams.txt.
+- Page change (0x7398ee): the old page goes at once, the new one runs In_ScaleY after 200 ms (its rows In_SlideX on W4M's delays) and plays In_Next at 200 ms; entering the editor plays In_Controller [data].
+- Pickers (`Frontend::pickList` / `pickDraw`, Pop::Pick) [data: WXFEP.Outfit / SelectGrave / SelectFlag / SelectWeapon / SelectSoundbank]: the W4M bubble (`bubble`: Speech Popup.tga cut as WXFE_Border_Bubble,
+  the pointer at the row that opened it) at FE x -125 [observed], In_ScaleY, In_ScaleHitXY in, click3 out, the FullScreenColour dim, the title box, PopUpDivide, the scratches, the highlighted row's preview, and the
+  list (5 rows, the soundbank's 8, scrolled to keep the highlight, the ListNavigation arrows past either end) sorted by text byte-wise with the "nothing" row (`FETXT.Nothing`) first. Previews: the attachment
+  model (hat, glasses, tash) at (0, 90) x 6 moved by its FrontEndOffsets (attachments.txt columns 10..12), the grave model (graves/*.glb, metres x 80 = W4M's scale 4) at (0, 22) turned (-0.29, -2.43, 0.2),
+  the flag picture at the FlagObject's place. The highlight moves only the preview; A sets the field, B leaves it unchanged [data: Highlighted / Selected messages].
+- Open [not exported by w4m-models: the models agent's]: the gloves' FrontEndMeshID preview (`Gloves.<x>P`), the HUD.Flag cloth mesh (ours draws the flag picture), the Weapon Factory weapon mesh,
+  the grave picker's `WXP_FE_Ghost` particle. The gloves are not drawn on the worm in the editor (skinned model: the models agent's) [open].
 
 ## Team pickers [W4M `WXFEP.SelectTeam`, docs/w4m/frontend.md "Single player WXFEP.SelectTeam", "Online"]
 - Story and Challenges (Local menu): the human saved teams then "Créer une équipe" (no CPU question), title `FETXT.SelectStoryTeam` / `SelectChallengeTeam`; the pick sets `missionTeam` and goes to the book / list, whose progress is that team's (above).
