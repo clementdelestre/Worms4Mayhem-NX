@@ -56,6 +56,7 @@ struct WeaponDef {
     float poison = 0;  // hp lost per turn by worms caught in the blast (health crate cures)
     std::string model, icon;  // Weapon Factory: projectile model, icon weapon name (cosmetic, "" = default)
     bool userFuse = false;    // "user_fuse": the thrower picks 1..5 s (W4M grenade, cluster, banana), fuse = default
+    bool keepFx = false;      // "keep_fx_at_rest": the ArielFx runs on after the payload stops (W4M StopFxAtRest 0)
     bool restFuse = false;    // "rest_fuse": the fuse only burns once the shell has stopped (W4M Holy Hand Grenade)
     bool pins = false;        // "pins": a melee that nails its victim in the ground (W4M Tail Nail)
     bool fuseShown = false;   // "fuse_shown": W4M IsFuseDisplayed, the last 5 s float over the shot (0x57b1e0)
@@ -89,7 +90,7 @@ struct WeaponDef {
     int launch = -1, detonate[2] = {-1, 0}, fuseTime = -1;
     bool powersUp = true, cpoison = false;
     float maxPower = 0.5f, collision[2] = {1, 1};
-    // "cluster_model", "ariel" (W4M ArielFx, Weapon Factory only); clone: the WEAPTWK weapon the payload copies (0x598160), set by factoryPayload
+    // "cluster_model", "ariel" (W4M ArielFx, attached at the payload model's FxLocator), "keep_fx_at_rest" (StopFxAtRest 0); clone: the WEAPTWK weapon the payload copies (0x598160), set by factoryPayload
     std::string cmodel, ariel, clone;
     // "graphic": W4M WeaponGraphicsResourceID, "res,loc," per held mesh (0x5984a0); factoryPayload fills it for our editor's weapons
     std::string graphic;

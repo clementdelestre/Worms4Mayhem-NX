@@ -85,6 +85,7 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
             if (key == "ariel") w.ariel = sv;
             if (key == "graphic") w.graphic = sv;
             if (key == "pre_detonation_sfx") w.preSfx = sv;
+            if (key == "keep_fx_at_rest") w.keepFx = b;
             if (key == "powers_up") w.powersUp = b;
             if (key == "powered") w.powered = b;
             if (key == "cluster_poison") w.cpoison = b;
@@ -181,6 +182,7 @@ void factoryPayload(WeaponDef &w) {
     if (w.poison > 0) p.ariel = "WXP_ExplosionG_Tail";
     if (homing) p.ariel = "WXP_HomingMissileTrail";
     if (bomber) p.ariel = "";
+    p.keepFx = L == 3 && w.poison <= 0;  // StopFxAtRest: the Dynamite template 0 (Dropped), 1 for the others and for Poison (0x5998b4)
     for (int c = 0; c < 2 && !(c && bomber); c++) {
         const bool child = c || bomber;
         const FactoryTemplate &t = T[c];

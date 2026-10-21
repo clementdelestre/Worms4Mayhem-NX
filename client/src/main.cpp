@@ -1084,6 +1084,35 @@ static void levelFx(const Game &g) {
     }, g.cfg.mission && g.cfg.mission->rainProb >= 0 ? g.cfg.mission->rainProb : t.rainProb);
 }
 
+static const char *shotMesh(const Projectile &s, const WeaponDef &d, const std::string &n) {
+    return n == "Fatkins Strike" ? "fatkins" : n == "Poison Arrow" ? "arrow" : n == "Dynamite" ? "dynamite"
+           : n == "Gas Canister" ? "gas" : d.kind == Kind::SuperSheep ? "supersheep" : d.kind == Kind::OldWoman ? "oldwoman"
+           : d.kind == Kind::Homing ? "homing" : d.kind == Kind::Scouser ? "scouser"
+           : d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
+           : n == "Cluster Grenade" || (s.child && d.kind == Kind::Mine) ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? "banana"  // W4M bananettes reuse the BananaBomb mesh
+           : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
+}
+
+// A fused shell's model: a dropped stick stands, a thrown shell tumbles, both set down at rest
+static bool shellPose(const Projectile &s, const WeaponDef &d, const char *m, float clock, const Terrain &t, int now, Vector3 *at, float *yaw, float *pitch) {
+    const bool drop = dropped(d);
+    if (!drop && !(d.fuse > 0 && d.kind == Kind::Shell)) return false;
+    const Vector3 P = s.shown(now);
+    *at = drop || Vector3Length(s.vel) < 1 ? restOn(t, P, Models::bottom(m)) : P;
+    *yaw = drop ? 0 : clock * 6, *pitch = drop ? 0 : clock * 4;
+    return true;
+}
+
+// Where the ArielFx emitters sit: the payload model's FxLocator in the world (0x5c1470), else the payload itself
+static Vector3 arielAt(const Projectile &s, float clock, const Terrain &t, int now) {
+    const WeaponDef &d = WEAPONS[s.weapon];
+    const char *m = shotMesh(s, d, kindName(d));
+    Vector3 at = s.shown(now), fx{};
+    float yaw, pitch;
+    if (customWeapon(s.weapon) || d.ariel.empty() || !Models::fxLocator(m, &fx) || !shellPose(s, d, m, clock, t, now, &at, &yaw, &pitch)) return s.shown(now);
+    return Vector3Add(at, Vector3Transform(fx, MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw))));
+}
+
 static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now) {
     const Vector3 P = s.shown(now);
     const WeaponDef &d = WEAPONS[s.weapon];
@@ -1103,12 +1132,8 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0)
         return Models::draw("airstrike", P, atan2f(s.vel.x, s.vel.z), atan2f(s.vel.y, sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z)), WHITE, "Spin", clock);  // AnimTravel
     if (d.kind == Kind::Airstrike && d.fuse > 0 && drawBovine(s, clock)) return true;
-    const char *m = n == "Fatkins Strike" ? "fatkins" : n == "Poison Arrow" ? "arrow" : n == "Dynamite" ? "dynamite"
-                  : n == "Gas Canister" ? "gas" : d.kind == Kind::SuperSheep ? "supersheep" : d.kind == Kind::OldWoman ? "oldwoman"
-                  : d.kind == Kind::Homing ? "homing" : d.kind == Kind::Scouser ? "scouser"
-                  : d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
-                  : n == "Cluster Grenade" || (s.child && d.kind == Kind::Mine) ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? "banana"  // W4M bananettes reuse the BananaBomb mesh
-                  : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
+    const char *m = shotMesh(s, d, n);
+    float sy, sp;
     Vector3 v = d.stick > 0 && s.stage ? s.aim : s.vel;  // a stuck arrow keeps the heading it hit with
     float h = sqrtf(v.x * v.x + v.z * v.z), yaw = atan2f(v.x, v.z);
     if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, P, yaw, 0, WHITE, "Run", clock);
@@ -1117,8 +1142,7 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now
                             s.stage > 0 ? (msTicks(800) - s.stage) * Game::DT : clock, s.stage <= 0);
     if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, P, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
     if (d.kind == Kind::Scouser) return Models::draw(m, P, clock * 0.7f);
-    if (dropped(d)) return Models::draw(m, restOn(t, P, Models::bottom(m)), 0);  // set down standing, it doesn't tumble
-    if (d.fuse > 0 && d.kind == Kind::Shell) return Models::draw(m, Vector3Length(s.vel) < 1 ? restOn(t, P, Models::bottom(m)) : P, clock * 6, clock * 4);
+    if (Vector3 at; shellPose(s, d, m, clock, t, now, &at, &sy, &sp)) return Models::draw(m, at, sy, sp);
     if (d.stick > 0 && s.stage) return Models::draw(m, P, yaw, atan2f(v.y, h), WHITE, "Hit", d.stick - s.fuse, false);  // AnimImpact, played once on Payload.Impact
     return Models::draw(m, P, yaw, atan2f(v.y, h));
 }
@@ -2753,7 +2777,7 @@ int main(int argc, char **argv) {
         EndBlendMode(), rlEnableDepthMask();
         lap(T_MODELS);
                 float fxDt = pause.open ? 0 : dt;
-        for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt);
+        for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt, arielAt(s, clock, game.terrain, game.clock));
         sinkBubbles(game);
         drawBubbles(game, fxDt);
         drawFactory(game, fxDt);
