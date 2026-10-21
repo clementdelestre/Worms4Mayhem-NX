@@ -1445,7 +1445,7 @@ int main(int argc, char **argv) {
     bool intro = uiShot && !strcmp(uiShot, "intro");
     bool loadShot = uiShot && !strcmp(uiShot, "loading");
     if (uiFrames.empty() && loadShot) uiFrames = {20, 60, 120, 170};  // intro, intro, loading screen x2
-    if (uiFrames.empty()) uiFrames.push_back(uiShot && (!strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) || !strcmp(uiShot, "setupslot")) ? 34 : 10);
+    if (uiFrames.empty()) uiFrames.push_back(uiShot && (!strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) || !strcmp(uiShot, "setupslot") || !strcmp(uiShot, "setupcards")) ? 34 : 10);
     // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
     bool bench = argc > 2 && !strcmp(argv[1], "--bench");
     int benchFrames = bench && argc > 3 ? atoi(argv[3]) : 1200;
@@ -1779,7 +1779,7 @@ int main(int argc, char **argv) {
         pause.open = !strcmp(uiShot, "pause");
         if (!strncmp(uiShot, "gameover", 8)) game.phase = Phase::GameOver, game.winner = 0, onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
     } else if (uiShot) {
-        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strcmp(uiShot, "setupslot") || !strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) ? Ui::Frontend::SetupTeams
+        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strcmp(uiShot, "setupslot") || !strcmp(uiShot, "setupcards") || !strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) ? Ui::Frontend::SetupTeams
                      : !strcmp(uiShot, "setupmap") ? Ui::Frontend::SetupMap : !strcmp(uiShot, "setuprules") ? Ui::Frontend::SetupRules
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
         static const std::pair<const char *, Ui::Frontend::Screen> MENUS[] = {{"local", Ui::Frontend::Local}, {"network", Ui::Frontend::Network},
@@ -1990,6 +1990,7 @@ int main(int argc, char **argv) {
                 if (frame == 26 && foreign) Ui::Frontend::sim[0].card = 1;
                 if (frame == 28 && (foreign || !strcmp(uiShot, "setup3slot"))) Ui::Frontend::sim[0].ok = true;
             }
+            if (uiShot && !strcmp(uiShot, "setupcards")) Ui::Frontend::simPads = 3;  // setup.txt's teams as they are: pad 1 white, pad 2 a red / blue Joy-Con pair
             if (uiShot && !strcmp(uiShot, "setupslot")) {  // slot 1's settings (pad 1), on its alliance row
                 Ui::Frontend::simPads = 1;
                 if (frame == 4) Ui::Frontend::sim[0].ok = true;
