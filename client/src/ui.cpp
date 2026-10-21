@@ -4329,6 +4329,11 @@ static void drawHst(const std::string &worm, const std::string &team, Color tc, 
 static const float HU = 720 / 480.0f;
 // A HUD root entity's centre in px: HUDTWK position x 0x4d4cc0 (x 4/3, y 1 at 16:9), 480 units high, centre origin, y up [disasm 0x4d4cc0]
 static Vector2 hudAt(float x, float y) { return {640 + x * 4 / 3.0f * HU, 360 - y * HU}; }
+// [ours, user-requested] every corner element's outer rim sits HUD_EDGE px from the screen edge, rims measured on the drawn sprites (alpha > 20)
+static const float HUD_EDGE = 16, COMPASS_R = 88, WIND_L = 31.7f, DISC_R = 47.4f, DISC_T = 45.9f, PREVIEW_R = 58, CLOCK_R = 44.9f, CLOCK_B = 44.9f;
+static Vector2 discNudge() { const Vector2 r = hudAt(253, 174); return {1280 - HUD_EDGE - DISC_R - r.x, HUD_EDGE + DISC_T - r.y}; }  // weapon disc, secondary disc, preview
+static Vector2 clockNudge() { const Vector2 r = hudAt(254, -170); return {1280 - HUD_EDGE - CLOCK_R - r.x, 720 - HUD_EDGE - CLOCK_B - r.y}; }  // clock, counter
+static float previewDx() { return 1280 - HUD_EDGE - PREVIEW_R - hudAt(252, 0).x; }
 
 // HUD.WP.Anims clips {time, value, in tangent x, y, out tangent x, y}, played at speed 1 (0x6a0730)
 static const float K_INWP_X[2][6] = {{0, 350, 0.20422f, -661, 0.20422f, -661}, {0.4165f, 0, 1.1465f, 0, 1.1465f, 0}},
@@ -4645,9 +4650,9 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         }
         cw = g.weapon, cf = fuse;
     }
-    radar(g, {124, 112}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
+    radar(g, {HUD_EDGE + COMPASS_R, HUD_EDGE + COMPASS_R}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
     // W4M WindMeterEntity (docs/w4m/render.md): downwind arrow in the camera frame, tilted 0.75 rad; grey and fixed under 0.05
-    Vector2 wc = {58, 236};
+    Vector2 wc = {HUD_EDGE + WIND_L, HUD_EDGE + COMPASS_R + 124};  // 124 px under the compass centre
     float ratio = hypotf(g.wind, g.windZ);
     int speed = (int)(ratio * 10 + 0.5f);
     if (!sprite(g.cfg.scheme.wind ? "wind_back" : "wind_backdisabled", wc, 0.72f, {64, 64})) DrawCircleV(wc, 30, {0, 104, 138, 220});
@@ -4660,7 +4665,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     float dw = digits(TextFormat("%02d", speed), wc.x + 54, wc.y - 11, 22, 0, speed == 0);  // HUD.Wind.TextOffset / SpeedScale, x 1.84 px per unit
     digits("m", wc.x + 54 + dw, wc.y - 11 + 22 * 0.3f, 22 * 0.8f, 0, speed == 0);
     // ActiveWormHudInfoEntity (0x5d8320 init, 0x5d7bb0): HUD.WormInfoBack always, HUD.WeaponIcon only for a weapon; both half extent 44 (BackScale / WeapScale), no text
-    const Vector2 wp = hudAt(253, 174 - (300 - 174) * pipShow * (1 - pipFull));  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
+    const Vector2 wp = Vector2Add(hudAt(253, 174 - (300 - 174) * pipShow * (1 - pipFull)), discNudge());  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
     {
         const float hs = 44 * HU;
         Texture2D back = tex("hud/secondback");
@@ -4677,7 +4682,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     if (open || ready) secOut = -1;
     auto secondary = [&](int wi, float x, float y, float rz, float k) {
-        const Vector2 c = hudAt(220, 200);
+        const Vector2 c = Vector2Add(hudAt(220, 200), discNudge());
         rlPushMatrix();
         rlTranslatef(c.x + x * HU, c.y - y * HU, 0);
         rlRotatef(-rz * RAD2DEG, 0, 0, 1);
@@ -4713,7 +4718,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             clockW = fabsf(tw - clockW) >= 0.01f ? clockW * 0.75f + tw * 0.25f : tw;
         }
         clockF = frame;
-        const Vector2 c = hudAt(254, -170);
+        const Vector2 c = Vector2Add(hudAt(254, -170), clockNudge());
         rlPushMatrix();
         rlTranslatef(c.x, c.y, 0);
         rlRotatef(0.1f * RAD2DEG, 0, 0, 1);
@@ -4745,7 +4750,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         rlPopMatrix();
     }
     if (sh.counter) {  // CounterGraphicEntity 0x5e57c0: "%d" (+ "%" if Percent) on HUD.WindBacking x BackScale 30, TextScale 21, HUD.Counter.Position (222, -190)
-        const Vector2 cp = hudAt(222, -190);
+        const Vector2 cp = Vector2Add(hudAt(222, -190), clockNudge());
         const float hs = 30 * HU;
         Texture2D wb = tex("hud/wind_back");
         if (wb.id) DrawTexturePro(wb, {0, 0, (float)wb.width, (float)wb.height}, {cp.x - hs, cp.y - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
@@ -4816,7 +4821,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (open) cpv.on = false;
     else {
         const float f = tick * Game::DT / 0.02f;  // W4M updates on 20 ms frames
-        const float ty = hudAt(252, pipShow > 0 ? 0 : 88).y;  // Position / PositionPiP
+        const float ty = hudAt(252, pipShow > 0 ? 0 : 88).y + discNudge().y;  // Position / PositionPiP
         if (!cpv.on) cpv.on = true, cpv.since = tick, cpv.tick = (uint32_t)f, cpv.y = ty;
         int steps = std::clamp((int)f - (int)cpv.tick, 0, 50);
         cpv.tick = (uint32_t)f;
@@ -4839,7 +4844,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         const int n = (int)present.size();
         float age = (tick - cpv.since) * Game::DT;
         rlPushMatrix();
-        rlTranslatef(hudAt(252, 0).x, cpv.y, 0);
+        rlTranslatef(hudAt(252, 0).x + previewDx(), cpv.y, 0);
         if (n) {  // locator2: the bars (MiniBackResource, BarScale 8.8)
             hudNode(xanimKeys(K_PV_IN_X2, 2, age, true), xanimKeys(K_PV_IN_Y2, 2, age, true), xanimKeys(K_PV_IN_R2, 2, age, true));
             static const float A[5][4] = {{}, {-0.055f}, {-0.065f, 0.065f}, {-0.06f, 0.06f, -0.04f}, {-0.15f, 0, 0, 0.1f}},
@@ -4876,7 +4881,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         rlPopMatrix();
     }
     // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)
-    Vector2 pb = {22, 520};
+    Vector2 pb = {HUD_EDGE - 7 * 0.62f, 720 - HUD_EDGE - 60.6f - 70};  // rim: bar left texel 7, arc bottom 60.6 px below its pivot, pivot 70 px under the bar origin
     float ps = 0.62f, pf = Clamp(g.power, 0, 1), aimAt = cur.pitch;
     if (g.scout.t >= 0 && g.scout.ok) {  // W4M Binoculars state 3: the bar sweeps 2.7 s, converges by 4 s, then SetPowerBar / SetAimAngle
         float t = g.scout.t / 60.0f, k = Clamp((t - 2.7f) / 1.3f, 0, 1), sweep = 0.5f + 0.5f * sinf(t * 6);
@@ -4889,7 +4894,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         DrawRectangleRounded({pb.x, pb.y, 40, 120}, 0.3f, 4, {0, 0, 0, 150});
         DrawRectangleRounded({pb.x + 4, pb.y + 4 + 112 * (1 - pf), 32, 112 * pf}, 0.3f, 4, ColorLerp(YELLOW, RED, pf));
     }
-    Vector2 ap = {102, 590};  // arc pivot: flat edge centre
+    Vector2 ap = {pb.x + 80, pb.y + 70};  // arc pivot: flat edge centre
     float deg = -aimAt * RAD2DEG;
     if (sprite("angle_back", ap, 0.6f, {70, 130})) sprite("angle_head", ap, 0.55f, {16, 32}, deg);
     else {
