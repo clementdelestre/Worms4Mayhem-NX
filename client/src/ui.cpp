@@ -3611,8 +3611,13 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     if (x && g.phase == Phase::Settle && !g.countGroup.empty()) in.flags |= Input::SKIP_COUNT, reopen = true;  // observed in W4M by the user, 2026-10-03: the menu key stops the count
     if (x && counting >= 0) skipHp = true;
     if (!local || g.phase != Phase::Aim) {
-        open = false, pick = -1, swallow = true;
+        pick = -1, swallow = true;
         if (g.phase != Phase::Settle) reopen = false;
+        if (g.phase != Phase::Aim) viewOpen = false;
+        bool o = !local && viewOpen && viewSlot < (int)WEAPONS.size();  // W4M replays the active player's Input.Menu.* on every machine (docs/w4m/network.md)
+        if (o != open) Audio::play(o ? Audio::Sfx::FePopupIn : Audio::Sfx::FePopupOut);
+        else if (o && viewSlot != cursor) Audio::play(Audio::Sfx::FeHighlight);
+        open = o, cursor = o ? viewSlot : cursor;
         return;
     }
     if (reopen) reopen = false, x = !open;
@@ -4359,7 +4364,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float full = fmaxf(g.jetInit, 0.01f);  // Jetpack.InitFuel
         healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / full, 0, 1));
     }
-    if (open) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
+    if (open && mine) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
     else if (mine && !quiet && g.girderOn && g.phase == Phase::Aim)  // W4M HelpText.kUtilityGirder0: Movement, GirderRaise / Lower, Fire
         hints({{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}});
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0

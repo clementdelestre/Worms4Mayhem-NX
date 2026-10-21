@@ -51,6 +51,8 @@ lob=0
 if [ "${botargs[1]:-0}" != 0 ]; then
     grep -q "lobby shows the guest's edited team" "$W/a.log" && grep -q "lobby shows the host's rules" "$W/b.log" || { echo "LOBBY: live edits not seen"; lob=1; }
 fi
+pan=0
+for d in a b; do grep -q "sees the remote panel" "$W/$d.log" || { echo "PANEL: $d never saw the remote weapon panel"; pan=1; }; done
 tail -n 3 "$W/a.log" "$W/b.log"
-echo "exit a=$ea b=$eb checksums=$em lobby=$lob  logs: $W"
-[ $ea = 0 ] && [ $eb = 0 ] && [ $em = 0 ] && [ $lob = 0 ]
+echo "exit a=$ea b=$eb checksums=$em lobby=$lob panel=$pan  logs: $W"
+[ $ea = 0 ] && [ $eb = 0 ] && [ $em = 0 ] && [ $lob = 0 ] && [ $pan = 0 ]

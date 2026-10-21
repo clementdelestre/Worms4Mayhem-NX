@@ -83,11 +83,31 @@ bool Net::remoteInput(uint32_t tick, Input &outIn) {
     return true;
 }
 
+int Net::held(uint32_t tick) const {
+    int n = 0;
+    for (auto it = inbox.find(tick); it != inbox.end() && it->first == tick + n; ++it) n++;
+    return n;
+}
+
+void Net::sendPanel(uint32_t tick, bool open, int slot) {
+    int v = open << 8 | (open ? slot & 0xff : 0);
+    if (v == panelSent) return;
+    panelSent = v;
+    send(W(PANEL).u32(tick).u8(open).u8(v & 0xff).done());
+}
+
+bool Net::remotePanel(uint32_t tick, bool &open, int &slot) {
+    if (panels.empty() || panels.begin()->first > tick) return false;
+    open = panels.begin()->second >> 8, slot = panels.begin()->second & 0xff;
+    panels.erase(panels.begin());
+    return true;
+}
+
 void Net::send(std::string frame) { out += frame; }
 
 void Net::poll() {
     if (fd < 0) return;
-    if (!batch.empty() && ++batchAge >= 3) flushInputs();
+    if (!batch.empty()) flushInputs();  // every frame, like W4M's store pass 0x542f00; the receiver's playout delay absorbs the jitter
     if (connecting) {
         pollfd p = {fd, POLLOUT, 0};
         if (::poll(&p, 1, 0) <= 0) return;
@@ -174,13 +194,22 @@ void Net::handle(const uint8_t *p, size_t n) {
         cfg.scheme = getScheme(r);
         cfg.wormpot = r.ok && r.p < r.e ? r.u32() : 0;
         inbox.clear();
+        panels.clear();
         batch.clear();
+        panelSent = -1;
         replay = 0;
         events.push_back({Start});
         break;
     case INPUTS: {
         uint32_t first = r.u32();
         for (int i = 0, c = r.u8(); i < c && r.ok; i++) inbox[first + i] = r.input();
+        break;
+    }
+    case PANEL: {
+        uint32_t t = r.u32();
+        bool on = r.u8();
+        uint8_t slot = r.u8();
+        if (r.ok) panels[t] = on << 8 | slot;
         break;
     }
     case DESYNC: events.push_back({Desync, r.u32()}); break;
@@ -238,7 +267,6 @@ void Net::flushInputs() {
     for (const Input &i : batch) w.input(i);
     send(w.done());
     batch.clear();
-    batchAge = 0;
 }
 
 void Net::sendInput(uint32_t tick, const Input &i) {

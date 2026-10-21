@@ -73,6 +73,8 @@ async fn full_match() {
     let f = b.expect(INPUTS).await;
     assert_eq!(&f[..5], &[0, 0, 0, 0, 3]);
     assert_eq!(R(&b.expect(INPUTS).await).u32(), Some(3));
+    a.send(W::new(PANEL).u32(6).u8(1).u8(4)).await;
+    assert_eq!(b.expect(PANEL).await, [6, 0, 0, 0, 1, 4], "panel relayed, not logged");
     a.send(inputs(9, 1)).await; // gap
     a.expect(ERROR).await;
     assert_eq!(a.expect(START).await, sa, "rejected sender is resynced");

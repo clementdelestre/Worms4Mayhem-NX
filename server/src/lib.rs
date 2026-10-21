@@ -27,6 +27,7 @@ pub const INPUT_BYTES: usize = 6;
 pub const TURN_END: u8 = 0x22;
 pub const DESYNC: u8 = 0x23;
 pub const REPLAY: u8 = 0x24;
+pub const PANEL: u8 = 0x25;
 pub const CHAT: u8 = 0x30;
 pub const PING: u8 = 0x31;
 pub const PONG: u8 = 0x32;
@@ -280,6 +281,13 @@ impl State {
                 }
                 rm.log.extend(inputs);
                 self.broadcast(rid, &W::new(INPUTS).bytes(&buf[1..]).done(), Some(id));
+            }
+            PANEL => {
+                // view only: relayed, never logged
+                let rid = room?;
+                r.take(6)?;
+                self.rooms.get(&rid)?.start.as_ref()?;
+                self.broadcast(rid, &W::new(PANEL).bytes(&buf[1..7]).done(), Some(id));
             }
             TURN_END => {
                 let rid = room?;
