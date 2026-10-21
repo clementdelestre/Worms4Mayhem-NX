@@ -398,7 +398,12 @@ void Models::start() {
             files.push_back(p);
         }
         if (files.empty()) return;
-        auto rank = [](const std::string &p) { return menuFile(p) ? 0 : p.find("/worm.glb") != std::string::npos || p.find("/hats/") != std::string::npos ? 1 : 2; };  // the match setup shows worm and hats
+        // menu scene, then what the team pages show (worm, headgear, gloves, graves), the weapon graphics of the editor's picker, the rest
+        auto rank = [](const std::string &p) {
+            if (menuFile(p)) return 0;
+            for (const char *k : {"/worm.glb", "/hats/", "/gloves/", "/glasses/", "/tash/", "/graves/"}) if (p.find(k) != std::string::npos) return 1;
+            return p.find('/', sizeof MODEL_DIR) == std::string::npos ? 2 : 3;
+        };
         std::stable_sort(files.begin(), files.end(), [&](const std::string &a, const std::string &b) { return rank(a) < rank(b); });
         menuLeft = (int)std::count_if(files.begin(), files.end(), menuFile);
         startT = GetTime();
@@ -431,7 +436,9 @@ bool Models::upload(double until) {
         if (!busy) {
             std::lock_guard<std::mutex> l(mu);
             if (jobs.empty()) break;
-            cur = std::move(jobs.front()), jobs.pop_front(), busy = true;
+            auto it = std::find_if(jobs.begin(), jobs.end(), [](const Job &x) { return x.path.find("/worm.glb") != std::string::npos; });  // the team pages' previews wait for it
+            if (it == jobs.end()) it = jobs.begin();
+            cur = std::move(*it), jobs.erase(it), busy = true;
         }
         if (uploadStep(cur)) menuLeft -= menuFile(cur.path), add(cur), busy = false;
     }
