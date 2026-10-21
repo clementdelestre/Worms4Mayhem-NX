@@ -1535,7 +1535,7 @@ void Game::doPostActivity() {
         if (activeAlliances() > 1 || cfg.mission) {
             const Scheme &sc = cfg.scheme;
             if ((cfg.rules & RULE_SUDDEN_DEATH) && !suddenDeath && clock >= sc.roundTime * 3600) {  // CheckSuddenDeath: RoundTimeRemaining 0
-                suddenDeath = true;
+                suddenDeath = true, emit(GameEvent::SuddenDeath, {});  // StartSuddenDeath: Comment.SuddenDeath
                 if (sc.sdType == Scheme::SD_ONE_HP) for (Worm &x : worms) if (x.alive && x.hp > 1) x.hp = x.counted = 1;  // lib_SetAllWormsEnergy(1)
                 if (sc.sdType == Scheme::SD_DRAW) { phase = Phase::GameOver, winner = -1, emit(GameEvent::GameOver, {0, 0, 0}); return; }  // FCS.GameOver
             }

@@ -85,6 +85,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   `Game::clock` (sudden death) does not count hot-seat ticks.
 - **Sudden death** (rule 64): once `clock` reaches `roundTime` minutes, every worm drops to 1 hp (`SD_BOTH`, `SD_ONE_HP`), and with
   `SD_BOTH` / `SD_WATER` the water rises by `Water.RiseSpeed` (0 / 0.2 / 0.4 / 0.8 m) per turn end, with no ceiling (W4M `Water.Level += RiseSpeed`, stdvs CheckSuddenDeath, docs/w4m/turn.md; the Flood weapon adds `Flood.Delta` the same way, no ceiling).
+  Sudden death start emits `GameEvent::SuddenDeath`: the HUD queues the text `Comment.SuddenDeath` in the commentary banner (disasm/data, docs/w4m/turn.md StartSuddenDeath), gated by Commentary.NoDefault like the crate / death comments [ours: shown once, default delay 1200 ms]. All HUD messages go through that one queue, one box at a time; no other text sits at the top (the worm / team name shows only on the ready screen, W4M HotSeatTimeGraphicEntity, HUDTWK HST.*) [ours].
 
 ### Firing and the retreat
 

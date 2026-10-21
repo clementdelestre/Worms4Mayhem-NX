@@ -209,8 +209,7 @@ struct Hud {
 private:
     int cursor = 0, pick = -1;  // pick: sent until it lands
     bool swallow = true;  // a held A (weapon pick, menu START) must not fire
-    int introWorm = -1;       // turn-start name banner (CPU/remote): current worm and the tick it became current
-    uint32_t introStart = 0;
+    int introWorm = -1;       // the worm whose turn it is: a change is a turn start
     // W4M hp count: labels/bars show `shown`, which ticks toward the sim's counted hp (Settle: timed by the sim)
     struct HpTrack { int seen = 0; float shown = 0, from = 0; bool poison = false; };
     struct Popup { int worm, amount; float age, punch; bool poison, live; };  // big damage counter; age runs once its count ends

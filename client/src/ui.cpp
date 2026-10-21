@@ -4000,6 +4000,8 @@ void hudEvent(const Game &g, const GameEvent &e) {
             announced[g.worms.size() + w.team] = 1;
             if (defaults) comment("TeamDeath", teamName(g.cfg, w.team).c_str());
         }
+    } else if (e.kind == GameEvent::SuddenDeath) {  // StartSuddenDeath: Comment.SuddenDeath through the CommentService queue
+        if (defaults) banners.push_back({tr("Comment.SuddenDeath", "SUDDEN DEATH!")});
     } else if (e.kind == GameEvent::CrateDrop && !g.objects.empty()) {
         int wi = g.objects.back().weapon;
         Kind k = wi >= 0 && wi < (int)WEAPONS.size() ? WEAPONS[wi].kind : Kind::Shell;
@@ -4146,7 +4148,7 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
     menuPage = false;
     const Worm &cur = g.worms[g.current];
     bool turnStart = g.current != introWorm;
-    if (turnStart) introWorm = g.current, introStart = tick;  // turn changed: (re)start the name-banner clock
+    if (turnStart) introWorm = g.current;
     bool cinematic = trackHp(g, turnStart, tick);
     bool ready = readyNow = !scriptMovie(g).borders && readyScreen(g, cinematic);  // local human's hot seat: W4M full-screen ready pause (killed by the borders, 0x5ee275)
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
@@ -4248,10 +4250,6 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         text(TextFormat("%d", (g.hotSeat + 59) / 60), 640, 596, 110, tc, 1);
         return;
     }
-    // turn start banner: team/worm name, also briefly for CPU/remote turns that skip the ready screen above
-    if (tick - introStart < 90 || (aiming && g.timer > std::max(1, (int)g.cfg.scheme.turnTime) * 60 - 120))
-        text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(g.cfg, cur.team, g.wormSlot(g.current))), 640, 14, 28, tc, 1);
-    if (g.suddenDeath && banners.empty()) text("SUDDEN DEATH!", 640, 46, 26, GOLDEN, 1);  // crate drops: commentary banner
 
     radar(g, {124, 112}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
     // W4M WindMeterEntity (docs/w4m/render.md): downwind arrow in the camera frame, tilted 0.75 rad; grey and fixed under 0.05

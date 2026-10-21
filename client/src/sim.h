@@ -251,7 +251,7 @@ struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
                           Comment, CommentClear, Emitter, EmitterOff, Shake, Pop,
-                          Movie, Speech, MovieSound, MovieStart, MovieEnd } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
+                          Movie, Speech, MovieSound, MovieStart, MovieEnd, SuddenDeath } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;
     const char *fx = nullptr;  // Boom, Splash, Pop: the PARTTWK effect its W4M caller starts (render only)
