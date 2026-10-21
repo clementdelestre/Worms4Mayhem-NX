@@ -363,7 +363,7 @@ int voiceBankOf(const std::string &speech) {
 static std::string wireOf(const GameConfig::Team &t) { wire::W w(0); return putTeam(w, t).b; }
 
 std::string mapTitle(const std::string &m) {
-    if (m.empty()) return "Random island";
+    if (m.empty()) return tr("FETXT.Random", "Random island", "Aléatoire");  // W4M FETXT.Random, the random-landscape entry [assumed: the entry text of pass 0 not decoded]
     if (const std::string &t = mapInfo(m).title; !t.empty()) return tr(t.c_str(), m.c_str());
     std::string s, b = m;
     bool w3d = b.size() > 4 && lower(b.substr(b.size() - 4)) == "-w3d";
@@ -869,10 +869,13 @@ void controls(bool game) {
             e = lines.find('\n', s);
             if (e == std::string::npos) e = lines.size();
             std::string ln = lines.substr(s, e - s);
-            text(ln.c_str(), x, y, 22, WHITE, left ? 2 : 0);
-            if (keys && calls[i].key && y == calls[i].ly) {
-                float w = textWidth(ln.c_str(), 22) + 10;
-                glyphs(calls[i].key, left ? x - w - glyphs(calls[i].key, 0, 0, 24, true, false) : x + w, y - 1, 24, true);
+            const bool cap = keys && calls[i].key && y == calls[i].ly;
+            const float kw = cap ? glyphs(calls[i].key, 0, 0, 24, true, false) : 0, room = (left ? x : 1280 - x) - 16 - (cap ? kw + 10 : 0);
+            const float sz = fminf(22, 22 * room / textWidth(ln.c_str(), 22));  // a long label shrinks to stay on screen
+            text(ln.c_str(), x, y + (22 - sz) / 2, sz, WHITE, left ? 2 : 0);
+            if (cap) {
+                float w = textWidth(ln.c_str(), sz) + 10;
+                glyphs(calls[i].key, left ? x - w - kw : x + w, y - 1, 24, true);
             }
         }
     }
