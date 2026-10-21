@@ -23,6 +23,7 @@
 #include "results.h"
 #include "barracks.h"
 #include "xray.h"
+#include <unordered_map>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -1105,8 +1106,28 @@ static Vector3 arielAt(const Projectile &s, float clock, const Terrain &t, int n
     const char *m = shotMesh(s, d, kindName(d));
     Vector3 at = s.shown(now), fx{};
     float yaw, pitch;
-    if (customWeapon(s.weapon) || d.ariel.empty() || !Models::fxLocator(m, &fx) || !shellPose(s, d, m, clock, t, now, &at, &yaw, &pitch)) return s.shown(now);
+    if (customWeapon(s.weapon) || d.ariel.empty() || !Models::fxLocator(m, &fx)) return at;
+    if (d.kind == Kind::OldWoman) at.y -= 0.3f, yaw = atan2f(s.vel.x, s.vel.z), pitch = 0;  // as drawShot poses her
+    else if (!shellPose(s, d, m, clock, t, now, &at, &yaw, &pitch)) return s.shown(now);
     return Vector3Add(at, Vector3Transform(fx, MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw))));
+}
+
+// A thrown landmine is an Object here: its ArielFx (kWeaponLandmine WXP_MineThrowerTrails, StopFxAtRest 1) runs at the mesh's FxLocator while it moves
+static void mineAriel(const Game &g) {
+    static std::unordered_map<int, int> fx;  // object uid -> effect handle (-1: stopped at rest)
+    std::unordered_map<int, int> live;
+    for (const Object &o : g.objects) {
+        if (o.type != Object::Mine || o.uid < 0) continue;
+        int h = fx.count(o.uid) ? fx[o.uid] : 0;
+        Vector3 at = o.pos, loc{};
+        if (Models::fxLocator("mine", &loc)) at = Vector3Add(at, Vector3Transform(loc, MatrixRotateY((&o - g.objects.data()) * 1.3f)));  // drawObject's yaw
+        if (h > 0 && Vector3Length(o.vel) < 1) Fx::stop(h), h = -1;
+        if (!h && Vector3Length(o.vel) >= 1 && !o.sunk) h = Fx::start("WXP_MineThrowerTrails", at);
+        if (h > 0) Fx::place(h, at);
+        live[o.uid] = h;
+    }
+    for (auto &[uid, h] : fx) if (h > 0 && !live.count(uid)) Fx::stop(h);
+    fx.swap(live);
 }
 
 static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now) {
@@ -2778,6 +2799,7 @@ int main(int argc, char **argv) {
         lap(T_MODELS);
                 float fxDt = pause.open ? 0 : dt;
         for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt, arielAt(s, clock, game.terrain, game.clock));
+        if (!pause.open) mineAriel(game);
         sinkBubbles(game);
         drawBubbles(game, fxDt);
         drawFactory(game, fxDt);
