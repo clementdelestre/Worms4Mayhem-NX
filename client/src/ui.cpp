@@ -4445,6 +4445,57 @@ static void helpPanel(const HudPose &p, const WeaponDef *w, bool factory) {
     rlPopMatrix();
 }
 
+// HUD.Anims clips (Bundl09 `HUD Anims.xom`, w4m-models --list, W4M_KEYS=full): {time s, value, in tangent x, y, out tangent x, y}, weighted
+static const float K_TI_Y[2][6] = {{2.0820313f, -200.0f, 0.0025501251f, 1.8808594f, 0.12078857f, 593.5f}, {3.125f, 0.0f, 2.1542969f, 0.0f, 2.1542969f, 0.0f}}, K_TO_Y[2][6] = {{0.0f, 0.0f, 1.1474609f, 224.875f, 1.1474609f, 224.875f}, {0.4165039f, -200.0f, 0.0f, -76.1875f, 0.0019550323f, -0.9995117f}},
+                   K_PV_IN_X1[2][6] = {{0.0f, 130.0f, 0.625f, -130.0f, 0.625f, -130.0f}, {0.625f, 0.0f, 1.6220703f, 0.0f, 1.6220703f, 0.0f}}, K_PV_IN_R1[2][6] = {{0.0f, -0.17443848f, 0.625f, 0.17443848f, 0.625f, 0.17443848f}, {0.625f, 0.0f, 1.6220703f, 0.0f, 1.6220703f, 0.0f}},
+                   K_PV_IN_X2[2][6] = {{0.041656494f, 130.0f, 0.625f, -130.0f, 0.625f, -130.0f}, {0.6665039f, 0.0f, 1.6142578f, 0.0f, 1.6142578f, 0.0f}}, K_PV_IN_Y2[2][6] = {{0.041656494f, -10.0f, 0.625f, 10.0f, 0.625f, 10.0f}, {0.6665039f, 0.0f, 1.6142578f, 0.0f, 3.59375f, 0.0f}},
+                   K_PV_IN_R2[2][6] = {{0.041656494f, 0.17443848f, 0.625f, -0.17443848f, 0.625f, -0.17443848f}, {0.6665039f, 0.0f, 1.6142578f, 0.0f, 1.6142578f, 0.0f}}, K_PV_IN_X3[2][6] = {{0.08331299f, 120.0f, 0.625f, -120.0f, 0.625f, -120.0f}, {0.7080078f, 0.0f, 1.6142578f, 0.0f, 2.609375f, 0.0f}},
+                   K_SW_IN_X[2][6] = {{0.0f, 70.0f, 0.625f, -70.0f, 0.625f, -70.0f}, {0.625f, 0.0f, 1.2861328f, 0.0f, 2.2792969f, 0.0f}}, K_SW_IN_Y[2][6] = {{0.0f, 120.0f, 1.0f, 0.0f, 0.625f, -120.0f}, {0.625f, 0.0f, 1.2949219f, -0.8173828f, 2.0644531f, -1.3027344f}},
+                   K_SW_IN_R[2][6] = {{0.0f, -1.2216797f, 0.4970703f, 0.38134766f, 0.5463867f, 0.4194336f}, {0.625f, 0.0f, 1.2861328f, -0.016204834f, 1.9599609f, -0.024673462f}}, K_SW_OUT_S[2][6] = {{0.0f, 1.0f, 0.47094727f, 0.0f, 0.47094727f, 0.0f}, {0.25f, 0.0f, 0.20019531f, -1.5751953f, 0.20019531f, -1.5751953f}};
+
+// MiniBackResource 0x5f2600: the 8 x 5 cell strip of a compact team bar, 2w x 2h HUD units about its centre, y up; colour 0..3 = R B G Y rows of Health Preview.tga.
+// [ours: each cell's picture is a texel rect measured on that sheet and the empty part is drawn flat (the mesh UVs are not decoded)]
+static void miniBar(int colour, float w, float h, float frac, Color tint) {
+    Texture2D t = tex("hud/health_preview");
+    auto mul = [&](Color c) { return Color{(unsigned char)(c.r * tint.r / 255), (unsigned char)(c.g * tint.g / 255), (unsigned char)(c.b * tint.b / 255), 255}; };
+    float f3 = w * 2 - 2 - 3.5f, pct = Clamp(frac, 0, 1), fill = f3 * pct, rest = f3 - fill;
+    float c0 = 2, c1 = 1, c3 = 1, c4 = 3, c6 = 1, c5 = rest;
+    if (rest < 3) {
+        if (rest < 0) c5 = 0, fill = f3;
+        else c5 = 0.001f, c4 = rest;
+    }
+    float c2 = fill - 2;
+    if (c2 < 0) {
+        c2 = 0;
+        if (fill == 0) c3 = 0, c1 = 0;
+        c5 = (f3 - c3) - c1;
+    }
+    if (c5 == 0) c6 = 0, c4 = 0;
+    else {
+        if (c5 - c4 < 1) c6 = 0;
+        c5 = (c5 - c4) - c6;
+    }
+    const float cw[8] = {c0, c1, c2, c3, c4, c5, c6, 3.5f}, rh[5] = {2, 1, 2 * h - 9, 1.5f, 4.5f};
+    const float sy[6] = {0, 2, 3, 18, 20, 24};  // texel rows of the bar picture per band
+    const Color slate[5] = {BLACK, {118, 150, 180, 255}, {82, 120, 155, 255}, {68, 99, 128, 255}, {56, 81, 105, 255}};
+    float x = -w;
+    for (int c = 0; c < 8; c++) {
+        float y = h;
+        for (int r = 0; r < 5; r++) {
+            Rectangle dst = {x * HU, -y * HU, cw[c] * HU, rh[r] * HU};
+            bool pic = c < 5 || c == 7;
+            if (cw[c] > 0 && t.id && pic) {
+                static const float sx[8][2] = {{0, 2}, {2, 4}, {4, 70}, {70, 72}, {72, 74}, {0, 0}, {0, 0}, {74, 76}};
+                float k = t.width / 128.0f;
+                Rectangle src = {(50 + sx[c][0]) * k, (6 + colour * 30 + sy[r]) * k, (sx[c][1] - sx[c][0]) * k, (sy[r + 1] - sy[r]) * k};
+                DrawTexturePro(t, src, dst, {}, 0, tint);
+            } else if (cw[c] > 0) DrawRectangleRec(dst, mul(r == 4 && c == 6 ? slate[4] : slate[r]));
+            y -= rh[r];
+        }
+        x += cw[c];
+    }
+}
+
 void Hud::drawPanel(const Game &g, int secs) {
     double now = GetTime();
     if (open != panelShown) panelShown = open, panelSince = now;
@@ -4516,6 +4567,17 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
     const bool ready = readyNow;
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+    // EnergyBarManagerEntity 0x5ea830: Turn.Started clears the bars' show flag; EndTurn / ApplyDamage (Settle) and Worm.Damaged set it
+    if (g.clock < barsClock || hpLast.size() != g.worms.size()) {
+        barsWanted = false, hpLast.assign(g.worms.size(), 0);
+        for (size_t i = 0; i < hpLast.size(); i++) hpLast[i] = g.worms[i].hp;
+        hideBars(), cpv = {}, barsReady = false, barsPhase = g.phase;
+    }
+    barsClock = g.clock;
+    if (ready && !barsReady) barsWanted = false;
+    barsReady = ready;
+    if (g.phase != barsPhase) barsWanted |= g.phase == Phase::Settle, barsPhase = g.phase;
+    for (size_t i = 0; i < hpLast.size(); i++) barsWanted |= g.worms[i].hp < hpLast[i], hpLast[i] = g.worms[i].hp;
     syncSubs(g);
     if (!quiet) drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f), !ready), drawSubtitle(fminf((tick - bannerTick) * Game::DT, 0.1f));
     bannerTick = tick;
@@ -4529,6 +4591,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         hstOn = false;
     }
     if (borders) hstOutro = false;
+    if (ready || borders || g.phase == Phase::GameOver) hideBars();  // hot seat, EFMV.BordersActive, game over: BaseHudObject level 3, hidden at once
     if (borders) return;  // EFMV.BordersActive: every HUD object leaves (BaseHudObject 0x5daf31) [ours: at once]
     if (hstOutro) {  // HotSeatTimeRemaining < 1: HST.OutroAnimName, 0.208 s, over the HUD it leaves
         float age = (tick - hstTick) * Game::DT;
@@ -4574,14 +4637,34 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         text(weaponName(wd), wp.x - 54, wp.y - 10, 22, ammo ? WHITE : GRAY, 2);
     }
     if (wd.userFuse) text(TextFormat("%s %ds", tr("FETXT.Fuse", "Fuse", "Mèche"), (int)g.fuseOf(wd)), wp.x - 54, wp.y + 16, 22, GOLDEN, 2);  // d-pad up/down
-    if (g.secondary >= 0) {  // W4M SecondaryWeaponGraphicEntity 0x5f82f0: dynamite / landmine / sheep icon under the tool's
-        const WeaponDef &sd = WEAPONS[g.secondary];
-        int sa = g.stock(cur.team, g.secondary);
-        Vector2 sp2 = {wp.x, wp.y + 140};
-        if (!sprite("secondback", sp2, 0.34f, {128, 128})) DrawCircleV(sp2, 30, {0, 119, 155, 230});
-        if (!image(iconOf(sd), {sp2.x - 23, sp2.y - 23, 46, 46}, WHITE)) text(sd.name.substr(0, 4).c_str(), sp2.x, sp2.y - 10, 18, WHITE, 1);
-        digits(sa < 0 ? "~" : TextFormat("%d", sa), sp2.x, sp2.y + 30, 28, 1);
-        text(weaponName(sd), sp2.x - 40, sp2.y - 10, 20, WHITE, 2);
+    // SecondaryWeaponGraphicEntity 0x5f82f0 (no text): root (220, 200) HUD units x (4/3, 1) from the centre, i.e. (253 - 220, 174 - 200) from the ActWormInfo spot;
+    // HUD.SecondWeapon.Back half 25, HUD.SecondWeaponIcon half 20; In_WPreview while held, Out_MeleeHit when it goes [disasm + data]
+    if (g.secondary != secIcon) {
+        if (secIcon >= 0) secOut = secIcon, secOutSince = tick;
+        secIcon = g.secondary, secSince = tick;
+    }
+    if (open || ready) secOut = -1;
+    auto secondary = [&](int wi, float x, float y, float rz, float k) {
+        const Vector2 c = {1176 - (253 - 220) * 4 / 3.0f * HU, 92 - (200 - 174) * HU};
+        rlPushMatrix();
+        rlTranslatef(c.x + x * HU, c.y - y * HU, 0);
+        rlRotatef(-rz * RAD2DEG, 0, 0, 1);
+        rlScalef(k, k, 1);
+        Texture2D back = tex("hud/secondback");
+        if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {-25 * HU, -25 * HU, 50 * HU, 50 * HU}, {}, 0, WHITE);
+        else DrawCircleV({}, 25 * HU, {0, 119, 155, 230});
+        const WeaponDef &sd = WEAPONS[wi];
+        if (!image(iconOf(sd), {-20 * HU, -20 * HU, 40 * HU, 40 * HU}, WHITE)) text(sd.name.substr(0, 4).c_str(), 0, -9, 18, WHITE, 1);
+        rlPopMatrix();
+    };
+    if (!open && !ready && secOut >= 0) {
+        float t = (tick - secOutSince) * Game::DT;
+        if (t >= 0.25f) secOut = -1;
+        else secondary(secOut, 0, 0, 0, xanimKeys(K_SW_OUT_S, 2, t, true));
+    }
+    if (!open && !ready && g.secondary >= 0) {
+        float t = (tick - secSince) * Game::DT;
+        secondary(g.secondary, xanimKeys(K_SW_IN_X, 2, t, true), xanimKeys(K_SW_IN_Y, 2, t, true), xanimKeys(K_SW_IN_R, 2, t, true), 1);
     }
     // turn timer (bottom right): turn seconds, round clock below
     bool retreat = g.phase == Phase::Flying || g.phase == Phase::Retreat;  // W4M: the retreat clock runs from the launch
@@ -4610,32 +4693,126 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         text(v, cp.x, cp.y - 19, 39, {255, 178, 0, 255}, 1);  // HUD.Counter.TextColor
     }
     if (retreat || g.hotSeat) text(g.hotSeat ? "READY" : "RETREAT", tp.x, tp.y - 82, 22, GOLDEN, 1);
-    // team health (bottom centre, above the hints)
-    // W4M EnergyBarManagerEntity 0x5e9f10: HUD.Energy.MaxLength is the largest team total (Active worms' energy) at WormManager.Reinitialise
+    // team health: EnergyBarManagerEntity 0x5e9f10 / 0x5e97f0 / 0x5e9a00 (bottom centre) and HealthPreviewEntity 0x5ebe40 (top right)
     static float maxHp = 100;
     static int lastClock = -1;
-    if (g.clock < lastClock || lastClock < 0) {
+    std::vector<float> tot(std::max(g.teams, 1), 0.0f);  // Energy of the Active worms, a surrendered team 0
+    for (const Worm &w : g.worms) if (w.alive && w.team < g.teams && !(w.team < (int)g.surrendered.size() && g.surrendered[w.team])) tot[w.team] += std::max(0, w.hp);
+    if (g.clock < lastClock || lastClock < 0) {  // HUD.Energy.MaxLength is the largest team total at WormManager.Reinitialise
         std::vector<float> sum(g.teams, 0);
         for (const Worm &w : g.worms) if (w.alive && w.team < g.teams) sum[w.team] += w.hp;
         maxHp = sum.empty() ? 0 : *std::max_element(sum.begin(), sum.end());
         if (maxHp < 1) maxHp = 100;
+        for (int t = 0; t < 4; t++) bars[t].len = bars[t].target = t < g.teams ? Clamp(tot[t] / maxHp, 0, 1) : 0;
     }
     lastClock = g.clock;
-    for (int t = 0; t < g.teams; t++) {
-        float hp = 0;
-        for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].team == t) hp += hpt[i].shown;  // shrinks with the count
-        float y = 646 - (g.teams - 1 - t) * 38.0f;
+    const int nt = std::min(g.teams, 4);
+    auto sortBars = [&] {  // 0x5e97f0: strongest first (swap only when strictly less), the rows fill from the bottom
+        std::vector<int> perm;
+        int nz = 0;
+        for (int t = 0; t < nt; t++) perm.push_back(t), nz += tot[t] > 0;
+        std::stable_sort(perm.begin(), perm.end(), [&](int a, int b) { return tot[a] > tot[b]; });
+        for (int i = 0; i < nt; i++) barSlot[perm[i]] = i + (4 - nz);
+    };
+    bool allHidden = true;
+    for (int t = 0; t < nt; t++) allHidden &= bars[t].st == 0 || bars[t].st == 3;
+    if (barsWanted && allHidden) sortBars();
+    else if (g.clock < 2) sortBars();
+    for (int t = 0; t < nt; t++) bars[t].target = Clamp(tot[t] / maxHp, 0, 1);
+    for (int t = 0; t < nt; t++) {  // BaseHudObject 0x5dad00: level 1 In, 2 Out, 3 hidden at once; the bar is up while its team lives (+0x94)
+        Bar &b = bars[t];
+        bool want = barsWanted && b.target > 0 && !open;
+        if (open) b.st = 0;
+        else if (want) { if (b.st == 0 || b.st == 3) b.st = 1, b.since = tick; }
+        else if (b.st == 1 || b.st == 2) b.st = 3, b.since = tick;
+        float age = (tick - b.since) * Game::DT;
+        if (b.st == 1 && age >= 3.125f) b.st = 2;
+        if (b.st == 3 && age >= 0.4165f) b.st = 0;
+        if (b.st == 1) {  // 0x5e8450 runs while In_TeamInfo plays: the length drains 1.5 of its 61 units a 20 ms frame, a rise snaps
+            float d = b.len - b.target;
+            b.len = d < 0 || d < 0.3f / 61 || d < 1.5f / 61 ? b.target : b.len - 1.5f / 61 * (Game::DT / 0.02f);
+        }
+    }
+    for (int t = 0; t < nt; t++) {
+        const Bar &b = bars[t];
+        if (b.st == 0) continue;
+        float age = (tick - b.since) * Game::DT;
+        float slide = b.st == 1 ? xanimKeys(K_TI_Y, 2, age, true) : b.st == 3 ? xanimKeys(K_TO_Y, 2, age, true) : 0;
+        float y = 646 - (3 - barSlot[t]) * 38.0f - slide * HU;
         static unsigned lastBlink[4];  // EnergyBarEntity 0x5e8fa0: the active team's name blinks team colour / white, 250 ms each
         unsigned nowMs = (unsigned)(tick * Game::DT * 1000);
         bool white = false;
-        if (t == cur.team && t < 4) {
+        if (t == cur.team) {
             if (nowMs > lastBlink[t] + 500) lastBlink[t] = nowMs;
             white = nowMs > lastBlink[t] + 250;
-        } else if (t < 4) lastBlink[t] = nowMs;
+        } else lastBlink[t] = nowMs;
         text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, white ? WHITE : teamTextColor(g, t), 2);
         const Catalog::Item *flag = t < (int)g.cfg.teamSetup.size() ? catalog().flag(g.cfg.teamSetup[t].flag) : nullptr;  // HUD.Energy.Flag*: the team's FlagGfxName
         if (!flag || !hudFlag(flag->model, {606, y + 12})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, teamColor(g, t));
-        healthBar(g.alliance(t) & 3, 628, y, 240, 24, Clamp(hp / maxHp, 0, 1));
+        healthBar(g.alliance(t) & 3, 628, y, 240, 24, Clamp(b.len, 0, 1));
+    }
+    // HealthPreviewEntity: In_WHealthAll when the HUD shows; Position (252, 88) / PositionPiP (252, 0) x (4/3, 1) from the centre, beside ActWormInfo (253, 174) / (253, 300)
+    if (open) cpv.on = false;
+    else {
+        const float f = tick * Game::DT / 0.02f;  // W4M updates on 20 ms frames
+        const float ty = 92 + (174 - 88) * HU + (pipShow > 0 ? (300 - 174) * HU : 0);
+        if (!cpv.on) cpv.on = true, cpv.since = tick, cpv.tick = (uint32_t)f, cpv.y = ty;
+        int steps = std::clamp((int)f - (int)cpv.tick, 0, 50);
+        cpv.tick = (uint32_t)f;
+        cpv.y = ty + (cpv.y - ty) * powf(0.9f, Game::DT / 0.01f);  // 0x5ebbd0: HUD.HPreview.MoveSpeed 0.1 a 10 ms
+        if (g.current != cpv.worm) cpv.worm = g.current, cpv.flash = tick;  // Timer.StartTurn restarts the flashing
+        float mx = 0;
+        std::vector<int> present;
+        for (int t = 0; t < nt; t++) mx = std::max(mx, tot[t]);
+        cpv.maxSeen = std::max(cpv.maxSeen, mx);  // 0x5eb620: scaled to the largest total seen, 100 under 1
+        const float sc = 100 / (cpv.maxSeen < 1 ? 100 : cpv.maxSeen), hpNow = cur.alive ? (float)std::max(0, cur.hp) : 0;
+        auto ease = [](float &v, float to) { v = std::fabs(to - v) >= 0.01f ? to * 0.25f + v * 0.75f : to; };  // 0x5eb8e0, 0x5eb100
+        for (int i = 0; i < steps; i++) {
+            for (int t = 0; t < nt; t++) ease(cpv.team[t], tot[t] * sc);
+            ease(cpv.text, hpNow);
+        }
+        for (int i = 0; i < 4; i++) {  // the active team first, then the others in turn
+            int t = (cur.team + i) % 4;
+            if (t < nt && tot[t] > 0) present.push_back(t);
+        }
+        const int n = (int)present.size();
+        float age = (tick - cpv.since) * Game::DT;
+        rlPushMatrix();
+        rlTranslatef(1176 + (252 - 253) * 4 / 3.0f * HU, cpv.y, 0);
+        if (n) {  // locator2: the bars (MiniBackResource, BarScale 8.8)
+            hudNode(xanimKeys(K_PV_IN_X2, 2, age, true), xanimKeys(K_PV_IN_Y2, 2, age, true), xanimKeys(K_PV_IN_R2, 2, age, true));
+            static const float A[5][4] = {{}, {-0.055f}, {-0.065f, 0.065f}, {-0.06f, 0.06f, -0.04f}, {-0.15f, 0, 0, 0.1f}},
+                               B[5][4] = {{}, {-3}, {-3, 3}, {-3, -5, -1.5f}, {0, -3, 1.3f, 0.1f}};
+            const float w = 8.8f * 4 / n, step = w * 1.6f, x0 = step * 0.5f - step * n * 0.5f;
+            const bool flashing = !g.script && (tick - cpv.flash) * Game::DT < 100;
+            for (int k = 0; k < n; k++) {
+                int t = present[k];
+                float ph = fmodf((tick - cpv.flash) * Game::DT, 1.0f), c = ph < 0.5f ? 128 + 127 * ph / 0.5f : 255 - 128 * (ph - 0.5f) / 0.5f;  // 0x5ebe40: 0x80 .. 0xff .. 0x7f a second
+                unsigned char v = flashing && t == cur.team ? (unsigned char)c : 255;
+                hudNode(x0 + k * step, B[n][k], A[n][k]);
+                miniBar(g.alliance(t) & 3, w, 8.8f, cpv.team[t] / 100, {v, v, v, 255});
+                rlPopMatrix();
+            }
+            rlPopMatrix();
+        }
+        {  // locator1: the health in HUD.Font (TextScale 12.8), right edge at TextPosition (10, 20), shadow (0, 0, 0, 120) beside it
+            hudNode(xanimKeys(K_PV_IN_X1, 2, age, true), 0, xanimKeys(K_PV_IN_R1, 2, age, true));
+            int v = std::min(999, (int)cpv.text);
+            const char *str = v >= 100 ? TextFormat("%d", v) : TextFormat("%02d", v);  // 0x5eb100: a blank hundreds glyph under 100, tens always drawn
+            float h = 2 * 12.8f * HU;
+            digits(str, 10 * HU + 2 * HU, -20 * HU - h / 2 + 2 * HU, h, 2, false, {0, 0, 0, 120});
+            digits(str, 10 * HU, -20 * HU - h / 2, h, 2);
+            rlPopMatrix();
+        }
+        {  // locator3: HUD.HealthIcon, or HUD.HealthShield while the worm wears armour (0x5eaeb0), IconScale 14.4 half extent at IconPosition (25, 20)
+            hudNode(xanimKeys(K_PV_IN_X3, 2, age, true), 0);
+            Texture2D ic = tex(cur.armour ? "hud/health_shield" : "fe/health_icon");
+            float hs = 14.4f * HU;
+            if (ic.id) DrawTexturePro(ic, {0, 0, (float)ic.width, (float)ic.height}, {25 * HU - hs, -20 * HU - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
+            else DrawCircleV({25 * HU, -20 * HU}, hs, WHITE);
+            rlPopMatrix();
+        }
+        rlPopMatrix();
     }
     // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)
     Vector2 pb = {22, 520};

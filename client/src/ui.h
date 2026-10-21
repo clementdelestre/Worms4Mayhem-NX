@@ -230,6 +230,19 @@ private:
     float wait = 0, tickGap = 0;
     uint32_t hpTick = 0;
     int hpClock = 0;
+    // W4M EnergyBarManagerEntity 0x5ea830: the team bars show from EndTurn / ApplyDamage / Worm.Damaged until the next Turn.Started
+    struct Bar { uint8_t st = 0; uint32_t since = 0; float len = 0, target = 0; };  // st: 0 hidden, 1 In_TeamInfo, 2 shown, 3 Out_TeamInfo
+    Bar bars[4];
+    bool barsWanted = false, barsReady = false;
+    Phase barsPhase = Phase::Aim;
+    int barSlot[4] = {0, 1, 2, 3}, barsClock = -1;
+    std::vector<int> hpLast;
+    // HealthPreviewEntity 0x5ebe40: the compact team bars and the active worm's health at the top right
+    struct Preview { bool on = false; uint32_t since = 0, flash = 0, tick = 0; float team[4] = {}, text = 0, maxSeen = 0, y = 0; int worm = -1; } cpv;
+    // SecondaryWeaponGraphicEntity 0x5f82f0: In_WPreview while a secondary weapon is held, Out_MeleeHit when it goes
+    int secIcon = -1, secOut = -1;
+    uint32_t secSince = 0, secOutSince = 0;
+    void hideBars() { for (Bar &b : bars) b.st = 0; cpv.on = false; }
     bool readyNow = false;  // labels(): this frame's ready screen
     bool hstOn = false, hstOutro = false;  // HotSeatTimeGraphicEntity: showing / playing HST.OutroAnimName
     uint32_t hstTick = 0;                  // tick its intro or outro started
