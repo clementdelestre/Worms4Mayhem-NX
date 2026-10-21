@@ -112,6 +112,7 @@ extern const WeaponDef NO_WEAPON;  // Kind::None
 inline const WeaponDef &weaponDef(int k) { return k < 0 ? NO_WEAPON : WEAPONS[k]; }  // -1: the empty hand
 bool loadWeapons(const char *path);
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out);  // same JSON as weapons.json
+int factoryLaunch(const WeaponDef &w);  // W4M ProjectileLaunchType 0 Bomber, 1 Launched, 2 Thrown, 3 Dropped (0x598160)
 bool customWeapon(int i);  // the Weapon Factory slot (appended after the loaded table at start())
 bool saveCustomWeapons(const char *path, const std::vector<WeaponDef> &list);
 void factoryPayload(WeaponDef &w);  // W4M 0x5983f0: sliders -> crater, damage, impulse and DetonationFx of the payload and its clusters

@@ -140,7 +140,7 @@ static const char *const CLONE[] = {"Airstrike", "Bazooka", "Grenade", "Dynamite
 static const char *const TEMPLATE_GRAPHIC[] = {"Radio,,",
     "Factory.TankGunBody,TANK_body_locator,Factory.TankGunBarrel,TANK_barrel_root_locator,Factory.TankGunButt,TANK_butt_root_locator,Factory.TankGunSight,TANK_sight_root_locator,",
     "Factory.Proj.Grenade,,"};
-static int factoryLaunch(const WeaponDef &w) { return w.launch >= 0 ? w.launch : w.kind == Kind::Airstrike ? 0 : w.kind == Kind::Shell && w.fuse > 0 ? 2 : 1; }
+int factoryLaunch(const WeaponDef &w) { return w.launch >= 0 ? w.launch : w.kind == Kind::Airstrike ? 0 : w.kind == Kind::Shell && w.fuse > 0 ? 2 : 1; }
 
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out) {
     if (!parseWeapons(path, out)) return false;
