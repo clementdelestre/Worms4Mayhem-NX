@@ -70,6 +70,14 @@ impl<'a> R<'a> {
     }
 }
 
+/// A team record after its name and cpu (PROTOCOL.md Teams): six ids, grave, the worm names, worms, alliance, handicap.
+fn skip_team(r: &mut R) -> Option<()> {
+    for _ in 0..6 { r.str()?; }
+    r.u8()?;
+    for _ in 0..r.u8()? { r.str()?; }
+    r.take(3).map(|_| ())
+}
+
 type Tx = UnboundedSender<Vec<u8>>;
 
 struct Player {
@@ -218,7 +226,7 @@ impl State {
                 let rid = room?;
                 let n = r.u8()?;
                 let mut cpu = false;
-                for _ in 0..n { r.str()?; cpu |= r.u8()? > 0; r.u8()?; r.u8()?; }
+                for _ in 0..n { r.str()?; cpu |= r.u8()? > 0; skip_team(&mut r)?; }
                 if cpu && self.rooms[&rid].host != id { self.send(id, &error("only the host can add CPU teams")); return Some(()); }
                 self.players.get_mut(&id)?.teams = buf[1..].to_vec();
                 self.broadcast(rid, &W::new(TEAMS).u32(id).bytes(&buf[1..]).done(), Some(id));

@@ -130,7 +130,7 @@ bool LanHost::handle(uint32_t id, const uint8_t *p, size_t n) {
     case TEAMS: {
         int cnt = r.u8();
         bool cpu = false;
-        for (int i = 0; i < cnt && r.ok; i++) r.str(), cpu |= r.u8() > 0, r.u8(), r.u8();
+        for (int i = 0; i < cnt && r.ok; i++) cpu |= getTeam(r).cpu > 0;
         if (!r.ok || !in) return false;
         if (cpu && host != id) { send(id, error("only the host can add CPU teams")); break; }
         players[id].teams.assign((const char *)p + 1, n - 1);

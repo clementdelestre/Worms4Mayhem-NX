@@ -97,6 +97,34 @@ static void checkKing() {
     assert(g.worms[2].alive && g.worms[3].alive && g.phase == Phase::GameOver && g.winner == 1);
 }
 
+// W4M team slots: worms per team 1..6 (team-major), handicap energy (lib_SetupMultiplayerTeam), alliances' turn order (SelectNextWorm
+// 0x5b5630: alliance after alliance, each alliance's teams in turn) and the win (GetActiveAlliances 0x5b4030, GetSurvivingTeam 0x5b3d40)
+static void checkTeamSlots() {
+    GameConfig c{5, 3, 3, "", RULE_NO_DELAYS};
+    c.teamSetup.resize(3), c.teamSetup[0].worms = 1, c.teamSetup[1].worms = 5, c.teamSetup[2].worms = 2;
+    c.teamSetup[1].handicap = 1, c.teamSetup[2].handicap = -1, c.scheme.health = 100;
+    c.teamSetup[0].alliance = 0, c.teamSetup[1].alliance = 1, c.teamSetup[2].alliance = 0, c.allyToStart = 1;
+    Game g;
+    g.start(c), g.hotSeat = 0;
+    assert(g.worms.size() == 8 && g.teamFirst == std::vector<int>({0, 1, 6, 8}) && g.worms[5].team == 1 && g.worms[6].team == 2 && g.wormSlot(7) == 1);
+    assert(g.worms[0].hp == 100 && g.worms[1].hp == 125 && g.worms[7].hp == 75);
+    assert(handicapHealth(150, 1) == 200 && handicapHealth(200, -1) == 100 && handicapHealth(50, 1) == 75 && handicapHealth(125, 1) == 125);
+    std::vector<int> order = {g.worms[g.current].team}, ones = {g.current};
+    for (int i = 0; i < 5; i++) g.beginTurn(g.current), order.push_back(g.worms[g.current].team), i % 2 ? ones.push_back(g.current) : void();
+    assert(order[0] == 1 && order[2] == 1 && order[4] == 1 && order[1] != order[3] && order[1] == order[5] && order[1] != 1 && order[3] != 1);
+    assert(ones == std::vector<int>({1, 2, 3}));  // team 1's worms in turn
+    for (int k = 0; k < 5; k++) g.worms[g.teamFirst[1] + k].alive = false;  // the lone enemy alliance is gone: teams 0 and 2 win together
+    g.beginTurn(g.current);
+    assert(g.phase == Phase::GameOver && g.winner == 2);
+    GameConfig d{5, 4, 1, "", 0};  // no alliance set: each its own (AddTeam's lowest free group); random start from the seed, same every time
+    assert(d.alliance(0) == 0 && d.alliance(3) == 3);
+    d.teamSetup.resize(4), d.teamSetup[1].alliance = 0;
+    assert(d.alliance(1) == 0 && d.alliance(2) == 1 && d.alliance(3) == 2);
+    Game a, b;
+    a.start(d), b.start(d);
+    assert(a.current == b.current && a.allyStart == b.allyStart);
+}
+
 // Pause > Draw Round (GameLogic.DrawImmediately): the match ends at once with no winner
 static void checkDrawRound() {
     Game g;
@@ -4548,6 +4576,7 @@ static void checkPlacement() {
 }
 
 int main() {
+    checkTeamSlots();
     checkPlacementSolid();
     checkDetailRemoval();
     checkLandUV();

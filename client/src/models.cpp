@@ -115,7 +115,6 @@ void owners(Entry &e) {
         }
     }
 }
-std::vector<std::string> hatNames;
 Shader shader{};
 
 // Boot: the worker reads each .glb, decodes its textures and samples its clips; the main thread only uploads.
@@ -351,6 +350,8 @@ void add(Job &j) {
     owners(e);
     for (int i = 0; i < e.count; i++) if (!strcmp(e.anims[i].name, "Base")) e.base = &e.anims[i];
     std::string name = GetFileNameWithoutExt(j.path.c_str());
+    for (const char *d : {"/gloves/", "/glasses/", "/tash/", "/graves/"})  // their file names repeat other models' (graves/worm, tash/cowboy)
+        if (strstr(j.path.c_str(), d)) name = std::string(d + 1) + name;
     if (name == "ufo") e.glow = {2};  // BeamConeShape's noise image (raylib material 0 is the default)
     for (int i = 0; name == "worm" && i < e.m.meshCount; i++) {  // glb material 1: boggy*eye, whose shadercolor2 the Eyes clips key
         const Mesh &me = e.m.meshes[i];
@@ -381,11 +382,9 @@ void Models::start() {
     if (first) {
         for (std::string &p : Loading::list(MODEL_DIR, ".glb", true)) {  // recurses into hats/ and frontend/
             if (p.find("/sky/") != std::string::npos) continue;  // level skies: one per match, Models::decode()
-            if (p.find("/hats/") != std::string::npos && p.find("/jetpack.glb") == std::string::npos) hatNames.push_back(GetFileNameWithoutExt(p.c_str()));  // the jetpack helmet is no WXFE.A.Hat
             files.push_back(p);
         }
         if (files.empty()) return;
-        std::sort(hatNames.begin(), hatNames.end());  // same file set on every client -> same order
         auto rank = [](const std::string &p) { return menuFile(p) ? 0 : p.find("/worm.glb") != std::string::npos || p.find("/hats/") != std::string::npos ? 1 : 2; };  // the match setup shows worm and hats
         std::stable_sort(files.begin(), files.end(), [&](const std::string &a, const std::string &b) { return rank(a) < rank(b); });
         menuLeft = (int)std::count_if(files.begin(), files.end(), menuFile);
@@ -427,7 +426,7 @@ bool Models::upload(double until) {
     if (std::lock_guard<std::mutex> l(mu); !jobs.empty()) return true;
     for (std::thread &w : workers) w.join();
     finished = true;
-    TraceLog(LOG_INFO, "MODELS: %d loaded from %s (%d hats) in %.0f ms", (int)models.size(), MODEL_DIR, (int)hatNames.size(), (GetTime() - startT) * 1000);
+    TraceLog(LOG_INFO, "MODELS: %d loaded from %s in %.0f ms", (int)models.size(), MODEL_DIR, (GetTime() - startT) * 1000);
     return false;
 }
 
@@ -491,13 +490,10 @@ void Models::unload() {
         UnloadModel(e.m);
     }
     models.clear();
-    hatNames.clear();
     if (scroll.id) UnloadShader(scroll), scroll = {};
     if (shader.id) UnloadShader(shader);
 }
 
-int Models::hatCount() { return (int)hatNames.size(); }
-const char *Models::hatName(int i) { return i >= 0 && i < (int)hatNames.size() ? hatNames[i].c_str() : ""; }
 
 static const ModelAnimation *find(const Entry &e, const char *clip) {  // "A" also finds w4m-models' "A+B" (A over B)
     size_t n = clip ? strlen(clip) : 0;

@@ -16,7 +16,7 @@ slots (`WXFEP.InsertTeam`), then `WXFEP.SelectLandscape2` (docs/w4m/frontend.md)
 - The label / value split of a row and the alternating tilt of the Rules rows [ours].
 
 ## State (`Lobby`, client/src/lobby.h) [ours]
-- `Lobby::cfg` (a `GameConfig`): teams, `teamSetup[]` (name, cpu, voice, hat, local pad), map, rules, scheme, wormpot, wormsPerTeam.
+- `Lobby::cfg` (a `GameConfig`): teams, `teamSetup[]` (`GameConfig::Team`, below), map, rules, scheme, wormpot, wormsPerTeam.
 - `owner[team]` (console id), `ready[]` (per team slot: its console is ready), `self`, `host`. `canEdit(team)`: the team's owner is this console (name, voice, hat, take / release). `used`: the playing slots.
   `canEditMatch()`: this console is the host (map, scheme, rules, worms per team, Wormpot). Local play: one console, `self == host`, every team its own.
 - The three screens (`Frontend::setupTeams` / `setupMap` / `setupRules`) draw from the Lobby; START copies it into the match `GameConfig`.
@@ -25,8 +25,40 @@ slots (`WXFEP.InsertTeam`), then `WXFEP.SelectLandscape2` (docs/w4m/frontend.md)
   connected, else 0 (desktop keyboard = pad 0); input, HUD and rumble of a team go through it. One pad may play several teams.
 
 ## setup.txt [ours]
-`teams`, `slots` (bit mask of the playing slots; a file without it plays slots 0..teams-1), `worms`, `rules`, `reels`, `map`, `scheme`, then per slot `team <i> <cpu> <hat> <voice|-> <name>` and `pad <i> <pad>`. A file without `pad` lines:
+`teams`, `slots` (bit mask of the playing slots; a file without it plays slots 0..teams-1), `worms`, `rules`, `reels`, `map`, `scheme`, then per slot `team <i> <cpu> <hat id|-> <speech|-> <name>` and `pad <i> <pad>` (the network teams: `net` / `netpad`). An older line with a hat number and a bank folder is read too (`Barracks::legacyHat`, `vo` + folder). A file without `pad` lines:
 team i on pad i when that pad is connected, else pad 0. `rules` is masked to the rows the Rules screen shows (King, Vampire, Low gravity, Sudden death).
+
+## Saved teams (`Barracks`, client/src/barracks.h) and the match team [W4M: docs/w4m/frontend.md "Saved teams", docs/w4m/turn.md "Alliances and turn order"]
+API for the Teams / My Worms / Story select screens and the network:
+- `SavedTeam` = W4M StoredTeamData: `name`, `worms[6]` (names), `skill` (0 human, 1..5 CPU, fixed at creation), `grave` (graves.txt row),
+  `flag` (`Flag.*`), `speech` (`vocowbo`...), `weapon` (CustomWeapon: the team's Weapon Factory weapon name), `hat` / `gloves` / `glasses` / `tash`
+  (`WXFE.A.*` ids, "" none). `slot(count, alliance, handicap)` gives the match's `GameConfig::Team`.
+- `Barracks` (`Frontend::barracks`, loaded by `loadSetup`): `teams` (W4M order, at most `Barracks::MAX` 20), `load(path, defaults, setup)`: `teams.txt`
+  (DATA_DIR, beside setup.txt); missing: the W4M defaults `assets/defteams.txt` (DEFSAVE's 7: Gunslingers, Funky Dudes, Spacemen, Scots, CPU Easy 1,
+  CPU Normal 3, CPU Hard 5), then once the old setup.txt `team` / `net` teams not already there (no worm names nor flag: ours as before), and
+  `loadSetup` saves it. `save(path)`, `find(name)`, `humans()`, `create(name, skill, randomNames, flag, seed)` (W4M SetUpNew: -1 when full, empty or
+  taken; names from `tr("FE.RandomWormNames")`, distinct; flag = the language's, W4M `SAVE.Language`: English Flag.UK, French Flag.France; a CPU
+  Flag.Terminator), `canDelete(i)` / `remove(i)` (never the last human team). The caller saves after each change.
+- teams.txt [ours]: per team `team <name>`, six `worm <name>`, `skill`, `grave`, `flag`, `speech`, `weapon`, `hat`, `gloves`, `glasses`, `tash`
+  (value = the rest of the line, may be empty), `end`.
+- `catalog()` (`Catalog`, from `tools/w4m-re/setuplists.py`'s assets/*.txt): `attachments` (type 0 hat, 1 gloves, 2 glasses, 3 tash, 4 the
+  Terminator hat; id, model, `MeshTextNameID`), `graves` (by GraveIndex: mesh id, model `graves/<x>`, `FETXT.Grave.*`), `flags` (id, ui png `flags/<x>`,
+  `FETXT.Flag.*`), `speech` (W4M's 30 rows), `stockWeapons`; `attachment(id)`, `flag(id)`, `drawName(id)` (the Models name). `Ui::hatLabel(id)`,
+  `Ui::hatIds()`, `Ui::speechIds()` (the banks we have), `Ui::voiceBankOf(speech)` (for `Audio::setTeamVoice`).
+- `GameConfig::Team` (sim.h; on the wire and in replays as `wire::putTeam`): name, cpu, speech, hat, gloves, glasses, tash, flag, grave, wormNames,
+  `worms` (1..6, 0 = `cfg.wormsPerTeam`), `alliance` (0..3, -1 = W4M AddTeam's lowest group no earlier team holds: `GameConfig::alliance(t)`),
+  `handicap` (-1..1), and the local `pad`. W4M's slot rows: worms 1..6 with the match total <= `MAX_MATCH_WORMS` 16, a new slot min(4, 16 - the
+  others), alliance 0..3, handicap -1 / 0 / +1; the Allies and Handicap rows only where W4M allows them (not Destruction, Statue, Fort; Allies not
+  Survivor either) [assumed: the row gating, docs/w4m/frontend.md]. The screens agent enforces the cap; the sim takes the counts as given.
+- Sim [disasm + data, docs/sim.md "Turn start"]: team-major worms (`Game::teamFirst`, `teamSize`, `wormSlot`), start energy `handicapHealth`,
+  alliance queues and the win of the last standing team's alliance; `GameConfig::allyToStart` -1 draws the first alliance from the seed.
+- In game [disasm + data; ours: the attachment frame]: the hat, glasses and tash at `HatLocator` (as the hat; W4M's Offsets lists not applied; the glasses sit on the eyes and the tash under
+  the nose [observed: `--animshot Base glasses/star` with `W4NX_LOC=HatLocator`]),
+  the grave of the team's GraveIndex, the team flag on its energy bar; worm names from `wormNames`, else ours.
+- Story progress per team (W4M StoredTeamData StoryChapter / StoryMissionsCompleted, docs/w4m/frontend.md): progress.txt is still one file; the
+  plan for the Story select agent: the picked team's name goes to `Progress::load` / `save` as `progress_<team>.txt` for the mission entries, the
+  `unlock` / `intro` / `welcome` lines stay in progress.txt (W4M Lock.* are the profile's), the current progress.txt entries become the first human
+  team's on first run.
 
 ## Screen 1, Teams [user-requested layout (mockup worms4nx-teams-v2.html), W4M skin]
 Pixels of the 1280 x 720 screen. 4 player slots side by side (`Frontend::teamSlot`, x 40 + k x 303.5, y 196, 289.5 x 322), W4M's blue text box (blue half of `fe/text_border_list`, 9-slice) as backdrop
@@ -65,8 +97,8 @@ W4M's `/*token*/` markup is dropped and space runs collapse (`plain`). `+` start
 
 ## Hat names and map list [data + ours]
 - Hat names: `WORMATTACHMENTS.XOM` `WXFE.A.Hat.*` holds `MeshID` (`Hat.Baseball.C`) and `MeshTextNameID` (`FETXT.Hat.Baseball.Camo`); the hat file is the
-  lower-cased MeshID without `Hat.`, `.` -> `_` (`baseball_c.glb`) [data]. `tools/w4m-re/setuplists.py` writes `assets/hats.txt` (file, key); `Ui::hatLabel` shows
-  the W4M text. The jetpack helmet (`jetpack.glb`) is no `WXFE.A.Hat` entry: it is not in the hat list (`Models::start`) [ours].
+  lower-cased MeshID without `Hat.`, `.` -> `_` (`baseball_c.glb`) [data]. `tools/w4m-re/setuplists.py` writes `assets/attachments.txt`; a team's hat is its
+  `WXFE.A` id (`Ui::hatIds`, W4M order), `Ui::hatLabel` shows the W4M text. The jetpack helmet (`jetpack.glb`) is no `WXFE.A.Hat` entry: it is no team hat [data].
 - Map list: `WXFEP.SelectLandscape2` (MENUTWKX) is built by TablePopulationService 0x4cf620 as four tabs: `FETXT.Random2` (random island), `FETXT.Prebuilt`,
   `FETXT.Saved`, `FETXT.Worms3DSection` [disasm 0x4cf620, REA decompile]. The Prebuilt landscapes are the 74 SCRIPTS.XOM `WXFE_LevelDetails` of `Level_Type` 0
   (`Multi.*`; `Level_FileName`, e.g. `Multi_CarpetCapers`, `ChallengeCrate` for Desert Oasis, `Alien-w3d`, `RandomArabian`..., which are procedural) [data]. Our list

@@ -3,6 +3,7 @@
 #include "mission.h"
 #include "net.h"
 #include "lobby.h"
+#include "barracks.h"
 #include "sim.h"
 #include <string>
 #include <vector>
@@ -38,9 +39,12 @@ std::string teamName(const GameConfig &c, int team);
 std::string resultBanner(const Game &g);  // versus game-over text; empty in a mission or challenge (missionEnd shows the result)
 void mapHeads(const std::vector<std::string> &maps);  // any thread: reads the maps' json heads that mapTitle() and the previews use
 void multiplayerMaps(std::vector<std::string> &maps);  // keeps what W4M's landscape select offers
-const char *hatLabel(int hat);  // hat 0 none, else W4M's name of hat file hat - 1 (Models::hatName)
+const char *hatLabel(const std::string &id);  // W4M's name of an attachment id, "None" for ""
+const std::vector<std::string> &hatIds();     // "" (none), then the WXFE.A hats in W4M order
+std::vector<std::string> speechIds();         // "vo" + each voices/ bank
+int voiceBankOf(const std::string &speech);   // the Audio bank of a W4M speech id, -1 none (team default)
 std::string mapTitle(const std::string &map);  // display name: W4M's level name, else from the file name
-const char *wormName(int team, int i);
+const char *wormName(const GameConfig &c, int team, int i);
 // pad -1 = any pad. D-pad buttons also fire on left-stick flicks and auto-repeat while held.
 bool pressed(int pad, std::initializer_list<int> buttons, std::initializer_list<int> keys);
 void pollStick();  // once per frame, before any pressed()
@@ -56,7 +60,7 @@ struct MenuItem;  // ui.cpp: one W4M menu entry and its place on screen
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 // setup.txt lines of this console's network teams ("net", "netpad"); the parser returns false for any other line
 std::string netProfileText(const std::vector<GameConfig::Team> &teams);
-bool netProfileLine(const char *line, int hats, std::vector<GameConfig::Team> &teams);
+bool netProfileLine(const char *line, std::vector<GameConfig::Team> &teams);
 
 struct Frontend {
     enum Screen { Title, Main, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm, Missions, SetupTeams, SetupMap, SetupRules } screen = Title;  // Missions: hands over to missionMenu(); SetupTeams / Map / Rules: the match setup, local or in a network room (lobby)
@@ -77,7 +81,7 @@ struct Frontend {
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
 
 private:
-    int row = 0, mainRow = 0, mapSel = 0, hats = 0, schemeRow = 0, subRow[5] = {};  // subRow: Local, Network, MyWorms, HelpOpts, Confirm
+    int row = 0, mainRow = 0, mapSel = 0, schemeRow = 0, subRow[5] = {};  // subRow: Local, Network, MyWorms, HelpOpts, Confirm
     Screen shown = (Screen)-1, from = Title;  // W4M menus: item slide-in since `entered` (from: previous screen), smoothed highlight per item
     float entered = -100, glow[8] = {};
     Screen next = Title;  // W4M menu change: the current items fly out for LEAVE s since `leaving`, then `next` slides in
@@ -87,6 +91,7 @@ private:
     void menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live = true);  // live: animate + take input
     bool online = false, lan = false, loaded = false, music = true, layout = false;  // layout: Controls shows the pad diagram  // online: network setup (LAN or server)
     std::string *editing = nullptr;  // desktop text entry target
+    Barracks barracks;               // the saved teams (teams.txt), loaded by loadSetup
     Lobby lobby;                     // the match being set up (SetupTeams / SetupMap / SetupRules): local, or a view of net->lobby
     std::vector<GameConfig::Team> myTeams;  // network: this console's teams, with their local pads; sent as TEAMS
     std::vector<GameConfig::Team> netProfile;  // myTeams as saved in setup.txt, restored in each new room

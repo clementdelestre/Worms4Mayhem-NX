@@ -288,17 +288,34 @@ struct SchemePreset { const char *name; Scheme s; const char *delays; };  // del
 extern const std::vector<SchemePreset> SCHEMES;  // [0] = Standard; values from W4M Data/Tweak/LOCAL.XOM
 struct GameConfig {
     uint32_t seed = 0;
-    int teams = 2, wormsPerTeam = 3;
+    int teams = 2, wormsPerTeam = 3;  // wormsPerTeam: the worms of a team whose Team::worms is 0
     std::string map;     // romfs maps/<map>.json; empty = procedural island
     uint32_t rules = 0;  // Rule flags
-    // cpu: 0 = human, 1..5 = AI level (W4M CPU1..CPU5); pad: the local pad that plays the team (ours, not sent, not in the checksum)
-    struct Team { std::string name; uint8_t cpu = 0, voice = 0, hat = 0, pad = 0; };
+    // W4M GameInitData Tn_* (docs/w4m/frontend.md "Saved teams"): cpu = Skill, 0 human, 1..5 AI level (CPU1..CPU5); pad: the local pad
+    // that plays the team (ours, not sent, not in the checksum). Ids are W4M's: speech "vocowbo", attachments "WXFE.A.Hat.Cowboy", "Flag.Cowboy"
+    struct Team {
+        std::string name; uint8_t cpu = 0;
+        std::string speech;                      // "" = team i's default bank
+        std::string hat, gloves, glasses, tash;  // "" = none
+        std::string flag;
+        uint8_t grave = 0;                       // GraveIndex (0x725eda)
+        std::vector<std::string> wormNames;      // Tn_W1..W6_Name
+        uint8_t worms = 0;                       // NumOfWorms 1..6, 0 = wormsPerTeam
+        int8_t alliance = -1;                    // AlliedGroup 0..3, -1 = the lowest group no earlier team holds (AddTeam 0x737633)
+        int8_t handicap = 0;                     // -1 / 0 / +1: WormHealth + Handicap x step (lib_SetupMultiplayerTeam)
+        uint8_t pad = 0;
+    };
     std::vector<Team> teamSetup;  // per team; may be shorter than teams (defaults apply)
+    int teamWorms(int t) const { return t < (int)teamSetup.size() && teamSetup[t].worms ? teamSetup[t].worms : wormsPerTeam; }
+    int alliance(int t) const;    // team t's AlliedGroup, -1 resolved
     Scheme scheme;
     uint32_t wormpot = 0;            // Wormpot reels: mode id per byte (wormpotReel)
     std::vector<WeaponDef> custom;   // host's Weapon Factory weapons, appended to the loaded table at start()
     const struct MissionSpec *mission = nullptr;  // single-player mission (mission.h), owned by the caller
+    int8_t allyToStart = -1;  // W4M AllyToStart: the first alliance to play; -1 = drawn from the seed (SetUpStartGame 0x4e8580)
 };
+int handicapHealth(int health, int handicap);  // a worm's start energy (lib_SetupMultiplayerTeam)
+constexpr int MAX_MATCH_WORMS = 16;  // W4M worm slots (WormDataNN 00..15); the team slot rows cap the sum (0x73620f)
 
 // Mission progress, driven by mission.cpp (checksummed). result: 0 running, 1 success, -1 failure.
 struct MissionRun { int result = 0, ticks = 0; };
@@ -422,7 +439,12 @@ struct Game {
     std::vector<int> nextWorm;
     std::vector<std::vector<int>> ammo;  // [team][weapon]
     std::vector<int> picked;             // per team: weapon in hand when its last turn ended (the AI's PreferVariety)
-    int teams = 2, perTeam = 1, current = 0, weapon = 0, winner = -1, timer = 0;
+    int teams = 2, current = 0, weapon = 0, winner = -1, timer = 0;
+    std::vector<int> teamFirst;  // worms are team-major: team t's are teamFirst[t] .. teamFirst[t + 1] - 1
+    int teamSize(int t) const { return teamFirst[t + 1] - teamFirst[t]; }
+    int wormSlot(int i) const { return i - teamFirst[worms[i].team]; }  // its place in its team (W4M PositionInTeam)
+    std::vector<std::vector<int>> allyQueue;  // W4M alliance queues (+0x9c): the teams of each AlliedGroup, the next to play first
+    int allyStart = 0;  // the first alliance to play
     int clock = 0;      // ticks played: sudden death after cfg.scheme.roundTime
     int walkTick = 0;   // ticks into the current walk: its W4M frames (walkFrame) run from its start, whatever the clock
     int hotSeat = 0;    // ticks left before the turn clock starts
@@ -547,7 +569,7 @@ struct Game {
     void stepFactory();
     bool noTurn = false;  // a mission script before its first turn: W4M CurrentTeamIndex and ActiveWormIndex are -1
     int turnTeam() const { return noTurn ? -1 : worms[current].team; }
-    std::vector<int8_t> allied;  // per team: W4M TeamData.AlliedGroup (scripts); empty: each team its own
+    std::vector<int8_t> allied;  // per team: W4M TeamData.AlliedGroup, from cfg at start(), the scripts' own in missions
     int alliance(int team) const { return team >= 0 && team < (int)allied.size() ? allied[team] : team; }
     bool indestructible = false;  // W4M Land.Indestructable (scripts): the Land Explosion handler returns (0x47356d)
     // Settle (W4M stdlib.lub): GameLogic.ApplyDamage starts every hurt worm's damage display at once, then the death queue
@@ -632,7 +654,7 @@ struct Game {
 private:
     float rand01();
     float mineFuse();  // a new mine's fuse, s (Scheme mineFuse, random: one draw)
-    void beginTurn(int team);
+    void beginTurn(int last, bool sameTeam = false);  // W4M SelectNextWorm 0x5b5630: last = the worm that played, -1 on the first turn
     void ropeCleanup();  // the rope entity goes: a hooked rope spends its ammo
     // stdlib.lub turn end: ApplyDamage, CheckActivity, DoPostActivity's two passes; ApplyPoison 0x5ac060; SurrenderTeam 0x5b4d00
     void applyDamage(const std::vector<int> *type6 = nullptr);  // type6: ApplyPoison's damage, no display but the vampire's
@@ -644,6 +666,9 @@ private:
     void surrender(int team);
     void dropCrates(int n, bool roll);
     bool standing(int team) const;
+    int activeAlliances() const;
+    int survivingTeam() const;
+    void initQueues();
     void nextWeapon(int team);
     void pick(int team, int k);  // W4M WeaponSelected 0x565d30
     void use(Worm &w);

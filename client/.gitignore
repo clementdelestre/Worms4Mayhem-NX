@@ -20,5 +20,6 @@ romfs/romfs
 .synced-*
 mission_check
 progress.txt
+teams.txt
 obj/
 log.txt

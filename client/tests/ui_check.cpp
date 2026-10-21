@@ -5,6 +5,7 @@
 #include "../src/controls.h"
 #include <cstring>
 #include "../src/ui.h"
+#include "../src/barracks.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cassert>
@@ -24,9 +25,11 @@ int main() {
         l.cfg.teamSetup[0].name = "A", l.cfg.teamSetup[2].name = "C", l.cfg.teamSetup[3].name = "D";
         GameConfig m = l.match();  // playing slots 0, 2, 3 in order
         assert(m.teams == 3 && m.teamSetup.size() == 3 && m.teamSetup[0].name == "A" && m.teamSetup[1].name == "C" && m.teamSetup[2].name == "D");
-        assert(l.hat(0, -1, 7) && l.cfg.teamSetup[0].hat == 7 && l.voice(0, -1, 5) && l.cfg.teamSetup[0].voice == 4);  // wrap
+        const std::vector<std::string> hats = {"", "A", "B"}, banks = {"voa", "vob", "voc"};
+        assert(l.hat(0, -1, hats) && l.cfg.teamSetup[0].hat == "B" && l.voice(0, -1, banks) && l.cfg.teamSetup[0].speech == "voc");  // wrap; an unlisted speech steps to an end
+        assert(l.voice(0, 1, banks) && l.cfg.teamSetup[0].speech == "voa" && l.hat(0, 1, hats) && l.cfg.teamSetup[0].hat.empty());
         l.owner[0] = 7;  // another console's slot is read-only
-        assert(!l.hat(0, 1, 7) && !l.ownedBy(0, 1) && !l.release(0) && l.padsUsed() == 0b10);
+        assert(!l.hat(0, 1, hats) && !l.ownedBy(0, 1) && !l.release(0) && l.padsUsed() == 0b10);
     }
     {  // Teams screen tokens move on their own and a room's later slots shift up on a release
         TeamCursors c;
@@ -42,14 +45,17 @@ int main() {
         assert(w.r == 255 && w.g == 255 && w.b == 255);
     }
     {  // network teams saved in setup.txt: name with spaces, hat, pad and the number of teams come back
-        std::vector<GameConfig::Team> mine = {{"Pirate Pete", 0, 0, 3, 2}, {"Two Words Here", 0, 0, 1, 1}}, back;
+        std::vector<GameConfig::Team> mine(2), back;
+        mine[0].name = "Pirate Pete", mine[0].hat = "WXFE.A.Hat.Pirate", mine[0].speech = "vopirate", mine[0].pad = 2;
+        mine[1].name = "Two Words Here", mine[1].pad = 1;
         std::string txt = Ui::netProfileText(mine) + "teams 3\n";
         size_t at = 0;
         for (size_t nl; (nl = txt.find('\n', at)) != std::string::npos; at = nl + 1) {
-            bool net = Ui::netProfileLine(txt.substr(at, nl - at).c_str(), 10, back);
+            bool net = Ui::netProfileLine(txt.substr(at, nl - at).c_str(), back);
             assert(net == !txt.compare(at, 3, "net"));
         }
-        assert(back.size() == 2 && back[0].name == "Pirate Pete" && back[0].hat == 3 && back[0].pad == 2 && back[1].name == "Two Words Here" && back[1].pad == 1);
+        assert(back.size() == 2 && back[0].name == "Pirate Pete" && back[0].hat == "WXFE.A.Hat.Pirate" && back[0].speech == "vopirate" && back[0].pad == 2);
+        assert(back[1].name == "Two Words Here" && back[1].hat.empty() && back[1].pad == 1);
     }
     {  // W4M lobby timer: 30 s from the second player, restarted by a join, off under 2 players, everyone ready at its end
         ReadyTimer t;
@@ -200,6 +206,40 @@ int main() {
         assert(Ui::resultBanner(g).empty());
         g.winner = -1;
         assert(Ui::resultBanner(g).empty());
+    }
+    {  // saved teams: W4M's 7 defaults seed teams.txt, an old setup.txt's teams join once, 20 at most, the last human team stays
+        const char *path = "barracks_check.txt", *setup = "barracks_check_setup.txt";
+        remove(path);
+        SaveFileText(setup, (char *)"team 0 0 1 cowbo Old Boys\nteam 1 2 0 - Gunslingers\nnet 0 0 0 - Net Team\n");
+        Barracks b;
+        b.load(path, "assets/defteams.txt", setup);
+        assert(b.teams.size() == 9 && b.humans() == 6 && b.teams[0].name == "Gunslingers" && b.teams[0].worms[0] == "Shotgun Sam" && b.teams[0].grave == 8);
+        assert(b.teams[0].flag == "Flag.Cowboy" && b.teams[0].speech == "vocowbo" && b.teams[0].hat == "WXFE.A.Hat.Cowboy" && b.teams[0].glasses.empty());
+        assert(b.teams[6].name == "CPU Hard" && b.teams[6].skill == 5 && b.teams[7].name == "Old Boys" && b.teams[7].speech == "vocowbo" && b.teams[8].name == "Net Team");
+        assert(b.teams[7].hat == Barracks::legacyHat(1) && !b.teams[7].hat.empty());
+        assert(b.save(path));
+        Barracks c;
+        c.load(path, "assets/defteams.txt", setup);  // teams.txt exists: no seeding, no migration
+        assert(c.teams.size() == 9 && c.teams[1].worms[3] == "Kickin Kel " && c.teams[8].name == "Net Team");
+        assert(c.create("", 0, "A,B", "Flag.UK", 1) < 0 && c.create("Scots", 0, "A,B", "Flag.UK", 1) < 0);  // empty, taken
+        int n = c.create("New", 3, "A,B,C,D,E,F,G", "Flag.UK", 7);
+        assert(n == 9 && c.teams[n].flag == "Flag.Terminator" && c.teams[n].skill == 3 && c.teams[n].speech == "voclassi");
+        for (int i = 0; i < 6; i++) for (int j = 0; j < i; j++) assert(!c.teams[n].worms[i].empty() && c.teams[n].worms[i] != c.teams[n].worms[j]);
+        while ((int)c.teams.size() < Barracks::MAX) assert(c.create("T" + std::to_string(c.teams.size()), 0, "A", "Flag.UK", 1) >= 0);
+        assert(c.create("Full", 0, "A", "Flag.UK", 1) < 0);
+        for (int i = (int)c.teams.size() - 1; i >= 0; i--) if (c.teams[i].skill || c.humans() > 1) assert(c.remove(i));
+        assert(c.humans() == 1 && !c.canDelete(c.find(c.teams[0].name)) && !c.remove(0));
+        GameConfig::Team t = b.teams[1].slot(5, 2, -1);
+        assert(t.name == "Funky Dudes" && t.worms == 5 && t.alliance == 2 && t.handicap == -1 && t.glasses == "WXFE.A.Glasses.Star" && t.wormNames.size() == 6);
+        remove(path), remove(setup);
+    }
+    {  // the editor's lists: W4M's 16 graves, 91 flags (to their ui png), 30 speech rows, 7 stock weapons; attachments by type
+        const Catalog &k = catalog();
+        assert(k.graves.size() == 16 && k.graves[8].id == "Grave.WildWest" && k.graves[8].model == "graves/wildwest");
+        assert(k.flags.size() == 91 && k.flag("Flag.WizardsHat") && k.flag("Flag.WizardsHat")->model == "flags/custom_wizard_hat");
+        assert(k.speech.size() == 30 && k.stockWeapons.size() == 7 && k.stockWeapons[0] == "FETXT.AFewProblems");
+        assert(k.attachment("WXFE.A.Mustache.Cowboy") && k.attachment("WXFE.A.Mustache.Cowboy")->type == 3 && !strcmp(k.drawName("WXFE.A.Hat.Cowboy"), "cowboy"));
+        assert(!strcmp(k.drawName("WXFE.A.Glasses.Star"), "glasses/star") && !k.drawName(""));
     }
     puts("ui_check ok");
 }

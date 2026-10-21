@@ -93,6 +93,11 @@ Commentary (lib_Comment, lib_Display{Failure,Success,SuddenDeath}Comment: Commen
   - Hand to hand: BaseballBat, Prod, FirePunch, NoMoreNails.
   - For reference, Explosives: Bazooka, Dynamite, Grenade, HolyHandGrenade, Landmine, HomingMissile, GasCanister, Fatkins. Animals: Sheep, SuperSheep,
     OldWoman, ConcreteDonkey, Scouser.
+- **David and Goliath** (Lua only) [data: raw bytecode, Wormpot.lub SetWormpotModes / SetDavidAndGolithHealth]: total = 100 x the largest
+  Tn_NumOfWorms of the match; per team of n worms, `SetDavidAndGolithHealth(total, n, team)`: david = total / 2n, the team's first worm gets
+  total - (n - 1) x david, the others david (Energy truncated [assumed: the Lua number into an int field]). The specialist delays
+  (`Inventory.WeaponDelays.Default` HomingMissile 1, Airstrike 5, `lib_SetupTeamWeaponDelays` for teams 0..3) run inside the per-worm loop: every
+  team gets them once one team has n > 1.
 - **Specialist** (+0x35, Lua only) [data: raw bytecode]: `SetSpecialistTeam(n, team)` returns unless n > 1. The worm at place p (1..n) gets class
   `T[(p-1)*6 + n]`.
   - Classes by team size: n=2: 1 2; n=3: 1 3 4; n=4: 5 6 3 4; n=5: 5 6 3 4 6; n=6: 5 6 3 4 6 3.
@@ -285,6 +290,39 @@ Who starts which phase:
   - the clamp only runs on the forward-probe path: distance < 5 units or < ForwardLandAvoidanceDistance returns before it (0x561286, 0x5612a3 → 0x561639) [disasm].
   Ours: `Game::avoidLand`, the same three probes as `Terrain::raycast`, which also samples the segment (every half voxel, 0.125 m, against W4M's 20 steps of 5 units) and returns the first sample inside the land, so the push direction normalise(hit − pos) is the probe's own direction either way [ours: our voxel land]; the force is 0.009 units/ms² = 450 m/s² applied per our tick (450 × DT; was 9 m/s per 1/60 s tick, 1.2 × W4M's), 100 units = 5 m, `Projectile::stage` = arrived.
 - **Factory LaunchSfx** [data + disasm]: weapons/Throw is a 3D linear 10..500 unit oneshot, weapons/SecretWeapLaunch a 2D oneshot, both 0 dB in the `weapons` bank (WormsX.fev, `fev.py -g 'Throw|SecretWeap'`); set into the payload's LaunchSfx (+0xb0) by 0x5983f0 for thrown (0x598fc0) and launched (0x599167).
+
+### Alliances and turn order (WXWormManagerService, SetUpStartGame) [disasm, REA decompile]
+- Team slots of `GM.GameInitData` [data: `pe.py schema GameInitData`, LVLSETUP defaults]: NumberOfTeams +0x14, AllyToStart +0x18, AllyTeam0..3
+  +0x1c..+0x28 (all -1 in LVLSETUP), then per team Tn_Name, Player, NumOfWorms, W1..W6_Name, Skill, Grave, SWeapon, Flag, Speech, IsLocal,
+  AlliedGroup, FirstWorm (-1), Handicap (0), Hat / Gloves / Glasses / TashAttachment, CustomWeapon (ref), InvertY / X / YFP (T1 at +0x2c, stride 0x68).
+- AddTeam (TeamControlService vtable 0x8a19b4 +0x20 = 0x73f311, from `FE.AddLTeamToGame` 0x735fca with alliance 99): copies the saved team into
+  slot NumberOfTeams: name, worm names, Skill, Grave, SWeapon through the table {7, 6, 17, 19} (weapon ids), Flag, Speech (a bank not found ->
+  `voclassi`), the four attachments, its SecretWeapon / Cluster into the slot's Weapon Factory container and CustomWeapon; NumOfWorms =
+  0x73620f, AlliedGroup = 0x737633 (for 99), Handicap 0. 0x73620f: min(4, 16 - the worms of the teams already in) (15 instead of 16 online when
+  `WXNET.Value.MaxPlayers` is 4 and 2 teams are in). 0x737633: the lowest group 0..3 none of the teams already in holds, else 0.
+- SetUpStartGame 0x4e8580 (FlowControlService, with 2+ teams), per round: each team with worms: FirstWorm = (FirstWorm == -1 ? rand() :
+  FirstWorm + 1) % NumOfWorms; AllyToStart = 0 for Tutorial / Story / Challenge, else (AllyToStart == -1 ? rand() & 3 : (AllyToStart + 1) & 3),
+  then the next group holding teams; per group g with teams: AllyTeam[g] = the k-th team of g (in slot order), k = (AllyTeam[g] == -1 ?
+  rand() % count : (AllyTeam[g] + 1) % count). So the first round's start alliance and each alliance's first team are random, later rounds
+  rotate them. The reader of Tn_FirstWorm was not found (InitialiseWorms 0x5b5bf0 queues a team's worms in slot order) [assumed: unused].
+- Queues [disasm 0x5b52b0 InitialiseAlliedGroups, 0x5b5bf0 InitialiseWorms]: worm manager +0x6c + 0xc t = team t's worm queue (its worms
+  with IsAllowedToTakeTurn, slot order; WormData +0x128 PositionInTeam), +0x9c + 0xc g = alliance g's team queue: AllyTeam[g] first, then the
+  others in team order (`DRM::kMaxAlliances` 4, asserts "Team set as first in alliance queue..."), +0xcc = AllyToStart.
+- SelectNextWorm 0x5b5630 (last worm, same team): first turn: last group = AllyToStart - 1; else the last worm's team's AlliedGroup
+  (TeamData +0x6c). Same team (SameTeamNextTurn): the front worm of that team's queue goes to its back and plays, the alliance queues stay.
+  Else the next group after the last one (wrapping, the last one itself at the end) with a non-empty queue; its front team goes to the
+  back, that team's front worm goes to the back and plays; none: -1 ("No active alliances found"). Turns alternate alliances; inside one,
+  its teams take turns.
+- A dead or unspawned worm leaves its team queue, a team with an empty queue leaves its alliance queue (0x5b3f60); a respawn rejoins at the back.
+- GetActiveAlliances 0x5b4030: AllianceCount = the non-empty alliance queues, 0 if no worm is active (+0x124). GetSurvivingTeam 0x5b3d40:
+  SurvivingTeamIndex = the team (+0x127) of the last active worm (worm order 0..15) whose team has not surrendered (TeamData +0x72); it also
+  sets `Achv.JoinMeLuke.HighestHealth` and `Achv.FeelThePowerOfTheDarkside.Survivors`. CheckOneTeamVictory wins that team: allies share the win.
+- Handicap [data: lib_help.lub lib_SetupMultiplayerTeam raw bytecode]: each worm's Energy = WormHealth + Handicap x step, step 25 when
+  WormHealth is 50 or 100, 50 at 150, 100 at 200, else 0.
+- Ours (`Game::beginTurn`, `allyQueue`, `allyStart`, `activeAlliances`, `survivingTeam`, `handicapHealth`; docs/sim.md "Turn start"): the same
+  queues; a dead team is skipped where W4M removes it [ours: equal order]; one round per match, so AllyToStart and the first teams are drawn
+  once, from the seed (`GameConfig::allyToStart` -1) instead of rand() [ours: deterministic over the network]; scripts start with alliance 0
+  and each alliance's lowest team.
 
 ### Start placement: worms, then mines and drums [disasm + data]
 - Order [data]: `stdvs Initialise` runs `lib_SetupMultiplayerWormsAndTeams` (each worm `Spawn = "spawn"`, lib_help.lub `lib_SetupMultiplayerWorm`), sends `WormManager.Reinitialise` (worms placed), then `lib_SetupMinesAndOildrums`: Objects 1 or 3 sends `GameLogic.CreateRandomMine`, 2 or 3 `GameLogic.CreateRandomOildrum`. Worms first.

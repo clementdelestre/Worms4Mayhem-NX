@@ -2,11 +2,13 @@
 #include "sim.h"
 #include <algorithm>
 #include <cmath>
+#include <string>
+#include <vector>
 
 // Match setup shared by the Teams / Map / Rules screens: local play (one console, everything editable) and the network room.
 struct Lobby {
     static constexpr int MAX_TEAMS = 4;
-    GameConfig cfg;                  // teams, teamSetup (name, cpu, voice, hat, local pad), map, rules, scheme, wormpot, wormsPerTeam
+    GameConfig cfg;                  // teams, teamSetup (GameConfig::Team), map, rules, scheme, wormpot, wormsPerTeam
     int owner[MAX_TEAMS] = {};       // console id of each team
     bool ready[MAX_TEAMS] = {};      // per team slot: its console is ready (network)
     int self = 0, host = 0;          // this console, the host's console
@@ -35,17 +37,13 @@ struct Lobby {
         used |= 1u << k, t.cpu = t.cpu % 5 + 1;
         return true;
     }
-    // voice / hat of team k by d steps (hat 0 = none); false when nothing may change
-    bool voice(int k, int d, int banks) {
-        if (!canEdit(k) || !d || !banks) return false;
-        uint8_t &v = cfg.teamSetup[k].voice;
-        return v = (uint8_t)(((v + d) % banks + banks) % banks), true;
+    // speech bank / hat of team k by d steps through ids (hats: "" first, none); false when nothing may change
+    static bool step(std::string &v, int d, const std::vector<std::string> &ids) {
+        int n = (int)ids.size(), i = (int)(std::find(ids.begin(), ids.end(), v) - ids.begin());
+        return n && d ? (v = ids[i == n ? (d > 0 ? 0 : n - 1) : ((i + d) % n + n) % n], true) : false;  // not listed: the first / last
     }
-    bool hat(int k, int d, int hats) {
-        if (!canEdit(k) || !d || !hats) return false;
-        uint8_t &h = cfg.teamSetup[k].hat;
-        return h = (uint8_t)(((h + d) % (hats + 1) + hats + 1) % (hats + 1)), true;
-    }
+    bool voice(int k, int d, const std::vector<std::string> &banks) { return canEdit(k) && step(cfg.teamSetup[k].speech, d, banks); }
+    bool hat(int k, int d, const std::vector<std::string> &hats) { return canEdit(k) && step(cfg.teamSetup[k].hat, d, hats); }
     // the pads that human teams of this console use, as a bit set
     unsigned padsUsed() const {
         unsigned m = 0;

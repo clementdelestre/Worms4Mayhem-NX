@@ -19,6 +19,7 @@
 #include "script.h"
 #include "sim.h"
 #include "ui.h"
+#include "barracks.h"
 #include "xray.h"
 #include <algorithm>
 #include <atomic>
@@ -165,13 +166,14 @@ static const char *objectModel(const Object &o) {
     return o.weapon < 0 ? "crate_health" : utility(WEAPONS[o.weapon].kind) && Models::has("crate_utility") ? "crate_utility" : "crate_weapon";
 }
 // W4M Sentry Gun mesh: the owner's AlliedGroup 0..3 plays its colour clip (table 0x590b54; turret 0x56b2d0, held 0x590356)
-static const char *teamClip(int team) { static const char *const C[] = {"Red", "Blue", "Green", "Yellow"}; return (unsigned)team < 4 ? C[team] : nullptr; }
+// Sentry Gun colour clip by the owner team's AlliedGroup (0x590356, 0x56b2d0)
+static const char *teamClip(const Game &g, int team) { static const char *const C[] = {"Red", "Blue", "Green", "Yellow"}; return team >= 0 ? C[g.alliance(team) & 3] : nullptr; }
 static Vector3 launchAt{};  // W4M Weapon.GetLaunchPosition: where the active worm's held weapon was last drawn
 static Vector3 viewEye{};  // the render camera, for every pass (PiP, shadows) as W4M picks the mesh once
 // W4M PayloadGraphicEntity: Payload.LogicallyArmed loops AnimArm MineOn from 0 (0x57b150), a dud's Payload.Disarm lets the pass end
 // (0x6a0470 loop off); past 300 units from the camera it shows LandmineLow instead (0x57d9dd), which never plays it
 static bool drawObject(const Game &g, const Object &o) {
-    const char *model = objectModel(o), *clip = o.type == Object::Sentry ? teamClip(o.team) : nullptr;
+    const char *model = objectModel(o), *clip = o.type == Object::Sentry ? teamClip(g, o.team) : nullptr;
     float t = 0;
     if (o.type == Object::Mine) {
         static std::vector<std::pair<int, int>> arm;  // per object: tick armed, tick its pass ends (-1: looping); ponytail: by index, a removal shifts a phase
@@ -723,7 +725,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         else if (bow && !strcmp(clip, "WindupBow")) mc = a.act.clip ? "FireBow" : "Windup", mt = a.act.clip ? a.act.t : a.wind;
         else if (!strcmp(held, "hold_homing") && a.lockT >= 0 && !a.act.clip) mc = "AimLockHomingMissile", mt = a.lockT, once = true;
         float ml = Models::clipLength(held, mc);
-        Models::pick(teamClip(w.team));  // WAE_Standard Init: the held Sentry Gun's team clip
+        Models::pick(teamClip(g, w.team));  // WAE_Standard Init: the held Sentry Gun's team clip
         const Matrix hm = !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m;
         Models::draw(held, hm, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
         Models::pick(nullptr);
@@ -736,10 +738,11 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     if (rk && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly)) Models::draw("hold_starburst", MatrixMultiply(m, root), WHITE, "FireStarburst", rk->fuse < WEAPONS[rk->weapon].fuse - 3.5f ? 3.5f : WEAPONS[rk->weapon].fuse - rk->fuse);  // WAE_Starburst 0x5917d0
     if (i == g.current && g.icarus == 2 && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly))  // WAE 0x5953d1
         Models::draw("wings", MatrixMultiply(m, root), WHITE, "FlyRedBull", t);
-    int hat = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].hat : 0;  // cosmetic only: index resolved against this client's own sorted hat list
-    const char *hatN = tool && g.jetting ? "jetpack" : hat ? Models::hatName(hat - 1) : nullptr;  // W4M's jetpack helmet
-    if (hatN && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
-        Models::draw(hatN, MatrixMultiply(m, root));
+    static const GameConfig::Team none;
+    const GameConfig::Team &tm = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team] : none;
+    const char *head[3] = {tool && g.jetting ? "jetpack" : catalog().drawName(tm.hat), catalog().drawName(tm.glasses), catalog().drawName(tm.tash)};  // W4M's jetpack helmet
+    if ((head[0] || head[1] || head[2]) && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
+        for (const char *n : head) if (n) Models::draw(n, MatrixMultiply(m, root));
     return true;
 }
 
@@ -772,7 +775,7 @@ static void dudFx(const std::vector<Object> &objs) {
     was.swap(now);
 }
 
-// Dead worms leave a random W4M gravestone, dropped onto whatever terrain is left below (render only).
+// Dead worms leave their team's W4M gravestone (GraveIndex), dropped onto whatever terrain is left below (render only).
 // W4M GirderKitGraphicEntity 0x5586c0: the Girder mesh x (3, 3.5, 3) units, opaque, tinted red where it can't go or after 45
 static void drawUtilities(const Game &g) {
     if (g.girderOn && g.phase == Phase::Aim) {
@@ -863,8 +866,9 @@ static void drawGrave(const Game &g, const Worm &w) {
     if (w.drowned) return;
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
     for (int k = 0; k < 100 && p.y > g.water && !g.terrain.solid(p); k++) p.y -= 0.1f;
-    uint32_t h = (g.cfg.seed + uint32_t(&w - g.worms.data()) * 40503u) * 2654435761u;  // random per worm, same every view
-    Models::draw(TextFormat("grave%u", (h >> 16) % 4), p, w.yaw);
+    int grave = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].grave : 0;  // the team's GraveIndex (0x725eda)
+    const auto &list = catalog().graves;
+    if (!list.empty()) Models::draw(list[grave < (int)list.size() ? grave : 0].model.c_str(), p, w.yaw);
 }
 
 // Bovine Blitz, W4M SuperBomberGraphicEntity (the SuperAirstrike chopper, banked into its turns) and
@@ -1612,7 +1616,7 @@ int main(int argc, char **argv) {
     auto startMatch = [&](const GameConfig &c, bool preStart = true) {
         game.terrain.undo = nullptr;
         snap.valid = false;
-        if (!c.mission) for (size_t k = 0; k < c.teamSetup.size(); k++) Audio::setTeamVoice((int)k, c.teamSetup[k].voice);  // online: the room's teams
+        if (!c.mission) for (size_t k = 0; k < c.teamSetup.size(); k++) Audio::setTeamVoice((int)k, Ui::voiceBankOf(c.teamSetup[k].speech));  // online: the room's teams
         rec = {c, {}, 0};
         recSaved = shotDone = false;
         irEnd = -1;
@@ -1726,9 +1730,14 @@ int main(int argc, char **argv) {
         if (netShot) {
             net.roomId = 1, net.hostId = 1;
             net.players = {{1, "Clem's Switch", true}, {2, "Living room", true}, {3, "Bedroom", true}};
-            net.consoleTeams[1] = {{"Red Rockets", 0, 0, 12}, {"Pirate Pete", 3, 2, 30}};
-            net.consoleTeams[2] = {{"Blue Bombers", 0, 1, 20}};
-            net.consoleTeams[3] = {{"Green Grubs", 0, 2, 40}};
+            auto shotTeam = [](const char *name, int cpu, int hat) {
+                GameConfig::Team t;
+                t.name = name, t.cpu = (uint8_t)cpu, t.hat = hat < (int)Ui::hatIds().size() ? Ui::hatIds()[hat] : "";
+                return t;
+            };
+            net.consoleTeams[1] = {shotTeam("Red Rockets", 0, 12), shotTeam("Pirate Pete", 3, 30)};
+            net.consoleTeams[2] = {shotTeam("Blue Bombers", 0, 20)};
+            net.consoleTeams[3] = {shotTeam("Green Grubs", 0, 40)};
             net.lobby.teams = {{1, 0, {}}, {2, 0, {}}, {3, 0, {}}, {1, 1, {}}};
             net.lobby.map = maps.size() > 6 ? maps[6] : "", net.lobby.rules = 0, net.lobby.wormsPerTeam = 3, net.lobby.scheme = SCHEMES[1].s;
             net.lobby.ready = {1, 3};
@@ -1826,7 +1835,7 @@ int main(int argc, char **argv) {
                     }
                     break;
                 case Net::TeamsChanged:  // netbot lobby test: the guest edits its team live, the host sees it then changes the settings live
-                    if (netbot && net.isHost() && !botSaw && std::any_of(net.lobby.teams.begin(), net.lobby.teams.end(), [](const Net::LobbyTeam &t) { return t.team.name.back() == '*' && t.team.hat == 3; })) {
+                    if (netbot && net.isHost() && !botSaw && std::any_of(net.lobby.teams.begin(), net.lobby.teams.end(), [](const Net::LobbyTeam &t) { return t.team.name.back() == '*' && t.team.hat == "WXFE.A.Hat.Cowboy"; })) {
                         botSaw = true;
                         net.lobby.map = opt.map, net.lobby.rules = opt.rules, net.lobby.scheme = opt.scheme, net.lobby.wormsPerTeam = opt.wormsPerTeam;
                         net.pushLobby();
@@ -1920,7 +1929,7 @@ int main(int argc, char **argv) {
                 q.custom.clear();
                 q.teamSetup.resize(2);
                 q.teamSetup[0].cpu = 0;
-                q.teamSetup[1] = {"CPU", 2, 1, 0};
+                q.teamSetup[1] = {"CPU", 2};
                 q.map = maps[GetRandomValue(0, (int)maps.size() - 1)];
                 q.seed = (uint32_t)(clock * 1000) + frame;
                 online = lan = false, quick = true;
@@ -2048,7 +2057,7 @@ int main(int argc, char **argv) {
             }
             if (netbot && !isHost && inRoom && !botStarted && !botEdited && net.lobby.teams.size() >= 3 && clock > 2) {  // live edit of the guest's team
                 botEdited = true;
-                botTeams[0].name += '*', botTeams[0].hat = 3;
+                botTeams[0].name += '*', botTeams[0].hat = "WXFE.A.Hat.Cowboy";
                 net.sendTeams(botTeams);
             }
             if (netbot && isHost && net.lobby.teams.size() >= 3 && !botStarted && botSaw && net.allReady()) {  // the host's ready comes from the lobby timer
@@ -2526,7 +2535,7 @@ int main(int argc, char **argv) {
                 for (float s : {-0.13f, 0.13f})
                     DrawSphere(Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 0.3f), Vector3Add(Vector3Scale(side, s), {0, 0.4f, 0}))), 0.1f, WHITE);
             }
-            if ((game.cfg.rules & RULE_KING) && int(&w - game.worms.data()) % game.perTeam == 0)
+            if ((game.cfg.rules & RULE_KING) && game.wormSlot(int(&w - game.worms.data())) == 0)
                 DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
         }
         // TriggerGraphicEntity 0x58be60 (Trigger.Visibility 1): the 1-unit Trigger.Ball x its radius, its 8x8 texture one colour,

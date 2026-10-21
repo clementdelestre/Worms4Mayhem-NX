@@ -745,14 +745,23 @@ void Game::start(const GameConfig &c) {
     landMax = scanTop(terrain);
     rng = c.seed * 2654435761u + 1;
     teams = c.teams;
-    perTeam = c.wormsPerTeam;
-    const int per = perTeam;
+    teamFirst.assign(1, 0);
+    for (int t = 0; t < teams; t++) teamFirst.push_back(teamFirst.back() + c.teamWorms(t));
     worms.clear();
     shots.clear();
     objects.clear(), triggers.clear(), allied.clear(), noTurn = false;
     factory = {}, factoryData = {};
     gas.clear();
     nextWorm.assign(teams, 0);
+    allied.clear();
+    for (int t = 0; t < teams; t++) allied.push_back((int8_t)c.alliance(t));
+    // SetUpStartGame 0x4e8580 draws AllyToStart and each alliance's first team with rand(); ours from the seed, off the match rng
+    uint32_t pick = c.seed * 2246822519u + 3266489917u;
+    auto draw = [&] { return (pick = pick * 1103515245u + 12345u) >> 16; };
+    initQueues();
+    for (auto &q : allyQueue)  // AllyTeam[g] first, the others in team order (0x5b52b0)
+        if (!q.empty()) { size_t k = draw() % q.size(); std::rotate(q.begin(), q.begin() + k, q.begin() + k + 1); }
+    allyStart = c.allyToStart >= 0 ? c.allyToStart & 3 : (int)(draw() & 3);
     winner = -1;
     weapon = -1;
     prevButtons = 0, cursorOn = locked = false;
@@ -811,12 +820,15 @@ void Game::start(const GameConfig &c) {
     const auto navT0 = std::chrono::steady_clock::now();
     const Grid grid = makeGrid(terrain);
     NodeCache nodes;
+    int most = 0;
+    for (int t = 0; t < teams; t++) most = std::max(most, teamSize(t));
     for (int t = 0; t < teams; t++)
-        for (int k = 0; k < per; k++) {
-            Worm w = {{cx, (Terrain::NY - 1) * Terrain::VOX, cz}, {0, 0, 0}, 0, 0.3f, std::max(1, (int)cfg.scheme.health), t, true, false};
+        for (int k = 0, n = teamSize(t); k < n; k++) {
+            Worm w = {{cx, (Terrain::NY - 1) * Terrain::VOX, cz}, {0, 0, 0}, 0, 0.3f, std::max(1, handicapHealth(cfg.scheme.health, t < (int)c.teamSetup.size() ? c.teamSetup[t].handicap : 0)), t, true, false};
             Vector3 c = placeWorm(grid, nodes, w.yaw);
             w.pos = {c.x, c.y + R, c.z};
-            if (wp(WP_GOLIATH)) w.hp = k ? 50 : 50 * (per + 1);  // SetDavidAndGolithHealth(100 n, n): Davids 100 n / 2n, the first the rest
+            // SetDavidAndGolithHealth(100 x the largest team, n): Davids total / 2n, the first the rest (Energy truncated)
+            if (wp(WP_GOLIATH)) { float david = 100.0f * most / (2 * n); w.hp = k ? (int)david : (int)(100 * most - (n - 1) * david); }
             if (wp(WP_ENERGY)) w.poison = POISON_DEFAULT;  // Wormpot.lub EnergyOrEnemy: PoisonRate = Worm.Poison.Default, then Worm.Poison
             worms.push_back(w);
         }
@@ -834,10 +846,10 @@ void Game::start(const GameConfig &c) {
     }
     Vector3 fp;  // stdvs Initialise: MineFactoryOn -> CreateRandMineFactory (0x4fe18e), a 40-unit sphere 40 up clear on the ground
     if (cfg.scheme.mineFactory && !cfg.mission && dropPoint(Object::Mine, fp, 40 / 20.0f)) factoryCreate(fp);
-    if (wp(WP_SPECIALIST) && per > 1) {  // Wormpot.lub SetSpecialistTeam: a class per worm by team size and place, the team's ammo set
+    if (wp(WP_SPECIALIST) && most > 1) {  // Wormpot.lub SetSpecialistTeam(n, team), teams of n > 1: a class per worm by team size and place, the team's ammo set
         static const uint8_t CLASS[7][6] = {{}, {}, {1, 2}, {1, 3, 4}, {5, 6, 3, 4}, {5, 6, 3, 4, 6}, {5, 6, 3, 4, 6, 3}};
         for (size_t i = 0; i < worms.size(); i++) {
-            int c = special[i] = CLASS[std::min(per, 6)][i % per];
+            int c = special[i] = CLASS[std::min(teamSize(worms[i].team), 6)][wormSlot((int)i)];
             for (int k = 0; k < 4; k++)
                 for (int j = 0; j < 7 && (SPEC_SETS[c] >> k & 1) && SPEC_AMMO[k][j].first; j++)
                     for (size_t x = 0; x < WEAPONS.size(); x++) if (WEAPONS[x].name == SPEC_AMMO[k][j].first) ammo[worms[i].team][x] = SPEC_AMMO[k][j].second;
@@ -850,52 +862,60 @@ void Game::start(const GameConfig &c) {
     run = MissionRun{}, script.reset(), indestructible = false;
     if (cfg.mission) missionStart(*this);
     for (Worm &x : worms) x.counted = std::max(0, x.hp);
-    if (!script) beginTurn(teams - 1);  // a script starts its first turn itself (stdlib StartFirstTurn)
+    if (!script) beginTurn(-1);  // a script starts its first turn itself (stdlib StartFirstTurn)
 }
 
-void Game::beginTurn(int team) {
+void Game::beginTurn(int last, bool sameTeam) {
     ropeCleanup(), grapple.on = false;
     for (size_t i = 0; i < bubbles.size();) if (--bubbles[i].life <= 0) emit(GameEvent::BubblePop, bubbles[i].pos), bubbles.erase(bubbles.begin() + i); else i++;  // GameLogic.Turn.Ended
     girderOn = false, icarus = 0, bubbleAt = -1, drift = {}, doubleDamage = changing = false, scout.t = -1, walkVel = {};  // DoPostActivity: SetData("DoubleDamage", 0)
     crated = false;
     wobble.weapon = -1;  // the gun entity is made anew each turn
     mysteryWalk = mysteryLow = false;  // GameLogic.Turn.Ended: Worm.VelocityScale 1 (0x4f59f0), Low.Gravity.GameDefault (0x4f24f0)
-    std::vector<bool> has(teams, false);
-    int alive = 0, last = -1;
-    for (const Worm &w : worms)
-        if (w.alive && !has[w.team] && !surrendered[w.team]) { has[w.team] = true; alive++; last = w.team; }  // GetActiveAlliances
-    if (alive <= 1 && !cfg.mission) {  // missions end through their objectives
+    if (activeAlliances() <= 1 && !cfg.mission) {  // CheckOneTeamVictory; missions end through their objectives
         phase = Phase::GameOver;
-        winner = alive ? last : -1;
+        winner = survivingTeam();
         emit(GameEvent::GameOver, {0, 0, 0});
         return;
     }
     const Scheme &sc = cfg.scheme;
-    for (int i = 1; i <= teams; i++) {
-        int t = (team + i) % teams;
-        if (!has[t]) continue;
-        for (int k = 0; k < perTeam; k++) {
-            int slot = (nextWorm[t] + k) % perTeam, c = t * perTeam + slot;
-            if (!worms[c].alive || !worms[c].turns) continue;
-            current = c;
-            nextWorm[t] = (slot + 1) % perTeam;
-            phase = Phase::Aim;
-            timer = std::max(1, (int)sc.turnTime) * 60;
-            hotSeat = msTicks(sc.hotSeat * 1000);
-            jumpDelay = 0;
-            selfHurt = false;
-            power = 0;
-            if (!script) {  // W4M stdlib SelectRandomWind (a script runs its own SetWind): Speed = Cap/10 x r² x MaxSpeed, Direction = r2 x 2 x 3.14, an xz vector (0x57eb25)
-                float r = rand01(), sp = WIND_CAP[std::min<int>(sc.wind, 3)] * r * r, dir = rand01() * 2 * 3.14f;
-                wind = sp * cosf(dir), windZ = sp * sinf(dir);
-            }
-            roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = jetInit, boost = 0, secondary = launched = -1;
-            for (Object &o : objects) o.hooked = false;
-            shotsLeft = ropeShots = 0, rope.swung = false;
-            weapon = -1;  // W4M GameLogic.Turn.Started (0x566d57): kWeaponUndefined, the empty hand
-            emit(GameEvent::TurnStart, worms[c].pos, c);
-            return;
+    // SelectNextWorm 0x5b5630: the alliance after the last one (AllyToStart first) with a team to play, its queue's front team, that
+    // team's next worm; both go to the back of their queues. SameTeamNextTurn: the last worm's team again, the alliance queue left alone
+    auto ready = [&](int t) {
+        if (surrendered[t]) return false;
+        for (int k = 0; k < teamSize(t); k++) if (const Worm &x = worms[teamFirst[t] + k]; x.alive && x.turns) return true;
+        return false;
+    };
+    int t = -1;
+    if (sameTeam && last >= 0 && ready(worms[last].team)) t = worms[last].team;
+    for (int g0 = last >= 0 ? alliance(worms[last].team) : allyStart + 3, i = 1; t < 0 && i <= 4; i++) {
+        auto &q = allyQueue[(g0 + i) & 3];
+        auto it = std::find_if(q.begin(), q.end(), ready);
+        if (it == q.end()) continue;
+        t = *it;
+        q.erase(it), q.push_back(t);
+    }
+    for (int k = 0, n = t < 0 ? 0 : teamSize(t); k < n; k++) {
+        int slot = (nextWorm[t] + k) % n, c = teamFirst[t] + slot;
+        if (!worms[c].alive || !worms[c].turns) continue;
+        current = c;
+        nextWorm[t] = (slot + 1) % n;
+        phase = Phase::Aim;
+        timer = std::max(1, (int)sc.turnTime) * 60;
+        hotSeat = msTicks(sc.hotSeat * 1000);
+        jumpDelay = 0;
+        selfHurt = false;
+        power = 0;
+        if (!script) {  // W4M stdlib SelectRandomWind (a script runs its own SetWind): Speed = Cap/10 x r² x MaxSpeed, Direction = r2 x 2 x 3.14, an xz vector (0x57eb25)
+            float r = rand01(), sp = WIND_CAP[std::min<int>(sc.wind, 3)] * r * r, dir = rand01() * 2 * 3.14f;
+            wind = sp * cosf(dir), windZ = sp * sinf(dir);
         }
+        roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = jetInit, boost = 0, secondary = launched = -1;
+        for (Object &o : objects) o.hooked = false;
+        shotsLeft = ropeShots = 0, rope.swung = false;
+        weapon = -1;  // W4M GameLogic.Turn.Started (0x566d57): kWeaponUndefined, the empty hand
+        emit(GameEvent::TurnStart, worms[c].pos, c);
+        return;
     }
 }
 
@@ -1267,12 +1287,46 @@ bool Game::standing(int team) const {
 // SurrenderTeam 0x5b4d00 (Team.Surrender from the utility, SurrenderTeamById from a vital worm): Surrendered, out of the turn order
 void Game::surrender(int team) { if (team < (int)surrendered.size()) surrendered[team] = 1; }
 
+// GetActiveAlliances 0x5b4030: the alliances with a team standing
+int Game::activeAlliances() const {
+    unsigned m = 0;
+    for (int t = 0; t < teams; t++) if (standing(t)) m |= 1u << (alliance(t) & 3);
+    return __builtin_popcount(m);
+}
+
+// GetSurvivingTeam 0x5b3d40: the team of the last active worm whose team has not surrendered (worm order), -1 none
+int Game::survivingTeam() const {
+    int s = -1;
+    for (int t = 0; t < teams; t++) if (standing(t)) s = t;
+    return s;
+}
+
+// InitialiseAlliedGroups 0x5b52b0: each alliance's queue holds its teams in team order
+void Game::initQueues() {
+    allyQueue.assign(4, {});
+    for (int t = 0; t < teams; t++) allyQueue[alliance(t) & 3].push_back(t);
+}
+
+int GameConfig::alliance(int t) const {
+    if (t < (int)teamSetup.size() && teamSetup[t].alliance >= 0) return teamSetup[t].alliance & 3;
+    unsigned used = 0;  // AddTeam 0x737633: the lowest group none of the earlier teams holds, 0 if all are
+    for (int k = 0; k < t; k++) used |= 1u << alliance(k);
+    for (int g = 0; g < 4; g++) if (!(used >> g & 1)) return g;
+    return 0;
+}
+
+// lib_SetupMultiplayerTeam: Energy = WormHealth + Handicap x (25 at 50 or 100, 50 at 150, 100 at 200, else 0)
+int handicapHealth(int health, int handicap) {
+    int step = health == 50 || health == 100 ? 25 : health == 150 ? 50 : health == 200 ? 100 : 0;
+    return health + handicap * step;
+}
+
 // GameLogic.ApplyDamage: every hurt worm shows its damage at once (0x5abc50); its energy <= the damage queues it to die (0x5abfb4).
 // Vampire Wormpot (0x5a9710): the active worm, if its team's vampire, gains half of each other worm's damage, in worm order.
 void Game::applyDamage(const std::vector<int> *type6) {
     for (Worm &x : worms) std::fill(x.dealt, x.dealt + 5, 0);
     countGroup.clear(), countT = 0;
-    const Worm *vamp = wp(WP_VAMPIRE) && current % perTeam == 0 ? &worms[current] : nullptr;
+    const Worm *vamp = wp(WP_VAMPIRE) && wormSlot(current) == 0 ? &worms[current] : nullptr;
     for (Worm &x : worms) {
         int i = int(&x - worms.data());
         if (vamp && &x != vamp && x.alive) worms[current].hp += (x.counted - x.hp + (type6 ? (*type6)[i] : 0)) / 2;  // poison included
@@ -1280,7 +1334,7 @@ void Game::applyDamage(const std::vector<int> *type6) {
         if (x.hp != x.counted) countGroup.push_back(i);
         if (x.hp <= 0) {
             deathQueue.push_back(i);  // GameLogic.AddMeToDeathQueue
-            if ((cfg.rules & RULE_KING) && i % perTeam == 0) surrender(x.team);  // flag 0x100 (0x5abf26)
+            if ((cfg.rules & RULE_KING) && wormSlot(i) == 0) surrender(x.team);  // flag 0x100 (0x5abf26)
         }
     }
 }
@@ -1315,7 +1369,7 @@ void Game::checkActivity() {
     else doPostActivity();
 }
 
-// stdlib DoPostActivity: pass 1 ApplyPoison, ApplyDamage, DoubleDamage 0, DoOncePerTurnFunctions (stdvs, two teams standing:
+// stdlib DoPostActivity: pass 1 ApplyPoison, ApplyDamage, DoubleDamage 0, DoOncePerTurnFunctions (stdvs, AllianceCount > 1:
 // sudden death, DropRandomCrate, Wormpot showers), then CheckActivity; pass 2 Turn.Ended, the victory check, StartTurn.
 void Game::doPostActivity() {
     Worm &w = worms[current];
@@ -1324,9 +1378,7 @@ void Game::doPostActivity() {
         std::vector<int> t6 = applyPoison();
         applyDamage(&t6);
         doubleDamage = false;
-        int left = 0;
-        for (int t = 0; t < teams; t++) left += standing(t);
-        if (left > 1 || cfg.mission) {
+        if (activeAlliances() > 1 || cfg.mission) {
             const Scheme &sc = cfg.scheme;
             if ((cfg.rules & RULE_SUDDEN_DEATH) && !suddenDeath && clock >= sc.roundTime * 3600) {  // CheckSuddenDeath: RoundTimeRemaining 0
                 suddenDeath = true;
@@ -1343,7 +1395,7 @@ void Game::doPostActivity() {
         return;
     }
     for (int &d : delays[w.team]) d = std::max(0, d - 1);  // W4M ActivateNextWorm 0x5b5a5f -> DecrementWeaponDelays 0x4f4df0: the team that just played
-    picked[w.team] = weapon, beginTurn(w.team);
+    picked[w.team] = weapon, beginTurn(current);
 }
 
 // GameLogic.DropRandomCrate 0x4fab20 (roll: rand % 100 < RandomCrateChancePerTurn) or CrateShower 0x4fb850 (6, no roll):
@@ -1372,7 +1424,7 @@ void Game::stepCount() {
     } else if (shown && !deathQueue.empty() && shots.empty() && !active()) {
         dyingWorm = deathQueue.front(), throes = COUNT_THROES;  // Worm.TimeToDie
         deathQueue.erase(deathQueue.begin());
-        if ((cfg.rules & RULE_KING) && dyingWorm % perTeam == 0) surrender(worms[dyingWorm].team);  // 0x5a7287
+        if ((cfg.rules & RULE_KING) && wormSlot(dyingWorm) == 0) surrender(worms[dyingWorm].team);  // 0x5a7287
     }
     if (shown && deathQueue.empty() && dyingWorm < 0) {
         for (int i : countGroup) worms[i].counted = std::max(0, worms[i].hp);
@@ -1589,8 +1641,8 @@ void Game::use(Worm &w) {
     case Kind::SkipGo: phase = Phase::Flying; break;  // W4M 0x587ed0: EndTurn, PostLaunchDelay, then a retreat of 0 (0x588160)
     case Kind::ChangeWorm:  // W4M 0x59a6c0: the first cycle spends one (DecrementInventory), later ones are free (SelectNextWorm)
         changing = true;
-        for (int k = 1, base = w.team * perTeam; k < perTeam; k++) {
-            int c = base + (current - base + k) % perTeam;
+        for (int k = 1, base = teamFirst[w.team], n = teamSize(w.team); k < n; k++) {
+            int c = base + (current - base + k) % n;
             if (worms[c].alive) { current = c; break; }
         }
         break;
@@ -1673,7 +1725,7 @@ void Game::vapourize(Worm &w) {
     int wi = int(&w - worms.data());
     // unspawned in the blast's own dispatch: its graphic never shows the blast's hurt
     events.erase(std::remove_if(events.begin(), events.end(), [&](const GameEvent &e) { return e.worm == wi && e.kind == GameEvent::Hurt; }), events.end());
-    if ((cfg.rules & RULE_KING) && wi % perTeam == 0) surrender(w.team);
+    if ((cfg.rules & RULE_KING) && wormSlot(wi) == 0) surrender(w.team);
     w.alive = false, w.hp = w.counted = 0, w.vel = {0, 0, 0};
     if (wi == current) selfHurt = true;
 }
@@ -1684,8 +1736,8 @@ bool Game::underwater(const Worm &w) const { return w.pos.y - R < water - 0.35f;
 
 void Game::drown(Worm &w) {
     int wi = int(&w - worms.data());
-    if (wp(WP_VAMPIRE) && current % perTeam == 0 && wi != current) worms[current].hp += w.counted / 2;
-    if ((cfg.rules & RULE_KING) && wi % perTeam == 0) surrender(w.team);
+    if (wp(WP_VAMPIRE) && wormSlot(current) == 0 && wi != current) worms[current].hp += w.counted / 2;
+    if ((cfg.rules & RULE_KING) && wormSlot(wi) == 0) surrender(w.team);
     if (w.grounded || w.motion.slide) w.vel = {w.vel.x / 2, -1.5f, w.vel.z / 2};  // from Ambulatory / Sliding (0x5ad91f): -0.03 units/ms
     w.alive = false, w.drowned = true, w.floatT = 0;
     w.hp = 0, w.counted = std::max(1, w.counted);  // counted > 0: afloat, drawn until its blast
@@ -2831,10 +2883,8 @@ void Game::step(const Input &raw) {
     }
 
     clock++;  // TimerLogicEntity 0x50f17d: the round clock also runs in the hot seat
-    // stdvs Worm_Died: the turn ends once fewer than two teams stand (worms die at their blast, not at 0 hp)
-    int left = 0;
-    for (int t = 0; t < teams; t++) left += standing(t);
-    bool over = !cfg.mission && left <= 1;
+    // stdvs Worm_Died: the turn ends once AllianceCount < 2 (worms die at their blast, not at 0 hp)
+    bool over = !cfg.mission && activeAlliances() <= 1;
     switch (phase) {
     case Phase::Aim:  // a script ends the turn through its Timer_* / Worm_Damaged_Current callbacks (stdlib EndTurn)
         // 0x586e75: a powered weapon's FirePressed posts Timer.EndTurn (0x549ad0), clearing the turn-running flag +0x6a until the shot

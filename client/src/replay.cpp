@@ -1,12 +1,14 @@
 #include "replay.h"
 #include "loading.h"
+#include "wire.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <utility>
 
-// .w4r: "W4R3", config (Start message layout minus owners), u32 final checksum, u32 ticks, 6 bytes per tick (W4R2: 5, no zoom; W4R1: 4, no flags).
+// .w4r: "W4R5", config (Start message layout minus owners), u32 final checksum, u32 ticks, 6 bytes per tick (W4R2: 5, no zoom; W4R1: 4, no flags).
+// W4R1..4 teams: str name, u8 cpu, u8 voice, u8 hat, played as then: team order from team 0, each team its own alliance.
 namespace {
 struct Out {
     std::string b;
@@ -28,10 +30,10 @@ struct In {
 
 bool Recording::save(const std::string &path) const {
     Out o;
-    o.b = "W4R4";
+    o.b = "W4R5";
     o.u32(cfg.seed), o.u8(cfg.teams), o.u8(cfg.wormsPerTeam), o.str(cfg.map), o.u32(cfg.rules);
     o.u8((uint8_t)cfg.teamSetup.size());
-    for (const auto &t : cfg.teamSetup) o.str(t.name), o.u8(t.cpu), o.u8(t.voice), o.u8(t.hat);
+    for (const auto &t : cfg.teamSetup) { wire::W w(0); putTeam(w, t), o.b.append(w.b, 3, std::string::npos); }
     o.u8(sizeof(Scheme));
     o.b.append((const char *)&cfg.scheme, sizeof(Scheme));
     o.u32(cfg.wormpot), o.u8((uint8_t)std::min<size_t>(cfg.custom.size(), 255));
@@ -58,13 +60,18 @@ bool Recording::load(const std::string &path) {
     char buf[65536];
     for (size_t n; (n = fread(buf, 1, sizeof buf, f));) b.append(buf, n);
     fclose(f);
-    int ver = b.size() >= 4 && !b.compare(0, 3, "W4R") ? b[3] - '0' : 0, per = ver >= 3 && ver <= 4 ? 6 : ver == 2 ? 5 : ver == 1 ? 4 : 0;
+    int ver = b.size() >= 4 && !b.compare(0, 3, "W4R") ? b[3] - '0' : 0, per = ver >= 3 && ver <= 5 ? 6 : ver == 2 ? 5 : ver == 1 ? 4 : 0;
     if (!per) return false;
     In r{b, 4};
     cfg = GameConfig{};
     cfg.seed = r.u32(), cfg.teams = r.u8(), cfg.wormsPerTeam = r.u8(), cfg.map = r.str(), cfg.rules = r.u32();
     cfg.teamSetup.resize(r.u8());
-    for (auto &t : cfg.teamSetup) t.name = r.str(), t.cpu = r.u8(), t.voice = r.u8(), t.hat = r.u8();
+    for (auto &t : cfg.teamSetup)
+        if (ver >= 5) {
+            wire::R w{(const uint8_t *)b.data() + r.p, (const uint8_t *)b.data() + b.size()};
+            t = wire::getTeam(w), r.ok &= w.ok, r.p = w.p - (const uint8_t *)b.data();
+        } else t.name = r.str(), t.cpu = r.u8(), r.u8(), r.u8();
+    if (ver < 5) cfg.allyToStart = 0;
     for (size_t i = 0, n = r.u8(); i < n; i++) {  // a newer, longer Scheme: extra bytes ignored
         uint8_t v = r.u8();
         if (i < sizeof(Scheme)) ((uint8_t *)&cfg.scheme)[i] = v;

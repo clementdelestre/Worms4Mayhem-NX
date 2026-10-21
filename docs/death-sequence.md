@@ -18,7 +18,7 @@ How long the camera stays on a worm that dies, in W4M and here. 60 ticks = 1 s.
 | Death5 scene (WORMACTING) | 3.0 s; Death15a 3.5 s |
 | Gesture clips in `worm.glb` | Sad 2.0, WhatWereYouThinking 3.83, SighAndShakeHead 5.54, Salute 3.0, ClutchChest 7.08, Doh 1.25, Ill 1.0, Vomit 3.42 s |
 | Gestures inside the scene | start at 0.16–0.81 s; Salute ends at 3.81 s, Doh at 1.45 s. The 3 s scene cuts the long ones, as in W4M |
-| Death, explosion, gravestone clips | none: `worm.glb` has no death clip, `grave0-3.glb` have no animation (static mesh, drawn on the ground at once) |
+| Death, explosion, gravestone clips | none: `worm.glb` has no death clip, the `graves/*.glb` (the team's GraveIndex, `assets/graves.txt`) have no animation (static mesh, drawn on the ground at once) |
 | Death voices (`voices/*/death*.ogg`, 75 files) | median 1.36 s, p90 2.35 s, max 3.66 s (3 files over 3 s) |
 | Explosion sound (`sfx/explosion*.ogg`) | 2.7, 3.2, 4.0 s files; audible for 2.5–3.2 s (−40 dB) |
 | Explosion particles (`fx.cpp`) | flash 0.3 s, fireballs 0.7 s, smoke up to 2.8 s |

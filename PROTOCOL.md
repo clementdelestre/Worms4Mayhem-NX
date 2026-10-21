@@ -55,10 +55,10 @@ C = client → server, S = server → client.
 | 0x13 | JoinRoom   | C   | `u32 roomId` |
 | 0x14 | RoomState  | S   | `u32 roomId, u32 hostId, u8 n, n × (u32 playerId, str name, u8 online)` — players in slot order |
 | 0x15 | Leave      | C   | — |
-| 0x16 | Teams      | C/S | C: `u8 n, n × team`; S: `u32 consoleId, u8 n, n × team`; `team` = `str name, u8 cpu, u8 voice, u8 hat` (cpu 0 = human, 1..5 = AI level). The sender's whole team list (several per console, humans and CPU); the relay keeps it per console and forwards it to the others (not back to the sender) |
+| 0x16 | Teams      | C/S | C: `u8 n, n × team`; S: `u32 consoleId, u8 n, n × team`; `team` = `str name, u8 cpu, str speech, str hat, str gloves, str glasses, str tash, str flag, u8 grave, u8 k, k × str wormName, u8 worms, i8 alliance, i8 handicap` (W4M NetworkTeamData + the slot settings, docs/match-setup.md "Saved teams": cpu 0 = human, 1..5 = AI level; ids are W4M's, "" = none / default; worms 0 = wormsPerTeam, alliance -1 = the lowest group no earlier team holds, handicap -1..1). The sender's whole team list (several per console, humans and CPU); the relay keeps it per console and forwards it to the others (not back to the sender) |
 | 0x17 | Lobby      | C/S | host → relay → the others: `u8 n, n × (u32 consoleId, u8 teamIdx), str map, u32 rules, u8 k, k × u8 scheme, u32 wormpot, u8 wormsPerTeam, u8 r, r × u32 readyConsoleId`. The n pairs are the room's team slots in order (slot = colour); `teamIdx` indexes that console's Teams list |
 | 0x18 | Ready      | C/S | C: `u8 ready`; S → host only: `u32 consoleId, u8 ready` |
-| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × (str name, u8 cpu, u8 voice, u8 hat), u8 k, k × u8 scheme, u32 wormpot, u8 c, c × Weapon` (server relays the bytes after the owners untouched) |
+| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × team, u8 k, k × u8 scheme, u32 wormpot, u8 c, c × Weapon` (server relays the bytes after the owners untouched) |
 | 0x21 | Inputs     | C/S | `u32 firstTick, u8 n, n × Input` |
 | 0x22 | TurnEnd    | C   | `u32 tick, u32 checksum` |
 | 0x23 | Desync     | S   | `u32 tick` |

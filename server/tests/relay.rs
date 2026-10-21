@@ -111,7 +111,7 @@ async fn full_match() {
 
 fn teams(list: &[(&str, u8)]) -> W {
     let mut w = W::new(TEAMS).u8(list.len() as u8);
-    for (n, cpu) in list { w = w.str(n).u8(*cpu).u8(1).u8(2); }
+    for (n, cpu) in list { w = (0..6).fold(w.str(n).u8(*cpu), |w, _| w.str("")).u8(0).u8(1).str("Worm").u8(1).u8(0xff).u8(0); }
     w
 }
 

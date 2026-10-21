@@ -154,6 +154,72 @@ The main menu list (row font, row height, gap, column width, box top) and the `W
 
 W4M lays the FE out about the screen centre in a 4:3 band [data]. Ours multiplies the x of every FE position by 1.333 (`FE_SPREAD`), keeping sizes [user-requested]. The ticker window runs between NAV Prev (-247, half 45) and NAV Start (264, half 40) less 10 FE each side: 406 FE at spread 1 (W4M's window at (11, -159)) [data / ours]. `FeFlat` keeps W4M's x for the left panel (divide, watermarks, Title Control), the Story book items and the movie frames, which sit on fixed art / 3D meshes [ours].
 
+### Saved teams (DATA.TeamBarracks), the team editor and the team pickers
+
+- Store [data: DEFSAVE.XOM `DATA.TeamBarracks`, `pe.py schema`]: `TeamDataColective` (Teams ref[] +0x14, HighScores ref[] +0x18), saved with the profile; every list below walks it in order. `StoredTeamData` fields:
+  TeamName +0x14, Worms str[] +0x18 (6 names), NewTeam +0x1c, Skill +0x20 (0 human, 1..5 = `FETXT.CPU1..5` "CPU Level 1..5"), Grave +0x24, SWeapon +0x28, Flag +0x2c (`Flag.*`), Speech +0x30 (speech bank, `vocowbo`...),
+  Player +0x34, SecretWeapon / SecretWeaponCluster refs +0x38 / +0x3c (`WeaponFactoryContainer`: the team's own Weapon Factory weapon and its cluster), CustomWeapon +0x40 (its name), Hat / Gloves / Glasses / Tash +0x44..+0x50
+  (`WXFE.A.*` ids), ClothingChanged +0x54, InGame bool +0x58, then TutorialsDone, AllTutorialsDone, AllMissionsDone, StoryMissionsCompleted u32[] (+0x74), StoryChapter (+0x78), w3dMissionsComplete(Extra): Story / tutorial progress is per team.
+  `NetworkTeamData : StoredTeamData` adds WormCount +0x5c and Alliance +0x60 (docs/w4m/network.md §Net messages). Per-team stats live apart (PersistStatsStorage 0x614b60, "not found so CreateNewTeamRecord.") [disasm].
+- Default barracks [data, DEFSAVE.XOM, 7 teams, all NewTeam 0, ClothingChanged 0]: name / Skill / Grave / Flag / Speech / CustomWeapon / Hat, Gloves, Glasses, Tash:
+  Gunslingers 0 / 8 / Flag.Cowboy / vocowbo / FETXT.ThePeaceBreaker / Hat.Cowboy, Gloves.Cowboy, -, Mustache.Cowboy (worms Shotgun Sam, Deadwood Hood, Deadeye Dye, Wyatt Emett, Boss Chogg, Marshall Meeks);
+  Funky Dudes 0 / 10 / Flag.Afro / vodisco / FETXT.ChatterBomb / Hat.Afro, -, Glasses.Star, Mustache.Afro (Jive Jegg, Disco Dennis, Cha Cha Charles, Kickin Kel, Groovy Grant, Jumping Jax);
+  Spacemen 0 / 6 / Flag.Spaceman / voastro / FETXT.KneeTrembler / Hat.Spacesuit, Gloves.Spacesuit, -, - (Captain Pickles, Cadet O'Carroll, Cadet Dobson, Cadet Egginton, Cadet Watson, Cadet Sharpy);
+  Scots 0 / 15 / Flag.Scotland / voscot / FETXT.AFewProblems / Hat.Scottish, -, -, Mustache.Scott (McDunstan, McGomersall, McStrangeway, McDimond, McBanks, McMorriss);
+  CPU Easy 1 / 14 / Flag.Worksite / voblues / FETXT.WipeOut / Hat.Party, Gloves.White, Glasses.3D, - (Aveyard, Riley, Daniel, Karl, Chesh, Clitheroe);
+  CPU Normal 3 / 9 / Flag.Cool / voclassi / FETXT.Factory.Blaster / Hat.Baseball, Gloves.White, Glasses.Rayban, - (Jay, Oli, Kilburn, Woody, Alan, Baldwin);
+  CPU Hard 5 / 5 / Flag.Tapper / voclassi / FETXT.TheBrownSofa / Hat.Pigtails, -, Glasses.NHS, - (Elaine, Steels, Christie, Debbie, Jess, Leanne). Some default worm names end with a space in the data.
+  So 4 human teams and 3 CPU teams; CPU teams are ordinary saved teams with Skill > 0, not a separate preset list.
+- Limit [disasm 0x4bf9f0, 0x4bdc90, 0x4c3590]: the "Create Team" row (`FETXT.CreateTeam`, `9Create`) is appended to a team list only while the barracks hold <= 19 teams: at most 20 saved teams. A match holds at most
+  `DRM::kMaxTeams` = 4 teams (`PrepareTeam$Select1..4`, assert `nIndex > 0 && nIndex <= DRM::kMaxTeams` in 0x742ab0) [disasm].
+- Create [data: MENUTWKX `WXFEP.NewTeamControl(List)`, `WXFEP.NewTeamContolListAI`; disasm 0x742ab0]: `WXMsg.PrepareTeam$CreateNew` opens `WXFEP.NewTeamControl` ("Do you want this team to be player controlled?"): Yes -> `User.Skill` 0,
+  No -> `WXFEP.NewTeamControlAI` (rows CPU Level 1..5 -> `User.Skill` 1..5); both then `PrepareTeam$SetUpNew`. `CreateNewNoCPU` (lists where CPU teams are not allowed) skips the question (Skill 0). The name is entered in `WXFEP.NewTeamName`
+  ("Enter team name", `User.TeamName`, checked by `USER.NameCheck`), then the editor opens (`FE.ChangeMenu$WXFE.TeamOptions`, `WXFE.TeamOptionsTrial` in the trial). The editor has no Skill row: the controller is fixed at creation [data].
+- New team SetUpNew 0x742134 [disasm, REA decompile]: fails at 20 teams ("Too many teams already") or on a name already in the barracks;
+  NewTeam = the parameter, the 6 worm names `User.HumanWorm1..6`, each first drawn by 0x737d86 from the comma list `FE.RandomWormNames` (text,
+  e.g. "Habbers,Hannah,...") until it differs from the other five; Flag by `SAVE.Language` 0..12: Flag.UK, USA, Czech, France, Germany, Italy,
+  Japan, Poland, RussianFederation, Spain, Slovakia, Innocent, Chinese; Speech `voclassi`; a CPU team (User.Skill > 0) gets Flag.Terminator; Skill;
+  the other fields keep the StoredTeamData defaults (Grave 0, no attachment) [assumed: container defaults]; `MCa.Team` = the name.
+- Lists [data, `tools/w4m-re/setuplists.py`]: graves = `WXFEP.SelectGraveList` rows, User.Grave 0..15 (Grave.Arabian Genie Lamp, Building
+  Jackhammer, Camelot Sword in Stone, Cross Celtic Cross, Prehistoric Mystic Rocks, Pyramid Mystic Pyramid, Space Sci-Fi, Temple, WildWest
+  Tombstone, Worm Statue, Bulb Weird, Obelisk, Marble, SkullnBones Chatting Skull, Eye The Eye, Brown Mystic Brown); in game 0x725eda maps
+  GraveIndex 0..20 to those meshes then Grave.DLC1.Army / Shark / Christmas / Sherlock / Sport [disasm]. Flags = `WXFEP.SelectFlagList` (91 rows,
+  `Flag.<id>`), each a LOCAL `FlagDataContainer` (TextResource `FETXT.Flag.*`, TargaName = the `Data/HUD/Flags/<TargaName>.tga` picture, e.g.
+  Flag.WizardsHat -> "Custom Wizard Hat", Flag.Liechenstein -> "Liechtenstein"); in game the team energy bar shows it (`HUD.Energy.Flag*Scale`,
+  TeamData FlagGfxName +0x4c). Speech = `WXFEP.SelectSoundbankList` (30 rows; Alien Breed, Classic, DLC Soundbank 3..5, Worms and Worms 2 all
+  `voclassi`). Attachments = WORMATTACHMENTS `WXFE_WormAttachments` Type 0 hat (74), 1 gloves (38, MeshID skinned to the worm's 34 bones,
+  FrontEndMeshID a preview mesh, no Offsets), 2 glasses (34), 3 tash (25), 4 Hat.Terminator; each has a `Lock.*` key and an Offsets list (not
+  decoded: which entry applies). Glasses and tash meshes sit below the hats' origin (y -9..-2 / -19..-4 units) [observed in the converted meshes].
+  Secret weapon options = the stock Weapon Factory weapons (LOCAL `DATA.LockedWeapons`, StockWeapon 1: FETXT.AFewProblems, ChatterBomb,
+  KneeTrembler...) plus the player's own; SWeapon (0..3) is AddTeam's index into {7, 6, 17, 19} for `Tn_SWeapon`, used only when SchemeData
+  Special is 1 (stdvs IncrementAlliedInventory), 0 in every SchemeData of the data [data].
+- Edit / delete [disasm 0x4c5c90 `WXEditTeam`, 0x4c4790 `WXDeleteTeam`; data `WXFEP.EditTeam` / `WXFEP.DeleteTeam` popups of `WXFE.Customise`]: the edit list shows every team, CPU ones included (row icon by Skill: 0 `WXFE.TeamInfo03:3`,
+  1 `02:2`, 2 `02:3`, 3 `03:0`, 4 `03:1`, 5 `03:2`); a row sends `FE.LoadTeam$<name>`, `KillPopUp`, `WXFE.CurrentTeamPage` 0, `FE.ChangeMenu$WXFE.TeamOptions`. The delete list skips the human teams when only one human team is left
+  (TeamControlService 0x738663 counts them), so the last human team cannot be deleted; a row sets `User.HumanTeamName` and opens `WXFEP.ConfirmDeleteTeam` (`FE.DeleteTeam`).
+- Editor `WXFE.TeamOptions` [data MENUTWKX; disasm 0x742ab0 `PrepareTeam$...`]: 3 pages (`Q.PageNumber` "%s/3", BUTTON Prev / Next = `PagePrev` / `PageNext`), the live worm `TheWorm` (WXFE_WormDesc), SUBHEADER Teamname `User.HumanTeamName`,
+  Cancel Edit (`Request^Leave^WXFE.TeamOptions`, `WXFEP.QuitTeamOptions`) and Accept Changes (`PrepareTeam$AcceptChanges`). Page 1 `WXFE.TeamPage1`: 6 worm name edit boxes `User.HumanWorm1..6`. Page 2 `WXFE.TeamPage2List`:
+  Speech Settings: Soundbank `WXD.CurrentSpeechName` (-> `WXFEP.SelectSoundbank`), Test Speech (`FE.PlayRandomSpeech`); Worm Settings: Head / Eyes / Face / Hands = `WXFE.HatName` / `GlassesName` / `TashName` / `GlovesName`
+  (-> `WXFEP.Outfit`, lists `CreateAttachmentsList$Hats/Glasses/Tash/Gloves`; ◀ ▶ = `PrepareTeam$Hat+ / Hat- / Glasses+ / ...`). Page 3 `WXFE.TeamPage3List`: Team Weapon `User.CustomWeaponName` (-> `WXFEP.SelectWeapon`),
+  Flag `User.FlagName` (-> `WXFEP.SelectFlag`), Grave `WXD.CurrentGraveName` (-> `WXFEP.SelectGrave`). One Hat / Gloves / Glasses / Tash per team record: every worm of a team wears the same outfit [data].
+- Match setup slot pick `WXFEP.InsertTeam` [disasm 0x4bf9f0 `WXAllTeamAvailable`, REA decompile]: title `FETXT.SelectTeam` "Select a team"; one row per saved team, skipping any team already in a slot of `GM.GameInitData`
+  (name compared with the filled slots: a team plays at most once per match) and skipping CPU teams (Skill > 0) when FrontEndService 0x7260d0("CPU") is false. That query is false for SubGameType Destruction, Statue and Fort,
+  true otherwise; the same function answers "Handicap" (false for Destruction / Statue / Fort), "Allies" (false for Destruction / Statue / Survivor / Fort) and "Landscape" [disasm]. A row sends `FE.AddLTeamToGame$<name>`,
+  `FE.CheckGameStart$LocalGame`, `FE.PopulateTable$WXCreateAGame`, `KillPopUp`. Last row (under 20 teams): Create Team -> `PrepareTeam$CreateNew` (`CreateNewNoCPU` when CPU teams are off).
+- Filled slot settings `WXFEP.TeamSettingsList` [disasm 0x4c0640 `WXTeamSettings`; data]: title = `WXFE.TeamSelectedName`; three ◀ ▶ rows: worms `WXFE.TeamSelectedWorms` 1..6, wrapping, capped so the match's worms stay
+  <= 16 [assumed: the stack slot holding 16 is the cap]; a team enters with min(4, 16 - the worms already in) (0x73620f; 15 for 16 online when
+  `WXNET.Value.MaxPlayers` is 4 and 2 teams are in) and the lowest alliance no team in holds (0x737633), handicap 0 [disasm, docs/w4m/turn.md
+  "Alliances and turn order"]; alliance `WXFE.TeamSelectedAlliedGroup` 0..3 wrapping (icons `WXFE.TeamInfo01:0..3`, `02:0..1`); handicap
+  `WXFE.TeamSelectedHandicap` -1 / 0 / +1 wrapping (icons `WXFE.HandicapAllies:1 / :2 / :0`), the alliance and handicap rows only when "Allies" / "Handicap" hold [assumed: the row gating, from the queries' use in this function]. Then Remove Team
+  (`PrepareTeam$RemoveTeam`, `FETXT.RemoveTeam`) and Accept (`PrepareTeam$Update`). Handicap: each worm starts with WormHealth + Handicap x 25 / 25 /
+  50 / 100 at WormHealth 50 / 100 / 150 / 200, else unchanged [data: lib_SetupMultiplayerTeam bytecode]. Allies share the turns' alternation and
+  the win (docs/w4m/turn.md "Alliances and turn order").
+- Single player `WXFEP.SelectTeam` [disasm 0x4c3590 `WXStoryTeam` "Select a mission team", 0x4bdc90 (Tutorial `FETXT.SelectTutorialTeam` via 0x4ce050, Challenges via 0x4ce2b0); data `WXFE.LocalGameList`]: only human teams
+  (Skill 0); a row sets `WXFE.MissionTeamName` and goes on (Story: first-launch movie, §Story and Challenges screens); last row Create Team (`CreateNewNoCPU`). In the trial only `Funky Dudes` is offered (`IsTrialVersion`). Story progress
+  is the picked team's (StoryChapter / StoryMissionsCompleted); the Challenges SUBHEADER is `User.HumanTeamName`.
+- Online [disasm 0x4c4110 `WXOnlineTeam`; data `WXFE.MainMenuList` Online row]: `WXFEP.SelectTeam` titled `FETXT.SelectOnlineTeam` lists the teams with Skill 0 and NewTeam 0; a row sets `WXFE.NetLocalTeamIndex` (barracks index),
+  then `KillPopUp`, `xo.msgReqOnlineMainScreen`. The player brings that one saved team, sent as `NetworkTeamData` in `TeamMessage` (docs/w4m/network.md §Net messages) [disasm + data; assumed: one team per player].
+- [web: https://m.hexus.net/gaming/reviews/ps2/1648-worms-4-mayhem-ps2/?page=2] the PS2 review: a team's special weapon, flag, grave and speech are changeable, the members share one look.
+
 ### Match setup screens (WXFE.CreateAGame, WXFEP.InsertTeam / SelectScheme / SelectLandscape2)
 
 - `WXFE.CreateAGame` (MENUTWKX, `xom.py dump Tweak/MENUTWKX.XOM WXFE.CreateAGame`) [data]: BeforeMenuDisplayed `AnimDivide$In_Curve`, `FE.PopulateTable$WXCreateAGame`; Cancel -> `Request^Leave^WXFE.CreateAGame`; default

@@ -320,10 +320,10 @@ struct ScriptHost {
         if (s < 0 || s >= SLOTS || !S->built) return;
         int i = S->slotWorm[s], t = std::min(3, (int)fnum(ctn(slotName("Worm.Data%02d", s)), "TeamIndex"));
         if (i >= 0 && g.worms[i].alive) return (void)TraceLog(LOG_WARNING, "script: worm %d respawned while alive", s);
-        if (i >= 0 && i / g.perTeam != t) S->wormSlot[i] = -1, i = -1;
-        for (int k = 0; k < g.perTeam && i < 0 && t < g.teams; k++) if (S->wormSlot[t * g.perTeam + k] < 0) i = t * g.perTeam + k;
-        for (int k = 0; k < g.perTeam && i < 0 && t < g.teams; k++)  // else a gone worm's column: its slot is remapped if it comes back
-            if (!g.worms[t * g.perTeam + k].alive && !g.worms[t * g.perTeam + k].drowned) i = t * g.perTeam + k, S->slotWorm[S->wormSlot[i]] = -1;
+        if (i >= 0 && (t >= g.teams || i < g.teamFirst[t] || i >= g.teamFirst[t + 1])) S->wormSlot[i] = -1, i = -1;
+        for (int k = 0; t < g.teams && k < g.teamSize(t) && i < 0; k++) if (S->wormSlot[g.teamFirst[t] + k] < 0) i = g.teamFirst[t] + k;
+        for (int k = 0; t < g.teams && k < g.teamSize(t) && i < 0; k++)  // else a gone worm's column: its slot is remapped if it comes back
+            if (!g.worms[g.teamFirst[t] + k].alive && !g.worms[g.teamFirst[t] + k].drowned) i = g.teamFirst[t] + k, S->slotWorm[S->wormSlot[i]] = -1;
         if (i < 0) return (void)TraceLog(LOG_WARNING, "script: no room for worm %d in team %d", s, t);
         S->slotWorm[s] = i, S->wormSlot[i] = s, S->touched[s] = true;
         Worm w = blank();
@@ -369,9 +369,12 @@ struct ScriptHost {
             S->slotWorm[s] = i, S->wormSlot[i] = s;
             place(g, worms[i], c, s);
         }
-        g.worms = worms, g.teams = teams, g.perTeam = per, g.current = 0;
+        g.worms = worms, g.teams = teams, g.current = 0;
+        g.teamFirst.clear();
+        for (int t = 0; t <= teams; t++) g.teamFirst.push_back(t * per);
         g.allied.assign(teams, 0);
         for (int t = 0; t < teams; t++) g.allied[t] = (int8_t)alliance(t);
+        g.initQueues(), g.allyStart = 0;  // SetUpStartGame: Story, Tutorial and Challenge start with alliance 0
         g.nextWorm.assign(teams, 0), g.fuses.assign(teams, 3), g.picked.assign(teams, g.weapon);
         g.ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0)), g.delays.assign(teams, std::vector<int>(WEAPONS.size(), 0));
         g.surrendered.assign(teams, 0), g.spy.assign(teams, 0), g.special.assign(worms.size(), 0), g.superWeapon.assign(teams, 0);
@@ -406,8 +409,8 @@ struct ScriptHost {
         if (S->started) {
             const Worm &w = g.worms[g.current];
             if (!same) for (int &d : g.delays[w.team]) d = std::max(0, d - 1);
-            g.picked[w.team] = g.weapon, g.beginTurn(same ? (w.team + g.teams - 1) % g.teams : w.team);
-        } else g.beginTurn(g.teams - 1);
+            g.picked[w.team] = g.weapon, g.beginTurn(g.current, same);
+        } else g.beginTurn(-1);
         if (g.phase != Phase::GameOver && slotOf(g.current) >= 0) {
             int t = g.worms[g.current].team;
             S->ammoSlot[t] = slotOf(g.current), pushInventory(t);
@@ -717,13 +720,9 @@ struct ScriptHost {
         } else if (is("RandomNumber.Get")) {  // 0x4ff0aa: Uint = a draw's low 16 bits, then Float = another's / 65536
             put("RandomNumber.Uint", (int)(g.rand01() * 65536)), put("RandomNumber.Float", (int)(g.rand01() * 65536) / 65536.0f);
         } else if (is("WormManager.GetActiveAlliances")) {
-            std::set<int> al;
-            for (int t = 0; t < g.teams; t++) if (g.standing(t)) al.insert(alliance(t));
-            put("AllianceCount", (double)al.size());
+            put("AllianceCount", (double)g.activeAlliances());
         } else if (is("WormManager.GetSurvivingTeam")) {
-            int t = 0;
-            while (t < g.teams && !g.standing(t)) t++;
-            put("SurvivingTeamIndex", t < g.teams ? t : -1);
+            put("SurvivingTeamIndex", g.survivingTeam());
         } else if (is("GameLogic.Mission.Success") || is("GameLogic.Challenge.Success")) gameOver(true, is("GameLogic.Challenge.Success"));
         else if (is("GameLogic.Mission.Failure") || is("GameLogic.Challenge.Failure") || is("GameLogic.Draw")) gameOver(false, is("GameLogic.Challenge.Failure"));
         else if (is("GameLogic.Win")) gameOver((int)a == 0);

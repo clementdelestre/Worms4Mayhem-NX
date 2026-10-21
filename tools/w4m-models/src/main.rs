@@ -80,10 +80,6 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("ufo", "AlienAbduction", 0.0, false, &["AbductStart", "AbductViolate+AbductLoop2", "AbductOpenDoors+AbductLoop2", "AbductLoop", "AbductLoop2", "AbductCloseBeam", "AbductEnd+AbductLoop2", "AbductFail"]),  // AlienAbductionGraphicEntity: raw units, origin on the beam axis; saucer, pods, BeamCone, CreatePoint; +AbductLoop2: BeamCone stays closed after AbductCloseBeam
     ("warpgate", "AbductionWarpGate", 0.0, false, &["WXM_DefSource"]),  // the portal the UFO arrives and leaves through
     ("cow", "Cow.Payload", 0.0, false, &["Hang", "Skydive"]),  // ParachutePayloadGraphicEntity: Crate.Chute at its "Parachute" node
-    ("grave0", "Grave.Cross", 0.9, true, &[]),
-    ("grave1", "Grave.Worm", 0.9, true, &[]),
-    ("grave2", "Grave.Obelisk", 0.9, true, &[]),
-    ("grave3", "Grave.SkullnBones", 0.9, true, &[]),
     // Hats (Bundl172-248, one "Hat.<Name>" XMeshDescriptor each; attach at the worm's HatLocator like held items at WeaponLocator)
     ("hats/afro", "Hat.Afro", 0.0, false, &[]),
     ("hats/alien", "Hat.Alien", 0.0, false, &[]),
@@ -1133,7 +1129,7 @@ fn main() {
     }
     let data = find_ci(Path::new(&args[1]), "Data").unwrap_or_else(|| PathBuf::from(&args[1]));
     let out = PathBuf::from(args.get(2).map_or("client/assets/models", |s| s.as_str()));
-    for d in ["hats", "frontend", "sky", "fx"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
+    for d in ["hats", "gloves", "glasses", "tash", "graves", "frontend", "sky", "fx"] { fs::create_dir_all(out.join(d)).expect("create out dir"); }
     let mut bundles: Vec<PathBuf> = fs::read_dir(data.join("Bundles")).expect("Data/Bundles").flatten().map(|e| e.path()).collect();
     bundles.sort_by_key(|p| p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.trim_start_matches(|c: char| !c.is_ascii_digit()).parse::<u32>().ok()).unwrap_or(u32::MAX));
     // level skies (SkyBoxEntity, Land.SkyBoxResource "<THEME>.<TIME>Sky"), raw units, named like the ramps in ui/sky
@@ -1150,6 +1146,15 @@ fn main() {
         let Some((desc, clips)) = l.strip_prefix("mesh ").and_then(|r| r.split_once(' ')) else { continue };
         let wanted: Vec<&str> = clips.split('+').filter(|c| *c != "-").map(|c| &*Box::leak(c.to_string().into_boxed_str())).collect();
         todo.push((format!("fx/{}", desc.to_lowercase()), desc.to_string(), 0.0, false, Box::leak(wanted.into_boxed_slice())));
+    }
+    // team outfits and graves, listed by tools/w4m-re/setuplists.py: raw units (attachments at the worm's locators), graves 20 units per metre about their origin
+    for l in fs::read_to_string(out.join("../attachments.txt")).unwrap_or_default().lines() {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() > 3 && f[0] != "0" && f[0] != "4" { todo.push((f[2].to_string(), f[3].to_string(), 0.0, false, &[][..])); }  // hats: MODELS
+    }
+    for l in fs::read_to_string(out.join("../graves.txt")).unwrap_or_default().lines() {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() > 1 { todo.push((f[0].to_string(), f[1].to_string(), -0.05, false, &[][..])); }
     }
     for path in bundles {
         if todo.is_empty() { break; }

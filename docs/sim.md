@@ -64,8 +64,11 @@ Multiple Girders (`WP_MULTI_GIRDER`, W4M GirdersDontEndTurn, disasm 0x55ac30).
 
 In order: bubbles age one turn end (W4M Bubble.Lifetime, data); Icarus, girder preview, Double Damage and binoculars reset (W4M
 DoPostActivity `SetData("DoubleDamage", 0)`, data); poison takes `poison` hp from each worm, never below 1 (W4M Worm.Poison, data);
-game over check; sudden death (below); the next team in order with a living worm, its next
-worm in rotation (`nextWorm`); turn timer = `turnTime` s, hot seat = `hotSeat` s (W4M HotSeat 10 s, data); wind
+game over check: one alliance or none left standing (`activeAlliances`, W4M GetActiveAlliances 0x5b4030), the winner the last
+standing team (`survivingTeam`, GetSurvivingTeam 0x5b3d40), disasm; sudden death (below); the next worm by W4M SelectNextWorm
+0x5b5630 (disasm, docs/w4m/turn.md "Alliances and turn order"): the next alliance after the last worm's (`allyStart` on the first
+turn) whose queue (`allyQueue`) holds a team with a worm to play, that team (it goes to the back of the queue), its next worm in
+rotation (`nextWorm`); SameTeamNextTurn keeps the last worm's team; turn timer = `turnTime` s, hot seat = `hotSeat` s (W4M HotSeat 10 s, data); wind
 `WIND_CAP[wind] × r²` along (cos, sin) of r2 × 2 × 3.14, `wind` / `windZ` (W4M stdlib SelectRandomWind, data; an xz vector 0x57eb25, disasm; levels 0, 3, 5, 10 / 10; HUD meter `Hud::draw`: downwind pointer in the camera frame, "NNm" = round(10 × |wind|), docs/w4m/render.md "Wind meter"; `Ui::windPointer`: W4M's yaw with its -sin(-268 / 640) term, the tip turned by ArrowOrien (0.75, 0, -0.2) in XYZ order and seen down -z, the sprite foreshortened along its axis; ours: the HUD is drawn in 2D with no projection of its own, so it matches W4M only if W4M's HUD camera is orthographic (not traced)); the empty hand: `weapon` -1 (W4M GameLogic.Turn.Started
 0x566d57 sets kWeaponUndefined, disasm; Weapon.Create runs only from scripts); `picked[team]` keeps the weapon held when its last turn
 ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall before, in `Settle` (below).
@@ -121,12 +124,12 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   that damage for the next ApplyDamage.
 - DoPostActivity pass 1 (`crated`): ApplyPoison (`applyPoison`, 0x5ac060: poison never below 1 hp; an unhurt abductee gets
   rand % 100 hp, 0 kills; damage type 6 shows no display unless other damage is pending, 0x5abe38), ApplyDamage, DoubleDamage 0,
-  then with two teams standing (or a mission): sudden death (RoundTimeRemaining 0; `sdType` = SchemeData SuddenDeath: all to 1 hp,
+  then with two alliances standing (AllianceCount > 1, `activeAlliances`; or a mission): sudden death (RoundTimeRemaining 0; `sdType` = SchemeData SuddenDeath: all to 1 hp,
   nothing, or a draw), the water rise `waterSpeed` 0 / 4 / 8 / 16 units once it started, DropRandomCrate (0x4fab20, chance %),
   the Wormpot crate shower; then CheckActivity. Pass 2: delays, `beginTurn` (victory check, Turn.Ended).
 - A team stands until its last worm died (its blast) or it surrendered (`surrendered`, SurrenderTeam 0x5b4d00: the Surrender utility
   and a vital worm, RULE_KING / Wormpot Vital Worm, flag 0x100 on each team's first worm; its worms stay). The turn ends once fewer
-  than two stand (stdvs Worm_Died). Wormpot Vampire: the active team's first worm gains half of every other worm's damage at
+  than two alliances stand (stdvs Worm_Died, AllianceCount < 2). Wormpot Vampire: the active team's first worm gains half of every other worm's damage at
   ApplyDamage (0x5a9710), poison included, and half a drowning worm's energy (0x5ad7c9).
 - The round clock (`clock`) runs in the hot seat too (TimerLogicEntity 0x50f17d).
 
@@ -232,7 +235,7 @@ W4M side: docs/w4m/turn.md §6b.
   - `superWeapon` is drawn at start from the team's ammo, before Crates Only clears it. The 150 type-4 cap is in `hurt`.
 - **Specialists** [data]:
   - `special` holds each worm's class. `allowed()` (inside `usable()`) applies the active worm's Allow set; the class's ammo is written into the team
-    ammo. Homing / Airstrike delays become 1 / 5. Our teams have at most 4 worms.
+    ammo, by the worm's team size and place (`teamSize`, `wormSlot`; teams of one worm none). Homing / Airstrike delays become 1 / 5 for every team once a team has two worms or more.
 - **No Cowards** [data]: the scheme's retreat time becomes 0 (weapon overrides stay), Surrender ammo 0.
 - **Energy Or Enemy** [data]: every worm starts poisoned at Worm.Poison.Default 10.
 - **Tug O Worms** [disasm]: `artillery()`: no walking, no jump, the Jetpack not allowed; the rope keeps its ammo. The AI plans no move and no retreat.

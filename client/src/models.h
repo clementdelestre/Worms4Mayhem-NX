@@ -46,7 +46,4 @@ void shade(Shader s);  // every draw() uses s until shade({})
 void pick(const char *clip, float t = 0);  // every draw() also plays this W4M clip's XChildSelector keys (looped) until pick(nullptr)
 bool visible(Vector3 c, float r);  // sphere vs the current BeginMode3D view frustum
 bool visible(Vector3 c, float r, const Matrix &mvp);  // sphere vs that view-projection's frustum
-// Hats (assets/models/hats/*.glb), sorted by file name so every client's list agrees. draw() them by hatName(i).
-int hatCount();
-const char *hatName(int i);  // "" if i out of range
 }

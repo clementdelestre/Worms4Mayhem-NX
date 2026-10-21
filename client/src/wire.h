@@ -2,6 +2,7 @@
 // PROTOCOL.md framing shared by the client (net.cpp) and the embedded LAN relay (lanhost.cpp).
 #include "sim.h"
 #include <cstdint>
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -43,9 +44,24 @@ struct R {
     Input input() { Input in; in.turn = u8(); in.walk = u8(); in.aim = u8(); in.buttons = u8(); in.flags = u8(); in.zoom = u8(); return in; }
 };
 
-// Shared by START, TEAMS and LOBBY.
-inline W &putTeam(W &w, const GameConfig::Team &t) { return w.str(t.name.c_str()).u8(t.cpu).u8(t.voice).u8(t.hat); }
-inline GameConfig::Team getTeam(R &r) { GameConfig::Team t; t.name = r.str(); t.cpu = r.u8(); t.voice = r.u8(); t.hat = r.u8(); return t; }
+// Shared by START, TEAMS, LOBBY and replays (PROTOCOL.md "Team"): W4M NetworkTeamData's fields, the per-slot WormCount / Alliance / Handicap.
+inline W &putTeam(W &w, const GameConfig::Team &t) {
+    w.str(t.name.c_str()).u8(t.cpu);
+    for (const std::string *s : {&t.speech, &t.hat, &t.gloves, &t.glasses, &t.tash, &t.flag}) w.str(s->c_str());
+    w.u8(t.grave).u8((uint8_t)std::min<size_t>(t.wormNames.size(), 6));
+    for (size_t i = 0; i < t.wormNames.size() && i < 6; i++) w.str(t.wormNames[i].c_str());
+    return w.u8(t.worms).u8((uint8_t)t.alliance).u8((uint8_t)t.handicap);
+}
+inline GameConfig::Team getTeam(R &r) {
+    GameConfig::Team t;
+    t.name = r.str(), t.cpu = r.u8();
+    for (std::string *s : {&t.speech, &t.hat, &t.gloves, &t.glasses, &t.tash, &t.flag}) *s = r.str();
+    t.grave = r.u8();
+    for (int i = 0, n = std::min<int>(r.u8(), 6); i < n; i++) t.wormNames.push_back(r.str());
+    t.worms = (uint8_t)std::min<int>(r.u8(), 6), t.alliance = (int8_t)r.u8(), t.handicap = (int8_t)std::clamp<int>((int8_t)r.u8(), -1, 1);
+    if (t.alliance > 3) t.alliance = -1;
+    return t;
+}
 inline W &putScheme(W &w, const Scheme &s) {
     w.u8(sizeof(Scheme));
     for (size_t i = 0; i < sizeof(Scheme); i++) w.u8(((const uint8_t *)&s)[i]);

@@ -11,6 +11,8 @@
 #include "lit.h"
 #include "movie.h"
 #include "loading.h"
+#include "barracks.h"
+#include "wire.h"
 #include "raymath.h"
 #include "rlgl.h"
 #include <algorithm>
@@ -319,19 +321,49 @@ void multiplayerMaps(std::vector<std::string> &maps) {
     }), maps.end());
 }
 
-// W4M's hat name (WXFE.A.Hat.* MeshTextNameID, hats.txt from tools/w4m-re/setuplists.py) of hat file hat
-const char *hatLabel(int hat) {
-    static std::map<std::string, std::string> key;
-    if (key.empty() && FileExists(DATA_DIR "assets/hats.txt")) {
-        char *txt = LoadFileText(DATA_DIR "assets/hats.txt");
-        for (char *l = strtok(txt, "\r\n"); l; l = strtok(nullptr, "\r\n"))
-            if (char *tab = strchr(l, '\t')) key[std::string(l, tab)] = tab + 1;
-        UnloadFileText(txt);
+// W4M's name of an attachment (its MeshTextNameID), "None" for ""
+const char *hatLabel(const std::string &id) {
+    if (id.empty()) return tr(nullptr, "None", "Aucun");
+    const Catalog::Item *a = catalog().attachment(id);
+    return tr(a ? a->text.c_str() : nullptr, id.c_str());
+}
+
+const std::vector<std::string> &hatIds() {
+    static std::vector<std::string> ids;
+    if (ids.empty()) {
+        ids.push_back("");
+        for (const Catalog::Item &a : catalog().attachments) if (a.type == 0 || a.type == 4) ids.push_back(a.id);
     }
-    if (!hat) return tr(nullptr, "None", "Aucun");
-    const char *file = Models::hatName(hat - 1);
-    auto it = key.find(file);
-    return tr(it != key.end() ? it->second.c_str() : nullptr, file);
+    return ids;
+}
+
+std::vector<std::string> speechIds() {
+    std::vector<std::string> ids;
+    for (int i = 0; i < Audio::voiceBanks(); i++) ids.push_back(std::string("vo") + Audio::voiceBankName(i));
+    return ids;
+}
+
+int voiceBankOf(const std::string &speech) {
+    for (int i = 0; i < Audio::voiceBanks(); i++) if (speech == std::string("vo") + Audio::voiceBankName(i)) return i;
+    return -1;
+}
+
+// setup.txt slot line "<kw> <i> <cpu> <hat id|-> <speech|-> <name>"; a number as hat or a bank folder as speech: our older lines
+static bool slotLine(const char *kw, const char *line, int &i, GameConfig::Team &t) {
+    char hat[64] = "", sp[64] = "";
+    int cpu = 0, n = 0;
+    if (sscanf(line, TextFormat("%s %%d %%d %%63s %%63s %%n", kw), &i, &cpu, hat, sp, &n) != 4) return false;
+    t.cpu = (uint8_t)Clamp(cpu, 0, 5);
+    t.hat = !strcmp(hat, "-") ? "" : isdigit((unsigned char)hat[0]) ? Barracks::legacyHat(atoi(hat)) : hat;
+    t.speech = !strcmp(sp, "-") ? "" : strncmp(sp, "vo", 2) ? std::string("vo") + sp : sp;
+    if (line[n]) t.name = line + n;
+    return true;
+}
+
+static std::string wireOf(const GameConfig::Team &t) { wire::W w(0); return putTeam(w, t).b; }
+
+static std::string slotText(const char *kw, int i, const GameConfig::Team &t) {
+    return TextFormat("%s %d %d %s %s %s\n", kw, i, t.cpu, t.hat.empty() ? "-" : t.hat.c_str(), t.speech.empty() ? "-" : t.speech.c_str(), t.name.c_str());
 }
 
 std::string mapTitle(const std::string &m) {
@@ -1459,7 +1491,10 @@ std::string teamName(const GameConfig &c, int team) {
     return TextFormat("Team %d", team + 1);
 }
 
-const char *wormName(int team, int i) { return WORM_NAMES[(team * 4 + i) % 16]; }
+const char *wormName(const GameConfig &c, int team, int i) {  // the team's own names (Tn_Wk_Name), else ours
+    if (team < (int)c.teamSetup.size() && i < (int)c.teamSetup[team].wormNames.size() && !c.teamSetup[team].wormNames[i].empty()) return c.teamSetup[team].wormNames[i].c_str();
+    return WORM_NAMES[(team * 4 + i) % 16];
+}
 
 // ---------------------------------------------------------------- frontend
 
@@ -1507,22 +1542,27 @@ bool Frontend::edit(std::string &s, const char *hint) {
 #endif
 }
 
-// setup.txt: "teams N", "slots MASK", "worms N", "map NAME|-", "rules N", "scheme <Scheme bytes>"... then "team <i> <cpu> <hat> <voice bank|-> <name>", "pad <i> <pad>"
+// setup.txt: "teams N", "slots MASK", "worms N", "map NAME|-", "rules N", "scheme <Scheme bytes>"... then "team <i> <cpu> <hat|-> <speech|-> <name>", "pad <i> <pad>"
 void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) {
     loaded = true;
-    hats = Models::hatCount();
+    barracks.load(DATA_DIR "teams.txt", DATA_DIR "assets/defteams.txt", DATA_DIR "setup.txt");
+    if (!FileExists(DATA_DIR "teams.txt")) barracks.save(DATA_DIR "teams.txt");
     cfg.teamSetup.resize(4);
     lobby.used = (1u << cfg.teams) - 1;
-    for (int t = 0; t < 4; t++)  // pad: team t's own pad when it is connected, else the first
-        cfg.teamSetup[t] = {DEFAULT_TEAMS[t], 0, (uint8_t)(Audio::voiceBanks() ? t % Audio::voiceBanks() : 0), 0, (uint8_t)(IsGamepadAvailable(t) ? t : 0)};
+    const std::vector<std::string> banks = speechIds();
+    for (int t = 0; t < 4; t++) {  // pad: team t's own pad when it is connected, else the first
+        cfg.teamSetup[t] = {};
+        cfg.teamSetup[t].name = DEFAULT_TEAMS[t], cfg.teamSetup[t].speech = banks.empty() ? "" : banks[t % banks.size()];
+        cfg.teamSetup[t].pad = (uint8_t)(IsGamepadAvailable(t) ? t : 0);
+    }
     if (!loadCustomWeapons(DATA_DIR "custom_weapons.json", customs)) customs.clear();
     if (customs.size() > (size_t)MAX_CUSTOM) customs.resize(MAX_CUSTOM);
     netProfile.clear();
     char *txt = LoadFileText(DATA_DIR "setup.txt");
     if (!txt) return;
     for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
-        char s[64] = "", nm[64] = "";
-        int a = 0, b = 0, c = 0, n = 0;
+        char s[64] = "";
+        int a = 0, b = 0;
         if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, 2, 4), lobby.used = (1u << cfg.teams) - 1;
         else if (sscanf(line, "slots %d", &a) == 1) lobby.used = (unsigned)a & 15;
         else if (sscanf(line, "worms %d", &a) == 1) cfg.wormsPerTeam = Clamp(a, 1, 4);
@@ -1543,15 +1583,8 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
             auto it = std::find(maps.begin(), maps.end(), std::string(s) == "-" ? "" : s);
             if (it != maps.end()) mapSel = int(it - maps.begin());
         } else if (sscanf(line, "pad %d %d", &a, &b) == 2 && a >= 0 && a < 4) cfg.teamSetup[a].pad = (uint8_t)Clamp(b, 0, 3);
-        else if (netProfileLine(line, hats, netProfile)) {}
-        else if (sscanf(line, "team %d %d %d %63s %n", &a, &b, &c, s, &n) == 4 && a >= 0 && a < 4) {
-            GameConfig::Team &t = cfg.teamSetup[a];
-            t.cpu = (uint8_t)Clamp(b, 0, 5);
-            t.hat = (uint8_t)Clamp(c, 0, hats);
-            for (int v = 0; v < Audio::voiceBanks(); v++) if (!strcmp(Audio::voiceBankName(v), s)) t.voice = (uint8_t)v;
-            snprintf(nm, sizeof nm, "%s", line + n);
-            if (nm[0]) t.name = nm;
-        }
+        else if (netProfileLine(line, netProfile)) {}
+        else if (GameConfig::Team t = cfg.teamSetup[0]; slotLine("team", line, a, t) && a >= 0 && a < 4) t.pad = cfg.teamSetup[a].pad, cfg.teamSetup[a] = t;
     }
     UnloadFileText(txt);
 }
@@ -1560,23 +1593,19 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
 std::string netProfileText(const std::vector<GameConfig::Team> &teams) {
     std::string s;
     for (size_t i = 0; i < teams.size(); i++) {
-        const GameConfig::Team &m = teams[i];
-        const char *v = Audio::voiceBankName(m.voice);
-        s += TextFormat("net %d %d %d %s %s\nnetpad %d %d\n", (int)i, m.cpu, m.hat, v[0] ? v : "-", m.name.c_str(), (int)i, m.pad);
+        s += slotText("net", (int)i, teams[i]) + TextFormat("netpad %d %d\n", (int)i, teams[i].pad);
     }
     return s;
 }
 
-bool netProfileLine(const char *line, int hats, std::vector<GameConfig::Team> &teams) {
-    char s[64] = "";
-    int a = 0, b = 0, c = 0, n = 0;
+bool netProfileLine(const char *line, std::vector<GameConfig::Team> &teams) {
+    int a = 0, b = 0;
+    GameConfig::Team t;
     if (sscanf(line, "netpad %d %d", &a, &b) == 2) {
         if (a >= 0 && a < (int)teams.size()) teams[a].pad = (uint8_t)Clamp(b, 0, 3);
-    } else if (sscanf(line, "net %d %d %d %63s %n", &a, &b, &c, s, &n) == 4) {
+    } else if (slotLine("net", line, a, t)) {
         if (teams.size() >= (size_t)Lobby::MAX_TEAMS) return true;
-        GameConfig::Team t;
-        t.hat = (uint8_t)Clamp(c, 0, hats), t.name = line + n;
-        for (int v = 0; v < Audio::voiceBanks(); v++) if (!strcmp(Audio::voiceBankName(v), s)) t.voice = (uint8_t)v;
+        t.cpu = 0;
         if (t.name.empty()) t.name = DEFAULT_TEAMS[teams.size()];
         teams.push_back(t);
     } else return false;
@@ -1600,9 +1629,7 @@ void Frontend::saveSetup(const GameConfig &cfg) const {
     for (size_t i = 0; i < sizeof(Scheme); i++) s += TextFormat(" %d", ((const uint8_t *)&cfg.scheme)[i]);
     s += "\n";
     for (int t = 0; t < (int)cfg.teamSetup.size(); t++) {
-        const GameConfig::Team &m = cfg.teamSetup[t];
-        const char *v = Audio::voiceBankName(m.voice);
-        s += TextFormat("team %d %d %d %s %s\npad %d %d\n", t, m.cpu, m.hat, v[0] ? v : "-", m.name.c_str(), t, m.pad);
+        s += slotText("team", t, cfg.teamSetup[t]) + TextFormat("pad %d %d\n", t, cfg.teamSetup[t].pad);
     }
     SaveFileText(DATA_DIR "setup.txt", (s + netProfileText(netProfile)).data());
 }
@@ -1729,13 +1756,14 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     case MyWorms: {
         // the 4 teams' name, voice and hat (setup.txt, also edited in the match setup)
-        int nb = Audio::voiceBanks(), &r = subRow[2];
+        const std::vector<std::string> banks = speechIds();
+        int &r = subRow[2];
         r = clampWrap(r + dy, 12);
         int k = r / 3, f = r % 3;
         GameConfig::Team &tm = cfg.teamSetup[k];
         if (f == 0 && ok) edit(tm.name, "Team name");
-        if (f == 1 && dx && nb) tm.voice = (uint8_t)clampWrap(tm.voice + dx, nb), Audio::setTeamVoice(k, tm.voice);
-        if (f == 2 && dx && hats) tm.hat = (uint8_t)clampWrap(tm.hat + dx, hats + 1);
+        if (f == 1 && Lobby::step(tm.speech, dx, banks)) Audio::setTeamVoice(k, voiceBankOf(tm.speech));
+        if (f == 2) Lobby::step(tm.hat, dx, hatIds());
         subPanel(tr("FETXTH.MYWORMS", "MY WORMS", "MES WORMS"), "fe2/art_myworms", t, subIn(t));
         for (int i = 0; i < 4; i++) {
             const GameConfig::Team &m = cfg.teamSetup[i];
@@ -1745,7 +1773,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
             if (k == i && !nine("fe/buttonbig_highlight", {c.x - 6, c.y - 6, c.width + 12, c.height + 12}, 110, 0.5f)) DrawRectangleRoundedLinesEx(c, 0.1f, 6, 4, GOLDEN);
             DrawRectangleRounded({c.x + 16, c.y + 18, 10, c.height - 36}, 1, 4, TEAM_COLORS[i]);
             const char *vals[3] = {TextFormat("%s%s", m.name.c_str(), editing == &cfg.teamSetup[i].name && fmodf(t, 1) < 0.5f ? "_" : ""),
-                                   nb ? Audio::voiceBankName(m.voice) : "-", !hats ? "-" : hatLabel(m.hat)};
+                                   m.speech.empty() ? "-" : m.speech.c_str() + 2, hatLabel(m.hat)};
             const char *labels[3] = {nullptr, tr("FETXTSH.Voice", "Voice", "Voix"), tr(nullptr, "Hat", "Chapeau")};
             for (int j = 0; j < 3; j++) {
                 bool hi = k == i && f == j;
@@ -1886,7 +1914,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     if (act == LeaveRoom) online = false, screen = Network;
     if (act != None) {
         cfg.teamSetup.resize(4);
-        for (int k = 0; k < 4; k++) Audio::setTeamVoice(k, cfg.teamSetup[k].voice);
+        for (int k = 0; k < 4; k++) Audio::setTeamVoice(k, voiceBankOf(cfg.teamSetup[k].speech));
         cfg.teamSetup.resize(cfg.teams);
         cfg.custom = customs;
         if (!online) loaded = false;  // reload (and re-pad to 4 teams) next time the menu shows; a room keeps its setup
@@ -2107,8 +2135,8 @@ void Frontend::wormPreview(int team, float t) {
     Lit::frame(cam.position);
     float yaw = 0.7f * sinf(t * 0.6f + team * 1.7f);  // slow turn
     Models::draw("worm", {0, 0, 0}, yaw, 0, WHITE, "Base", t);
-    if (Matrix m; tm.hat && Models::joint("worm", "HatLocator", "Base", t, true, &m))
-        Models::draw(Models::hatName(tm.hat - 1), MatrixMultiply(m, MatrixRotateY(yaw)));
+    if (Matrix m; Models::joint("worm", "HatLocator", "Base", t, true, &m))
+        for (const std::string *id : {&tm.hat, &tm.glasses, &tm.tash}) if (const char *n = catalog().drawName(*id)) Models::draw(n, MatrixMultiply(m, MatrixRotateY(yaw)));
     EndMode3D();
     EndTextureMode();
 }
@@ -2199,7 +2227,7 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
 
 bool Frontend::setupTeams(bool plus, float t) {
     GameConfig &c = lobby.cfg;
-    const int nb = Audio::voiceBanks();
+    const std::vector<std::string> banks = speechIds();
     Models::upload(GetTime() + 0.004);  // worm and hats are no menu assets: a plain launch uploads them only here or at the first match
     if (!cursors.placed && (!room() || c.teams)) {  // each token starts on the first slot its pad plays, else on the first free one
         cursors.placed = true;
@@ -2229,16 +2257,18 @@ bool Frontend::setupTeams(bool plus, float t) {
                 if (in.back) panelPad = -1, Audio::play(Audio::Sfx::FeClick);
                 if (in.dy) panelRow ^= 1, Audio::play(Audio::Sfx::FeHighlight);
                 if (!panelRow && in.ok) editPad = p, edit(m.name, "Team name");
-                else if (panelRow && (in.dx || in.ok) && lobby.voice(panelSlot, in.dx ? in.dx : 1, nb)) Audio::setTeamVoice(panelSlot, m.voice), Audio::play(in.dx ? Audio::Sfx::FeChange : Audio::Sfx::FeClick);
+                else if (panelRow && (in.dx || in.ok) && lobby.voice(panelSlot, in.dx ? in.dx : 1, banks)) Audio::setTeamVoice(panelSlot, voiceBankOf(m.speech)), Audio::play(in.dx ? Audio::Sfx::FeChange : Audio::Sfx::FeClick);
                 continue;
             }
         }
         if (in.card || (in.dx && !lobby.ownedBy(s, p))) cursors.move(p, in.card ? in.card : in.dx), Audio::play(Audio::Sfx::FeChange);  // on its own player ◀ ▶ is the hat
-        else if (in.dx && lobby.hat(s, in.dx, hats)) Audio::play(Audio::Sfx::FeChange);
+        else if (in.dx && lobby.hat(s, in.dx, hatIds())) Audio::play(Audio::Sfx::FeChange);
         const bool own = lobby.ownedBy(s, p), freeSlot = !lobby.playing(s), cpuHere = lobby.playing(s) && lobby.canEdit(s) && c.teamSetup[s].cpu;
         auto newTeam = [&](int cpu) {  // a room: the slot appears with the host's LOBBY
             if (c.teams >= Lobby::MAX_TEAMS || pending()) return;
-            myTeams.push_back({DEFAULT_TEAMS[c.teams], (uint8_t)cpu, (uint8_t)(nb ? c.teams % nb : 0), 0, (uint8_t)p});
+            GameConfig::Team nt;
+            nt.name = DEFAULT_TEAMS[c.teams], nt.cpu = (uint8_t)cpu, nt.speech = banks.empty() ? "" : banks[c.teams % banks.size()], nt.pad = (uint8_t)p;
+            myTeams.push_back(nt);
             net->sendTeams(myTeams), saveNetTeams(), s = c.teams;
             Audio::play(Audio::Sfx::FeClick);
         };
@@ -2300,7 +2330,7 @@ bool Frontend::setupTeams(bool plus, float t) {
         if (!cardPanel(d)) DrawRectangleRounded(d, 0.1f, 6, PANEL);
         const GameConfig::Team &m = c.teamSetup[panelSlot];
         for (int r = 0; r < 2; r++) {
-            std::string v = r ? (nb ? Audio::voiceBankName(m.voice) : "-") : m.name + (editing == &c.teamSetup[panelSlot].name && fmodf(t, 1) < 0.5f ? "_" : "");
+            std::string v = r ? (m.speech.size() > 2 ? m.speech.substr(2) : "-") : m.name + (editing == &c.teamSetup[panelSlot].name && fmodf(t, 1) < 0.5f ? "_" : "");
             feRow({d.x + 22, d.y + 28 + r * 56.0f, d.width - 44, 40}, r == panelRow, r ? tr("FETXTSH.Voice", "Voice", "Voix") : tr(nullptr, "Name", "Nom"), v.c_str(), r == panelRow && r);
         }
     }
@@ -2452,7 +2482,7 @@ void Frontend::toNet() {
         if (t.owner != net->id || t.idx >= myTeams.size()) continue;
         GameConfig::Team &m = myTeams[t.idx];
         const GameConfig::Team &e = c.teamSetup[k];
-        teamsDirty |= m.name != e.name || m.cpu != e.cpu || m.voice != e.voice || m.hat != e.hat || m.pad != e.pad;
+        teamsDirty |= wireOf(m) != wireOf(e) || m.pad != e.pad;
         m = e;
     }
     if (teamsDirty && now() - teamsSent >= 0.1f) net->sendTeams(myTeams), saveNetTeams(), teamsDirty = false, teamsSent = now();  // typing sends a few times a second
@@ -2546,13 +2576,11 @@ template <size_t N> int indexOf(const char *(&list)[N], const std::string &v) {
 
 std::string iconOf(const WeaponDef &w) { return weaponIcon(w.icon.empty() ? w.name : w.icon); }
 
-static const char *const TEAM_FLAGS[4] = {"flags/custom_cool", "flags/custom_police", "flags/custom_genie", "flags/custom_crown"};
-
 bool warmHud(int &i, double until) {
     static std::vector<std::string> names;
     if (names.empty()) {  // hud/ but the wxp_ particle sheets Fx loads itself, plus the art the match HUD reaches outside it
         for (const WeaponDef &w : WEAPONS) names.push_back(iconOf(w));
-        for (const char *f : TEAM_FLAGS) names.push_back(f);
+        for (const Catalog::Item &f : catalog().flags) names.push_back(f.model);
         for (const char *n : {"fe/team_health", "fe/com_panel", "fe/speech_popup", "fe2/homing_inner"}) names.push_back(n);
         for (const std::string &p : Loading::list(DATA_DIR "assets/ui/hud", ".png"))
             if (const char *f = GetFileNameWithoutExt(p.c_str()); strncmp(f, "wxp_", 4)) names.push_back(std::string("hud/") + f);
@@ -3130,7 +3158,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
     } else if (e.kind == GameEvent::Death && e.worm >= 0 && !announced[e.worm]) {
         const Worm &w = g.worms[e.worm];
         announced[e.worm] = 1;
-        if (defaults) comment(g.drowned(e.worm) ? "WaterDeath" : "LandDeath", wormName(w.team, e.worm % std::max(1, g.perTeam)));
+        if (defaults) comment(g.drowned(e.worm) ? "WaterDeath" : "LandDeath", wormName(g.cfg, w.team, g.wormSlot(e.worm)));
         bool left = false;
         for (const Worm &x : g.worms) left |= x.team == w.team && x.alive;
         if (!left && !announced[g.worms.size() + w.team]) {
@@ -3147,7 +3175,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
         banners.push_back({mysteryText(e.weapon)});
     } else if (e.kind == GameEvent::Collect && e.worm >= 0 && defaults) {  // CommentaryPanel.CrateText
         const Worm &w = g.worms[e.worm];
-        const char *who = wormName(w.team, e.worm % std::max(1, g.perTeam));
+        const char *who = wormName(g.cfg, w.team, g.wormSlot(e.worm));
         if (e.weapon == -1) banners.push_back({TextFormat("%s : +%d", who, (int)g.cfg.scheme.crateHealth)});
         else if (e.weapon >= 0 && e.weapon < (int)WEAPONS.size()) {
             banners.push_back({TextFormat("%s : %s", who, weaponName(WEAPONS[e.weapon]))});
@@ -3310,7 +3338,7 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     // W4M worm labels: name over hp, team colour, on a Text.Backing; hidden on the ready screen, with the weapon panel open or a UFO out (0x5fd4e0)
     if (!ready && !open && !g.efmvActive()) for (const Worm &w : g.worms) {
-        int i = int(&w - g.worms.data()), k = i % std::max(1, g.perTeam), hp = (int)lroundf(hpt[i].shown);
+        int i = int(&w - g.worms.data()), k = g.wormSlot(i), hp = (int)lroundf(hpt[i].shown);
         if (!w.alive) continue;  // blown up, or drowned: W4M shows no label afloat
         float dist = Vector3DotProduct(Vector3Subtract(w.pos, cam.position), fwd);
         bool popup = std::any_of(popups.begin(), popups.end(), [&](const Popup &p) { return p.worm == i; });
@@ -3333,7 +3361,7 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
         const Color POISON = {120, 220, 60, 255};
         if (label) {
             text3dAt(TextFormat("%d", hp), hpAt, 0.25f, i == counting && hpt[i].poison ? POISON : c, cam, fwd);  // WormHealthNameEntity 0x5fdb70: Text3Ds in FE.Font
-            text3dAt(wormName(w.team, k), nameAt, 0.25f, c, cam, fwd);
+            text3dAt(wormName(g.cfg, w.team, k), nameAt, 0.25f, c, cam, fwd);
         }
         for (const Popup &p : popups) {  // W4M damage counter: big cream hud digits, grows as it counts, pops on each step
             if (p.worm != i) continue;
@@ -3378,7 +3406,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     bool aiming = g.phase == Phase::Aim;
     if (ready) {  // W4M ready screen: big worm + team name, "Ready?" + countdown, rest of the HUD hidden
         const Color CREAM = {255, 244, 228, 255};
-        text(wormName(cur.team, g.current % std::max(1, g.perTeam)), 640, 64, 64, tc, 1);
+        text(wormName(g.cfg, cur.team, g.wormSlot(g.current)), 640, 64, 64, tc, 1);
         text(teamName(g.cfg, cur.team).c_str(), 640, 136, 38, CREAM, 1);
         text("Ready?", 640, 560, 32, CREAM, 1);
         text(TextFormat("%d", (g.hotSeat + 59) / 60), 640, 596, 110, tc, 1);
@@ -3386,7 +3414,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     // turn start banner: team/worm name, also briefly for CPU/remote turns that skip the ready screen above
     if (tick - introStart < 90 || (aiming && g.timer > std::max(1, (int)g.cfg.scheme.turnTime) * 60 - 120))
-        text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(cur.team, g.current % std::max(1, g.perTeam))), 640, 14, 28, tc, 1);
+        text(TextFormat("%s - %s", teamName(g.cfg, cur.team).c_str(), wormName(g.cfg, cur.team, g.wormSlot(g.current))), 640, 14, 28, tc, 1);
     if (g.suddenDeath && banners.empty()) text("SUDDEN DEATH!", 640, 46, 26, GOLDEN, 1);  // crate drops: commentary banner
 
     radar(g, {124, 112}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
@@ -3463,7 +3491,8 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].team == t) hp += hpt[i].shown;  // shrinks with the count
         float y = 646 - (g.teams - 1 - t) * 38.0f;
         text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, TEAM_COLORS[t % 4], 2);
-        if (!image(TEAM_FLAGS[t % 4], {584, y - 4, 32, 32})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, TEAM_COLORS[t % 4]);
+        const Catalog::Item *flag = t < (int)g.cfg.teamSetup.size() ? catalog().flag(g.cfg.teamSetup[t].flag) : nullptr;  // HUD.Energy.Flag*: the team's FlagGfxName
+        if (!flag || !image(flag->model.c_str(), {584, y - 4, 32, 32})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, TEAM_COLORS[t % 4]);
         healthBar(t, 628, y, 240, 24, Clamp(hp / maxHp, 0, 1));
     }
     // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)
