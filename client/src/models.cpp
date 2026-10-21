@@ -140,6 +140,9 @@ struct Job {
     Tracks tracks, alphas;
     std::vector<int> hands;
     std::vector<std::array<float, 16>> mat;
+    unsigned char *rest = nullptr;  // prepare(early): the file again, for every clip once this job (Base only) is out
+    int restSize = 0;
+    bool clipsOnly = false;  // anims only: they replace the drawn model's
 };
 std::mutex mu;
 std::deque<Job> jobs;
@@ -224,7 +227,7 @@ void compact(Job &j) {
     memcpy(j.data + 8, &j.size, 4);
 }
 
-Job prepare(const char *path) {
+Job prepare(const char *path, bool early = false) {
     Job j{path};
     j.data = readFile(path, &j.size);
     cgltf_options o{};
@@ -268,6 +271,7 @@ Job prepare(const char *path) {
         view(g->accessors[i].buffer_view), view(g->accessors[i].sparse.indices_buffer_view), view(g->accessors[i].sparse.values_buffer_view);
     for (size_t i = 0; i < g->images_count; i++) view(g->images[i].buffer_view);  // still parsed
     bool skinned = g->skins_count > 0;
+    bool split = early && skinned && g->animations_count > 1 && g->animations[0].name && !strcmp(g->animations[0].name, "Base");  // w4m-models writes Base first
     for (size_t i = 0; i < g->nodes_count; i++)
         if (g->nodes[i].name && !strcmp(g->nodes[i].name, "FxLocator") && g->nodes[i].has_translation)
             j.hasFx = true, j.fx = {g->nodes[i].translation[0], g->nodes[i].translation[1], g->nodes[i].translation[2]};
@@ -285,6 +289,7 @@ Job prepare(const char *path) {
         Span sp{T_CLIPS};
         unsigned char *keep = j.data;
         j.data = (unsigned char *)memcpy(malloc(j.size), keep, j.size);
+        if (split) j.rest = (unsigned char *)memcpy(malloc(j.size), keep, j.size), j.restSize = j.size, blank(j, "animations", 1);  // the previews' idle now
         serve = &j, j.anims = LoadModelAnimations(path, &j.count), serve = nullptr;
         j.data = keep;
     }
@@ -335,6 +340,25 @@ static int parentOf(const Entry &e, const char *n) {
     return -1;
 }
 
+std::string entryName(const std::string &path) {
+    std::string name = GetFileNameWithoutExt(path.c_str());
+    for (const char *d : {"/gloves/", "/glasses/", "/tash/", "/graves/", "/factory/"})  // their file names repeat other models' (graves/worm, tash/cowboy, factory/radio)
+        if (strstr(path.c_str(), d)) name = std::string(d + 1) + name;
+    return name;
+}
+
+// Every clip of a model drawn so far with Base only: the pose caches pointed into the old clips
+void addClips(Job &j) {
+    auto it = models.find(entryName(j.path));
+    if (it == models.end()) return UnloadModelAnimations(j.anims, j.count);
+    Entry &e = it->second;
+    UnloadModelAnimations(e.anims, e.count);
+    e.anims = j.anims, e.count = j.count, e.posed = e.aimed = nullptr, e.frame = e.aimFrame = -1;
+    for (Entry::Slot &s : e.slots) s.a = s.am = nullptr;
+    owners(e);
+    for (int i = 0; i < e.count; i++) if (!strcmp(e.anims[i].name, "Base")) e.base = &e.anims[i];
+}
+
 void add(Job &j) {
     Entry e;
     e.m = j.m;
@@ -362,9 +386,7 @@ void add(Job &j) {
     for (int b = 0; b < (int)e.m.skeleton.boneCount; b++) e.parent.push_back(parentOf(e, e.m.skeleton.bones[b].name));
     owners(e);
     for (int i = 0; i < e.count; i++) if (!strcmp(e.anims[i].name, "Base")) e.base = &e.anims[i];
-    std::string name = GetFileNameWithoutExt(j.path.c_str());
-    for (const char *d : {"/gloves/", "/glasses/", "/tash/", "/graves/", "/factory/"})  // their file names repeat other models' (graves/worm, tash/cowboy, factory/radio)
-        if (strstr(j.path.c_str(), d)) name = std::string(d + 1) + name;
+    std::string name = entryName(j.path);
     if (name == "ufo") e.glow = {2};  // BeamConeShape's noise image (raylib material 0 is the default)
     for (int i = 0; name == "worm" && i < e.m.meshCount; i++) {  // glb material 1: boggy*eye, whose shadercolor2 the Eyes clips key
         const Mesh &me = e.m.meshes[i];
@@ -398,11 +420,12 @@ void Models::start() {
             files.push_back(p);
         }
         if (files.empty()) return;
-        // menu scene, then what the team pages show (worm, headgear, gloves, graves), the weapon graphics of the editor's picker, the rest
+        // menu scene, then what the team pages show (worm, then headgear, gloves, graves), the weapon graphics of the editor's picker, the rest
         auto rank = [](const std::string &p) {
             if (menuFile(p)) return 0;
-            for (const char *k : {"/worm.glb", "/hats/", "/gloves/", "/glasses/", "/tash/", "/graves/"}) if (p.find(k) != std::string::npos) return 1;
-            return p.find('/', sizeof MODEL_DIR) == std::string::npos ? 2 : 3;
+            if (p.find("/worm.glb") != std::string::npos) return 1;
+            for (const char *k : {"/hats/", "/gloves/", "/glasses/", "/tash/", "/graves/"}) if (p.find(k) != std::string::npos) return 2;
+            return p.find('/', sizeof MODEL_DIR) == std::string::npos ? 3 : 4;
         };
         std::stable_sort(files.begin(), files.end(), [&](const std::string &a, const std::string &b) { return rank(a) < rank(b); });
         menuLeft = (int)std::count_if(files.begin(), files.end(), menuFile);
@@ -415,9 +438,13 @@ void Models::start() {
         workers[c] = std::thread([end](int core) {
             Loading::pinCore(core);
             for (unsigned i; !stopWork && (i = nextFile++) < end;) {
-                Job j = ::prepare(files[i].c_str());
+                Job j = ::prepare(files[i].c_str(), true), c{j.path};
+                c.data = j.rest, c.size = j.restSize, c.clipsOnly = true, j.rest = nullptr;
+                { std::lock_guard<std::mutex> l(mu); jobs.push_back(std::move(j)); }
+                if (!c.data) continue;
+                { Span sp{T_CLIPS}; serve = &c, c.anims = LoadModelAnimations(c.path.c_str(), &c.count), serve = nullptr; }
                 std::lock_guard<std::mutex> l(mu);
-                jobs.push_back(std::move(j));
+                jobs.push_back(std::move(c));
             }
             nextFile = std::min(nextFile.load(), end);
             working--;
@@ -440,7 +467,13 @@ bool Models::upload(double until) {
             if (it == jobs.end()) it = jobs.begin();
             cur = std::move(*it), jobs.erase(it), busy = true;
         }
-        if (uploadStep(cur)) menuLeft -= menuFile(cur.path), add(cur), busy = false;
+        if (cur.clipsOnly) {
+            addClips(cur), busy = false;
+            TraceLog(LOG_INFO, "MODELS: %s: all %d clips in", cur.path.c_str(), cur.count);
+        } else if (uploadStep(cur)) {
+            menuLeft -= menuFile(cur.path), add(cur), busy = false;
+            if (cur.restSize) TraceLog(LOG_INFO, "MODELS: %s drawable, Base clip only", cur.path.c_str());
+        }
     }
     if (busy || working || nextFile < files.size()) return true;
     if (std::lock_guard<std::mutex> l(mu); !jobs.empty()) return true;
