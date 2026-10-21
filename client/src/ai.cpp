@@ -56,8 +56,14 @@ static bool outside(const Game &g, Vector3 p) {
 
 // Copy of Game::stepWorm without hp; false once drowned.
 struct Body { Vector3 pos, vel; bool grounded; float fall = 0; Motion motion{}; };
+static const Colliders &wormColliders(const Game &g) {  // Game::stepWorm's: the active worm's sphere against the others
+    static thread_local Colliders cs;
+    g.colliders(cs, Game::WORM_MASK, g.current);
+    return cs;
+}
+
 static bool stepBody(const Game &g, Body &b, float &yaw) {
-    float speed = wormBody(g.terrain, b.pos, b.vel, b.grounded, b.motion, yaw, g.gravity(), g.pot, 0.3f, g.wormWind());
+    float speed = wormBody(g.terrain, b.pos, b.vel, b.grounded, b.motion, yaw, g.gravity(), g.pot, 0.3f, g.wormWind(), &wormColliders(g));
     b.fall += g.fallDamage(speed);
     return b.pos.y >= g.water;
 }
@@ -132,7 +138,7 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
             out = np;
             if (g.terrain.solid(np)) {
                 if (impact || first) return at(true);
-                v = Vector3Reflect(v, g.terrain.normal(np)) * wd.bounce;
+                v = payBounce(v, g.terrain.normal(np), child ? wd.cdamp : wd.damp, true);
                 break;
             }
             p = np;
@@ -233,7 +239,7 @@ static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
     else if (b.grounded && !b.motion.slide && in.walk && !m.jump) {  // Game::step's walk
         Vector3 walkV = flat(m.yaw) * (in.walk / 127.0f * Game::INPUT_IMPULSE), gn;
         if (!Game::walkFrame(m.walkTick = wt + 1)) {
-        } else if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * Game::WALK_FRAME, &m.vault, &gn)) b.vel = walkV, b.motion.air = true;
+        } else if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * Game::WALK_FRAME, &m.vault, &gn, &wormColliders(g), &b.motion)) b.vel = walkV, b.motion.air = true;
         else if (!m.vault.t) slideIfSteep(gn, b.vel, b.motion, walkV, g.pot);
     }
     b.motion.input = flat(m.yaw) * (in.walk / 127.0f);

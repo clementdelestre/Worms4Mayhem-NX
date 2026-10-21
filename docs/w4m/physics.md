@@ -60,7 +60,28 @@ ChangeState = 0x5aa7f0(pData, newState). 7/8 are sticky (walking never overrides
 See §11 "Vaulting 0x5aca80" for the full trace (start, abort, end, inputs).
 
 ### Sphere resolver 0x519ed0 (CollisionManagerService, worm sphere ent+0x28) (disasm)
-Sets own bound sphere centre at pos (+radius in y unless flag), iterates contacts (fn ptr 0x95c25c). Contact 1: push out along contact normal to touching distance. Contact 2: solve 2-sphere intersection circle. Contact 3+ (jumptable 0x51a4f4 cases 2,3): give up, return the fallback/old position. Sphere-vs-sphere entities (worms, crates, drums, LandFramePseudoEntity), NOT the voxel land.
+- Args (fallback, pos in/out, normal out, id out, flag). The sphere is centred at pos + (0, radius, 0) unless flag (every worm caller passes 0); 0x516b90 starts a static overlap query with the collider's own mask (+4: the worm's 0x811 = worms, drums, sentries) and exclude id -2 (none); the collider skips itself by handle.
+- The overlap iterator 0x516350 walks the collider table in index order: a record counts when `flags & mask` and its owner id is not the exclude id, and |q - c|^2 < (r + r_self)^2 strictly, q being the centre at the query's start (fixed for the whole loop). Its contact normal (0x517ba0 for this iterator) is q - c, unnormalised.
+- First contact: normal n0 = normalize(q - c0); centre = c0 + n0 (r0 + r_self); the id out = this collider's.
+- Second contact: a = |c1 - c0|, u = (c1 - c0) / a (assert a != 0, WX_Collider.cpp 0xec); h = (S0^2 + a^2 - S1^2) / 2a with S = r + r_self; the centre goes to c0 + u h + the part of (centre - c0) across u scaled to sqrt(S0^2 - h^2) (the touching circle's point nearest where it was) [disasm + reasoning: the two square-root arguments are read from the fpu stack]; normal = normalize(normalize(p - c0) + normalize(p - c1)).
+- Third contact (jump table 0x51a4f4 cases 2, 3): pos = fallback, return true; the normal stays the second one.
+- Returns whether any contact was found; pos is written back less the radius. Colliders only: the voxel land is not in it.
+- Callers: UpdateWalking 0x5b0da0, Ballistic 0x5af430, Sliding 0x5afbe0, the jetpack 0x562810 (all with the worm's own collider ent+0x28).
+
+### Step-down resolver 0x51a510 (UpdateWalking's drop branch) (disasm)
+- Same query (mask 0x811). For each overlapping collider c, with S = r + r_self and the horizontal offset d to it: centre above c: y = c.y + sqrt(S^2 - d^2) (on its top); below: y = c.y - sqrt(S^2 - d^2); level: nothing. A collider pushing up after one pushed down (or the reverse): pos = fallback, return 1.
+- Returns 1 when it moved the centre; id out = the first overlapping collider.
+
+### Worm contacts with colliders, per state (disasm)
+- **Walking** (0x5b0da0), support id +0xe8 = 0xFFFF at each step:
+  - ledge (5 < d <= 20): after the hit + 0.1, the resolver; a contact with n.y > 0 replaces the ground normal (material 0) and becomes the support; then walkable + Fits -> Vaulting.
+  - step (-5 <= d <= 5), 0x5b1579: no contact -> the land walk. Contact with n.y < -0.1 or n.y >= 0.8: no move. Otherwise input . n >= 0 (InputImpulse +0x68, 0x445390 dot): Fits -> placed at the resolved point, support = the collider, no slide test. Input into it: cand -= 15 n, cand.y += 10, resolve again, Fits -> Vaulting to it (250 ms, the vault fields as the ledge path), support = the collider. Not Fitting: no move.
+  - drop (d < -5): cand.y = y - 5, 0x51a510; moved and Fits -> placed (on a collider's top), support = it; moved and not Fits -> no move; not moved -> the land drop (Fall from the old height).
+  - Idle (0x5b1a3e): a support other than 0xFFFF whose collider centre no longer equals +0x130 (0x47a080, a 12-byte compare) -> event 7, Ballistic. +0x130 holds the support's centre (written at 0x5b20c5 / 0x5b2c70) [disasm; when it is refreshed: assumed each update].
+- **Ballistic** 0x5af430: support = 0xFFFF each update. No land hit: Integrate, then the resolver from the old position. Contact and Fits: placed, stuck -1; n.y >= 0.8 -> event 8 (15 with +0xdc), Ambulatory, support = the collider, no FallDamage, Velocity untouched; else Rebound(n) + event 23. Contact not Fitting: back to the old position, stuck +2, Rebound on normalize(old - integrated) (>= 20: forced landing). No contact: Fits -> moved, else the same failure. Land hit: the candidate (the hit less the probe offset) is resolved too, its normal unused.
+- **Sliding** 0x5afbe0, follow-the-ground branch: the resolver on the candidate (fallback = pos); a contact zeroes its normal's y and, when the rest is not zero, Rebounds on it normalised and adds 2 to the stuck count; then the usual Fits.
+- **Jetpack** 0x562810: no land hit: candidate = pos + v 20 ms, the resolver. No contact: Fits -> moved, else v x -0.8. Contact and Fits: moved; n.y > 0 ends the pack with v kept (worm Ballistic), else v -= 1.8 (v.n) n. Contact not Fitting: v x -0.8. Land hit: the contact point is resolved before the foot / Fits test.
+- The ninja rope does not use it (its own mask 0x19 test, docs/w4m/weapons.md). Gravestones (0x400) are outside the worm mask: worms pass through them.
 
 ### Why worms can enter scenery in corners (assessment: disasm + reasoning)
 - Body vs land = only 3 thin vertical rods (x=+-4,z=-3 and z=+5, 20 tall, Fits 0x59edf0); no centre rod, no width beyond 4-5 units, no ceiling/forward probe. A concave corner or overhang edge passing between rods is never seen.

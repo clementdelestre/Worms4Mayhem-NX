@@ -29,7 +29,7 @@ Repository-level scripts in `tests/` (run from the repository root, they build t
 
 Sentry Gun capture (ours): `W4NX_HIDDEN=1 W4NX_SHOTEND=940 W4NX_WALK="800 812" W4NX_VIEW="24.5 5.6 22.0 22.05 4.3 18.45" W4NX_CAPFRAMES="120 800 860 930" ./worms4nx --aimshot 27 AssaultAndDefend fire`: placed and deployed, scanning at the next turn, tracking the worm that walked (`W4NX_WALK="from to [walk]"`: the active worm walks between those frames, out of the forced aim), firing.
 
-Object collision captures (ours): `W4NX_PLACE="<crate|drum|sentry> <m> ..."` puts those objects that far ahead of the active worm on the land in any shot mode, e.g. `W4NX_HIDDEN=1 W4NX_PITCH=0 W4NX_PLACE="drum 4" W4NX_CAPFRAMES="..." ./worms4nx --aimshot <bazooka> <map> fire`.
+Object collision captures (ours): `W4NX_PLACE="<crate|drum|sentry>[:up] <m> ..."` puts those objects that far ahead of the active worm on the land (or `up` m over it) in any shot mode; `W4NX_DIE=<frame>` kills the active worm at that frame (gravestone captures), e.g. `W4NX_HIDDEN=1 W4NX_PITCH=0 W4NX_PLACE="drum 4" W4NX_CAPFRAMES="..." ./worms4nx --aimshot <bazooka> <map> fire`.
 
 Timing runs (ours, not pass/fail): `./worms4nx --bench <map> [frames]` (CPU match, per-section ms, draw calls per frame and worst frame);
 `W4NX_BENCH=<frames> ./worms4nx --shot <weapon index> [map]` (that weapon fired, e.g. 15 Airstrike, 18 Concrete Donkey:
@@ -429,6 +429,10 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkEmptyHand` | W4M kWeaponUndefined at turn start: FIRE fires nothing, takes no ammo; NEXT_WEAPON picks a usable one. |
 | `checkSchemeFactory` | Scheme `mineFactory` (W4M MineFactoryOn): the factory exists at start and counts down at each turn end. |
 | `checkGunObjects` | W4M gun mask 0x1c3f: the bullet stops on a mine or an oil drum in its way. |
+| `checkWormColliders` | W4M worm resolver (mask 0x811): a fall onto a drum lands on its top and holds there, falls once it is gone; a walk into a drum climbs over it, never inside its sphere out of a vault; a fall onto a worm lands on its head; a knock-back into a drum rebounds; crates and gravestones are not in the worm's colliders; the jetpack bounces off a drum's underside and ends on its top with v kept. |
+| `checkCrateColliders` | W4M 0x5cb7e0: a crate dropped on a drum rests on it ("Crate Spawn" released) and drops to the slab once the drum is gone; a drum dropped on a crate falls through it to the land. |
+| `checkPayloadBounce` | W4M 0x518f40 values (Min dampings, Bounce.MinSpeed stop, the 1 m/s floor, v.n > 0, zero dampings) and the WEAPTWK dampings loaded from weapons.json. |
+| `checkGravestone` | W4M DeathThroes gravestone: made 1 m over the feet with the team's GraveIndex and yaw, rests on land, unmoved by a blast's push, falls when its land is carved, stops a bullet, is in the payload mask and not the worm's, removed 1.5 m under the water. |
 | `checkAbduction` | W4M alien abduction: UFO lifts worms in reach nearest first, spits them out 2.1 s apart at half health. |
 | `checkSuperSheep` | Super Sheep: walks, FIRE takes off (25 s flight), FIRE again blows it up. |
 | `checkOldWoman` | Old Woman: steered, FIRE explodes, each enemy bumped loses 1-8 of a weapon to her team. |

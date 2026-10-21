@@ -73,6 +73,8 @@ struct WeaponDef {
     // W4M payload water (Game::wet): "size" Radius (the surface is met that high), "sink" SinkDepth, m; "skim_speed" MinSpeedForSkim
     // m/s (-1: SkimsOnWater 0), "skim_angle" MaxAngleForSkim rad, "skim_xz" / "skim_y" SkimDamping; cluster_*: the bomblets' container
     float size = 0, sink = 0, csize = 0, csink = 0, skim[4] = {-1, 0, 0, 0};  // size: a gun's BulletRadius
+    // "tangential_damping", "parallel_damping" (cluster_*: the bomblets'): W4M TangentialMinBounceDamping, ParallelMinBounceDamping; the Max pair is never read (0x57ef80)
+    float damp[2] = {0, 0}, cdamp[2] = {0, 0};
     // W4M BombletMaxConeAngle rad, BombletMinSpeed / MaxSpeed m/s: "cluster_cone", "cluster_min_speed", "cluster_max_speed"
     float ccone = 0, cspeed[2] = {0, 0};
     float spread = 0.3f;  // "cluster_spread": W4M Weapon Factory ClusterSpread 0..1 (WXD.DefaultWeapon 0.3), Weapon Factory weapons only
@@ -123,7 +125,11 @@ void factoryPayload(WeaponDef &w);  // W4M 0x5983f0: sliders -> crater, damage, 
 // spin rate / target (+0x120 / +0x124, rad per 20 ms), SupportNormal (pData +0x80). input: this tick's stick, not state
 // W4M stuck count +2 / -1 per 20 ms frame, landed at 20: kept x6 so our 5/6-frame tick adds whole steps (+10 / -5, at 120)
 enum : int { STUCK_UP = 10, STUCK_DOWN = 5, STUCK_MAX = 120 };
-struct Motion { int stuck = 0; bool air = false, slide = false; float spin = 0, spinTo = 0; Vector3 normal{0, 1, 0}, input{}; };
+// on: the collider it stands on (+0xe8, -1 land or none), onAt: that collider's centre when last checked (+0x130)
+struct Motion { int stuck = 0; bool air = false, slide = false; float spin = 0, spinTo = 0; Vector3 normal{0, 1, 0}, input{}; int on = -1; Vector3 onAt{}; };
+// W4M CollisionManagerService record: a collider sphere, its flags and owner id (worm index, or Game::UID_BASE + Object / Grave uid)
+struct Collider { Vector3 c; float r; uint32_t flags; int id; };
+using Colliders = std::vector<Collider>;
 struct Worm {
     Vector3 pos, vel;
     float yaw, pitch;
@@ -148,7 +154,8 @@ bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd);  // p inside a's 
 struct Vault { Vector3 from{}, to{}, dir{}, vel{}; int t = 0; };  // vel: the walk velocity, W4M Velocity during the vault
 // Ground walk, shared with the AI's prediction. walkStep: true when it walked off a ledge. A 5..20-unit ledge starts *vault
 // (pos unchanged) when given, else it is climbed at once. *ground: the ground normal of a step that moved, else up.
-bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault = nullptr, Vector3 *ground = nullptr);
+// cs: the worm sphere's colliders (mask 0x811, itself left out); m->on: the collider the step stands on, -1 none.
+bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault = nullptr, Vector3 *ground = nullptr, const Colliders *cs = nullptr, Motion *m = nullptr);
 void vaultStep(Vector3 &pos, Vault &v, Vector3 input);  // one vault tick
 bool fits(const Terrain &t, Vector3 from, Vector3 to);  // the upper body at `to` is out of land, or no deeper than at `from`
 // A tick's move cut into sub-steps of at most Terrain::SUB (shots, objects, walkers), so nothing skips thin land.
@@ -159,10 +166,12 @@ Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn);
 Vector3 launchPoint(const WeaponDef &d, Vector3 pos, float yaw);
 // W4M payloads touch land by their centre point (0x574e90); at rest the mesh is drawn r along the land normal (0x5761f0)
 Vector3 restOn(const Terrain &t, Vector3 p, float r);
-bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g);  // W4M jetpack collider, one tick: true when a foot landed the pack
+bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g, const Colliders *cs = nullptr);  // W4M jetpack collider, one tick: true when the pack lands
 // One worm tick (ground slide, fall, flight), shared with the AI; returns the landing speed, 0 if none.
 // wind: the Ballistic acceleration's xz part (W4M SetAcceleration 0x5a6d20, Wormpot WindAffectsWorms), m/s²
-float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float gravity, uint64_t pot, float e = 0.3f, Vector2 wind = {0, 0});
+float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float gravity, uint64_t pot, float e = 0.3f, Vector2 wind = {0, 0}, const Colliders *cs = nullptr);
+// W4M payload bounce 0x57ef80 / 0x518f40 on n with damping {tangential, parallel}; stop: under Bounce.MinSpeed it stops, else it keeps 1 m/s
+Vector3 payBounce(Vector3 v, Vector3 n, const float damp[2], bool stop);
 // W4M UpdateWalking 0x5b19d0: a step onto ground n past SlideAngle starts Sliding with the walk velocity
 void slideIfSteep(Vector3 n, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot);
 void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity, const std::function<bool(Vector3)> &wall = nullptr);  // sheep, old woman, scouser on foot
@@ -225,6 +234,7 @@ struct Object {
     int courtesy = 0;  // mine: ticks before a worm can arm it (W4M ArmingCourtesyTime)
     bool hooked = false;  // W4M kRopeModeAttachedToObject: swings on Game::rope about the worm's feet
     bool spawning = false;  // crate: W4M "Crate Spawn" active object (0x5c9bd0) until a bounce leaves it under 1 m/s (0x5c8900)
+    bool bounced = false;   // crate: bounced once (+0x8c, 0x5c8900); another crate's sweep ignores it while it never did, nor rests
     float delay = -1;  // mine: fuse s drawn at creation (W4M CreateMine 0x4f97cf); -1: drawn when armed
     bool fizzle = false;  // mine: its dud roll, drawn with delay
     bool sunk = false;  // crate: sinking (0x5c81a0); mine: under the disarm plane, disarmed, sinking
@@ -435,7 +445,6 @@ struct Game {
     static constexpr int STRIKE_BLITZ = 2000;  // W4M Bomber.BlitzDuration ms: N bombs, one every BlitzDuration / N (0x54dbf5, integer ms)
     static int strikeTicks(const WeaponDef &wd) { return (STRIKE_BLITZ / std::max(1, wd.clusters) * 60 + 500) / 1000; }
     static constexpr int FATKINS_BOUNCES = 3;      // W4M 0x554f88: the 4th contact rests it (DetonatesAtRest)
-    static constexpr float FATKINS_STOP = 1.5f;   // Bounce.MinSpeed 0.03 units/ms
     static constexpr int STRIKE_LEAD = 240;    // W4M Bomber: the first DropBomb waits for the 4 s bombrun_start clip (0x54db75)
     static constexpr float STRIKE_EXTRA = 7;  // Bomber.ExtraHeight 140 units
     // W4M AlienAbductionLogicEntity states 1-6 (0x548710) as Projectile::stage; times from its clip table 0x546d00, HOLD = CloseBeam + Violate + OpenDoors - 250 ms
@@ -464,6 +473,14 @@ struct Game {
     std::vector<Worm> worms;
     std::vector<Projectile> shots;
     std::vector<Object> objects;
+    // W4M GraveStoneLogicEntity: the dead worm's team gravestone, a 9-unit sphere (flags 0x400, mask 0xc37); onLand: at rest on land
+    struct Grave { Vector3 pos, vel; float yaw; int grave, uid; bool moving = true, onLand = false; };
+    std::vector<Grave> graves;
+    static constexpr float GRAVE_R = 0.45f;
+    static constexpr int UID_BASE = 64;
+    static constexpr uint32_t WORM_MASK = 0x811, CRATE_MASK = 0x83f, GRAVE_MASK = 0xc37;  // collider masks (0x5a9bb3, 0x5ca180, 0x5cec20)  // Collider::id of an object or grave: UID_BASE + its uid
+    void colliders(Colliders &out, uint32_t mask, int skip = -1) const;  // worms, objects, graves of mask but id skip, table order
+    void stepGraves();
     struct Gas { Vector3 pos; float life, poison; };
     std::vector<Gas> gas;  // poison clouds: drift with the wind, poison every worm inside
     std::vector<GameEvent> events;  // cleared at the start of each step()

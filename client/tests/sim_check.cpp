@@ -2605,7 +2605,7 @@ static void checkStockWeapons() {
     {  // Thrown, Fused FuseTime -1: the Grenade's clone with HasAdjustableFuse, LifeTime 6000; 3 Poo bomblets on impact
         WeaponDef w = start(g, "FETXT.AFewProblems");
         assert(w.kind == Kind::Shell && w.clone == "Grenade" && w.userFuse && w.fuse == 6 && !w.restFuse && w.wind && w.powered && w.postLaunch == 500);
-        assert(near(w.base, 5) && near(w.speed, 5 + 5 + (26.65f - 5) * 0.9f) && w.bounce == WEAPONS[weaponNamed("Grenade")].bounce);
+        assert(near(w.base, 5) && near(w.speed, 5 + 5 + (26.65f - 5) * 0.9f) && w.damp[0] == WEAPONS[weaponNamed("Grenade")].damp[0] && w.damp[1] == WEAPONS[weaponNamed("Grenade")].damp[1]);
         assert(near(w.radius, 51.5f * 0.1f / 0.65f / 20) && near(w.damage, 55 / 0.65f * 0.5f) && w.fx == "WXP_ExplosionX_Med");
         assert(w.clusters == 3 && !w.crest && near(w.ccone, 0.28f) && near(w.cspeed[0], 0.7f / 7 * 50) && near(w.cspeed[1], 0.35f * 50));
         assert(near(w.cradius, 40 / 3.0f * 0.5f / 0.65f / 20) && near(w.cdamage, 40 / 3.0f / 0.65f * 0.3f) && w.cfx == "WXP_Explosion_Small");
@@ -2655,7 +2655,8 @@ static void checkStockWeapons() {
     {  // Bomber, 10 bombs AtRest: divider 3, WXP_ExploCluster (n >= 6), the bombs bounce (the Grenade's damping) and rest
         WeaponDef w = start(g, "FETXT.WipeOut");
         assert(w.clusters == 10 && w.crest && w.cfx == "WXP_ExploCluster" && near(w.cdamage, 25 / 3.0f / 0.35f) && near(w.cradius, 58 / 3.0f / 0.65f / 20));
-        assert(w.bounce == WEAPONS[weaponNamed("Grenade")].bounce && near(w.scale[1], 1.5f));
+        const WeaponDef &gr = WEAPONS[weaponNamed("Grenade")];
+        assert(w.cdamp[0] == gr.damp[0] && w.cdamp[1] == gr.damp[1] && near(w.scale[1], 1.5f));
     }
     {  // AtRest bomblet (0x5758c0): it bounces off the land and only detonates once it rests
         start(g, "FETXT.KneeTrembler");
@@ -2774,7 +2775,9 @@ static int fuseTicks(int presses, uint8_t key, const char *weapon, int *choir = 
     g.weapon = weaponNamed(weapon);
     g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
     for (int i = 0; i < presses; i++) { Input in; in.buttons = key; g.step(in); g.step(Input{}); }
-    a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.yaw = 0, a.pitch = 0.5f, a.grounded = true;  // standing: W4M CanFire
+    Vector3 ground;
+    assert(g.terrain.raycast({{20, 55, 20}, {0, -1, 0}}, 60, &ground));
+    a.pos = {20, ground.y + 1.5f, 20}, a.vel = {0, 0, 0}, a.yaw = 0, a.pitch = 0.5f, a.grounded = true;  // standing just over the land: W4M CanFire
     Input fire;
     fire.buttons = Input::FIRE;
     g.step(fire);
@@ -3444,6 +3447,170 @@ static void checkObjectCollisions() {
         g.objects = {{Object::Target, {P.x, top + 2, P.z}, {0, 0, 0}, -1, -1, false, false}};
         assert(g.gunRay(r, shooter, 0).obj == 0 && g.gunRay(r, shooter, 0, -1, Game::SENTRY_SHOT_MASK).obj == -1);
     }
+}
+
+// W4M worm resolver 0x519ed0 (mask 0x811): lands on a top and holds there, climbs over, Rebounds; the jetpack ends on a top
+// (0x563252); crates and gravestones are outside the mask
+static void checkWormColliders() {
+    Game g;
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    g.objects.clear();
+    const Vector3 P = {20, g.landTop() + 8, 20};
+    g.weldLand(P, {4, 0.5f, 4});
+    const float top = P.y + 0.5f, R = Game::R, DR = 0.45f;
+    Worm &w = g.worms[g.current];
+    const int other = g.current ? 0 : 1;
+    g.worms[other].pos = {P.x + 3.5f, top + R, P.z + 3.5f}, g.worms[other].vel = {}, g.worms[other].grounded = true;
+    auto put = [&](Vector3 p) { w.pos = p, w.vel = {}, w.grounded = false, w.motion = {}; };
+    auto run = [&](int ticks, Input in = Input{}) { for (int t = 0; t < ticks; t++) g.phase = Phase::Aim, g.timer = 6000, g.step(in); };
+    const Vector3 dc = {P.x, top + DR, P.z};
+    {  // a fall onto a drum: on its top, held there, then down to the slab once it is gone
+        g.objects = {{Object::Barrel, {P.x, top, P.z}, {0, 0, 0}, -1, -1, false, false}};
+        put({P.x + 0.1f, top + 3, P.z});
+        run(120);
+        assert(w.grounded && w.motion.on == Game::UID_BASE + g.objects[0].uid && fabsf(Vector3Distance(w.pos, dc) - (R + DR)) < 0.01f && w.pos.y > dc.y + 0.9f);
+        g.objects.clear();
+        run(60);
+        assert(w.grounded && w.motion.on < 0 && fabsf(w.pos.y - (top + R)) < 0.06f);
+    }
+    {  // a walk into a drum climbs over it: outside its sphere whenever it is not vaulting, on it for a while, then past it
+        g.objects = {{Object::Barrel, {P.x, top, P.z}, {0, 0, 0}, -1, -1, false, false}};
+        put({P.x - 2.5f, top + R, P.z}), w.yaw = PI / 2, w.grounded = true;
+        run(5);
+        Input in{};
+        in.walk = 127;
+        bool on = false;
+        for (int t = 0; t < 120 && w.pos.x < P.x + 1.5f; t++) {
+            run(1, in);
+            if (!g.vault.t) assert(Vector3Distance(w.pos, dc) > R + DR - 0.01f);
+            on = on || w.motion.on == Game::UID_BASE + g.objects[0].uid;
+        }
+        assert(on && w.pos.x >= P.x + 1.5f);
+    }
+    {  // a fall onto another worm: lands on its head
+        g.objects.clear();
+        const Vector3 o = g.worms[other].pos;
+        put({o.x, o.y + 2, o.z});
+        run(90);
+        assert(w.grounded && w.motion.on == other && w.pos.y > o.y + 2 * R - 0.02f);
+        put({P.x - 3, top + R, P.z - 3}), w.grounded = true;
+        run(10);
+    }
+    {  // knocked into a drum: Rebound off its side, never inside
+        g.objects = {{Object::Barrel, {P.x, top, P.z}, {0, 0, 0}, -1, -1, false, false}};
+        put({P.x - 2, dc.y + 0.1f, P.z}), w.vel = {12, 1, 0};
+        bool back = false;
+        for (int t = 0; t < 30; t++) run(1), back = back || w.vel.x < 0, assert(Vector3Distance(w.pos, dc) > R + DR - 0.01f);
+        assert(back && w.pos.x < P.x);
+    }
+    {  // a crate lies in the way of nothing: a worm falls through it (crate flags 2 / 4, outside 0x811)
+        Object crate = {Object::Crate, {P.x, top + 0.5f, P.z}, {0, 0, 0}, -1, -1, false, false};
+        crate.pinned = true;
+        g.objects = {crate};
+        Colliders cs;
+        g.colliders(cs, Game::WORM_MASK, g.current);
+        for (const Collider &c : cs) assert(c.flags & Game::WORM_MASK && c.id < Game::UID_BASE);
+    }
+    {  // the jetpack's own update: up into a drum's underside bounces down, down onto its top ends the pack, v kept
+        const Vector3 c = {P.x, top + 10, P.z};  // clear air
+        const Colliders cs = {{c, DR, 0x10, Game::UID_BASE}};
+        Vector3 p = {c.x, c.y - DR - R - 0.05f, c.z}, v = {0, 6, 0};
+        for (int k = 0; k < 10 && v.y > 0; k++) assert(!jetBody(g.terrain, p, v, 0, &cs));
+        assert(v.y < 0 && Vector3Distance(p, c) > R + DR - 0.01f);
+        p = {c.x, c.y + DR + R + 0.05f, c.z}, v = {0, -6, 0};
+        bool landed = false;
+        for (int k = 0; k < 10 && !landed; k++) landed = jetBody(g.terrain, p, v, 0, &cs);
+        assert(landed && v.y < -5);
+    }
+}
+
+// W4M CrateLogicEntity 0x5cb7e0 (mask 0x83f): a crate falling onto a drum rests on it ("Crate Spawn" released) and drops once it is gone;
+// drums (0x5d1c60) and sentries cast only the land: a drum falling onto a crate goes through it
+static void checkCrateColliders() {
+    Game g;
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    g.objects.clear();
+    const Vector3 P = {20, g.landTop() + 8, 20};
+    g.weldLand(P, {4, 0.5f, 4});
+    const float top = P.y + 0.5f, DR = 0.45f;
+    auto run = [&](int ticks) { for (int t = 0; t < ticks; t++) g.phase = Phase::Aim, g.timer = 6000, g.step(Input{}); };
+    Object crate = {Object::Crate, {P.x + 0.1f, top + 4, P.z}, {0, 0, 0}, -1, -1, false, false};
+    crate.spawning = true;
+    g.objects = {{Object::Barrel, {P.x, top, P.z}, {0, 0, 0}, -1, -1, false, false}, crate};
+    run(150);
+    const Object &c = g.objects[1];
+    // at rest on it: each tick it falls one Euler step from rest (v only, 0x5c961a) and the slow contact stops it again, as in W4M
+    assert(c.type == Object::Crate && !c.spawning && Vector3Length(c.vel) < 0.25f && Vector3Distance(c.pos, {P.x, top + DR, P.z}) < DR + 0.5f + 0.02f && c.pos.y > top + 1.2f);
+    g.objects.erase(g.objects.begin());
+    run(90);
+    assert(g.objects.size() == 1 && fabsf(g.objects[0].pos.y - (top + restHalf(g.objects[0]) + 0.05f)) < 0.06f);
+    Object low = g.objects[0];
+    low.pinned = true;
+    g.objects = {low, {Object::Barrel, {P.x, top + 3, P.z}, {0, 0, 0}, -1, -1, false, false}};
+    run(150);
+    assert(fabsf(g.objects[1].pos.y - top) < 0.06f);  // the drum's base on the slab, inside the crate
+}
+
+// W4M 0x57ef80 -> 0x518f40: TangentialMin / ParallelMin dampings; land and DetonatesAtRest (or no expiry) stop under Bounce.MinSpeed,
+// a fused payload off a collider keeps 0.02 units/ms
+static void checkPayloadBounce() {
+    const float gren[2] = {0.7f, 0.35f}, none[2] = {0, 0};
+    const Vector3 up = {0, 1, 0};
+    auto near = [](Vector3 a, Vector3 b) { return Vector3Distance(a, b) < 1e-4f; };
+    assert(near(payBounce({10, -10, 0}, up, gren, true), {7, 3.5f, 0}));
+    assert(near(payBounce({0, -2, 0}, up, gren, true), {0, 0, 0}));  // 0.7 m/s < 1.5
+    assert(near(payBounce({0, -2, 0}, up, gren, false), {0, 1, 0}));  // raised to 1 m/s
+    assert(near(payBounce({0, 4, 0}, up, gren, true), {0, 1.4f, 0}));  // v.n > 0: |v| x Parallel along n
+    assert(near(payBounce({3, -30, 1}, up, none, false), {0, 0, 0}));
+    const WeaponDef &g = WEAPONS[weaponNamed("Grenade")], &f = WEAPONS[weaponNamed("Fatkins Strike")], &b = WEAPONS[weaponNamed("Banana Bomb")];
+    assert(g.damp[0] == 0.7f && g.damp[1] == 0.35f && f.damp[0] == 0.4f && f.damp[1] == 0.6f && b.cdamp[0] == 0.4f && b.cdamp[1] == 0.3f);
+}
+
+// W4M DeathThroes end (0x5aa080 -> 0x5a9310): the team's gravestone 20 units over Position, a 9-unit ColliderLogicEntity: falls and rests
+// on land, falls again when that land goes, never pushed by a blast; payloads (0x3c37) and bullets (0x1c3f) meet it, worms pass through
+static void checkGravestone() {
+    Game g;
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    g.objects.clear();
+    const Vector3 P = {20, g.landTop() + 8, 20};
+    g.weldLand(P, {4, 3, 4});
+    const float top = P.y + 3, GR = Game::GRAVE_R;
+    const int k = g.current ? 0 : 1;
+    Worm &x = g.worms[k];
+    x.pos = {P.x, top + Game::R, P.z}, x.vel = {}, x.hp = 0, x.yaw = 1;
+    g.cfg.teamSetup.resize(g.teams), g.cfg.teamSetup[x.team].grave = 3;
+    g.dyingWorm = k, g.throes = 1;
+    g.stepCount();
+    assert(g.graves.size() == 1 && g.graves[0].grave == 3 && g.graves[0].yaw == 1 && fabsf(g.graves[0].pos.y - (top + 1)) < 1e-4f);
+    auto settle = [&] { for (int t = 0; t < 240 && g.graves[0].moving; t++) g.stepGraves(); };
+    settle();
+    Game::Grave &gr = g.graves[0];
+    Vector3 under = {gr.pos.x, gr.pos.y - GR - 0.05f, gr.pos.z};
+    assert(!gr.moving && gr.onLand && gr.pos.y > P.y && g.terrain.solid(under) && !g.terrain.solid({gr.pos.x, gr.pos.y - GR + 0.02f, gr.pos.z}));
+    const Vector3 rest = gr.pos;
+    g.explode({rest.x + 1.2f, rest.y, rest.z}, {0, 3, 0, 20, 3, 0.25f});  // a push, no crater: it stays
+    for (int t = 0; t < 30; t++) g.stepGraves();
+    assert(Vector3Equals(gr.pos, rest) && !gr.moving);
+    g.terrain.carve(under, 0.6f);  // its land gone: it falls to what is left
+    g.stepGraves();
+    assert(gr.moving);
+    settle();
+    assert(!gr.moving && gr.pos.y < rest.y - 0.2f);
+    Worm shooter{};
+    shooter.alive = false;
+    const Ray r = {{gr.pos.x, gr.pos.y + 3, gr.pos.z}, {0, -1, 0}};  // straight down onto it
+    const Game::GunHit h = g.gunRay(r, shooter, WEAPONS[weaponNamed("Shotgun")].size);
+    assert(!h.land && h.worm < 0 && h.obj < 0 && fabsf(h.dist - (3 - GR - WEAPONS[weaponNamed("Shotgun")].size)) < 0.02f);
+    Colliders cs;
+    g.colliders(cs, 0x3c37);
+    bool payload = false;
+    for (const Collider &c : cs) payload |= c.flags == 0x400;
+    g.colliders(cs, Game::WORM_MASK);
+    for (const Collider &c : cs) assert(c.flags != 0x400);
+    assert(payload);
+    g.graves[0].pos.y = g.water - 1.6f, g.graves[0].moving = true;
+    g.stepGraves();
+    assert(g.graves.empty());  // under Water.Level - 30 units
 }
 
 // W4M stdvs Initialise: SchemeData MineFactoryOn creates the factory at a random spot; each DoOncePerTurnFunctions counts it down.
@@ -4913,6 +5080,8 @@ int main() {
         assert(w.hp == 500 - 75 - 60 - 200 - 60);
     }
     assert(loadWeapons("romfs/weapons.json"));
+    checkPayloadBounce();
+    checkGravestone();
     checkRope();
     checkWaterShots();
     checkSeaTurn();
@@ -4999,6 +5168,8 @@ int main() {
     checkSchemeFactory();
     checkGunObjects();
     checkObjectCollisions();
+    checkWormColliders();
+    checkCrateColliders();
     checkAbduction();
     checkSuperSheep();
     checkOldWoman();
