@@ -262,7 +262,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
         if (WEAPONS[e.weapon].fuse <= 0 && !customWeapon(e.weapon)) Fx::ariel(e.pos);  // a Weapon Factory Bomber's ArielFx is "" (0x59939c)
         break;
     case GameEvent::Splash: Fx::start(e.fx, e.pos); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking; the sounds are the effect's EmitterSoundFX
-    case GameEvent::Pop: case GameEvent::Sink: Fx::start(e.fx, e.pos); break;
+    case GameEvent::Pop: Fx::start(e.fx, e.pos); break;
     case GameEvent::Death: say(Voice::Death); break;  // worm speech goes through its WormPoseManager: lip sync (0x59cb20)
     case GameEvent::Hurt: say(Voice::Hurt); break;
     case GameEvent::Jump: say(Voice::Jump); break;
@@ -844,6 +844,20 @@ static void drawFactory(const Game &g, float dt) {
 
 // BubbleTroubleGraphicEntity: the machine at the base, WXP_Bubbles_Small at its "bubble" node (17.66 units up); the bubble
 // plays WXM_Create (1.5 s), then WXM_Bobbing looped, WXM_HitBounce once per hit (0x54e920, 0x54e410, 0x54e480).
+// SinkingFx WXP_UnderWaterBubbles rides each sunk payload / mine (0x580aa0 -> 0x57fcc0 attached, 0x5c1470) and stops when it is removed
+static void sinkBubbles(const Game &g) {
+    static std::vector<int> live;
+    std::vector<int> now;
+    auto ride = [&](int &h, Vector3 at) {
+        if (h) Fx::place(h, at); else h = Fx::start("WXP_UnderWaterBubbles", at);
+        now.push_back(h);
+    };
+    for (const Projectile &s : g.shots) if (s.sunk) ride(s.bubbles, s.pos);
+    for (const Object &o : g.objects) if (o.sunk && o.type == Object::Mine) ride(o.bubbles, o.pos);
+    for (int h : live) if (std::find(now.begin(), now.end(), h) == now.end()) Fx::stop(h);
+    live = std::move(now);
+}
+
 static void drawBubbles(const Game &g, float dt) {
     static Shader sh = Lit::shader(BUBBLE_VS, BUBBLE_FS, false);
     for (const Game::Bubble &b : g.bubbles) {
@@ -2579,6 +2593,7 @@ int main(int argc, char **argv) {
         lap(T_MODELS);
                 float fxDt = pause.open ? 0 : dt;
         for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt);
+        sinkBubbles(game);
         drawBubbles(game, fxDt);
         drawFactory(game, fxDt);
         Fx::setWind({game.wind, 0, game.windZ}), Fx::levelSync(game.terrain.emitters), Fx::weather(game.cfg.seed, game.clock);
