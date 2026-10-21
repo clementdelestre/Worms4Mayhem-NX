@@ -103,7 +103,7 @@ private:
     TeamCursors cursors;             // SetupTeams: one token per pad
     Vector2 tokenAt[4] = {};         // where each token is drawn (it glides to its slot)
     int rulesRow = 0, editPad = 0;   // SetupRules row; the pad that is typing
-    RenderTexture2D wormRt = {};     // the focused team's worm preview
+    RenderTexture2D wormRt[Lobby::MAX_TEAMS] = {};  // each slot's worm preview, drawn before the slots' 2D pass
     bool live = true;                // this frame takes input (the menu is not flying out, no text entry)
     PadIn padIn(int p);        // pad p's presses this frame (a scripted pad replaces them)
     // W4M popups (docs/w4m/frontend.md "Saved teams"): one at a time, modal; the Teams screen's belong to a pad, the others to any pad
@@ -157,7 +157,8 @@ private:
     bool setupTeams(bool plus, float t);  // true: leave the room
     void setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps);
     bool setupRules(int dx, int dy, bool ok, bool back, bool plus);  // true: START
-    void wormPreview(const GameConfig::Team &tm, float t, float phase, const char *clip = "Base", float ct = 0);
+    void wormPreview(int k, const GameConfig::Team &tm, float t);
+    bool slotTake() const;  // the slot popup offers "Control with this pad": the team is a human one another pad plays
     void loadTeams();
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;

@@ -68,7 +68,7 @@ inline Color mixColors(Color a, Color b) { return {(unsigned char)((a.r + b.r) /
 struct TeamCursors {
     int slot[4] = {};
     bool placed = false;  // the tokens were put on their first slots
-    void move(int p, int d) { slot[p] = ((slot[p] + d) % Lobby::MAX_TEAMS + Lobby::MAX_TEAMS) % Lobby::MAX_TEAMS; }
+    void move(int p, int d) { slot[p] = std::clamp(slot[p] + d, 0, Lobby::MAX_TEAMS - 1); }
     void removed(int k) { for (int &s : slot) if (s > k) s--; }  // a room's later slots shift up
 };
 

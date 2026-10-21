@@ -23,6 +23,7 @@ Repository-level scripts in `tests/` (run from the repository root, they build t
 
 | Script | Covers |
 |---|---|
+| `tests/teams_flow.sh` | Title → Local → Custom game with two placed teams: the worm previews must not corrupt rlgl's matrices (the frontend shrank frame after frame); captures the menu at frames 200 and 400 (`W4NX_CAPFRAMES`) and checks the title is drawn. |
 | `tests/quit_check.sh` | Pause → Quit → Yes to menu stays on the menu: scripted keys (title, Local, Quick match, pause, Quit, the ConfirmQuit Yes, arrows); fails on a second Play. |
 | `tests/netbot.sh` | Two real clients (`--netbot`, the AI plays each owner's team) through a local server; fails on a desync. With a rules value it also checks the live lobby (guest edits its team, host pushes map and rules, both sides see them; the host's ready comes from the 4 s `W4NX_LOBBY_TIMER`). |
 
@@ -35,8 +36,7 @@ hash of the land content, unchanged by a format change: see "Map size").
 ### Frame pacing and hitch log (ours, 2026-10-05)
 
 `log.txt` (`sdmc:/switch/worms4nx/` on Switch, `./` on desktop; raylib's log too): lines queue in memory from the first
-one and a thread writes them each second; warnings are written at once (a crash keeps them, but may lose the last second of
-info lines). A Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer made one every ~3 HITCH lines (the `other`
+one and a thread writes them every 50 ms (a log fetched by FTP while the game runs is complete); the previous run's log is kept as `log.prev.txt`; each frontend screen change logs `UI: screen <from> -> <to> at <t> s`. A Switch SD write blocks 15-25 ms, and newlib's 1 KB stdio buffer made one every ~3 HITCH lines (the `other`
 15-22 ms stalls of sw-log3); written line by line, the 2597 boot lines were the whole 47 s boot (see "Boot time"). The thread is joined at exit: libnx has no `pthread_detach`, so
 `std::thread::detach` aborts the process (ours, found 2026-10-05). In a match:
 - `HITCH <ms>, <n> ticks, <n> chunks, <n> particles, <n> sounds | <section ms> ... other <ms> | loads tex .. fbo ..`: a

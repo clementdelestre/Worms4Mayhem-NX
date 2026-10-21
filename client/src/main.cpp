@@ -82,12 +82,13 @@ static void logDrain() {
     if (logq.f && !out.empty()) fwrite(out.data(), 1, out.size(), logq.f), fflush(logq.f);
 }
 static void logAsync() {  // joined at exit: libnx has no pthread_detach (std::thread::detach aborts)
+    rename(DATA_DIR "log.txt", DATA_DIR "log.prev.txt");  // a crashed or hung run stays readable
     if (!(logq.f = fopen(DATA_DIR "log.txt", "w"))) return;
     logq.async = true;
     logq.writer = std::thread([] {
-        for (int i = 1; !logq.stop; i++) {
+        while (!logq.stop) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            if (i % 20 == 0) logDrain();
+            logDrain();  // every 50 ms: a log fetched while the game runs is complete
         }
     });
     atexit([] { logq.stop = true, logq.writer.join(), logDrain(); });
@@ -1794,7 +1795,7 @@ int main(int argc, char **argv) {
     FILE *inScript = getenv("W4NX_INPUTSCRIPT") ? fopen(getenv("W4NX_INPUTSCRIPT"), "r") : nullptr;
     int sf = -1, sk = 0, sd = 0;
     Screen shown = screen;
-    // W4NX_CAPFRAMES="10 11 12": cap_<frame>.png of the match / loading screen at those frames, fixed dt
+    // W4NX_CAPFRAMES="10 11 12": cap_<frame>.png of the menu / match / loading screen at those frames, fixed dt
     std::vector<int> capFrames;
     for (char *c = getenv("W4NX_CAPFRAMES"), *e; c && *c; c = e) { int f = strtol(c, &e, 10); if (e == c) break; capFrames.push_back(f); }
     auto capture = [&](int frame) {
@@ -1913,6 +1914,7 @@ int main(int argc, char **argv) {
             if (intro && frame == 80) front.go(Ui::Frontend::Local);
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame))
                 snprintf(capPath, sizeof capPath, uiShot == flagUi ? DATA_DIR "ui_%d.png" : "ui.png", frame), front.capture = capPath, TraceLog(LOG_INFO, "UI: frame %d", frame);
+            if (std::count(capFrames.begin(), capFrames.end(), frame)) snprintf(capPath, sizeof capPath, "cap_%d.png", frame), front.capture = capPath;
             if (uiShot && frame > uiFrames.back()) break;
             if (uiShot && !strncmp(uiShot, "setup2", 6)) {  // two pads: pad 1 frees slot 2, pad 2 takes it and makes slot 3 a CPU (level 2), pad 1 goes back to slot 1 and changes its hat; setup2panel then opens its panel
                 Ui::Frontend::simPads = 3;
@@ -1925,7 +1927,7 @@ int main(int argc, char **argv) {
                 if (frame == 17) Ui::Frontend::sim[0].dx = 1;
                 if (frame == 20 && strlen(uiShot) > 6) Ui::Frontend::sim[0].ok = true;
             }
-            if (uiShot && !strncmp(uiShot, "setup3", 6)) {  // saved teams placed: pad 1 picks Gunslingers, pad 2 Funky Dudes, then CPU Easy (third row of what is left) on slot 3, its token ends on the free slot 4; setup3list stops with that list open, setup3slot opens slot 1's settings
+            if (uiShot && !strncmp(uiShot, "setup3", 6)) {  // saved teams placed: pad 1 picks Gunslingers, pad 2 Funky Dudes, then CPU Easy (third row of what is left) on slot 3, its token ends on the free slot 4; setup3list stops with that list open, setup3slot opens slot 1's settings, setup3foreign pad 1's on slot 2's team (pad 2)
                 Ui::Frontend::simPads = 3;
                 const bool list = !strcmp(uiShot, "setup3list");
                 for (int f : {4, 6}) if (frame == f) Ui::Frontend::sim[0].ok = true;
@@ -1936,7 +1938,9 @@ int main(int argc, char **argv) {
                 if (frame == 18 || frame == 20) Ui::Frontend::sim[1].dy = 1;
                 if (frame == 22 && !list) Ui::Frontend::sim[1].ok = true;
                 if (frame == 24 && !list) Ui::Frontend::sim[1].card = 1;
-                if (frame == 28 && !strcmp(uiShot, "setup3slot")) Ui::Frontend::sim[0].ok = true;
+                const bool foreign = !strcmp(uiShot, "setup3foreign");
+                if (frame == 26 && foreign) Ui::Frontend::sim[0].card = 1;
+                if (frame == 28 && (foreign || !strcmp(uiShot, "setup3slot"))) Ui::Frontend::sim[0].ok = true;
             }
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;

@@ -30,10 +30,10 @@ int main() {
     }
     {  // Teams screen tokens move on their own and a room's later slots shift up on a release
         TeamCursors c;
-        c.move(0, 1), c.move(1, -1);
-        assert(c.slot[0] == 1 && c.slot[1] == 3 && c.slot[2] == 0);
-        c.removed(1);
-        assert(c.slot[0] == 1 && c.slot[1] == 2);
+        c.move(0, 1), c.move(1, -1), c.slot[2] = 3, c.move(2, 1);  // no wrap at either end
+        assert(c.slot[0] == 1 && c.slot[1] == 0 && c.slot[2] == 3);
+        c.slot[1] = 2, c.removed(1);
+        assert(c.slot[0] == 1 && c.slot[1] == 1);
     }
     {  // a Joy-Con pair's colour is the average of its two colours: blue + red = purple
         Color p = mixColors({58, 123, 255, 255}, {255, 60, 40, 255});
