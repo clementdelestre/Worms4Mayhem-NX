@@ -1323,6 +1323,7 @@ static void particles(const Camera3D &cam, int bin) {
         } else quad(p.p, r, u, col);
     }
     endRun();
+    rlDrawRenderBatchActive();  // the last run is drawn here: rlEnable* do not flush, so z write and culling must still be off
     rlEnableDepthMask();
     rlEnableBackfaceCulling();
 }

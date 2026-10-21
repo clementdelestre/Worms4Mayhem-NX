@@ -2589,7 +2589,7 @@ int main(int argc, char **argv) {
         // XBlendModeGL SrcAlpha / InvSrcAlpha (Bundl09)
         BeginBlendMode(BLEND_ALPHA), rlDisableDepthMask();
         for (const Game::Trigger &t : game.triggers) if (t.visible && Models::visible(t.pos, t.radius)) DrawSphereEx(t.pos, t.radius, 12, 16, {255, 30, 0, 125});
-        rlEnableDepthMask(), EndBlendMode();
+        EndBlendMode(), rlEnableDepthMask();
         lap(T_MODELS);
                 float fxDt = pause.open ? 0 : dt;
         for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt);
