@@ -185,7 +185,7 @@ The `.wmv` files are separate. `MoviePlayerService` plays them full screen.
   240), then the entity goes: BordersActive 0, EFMV.Ready, HUD.Show (0x5e65d0). The `EFMV.Borders` sprite resource is in no bundle:
   its quad size, read here as +-1 x scale, is the one assumed point [assumed: the resource is in no bundle and no size is read by 0x5e66c0 / 0x5e68c0; unresolvable from the install, 2026-10-12].
 - HUD: HUD.Hide / Show only toggle HudService's active-worm arrow; the HUD leaves through `EFMV.BordersActive` (BaseHudObject::Update
-  0x5daf31, state 2 -> Out_* clip): clock, counter, energy bars, wind, scanner, power bar, angle, melee bar, active worm info, secondary
+  0x5dad00, level 2 -> Out_* clip): clock, counter, energy bars, wind, scanner, power bar, angle, melee bar, active worm info, secondary
   weapon, blimp help, commentary box. HotSeatTimeGraphicEntity kills itself (0x5ee275). Worm names and hp hide while `EFMV.Active`
   (WormHealthNameEntity 0x5fd4e0); HudClock's last-5-seconds ticks stop then (0x5eff38).
 - CommentService (0x5e4ca0): Subtitles.On sets +0x68, kills the shown box at once and empties the queue; EFMV.Ready creates

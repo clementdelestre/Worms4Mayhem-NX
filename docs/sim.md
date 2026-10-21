@@ -153,6 +153,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   than two alliances stand (stdvs Worm_Died, AllianceCount < 2). Wormpot Vampire: the active worm gains half of every other worm's damage, its allies' and team mates' included (no team test), at
   ApplyDamage (0x5a9710), poison included, and half a drowning worm's energy (0x5ad7c9).
 - The round clock (`clock`) runs in the hot seat too (TimerLogicEntity 0x50f17d).
+- **Ready screen** [ours: `Ui::drawHst`, layout and clips in docs/w4m/turn.md "HST layout"]: drawn while `hotSeat` > 0 in Aim (ms = hotSeat x DT), HST_In_All from the tick it shows; when it ends not under movie borders, HST_Out_All (0.208 s) plays over the HUD. The rest of the HUD, the commentary banner included, is hidden during it (BaseHudObject 0x5dad00 hot-seat condition, docs/w4m/turn.md "HST vs commentary"); the banner queue keeps ageing. Worm name and countdown: team gradient (`teamTextTop`) to white; no backdrop.
 
 ## Weapon in hand
 
@@ -558,3 +559,4 @@ in the first-person aim takes the aim ray's target (`locked`, `lockAt = target()
   retreat planned with the attack. Strikes are aimed from the Blimp too; a homing missile is locked (one FIRE press, then released) and charged from the worm, like a human.
 - W4M side: `docs/w4m/ai.md` §18; ours in detail, with the source of each rule: `ai.md`.
 - Jetpack after a secondary drop: the turn enters the retreat (the dropped weapon's RetreatTime, `Game::launched`); the jetpack stays usable through it, a landed one takes off again with FIRE while fuel lasts [observed in W4M by the user, 2026-10-03].
+- **Active team marker** [ours: `Hud::draw` team loop, docs/w4m/missions.md "Active team marker"]: the active team's name alternates team colour / white every 250 ms from the first frame it is active (`lastBlink`).

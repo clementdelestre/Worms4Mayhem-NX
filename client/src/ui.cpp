@@ -47,6 +47,11 @@ namespace Ui {
 
 const Color TEAM_COLORS[4] = {{255, 78, 60, 255}, {108, 127, 255, 255}, {59, 244, 123, 255}, {255, 218, 77, 255}};
 Color teamColor(const Game &g, int team) { return TEAM_COLORS[g.alliance(team) & 3]; }
+// 0x50cb90: text colour 15 + AlliedGroup (Team_Red .. Team_Yellow), gradient top -> white
+static Color teamTextTop(const Game &g, int team) {
+    static const Color TOP[4] = {{255, 74, 38, 255}, {109, 148, 255, 255}, {83, 255, 127, 255}, {255, 224, 100, 255}};
+    return TOP[g.alliance(team) & 3];
+}
 Color teamTextColor(const Game &g, int team) {
     return team < (int)g.surrendered.size() && g.surrendered[team] ? Color{128, 128, 128, 255} : teamColor(g, team);
 }
@@ -889,9 +894,8 @@ void background() {
 // MENUTWKXINGAME FE.AnimSpeed (FrontEndService +0x134, 0x72a244): item clips last their length x it (0x6a03d0, 0x7a9cf8)
 static const float FE_ANIM_SPEED = 0.9f;
 // The exe's key curve (tools/w4m-models curve(), 0x7abb1c): a zero out-tangent holds; unweighted = Hermite on the tangent
-// slopes, weighted = Bezier with handles at key +- tangent / 3, solved for t
-float clipKeys(const float (*k)[6], int n, float t, bool weighted) {
-    t /= FE_ANIM_SPEED;
+// slopes, weighted = Bezier with handles at key +- tangent / 3, solved for t; clipKeys plays it at the menu's FE.AnimSpeed
+float xanimKeys(const float (*k)[6], int n, float t, bool weighted) {
     if (t <= k[0][0]) return k[0][1];
     int i = 0;
     while (i < n - 1 && t >= k[i + 1][0]) i++;
@@ -922,6 +926,7 @@ float clipKeys(const float (*k)[6], int n, float t, bool weighted) {
     }
     return bz(u, a[1], y1, y2, b[1]);
 }
+float clipKeys(const float (*k)[6], int n, float t, bool weighted) { return xanimKeys(k, n, t / FE_ANIM_SPEED, weighted); }
 // Bundl10 WXFrontend.Anim keys {time s, value, in tangent x, y, out tangent x, y} (w4m-models --list, W4M_KEYS):
 // in_scalehitxy scale XY and shake X / Y, unweighted
 const float IN_SCALEHIT_S[6][6] = {{0, 0, 0.00027776f, 0.99951f, 0, 0}, {0.00016665f, 0.59961f, 0.94434f, 0.32764f, 0.94434f, 0.32764f},
@@ -4035,15 +4040,16 @@ static void drawSubtitle(float dt) {
     text(subs[0].s.c_str(), 640, 360 + 210 * 720 / 540.f - SUB_SIZE / 2, SUB_SIZE, WHITE, 1);
 }
 
-static void drawBanner(float dt) {
+static void drawBanner(float dt, bool shown) {  // shown false: the hot seat hides the box (BaseHudObject 0x5dad00), its queue keeps running
     if (banners.empty()) return;
     const float LIFE = banners[0].life > 0 ? banners[0].life : banners.size() > 1 ? 2 : 3, SIZE = BANNER_SIZE;  // queued: keeps pace with the death queue (2 s a worm)
     if ((bannerAge += dt) > LIFE) { banners.erase(banners.begin()), bannerAge = 0; return; }
+    if (!shown) return;
     std::vector<std::string> lines = wrapBanner(banners[0].s);
     float w = 0;
     for (const std::string &l : lines) w = fmaxf(w, textWidth(l.c_str(), SIZE));
     w += 80;
-    float h = 44 + 30 * lines.size(), y = 66 - (h + 60) * (fmaxf(0, 1 - bannerAge / 0.2f) + fmaxf(0, (bannerAge - LIFE + 0.2f) / 0.2f));
+    float h = 44 + 30 * lines.size(), y = 360 - 140 * 1.5f - h / 2 - (h + 60) * (fmaxf(0, 1 - bannerAge / 0.2f) + fmaxf(0, (bannerAge - LIFE + 0.2f) / 0.2f));  // HUD.Comment.Position y 140
     Rectangle r = {640 - w / 2, y, w, h};
     if (!comPanel(r)) DrawRectangleRounded(r, 0.3f, 6, {0, 104, 138, 230});
     for (size_t i = 0; i < lines.size(); i++) text(lines[i].c_str(), 640, y + 20 + 30 * i, SIZE, WHITE, 1);
@@ -4230,14 +4236,69 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
 }
 
+// W4M HotSeatTimeGraphicEntity (docs/w4m/turn.md "Hot seat screen"): HUD units about the screen centre, 480 tall (x1.5 px), y up. Keys {time s, value, in x, y, out x, y}
+// from Bundl09 `HST Anims.xom` clips HST_In_All / HST_Out_All; scale x / y of each node
+static const float HST_I_RDY_X[3][6] = {{0.0f, 0.0f, 0.0833129883f, 0.281738281f, 0.0f, 0.0f}, {0.0833129883f, 0.281738281f, 0.00465774536f, 0.00171852112f, 0.201416016f, 2.2578125f},
+                                        {0.666503906f, 1.0f, 0.747070312f, -0.00407409668f, 0.10925293f, 2.3359375f}};
+static const float HST_I_RDY_Y[8][6] = {{0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f}, {0.0416564941f, 0.0f, 1.0f, 0.0f, 0.0401916504f, 0.999023438f},
+                                        {0.0833129883f, 1.03417969f, 0.0401916504f, 0.999023438f, 0.548339844f, -0.8359375f}, {0.125f, 0.971191406f, 0.548339844f, -0.8359375f, 0.654785156f, 0.755371094f},
+                                        {0.166625977f, 1.01953125f, 0.654785156f, 0.755371094f, 0.833984375f, -0.551757812f}, {0.208251953f, 0.991699219f, 0.833984375f, -0.551757812f, 0.96484375f, 0.262207031f},
+                                        {0.25f, 1.00292969f, 0.96484375f, 0.262207031f, 0.99609375f, -0.0826416016f}, {0.291503906f, 1.0f, 0.99609375f, -0.0826416016f, 1.0f, 0.0f}};
+static const float HST_I_TEAM_Y[2][6] = {{0.0833129883f, 0.0f, 0.260009766f, 2.15625f, 0.260009766f, 2.15625f}, {2.08203125f, 0.999511719f, 1.93359375f, 0.0f, 3.46875f, 0.0f}};
+static const float HST_I_TIME[4][6] = {{0.0f, 0.0f, 0.0833129883f, 0.0f, 0.0833129883f, 0.0f}, {0.0833129883f, 0.0f, 0.0833129883f, 0.0f, 0.0416564941f, 1.28808594f},
+                                       {0.125f, 1.28808594f, 0.0219726562f, 0.635253906f, 0.673828125f, -0.703125f}, {2.70703125f, 1.0f, 2.8203125f, 0.0129470825f, 2.8203125f, 0.0129470825f}};
+static const float HST_I_WORM_X[2][6] = {{0.0416564941f, 0.0f, 0.457763672f, 0.200195312f, 0.0f, 3.14453125f}, {3.20703125f, 1.0f, 3.46289062f, 0.0f, 0.00499725342f, 0.0f}};
+static const float HST_O_SHRINK[2][6] = {{0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f}, {0.208251953f, 0.0f, 0.0827636719f, -0.99609375f, 0.0827636719f, -0.99609375f}};
+static const float HST_OUT_TIME = 0.208251953f;  // HST_Out_All length
+// ms: HotSeatTimeRemaining; age: s since HST_In_All (outro: since HST_Out_All)
+static void drawHst(const std::string &worm, const std::string &team, Color tc, int ms, float age, bool outro) {
+    const float K = 1.5f;  // HUD unit -> px
+    struct Line { std::string s; float y, em, sx, sy; Color c, c2; };
+    auto fit = [&](const std::string &s, float maxScale, float maxW) { return fminf(maxScale, maxW / (textWidth(s.c_str(), 100) / 100)); };  // 0x5ed660
+    auto keys = [&](const float (*in)[6], int n, bool weighted) { return outro ? xanimKeys(HST_O_SHRINK, 2, age, false) : xanimKeys(in, n, age, weighted); };
+    int secs = (ms + 999) / 1000;
+    float pulse = 1 + 0.3f * (ms % 1000) / 1000.0f;  // 0x5ed6e0
+    Line lines[4] = {
+        {worm, 187.5f, fit(worm, 41, 245), outro ? 1 : xanimKeys(HST_I_WORM_X, 2, age, true), outro ? keys(nullptr, 0, false) : 1, tc, WHITE},
+        {team, 145.875f, fit(team, 35, 300), 1, keys(HST_I_TEAM_Y, 2, true), WHITE, WHITE},
+        {tr("Text.Ready", "Ready?"), -142.0f, 26, keys(HST_I_RDY_X, 3, true), keys(HST_I_RDY_Y, 8, false), WHITE, WHITE},
+        {TextFormat("%d", secs), -185.0f, 48 * pulse, keys(HST_I_TIME, 4, true), keys(HST_I_TIME, 4, true), tc, WHITE},
+    };
+    for (const Line &l : lines) {
+        if (l.sx < 0.001f || l.sy < 0.001f) continue;
+        std::vector<Vector2> pose = textPose(4, l.s);  // HST.TextAnimNames High5;Low5
+        for (Vector2 &v : pose) v.x *= K / FE_S;
+        rlPushMatrix();
+        rlTranslatef(640, 360 - l.y * K, 0);
+        rlScalef(l.sx, l.sy, 1);
+        textG(l.s.c_str(), 0, -l.em * K / 2, l.em * K, l.c, l.c2, 1, {0, 0, 0, 255}, &pose);
+        rlPopMatrix();
+    }
+}
+
 void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
     const bool ready = readyNow;
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
     syncSubs(g);
-    if (!quiet) drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f)), drawSubtitle(fminf((tick - bannerTick) * Game::DT, 0.1f));
+    if (!quiet) drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f), !ready), drawSubtitle(fminf((tick - bannerTick) * Game::DT, 0.1f));
     bannerTick = tick;
-    if (scriptMovie(g).borders) return;  // EFMV.BordersActive: every HUD object leaves (BaseHudObject 0x5daf31) [ours: at once]
+    const bool borders = scriptMovie(g).borders;
+    const std::string wormTxt = wormName(g.cfg, cur.team, g.wormSlot(g.current)), teamTxt = teamName(g.cfg, cur.team);
+    if (ready) {
+        if (!hstOn) hstTick = tick;
+        hstOn = true, hstWorm = wormTxt, hstTeam = teamTxt, hstCol = teamTextTop(g, cur.team);
+    } else {
+        if (hstOn && !borders) hstOutro = true, hstTick = tick;  // else the entity dies at once under the borders (0x5ee275)
+        hstOn = false;
+    }
+    if (borders) hstOutro = false;
+    if (borders) return;  // EFMV.BordersActive: every HUD object leaves (BaseHudObject 0x5daf31) [ours: at once]
+    if (hstOutro) {  // HotSeatTimeRemaining < 1: HST.OutroAnimName, 0.208 s, over the HUD it leaves
+        float age = (tick - hstTick) * Game::DT;
+        if (age >= HST_OUT_TIME) hstOutro = false;
+        else drawHst(hstWorm, hstTeam, hstCol, 0, age, true);
+    }
     if (g.phase == Phase::GameOver) {
         if (!g.cfg.mission) {  // missions and challenges end on missionEnd() only
             // HeaderTop FE.WinString in Header_Orange, the line under it in Solid_White
@@ -4249,12 +4310,8 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const WeaponDef &wd = weaponDef(g.weapon);
     Color tc = teamColor(g, cur.team);
     bool aiming = g.phase == Phase::Aim;
-    if (ready) {  // W4M ready screen: big worm + team name, "Ready?" + countdown, rest of the HUD hidden
-        const Color CREAM = {255, 244, 228, 255};
-        text(wormName(g.cfg, cur.team, g.wormSlot(g.current)), 640, 64, 64, tc, 1);
-        text(teamName(g.cfg, cur.team).c_str(), 640, 136, 38, CREAM, 1);
-        text(tr("Text.Ready", "Ready?"), 640, 560, 32, CREAM, 1);  // HST_Ready: Text.Ready (0x5edf1a)
-        text(TextFormat("%d", (g.hotSeat + 59) / 60), 640, 596, 110, tc, 1);
+    if (ready) {  // W4M ready screen (HotSeatTimeGraphicEntity): the rest of the HUD hidden
+        drawHst(wormTxt, teamTxt, hstCol, (int)lroundf(g.hotSeat * Game::DT * 1000), (tick - hstTick) * Game::DT, false);
         return;
     }
 
@@ -4331,7 +4388,14 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float hp = 0;
         for (size_t i = 0; i < g.worms.size(); i++) if (g.worms[i].team == t) hp += hpt[i].shown;  // shrinks with the count
         float y = 646 - (g.teams - 1 - t) * 38.0f;
-        text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, teamTextColor(g, t), 2);
+        static unsigned lastBlink[4];  // EnergyBarEntity 0x5e8fa0: the active team's name blinks team colour / white, 250 ms each
+        unsigned nowMs = (unsigned)(tick * Game::DT * 1000);
+        bool white = false;
+        if (t == cur.team && t < 4) {
+            if (nowMs > lastBlink[t] + 500) lastBlink[t] = nowMs;
+            white = nowMs > lastBlink[t] + 250;
+        } else if (t < 4) lastBlink[t] = nowMs;
+        text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, white ? WHITE : teamTextColor(g, t), 2);
         const Catalog::Item *flag = t < (int)g.cfg.teamSetup.size() ? catalog().flag(g.cfg.teamSetup[t].flag) : nullptr;  // HUD.Energy.Flag*: the team's FlagGfxName
         if (!flag || !hudFlag(flag->model, {606, y + 12})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, teamColor(g, t));
         healthBar(g.alliance(t) & 3, 628, y, 240, 24, Clamp(hp / maxHp, 0, 1));

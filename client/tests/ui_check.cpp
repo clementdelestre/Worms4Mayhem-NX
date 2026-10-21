@@ -206,6 +206,7 @@ int main() {
     }
     // FE clips run the exe's key curve at FE.AnimSpeed 0.9: in_scalehitxy scale 0.75 / 1.012 at clip 0.05 / 0.1 s (w4m-models eval)
     assert(fabsf(Ui::clipKeys(Ui::IN_SCALEHIT_S, 6, 0.045f) - 0.75f) < 0.005f && fabsf(Ui::clipKeys(Ui::IN_SCALEHIT_S, 6, 0.09f) - 1.012f) < 0.005f);
+    assert(fabsf(Ui::xanimKeys(Ui::IN_SCALEHIT_S, 6, 0.05f) - 0.75f) < 0.005f);  // in-game HUD clips play at speed 1 (HST_In_All)
     for (int i = 0; i < (int)Audio::Sfx::Count; i++) {  // a match sound must never be a frontend one (the enum, the files and the events march together)
         auto id = (Audio::Sfx)i;
         bool fe = !strncmp(Audio::sfxFile(id), "fe_", 3) || !strncmp(Audio::sfxFile(id), "wormpot_", 8), feEv = strstr(Audio::sfxEvent(id), "frontendsfx/") || strstr(Audio::sfxEvent(id), "In_") || strstr(Audio::sfxEvent(id), "FEError") || strstr(Audio::sfxEvent(id), "Typewriter") || strstr(Audio::sfxEvent(id), "Highlight") || strstr(Audio::sfxEvent(id), "click2");

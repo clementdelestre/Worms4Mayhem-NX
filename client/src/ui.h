@@ -32,6 +32,7 @@ void logo(float cx, float y, float w, float deg = 0, float stretch = 1);  // W4M
 // one channel of a W4M frontend item clip t s after it started (WXFrontend.Anim keys {time s, value, in tangent x, y, out tangent
 // x, y}, at FE.AnimSpeed), held past its ends
 float clipKeys(const float (*keys)[6], int n, float t, bool weighted = false);
+float xanimKeys(const float (*keys)[6], int n, float t, bool weighted = false);  // the same curve at speed 1 (in-game HUD clips)
 extern const float IN_SCALEHIT_S[6][6], IN_SCALEHIT_X[7][6], IN_SCALEHIT_Y[7][6];
 // Menu language: 0 English, 1 French (lang.txt, else the system language). tr(): W4M's string for key
 // (assets/lang/<en|fr>.txt from tools/w4m-ui), else the built-in en / fr text (key may be null).
@@ -224,6 +225,10 @@ private:
     uint32_t hpTick = 0;
     int hpClock = 0;
     bool readyNow = false;  // labels(): this frame's ready screen
+    bool hstOn = false, hstOutro = false;  // HotSeatTimeGraphicEntity: showing / playing HST.OutroAnimName
+    uint32_t hstTick = 0;                  // tick its intro or outro started
+    std::string hstWorm, hstTeam;          // texts the outro keeps
+    Color hstCol = {};
     bool trackHp(const Game &g, bool turnStart, uint32_t tick);  // true while the camera is on a worm or a crate
 };
 void hudEvent(const Game &g, const GameEvent &e);  // per sim event: W4M commentary banners (deaths, crates)
