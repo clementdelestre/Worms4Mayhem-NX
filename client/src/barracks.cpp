@@ -1,4 +1,5 @@
 #include "barracks.h"
+#include "raymath.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -142,17 +143,59 @@ void Catalog::load(const char *dir) {
             add(f);
         }
     };
+    auto offsetList = [](const std::string &s) {
+        std::vector<std::array<float, 9>> v;
+        std::stringstream ss(s);
+        for (std::string e; std::getline(ss, e, ';');) {
+            std::array<float, 9> o{};
+            std::stringstream es(e);
+            for (float &x : o) es >> x;
+            v.push_back(o);
+        }
+        return v;
+    };
     *this = Catalog{};
-    rows("attachments.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 5) attachments.push_back({f[1], f[2], f[4], f.size() > 5 ? f[5] : "", atoi(f[0].c_str()), f.size() > 6 ? atoi(f[6].c_str()) : 2}); });
+    rows("attachments.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 5) attachments.push_back({f[1], f[2], f[4], f.size() > 5 ? f[5] : "", atoi(f[0].c_str()), f.size() > 6 ? atoi(f[6].c_str()) : 2, f.size() <= 8 || atoi(f[7].c_str()), f.size() <= 8 || atoi(f[8].c_str()), f.size() > 9 ? offsetList(f[9]) : std::vector<std::array<float, 9>>{}}); });
     rows("graves.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 3) graves.push_back({f[1], f[0], f[2]}); });
     rows("flags.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 3) flags.push_back({f[0], "flags/" + f[1], f[2]}); });
     rows("speech.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 2) speech.push_back({f[0], "", f[1]}); });
     rows("stockweapons.txt", [&](const std::vector<std::string> &f) { if (!f.empty() && !f[0].empty()) stockWeapons.push_back(f[0]); });
 }
 
+// "id:N" -> id, N (W4M 0x755f6c: atoi after the first ':', 0 without)
+static std::string splitIndex(const std::string &s, int *idx) {
+    size_t c = s.find(':');
+    *idx = c == std::string::npos ? 0 : atoi(s.c_str() + c + 1);
+    return s.substr(0, c);
+}
+
 const Catalog::Item *Catalog::attachment(const std::string &id) const {
-    for (const Item &a : attachments) if (a.id == id) return &a;
+    int n;
+    std::string bare = splitIndex(id, &n);
+    for (const Item &a : attachments) if (a.id == bare) return &a;
     return nullptr;
+}
+
+std::vector<Catalog::Headgear> Catalog::headgear(const std::string &hat, const std::string &glasses, const std::string &tash, bool jetpack) const {
+    std::vector<Headgear> out;
+    const Item *h = attachment(hat);
+    bool wantGlasses = !h || h->glasses, wantTash = !h || h->tash;
+    auto add = [&](const std::string &id, const char *model) {
+        int n;
+        splitIndex(id, &n);
+        const Item *a = attachment(id);
+        Matrix m = MatrixIdentity();
+        if (a && n >= 0 && n < (int)a->offsets.size()) {
+            const auto &o = a->offsets[n];  // XTransform local = T . Rz.Ry.Rx . S (docs/w4m-formats.md)
+            m = MatrixMultiply(MatrixMultiply(MatrixScale(o[6], o[7], o[8]), MatrixRotateXYZ({o[3], o[4], o[5]})), MatrixTranslate(o[0], o[1], o[2]));
+        }
+        out.push_back({model, m});
+    };
+    if (jetpack) out.push_back({"jetpack", MatrixIdentity()});
+    else if (const char *n = drawName(hat)) add(hat, n);
+    if (wantGlasses) if (const char *n = drawName(glasses)) add(glasses, n);
+    if (wantTash) if (const char *n = drawName(tash)) add(tash, n);
+    return out;
 }
 
 const Catalog::Item *Catalog::flag(const std::string &id) const {

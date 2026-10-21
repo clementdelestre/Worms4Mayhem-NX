@@ -2100,7 +2100,7 @@ void Frontend::wormPreview(const GameConfig::Team &tm, float t, float phase, con
     Models::draw("worm", {0, 0, 0}, yaw, 0, WHITE, clip, ct);
     Models::gloves(nullptr);
     if (Matrix m; Models::joint("worm", "HatLocator", clip, ct, true, &m))
-        for (const std::string *id : {&tm.hat, &tm.glasses, &tm.tash}) if (const char *n = catalog().drawName(*id)) Models::draw(n, MatrixMultiply(m, MatrixRotateY(yaw)));
+        for (const auto &hg : catalog().headgear(tm.hat, tm.glasses, tm.tash)) Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), MatrixRotateY(yaw)));
     EndMode3D();
     EndTextureMode();
 }

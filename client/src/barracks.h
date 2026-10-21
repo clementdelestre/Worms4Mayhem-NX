@@ -2,6 +2,7 @@
 // W4M saved teams, DATA.TeamBarracks (docs/w4m/frontend.md "Saved teams", docs/match-setup.md "Saved teams"): teams.txt beside
 // setup.txt, seeded from W4M's defaults; and the team editor's W4M lists (tools/w4m-re/setuplists.py, assets/*.txt).
 #include "sim.h"
+#include <array>
 #include <functional>
 #include <string>
 #include <vector>
@@ -41,7 +42,9 @@ struct Barracks {
 
 // The editor's lists, W4M order. Item id: attachment / flag / speech id; model: assets/models path (attachments, graves) or ui png (flags)
 struct Catalog {
-    struct Item { std::string id, model, text, lock; int type = 0, state = 2; };  // lock / state: an attachment's Lock.* key and its default State (0 Hidden, 1 Purchasable, 2 Unlocked)
+    // lock / state: an attachment's Lock.* key and its default State (0 Hidden, 1 Purchasable, 2 Unlocked); glasses / tash: its bools (a hat's gate the glasses / tash drawn with it);
+    // offsets: its Offsets list, each {position, orientation (radians), scale}
+    struct Item { std::string id, model, text, lock; int type = 0, state = 2; bool glasses = true, tash = true; std::vector<std::array<float, 9>> offsets; };
     std::vector<Item> attachments;  // WORMATTACHMENTS: type 0 hat, 1 gloves, 2 glasses, 3 tash, 4 the Terminator hat
     std::vector<Item> graves;       // SelectGraveList, by GraveIndex (id = its Grave.* mesh)
     std::vector<Item> flags;        // SelectFlagList
@@ -51,6 +54,10 @@ struct Catalog {
     const Item *attachment(const std::string &id) const;  // null if none
     const Item *flag(const std::string &id) const;
     const char *drawName(const std::string &id) const;  // the Models name of an attachment, null for "" or unknown
+    // W4M 0x7573f7 / 0x5a49a0: what a worm wears at its HatLocator, each with its model and the matrix to put before the locator's. Ids may carry W4M's ":N" Offsets index
+    // (0x755f6c / 0x59f300; none = 0; past the list = identity); a hat's Glasses / Tash bools gate those two; `jetpack` swaps the hat for the jetpack helmet
+    struct Headgear { const char *model; Matrix local; };
+    std::vector<Headgear> headgear(const std::string &hat, const std::string &glasses, const std::string &tash, bool jetpack = false) const;
     // the attachments of a type the team editor offers ("" none first): State Unlocked by default, or its lock in `unlocks` (the save's Lock.* keys); a team's current one stays listed
     std::vector<std::string> usable(int type, const std::vector<std::string> &unlocks, const std::string &current) const;
 };
