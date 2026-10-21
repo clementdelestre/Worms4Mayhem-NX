@@ -5050,6 +5050,30 @@ static void checkPlacement() {
     assert(checked > 0 && overhang > 0);  // layer 1: ground under an overhang
 }
 
+// W4M: a mine is a Landmine payload (0x581dc0, mask 0x3c37): falling onto a drum it bounces off it (0x580db0, T 0.4 / P 0.2);
+// a crate (mask 0x83f) meets a payload (flag 8) and rests on it
+static void checkPayloadColliders() {
+    Game g;
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    g.objects.clear();
+    const Vector3 P = {20, g.landTop() + 8, 20};
+    g.weldLand(P, {4, 0.5f, 4});
+    const float top = P.y + 0.5f;
+    auto run = [&](int ticks, auto f) { for (int t = 0; t < ticks; t++) { g.phase = Phase::Aim, g.timer = 6000, g.step(Input{}); if (f()) return true; } return false; };
+    g.objects = {{Object::Barrel, {P.x, top, P.z}, {0, 0, 0}, -1, -1, false, false}, {Object::Mine, {P.x, top + 4, P.z}, {0, 0, 0}, -1, -1, false, false}};
+    g.objects[1].courtesy = 1000000;
+    assert(run(150, [&] { return g.objects[1].vel.y > 0; }) && g.objects[1].pos.y > top + 0.9f);
+    g.objects.clear();
+    const int gren = weaponNamed("Grenade");
+    const float gs = WEAPONS[gren].size;
+    g.shots = {{{P.x, top + gs + 0.02f, P.z}, {0, 0, 0}, gren, 1e9f, false, 1}};
+    Object crate = {Object::Crate, {P.x, top + 4, P.z}, {0, 0, 0}, -1, -1, false, false};
+    g.objects = {crate};
+    run(200, [] { return false; });
+    assert(g.shots.size() == 1 && g.objects.size() == 1 && !g.objects[0].spawning);
+    assert(g.objects[0].pos.y > top + restHalf(g.objects[0]) + 0.05f + gs / 2);  // on the grenade, over where the land holds it
+}
+
 int main() {
     checkTeamSlots();
     checkAlliances();
@@ -5200,6 +5224,7 @@ int main() {
     checkIcarus();
     checkCollectedUtilities();
     checkTunnelling();
+    checkPayloadColliders();
     for (size_t i = 0; i < WEAPONS.size(); i++) {
         bool fired, again;
         Kind k = WEAPONS[i].kind;

@@ -475,7 +475,7 @@ struct Game {
     std::vector<Projectile> shots;
     std::vector<Object> objects;
     // W4M GraveStoneLogicEntity: the dead worm's team gravestone, a 9-unit sphere (flags 0x400, mask 0xc37); onLand: at rest on land
-    struct Grave { Vector3 pos, vel; float yaw; int grave, uid; bool moving = true, onLand = false; };
+    struct Grave { Vector3 pos, vel; float yaw; int grave, uid, born; bool moving = true, onLand = false; };  // born: `clock` at creation (the Go clip)
     std::vector<Grave> graves;
     static constexpr float GRAVE_R = 0.45f;
     static constexpr int UID_BASE = 64;
