@@ -1488,9 +1488,18 @@ static void subPanel(const char *title, const char *art, float t, float p) {
 // W4M WXFEP.Confirm* in our style: the question, then ConfirmList's No (the default) and Yes rows
 static void yesNo(const char *q, int r, float t) {
     popup({330, 200, 620, 320});
-    float qs = fminf(36, 36 * 560 / textWidth(q, 36)), qw = fmaxf(textWidth(q, qs) + 40, 300);
-    text(q, 640, 236, qs, GOLD_TOP, 1);
-    if (!image("fe/title_underline", {640 - qw / 2, 280, qw, 22})) DrawRectangle(640 - qw / 2, 286, qw, 3, WHITE);
+    std::string a = q, b;  // too wide for one line: split at the space nearest the middle, full size on two lines
+    if (textWidth(q, 36) > 560) {
+        size_t best = std::string::npos, mid = a.size() / 2;
+        auto dist = [mid](size_t i) { return i > mid ? i - mid : mid - i; };
+        for (size_t i = 0; i < a.size(); i++) if (a[i] == ' ' && (best == std::string::npos || dist(i) < dist(best))) best = i;
+        if (best != std::string::npos) b = a.substr(best + 1), a.resize(best);
+    }
+    const float qs = fminf(36, 36 * 560 / fmaxf(textWidth(a.c_str(), 36), textWidth(b.c_str(), 36)));
+    const float qw = fmaxf(fmaxf(textWidth(a.c_str(), qs), textWidth(b.c_str(), qs)) + 40, 300), uy = b.empty() ? 280 : 300;
+    text(a.c_str(), 640, b.empty() ? 236 : 218, qs, GOLD_TOP, 1);
+    if (!b.empty()) text(b.c_str(), 640, 258, qs, GOLD_TOP, 1);
+    if (!image("fe/title_underline", {640 - qw / 2, uy, qw, 22})) DrawRectangle(640 - qw / 2, uy + 6, qw, 3, WHITE);
     for (int i = 0; i < 2; i++) {
         bool hi = i == r;
         float sz = hi ? 50 : 42, s = hi ? 1.04f - 0.04f * cosf(t * 4 * PI) : 1;
@@ -2252,7 +2261,7 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
     // the card's content fades under the pad's open list; the ribbon, the pad disc and the ready flag stay
     auto chrome = [&] {
         if (fade > 0 && !cardPanel(d, Fade(WHITE, fade))) DrawRectangleRounded(d, 0.1f, 6, Fade(PANEL, fade));
-        const char *rb = play ? m.name.c_str() : TextFormat(tr(nullptr, "Player %d", "Joueur %d"), k + 1);
+        const char *rb = play ? m.name.c_str() : tr("FETXT.WaitingForPlayer", "Empty", "Vide");
         Rectangle r = {d.x + 16, d.y - 22, d.width - 32, 40};
         Tilt tl(centre(r), 0.035f);
         DrawRectangleRounded({r.x - 3, r.y - 3, r.width + 6, r.height + 6}, 0.5f, 8, BLACK);
