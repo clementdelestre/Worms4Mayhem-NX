@@ -4609,6 +4609,34 @@ static void checkDetailRemoval() {
     assert(t.objects.size() == n0 - 2);
 }
 
+// W4M 0x46e6b9 / 0x468200: a Visible 0 land frame is solid and never drawn (material 67); the TheWindyWizard "CODE AAAA" frame goes with Land.ClearCoded
+static void checkHiddenLand() {
+    for (const char *map : {"TheWindyWizard", "ChallengeCrate2", "DestructAndServe"}) {
+        Terrain t;
+        assert(t.load(map, 1));
+        int n = 0;
+        for (size_t i = 0; i < t.d.size() && n < 1; i++) {
+            if (t.mats[i] != 67 || t.d[i] <= 0) continue;
+            int x, y, z;
+            t.xyz(i, x, y, z);
+            Vector3 p = {(x + 0.5f) * Terrain::VOX, (y + 0.5f) * Terrain::VOX, (z + 0.5f) * Terrain::VOX}, hit;
+            assert(t.solid(p));
+            assert(t.raycast({{p.x, p.y + 1.5f, p.z}, {0, -1, 0}}, 3, &hit) && hit.y >= p.y - 1.5f * Terrain::VOX);
+            n++;
+        }
+        assert(n == 1);
+    }
+    Terrain t;
+    assert(t.load("TheWindyWizard", 1) && t.codes.count("AAAA"));
+    std::vector<size_t> held;
+    for (auto [at, n] : t.codes["AAAA"].vox)
+        for (int i = at; i < at + n; i++)
+            if (t.mats[i] == 67 && t.d[i] > 0) held.push_back(i);
+    assert(!held.empty());
+    assert(t.clearCoded("AAAA"));
+    for (size_t i : held) assert(t.d[i] <= 0);
+}
+
 // W4M GLG 0x457130: uv = floor / wall row . lattice point + offset; a thin cell's corner 1 (4) is its corner 0 one lattice step along x (z)
 static void checkLandUV() {
     Terrain t;
@@ -4701,6 +4729,7 @@ int main() {
     checkTeamSlots();
     checkPlacementSolid();
     checkDetailRemoval();
+    checkHiddenLand();
     checkLandUV();
     checkPlacement();
     checkCountCamera();
