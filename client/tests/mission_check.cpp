@@ -225,6 +225,50 @@ static void checkCrates(const std::vector<MissionSpec> &list) {
     }
 }
 
+// A crate a script makes with Crate.AddToWormInventory books to the collector's own Inventory.WormNN (0x5c8820), not the alliance's;
+// NumContents -1 on a count of 0 gives it an infinite weapon (-1)
+static void checkWormInventoryCrate(const std::vector<MissionSpec> &list) {
+    Game g;
+    for (const MissionSpec &m : list) if (m.id == "CarpetCapers") g.start(missionConfig(m, 3));
+    Input skip;
+    skip.flags = Input::SKIP_MOVIE;
+    for (int t = 0; t < 60 * 120 && !(g.phase == Phase::Aim && g.worms[g.current].team == 0 && !scriptMovieOn(g)); t++) g.step(t % 30 ? Input{} : skip);
+    assert(g.phase == Phase::Aim && g.worms[g.current].team == 0);
+    auto inv = [&](const char *who, const char *w) {
+        char b[160];
+        snprintf(b, sizeof b, "return QueryContainer(\"Inventory.%s\").%s", who, w);
+        return (int)scriptEval(g, b);
+    };
+    int slot = (int)scriptEval(g, "return GetData(\"ActiveWormIndex\")");
+    char me[16];
+    snprintf(me, sizeof me, "Worm%02d", slot);
+    // the crate as a script makes it: the Crate.* keys, then GameLogic.CreateCrate (GameLogicService resets AddToWormInventory per crate)
+    auto spawn = [&](int tag, const char *what, int n, int toWorm) {
+        char b[400];
+        snprintf(b, sizeof b, "SetData(\"Crate.Type\",\"weapon\") SetData(\"Crate.Contents\",\"%s\") SetData(\"Crate.NumContents\",%d) SetData(\"Crate.Index\",%d) "
+                 "SetData(\"Crate.Spawn\",\"Crate1\") SetData(\"Crate.Gravity\",0) SetData(\"Crate.AddToWormInventory\",%d) SendMessage(\"GameLogic.CreateCrate\") return 0", what, n, tag, toWorm);
+        g.worms[g.current].pos.y += 8, g.worms[g.current].vel = {};  // clear of the marker: the script sees the crate (an Index) a tick before it is collected
+        scriptEval(g, b);
+        auto o = std::find_if(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.tag == tag && x.type == Object::Crate; });
+        assert(o != g.objects.end());
+        g.step(Input{});
+        o = std::find_if(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.tag == tag && x.type == Object::Crate; });
+        g.worms[g.current].pos = o->pos, g.worms[g.current].vel = {}, g.hotSeat = 0;
+        for (int t = 0; t < 20; t++) g.step(Input{});
+    };
+    assert(inv(me, "Dynamite") == 0);
+    int alliance = inv("Alliance00", "Dynamite");
+    spawn(70, "kWeaponDynamite", 3, 1);
+    assert(inv(me, "Dynamite") == 3 && inv("Alliance00", "Dynamite") == alliance && scriptEval(g, "return GetData(\"Crate.AddToWormInventory\")") == 0);
+    spawn(71, "kWeaponDynamite", 2, 0);  // the key was reset: this one goes to the alliance
+    assert(inv(me, "Dynamite") == 3 && inv("Alliance00", "Dynamite") == alliance + 2);
+    assert(inv(me, "Girder") == 0);
+    spawn(72, "kUtilityGirder", -1, 1);
+    printf("worm-inventory crate: %s Dynamite %d, Girder %d (alliance %d, team %d)\n", me, inv(me, "Dynamite"), inv(me, "Girder"), inv("Alliance00", "Girder"), inv("Team00", "Girder"));
+    assert(inv(me, "Girder") == -1 && [&] { for (size_t w = 0; w < WEAPONS.size(); w++) if (WEAPONS[w].name == "Girder") return g.ammo[0][w] == -1; return false; }());
+    assert(scriptReport(g).errors == 0);
+}
+
 // Mission crates: every one that falls or snaps ends with its centre 10 x Scale units over the ground (0x5c94d0, GroundSnap 0x5c8137),
 // within the 0.25 m voxel; a pinned one (Gravity 0) stays at its marker
 static void checkCratePlacement(const std::vector<MissionSpec> &list) {
@@ -371,12 +415,14 @@ int main() {
     }
     if (only && !strcmp(only, "movies")) return checkMovies(list), 0;
     if (only && !strcmp(only, "crates")) return checkCrates(list), 0;
+    if (only && !strcmp(only, "wormcrate")) return checkWormInventoryCrate(list), 0;
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
     if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
     if (only) return 0;
     checkLot2(list);
     checkCrates(list);
+    checkWormInventoryCrate(list);
     checkCratePlacement(list);
     checkDeaths(list);
     checkMovies(list);

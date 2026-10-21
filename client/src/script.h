@@ -24,6 +24,7 @@ const char *scriptCrateGraphic(const Game &g, int index);  // a custom crate's C
 // elapsedMs: ElapsedRoundTime
 struct ScriptHud { bool counter = false, percent = false, tenths = false, roundClock = true, defaults = true, endless = false, hideTurn = false; int value = 0, roundTime = 0; int64_t clockMs = 0, elapsedMs = 0; };
 ScriptHud scriptHud(const Game &g);
+double scriptEval(Game &g, const char *lua);  // run a Lua chunk in the script's state, its numeric result (tests: the container reads and crate spawns a script makes)
 double scriptNum(const Game &g, const char *key, double def);  // a data key's value, def when the store lacks it
 // The end (0x4fd27a): -1 GameOverLogicEntity's pace; 0 the EFMV.GameOverMovie plays; 1 the result now (that movie ended, or .Off)
 int scriptOutro(const Game &g);

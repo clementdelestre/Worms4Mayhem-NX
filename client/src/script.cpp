@@ -1098,6 +1098,15 @@ bool scriptStart(Game &g, const std::string &dir, const std::string &script, con
     return S->built;
 }
 
+double scriptEval(Game &g, const char *lua) {
+    Using u(g);
+    int r = luaL_loadbuffer(S->L, lua, strlen(lua), "eval") || lua_pcall(S->L, 0, 1, 0);
+    double v = r ? 0 : lua_tonumber(S->L, -1);
+    if (r) S->errors++, S->lastError = lua_tostring(S->L, -1) ? lua_tostring(S->L, -1) : "?";
+    lua_pop(S->L, 1);
+    return v;
+}
+
 void scriptEvent(Game &g, const char *fn) {
     Using u(g);
     call(fn);
