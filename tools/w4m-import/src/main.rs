@@ -155,6 +155,8 @@ const SFX: &[(&str, &str, &[&str])] = &[
     ("scouser", "weapons", &["ScouserLaunch", "ScouserJump1", "ScouserJump2", "ScouserJump3"]),
     ("sentry_place", "weapons", &["SentryGunHeld"]),
     ("sentry_fire", "weapons", &["SentryGunLoop"]),
+    ("sentry_end", "weapons", &["SentryGunEnd"]),
+    ("sentry_activation", "weapons", &["SentryGunActivation"]),
     ("dynamite", "weapons", &["Fuse"]),
     ("gas", "weapons", &["GasLoop"]),
     ("abduction", "weapons", &["AlienUFOBeamStart"]),

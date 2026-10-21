@@ -75,6 +75,9 @@ constexpr Def DEFS[] = {
     {Sfx::ScouserFire, "scouser", "weapons/ScouserLaunch", 0, false, 0.5f, 60, 1},
     {Sfx::SentryPlace, "sentry_place", "weapons/SentryGunHeld", -8, true, 0.5f, 20, 1},
     {Sfx::SentryFire, "sentry_fire", "weapons/SentryGun", -3, true, 0.5f, 100, 1},
+    // weapons/SentryGun past its sustain: SentryGunEnd once the Cycle param (0.2/s) runs from 0.194 to 0.221
+    {Sfx::SentryEnd, "sentry_end", "weapons/SentryGun", -3, false, 0.5f, 100, 1, 0, nullptr, 1, {135, 135}},
+    {Sfx::SentryActivation, "sentry_activation", "weapons/SentryGunActivation", -6, false, 0.5f, 25, 1},
     {Sfx::Dynamite, "dynamite", "weapons/FuseLoop", -4, true, 0.5f, 25, 1},
     {Sfx::Gas, "gas", "weapons/GasLoop", -16, false, 0.5f, 15, 1},
     {Sfx::Abduction, "abduction", "weapons/AlienUfoBeamStart", 0, false, 0.5f, 100, 1},

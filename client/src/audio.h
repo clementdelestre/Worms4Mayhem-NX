@@ -10,7 +10,7 @@ namespace Audio {
 // Shotgun..SuperSheepFire are per-weapon fire sounds; they fall back to Fire when not imported.
 enum class Sfx { Explosion, BigExplosion, Fire, Bounce, Splash, Sheep, Holy, TurnStart, Tick,
                  Shotgun, Airstrike, Donkey, Rope, Teleport,
-                 BatSwing, FirePunch, Prod, Sniper, Bow, Homing, OldWomanFire, ScouserFire, SentryPlace, SentryFire,
+                 BatSwing, FirePunch, Prod, Sniper, Bow, Homing, OldWomanFire, ScouserFire, SentryPlace, SentryFire, SentryEnd, SentryActivation,
                  Dynamite, Gas, Abduction, Flood, Parachute, MineBeep, CrateLand, Pickup, SuperSheepFire,
                  Step, Land, HpTick,  // Step, Land: worm foley; HpTick: HUD hp count; silent when not imported
                  CrateImpactHealth, CrateImpactWeapon, CrateImpactUtil,  // parachuted crate touching down, by content

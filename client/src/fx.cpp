@@ -86,7 +86,7 @@ const Ramp RAMPS[] = {
 };
 enum RampId { R_NONE, R_STARBURST, R_BAZ_MAIN, R_BAZ_PUFF, R_HOM_SMOKE, R_HOM_GLOW, R_WHITE, R_DONKEY_RING,
               R_SB_CYAN, R_SB_GLOW, R_FW_RED, R_FW_GREEN, R_FW_STAR, R_FW_PALE, R_FW_ENDGREEN };
-struct Streak { Vector3 p, dir; float len, width; unsigned char tex; };
+struct Streak { Vector3 p, dir; float len, width; unsigned char tex; float tailW = -1; };  // tailW >= 0: the tail's half width
 
 std::vector<Texture2D> tex(TEX_COUNT);  // past TEX_COUNT: the data sprite sets (sprites.txt)
 std::vector<Ramp> ramps(std::begin(RAMPS), std::end(RAMPS));
@@ -484,7 +484,7 @@ void decodeData() {
             {"weapons/explosionboxed", Audio::Sfx::ExplosionBoxed, 0}, {"weapons/holygrenadeexplosion", Audio::Sfx::HolyBoom, 0},
             {"weapons/explosionwithsheep", Audio::Sfx::SheepBoom, 0}, {"weapons/scouserpop", Audio::Sfx::ScouserPop, 0}, {"weapons/gasloop", Audio::Sfx::Gas, 0},
             {"global/fireworksexplosion", Audio::Sfx::Fireworks, 0}, {"weapons/concretedonkeyimpact", Audio::Sfx::DonkeyImpact, 0},
-            {"weapons/floodrainloop", Audio::Sfx::FloodRain, 1}};
+            {"weapons/floodrainloop", Audio::Sfx::FloodRain, 1}, {"weapons/sentrygunactivation", Audio::Sfx::SentryActivation, 0}};
         for (const auto &x : SND)
             if (lower(c["EmitterSoundFX"].s()) == x.ev) e.sfx = (int)x.id, e.sfxLoop = x.mode == 1, e.sfxHold = x.mode == 2;
         dataFx[lower(name)] = {&e};
@@ -931,6 +931,11 @@ static void gunBlast(Vector3 p) {
     }
 }
 
+void streak(Vector3 head, Vector3 tail, float halfWidth, float tailWidth) {
+    float len = Vector3Distance(head, tail);
+    if (len > 1e-4f) streaks.push_back({head, Vector3Scale(Vector3Subtract(tail, head), 1 / len), len, halfWidth, TRAIL_W, tailWidth});
+}
+
 void donkeyAriel(Vector3 at) {  // WXP_CrateSpawnLGRings: 30 sprites, 22 units, life 1.2 +- 0.5 s, V +- (1.5, 0, 1.5), random orientation, spin +- 15 deg x 10/s
     for (int i = 0; i < 30; i++) alt(at, {rnd(-1, 1) * 1.5f, 0, rnd(-1, 1) * 1.5f}, 1.5f, 1.2f + rnd(-0.5f, 0.5f), 22, rnd(-15, 15) * DEG2RAD * 10, rnd(0, 360) * DEG2RAD, R_DONKEY_RING, 6000);
 }
@@ -1364,17 +1369,18 @@ void draw(const Camera3D &cam) {
                         Vector3 rs = Vector3Normalize({camLook.z, 0, -camLook.x});
                         quad(q.p, Vector3Scale(rs, q.size * RU), {0, q.size * RU, 0}, {255, 255, 255, (unsigned char)fmaxf(0, q.alpha)});
                     }
-            if (add && (t == TRAIL_R || t == TRAIL_B))
+            if (add && (t == TRAIL_R || t == TRAIL_B || t == TRAIL_W))
                 for (const Streak &st : streaks) {
                     if (st.tex != t) continue;
                     if (!any) rlSetTexture(tex[t].id), rlBegin(RL_QUADS), any = true;
                     // ribbon along -velocity, widened across the view direction; u runs head (bright) to tail
-                    Vector3 side = Vector3Scale(Vector3Normalize(Vector3CrossProduct(st.dir, fwd)), st.width), tail = Vector3Add(st.p, Vector3Scale(st.dir, st.len));
+                    Vector3 n = Vector3Normalize(Vector3CrossProduct(st.dir, fwd)), side = Vector3Scale(n, st.width), tail = Vector3Add(st.p, Vector3Scale(st.dir, st.len));
+                    Vector3 ts = st.tailW >= 0 ? Vector3Scale(n, st.tailW) : side;
                     rlColor4ub(255, 255, 255, 255);
                     rlTexCoord2f(0, 0); rlVertex3f(st.p.x + side.x, st.p.y + side.y, st.p.z + side.z);
                     rlTexCoord2f(0, 1); rlVertex3f(st.p.x - side.x, st.p.y - side.y, st.p.z - side.z);
-                    rlTexCoord2f(1, 1); rlVertex3f(tail.x - side.x, tail.y - side.y, tail.z - side.z);
-                    rlTexCoord2f(1, 0); rlVertex3f(tail.x + side.x, tail.y + side.y, tail.z + side.z);
+                    rlTexCoord2f(1, 1); rlVertex3f(tail.x - ts.x, tail.y - ts.y, tail.z - ts.z);
+                    rlTexCoord2f(1, 0); rlVertex3f(tail.x + ts.x, tail.y + ts.y, tail.z + ts.z);
                 }
             if (any) rlEnd(), rlSetTexture(0);
         }

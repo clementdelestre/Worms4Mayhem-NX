@@ -8,6 +8,7 @@
 #include "efmv.h"
 #include "frontbg.h"
 #include "fx.h"
+#include "turret.h"
 #include "lanhost.h"
 #include "lit.h"
 #include "loading.h"
@@ -191,6 +192,7 @@ static bool drawObject(const Game &g, const Object &o) {
         if (Vector3Distance(viewEye, o.pos) > 15 && Models::has("mine_low")) model = "mine_low", clip = nullptr;
     }
     Models::pick(clip, t);
+    if (o.type == Object::Sentry) { bool ok = Turret::draw(g, o); return Models::pick(nullptr), ok; }
     float yaw = (&o - g.objects.data()) * 1.3f;
     static char gfx[16];  // W4M custom crate: its CustomGraphic detail mesh (CrateGraphicEntity 0x5c4ea1), raw units like the target's
     const char *custom = o.type == Object::Crate && o.weapon < -1 ? scriptCrateGraphic(g, o.tag) : nullptr;
@@ -208,6 +210,7 @@ static void floodFx(const Game &g, float stop) {  // FloodLogicEntity 0x555720: 
 static void onEvent(const Game &g, const GameEvent &e) {
     animEvent(g, e);
     Acting::event(g, e);
+    Turret::event(g, e);
     if (e.kind >= GameEvent::Movie) Acting::movie(g, e);
     Ui::hudEvent(g, e);
     using Audio::Sfx;
@@ -235,8 +238,8 @@ static void onEvent(const Game &g, const GameEvent &e) {
         else if (k == Kind::Melee) s = d.name == "Baseball Bat" ? Sfx::BatSwing : d.name == "Prod" ? Sfx::Prod : Sfx::FirePunch;
         else if (k == Kind::Shotgun && d.name == "Sniper Rifle") s = Sfx::Sniper;
         if ((k == Kind::Shell || k == Kind::Homing) && customWeapon(e.weapon)) s = kindName(d) == "Grenade" ? Sfx::Throw : Sfx::SecretLaunch;  // 0x5983f0 LaunchSfx: Thrown / Launched
-        else if (k == Kind::Sentry && e.worm >= 0) s = Sfx::SentryPlace;  // placing vs. the turret's own shots (worm -1)
-        if (k != Kind::Airstrike && k != Kind::Abduction && k != Kind::Jetpack && k != Kind::Flood) Audio::play(s, e.pos);  // chopper / UFO: drawBomber, drawUfo; jetpack: its loop (jetAudio); Flood: its rain's
+        else if (k == Kind::Sentry) s = e.worm >= 0 ? Sfx::SentryPlace : Sfx::Count;  // the turret's own burst: its FireSound loop (Turret::update)
+        if (k != Kind::Airstrike && k != Kind::Abduction && k != Kind::Jetpack && k != Kind::Flood && s != Sfx::Count) Audio::play(s, e.pos);  // chopper / UFO: drawBomber, drawUfo; jetpack: its loop (jetAudio); Flood: its rain's
         if (k == Kind::Flood) floodFx(g, 1 + 4.7f);  // FloodWeaponLogicEntity 0x555c90: StopRain with DoFlood, RainDuration 4700 ms after the start
         bool tool = utility(k) || k == Kind::SkipGo;
         if (e.worm >= 0 && !tool) Acting::speak(g, e.worm, WEAPONS[e.weapon].name == "Fire Punch" ? Voice::Punch : Voice::Fire);  // worm -1: sentry gun; MeleeWeaponLogicEntity 0x568270: kMeleeFirepunch says Punch
@@ -1584,7 +1587,7 @@ int main(int argc, char **argv) {
             for (; irTick < (uint32_t)irEnd; irTick++) game.step(rec.inputs[irTick]);
         irEnd = -1;
         irSwallow = true;
-        Fx::clear();
+        Fx::clear(), Turret::clear();
         Audio::stopSfx();  // the skipped ticks' sounds must not outlive the replay
     };
     int livePad = -1;  // pad of the human playing this turn here, -1 none
@@ -2297,7 +2300,7 @@ int main(int argc, char **argv) {
                     game.step(play.inputs[tick++]);
                     for (const GameEvent &e : game.events) next |= e.kind == GameEvent::TurnStart || e.kind == GameEvent::GameOver;
                 }
-                Fx::clear();
+                Fx::clear(), Turret::clear();
                 game.terrain.remesh();
             }
             quit = pressed({GAMEPAD_BUTTON_RIGHT_FACE_DOWN, GAMEPAD_BUTTON_MIDDLE_RIGHT}, {KEY_ESCAPE, KEY_BACKSPACE});
@@ -2381,6 +2384,7 @@ int main(int argc, char **argv) {
         if (aimShot && Controls::targetView(game) && frame > 30)  // Blimp: pan, yaw, then tilt down
             in.buttons |= Input::TARGET | (frame >= 45 ? Input::PITCH : 0), in.walk = frame < 45 ? 127 : 0, in.turn = frame < 45 ? 40 : 0, in.aim = frame >= 45 ? -60 : 0;
         if (aimShot && frame > 30 && getenv("W4NX_PITCH")) game.worms[game.current].pitch = (float)atof(getenv("W4NX_PITCH")) * DEG2RAD;  // that aim pitch, degrees
+        if (int a, b, v = 127; shot && getenv("W4NX_WALK") && sscanf(getenv("W4NX_WALK"), "%d %d %d", &a, &b, &v) >= 2 && frame >= a) Controls::forceAim = 0, in.walk = frame < b ? (int8_t)v : 0;  // W4NX_WALK="from to [walk]": the active worm walks, out of the forced aim
         if (aimBench && frame >= 60) in = Input{}, in.buttons = Controls::targetView(game) ? Input::TARGET | (frame == 61 && getenv("W4NX_LOCK") ? Input::FIRE : 0) : 0;
         if (irSwallow) {
             if (in.buttons & (Input::FIRE | Input::JUMP)) in.buttons &= ~(Input::FIRE | Input::JUMP);
@@ -2482,7 +2486,7 @@ int main(int argc, char **argv) {
                 int built = game.terrain.remesh();  // what the kept meshes do not cover
                 TraceLog(LOG_INFO, "REPLAY: %u ticks re-simulated, %d chunks remeshed, %d kept, %.1f ms", irTick - from, built,
                          (int)game.terrain.liveKept.size(), (GetTime() - t0) * 1000);
-                Fx::clear();
+                Fx::clear(), Turret::clear();
                 irAcc = 0;
             }
         }
@@ -2735,6 +2739,7 @@ int main(int argc, char **argv) {
         drawBubbles(game, fxDt);
         drawFactory(game, fxDt);
         Fx::setWind({game.wind, 0, game.windZ}), Fx::levelSync(game.terrain.emitters), Fx::weather(game.cfg.seed, game.clock);
+        Turret::update(game, fxDt, launchAt);
         Fx::update(fxDt);
         Fx::draw(view);
         Fx::drawFlare(view, fxDt, [&](Vector3 o, Vector3 d) {

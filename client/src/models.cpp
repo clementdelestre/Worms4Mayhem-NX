@@ -723,11 +723,11 @@ static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnim
     int n = std::min(e.m.skeleton.boneCount, a.boneCount);
     out.resize(n);
     const Transform *src = layered(e, a, f, ly);
-    const Transform *L[5];
-    float lw[5];
+    const Transform *L[7];
+    float lw[7];
     int nl = 0;
     if (aim && (int)aim->boneCount >= n) L[nl] = aim->keyframePoses[af], lw[nl++] = ly ? ly->aimW : 1;
-    for (int k = 0, kf; ly && k < 4; k++)
+    for (int k = 0, kf; ly && k < 6; k++)
         if (const ModelAnimation *c = ly->add[k] ? clipFrame(e, ly->add[k], ly->addT[k], false, &kf, false) : nullptr; c && (int)c->boneCount >= n)
             L[nl] = c->keyframePoses[kf], lw[nl++] = 1;
     if (nl) addLayers(e, src, L, lw, nl, out);
@@ -1032,7 +1032,7 @@ static bool same(const Models::Layers &a, const Models::Layers &b) {
            a.gestYaw == b.gestYaw && a.gestPitch == b.gestPitch && a.act[0] == b.act[0] && a.act[1] == b.act[1] && a.actW[0] == b.actW[0] &&
            a.actW[1] == b.actW[1] && a.aimW == b.aimW && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) && (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60) &&
            a.lip[0] == b.lip[0] && a.lip[1] == b.lip[1] && a.lipW[0] == b.lipW[0] && a.lipW[1] == b.lipW[1] &&
-           std::equal(a.add, a.add + 4, b.add) && std::equal(a.addT, a.addT + 4, b.addT);
+           std::equal(a.add, a.add + 6, b.add) && std::equal(a.addT, a.addT + 6, b.addT);
 }
 
 bool Models::blend(const char *name, const char *clip, float t, bool loop, const Layers *ly, Vector3 *out) {
@@ -1135,14 +1135,23 @@ static void drawGloves(Entry &g, const Entry &body, const std::vector<Matrix> &b
     drawModel(g, pos, tint);
 }
 
+static bool drawLayered(Entry &e, Vector3 pos, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Models::Layers *ly);
 bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers *ly) {
     auto it = models.find(name);
     if (it == models.end()) return false;
-    Entry &e = it->second;
+    it->second.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
+    return drawLayered(it->second, pos, tint, clip, t, loop, aim, aimT, ly);
+}
+bool Models::draw(const char *name, Matrix m, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers &ly) {
+    auto it = models.find(name);
+    if (it == models.end()) return false;
+    it->second.m.transform = m;
+    return drawLayered(it->second, {0, 0, 0}, WHITE, clip, t, loop, aim, aimT, &ly);
+}
+static bool drawLayered(Entry &e, Vector3 pos, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Models::Layers *ly) {
     // CPU skinning into the pose's slot (skinned once while it stays in use)
     int f, af = -1;
     const ModelAnimation *am = aim ? clipFrame(e, aim, aimT, false, &af, false) : nullptr;
-    e.m.transform = MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
     select(e, clip, t, loop, aim, aimT, ly), fade(e, clip, t, loop);
     if (const ModelAnimation *a = clipFrame(e, clip, t, loop, &f); a && e.m.boneMatrices && a->keyframeCount > 0) {
         Entry::Slot &s = slotFor(e, a, f, am, af, ly);
