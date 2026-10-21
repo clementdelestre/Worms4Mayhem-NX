@@ -629,7 +629,7 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
     return landing;
 }
 
-void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity) {
+void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity, const std::function<bool(Vector3)> &wall) {
     bool ground = t.solid({pos.x, pos.y - 0.35f, pos.z});
     vel.y = ground && vel.y <= 0 ? 0 : vel.y - gravity * Game::DT;
     Vector3 np = Vector3Add(pos, Vector3Scale(vel, Game::DT));
@@ -639,7 +639,7 @@ void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity) {
     }
     float climb = 0;
     while (climb <= 0.6f && t.solid({np.x, np.y - 0.3f + climb, np.z})) climb += 0.05f;
-    if (climb > 0.6f) { np.x = pos.x; np.z = pos.z; if (ground) vel.y = 7; }
+    if (climb > 0.6f || (wall && wall({np.x, np.y + climb, np.z}))) { np.x = pos.x; np.z = pos.z; if (ground) vel.y = 7; }
     else np.y += climb;
     bool roof = t.solid({np.x, np.y + 0.3f, np.z});
     for (float y = np.y - 0.2f; y < np.y + 0.3f && !roof; y += 0.1f) roof = t.solid({np.x, y, np.z});  // the whole body: a thin overhang can't fall between feet and head
@@ -823,7 +823,7 @@ void Game::start(const GameConfig &c) {
     for (int t = 0; t < teams; t++) teamFirst.push_back(teamFirst.back() + c.teamWorms(t));
     worms.clear();
     shots.clear();
-    objects.clear(), triggers.clear(), allied.clear(), noTurn = false, sentries = 0;
+    objects.clear(), triggers.clear(), allied.clear(), noTurn = false, sentries = 0, uids = 0;
     factory = {}, factoryData = {};
     gas.clear();
     nextWorm.assign(teams, 0);
@@ -1049,6 +1049,15 @@ static bool crateLike(const Object &o) { return o.type == Object::Crate || o.typ
 float restHalf(const Object &o) { return crateLike(o) ? fmaxf(0, 0.5f * o.scale - 0.05f) : halfHeight(o.type); }
 Vector3 sentryBase(const Object &o) { return {o.pos.x, o.pos.y - restHalf(o) - 0.05f, o.pos.z}; }
 Vector3 sentryUp(const Terrain &t, const Object &o) { return t.normal(sentryBase(o)); }
+// W4M collider of an object (centre, radius, flags): crate 10 x Scale units at its centre, flags 4 health / 0x20 target / 2 others (0x5ca180);
+// drum 9 units centred 9 units over its Position, 0x10 (0x5d18b2, 0x5d1c60); mine: a Landmine payload, Radius 3 units, ColliderFlags 0 | 8 (0x58246d);
+// sentry 16 units, 16 up its normal, 0x800 (0x56cec0, 0x56df8f). Flags 0: none (one going off this tick)
+static uint32_t collider(const Terrain &t, const Object &o, Vector3 &c, float &r) {
+    if (o.dead) return 0;
+    if (o.type == Object::Sentry) return c = Vector3Add(sentryBase(o), Vector3Scale(sentryUp(t, o), 0.8f)), r = 0.8f, 0x800;
+    c = colliderCentre(o), r = o.type == Object::Mine ? 0.15f : o.type == Object::Barrel ? DRUM_R : 0.5f * o.scale;
+    return o.type == Object::Crate ? (o.weapon < 0 && o.mystery < 0 ? 4 : 2) : o.type == Object::Target ? 0x20 : o.type == Object::Barrel ? 0x10 : 8;
+}
 static bool sheepLike(Kind k) { return k == Kind::Sheep || k == Kind::SuperSheep || k == Kind::OldWoman || k == Kind::Scouser; }  // WEAPTWK ColliderFlags 128: collider 0x88
 static const char *named(const std::string &s) { return s.empty() ? nullptr : s.c_str(); }  // an empty WEAPTWK effect or sound starts nothing (0x57fd00)
 // PARTTWK: the DetonationFx effects holding the WXP_GasCloud emitter, whose particle poisons the worms it touches
@@ -1248,7 +1257,7 @@ void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
     const float ang = rand01() * 2 * PI, r = rand01(), m = r * r * 0.4f;
     const Vector3 dir = Vector3Normalize(Vector3Add(v, Vector3Add(Vector3Scale(a, cosf(ang) * m), Vector3Scale(b, sinf(ang) * m))));
     const Worm none{};
-    const GunHit h = gunRay({from, dir}, none, 0, int(&o - objects.data()));
+    const GunHit h = gunRay({from, dir}, none, 0, int(&o - objects.data()), SENTRY_SHOT_MASK);
     Vector3 land;
     if (terrain.raycast({from, dir}, 150, &land)) emit(GameEvent::Pop, land), events.back().fx = "WXP_Wep_Sentry_Hit";  // at the land hit even past a nearer worm
     if (h.dist >= 150) return;
@@ -1400,7 +1409,7 @@ int Game::fallDamage(float speed) const {
 }
 
 // W4M 0x55e10f: the shooter is skipped by id (0x5b27e0 -> 0x519dd0); gun mask 0x1c3f has the bubble shell's 0x1000, not the 0x2000 it takes with the shooter inside
-Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet, int self) const {
+Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet, int self, uint32_t mask) const {
     Vector3 hit, dir = r.direction;
     GunHit h{{}, terrain.raycast(r, GUN_RANGE, &hit) ? Vector3Distance(r.position, hit) : GUN_RANGE, -1, true};
     auto across = [&](Vector3 c, float rad) {  // 0x519dd0: where the bullet sphere first touches the collider sphere
@@ -1411,14 +1420,12 @@ Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet, int self) co
     };
     for (size_t i = 0; i < worms.size(); i++)
         if (float t = worms[i].alive && &worms[i] != &shooter ? across(worms[i].pos, R) : -1; t > 0) h.dist = t, h.worm = (int)i, h.land = false;
-    for (size_t i = 0; i < objects.size(); i++)  // crate colliders (gun mask 0x1c3f): the crate sphere, 10 x Scale units
-        if (float t = crateLike(objects[i]) && !objects[i].dead ? across(objects[i].pos, 0.5f * objects[i].scale) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = (int)i;
-    for (const Object &o : objects)  // mines (payload flag 8, Radius 3) and drums (flag 0x10, 9 units): only the hit's Explosion reaches them
-        if (float t = (o.type == Object::Mine || o.type == Object::Barrel) && !o.dead ? across(colliderCentre(o), o.type == Object::Mine ? 0.15f : DRUM_R) : -1; t > 0)
-            h.dist = t, h.worm = -1, h.land = false, h.obj = -1;
-    for (size_t i = 0; i < objects.size(); i++)  // sentries: 16 units, 16 up the normal, flag 0x800 (0x56cec0, 0x56df8f)
-        if (float t = objects[i].type == Object::Sentry && (int)i != self ? across(Vector3Add(sentryBase(objects[i]), Vector3Scale(sentryUp(terrain, objects[i]), 0.8f)), 0.8f) : -1; t > 0)
-            h.dist = t, h.worm = -1, h.land = false, h.obj = -1, h.sentry = (int)i;
+    for (size_t i = 0; i < objects.size(); i++) {  // only a crate or target is hurt directly; a mine or drum only by the hit's Explosion
+        Vector3 c;
+        float cr;
+        uint32_t f = (int)i != self ? collider(terrain, objects[i], c, cr) & mask : 0;
+        if (float t = f ? across(c, cr) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = f & 0x26 ? (int)i : -1, h.sentry = f & 0x800 ? (int)i : -1;
+    }
     for (const Bubble &bb : bubbles) {
         Vector3 c = Vector3Add(bb.pos, {0, BUBBLE_UP, 0});
         if (float t = Vector3Distance(c, r.position) > BUBBLE_SHELL ? across(c, BUBBLE_SHELL) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = -1, h.sentry = -1;
@@ -2032,13 +2039,6 @@ int Game::ropeSwing(const Input &in, float yaw) {
     return a < 1.41372f ? 1 : a > 1.72788f ? -1 : 0;
 }
 
-// W4M collider of an object (centre, radius, flags): crate 10 units at its centre, flags 4 health / 0x20 target / 2 others (0x5ca180);
-// drum 9 units centred 9 units over its Position, 0x10 (0x5d18b2, 0x5d1c60); mine: a Landmine payload, Radius 3 units, ColliderFlags 0 | 8 (0x58246d)
-static uint32_t collider(const Object &o, Vector3 &c, float &r) {
-    c = colliderCentre(o), r = o.type == Object::Mine ? 0.15f : o.type == Object::Barrel ? DRUM_R : 0.5f;
-    return o.type == Object::Crate ? (o.weapon < 0 && o.mystery < 0 ? 4 : 2) : o.type == Object::Target ? 0x20 : o.type == Object::Barrel ? 0x10 : o.type == Object::Mine ? 8 : 0;
-}
-
 // 0x56fcb0: the rope's sphere at the body meets a collider of its mask, or Fits 0x59edf0's 1 m rods (ours from Terrain::SUB up) fail. A worm:
 // 5 units, mask 0x19 (worms, payloads, drums, bubbles: no crate); a hooked object (0x571d90): 0x3f, a crate its own 10 units (0x5c5fd0)
 bool Game::ropeBlocked(Vector3 f, int self, int body) const {
@@ -2053,7 +2053,7 @@ bool Game::ropeBlocked(Vector3 f, int self, int body) const {
     for (size_t i = 0; i < objects.size(); i++) {
         Vector3 c;
         float cr;
-        if ((int)i != body && (collider(objects[i], c, cr) & (body >= 0 ? 0x3f : 0x19)) && Vector3Distance(f, c) < r + cr) return true;
+        if ((int)i != body && (collider(terrain, objects[i], c, cr) & (body >= 0 ? 0x3f : 0x19)) && Vector3Distance(f, c) < r + cr) return true;
     }
     return false;
 }
@@ -2161,7 +2161,7 @@ int Game::grappleStep(Hook &h, Vector3 feet, float maxLen, bool standing, Vector
             Vector3 c;
             float r;
             bool still = o.type != Object::Mine || Vector3LengthSqr(o.vel) == 0;  // a moving payload: "not allowed", it flies on
-            if ((collider(o, c, r) & 0x1e) && still && o.tag < 0 && Vector3Distance(h.at, c) < 0.25f + r) return *obj = (int)i, 3;
+            if ((collider(terrain, o, c, r) & 0x1e) && still && o.tag < 0 && Vector3Distance(h.at, c) < 0.25f + r) return *obj = (int)i, 3;
         }
         for (const Bubble &b : bubbles) if (Vector3Distance(h.at, b.pos) < 0.25f + 0.45f) return 0;
     }
@@ -2528,11 +2528,28 @@ void Game::stepShots(const Input &in, bool detonate) {
         }
         return false;
     };
-    auto touches = [&](Vector3 p, float r = R + 0.3f) {  // contact bits: worm index, 63 = a target
+    auto touches = [&](Vector3 p, float r = R + 0.3f) {  // contact bits: worm index
         uint64_t m = 0;
         for (size_t k = 0; k < worms.size() && k < 63; k++) if (worms[k].alive && Vector3Distance(p, worms[k].pos) < r) m |= 1ull << k;
-        for (const Object &o : objects) if (o.type == Object::Target && Vector3Distance(p, o.pos) < 0.7f) m |= 1ull << 63;
         return m;
+    };
+    for (Object &o : objects) if (o.uid < 0) o.uid = uids++;
+    // 0x581dc0 against objects, payload mask 0x3c37 (crates, drums, targets, sentries; not mines or payloads, flag 8): the sphere of
+    // radius r at p adds its contacts to `now` and returns the flags of the first one not touched last tick, n its normal (0x517ba0)
+    auto touchesObj = [&](const Projectile &s, Vector3 p, float r, std::vector<int> &now, Vector3 *n = nullptr) {
+        uint32_t hit = 0;
+        for (const Object &o : objects) {
+            Vector3 c;
+            float cr;
+            uint32_t f = collider(terrain, o, c, cr) & 0x3c37;
+            if (!f || Vector3Distance(p, c) >= r + cr) continue;
+            now.push_back(o.uid);
+            if (!hit && s.touching != ~0ull && std::find(s.touchObj.begin(), s.touchObj.end(), o.uid) == s.touchObj.end()) {
+                hit = f;
+                if (n) *n = Vector3Normalize(Vector3Subtract(p, c));
+            }
+        }
+        return hit;
     };
     auto stick = [&](Projectile &s) {  // 0x586650: ArmOnImpact arms it, bounce damping 0 stops it; 0x575fb0 schedules Payload.Detonate PreDetonationTime later
         if (!s.stage) s.fuse = WEAPONS[s.weapon].stick;  // stopping again after a fall: the first Payload.Detonate still stands
@@ -2573,6 +2590,8 @@ void Game::stepShots(const Input &in, bool detonate) {
         const bool rests = s.child ? wd.crest : wd.restFuse, missile = wd.kind == Kind::Homing && !s.child;  // a homing weapon's bomblets fly as shells
         bool timed = s.child ? wd.crest : wd.fuse > 0 || wd.restFuse || (wd.stick > 0 && s.stage);
         Vector3 np, was = s.pos;
+        const float rad = s.child ? wd.csize : wd.size;  // Radius, the collider sphere
+        std::vector<int> nowObj;
         bool bomber = wd.kind == Kind::Airstrike && !s.child;  // the plane; fuse > 0: the steered Bovine Blitz
         if (wd.kind == Kind::Abduction) {
             if (stepUfo(s)) i++;
@@ -2582,8 +2601,8 @@ void Game::stepShots(const Input &in, bool detonate) {
         if (s.sunk) {  // no acceleration; any contact (0x577e86) or Water.ExpiryDepth (0x582050) removes it, never a blast
             np = Vector3Add(s.pos, Vector3Scale(s.vel, DT));
             uint64_t m = touches(np);
-            bool gone = terrain.solid(np) || (m & ~s.touching) || (s.pos.y > WATER_EXPIRY && np.y <= WATER_EXPIRY);
-            s.pos = np, s.touching = m;
+            bool gone = terrain.solid(np) || (m & ~s.touching) || touchesObj(s, np, rad, nowObj) || (s.pos.y > WATER_EXPIRY && np.y <= WATER_EXPIRY);
+            s.pos = np, s.touching = m, s.touchObj = nowObj;
             if (gone) emit(GameEvent::Deleted, s.pos), shots.erase(shots.begin() + i);
             else i++;
             continue;
@@ -2602,9 +2621,13 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (under && Vector3LengthSqr(s.vel) > 0) s.vel = {}, s.fuse = fminf(s.fuse, 2);  // Payload.Sink: stops, expires 2 s on (DetonatesOnExpiry)
             if (under) {
             } else if (wd.kind == Kind::OldWoman && s.stage > 0) s.stage--;  // 0x593370: state 3, still for 800 ms after a theft
+            else if (wd.kind == Kind::Sheep || wd.kind == Kind::SuperSheep)  // JumpingPayload 0x565080: a worm, drum or sentry is met like land, a crate or target not
+                walkerStep(terrain, s.pos, s.vel, gravity(), [&](Vector3 p) { std::vector<int> o; return (touches(p) & ~s.touching) || (touchesObj(s, p, rad, o) & ~0x26u); });
             else walkerStep(terrain, s.pos, s.vel, gravity());
             if (shell(was, s.pos, &sn)) s.pos = was, s.vel = {-s.vel.x, 0, -s.vel.z};  // 0x593476: walkers turn back
             np = s.pos;
+            touchesObj(s, np, rad, nowObj);
+            s.touching = touches(np), s.touchObj = nowObj;
             boom = detonate && (wd.kind == Kind::Sheep || wd.kind == Kind::OldWoman);
             if (detonate && wd.kind == Kind::SuperSheep) {  // takes off: the flight gets its own lifetime
                 s.stage = 1, s.fuse = wd.fuse;
@@ -2636,9 +2659,10 @@ void Game::stepShots(const Input &in, bool detonate) {
                 np = s.pos = Vector3Add(s.pos, Vector3Scale(s.vel, DT / n));
                 uint64_t m = touches(np);
                 now |= m;
-                boom = terrain.solid(np) || (m & ~s.touching) || shell(was, np, &sn);
+                bool obj = touchesObj(s, np, rad, nowObj) && star;  // 0x57fc00 DetonatesOnObjectImpact: Starburst 1, Super Sheep 0 (flies on)
+                boom = terrain.solid(np) || (m & ~s.touching) || obj || shell(was, np, &sn);
             }
-            s.touching = now;
+            s.touching = now, s.touchObj = nowObj;
             np = s.pos;
             // slot 27 after the move (0x57fbe7): launched at fuse end, then the speed steps for the next frame
             if (star && wd.fuse - (s.fuse - DT) >= STAR_FUSE - DT / 2) s.vel = Vector3Scale(hd, starSpeed(Vector3Length(s.vel), wd.speed, s.pos.y < water));
@@ -2692,10 +2716,10 @@ void Game::stepShots(const Input &in, bool detonate) {
                     bool land = false;
                     for (const Vector3 &d : DIR) land = land || (s.vel.y < 0 && terrain.solid(Vector3Add(np, Vector3Scale(d, wd.lift))));
                     now |= touches(np, wd.lift + R);
-                    if (land || (now & ~s.touching)) { boom = true, s.stage = DONKEY_HOLD; break; }
+                    if (land || (now & ~s.touching) || touchesObj(s, np, wd.lift, nowObj)) { boom = true, s.stage = DONKEY_HOLD; break; }
                     s.pos = np;
                 }
-                s.touching = now;
+                s.touching = now, s.touchObj = nowObj;
             }
             if (!boom && s.fuse >= DONKEY_LIFE - DT / 2) boom = lifeEnd = true, s.hits = 1;  // LifeTime 8000, DetonatesOnExpiry
         } else if (stuck) {  // in the land, waiting out PreDetonationTime
@@ -2720,11 +2744,12 @@ void Game::stepShots(const Input &in, bool detonate) {
                 uint64_t m = touches(q, wd.lift + R), fresh = m & ~s.touching;
                 now |= m;
                 for (int j = 0; !hit && fresh && j < 64; j++)
-                    if (fresh >> j & 1) hit = true, n = j < 63 ? Vector3Normalize(Vector3Subtract(q, worms[j].pos)) : Vector3Negate(Vector3Normalize(s.vel));
+                    if (fresh >> j & 1) hit = true, n = Vector3Normalize(Vector3Subtract(q, worms[j].pos));
+                if (!hit && touchesObj(s, q, wd.lift, nowObj, &sn)) hit = true, n = sn;
                 if (!hit && shell(np, q, &sn)) hit = true, n = sn;
                 if (!hit) np = q;
             }
-            s.touching = now, s.pos = np;
+            s.touching = now, s.touchObj = nowObj, s.pos = np;
             if (hit) {  // 0x580db0 -> 0x518f40: v = vt x TangentialBounceDamping 0.4 - vn x Parallel 0.6, 0 under Bounce.MinSpeed 0.03 units/ms
                 float vn = Vector3DotProduct(s.vel, n);
                 s.vel = vn < 0 ? Vector3Subtract(Vector3Scale(Vector3Subtract(s.vel, Vector3Scale(n, vn)), 0.4f), Vector3Scale(n, vn * 0.6f)) : Vector3Scale(n, Vector3Length(s.vel) * 0.6f);
@@ -2756,10 +2781,14 @@ void Game::stepShots(const Input &in, bool detonate) {
                     s.vel = Vector3Scale(Vector3Reflect(s.vel, sn), wd.bounce);
                     break;
                 }
-                if (terrain.solid(np)) {
+                // 0x577da0 / 0x57fc00: an object (DetonatesOnObjectImpact = OnLandImpact here) gets the land's response about its centre
+                bool solid = terrain.solid(np);
+                if (solid) sn = terrain.normal(np);
+                else solid = touchesObj(s, np, rad, nowObj, &sn);
+                if (solid) {
                     if (impact && wd.stick > 0) { stick(s); break; }
                     if (impact) { boom = true; break; }
-                    s.vel = Vector3Scale(Vector3Reflect(s.vel, terrain.normal(np)), wd.bounce);
+                    s.vel = Vector3Scale(Vector3Reflect(s.vel, sn), wd.bounce);
                     if (Vector3Length(s.vel) > 2) {
                         emit(GameEvent::Bounce, np, -1, s.weapon);
                         if (s.child && customWeapon(s.weapon) && wd.kind != Kind::Airstrike) events.back().fx = FACTORY_CLUSTER_BOUNCE;
@@ -2771,7 +2800,7 @@ void Game::stepShots(const Input &in, bool detonate) {
                 now |= m;
                 if (impact && wd.kind != Kind::Donkey && (m & ~s.touching)) boom = true;
             }
-            s.touching = now;
+            s.touching = now, s.touchObj = nowObj;
         }
         if (missile && wd.avoid && s.fuse >= 30) boom = true;  // LifeTime 30000, DetonatesOnExpiry (0x598e0c)
         bool expired = false;
@@ -3214,7 +3243,7 @@ uint32_t Game::checksum() const {
     };
     mix(&walkTick, sizeof walkTick);
     for (const Worm &w : worms) { mix(&w.pos, sizeof w.pos); mix(&w.vel, sizeof w.vel); mix(&w.hp, sizeof w.hp); mix(&w.yaw, sizeof w.yaw); mix(&w.pitch, sizeof w.pitch); mix(&w.alive, sizeof w.alive); mix(&w.poison, sizeof w.poison); mix(&w.counted, sizeof w.counted); mix(&w.nailed, 1); mix(&w.armour, 1); mix(&w.motion.stuck, sizeof w.motion.stuck), mix(&w.motion.air, 1), mix(&w.motion.slide, 1), mix(&w.motion.spin, sizeof w.motion.spin), mix(&w.motion.spinTo, sizeof w.motion.spinTo), mix(&w.motion.normal, sizeof w.motion.normal); if (w.drowned) mix(&w.floatT, sizeof w.floatT); if (w.abducted) mix(&w.zap, sizeof w.zap), mix(&w.calm, sizeof w.calm), mix(&w.zapFound, 1), mix(&w.zapSpot, sizeof w.zapSpot); }
-    for (const Projectile &s : shots) { mix(&s.pos, sizeof s.pos); mix(&s.vel, sizeof s.vel); mix(&s.weapon, sizeof s.weapon); mix(&s.fuse, sizeof s.fuse); mix(&s.hits, sizeof s.hits); mix(&s.stage, sizeof s.stage); mix(&s.prey, sizeof s.prey); mix(&s.aim, sizeof s.aim); mix(&s.touching, sizeof s.touching); }
+    for (const Projectile &s : shots) { mix(&s.pos, sizeof s.pos); mix(&s.vel, sizeof s.vel); mix(&s.weapon, sizeof s.weapon); mix(&s.fuse, sizeof s.fuse); mix(&s.hits, sizeof s.hits); mix(&s.stage, sizeof s.stage); mix(&s.prey, sizeof s.prey); mix(&s.aim, sizeof s.aim); mix(&s.touching, sizeof s.touching); mix(s.touchObj.data(), s.touchObj.size() * sizeof(int)); }
     mix(&chute, 1);
     if (chute) mix(&chuteDrift, sizeof chuteDrift), mix(&chuteAt, sizeof chuteAt), mix(&chuteAng, sizeof chuteAng), mix(&chuteSpin, sizeof chuteSpin),
                mix(&chuteSink, sizeof chuteSink), mix(&chuteGain, sizeof chuteGain);

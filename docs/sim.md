@@ -528,9 +528,17 @@ BombletMin / MaxSpeed); Weapon Factory weapons get their clone's, Radius = Proje
 
 - Off its feet and moving, the worm launches 1.5 m (30 units) further along its velocity and the shell, homing missile or mine
   inherits that velocity (W4M 0x585a52 / 0x585bc5, disasm); walkers get the offset only (ours).
-- `Projectile::touching` (checksummed): the worm contacts of the last tick (bit per worm, 63 = mission target). Only a new contact is a
-  hit, and on the first tick every contact counts as old, so a shot leaves its own worm and can hit it once it has left (W4M
-  0x582200 / 0x581dc0, disasm). Guns (shotgun, sniper) fire from the eye and skip the shooter (W4M exclude id 0x5b27e0 → 0x519dd0); the ray: docs/weapons-audit.md Gun hits.
+- `Projectile::touching` / `touchObj` (checksummed): the worm contacts (bit per worm) and object contacts (`Object::uid`, numbered
+  by `stepShots`) of the last tick. Only a new contact is a hit, and on the first tick every contact counts as old, so a shot
+  leaves its own worm and can hit it once it has left (W4M 0x582200 / 0x581dc0, disasm).
+- Object contacts (`collider`, `stepShots`' `touchesObj`; docs/w4m/weapons.md "Collider flags and masks", disasm + data): the
+  payload's Radius sphere against crates, drums, targets and sentries (mask 0x3c37, never mines). Shells, bomblets, homing
+  missiles and arrows get their land response about the collider's centre (detonate, stick, or bounce off with `bounce`); the
+  Starburst detonates, the flying Super Sheep goes through; the Concrete Donkey smashes and Fatkins bounces; sheep (and the
+  Super Sheep on foot) meet worms, drums and sentries as `walkerStep` walls (hop, never enter), walk through crates and targets;
+  the Old Woman and the Scouser ignore objects; a sinking payload is removed. Ours: the bounce is our land bounce (`bounce`,
+  not W4M's tangential / parallel dampings), tested per substep at the sphere's end point.
+- Bullets (`gunRay`): the gun mask 0x1c3f, the sentry's 0x381b (`SENTRY_SHOT_MASK`: no health crate, no target). Guns (shotgun, sniper) fire from the eye and skip the shooter (W4M exclude id 0x5b27e0 → 0x519dd0); the ray: docs/weapons-audit.md Gun hits.
 - A homing missile flies 1.25 s straight, homes 4 s (+97.5 m/s², ≤ 29.5 m/s), flies 5 s straight and expires at 10.25 s, with no
   gravity (W4M HomingPayload 0x560aa0 / 0x560eb0, data + disasm).
 

@@ -1524,6 +1524,24 @@ int main(int argc, char **argv) {
             if (utilShot && loadCustomWeapons(f, mine))
                 for (const WeaponDef &d : mine) if (d.name == utilShot) sc.teamSetup.resize(2), sc.teamSetup[0].secret = sc.teamSetup[1].secret = d;
         game.start(sc);
+        // W4NX_PLACE="<crate|drum|sentry> <m> ...": those objects that far ahead of the active worm, on the land (collision captures)
+        for (const char *c = getenv("W4NX_PLACE"); c && *c;) {
+            char t[16];
+            float d;
+            int n;
+            if (sscanf(c, "%15s %f%n", t, &d, &n) != 2) break;
+            c += n;
+            const Worm &w = game.worms[game.current];
+            Vector3 p = Vector3Add(w.pos, Vector3Scale(flat(w.yaw), d)), at;
+            if (!game.terrain.raycast({{p.x, p.y + 5, p.z}, {0, -1, 0}}, 50, &at)) continue;
+            Object o = {!strcmp(t, "drum") ? Object::Barrel : !strcmp(t, "sentry") ? Object::Sentry : Object::Crate, at, {0, 0, 0}, 0, -1, false, false};
+            if (o.type == Object::Sentry) {
+                o.team = 1 - w.team;
+                for (size_t k = 0; k < WEAPONS.size(); k++) if (WEAPONS[k].name == "Sentry Gun") o.weapon = (int)k;
+            }
+            o.pos.y += restHalf(o) + 0.05f;
+            game.objects.push_back(o);
+        }
         Audio::preloadVoices(game.teams);
         game.terrain.remesh();
         Fx::theme(game.terrain.theme, game.terrain.sky, game.terrain.time);

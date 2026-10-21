@@ -2,6 +2,7 @@
 #include "terrain.h"
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -164,7 +165,7 @@ bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g);  // W4M jet
 float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float gravity, uint64_t pot, float e = 0.3f, Vector2 wind = {0, 0});
 // W4M UpdateWalking 0x5b19d0: a step onto ground n past SlideAngle starts Sliding with the walk velocity
 void slideIfSteep(Vector3 n, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot);
-void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity);  // sheep, old woman, scouser on foot
+void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity, const std::function<bool(Vector3)> &wall = nullptr);  // sheep, old woman, scouser on foot
 
 // W4M NinjaRopeUtilityLogicEntity: the body (worm feet, or a hooked object) swings in its yaw's vertical plane about the last bend
 struct Rope {
@@ -191,7 +192,8 @@ struct Projectile {
     Vector3 aim{};  // homing target
     int stage = 0;   // walks-first super sheep: 1 once airborne; scouser: 1 once inflated
     int prey = -1;   // scouser: the worm it carries; old woman: the last worm she robbed
-    uint64_t touching = ~0ull;  // W4M 0x582200 / 0x581dc0: last tick's contacts (worm bits, 63 = target) are not hits; all of them on the first tick
+    uint64_t touching = ~0ull;  // W4M 0x582200 / 0x581dc0: last tick's contacts (worm bits) are not hits; all of them on the first tick
+    std::vector<int> touchObj;  // the same for objects, by Object::uid
     bool sunk = false;  // W4M +0x6f: under the disarm plane, disarmed, sinking to Water.ExpiryDepth
     // render only (main.cpp, not in the checksum): W4M Weapon.GraphicalLaunchLocation - launch point, fading out linearly
     // by tick shownEnd (0x585cf2, 0x57de60, 0x57f640); shownT0 -1: not seen by the renderer yet
@@ -227,6 +229,7 @@ struct Object {
     bool fizzle = false;  // mine: its dud roll, drawn with delay
     bool sunk = false;  // crate: sinking (0x5c81a0); mine: under the disarm plane, disarmed, sinking
     int mystery = -1;  // crate: W4M kMystery item - 0x32 (MYSTERY_ITEMS), drawn at spawn; weapon stays -1
+    int uid = -1;  // contact identity (W4M collider owner id), numbered by Game::stepShots
     int id = -1;  // mine: its W4M Mine.Id when a script placed it (GameLogic.PlaceMine); sentry: its placement number (Game::sentries)
     // crate / target: W4M CrateLogicEntity (0x5c7bb0) from the Crate.* keys; the defaults are a random crate's
     int hp = CRATE_HP;  // Hitpoints x HitpointsMultiplier: what blasts and bullets take off
@@ -517,6 +520,7 @@ struct Game {
     Rope rope;  // the active worm's rope, or the hooked object's
     Hook grapple;  // the active worm's hook in flight
     int sentries = 0;  // Sentry Guns placed this match: the next one's id
+    int uids = 0;      // the next Object::uid
     int ropeUsed = -1;  // the rope that hooked this turn: its ammo goes at the cleanup (0x5727b0, +0x7b)
     float fuel = 0, ropeMax = 0, thrust = 0;  // max/thrust: of the tool in use, the hand may hold a weapon
     float jetInit = 7.5f;     // W4M Jetpack.InitFuel s: a new jetpack entity's fuel (0x563440)
@@ -671,7 +675,8 @@ struct Game {
     int fallDamage(float speed) const;  // W4M FallDamage 0x5ac3e0: hp lost landing at `speed` m/s, scheme and Wormpot included
     struct GunHit { Vector3 at; float dist; int worm; bool land; int obj = -1, sentry = -1; };  // at: the struck worm's centre or sentry's base, else the ray's end; worm / obj (a crate) / sentry -1: none
     static constexpr float GUN_RANGE = 9999 / 20.0f;  // WEAPTWK Range 9999 units, both guns
-    GunHit gunRay(Ray r, const Worm &shooter, float bullet, int self = -1) const;  // W4M gun sweep 0x55e10f, a BulletRadius sphere: land, worms, crates, mines, drums, sentries but `self`, bubbles (dist GUN_RANGE: a miss)
+    static constexpr uint32_t GUN_MASK = 0x1c3f, SENTRY_SHOT_MASK = 0x381b;  // collider masks: gun 0x55d491, sentry bullet 0x56c5f0
+    GunHit gunRay(Ray r, const Worm &shooter, float bullet, int self = -1, uint32_t mask = GUN_MASK) const;  // W4M gun sweep 0x55e10f, a BulletRadius sphere: land, worms, the objects of `mask` but `self`, bubbles (dist GUN_RANGE: a miss)
     Blast gunBlast(int weapon) const;                  // one hit's explosion, Wormpot super firearms included
     bool steered() const;    // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
     bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)
