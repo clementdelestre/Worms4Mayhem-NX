@@ -120,7 +120,7 @@ void Xray::hidden() {
     SetShaderValue(hideS, GetShaderLocation(hideS, "px"), &px, SHADER_UNIFORM_VEC2);
     SetShaderValue(hideS, GetShaderLocation(hideS, "mask"), &slot, SHADER_UNIFORM_INT);
     rlActiveTextureSlot(SLOT), rlEnableTexture(rt.texture.id), rlActiveTextureSlot(0);
-    rlDisableDepthMask();
+    Models::zwrite(false);
     glDepthFunc(GL_GREATER_);
     Models::shade(hideS);
 }
@@ -130,7 +130,7 @@ void Xray::done() {
     rlColorMask(true, true, true, true);
     glBlendFunc(GL_SRC_ALPHA_, GL_ONE_MINUS_SRC_ALPHA_);
     glDepthFunc(GL_LEQUAL_);
-    rlEnableDepthMask();
+    Models::zwrite(true);
     rlActiveTextureSlot(SLOT), rlDisableTexture(), rlActiveTextureSlot(0);
 }
 

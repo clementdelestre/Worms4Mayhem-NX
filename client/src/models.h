@@ -47,6 +47,7 @@ bool joint(const char *name, const char *joint, const char *clip, float t, bool 
            const Layers *ly = nullptr);
 bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true, int part = 0);  // full world matrix; a clip not looping holds its last key; part 1 = opaque meshes only, 2 = blended ones only (W4M bins them after every opaque draw)
 bool draw(const char *name, Matrix m, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers &ly);  // world matrix, with layers
+void zwrite(bool on);  // the depth mask draw() restores after its blended shapes
 void shade(Shader s);  // every draw() uses s until shade({})
 void pick(const char *clip, float t = 0);
 void texture(const Texture2D *t);  // every draw() shows t in place of each material's diffuse map (the W4M flag cloth's TGA), until texture(nullptr)

@@ -871,6 +871,8 @@ void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse; }
 )";
 static void compileBeam() { scroll = Lit::shader(SCROLL_VS, SCROLL_FS, false); }  // at boot: a compile on the first abduction drops frames
 void Models::shade(Shader s) { over = s; }
+static bool zOn = true;
+void Models::zwrite(bool on) { zOn = on, on ? rlEnableDepthMask() : rlDisableDepthMask(); }
 static const char *picked = nullptr;
 static float pickedT = 0;
 void Models::pick(const char *clip, float t) { picked = clip, pickedT = t; }
@@ -977,7 +979,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
     }
     if (anyKeyed && part != 1) {
         if (blendLoc >= 0) { float v = 0; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
-        rlDrawRenderBatchActive(), rlEnableDepthMask(), rlEnableBackfaceCulling();
+        rlDrawRenderBatchActive(), zOn ? rlEnableDepthMask() : rlDisableDepthMask(), rlEnableBackfaceCulling();
     }
     if (!e.glow.empty() && part != 1) {  // additive and unlit (BeamCone's WarpgateShader: the grey noise as cyan light)
         rlDrawRenderBatchActive();
@@ -995,7 +997,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
         }
         rlDrawRenderBatchActive();
         EndBlendMode();
-        rlEnableDepthMask(), rlEnableBackfaceCulling();
+        zOn ? rlEnableDepthMask() : rlDisableDepthMask(), rlEnableBackfaceCulling();  // back to the caller's mask (Xray::hidden writes no z)
     }
     for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = keep;
 }
