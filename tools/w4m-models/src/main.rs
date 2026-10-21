@@ -1180,7 +1180,7 @@ fn main() {
     }
     for l in fs::read_to_string(out.join("../graves.txt")).unwrap_or_default().lines() {
         let f: Vec<&str> = l.split('\t').collect();
-        if f.len() > 1 { todo.push((f[0].to_string(), f[1].to_string(), -0.05, false, &[][..])); }
+        if f.len() > 1 { todo.push((f[0].to_string(), f[1].to_string(), -0.05, false, &["Go"][..])); }  // GraveStoneGraphicEntity loops Go (0x5ce87a)
     }
     // the stock Weapon Factory payload meshes (Factory.Proj.*), listed by setuplists.py: 20 units per metre about their origin
     for l in fs::read_to_string(out.join("../stockmodels.txt")).unwrap_or_default().lines() {
