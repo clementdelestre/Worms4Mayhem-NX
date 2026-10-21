@@ -53,7 +53,8 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
             {"reach", &w.blast[0]}, {"push", &w.blast[1]}, {"push_reach", &w.blast[2]}, {"push_depth", &w.blast[3]},
             {"cluster_reach", &w.cblast[0]}, {"cluster_push", &w.cblast[1]}, {"cluster_push_reach", &w.cblast[2]}, {"cluster_push_depth", &w.cblast[3]}, {"lift", &w.lift}, {"stick", &w.stick}, {"gravity", &w.grav}, {"min_speed", &w.base}, {"fuse_height", &w.fuseHeight}, {"fuse_size", &w.fuseSize},
             {"size", &w.size}, {"sink", &w.sink}, {"cluster_size", &w.csize}, {"cluster_sink", &w.csink}, {"skim_speed", &w.skim[0]}, {"skim_angle", &w.skim[1]},
-            {"skim_xz", &w.skim[2]}, {"skim_y", &w.skim[3]}, {"cluster_cone", &w.ccone}, {"cluster_min_speed", &w.cspeed[0]}, {"cluster_max_speed", &w.cspeed[1]}, {"cluster_spread", &w.spread},
+            {"skim_xz", &w.skim[2]}, {"skim_y", &w.skim[3]}, {"tangential_damping", &w.damp[0]}, {"parallel_damping", &w.damp[1]},
+            {"cluster_tangential_damping", &w.cdamp[0]}, {"cluster_parallel_damping", &w.cdamp[1]}, {"cluster_cone", &w.ccone}, {"cluster_min_speed", &w.cspeed[0]}, {"cluster_max_speed", &w.cspeed[1]}, {"cluster_spread", &w.spread},
             {"land_damage", &w.slider[0][0]}, {"worm_radius", &w.slider[0][1]}, {"worm_damage", &w.slider[0][2]}, {"blast_strength", &w.slider[0][3]},
             {"cluster_land_damage", &w.slider[1][0]}, {"cluster_worm_radius", &w.slider[1][1]}, {"cluster_worm_damage", &w.slider[1][2]}, {"cluster_blast_strength", &w.slider[1][3]},
             {"max_power", &w.maxPower}, {"collision", &w.collision[0]}, {"cluster_collision", &w.collision[1]}};
@@ -196,7 +197,9 @@ void factoryPayload(WeaponDef &w) {
         (child ? p.cfx : p.fx) = (c ? w.cpoison : w.poison > 0) ? fx + ",WXP_Explosion_Gas" : fx;
         // Detonate switch 0x5998b4 (the bombs: the Weapon container's): Fused / AtRest set the damping 0.7 / 0.35 / 0.8 / 0.8, the Grenade's
         const int det = ours && !c ? (w.fuse > 0 ? 1 : 0) : w.detonate[c];
-        if (det && grenade && !ours) p.bounce = grenade->bounce;
+        float *damp = child ? p.cdamp : p.damp;
+        if (det && grenade && !ours) damp[0] = grenade->damp[0], damp[1] = grenade->damp[1];
+        if (ours) damp[0] = damp[1] = w.bounce;  // [ours] the editor's one Bounce knob
         if (child) { p.crest = det == 3; continue; }
         p.restFuse = det == 3, p.userFuse = det == 1 && w.fuseTime < 0 && !ours;
         p.fuse = det == 1 ? (ours ? w.fuse : w.fuseTime < 0 ? 6 : w.fuseTime / 1000.0f) : 0;  // LifeTime FuseTime, or 6000 with HasAdjustableFuse
@@ -379,17 +382,97 @@ static Feet feet(const Terrain &t, Vector3 f) {
 
 static bool rodsFit(const Terrain &t, Vector3 from, Vector3 to);
 
-// W4M UpdateWalking 0x5b0da0, one step: the candidate is the nearest foot hit + 0.1 unit
-bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault, Vector3 *ground) {
+// W4M 0x519ed0: the worm sphere at `to` out of the colliders overlapping it (one: along the centres, two: their touching circle,
+// three: back to from); *n the push direction; returns the first one's id, -1 none (docs/sim.md "resolve")
+static int resolve(const Colliders *cs, Vector3 from, Vector3 &to, Vector3 *n) {
+    if (!cs) return -1;
+    const Vector3 q = to;
+    Vector3 c0{}, dir{};
+    float s0 = 0;
+    int k = 0, id = -1;
+    for (const Collider &c : *cs) {
+        const float s = c.r + Game::R;
+        if (Vector3LengthSqr(Vector3Subtract(q, c.c)) >= s * s) continue;  // 0x516350: strictly inside, tested at q
+        if (k == 0) {
+            dir = Vector3Normalize(Vector3Subtract(q, c.c)), to = Vector3Add(c.c, Vector3Scale(dir, s));
+            id = c.id, c0 = c.c, s0 = s;
+        } else if (k == 1) {  // the circle: h along c0 -> c, radius sqrt(s0^2 - h^2), at to's side
+            const Vector3 ax = Vector3Subtract(c.c, c0), p = Vector3Subtract(to, c0);
+            const float a = Vector3Length(ax), h = (s0 * s0 + a * a - s * s) / (2 * a), rho2 = s0 * s0 - h * h;
+            const Vector3 u = Vector3Scale(ax, 1 / a), perp = Vector3Subtract(p, Vector3Scale(u, Vector3DotProduct(p, u)));
+            const float pl = Vector3Length(perp);
+            if (!(rho2 >= 0) || pl == 0) { to = from; break; }  // [ours] W4M asserts a > 0 and takes a NaN square root here
+            to = Vector3Add(Vector3Add(c0, Vector3Scale(u, h)), Vector3Scale(perp, sqrtf(rho2) / pl));
+            dir = Vector3Normalize(Vector3Add(Vector3Normalize(Vector3Subtract(to, c0)), Vector3Normalize(Vector3Subtract(to, c.c))));
+        } else { to = from; break; }
+        k++;
+    }
+    if (n && id >= 0) *n = dir;
+    return id;
+}
+
+// W4M 0x51a510, a step down: onto the top or under the bottom of each collider overlapping `to`, both ways at once back to from;
+// returns the first one's id when one moved it, -1 none
+static int resolveUp(const Colliders *cs, Vector3 from, Vector3 &to) {
+    if (!cs) return -1;
+    const Vector3 q = to;
+    bool up = false, down = false;
+    int id = -1;
+    for (const Collider &c : *cs) {
+        const float s = c.r + Game::R, dx = to.x - c.c.x, dz = to.z - c.c.z;
+        if (Vector3LengthSqr(Vector3Subtract(q, c.c)) >= s * s) continue;
+        if (id < 0) id = c.id;
+        if (to.y > c.c.y) {
+            if (down) { to = from; return id; }
+            up = true, to.y = c.c.y + sqrtf(fmaxf(s * s - dx * dx - dz * dz, 0));
+        } else if (to.y < c.c.y) {
+            if (up) { to = from; return id; }
+            down = true, to.y = c.c.y - sqrtf(fmaxf(s * s - dx * dx - dz * dz, 0));
+        }
+    }
+    return up || down ? id : -1;
+}
+
+static const Collider *colliderOf(const Colliders *cs, int id) {
+    if (cs) for (const Collider &c : *cs) if (c.id == id) return &c;
+    return nullptr;
+}
+
+static void standOn(Motion *m, const Colliders *cs, int id) {
+    if (!m) return;
+    m->on = id;
+    if (const Collider *c = colliderOf(cs, id)) m->onAt = c->c;
+}
+
+// W4M UpdateWalking 0x5b0da0, one step: the candidate is the nearest foot hit + 0.1 unit, then the colliders' resolve
+bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault, Vector3 *ground, const Colliders *cs, Motion *m) {
     const float R = Game::R, U = 0.05f;
-    const Vector3 f = flat(yaw), np = Vector3Add(pos, Vector3Scale(f, dist));
+    const Vector3 f = flat(yaw), np = Vector3Add(pos, Vector3Scale(f, dist)), in = Vector3Scale(f, copysignf(1, dist));
     const Feet c = feet(t, {np.x, pos.y - R, np.z});
-    Vector3 to = {np.x, pos.y + (c.d + 0.1f) * U, np.z};
+    Vector3 to = {np.x, pos.y + (c.d + 0.1f) * U, np.z}, cn;
+    int sup = -1;
+    standOn(m, cs, -1);  // 0x5b10f6: support 0xFFFF each step
     if (ground) *ground = {0, 1, 0};
     if (c.d > 5) {  // 0x5b1209: a ledge up to the 20-unit body vaults when walkable (0x4adda0) and Fits, else blocks
-        if (c.n.y < SLIDE_NY || !rodsFit(t, pos, to)) return false;
-        if (vault) { *vault = {pos, to, Vector3Scale(f, copysignf(1, dist)), {}, msTicks(250)}; return false; }  // 0x5b1285: no move this frame
+        Vector3 gn = c.n;
+        if (int id = resolve(cs, pos, to, &cn); id >= 0 && cn.y > 0) gn = cn, sup = id;  // 0x5b1235: an object under it is the ground
+        if (gn.y < SLIDE_NY || !rodsFit(t, pos, to)) return false;
+        standOn(m, cs, sup);
+        if (vault) { *vault = {pos, to, in, {}, msTicks(250)}; return false; }  // 0x5b1285: no move this frame
         pos = to;
+    } else if (c.d >= -5 && (sup = resolve(cs, pos, to, &cn)) >= 0) {  // 0x5b1579: a collider in the way
+        if (cn.y < -0.1f || cn.y >= 0.8f) return false;
+        if (Vector3DotProduct(in, cn) >= 0) {  // 0x5b1854: along or away from it, the pushed-out step
+            if (!rodsFit(t, pos, to)) return false;
+            pos = to;
+        } else {  // 0x5b15c9: into it, a vault 15 units back from it and 10 up, resolved again
+            to = Vector3Add(Vector3Subtract(to, Vector3Scale(cn, 15 * U)), {0, 10 * U, 0});
+            resolve(cs, pos, to, nullptr);
+            if (!rodsFit(t, pos, to)) return false;
+            if (vault) *vault = {pos, to, in, {}, msTicks(250)};
+            else pos = to;
+        }
+        standOn(m, cs, sup);
     } else if (c.d >= -5) {
         if (Vector3DotProduct(c.n, Vector3Subtract(to, pos)) < 0 && c.n.y < SLIDE_NY) return false;  // 0x5b1920: into the ground only if walkable
         for (int k = 0; k <= 4; k++)  // push-out +0..+4 units (0x5b194c)
@@ -398,8 +481,15 @@ bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vaul
                 if (ground) *ground = c.n;
                 break;
             }
-    } else {  // 0x5b14c7: Fall from the old height when it Fits, else +1..+5 units (0x5b14e1)
-        to.y = pos.y;
+    } else {  // 0x5b141b: 5 units down onto a collider's top when one is there and it Fits
+        Vector3 down = {to.x, pos.y - 5 * U, to.z};
+        if (int id = resolveUp(cs, pos, down); id >= 0) {
+            if (!rodsFit(t, pos, down)) return false;
+            pos = down;
+            standOn(m, cs, id);
+            return false;
+        }
+        to.y = pos.y;  // 0x5b14c7: Fall from the old height when it Fits, else +1..+5 units (0x5b14e1)
         if (rodsFit(t, pos, to)) { pos = to; return true; }
         for (int k = 1; k <= 5; k++)
             if (rodsFit(t, pos, {to.x, to.y + k * U, to.z})) { pos = {to.x, to.y + k * U, to.z}; break; }
@@ -506,24 +596,28 @@ static bool rebound(Vector3 &pos, Vector3 &v, Vector3 n, float e, Vector3 acc) {
     return false;
 }
 
-enum { FLY_STUCK = 1, FLY_REBOUND = 2, FLY_LAND = 4, FLY_SLIDE = 8 };
+enum { FLY_STUCK = 1, FLY_REBOUND = 2, FLY_LAND = 4, FLY_SLIDE = 8, FLY_OBJECT = 16 };
 
-// W4M Ballistic 0x5af430 on land, one tick: no hit Integrates; a hit moves to the contact and stores its normal (SupportNormal 0x5af5ba),
-// then a foot on n.y >= 0.2 lands, a head or a wall Rebounds on n. Not Fitting there: stays put and Rebounds on normalize(pos - there)
-static int flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, Vector3 acc, float e, Vector3 &support) {
+// W4M Ballistic 0x5af430, one tick: a land hit lands a foot on n.y >= 0.2 (SupportNormal 0x5af5ba), else Rebounds; with none a collider
+// lands it on its top (n.y >= 0.8, on) or Rebounds it; every move is resolved; not Fitting it stays and Rebounds back
+static int flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, Vector3 acc, float e, Vector3 &support, const Colliders *cs, int &on) {
     const float DT = Game::DT;
     const Vector3 m = Vector3Add(Vector3Scale(vel, DT), Vector3Scale(acc, DT * DT / 2));
     const Sweep s = sweep(t, pos, m);
-    const Vector3 to = s.at < 0 ? Vector3Add(pos, m) : Vector3Add(pos, Vector3Scale(Vector3Normalize(m), s.d));
+    const Vector3 moved = s.at < 0 ? Vector3Add(pos, m) : Vector3Add(pos, Vector3Scale(Vector3Normalize(m), s.d));
+    Vector3 to = moved, cn;
     if (s.at < 0) vel = Vector3Add(vel, Vector3Scale(acc, DT));  // 0x5af98f Integrate; a hit keeps the Velocity
-    if (!rodsFit(t, pos, to)) {  // 0x5af81a / 0x5afb17; the contact at pos itself: v = -v (0x5af8cb)
-        Vector3 back = Vector3Subtract(pos, to);
+    const int id = resolve(cs, pos, to, &cn);
+    if (!rodsFit(t, pos, to)) {  // 0x5af81a / 0x5afb17 (from the unresolved move); the contact at pos itself: v = -v (0x5af8cb)
+        Vector3 back = Vector3Subtract(pos, s.at < 0 ? moved : to);
         if (Vector3LengthSqr(back) > 1e-12f) return FLY_STUCK | (rebound(pos, vel, Vector3Normalize(back), e, acc) ? FLY_SLIDE : FLY_REBOUND);
         if (s.at >= 0) vel = Vector3Negate(vel);
         return FLY_STUCK | FLY_REBOUND;
     }
     pos = to;
-    if (s.at < 0) return 0;
+    if (s.at < 0 && id < 0) return 0;
+    if (s.at < 0 && cn.y >= 0.8f) return on = id, FLY_OBJECT;  // 0x5afac2: event 8, Ambulatory on it, no FallDamage
+    if (s.at < 0) return rebound(pos, vel, cn, e, acc) ? FLY_SLIDE : FLY_REBOUND;  // 0x5af931 + event 23
     support = s.n;
     if (s.at >= 4 || s.n.y < 0.2f) return rebound(pos, vel, s.n, e, acc) ? FLY_SLIDE : FLY_REBOUND;  // 0x5af5e6 head, 0x5af5fb wall
     return FLY_LAND;
@@ -531,7 +625,7 @@ static int flyBody(const Terrain &t, Vector3 &pos, Vector3 &vel, Vector3 acc, fl
 
 // W4M jetpack collider 0x59ec70 over one tick (the same sweep): a foot with the rods clear (Fits) lands the pack with v -= (v.n) n,
 // whatever the normal; a head or blocked rods bounce v -= 1.8 (v.n) n (0x5630dc)
-bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g) {
+bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g, const Colliders *cs) {
     const float DT = Game::DT;
     const bool still = Vector3LengthSqr(vel) == 0;  // [ours] at rest (our take-off tick, its thrust comes a tick later): neither swept nor moved
     vel.y -= g * DT / 2;
@@ -540,15 +634,25 @@ bool jetBody(const Terrain &t, Vector3 &pos, Vector3 &vel, float g) {
     if (s.at >= 0) {
         const Vector3 from = pos;
         pos = Vector3Add(pos, Vector3Scale(Vector3Normalize(vel), s.d));
+        resolve(cs, from, pos, nullptr);  // 0x56318a
         landed = s.at < 4 && rodsFit(t, from, pos);
         vel = Vector3Subtract(vel, Vector3Scale(s.n, Vector3DotProduct(vel, s.n) * (landed ? 1 : 1 + Game::JET_BOUNCE)));
-    } else if (!still) pos = Vector3Add(pos, Vector3Scale(vel, DT));
+    } else if (!still) {  // 0x563110: the colliders; on top of one (n.y > 0) the pack ends with v kept, under or beside it bounces
+        Vector3 to = Vector3Add(pos, Vector3Scale(vel, DT)), cn;
+        const int id = resolve(cs, pos, to, &cn);
+        if (!rodsFit(t, pos, to)) vel = Vector3Scale(vel, -Game::JET_BOUNCE);  // 0x5633e9
+        else {
+            pos = to;
+            if (id >= 0 && cn.y > 0) landed = true;
+            else if (id >= 0) vel = Vector3Subtract(vel, Vector3Scale(cn, Vector3DotProduct(vel, cn) * (1 + Game::JET_BOUNCE)));
+        }
+    }
     vel.y -= g * DT / 2;
     return landed;
 }
 
 // W4M Sliding 0x5afbe0, one tick (K W4M frames); velocities are m/s, W4M's units/ms are 50 times smaller
-static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, float &yaw, float g, uint64_t pot, float e) {
+static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, float &yaw, float g, uint64_t pot, float e, const Colliders *cs) {
     const float R = Game::R, DT = Game::DT, U = 0.05f, K = DT / 0.02f;
     const bool slip = wpOn(pot, WP_SLIPPY);
     const float start = slip ? SLIPPY_START : START_SLIDE, stop = slip ? SLIPPY_STOP : STOP_SLIDE, walkable = slip ? SLIPPY_NY : SLIDE_NY;
@@ -576,7 +680,12 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
         if (!rodsFit(t, pos, to)) return landed();
         pos = to, vel = Vector3Subtract(vel, Vector3Scale(n, Vector3DotProduct(vel, n))), m.slide = m.air = false;
     } else {  // follow the ground: the highest hit + 0.1 unit
-        const Vector3 to = {cand.x, cand.y + (c.d + 0.1f) * U, cand.z}, nn = c.n;
+        Vector3 to = {cand.x, cand.y + (c.d + 0.1f) * U, cand.z}, cn;
+        const Vector3 nn = c.n;
+        if (resolve(cs, pos, to, &cn) >= 0 && (cn.x != 0 || cn.z != 0)) {  // 0x5b0389: a collider Rebounds it on its level normal
+            rebound(pos, vel, Vector3Normalize({cn.x, 0, cn.z}), e, {0, -g, 0});
+            m.stuck += STUCK_UP;
+        }
         if (!rodsFit(t, pos, to)) return landed();
         pos = to, m.stuck = std::max(m.stuck - STUCK_DOWN, 0);
         m.spinTo -= 2 * Vector3DotProduct(Vector3CrossProduct(nn, n), Vector3Scale(vel, 1.0f / 50));
@@ -591,11 +700,14 @@ void slideIfSteep(Vector3 n, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot
         vel = walk, m.slide = true, m.spin = m.spinTo = 0, m.normal = n;  // event 17 (SupportNormal 0x5b1998); ChangeState zeroes the spin (0x5aaa0c)
 }
 
-float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float g, uint64_t pot, float e, Vector2 wind) {
+float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float g, uint64_t pot, float e, Vector2 wind, const Colliders *cs) {
     const float R = Game::R;
     bool was = grounded, slip = wpOn(pot, WP_SLIPPY);
+    // 0x5b1a3e: standing on a collider holds while its centre stays where it was (+0x130); moved or gone, it falls
+    const Collider *sup = m.on >= 0 ? colliderOf(cs, m.on) : nullptr;
+    if (!sup || sup->c.x != m.onAt.x || sup->c.y != m.onAt.y || sup->c.z != m.onAt.z) m.on = -1;
     if (m.slide) {
-        slideStep(t, pos, vel, m, yaw, g, pot, e);
+        slideStep(t, pos, vel, m, yaw, g, pot, e, cs);
         grounded = m.slide || Vector3LengthSqr(vel) == 0;
         return 0;
     }
@@ -613,7 +725,7 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
     };
     Vector3 n{0, 1, 0};
     // a flight lands through its sweep (0x5af430); [ours] a worm put down at rest (spawn, teleport) stands where it is
-    grounded = vel.y <= 0 && (was || Vector3LengthSqr(vel) == 0) && footing(t, {pos.x, pos.y - R - STANCE, pos.z}, &n);
+    grounded = vel.y <= 0 && (was || Vector3LengthSqr(vel) == 0) && (m.on >= 0 || footing(t, {pos.x, pos.y - R - STANCE, pos.z}, &n));
     if (grounded && was && Vector3LengthSqr(vel) > 0 && Vector3DotProduct(vel, n) >= 0) grounded = false;  // ImpulseWorm: not into the ground, Ballistic
     // [ours] idle and no fall Fits: W4M would Rebound to a stop, Slide, land with support 0xFFFF and stay (0x5b1a3e); ours stays at once
     if (!grounded && was && Vector3LengthSqr(vel) == 0 && !rodsFit(t, pos, {pos.x, pos.y - 0.05f, pos.z})) grounded = true;
@@ -621,10 +733,12 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
         if (!was || Vector3LengthSqr(vel) > 0) land(n, !was);
         else vel = {0, 0, 0};
     } else {
-        int c = flyBody(t, pos, vel, {wind.x, -g, wind.y}, e, m.normal);
+        m.on = -1;  // 0x5af4b5: Ballistic clears the support
+        int c = flyBody(t, pos, vel, {wind.x, -g, wind.y}, e, m.normal, cs, m.on);
         m.stuck = c & FLY_STUCK ? m.stuck + STUCK_UP : std::max(m.stuck - STUCK_DOWN, 0);
         if ((c & FLY_STUCK) && m.stuck >= STUCK_MAX) vel = {0, 0, 0}, grounded = true;  // W4M 0x5af821: landed where it is, the count kept
         else if (c & FLY_LAND) grounded = true, land(m.normal, true);
+        else if (c & FLY_OBJECT) grounded = true, vel = {0, 0, 0}, standOn(&m, cs, m.on);  // the idle walk zeroes Velocity
         else if (c & FLY_SLIDE) grounded = m.slide = true, m.spin = m.spinTo = 0, m.air = false;  // Rebound stopped on land: event 8, Sliding
         else if (c & FLY_REBOUND) m.air = false;
     }
@@ -825,7 +939,7 @@ void Game::start(const GameConfig &c) {
     for (int t = 0; t < teams; t++) teamFirst.push_back(teamFirst.back() + c.teamWorms(t));
     worms.clear();
     shots.clear();
-    objects.clear(), triggers.clear(), allied.clear(), noTurn = false, sentries = 0, uids = 0;
+    objects.clear(), graves.clear(), triggers.clear(), allied.clear(), noTurn = false, sentries = 0, uids = 0;
     factory = {}, factoryData = {};
     gas.clear();
     nextWorm.assign(teams, 0);
@@ -1060,6 +1174,46 @@ static uint32_t collider(const Terrain &t, const Object &o, Vector3 &c, float &r
     c = colliderCentre(o), r = o.type == Object::Mine ? 0.15f : o.type == Object::Barrel ? DRUM_R : 0.5f * o.scale;
     return o.type == Object::Crate ? (o.weapon < 0 && o.mystery < 0 ? 4 : 2) : o.type == Object::Target ? 0x20 : o.type == Object::Barrel ? 0x10 : 8;
 }
+// W4M 0x5164b0: the fraction of d where spheres s apart first touch, 0 already overlapping, -1 none. [ours] within 0.1 mm is touching,
+// not overlapping: float rounding of a sphere moved to its contact would decide whether it may leave
+static float sweepHit(Vector3 p, Vector3 d, Vector3 c, float s) {
+    const Vector3 o = Vector3Subtract(p, c);
+    s -= 1e-4f;
+    const float a = Vector3DotProduct(d, d), b = Vector3DotProduct(o, d), k = Vector3DotProduct(o, o) - s * s;
+    if (a == 0) return k < 0 ? 0 : -1;  // 0x516350: the overlap alone
+    const float disc = b * b - a * k;
+    if (disc < 0) return -1;
+    const float t0 = (-b - sqrtf(disc)) / a, t1 = (-b + sqrtf(disc)) / a;
+    return t1 <= 0 || t0 > 1 ? -1 : fmaxf(t0, 0);
+}
+
+// the CollisionManagerService records whose flags meet mask, but id skip; worms (10 units about Position + 10, 0x519ed0: w.pos), objects,
+// gravestones [assumed: W4M's creation order]
+void Game::colliders(Colliders &out, uint32_t mask, int skip) const {
+    out.clear();
+    for (size_t i = 0; i < worms.size(); i++)
+        if ((mask & 1) && worms[i].alive && (int)i != skip) out.push_back({worms[i].pos, R, 1, (int)i});
+    for (const Object &o : objects) {
+        Vector3 c;
+        float r;
+        if (uint32_t f = collider(terrain, o, c, r) & mask; f && o.uid >= 0 && UID_BASE + o.uid != skip) out.push_back({c, r, f, UID_BASE + o.uid});
+    }
+    if (mask & 0x400)
+        for (const Grave &g : graves) if (UID_BASE + g.uid != skip) out.push_back({g.pos, GRAVE_R, 0x400, UID_BASE + g.uid});
+}
+
+// W4M 0x57ef80 -> 0x518f40: v.n <= 0: vt x T - vn n x P, else n |v| P; both 0 stop it. stop: under Bounce.MinSpeed 0.03 units/ms it
+// stops, else it keeps at least 0.02 units/ms (0x57f04d)
+Vector3 payBounce(Vector3 v, Vector3 n, const float damp[2], bool stop) {
+    const float T = damp[0], P = damp[1], MIN = 1.5f, KEEP = 1;
+    if (T == 0 && P == 0) return {};
+    const float vn = Vector3DotProduct(v, n), l = Vector3Length(v);
+    const Vector3 r = vn <= 0 ? Vector3Subtract(Vector3Scale(Vector3Subtract(v, Vector3Scale(n, vn)), T), Vector3Scale(n, vn * P)) : Vector3Scale(n, l * P);
+    if (stop) return (vn <= 0 ? Vector3Length(r) : l) < MIN ? Vector3{} : r;
+    const float rl = Vector3Length(r);
+    return rl > 0 && rl < KEEP ? Vector3Scale(r, KEEP / rl) : r;
+}
+
 static bool sheepLike(Kind k) { return k == Kind::Sheep || k == Kind::SuperSheep || k == Kind::OldWoman || k == Kind::Scouser; }  // WEAPTWK ColliderFlags 128: collider 0x88
 static const char *named(const std::string &s) { return s.empty() ? nullptr : s.c_str(); }  // an empty WEAPTWK effect or sound starts nothing (0x57fd00)
 // PARTTWK: the DetonationFx effects holding the WXP_GasCloud emitter, whose particle poisons the worms it touches
@@ -1272,6 +1426,41 @@ void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
 }
 
 void Game::stepObjects() {
+    Colliders cs;
+    for (Object &o : objects) if (o.uid < 0) o.uid = uids++;
+    // CrateLogicEntity 0x5c8900, land or collider: v = 0.2 (vx, -vy, vz), at rest under 0.02 units/ms, "Crate Spawn" released there
+    auto crateRest = [&](Object &o) {
+        if (o.spawning) emit(GameEvent::CrateLand, o.pos, -1, o.mystery >= 0 ? -2 : o.weapon);
+        o.vel = {0, 0, 0}, o.spawning = false;
+    };
+    auto crateBounce = [&](Object &o) {
+        o.vel = {o.vel.x * 0.2f, -o.vel.y * 0.2f, o.vel.z * 0.2f}, o.bounced = true;
+        if (Vector3Length(o.vel) < 1) crateRest(o);
+    };
+    // 0x5cb7e0, mask 0x83f but worms (the collect below), every contact; slow on a top: rests; faster and head-on: to the contact and
+    // bounced; any contact skips the fall this tick (+0x63). A crate never bounced and still falling is passed through
+    auto crateSweep = [&](Object &o) {
+        bool on = false;
+        colliders(cs, CRATE_MASK & ~1u, UID_BASE + o.uid);
+        const Vector3 d = Vector3Scale(o.vel, DT);
+        for (const Collider &c : cs) {
+            const float t = sweepHit(o.pos, d, c.c, c.r + 0.5f * o.scale);
+            if (t < 0) continue;
+            if (c.flags & 0x26) {
+                bool falling = false;
+                for (const Object &x : objects) falling |= UID_BASE + x.uid == c.id && !x.bounced && Vector3LengthSqr(x.vel) > 0;
+                if (falling) continue;
+            }
+            const Vector3 n = Vector3Normalize(Vector3Subtract(Vector3Add(o.pos, Vector3Scale(d, t)), c.c));
+            if (Vector3Length(o.vel) <= 1) {
+                if (c.c.y < o.pos.y) on = true, o.falling = false, crateRest(o);
+            } else {
+                on = true;
+                if (Vector3DotProduct(o.vel, n) <= 0) o.pos = Vector3Add(o.pos, Vector3Scale(d, t)), crateBounce(o);
+            }
+        }
+        return on;
+    };
     for (size_t i = 0; i < objects.size();) {
         Object &o = objects[i];
         float h = restHalf(o), up = colliderCentre(o).y - o.pos.y, rad = o.type == Object::Barrel ? DRUM_R : h;  // wall and ceiling probes at the collider
@@ -1285,17 +1474,13 @@ void Game::stepObjects() {
             o.pos = Vector3Add(o.pos, Vector3Scale(o.vel, DT));
         }
         Vector3 v0 = o.vel;
+        const bool onObj = crateLike(o) && !o.sunk && !o.hooked && !o.pinned && crateSweep(o);
         if (o.sunk) {
-        } else if (o.hooked || o.pinned) {  // on the rope (step())
+        } else if (o.hooked || o.pinned || onObj) {  // on the rope (step()), or held by a collider this tick
         } else if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
             Vector3 n = terrain.normal({o.pos.x, o.pos.y - h, o.pos.z});
-            if (crateLike(o)) {  // CrateLogicEntity 0x5c8900: v = 0.2 (vx, -vy, vz), at rest under 0.02 units/ms; the chute closes (0x5c9503)
-                o.vel = {o.vel.x * 0.2f, -o.vel.y * 0.2f, o.vel.z * 0.2f};
-                if (Vector3Length(o.vel) < 1) {
-                    if (o.spawning) emit(GameEvent::CrateLand, o.pos, -1, o.mystery >= 0 ? -2 : o.weapon);
-                    o.vel = {0, 0, 0}, o.spawning = false;
-                }
-            } else if (n.y < SLIDE_NY) o.vel = {(o.vel.x + n.x * n.y * gravity() * DT) * SLIDE_FRICTION, 0, (o.vel.z + n.z * n.y * gravity() * DT) * SLIDE_FRICTION};  // too steep: W4M Sliding, as wormBody
+            if (crateLike(o)) crateBounce(o);  // the chute closes (0x5c9503)
+            else if (n.y < SLIDE_NY) o.vel = {(o.vel.x + n.x * n.y * gravity() * DT) * SLIDE_FRICTION, 0, (o.vel.z + n.z * n.y * gravity() * DT) * SLIDE_FRICTION};  // too steep: W4M Sliding, as wormBody
             else o.vel = {o.vel.x * 0.8f, 0, o.vel.z * 0.8f};
             o.falling = false, v0 = o.vel;
         } else {
@@ -1304,7 +1489,7 @@ void Game::stepObjects() {
         }
         Vector3 face = Vector3Scale(Vector3Normalize({o.vel.x, 0, o.vel.z}), rad);  // the leading side meets a wall, not the centre
         Vector3 d = arcMove(v0, o.vel, crateLike(o) ? EULER_X : 0);  // crates 0x5c961a: pos += v x 20, then v += a x 20
-        for (int k = 0, n = o.hooked || o.sunk ? 0 : substeps(o.vel); k < n; k++) {
+        for (int k = 0, n = o.hooked || o.sunk || onObj ? 0 : substeps(o.vel); k < n; k++) {
             Vector3 np = Vector3Add(o.pos, Vector3Scale(d, 1.0f / n));
             if (terrain.solid({np.x + face.x, o.pos.y + up, np.z + face.z})) { o.vel.x = o.vel.z = d.x = d.z = 0; np.x = o.pos.x; np.z = o.pos.z; }
             if (o.vel.y > 0 && terrain.solid({np.x, np.y + up + rad, np.z})) { o.vel.y = d.y = 0; np.y = o.pos.y; }
@@ -1392,6 +1577,59 @@ void Game::stepObjects() {
         }
 }
 
+// W4M ColliderLogicEntity 0x5155c0 (gravestone) per tick: sweep, land cast, rest / bounce 0x514eb0 / nudge 0x5147d0, Euler step; at rest
+// on land until it goes, on a collider re-tested (0x514ce0); gone under Water.Level - 30 units (docs/sim.md "Gravestones")
+void Game::stepGraves() {
+    static constexpr float SLOW = 0.5f, NUDGE = 0.25f, TOP = 0.7072f;
+    Colliders cs;
+    auto nudge = [](Grave &g, Vector3 n) {
+        Vector3 l = {n.x, 0, n.z};
+        l = Vector3LengthSqr(l) == 0 ? Vector3{0, 1, 0} : Vector3Normalize(l);
+        g.vel = Vector3Add(g.vel, Vector3Scale(l, NUDGE)), g.moving = true;
+    };
+    for (size_t i = 0; i < graves.size();) {
+        Grave &g = graves[i];
+        colliders(cs, GRAVE_MASK, UID_BASE + g.uid);
+        if (!g.moving && g.onLand && !terrain.solid({g.pos.x, g.pos.y - GRAVE_R - 0.05f, g.pos.z})) g.onLand = false;  // [ours] its support voxel's check
+        if (!g.moving && !g.onLand) {
+            const Collider *o = nullptr;
+            for (const Collider &c : cs) if (Vector3Distance(g.pos, c.c) < c.r + GRAVE_R) { o = &c; break; }
+            if (!o) g.moving = true;
+            else {
+                const Vector3 n = Vector3Normalize(Vector3Subtract(g.pos, o->c));
+                g.pos = Vector3Add(o->c, Vector3Scale(n, o->r + GRAVE_R));
+                if (n.y > TOP) nudge(g, n);
+            }
+        }
+        if (g.moving) {
+            const Vector3 a = {0, -gravity(), 0}, d = Vector3Scale(g.vel, DT), m = Vector3Add(d, Vector3Scale(a, DT * DT / 2));
+            float tc = 2;
+            const Collider *hc = nullptr;
+            for (const Collider &c : cs)
+                if (float t = sweepHit(g.pos, d, c.c, c.r + GRAVE_R); t >= 0 && t < tc) tc = t, hc = &c;
+            Vector3 n{}, ln;
+            if (hc) n = Vector3Normalize(Vector3Subtract(Vector3Add(g.pos, Vector3Scale(d, tc)), hc->c));
+            if (hc && Vector3DotProduct(n, g.vel) >= 0) hc = nullptr;  // moving off it
+            const Vector3 bottom = {g.pos.x, g.pos.y - GRAVE_R, g.pos.z};
+            const float ml = Vector3Length(m);
+            float th = 0;
+            const bool land = ml > 0 && terrain.cast(bottom, Vector3Scale(m, 1 / ml), ml, &th, &ln) && (!hc || th < tc * Vector3Length(d));
+            const bool contact = land || hc;
+            if (land) g.pos = Vector3Add(g.pos, Vector3Scale(m, fmaxf(th - 1e-4f, 0) / ml)), n = ln;  // the last empty point (0x468490)
+            else if (hc) g.pos = Vector3Add(g.pos, Vector3Scale(d, tc));
+            if (contact) {
+                const bool slow = Vector3Length(g.vel) <= SLOW;
+                if (n.y >= TOP && slow) g.vel = {}, g.moving = false, g.onLand = land;
+                else if (slow) nudge(g, n);
+                else g.vel = Vector3Scale(Vector3Subtract(g.vel, Vector3Scale(n, 2 * 50 * Clamp(Vector3DotProduct(g.vel, n) / 50, -1, 1))), 0.3f);
+            }
+            if (g.moving) g.pos = Vector3Add(g.pos, Vector3Add(Vector3Scale(g.vel, DT), Vector3Scale(a, DT * DT / 2))), g.vel = Vector3Add(g.vel, Vector3Scale(a, DT));
+        }
+        if (g.pos.y < water - 1.5f) graves.erase(graves.begin() + i);
+        else i++;
+    }
+}
+
 Vector3 Game::blimpEye(Vector3 focus, float yaw, float pitch) const {
     return Vector3Add(focus, {-sinf(yaw) * cosf(pitch) * BLIMP_STICK, sinf(pitch) * BLIMP_STICK, -cosf(yaw) * cosf(pitch) * BLIMP_STICK});
 }
@@ -1428,6 +1666,10 @@ Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet, int self, ui
         uint32_t f = (int)i != self ? collider(terrain, objects[i], c, cr) & mask : 0;
         if (float t = f ? across(c, cr) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = f & 0x26 ? (int)i : -1, h.sentry = f & 0x800 ? (int)i : -1;
     }
+    Colliders cs;
+    colliders(cs, mask & 0x400);  // gravestones: the bullet stops, no message for them (0x55e10f)
+    for (const Collider &c : cs)
+        if (float t = across(c.c, c.r); t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = -1, h.sentry = -1;
     for (const Bubble &bb : bubbles) {
         Vector3 c = Vector3Add(bb.pos, {0, BUBBLE_UP, 0});
         if (float t = Vector3Distance(c, r.position) > BUBBLE_SHELL ? across(c, BUBBLE_SHELL) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = -1, h.sentry = -1;
@@ -1622,6 +1864,8 @@ void Game::stepCount() {
         std::vector<int> was;
         for (int j : countGroup) was.push_back(worms[j].hp);
         deathBlast(x, i);
+        // 0x5a9310 -> Gravestone.Create 0x4f5ac0: the team's gravestone (GraveIndex < 21) 20 units over Position, the worm's yaw
+        if (int gi = x.team < (int)cfg.teamSetup.size() ? cfg.teamSetup[x.team].grave : 0; gi < 21) graves.push_back({{x.pos.x, x.pos.y - R + 1, x.pos.z}, {}, x.yaw, gi, uids++});
         for (size_t k = countGroup.size(); k-- > 0;)  // hurt now: shown at the next ApplyDamage
             if (worms[countGroup[k]].hp != was[k]) worms[countGroup[k]].counted = was[k], countGroup.erase(countGroup.begin() + k);
     } else if (shown && !deathQueue.empty() && shots.empty() && !active()) {
@@ -1879,7 +2123,9 @@ void Game::stepWorm(Worm &w) {
     int stuck = w.motion.stuck;  // the jetpack's own flight is not Ballistic: it keeps no stuck count
     float hit = 0;
     bool hung = chute && &w == &worms[current] && !w.grounded;  // the parachute moves it (0x5792a0), no Ballistic gravity
-    auto settle = [&](float e) { return wormBody(terrain, w.pos, w.vel, w.grounded, w.motion, w.yaw, hung ? 0 : gravity(), pot, e, hung ? Vector2{} : wormWind()); };
+    Colliders cs;
+    colliders(cs, WORM_MASK, int(&w - worms.data()));
+    auto settle = [&](float e) { return wormBody(terrain, w.pos, w.vel, w.grounded, w.motion, w.yaw, hung ? 0 : gravity(), pot, e, hung ? Vector2{} : wormWind(), &cs); };
     // hung: Position = canopy + 40 units (sin a right - cos a up); ours reaches it through the body's sweep (voxel land), Velocity kept
     const Vector3 hv = w.vel, f = flat(w.yaw);
     if (hung) w.vel = Vector3Scale(Vector3Subtract(Vector3Add(chuteAt, {2 * sinf(chuteAng) * f.z, -2 * cosf(chuteAng), -2 * sinf(chuteAng) * f.x}), w.pos), 1 / DT);
@@ -1904,7 +2150,7 @@ void Game::stepWorm(Worm &w) {
         if (!punching && fall < -6) w.vel = {0, 0, 0};
     }
     if (!jet) hit = settle(0.3f);
-    else if (w.grounded = false, jetBody(terrain, w.pos, w.vel, gravity())) jetting = false, settle(0.3f);  // landed: no fall speed left, only the shared settling
+    else if (w.grounded = false, jetBody(terrain, w.pos, w.vel, gravity(), &cs)) jetting = false, settle(0.3f);  // landed: no fall speed left, only the shared settling
     if (hung) w.vel = hv, chute = !w.grounded;  // a blocked canopy move closes it (0x57967e)
     if (!jet) land(hit);  // W4M 0x562f72: a foot touching land lands the pack with v -= (v.n) n, so Ballistic sees no fall speed
     if (jet) w.motion.stuck = stuck;
@@ -2536,19 +2782,19 @@ void Game::stepShots(const Input &in, bool detonate) {
         return m;
     };
     for (Object &o : objects) if (o.uid < 0) o.uid = uids++;
-    // 0x581dc0 against objects, payload mask 0x3c37 (crates, drums, targets, sentries; not mines or payloads, flag 8): the sphere of
-    // radius r at p adds its contacts to `now` and returns the flags of the first one not touched last tick, n its normal (0x517ba0)
+    // 0x581dc0, payload mask 0x3c37 but worms (`touches`): the contacts' uids into `now`; the flags of the first one not touched
+    // last tick, n its normal (0x517ba0)
+    Colliders objCs;
     auto touchesObj = [&](const Projectile &s, Vector3 p, float r, std::vector<int> &now, Vector3 *n = nullptr) {
         uint32_t hit = 0;
-        for (const Object &o : objects) {
-            Vector3 c;
-            float cr;
-            uint32_t f = collider(terrain, o, c, cr) & 0x3c37;
-            if (!f || Vector3Distance(p, c) >= r + cr) continue;
-            now.push_back(o.uid);
-            if (!hit && s.touching != ~0ull && std::find(s.touchObj.begin(), s.touchObj.end(), o.uid) == s.touchObj.end()) {
-                hit = f;
-                if (n) *n = Vector3Normalize(Vector3Subtract(p, c));
+        colliders(objCs, 0x3c37 & ~1u);
+        for (const Collider &c : objCs) {
+            const int uid = c.id - UID_BASE;
+            if (Vector3Distance(p, c.c) >= r + c.r) continue;
+            now.push_back(uid);
+            if (!hit && s.touching != ~0ull && std::find(s.touchObj.begin(), s.touchObj.end(), uid) == s.touchObj.end()) {
+                hit = c.flags;
+                if (n) *n = Vector3Normalize(Vector3Subtract(p, c.c));
             }
         }
         return hit;
@@ -2752,11 +2998,9 @@ void Game::stepShots(const Input &in, bool detonate) {
                 if (!hit) np = q;
             }
             s.touching = now, s.touchObj = nowObj, s.pos = np;
-            if (hit) {  // 0x580db0 -> 0x518f40: v = vt x TangentialBounceDamping 0.4 - vn x Parallel 0.6, 0 under Bounce.MinSpeed 0.03 units/ms
-                float vn = Vector3DotProduct(s.vel, n);
-                s.vel = vn < 0 ? Vector3Subtract(Vector3Scale(Vector3Subtract(s.vel, Vector3Scale(n, vn)), 0.4f), Vector3Scale(n, vn * 0.6f)) : Vector3Scale(n, Vector3Length(s.vel) * 0.6f);
-                if (Vector3Length(s.vel) < FATKINS_STOP) s.vel = {};
-                else emit(GameEvent::Bounce, np, -1, s.weapon);  // Payload.Bounce: BounceFx / BounceSfx
+            if (hit) {  // 0x580db0, Bounce.MinSpeed on any contact
+                s.vel = payBounce(s.vel, n, wd.damp, true);
+                if (Vector3LengthSqr(s.vel) > 0) emit(GameEvent::Bounce, np, -1, s.weapon);  // Payload.Bounce: BounceFx / BounceSfx
                 s.prey++;
                 boom = Vector3LengthSqr(s.vel) == 0 || s.prey > FATKINS_BOUNCES;  // Payload.Rest, DetonatesAtRest: Detonate (0x5758c0)
                 fatBlast = 1 - 0.2f * (s.prey - 1);  // radii x 1, 0.8, 0.6, 0.4: blasted after the Detonate (0x555066)
@@ -2777,20 +3021,23 @@ void Game::stepShots(const Input &in, bool detonate) {
             for (int k = 0, n = substeps(s.vel); k < n && !boom; k++) {  // W4M searches the whole path for the first land contact
                 np = Vector3Add(s.pos, Vector3Scale(d, 1.0f / n));
                 Vector3 sn;
-                if (shell(s.pos, np, &sn)) {  // the land bounce response (vtable +0x80), Bubble.Hit
+                // 0x577da0 on an object, a bubble shell included: Bounce.MinSpeed only for DetonatesAtRest or no LifeTime running
+                const float *damp = s.child ? wd.cdamp : wd.damp;
+                if (shell(s.pos, np, &sn)) {  // Bubble.Hit; under 0.15 (units/ms)^2 the velocity first gets x (1.1, 1.5, 1.1) (0x577e64)
                     if (impact && wd.stick > 0) { stick(s); break; }
                     if (impact) { boom = true; break; }
-                    s.vel = Vector3Scale(Vector3Reflect(s.vel, sn), wd.bounce);
+                    if (Vector3Length(s.vel) < sqrtf(0.15f) * 50) s.vel = {s.vel.x * 1.1f, s.vel.y * 1.5f, s.vel.z * 1.1f};
+                    s.vel = payBounce(s.vel, sn, damp, rests || !timed);
                     break;
                 }
                 // 0x577da0 / 0x57fc00: an object (DetonatesOnObjectImpact = OnLandImpact here) gets the land's response about its centre
-                bool solid = terrain.solid(np);
+                bool solid = terrain.solid(np), land = solid;
                 if (solid) sn = terrain.normal(np);
                 else solid = touchesObj(s, np, rad, nowObj, &sn);
                 if (solid) {
                     if (impact && wd.stick > 0) { stick(s); break; }
                     if (impact) { boom = true; break; }
-                    s.vel = Vector3Scale(Vector3Reflect(s.vel, sn), wd.bounce);
+                    s.vel = payBounce(s.vel, sn, damp, land || rests || !timed);  // Payload.CollideWithLand passes 1 (0x577cb9)
                     if (Vector3Length(s.vel) > 2) {
                         emit(GameEvent::Bounce, np, -1, s.weapon);
                         if (s.child && customWeapon(s.weapon) && wd.kind != Kind::Airstrike) events.back().fx = FACTORY_CLUSTER_BOUNCE;
@@ -2862,6 +3109,7 @@ void Game::step(const Input &raw) {
     Input in = scriptMovieOn(*this) ? Input{} : raw;  // a movie leaves only its own input group (EFMVMovie, 0x5074a0): no worm control
     if (wp(WP_NO_BLIMP)) in.buttons &= ~Input::TARGET;  // Camera.Disable "Blimp" (0x5d6fea): targeting from the aim view only
     ropeIn = {};
+    for (Object &o : objects) if (o.uid < 0) o.uid = uids++;  // colliders' owner ids
     int chosen = (in.buttons & Input::NEXT_WEAPON) && in.aim ? (uint8_t)in.aim - 1 : -1;
     if (chosen >= 0) in.aim = 0;
     // user-requested (2026-10-03, retest vs W4M later): the press that cancels the hot seat (W4M 0x50fce0) is never a shot, jump or view change
@@ -2906,8 +3154,10 @@ void Game::step(const Input &raw) {
             vaultStep(w.pos, vault, aimCursor ? Vector3{} : Vector3Scale(flat(y), in.walk));
         } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed && !artillery()) {  // W4M Sliding: no walking
             Vector3 walkV = Vector3Scale(flat(w.yaw), in.walk / 127.0f * INPUT_IMPULSE), was = w.pos, gn;  // W4M Velocity = InputImpulse (0x546f10)
+            Colliders cs;
+            colliders(cs, WORM_MASK, current);
             if (!walkFrame(walkTick = wt + 1)) {
-            } else if (walkStep(terrain, w.pos, w.yaw, in.walk / 127.0f * ws * WALK_FRAME, &vault, &gn)) w.vel = walkV, w.motion.air = true;  // Fall(InputImpulse) 0x5b14c7, air control on
+            } else if (walkStep(terrain, w.pos, w.yaw, in.walk / 127.0f * ws * WALK_FRAME, &vault, &gn, &cs, &w.motion)) w.vel = walkV, w.motion.air = true;  // Fall(InputImpulse) 0x5b14c7, air control on
             else if (vault.t) vault.vel = walkVel;  // the vault start writes no Velocity: the last step's
             else {
                 if (!Vector3Equals(was, w.pos)) walkVel = walkV;  // a blocked step leaves Velocity as it was
@@ -3087,6 +3337,7 @@ void Game::step(const Input &raw) {
         o->pos = Vector3Add(p, off);
     }
     stepObjects();
+    stepGraves();
     stepTriggers();
     stepFactory();
     wobbleStep(raw.zoom / 255.0f);
@@ -3244,7 +3495,7 @@ uint32_t Game::checksum() const {
         for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t *)p)[i]) * 16777619u;
     };
     mix(&walkTick, sizeof walkTick);
-    for (const Worm &w : worms) { mix(&w.pos, sizeof w.pos); mix(&w.vel, sizeof w.vel); mix(&w.hp, sizeof w.hp); mix(&w.yaw, sizeof w.yaw); mix(&w.pitch, sizeof w.pitch); mix(&w.alive, sizeof w.alive); mix(&w.poison, sizeof w.poison); mix(&w.counted, sizeof w.counted); mix(&w.nailed, 1); mix(&w.armour, 1); mix(&w.motion.stuck, sizeof w.motion.stuck), mix(&w.motion.air, 1), mix(&w.motion.slide, 1), mix(&w.motion.spin, sizeof w.motion.spin), mix(&w.motion.spinTo, sizeof w.motion.spinTo), mix(&w.motion.normal, sizeof w.motion.normal); if (w.drowned) mix(&w.floatT, sizeof w.floatT); if (w.abducted) mix(&w.zap, sizeof w.zap), mix(&w.calm, sizeof w.calm), mix(&w.zapFound, 1), mix(&w.zapSpot, sizeof w.zapSpot); }
+    for (const Worm &w : worms) { mix(&w.pos, sizeof w.pos); mix(&w.vel, sizeof w.vel); mix(&w.hp, sizeof w.hp); mix(&w.yaw, sizeof w.yaw); mix(&w.pitch, sizeof w.pitch); mix(&w.alive, sizeof w.alive); mix(&w.poison, sizeof w.poison); mix(&w.counted, sizeof w.counted); mix(&w.nailed, 1); mix(&w.armour, 1); mix(&w.motion.stuck, sizeof w.motion.stuck), mix(&w.motion.air, 1), mix(&w.motion.slide, 1), mix(&w.motion.spin, sizeof w.motion.spin), mix(&w.motion.spinTo, sizeof w.motion.spinTo), mix(&w.motion.normal, sizeof w.motion.normal); if (w.motion.on >= 0) mix(&w.motion.on, sizeof w.motion.on), mix(&w.motion.onAt, sizeof w.motion.onAt); if (w.drowned) mix(&w.floatT, sizeof w.floatT); if (w.abducted) mix(&w.zap, sizeof w.zap), mix(&w.calm, sizeof w.calm), mix(&w.zapFound, 1), mix(&w.zapSpot, sizeof w.zapSpot); }
     for (const Projectile &s : shots) { mix(&s.pos, sizeof s.pos); mix(&s.vel, sizeof s.vel); mix(&s.weapon, sizeof s.weapon); mix(&s.fuse, sizeof s.fuse); mix(&s.hits, sizeof s.hits); mix(&s.stage, sizeof s.stage); mix(&s.prey, sizeof s.prey); mix(&s.aim, sizeof s.aim); mix(&s.touching, sizeof s.touching); mix(s.touchObj.data(), s.touchObj.size() * sizeof(int)); }
     mix(&chute, 1);
     if (chute) mix(&chuteDrift, sizeof chuteDrift), mix(&chuteAt, sizeof chuteAt), mix(&chuteAng, sizeof chuteAng), mix(&chuteSpin, sizeof chuteSpin),
@@ -3288,6 +3539,7 @@ uint32_t Game::checksum() const {
     if (launched >= 0) mix(&launched, sizeof launched);
     if (jetting || jetUsed) mix(&jetting, 1), mix(&jetUsed, 1), mix(&fuel, sizeof fuel), mix(&boost, sizeof boost);  // no jetpack: old replays' sums hold
     for (const Bubble &b : bubbles) mix(&b, sizeof b);
+    for (const Grave &g : graves) mix(&g.pos, sizeof g.pos), mix(&g.vel, sizeof g.vel), mix(&g.moving, 1);
     mix(&bubbleAt, sizeof bubbleAt);
     mix(&icarus, sizeof icarus), mix(&flapAt, sizeof flapAt), mix(&drift, sizeof drift), mix(&doubleDamage, 1), mix(&changing, 1), mix(spy.data(), spy.size());
     mix(&scout.t, sizeof scout.t), mix(&scout.power, sizeof scout.power), mix(&scout.pitch, sizeof scout.pitch);
@@ -3319,6 +3571,7 @@ uint32_t Game::checksum() const {
         if (wd.avoid) mix(&wd.avoid, 1);
         if (wd.crest) mix(&wd.crest, 1);
         if (!wd.powered) mix(&wd.powered, 1);
+        mix(wd.damp, sizeof wd.damp), mix(wd.cdamp, sizeof wd.cdamp);
         mix(&wd.size, sizeof wd.size), mix(&wd.sink, sizeof wd.sink), mix(&wd.csize, sizeof wd.csize), mix(&wd.csink, sizeof wd.csink), mix(wd.skim, sizeof wd.skim), mix(&wd.ccone, sizeof wd.ccone), mix(wd.cspeed, sizeof wd.cspeed);
         mix(&wd.userFuse, sizeof wd.userFuse), mix(&wd.restFuse, sizeof wd.restFuse), mix(&wd.walks, 1), mix(&wd.pins, 1);
     }

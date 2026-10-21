@@ -811,7 +811,6 @@ static void dudFx(const std::vector<Object> &objs) {
     was.swap(now);
 }
 
-// Dead worms leave their team's W4M gravestone (GraveIndex), dropped onto whatever terrain is left below (render only).
 // W4M GirderKitGraphicEntity 0x5586c0: the Girder mesh x (3, 3.5, 3) units, opaque, tinted red where it can't go or after 45
 static void drawUtilities(const Game &g) {
     if (g.girderOn && g.phase == Phase::Aim) {
@@ -912,13 +911,10 @@ static void drawBubbles(const Game &g, float dt) {
     rlEnableDepthMask(), rlEnableBackfaceCulling();
 }
 
-static void drawGrave(const Game &g, const Worm &w) {
-    if (w.drowned) return;
-    Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
-    for (int k = 0; k < 100 && p.y > g.water && !g.terrain.solid(p); k++) p.y -= 0.1f;
-    int grave = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team].grave : 0;  // the team's GraveIndex (0x725eda)
+// W4M GraveStoneGraphicEntity 0x5ce680: the team's mesh (GraveIndex, 0x725eda) at the logic position less its radius, the logic's yaw
+static void drawGrave(const Game::Grave &g) {
     const auto &list = catalog().graves;
-    if (!list.empty()) Models::draw(list[grave < (int)list.size() ? grave : 0].model.c_str(), p, w.yaw);
+    if (!list.empty()) Models::draw(list[g.grave < (int)list.size() ? g.grave : 0].model.c_str(), {g.pos.x, g.pos.y - Game::GRAVE_R, g.pos.z}, g.yaw);
 }
 
 // Bovine Blitz, W4M SuperBomberGraphicEntity (the SuperAirstrike chopper, banked into its turns) and
@@ -1548,13 +1544,14 @@ int main(int argc, char **argv) {
             if (utilShot && loadCustomWeapons(f, mine))
                 for (const WeaponDef &d : mine) if (d.name == utilShot) sc.teamSetup.resize(2), sc.teamSetup[0].secret = sc.teamSetup[1].secret = d;
         game.start(sc);
-        // W4NX_PLACE="<crate|drum|sentry> <m> ...": those objects that far ahead of the active worm, on the land (collision captures)
+        // W4NX_PLACE="<crate|drum|sentry>[:up] <m> ...": those objects that far ahead of the active worm, on the land or up m over it (collision captures)
         for (const char *c = getenv("W4NX_PLACE"); c && *c;) {
             char t[16];
-            float d;
+            float d, up = 0;
             int n;
             if (sscanf(c, "%15s %f%n", t, &d, &n) != 2) break;
             c += n;
+            if (char *k = strchr(t, ':')) up = (float)atof(k + 1), *k = 0;
             const Worm &w = game.worms[game.current];
             Vector3 p = Vector3Add(w.pos, Vector3Scale(flat(w.yaw), d)), at;
             if (!game.terrain.raycast({{p.x, p.y + 5, p.z}, {0, -1, 0}}, 50, &at)) continue;
@@ -1563,7 +1560,7 @@ int main(int argc, char **argv) {
                 o.team = 1 - w.team;
                 for (size_t k = 0; k < WEAPONS.size(); k++) if (WEAPONS[k].name == "Sentry Gun") o.weapon = (int)k;
             }
-            o.pos.y += restHalf(o) + 0.05f;
+            o.pos.y += restHalf(o) + 0.05f + up;
             game.objects.push_back(o);
         }
         Audio::preloadVoices(game.teams);
@@ -2428,6 +2425,7 @@ int main(int argc, char **argv) {
             in.buttons |= Input::TARGET | (frame >= 45 ? Input::PITCH : 0), in.walk = frame < 45 ? 127 : 0, in.turn = frame < 45 ? 40 : 0, in.aim = frame >= 45 ? -60 : 0;
         if (aimShot && frame > 30 && getenv("W4NX_PITCH")) game.worms[game.current].pitch = (float)atof(getenv("W4NX_PITCH")) * DEG2RAD;  // that aim pitch, degrees
         if (int a, b, v = 127; shot && getenv("W4NX_WALK") && sscanf(getenv("W4NX_WALK"), "%d %d %d", &a, &b, &v) >= 2 && frame >= a) Controls::forceAim = 0, in.walk = frame < b ? (int8_t)v : 0;  // W4NX_WALK="from to [walk]": the active worm walks, out of the forced aim
+        if (shot && getenv("W4NX_DIE") && frame == atoi(getenv("W4NX_DIE"))) game.worms[game.current].hp = 0, game.selfHurt = true;  // W4NX_DIE=<frame>: the active worm dies (gravestone captures)
         if (aimBench && frame >= 60) in = Input{}, in.buttons = Controls::targetView(game) ? Input::TARGET | (frame == 61 && getenv("W4NX_LOCK") ? Input::FIRE : 0) : 0;
         if (irSwallow) {
             if (in.buttons & (Input::FIRE | Input::JUMP)) in.buttons &= ~(Input::FIRE | Input::JUMP);
@@ -2655,7 +2653,9 @@ int main(int argc, char **argv) {
         Lit::shadowPass(game.terrain.bounds, Terrain::meshVer, game.terrain.takeStale(), [&] { game.terrain.drawShadow(), game.terrain.drawObjects(0, true, 1); }, [&](std::vector<Vector4> &at) {
             game.terrain.drawObjects(clock, true, 2, &at);
             for (const Worm &w : game.worms)
-                if (Models::visible(w.pos, 2)) (w.alive || w.counted > 0) ? (void)drawWorm(game, w, clock) : drawGrave(game, w), at.push_back({w.pos.x, w.pos.y, w.pos.z, 2});
+                if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawWorm(game, w, clock), at.push_back({w.pos.x, w.pos.y, w.pos.z, 2});
+            for (const Game::Grave &gr : game.graves)
+                if (Models::visible(gr.pos, 2)) drawGrave(gr), at.push_back({gr.pos.x, gr.pos.y, gr.pos.z, 2});
             for (const Projectile &s : game.shots) {
                 const Vector3 sp = s.shown(game.clock);
                 drawShot(s, clock, game.terrain, game.clock), at.push_back({sp.x, sp.y, sp.z, 3});
@@ -2699,7 +2699,7 @@ int main(int argc, char **argv) {
         game.terrain.draw();
         lap(T_TERRAIN);
         // W4M bin 8 (3D, registry default scene of every shot, crate, mine, barrel, grave): opaque shapes are drawn before the water, a transparent one after it (0x6ee277)
-        for (const Worm &w : game.worms) if (!w.alive && w.counted <= 0) drawGrave(game, w);
+        for (const Game::Grave &gr : game.graves) drawGrave(gr);
         if (game.roped)
             for (int k = 0; k < game.rope.n; k++) DrawLine3D(game.rope.pt[k], k + 1 < game.rope.n ? game.rope.pt[k + 1] : cur.pos, BROWN);
         if (game.grapple.on) DrawLine3D(game.grapple.at, cur.pos, BROWN);  // the hook in flight (rope mode 2)
