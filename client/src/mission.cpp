@@ -4,6 +4,7 @@
 #include "script.h"
 #include "raymath.h"
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <tuple>
@@ -111,26 +112,57 @@ bool Progress::storyDone(const std::vector<MissionSpec> &list) const {
     for (const MissionSpec &m : list) if (m.kind == "mission" && get(m.id).done) return true;
     return false;
 }
-void Progress::load(const char *path) {
-    entries.clear(), unlocks.clear(), storyIntro = welcome = false;
+static void parseProgress(const char *path, Progress &p, bool profile) {
     char *txt = LoadFileText(path);
     if (!txt) return;
     for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
         char id[128];
         int done = 0, best = 0;
-        if (sscanf(line, "%127s %d %d", id, &done, &best) == 3) entries.push_back({id, {done != 0, best}});
-        else if (sscanf(line, "unlock %127s", id) == 1) unlocks.push_back(id);
-        else if (!strcmp(line, "intro")) storyIntro = true;
-        else if (!strcmp(line, "welcome")) welcome = true;
+        if (sscanf(line, "%127s %d %d", id, &done, &best) == 3) { if (!profile) p.entries.push_back({id, {done != 0, best}}); }
+        else if (!profile) continue;
+        else if (sscanf(line, "unlock %127s", id) == 1) p.unlocks.push_back(id);
+        else if (!strcmp(line, "intro")) p.storyIntro = true;
+        else if (!strcmp(line, "welcome")) p.welcome = true;
     }
     UnloadFileText(txt);
 }
 
-void Progress::save(const char *path) const {
+void Progress::open(const char *profile, const char *team) {
+    entries.clear(), unlocks.clear(), storyIntro = welcome = false;
+    profilePath = profile, teamPath = team ? team : "";
+    parseProgress(profile, *this, true);
+    if (team) parseProgress(team, *this, false);
+}
+
+void Progress::save() const {
     std::string s;
-    for (const auto &e : entries) s += TextFormat("%s %d %d\n", e.first.c_str(), e.second.done, e.second.best);
     for (const std::string &u : unlocks) s += "unlock " + u + "\n";
     if (storyIntro) s += "intro\n";
     if (welcome) s += "welcome\n";
-    SaveFileText(path, s.data());
+    SaveFileText(profilePath.c_str(), s.data());
+    if (teamPath.empty()) return;
+    s.clear();
+    for (const auto &e : entries) s += TextFormat("%s %d %d\n", e.first.c_str(), e.second.done, e.second.best);
+    SaveFileText(teamPath.c_str(), s.data());
+}
+
+std::string Progress::teamFile(const char *dir, const std::string &team) {
+    std::string n;
+    for (unsigned char ch : team) n += isalnum(ch) || ch == '-' || ch == '_' ? std::string(1, (char)ch) : TextFormat("%%%02X", ch);
+    return std::string(dir) + "progress_" + n + ".txt";
+}
+
+void Progress::migrate(const char *profile, const char *team) {
+    char *txt = LoadFileText(profile);
+    if (!txt) return;
+    std::string keep, moved;
+    for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
+        char id[128];
+        int done, best;
+        (sscanf(line, "%127s %d %d", id, &done, &best) == 3 ? moved : keep) += std::string(line) + "\n";
+    }
+    UnloadFileText(txt);
+    if (moved.empty()) return;
+    if (!FileExists(team)) SaveFileText(team, moved.data());
+    SaveFileText(profile, keep.data());
 }

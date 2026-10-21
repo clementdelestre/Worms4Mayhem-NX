@@ -25,7 +25,8 @@ GameConfig missionConfig(const MissionSpec &m, uint32_t seed);  // cfg.mission p
 void placeMapObjects(Game &g);           // W4M GameLogic.PlaceObjects: mines and oil drums on the map's markers
 void missionEnd(Game &g, bool won);      // result, GameOver
 
-// progress.txt: "<mission id> <completed 0/1> <best ticks>" per line, "unlock <item>" per unlocked W4M WXFE_UnlockableItem
+// The profile's progress.txt: "unlock <item>" per unlocked W4M WXFE_UnlockableItem, "intro", "welcome" (W4M Lock.* and movie flags are the profile's); each team's
+// mission entries "<mission id> <completed 0/1> <best ticks>" in progress_<team>.txt (W4M StoredTeamData StoryMissionsCompleted: Story progress is per team)
 struct Progress {
     struct Entry { bool done = false; int best = 0; };
     std::vector<std::pair<std::string, Entry>> entries;
@@ -36,6 +37,11 @@ struct Progress {
     Entry get(const std::string &id) const;
     void record(const std::string &id, bool done, int ticks);
     bool unlocked(const std::vector<MissionSpec> &list, size_t i) const;  // missions: previous one of the campaign done
-    void load(const char *path);
-    void save(const char *path) const;
+    void open(const char *profile, const char *team = nullptr);  // loads the profile file and the team's entries (null: no team)
+    void save() const;                                          // writes the files `open` read
+    static std::string teamFile(const char *dir, const std::string &team);  // <dir>progress_<team>.txt, unsafe name bytes as %XX
+    static void migrate(const char *profile, const char *team);  // the entries of an older single progress.txt become `team`'s file (if absent)
+
+private:
+    std::string profilePath, teamPath;
 };

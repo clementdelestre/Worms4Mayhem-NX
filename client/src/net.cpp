@@ -173,20 +173,6 @@ void Net::handle(const uint8_t *p, size_t n) {
         for (auto &t : cfg.teamSetup) t = getTeam(r);
         cfg.scheme = getScheme(r);
         cfg.wormpot = r.ok && r.p < r.e ? r.u32() : 0;
-        cfg.custom.clear();
-        for (int i = 0, n = r.ok && r.p < r.e ? r.u8() : 0; i < n && r.ok; i++) {
-            WeaponDef w{};
-            w.name = r.str();
-            w.kind = (Kind)std::min<int>(r.u8(), (int)Kind::ChangeWorm);
-            for (float *f : {&w.speed, &w.fuse, &w.bounce, &w.poison, &w.spread}) *f = r.f32();
-            for (auto &c : w.slider) for (float &f : c) f = r.f32();
-            for (int *v : {&w.count, &w.clusters, &w.shots, &w.weight}) *v = (int32_t)r.u32();
-            uint8_t fl = r.u8();  // bit 0 wind, bit 1 HomingAvoidLand (older peers read a set byte as wind)
-            w.wind = fl & 1, w.avoid = fl & 2;
-            w.model = r.str();
-            w.icon = r.str();
-            if (r.ok) cfg.custom.push_back(w);
-        }
         inbox.clear();
         batch.clear();
         replay = 0;
@@ -277,15 +263,7 @@ void Net::start(const GameConfig &c, const std::vector<uint32_t> &own) {
     w.str(c.map.c_str()).u32(c.rules).u8((uint8_t)c.teamSetup.size());
     for (const auto &t : c.teamSetup) putTeam(w, t);
     putScheme(w, c.scheme);
-    w.u32(c.wormpot).u8((uint8_t)std::min<size_t>(c.custom.size(), 255));
-    for (size_t i = 0; i < c.custom.size() && i < 255; i++) {
-        const WeaponDef &d = c.custom[i];
-        w.str(d.name.c_str()).u8((uint8_t)d.kind);
-        for (float f : {d.speed, d.fuse, d.bounce, d.poison, d.spread}) w.f32(f);
-        for (auto &c : d.slider) for (float f : c) w.f32(f);
-        for (int v : {d.count, d.clusters, d.shots, d.weight}) w.u32((uint32_t)v);
-        w.u8(d.wind | d.avoid << 1).str(d.model.c_str()).str(d.icon.c_str());
-    }
+    w.u32(c.wormpot);
     send(w.done());
 }
 
@@ -341,7 +319,7 @@ void Net::syncLobby() {
     if (!same(before, lobby)) pushLobby();
 }
 
-void Net::startMatch(uint32_t seed, const std::vector<WeaponDef> &custom) {
+void Net::startMatch(uint32_t seed) {
     GameConfig c;
     c.seed = seed;
     c.map = lobby.map;
@@ -349,7 +327,6 @@ void Net::startMatch(uint32_t seed, const std::vector<WeaponDef> &custom) {
     c.scheme = lobby.scheme;
     c.wormpot = lobby.wormpot;
     c.wormsPerTeam = lobby.wormsPerTeam;
-    c.custom = custom;
     std::vector<uint32_t> own;
     for (const LobbyTeam &t : lobby.teams) c.teamSetup.push_back(t.team), own.push_back(t.owner);
     c.teams = (int)own.size();

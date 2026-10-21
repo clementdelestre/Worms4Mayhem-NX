@@ -43,7 +43,8 @@ bool joint(const char *name, const char *joint, const char *clip, float t, bool 
            const Layers *ly = nullptr);
 bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true, int part = 0);  // full world matrix; a clip not looping holds its last key; part 1 = opaque meshes only, 2 = blended ones only (W4M bins them after every opaque draw)
 void shade(Shader s);  // every draw() uses s until shade({})
-void pick(const char *clip, float t = 0);  // every draw() also plays this W4M clip's XChildSelector keys (looped) until pick(nullptr)
+void pick(const char *clip, float t = 0);
+void gloves(const char *name);  // every posed draw() of a model with W4M hand shapes shows this glove model's in their place, until gloves(nullptr)  // every draw() also plays this W4M clip's XChildSelector keys (looped) until pick(nullptr)
 bool visible(Vector3 c, float r);  // sphere vs the current BeginMode3D view frustum
 bool visible(Vector3 c, float r, const Matrix &mvp);  // sphere vs that view-projection's frustum
 }

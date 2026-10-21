@@ -58,25 +58,26 @@ extern bool forceHelp;      // --ui help captures
 
 struct MenuItem;  // ui.cpp: one W4M menu entry and its place on screen
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
-// setup.txt lines of this console's network teams ("net", "netpad"); the parser returns false for any other line
-std::string netProfileText(const std::vector<GameConfig::Team> &teams);
-bool netProfileLine(const char *line, std::vector<GameConfig::Team> &teams);
 
 struct Frontend {
-    enum Screen { Title, Main, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm, Missions, SetupTeams, SetupMap, SetupRules } screen = Title;  // Missions: hands over to missionMenu(); SetupTeams / Map / Rules: the match setup, local or in a network room (lobby)
+    enum Screen { Title, Main, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm, Missions, SetupTeams, SetupMap, SetupRules, TeamEdit } screen = Title;  // Missions: hands over to missionMenu(); SetupTeams / Map / Rules: the match setup, local or in a network room (lobby); TeamEdit: W4M WXFE.TeamOptions
     enum Action { None, StartLocal, Quit, Replays, SinglePlayer, QuickMatch, Salon, RoomStart, LeaveRoom };  // Salon: open the network salon (wantLan); RoomStart: the host starts the room's match; LeaveRoom: B on the room's first screen
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
     int missionTab = 0;             // SinglePlayer: 0 story missions, 1 challenges
+    std::string missionTeamName();  // missionTeam if it is still a saved team, else the first human one (null name: none)
+    std::string missionTeam;        // the saved team picked for them (W4M WXFE.MissionTeamName): its progress, its name on the Challenges page
     Net *net = nullptr;             // the connection of a network room: SetupTeams / Map / Rules then show net->lobby
     bool wantLan = false;           // Salon: Réseau local, else En ligne
     int timer = -1;                 // lobby timer seconds (ReadyTimer::seconds), -1 none
-    struct PadIn { int dx = 0, dy = 0, card = 0; bool ok = false, back = false, cpu = false, plus = false; };
+    struct PadIn { int dx = 0, dy = 0, card = 0; bool ok = false, back = false, plus = false; };
     static unsigned simPads;        // tests (--ui setup2): pads that count as connected and take `sim` instead of the real pad
     static PadIn sim[4];
-    void enterRoom(bool lan);       // joined / created a room: the setup screens in network mode, own team from setup.txt
+    static std::string simText;     // tests (W4NX_INPUTSCRIPT): characters typed into a text entry, which the keyboard cannot send as key events
+    void enterRoom(bool lan);       // joined / created a room: the setup screens in network mode, with the saved team picked for it
     void backToRoom();              // a room match is over
     void dropRoom() { online = false, screen = Network, loaded = false; }  // the connection is gone
     int minePad(int idx) const { return idx >= 0 && idx < (int)myTeams.size() ? myTeams[idx].pad : 0; }  // local pad of this console's idx-th team
+    void captureState(const std::string &what);  // tests (--ui captures): selectteam, createask, teamedit1..3, slotpopup: states the scripted pads cannot click to
     void go(Screen s);              // W4M menu change: current items fly out, then s slides in
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
 
@@ -94,7 +95,6 @@ private:
     Barracks barracks;               // the saved teams (teams.txt), loaded by loadSetup
     Lobby lobby;                     // the match being set up (SetupTeams / SetupMap / SetupRules): local, or a view of net->lobby
     std::vector<GameConfig::Team> myTeams;  // network: this console's teams, with their local pads; sent as TEAMS
-    std::vector<GameConfig::Team> netProfile;  // myTeams as saved in setup.txt, restored in each new room
     bool teamsDirty = false;         // myTeams changed, not sent yet
     float teamsSent = 0;
     bool room() const { return online && net && net->roomId; }
@@ -102,19 +102,58 @@ private:
     void toNet();                    // lobby -> myTeams / net->lobby (host)
     TeamCursors cursors;             // SetupTeams: one token per pad
     Vector2 tokenAt[4] = {};         // where each token is drawn (it glides to its slot)
-    int panelPad = -1, panelSlot = 0, panelRow = 0;  // SetupTeams: the pad editing a player's name / voice, its slot and row
-    int rulesRow = 0, editPad = 0;   // SetupRules row; the pad that is typing a team name
+    int rulesRow = 0, editPad = 0;   // SetupRules row; the pad that is typing
     RenderTexture2D wormRt = {};     // the focused team's worm preview
     bool live = true;                // this frame takes input (the menu is not flying out, no text entry)
     PadIn padIn(int p);        // pad p's presses this frame (a scripted pad replaces them)
+    // W4M popups (docs/w4m/frontend.md "Saved teams"): one at a time, modal; the Teams screen's belong to a pad, the others to any pad
+    struct Pop {
+        enum Kind { None, Teams, Ask, Cpu, Name, Slot, Confirm, Pick } kind = None;
+        enum Use { Insert, Mission, Online, Edit, Delete, Create, Soundbank, Head, Eyes, Face, Hands, Weapon, Flag, Grave, Quit, NoField } use = Insert;
+        int pad = -1, row = 0, slot = 0, arg = 0, skill = 0;
+        std::vector<int> ids;            // Teams: barracks indexes, -1 the Create Team row
+        std::vector<std::string> vals;   // Pick: the ids of its rows
+        std::string name, undo;          // Name: what is typed; Pick: the value to restore on B
+        bool typing = false, err = false;
+        float t0 = 0;
+    } pop;
+    struct Editor {  // WXFE.TeamOptions: the working copy of a saved team
+        int index = -1, page = 0, row = 0, placeSlot = -1, placePad = 0;
+        SavedTeam t;
+        Screen ret = MyWorms;
+        Pop::Use after = Pop::Edit;      // after a create: Insert places the team, Mission / Online reopen their list
+        bool changed = false;
+        std::vector<std::string> unlocks;
+    } ed;
+    Action pending = None;
+    std::string onlineTeam;          // the saved team this console brings to a room
     void teamSlot(Rectangle d, int k, float t);
+    void openTeams(Pop::Use use, int pad, int slot, int arg = 0);
+    int reopen = -1, reopenArg = 0;  // a Pop::Use whose list opens again when the editor's screen change is done (after Create Team)
+    void setPop(Pop p);
+    void closePop();
+    void popInput(PadIn in, float t);
+    void popDraw(float t);
+    void placeTeam(int slot, int pad, int index);
+    void releaseSlot(int s);
+    void startCreate(Pop::Use use);
+    void openEditor(int index, Screen ret, int placeSlot, int placePad, Pop::Use after);
+    void editor(PadIn in, float t);
+    void leaveEditor(bool accepted);
+    void pickList(Pop::Use use);
+    std::string *fieldRef(Pop::Use u);
+    std::string getField(Pop::Use u);
+    void setField(Pop::Use u, const std::string &v);
+    std::vector<std::string> fieldValues(Pop::Use u);
+    std::string fieldLabel(Pop::Use u, const std::string &id) const;
+    bool placed(const std::string &name) const;
     bool setupTeams(bool plus, float t);  // true: leave the room
     void setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps);
     bool setupRules(int dx, int dy, bool ok, bool back, bool plus);  // true: START
-    void wormPreview(int team, float t);
+    void wormPreview(const GameConfig::Team &tm, float t, float phase, const char *clip = "Base", float ct = 0);
+    void loadTeams();
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;
-    void saveNetTeams();  // myTeams -> netProfile and setup.txt
     bool edit(std::string &s, const char *hint);  // true when s changed (Switch: swkbd, desktop: starts inline entry)
     // Wormpot slot machine (3 reels) and Weapon Factory (custom_weapons.json, sent to the room in Start)
     int reel = 0, spinTo[3] = {}, facSel = 0, facRow = 0;

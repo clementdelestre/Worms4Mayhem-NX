@@ -16,12 +16,13 @@ std::vector<WeaponDef> WEAPONS = {
     {"Grenade", Kind::Shell, 3, 45, 22, 3, 0.45f, 0, 0, -1, 0, 1, false},
 };
 
-static size_t baseWeapons = WEAPONS.size();  // loaded table; start() appends GameConfig::custom after it
+static size_t baseWeapons = WEAPONS.size();  // loaded table; start() appends the Weapon Factory slot after it
 static const char *KINDS[] = {"shell", "sheep", "airstrike", "donkey", "shotgun", "rope", "jetpack", "teleport", "supersheep", "oldwoman",
                               "melee", "homing", "mine", "scouser", "sentry", "abduction", "flood", "parachute", "skipgo", "surrender", "changeworm", "armour",
                               "girder", "binoculars", "bubble", "icarus", "doubledamage", "cratespy"};
 
 // Minimal JSON: one array of flat objects with string/number/bool values.
+static const WeaponDef JSON_DEFAULT = {"?", Kind::Shell, 2, 30, 20, 0, 0, 1.5f, 15, -1, 0, 1, false};  // a weapons JSON entry before its keys
 static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
@@ -46,7 +47,7 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
     list.clear();
     if (!eat('[')) return false;
     while (eat('{')) {
-        WeaponDef w = {"?", Kind::Shell, 2, 30, 20, 0, 0, 1.5f, 15, -1, 0, 1, false};
+        WeaponDef w = JSON_DEFAULT;
         const struct { const char *k; float *v; } floats[] = {{"radius", &w.radius}, {"damage", &w.damage}, {"speed", &w.speed}, {"fuse", &w.fuse},
             {"bounce", &w.bounce}, {"cluster_radius", &w.cradius}, {"cluster_damage", &w.cdamage}, {"poison", &w.poison},
             {"reach", &w.blast[0]}, {"push", &w.blast[1]}, {"push_reach", &w.blast[2]}, {"push_depth", &w.blast[3]},
@@ -95,6 +96,15 @@ static bool parseWeapons(const char *path, std::vector<WeaponDef> &list) {
         if (!eat(',')) break;
     }
     return eat(']');
+}
+
+// a Weapon Factory weapon from its editor fields alone (those wire::putWeapon carries), so every peer builds the same one
+static WeaponDef editorFields(const WeaponDef &d) {
+    WeaponDef w = JSON_DEFAULT;
+    w.name = d.name, w.kind = d.kind, w.speed = d.speed, w.fuse = d.fuse, w.bounce = d.bounce, w.poison = d.poison, w.spread = d.spread;
+    memcpy(w.slider, d.slider, sizeof w.slider);
+    w.count = d.count, w.clusters = d.clusters, w.shots = d.shots, w.weight = d.weight, w.wind = d.wind, w.avoid = d.avoid, w.model = d.model, w.icon = d.icon;
+    return w;
 }
 
 bool loadWeapons(const char *path) {
@@ -706,7 +716,12 @@ static const std::pair<const char *, int> SPEC_AMMO[4][7] = {
     {{"Bazooka", -1}, {"Homing Missile", 1}}, {{"Grenade", -1}, {"Cluster Grenade", 3}}};
 static const int SPEC_SETS[7] = {0, 4 | 8, 1 | 2, 1, 2, 4, 8};
 
+void Game::wieldSecret(int team) {
+    if (WEAPONS.size() > baseWeapons && team < (int)secrets.size() && !secrets[team].name.empty()) WEAPONS[baseWeapons] = secrets[team];
+}
+
 bool Game::allowed(int team, int wi) const {
+    if (customWeapon(wi) && (team >= (int)secrets.size() || secrets[team].name.empty())) return false;  // ours: a team without a factory weapon
     if (current < 0 || current >= (int)worms.size() || worms[current].team != team) return true;
     const std::string &n = WEAPONS[wi].name;
     if (artillery() && WEAPONS[wi].kind == Kind::Jetpack) return false;  // AllowJetpack 0
@@ -730,13 +745,17 @@ static float scanTop(const Terrain &t) {
 void Game::start(const GameConfig &c) {
     cfg = c;
     WEAPONS.resize(std::min(WEAPONS.size(), baseWeapons));
-    WEAPONS.insert(WEAPONS.end(), c.custom.begin(), c.custom.end());
-    for (size_t i = baseWeapons; i < WEAPONS.size(); i++)  // WEAPTWK kWeaponFactoryWeapon PostLaunchDelay 500, kWeaponFactoryHoming 0; not on the wire, so set here
-        WEAPONS[i].postLaunch = WEAPONS[i].kind == Kind::Homing ? 0 : 500, WEAPONS[i].retreat = -1,  // water: Radius 5, SinkDepth 5, FactoryCluster 4 / 5 units
-        WEAPONS[i].size = WEAPONS[i].sink = WEAPONS[i].csink = 0.25f, WEAPONS[i].csize = 0.2f,
-        WEAPONS[i].skim[0] = WEAPONS[i].kind == Kind::Homing ? -1 : 5, WEAPONS[i].skim[1] = -0.4f, WEAPONS[i].skim[2] = 0.45f, WEAPONS[i].skim[3] = -0.3f,
+    secrets.assign(c.teams, WeaponDef{});
+    for (int t = 0; t < c.teams && t < (int)c.teamSetup.size(); t++) {
+        if (!c.teamSetup[t].secret) continue;
+        WeaponDef &w = secrets[t] = editorFields(*c.teamSetup[t].secret);
+        // WEAPTWK kWeaponFactoryWeapon PostLaunchDelay 500, kWeaponFactoryHoming 0; water: Radius 5, SinkDepth 5, FactoryCluster 4 / 5 units
+        w.postLaunch = w.kind == Kind::Homing ? 0 : 500, w.retreat = -1, w.size = w.sink = w.csink = 0.25f, w.csize = 0.2f;
+        w.skim[0] = w.kind == Kind::Homing ? -1 : 5, w.skim[1] = -0.4f, w.skim[2] = 0.45f, w.skim[3] = -0.3f;
         // 0x5995dd: cone 0.28, speeds k/7 .. k/2 units/ms, k = 0.5 ClusterSpread + 0.3
-        factoryPayload(WEAPONS[i]), WEAPONS[i].ccone = 0.28f, WEAPONS[i].cspeed[0] = (0.5f * WEAPONS[i].spread + 0.3f) / 7 * 50, WEAPONS[i].cspeed[1] = (0.5f * WEAPONS[i].spread + 0.3f) / 2 * 50;
+        factoryPayload(w), w.ccone = 0.28f, w.cspeed[0] = (0.5f * w.spread + 0.3f) / 7 * 50, w.cspeed[1] = (0.5f * w.spread + 0.3f) / 2 * 50;
+        if (WEAPONS.size() == baseWeapons) WEAPONS.push_back(w);  // one inventory slot (stdvs WeaponFactoryWeapon), each team firing its own
+    }
     // Wormpot modes that are existing rules or scheme values: set them on our copy, which the checksum covers
     pot = wormpotModes(c.wormpot);
     if (wp(WP_LOW_GRAVITY)) cfg.rules |= RULE_LOW_GRAVITY;
@@ -796,12 +815,13 @@ void Game::start(const GameConfig &c) {
 
     ammo.assign(teams, std::vector<int>(WEAPONS.size(), 0));
     const int set = cfg.scheme.weapons;
-    for (auto &a : ammo)
+    for (int t = 0; t < teams; t++)
         for (size_t i = 0; i < WEAPONS.size(); i++) {
-            Kind k = WEAPONS[i].kind;
+            const WeaponDef &d = customWeapon((int)i) ? secrets[t] : WEAPONS[i];
+            Kind k = d.kind;
             bool keep = set == Scheme::SET_DEFAULT || k == Kind::SkipGo || k == Kind::Surrender ||
                         (set == Scheme::SET_BNG && (k == Kind::Shell || k == Kind::Homing));
-            a[i] = set == Scheme::SET_UNLIMITED ? -1 : keep ? WEAPONS[i].count : 0;
+            ammo[t][i] = d.name.empty() ? 0 : set == Scheme::SET_UNLIMITED ? -1 : keep ? d.count : 0;
         }
     superWeapon.assign(teams, 0);  // SetupModes runs before the Lua's inventory changes
     for (int t = 0; t < teams && wp(WP_SECRET_WEAPON); t++) {  // 0x5d65c0: rand() % 30 until the team holds it, if it holds any kWeapon
@@ -899,6 +919,7 @@ void Game::beginTurn(int last, bool sameTeam) {
         int slot = (nextWorm[t] + k) % n, c = teamFirst[t] + slot;
         if (!worms[c].alive || !worms[c].turns) continue;
         current = c;
+        wieldSecret(t);
         nextWorm[t] = (slot + 1) % n;
         phase = Phase::Aim;
         timer = std::max(1, (int)sc.turnTime) * 60;

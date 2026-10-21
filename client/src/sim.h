@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -91,12 +92,12 @@ inline float launchSpeed(const WeaponDef &d, float power) { return d.base >= 0 ?
 inline bool dropped(const WeaponDef &d) { return d.kind == Kind::Shell && d.fuse > 0 && d.speed < 5; }
 // W4M WeaponSelected 0x565d30: with rope, jetpack or parachute out, only Dynamite, Landmine and Sheep (payload case 0) keep it
 inline bool toolDrop(const WeaponDef &d) { return dropped(d) || d.kind == Kind::Mine || d.kind == Kind::Sheep; }
-extern std::vector<WeaponDef> WEAPONS;  // built-in fallback until loadWeapons() succeeds, then + GameConfig::custom
+extern std::vector<WeaponDef> WEAPONS;  // built-in fallback until loadWeapons() succeeds, then + the Weapon Factory slot (Game::start)
 extern const WeaponDef NO_WEAPON;  // Kind::None
 inline const WeaponDef &weaponDef(int k) { return k < 0 ? NO_WEAPON : WEAPONS[k]; }  // -1: the empty hand
 bool loadWeapons(const char *path);
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out);  // same JSON as weapons.json
-bool customWeapon(int i);  // a Weapon Factory weapon (appended after the loaded table at start())
+bool customWeapon(int i);  // the Weapon Factory slot (appended after the loaded table at start())
 bool saveCustomWeapons(const char *path, const std::vector<WeaponDef> &list);
 void factoryPayload(WeaponDef &w);  // W4M 0x5983f0: sliders -> crater, damage, impulse and DetonationFx of the payload and its clusters
 
@@ -303,6 +304,7 @@ struct GameConfig {
         uint8_t worms = 0;                       // NumOfWorms 1..6, 0 = wormsPerTeam
         int8_t alliance = -1;                    // AlliedGroup 0..3, -1 = the lowest group no earlier team holds (AddTeam 0x737633)
         int8_t handicap = 0;                     // -1 / 0 / +1: WormHealth + Handicap x step (lib_SetupMultiplayerTeam)
+        std::optional<WeaponDef> secret;         // Tn_CustomWeapon: the team's Weapon Factory weapon (AddTeam 0x73f311)
         uint8_t pad = 0;
     };
     std::vector<Team> teamSetup;  // per team; may be shorter than teams (defaults apply)
@@ -310,7 +312,6 @@ struct GameConfig {
     int alliance(int t) const;    // team t's AlliedGroup, -1 resolved
     Scheme scheme;
     uint32_t wormpot = 0;            // Wormpot reels: mode id per byte (wormpotReel)
-    std::vector<WeaponDef> custom;   // host's Weapon Factory weapons, appended to the loaded table at start()
     const struct MissionSpec *mission = nullptr;  // single-player mission (mission.h), owned by the caller
     int8_t allyToStart = -1;  // W4M AllyToStart: the first alliance to play; -1 = drawn from the seed (SetUpStartGame 0x4e8580)
 };
@@ -439,6 +440,9 @@ struct Game {
     std::vector<int> nextWorm;
     std::vector<std::vector<int>> ammo;  // [team][weapon]
     std::vector<int> picked;             // per team: weapon in hand when its last turn ended (the AI's PreferVariety)
+    // per team: its Weapon Factory weapon (factoryPayload applied), "" none; the one WEAPONS slot holds the playing team's (0x597ec0)
+    std::vector<WeaponDef> secrets;
+    void wieldSecret(int team);
     int teams = 2, current = 0, weapon = 0, winner = -1, timer = 0;
     std::vector<int> teamFirst;  // worms are team-major: team t's are teamFirst[t] .. teamFirst[t + 1] - 1
     int teamSize(int t) const { return teamFirst[t + 1] - teamFirst[t]; }

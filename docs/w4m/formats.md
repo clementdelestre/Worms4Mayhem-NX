@@ -172,13 +172,13 @@ Empty (178 B header only): 01, 35, 51-56, 62-67, 158, 167-171, 243, 249-251, 287
 | 172-248 | Hat.<Name> (1 desc + 1 img) e.g. Hat.Afro 172, Baseball 182, Crown 201, Pigtails 212, AlienBreed 240 | w4m-models comment | D |
 | 252-286 | Glasses.* (e.g. Monocle 258, SherlockPipe 284) | strings | D (bounds A) |
 | 288-311 | Mustache.* (Afro 288, Small.Brown 303) | strings | D (bounds A) |
-| 315-352 | Gloves.* skinned on 34-bone worm skeleton (XSkin 1-2) | docs, strings | D |
+| 315-352 | Gloves.* skinned on 34-bone worm skeleton (XSkin 1-2): XSkinShapes `hand_leftShape_shaderl` / `hand_rightShape_shaderr` (frontend.md "Gloves on the worm") | docs, strings, w4m-models | D |
 | 354-374 | Grave.* (Arabian 354 ... DLC1.Army 370) with clip libs | strings, w4m-models | D |
 | 376-407 | Factory.* weapon-factory parts (BlasterGunBarrel, RayGunButt...) | strings | D |
 | 409-470 | Factory.Proj.* projectiles (Ray, Classic, Tank, 8ball ... DLC1.Payload1-5 466-470) | strings | D (bounds A) |
 | 472-473 | HUD.HealthBar/HealthIcon (472), 473 same size | w4m-ui (472) | D/A |
 | 474 | W4.Worm (34 bones, 329 clips, 3 XSkin, 18 img), Nav icons | docs | D |
-Factory.*/Gloves.*/Glasses/Mustache/Grave(partly): **not imported by any repo tool**.
+Factory.*: **not imported by any repo tool**.
 
 ### Gaps (not handled anywhere in repo)
 EFMV/*/LIP.txt, Audio/EFMV/*.lsd, FMV/*.wmv, Frontend/Gallery, *.csh, HUDTWK/LVLSETUP/DEFSAVE/STATS/WORMATTACHMENTS, EFMV_* containers in level XOMs, Factory/Glasses/Mustache/Gloves bundles. Documented but not imported: WormsX.fev (§12, `fev.py`), AITWK (§18), EFMV/WORMACTING (§19).

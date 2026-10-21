@@ -109,9 +109,13 @@ async fn full_match() {
     assert_eq!(R(&st[4..]).u32(), Some(idb));
 }
 
-fn teams(list: &[(&str, u8)]) -> W {
+// a team with `weapon` carries a Weapon Factory weapon (PROTOCOL.md Weapon)
+fn teams(list: &[(&str, u8, bool)]) -> W {
     let mut w = W::new(TEAMS).u8(list.len() as u8);
-    for (n, cpu) in list { w = (0..6).fold(w.str(n).u8(*cpu), |w, _| w.str("")).u8(0).u8(1).str("Worm").u8(1).u8(0xff).u8(0); }
+    for (n, cpu, weapon) in list {
+        w = (0..6).fold(w.str(n).u8(*cpu), |w, _| w.str("")).u8(0).u8(1).str("Worm").u8(1).u8(0xff).u8(0).u8(*weapon as u8);
+        if *weapon { w = (0..13 + 4).fold(w.str("Lobber").u8(0), |w, _| w.u32(0)).u8(1).str("holy").str(""); }
+    }
     w
 }
 
@@ -134,13 +138,13 @@ async fn lobby_flow() {
     a.expect(ROOM_STATE).await;
 
     // TEAMS reach the other console only, with the sender's id; CPU teams are host-only
-    b.send(teams(&[("Bob1", 0), ("Bob2", 0)])).await;
+    b.send(teams(&[("Bob1", 0, true), ("Bob2", 0, false)])).await;
     let t = a.expect(TEAMS).await;
     assert_eq!(R(&t).u32(), Some(idb));
     assert_eq!(t[4], 2);
-    b.send(teams(&[("Cpu", 2)])).await;
+    b.send(teams(&[("Bob3", 0, true), ("Cpu", 2, false)])).await;
     b.expect(ERROR).await;
-    a.send(teams(&[("Al", 0), ("Cpu", 2)])).await;
+    a.send(teams(&[("Al", 0, false), ("Cpu", 2, false)])).await;
     assert_eq!(R(&b.expect(TEAMS).await).u32(), Some(ida));
 
     // LOBBY: host only, relayed to the others, kept for late joiners

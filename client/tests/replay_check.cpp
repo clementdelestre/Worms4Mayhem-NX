@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <map>
 
 static uint32_t voxels(const Game &g) {
@@ -30,6 +31,11 @@ int main() {
         rec.cfg = GameConfig{77, 2, 3, map};
         rec.cfg.teamSetup = {{"CPU", 2}, {"CPU", 2}};
         if (*map) rec.cfg.wormpot = WP_DOUBLE_DAMAGE;
+        if (!strcmp(map, "arabian")) {  // each team its own Weapon Factory weapon, through the W4R6 team records
+            WeaponDef a = {"Lobber A", Kind::Shell, 4, 70, 25, 2, 0.5f, 1.5f, 20, 2, 3, 1, false, 4}, b = a;
+            b.name = "Strike B", b.kind = Kind::Airstrike, b.clusters = 3;
+            rec.cfg.teamSetup[0].secret = a, rec.cfg.teamSetup[1].secret = b;
+        }
         Game g;
         g.start(rec.cfg);
         Ai ai;
@@ -82,6 +88,9 @@ int main() {
         bool loaded = back.load(path);
         assert(saved && loaded);
         assert(back.inputs.size() == rec.inputs.size() && back.checksum == rec.checksum && back.cfg.map == rec.cfg.map && back.cfg.wormpot == rec.cfg.wormpot);
+        for (size_t t = 0; t < rec.cfg.teamSetup.size(); t++)
+            assert(back.cfg.teamSetup[t].secret.has_value() == rec.cfg.teamSetup[t].secret.has_value() &&
+                   (!rec.cfg.teamSetup[t].secret || back.cfg.teamSetup[t].secret->name == rec.cfg.teamSetup[t].secret->name));
         Game h;
         h.start(back.cfg);
         auto t0 = std::chrono::steady_clock::now();

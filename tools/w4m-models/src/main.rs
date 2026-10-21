@@ -498,9 +498,19 @@ fn decompose(m: &M4) -> ([f32; 3], [f32; 4], [f32; 3]) {
 }
 
 struct Group { path: String, xf: usize, parent: Option<usize> }
+// XShape / XSkinShape Name, from p just past Geometry: SortKey, Parameters, Pre / PostRenderFunc, Bounds + BoundMode
+fn shape_name(x: &Xom, d: &[u8], mut p: usize) -> String {
+    p += 4;
+    skip_set(d, &mut p);
+    vi(d, &mut p);
+    vi(d, &mut p);
+    p += 20;
+    x.str(vi(d, &mut p))
+}
 // blend: the shader's XBlendModeGL (SourceFactor, DestFactor: W4M BlendFactor enum), None = opaque
 // mat: its XMaterial Specular rgb, Emissive rgb, Fresnel rgb, FresnelPower, Power (FixedFunction.cg materialMatrix, 0x792594)
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)>, mat: [f32; 11], sel: Option<usize> }
+// hand: a W4M hand shape (worm boggyhand_*, glove hand_*), whose geometry a glove swaps in (0x5a33a0)
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)>, mat: [f32; 11], sel: Option<usize>, hand: bool }
 #[derive(Default)]
 // alts: per XChildSelector ($animTexN), its children's XImages in child order (a clip keys the child index + 0.5)
 struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize, alts: Vec<(String, Vec<usize>)> }
@@ -562,20 +572,20 @@ impl Scene {
             "XShape" => {
                 p += 4;
                 let (sh, geo) = (vi(d, &mut p), vi(d, &mut p));
-                self.part(x, sh, geo, &[], g);
+                self.part(x, sh, geo, &[], g, &shape_name(x, d, p));
             }
             "XSkinShape" => {
                 let bones = refs(&mut p);
                 p += 4;
                 let (sh, geo) = (vi(d, &mut p), vi(d, &mut p));
                 for &b in &bones { if !self.bones.iter().any(|x| x.0 == b) { self.bones.push((b, g.unwrap_or(0))); } }
-                self.part(x, sh, geo, &bones, g);
+                self.part(x, sh, geo, &bones, g, &shape_name(x, d, p));
             }
             _ => {}
         }
     }
 
-    fn part(&mut self, x: &Xom, shader: usize, geo: usize, bones: &[usize], g: Option<usize>) {
+    fn part(&mut self, x: &Xom, shader: usize, geo: usize, bones: &[usize], g: Option<usize>, name: &str) {
         if x.t(geo) != "XIndexedTriangleSet" { return; }
         let d = x.d(geo);
         let mut p = 3;
@@ -634,7 +644,7 @@ impl Scene {
             mat[9] = f32le(d, 103);
             mat[10] = f32le(d, 99);
         }
-        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend, mat, sel: None });
+        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend, mat, sel: None, hand: name.starts_with("boggyhand_") || name.starts_with("hand_") });
     }
 
     // Local matrix of every group, with the clip's curves layered on Base (offsets for keys Base also has).
@@ -795,7 +805,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     }
     let lib = if s.lib != 0 { clips(x.d(s.lib), &x.s, &mut 0) } else { vec![] };
     let base = lib.iter().find(|c| c.name == "Base");
-    let animated = s.parts.iter().any(|p| !p.skin.is_empty()) && !lib.is_empty();
+    let animated = s.parts.iter().any(|p| !p.skin.is_empty()) && (!lib.is_empty() || wanted.contains(&"Rest"));
     // "A+B": clip A layered over B (channels A lacks come from B, then Base); "A@s": only A's first s seconds;
     // "Rest": one frame of Base, else of the stored transforms (a held mesh with no slot clip playing)
     let chosen: Vec<(&str, Vec<&Clip>, f32)> = if !animated { vec![] } else {
@@ -874,7 +884,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
     // static parts sharing a texture are merged (one draw call each), skinned ones kept as they are
-    struct Prim { img: usize, blend: Option<(u32, u32)>, mat: [f32; 11], anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize> }
+    struct Prim { img: usize, blend: Option<(u32, u32)>, mat: [f32; 11], anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize>, hand: bool }
     let mut out: Vec<Prim> = Vec::new();
     for pt in &s.parts {
         let (pos, nrm): (Vec<f32>, Vec<f32>) = if animated {
@@ -901,7 +911,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             o.uv.extend(uv);
             o.rgba.extend(rgba);
         } else {
-            out.push(Prim { img: pt.img, blend: pt.blend, mat: pt.mat, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel });
+            out.push(Prim { img: pt.img, blend: pt.blend, mat: pt.mat, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel, hand: pt.hand && animated });
         }
     }
     let mut prims = Vec::new();
@@ -947,6 +957,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let Some(pi) = out.iter().position(|o| o.sel == Some(si)) else { continue };
         sel += &format!("S {pi}{};", imgs.iter().map(|im| format!(" {}", images.iter().position(|i| i == im).unwrap())).collect::<String>());
     }
+    for (pi, _) in out.iter().enumerate().filter(|(_, o)| o.hand) { sel += &format!("H {pi};"); }  // "H <primitive>": a hand shape
     if !sel.is_empty() && s.lib != 0 {
         for c in clips(x.d(s.lib), &x.s, &mut 0) {
             for (si, (name, _)) in s.alts.iter().enumerate() {
@@ -1150,7 +1161,7 @@ fn main() {
     // team outfits and graves, listed by tools/w4m-re/setuplists.py: raw units (attachments at the worm's locators), graves 20 units per metre about their origin
     for l in fs::read_to_string(out.join("../attachments.txt")).unwrap_or_default().lines() {
         let f: Vec<&str> = l.split('\t').collect();
-        if f.len() > 3 && f[0] != "0" && f[0] != "4" { todo.push((f[2].to_string(), f[3].to_string(), 0.0, false, &[][..])); }  // hats: MODELS
+        if f.len() > 3 && f[0] != "0" && f[0] != "4" { todo.push((f[2].to_string(), f[3].to_string(), 0.0, false, if f[0] == "1" { &["Rest"][..] } else { &[][..] })); }  // hats: MODELS; gloves skinned, on the worm's bones
     }
     for l in fs::read_to_string(out.join("../graves.txt")).unwrap_or_default().lines() {
         let f: Vec<&str> = l.split('\t').collect();

@@ -7,7 +7,7 @@
 #include <ctime>
 #include <utility>
 
-// .w4r: "W4R5", config (Start message layout minus owners), u32 final checksum, u32 ticks, 6 bytes per tick (W4R2: 5, no zoom; W4R1: 4, no flags).
+// .w4r: "W4R6", config (Start message layout minus owners), u32 final checksum, u32 ticks, 6 bytes per tick (W4R2: 5, no zoom; W4R1: 4, no flags).
 // W4R1..4 teams: str name, u8 cpu, u8 voice, u8 hat, played as then: team order from team 0, each team its own alliance.
 namespace {
 struct Out {
@@ -30,21 +30,13 @@ struct In {
 
 bool Recording::save(const std::string &path) const {
     Out o;
-    o.b = "W4R5";
+    o.b = "W4R6";
     o.u32(cfg.seed), o.u8(cfg.teams), o.u8(cfg.wormsPerTeam), o.str(cfg.map), o.u32(cfg.rules);
     o.u8((uint8_t)cfg.teamSetup.size());
     for (const auto &t : cfg.teamSetup) { wire::W w(0); putTeam(w, t), o.b.append(w.b, 3, std::string::npos); }
     o.u8(sizeof(Scheme));
     o.b.append((const char *)&cfg.scheme, sizeof(Scheme));
-    o.u32(cfg.wormpot), o.u8((uint8_t)std::min<size_t>(cfg.custom.size(), 255));
-    for (size_t i = 0; i < cfg.custom.size() && i < 255; i++) {
-        const WeaponDef &d = cfg.custom[i];
-        o.str(d.name), o.u8((uint8_t)d.kind);
-        for (float f : {d.speed, d.fuse, d.bounce, d.poison, d.spread}) o.f32(f);
-        for (auto &c : d.slider) for (float f : c) o.f32(f);
-        for (int v : {d.count, d.clusters, d.shots, d.weight}) o.u32((uint32_t)v);
-        o.u8(d.wind | d.avoid << 1), o.str(d.model), o.str(d.icon);
-    }
+    o.u32(cfg.wormpot);
     o.u32(checksum), o.u32((uint32_t)inputs.size());
     for (const Input &i : inputs) o.u8(i.turn), o.u8(i.walk), o.u8(i.aim), o.u8(i.buttons), o.u8(i.flags), o.u8(i.zoom);
     FILE *f = fopen(path.c_str(), "wb");
@@ -60,7 +52,7 @@ bool Recording::load(const std::string &path) {
     char buf[65536];
     for (size_t n; (n = fread(buf, 1, sizeof buf, f));) b.append(buf, n);
     fclose(f);
-    int ver = b.size() >= 4 && !b.compare(0, 3, "W4R") ? b[3] - '0' : 0, per = ver >= 3 && ver <= 5 ? 6 : ver == 2 ? 5 : ver == 1 ? 4 : 0;
+    int ver = b.size() >= 4 && !b.compare(0, 3, "W4R") ? b[3] - '0' : 0, per = ver >= 3 && ver <= 6 ? 6 : ver == 2 ? 5 : ver == 1 ? 4 : 0;
     if (!per) return false;
     In r{b, 4};
     cfg = GameConfig{};
@@ -69,7 +61,7 @@ bool Recording::load(const std::string &path) {
     for (auto &t : cfg.teamSetup)
         if (ver >= 5) {
             wire::R w{(const uint8_t *)b.data() + r.p, (const uint8_t *)b.data() + b.size()};
-            t = wire::getTeam(w), r.ok &= w.ok, r.p = w.p - (const uint8_t *)b.data();
+            t = wire::getTeam(w, ver >= 6), r.ok &= w.ok, r.p = w.p - (const uint8_t *)b.data();
         } else t.name = r.str(), t.cpu = r.u8(), r.u8(), r.u8();
     if (ver < 5) cfg.allyToStart = 0;
     for (size_t i = 0, n = r.u8(); i < n; i++) {  // a newer, longer Scheme: extra bytes ignored
@@ -77,19 +69,7 @@ bool Recording::load(const std::string &path) {
         if (i < sizeof(Scheme)) ((uint8_t *)&cfg.scheme)[i] = v;
     }
     cfg.wormpot = r.u32();
-    for (int i = 0, n = r.u8(); i < n && r.ok; i++) {
-        WeaponDef w{};
-        w.name = r.str(), w.kind = (Kind)std::min<int>(r.u8(), (int)Kind::ChangeWorm);
-        if (ver < 4) for (float *f : {&w.radius, &w.damage, &w.speed, &w.fuse, &w.bounce, &w.cradius, &w.cdamage, &w.poison}) *f = r.f32();  // sliders: factoryPayload()
-        else {
-            for (float *f : {&w.speed, &w.fuse, &w.bounce, &w.poison, &w.spread}) *f = r.f32();
-            for (auto &c : w.slider) for (float &f : c) f = r.f32();
-        }
-        for (int *v : {&w.count, &w.clusters, &w.shots, &w.weight}) *v = (int32_t)r.u32();
-        { uint8_t fl = r.u8(); w.wind = fl & 1, w.avoid = fl & 2; }
-        w.model = r.str(), w.icon = r.str();
-        cfg.custom.push_back(w);
-    }
+    if (ver < 6 && r.u8()) return false;  // before W4R6 the host's Weapon Factory weapons went to every team: not replayable
     checksum = r.u32();
     uint32_t n = r.u32();
     if (!r.ok || cfg.teams < 2 || cfg.teams > 4 || (b.size() - r.p) / per < n) return false;

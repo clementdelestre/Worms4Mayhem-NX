@@ -2,6 +2,7 @@
 // W4M saved teams, DATA.TeamBarracks (docs/w4m/frontend.md "Saved teams", docs/match-setup.md "Saved teams"): teams.txt beside
 // setup.txt, seeded from W4M's defaults; and the team editor's W4M lists (tools/w4m-re/setuplists.py, assets/*.txt).
 #include "sim.h"
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -12,8 +13,9 @@ struct SavedTeam {  // W4M StoredTeamData
     int grave = 0;  // graves.txt row
     std::string flag, speech = "voclassi", weapon;  // weapon: CustomWeapon, the team's Weapon Factory weapon
     std::string hat, gloves, glasses, tash;          // WXFE.A.* ids, "" none
-    // the team in a match slot: worms 1..6 (0 = the match default), alliance 0..3 (-1 = AddTeam's), handicap -1..1
-    GameConfig::Team slot(int count = 0, int alliance = -1, int handicap = 0) const;
+    // the team in a match slot: worms 1..6 (0 = the match default), alliance 0..3 (-1 = AddTeam's), handicap -1..1; its weapon
+    // looked up by name in the player's Weapon Factory list (AddTeam 0x73f311 copies the team's SecretWeapon into the slot)
+    GameConfig::Team slot(int count = 0, int alliance = -1, int handicap = 0, const std::vector<WeaponDef> &factory = {}) const;
 };
 
 struct Barracks {
@@ -28,13 +30,18 @@ struct Barracks {
     // (Flag.Terminator for a CPU), voclassi; -1 when full, the name is empty or taken
     int create(const std::string &name, int skill, const std::string &randomNames, const std::string &flag, uint32_t seed);
     bool canDelete(int i) const;  // WXDeleteTeam 0x4c4790: never the last human team
+    // The rows of W4M's team lists (indexes): Insert (WXAllTeamAvailable 0x4bf9f0: not already in a slot, CPU teams only where cpuOk), Human (WXStoryTeam 0x4c3590 / WXOnlineTeam 0x4c4110:
+    // Skill 0), Edit (every team), Delete (never the last human team); the Create Team row follows them while canCreate()
+    enum class List { Insert, Human, Edit, Delete };
+    std::vector<int> list(List kind, const std::function<bool(const std::string &)> &placed = {}, bool cpuOk = true) const;
+    bool canCreate() const { return teams.size() < (size_t)MAX; }
     bool remove(int i);
     static std::string legacyHat(int hat);  // our older setup.txt hat number (1 + rank in the sorted hat files) -> its id
 };
 
 // The editor's lists, W4M order. Item id: attachment / flag / speech id; model: assets/models path (attachments, graves) or ui png (flags)
 struct Catalog {
-    struct Item { std::string id, model, text; int type = 0; };
+    struct Item { std::string id, model, text, lock; int type = 0, state = 2; };  // lock / state: an attachment's Lock.* key and its default State (0 Hidden, 1 Purchasable, 2 Unlocked)
     std::vector<Item> attachments;  // WORMATTACHMENTS: type 0 hat, 1 gloves, 2 glasses, 3 tash, 4 the Terminator hat
     std::vector<Item> graves;       // SelectGraveList, by GraveIndex (id = its Grave.* mesh)
     std::vector<Item> flags;        // SelectFlagList
@@ -44,5 +51,7 @@ struct Catalog {
     const Item *attachment(const std::string &id) const;  // null if none
     const Item *flag(const std::string &id) const;
     const char *drawName(const std::string &id) const;  // the Models name of an attachment, null for "" or unknown
+    // the attachments of a type the team editor offers ("" none first): State Unlocked by default, or its lock in `unlocks` (the save's Lock.* keys); a team's current one stays listed
+    std::vector<std::string> usable(int type, const std::vector<std::string> &unlocks, const std::string &current) const;
 };
 const Catalog &catalog();  // loaded from assets on first use

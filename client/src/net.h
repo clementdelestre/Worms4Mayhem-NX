@@ -44,7 +44,7 @@ struct Net {
     void pushLobby();      // host: broadcast `lobby`
     void setReady(bool ready);
     // Host: START from the lobby (owners[team] = console of each team), seed and Weapon Factory weapons from the caller.
-    void startMatch(uint32_t seed, const std::vector<WeaponDef> &custom = {});
+    void startMatch(uint32_t seed);
 
     bool connect(const char *host, int port, const char *name);
     void close();

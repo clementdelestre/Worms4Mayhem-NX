@@ -70,12 +70,19 @@ impl<'a> R<'a> {
     }
 }
 
-/// A team record after its name and cpu (PROTOCOL.md Teams): six ids, grave, the worm names, worms, alliance, handicap.
+/// A team record after its name and cpu (PROTOCOL.md Teams): six ids, grave, the worm names, worms, alliance, handicap, its Weapon.
 fn skip_team(r: &mut R) -> Option<()> {
     for _ in 0..6 { r.str()?; }
     r.u8()?;
     for _ in 0..r.u8()? { r.str()?; }
-    r.take(3).map(|_| ())
+    r.take(3)?;
+    if r.u8()? != 0 {
+        r.str()?;
+        r.take(1 + 13 * 4 + 4 * 4 + 1)?;  // kind, 13 f32, 4 i32, flags
+        r.str()?;
+        r.str()?;
+    }
+    Some(())
 }
 
 type Tx = UnboundedSender<Vec<u8>>;

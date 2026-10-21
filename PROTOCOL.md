@@ -55,10 +55,10 @@ C = client → server, S = server → client.
 | 0x13 | JoinRoom   | C   | `u32 roomId` |
 | 0x14 | RoomState  | S   | `u32 roomId, u32 hostId, u8 n, n × (u32 playerId, str name, u8 online)` — players in slot order |
 | 0x15 | Leave      | C   | — |
-| 0x16 | Teams      | C/S | C: `u8 n, n × team`; S: `u32 consoleId, u8 n, n × team`; `team` = `str name, u8 cpu, str speech, str hat, str gloves, str glasses, str tash, str flag, u8 grave, u8 k, k × str wormName, u8 worms, i8 alliance, i8 handicap` (W4M NetworkTeamData + the slot settings, docs/match-setup.md "Saved teams": cpu 0 = human, 1..5 = AI level; ids are W4M's, "" = none / default; worms 0 = wormsPerTeam, alliance -1 = the lowest group no earlier team holds, handicap -1..1). The sender's whole team list (several per console, humans and CPU); the relay keeps it per console and forwards it to the others (not back to the sender) |
+| 0x16 | Teams      | C/S | C: `u8 n, n × team`; S: `u32 consoleId, u8 n, n × team`; `team` = `str name, u8 cpu, str speech, str hat, str gloves, str glasses, str tash, str flag, u8 grave, u8 k, k × str wormName, u8 worms, i8 alliance, i8 handicap, u8 s, s × Weapon` (W4M NetworkTeamData + the slot settings, docs/match-setup.md "Saved teams": cpu 0 = human, 1..5 = AI level; ids are W4M's, "" = none / default; worms 0 = wormsPerTeam, alliance -1 = the lowest group no earlier team holds, handicap -1..1; `s` 1: the team's Weapon Factory weapon, W4M Tn_CustomWeapon). The sender's whole team list (several per console, humans and CPU); the relay keeps it per console and forwards it to the others (not back to the sender) |
 | 0x17 | Lobby      | C/S | host → relay → the others: `u8 n, n × (u32 consoleId, u8 teamIdx), str map, u32 rules, u8 k, k × u8 scheme, u32 wormpot, u8 wormsPerTeam, u8 r, r × u32 readyConsoleId`. The n pairs are the room's team slots in order (slot = colour); `teamIdx` indexes that console's Teams list |
 | 0x18 | Ready      | C/S | C: `u8 ready`; S → host only: `u32 consoleId, u8 ready` |
-| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × team, u8 k, k × u8 scheme, u32 wormpot, u8 c, c × Weapon` (server relays the bytes after the owners untouched) |
+| 0x20 | Start      | C/S | `u32 seed, u8 teams, u8 wormsPerTeam, teams × u32 ownerPlayerId, str map, u32 rules, u8 n, n × team, u8 k, k × u8 scheme, u32 wormpot` (server relays the bytes after the owners untouched) |
 | 0x21 | Inputs     | C/S | `u32 firstTick, u8 n, n × Input` |
 | 0x22 | TurnEnd    | C   | `u32 tick, u32 checksum` |
 | 0x23 | Desync     | S   | `u32 tick` |
@@ -83,11 +83,12 @@ C = client → server, S = server → client.
   sudden death type, fall damage, wind, weapon set, water speed, mystery crate share, mine factory on). Fields are only ever appended: a reader keeps defaults for
   bytes it does not get (missing block = default scheme) and ignores extra ones. The block is preceded by its length (`u8 k`, 20 today).
   Weapon delays are not sent: every client derives them in `Game::start` from the preset whose bytes equal the scheme (`SCHEMES`), unless rule 128.
-- **Start wormpot / custom weapons** (optional, after the scheme block; absent = 0 / none): `wormpot` holds the three
-  reels: byte r = reel r's W4M mode id (`WormpotMode` of `sim.h`, 0 or 1 = empty). `Weapon` = `str name, u8 kind` (clamped to `Kind::ChangeWorm` on read), 5 × f32 (speed, fuse, bounce, poison,
+- **Start wormpot** (optional, after the scheme block; absent = 0): `wormpot` holds the three
+  reels: byte r = reel r's W4M mode id (`WormpotMode` of `sim.h`, 0 or 1 = empty).
+- **Weapon** (a team's Weapon Factory weapon, in its `team` record) = `str name, u8 kind` (clamped to `Kind::ChangeWorm` on read), 5 × f32 (speed, fuse, bounce, poison,
   cluster spread), 8 × f32 Weapon Factory sliders (land damage, worm radius, worm damage, blast strength; then the cluster's), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon`
-  (f32 = IEEE-754 bits as u32). These are the host's Weapon Factory weapons: every client appends them to its
-  `weapons.json` table at start, so the table (part of the checksum) is the same everywhere. Fields not on the wire
+  (f32 = IEEE-754 bits as u32). Every client puts them in the one Weapon Factory slot after its `weapons.json` table, the playing
+  team's at each turn start (`Game::wieldSecret`), so the table (part of the checksum) is the same everywhere. Fields not on the wire
   (`post_launch`, `retreat`, `user_fuse`...) are reset by `Game::start` on every peer, crater / damage / blast keys / detonation from the sliders (`factoryPayload`): PostLaunchDelay 500 ms (homing 0),
   retreat = the scheme's (W4M kWeaponFactoryWeapon / kWeaponFactoryHoming, data).
 - **Inputs**: the match is one input stream indexed by tick (tick 0 = first `step` after

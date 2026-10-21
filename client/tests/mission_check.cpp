@@ -341,12 +341,13 @@ int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<MissionSpec> list = listMissions("./romfs/", "./");
     Progress p;
+    p.open("progress_check.txt", "progress_check_team.txt");
     p.record("a", false, 0), p.record("a", true, 900), p.record("a", true, 1200);
     p.unlocks = {"Lock.EasterEgg.3"}, p.storyIntro = true;
-    p.save("progress_check.txt");
+    p.save();
     Progress q;
-    q.load("progress_check.txt");
-    remove("progress_check.txt");
+    q.open("progress_check.txt", "progress_check_team.txt");
+    remove("progress_check.txt"), remove("progress_check_team.txt");
     assert(q.get("a").done && q.get("a").best == 900 && !q.get("b").done && q.unlocks == p.unlocks && q.storyIntro);
     if (list.empty()) return puts("mission_check: no W4M mission imported (assets/missions), nothing to run"), 0;
     const char *only = getenv("W4NX_MISSION");

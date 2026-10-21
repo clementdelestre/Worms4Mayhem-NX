@@ -461,6 +461,12 @@ Crate pickup 0x5c9800 switches on crate type − 0x22 (byte table 0x5c99ac): 44 
 - `MineOn` only keys the `XChildSelector`: lamp off / on every 0.25 s (docs/w4m/formats.md §6 "XChildSelector").
 
 ### Weapon Factory payload (0x5983f0) and editor (0x7409f5, list builders) [disasm + data]
+- **Whose weapon** [disasm 0x599f50 -> 0x597ec0, REA decompile; data: Lua]: the inventory has one `WeaponFactoryWeapon` slot (lib_help
+  lib_SetupDefaultInventoryAndDelays: `Inventory.Alliance.Default` ammo = SchemeData WeaponFactoryWeapon.Ammo, delay = its .Delay). Firing it,
+  WeaponFactoryLogicEntity's start reads the firing worm's WormData team index (+0x127, -1 read as 0) and copies that team's GameInitData
+  CustomWeapon container (team 0..3 at +0x84 / +0xec / +0x144 / +0xcc, then its Weapon +0x14 and Cluster +0x18) into the payload containers
+  before 0x599990 [disasm; the offsets of teams 2 and 3 do not follow the 0x68 slot stride: not explained]. So every team fires its own
+  Weapon Factory weapon (AddTeam's copy of its saved team's SecretWeapon, turn.md "Alliances and turn order") out of the shared slot.
 - **Call** [disasm]: 0x5983f0(payload, container, divider) `cdecl`; 0x599990 calls it for the Weapon container (divider 1 + 2 (n - 1) / 9 when ProjectileLaunchType = 0 Bomber, n = ProjectileNumClusters, else 1; 0x599bc7) and, with clusters, for the Cluster container on a `kWeaponFactoryCluster` payload with divider n (0x599d15).
 - **Sliders -> payload** [disasm 0x5987ca..0x5988e6], d = divider, k = 0.65 (0.35 when the container's launch type is Bomber, 0x598689), template values T (the WEAPTWK payload fields), S = WormPot SuperScale when the team's WormpotSuperWeapon is 0x15 and FE.WP.SecretSuperWeapons is set (0x598670, else 1):
   - LandDamageRadius = T.Land / d x L / 0.65 x S (constant 0.65 at 0x85bb38, not k);

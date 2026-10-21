@@ -149,7 +149,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   when the tool goes (rope off, chute landed, jetpack dry) the secondary comes to hand (W4M 0x565920, disasm). `held()` is the
   secondary if any, else the weapon. Details: `weapons-audit.md` "Jetpack".
 - **Delays** (`Game::delays[team][weapon]`, checksummed): a W4M preset brings its SchemeData `Delay` per weapon (`SCHEMES[].delays`,
-  data; "*" = every Weapon Factory weapon); a custom scheme has none (W4M WXD.DefaultSchemeData, data). A delayed weapon is not
+  data; "*" = the Weapon Factory slot); a custom scheme has none (W4M WXD.DefaultSchemeData, data). A delayed weapon is not
   `usable`; the panel dims it with its turns left (W4M FETXT.HTPSubtopic4) and the AI skips it. They count down at the end of each of the
   team's own turns (disasm: ActivateNextWorm 0x5b59b0 sends GameLogic.DecrementWeaponDelays at 0x5b5a5f, before it writes the new
   CurrentTeamIndex at 0x5b5b7c and not on the first turn; the send 0x6910e4 → 0x68cb82 calls the handler at once; 0x4f4df0 takes 1 off

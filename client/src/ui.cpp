@@ -71,7 +71,6 @@ int presetOf(const Scheme &s) {
     for (size_t i = 0; i < SCHEMES.size(); i++) if (!memcmp(&SCHEMES[i].s, &s, sizeof s)) return (int)i;
     return -1;
 }
-const char *DEFAULT_TEAMS[] = {"Red Rockets", "Blue Bombers", "Green Grubs", "Gold Diggers"};
 const char *WORM_NAMES[] = {"Boggy", "Spadge", "Nobby", "Clagnut", "Thumper", "Wiggles", "Squirm", "Noodle",
                             "Gizmo", "Pickles", "Biscuit", "Rumble", "Sprout", "Dumpling", "Chompy", "Fidget"};
 const int HEALTH_ROW[4] = {2, 1, 4, 3};  // team colour -> bar of fe/team_health.png (grey, blue, red, orange, green)
@@ -348,23 +347,7 @@ int voiceBankOf(const std::string &speech) {
     return -1;
 }
 
-// setup.txt slot line "<kw> <i> <cpu> <hat id|-> <speech|-> <name>"; a number as hat or a bank folder as speech: our older lines
-static bool slotLine(const char *kw, const char *line, int &i, GameConfig::Team &t) {
-    char hat[64] = "", sp[64] = "";
-    int cpu = 0, n = 0;
-    if (sscanf(line, TextFormat("%s %%d %%d %%63s %%63s %%n", kw), &i, &cpu, hat, sp, &n) != 4) return false;
-    t.cpu = (uint8_t)Clamp(cpu, 0, 5);
-    t.hat = !strcmp(hat, "-") ? "" : isdigit((unsigned char)hat[0]) ? Barracks::legacyHat(atoi(hat)) : hat;
-    t.speech = !strcmp(sp, "-") ? "" : strncmp(sp, "vo", 2) ? std::string("vo") + sp : sp;
-    if (line[n]) t.name = line + n;
-    return true;
-}
-
 static std::string wireOf(const GameConfig::Team &t) { wire::W w(0); return putTeam(w, t).b; }
-
-static std::string slotText(const char *kw, int i, const GameConfig::Team &t) {
-    return TextFormat("%s %d %d %s %s %s\n", kw, i, t.cpu, t.hat.empty() ? "-" : t.hat.c_str(), t.speech.empty() ? "-" : t.speech.c_str(), t.name.c_str());
-}
 
 std::string mapTitle(const std::string &m) {
     if (m.empty()) return "Random island";
@@ -1456,7 +1439,7 @@ static Audio::Sfx enterSfx(Frontend::Screen s, Frontend::Screen from) {
 }
 static int bgPage(Frontend::Screen s, bool online) {
     using F = Frontend;
-    return s <= F::Main || s == F::Confirm ? 0 : s == F::Local || s == F::Missions || s >= F::SetupTeams ? 1 : s == F::Network ? 2 : 3;
+    return s <= F::Main || s == F::Confirm ? 0 : s == F::TeamEdit ? 3 : s == F::Local || s == F::Missions || s >= F::SetupTeams ? 1 : s == F::Network ? 2 : 3;
 }
 
 static const float TITLE_OUT = 0.35f + 0.05f * (MAIN_ITEMS - 1);  // the title glide's length: last menu row in
@@ -1542,31 +1525,36 @@ bool Frontend::edit(std::string &s, const char *hint) {
 #endif
 }
 
-// setup.txt: "teams N", "slots MASK", "worms N", "map NAME|-", "rules N", "scheme <Scheme bytes>"... then "team <i> <cpu> <hat|-> <speech|-> <name>", "pad <i> <pad>"
-void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) {
-    loaded = true;
+// teams.txt, seeded from W4M's defaults (and an older setup.txt's teams) when missing
+void Frontend::loadTeams() {
+    if (!barracks.teams.empty()) return;
     barracks.load(DATA_DIR "teams.txt", DATA_DIR "assets/defteams.txt", DATA_DIR "setup.txt");
     if (!FileExists(DATA_DIR "teams.txt")) barracks.save(DATA_DIR "teams.txt");
-    cfg.teamSetup.resize(4);
-    lobby.used = (1u << cfg.teams) - 1;
-    const std::vector<std::string> banks = speechIds();
-    for (int t = 0; t < 4; t++) {  // pad: team t's own pad when it is connected, else the first
-        cfg.teamSetup[t] = {};
-        cfg.teamSetup[t].name = DEFAULT_TEAMS[t], cfg.teamSetup[t].speech = banks.empty() ? "" : banks[t % banks.size()];
-        cfg.teamSetup[t].pad = (uint8_t)(IsGamepadAvailable(t) ? t : 0);
-    }
+}
+
+// The team picked for Story / Challenges, else the first human one; a single-team progress.txt of an older build becomes that first team's file
+std::string Frontend::missionTeamName() {
+    loadTeams();
+    auto first = std::find_if(barracks.teams.begin(), barracks.teams.end(), [](const SavedTeam &t) { return !t.skill; });
+    if (first != barracks.teams.end()) Progress::migrate(DATA_DIR "progress.txt", Progress::teamFile(DATA_DIR, first->name).c_str());
+    if (barracks.find(missionTeam) < 0) missionTeam = first != barracks.teams.end() ? first->name : "";
+    return missionTeam;
+}
+
+// setup.txt: "map NAME|-", "rules N", "reels N", "scheme <Scheme bytes>", then per placed team "slot <k> <pad> <worms> <alliance> <handicap> <team name>" (the teams are teams.txt's)
+void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) {
+    loaded = true;
+    loadTeams();
+    cfg.teamSetup.assign(4, {});
+    lobby.used = 0;
     if (!loadCustomWeapons(DATA_DIR "custom_weapons.json", customs)) customs.clear();
     if (customs.size() > (size_t)MAX_CUSTOM) customs.resize(MAX_CUSTOM);
-    netProfile.clear();
     char *txt = LoadFileText(DATA_DIR "setup.txt");
     if (!txt) return;
     for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) {
         char s[64] = "";
-        int a = 0, b = 0;
-        if (sscanf(line, "teams %d", &a) == 1) cfg.teams = Clamp(a, 2, 4), lobby.used = (1u << cfg.teams) - 1;
-        else if (sscanf(line, "slots %d", &a) == 1) lobby.used = (unsigned)a & 15;
-        else if (sscanf(line, "worms %d", &a) == 1) cfg.wormsPerTeam = Clamp(a, 1, 4);
-        else if (sscanf(line, "rules %d", &a) == 1) cfg.rules = (uint32_t)a & RULE_MASK;
+        int a = 0, b = 0, w = 0, al = 0, h = 0, n = 0;
+        if (sscanf(line, "rules %d", &a) == 1) cfg.rules = (uint32_t)a & RULE_MASK;
         else if (sscanf(line, "reels %d", &a) == 1) cfg.wormpot = (uint32_t)a;
         else if (!strncmp(line, "scheme ", 7)) {
             char *p = line + 7;
@@ -1582,56 +1570,28 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
         else if (sscanf(line, "map %63s", s) == 1) {
             auto it = std::find(maps.begin(), maps.end(), std::string(s) == "-" ? "" : s);
             if (it != maps.end()) mapSel = int(it - maps.begin());
-        } else if (sscanf(line, "pad %d %d", &a, &b) == 2 && a >= 0 && a < 4) cfg.teamSetup[a].pad = (uint8_t)Clamp(b, 0, 3);
-        else if (netProfileLine(line, netProfile)) {}
-        else if (GameConfig::Team t = cfg.teamSetup[0]; slotLine("team", line, a, t) && a >= 0 && a < 4) t.pad = cfg.teamSetup[a].pad, cfg.teamSetup[a] = t;
+        } else if (sscanf(line, "slot %d %d %d %d %d %n", &a, &b, &w, &al, &h, &n) == 5 && a >= 0 && a < 4 && line[n]) {
+            int i = barracks.find(line + n);
+            if (i < 0 || placed(line + n)) continue;
+            cfg.teamSetup[a] = barracks.teams[i].slot(Clamp(w, 1, 6), Clamp(al, 0, 3), Clamp(h, -1, 1), customs);
+            cfg.teamSetup[a].pad = (uint8_t)Clamp(b, 0, 3);
+            lobby.used |= 1u << a;
+            lobby.cfg.teamSetup.resize(4), lobby.cfg.teamSetup[a] = cfg.teamSetup[a];
+        }
     }
     UnloadFileText(txt);
 }
 
-// setup.txt "net"/"netpad" lines: this console's network teams, kept across rooms and restarts
-std::string netProfileText(const std::vector<GameConfig::Team> &teams) {
-    std::string s;
-    for (size_t i = 0; i < teams.size(); i++) {
-        s += slotText("net", (int)i, teams[i]) + TextFormat("netpad %d %d\n", (int)i, teams[i].pad);
-    }
-    return s;
-}
-
-bool netProfileLine(const char *line, std::vector<GameConfig::Team> &teams) {
-    int a = 0, b = 0;
-    GameConfig::Team t;
-    if (sscanf(line, "netpad %d %d", &a, &b) == 2) {
-        if (a >= 0 && a < (int)teams.size()) teams[a].pad = (uint8_t)Clamp(b, 0, 3);
-    } else if (slotLine("net", line, a, t)) {
-        if (teams.size() >= (size_t)Lobby::MAX_TEAMS) return true;
-        t.cpu = 0;
-        if (t.name.empty()) t.name = DEFAULT_TEAMS[teams.size()];
-        teams.push_back(t);
-    } else return false;
-    return true;
-}
-
-void Frontend::saveNetTeams() {
-    netProfile = myTeams;
-    std::string out;
-    if (char *txt = LoadFileText(DATA_DIR "setup.txt")) {
-        for (char *line = strtok(txt, "\n"); line; line = strtok(nullptr, "\n")) if (strncmp(line, "net", 3)) out += std::string(line) + "\n";
-        UnloadFileText(txt);
-    }
-    SaveFileText(DATA_DIR "setup.txt", (out + netProfileText(netProfile)).data());
-}
-
 void Frontend::saveSetup(const GameConfig &cfg) const {
     if (room()) return;  // a room's teams and settings are the room's
-    std::string s = TextFormat("teams %d\nslots %u\nworms %d\nrules %u\nreels %u\nmap %s\nscheme", std::max(2, room() ? cfg.teams : lobby.count()), lobby.used, cfg.wormsPerTeam, cfg.rules, cfg.wormpot,
-                               cfg.map.empty() ? "-" : cfg.map.c_str());
+    std::string s = TextFormat("rules %u\nreels %u\nmap %s\nscheme", cfg.rules, cfg.wormpot, cfg.map.empty() ? "-" : cfg.map.c_str());
     for (size_t i = 0; i < sizeof(Scheme); i++) s += TextFormat(" %d", ((const uint8_t *)&cfg.scheme)[i]);
     s += "\n";
-    for (int t = 0; t < (int)cfg.teamSetup.size(); t++) {
-        s += slotText("team", t, cfg.teamSetup[t]) + TextFormat("pad %d %d\n", t, cfg.teamSetup[t].pad);
+    for (int k = 0; k < (int)cfg.teamSetup.size(); k++) {
+        const GameConfig::Team &t = cfg.teamSetup[k];
+        if (lobby.playing(k)) s += TextFormat("slot %d %d %d %d %d %s\n", k, t.pad, cfg.teamWorms(k), t.alliance < 0 ? 0 : t.alliance, t.handicap, t.name.c_str());
     }
-    SaveFileText(DATA_DIR "setup.txt", (s + netProfileText(netProfile)).data());
+    SaveFileText(DATA_DIR "setup.txt", s.data());
 }
 
 Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name) {
@@ -1641,10 +1601,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         loadSetup(cfg, maps);
         lobby.cfg = cfg, lobby.cfg.teams = Lobby::MAX_TEAMS;
         lobby.cfg.map = maps.empty() ? "" : maps[std::min(mapSel, (int)maps.size() - 1)];
-        if (online && net) {  // a fresh room: own team from setup.txt, and as host its settings
-            GameConfig::Team t = cfg.teamSetup[0];
-            t.cpu = 0;
-            myTeams = netProfile.empty() ? std::vector<GameConfig::Team>{t} : netProfile;
+        if (online && net) {  // a fresh room: the saved team this console brought (W4M WXNET.NetLocalTeamIndex), and as host its settings
+            int ti = barracks.find(onlineTeam);
+            if (ti < 0) ti = barracks.find(missionTeam);
+            GameConfig::Team t = ti >= 0 ? barracks.teams[ti].slot(4, -1, 0, customs) : GameConfig::Team{};
+            t.pad = 0;
+            myTeams = {t};
             lobby.cfg.teams = 0;
             if (net->isHost()) {
                 net->lobby.map = lobby.cfg.map, net->lobby.rules = lobby.cfg.rules, net->lobby.scheme = lobby.cfg.scheme, net->lobby.wormpot = lobby.cfg.wormpot;
@@ -1663,8 +1625,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     bool typing = editing != nullptr, busy = typing || leaving >= 0;  // no input while the menu flies out
     live = !busy;
     if (editing) {
-        for (int c = GetCharPressed(); c; c = GetCharPressed())
-            if (c >= 32 && c < 256 && editing->size() < 20) editing->push_back((char)c), Audio::play(Audio::Sfx::FeType);
+        for (int c = GetCharPressed(); c; c = GetCharPressed()) simText.push_back((char)(c < 256 ? c : 0));
+        for (char c : simText)
+            if (c >= 32 && editing->size() < 20) editing->push_back(c), Audio::play(Audio::Sfx::FeType);
+        simText.clear();
         if (IsKeyPressed(KEY_BACKSPACE) && !editing->empty()) editing->pop_back(), Audio::play(Audio::Sfx::FeType);
         if (IsKeyPressed(KEY_ENTER) || IsGamepadButtonPressed(editPad, A)) editing = nullptr, Audio::play(Audio::Sfx::FeClick);
     }
@@ -1672,6 +1636,12 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     int dx = busy ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
     bool ok = !busy && P({A}, {KEY_ENTER, KEY_SPACE}), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
     bool plus = !busy && P({PLUS}, {KEY_N});  // next step / start
+    int card = busy ? 0 : P({GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, {KEY_PAGE_DOWN}) - P({GAMEPAD_BUTTON_LEFT_TRIGGER_1}, {KEY_PAGE_UP});
+    if (pop.kind != Pop::None) {  // a popup is modal: it takes the input (the Teams screen hands it its pad's presses)
+        if (pop.pad < 0) popInput({dx, dy, 0, ok, back, plus}, t);
+        if (pending != None) act = pending, pending = None;
+        busy = true, live = false, dx = dy = card = 0, ok = back = plus = false;
+    }
     if (room() && !busy && P({GAMEPAD_BUTTON_RIGHT_TRIGGER_2}, {KEY_R})) net->setReady(!net->isReady(net->id));
     if (ok || back) feBack = back;
     if (screen != shown) {  // W4M menus: slide in (not on the first frame: --ui captures), highlight the current entry
@@ -1679,6 +1649,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         int sel = screen == Main ? mainRow : screen >= Local && screen <= Confirm ? subRow[screen - Local] : 0;
         for (int i = 0; i < 8; i++) glow[i] = i == sel;
         FrontBg::page(bgPage(screen, online));
+        if (reopen >= 0) openTeams((Pop::Use)reopen, -1, 0, reopenArg), reopen = -1;  // after Create Team: the list the team was made for
         if (from != (Screen)-1 && screen != Missions) Audio::play(enterSfx(screen, from));  // missionMenu() plays its own
     }
 
@@ -1748,49 +1719,28 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (ok && k == 0) {
             if (sel == 0) act = QuickMatch;
             else if (sel == 1) screen = SetupTeams, online = false, cursors = {}, rulesRow = 0, loaded = false;
-            else missionTab = sel - 2, go(Missions);
+            else openTeams(Pop::Mission, -1, 0, sel - 2);  // W4M WXFEP.SelectTeam, then the Story / Challenges screen
         }
-        if (ok && k == 1) act = Salon, wantLan = sel == 0;
+        if (ok && k == 1) openTeams(Pop::Online, -1, 0, sel);  // WXOnlineTeam: the team this console brings
         if (ok && k == 3) screen = sel == 0 ? Options : sel == 1 ? Controls : Factory, row = 0, facSel = 0;
         break;
     }
-    case MyWorms: {
-        // the 4 teams' name, voice and hat (setup.txt, also edited in the match setup)
-        const std::vector<std::string> banks = speechIds();
-        int &r = subRow[2];
-        r = clampWrap(r + dy, 12);
-        int k = r / 3, f = r % 3;
-        GameConfig::Team &tm = cfg.teamSetup[k];
-        if (f == 0 && ok) edit(tm.name, "Team name");
-        if (f == 1 && Lobby::step(tm.speech, dx, banks)) Audio::setTeamVoice(k, voiceBankOf(tm.speech));
-        if (f == 2) Lobby::step(tm.hat, dx, hatIds());
+    case MyWorms: {  // W4M WXFE.Customise: Create / Edit / Delete Team
+        static const MenuItem items[] = {{"FETXT.CreateTeam", "Create Team", "Créer une équipe", 880, 190, 56, -3}, {"FETXT.EditTeam", "Edit Team", "Éditer une équipe", 1050, 320, 54, 2},
+                                         {"FETXT.DeleteTeam", "Delete Team", "Supprimer une équipe", 900, 450, 54, -2}};
+        int &sel = subRow[2];
         subPanel(tr("FETXTH.MYWORMS", "MY WORMS", "MES WORMS"), "fe2/art_myworms", t, subIn(t));
-        for (int i = 0; i < 4; i++) {
-            const GameConfig::Team &m = cfg.teamSetup[i];
-            float a = rowAppear(t - entered, leaving >= 0 ? t - leaving : -1, i, 0.06f);
-            Rectangle c = {560 + (i % 2) * 355.0f + (1 - a) * 400, 104 + (i / 2) * 250.0f, 335, 220};
-            popup(c);
-            if (k == i && !nine("fe/buttonbig_highlight", {c.x - 6, c.y - 6, c.width + 12, c.height + 12}, 110, 0.5f)) DrawRectangleRoundedLinesEx(c, 0.1f, 6, 4, GOLDEN);
-            DrawRectangleRounded({c.x + 16, c.y + 18, 10, c.height - 36}, 1, 4, TEAM_COLORS[i]);
-            const char *vals[3] = {TextFormat("%s%s", m.name.c_str(), editing == &cfg.teamSetup[i].name && fmodf(t, 1) < 0.5f ? "_" : ""),
-                                   m.speech.empty() ? "-" : m.speech.c_str() + 2, hatLabel(m.hat)};
-            const char *labels[3] = {nullptr, tr("FETXTSH.Voice", "Voice", "Voix"), tr(nullptr, "Hat", "Chapeau")};
-            for (int j = 0; j < 3; j++) {
-                bool hi = k == i && f == j;
-                Rectangle l = {c.x + 36, c.y + 20 + j * 62.0f, c.width - 56, 50};
-                if (hi) brush(l);
-                if (!j) { text(vals[0], l.x + 8, l.y + 8, 32, TEAM_COLORS[i]); continue; }
-                text(labels[j], l.x + 8, l.y + 12, 24, ink(hi));
-                text(TextFormat(hi ? "< %s >" : "%s", vals[j]), l.x + l.width - 8, l.y + 12, 24, ink(hi), 2);
-            }
-        }
+        menu(items, 3, sel, dy, t);
         paperStrip(t, true);
-        if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
-        else hints({{"A", "Enter", f ? tr(nullptr, "Listen", "Écouter") : tr(nullptr, "Rename", "Renommer")}, {"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")},
-                    {"B", "Esc", tr(nullptr, "Save & back", "Enregistrer")}});
-        if (back) saveSetup(cfg), go(Main);
+        hints({{"A", "Enter", tr(nullptr, "Select", "Sélectionner")}, {"B", "Esc", tr(nullptr, "Back", "Retour")}});
+        if (back) go(Main);
+        if (ok) {
+            if (sel == 0) startCreate(Pop::Create);
+            else openTeams(sel == 1 ? Pop::Edit : Pop::Delete, -1, 0);
+        }
         break;
     }
+    case TeamEdit: editor({dx, dy, card, ok, back, plus}, t); break;
     case Options: {
         const int n = 4;
         row = clampWrap(row + dy, n);
@@ -1895,6 +1845,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (setupRules(dx, dy, ok, back, plus)) act = online ? RoomStart : StartLocal;
         break;
     }
+    popDraw(t);
     if (room()) toNet();
     if (helpHeld()) controls(false);
     Loading::overlay(GetFrameTime());
@@ -1916,7 +1867,6 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         cfg.teamSetup.resize(4);
         for (int k = 0; k < 4; k++) Audio::setTeamVoice(k, voiceBankOf(cfg.teamSetup[k].speech));
         cfg.teamSetup.resize(cfg.teams);
-        cfg.custom = customs;
         if (!online) loaded = false;  // reload (and re-pad to 4 teams) next time the menu shows; a room keeps its setup
     }
     return act;
@@ -1946,6 +1896,13 @@ const char *padStyle(int p) {
     if (strstr(n, "left")) return "Joy-Con L";
     if (strstr(n, "right")) return "Joy-Con R";
     return "Controller";
+}
+
+// W4M's FETXT.CPU1..5
+const char *cpuText(int n) {
+    static const char *const EN[] = {"", "CPU Level 1", "CPU Level 2", "CPU Level 3", "CPU Level 4", "CPU Level 5"}, *const FR[] = {"", "I.A. Niveau 1", "I.A. Niveau 2", "I.A. Niveau 3", "I.A. Niveau 4", "I.A. Niveau 5"};
+    n = Clamp(n, 0, 5);
+    return tr(n ? TextFormat("FETXT.CPU%d", n) : nullptr, EN[n], FR[n]);
 }
 
 // WXFE_GradientColours [data, docs/w4m/frontend.md "Text colours"]: 10 TextBox_Yellow, 12 List_Data_Orange, 19 Disabled_Grey, 31 ERROR_RED, 3 Solid_Black
@@ -2107,41 +2064,49 @@ void padDot(Vector2 c, float r, int p) {
 // A labelled column head (WXFE.HeaderList entries: FETXT.Teams, Landscape, GameStyle, Wormpot), List_Lable_Blue, tilted
 void head(const char *label, float x, float y, float rz) { feLine(label, x, y, 22, GC_LIST_LABLE_BLUE, 1, rz); }
 
-// The Teams screen's button legend under the paper strip: the essential buttons only (Switch glyphs, desktop keys) [ours]
-void teamsLegend() {
-    struct E { const char *pad, *key, *label; };
-    const E all[] = {{"A", "Enter", tr(nullptr, "Take / edit", "Prendre / modifier")}, {"< >", "< >", tr(nullptr, "Hat", "Chapeau")}, {"Y", "Y", tr(nullptr, "CPU", "IA")},
-                     {"B", "Esc", tr(nullptr, "Release", "Lâcher")}, {"+", "N", tr(nullptr, "Next", "Suivant")}};
+// A button legend under the paper strip: the essential buttons only (Switch glyphs, desktop keys) [ours]
+struct LegendEntry { const char *pad, *key, *label, *en, *fr; };
+void legend(const LegendEntry *all, int n) {
     const bool key = keyGlyphs();
     const float G = 30, px = 20, gap = 26;
     float total = -gap;
-    for (const E &e : all) total += glyphs(key ? e.key : e.pad, 0, 0, G, key, false) + 8 + feWidthPx(e.label, px) + gap;
+    auto text_ = [](const LegendEntry &e) { return tr(e.label, e.en, e.fr); };
+    for (int i = 0; i < n; i++) total += glyphs(key ? all[i].key : all[i].pad, 0, 0, G, key, false) + 8 + feWidthPx(text_(all[i]), px) + gap;
     float x = 640 - total / 2;
-    for (const E &e : all) {
-        x += glyphs(key ? e.key : e.pad, x, 662, G, key) + 8;
-        feTextPx(e.label, x, 662 + G / 2, px, GC_WHITE, 0);
-        x += feWidthPx(e.label, px) + gap;
+    for (int i = 0; i < n; i++) {
+        x += glyphs(key ? all[i].key : all[i].pad, x, 662, G, key) + 8;
+        feTextPx(text_(all[i]), x, 662 + G / 2, px, GC_WHITE, 0);
+        x += feWidthPx(text_(all[i]), px) + gap;
     }
+}
+
+void teamsLegend() {
+    static const LegendEntry L[] = {{"A", "Enter", nullptr, "Pick / settings", "Choisir / réglages"}, {"< >", "< >", nullptr, "Move", "Jeton"}, {"B", "Esc", "FETXT.RemoveTeam", "Remove", "Retirer"},
+                                    {"+", "N", nullptr, "Next", "Suivant"}};
+    legend(L, 4);
 }
 }  // namespace
 
-void Frontend::wormPreview(int team, float t) {
+void Frontend::wormPreview(const GameConfig::Team &tm, float t, float phase, const char *clip, float ct) {
     if (!wormRt.id) wormRt = LoadRenderTexture(256, 346);
-    const GameConfig::Team &tm = lobby.cfg.teamSetup[team];
+    if (ct < 0) ct = t;
     Camera3D cam = {{0, 1.0f, 3.7f}, {0, 0.8f, 0}, {0, 1, 0}, 30, CAMERA_PERSPECTIVE};
     BeginTextureMode(wormRt);
     ClearBackground(BLANK);
     BeginMode3D(cam);
     Lit::frame(cam.position);
-    float yaw = 0.7f * sinf(t * 0.6f + team * 1.7f);  // slow turn
-    Models::draw("worm", {0, 0, 0}, yaw, 0, WHITE, "Base", t);
-    if (Matrix m; Models::joint("worm", "HatLocator", "Base", t, true, &m))
+    float yaw = 0.7f * sinf(t * 0.6f + phase * 1.7f);  // slow turn
+    Models::gloves(catalog().drawName(tm.gloves));
+    Models::draw("worm", {0, 0, 0}, yaw, 0, WHITE, clip, ct);
+    Models::gloves(nullptr);
+    if (Matrix m; Models::joint("worm", "HatLocator", clip, ct, true, &m))
         for (const std::string *id : {&tm.hat, &tm.glasses, &tm.tash}) if (const char *n = catalog().drawName(*id)) Models::draw(n, MatrixMultiply(m, MatrixRotateY(yaw)));
     EndMode3D();
     EndTextureMode();
 }
 
 unsigned Frontend::simPads = 0;
+std::string Frontend::simText;
 Frontend::PadIn Frontend::sim[4];
 
 Frontend::PadIn Frontend::padIn(int p) {
@@ -2153,18 +2118,15 @@ Frontend::PadIn Frontend::padIn(int p) {
     in.dx = pressed(p, {RIGHT}, {}) - pressed(p, {LEFT}, {});
     in.card = pressed(p, {GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, K({KEY_PAGE_DOWN})) - pressed(p, {GAMEPAD_BUTTON_LEFT_TRIGGER_1}, K({KEY_PAGE_UP}));
     in.ok = pressed(p, {A}, K({KEY_ENTER, KEY_SPACE})), in.back = pressed(p, {B}, K({KEY_BACKSPACE, KEY_ESCAPE}));
-    in.cpu = pressed(p, {YB}, K({KEY_Y}));
     return in;
 }
 
-// One player slot (d) of the Teams screen: ribbon in the team colour, who plays it, the name, its live worm free at the bottom, the hat tag with its arrows when
-// this console plays it, in a room the ready grenade. A free slot shows how to take it.
+// One player slot (d) of the Teams screen: ribbon in the team colour, who plays it, the saved team's name and flag, its live worm in its outfit free at the bottom,
+// the tag of its slot settings, in a room the ready grenade. A free slot shows how to pick a team.
 void Frontend::teamSlot(Rectangle d, int k, float t) {
     const GameConfig &c = lobby.cfg;
     const GameConfig::Team &m = c.teamSetup[k];
     const bool play = lobby.playing(k), cpu = play && m.cpu, mine = play && lobby.canEdit(k) && !m.cpu;
-    const char *CPU[] = {"", tr("FETXT.CPU1", "CPU Level 1", "I.A. Niveau 1"), tr("FETXT.CPU2", "CPU Level 2", "I.A. Niveau 2"), tr("FETXT.CPU3", "CPU Level 3", "I.A. Niveau 3"),
-                         tr("FETXT.CPU4", "CPU Level 4", "I.A. Niveau 4"), tr("FETXT.CPU5", "CPU Level 5", "I.A. Niveau 5")};
     int rank = 0;  // the match colour: the rank among the playing slots
     for (int j = 0; j < k; j++) rank += lobby.playing(j);
     const float cx = d.x + d.width / 2;
@@ -2180,22 +2142,17 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
         DrawRectangleRounded(r, 0.5f, 8, play ? TEAM_COLORS[rank] : Color{110, 120, 130, 255});
         feTextPx(rb, cx, r.y + r.height / 2, 24, GC_WHITE, 1);
     }
-    if (!play) {  // "A to play, Y for a CPU" (the host only in a room)
+    if (!play) {  // "A to pick a team"
         const bool key = keyGlyphs();
-        auto line = [&](const char *g, const char *txt, float y, float G) {
-            float gw = glyphs(g, 0, 0, G, key, false), tw = feWidthPx(txt, 22), x = cx - (gw + 10 + tw) / 2;
-            glyphs(g, x, y, G, key);
-            feTextPx(txt, x + gw + 10, y + G / 2, 22, GC_WHITE, 0);
-        };
-        const bool cpuOk = !room() || lobby.isHost();
-        float y = d.y + d.height / 2 - (cpuOk ? 50 : 20);
-        line(key ? "Enter" : "A", tr(nullptr, "to play", "pour jouer"), y, 40);
-        if (cpuOk) line("Y", tr(nullptr, "for a CPU", "pour une IA"), y + 62, 40);
+        const char *txt = tr(nullptr, "to pick a team", "pour choisir une équipe");
+        float G = 40, gw = glyphs(key ? "Enter" : "A", 0, 0, G, key, false), px = fit(txt, 22, d.width - gw - 40), tw = feWidthPx(txt, px), x = cx - (gw + 10 + tw) / 2, y = d.y + d.height / 2 - 20;
+        glyphs(key ? "Enter" : "A", x, y, G, key);
+        feTextPx(txt, x + gw + 10, y + G / 2, px, GC_WHITE, 0);
         return;
     }
     // who plays it
     const float wy = d.y + 44;
-    if (cpu) feTextPx(CPU[m.cpu], cx, wy, fit(CPU[m.cpu], 18, d.width - 30), GC_LIST_LABLE_BLUE, 1);
+    if (cpu) feTextPx(cpuText(m.cpu), cx, wy, fit(cpuText(m.cpu), 18, d.width - 30), GC_LIST_LABLE_BLUE, 1);
     else if (mine) {
         bool here = padPresent(m.pad);
         const char *who = here ? TextFormat("%s %d - %s", tr(nullptr, "Pad", "Manette"), m.pad + 1, padStyle(m.pad)) : TextFormat(tr(nullptr, "Pad %d missing", "Manette %d absente"), m.pad + 1);
@@ -2206,28 +2163,436 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
         auto pl = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
         if (pl != net->players.end()) feTextPx(pl->name.c_str(), cx, wy, fit(pl->name.c_str(), 18, d.width - 30), GC_DISABLED, 1);
     }
-    std::string nameS = m.name + (editing == &lobby.cfg.teamSetup[k].name && fmodf(t, 1) < 0.5f ? "_" : "");
-    feTextPx(nameS.c_str(), cx, d.y + 86, fit(nameS.c_str(), 28, d.width - 30), mine || cpu ? GC_TEXTBOX_YELLOW : GC_DISABLED, 1);
-    wormPreview(k, t);
+    const Catalog::Item *fl = catalog().flag(m.flag);
+    const float fw = fl ? 44 : 0;
+    feTextPx(m.name.c_str(), cx + fw / 2, d.y + 86, fit(m.name.c_str(), 28, d.width - 30 - fw), mine || cpu ? GC_TEXTBOX_YELLOW : GC_DISABLED, 1);
+    if (fl) image(fl->model, {d.x + 12, d.y + 86 - 20, 40, 40});
+    wormPreview(m, t, (float)k);
     DrawTexturePro(wormRt.texture, {0, 0, 256, -346}, {cx - 92.5f, d.y + d.height + 36 - 250, 185, 250}, {}, 0, WHITE);
-    const char *hat = hatLabel(m.hat);
-    float hpx = fit(hat, 18, d.width - 100), hw = feWidthPx(hat, hpx) + 24;
+    std::string tag = TextFormat("%d %s", c.teamWorms(k), tr("FETXT.Worms", "Worms", "Vers"));  // the slot settings (W4M TeamSettingsList)
+    int al = c.alliance(k);
+    for (int j = 0; j < Lobby::MAX_TEAMS; j++) if (j != k && lobby.playing(j) && c.alliance(j) == al) { tag += TextFormat(" - %s %d", tr(nullptr, "Group", "Groupe"), al + 1); break; }
+    if (m.handicap) tag += TextFormat(" - %s %+d", tr("FETXT.Handicap", "Handicap", "Handicap"), m.handicap);
+    float hpx = fit(tag.c_str(), 18, d.width - 40), hw = feWidthPx(tag.c_str(), hpx) + 24;
     DrawRectangleRounded({cx - hw / 2, d.y + d.height - 40, hw, 28}, 1, 8, {0, 0, 0, 150});
-    feTextPx(hat, cx, d.y + d.height - 26, hpx, GC_WHITE, 1);
-    if (mine) {  // arrows around the hat, only on the slots this console plays
-        Texture2D a = tex("fe/textitem_arrows");
-        const float aw = 22, ah = 44, ay = d.y + d.height - 96;
-        if (a.id) {
-            DrawTexturePro(a, {0, 0, 32, 64}, {d.x + 14, ay, aw, ah}, {}, 0, GC_LIST_DATA_ORANGE[0]);
-            DrawTexturePro(a, {32, 0, 32, 64}, {d.x + d.width - 14 - aw, ay, aw, ah}, {}, 0, GC_LIST_DATA_ORANGE[0]);
-        }
-    }
+    feTextPx(tag.c_str(), cx, d.y + d.height - 26, hpx, GC_WHITE, 1);
     if (room()) navAt(0, lobby.ready[k] ? 0 : 2, {d.x + 10, d.y + 8, 34, 34});  // Team<n>_Ready: Nav Start, Normal when ready, Disabled when not
+}
+
+// a saved team plays at most once per match (WXAllTeamAvailable 0x4bf9f0 compares the names); in a room, the teams this console just added count too
+bool Frontend::placed(const std::string &name) const {
+    for (int k = 0; k < Lobby::MAX_TEAMS && k < (int)lobby.cfg.teamSetup.size(); k++) if (lobby.playing(k) && lobby.cfg.teamSetup[k].name == name) return true;
+    return room() && std::any_of(myTeams.begin(), myTeams.end(), [&](const GameConfig::Team &t) { return t.name == name; });
+}
+
+void Frontend::setPop(Pop p) {
+    pop = std::move(p), pop.t0 = now();
+    Audio::play(Audio::Sfx::FePopupIn);
+}
+
+void Frontend::closePop() {
+    pop = {};
+    Audio::play(Audio::Sfx::FePopupOut);
+}
+
+// W4M FE.AddLTeamToGame: the saved team enters the slot with min(4, 16 - the worms already in) worms and the lowest free alliance (0x73620f, 0x737633)
+void Frontend::placeTeam(int s, int pad, int index) {
+    const SavedTeam &st = barracks.teams[index];
+    const int worms = std::max(1, lobby.newWorms());
+    if (room()) {  // the slot appears with the host's LOBBY; the alliance resolves by join order
+        GameConfig::Team nt = st.slot(worms, -1, 0, customs);
+        nt.pad = (uint8_t)pad;
+        myTeams.push_back(nt);
+        net->sendTeams(myTeams), cursors.slot[pad] = lobby.cfg.teams;
+    } else lobby.place(s, pad, st.slot(worms, lobby.freeAlliance(), 0, customs));
+}
+
+void Frontend::releaseSlot(int s) {
+    if (room()) {
+        myTeams.erase(myTeams.begin() + net->lobby.teams[s].idx), net->sendTeams(myTeams);
+        cursors.removed(s);
+    } else lobby.release(s);
+}
+
+// The saved-team list of a popup (WXFEP.InsertTeam / SelectTeam / the edit and delete lists): `use` says which teams it shows and what a row does
+void Frontend::openTeams(Pop::Use use, int pad, int slot, int arg) {
+    Pop p;
+    p.kind = Pop::Teams, p.use = use, p.pad = pad, p.slot = slot, p.arg = arg;
+    using L = Barracks::List;
+    p.ids = barracks.list(use == Pop::Insert ? L::Insert : use == Pop::Edit ? L::Edit : use == Pop::Delete ? L::Delete : L::Human, [&](const std::string &n) { return placed(n); },
+                          !room() || lobby.isHost());  // a CPU team: the host's in a room [ours]
+    if ((use == Pop::Insert || use == Pop::Mission || use == Pop::Online) && barracks.canCreate()) p.ids.push_back(-1);  // Create Team
+    setPop(p);
+}
+
+// PrepareTeam$CreateNew: "player controlled?" (not where CPU teams are off), the CPU level, the name, then the editor
+void Frontend::startCreate(Pop::Use use) {
+    Pop p = pop;
+    p.use = use, p.row = 0, p.err = false, p.typing = false, p.name.clear(), p.skill = 0;
+    const bool cpuOk = use == Pop::Create || (use == Pop::Insert && (!room() || lobby.isHost()));
+    p.kind = cpuOk ? Pop::Ask : Pop::Name;
+    setPop(p);
+}
+
+static std::string trimmed(std::string s) {
+    while (!s.empty() && s.back() == ' ') s.pop_back();
+    while (!s.empty() && s.front() == ' ') s.erase(s.begin());
+    return s;
+}
+
+// A popup's input. The Teams screen hands in its pad's presses, every other screen any pad's.
+void Frontend::popInput(PadIn in, float t) {
+    (void)t;
+    const int n = pop.kind == Pop::Teams ? (int)pop.ids.size() : pop.kind == Pop::Cpu ? 5 : pop.kind == Pop::Slot ? 5 : pop.kind == Pop::Pick ? (int)pop.vals.size() : 2;
+    if (pop.kind != Pop::Name && in.dy && n) pop.row = clampWrap(pop.row + in.dy, n), Audio::play(Audio::Sfx::FeHighlight);
+    switch (pop.kind) {
+    case Pop::Teams: {
+        if (in.back) closePop();
+        else if (in.ok && n) {
+            int idx = pop.ids[pop.row];
+            if (idx < 0) startCreate(pop.use);
+            else {
+                const Pop::Use use = pop.use;
+                const int slot = pop.slot, pad = pop.pad, arg = pop.arg;
+                if (use == Pop::Delete) { Pop p = pop; p.kind = Pop::Confirm, p.arg = idx, p.row = 0; setPop(p); break; }
+                closePop();
+                Audio::play(Audio::Sfx::FeClick);
+                if (use == Pop::Insert) placeTeam(slot, pad, idx);
+                else if (use == Pop::Mission) missionTeam = barracks.teams[idx].name, missionTab = arg, go(Missions);
+                else if (use == Pop::Online) onlineTeam = barracks.teams[idx].name, wantLan = arg == 0, pending = Salon;
+                else openEditor(idx, screen, -1, 0, Pop::Edit);
+            }
+        }
+        break;
+    }
+    case Pop::Ask:  // WXFEP.NewTeamControl: No is the default row, Yes a player-controlled team
+        if (in.dx) pop.row ^= 1;
+        if (in.back) closePop();
+        else if (in.ok) {
+            Pop p = pop;
+            p.kind = pop.row ? Pop::Name : Pop::Cpu, p.row = 0, p.skill = 0;
+            setPop(p);
+        }
+        break;
+    case Pop::Cpu:  // WXFEP.NewTeamControlAI: CPU Level 1..5
+        if (in.back) closePop();
+        else if (in.ok) {
+            Pop p = pop;
+            p.kind = Pop::Name, p.skill = pop.row + 1, p.typing = p.err = false;
+            setPop(p);
+        }
+        break;
+    case Pop::Name: {  // WXFEP.NewTeamName: typed at once; an empty or taken name (USER.NameCheck) is refused
+        auto finish = [&] {
+            std::string nm = trimmed(pop.name);
+            if (nm.empty() || barracks.find(nm) >= 0) return pop.err = true, Audio::play(Audio::Sfx::FeError), void();
+            int idx = barracks.create(nm, pop.skill, tr("FE.RandomWormNames", "Alex,Sam,Jo,Max,Kim,Lee,Ray,Zed", nullptr), language ? "Flag.France" : "Flag.UK", (uint32_t)(GetTime() * 1000) + (uint32_t)barracks.teams.size());
+            if (idx < 0) return pop.err = true, Audio::play(Audio::Sfx::FeError), void();
+            barracks.save(DATA_DIR "teams.txt");
+            const Pop::Use use = pop.use;
+            const int slot = pop.slot, pad = pop.pad, arg = pop.arg;
+            closePop();
+            reopenArg = arg;
+            openEditor(idx, screen, use == Pop::Insert ? slot : -1, pad < 0 ? 0 : pad, use);
+        };
+        if (pop.err) {
+            if (in.back) closePop();
+            else if (in.ok) pop.err = false;
+            break;
+        }
+        if (!pop.typing) {
+            pop.typing = true, editPad = pop.pad < 0 ? 0 : pop.pad;
+#ifdef __SWITCH__
+            bool done = edit(pop.name, "Team name");
+            pop.typing = false;
+            if (done) finish();
+            else closePop();
+#else
+            edit(pop.name, "Team name");
+#endif
+        }
+#ifndef __SWITCH__
+        else if (!editing) pop.typing = false, finish();
+#endif
+        break;
+    }
+    case Pop::Slot: {  // WXFEP.TeamSettingsList: worms, allies, handicap, Remove Team, Accept
+        if (!lobby.playing(pop.slot) || !lobby.canEdit(pop.slot)) { closePop(); break; }
+        GameConfig::Team &m = lobby.cfg.teamSetup[pop.slot];
+        int d = in.dx ? in.dx : in.ok && pop.row < 3 ? 1 : 0;
+        if (d && pop.row == 0) {
+            int mx = lobby.maxWorms(pop.slot), v = lobby.cfg.teamWorms(pop.slot) + d;
+            m.worms = (uint8_t)(v > mx ? 1 : v < 1 ? mx : v);
+        } else if (d && pop.row == 1) m.alliance = (int8_t)clampWrap(lobby.cfg.alliance(pop.slot) + d, 4);
+        else if (d && pop.row == 2) m.handicap = (int8_t)(m.handicap + d > 1 ? -1 : m.handicap + d < -1 ? 1 : m.handicap + d);
+        if (d) Audio::play(Audio::Sfx::FeChange);
+        if (in.ok && pop.row == 3) { releaseSlot(pop.slot); closePop(); }
+        else if ((in.ok && pop.row == 4) || in.back) closePop();
+        break;
+    }
+    case Pop::Confirm:  // WXFEP.ConfirmDeleteTeam / QuitTeamOptions: No is the default row
+        if (in.dx) pop.row ^= 1;
+        if (in.back || (in.ok && !pop.row)) closePop();
+        else if (in.ok) {
+            const Pop::Use use = pop.use;
+            const int idx = pop.arg;
+            closePop();
+            if (use == Pop::Delete) barracks.remove(idx), barracks.save(DATA_DIR "teams.txt");
+            else leaveEditor(false);
+        }
+        break;
+    case Pop::Pick: {  // the editor's lists: the row under the highlight shows live, B puts the old value back
+        if (in.dy && n) setField(pop.use, pop.vals[pop.row]);
+        if (in.back) setField(pop.use, pop.undo), closePop();
+        else if (in.ok) closePop(), Audio::play(Audio::Sfx::FeClick);
+        break;
+    }
+    case Pop::None: break;
+    }
+}
+
+// ---- the popups' look: W4M's paper popup, Button_Yellow title over its underline, the list rows of the Teams screen
+
+namespace {
+// title and rows (label left, value right) of a list popup, the highlight row scrolling into the window; flag: a picture of the highlighted row
+void listPanel(const char *title, const std::vector<std::string> &labels, const std::vector<std::string> &values, int sel, const std::string &flag = "") {
+    const int n = (int)labels.size(), vis = std::min(std::max(n, 1), 8);
+    const float rh = 44, w = 560, h = 112 + vis * rh;
+    Rectangle d = {640 - w / 2, 360 - h / 2 - 10, w, h};
+    popup(d);
+    feTextPx(title, 640, d.y + 40, std::min(30.0f, 30 * (w - 100) / feWidthPx(title, 30)), GC_BUTTON_YELLOW, 1);
+    if (!image("fe/title_underline", {640 - 220, d.y + 62, 440, 22})) DrawRectangle(640 - 220, d.y + 72, 440, 3, WHITE);
+    const int first = Clamp(sel - vis / 2, 0, std::max(0, n - vis));
+    for (int i = first; i < n && i < first + vis; i++) feRow({d.x + 40, d.y + 96 + (i - first) * rh, w - 80, 38}, i == sel ? 1 : 0, labels[i].c_str(), values[i].c_str(), false);
+    if (n > vis) {  // scroll bar
+        float bh = (h - 120) * vis / n;
+        DrawRectangleRounded({d.x + w - 30, d.y + 96 + (h - 120 - bh) * first / (n - vis), 6, bh}, 1, 4, {255, 255, 255, 150});
+    }
+    if (!flag.empty()) image(flag, {d.x + w + 14, d.y + 40, 96, 96});
+}
+}  // namespace
+
+void Frontend::popDraw(float t) {
+    if (pop.kind == Pop::None) return;
+    DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 120});
+    const float k = backOut((now() - pop.t0) / 0.2f);
+    rlPushMatrix();
+    rlTranslatef(640, 360, 0), rlScalef(k, k, 1), rlTranslatef(-640, -360, 0);
+    FeFlat flat;
+    std::vector<std::string> labels, values;
+    switch (pop.kind) {
+    case Pop::Teams: {
+        for (int i : pop.ids) {
+            labels.push_back(i < 0 ? tr("FETXT.CreateTeam", "Create Team", "Créer une équipe") : barracks.teams[i].name);
+            values.push_back(i >= 0 && barracks.teams[i].skill ? cpuText(barracks.teams[i].skill) : "");
+        }
+        const char *title = pop.use == Pop::Insert ? tr("FETXT.SelectTeam", "Select a team", nullptr) : pop.use == Pop::Online ? tr("FETXT.SelectOnlineTeam", "Select Team", nullptr)
+                          : pop.use == Pop::Mission ? (pop.arg ? tr("FETXT.SelectChallengeTeam", "Select a challenge team", nullptr) : tr("FETXT.SelectStoryTeam", "Select a mission team", nullptr))
+                          : pop.use == Pop::Edit ? tr("FETXT.SelectTeamEdit", "Select a team to edit", nullptr) : tr("FETXT.SelectTeamDelete", "Select a team to delete", nullptr);
+        listPanel(title, labels, values, pop.row);
+        break;
+    }
+    case Pop::Ask: yesNo(tr("FETXT.CPUControl", "Do you want this team to be player controlled?", nullptr), pop.row, t); break;
+    case Pop::Cpu:
+        for (int i = 1; i <= 5; i++) labels.push_back(cpuText(i)), values.push_back("");
+        listPanel(tr("FETXT.TeamController", "Who has control?", nullptr), labels, values, pop.row);
+        break;
+    case Pop::Name: {
+        Rectangle d = {340, 230, 600, 230};
+        popup(d);
+        feTextPx(tr("FETXT.EnterTeamName", "Enter team name", nullptr), 640, d.y + 44, 30, GC_BUTTON_YELLOW, 1);
+        std::string v = pop.name + (pop.typing && fmodf(t, 1) < 0.5f ? "_" : "");
+        feRow({d.x + 50, d.y + 96, d.width - 100, 44}, 1, "", v.c_str(), false);
+        const char *note = pop.err ? tr(nullptr, "This name is empty or already used: A types again, B cancels", "Ce nom est vide ou déjà pris : A saisit à nouveau, B annule") : "";
+        feTextPx(note, 640, d.y + 180, 18, GC_ERROR_RED, 1);
+        break;
+    }
+    case Pop::Slot: {
+        const GameConfig::Team &m = lobby.cfg.teamSetup[pop.slot];
+        const char *lab[5] = {tr("FETXT.Worms", "Worms", "Vers"), tr("FETXT.AlliedColour", "Allied Colour", "Alliance"), tr("FETXT.Handicap", "Handicap", "Handicap"), tr("FETXT.RemoveTeam", "Remove Team", nullptr),
+                              tr("FETXT.Accept", "Accept", nullptr)};
+        Rectangle d = {390, 150, 500, 420};
+        popup(d);
+        feTextPx(m.name.c_str(), 640, d.y + 44, 30, GC_BUTTON_YELLOW, 1);
+        if (!image("fe/title_underline", {640 - 200, d.y + 66, 400, 22})) DrawRectangle(640 - 200, d.y + 76, 400, 3, WHITE);
+        for (int i = 0; i < 5; i++) {
+            std::string v = i == 0 ? TextFormat("%d", lobby.cfg.teamWorms(pop.slot)) : i == 1 ? TextFormat("%d", lobby.cfg.alliance(pop.slot) + 1) : i == 2 ? (m.handicap ? TextFormat("%+d", m.handicap) : "0") : "";
+            feRow({d.x + 40, d.y + 108 + i * 54.0f, d.width - 80, 44}, i == pop.row ? 1 : 0, lab[i], v.c_str(), i < 3 && i == pop.row);
+        }
+        break;
+    }
+    case Pop::Confirm: yesNo(pop.use == Pop::Delete ? tr("FETXT.ConfirmDeleteThis", "Are you sure you want to delete this?", nullptr) : tr(nullptr, "Discard the changes?", "Abandonner les modifications ?"), pop.row, t); break;
+    case Pop::Pick: {
+        for (const std::string &v : pop.vals) labels.push_back(fieldLabel(pop.use, v)), values.push_back("");
+        const char *title = pop.use == Pop::Soundbank ? tr("FETXT.SelectSoundbank", "Select Soundbank", nullptr) : pop.use == Pop::Head ? tr("FETXT.Head", "Head", nullptr)
+                          : pop.use == Pop::Eyes ? tr("FETXT.Eyes", "Eyes", nullptr) : pop.use == Pop::Face ? tr("FETXT.Face", "Face", nullptr) : pop.use == Pop::Hands ? tr("FETXT.Hands", "Hands", nullptr)
+                          : pop.use == Pop::Weapon ? tr("FETXT.SelectTeamWeapon", "Select your teams super weapon", nullptr) : pop.use == Pop::Flag ? tr("FETXTSH.TeamFlag", "Team Flag", nullptr)
+                          : tr("FETXTSH.TeamGrave", "Team Grave", nullptr);
+        std::string flag;
+        if (pop.use == Pop::Flag && pop.row < (int)pop.vals.size()) if (const Catalog::Item *f = catalog().flag(pop.vals[pop.row])) flag = f->model;
+        listPanel(title, labels, values, pop.row, flag);
+        break;
+    }
+    case Pop::None: break;
+    }
+    rlPopMatrix();
+}
+
+
+// ---- the team editor (W4M WXFE.TeamOptions, docs/w4m/frontend.md "Saved teams"): 3 pages on a working copy of the saved team
+
+void Frontend::openEditor(int index, Screen ret, int placeSlot, int placePad, Pop::Use after) {
+    ed = {};
+    ed.index = index, ed.t = barracks.teams[index], ed.ret = ret, ed.placeSlot = placeSlot, ed.placePad = placePad, ed.after = after;
+    Progress p;
+    p.open(DATA_DIR "progress.txt");
+    ed.unlocks = p.unlocks;
+    go(TeamEdit);
+}
+
+// the team's string field a popup / row edits; null for the grave (an index)
+std::string *Frontend::fieldRef(Pop::Use u) {
+    SavedTeam &t = ed.t;
+    return u == Pop::Soundbank ? &t.speech : u == Pop::Head ? &t.hat : u == Pop::Eyes ? &t.glasses : u == Pop::Face ? &t.tash : u == Pop::Hands ? &t.gloves : u == Pop::Weapon ? &t.weapon
+         : u == Pop::Flag ? &t.flag : nullptr;
+}
+
+std::string Frontend::getField(Pop::Use u) { const std::string *f = fieldRef(u); return f ? *f : std::to_string(ed.t.grave); }
+
+void Frontend::setField(Pop::Use u, const std::string &v) {
+    if (std::string *f = fieldRef(u)) *f = v;
+    else ed.t.grave = atoi(v.c_str());
+    ed.changed = true;
+}
+
+// the ids a field offers, W4M order: the speech banks we have, the attachments of its type the save has unlocked ("" none first), the stock Weapon Factory weapons and ours, the flags, the graves
+std::vector<std::string> Frontend::fieldValues(Pop::Use u) {
+    const Catalog &k = catalog();
+    std::vector<std::string> v;
+    if (u == Pop::Soundbank) {
+        for (const Catalog::Item &s : k.speech) if (voiceBankOf(s.id) >= 0 && std::find(v.begin(), v.end(), s.id) == v.end()) v.push_back(s.id);
+    } else if (u == Pop::Head || u == Pop::Hands || u == Pop::Eyes || u == Pop::Face) v = k.usable(u == Pop::Head ? 0 : u == Pop::Hands ? 1 : u == Pop::Eyes ? 2 : 3, ed.unlocks, getField(u));
+    else if (u == Pop::Weapon) {
+        v.push_back("");
+        for (const std::string &w : k.stockWeapons) v.push_back(w);
+        for (const WeaponDef &w : customs) v.push_back(w.name);
+    } else if (u == Pop::Flag) for (const Catalog::Item &f : k.flags) v.push_back(f.id);
+    else for (size_t i = 0; i < k.graves.size(); i++) v.push_back(std::to_string(i));
+    if (std::find(v.begin(), v.end(), getField(u)) == v.end()) v.push_back(getField(u));
+    return v;
+}
+
+std::string Frontend::fieldLabel(Pop::Use u, const std::string &id) const {
+    const Catalog &k = catalog();
+    if (u == Pop::Soundbank) {  // several W4M rows share a bank (voclassi): the plain FETXT.SB.<bank> one names it [assumed: W4M's own choice is not decoded]
+        const Catalog::Item *row = nullptr;
+        for (const Catalog::Item &s : k.speech)
+            if (s.id == id && (!row || (s.text.compare(0, 9, "FETXT.SB.") == 0 && s.text.find("DLC1") == std::string::npos && row->text.compare(0, 9, "FETXT.SB.") != 0))) row = &s;
+        if (row) return tr(row->text.c_str(), id.c_str());
+    }
+    if (u == Pop::Head || u == Pop::Hands || u == Pop::Eyes || u == Pop::Face) return hatLabel(id);
+    if (u == Pop::Weapon) return id.empty() ? tr("FETXT.None2", "None", "Aucune") : tr(id.c_str(), id.c_str());
+    if (u == Pop::Flag) { const Catalog::Item *f = k.flag(id); return f ? tr(f->text.c_str(), id.c_str()) : id; }
+    if (u == Pop::Grave) { size_t i = (size_t)atoi(id.c_str()); return i < k.graves.size() ? tr(k.graves[i].text.c_str(), k.graves[i].id.c_str()) : id; }
+    return id;
+}
+
+void Frontend::pickList(Pop::Use u) {
+    Pop p;
+    p.kind = Pop::Pick, p.use = u, p.vals = fieldValues(u), p.undo = getField(u);
+    p.row = (int)(std::find(p.vals.begin(), p.vals.end(), p.undo) - p.vals.begin());
+    setPop(p);
+}
+
+void Frontend::leaveEditor(bool accepted) {
+    if (accepted) barracks.teams[ed.index] = ed.t, barracks.save(DATA_DIR "teams.txt");
+    if (ed.after == Pop::Insert && ed.placeSlot >= 0 && !placed(ed.t.name) && lobby.newWorms() >= 1 && (room() ? (int)myTeams.size() < Lobby::MAX_TEAMS : !lobby.playing(ed.placeSlot)))
+        placeTeam(ed.placeSlot, ed.placePad, ed.index);
+    if (ed.after == Pop::Mission || ed.after == Pop::Online) reopen = (int)ed.after;
+    go(ed.ret);
+}
+
+void Frontend::editor(PadIn in, float t) {
+    Models::upload(GetTime() + 0.004);
+    const int rows = ed.page == 2 ? 3 : 6;
+    if (in.card) {
+        int np = Clamp(ed.page + in.card, 0, 2);
+        if (np != ed.page) ed.page = np, ed.row = std::min(ed.row, (np == 2 ? 3 : 6) - 1), Audio::play(Audio::Sfx::FePage);
+    }
+    if (in.dy) ed.row = clampWrap(ed.row + in.dy, rows), Audio::play(Audio::Sfx::FeHighlight);
+    // the row of an editor page -> the field it edits (NoField: a worm name or the speech test)
+    static const Pop::Use P2[6] = {Pop::Soundbank, Pop::NoField, Pop::Head, Pop::Eyes, Pop::Face, Pop::Hands}, P3[3] = {Pop::Weapon, Pop::Flag, Pop::Grave};
+    auto pageField = [&](int page, int row) { return page == 1 ? P2[row] : page == 2 ? P3[row] : Pop::NoField; };
+    const Pop::Use u = pageField(ed.page, ed.row);
+    if (ed.page == 0 && in.ok) edit(ed.t.worms[ed.row], "Worm name"), ed.changed = true, editPad = 0;
+    else if (ed.page == 1 && ed.row == 1 && in.ok) {  // FE.PlayRandomSpeech
+        static const Audio::Voice LINES[] = {Audio::Voice::Fire, Audio::Voice::Hurt, Audio::Voice::Victory, Audio::Voice::Jump, Audio::Voice::Idle};
+        Audio::setTeamVoice(0, voiceBankOf(ed.t.speech));
+        Audio::voice(0, LINES[GetRandomValue(0, 4)]);
+    } else if (u != Pop::NoField && in.ok) pickList(u);
+    else if (u != Pop::NoField && in.dx) {  // PrepareTeam$Hat+ / Hat- ...: the next / previous entry
+        std::vector<std::string> v = fieldValues(u);
+        int i = (int)(std::find(v.begin(), v.end(), getField(u)) - v.begin());
+        setField(u, v[clampWrap(i + in.dx, (int)v.size())]);
+        Audio::play(Audio::Sfx::FeChange);
+    }
+    if (in.plus) leaveEditor(true);
+    else if (in.back) {
+        if (!ed.changed) leaveEditor(false);
+        else setPop([&] { Pop p; p.kind = Pop::Confirm, p.use = Pop::Quit; return p; }());
+    }
+
+    // the screen: blue divide, watermark, the live worm on the left, the team's name over it, the page's list on the right [data: WXFE.TeamOptions items; the list positions assumed]
+    const float p = subIn(t), x = (1 - easeOut(p / 0.7f)) * -820;
+    const char *title = tr("FETXTH.TeamDesign", "TEAM DESIGN", "CRÉATION D'ÉQUIPE");
+    divide(x);
+    watermark(title, x, t);
+    titleControl(title, x);
+    FeFlat flat;
+    static int shownRow = -1, shownPage = -1;
+    static float rowSince = 0;
+    if (ed.row != shownRow || ed.page != shownPage) shownRow = ed.row, shownPage = ed.page, rowSince = t;
+    const char *clip = u == Pop::Flag ? "Salute" : u == Pop::Grave ? "Pray" : "Base";  // WXD.WormAnim set by the rows' Highlighted messages
+    wormPreview(ed.t.slot(), t, 0, clip, t - rowSince);
+    Vector2 wc = fePos(-155, -60);
+    DrawTexturePro(wormRt.texture, {0, 0, 256, -346}, {wc.x - 150, 170, 300, 405}, {}, 0, WHITE);
+    feLine(ed.t.name.c_str(), -291, 145, 23, GC_SUBHEADER_BLUE, 0);
+    Rectangle pn = {650, 150, 590, 350};
+    popup(pn);
+    FeFlat f2;
+    auto rowAt = [&](float y, float h) { return Rectangle{pn.x + 50, y, pn.width - 100, h}; };
+    auto value = [&](Pop::Use f) { return fieldLabel(f, getField(f)); };
+    if (ed.page == 0) {
+        for (int i = 0; i < 6; i++) {
+            std::string v = ed.t.worms[i] + (editing == &ed.t.worms[i] && fmodf(t, 1) < 0.5f ? "_" : "");
+            feRow(rowAt(pn.y + 24 + i * 52, 44), i == ed.row ? 1 : 0, TextFormat(tr(nullptr, "Worm %d", "Ver %d"), i + 1), v.c_str(), false);
+        }
+    } else if (ed.page == 1) {
+        feTextPx(tr("FETXTSH.SpeechSettings", "Speech Settings", nullptr), pn.x + pn.width / 2, pn.y + 34, 22, GC_BUTTON_YELLOW, 1);
+        feTextPx(tr("FETXT.WormSettings", "Worm Settings", nullptr), pn.x + pn.width / 2, pn.y + 160, 22, GC_BUTTON_YELLOW, 1);
+        const char *lab[6] = {tr("FETXT.Soundbank", "Soundbank", nullptr), tr("FETXT.TestSpeech", "Test Speech", nullptr), tr("FETXT.Head", "Head", nullptr), tr("FETXT.Eyes", "Eyes", nullptr),
+                              tr("FETXT.Face", "Face", nullptr), tr("FETXT.Hands", "Hands", nullptr)};
+        for (int i = 0; i < 6; i++) {
+            const Pop::Use f = pageField(1, i);
+            feRow(rowAt(i < 2 ? pn.y + 56 + i * 48 : pn.y + 180 + (i - 2) * 41, 38), i == ed.row ? 1 : 0, lab[i], f == Pop::NoField ? "" : value(f).c_str(), i == ed.row && f != Pop::NoField);
+        }
+    } else {
+        const char *lab[3] = {tr("FETXTSH.TeamWeapon", "Team Weapon", nullptr), tr("FETXTSH.TeamFlag", "Team Flag", nullptr), tr("FETXTSH.TeamGrave", "Team Grave", nullptr)};
+        for (int i = 0; i < 3; i++) feRow(rowAt(pn.y + 36 + i * 56, 44), i == ed.row ? 1 : 0, lab[i], value(pageField(2, i)).c_str(), i == ed.row);
+        if (const Catalog::Item *fl = catalog().flag(ed.t.flag)) image(fl->model, {pn.x + pn.width / 2 - 48, pn.y + 36 + 3 * 56 + 8, 96, 96});
+    }
+    Vector2 pl = fePos(124, -116);
+    feTextPx(TextFormat("%d/3", ed.page + 1), pl.x, pl.y, 21 * FE_S, GC_WHITE, 1);
+    pageArrow(false, ed.page == 0 ? 3 : 0, {60, -116}, 20);
+    pageArrow(true, ed.page == 2 ? 3 : 0, {190, -118}, 20);
+    setupFront(t, tr("FETIP.TeamDesign", "Customise your team", nullptr), false, 0);
+    static const LegendEntry L[] = {{"A", "Enter", nullptr, "Edit", "Modifier"}, {"< >", "< >", nullptr, "Change", "Changer"}, {"L R", "PgUp PgDn", nullptr, "Page", "Page"},
+                                    {"B", "Esc", nullptr, "Cancel", "Annuler"}, {"+", "N", "FETXT.Accept", "Accept", "Accepter"}};
+    legend(L, 5);
 }
 
 bool Frontend::setupTeams(bool plus, float t) {
     GameConfig &c = lobby.cfg;
-    const std::vector<std::string> banks = speechIds();
     Models::upload(GetTime() + 0.004);  // worm and hats are no menu assets: a plain launch uploads them only here or at the first match
     if (!cursors.placed && (!room() || c.teams)) {  // each token starts on the first slot its pad plays, else on the first free one
         cursors.placed = true;
@@ -2240,8 +2605,8 @@ bool Frontend::setupTeams(bool plus, float t) {
             cursors.slot[p] = own >= 0 ? own : std::max(free_, 0), tokenAt[p] = {-1, -1};
         }
     }
-    // a room: this console's team that the host's LOBBY did not list yet blocks another take
-    auto pending = [&] {
+    // a room: this console's team that the host's LOBBY did not list yet blocks another pick
+    auto pending_ = [&] {
         int own = 0;
         for (int k = 0; k < c.teams; k++) own += lobby.canEdit(k);
         return (int)myTeams.size() > own;
@@ -2250,41 +2615,23 @@ bool Frontend::setupTeams(bool plus, float t) {
     for (int p = 0; p < 4; p++) {
         PadIn in = padIn(p);
         int &s = cursors.slot[p];
-        if (panelPad == p) {  // the name / voice panel of this pad's player
-            if (!lobby.ownedBy(panelSlot, p)) panelPad = -1;
-            else {
-                GameConfig::Team &m = c.teamSetup[panelSlot];
-                if (in.back) panelPad = -1, Audio::play(Audio::Sfx::FeClick);
-                if (in.dy) panelRow ^= 1, Audio::play(Audio::Sfx::FeHighlight);
-                if (!panelRow && in.ok) editPad = p, edit(m.name, "Team name");
-                else if (panelRow && (in.dx || in.ok) && lobby.voice(panelSlot, in.dx ? in.dx : 1, banks)) Audio::setTeamVoice(panelSlot, voiceBankOf(m.speech)), Audio::play(in.dx ? Audio::Sfx::FeChange : Audio::Sfx::FeClick);
-                continue;
-            }
+        if (pop.kind != Pop::None) {  // a popup belongs to the pad that opened it
+            if (pop.pad == p) popInput(in, t);
+            continue;
         }
-        if (in.card || (in.dx && !lobby.ownedBy(s, p))) cursors.move(p, in.card ? in.card : in.dx), Audio::play(Audio::Sfx::FeChange);  // on its own player ◀ ▶ is the hat
-        else if (in.dx && lobby.hat(s, in.dx, hatIds())) Audio::play(Audio::Sfx::FeChange);
-        const bool own = lobby.ownedBy(s, p), freeSlot = !lobby.playing(s), cpuHere = lobby.playing(s) && lobby.canEdit(s) && c.teamSetup[s].cpu;
-        auto newTeam = [&](int cpu) {  // a room: the slot appears with the host's LOBBY
-            if (c.teams >= Lobby::MAX_TEAMS || pending()) return;
-            GameConfig::Team nt;
-            nt.name = DEFAULT_TEAMS[c.teams], nt.cpu = (uint8_t)cpu, nt.speech = banks.empty() ? "" : banks[c.teams % banks.size()], nt.pad = (uint8_t)p;
-            myTeams.push_back(nt);
-            net->sendTeams(myTeams), saveNetTeams(), s = c.teams;
-            Audio::play(Audio::Sfx::FeClick);
-        };
-        if (in.ok && own) panelPad = p, panelSlot = s, panelRow = 0, Audio::play(Audio::Sfx::FeClick);
-        else if (in.ok && freeSlot && room()) newTeam(0);
-        else if (in.ok && freeSlot && lobby.take(s, p)) Audio::play(Audio::Sfx::FeClick);
-        if (in.cpu && freeSlot && room()) { if (lobby.isHost()) newTeam(1); }
-        else if (in.cpu && lobby.cpuStep(s)) Audio::play(Audio::Sfx::FeClick);
-        if (in.back && !(own || cpuHere)) back = true;
-        else if (in.back) {  // B releases the player
-            if (room()) {
-                myTeams.erase(myTeams.begin() + net->lobby.teams[s].idx), net->sendTeams(myTeams), saveNetTeams();
-                cursors.removed(s), panelSlot -= panelSlot > s;
-            } else lobby.release(s);
-            Audio::play(Audio::Sfx::FeClick);
+        if (in.card || in.dx) cursors.move(p, in.card ? in.card : in.dx), Audio::play(Audio::Sfx::FeChange);
+        const bool freeSlot = !lobby.playing(s), mineSlot = lobby.playing(s) && lobby.canEdit(s);
+        if (in.ok && freeSlot) {
+            if (room() ? (c.teams >= Lobby::MAX_TEAMS || pending_()) : false) Audio::play(Audio::Sfx::FeError);
+            else if (lobby.newWorms() < 1) Audio::play(Audio::Sfx::FeError);  // the match holds MAX_MATCH_WORMS worms
+            else openTeams(Pop::Insert, p, s);
+        } else if (in.ok && mineSlot) {
+            Pop sp;
+            sp.kind = Pop::Slot, sp.pad = p, sp.slot = s;
+            setPop(sp);
         }
+        if (in.back && !mineSlot) back = true;
+        else if (in.back) releaseSlot(s), Audio::play(Audio::Sfx::FeClick);  // B takes the team out, like Remove Team
     }
     leave = back && room();
     if (back && !room()) saveSetup(c), go(Local);
@@ -2324,19 +2671,8 @@ bool Frontend::setupTeams(bool plus, float t) {
             feTextPx(TextFormat("%d", p + 1), at.x, at.y, 22, bright ? GC_BLACK : GC_WHITE, 1, bright ? BC_NONE : BC_BLACK);
         }
     }
-    if (panelPad >= 0) {  // the small name / voice panel of the pad's player
-        DrawRectangle(0, 0, 1280, 720, {0, 0, 0, 110});
-        Rectangle d = {440, 230, 400, 170};
-        if (!cardPanel(d)) DrawRectangleRounded(d, 0.1f, 6, PANEL);
-        const GameConfig::Team &m = c.teamSetup[panelSlot];
-        for (int r = 0; r < 2; r++) {
-            std::string v = r ? (m.speech.size() > 2 ? m.speech.substr(2) : "-") : m.name + (editing == &c.teamSetup[panelSlot].name && fmodf(t, 1) < 0.5f ? "_" : "");
-            feRow({d.x + 22, d.y + 28 + r * 56.0f, d.width - 44, 40}, r == panelRow, r ? tr("FETXTSH.Voice", "Voice", "Voix") : tr(nullptr, "Name", "Nom"), v.c_str(), r == panelRow && r);
-        }
-    }
     // tooltip: how to move the token; the red flag when the match cannot go on [ours]
-    const char *tip = panelPad >= 0 ? tr(nullptr, "A edits the name, left / right change the voice, B closes", "A modifie le nom, gauche / droite changent la voix, B ferme")
-                                    : tr(nullptr, "L / R move your token, A takes a free player", "L / R déplacent ton jeton, A prend un joueur libre");
+    const char *tip = tr("FETIP.InsertTeam", "Select a team to play.", nullptr);
     bool warn = false;
     if (!room() && lobby.count() < 2) warn = true, tip = tr(nullptr, "Two players are needed to play", "Il faut deux joueurs pour jouer");
     for (int k = 0; k < Lobby::MAX_TEAMS && !warn; k++)
@@ -2389,14 +2725,13 @@ void Frontend::setupMap(int dx, int dy, bool back, bool plus, const std::vector<
 
 bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
     GameConfig &c = lobby.cfg;
-    enum { Scheme_, Worms, FirstRule, Pot = FirstRule + RULES, Rows };
+    enum { Scheme_, FirstRule, Pot = FirstRule + RULES, Rows };
     rulesRow = clampWrap(rulesRow + dy, Rows);
     int preset = presetOf(c.scheme), np = (int)SCHEMES.size();
     bool mayEdit = lobby.canEditMatch();
     if (!mayEdit) dx = 0, ok = false;  // read-only: the rows and their help stay readable
     if (rulesRow == Scheme_ && dx) c.scheme = SCHEMES[clampWrap(preset < 0 ? (dx > 0 ? 0 : np - 1) : preset + dx, np)].s;
     if (rulesRow == Scheme_ && ok) screen = SchemeEdit, schemeRow = 0;
-    if (rulesRow == Worms) c.wormsPerTeam = Clamp(c.wormsPerTeam + dx, 1, 4);
     if (rulesRow >= FirstRule && rulesRow < Pot && (dx || ok)) c.rules ^= RULE_ROWS[rulesRow - FirstRule].bit;
     if (rulesRow == Pot && ok) screen = Wormpot, reel = 0;
     if (back) screen = SetupMap;
@@ -2411,7 +2746,7 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
     int pots = 0, pot = 0;
     for (int b = 0; b < WP_MODES; b++) if (wpOn(wormpotModes(c.wormpot), b)) pots++, pot = b;
     struct Row { const char *label; std::string value; int toggle; };  // toggle: -1 none, else the rule bit's row
-    std::vector<Row> rows = {{tr("FETXT.Scheme", "Scheme", "Schéma"), preset < 0 ? "Custom" : SCHEMES[preset].name, -1}, {tr(nullptr, "Worms per team", "Vers par équipe"), TextFormat("%d", c.wormsPerTeam), -1}};
+    std::vector<Row> rows = {{tr("FETXT.Scheme", "Scheme", "Schéma"), preset < 0 ? "Custom" : SCHEMES[preset].name, -1}};
     for (int r = 0; r < RULES; r++) rows.push_back({ruleLabel(r), c.rules & RULE_ROWS[r].bit ? tr("FETXT.On", "On", "Oui") : tr("FETXT.Off", "Off", "Non"), r});
     rows.push_back({tr("FETXT.Wormpot", "Wormpot", "Wormpot"), !pots ? tr(nullptr, "None", "Aucun") : pots == 1 ? potName(pot) : TextFormat(tr(nullptr, "%d modes", "%d modes"), pots), -1});
     const char *title = rows[rulesRow].label, *help = nullptr;  // the left panel explains the selected row with W4M's own text
@@ -2448,8 +2783,18 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
     return start;
 }
 
+void Frontend::captureState(const std::string &what) {
+    loadTeams();
+    if (what == "selectteam") screen = Local, openTeams(Pop::Mission, -1, 0, 0);
+    else if (what == "createask") screen = MyWorms, startCreate(Pop::Create);
+    else if (what.compare(0, 8, "teamedit") == 0 && what.size() == 9) {
+        openEditor(barracks.find(missionTeamName()), MyWorms, -1, 0, Pop::Edit);
+        screen = TeamEdit, leaving = -1, ed.page = what[8] - '1', ed.row = ed.page == 2 ? 1 : 0;
+    }
+}
+
 void Frontend::enterRoom(bool l) {
-    online = true, lan = l, loaded = false, screen = SetupTeams, cursors = {}, rulesRow = 0, teamsDirty = false, editing = nullptr;
+    online = true, lan = l, loaded = false, screen = SetupTeams, cursors = {}, rulesRow = 0, teamsDirty = false, editing = nullptr, pop = {};
     myTeams.clear();
 }
 
@@ -2485,7 +2830,7 @@ void Frontend::toNet() {
         teamsDirty |= wireOf(m) != wireOf(e) || m.pad != e.pad;
         m = e;
     }
-    if (teamsDirty && now() - teamsSent >= 0.1f) net->sendTeams(myTeams), saveNetTeams(), teamsDirty = false, teamsSent = now();  // typing sends a few times a second
+    if (teamsDirty && now() - teamsSent >= 0.1f) net->sendTeams(myTeams), teamsDirty = false, teamsSent = now();
     Net::Lobby &n = net->lobby;
     if (lobby.isHost() && (n.map != c.map || n.rules != c.rules || n.wormpot != c.wormpot || n.wormsPerTeam != c.wormsPerTeam || memcmp(&n.scheme, &c.scheme, sizeof(Scheme)))) {
         n.map = c.map, n.rules = c.rules, n.scheme = c.scheme, n.wormpot = c.wormpot, n.wormsPerTeam = c.wormsPerTeam;

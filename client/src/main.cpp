@@ -710,7 +710,10 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     const Vector3 ROOT = {0, 0.15f, 0};
     if (roll) p = Vector3Add(p, Vector3Subtract(Vector3Transform(ROOT, MatrixRotateY(w.yaw)), Vector3Transform(ROOT, MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)))));
     Matrix root = MatrixMultiply(MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)), MatrixTranslate(p.x, p.y, p.z));
-    if (!Models::draw("worm", p, w.yaw, roll, tint, clip, t, loop, aim, aimT, ly)) return false;
+    Models::gloves(w.team < (int)g.cfg.teamSetup.size() ? catalog().drawName(g.cfg.teamSetup[w.team].gloves) : nullptr);
+    bool drawn = Models::draw("worm", p, w.yaw, roll, tint, clip, t, loop, aim, aimT, ly);
+    Models::gloves(nullptr);
+    if (!drawn) return false;
     Matrix m;
     bool loc = Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly);
     if (loc && i == g.current) launchAt = Vector3Transform({}, MatrixMultiply(m, root));  // no held mesh: the worm's WeaponLocator (0x594630)
@@ -1347,6 +1350,7 @@ int main(int argc, char **argv) {
         ClearBackground(SKYBLUE);
         Lit::frame(c.position);
         BeginMode3D(c);
+        Models::gloves(getenv("W4NX_GLOVES"));  // W4NX_GLOVES: a glove model (gloves/cowboy) on the worm
         for (int k = 0; k < 8; k++) {
             Vector3 p = Vector3Scale({-3.6f + (k % 4) * 2.4f, k < 4 ? 1 : -1.6f, 0}, zoom);
             Matrix m;
@@ -1386,7 +1390,7 @@ int main(int argc, char **argv) {
     bool intro = uiShot && !strcmp(uiShot, "intro");
     bool loadShot = uiShot && !strcmp(uiShot, "loading");
     if (uiFrames.empty() && loadShot) uiFrames = {20, 60, 120, 170};  // intro, intro, loading screen x2
-    if (uiFrames.empty()) uiFrames.push_back(uiShot && !strncmp(uiShot, "setup2", 6) ? 34 : 10);
+    if (uiFrames.empty()) uiFrames.push_back(uiShot && (!strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6)) ? 34 : 10);
     // --bench <map> [frames] [nosync]: CPU-vs-CPU match, uncapped, one sim tick per frame, prints per-section ms and exits
     bool bench = argc > 2 && !strcmp(argv[1], "--bench");
     int benchFrames = bench && argc > 3 ? atoi(argv[3]) : 1200;
@@ -1455,7 +1459,9 @@ int main(int argc, char **argv) {
     }
     if (shot) {
         GameConfig sc = {1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u};
-        if (utilShot) loadCustomWeapons(DATA_DIR "custom_weapons.json", sc.custom);  // --utilshot <Factory weapon name>
+        std::vector<WeaponDef> mine;  // --utilshot <Factory weapon name>: team 0's Weapon Factory weapon
+        if (utilShot && loadCustomWeapons(DATA_DIR "custom_weapons.json", mine))
+            for (const WeaponDef &d : mine) if (d.name == utilShot) sc.teamSetup.resize(2), sc.teamSetup[0].secret = d;
         game.start(sc);
         Audio::preloadVoices(game.teams);
         game.terrain.remesh();
@@ -1691,12 +1697,13 @@ int main(int argc, char **argv) {
     auto openMissions = [&] {
         if (missions.empty()) {
             double t = GetTime();
-            missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, DATA_DIR), progress.load(DATA_DIR "progress.txt"), scriptUnlocks = progress.unlocks;
+            missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, DATA_DIR);
             TraceLog(LOG_INFO, "MISSIONS: opened +%.0f ms after the menu scene, waited %.1f ms (list at +%.0f)", (t - titleT) * 1000,
                      (GetTime() - t) * 1000, misList);
             misFrames = 0;
         }
-        missionMenu.team = Ui::teamName(opt, 0);
+        missionMenu.team = front.missionTeamName();  // the picked team's progress (W4M StoredTeamData StoryMissionsCompleted)
+        progress.open(DATA_DIR "progress.txt", Progress::teamFile(DATA_DIR, missionMenu.team).c_str()), scriptUnlocks = progress.unlocks;
         screen = Screen::Missions;
     };
     auto startMission = [&](int i, bool preStart = true) {
@@ -1713,12 +1720,13 @@ int main(int argc, char **argv) {
         pause.open = !strcmp(uiShot, "pause");
         if (!strcmp(uiShot, "gameover")) game.phase = Phase::GameOver, game.winner = 0, onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
     } else if (uiShot) {
-        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strncmp(uiShot, "setup2", 6) ? Ui::Frontend::SetupTeams
+        front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) ? Ui::Frontend::SetupTeams
                      : !strcmp(uiShot, "setupmap") ? Ui::Frontend::SetupMap : !strcmp(uiShot, "setuprules") ? Ui::Frontend::SetupRules
                      : !strcmp(uiShot, "options") ? Ui::Frontend::Options : !strcmp(uiShot, "controls") ? Ui::Frontend::Controls : Ui::Frontend::Title;
         static const std::pair<const char *, Ui::Frontend::Screen> MENUS[] = {{"local", Ui::Frontend::Local}, {"network", Ui::Frontend::Network},
             {"myworms", Ui::Frontend::MyWorms}, {"helpopts", Ui::Frontend::HelpOpts}, {"confirm", Ui::Frontend::Confirm}};
         for (auto &m : MENUS) if (!strcmp(uiShot, m.first)) front.screen = m.second;
+        front.captureState(uiShot);
         // netteams | netmap | netrules [_ro]: a network room of 3 consoles seen by the host / by a guest; salon | salonjoin: the lobby list
         bool guest = strstr(uiShot, "_ro") != nullptr, netShot = !strncmp(uiShot, "net", 3);
         if (netShot || !strncmp(uiShot, "salon", 5)) {
@@ -1730,14 +1738,12 @@ int main(int argc, char **argv) {
         if (netShot) {
             net.roomId = 1, net.hostId = 1;
             net.players = {{1, "Clem's Switch", true}, {2, "Living room", true}, {3, "Bedroom", true}};
-            auto shotTeam = [](const char *name, int cpu, int hat) {
-                GameConfig::Team t;
-                t.name = name, t.cpu = (uint8_t)cpu, t.hat = hat < (int)Ui::hatIds().size() ? Ui::hatIds()[hat] : "";
-                return t;
-            };
-            net.consoleTeams[1] = {shotTeam("Red Rockets", 0, 12), shotTeam("Pirate Pete", 3, 30)};
-            net.consoleTeams[2] = {shotTeam("Blue Bombers", 0, 20)};
-            net.consoleTeams[3] = {shotTeam("Green Grubs", 0, 40)};
+            Barracks saved;
+            saved.load("/nonexistent", DATA_DIR "assets/defteams.txt");  // W4M's default teams
+            auto shotTeam = [&](int i) { return saved.teams[i].slot(3, -1); };
+            net.consoleTeams[1] = {shotTeam(0), shotTeam(5)};
+            net.consoleTeams[2] = {shotTeam(1)};
+            net.consoleTeams[3] = {shotTeam(2)};
             net.lobby.teams = {{1, 0, {}}, {2, 0, {}}, {3, 0, {}}, {1, 1, {}}};
             net.lobby.map = maps.size() > 6 ? maps[6] : "", net.lobby.rules = 0, net.lobby.wormsPerTeam = 3, net.lobby.scheme = SCHEMES[1].s;
             net.lobby.ready = {1, 3};
@@ -1806,6 +1812,7 @@ int main(int argc, char **argv) {
         bool scriptEnd = false;
         for (; inScript && (sf >= 0 || fscanf(inScript, "%d %d %d", &sf, &sk, &sd) == 3) && sf <= frame; sf = -1)
             if (sk < 0) scriptEnd = true;
+            else if (sd == 2) Ui::Frontend::simText.push_back((char)sk);  // a typed character
             else PlayAutomationEvent({0, sd ? 2u : 1u, {sk}});  // rcore.c INPUT_KEY_DOWN / INPUT_KEY_UP
         if (inScript && (screen != shown || frame == 0)) printf("frame %d screen %d\n", frame, (int)(shown = screen)), fflush(stdout);
         if (scriptEnd) break;
@@ -1888,7 +1895,7 @@ int main(int argc, char **argv) {
             static bool welcomeChecked = false;
             if (!welcomeChecked && !uiShot && !inScript && !netbot) {
                 welcomeChecked = true;
-                progress.load(DATA_DIR "progress.txt");
+                progress.open(DATA_DIR "progress.txt");
                 if (!progress.welcome && Movie::has("Welcome")) Movie::start("Welcome"), welcomeMovie = true, screen = Screen::Movie;
             }
             if (screen == Screen::Movie) continue;
@@ -1904,10 +1911,22 @@ int main(int argc, char **argv) {
                 if (frame == 8) Ui::Frontend::sim[1].card = -1;
                 if (frame == 10) Ui::Frontend::sim[1].ok = true;
                 if (frame == 12) Ui::Frontend::sim[1].card = 1;
-                if (frame == 14 || frame == 15) Ui::Frontend::sim[1].cpu = true;
                 if (frame == 16) Ui::Frontend::sim[0].card = -1;
                 if (frame == 17) Ui::Frontend::sim[0].dx = 1;
                 if (frame == 20 && strlen(uiShot) > 6) Ui::Frontend::sim[0].ok = true;
+            }
+            if (uiShot && !strncmp(uiShot, "setup3", 6)) {  // saved teams placed: pad 1 picks Gunslingers, pad 2 Funky Dudes, then CPU Easy (third row of what is left) on slot 3, its token ends on the free slot 4; setup3list stops with that list open, setup3slot opens slot 1's settings
+                Ui::Frontend::simPads = 3;
+                const bool list = !strcmp(uiShot, "setup3list");
+                for (int f : {4, 6}) if (frame == f) Ui::Frontend::sim[0].ok = true;
+                if (frame == 8) Ui::Frontend::sim[1].card = 1;
+                for (int f : {10, 12}) if (frame == f) Ui::Frontend::sim[1].ok = true;
+                if (frame == 14) Ui::Frontend::sim[1].card = 1;
+                if (frame == 16) Ui::Frontend::sim[1].ok = true;
+                if (frame == 18 || frame == 20) Ui::Frontend::sim[1].dy = 1;
+                if (frame == 22 && !list) Ui::Frontend::sim[1].ok = true;
+                if (frame == 24 && !list) Ui::Frontend::sim[1].card = 1;
+                if (frame == 28 && !strcmp(uiShot, "setup3slot")) Ui::Frontend::sim[0].ok = true;
             }
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;
@@ -1926,7 +1945,6 @@ int main(int argc, char **argv) {
             if (a == Ui::Frontend::QuickMatch) {  // you vs one level-2 CPU team on a random map, Standard scheme; opt untouched
                 GameConfig q = opt;
                 q.teams = 2, q.wormsPerTeam = 4, q.rules = 0, q.wormpot = 0, q.mission = nullptr, q.scheme = SCHEMES[0].s;
-                q.custom.clear();
                 q.teamSetup.resize(2);
                 q.teamSetup[0].cpu = 0;
                 q.teamSetup[1] = {"CPU", 2};
@@ -1947,7 +1965,7 @@ int main(int argc, char **argv) {
                 screen = Screen::Lobby;
             } else if (a == Ui::Frontend::RoomStart) {
                 opt.seed = (uint32_t)(clock * 1000) + frame;
-                net.startMatch(opt.seed, opt.custom);
+                net.startMatch(opt.seed);
             } else if (a == Ui::Frontend::LeaveRoom) {
                 if (lan) leaveLan();
                 else net.leave(), net.listRooms();
@@ -1989,8 +2007,8 @@ int main(int argc, char **argv) {
             }
             EndDrawing();
             if (uiShot && frame >= uiFrames.back()) break;
-            if (!on && welcomeMovie) welcomeMovie = false, progress.welcome = true, progress.save(DATA_DIR "progress.txt"), screen = Screen::Menu;
-            else if (!on) progress.storyIntro = true, progress.save(DATA_DIR "progress.txt"), missionMenu.shown = -1, screen = Screen::Missions;
+            if (!on && welcomeMovie) welcomeMovie = false, progress.welcome = true, progress.save(), screen = Screen::Menu;
+            else if (!on) progress.storyIntro = true, progress.save(), missionMenu.shown = -1, screen = Screen::Missions;
             continue;
         }
         if (screen == Screen::Missions) {
@@ -2066,7 +2084,7 @@ int main(int argc, char **argv) {
                 c.seed = (uint32_t)(clock * 1000) + frame;
                 net.lobby.map = c.map, net.lobby.rules = c.rules, net.lobby.scheme = c.scheme, net.lobby.wormpot = c.wormpot, net.lobby.wormsPerTeam = c.wormsPerTeam;
                 net.pushLobby();
-                net.startMatch(c.seed, c.custom);
+                net.startMatch(c.seed);
             }
             if (inRoom && !netbot) {  // joined or created: the setup screens in network mode
                 front.enterRoom(lan);
@@ -2600,7 +2618,7 @@ int main(int argc, char **argv) {
                 for (const std::string &u : {egg.item, bonus ? "Lock.T." + ms->level : std::string()})
                     if (!u.empty() && std::find(progress.unlocks.begin(), progress.unlocks.end(), u) == progress.unlocks.end())
                         progress.unlocks.push_back(u), scriptUnlocks = progress.unlocks;
-                progress.save(DATA_DIR "progress.txt");
+                progress.save();
             }
             missionSaved = true;
             int next = missionIdx + 1;

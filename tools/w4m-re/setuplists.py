@@ -3,8 +3,9 @@
 
   setuplists.py [OUTDIR]   default: client/assets (gitignored: game data, never commit it)
 multimaps.txt   the Level_FileName of every SCRIPTS.XOM WXFE_LevelDetails of Level_Type 0 (the Prebuilt landscapes of WXFEP.SelectLandscape2)
-attachments.txt "<type>\t<WXFE.A id>\t<model>\t<MeshID>\t<text key>\t<lock>" per WORMATTACHMENTS entry, type 0 hat 1 gloves 2 glasses 3 tash
-                4 (Hat.Terminator); model = <dir>/<file> under assets/models, written by w4m-models from this list
+attachments.txt "<type>\t<WXFE.A id>\t<model>\t<MeshID>\t<text key>\t<lock>\t<state>" per WORMATTACHMENTS entry, type 0 hat 1 gloves 2 glasses 3 tash
+                4 (Hat.Terminator); model = <dir>/<file> under assets/models, written by w4m-models from this list; state = the lock's DEFSAVE
+                WXFE_UnlockableItem State (0 Hidden, 1 Purchasable, 2 Unlocked; 2 without a lock)
 graves.txt      "<model>\t<mesh>\t<text key>\t<name>" per WXFEP.SelectGraveList row, in User.Grave order (0x725eda: index -> Grave.* mesh)
 flags.txt       "<Flag id>\t<ui png>\t<text key>" per WXFEP.SelectFlagList row (LOCAL FlagDataContainer: TargaName, TextResource)
 speech.txt      "<speech bank>\t<text key>" per WXFEP.SelectSoundbankList row (the bank is our voices/<bank without 'vo'>)
@@ -30,10 +31,12 @@ def main(a):
     out = a[0] if a else os.path.join(os.path.dirname(__file__), '..', '..', 'client', 'assets')
     tw = os.path.join(GAME, 'Data', 'Tweak')
     att = dump(os.path.join(tw, 'WORMATTACHMENTS.XOM'))
+    save = dump(os.path.join(tw, 'DEFSAVE.XOM'))
     parts = [(k, v) for k, v in att.items() if v.get('_type') == 'WXFE_WormAttachments' and v['Type'] in DIRS]
     with open(os.path.join(out, 'attachments.txt'), 'w') as f:
         for k, v in parts:
-            f.write('%d\t%s\t%s/%s\t%s\t%s\t%s\n' % (v['Type'], k, DIRS[v['Type']], model(v['MeshID']), v['MeshID'], v['MeshTextNameID'], v.get('Lock', '')))
+            f.write('%d\t%s\t%s/%s\t%s\t%s\t%s\t%d\n' % (v['Type'], k, DIRS[v['Type']], model(v['MeshID']), v['MeshID'], v['MeshTextNameID'], v.get('Lock', ''),
+                                                       save[v['Lock']]['State'] if v.get('Lock') in save else 2))
     lv = sorted({v['Level_FileName'] for v in dump(os.path.join(tw, 'SCRIPTS.XOM')).values() if v.get('_type') == 'WXFE_LevelDetails' and v['Level_Type'] == 0})
     with open(os.path.join(out, 'multimaps.txt'), 'w') as f:
         f.write('\n'.join(lv) + '\n')

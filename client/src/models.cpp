@@ -28,11 +28,11 @@
 
 namespace {
 // W4M XChildSelector (w4m-models root extras "sel"): the mesh showing child 0 and each child's material; per clip keying it,
-// its SelectedChild value at 60 fps; "A" tracks: a mesh's XConstColorSet alpha at 60 fps
+// its SelectedChild value at 60 fps; "A" tracks: a mesh's XConstColorSet alpha at 60 fps; "H": a W4M hand shape (gloves swap them)
 struct Sel { int mesh; std::vector<int> mat; };
 struct SelTrack { int sel; std::vector<float> v; };
 using Tracks = std::map<std::string, std::vector<SelTrack>>;  // per W4M clip
-void parseSel(const char *p, std::vector<Sel> &sels, Tracks &tracks, Tracks &alphas) {
+void parseSel(const char *p, std::vector<Sel> &sels, Tracks &tracks, Tracks &alphas, std::vector<int> &hands) {
     while (*p && *p != '"') {  // "S <primitive> <material>...;" then "K|A <clip> <selector|primitive> <length> <value or value*count>...;"
         const char *end = p + strcspn(p, ";\"");
         std::istringstream in(std::string(p, end));
@@ -42,6 +42,9 @@ void parseSel(const char *p, std::vector<Sel> &sels, Tracks &tracks, Tracks &alp
             in >> s.mesh;
             for (int m; in >> m;) s.mat.push_back(m + 1);  // raylib material 0 is its default
             sels.push_back(s);
+        } else if (tag == "H") {
+            int m;
+            if (in >> m) hands.push_back(m);
         } else if (tag == "K" || tag == "A") {
             std::string clip;
             SelTrack t{};
@@ -74,12 +77,14 @@ struct Entry {
     std::vector<int> glow;  // materials drawn as additive light (W4M shader surfaces)
     std::vector<Sel> sels;
     Tracks tracks, alphas;
+    std::vector<int> hands, handBone;  // hand shape meshes; a glove's: per bone, the body's bone of that name
+    bool hideHands = false;
     std::vector<float> alpha;  // per mesh, from the last draw's clip
     std::vector<std::array<float, 16>> mat;  // per mesh: its W4M materialMatrix rows (w4m-models primitive extras "w4m")
     std::vector<char> keyed;  // meshes whose shape alpha the clip keys: blended shapes, drawn after the opaque ones
     // skinned poses in their own buffers: a worm drawn in the shadow pass then the view is skinned once a frame
     // pose: the skinned meshes' positions and normals, all meshes in one buffer each (a pose is two uploads)
-    struct Slot { const ModelAnimation *a, *am; int f, af; bool lay; Models::Layers ly; float eyeUV[3]; unsigned long used; std::vector<Mesh> meshes; unsigned pose[2]; };
+    struct Slot { const ModelAnimation *a, *am; int f, af; bool lay; Models::Layers ly; float eyeUV[3]; unsigned long used; std::vector<Mesh> meshes; unsigned pose[2]; std::vector<Matrix> bones; };
     std::vector<Slot> slots;
 };
 std::map<std::string, Entry> models;
@@ -131,6 +136,7 @@ struct Job {
     Vector3 fx{};  // translation of the glb's FxLocator node (WEAPTWK FxLocator: the ArielFx emitters' origin), model space
     std::vector<Sel> sels;
     Tracks tracks, alphas;
+    std::vector<int> hands;
     std::vector<std::array<float, 16>> mat;
 };
 std::mutex mu;
@@ -263,7 +269,7 @@ Job prepare(const char *path) {
     for (size_t i = 0; i < g->nodes_count; i++)
         if (g->nodes[i].name && !strcmp(g->nodes[i].name, "FxLocator") && g->nodes[i].has_translation)
             j.hasFx = true, j.fx = {g->nodes[i].translation[0], g->nodes[i].translation[1], g->nodes[i].translation[2]};
-    if (const char *x = g->extras.data ? strstr(g->extras.data, "\"sel\":\"") : nullptr) parseSel(x + 7, j.sels, j.tracks, j.alphas);
+    if (const char *x = g->extras.data ? strstr(g->extras.data, "\"sel\":\"") : nullptr) parseSel(x + 7, j.sels, j.tracks, j.alphas, j.hands);
     cgltf_free(g);
     auto [js, end] = json(j);
     const char *tag = "\"baseColorTexture\"";
@@ -329,7 +335,7 @@ void add(Job &j) {
     if (strstr(j.path.c_str(), "/frontend/")) return (void)(spare[j.path] = e.m);  // FrontBg's scene, freed by FrontBg
     for (int k = 0; k < e.m.materialCount; k++)
         if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
-    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.mat = std::move(j.mat);
+    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.hands = std::move(j.hands), e.mat = std::move(j.mat);
     for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
     for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
         const char *n = e.m.skeleton.bones[b].name;
@@ -876,6 +882,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
         if (blendLoc >= 0) { float v = pass; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
         for (int i = 0; i < m.meshCount; i++) {
             if ((i < (int)e.keyed.size() && e.keyed[i]) != (pass == 1)) continue;
+            if (e.hideHands && std::find(e.hands.begin(), e.hands.end(), i) != e.hands.end()) continue;
             int mi = m.meshMaterial[i];
             if (std::find(e.glow.begin(), e.glow.end(), mi) != e.glow.end()) continue;
             Material mat = m.materials[mi];
@@ -1005,9 +1012,49 @@ static Entry::Slot &slotFor(Entry &e, const ModelAnimation *a, int f, const Mode
     }
     Entry::Slot &s = *std::min_element(e.slots.begin(), e.slots.end(), [](const Entry::Slot &x, const Entry::Slot &y) { return x.used < y.used; });
     skin(e, *a, f, am, af, ly, s.meshes.data(), s.pose);
+    s.bones.assign(e.m.boneMatrices, e.m.boneMatrices + e.m.skeleton.boneCount);
     s.a = a, s.f = f, s.am = am, s.af = af, s.lay = lay, s.ly = lay ? *ly : Models::Layers{}, s.used = ++seq;
     s.eyeUV[0] = s.eyeUV[1] = s.eyeUV[2] = NAN;  // uploaded below
     return s;
+}
+
+static const char *gloveName = nullptr;
+void Models::gloves(const char *name) { gloveName = name; }
+
+// W4M glove (0x5a33a0, 0x756734): its hand shapes replace the body's, skinned on the body's bones of the same name
+static void drawGloves(Entry &g, const Entry &body, const std::vector<Matrix> &bones, Vector3 pos, Color tint) {
+    Model &m = g.m;
+    int nb = (int)body.m.skeleton.boneCount;
+    if (g.handBone.empty())
+        for (int b = 0; b < (int)m.skeleton.boneCount; b++) {
+            int k = 0;
+            while (k < nb && strcmp(body.m.skeleton.bones[k].name, m.skeleton.bones[b].name)) k++;
+            g.handBone.push_back(k < nb ? k : 0);
+        }
+    static std::vector<Matrix> nm;
+    nm.resize(bones.size());
+    for (size_t b = 0; b < bones.size(); b++) nm[b] = MatrixTranspose(MatrixInvert(bones[b]));
+    for (int i : g.hands) {
+        if (i >= m.meshCount || !skinned(m.meshes[i])) continue;
+        Mesh &me = m.meshes[i];
+        for (int v = 0; v < me.vertexCount; v++) {
+            Vector3 p = {me.vertices[3 * v], me.vertices[3 * v + 1], me.vertices[3 * v + 2]}, op = {}, on = {};
+            Vector3 nr = me.normals ? Vector3{me.normals[3 * v], me.normals[3 * v + 1], me.normals[3 * v + 2]} : Vector3{};
+            for (int j = 0; j < 4; j++) {
+                float w = me.boneWeights[4 * v + j];
+                int b = me.boneIndices[4 * v + j] < g.handBone.size() ? g.handBone[me.boneIndices[4 * v + j]] : 0;
+                if (w == 0 || b >= (int)bones.size()) continue;
+                op = Vector3Add(op, Vector3Scale(Vector3Transform(p, bones[b]), w));
+                on = Vector3Add(on, Vector3Scale(Vector3Transform(nr, nm[b]), w));
+            }
+            memcpy(&me.animVertices[3 * v], &op, sizeof op);
+            memcpy(&me.animNormals[3 * v], &on, sizeof on);
+        }
+        rlUpdateVertexBuffer(me.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_POSITION], me.animVertices, me.vertexCount * 3 * sizeof(float), 0);
+        if (me.normals) rlUpdateVertexBuffer(me.vboId[RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL], me.animNormals, me.vertexCount * 3 * sizeof(float), 0);
+    }
+    m.transform = body.m.transform;
+    drawModel(g, pos, tint);
 }
 
 bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers *ly) {
@@ -1024,8 +1071,12 @@ bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color t
         eyes(e, ly, s.meshes.data(), s.eyeUV);
         Mesh *own = e.m.meshes;
         e.m.meshes = s.meshes.data();
+        auto gl = gloveName && !e.hands.empty() ? models.find(gloveName) : models.end();
+        e.hideHands = gl != models.end();
         drawModel(e, pos, tint);
+        e.hideHands = false;
         e.m.meshes = own;
+        if (gl != models.end()) drawGloves(gl->second, e, s.bones, pos, tint);
         return true;
     }
     eyes(e, ly, e.m.meshes, e.eyeUV);

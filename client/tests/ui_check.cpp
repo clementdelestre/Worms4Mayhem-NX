@@ -13,23 +13,20 @@
 
 int main() {
     loadWeapons("romfs/weapons.json");
-    {  // Lobby slots: a pad takes a free slot only, a pad may take several, release frees it, Y makes a CPU then cycles its level, pads in use are this console's human slots
+    {  // Lobby slots: a pad puts a saved team in a free slot only, a pad may play several, release frees it, pads in use are this console's human slots (a CPU team needs none)
         Lobby l;
         l.cfg.teams = Lobby::MAX_TEAMS, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
-        assert(l.count() == 0 && l.take(2, 1) && !l.take(2, 0) && l.take(0, 1) && l.playing(0) && l.playing(2) && !l.playing(1) && l.padsUsed() == 0b10);
+        GameConfig::Team h, cpu;
+        h.name = "H", cpu.name = "D", cpu.cpu = 3;
+        assert(l.count() == 0 && l.place(2, 1, h) && !l.place(2, 0, h) && l.place(0, 1, h) && l.playing(0) && l.playing(2) && !l.playing(1) && l.padsUsed() == 0b10);
         assert(l.ownedBy(2, 1) && !l.ownedBy(2, 0) && !l.ownedBy(1, 1));
-        assert(l.cpuStep(3) && l.cfg.teamSetup[3].cpu == 1 && !l.cpuStep(2) && l.padsUsed() == 0b10);  // a human slot is no CPU
-        for (int i = 0; i < 5; i++) assert(l.cpuStep(3));
-        assert(l.cfg.teamSetup[3].cpu == 1);  // level 5 wraps to 1 (1 + 5 steps)
-        assert(l.release(3) && !l.playing(3) && l.cfg.teamSetup[3].cpu == 0 && !l.release(3) && l.cpuStep(3) && l.cfg.teamSetup[3].cpu == 1);
-        l.cfg.teamSetup[0].name = "A", l.cfg.teamSetup[2].name = "C", l.cfg.teamSetup[3].name = "D";
+        assert(l.place(3, 0, cpu) && l.cfg.teamSetup[3].cpu == 3 && l.padsUsed() == 0b10 && !l.ownedBy(3, 0));
+        assert(l.release(3) && !l.playing(3) && !l.release(3));
+        l.cfg.teamSetup[0].name = "A", l.cfg.teamSetup[2].name = "C", l.place(3, 0, cpu);
         GameConfig m = l.match();  // playing slots 0, 2, 3 in order
         assert(m.teams == 3 && m.teamSetup.size() == 3 && m.teamSetup[0].name == "A" && m.teamSetup[1].name == "C" && m.teamSetup[2].name == "D");
-        const std::vector<std::string> hats = {"", "A", "B"}, banks = {"voa", "vob", "voc"};
-        assert(l.hat(0, -1, hats) && l.cfg.teamSetup[0].hat == "B" && l.voice(0, -1, banks) && l.cfg.teamSetup[0].speech == "voc");  // wrap; an unlisted speech steps to an end
-        assert(l.voice(0, 1, banks) && l.cfg.teamSetup[0].speech == "voa" && l.hat(0, 1, hats) && l.cfg.teamSetup[0].hat.empty());
         l.owner[0] = 7;  // another console's slot is read-only
-        assert(!l.hat(0, 1, hats) && !l.ownedBy(0, 1) && !l.release(0) && l.padsUsed() == 0b10);
+        assert(!l.ownedBy(0, 1) && !l.release(0) && !l.place(0, 1, h) && l.padsUsed() == 0b10);
     }
     {  // Teams screen tokens move on their own and a room's later slots shift up on a release
         TeamCursors c;
@@ -43,19 +40,6 @@ int main() {
         assert(p.r == 156 && p.g == 91 && p.b == 147 && p.a == 255);
         Color w = mixColors(WHITE, WHITE);
         assert(w.r == 255 && w.g == 255 && w.b == 255);
-    }
-    {  // network teams saved in setup.txt: name with spaces, hat, pad and the number of teams come back
-        std::vector<GameConfig::Team> mine(2), back;
-        mine[0].name = "Pirate Pete", mine[0].hat = "WXFE.A.Hat.Pirate", mine[0].speech = "vopirate", mine[0].pad = 2;
-        mine[1].name = "Two Words Here", mine[1].pad = 1;
-        std::string txt = Ui::netProfileText(mine) + "teams 3\n";
-        size_t at = 0;
-        for (size_t nl; (nl = txt.find('\n', at)) != std::string::npos; at = nl + 1) {
-            bool net = Ui::netProfileLine(txt.substr(at, nl - at).c_str(), back);
-            assert(net == !txt.compare(at, 3, "net"));
-        }
-        assert(back.size() == 2 && back[0].name == "Pirate Pete" && back[0].hat == "WXFE.A.Hat.Pirate" && back[0].speech == "vopirate" && back[0].pad == 2);
-        assert(back[1].name == "Two Words Here" && back[1].hat.empty() && back[1].pad == 1);
     }
     {  // W4M lobby timer: 30 s from the second player, restarted by a join, off under 2 players, everyone ready at its end
         ReadyTimer t;
@@ -232,6 +216,68 @@ int main() {
         GameConfig::Team t = b.teams[1].slot(5, 2, -1);
         assert(t.name == "Funky Dudes" && t.worms == 5 && t.alliance == 2 && t.handicap == -1 && t.glasses == "WXFE.A.Glasses.Star" && t.wormNames.size() == 6);
         remove(path), remove(setup);
+    }
+    {  // W4M team lists: Insert hides the teams already in a slot and, where CPU teams are off, the CPU ones; the human lists skip CPU teams; Delete protects the last human team
+        Barracks b;
+        remove("barracks_check.txt");
+        b.load("barracks_check.txt", "assets/defteams.txt");
+        auto placed = [](const std::string &n) { return n == "Gunslingers" || n == "CPU Easy"; };
+        assert(b.list(Barracks::List::Insert).size() == 7 && b.list(Barracks::List::Edit).size() == 7 && b.list(Barracks::List::Human).size() == 4);
+        std::vector<int> ins = b.list(Barracks::List::Insert, placed), noCpu = b.list(Barracks::List::Insert, placed, false);
+        assert(ins.size() == 5 && b.teams[ins[0]].name == "Funky Dudes" && noCpu.size() == 3 && b.teams[noCpu.back()].name == "Scots");
+        assert(b.list(Barracks::List::Delete).size() == 7);
+        while (b.humans() > 1) b.remove(0);
+        std::vector<int> del = b.list(Barracks::List::Delete);
+        assert(del.size() == 3 && b.list(Barracks::List::Human).size() == 1 && b.canCreate());
+        for (int i = 0; i < Barracks::MAX; i++) b.create("T" + std::to_string(i), 0, "A", "Flag.UK", 1);
+        assert(!b.canCreate());
+    }
+    {  // slots: a team enters with min(4, 16 - the worms in), the row caps keep the match at 16 worms, the lowest free alliance
+        Lobby L;
+        L.cfg.teams = Lobby::MAX_TEAMS, L.cfg.teamSetup.assign(Lobby::MAX_TEAMS, {});
+        SavedTeam st;
+        st.name = "A";
+        assert(L.newWorms() == 4 && L.freeAlliance() == 0 && L.count() == 0);
+        assert(L.place(0, 1, st.slot(6, L.freeAlliance())) && L.place(1, 0, st.slot(6, L.freeAlliance())) && !L.place(1, 0, st.slot(1)));
+        assert(L.newWorms() == 4 && L.wormsIn() == 12 && L.cfg.teamSetup[0].pad == 1 && L.cfg.teamSetup[1].alliance == 1 && L.freeAlliance() == 2);
+        assert(L.place(2, 0, st.slot(3, 2)) && L.newWorms() == 1 && L.maxWorms(2) == 4 && L.maxWorms(0) == 6 && L.freeAlliance() == 3);
+        L.cfg.teamSetup[2].worms = 4;
+        assert(L.newWorms() == 0 && L.wormsIn() == 16 && L.maxWorms(2) == 4 && L.maxWorms(0) == 6);
+        L.cfg.teamSetup[0].worms = 3;
+        assert(L.newWorms() == 3 && L.maxWorms(1) == 6 && L.release(2) && !L.playing(2) && L.count() == 2 && L.wormsIn() == 9);
+    }
+    {  // Story progress is the picked team's (W4M StoredTeamData StoryMissionsCompleted), the unlocks and movie flags the profile's; an older progress.txt becomes the first team's
+        const std::string funky = Progress::teamFile("", "Funky Dudes"), scots = Progress::teamFile("", "Scots");
+        assert(funky == "progress_Funky%20Dudes.txt" && funky != scots);
+        for (const char *f : {"pg_check.txt", "pg_check_old.txt", "pg_check_first.txt"}) remove(f);
+        Progress a;
+        a.open("pg_check.txt", funky.c_str());
+        a.record("m1", true, 900), a.unlocks = {"Lock.A"}, a.welcome = true;
+        a.save();
+        Progress b;
+        b.open("pg_check.txt", scots.c_str());
+        assert(b.get("m1").best == 0 && !b.get("m1").done && b.unlocks == a.unlocks && b.welcome);
+        Progress c;
+        c.open("pg_check.txt", funky.c_str());
+        assert(c.get("m1").done && c.get("m1").best == 900);
+        SaveFileText("pg_check_old.txt", (char *)"m1 1 500\nm2 0 0\nunlock Lock.X\nintro\n");
+        Progress::migrate("pg_check_old.txt", "pg_check_first.txt");
+        Progress d, e;
+        d.open("pg_check_old.txt"), e.open("pg_check_old.txt", "pg_check_first.txt");
+        assert(d.entries.empty() && d.storyIntro && d.unlocks.size() == 1 && e.get("m1").done && e.get("m1").best == 500 && e.entries.size() == 2);
+        Progress::migrate("pg_check_old.txt", "pg_check_first.txt");  // nothing left to move
+        for (const char *f : {"pg_check.txt", "pg_check_old.txt", "pg_check_first.txt", funky.c_str()}) remove(f);
+    }
+    {  // the attachments a team may wear: State Unlocked by default, or its Lock.* in the save's unlocks, the current one stays
+        const Catalog &k = catalog();
+        std::vector<std::string> hats = k.usable(0, {}, "");
+        assert(hats[0].empty() && std::find(hats.begin(), hats.end(), "WXFE.A.Hat.Cowboy") != hats.end());
+        const Catalog::Item *locked = nullptr;
+        for (const Catalog::Item &a : k.attachments) if (a.type == 0 && a.state != 2 && !a.lock.empty()) { locked = &a; break; }
+        assert(locked && std::find(hats.begin(), hats.end(), locked->id) == hats.end());
+        assert(std::find(k.usable(0, {locked->lock}, "").begin(), k.usable(0, {locked->lock}, "").end(), locked->id) != k.usable(0, {locked->lock}, "").end());
+        std::vector<std::string> kept = k.usable(0, {}, locked->id);
+        assert(std::find(kept.begin(), kept.end(), locked->id) != kept.end());
     }
     {  // the editor's lists: W4M's 16 graves, 91 flags (to their ui png), 30 speech rows, 7 stock weapons; attachments by type
         const Catalog &k = catalog();

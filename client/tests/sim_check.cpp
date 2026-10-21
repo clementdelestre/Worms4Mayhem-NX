@@ -2518,39 +2518,54 @@ static void checkCustomWeapons() {
     }
     assert(list.size() == 2 && list[0].name == w.name && list[0].fuse == w.fuse && list[0].bounce == w.bounce && list[0].model == "holy" && list[1].kind == Kind::Airstrike);
     GameConfig c{51, 2, 2, "", 0};
-    c.custom = list;
+    c.teamSetup.resize(2);
+    c.teamSetup[0].secret = list[0], c.teamSetup[1].secret = list[1];
     Game g;
     g.start(c), g.hotSeat = 0;
-    assert(WEAPONS.size() == base + 2 && WEAPONS[base].name == "Test Lobber" && g.ammo[0][base] == 2);
+    int t0 = g.worms[g.current].team;
+    // one inventory slot, each team its own weapon in it on its turns (0x597ec0: the worm's team's Tn_CustomWeapon)
+    assert(WEAPONS.size() == base + 1 && WEAPONS[base].name == list[t0].name && g.ammo[0][base] == 2 && g.ammo[1][base] == 2);
     assert(customWeapon((int)base) && !customWeapon((int)base - 1));
-    assert(WEAPONS[base].postLaunch == 500 && WEAPONS[base + 1].postLaunch == 500 && WEAPONS[base].retreat == -1);  // kWeaponFactoryWeapon
-    c.custom[1].kind = Kind::Homing;
-    g.start(c), g.hotSeat = 0;
-    assert(WEAPONS[base + 1].postLaunch == 0);  // kWeaponFactoryHoming
+    assert(WEAPONS[base].postLaunch == 500 && WEAPONS[base].retreat == -1);  // kWeaponFactoryWeapon
+    g.wieldSecret(1 - t0);
+    assert(WEAPONS[base].name == list[1 - t0].name && WEAPONS[base].kind == list[1 - t0].kind);
+    {  // a team without one never fires the slot
+        GameConfig n = c;
+        n.teamSetup[1].secret.reset();
+        Game h;
+        h.start(n);
+        assert(h.ammo[1][base] == 0 && !h.allowed(1, (int)base) && h.ammo[0][base] == 2);
+    }
+    WeaponDef &s1 = *c.teamSetup[1].secret;
+    s1.kind = Kind::Homing;
+    g.start(c), g.hotSeat = 0, g.wieldSecret(1);
+    assert(WEAPONS[base].postLaunch == 0);  // kWeaponFactoryHoming
     {  // HomingAvoidLand (0x5611b0): heading at the ground 3 m away, the forward probe hits and the missile is pushed up, within MaxHomingSpeed 0.25
         float vy[2];
         for (int avoid = 0; avoid < 2; avoid++) {
-            c.custom[1].kind = Kind::Homing, c.custom[1].avoid = avoid, c.custom[1].fuse = 0, c.custom[1].speed = 12;
-            g.start(c), g.hotSeat = 0;
+            s1.kind = Kind::Homing, s1.avoid = avoid, s1.fuse = 0, s1.speed = 12;
+            g.start(c), g.hotSeat = 0, g.wieldSecret(1);
             Vector3 hit, p = g.worms[0].pos, tgt = Vector3Add(p, {30, 0, 0});
             assert(g.terrain.raycast({Vector3Add(p, {0, 20, 0}), {0, -1, 0}}, 40, &hit));
-            g.shots = {{Vector3Add(hit, {0, 3, 0}), {0, -10, 0}, (int)base + 1, 2.0f, false, 1, tgt}};
+            g.shots = {{Vector3Add(hit, {0, 3, 0}), {0, -10, 0}, (int)base, 2.0f, false, 1, tgt}};
             g.step(Input{});
             vy[avoid] = g.shots.empty() ? -99 : g.shots[0].vel.y;
             if (avoid) assert(!g.shots.empty() && Vector3Length(g.shots[0].vel) <= 12.5f + 0.01f);
         }
         assert(vy[1] > vy[0] + 5);
     }
-    c.custom[1].kind = Kind::Airstrike, c.custom[1].avoid = false;
+    s1.kind = Kind::Airstrike, s1.avoid = false;
     g.start(c), g.hotSeat = 0;
     uint32_t with = g.checksum();
-    for (size_t i = base; i < WEAPONS.size(); i++) {
+    for (int k = 0; k < 2; k++) {  // both teams armed with each weapon in turn, so the first worm fires it
+        GameConfig b = c;
+        b.teamSetup[1 - k].secret = c.teamSetup[k].secret;
+        b.seed = 99u + k;
         bool fired, again;
-        c.seed = 99u + (int)i;
-        uint32_t x = fireEach((int)i, fired, &c), y = fireEach((int)i, again, &c);
+        uint32_t x = fireEach((int)base, fired, &b), y = fireEach((int)base, again, &b);
         assert(fired && again && x == y);
     }
-    c.custom.clear();
+    c.teamSetup.clear();
     c.seed = 51;
     g.start(c), g.hotSeat = 0;
     assert(WEAPONS.size() == base && g.checksum() != with);

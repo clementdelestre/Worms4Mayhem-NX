@@ -193,6 +193,17 @@ W4M lays the FE out about the screen centre in a 4:3 band [data]. Ours multiplie
   Secret weapon options = the stock Weapon Factory weapons (LOCAL `DATA.LockedWeapons`, StockWeapon 1: FETXT.AFewProblems, ChatterBomb,
   KneeTrembler...) plus the player's own; SWeapon (0..3) is AddTeam's index into {7, 6, 17, 19} for `Tn_SWeapon`, used only when SchemeData
   Special is 1 (stdvs IncrementAlliedInventory), 0 in every SchemeData of the data [data].
+- Gloves on the worm [disasm, REA decompile]: no attached mesh. In game WXWormGraphicEntity 0x5a33a0 and in the FE WXFE_WormEntity 0x756e27
+  (from the attach routine 0x7573f7, gloves by their MeshID +0x14) find the worm's skin shapes `boggyhand_leftShape_boggyhand_shader` /
+  `boggyhand_rightShape_boggyhand_shader` and the glove model's `hand_leftShape_shaderl` / `hand_rightShape_shaderr`; 0x5a0c40 / 0x756734 maps each
+  glove bone (XSkinShape Bones +0x48) to the worm bone of the same name (+0x28), copies the glove shape's Geometry (+0x34) and Shader (+0x30)
+  into the worm's hand shape and rewrites the palette indices through that map. So the glove is the worm's own hand shape, posed by the worm's
+  bones; "" restores the worm's hands (0x756e27, from a saved copy). Every Gloves.* model holds exactly those two XSkinShapes on the 34-bone
+  skeleton [data: w4m-models, 38 models]. FrontEndMeshID (`Gloves.<x>P`, Bundl06) is not what the worm wears [disasm: 0x7573f7 reads +0x14].
+- Hat / glasses / tash attach 0x7573f7 (FE) [disasm, REA decompile]: each at `HatLocator` (vtable +0x60), with the Offsets entry chosen by the
+  index 0x7565f2 parses from the attachment string (Position +0x14, Rotation +0x20, Scale +0x2c; identity when the index is past the list)
+  [assumed: the string form "id:N" and its default index 0, 0x7565f2 not read]. The hat's Glasses (+0x30) / Tash (+0x31) bools gate attaching
+  glasses / tash at all, its Eyebrow (+0x32) goes to 0x59b830 [disasm; what 0x59b830 does: not read]. The in-game attach is not traced here.
 - Edit / delete [disasm 0x4c5c90 `WXEditTeam`, 0x4c4790 `WXDeleteTeam`; data `WXFEP.EditTeam` / `WXFEP.DeleteTeam` popups of `WXFE.Customise`]: the edit list shows every team, CPU ones included (row icon by Skill: 0 `WXFE.TeamInfo03:3`,
   1 `02:2`, 2 `02:3`, 3 `03:0`, 4 `03:1`, 5 `03:2`); a row sends `FE.LoadTeam$<name>`, `KillPopUp`, `WXFE.CurrentTeamPage` 0, `FE.ChangeMenu$WXFE.TeamOptions`. The delete list skips the human teams when only one human team is left
   (TeamControlService 0x738663 counts them), so the last human team cannot be deleted; a row sets `User.HumanTeamName` and opens `WXFEP.ConfirmDeleteTeam` (`FE.DeleteTeam`).
@@ -218,6 +229,14 @@ W4M lays the FE out about the screen centre in a 4:3 band [data]. Ours multiplie
   is the picked team's (StoryChapter / StoryMissionsCompleted); the Challenges SUBHEADER is `User.HumanTeamName`.
 - Online [disasm 0x4c4110 `WXOnlineTeam`; data `WXFE.MainMenuList` Online row]: `WXFEP.SelectTeam` titled `FETXT.SelectOnlineTeam` lists the teams with Skill 0 and NewTeam 0; a row sets `WXFE.NetLocalTeamIndex` (barracks index),
   then `KillPopUp`, `xo.msgReqOnlineMainScreen`. The player brings that one saved team, sent as `NetworkTeamData` in `TeamMessage` (docs/w4m/network.md §Net messages) [disasm + data; assumed: one team per player].
+- Editor layout and highlight animations [data, `xom.py dump MENUTWKX.XOM WXFE.TeamOptions / TeamPage1 / TeamPage2List / TeamPage3List / WXFEP.TeamSettingsList`]: `WXFE.TeamOptions` items (FE units, y up): `LABEL Page` (124, -116) `Q.PageNumber` size 21, `BUTTON Prev` (60, -116), `BUTTON Next` (190, -118),
+  `TheWorm` (-155, -60) scale 120, `SUBHEADER Teamname` (-181, 145) 110 x 15 size 23, `Cancel Edit` (-247, -159) 45 (NAV Prev), `Accept Changes` (258, -166) 40 (NAV Start), `Shadow` (-194, -89), Title Control (-152, 188), tooltip `FETIP.TeamDesign`. `WXFE.TeamPage1`
+  (offset (-40, 40)): 6 `WXFE_TextEditBoxDesc` `User.HumanWorm1..6` at x 160..177, y 62 / 28 / -7 / -40 / -73 / -109, 90 x 9, over `Paper Back` (164, -27) 155 x 151. `TeamPage2List` rows: 2 decorative headings, Soundbank (`CreatePopUp$WXFEP.SelectSoundbank`),
+  Test Speech (`FE.PlayRandomSpeech`), Head / Eyes (Glasses) / Face (Tash) / Hands (Gloves) (`CopyString WXFE.<x>Name WXD.CurrentAttachmentIndex`, `CreateAttachmentsList$<Hats|Glasses|Tash|Gloves>`, popup `WXFEP.Outfit`), RowHeight 22; the Hands row highlight sets
+  `WXD.WormAnim` InspectHands. `TeamPage3List`: 3 rows RowHeight 30, Border 6 / 9 / 7: Weapon (`WXFEP.SelectWeapon`), Flag (`WXFEP.SelectFlag`, highlight WormAnim Salute), Grave (`WXFEP.SelectGrave`, highlight WormAnim Pray). `TeamSettingsList` rows RowHeight 30,
+  Border_Highlight 11: worms / allied group / handicap (Left / Right and Selected step them, `PopulateTable$WXTeamSettings`), Remove Team, Accept.
+- Attachment locks [data DEFSAVE `WXFE_UnlockableItem.State`: 0 Hidden, 1 Purchasable, 2 Unlocked]: of the 172 attachments, 98 have a lock Unlocked by default, 58 Purchasable, 15 Hidden, 1 none (`setuplists.py` writes it as column 7 of attachments.txt); every default team's outfit is Unlocked.
+  The editor offers an attachment when its State is 2 or its `Lock.*` is in the save's unlocks [ours: our save keeps `unlock <Lock.*>` lines in progress.txt; W4M's ItemShop purchases do not exist here].
 - [web: https://m.hexus.net/gaming/reviews/ps2/1648-worms-4-mayhem-ps2/?page=2] the PS2 review: a team's special weapon, flag, grave and speech are changeable, the members share one look.
 
 ### Match setup screens (WXFE.CreateAGame, WXFEP.InsertTeam / SelectScheme / SelectLandscape2)
