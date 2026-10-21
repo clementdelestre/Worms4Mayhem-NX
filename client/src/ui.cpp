@@ -2794,7 +2794,7 @@ void edRow(float x, float y, float rz, const char *label, const char *value, boo
 // WXFE_Border_Bubble (kMT_BubbleBorder 36, 0x77cfe7): "Speech Popup.tga" cut in 10 quads around the SpeechPopup Paper fill, FE half extents sx, sy
 // (the popup's Scale + the 16 FE border): corners 38 x 38, the sides 13 wide in two halves each, top / bottom 16 high, the fill (sx - 8.5, sy - 9),
 // 0.5 FE per sprite pixel; the pointer (the right-pointing notch) at the right edge, at the y of the item that opened it [observed: its place]
-void bubble(Vector2 c, float sx, float sy, float pointerY) {
+void bubble(Vector2 c, float sx, float sy, float pointerY = NAN) {  // NAN: kMT_BubbleBorderNoPointer (37)
     Texture2D t = tex("fe/speech_popup");
     auto quad = [&](float x, float y, float hx, float hy, Rectangle uv) {
         if (t.id) DrawTexturePro(t, uv, {c.x + (x - hx) * FE_S, c.y - (y + hy) * FE_S, 2 * hx * FE_S, 2 * hy * FE_S}, {}, 0, WHITE);
@@ -2808,7 +2808,7 @@ void bubble(Vector2 c, float sx, float sy, float pointerY) {
     quad(0, sy - 8, sx - 38, 8, {132, 4, 270, 32}), quad(0, -sy + 7, sx - 38, 8, {132, 42, 270, 32});
     quad(-sx + 19, sy - 19, 19, 19, {126, 78, 76, 76}), quad(sx - 19, sy - 19, 19, 19, {218, 78, 76, 76});
     quad(-sx + 19, -sy + 19, 19, 19, {126, 178, 76, 76}), quad(sx - 19, -sy + 19, 19, 19, {218, 178, 76, 76});
-    quad(sx - 6, pointerY, 24, 30, {298, 128, 96, 120});
+    if (!std::isnan(pointerY)) quad(sx - 6, pointerY, 24, 30, {298, 128, 96, 120});
 }
 
 // a decorative ImageView of a W4M picker (WXFE.Scratches1 = 5 cells, Scratches2 = 3): FE offset, half extents, rz, alpha
