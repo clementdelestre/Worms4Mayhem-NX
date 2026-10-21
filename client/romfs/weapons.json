@@ -28,7 +28,7 @@
   {"name": "Fire Punch", "kind": "melee", "damage": 30, "speed": 3, "bounce": 12, "fuse": 8, "count": -1},
   {"name": "Prod", "kind": "melee", "damage": 0, "speed": 6, "bounce": 2, "count": -1},
   {"name": "Tail Nail", "kind": "melee", "post_launch": 1000, "damage": 15, "speed": 0, "bounce": 0, "pins": true, "count": 1, "crate_weight": 2},
-  {"name": "Sentry Gun", "kind": "sentry", "post_launch": 420, "radius": 15, "damage": 25, "fuse": 10, "count": 1, "crate_weight": 2},
+  {"name": "Sentry Gun", "kind": "sentry", "post_launch": 420, "radius": 15, "damage": 5, "reach": 1.5, "push": 2, "push_reach": 1.5, "push_depth": 0, "fuse": 10, "count": 1, "crate_weight": 2},
   {"name": "Ninja Rope", "kind": "rope", "speed": 22.5, "count": -1},
   {"name": "Jetpack", "kind": "jetpack", "speed": 20, "fuse": 7.5, "count": 2, "crate_weight": 5},
   {"name": "Teleport", "kind": "teleport", "count": 2, "crate_weight": 5},

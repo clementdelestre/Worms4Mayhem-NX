@@ -28,7 +28,7 @@ inline float yawTo(Vector3 a, Vector3 b) { return atan2f(b.x - a.x, b.z - a.z); 
 inline float wrapPi(float a) { return remainderf(a, 2 * PI); }
 
 // Shell covers bazooka/grenades/clusters; speed = rope length or jetpack thrust, fuse = sheep timeout or jetpack fuel.
-// Melee: speed = knock along the aim, bounce = upward knock, fuse = attacker's leap. Sentry: radius = range, fuse = reload.
+// Melee: speed = knock along the aim, bounce = upward knock, fuse = attacker's leap. Sentry: radius = range, fuse = burst length (WeaponReloadTime), damage / reach / push = one bullet's ExplosionMessage.
 // Abduction: radius = W4M Abduction.AreaOfEffect (xz), speed = NormalSpeed, m/s.
 // Airstrike with fuse > 0: W4M controlled bomber (Bovine Blitz), flies fuse s at speed, FIRE drops one of `clusters` payloads.
 enum class Kind : uint8_t { Shell, Sheep, Airstrike, Donkey, Shotgun, Rope, Jetpack, Teleport,
@@ -215,7 +215,7 @@ struct Object {
     float fuse;
     bool falling;  // crate under parachute
     bool dead;     // hit by an explosion: detonates (barrel, weapon crate) or vanishes next step
-    int team = -1;  // sentry owner (weapon = its WEAPONS index, fuse = reload left)
+    int team = -1;  // sentry owner (weapon = its WEAPONS index)
     int tag = -1;   // mission object index (JSON missions, W4M Crate.Index)
     bool dud = false;  // mine whose fuse fizzled (W4M Mine.DudProbability): inert for good
     int courtesy = 0;  // mine: ticks before a worm can arm it (W4M ArmingCourtesyTime)
@@ -233,6 +233,8 @@ struct Object {
     bool pinned = false, pushable = true, radar = true, track = true;  // pinned: Gravity 0; radar: Crate.RadarHide / Display; TrackCam
     float scale = 1;    // Scale: its sphere is 10 x Scale units (0x5c5700)
     mutable int bubbles = 0;  // render only: a mine's SinkingFx handle while sunk (0x5c1470)
+    // sentry: W4M NewSentryGunLogicEntity states 2 / 3 / 4 / 6 (0x56de80); ticks (msTicks); `seen` = +0xbc, each worm's position when last counted as moved
+    struct Turret { enum : int8_t { Scan = 2, Track = 3, Fire = 4, Done = 6 } state = Done; int8_t target = -1; bool fresh = false; int timer = 0, scan = 0, shot = 0; Vector3 seen[16] = {}; } turret;
 };
 float restHalf(const Object &o);  // a resting object's centre is restHalf + 0.05 m (the probe) above the ground
 
@@ -718,6 +720,8 @@ private:
     bool dropPoint(Object::Type t, Vector3 &out, float radius = -1);  // radius: the sphere 0x4f26b0 checks, -1 the object's
     bool addObject(Object::Type t, float lift);
     void stepObjects();
+    void stepSentry(Object &o);  // NewSentryGunLogicEntity update 0x56de80
+    void sentryShot(const Object &o, const Vector3 &up, int target);  // 0x56c810
     void openMystery(int item, Worm &w);  // CrateLogicEntity 0x5ca1f0
     void crateHit(Object &o, float dmg);  // a crate or target takes blast or bullet damage
     void poisonWorm(Worm &w) { if (!w.poison) w.poison = POISON_DEFAULT, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm
