@@ -1792,6 +1792,7 @@ int main(int argc, char **argv) {
         if (strncmp(uiShot, "ready", 5)) game.hotSeat = 0;  // every shot but "ready" skips the hot-seat pause
         for (size_t i = 0; argc > 4 && i < WEAPONS.size(); i++) if (WEAPONS[i].name == argv[4]) game.weapon = (int)i;  // --ui hud <map> <weapon>
         hud.open = !strcmp(uiShot, "panel");
+        if (hud.open && getenv("W4NX_PANEL")) hud.point(atoi(getenv("W4NX_PANEL")));  // W4NX_PANEL: the cursor cell (row x 6 + column)
         pause.open = !strcmp(uiShot, "pause");
         if (!strncmp(uiShot, "gameover", 8)) game.phase = Phase::GameOver, game.winner = 0, results.finish(game), onEvent(game, {GameEvent::GameOver, {}, -1, -1});  // runs 10 s: W4NX_CAPFRAMES
     } else if (uiShot && (!strncmp(uiShot, "winmatch", 8) || !strncmp(uiShot, "winround", 8) || !strncmp(uiShot, "preround", 8))) {

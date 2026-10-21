@@ -55,7 +55,7 @@ namespace {
 const int A = GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, B = GAMEPAD_BUTTON_RIGHT_FACE_DOWN, X = GAMEPAD_BUTTON_RIGHT_FACE_UP,
           MINUS = GAMEPAD_BUTTON_MIDDLE_LEFT, UP = GAMEPAD_BUTTON_LEFT_FACE_UP, DOWN = GAMEPAD_BUTTON_LEFT_FACE_DOWN, LEFT = GAMEPAD_BUTTON_LEFT_FACE_LEFT,
           RIGHT = GAMEPAD_BUTTON_LEFT_FACE_RIGHT, PLUS = GAMEPAD_BUTTON_MIDDLE_RIGHT;
-const int PANEL_COLS = 8;
+const int PANEL_ROWS = 7, PANEL_COLS = 6;  // W4M weapon panel grid (0x920e58)
 const int MAX_CUSTOM = 8;  // Weapon Factory slots
 const Color GOLDEN = {255, 210, 60, 255}, PANEL = {24, 74, 92, 230};  // W4M teal paper
 // Scheme edit page: one row per Scheme byte, in struct order. names: enum labels (min = 0).
@@ -386,12 +386,19 @@ std::string weaponIcon(const std::string &n) {
 }
 
 // W4M WEAPTWK DisplayName: the language's Text.kWeapon* / Text.kUtility* text ("Super Airstrike" -> Bovine Blitz), else our name
-const char *weaponName(const WeaponDef &w) {
-    if (w.name.rfind("FETXT.", 0) == 0) return tr(w.name.c_str(), w.name.c_str());  // container Name is the DisplayName (0x599513)
-    static const std::map<std::string, std::string> ALIAS = {{"TailNail", "NoMoreNails"}, {"FatkinsStrike", "Fatkins"}, {"InflatableScouser", "Scouser"}};
+// W4M weapon enum name without its kWeapon / kUtility prefix ("Tail Nail" -> NoMoreNails)
+std::string w4mKey(const WeaponDef &w) {
+    static const std::map<std::string, std::string> ALIAS = {{"TailNail", "NoMoreNails"}, {"FatkinsStrike", "Fatkins"}, {"InflatableScouser", "Scouser"},
+                                                             {"IcarusPotion", "Redbull"}};
     std::string k;
     for (char c : w.name) if (c != ' ') k += c;
     if (auto a = ALIAS.find(k); a != ALIAS.end()) k = a->second;
+    return k;
+}
+
+const char *weaponName(const WeaponDef &w) {
+    if (w.name.rfind("FETXT.", 0) == 0) return tr(w.name.c_str(), w.name.c_str());  // container Name is the DisplayName (0x599513)
+    std::string k = w4mKey(w);
     const char *s = tr(("Text.kWeapon" + k).c_str(), nullptr);
     return s ? s : tr(("Text.kUtility" + k).c_str(), w.name.c_str());
 }
@@ -890,8 +897,8 @@ void background() {
 static const float FE_ANIM_SPEED = 0.9f;
 // The exe's key curve (tools/w4m-models curve(), 0x7abb1c): a zero out-tangent holds; unweighted = Hermite on the tangent
 // slopes, weighted = Bezier with handles at key +- tangent / 3, solved for t
-float clipKeys(const float (*k)[6], int n, float t, bool weighted) {
-    t /= FE_ANIM_SPEED;
+float clipKeys(const float (*k)[6], int n, float t, bool weighted, bool fe) {
+    if (fe) t /= FE_ANIM_SPEED;
     if (t <= k[0][0]) return k[0][1];
     int i = 0;
     while (i < n - 1 && t >= k[i + 1][0]) i++;
@@ -1225,7 +1232,13 @@ struct FeBox {
 // /*FETXT.Control.X*/ tokens: W4M's text table swaps each for the controller's button glyph (0x4de750 aliases MenuSelect / MenuCancel to
 // FETXT.JoyButton1 / 2); here a pill with our pad button (Switch A / B) or the PC key, kept in a line as '\x01' + the label
 static std::string feTokens(const std::string &s) {
-    static const struct { const char *tok, *pad, *key; } MAP[] = {{"FETXT.Control.MenuSelect", "A", "Enter"}, {"FETXT.Control.MenuCancel", "B", "Backspace"}};
+    static const struct { const char *tok, *pad, *key; } MAP[] = {
+        {"FETXT.Control.MenuSelect", "A", "Enter"}, {"FETXT.Control.MenuCancel", "B", "Backspace"}, {"FETXT.Control.Fire", "A", "Space"},
+        {"FETXT.Control.1stPerson", "ZL", "RMB"}, {"FETXT.Control.Jump", "B", "Enter"}, {"FETXT.Control.Blimp", "Y", "E"},
+        {"FETXT.Control.FuseUp", "D-pad", "="}, {"FETXT.Control.Inventory", "X", "Q"}, {"FETXT.Control.ZoomIn", "R", "X"},
+        {"FETXT.Control.ZoomOut", "L", "Z"}, {"FETXT.Control.Ninja.Lengthen", "RS", "S"}, {"FETXT.Control.Ninja.Shorten", "RS", "W"},
+        {"FETXT.Control.Ninja.Forwards", "LS", "Arrows"}, {"FETXT.Control.Ninja.Backwards", "LS", "Arrows"}, {"FETXT.Control.GirderRaise", "RS", "W"},
+        {"FETXT.Control.GirderLower", "RS", "S"}, {"FETXT.Control.Pause", "+", "Esc"}, {"Button.Movement", "LS", "Arrows"}, {"Button.Aim", "RS", "WASD"}};
     std::string out;
     for (size_t i = 0; i < s.size();) {
         size_t e = s.compare(i, 2, "/*") == 0 ? s.find("*/", i + 2) : std::string::npos;
@@ -1263,6 +1276,20 @@ static std::vector<std::string> feWrap(const std::string &s, float sizePx, float
     if (!line.empty() || lines.empty()) lines.push_back(line);
     return lines;
 }
+// one feWrap() line at (x, y) top, its button pills drawn as glyphs
+static void feLine(const std::string &ln, float x, float y, float px, Color c0, Color c1, int align, Color e, const std::vector<Vector2> *pose = nullptr) {
+    if (ln.find('\x01') == std::string::npos) return textG(ln.c_str(), x, y, px, c0, c1, align, e, pose);
+    float cx = x - feWidth(ln, px) * align / 2;
+    for (size_t k = 0; k < ln.size();) {
+        size_t a = ln.find('\x01', k), z = a == std::string::npos ? ln.size() : a;
+        std::string run = ln.substr(k, z - k);
+        textG(run.c_str(), cx, y, px, c0, c1, 0, e), cx += textWidth(run.c_str(), px);
+        if (a == std::string::npos) break;
+        size_t q = ln.find('\x02', a);
+        float h = feGlyphH(px);
+        cx += glyphs(ln.substr(a + 1, q - a - 1).c_str(), cx, y + (px - h) / 2, h, keyGlyphs()) + px * 0.15f, k = q + 1;
+    }
+}
 static void feText(const std::string &text, const FeBox &b) {
     std::string s = feTokens(text);
     float size = b.size;
@@ -1295,20 +1322,7 @@ static void feText(const std::string &text, const FeBox &b) {
         rlPushMatrix(), rlTranslatef(p.x, p.y, 0), rlScalef(TEXT_X, a, 1), rlTranslatef(-p.x, -p.y, 0);
         Color c0 = b.grad[0], c1 = b.grad[1], e = b.edge;
         c0.a *= a, c1.a *= a, e.a *= a;
-        const std::string &ln = lines[i];
-        if (ln.find('\x01') == std::string::npos) textG(ln.c_str(), p.x, p.y, px, c0, c1, align, e, b.anim ? &pose : nullptr);
-        else {
-            float cx = p.x - feWidth(ln, px) * align / 2;
-            for (size_t k = 0; k < ln.size();) {
-                size_t a = ln.find('\x01', k), z = a == std::string::npos ? ln.size() : a;
-                std::string run = ln.substr(k, z - k);
-                textG(run.c_str(), cx, p.y, px, c0, c1, 0, e), cx += textWidth(run.c_str(), px);
-                if (a == std::string::npos) break;
-                size_t q = ln.find('\x02', a);
-                float h = feGlyphH(px);
-                cx += glyphs(ln.substr(a + 1, q - a - 1).c_str(), cx, p.y + (px - h) / 2, h, keyGlyphs()) + px * 0.15f, k = q + 1;
-            }
-        }
+        feLine(lines[i], p.x, p.y, px, c0, c1, align, e, b.anim ? &pose : nullptr);
         rlPopMatrix();
     }
     rlPopMatrix();
@@ -3593,11 +3607,27 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
 
 // ---------------------------------------------------------------- HUD
 
-// weapon panel slots: W4M crate-only effects (Double Damage, Crate Spy, Armour) are never in the inventory
-static std::vector<int> panelSlots() {
-    std::vector<int> v;
-    for (size_t i = 0; i < WEAPONS.size(); i++) if (!collected(WEAPONS[i].kind)) v.push_back((int)i);
-    return v;
+// W4M weapon panel grid 0x920e58 (docs/w4m/render.md "Weapon panel"): W4M weapon, icon sheet 1-3, 4 x 4 cell; "" = no weapon
+struct PanelCell { const char *key; int sheet, cell; };
+static const PanelCell PANEL_GRID[PANEL_ROWS * PANEL_COLS] = {
+    {"Bazooka", 1, 12}, {"HomingMissile", 3, 4}, {"Shotgun", 2, 8}, {"PoisonArrow", 2, 5}, {"SentryGun", 2, 6}, {"SniperRifle", 1, 1},
+    {"Grenade", 1, 3}, {"ClusterGrenade", 2, 0}, {"GasCanister", 2, 10}, {"HolyHandGrenade", 1, 5}, {"BananaBomb", 2, 14}, {"Fatkins", 3, 2},
+    {"FirePunch", 1, 4}, {"Prod", 1, 7}, {"BaseballBat", 2, 13}, {"Airstrike", 1, 14}, {"SuperAirstrike", 3, 7}, {"AlienAbduction", 2, 15},
+    {"Landmine", 1, 6}, {"Dynamite", 1, 2}, {"Sheep", 1, 13}, {"OldWoman", 3, 1}, {"Scouser", 2, 2}, {"SuperSheep", 2, 9},
+    {"Flood", 1, 9}, {"NoMoreNails", 2, 12}, {"Starburst", 2, 7}, {"ConcreteDonkey", 1, 15}, {"FactoryWeapon", 3, 6}, {"", 0, 0},
+    {"Parachute", 2, 3}, {"NinjaRope", 1, 8}, {"Redbull", 1, 0}, {"Jetpack", 2, 4}, {"Girder", 2, 1}, {"BubbleTrouble", 3, 5},
+    {"SkipGo", 1, 10}, {"ChangeWorm", 3, 3}, {"Surrender", 1, 11}, {"", 0, 0}, {"", 0, 0}, {"Binoculars", 3, 8}};
+
+int panelWeapon(int cell) {
+    const char *k = PANEL_GRID[cell].key;
+    for (int w = 0; *k && w < (int)WEAPONS.size(); w++)
+        if (!strcmp(k, "FactoryWeapon") ? customWeapon(w) : w4mKey(WEAPONS[w]) == k) return w;
+    return -1;
+}
+
+static int panelCell(int weapon) {
+    for (int c = 0; weapon >= 0 && c < PANEL_ROWS * PANEL_COLS; c++) if (panelWeapon(c) == weapon) return c;
+    return -1;
 }
 
 void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
@@ -3614,27 +3644,27 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
         pick = -1, swallow = true;
         if (g.phase != Phase::Settle) reopen = false;
         if (g.phase != Phase::Aim) viewOpen = false;
-        bool o = !local && viewOpen && viewSlot < (int)WEAPONS.size();  // W4M replays the active player's Input.Menu.* on every machine (docs/w4m/network.md)
+        bool o = !local && viewOpen && viewSlot < PANEL_ROWS * PANEL_COLS;  // W4M replays the active player's Input.Menu.* on every machine (docs/w4m/network.md)
         if (o != open) Audio::play(o ? Audio::Sfx::FePopupIn : Audio::Sfx::FePopupOut);
         else if (o && viewSlot != cursor) Audio::play(Audio::Sfx::FeHighlight);
         open = o, cursor = o ? viewSlot : cursor;
         return;
     }
     if (reopen) reopen = false, x = !open;
-    int cols = PANEL_COLS;
     using S = Audio::Sfx;
-    if (x) open = !open, cursor = g.held(), Audio::play(open ? S::FePopupIn : S::FePopupOut);
+    if (x) {
+        open = !open, Audio::play(open ? S::FePopupIn : S::FePopupOut);
+        if (int c = panelCell(g.held()); c >= 0) cursor = c;
+    }
     if (open) {
         int dx = pressed(pad, {RIGHT}, {KEY_RIGHT}) - pressed(pad, {LEFT}, {KEY_LEFT});
         bool fwd = g.jetting && ((pad >= 0 && IsGamepadButtonDown(pad, UP)) || IsKeyDown(KEY_W));  // Jetpack.Forward, InGame group
         int dy = pressed(pad, {DOWN}, {KEY_DOWN}) - (pressed(pad, {UP}, {KEY_UP}) && !(fwd && pad >= 0 && IsGamepadButtonDown(pad, UP)));
         int was = cursor;
-        std::vector<int> slots = panelSlots();
-        int at = int(std::find(slots.begin(), slots.end(), cursor) - slots.begin()) % std::max<int>(1, (int)slots.size());
-        cursor = slots.empty() ? 0 : slots[clampWrap(at + dx + dy * cols, (int)slots.size())];
+        cursor = clampWrap(cursor / PANEL_COLS + dy, PANEL_ROWS) * PANEL_COLS + clampWrap(cursor % PANEL_COLS + dx, PANEL_COLS);  // 0x6038e0: each axis wraps
         if (cursor != was) Audio::play(S::FeHighlight);
         if (pressed(pad, {A}, {KEY_SPACE, KEY_ENTER})) {
-            if (g.pickable(cur.team, cursor)) select(cursor), Audio::play(S::FeClick);  // a tool out: a payload is its secondary, else it ends
+            if (int w = panelWeapon(cursor); w >= 0 && g.pickable(cur.team, w)) select(w), Audio::play(S::FeClick);  // a tool out: a payload is its secondary, else it ends
             else Audio::play(S::FeError);
         }
         if (pressed(pad, {B}, {KEY_BACKSPACE})) open = false, swallow = true, Audio::play(S::FeCancel);
@@ -4230,6 +4260,212 @@ void Hud::labels(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
 }
 
+// ---------------------------------------------------------------- weapon panel (docs/w4m/render.md "Weapon panel")
+
+// HUD units: 480 tall, centre origin, y up; drawn in px under rl matrices
+static const float HU = 720 / 480.0f;
+
+// HUD.WP.Anims clips {time, value, in tangent x, y, out tangent x, y}, played at speed 1 (0x6a0730)
+static const float K_INWP_X[2][6] = {{0, 350, 0.20422f, -661, 0.20422f, -661}, {0.4165f, 0, 1.1465f, 0, 1.1465f, 0}},
+                   K_INWP_Y[2][6] = {{0, -64.0625f, 0.14832f, 126.75f, 0.14832f, 126.75f}, {0.4165f, 0, 1.1465f, 0, 1.1465f, 0}},
+                   K_INWP_R[2][6] = {{0, -0.026169f, 0.95068f, -0.067139f, 0.36743f, -0.041351f}, {0.4165f, -0.04361f, 0.97559f, 0, 0.97559f, 0}},
+                   K_OUTWP_X[2][6] = {{0, 0, 1.3057f, 0, 1.3057f, 0}, {0.5f, 350, 0.20691f, 558.5f, 0.20691f, 558.5f}},
+                   K_OUTWP_Y[2][6] = {{0, 0, 0.65869f, 0, 0.65869f, 0}, {0.5f, -54.031f, 0.4646f, -107.875f, 0.4646f, -107.875f}},
+                   K_OUTWP_S[2][6] = {{0, 1, 0.92822f, -0.37134f, 0.92822f, -0.37134f}, {0.5f, 0.7998f, 0.92822f, -0.37134f, 0.92822f, -0.37134f}},
+                   K_OUTWP_R[2][6] = {{0, -0.04361f, 0.82178f, 0, 0.82178f, 0}, {0.5f, 0.04361f, 0.48242f, 0.097107f, 0.48242f, 0.097107f}},
+                   K_WPHI_S[3][6] = {{0, 1.5f, 0.47559f, -0.87939f, 0.47559f, -0.87939f}, {0.4165f, 1.0996f, 1, 0, 1, 0},
+                                     {0.833f, 1.5f, 0.44897f, 0.89307f, 0.44897f, 0.89307f}},
+                   K_INWH_X[2][6] = {{0.041656f, -74.1875f, 0, 243.625f, 0, 243.625f}, {0.9165f, 0, 0.9038f, 8.1016f, 0.0401f, -0.89844f}},
+                   K_INWH_Y[6][6] = {{0.041656f, -25.953f, 0.0013094f, 0.68408f, 0, 73.625f}, {0.375f, 6.8203f, 0.83447f, 0, 0.24097f, 0},
+                                     {0.5415f, 2.3672f, 0, -12.305f, 0.035187f, 3.5918f}, {0.6665f, 3.5059f, 0.06958f, 0, 0.11127f, 0},
+                                     {0.7915f, 2.7598f, 0.04538f, -2.5547f, 0.13916f, 1.2676f}, {0.958f, 3, 0.0636f, -0.34009f, 0.0636f, -0.34009f}},
+                   K_INWH_SY[6][6] = {{0.041656f, 0, 0, 1.7129f, 0, 1.7129f}, {0.25f, 1.0088f, 0.61768f, -0.0010185f, 0.067993f, 0.0000388f},
+                                      {0.5f, 1.0088f, 0.25f, 0, 0.041656f, 0}, {0.5415f, 0.99805f, 0.041656f, -0.01133f, 0.12494f, 0.01133f},
+                                      {0.6665f, 1.0088f, 0.1969f, 0, 0.1969f, 0}, {0.7915f, 1, 0.019348f, -0.0040474f, 0.019348f, -0.0040474f}},
+                   K_INWH_R[2][6] = {{0, 0, 1, 0, 1, 0}, {0.5415f, 0.04361f, 0.99658f, 0.080261f, 0.99658f, 0.080261f}},
+                   K_OUTWH_X[2][6] = {{0, 0, 1.0645f, 0, 1.0645f, 0}, {0.5f, -247.375f, 0.5f, -247.375f, 0.5f, -247.375f}},
+                   K_OUTWH_Y[2][6] = {{0, 3, 1.0645f, 0, 1.0645f, 0}, {0.5f, -20.906f, 0.5f, -23.906f, 0.5f, -23.906f}},
+                   K_OUTWH_S[2][6] = {{0, 1, 0.6626f, -0.12683f, 0.6626f, -0.12683f}, {0.5f, 0.6499f, 0.354f, -0.82666f, 0.354f, -0.82666f}},
+                   K_OUTWH_R[2][6] = {{0, 0.061066f, 1.0645f, 0, 1.0645f, 0}, {0.5f, -0.082336f, 0.5f, -0.14343f, 0.5f, -0.14343f}};
+static const FeClip IN_WP = {{}, {}, keys(K_INWP_X, true), keys(K_INWP_Y, true), keys(K_INWP_R, true)},
+                    OUT_WP = {keys(K_OUTWP_S, false), keys(K_OUTWP_S, false), keys(K_OUTWP_X, true), keys(K_OUTWP_Y, true), keys(K_OUTWP_R, true)},
+                    IN_WH = {{}, keys(K_INWH_SY, true), keys(K_INWH_X, true), keys(K_INWH_Y, true), keys(K_INWH_R, false)},
+                    OUT_WH = {keys(K_OUTWH_S, true), keys(K_OUTWH_S, true), keys(K_OUTWH_X, true), keys(K_OUTWH_Y, true), keys(K_OUTWH_R, true)};
+
+// locator1 of a HUD clip at t s: its channels over the rest pose (x, y, sx, sy, rz)
+struct HudPose { float x = 0, y = 0, sx = 1, sy = 1, rz = 0; };
+static HudPose hudPose(const FeClip &c, float t, HudPose p = {}) {
+    auto at = [&](Keys k, float &v) { if (k.n) v = clipKeys(k.k, k.n, t, k.weighted, false); };
+    at(c.tx, p.x), at(c.ty, p.y), at(c.sx, p.sx), at(c.sy, p.sy), at(c.rz, p.rz);
+    return p;
+}
+
+// a child node at local HUD (x, y), turned rz rad (y up), scaled
+static void hudNode(float x, float y, float rz = 0, float sx = 1, float sy = 1) {
+    rlPushMatrix();
+    rlTranslatef(x * HU, -y * HU, 0);
+    rlRotatef(-rz * RAD2DEG, 0, 0, 1);
+    rlScalef(sx, sy, 1);
+}
+
+// an XBitmap: picture src (px of the 256 px sheet, scaled to the PNG) on half extents (hw, hh) about local (x, y)
+static void hudBitmap(Texture2D t, Rectangle src, float x, float y, float hw, float hh, Color tint = WHITE) {
+    float k = t.width / 256.0f;
+    DrawTexturePro(t, {src.x * k, src.y * k, src.width * k, src.height * k}, {(x - hw) * HU, (-y - hh) * HU, 2 * hw * HU, 2 * hh * HU}, {}, 0, tint);
+}
+
+// an FE.Font HUD text centred on local y, em `units` high, x scaled by xs, its width squeezed to `fit` units (0x755843: x scale only).
+// Not TEXT_X wide like WXFE text [observed: the real panel title is 192 units wide at em 24]
+static void hudText(const char *t, float x, float y, float units, const Color *grad, Color edge, int align, float fit = 0, float xs = 1,
+                    const std::vector<Vector2> *pose = nullptr) {
+    float px = units * HU * 56 / 50, w = textWidth(t, px) * xs, sx = xs * (fit > 0 && w > fit * HU ? fit * HU / w : 1);
+    rlPushMatrix();
+    rlTranslatef(x * HU, -y * HU, 0);
+    rlScalef(sx, 1, 1);
+    textG(t, 0, -px / 2, px, grad[0], grad[1], align, edge, pose);
+    rlPopMatrix();
+}
+
+// HUD.Arm.Bord.Res (ArmouryBorderResource 0x5d9770): 3 x 4 quads of Weapon Panel Main.tga about the node, half extents (w, h)
+static void armBorder(Texture2D t, float w, float h) {
+    const float X[4] = {-w, 23 - w, w - 24, w}, Y[5] = {h, h - 23, 1.5f, 26 - h, -h};
+    static const Rectangle SRC[4][3] = {{{128, 18, 23, 23}, {1, 195, 254, 23}, {155, 18, 24, 23}},
+                                        {{3, 3, 23, 186}, {118, 88, 71, 50.5f}, {59, 3, 24, 186}},
+                                        {{30, 3, 23, 186}, {118, 138.5f, 71, 50.5f}, {88, 3, 24, 186}},
+                                        {{128, 45, 23, 26}, {1, 227, 254, 26}, {155, 45, 24, 26}}};
+    for (int j = 0; j < 4; j++)
+        for (int i = 0; i < 3; i++)
+            hudBitmap(t, SRC[j][i], (X[i] + X[i + 1]) / 2, (Y[j] + Y[j + 1]) / 2, (X[i + 1] - X[i]) / 2, (Y[j] - Y[j + 1]) / 2);
+}
+
+// WXFE_Border_NamePlate (0x7631cd, 0x76345c): 3 x 3 quads; the plate is stored upright in the sheet, its rows along u, its columns along v
+static void namePlate(Texture2D t, float w, float h) {
+    const float X[4] = {-w, 11 - w, w - 11, w}, Y[4] = {h, h - 11, 18 - h, -h}, U[4] = {204, 215, 235, 253}, V[4] = {2, 13, 178, 189};
+    float k = t.width / 256.0f;
+    rlSetTexture(t.id);
+    rlBegin(RL_QUADS);
+    rlColor4ub(255, 255, 255, 255);
+    for (int j = 0; j < 3; j++)
+        for (int i = 0; i < 3; i++) {
+            float u0 = U[j] * k / t.width, u1 = U[j + 1] * k / t.width, v0 = V[i] * k / t.height, v1 = V[i + 1] * k / t.height;
+            float x0 = X[i] * HU, x1 = X[i + 1] * HU, y0 = -Y[j] * HU, y1 = -Y[j + 1] * HU;
+            rlTexCoord2f(u0, v0), rlVertex2f(x0, y0);
+            rlTexCoord2f(u1, v0), rlVertex2f(x0, y1);
+            rlTexCoord2f(u1, v1), rlVertex2f(x1, y1);
+            rlTexCoord2f(u0, v1), rlVertex2f(x1, y0);
+        }
+    rlEnd();
+    rlSetTexture(0);
+}
+
+// WXD.WeaponHelpText (0x5fece0): HelpText.<W4M weapon>0; the Weapon Factory slot by its launch type
+static const char *weaponHelp(const WeaponDef &w, bool factory) {
+    if (factory) {
+        static const char *const LAUNCH[3] = {"HelpText.kSecretWeaponBomber", "HelpText.kSecretWeaponLaunched", "HelpText.kSecretWeaponThrown"};
+        int l = factoryLaunch(w);
+        if (const char *s = l < 3 ? tr(LAUNCH[l], nullptr) : nullptr) return s;
+        return tr("HelpText.kWeaponSecretWeapon0", "");
+    }
+    std::string k = w4mKey(w);
+    const char *s = tr(("HelpText.kWeapon" + k + "0").c_str(), nullptr);
+    return s ? s : tr(("HelpText.kUtility" + k + "0").c_str(), "");
+}
+
+// WXWeaponHelpPanelLogicEntity: the help panel left of the weapon panel; the cursor cell's weapon or none
+static void helpPanel(const HudPose &p, const WeaponDef *w, bool factory) {
+    // [observed: the real game puts this group's centre at about (-205, -96) HUD units, 1.17 x its decoded size; its parent transform is not traced]
+    const Vector2 AT = {-205, -96};
+    const float K = 1.17f;
+    hudNode(AT.x + p.x, AT.y + p.y, p.rz, p.sx * K, p.sy * K);
+    comPanel({-90.3f * HU, -94.6f * HU, 180.6f * HU, 189.2f * HU});  // kMT_ComPanelBorder, half (90.3, 94.6) at (-95, -46)
+    const char *title = w ? weaponName(*w) : tr("Text.WeaponHelpTitle", "Weapon Help", "Aide des armes");
+    std::vector<Vector2> pose = textPose(4, title);  // High5,Low5
+    hudText(title, -4, 83, 20, GC_BUTTON_YELLOW, {0x67, 0x47, 0x00, 255}, 1, 164, 1, &pose);  // (-99, 37), fitted to 164 wide
+    if (Texture2D d = tex("hud/weapon_panel_divide"); d.id) hudBitmap(d, {0, 0, 256, 32}, -4, 63, 70, 6);  // HUD.WeaponDivide 20 below
+    if (w) {  // WXFEP.WeaponHelp: (-93, -55) half (80, 60), FontSizeOverride 20, AutoScale, Solid_White, top-left
+        std::string s = feTokens(weaponHelp(*w, factory));
+        float size = 20;
+        std::vector<std::string> lines = feWrap(s, size * HU, 160 * HU);
+        while (size > 5 && lines.size() * size > 120) lines = feWrap(s, (size -= 1) * HU, 160 * HU);
+        for (size_t i = 0; i < lines.size(); i++) {
+            float px = size * HU;
+            rlPushMatrix();
+            rlTranslatef(-78 * HU, (-51 + i * size) * HU, 0);
+            rlScalef(TEXT_X, 1, 1);
+            feLine(lines[i], 0, 0, px, WHITE, WHITE, 0, BLACK);
+            rlPopMatrix();
+        }
+    }
+    rlPopMatrix();
+}
+
+void Hud::drawPanel(const Game &g, int secs) {
+    double now = GetTime();
+    if (open != panelShown) panelShown = open, panelSince = now;
+    float t = (float)(now - panelSince);
+    if (!open && t >= 0.5f) return;
+    if (cursor != hiCell) hiCell = cursor, hiSince = now;
+    const int team = g.worms[g.current].team, N = PANEL_ROWS * PANEL_COLS;
+    Texture2D main = tex("hud/weapon_panel_main"), top = tex("hud/weapon_panel_top");
+    if (!main.id || !top.id) return;
+    HudPose wp = open ? hudPose(IN_WP, t) : hudPose(OUT_WP, t);
+
+    // help panel first: the weapon panel's root (layer 0x29+) draws over it
+    int w = panelWeapon(cursor);
+    bool has = w >= 0 && g.stock(team, w) && g.allowed(team, w);  // 0x602c70
+    rlPushMatrix();
+    rlTranslatef(640, 360, 0);
+    helpPanel(open ? hudPose(IN_WH, t) : hudPose(OUT_WH, t), has ? &WEAPONS[w] : nullptr, has && customWeapon(w));
+
+    hudNode(140 + wp.x, -10 + wp.y, wp.rz, wp.sx, wp.sy);  // the HUD.WP.Anims instance at (140, -10), its locator1
+    armBorder(main, 146, 205);
+    hudNode(0, 195);
+    namePlate(main, 109.33f, 23.5f);
+    const char *title = tr("Text.WeaponPanelTitle", "Weapon Menu", "Menu d'armes");
+    std::vector<Vector2> pose = textPose(4, title);  // High5,Low5
+    static const Color BLACKS[2] = {BLACK, BLACK};
+    hudText(title, 0, 0, 24, BLACKS, BLANK, 1, 0, 1, &pose);
+    rlPopMatrix();
+    if (Texture2D d = tex("hud/weapon_panel_divide"); d.id) hudBitmap(d, {0, 0, 256, 32}, 0, -44, 76, 6);
+
+    // cells: tiles (layer 0x29), icons (0x2c), the highlight tile (0x2d), its icon copy, the delay texts (0x2e)
+    static const Rectangle FRAME[4] = {{8, 8, 86, 86}, {102, 8, 86, 86}, {10, 102, 148, 148}, {176, 178, 72, 72}};
+    float hs = hudPose({keys(K_WPHI_S, false), keys(K_WPHI_S, false)}, fmodf((float)(now - hiSince), K_WPHI_S[2][0])).sx;  // WP_Highlight, looped
+    for (int pass = 0; pass < 5; pass++)
+        for (int c = 0; c < N; c++) {
+            int wc = panelWeapon(c), a = wc >= 0 ? g.stock(team, wc) : 0, late = a && g.allowed(team, wc) ? g.delays[team][wc] : 0;
+            bool lit = a && g.allowed(team, wc), hi = c == cursor;
+            if ((pass >= 2 && pass <= 3 && !hi) || ((pass == 1 || pass == 3) && !lit) || (pass == 4 && !late)) continue;
+            Color tint = late || (lit && !g.pickable(team, wc)) ? Color{255, 255, 255, 0x66} : WHITE;
+            float s = hi ? hs : 1;
+            hudNode(41.8f * (c % PANEL_COLS) - 105.9f, 148.5f - 41.8f * (c / PANEL_COLS) - (c / PANEL_COLS > 4 ? 18 : 0), 0, s, s);
+            const PanelCell &pc = PANEL_GRID[c];
+            if (pass == 0) hudBitmap(top, FRAME[lit ? 0 : 1], 0, 0, 20.5f, 20.5f, lit ? tint : WHITE);
+            else if (pass == 2) hudBitmap(top, FRAME[2], 0, 0, 20.5f, 20.5f);
+            else if (pass == 4) hudText(TextFormat("%d", late), 9.27f, -9.27f, 18, GC_WHITE, BLACK, 1);
+            else if (Texture2D ic = tex(TextFormat("hud/weapon_panel_icons%d", pc.sheet)); ic.id)
+                hudBitmap(ic, {pc.cell % 4 * 64.0f, pc.cell / 4 * 64.0f, 64, 64}, 0, 0, 15.99f, 15.99f, tint);
+            rlPopMatrix();
+        }
+
+    // footer (0x6026a0): the cursor weapon's name and count, the turn clock in its box
+    if (has) {
+        int a = g.stock(team, w), late = g.delays[team][w];
+        static const Color NAME[2] = {{245, 245, 245, 255}, {245, 245, 245, 255}}, COUNT[2] = {{255, 210, 51, 255}, {255, 210, 51, 255}};
+        const Color EDGE = {0, 30, 41, 255};
+        bool count = !late && a > 0;
+        const char *name = late ? tr("Text.WeaponDelayed", "Delayed", "Délai") : weaponName(WEAPONS[w]);
+        hudText(name, count ? -108 : -122, -177, 24, NAME, EDGE, 0, count ? 186 : 200);
+        if (count) hudText(TextFormat("%d", a), -122, -177, 24, COUNT, EDGE, 2, 0, a > 9 ? 16.8f / 24 : 1);  // 16.8 wide above 9
+    }
+    hudNode(103.5f, -163, -0.11f);
+    hudBitmap(top, FRAME[3], 0, 0, 16, 16);
+    if (secs >= 0) digits(TextFormat("%d", secs), 0, -14 * HU, 28 * HU, 1);  // HUD.Font digits of TurnTimeRemaining [size observed: 0.8 x the box]
+    rlPopMatrix();
+    rlPopMatrix();
+    rlPopMatrix();
+}
+
 void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
     const bool ready = readyNow;
@@ -4296,17 +4532,19 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     int left = aiming && g.hotSeat ? g.hotSeat : aiming ? g.timer : retreat ? std::min(g.timer, g.retreatTicks(weaponDef(g.weapon))) : 0, secs = (left + 59) / 60;
     Vector2 tp = {1180, 612};
     bool urgent = (secs <= 5 && aiming && !g.hotSeat) || retreat;
-    if (!sprite("timer_back", tp, 0.62f, {128, 128}, 0, urgent && tick / 15 % 2 ? Color{255, 120, 120, 255} : WHITE)) DrawCircleV(tp, 54, {0, 119, 155, 230});
     ScriptHud sh = scriptHud(g);
-    if (!sh.endless) digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);  // TurnTime 0: TurnTimeRemaining 0, no digits (0x5eff0d)
-    if (!g.script) {
-        int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
-        digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
-    } else if (sh.roundClock && sh.roundTime == -1) digits("~", tp.x, tp.y + 18, 26, 1, true);  // FXTXT.Infinity
-    else if (sh.roundClock) {  // HudClockEntity 0x5f03f0: "%02d:%02d" min:s, DisplayTenths adds a "%02d" of hundredths in a second, smaller text
-        int s = (int)(sh.clockMs / 1000);
-        float w = digits(TextFormat("%02d:%02d", s / 60, s % 60), tp.x - (sh.tenths ? 12 : 0), tp.y + 18, 26, 1, true);
-        if (sh.tenths) digits(TextFormat("%02d", (int)(sh.clockMs % 1000) / 10), tp.x - 12 + w / 2 + 2, tp.y + 18 + 26 * 0.4f, 26 * 0.6f, 0, true);
+    if (!panelShown) {  // the open weapon panel shows the turn clock in its box [observed: the real game hides this one meanwhile]
+        if (!sprite("timer_back", tp, 0.62f, {128, 128}, 0, urgent && tick / 15 % 2 ? Color{255, 120, 120, 255} : WHITE)) DrawCircleV(tp, 54, {0, 119, 155, 230});
+        if (!sh.endless) digits(TextFormat("%d", secs), tp.x, tp.y - 34, 56, 1, true);  // TurnTime 0: TurnTimeRemaining 0, no digits (0x5eff0d)
+        if (!g.script) {
+            int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
+            digits(TextFormat("%02d:%02d", round / 60, round % 60), tp.x, tp.y + 18, 26, 1, true);
+        } else if (sh.roundClock && sh.roundTime == -1) digits("~", tp.x, tp.y + 18, 26, 1, true);  // FXTXT.Infinity
+        else if (sh.roundClock) {  // HudClockEntity 0x5f03f0: "%02d:%02d" min:s, DisplayTenths adds a "%02d" of hundredths in a second, smaller text
+            int s = (int)(sh.clockMs / 1000);
+            float w = digits(TextFormat("%02d:%02d", s / 60, s % 60), tp.x - (sh.tenths ? 12 : 0), tp.y + 18, 26, 1, true);
+            if (sh.tenths) digits(TextFormat("%02d", (int)(sh.clockMs % 1000) / 10), tp.x - 12 + w / 2 + 2, tp.y + 18 + 26 * 0.4f, 26 * 0.6f, 0, true);
+        }
     }
     if (sh.counter) {  // CounterGraphicEntity 0x5e57c0: "%d" (+ "%" if Percent) on HUD.WindBacking x BackScale 30, TextScale 21, at the clock's lower left
         Vector2 cp = {1054, 659};
@@ -4366,7 +4604,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float full = fmaxf(g.jetInit, 0.01f);  // Jetpack.InitFuel
         healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / full, 0, 1));
     }
-    if (open && mine) hints({{"D-pad", "Up/Down/Left/Right", "Move"}, {"A", "Enter", "Select"}, {"B/X", "Backspace/Q", "Close"}});
+    if (open) {}  // over its panel W4M draws no button legend
     else if (mine && !quiet && g.girderOn && g.phase == Phase::Aim)  // W4M HelpText.kUtilityGirder0: Movement, GirderRaise / Lower, Fire
         hints({{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}});
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
@@ -4386,33 +4624,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         hints({{"A", "Space", "Fire"}, {"D-pad", "Wheel", "Zoom"}});
     else if (mine && !quiet && aiming) hints(weaponHints(wd));
     else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});
-    if (!open) return;
-
-    // weapon panel
-    std::vector<int> slots = panelSlots();
-    int n = (int)slots.size(), cols = PANEL_COLS, rows = (n + cols - 1) / cols;
-    float cell = 92, pw = cols * cell + 60, ph = rows * cell + 150;
-    Rectangle pr = {640 - pw / 2, 360 - ph / 2, pw, ph};
-    popup(pr);
-    text("WEAPONS", 640, pr.y + 24, 40, GOLDEN, 1);
-    for (int k = 0; k < n; k++) {
-        int i = slots[k];
-        Rectangle c = {pr.x + 30 + (k % cols) * cell, pr.y + 80 + (k / cols) * cell, cell - 8, cell - 8};
-        int a = g.stock(cur.team, i), late = g.delays[cur.team][i];
-        if (late) a = 0;  // W4M FETXT.HTPSubtopic4: a delayed weapon is dimmed, its number the turns left
-        bool lit = a && g.pickable(cur.team, i);
-        if (i == cursor && !nine("fe/buttonbig_highlight", c, 64, 0.25f)) DrawRectangleRoundedLinesEx(c, 0.2f, 4, 4, GOLDEN);
-        Rectangle ic = {c.x + 8, c.y + 8, c.width - 16, c.height - 16};
-        if (!image(iconOf(WEAPONS[i]), ic, lit ? WHITE : Fade(GRAY, 0.5f))) {
-            DrawRectangleRounded(ic, 0.2f, 4, lit ? PANEL : Fade(PANEL, 0.4f));
-            text(WEAPONS[i].name.substr(0, 4).c_str(), ic.x + ic.width / 2, ic.y + ic.height / 2 - 10, 20, lit ? WHITE : GRAY, 1);
-        }
-        if (a > 0) text(TextFormat("%d", a), c.x + c.width - 6, c.y + c.height - 26, 22, WHITE, 2);
-        if (late) text(TextFormat("%d", late), c.x + c.width / 2, c.y + c.height / 2 - 20, 40, GOLDEN, 1);
-    }
-    const WeaponDef &sel = WEAPONS[cursor];
-    int sa = g.stock(cur.team, cursor);
-    text(TextFormat("%s  %s", weaponName(sel), sa < 0 ? "(infinite)" : TextFormat("x%d", sa)), 640, pr.y + ph - 58, 30, sa ? WHITE : GRAY, 1);
+    drawPanel(g, sh.endless ? -1 : secs);
 }
 
 // ---------------------------------------------------------------- pause

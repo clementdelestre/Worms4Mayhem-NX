@@ -153,6 +153,16 @@ int main() {
         if (toolDrop(WEAPONS[pw])) assert(g.jetting && g.weapon == jp && g.secondary == pw);
         else assert(!g.jetting && g.weapon == pw && g.secondary < 0);
     }
+    {  // W4M weapon panel grid (0x920e58): its 38 named cells but the Weapon Factory one (no team weapon here) hold ours; Teleport and the crate-only effects have none
+        Game g;
+        g.start({7, 2, 2, "", 0});
+        std::set<int> seen;
+        int filled = 0;
+        for (int c = 0; c < 42; c++) if (int w = Ui::panelWeapon(c); w >= 0) filled++, seen.insert(w);
+        assert(filled == 38 && seen.size() == 38);
+        for (size_t w = 0; w < WEAPONS.size(); w++)
+            if (!seen.count((int)w)) assert(WEAPONS[w].kind == Kind::Teleport || collected(WEAPONS[w].kind));
+    }
     {  // user-requested: X during the count ends it; an open panel is never hidden by the ready screen
         Game g;
         g.start({7, 2, 2, "", 0});

@@ -31,7 +31,7 @@ bool artReady(const char *name);  // art() would not read the SD card for it
 void logo(float cx, float y, float w, float deg = 0, float stretch = 1);  // W4M logo, top centre at (cx, y), tilted deg
 // one channel of a W4M frontend item clip t s after it started (WXFrontend.Anim keys {time s, value, in tangent x, y, out tangent
 // x, y}, at FE.AnimSpeed), held past its ends
-float clipKeys(const float (*keys)[6], int n, float t, bool weighted = false);
+float clipKeys(const float (*keys)[6], int n, float t, bool weighted = false, bool fe = true);  // fe: an FE item clip, played at FE.AnimSpeed
 extern const float IN_SCALEHIT_S[6][6], IN_SCALEHIT_X[7][6], IN_SCALEHIT_Y[7][6];
 // Menu language: 0 English, 1 French (lang.txt, else the system language). tr(): W4M's string for key
 // (assets/lang/<en|fr>.txt from tools/w4m-ui), else the built-in en / fr text (key may be null).
@@ -190,6 +190,7 @@ Vector2 windPointer(bool live, float wx, float wz, Vector2 fwd);  // wind meter 
 float text3dPlace(Vector3 p, float scale, const Camera3D &cam, Vector3 fwd, Vector2 screen, Vector2 &at);  // Text3D em (px) and centre
 // W4M PiP (HUDTWK PiP.*, WXFE_Border_Bubble): the event camera's picture in its tilted inset; show / full as Controls::inset
 void pipInset(const RenderTexture2D &scene, float show, float full);
+int panelWeapon(int cell);  // our weapon in a W4M weapon panel cell (row-major, 7 x 6), -1 for none
 struct Hud {
     bool skipHp = false;  // X pressed during the count (user-requested)
     int counting = -1;  // worm whose label is counting, camera on it; wait: camera travel / linger seconds
@@ -207,12 +208,17 @@ struct Hud {
     void select(int weapon) { pick = weapon, open = false, swallow = true; }
     int slot() const { return cursor; }
     void view(bool o, int slot) { viewOpen = o, viewSlot = slot; }  // the remote active player's panel (PANEL), shown read-only
+    void point(int cell) { cursor = cell; }  // tests: the weapon panel cursor
 
 private:
     int cursor = 0, pick = -1;  // pick: sent until it lands
     bool viewOpen = false;
     int viewSlot = 0;
     bool swallow = true;  // a held A (weapon pick, menu START) must not fire
+    bool panelShown = false;  // the weapon panel's last drawn state: open plays In_WP, closed Out_WP from panelSince
+    double panelSince = -1e9, hiSince = 0;
+    int hiCell = -1;  // the cell WP_Highlight runs on since hiSince
+    void drawPanel(const Game &g, int secs);  // secs: the turn clock, -1 none
     int introWorm = -1;       // the worm whose turn it is: a change is a turn start
     // W4M hp count: labels/bars show `shown`, which ticks toward the sim's counted hp (Settle: timed by the sim)
     struct HpTrack { int seen = 0; float shown = 0, from = 0; bool poison = false; };
