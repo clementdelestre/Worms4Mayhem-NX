@@ -15,7 +15,7 @@ struct SavedTeam {  // W4M StoredTeamData
     std::string flag, speech = "voclassi", weapon;  // weapon: CustomWeapon, the team's Weapon Factory weapon
     std::string hat, gloves, glasses, tash;          // WXFE.A.* ids, "" none
     // the team in a match slot: worms 1..6 (0 = the match default), alliance 0..3 (-1 = AddTeam's), handicap -1..1; its weapon
-    // looked up by name in the player's Weapon Factory list (AddTeam 0x73f311 copies the team's SecretWeapon into the slot)
+    // looked up by name in the player's Weapon Factory list, then the stock weapons (AddTeam 0x73f311 copies the team's SecretWeapon into the slot)
     GameConfig::Team slot(int count = 0, int alliance = -1, int handicap = 0, const std::vector<WeaponDef> &factory = {}) const;
 };
 
@@ -55,7 +55,8 @@ struct Catalog {
     std::vector<Item> graves;       // SelectGraveList, by GraveIndex (id = its Grave.* mesh)
     std::vector<Item> flags;        // SelectFlagList
     std::vector<Item> speech;       // SelectSoundbankList
-    std::vector<std::string> stockWeapons;  // LOCAL DATA.LockedWeapons, stock Weapon Factory weapons
+    std::vector<std::string> stockWeapons;  // LOCAL DATA.LockedWeapons, stock Weapon Factory weapons: their names
+    std::vector<WeaponDef> stock;           // and the weapons (stockweapons.json, W4M WeaponFactoryContainer fields)
     void load(const char *assetDir);
     const Item *attachment(const std::string &id) const;  // null if none
     const Item *flag(const std::string &id) const;

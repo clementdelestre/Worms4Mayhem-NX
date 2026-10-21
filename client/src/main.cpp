@@ -220,7 +220,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
         else if (Sfx s = e.sfx ? Audio::byEvent(e.sfx) : Sfx::Count; s != Sfx::Count) Audio::play(s, e.pos);
         if (g.phase != Phase::Aim) Controls::impact(e.pos);
         break;
-    case GameEvent::Hallelujah: Audio::play(Sfx::Holy, e.pos); break;
+    case GameEvent::Hallelujah: if (Sfx s = Audio::byEvent(e.sfx); s != Sfx::Count) Audio::play(s, e.pos); break;  // PreDetonationSfx
     case GameEvent::Fire: {
         const WeaponDef &d = WEAPONS[e.weapon];
         Kind k = d.kind;
@@ -232,7 +232,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
         if (k == Kind::Shell) s = d.name == "Poison Arrow" ? Sfx::Bow : d.name == "Dynamite" ? Sfx::Dynamite : d.name == "Gas Canister" ? Sfx::Gas : s;
         else if (k == Kind::Melee) s = d.name == "Baseball Bat" ? Sfx::BatSwing : d.name == "Prod" ? Sfx::Prod : Sfx::FirePunch;
         else if (k == Kind::Shotgun && d.name == "Sniper Rifle") s = Sfx::Sniper;
-        if (k == Kind::Shell && customWeapon(e.weapon)) s = d.fuse > 0 ? Sfx::Throw : Sfx::SecretLaunch;  // Factory LaunchSfx by launch type
+        if ((k == Kind::Shell || k == Kind::Homing) && customWeapon(e.weapon)) s = kindName(d) == "Grenade" ? Sfx::Throw : Sfx::SecretLaunch;  // 0x5983f0 LaunchSfx: Thrown / Launched
         else if (k == Kind::Sentry && e.worm >= 0) s = Sfx::SentryPlace;  // placing vs. the turret's own shots (worm -1)
         if (k != Kind::Airstrike && k != Kind::Abduction && k != Kind::Jetpack && k != Kind::Flood) Audio::play(s, e.pos);  // chopper / UFO: drawBomber, drawUfo; jetpack: its loop (jetAudio); Flood: its rain's
         if (k == Kind::Flood) floodFx(g, 1 + 4.7f);  // FloodWeaponLogicEntity 0x555c90: StopRain with DoFlood, RainDuration 4700 ms after the start
@@ -246,8 +246,9 @@ static void onEvent(const Game &g, const GameEvent &e) {
                               {"Grenade", "WXP_Poof_VFast", Sfx::Bounce}, {"Cluster Grenade", "WXP_Poof_VFast", Sfx::Bounce},
                               {"Holy Hand Grenade", "WXP_Poof_VFast", Sfx::Bounce}, {"Gas Canister", "WXP_Poof_VFast", Sfx::Bounce},
                               {"Landmine", "WXP_Poof_VFast", Sfx::Bounce}};
+        if (e.fx) { Fx::start(e.fx, e.pos); break; }  // the event's own BounceFx (a Weapon Factory bomblet's)
         for (const B &b : T)
-            if (e.weapon >= 0 && WEAPONS[e.weapon].name == b.weapon) Audio::play(b.sfx, e.pos), Fx::start(b.fx, e.pos);
+            if (e.weapon >= 0 && kindName(WEAPONS[e.weapon]) == b.weapon) Audio::play(b.sfx, e.pos), Fx::start(b.fx, e.pos);
         break;
     }
     case GameEvent::Arm: Audio::play(Sfx::BowImpact, e.pos); break;
@@ -257,7 +258,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
             break;
         }
         Audio::play(WEAPONS[e.weapon].fuse > 0 ? Sfx::CowFall : Sfx::BombWhistle, e.pos);
-        if (WEAPONS[e.weapon].fuse <= 0) Fx::ariel(e.pos);
+        if (WEAPONS[e.weapon].fuse <= 0 && !customWeapon(e.weapon)) Fx::ariel(e.pos);  // a Weapon Factory Bomber's ArielFx is "" (0x59939c)
         break;
     case GameEvent::Splash: Fx::start(e.fx, e.pos); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking; the sounds are the effect's EmitterSoundFX
     case GameEvent::Pop: case GameEvent::Sink: Fx::start(e.fx, e.pos); break;
@@ -1040,12 +1041,19 @@ static void levelFx(const Game &g) {
 static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now) {
     const Vector3 P = s.shown(now);
     const WeaponDef &d = WEAPONS[s.weapon];
-    const std::string &n = d.name;
+    const std::string &n = kindName(d);  // a Weapon Factory payload: the weapon it clones
     if (s.child && d.kind == Kind::SuperSheep) return true;  // starburst stars: particles only (Fx::trail)
     if (n == "Starburst") return true;  // the rider mounts it on its Pack_Locator (drawWorm)
     if (!s.child && d.kind == Kind::Airstrike) return true;  // the plane: drawBomber()
     if (d.kind == Kind::Abduction) return true;  // the saucer: drawUfo()
     if ((n == "Fatkins Strike" || s.child) && s.stage > 0) return true;  // still in the bomber; a bomblet before its spawn
+    const std::string &factory = s.child && d.kind != Kind::Airstrike ? d.cmodel : d.model;  // Weapon Factory: Factory.Proj.* (0x599486)
+    if (!factory.empty()) {  // Scale: x (2 - 0.05 n) for a Bomber's bombs
+        float k = d.scale[s.child], yaw = atan2f(s.vel.x, s.vel.z), pitch = atan2f(s.vel.y, sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z));
+        bool tumble = n == "Grenade" && Vector3Length(s.vel) >= 1;  // the Grenade's OrientationOption 1, SpinSpeed 0.1
+        Matrix r = tumble ? MatrixMultiply(MatrixRotateX(clock * 4), MatrixRotateY(clock * 6)) : MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw));
+        return Models::draw(factory.c_str(), MatrixMultiply(MatrixMultiply(MatrixScale(k, k, k), r), MatrixTranslate(P.x, P.y, P.z)));
+    }
     if (d.kind == Kind::Airstrike && s.child && d.fuse <= 0)
         return Models::draw("airstrike", P, atan2f(s.vel.x, s.vel.z), atan2f(s.vel.y, sqrtf(s.vel.x * s.vel.x + s.vel.z * s.vel.z)), WHITE, "Spin", clock);  // AnimTravel
     if (d.kind == Kind::Airstrike && d.fuse > 0 && drawBovine(s, clock)) return true;
@@ -1055,7 +1063,6 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now
                   : d.kind == Kind::Sheep ? "sheep" : d.kind == Kind::Donkey ? "donkey" : d.kind == Kind::Airstrike ? "airstrike"
                   : n == "Cluster Grenade" || (s.child && d.kind == Kind::Mine) ? (s.child ? "clusterlet" : "cluster") : n == "Banana Bomb" ? "banana"  // W4M bananettes reuse the BananaBomb mesh
                   : n == "Holy Hand Grenade" ? "holy" : d.fuse > 0 ? "grenade" : "bazooka";
-    if (!d.model.empty()) m = d.model.c_str();  // Weapon Factory
     Vector3 v = d.stick > 0 && s.stage ? s.aim : s.vel;  // a stuck arrow keeps the heading it hit with
     float h = sqrtf(v.x * v.x + v.z * v.z), yaw = atan2f(v.x, v.z);
     if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, P, yaw, 0, WHITE, "Run", clock);
@@ -2358,7 +2365,7 @@ int main(int argc, char **argv) {
         static float rocketAge = 0;
         const Vector3 *rocket = nullptr;
         for (const Projectile &s : game.shots)
-            if (!s.child && !customWeapon(s.weapon) && (WEAPONS[s.weapon].name == "Bazooka" || WEAPONS[s.weapon].kind == Kind::Homing)) rocket = &s.pos;
+            if (!s.child && (kindName(WEAPONS[s.weapon]) == "Bazooka" || WEAPONS[s.weapon].kind == Kind::Homing)) rocket = &s.pos;  // a Factory clone of either too
         rocketAge = rocket ? rocketAge + GetFrameTime() : 0;
         Audio::hold(Audio::Sfx::Homing, onMatch && rocket && rocketAge < 5.029f && !pause.open, rocket);
         Audio::loop(Audio::Sfx::MineBeep, onMatch && mine && !pause.open, mine);
@@ -2366,15 +2373,16 @@ int main(int argc, char **argv) {
         Audio::loop(Audio::Sfx::Cheer, onMatch && game.phase == Phase::GameOver && won(game));
         // W4M PowerbarMeterEntity 0x5f5c70: PoweringUpStart plays the type's sound on the worm, cut at the launch (0x1a = kWeaponPoisonArrow, table 0x90c920)
         const WeaponDef &sw = weaponDef(game.weapon);
-        bool charging = onMatch && game.phase == Phase::Aim && cur.alive && game.power > 0 && powered(sw.kind) && !pause.open;
-        Audio::hold(Audio::Sfx::PowerRocket, charging && sw.kind == Kind::Shell && sw.name != "Poison Arrow", &cur.pos);
-        Audio::hold(Audio::Sfx::PowerHoming, charging && sw.kind == Kind::Homing, &cur.pos);
+        bool charging = onMatch && game.phase == Phase::Aim && cur.alive && game.power > 0 && powered(sw) && !pause.open;
+        const bool homingId = sw.kind == Kind::Homing && !customWeapon(game.weapon);  // by weapon id: the Weapon Factory's (21) is RocketPowerUp
+        Audio::hold(Audio::Sfx::PowerRocket, charging && !homingId && sw.name != "Poison Arrow", &cur.pos);
+        Audio::hold(Audio::Sfx::PowerHoming, charging && homingId, &cur.pos);
         // Accessory.Init = the weapon shown in hand (game.weapon): EquipSfx at most once per 9 s per worm (+0xd4)
         static int equipW = -1, equipWorm = -1;
         static double equipAt[256];
         bool aiming = onMatch && game.phase == Phase::Aim && cur.alive, hand = aiming && !pause.open;
         if (aiming && game.weapon >= 0 && (game.weapon != equipW || game.current != equipWorm) && (unsigned)game.current < 256 && GetTime() > equipAt[game.current] + 9)
-            Audio::equip(customWeapon(game.weapon) ? "Bazooka" : wd.name.c_str(), cur.pos), equipAt[game.current] = GetTime();
+            Audio::equip(kindName(wd).c_str(), cur.pos), equipAt[game.current] = GetTime();  // a Factory weapon: its clone's EquipSfx
         equipW = aiming ? game.weapon : -1, equipWorm = aiming ? game.current : -1;
         // WAE_* Input.TauntPressed (DIK 20, no joypad), state 1 -> 2: the Acting taunt scene plus the WXAnimTaunt clip until it ends.
         // It needs kWPS_Ambulatory (WormData+0xf0 == 0) and no PlayFireAnim since Accessory.Init (+0xc5, 0x58c333): not between shotgun shots
@@ -2566,7 +2574,7 @@ int main(int argc, char **argv) {
         rlEnableDepthMask(), EndBlendMode();
         lap(T_MODELS);
                 float fxDt = pause.open ? 0 : dt;
-        for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt, {game.wind, 0, game.windZ});
+        for (const Projectile &s : game.shots) Fx::trail(s, s.shown(game.clock), fxDt);
         drawBubbles(game, fxDt);
         drawFactory(game, fxDt);
         Fx::setWind({game.wind, 0, game.windZ}), Fx::levelSync(game.terrain.emitters), Fx::weather(game.cfg.seed, game.clock);

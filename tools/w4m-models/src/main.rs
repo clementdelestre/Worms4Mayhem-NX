@@ -982,8 +982,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
 
     // joints: flat nodes holding the full skinning matrix (inverse bind = identity), so no shear-prone hierarchy
     let mut nodes = vec![format!("{{\"name\":\"mesh\",\"mesh\":0{}}}", if animated { ",\"skin\":0" } else { "" })];
-    // WEAPTWK FxLocator (bazookarocket, homingmissile): where the ArielFx emitters sit on a static payload, in the baked model's space
-    for (gi, _) in s.groups.iter().enumerate().filter(|(_, g)| !animated && matches!(g.path.as_str(), "bazookarocket" | "homingmissile")) {
+    // WEAPTWK FxLocator (bazookarocket, homingmissile; a Weapon Factory payload's `fuse`, 0x5993ec): where the ArielFx emitters sit on a static payload, in the baked model's space
+    for (gi, _) in s.groups.iter().enumerate().filter(|(_, g)| !animated && matches!(g.path.as_str(), "bazookarocket" | "homingmissile" | "fuse")) {
         let t = apply(&norm, apply(&rest[gi], [0.0; 3], 1.0), 1.0);
         nodes.push(format!("{{\"name\":\"FxLocator\",\"translation\":{t:?}}}"));
     }
@@ -1166,6 +1166,10 @@ fn main() {
     for l in fs::read_to_string(out.join("../graves.txt")).unwrap_or_default().lines() {
         let f: Vec<&str> = l.split('\t').collect();
         if f.len() > 1 { todo.push((f[0].to_string(), f[1].to_string(), -0.05, false, &[][..])); }
+    }
+    // the stock Weapon Factory payload meshes (Factory.Proj.*), listed by setuplists.py: 20 units per metre about their origin
+    for l in fs::read_to_string(out.join("../stockmodels.txt")).unwrap_or_default().lines() {
+        if let Some((name, desc)) = l.split_once('\t') { todo.push((name.to_string(), desc.to_string(), -0.05, false, &[][..])); }
     }
     for path in bundles {
         if todo.is_empty() { break; }

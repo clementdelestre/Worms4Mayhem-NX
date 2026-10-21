@@ -1,6 +1,7 @@
 // Recorded AI match: save/load/re-sim gives the same checksum; instant-replay restore (snapshot or checkpoint) + re-sim,
 // or a skip (forward), lands on the live state.
 // Run from client/ (romfs maps).
+#include "../src/barracks.h"
 #include "../src/ai.h"
 #include "../src/replay.h"
 #include <cassert>
@@ -31,10 +32,14 @@ int main() {
         rec.cfg = GameConfig{77, 2, 3, map};
         rec.cfg.teamSetup = {{"CPU", 2}, {"CPU", 2}};
         if (*map) rec.cfg.wormpot = WP_DOUBLE_DAMAGE;
-        if (!strcmp(map, "arabian")) {  // each team its own Weapon Factory weapon, through the W4R6 team records
+        if (!strcmp(map, "arabian")) {  // each team its own Weapon Factory weapon, through the W4R7 team records
             WeaponDef a = {"Lobber A", Kind::Shell, 4, 70, 25, 2, 0.5f, 1.5f, 20, 2, 3, 1, false, 4}, b = a;
             b.name = "Strike B", b.kind = Kind::Airstrike, b.clusters = 3;
             rec.cfg.teamSetup[0].secret = a, rec.cfg.teamSetup[1].secret = b;
+        }
+        if (!strcmp(map, "Accuracy")) {  // a stock weapon's container fields (LOCAL DATA.LockedWeapons) through the records
+            assert(catalog().stock.size() == 7);
+            rec.cfg.teamSetup[0].secret = catalog().stock[6], rec.cfg.teamSetup[1].secret = catalog().stock[2];
         }
         Game g;
         g.start(rec.cfg);

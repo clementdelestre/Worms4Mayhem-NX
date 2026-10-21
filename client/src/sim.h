@@ -39,7 +39,6 @@ enum class Kind : uint8_t { Shell, Sheep, Airstrike, Donkey, Shotgun, Rope, Jetp
 inline bool collected(Kind k) { return k == Kind::DoubleDamage || k == Kind::CrateSpy || k == Kind::Armour; }  // W4M crate collect 0x5c9800 (44, 46, 47): applied at once, never in the inventory
 inline bool targeted(Kind k) { return k == Kind::Airstrike || k == Kind::Donkey || k == Kind::Abduction || k == Kind::Teleport; }  // W4M IsTargetingWeapon seen from the Blimp (Homing: see blimped)
 inline bool blimped(Kind k) { return targeted(k) || k == Kind::Homing; }  // seen from the Blimp: also Homing, which locks from there or from the aim view (0x583a10, user-requested A / ZR mapping)
-inline bool powered(Kind k) { return k == Kind::Shell || k == Kind::Homing; }  // hold FIRE to charge, release to fire
 inline bool utility(Kind k) { return k == Kind::Rope || k == Kind::Jetpack || k == Kind::Teleport || k == Kind::Parachute || k == Kind::ChangeWorm || k == Kind::Armour ||
                                     (k >= Kind::Girder && k != Kind::None); }  // utility-crate pool
 // W4M CanBeUsedWhenTailNailed: no movement tools, animals or melee for a nailed worm
@@ -82,13 +81,27 @@ struct WeaponDef {
     // Weapon Factory: W4M WeaponFactoryContainer LandDamageRadius, WormDamageRadius, WormDamageMagnitude, Push (0..1) of the Weapon [0] and
     // Cluster [1] containers; "land_damage", "worm_radius", "worm_damage", "blast_strength", cluster_*; factoryPayload() builds the payload
     float slider[2][4] = {{-1, -1, -1, -1}, {-1, -1, -1, -1}};
+    // W4M WeaponFactoryContainer (docs/w4m/weapons.md "Launch branch"): "launch" ProjectileLaunchType 0 Bomber, 1 Launched, 2 Thrown,
+    // 3 Dropped (-1: ours, from kind and fuse); "detonate" / "cluster_detonate" 0 Impact, 1 Fused, 3 AtRest (-1: ours, from fuse);
+    // "fuse_time" FuseTime ms (-1 adjustable); "powers_up", "max_power"; "collision" / "cluster_collision" ProjectileCollisionRadius units
+    int launch = -1, detonate[2] = {-1, 0}, fuseTime = -1;
+    bool powersUp = true, cpoison = false;
+    float maxPower = 0.5f, collision[2] = {1, 1};
+    // "cluster_model", "ariel" (W4M ArielFx, Weapon Factory only); clone: the WEAPTWK weapon the payload copies (0x598160), set by factoryPayload
+    std::string cmodel, ariel, clone;
+    bool crest = false;   // bomblets / air strike bombs detonate at rest (W4M Detonate 3 of their container), else on impact
+    bool powered = true;  // "powered": W4M IsPoweredWeapon of a Shell or Homing, else the launch speed is min_speed
+    std::string preSfx;   // "pre_detonation_sfx": W4M PreDetonationSfx, played when the rest fuse starts
+    float scale[2] = {1, 1};  // W4M Scale of the payload mesh and of its bomblets / air strike bombs (render only)
 };
+inline bool powered(const WeaponDef &d) { return (d.kind == Kind::Shell || d.kind == Kind::Homing) && d.powered; }  // hold FIRE to charge, release to fire
+inline const std::string &kindName(const WeaponDef &d) { return d.clone.empty() ? d.name : d.clone; }  // the name the client keys meshes and sounds on
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
 struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns)
 Blast blastOf(const WeaponDef &d, bool child);
 // Set down at the worm's feet (dynamite): the worm retreats while the fuse burns.
 // W4M IsPoweredWeapon: BasePower + ShotPower x MaxPower, ShotPower 0..1 over Tweaks.MaxPowerUpTime 1500 ms
-inline float launchSpeed(const WeaponDef &d, float power) { return d.base >= 0 ? d.base + (d.speed - d.base) * power : d.speed * fmaxf(power, 0.15f); }
+inline float launchSpeed(const WeaponDef &d, float power) { return !d.powered ? d.base : d.base >= 0 ? d.base + (d.speed - d.base) * power : d.speed * fmaxf(power, 0.15f); }
 inline bool dropped(const WeaponDef &d) { return d.kind == Kind::Shell && d.fuse > 0 && d.speed < 5; }
 // W4M WeaponSelected 0x565d30: with rope, jetpack or parachute out, only Dynamite, Landmine and Sheep (payload case 0) keep it
 inline bool toolDrop(const WeaponDef &d) { return dropped(d) || d.kind == Kind::Mine || d.kind == Kind::Sheep; }
@@ -285,7 +298,7 @@ inline uint64_t wormpotModes(uint32_t wp) {  // the picked modes, bit = mode id
     return m;
 }
 inline bool wpOn(uint64_t modes, int mode) { return modes >> mode & 1; }
-struct SchemePreset { const char *name; Scheme s; const char *delays; };  // delays: "Weapon N|..." (W4M SchemeData Delay), "*" = Weapon Factory
+struct SchemePreset { const char *name; Scheme s; const char *delays; int factoryAmmo; };  // delays: "Weapon N|..." (W4M SchemeData Delay), "*" = Weapon Factory; SchemeData WeaponFactoryWeapon.Ammo
 extern const std::vector<SchemePreset> SCHEMES;  // [0] = Standard; values from W4M Data/Tweak/LOCAL.XOM
 struct GameConfig {
     uint32_t seed = 0;
@@ -428,7 +441,7 @@ struct Game {
     static constexpr float DONKEY_CURVE = 11, DONKEY_HANG = 0.75f, DONKEY_LIFE = 8;
     static constexpr float DONKEY_MIN_HEIGHT = 75, DONKEY_EXTRA = 25;  // Donkey.MinHeight 1500, Donkey.ExtraHeight 500 units: it starts target + max(MinHeight, Land.MaxHeight + ExtraHeight) up (0x553700)
     static constexpr int DONKEY_HOLD = 5;
-    static constexpr float GAS_LIFE = 8, GAS_RADIUS = 5;  // W4M WXP_GasCloud: one 8 s particle, collision radius 100 units
+    static constexpr float GAS_LIFE = 8, GAS_RADIUS = 5, GAS_POISON = 10;  // W4M WXP_GasCloud: one 8 s particle, collision radius 100 units, poison 10
 
     Terrain terrain;
     std::vector<Worm> worms;
