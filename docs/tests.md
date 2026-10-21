@@ -145,6 +145,12 @@ Now (ours):
   (strace: 1766 stats for the 884 files of `assets/maps`), each an SD request on Switch. Sound variants are looked up in one
   listing of their directory instead of a `FileExists` per variant.
 - worm.glb's clips are sampled from a copy of the bytes already read, not a second 19 MB read.
+- worm.glb is the first job after the opening iris and goes out with its `Base` clip only (a skinned glb whose first clip is
+  `Base`, w4m-models' order): the Teams slots and editor draw it ~12 ms of sampling after its read and parse, not after all
+  223 clips (Switch: 3.0 s, `MODEL: ... Loaded animation` timestamps 13.83 -> 16.87). The same worker then samples every
+  clip and the main thread swaps them in (`addClips`, pose caches reset); a clip asked for before that draws `Base` (the
+  missing-clip fallback), and a match waits for the whole upload as before. Log: `MODELS: <path> drawable, Base clip only`,
+  then `MODELS: <path>: all 223 clips in` [ours].
 - The map titles the sort needs are read on a thread (`Ui::mapHeads`), not on the main thread after the joins.
 - Those heads come from one file, `assets/maps/index.tsv` (w4m-maps, after every import: `name, title, preview, theme`
   per line, cut from each json's first 399 bytes as `Ui::mapInfo` does). A map of the listing missing from it (copied by
