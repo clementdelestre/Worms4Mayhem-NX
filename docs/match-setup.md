@@ -9,8 +9,7 @@ slots (`WXFEP.InsertTeam`), then `WXFEP.SelectLandscape2` (docs/w4m/frontend.md)
 - Frame of the 3 screens and the Salon (`setupBack` / `setupFront`, ui.cpp): `divide` + `watermark` + `titleControl` as every submenu (title `FETXTH.LOCALGAME` locally, `FETXTH.GameLobby` in a room,
   `FETXTH.NetworkPlay` in the Salon) [data: CreateAGame's AnimDivide$In_Curve, Scrolling 1-4, Title Control]; the panel slides in once, then the 3 steps of the match setup keep it [ours].
   The strip carries the tooltip of the highlighted row (W4M copies `FETIP.*` into `FE.ToolTip`: `FETIP.InsertTeam`, `FETIP.Landscape2`, `FETIP.GameStyle`, `FETIP.Wormpot`) [data], NAV Prev
-  (back arrow) and NAV Start (the jar, Normal) at W4M's (264, -166) [data]. The pad's buttons (Switch glyphs / PC keys) are drawn under the strip, white FE text [ours: W4M has
-  Select / Back only]. The 3 steps ("1 Équipes", "2 Terrain", "3 Règles", the current one `Button_Yellow`) sit at the top right [ours: CreateAGame is one screen].
+  (back arrow) and NAV Start (the jar, Normal) at W4M's (264, -166) [data]. No button bar under the strip: the tooltip and NAV Prev / Start carry it, as W4M's ButtonHelp (Select / Back) [ours]. The 3 steps ("1 Équipes", "2 Terrain", "3 Règles", the current one `Button_Yellow`) sit at the top right [ours: CreateAGame is one screen].
 - Rows (`feRow` / `feBorder`): W4M's list rows, `fe/border_normal` (Border_Normal 6) / `border_highlight` (9) / `border_disabled` (7), RowHeight 42 [data]; the halves of the sprite's circle cap a stretched bar [assumed: how W4M cuts the border]. Label `List_Lable_Blue`, value `List_Data_Orange`, team names `TextBox_Yellow`, the
   highlight `Solid_Black` on the orange bar, `ERROR_RED` for a missing pad [data: WXFE.CreateAGameList columns, gradients]; no outline on the black highlight text [assumed: readability].
   Arrows are `fe/textitem_arrows` halves around an editable value [data: Arrow_* of the list control; their colour assumed].
@@ -31,17 +30,17 @@ team i on pad i when that pad is connected, else pad 0. `rules` is masked to the
 
 ## Screen 1, Teams [user-requested layout, W4M skin]
 Layout of the user's mockup, in the W4M frontend skin (pixels of the 1280 x 720 screen):
-- Pad strip across the top (y 120, 4 capsules of 291 x 54, `feBorder`, disabled border without a pad): the pad's LEDs (pad i lights i + 1 of 4), "Manette i", `padStyle()` name or "L + R pour rejoindre",
-  and one dot per team the pad plays (team colour) [ours].
-- 4 team cards side by side (y 190, 289 x 334): backdrop = W4M's blue text box (blue half of `fe/text_border_list`, 9-slice) [data: sprite, assumed: its use as a card]; inside, W4M list rows
+- Pad strip across the top (y 132, 4 capsules of 291 x 52, `feBorder`, disabled border without a pad): the controller dot (the body colour from libnx `hidGetNpadControllerColorSingle`, or `Split` for a Joy-Con pair: two half
+  discs, left / right Joy-Con colour when they differ; grey when the system gives none: `Controls::padColors`), "Manette i", `padStyle()` name or "L + R pour rejoindre", and on the right one numbered square per team the
+  pad plays (team colour, team number): round = the controller, square = a team [ours].
+- 4 team cards side by side (y 208, 289 x 308): backdrop = W4M's blue text box (blue half of `fe/text_border_list`, 9-slice) [data: sprite, assumed: its use as a card]; inside, W4M list rows
   (`feRow`): the name (team colour dot, `TextBox_Yellow`), Contrôle (Manette 1..4, then `FETXT.CPU1..5`), Voix (`FETXTSH.Voice`) and Chapeau; rows of a team another console owns use the disabled border.
-- Each card has its own live worm (`worm.glb`, clip `Base`, team tint, hat on `HatLocator`, one `RenderTexture` 256 x 346 rendered per card, turning slowly), 170 x 230 in its bottom-right corner,
-  overflowing the card by 12 px, behind the rows [user-requested]. `Frontend::setupTeams` uploads the pending models each frame (`Models::upload`): a plain launch (Switch) only uploads the menu assets at boot.
+- Each card has its own live worm (`worm.glb`, clip `Base`, untinted: W4M's worm bundle has no per-team skin, the team shows by the dot, name and HUD colours [assumed: no tint or team texture found in docs/w4m/formats.md "W4.Worm"; the in-match worm still carries our team tint, not checked against W4M], hat on `HatLocator`, one `RenderTexture` 256 x 346 rendered per card, turning slowly), 185 x 250 in its bottom-right corner,
+  overflowing the card by 15 px right and 36 px below, behind the rows [user-requested]. `Frontend::setupTeams` uploads the pending models each frame (`Models::upload`): a plain launch (Switch) only uploads the menu assets at boot.
 - Footer of a card (bottom-left): "Manette n absente" in `ERROR_RED` for a human team of this console without its pad; in a room, the owner console's name and its ready grenade [ours].
-- An empty slot is a card with a big "+" and `FETXT.InsertTeam`; step indicator 1 / 2 / 3 top right and the tooltip strip with the pad's buttons under it as on every setup screen.
-- One cursor per pad (`TeamCursors`, lobby.h): a present pad has its own cursor (card + row: 0 name, 1 Contrôle, 2 Voix, 3 Chapeau; an empty card has row 0 only), marked on its row by a disc in the
-  player-light green with the pad's number (left margin of the card, the second cursor of a row on the right margin; on an empty card under the "+"). A card with a cursor is raised 4 px and gets the
-  ButtonBig highlight frame; a row with a cursor is the orange highlight row [ours]. All the cursors act in the same frame: D-pad up / down changes row, left / right changes the value (on the name row
+- An empty slot is a card with the X button glyph (the button that adds a team: pad glyph, key cap on desktop) and `FETXT.InsertTeam` scaled to fit the card [ours]. A row whose value does not fit beside its label (hat names) shows the value alone, full width.
+- One cursor per pad (`TeamCursors`, lobby.h): a present pad has its own cursor (card + row: 0 name, 1 Contrôle, 2 Voix, 3 Chapeau; an empty card has row 0 only), marked on its row by the pad's controller dot
+  (left margin of the card, the second cursor of a row on the right margin; on an empty card under the X); a row with a cursor is the highlight row, tinted with the mix of that pad's body colours (red + blue Joy-Con = purple; `padFocus`, the highlight sprite in greys times the tint, lightened for the black text), W4M's orange when the pad is white or its colour unknown, and the dot stays; no frame around the card [ours]. All the cursors act in the same frame: D-pad up / down changes row, left / right changes the value (on the name row
   it moves to the next card), L / R (PageUp / PageDown on the keyboard = pad 0) move between cards, A edits the name or cycles the value, Y: the card's team is played by this pad, X: remove an own
   team (2 teams least locally, 1 in a room) or, on an empty card, add a team played by this pad. Two cursors may share a card or a row. Each pad starts on the first team it plays, else on this
   console's first team. While a name is typed on the keyboard, pad 0 and the typing pad wait; the other pads keep moving [ours].
@@ -78,7 +77,7 @@ W4M's `/*token*/` markup is dropped and space runs collapse (`plain`). `+` start
 
 ## Network room [ours unless tagged]
 - Flow: Réseau local / En ligne (Network menu) -> Salon (`Ui::salon`: Créer un salon / Rejoindre un salon as the Network menu's gold entries with a black brush on the selection, the games as list rows; Rejoindre lists the LAN games heard or the server's rooms,
-  R refreshes) -> the 3 screens above. W4M had the same order: GameList / HostGame / GameLobby (docs/w4m/network.md "Lobby flow") [data]. B on Teams leaves the room.
+  R refreshes; the panel, the entries and the list rows glide in with `rowAppear` and `FeNextIn` as the other menus, `Salon::t0` / `t1`; the status line goes through `tr()`) -> the 3 screens above. W4M had the same order: GameList / HostGame / GameLobby (docs/w4m/network.md "Lobby flow") [data]. B on Teams leaves the room.
 - The Lobby is a view of `Net::Lobby` (`Frontend::fromNet`): `owner[k]` = the slot's console, `self` / `host` = this console / the room's host, `ready[k]` = its console is
   ready. Slot order = colour, join order. This console's teams (`myTeams`, with their local pads) are the source of its own rows; a change goes out as TEAMS at most
   every 0.1 s (`Frontend::toNet`), so remote edits (name, hat, voice) show live on every console. A console edits only its own teams (`canEdit`); CPU control is

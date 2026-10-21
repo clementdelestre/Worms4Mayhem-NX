@@ -40,6 +40,7 @@ bool inset(Camera3D &view, float &show, float &full);
 void focus(const Vector3 *at, float radius = 0, bool crate = false);  // HUD cinematic target (hp count, crate drop), radius m kept in view; held while set each frame, nullptr or no call: released after 0.2 s
 // crate: W4M CrateTrackCamera on it instead of the framing
 void rumble(int pad, float amp, float secs);  // pad -1: nobody
+bool padColors(int pad, Color &l, Color &r);  // the controller body colour (Switch: Joy-Con pair left / right), false when unknown
 void update(float dt);                         // rumble envelopes, once per frame
 bool quitMovie();  // W4M input group EFMVMovie: Input.QuitEFMV on Space, or any pad's Y or Back (- here) (0x4e1360, 0x4e4a20)
 }  // namespace Controls

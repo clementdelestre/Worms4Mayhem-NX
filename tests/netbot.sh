@@ -9,6 +9,7 @@
 #      W4NX_LOBBY_TIMER=s: the W4M lobby timer (default here 4 s, game 30 s): the host is ready only when it ends.
 # With a rules value (3rd argument, non-zero) it also checks the live lobby: b edits its team, a sees it then pushes map and rules, b sees them.
 set -u
+export W4NX_HIDDEN=1  # hidden window, silent audio
 export W4NX_LOBBY_TIMER=${W4NX_LOBBY_TIMER:-4}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 W=$(mktemp -d)

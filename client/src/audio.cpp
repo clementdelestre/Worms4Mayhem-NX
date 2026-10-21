@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include "audio.h"
 #include "loading.h"
@@ -430,6 +431,7 @@ void loadSfx(int first, bool menu, Variants *out) {  // every other sound from f
 
 void init() {
     InitAudioDevice();
+    if (getenv("W4NX_HIDDEN")) SetMasterVolume(0);  // hidden (test) runs keep the audio code and its timing but stay silent
     SetAudioStreamBufferSizeDefault(16384);  // ~370 ms per half: rides out long frames
     std::thread music([] {
         openMusic("theme");

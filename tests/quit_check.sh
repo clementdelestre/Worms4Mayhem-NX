@@ -2,6 +2,7 @@
 # Pause -> Quit to menu must stay on the menu: title, Local, Quick match, pause, Quit, Yes (Enter), then arrows; fails on a 2nd Play.
 # Usage: tests/quit_check.sh   Env: W4NX=client binary (built if unset)
 set -u
+export W4NX_HIDDEN=1  # hidden window, silent audio
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 W=$(mktemp -d)
 if [ -z "${W4NX:-}" ]; then

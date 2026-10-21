@@ -501,3 +501,5 @@ off under 2 players, fires once), `Ui::multiplayerMaps` against `assets/multimap
 Imported Meet_The_Professor: the MJPG header (640 x 480, 25 fps) and frame count (106.12 s), the `FMVSubTiles` timing
 (`Movie::Subs`: Line1 from 11400 ms, hidden at 16400 ms (5000 ms hold), Line20 at 17000, Line2 at 18400; Welcome holds 8000), then a
 1.5 s playback in a hidden window (`start`, `update` true each frame, `stop`, `update` false).
+
+- Hidden runs (`W4NX_HIDDEN`, exported by `tests/netbot.sh` and `tests/quit_check.sh`) set the master volume to 0 right after `InitAudioDevice()`: the audio code and its timing still run, nothing is heard [ours].

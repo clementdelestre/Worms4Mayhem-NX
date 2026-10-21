@@ -1017,6 +1017,20 @@ void update(float dt) {
     }
 }
 
+bool padColors(int pad, Color &l, Color &r) {
+#ifdef __SWITCH__
+    HidNpadIdType id = pad ? HidNpadIdType(HidNpadIdType_No1 + pad) : hidGetNpadStyleSet(HidNpadIdType_No1) ? HidNpadIdType_No1 : HidNpadIdType_Handheld;
+    auto rgb = [](u32 c) { return Color{(unsigned char)(c & 255), (unsigned char)(c >> 8 & 255), (unsigned char)(c >> 16 & 255), 255}; };  // RGBA8, R lowest
+    HidNpadControllerColor a = {}, b = {};
+    bool ok = hidGetNpadStyleSet(id) & HidNpadStyleTag_NpadJoyDual ? R_SUCCEEDED(hidGetNpadControllerColorSplit(id, &a, &b))
+                                                                  : R_SUCCEEDED(hidGetNpadControllerColorSingle(id, &a));
+    if (ok) return l = rgb(a.main), r = rgb(hidGetNpadStyleSet(id) & HidNpadStyleTag_NpadJoyDual ? b.main : a.main), true;
+#else
+    (void)pad, (void)l, (void)r;
+#endif
+    return false;
+}
+
 bool inset(Camera3D &view, float &show, float &full) {
     view = pipView, view.up = viewUp(view);
     show = pip.mode == 1 ? leadEase(pip.t, 0.5f, 0, 0.1f) : pip.mode == 2 ? pip.from * (1 - leadEase(pip.t, 0.5f, 0, 0.1f)) : pip.from;  // ShowTime, ShowLeadIn / Out

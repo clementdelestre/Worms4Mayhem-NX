@@ -48,11 +48,6 @@ const int A = GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, B = GAMEPAD_BUTTON_RIGHT_FACE_DOW
           RIGHT = GAMEPAD_BUTTON_LEFT_FACE_RIGHT, PLUS = GAMEPAD_BUTTON_MIDDLE_RIGHT;
 const int PANEL_COLS = 8;
 const int MAX_CUSTOM = 8;  // Weapon Factory slots
-#ifdef __SWITCH__
-const char *APPLET = "-";  // controller applet glyph, Switch only
-#else
-const char *APPLET = nullptr;
-#endif
 const Color GOLDEN = {255, 210, 60, 255}, PANEL = {24, 74, 92, 230};  // W4M teal paper
 // Scheme edit page: one row per Scheme byte, in struct order. names: enum labels (min = 0).
 struct SchemeField { const char *label, *fmt; int min, max, step; const char *names[9]; };
@@ -1926,11 +1921,6 @@ const char *padStyle(int p) {
 const Color GC_TEXTBOX_YELLOW[2] = {{255, 242, 182, 255}, {255, 212, 119, 255}}, GC_LIST_DATA_ORANGE[2] = {{255, 228, 146, 255}, {255, 250, 225, 255}},
             GC_DISABLED[2] = {{128, 128, 128, 255}, {192, 192, 192, 255}}, GC_ERROR_RED[2] = {{255, 0, 0, 255}, {255, 0, 0, 255}}, GC_BLACK[2] = {BLACK, BLACK};
 
-// The Switch player lights of pad p: the first p + 1 of 4 lit, 8 px squares; width 4 * 8 + 3 * 3 [ours: the Switch has no W4M equivalent]
-void led(float x, float y, int p) {
-    for (int i = 0; i < 4; i++) DrawRectangleRounded({x + i * 11.0f, y, 8, 8}, 0.25f, 4, i <= p ? Color{54, 216, 96, 255} : Color{255, 255, 255, 80});
-}
-
 
 #ifdef __SWITCH__
 bool padMissing(const Lobby &L) {
@@ -1973,14 +1963,30 @@ bool cover(const std::string &name, Rectangle d, Color tint = WHITE) {
 // ---- W4M list widgets of WXFE.CreateAGame (WXFE.CreateAGameList rows: Border_Normal 6 / Highlight 9 / Disabled 7, GapBetweenItems 2)
 
 // The row border: the halves of fe/border_*'s circle cap a stretched bar; d: the row's inside
-void feBorder(Rectangle d, int state) {
+// The highlight sprite in greys, so a tint gives it any hue (the orange one multiplied would go dark)
+Texture2D greyHighlight() {
+    static Texture2D g;
+    if (!g.id && FileExists(DATA_DIR "assets/ui/fe/border_highlight.png")) {
+        Image im = LoadImage(DATA_DIR "assets/ui/fe/border_highlight.png");
+        ImageFormat(&im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+        for (unsigned char *q = (unsigned char *)im.data, *e = q + 4 * im.width * im.height; q < e; q += 4) q[0] = q[1] = q[2] = (unsigned char)(0.299f * q[0] + 0.587f * q[1] + 0.114f * q[2]);  // alpha kept
+        g = LoadTextureFromImage(im), UnloadImage(im);
+        SetTextureFilter(g, TEXTURE_FILTER_BILINEAR);
+    }
+    return g;
+}
+
+// focus: tint of the highlight (state 1), null = W4M's orange
+void feBorder(Rectangle d, int state, const Color *focus = nullptr) {
     static const char *const NAME[3] = {"fe/border_normal", "fe/border_highlight", "fe/border_disabled"};
-    Texture2D t = tex(NAME[state]);
+    Texture2D t = state == 1 && focus ? greyHighlight() : tex(NAME[state]);
+    if (!t.id) t = tex(NAME[state]), focus = nullptr;
     if (!t.id) return DrawRectangleRounded(d, 1, 8, state == 1 ? GOLDEN : PANEL);
+    const Color tc = focus ? *focus : WHITE;
     float k = d.height / 92, cap = fminf(64 * k, d.width / 2), x0 = d.x - 8 * k, w = d.width + 16 * k, y0 = d.y - 16 * k, h = 128 * k;
-    DrawTexturePro(t, {8, 0, 64, 128}, {x0, y0, cap, h}, {}, 0, WHITE);
-    DrawTexturePro(t, {72, 0, 64, 128}, {x0 + w - cap, y0, cap, h}, {}, 0, WHITE);
-    DrawTexturePro(t, {200, 0, 200, 128}, {x0 + cap, y0, w - 2 * cap, h}, {}, 0, WHITE);
+    DrawTexturePro(t, {8, 0, 64, 128}, {x0, y0, cap, h}, {}, 0, tc);
+    DrawTexturePro(t, {72, 0, 64, 128}, {x0 + w - cap, y0, cap, h}, {}, 0, tc);
+    DrawTexturePro(t, {200, 0, 200, 128}, {x0 + cap, y0, w - 2 * cap, h}, {}, 0, tc);
 }
 
 // FE text in pixels: x anchored by align (0 left, 1 centre, 2 right), yc the line's centre; TEXT_X as every FE text
@@ -2022,24 +2028,26 @@ struct Tilt {
 Vector2 centre(Rectangle r) { return {r.x + r.width / 2, r.y + r.height / 2}; }
 
 // A list row with a label left (List_Lable_Blue) and a value right (List_Data_Orange); Solid_Black on the highlight (state 1), grey when disabled (2).
-// arrows: textitem_arrows around the value; ledPad >= 0: that pad's lights before it; red: ERROR_RED value [ours: W4M rows hold one text column]
-void feRow(Rectangle r, int state, const char *label, const char *value, bool arrows, int ledPad = -1, bool red = false) {
-    feBorder(r, state);
+// arrows: textitem_arrows around the value; compact: smaller text and margins for a narrow card; red: ERROR_RED value [ours: W4M rows hold one text column]
+void feRow(Rectangle r, int state, const char *label, const char *value, bool arrows, bool compact = false, bool red = false, const Color *focus = nullptr) {
+    feBorder(r, state, focus);
     bool hi = state == 1;
     const Color *lg = hi ? GC_BLACK : state == 2 ? GC_DISABLED : GC_LIST_LABLE_BLUE;
     const Color *vg = red ? GC_ERROR_RED : hi ? GC_BLACK : state == 2 ? GC_DISABLED : GC_LIST_DATA_ORANGE;
-    float px = r.height * 0.62f, pad = r.height * 0.8f, cy = r.y + r.height / 2, ah = r.height * 0.6f, aw = ah * 0.5f, right = r.x + r.width - pad;
-    float lw = feWidthPx(label, px), avail = r.width - 2 * pad - lw - 16 - (arrows ? 2 * aw + 12 : 0) - (ledPad >= 0 ? 53 : 0), vpx = px, vw = feWidthPx(value, vpx);
+    float px = r.height * (compact ? 0.5f : 0.62f), pad = r.height * (compact ? 0.4f : 0.8f), cy = r.y + r.height / 2, ah = r.height * 0.6f, aw = ah * 0.5f, right = r.x + r.width - pad;
+    float lw = feWidthPx(label, px), avail = r.width - 2 * pad - lw - (compact ? 8 : 16) - (arrows ? 2 * aw + 8 : 0), vpx = px, vw = feWidthPx(value, vpx);
+    const bool solo = compact && vw > avail;  // a long value (hat name) takes the whole row, label dropped
+    if (solo) lw = 0, avail = r.width - 2 * pad - (arrows ? 2 * aw + 8 : 0);
     if (vw > avail && avail > 0) vpx *= avail / vw, vw = avail;
+    if (solo) right = r.x + (r.width + vw) / 2 + (arrows ? aw + 6 : 0);
     Texture2D a = tex("fe/textitem_arrows");
     Color ac = hi ? Color{42, 22, 0, 255} : GC_LIST_DATA_ORANGE[0];
     if (arrows && a.id) DrawTexturePro(a, {32, 0, 32, 64}, {right - aw, cy - ah / 2, aw, ah}, {}, 0, ac), right -= aw + 6;
     Color edge = hi ? BC_NONE : BC_BLACK;  // black on the orange bar without the outline [assumed: readability]
     feTextPx(value, right, cy, vpx, vg, 2, edge);
     right -= vw;
-    if (ledPad >= 0) led(right - 49, cy - 4, ledPad), right -= 53;
     if (arrows && a.id) DrawTexturePro(a, {0, 0, 32, 64}, {right - aw - 6, cy - ah / 2, aw, ah}, {}, 0, ac);
-    feTextPx(label, r.x + pad, cy, px, lg, 0, edge);
+    if (!solo) feTextPx(label, r.x + pad, cy, px, lg, 0, edge);
 }
 
 // Blue divide, scrolling watermark and Title Control of the setup screens [data MENUTWKX WXFE.CreateAGame: AnimDivide$In_Curve, Scrolling 1-4, Title Control]; p: the
@@ -2066,19 +2074,33 @@ void setupBack(const char *title, int step, float t, float p, int timer) {
     }
 }
 
-// The paper strip with a tooltip (warn: red), NAV Prev and NAV Start (start: 0 Normal, 2 Disabled), then the pad's buttons under it
-// [ours: W4M's ButtonHelp shows Select / Back only]
-void setupFront(float t, const char *tip, bool warn, int start, const std::vector<Hint> &h) {
-    paperStrip(t, true, tip, warn, start);
-    menuPage = false;
-    hints(h);
-    menuPage = true;
+// The paper strip with a tooltip (warn: red), NAV Prev and NAV Start (start: 0 Normal, 2 Disabled); no button bar, W4M's ButtonHelp shows Select / Back only
+void setupFront(float t, const char *tip, bool warn, int start) { paperStrip(t, true, tip, warn, start); }
+
+// The body colour of pad p's controller: one disc, or two halves (left / right Joy-Con) when the pair differs; grey when the system gives none [ours]
+bool padBody(int p, Color &l, Color &r) {
+    if (!(Frontend::simPads >> p & 1)) return Controls::padColors(p, l, r);
+    l = p ? Color{230, 40, 50, 255} : WHITE, r = p ? Color{40, 120, 230, 255} : WHITE;  // test pads: a white pad, a red / blue Joy-Con pair
+    return true;
 }
 
-// A pad's cursor mark on the Teams screen: its player light colour and its number [ours]
-void padTag(int p, Vector2 c) {
-    DrawCircleV(c, 10, WHITE), DrawCircleV(c, 8, {54, 216, 96, 255});
-    feTextPx(TextFormat("%d", p + 1), c.x, c.y, 14, GC_BLACK, 1, BC_NONE);
+void padDot(Vector2 c, float r, int p) {
+    Color l = {200, 200, 200, 255}, rt = l;
+    padBody(p, l, rt);
+    DrawCircleV(c, r + 2, BLACK);
+    if (l.r == rt.r && l.g == rt.g && l.b == rt.b) return DrawCircleV(c, r, l);
+    DrawCircleSector(c, r, 90, 270, 24, l), DrawCircleSector(c, r, 270, 450, 24, rt);
+}
+
+// Pad p's focus tint: the mix of its body colours, lightened for the black text; false (W4M's orange) when unknown or white [ours]
+bool padFocus(int p, Color &out) {
+    Color l, r;
+    if (!padBody(p, l, r)) return false;
+    float c[3] = {(l.r + r.r) / 2.0f, (l.g + r.g) / 2.0f, (l.b + r.b) / 2.0f}, mx = fmaxf(c[0], fmaxf(c[1], c[2])), mn = fminf(c[0], fminf(c[1], c[2]));
+    if (mn > 215 || mx < 1) return false;
+    for (float &v : c) v = Lerp(v * 255 / mx, 255, 0.2f);
+    out = {(unsigned char)c[0], (unsigned char)c[1], (unsigned char)c[2], 255};
+    return true;
 }
 
 // A labelled column head (WXFE.HeaderList entries: FETXT.Teams, Landscape, GameStyle, Wormpot), List_Lable_Blue, tilted
@@ -2094,7 +2116,7 @@ void Frontend::wormPreview(int team, float t) {
     BeginMode3D(cam);
     Lit::frame(cam.position);
     float yaw = 0.7f * sinf(t * 0.6f + team * 1.7f);  // slow turn
-    Models::draw("worm", {0, 0, 0}, yaw, 0, ColorLerp(WHITE, TEAM_COLORS[team], 0.5f), "Base", t);
+    Models::draw("worm", {0, 0, 0}, yaw, 0, WHITE, "Base", t);
     if (Matrix m; tm.hat && Models::joint("worm", "HatLocator", "Base", t, true, &m))
         Models::draw(Models::hatName(tm.hat - 1), MatrixMultiply(m, MatrixRotateY(yaw)));
     EndMode3D();
@@ -2118,29 +2140,31 @@ Frontend::PadIn Frontend::padIn(int p) {
 }
 
 // One team's card (d) of the Teams screen: name, Control, Voice and Hat rows, its live worm free in the bottom-right corner, then a footer: the pad
-// missing (red) or, in a room, the owner console with its W4M ready grenade. Every pad whose cursor is here tags the row it is on.
+// missing (red) or, in a room, the owner console with its W4M ready grenade. A pad's cursor is its controller dot beside the row it is on.
 void Frontend::teamCard(Rectangle d, int k, float t) {
     const GameConfig &c = lobby.cfg;
     const GameConfig::Team &m = c.teamSetup[k];
     const int nb = Audio::voiceBanks();
     const char *CPU[] = {"", tr("FETXT.CPU1", "CPU Level 1", "I.A. Niveau 1"), tr("FETXT.CPU2", "CPU Level 2", "I.A. Niveau 2"), tr("FETXT.CPU3", "CPU Level 3", "I.A. Niveau 3"),
                          tr("FETXT.CPU4", "CPU Level 4", "I.A. Niveau 4"), tr("FETXT.CPU5", "CPU Level 5", "I.A. Niveau 5")};
-    bool own = lobby.canEdit(k), here = false;
-    for (int p = 0; p < 4; p++) here |= padPresent(p) && cursors.at[p].card == k;
-    if (here) d.y -= 4;
+    bool own = lobby.canEdit(k);
     if (!cardPanel(d)) DrawRectangleRounded(d, 0.1f, 6, PANEL);
-    if (here) pictureFrame(d, true, 0.3f);
     bool miss = own && !m.cpu && !padPresent(m.pad);
     wormPreview(k, t);
-    DrawTexturePro(wormRt.texture, {0, 0, 256, -346}, {d.x + d.width - 158, d.y + d.height - 226, 170, 230}, {}, 0, WHITE);
+    DrawTexturePro(wormRt.texture, {0, 0, 256, -346}, {d.x + d.width - 170, d.y + d.height + 36 - 250, 185, 250}, {}, 0, WHITE);
     for (int r = 0; r < 4; r++) {
-        Rectangle b = r ? Rectangle{d.x + 24, d.y + 66 + (r - 1) * 40.0f, d.width - 48, 34} : Rectangle{d.x + 24, d.y + 20, d.width - 48, 40};
+        Rectangle b = r ? Rectangle{d.x + 18, d.y + 70 + (r - 1) * 44.0f, d.width - 36, 34} : Rectangle{d.x + 18, d.y + 20, d.width - 36, 40};
         int tags = 0;
+        Color tint;
+        const Color *focus = nullptr;
         for (int p = 0; p < 4; p++)
-            if (padPresent(p) && cursors.at[p].card == k && cursors.at[p].row == r) padTag(p, {tags++ % 2 ? d.x + d.width - 12 : d.x + 12, b.y + b.height / 2 + (tags > 2 ? 12 : 0)});
+            if (padPresent(p) && cursors.at[p].card == k && cursors.at[p].row == r) {
+                if (!focus && padFocus(p, tint)) focus = &tint;
+                padDot({tags++ % 2 ? d.x + d.width - 9 : d.x + 9, b.y + b.height / 2 + (tags > 2 ? 12 : 0)}, 6, p);
+            }
         bool sel = tags > 0;
         if (!r) {
-            feBorder(b, sel ? 1 : own ? 0 : 2);
+            feBorder(b, sel ? 1 : own ? 0 : 2, focus);
             float px = b.height * 0.6f, cy = b.y + b.height / 2, x = b.x + b.height * 0.7f;
             DrawCircleV({x, cy}, b.height * 0.28f, BLACK), DrawCircleV({x, cy}, b.height * 0.22f, TEAM_COLORS[k]);
             std::string nameS = m.name + (editing == &lobby.cfg.teamSetup[k].name && fmodf(t, 1) < 0.5f ? "_" : "");
@@ -2151,9 +2175,9 @@ void Frontend::teamCard(Rectangle d, int k, float t) {
         const char *label = r == 1 ? tr(nullptr, "Control", "Contrôle") : r == 2 ? tr("FETXTSH.Voice", "Voice", "Voix") : tr(nullptr, "Hat", "Chapeau");
         const char *val = r == 1 ? (m.cpu ? CPU[m.cpu] : own ? TextFormat(tr(nullptr, "Pad %d", "Manette %d"), m.pad + 1) : tr(nullptr, "Human", "Humain"))
                         : r == 2 ? (nb ? Audio::voiceBankName(m.voice) : "-") : (!hats ? "-" : hatLabel(m.hat));
-        feRow(b, sel ? 1 : own ? 0 : 2, label, val, sel && own, -1, r == 1 && miss);
+        feRow(b, sel ? 1 : own ? 0 : 2, label, val, sel && own, true, r == 1 && miss, focus);
     }
-    float fy = d.y + d.height - 34;
+    float fy = d.y + d.height - 26;
     if (room()) {  // the owner console and its ready grenade (Team<n>_Ready: Nav Start, Normal when ready, Disabled when not)
         navAt(0, lobby.ready[k] ? 0 : 2, {d.x + 22, fy - 48, 40, 40});
         auto pl = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
@@ -2224,45 +2248,47 @@ bool Frontend::setupTeams(bool plus, float t) {
     auto glide = [&](int i) { return settled ? 1.0f : rowAppear(since, out, i + 3); };
     setupBack(room() ? tr("FETXTH.GameLobby", "GAME LOBBY", "SALON") : tr("FETXTH.LOCALGAME", "LOCAL GAME", "PARTIE LOCALE"), 0, t, settled ? 1 : subIn(t), room() ? timer : -2);
     FeFlat flat;
-    // the 4 Switch player slots, with the teams each controls [ours]
+    // the 4 Switch player slots [ours]: the controller's body colour, its name, and a numbered square in the colour of each team it plays
     for (int p = 0; p < 4; p++) {
         float al = glide(p);
         if (al <= 0) continue;
-        Rectangle d = {40.0f + p * 303.0f, 120, 291, 54};
+        Rectangle d = {40.0f + p * 303.0f, 132, 291, 52};
         Tilt tl(centre(d), 0, (al - 1) * 400);
         bool on = padPresent(p);
         feBorder(d, on ? 0 : 2);
-        float cy = d.y + d.height / 2, dots = d.x + d.width - 24;
+        float cy = d.y + d.height / 2, chips = d.x + d.width - 34;
         for (int k = Lobby::MAX_TEAMS - 1; k >= 0; k--) {
             if (k >= c.teams || !lobby.canEdit(k) || c.teamSetup[k].cpu || c.teamSetup[k].pad != p) continue;
-            DrawCircleV({dots, cy}, 10, WHITE), DrawCircleV({dots, cy}, 8, TEAM_COLORS[k]);
-            dots -= 22;
+            Rectangle q = {chips - 10, cy - 10, 20, 20};
+            DrawRectangleRounded({q.x - 2, q.y - 2, 24, 24}, 0.3f, 4, BLACK), DrawRectangleRounded(q, 0.3f, 4, TEAM_COLORS[k]);
+            feTextPx(TextFormat("%d", k + 1), q.x + 10, cy, 14, GC_BLACK, 1, BC_NONE);
+            chips -= 28;
         }
-        led(d.x + 24, cy - 16, p);
-        feTextPx(TextFormat(tr(nullptr, "Pad %d", "Manette %d"), p + 1), d.x + 24 + 53, cy - 10, 18, on ? GC_BUTTON_YELLOW : GC_DISABLED, 0);
+        if (on) padDot({d.x + 30, cy}, 10, p);
+        feTextPx(TextFormat(tr(nullptr, "Pad %d", "Manette %d"), p + 1), d.x + 52, cy - 10, 19, on ? GC_BUTTON_YELLOW : GC_DISABLED, 0);
         const char *st = on ? padStyle(p) : tr(nullptr, "L + R to join", "L + R pour rejoindre");
-        float w = feWidthPx(st, 14), space = dots - (d.x + 24) - 10;
-        feTextPx(st, d.x + 24, cy + 12, w > space ? 14 * space / w : 14, on ? GC_LIST_LABLE_BLUE : GC_DISABLED, 0);
+        float w = feWidthPx(st, 14), space = chips - (d.x + 52) - 8;
+        feTextPx(st, d.x + 52, cy + 12, w > space ? 14 * space / w : 14, on ? GC_LIST_LABLE_BLUE : GC_DISABLED, 0);
     }
-    // the 4 team cards, an empty one reads "Insert team"
+    // the 4 team cards, an empty one offers the X button that adds a team
     const float W = (1200 - 3 * 14) / 4.0f;
     for (int k = 0; k < Lobby::MAX_TEAMS; k++) {
         float al = glide(k + 4);
         if (al <= 0) continue;
-        Rectangle d = {40 + k * (W + 14), 190, W, 334};
+        Rectangle d = {40 + k * (W + 14), 208, W, 308};
         Tilt tl(centre(d), 0, (al - 1) * 500);
         if (k < c.teams) { teamCard(d, k, t); continue; }
-        bool here = false;
-        for (int p = 0; p < 4; p++) here |= padPresent(p) && cursors.at[p].card == k;
-        if (here) d.y -= 4;
         if (!cardPanel(d)) DrawRectangleRounded(d, 0.1f, 6, PANEL);
-        if (here) pictureFrame(d, true, 0.3f);
         float cx = d.x + d.width / 2, cy = d.y + d.height / 2;
-        feTextPx("+", cx, cy - 30, 90, GC_BUTTON_YELLOW, 1);
-        feTextPx(tr("FETXT.InsertTeam", "- Insert Team -", "- Ajouter une équipe -"), cx, cy + 26, 24, GC_TEXTBOX_YELLOW, 1);
+        const bool key = keyGlyphs();
+        const float G = 64, gw = glyphs("X", 0, 0, G, key, false);
+        glyphs("X", cx - gw / 2, cy - 54, G, key);
+        const char *ins = tr("FETXT.InsertTeam", "- Insert Team -", "- Ajouter une équipe -");
+        float w = feWidthPx(ins, 22);
+        feTextPx(ins, cx, cy + 40, w > d.width - 28 ? 22 * (d.width - 28) / w : 22, GC_TEXTBOX_YELLOW, 1);
         int tags = 0;
         for (int p = 0; p < 4; p++)
-            if (padPresent(p) && cursors.at[p].card == k) padTag(p, {cx - 30 + 20.0f * tags++, cy + 70});
+            if (padPresent(p) && cursors.at[p].card == k) padDot({cx - 20 + 20.0f * tags++, cy + 74}, 5, p);
     }
     // tooltip: W4M's FETIP.InsertTeam; a missing pad keeps its red flag [ours]
     const char *tip = tr("FETIP.InsertTeam", "Insert a team or change team settings.", nullptr);
@@ -2270,10 +2296,7 @@ bool Frontend::setupTeams(bool plus, float t) {
     for (int k = 0; k < c.teams && !warn; k++)
         if (lobby.canEdit(k) && !c.teamSetup[k].cpu && !padPresent(c.teamSetup[k].pad))
             warn = true, tip = TextFormat(tr(nullptr, "Pad %d missing: + opens the controller screen", "Manette %d absente : + ouvre l'écran des manettes"), c.teamSetup[k].pad + 1);
-    setupFront(t, tip, warn, 0,
-               {{"A", "Enter", tr(nullptr, "Edit", "Modifier")}, {"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")}, {"L/R", "PgUp/PgDn", tr(nullptr, "Team", "Équipe")},
-                {"Y", "Y", tr(nullptr, "Take with my pad", "Prendre avec ma manette")}, {"X", "X", tr(nullptr, "Add / remove", "Ajouter / retirer")},
-                {APPLET, nullptr, tr(nullptr, "Pads", "Manettes")}, {"+", "N", tr(nullptr, "Next", "Suivant")}, {"B", "Esc", tr(nullptr, "Back", "Retour")}});
+    setupFront(t, tip, warn, 0);
     return leave;
 }
 
@@ -2314,10 +2337,7 @@ void Frontend::setupMap(int dx, int dy, bool back, bool plus, const std::vector<
         float w = feWidthPx(nm.c_str(), px);
         feTextPx(nm.c_str(), d.x + 10, d.y + th - 14, w > d.width - 20 ? px * (d.width - 20) / w : px, i == mapSel ? GC_BUTTON_YELLOW : GC_WHITE, 0);
     }
-    std::vector<Hint> h = {{"B", "Esc", tr(nullptr, "Teams", "Équipes")}, {"+", "N", tr(nullptr, "Next", "Suivant")}};
-    if (lobby.canEditMatch()) h.insert(h.begin(), {{"D-pad", "Arrows", tr(nullptr, "Map", "Terrain")}, {"Y", "Y", tr(nullptr, "Random", "Au hasard")}});
-    if (room()) h.push_back({"ZR", "R", tr(nullptr, "Ready", "Prêt")});
-    setupFront(t, lobby.canEditMatch() ? tr("FETIP.Landscape2", "Select a landscape to battle on.", nullptr) : tr(nullptr, "The host picks the map", "L'hôte choisit le terrain"), false, 0, h);
+    setupFront(t, lobby.canEditMatch() ? tr("FETIP.Landscape2", "Select a landscape to battle on.", nullptr) : tr(nullptr, "The host picks the map", "L'hôte choisit le terrain"), false, 0);
 }
 
 bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
@@ -2375,14 +2395,9 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
         feRow(d, sel ? 1 : 0, rows[i].label, rows[i].value.c_str(), sel && mayEdit && i < FirstRule);
         if (i == Pot) image("fe/icon_wxpot", {d.x - 46, d.y - 6, 40, 40});
     }
-    bool ready = room() && net->isReady(net->id), go = room() && mayEdit && net->allReady() && c.teams >= 2;
-    std::vector<Hint> h = {{"D-pad", "Up/Down", tr(nullptr, "Choose", "Choisir")}};
-    if (mayEdit) h.push_back({"A", "Enter", tr(nullptr, "Toggle", "Activer")}), h.push_back({"D-pad", "Left/Right", tr(nullptr, "Change", "Changer")});
-    h.push_back({"+", "N", !room() || go ? tr(nullptr, "Start", "Lancer") : ready ? tr(nullptr, "Not ready", "Pas prêt") : tr(nullptr, "Ready", "Prêt")});
-    h.push_back({"B", "Esc", tr(nullptr, "Map", "Terrain")});
     const char *tip = !mayEdit ? tr(nullptr, "The host sets the rules", "L'hôte règle la partie") : rulesRow == Scheme_ ? tr("FETIP.GameStyle", "Game styles contain game and weapon settings.", nullptr)
                       : rulesRow == Pot ? tr("FETIP.Wormpot", "Wormpot modifies the game rules to create new ways to play.", nullptr) : nullptr;
-    setupFront(t, tip, false, 0, h);
+    setupFront(t, tip, false, 0);
     return start;
 }
 
@@ -2445,31 +2460,34 @@ int salon(Salon &st, bool lan, const std::vector<std::string> &names, const std:
         if (back) st.joining = false;
     }
     float t = now();
+    if (st.page < 0) st.t0 = t;
+    if (st.page != st.joining) st.page = st.joining, st.t1 = t, Audio::play(Audio::Sfx::FeNextIn);  // W4M's item in-animations and sound, as on the other menus
     const char *title = tr("FETXTH.NetworkPlay", "NETWORK PLAY", "JEU EN RÉSEAU");
-    divide(0);
-    watermark(title, 0, t);
-    titleControl(title, 0);
+    float x = (1 - easeOut((t - st.t0) / 0.4f / 0.7f)) * -820;
+    divide(x);
+    watermark(title, x, t);
+    titleControl(title, x);
     feTextPx(lan ? tr(nullptr, "Local network", "Réseau local") : tr(nullptr, "Online", "En ligne"), 1240 - feWidthPx(lan ? tr(nullptr, "Local network", "Réseau local") : tr(nullptr, "Online", "En ligne"), 18 * FE_S), 92, 18 * FE_S, GC_BUTTON_YELLOW, 0);
     if (!st.joining) {  // W4M's menu entries (WXNET.MainMenu): gold labels, the highlight a black brush stroke
         static const MenuItem ITEMS[2] = {{nullptr, "Create a lobby", "Créer un salon", 900, 220, 60, -3}, {nullptr, "Join a lobby", "Rejoindre un salon", 1040, 360, 58, 2}};
         static float glow[2] = {1, 0};
         for (int i = 0; i < 2; i++) {
             glow[i] += ((i == st.row) - glow[i]) * fminf(1, GetFrameTime() * 14);
-            menuEntry(tr(ITEMS[i].key, ITEMS[i].en, ITEMS[i].fr), ITEMS[i].x, ITEMS[i].y, ITEMS[i].size, ITEMS[i].deg, ITEMS[i].fit, ITEMS[i].sx, glow[i], 1, t);
+            menuEntry(tr(ITEMS[i].key, ITEMS[i].en, ITEMS[i].fr), ITEMS[i].x, ITEMS[i].y, ITEMS[i].size, ITEMS[i].deg, ITEMS[i].fit, ITEMS[i].sx, glow[i], rowAppear(t - st.t1, -1, i), t);
         }
     } else {  // the games heard / the server's rooms as W4M list rows (WXNET.GameList)
         head(lan ? tr(nullptr, "Games on this network", "Parties sur ce réseau") : tr(nullptr, "Open lobbies", "Salons ouverts"), 150, 150, 0.05f);
         const int vis = 6, first = Clamp(st.sel - vis + 1, 0, std::max(0, n - vis));
         for (int i = first; i < n && i < first + vis; i++) {
             Rectangle d = feBox(150, 116 - (i - first) * 36.0f, 270, 32);
-            Tilt tl(centre(d), 0.06f - 0.04f * ((i - first) % 4));
+            float al = rowAppear(t - st.t1, -1, i - first);
+            if (al <= 0) continue;
+            Tilt tl(centre(d), 0.06f - 0.04f * ((i - first) % 4), (al - 1) * 400);
             feRow(d, i == st.sel ? 1 : 0, names[i].c_str(), info[i].c_str(), false);
         }
         if (!n) feLine(lan ? tr(nullptr, "Looking for games on this network...", "Recherche de parties sur ce réseau...") : tr(nullptr, "No lobby yet", "Aucun salon pour l'instant"), 150, 40, 20, GC_WHITE, 1);
     }
-    std::vector<Hint> h = {{"A", "Enter", tr(nullptr, "Select", "Choisir")}, {"B", "Esc", st.joining ? tr(nullptr, "Back", "Retour") : tr(nullptr, "Leave", "Quitter")}};
-    if (st.joining && !lan) h.insert(h.begin() + 1, {"Y", "R", tr(nullptr, "Refresh", "Actualiser")});
-    setupFront(t, status.empty() ? nullptr : status.c_str(), !status.empty(), -1, h);
+    setupFront(t, status.empty() ? nullptr : status.c_str(), !status.empty(), -1);
     return ret;
 }
 

@@ -188,7 +188,7 @@ int replayList(const std::vector<std::string> &files, int &sel, bool &instant);
 void playbackBar(bool paused, int speed, bool freeCam, float sec, float total, const char *note);  // match playback overlay
 void replayBadge();  // instant replay overlay
 // Network salon (inside Begin/EndDrawing): Créer / Rejoindre, then the LAN games heard or the server's rooms. 1 create, 2 join entry sel, -1 back, 0 nothing yet.
-struct Salon { int row = 0, sel = 0; bool joining = false; };
+struct Salon { int row = 0, sel = 0, page = -1; bool joining = false; float t0 = 0, t1 = 0; };  // page: the entries shown (-1 none yet), t0 / t1: when the screen / entries came in
 int salon(Salon &st, bool lan, const std::vector<std::string> &names, const std::vector<std::string> &info, const std::string &status);
 // Single player (inside Begin/EndDrawing): Missions / Challenges list, then the briefing. Mission index to start, -1 none yet, -2 back.
 // shown: when the list / briefing appeared (-1: opening now); leaving: when its items started out; to: what follows them
