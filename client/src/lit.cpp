@@ -29,14 +29,16 @@ const char *MVS = R"(
 attribute vec3 vertexPosition;
 attribute vec2 vertexTexCoord;
 attribute vec3 vertexNormal;
+attribute vec4 vertexColor;
 uniform mat4 mvp;
 uniform mat4 matModel;
 uniform mat4 matNormal;
 varying vec2 uv;
 varying vec3 n;
 varying vec3 wp;
+varying vec4 vc;
 void main() {
-    uv = vertexTexCoord; n = (matNormal * vec4(vertexNormal, 0.0)).xyz; wp = (matModel * vec4(vertexPosition, 1.0)).xyz;
+    uv = vertexTexCoord; vc = vertexColor; n = (matNormal * vec4(vertexNormal, 0.0)).xyz; wp = (matModel * vec4(vertexPosition, 1.0)).xyz;
     gl_Position = mvp * vec4(vertexPosition, 1.0);
 }
 )";
@@ -52,9 +54,10 @@ uniform vec4 material[4];  // FixedFunction.cg materialMatrix rows: specular, em
 varying vec2 uv;
 varying vec3 n;
 varying vec3 wp;
+varying vec4 vc;
 uniform float blended;
 void main() {
-    vec4 c = texture2D(texture0, uv) * colDiffuse;
+    vec4 c = texture2D(texture0, uv) * colDiffuse * vc;  // the Col CG programs multiply the vertex colour in
     if (c.a < (blended > 0.5 ? 0.004 : 0.5)) discard;
     vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
     vec3 base = diffuse * max(dot(nn, sunDir), 0.0) + ambient + material[1].xyz;

@@ -50,6 +50,7 @@ struct Catalog {
         bool glasses = true, tash = true;
         std::vector<std::array<float, 9>> offsets;
         float fePos[3] = {0, 0, 0}, feRot[3] = {0, 0, 0}, feScale[3] = {1, 1, 1};
+        std::string feModel;  // a glove's FrontEndMeshID model (the picker preview)
     };
     std::vector<Item> attachments;  // WORMATTACHMENTS: type 0 hat, 1 gloves, 2 glasses, 3 tash, 4 the Terminator hat
     std::vector<Item> graves;       // SelectGraveList, by GraveIndex (id = its Grave.* mesh)

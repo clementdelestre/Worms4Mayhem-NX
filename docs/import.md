@@ -14,7 +14,7 @@ Default install path in the examples: the Steam `WormsXHD` folder (Worms Ultimat
 | `tools/w4m-re/acting.py` | `acting.py [out = client/assets/acting.txt]` | the WORMACTING scenes | `worm-reactions.md` |
 | `tools/w4m-re/setuplists.py` | `setuplists.py [assets = client/assets]`, before w4m-models | `multimaps.txt`, `attachments.txt`, `graves.txt`, `flags.txt`, `speech.txt`, `stockweapons.txt`, `defteams.txt` (the team editor's W4M lists and the default teams) | `match-setup.md` "Saved teams" |
 
-Order: `w4m-maps`, then `parttwk.py` and `setuplists.py`, then `w4m-models` (it skins the moving decor listed in `models/decor/anim.txt` (`decor/<lib>_anim.glb`), exports the particle meshes of `fx/sets.txt` and the gloves (skinned, hand shapes tagged `H`) / glasses / tash / graves of `attachments.txt` and `graves.txt`). Run w4m-maps on all maps: with map stems it rewrites `anim.txt` for those maps only.
+Order: `w4m-maps`, then `parttwk.py` and `setuplists.py`, then `w4m-models` (it skins the moving decor listed in `models/decor/anim.txt` (`decor/<lib>_anim.glb`), exports the particle meshes of `fx/sets.txt` and the gloves (skinned, hand shapes tagged `H`; their FrontEndMeshID preview meshes `gloves/<x>p`) / glasses / tash / graves of `attachments.txt` and `graves.txt`; `hud_flag` the HUD.Flag cloth). Run w4m-maps on all maps: with map stems it rewrites `anim.txt` for those maps only.
 
 Build each Rust tool with `cargo build --release --manifest-path tools/<tool>/Cargo.toml`. `--list` of `w4m-models` takes exactly one
 bundle file: with any other argument count `--list` is taken as the install dir and the next argument as the out dir (`main()`). Then copy `client/assets/` to the console (`README.md`

@@ -9,7 +9,8 @@ attachments.txt "<type>\t<WXFE.A id>\t<model>\t<MeshID>\t<text key>\t<lock>\t<st
                 2 without a lock); Glasses / Tash = the entry's bools (a hat's gate whether glasses / tash are attached with it, 0x7573f7 +0x30 / +0x31;
                 a hat with 0 also disables that editor row, WXD.EyesOk / TashOk); offsets = the Offsets list, ';'-separated entries of
                 "px py pz rx ry rz sx sy sz" (PositionOffset, OrientationOffset radians, ScaleOffset; docs/w4m/frontend.md);
-                fe pos / rot / scale: FrontEndOffsets, the WXFEP.Outfit preview's WXD.Vector.Position / Orientation / Scale (0x738e38)
+                fe pos / rot / scale: FrontEndOffsets, the WXFEP.Outfit preview's WXD.Vector.Position / Orientation / Scale (0x738e38);
+                last two: gloves only, the model path and the FrontEndMeshID (Gloves.<x>P, not always MeshID + P) the preview shows, written by w4m-models
 graves.txt      "<model>\t<mesh>\t<text key>\t<name>" per WXFEP.SelectGraveList row, in User.Grave order (0x725eda: index -> Grave.* mesh)
 flags.txt       "<Flag id>\t<ui png>\t<text key>" per WXFEP.SelectFlagList row (LOCAL FlagDataContainer: TargaName, TextResource)
 speech.txt      "<speech bank>\t<text key>" per WXFEP.SelectSoundbankList row (the bank is our voices/<bank without 'vo'>)
@@ -74,9 +75,10 @@ def main(a):
             offs = ';'.join(' '.join('%g' % x for x in o['PositionOffset'] + o['OrientationOffset'] + o['ScaleOffset']) for o in v['Offsets'])
             fo = v.get('FrontEndOffsets') or {}
             vec = lambda key, d: ' '.join('%g' % x for x in fo.get(key, d))
-            f.write('%d\t%s\t%s/%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n' % (v['Type'], k, DIRS[v['Type']], model(v['MeshID']), v['MeshID'], v['MeshTextNameID'], v.get('Lock', ''),
+            f.write('%d\t%s\t%s/%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n' % (v['Type'], k, DIRS[v['Type']], model(v['MeshID']), v['MeshID'], v['MeshTextNameID'], v.get('Lock', ''),
                     save[v['Lock']]['State'] if v.get('Lock') in save else 2, v['Glasses'], v['Tash'], offs,
-                    vec('PositionOffset', [0, 0, 0]), vec('OrientationOffset', [0, 0, 0]), vec('ScaleOffset', [1, 1, 1])))
+                    vec('PositionOffset', [0, 0, 0]), vec('OrientationOffset', [0, 0, 0]), vec('ScaleOffset', [1, 1, 1]),
+                    '%s/%s' % (DIRS[1], model(v['FrontEndMeshID'])) if v['Type'] == 1 else '', v['FrontEndMeshID'] if v['Type'] == 1 else ''))
     lv = sorted({v['Level_FileName'] for v in dump(os.path.join(tw, 'SCRIPTS.XOM')).values() if v.get('_type') == 'WXFE_LevelDetails' and v['Level_Type'] == 0})
     with open(os.path.join(out, 'multimaps.txt'), 'w') as f:
         f.write('\n'.join(lv) + '\n')

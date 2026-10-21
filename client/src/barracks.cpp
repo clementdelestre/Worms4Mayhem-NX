@@ -165,6 +165,7 @@ void Catalog::load(const char *dir) {
             sscanf(f[11].c_str(), "%f %f %f", &a.feRot[0], &a.feRot[1], &a.feRot[2]);
             sscanf(f[12].c_str(), "%f %f %f", &a.feScale[0], &a.feScale[1], &a.feScale[2]);
         }
+        if (f.size() > 13) a.feModel = f[13];
         attachments.push_back(a);
     });
     rows("graves.txt", [&](const std::vector<std::string> &f) { if (f.size() >= 3) graves.push_back({f[1], f[0], f[2]}); });
