@@ -4471,18 +4471,16 @@ static void checkWaterShots() {
         g.objects = {{Object::Mine, {20, g.water + 1, 20}, {0, 0, 0}, -1, -1, false, false}, {Object::Crate, {30, g.water + 1, 30}, {0, 0, 0}, -1, -1, false, false},
                      {Object::Barrel, {50, g.water + 1, 50}, {0, 0, 0}, -1, -1, false, false}};
         std::vector<std::string> seen;
-        int sinks = 0;
         for (int t = 0; t < 120; t++) {
             g.step(Input{});
             for (const GameEvent &e : g.events) {
-                sinks += e.kind == GameEvent::Sink && !strcmp(e.fx, "WXP_UnderWaterBubbles");
                 if (e.kind == GameEvent::Splash) {
                     seen.push_back(e.fx);
                     if (!strcmp(e.fx, "WXP_WaterSmallSplash")) assert(e.pos.y == Terrain::WATER + 1.0f / 20 && e.pos.x == 30);
                 }
             }
         }
-        assert(sinks == 1 && g.objects.size() == 1 && g.objects[0].type == Object::Mine && g.objects[0].sunk && g.objects[0].fuse < 0);  // crate sunk 1 m and removed; mine disarmed, sinking
+        assert(g.objects.size() == 1 && g.objects[0].type == Object::Mine && g.objects[0].sunk && g.objects[0].fuse < 0);  // crate sunk 1 m and removed; mine disarmed, sinking
         auto n = [&](const char *fx) { return (int)std::count(seen.begin(), seen.end(), fx); };
         assert(seen.size() == 3 && n("WXP_WaterLargeSplash") == 1 && n("WXP_WaterSplash") == 1 && n("WXP_WaterSmallSplash") == 1);
     }

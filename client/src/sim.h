@@ -193,6 +193,7 @@ struct Projectile {
     // by tick shownEnd (0x585cf2, 0x57de60, 0x57f640); shownT0 -1: not seen by the renderer yet
     Vector3 shownOff{};
     int shownT0 = -1, shownEnd = -1;
+    mutable int bubbles = 0;  // render only: the SinkingFx handle attached while sunk (0x5c1470)
     Vector3 shown(int now) const {
         float k = shownEnd > shownT0 ? 1 - fminf((float)(now - shownT0) / (shownEnd - shownT0), 1) : 1;
         return {pos.x + shownOff.x * k, pos.y + shownOff.y * k, pos.z + shownOff.z * k};
@@ -229,6 +230,7 @@ struct Object {
     int8_t teamCollect = -1, teamDestroy = -1;  // TeamCollectable / TeamDestructible: the AlliedGroup that may, -1 any
     bool pinned = false, pushable = true, radar = true, track = true;  // pinned: Gravity 0; radar: Crate.RadarHide / Display; TrackCam
     float scale = 1;    // Scale: its sphere is 10 x Scale units (0x5c5700)
+    mutable int bubbles = 0;  // render only: a mine's SinkingFx handle while sunk (0x5c1470)
 };
 float restHalf(const Object &o);  // a resting object's centre is restHalf + 0.05 m (the probe) above the ground
 
@@ -244,7 +246,7 @@ enum : int { MY_MINE_LAYER, MY_MINE_TRIPLET, MY_BARREL_TRIPLET, MY_FLOOD, MY_DIS
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
-                          Comment, CommentClear, Emitter, EmitterOff, Shake, Pop, Sink,
+                          Comment, CommentClear, Emitter, EmitterOff, Shake, Pop,
                           Movie, Speech, MovieSound, MovieStart, MovieEnd } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;

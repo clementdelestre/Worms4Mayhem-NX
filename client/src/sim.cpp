@@ -1201,7 +1201,6 @@ void Game::stepObjects() {
             }
             if (!o.sunk && was > water - 5.0f / 20 && o.pos.y <= water - 5.0f / 20) {
                 o.sunk = true, o.fuse = -1, o.vel = sinkVel(o.vel), o.pos.y = water - 5.0f / 20;
-                emit(GameEvent::Sink, o.pos), events.back().fx = "WXP_UnderWaterBubbles";
             }
             gone = o.sunk && o.pos.y <= WATER_EXPIRY;
         }
