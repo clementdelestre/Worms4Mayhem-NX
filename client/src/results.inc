@@ -19,13 +19,24 @@ const char *const W4M_WEAPON[31] = {"Bazooka", "Grenade", "ClusterGrenade", "Air
                                     "SuperSheep", "Starburst", "FactoryWeapon", "AlienAbduction", "Fatkins", "Scouser", "NoMoreNails", "PoisonArrow",
                                     "SentryGun", "SniperRifle", "SuperAirstrike", "ClusterBomb", "Bananette"};  // kWeapon<name> 1..31 (table 0x90c920)
 
-// one ListDetail stat row (the MatchStatsList rows): label right of the centre, value left of it, in a W4M row `w` FE wide centred at c
-void resultRow(Vector2 c, float w, float size, const char *label, const char *value, const Color *lg, const Color *vg, int anim) {
-    float half = w * 0.48f, k = feK;  // the row's centre is spread like every FE position, its columns are not
+// a list row 540 FE wide at c (columns not spread): label column p1 % (right-justified), an expanding gap, value column p2 % (left-justified). A column is
+// p % of the row less GapBetweenItems 2, packed from the left 2 apart, and the expanding gap pushes the last column to the row's end less 2 (0x781dfd, 0x7802e3)
+void resultRow(Vector2 c, float p1, float p2, float size, const char *label, const char *value, const Color *lg, const Color *vg, int labelAnim, int anim) {
+    const float W = 540, G = 2, w1 = W * p1 - G, w2 = W * p2 - G, x = c.x * feK;
     FeFlat flat;
-    FeBox b = {{c.x * k - (2.5f + half / 2), c.y}, half / 2, size / 2, size, 0, -1, 5, 0, true, lg, BC_BLACK};
+    FeBox b = {{x - W / 2 + w1 / 2, c.y}, w1 / 2, size / 2, size, 0, -1, 5, labelAnim, true, lg, BC_BLACK};
     feText(label, b);
-    b = {{c.x * k + (2.5f + half / 2), c.y}, half / 2, size / 2, size, 0, -1, 3, anim, true, vg, BC_BLACK};
+    b = {{x + W / 2 - G - w2 / 2, c.y}, w2 / 2, size / 2, size, 0, -1, 3, anim, true, vg, BC_BLACK};
+    feText(value, b);
+}
+
+// MatchStatsList row 5 (KeepWhiteSpace 0): each column shrinks to its text, a fixed 5 FE gap between them 2 apart, the two expanding end gaps centre the pair
+void elapsedRow(Vector2 c, float size, const char *label, const char *value) {
+    const float t1 = feWidthPx(label, size * FE_S) / FE_S, t2 = feWidthPx(value, size * FE_S) / FE_S, gap = 2 + 5 + 2, x = c.x * feK - (t1 + gap + t2) / 2;
+    FeFlat flat;
+    FeBox b = {{x + t1 / 2, c.y}, t1 / 2 + 1, size / 2, size, 0, -1, 5, 2, true, GC_LIST_LABLE_BLUE, BC_BLACK};
+    feText(label, b);
+    b = {{x + t1 + gap + t2 / 2, c.y}, t2 / 2 + 1, size / 2, size, 0, -1, 3, 2, true, GC_LIST_LABLE_BLUE, BC_BLACK};
     feText(value, b);
 }
 }  // namespace
@@ -106,9 +117,9 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
     if (Texture2D bg = tex("back/loadbackgeneric"); bg.id) DrawTexturePro(bg, {0, 0, (float)bg.width, (float)bg.height}, {0, 0, 1280, 720}, {}, 0, WHITE);
     FrontBg::page(1);
     FrontBg::draw(dt, false);
-    const bool splitOut = out >= 0 && st.after == ResultsScreen::Leave;  // Messages_CancelPressed / Yes: AnimDivide$Out_Split
-    feMesh("bluedivide", {0, 0, 0}, {1, 1, 1}, {0, 0, 0}, false, splitOut ? "Out_Split" : "In_Split", splitOut ? out : since);  // BeforeMenuDisplayed: AnimDivide$In_Split
     if (!image("fe/paperpopup02", {-1000, -400, 3280, 1520}, {255, 80, 0, 230})) DrawRectangle(0, 0, 1280, 720, {255, 80, 0, 230});
+    const bool splitOut = out >= 0 && st.after == ResultsScreen::Leave;  // Messages_CancelPressed / Yes: AnimDivide$Out_Split
+    feMesh("bluedivide", {-5, 0, -10}, {1, 1, 1}, {0, 0, 0}, FE_DIVIDE_LIGHT, splitOut ? "Out_Split" : "In_Split", splitOut ? out : since);  // BeforeMenuDisplayed: AnimDivide$In_Split
     auto slide = [&](float x, float y, const FeClip *in, float delay, const FeClip *outc, float slideBy = -1300) { return feItem(fePos(x, y), in, delay, outc, since, out, slideBy); };
 
     if (!pre && !draw) {  // Firework1..7 (WXFE_MeshObjectParticleDesc: effect at the item's FE position, SpawnDelay then every SpawnLoopTime ms)
@@ -173,7 +184,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
         const Color *tg = GC_TEAM[r.cfg.alliance(p.team) & 3];
         if (slide(ex, 138, &IN_SLIDEX, 0.8f, nullptr)) {  // Elapsed Time: row 5 of the list, List_Lable_Blue
             uint32_t s = r.match.seconds;
-            resultRow({ex, 138}, 540, 22, tr("Stat.Match.ElapsedTime", "Total time"), TextFormat("%um, %us", s / 60, s % 60), GC_LIST_LABLE_BLUE, GC_LIST_LABLE_BLUE, 2);
+            elapsedRow({ex, 138}, 22, tr("Stat.Match.ElapsedTime", "Total time"), TextFormat("%um, %us", s / 60, s % 60));
             rlPopMatrix();
         }
         float pt = t - st.pageT;  // the page's AddItem: In_SlideX at 200 ms, its rows In_ScaleY at 250 + 50 n ms
@@ -187,7 +198,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
             for (int i = 0; i < 5; i++) {
                 float rowT = i ? pt - (0.25f + 0.05f * (i - 1)) : 1;
                 if (i && !feItem(fePos(0, 70 - 25.0f * i), &IN_SCALEY, 0, nullptr, rowT + 0.0f, -1)) continue;
-                resultRow({0, 70 - 25.0f * i}, 540, 24, lab[i], val[i].c_str(), GC_WHITE, tg, 2);
+                resultRow({0, 70 - 25.0f * i}, 0.48f, 0.48f, 24, lab[i], val[i].c_str(), GC_WHITE, tg, 0, 2);
                 if (i) rlPopMatrix();
             }
             rlPopMatrix();
@@ -213,12 +224,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
             if (!slide(ROW[i].x, ROW[i].y, &IN_SPRINGXY, ROW[i].delay, &OUT_SCALEY)) continue;
             Vector2 c = fePos(ROW[i].x, ROW[i].y);
             Tilt tl(c, ROW[i].rot);
-            const float k = feK;
-            FeFlat flat;
-            FeBox b = {{ROW[i].x * k - (1.5f + 270 * 0.62f), ROW[i].y}, 270 * 0.62f, 15, 28, 0, -1, 5, 2, true, GC_WHITE, BC_BLACK};
-            feText(a.label, b);
-            b = {{ROW[i].x * k + (1.5f + 270 * 0.35f), ROW[i].y}, 270 * 0.35f, 15, 28, 0, -1, 3, 2, true, GC_TEAM[r.cfg.alliance(a.team) & 3], BC_BLACK};
-            feText(a.who, b);
+            resultRow({ROW[i].x, ROW[i].y}, 0.62f, 0.35f, 28, a.label.c_str(), a.who.c_str(), GC_WHITE, GC_TEAM[r.cfg.alliance(a.team) & 3], 2, 2);
             rlPopMatrix();
         }
     }

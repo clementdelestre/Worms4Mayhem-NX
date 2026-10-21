@@ -1141,13 +1141,14 @@ static Rectangle feRect(float x, float y, float hw, float hh) { Vector2 c = fePo
 // A WXFE_MeshObjectDesc through the FE camera (0.54 rad at z 903.5 [observed, see FE_S]; Lighting: FrontendMeshLight): position (FE units), scale,
 // orientation (rad) and the mesh clip at t s
 extern "C" void glClear(unsigned int mask);
-static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, bool lit, const char *clip, float t) {
+static const int FE_DIVIDE_LIGHT = 2;  // feMesh light: 0 none, 1 the item's Lighting (FrontendMeshLight), 2 the BlueDivide's
+static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, int light, const char *clip, float t) {
     Camera3D cam = {{0, 0, 903.5f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
     glClear(0x100);
     rlSetClipPlanes(5, 15000);
     BeginMode3D(cam);
     Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateZYX(rot)), MatrixTranslate(pos.x, pos.y, pos.z));
-    Models::shade(Lit::frontendShader(lit));
+    Models::shade(light == FE_DIVIDE_LIGHT ? Lit::divideShader() : Lit::frontendShader(light));
     Models::draw(name, m, WHITE, clip, t / FE_ANIM_SPEED, false);
     Models::shade({});
     EndMode3D();

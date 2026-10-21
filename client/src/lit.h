@@ -22,6 +22,8 @@ Shader shader(const char *vs, const char *fs, bool lit = true, bool es3 = false)
 Shader modelShader(bool worm);
 // FrontendMeshLight (FrontEndService 0x729662, WXFE.* TWEAK.XOM): the menu meshes' shader, drawn from the FE camera at (0, 0, 903.5); lit = the mesh item's Lighting flag
 Shader frontendShader(bool lit);
+// WX.Mesh.BlueDivide's own light (FrontEndService 0x729942): it travels (0, -0.75, -0.75), the opposite of the FE layers' light
+Shader divideShader();
 void frame(Vector3 cam);  // push sun + camera to every Lit shader
 void profile(float frameTime);  // once per frame, before BeginDrawing: picks the Switch framebuffer size
 // W4M lighting pass (docs/maps.md "Rendering"): a 1024² depth map seen along -LOW_LIGHT, fitted to the land box. statics() is
