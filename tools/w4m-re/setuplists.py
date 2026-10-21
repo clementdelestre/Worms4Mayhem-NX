@@ -3,10 +3,12 @@
 
   setuplists.py [OUTDIR]   default: client/assets (gitignored: game data, never commit it)
 multimaps.txt   the Level_FileName of every SCRIPTS.XOM WXFE_LevelDetails of Level_Type 0 (the Prebuilt landscapes of WXFEP.SelectLandscape2)
-attachments.txt "<type>\t<WXFE.A id>\t<model>\t<MeshID>\t<text key>\t<lock>\t<state>\t<glasses>\t<tash>\t<fe pos xyz>\t<fe rot xyz>\t<fe scale xyz>"
+attachments.txt "<type>\t<WXFE.A id>\t<model>\t<MeshID>\t<text key>\t<lock>\t<state>\t<Glasses>\t<Tash>\t<offsets>\t<fe pos xyz>\t<fe rot xyz>\t<fe scale xyz>"
                 per WORMATTACHMENTS entry, type 0 hat 1 gloves 2 glasses 3 tash 4 (Hat.Terminator); model = <dir>/<file> under assets/models,
                 written by w4m-models from this list; state = the lock's DEFSAVE WXFE_UnlockableItem State (0 Hidden, 1 Purchasable, 2 Unlocked;
-                2 without a lock); glasses / tash: the Glasses / Tash bools (a hat with 0 disables that editor row, WXD.EyesOk / TashOk);
+                2 without a lock); Glasses / Tash = the entry's bools (a hat's gate whether glasses / tash are attached with it, 0x7573f7 +0x30 / +0x31;
+                a hat with 0 also disables that editor row, WXD.EyesOk / TashOk); offsets = the Offsets list, ';'-separated entries of
+                "px py pz rx ry rz sx sy sz" (PositionOffset, OrientationOffset radians, ScaleOffset; docs/w4m/frontend.md);
                 fe pos / rot / scale: FrontEndOffsets, the WXFEP.Outfit preview's WXD.Vector.Position / Orientation / Scale (0x738e38)
 graves.txt      "<model>\t<mesh>\t<text key>\t<name>" per WXFEP.SelectGraveList row, in User.Grave order (0x725eda: index -> Grave.* mesh)
 flags.txt       "<Flag id>\t<ui png>\t<text key>" per WXFEP.SelectFlagList row (LOCAL FlagDataContainer: TargaName, TextResource)
@@ -37,10 +39,11 @@ def main(a):
     parts = [(k, v) for k, v in att.items() if v.get('_type') == 'WXFE_WormAttachments' and v['Type'] in DIRS]
     with open(os.path.join(out, 'attachments.txt'), 'w') as f:
         for k, v in parts:
+            offs = ';'.join(' '.join('%g' % x for x in o['PositionOffset'] + o['OrientationOffset'] + o['ScaleOffset']) for o in v['Offsets'])
             fo = v.get('FrontEndOffsets') or {}
             vec = lambda key, d: ' '.join('%g' % x for x in fo.get(key, d))
-            f.write('%d\t%s\t%s/%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n' % (v['Type'], k, DIRS[v['Type']], model(v['MeshID']), v['MeshID'], v['MeshTextNameID'], v.get('Lock', ''),
-                    save[v['Lock']]['State'] if v.get('Lock') in save else 2, v.get('Glasses', 1), v.get('Tash', 1),
+            f.write('%d\t%s\t%s/%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\t%s\n' % (v['Type'], k, DIRS[v['Type']], model(v['MeshID']), v['MeshID'], v['MeshTextNameID'], v.get('Lock', ''),
+                    save[v['Lock']]['State'] if v.get('Lock') in save else 2, v['Glasses'], v['Tash'], offs,
                     vec('PositionOffset', [0, 0, 0]), vec('OrientationOffset', [0, 0, 0]), vec('ScaleOffset', [1, 1, 1])))
     lv = sorted({v['Level_FileName'] for v in dump(os.path.join(tw, 'SCRIPTS.XOM')).values() if v.get('_type') == 'WXFE_LevelDetails' and v['Level_Type'] == 0})
     with open(os.path.join(out, 'multimaps.txt'), 'w') as f:

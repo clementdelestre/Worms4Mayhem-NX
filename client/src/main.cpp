@@ -743,9 +743,9 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         Models::draw("wings", MatrixMultiply(m, root), WHITE, "FlyRedBull", t);
     static const GameConfig::Team none;
     const GameConfig::Team &tm = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team] : none;
-    const char *head[3] = {tool && g.jetting ? "jetpack" : catalog().drawName(tm.hat), catalog().drawName(tm.glasses), catalog().drawName(tm.tash)};  // W4M's jetpack helmet
-    if ((head[0] || head[1] || head[2]) && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
-        for (const char *n : head) if (n) Models::draw(n, MatrixMultiply(m, root));
+    const auto head = catalog().headgear(tm.hat, tm.glasses, tm.tash, tool && g.jetting);  // W4M's jetpack helmet
+    if (!head.empty() && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
+        for (const auto &hg : head) Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), root));
     return true;
 }
 
@@ -1360,6 +1360,9 @@ int main(int argc, char **argv) {
             if (float sc = getenv("W4NX_SCALE") ? (float)atof(getenv("W4NX_SCALE")) : 0; sc > 0)  // W4NX_SCALE: a raw-unit model (ufo) at that scale
                 Models::draw(mdl, MatrixMultiply(MatrixScale(sc, sc, sc), MatrixTranslate(p.x, p.y, p.z)), WHITE, argv[2], L * k / 7);
             else Models::draw(mdl, p, getenv("W4NX_YAW") ? (float)atof(getenv("W4NX_YAW")) : PI / 2, 0, WHITE, argv[2], L * k / 7, false, aim, aimT, layered ? &ly : nullptr);
+            if (char hat[64], gl[64], ta[64]; getenv("W4NX_HEAD") && sscanf(getenv("W4NX_HEAD"), "%63s %63s %63s", hat, gl, ta) == 3 && Models::joint("worm", "HatLocator", argv[2], L * k / 7, false, &m, aim, aimT, layered ? &ly : nullptr))  // W4NX_HEAD="<hat> <glasses> <tash>" ids, - none
+                for (const auto &hg : catalog().headgear(strcmp(hat, "-") ? hat : "", strcmp(gl, "-") ? gl : "", strcmp(ta, "-") ? ta : ""))
+                    Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), MatrixMultiply(MatrixRotateY(getenv("W4NX_YAW") ? (float)atof(getenv("W4NX_YAW")) : PI / 2), MatrixTranslate(p.x, p.y, p.z))));
             const char *loc = getenv("W4NX_LOC") ? getenv("W4NX_LOC") : "WeaponLocator";  // W4NX_LOC: another attach joint (Pack_Locator)
             if (argc > 3 && Models::joint("worm", loc, argv[2], L * k / 7, false, &m, aim, aimT))
                 Models::draw(argv[3], MatrixMultiply(!strcmp(argv[3], "hold_starburst") && !getenv("W4NX_LOC") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))), WHITE, getenv("W4NX_LOC") || Models::clipLength(argv[3], argv[2]) > 0 ? argv[2] : "Rest", L * k / 7);

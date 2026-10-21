@@ -2121,17 +2121,14 @@ void teamsLegend() {
 }
 }  // namespace
 
-// a team's worm at the origin turned by yaw (the caller's matrix places it): its gloves, then hat, glasses and tash at HatLocator, glasses and tash
-// only where the hat allows them (the hat's Glasses / Tash bools gate attaching them, 0x7573f7)
+// a team's worm at the origin turned by yaw (the caller's matrix places it): its gloves, then Catalog::headgear at HatLocator
 static void drawTeamWorm(const GameConfig::Team &tm, float yaw, const char *clip, float ct, bool loop) {
     const Catalog &k = catalog();
     Models::gloves(k.drawName(tm.gloves));
     Models::draw("worm", {0, 0, 0}, yaw, 0, WHITE, clip, ct, loop);
     Models::gloves(nullptr);
-    const Catalog::Item *hat = k.attachment(tm.hat);
     if (Matrix m; Models::joint("worm", "HatLocator", clip, ct, loop, &m))
-        for (const std::string *id : {&tm.hat, &tm.glasses, &tm.tash})
-            if (const char *n = k.drawName(*id); n && (!hat || id == &tm.hat || (id == &tm.glasses ? hat->glasses : hat->tash))) Models::draw(n, MatrixMultiply(m, MatrixRotateY(yaw)));
+        for (const auto &hg : k.headgear(tm.hat, tm.glasses, tm.tash)) Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), MatrixRotateY(yaw)));
 }
 
 void Frontend::wormPreview(const GameConfig::Team &tm, float t, float phase, const char *clip, float ct) {
