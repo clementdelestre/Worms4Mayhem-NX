@@ -13,6 +13,10 @@
 
 int main() {
     loadWeapons("romfs/weapons.json");
+    {  // an overflowing text waits 2 s, then keeps sliding; a looping one slides from the start
+        assert(Ui::marqueeShift(600, 1, false) == 0 && Ui::marqueeShift(600, 3, false) > 0 && Ui::marqueeShift(600, 3.5f, false) > Ui::marqueeShift(600, 3, false));
+        assert(Ui::marqueeShift(600, 0.5f, true) > 0);
+    }
     {  // Lobby slots: a pad puts a saved team in a free slot only, a pad may play several, release frees it, pads in use are this console's human slots (a CPU team needs none)
         Lobby l;
         l.cfg.teams = Lobby::MAX_TEAMS, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);

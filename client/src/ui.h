@@ -14,6 +14,7 @@ constexpr bool REPLAYS = false;
 // W4M-styled frontend and HUD. Art: assets/ui/*.png from tools/w4m-ui; missing files fall back to plain shapes.
 namespace Ui {
 extern const Color TEAM_COLORS[4];
+float marqueeShift(float period, float t, bool loop);  // px an overflowing text has slid t s after it showed: waits 2 s, then glides on (loop: no wait)
 void load();
 bool preload(double until);  // boot: uploads the decoded frontend art until GetTime() reaches until; true while some is pending
 bool warm(const std::vector<std::string> &names, double until);  // uploads the predecoded pictures until GetTime() reaches until; true while some are pending

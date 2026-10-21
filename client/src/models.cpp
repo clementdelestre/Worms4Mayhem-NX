@@ -910,7 +910,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
             int mi = m.meshMaterial[i];
             if (std::find(e.glow.begin(), e.glow.end(), mi) == e.glow.end()) continue;
             Material mat = m.materials[mi];
-            Vector2 shift = {0, -fmodf((float)GetTime(), 1.166f) / 1.166f};
+            Vector2 shift = {0, -(float)fmod(GetTime(), 1.166) / 1.166f};  // fmod in double: on Switch GetTime() counts from console boot
             SetShaderValue(scroll, GetShaderLocation(scroll, "shift"), &shift, SHADER_UNIFORM_VEC2);
             mat.shader = scroll;
             mat.maps[MATERIAL_MAP_DIFFUSE].color = {(unsigned char)(70 * tint.r / 255), (unsigned char)(200 * tint.g / 255), (unsigned char)(255 * tint.b / 255), (unsigned char)(50 * tint.a / 255)};

@@ -240,16 +240,6 @@ bool image(const std::string &name, Rectangle d, Color tint = WHITE) {
     return t.id;
 }
 
-// A team flag texture is 128 x 128 with the picture in rows 22..105 (89 of 93 flags); drawn cropped to it, fitted centred in d [observed: the flags/ pngs]
-bool flagImage(const std::string &name, Rectangle d) {
-    if (pending(name)) return true;
-    Texture2D t = tex(name);
-    if (!t.id) return false;
-    const float k = t.height / 128.0f, w = 128 * k, h = 84 * k, f = fminf(d.width / w, d.height / h);
-    DrawTexturePro(t, {0, 22 * k, w, h}, {d.x + (d.width - w * f) / 2, d.y + (d.height - h * f) / 2, w * f, h * f}, {}, 0, WHITE);
-    return true;
-}
-
 std::string lower(std::string s) {
     for (char &c : s) c = (char)tolower((unsigned char)c);
     return s;
@@ -1317,23 +1307,27 @@ static void tooltipStrip() {
 // WXFE_TextScroller (0x76e1c1, 0x76df84, 0x76e0a0): a line narrower than its window (Wrap 0) stays put, a wider one and a copy one space behind it
 // slide left 0.5 FE per 20 ms tick (the ticker's Speed), back to the start after one text + space, with a 2000 ms wait; t: s since the text was set;
 // loop (the strip's default ticker, user-requested): no wait, the scroll never stops, a short text too
+float marqueeShift(float period, float t, bool loop) {
+    int steps = (int)(period / (0.5f * FE_S)) + 1, n = (int)(fmaxf(t, 0) * 50) % (100 + steps);
+    return loop ? fmodf(fmaxf(t, 0) * 25 * FE_S, period) : fmaxf(n - 100, 0) * 0.5f * FE_S;  // loop: no wait, the copies glide by without a stop
+}
 static void marquee(const char *s, Rectangle win, float px, const Color *g, int align, Color edge, float t, bool loop = false) {
     float w = textWidth(s, px) * TEXT_X, cy = win.y + win.height / 2;
     auto line = [&](float x, int al) { rlPushMatrix(), rlTranslatef(roundf(x), cy, 0), rlScalef(TEXT_X, 1, 1), textG(s, 0, -px / 2, px, g[0], g[1], al, edge), rlPopMatrix(); };
-    if (w <= win.width && !loop) return line(align == 0 ? win.x : align == 1 ? win.x + win.width / 2 : win.x + win.width, align);
+    if (roundf(w) <= roundf(win.width) && !loop)  // whole pixels: a window sized from the text's own width still fits it
+        return line(align == 0 ? win.x : align == 1 ? win.x + win.width / 2 : win.x + win.width, align);
     float period = fmaxf(w + textWidth(" ", px) * TEXT_X, loop ? win.width : 0);  // loop: a short text still crosses the whole window
-    int steps = (int)(period / (0.5f * FE_S)) + 1, n = (int)(fmaxf(t, 0) * 50) % (100 + steps);
     rlDrawRenderBatchActive();
     BeginScissorMode((int)win.x, (int)(cy - px), (int)win.width, (int)(2 * px));
-    const float shift = loop ? fmodf(fmaxf(t, 0) * 25 * FE_S, period) : fmaxf(n - 100, 0) * 0.5f * FE_S;  // loop: no wait, the copies glide by without a stop
+    const float shift = marqueeShift(period, t, loop);
     for (float x = win.x - shift; x < win.x + win.width; x += period) line(x, 0);
     rlDrawRenderBatchActive();
     EndScissorMode();
 }
 // s since `s` last changed at this call site (the scroller restarts on a new text: 0x76e23c subscribes 0x76e1c1 to its resource)
 static float sinceSet(std::string &last, float &at, const char *s) {
-    if (last != s) last = s, at = (float)GetTime();
-    return (float)GetTime() - at;
+    if (last != s) last = s, at = now();
+    return now() - at;
 }
 
 // TickerTapeTXT (WXFE_NewsFeedScrollingTextDesc of WXFE.TickerTape = WXFE.TickerTapeDefault, NewsFeedService 0x4bb8e0): Solid_Black (Colour_Front 3,
@@ -2055,11 +2049,11 @@ void feRow(Rectangle r, int state, const char *label, const char *value, bool ar
     Color ac = hi ? Color{42, 22, 0, 255} : GC_LIST_DATA_ORANGE[0];
     if (arrows && a.id) DrawTexturePro(a, {32, 0, 32, 64}, {right - aw, cy - ah / 2, aw, ah}, {}, 0, ac), right -= aw + 6;
     Color edge = hi ? BC_NONE : BC_BLACK;  // black on the orange bar without the outline [assumed: readability]
-    marquee(value, {right - vw, cy - px, vw, 2 * px}, px, vg, 2, edge, (float)GetTime());  // a long value scrolls, never shrinks [user-requested]
+    marquee(value, {right - vw, cy - px, vw, 2 * px}, px, vg, 2, edge, now());  // a long value scrolls, never shrinks [user-requested]
     right -= vw;
     if (arrows && a.id) DrawTexturePro(a, {0, 0, 32, 64}, {right - aw - 6, cy - ah / 2, aw, ah}, {}, 0, ac);
     float room = fminf(lw, right - 16 - (r.x + pad));
-    marquee(label, {r.x + pad, cy - px, fmaxf(room, 0), 2 * px}, px, lg, 0, edge, (float)GetTime());  // a long label scrolls too [user-requested]
+    marquee(label, {r.x + pad, cy - px, fmaxf(room, 0), 2 * px}, px, lg, 0, edge, now());  // a long label scrolls too [user-requested]
 }
 
 // Blue divide, scrolling watermark and Title Control of the setup screens [data MENUTWKX WXFE.CreateAGame: AnimDivide$In_Curve, Scrolling 1-4, Title Control]; p: the
@@ -2103,7 +2097,9 @@ void padToken(Vector2 at, float r, int p) {
     Color col = mixColors(l, rt);
     bool bright = col.r * 0.3f + col.g * 0.59f + col.b * 0.11f > 150;
     DrawCircleV({at.x, at.y + r / 6}, r, {0, 0, 0, 110});
-    DrawCircleV(at, r, BLACK), DrawCircleV(at, r * 7 / 8, WHITE), DrawCircleV(at, r * 17 / 24, col);
+    DrawCircleV(at, r, BLACK), DrawCircleV(at, r * 7 / 8, WHITE);
+    if (l.r == rt.r && l.g == rt.g && l.b == rt.b) DrawCircleV(at, r * 17 / 24, col);
+    else DrawCircleSector(at, r * 17 / 24, 90, 270, 24, l), DrawCircleSector(at, r * 17 / 24, -90, 90, 24, rt);  // a Joy-Con pair: left | right
     feTextPx(TextFormat("%d", p + 1), at.x, at.y, r * 22 / 24, bright ? GC_BLACK : GC_WHITE, 1, bright ? BC_NONE : BC_BLACK);
 }
 
@@ -2172,8 +2168,8 @@ Frontend::PadIn Frontend::padIn(int p) {
     return in;
 }
 
-// One player slot (d) of the Teams screen: the ribbon in the team's match colour carrying its name ("Joueur N" on a free slot), its flag, who plays it (the pad's disc, the CPU level,
-// another console's name), its live worm in its outfit free at the bottom and the slot settings in the right margin, in a room the ready grenade. A free slot shows how to pick a team.
+// One player slot (d) of the Teams screen: the ribbon in the team's match colour carrying its name ("Joueur N" on a free slot), who plays it (the pad's disc left of the ribbon on the frame's top edge,
+// the CPU level, another console's name), its live worm in its outfit free at the bottom and the slot settings in the right margin, in a room the ready grenade. A free slot shows how to pick a team.
 void Frontend::teamSlot(Rectangle d, int k, float t) {
     (void)t;
     const GameConfig &c = lobby.cfg;
@@ -2182,12 +2178,12 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
     int rank = 0;  // the match colour: the rank among the playing slots
     for (int j = 0; j < k; j++) rank += lobby.playing(j);
     const float cx = d.x + d.width / 2;
-    auto line = [](const char *s, float px, float x0, float x1, float cy, const Color *g, int align) { marquee(s, {x0, cy - px, x1 - x0, 2 * px}, px, g, align, BC_BLACK, (float)GetTime()); };
+    auto line = [](const char *s, float px, float x0, float x1, float cy, const Color *g, int align) { marquee(s, {x0, cy - px, x1 - x0, 2 * px}, px, g, align, BC_BLACK, now()); };
     if (!cardPanel(d)) DrawRectangleRounded(d, 0.1f, 6, PANEL);
     if (!play) DrawRectangleRounded(d, 0.1f, 6, {0, 20, 40, 110});
     {  // ribbon
         const char *rb = play ? m.name.c_str() : TextFormat(tr(nullptr, "Player %d", "Joueur %d"), k + 1);
-        float w = fminf(feWidthPx(rb, 24) + 40, d.width - 30);
+        float w = fminf(feWidthPx(rb, 24) + 40, d.width - 104);  // room for the pad's disc on the left, mirrored on the right
         Rectangle r = {cx - w / 2, d.y - 20, w, 36};
         Tilt tl(centre(r), 0.035f);
         DrawRectangleRounded({r.x - 3, r.y - 3, r.width + 6, r.height + 6}, 0.5f, 8, BLACK);
@@ -2212,13 +2208,10 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
         for (size_t i = 0; i < ls.size(); i++) line(ls[i].c_str(), 20, x + gw + 10, x + gw + 10 + tw, y + G / 2 + (i - (ls.size() - 1) / 2.0f) * 24, GC_WHITE, 0);
         return;
     }
-    // flag, then who plays it: the pad's disc with its number, the CPU level, another console's name
-    const float wy = d.y + 52;
-    float x0 = d.x + 16;
-    if (const Catalog::Item *fl = catalog().flag(m.flag)) flagImage(fl->model, {x0, wy - 18, 56, 36}), x0 += 56 + 12;
+    const float wy = d.y + 52, x0 = d.x + 16;
     if (cpu) line(cpuText(m.cpu), 18, x0, d.x + d.width - 16, wy, GC_LIST_LABLE_BLUE, 0);
     else if (mine) {
-        if (padPresent(m.pad)) padToken({x0 + 16, wy}, 16, m.pad);
+        if (padPresent(m.pad)) padToken({d.x + 24, d.y - 8}, 20, m.pad);
         else line(TextFormat(tr(nullptr, "Pad %d missing", "Manette %d absente"), m.pad + 1), 18, x0, d.x + d.width - 16, wy, GC_ERROR_RED, 0);
     } else {  // another console's player: its name
         auto pl = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
@@ -2431,7 +2424,7 @@ void listPanel(const char *title, const std::vector<std::string> &labels, const 
     const float rh = 44, w = 560, h = 112 + vis * rh;
     Rectangle d = {640 - w / 2, 360 - h / 2 - 10, w, h};
     popup(d);
-    marquee(title, {d.x + 50, d.y + 10, w - 100, 60}, 30, GC_BUTTON_YELLOW, 1, BC_BLACK, (float)GetTime());
+    marquee(title, {d.x + 50, d.y + 10, w - 100, 60}, 30, GC_BUTTON_YELLOW, 1, BC_BLACK, now());
     if (!image("fe/title_underline", {640 - 220, d.y + 62, 440, 22})) DrawRectangle(640 - 220, d.y + 72, 440, 3, WHITE);
     const int first = Clamp(sel - vis / 2, 0, std::max(0, n - vis));
     for (int i = first; i < n && i < first + vis; i++) feRow({d.x + 40, d.y + 96 + (i - first) * rh, w - 80, 38}, i == sel ? 1 : 0, labels[i].c_str(), values[i].c_str(), false);
@@ -3021,7 +3014,7 @@ void Frontend::setupMap(int dx, int dy, bool back, bool plus, const std::vector<
         DrawRectangleGradientV((int)pv.x, (int)(pv.y + pv.height - 82), (int)pv.width, 82, {0, 0, 0, 0}, {0, 0, 0, 170});
         pictureFrame(pv, false);
         const std::string title = mapTitle(lobby.cfg.map);
-        marquee(title.c_str(), {pv.x + 18, pv.y + pv.height - 26 - 34, pv.width - 36, 68}, 34, GC_WHITE, 0, BC_BLACK, (float)GetTime());
+        marquee(title.c_str(), {pv.x + 18, pv.y + pv.height - 26 - 34, pv.width - 36, 68}, 34, GC_WHITE, 0, BC_BLACK, now());
     }
     // the landscape list: 3 columns of tiles, the highlight frame on the selection
     const int cols = 3, rows = (n + cols - 1) / cols, vis = 4, first = Clamp(mapSel / cols - 1, 0, std::max(0, rows - vis));
@@ -3032,7 +3025,7 @@ void Frontend::setupMap(int dx, int dy, bool back, bool plus, const std::vector<
         DrawRectangleGradientV((int)d.x, (int)d.y + 40, (int)d.width, 42, {0, 0, 0, 0}, {0, 0, 0, 170});
         pictureFrame(d, i == mapSel);
         const std::string nm = mapTitle(maps[i]);  // a long name scrolls, never shrinks [user-requested]
-        marquee(nm.c_str(), {d.x + 8, d.y + th - 15 - 16, d.width - 16, 32}, 16, i == mapSel ? GC_BUTTON_YELLOW : GC_WHITE, 0, BC_BLACK, (float)GetTime());
+        marquee(nm.c_str(), {d.x + 8, d.y + th - 15 - 16, d.width - 16, 32}, 16, i == mapSel ? GC_BUTTON_YELLOW : GC_WHITE, 0, BC_BLACK, now());
     }
     setupFront(t, lobby.canEditMatch() ? tr("FETIP.Landscape2", "Select a landscape to battle on.", nullptr) : tr(nullptr, "The host picks the map", "L'hôte choisit le terrain"), false, 0);
 }
