@@ -1141,13 +1141,14 @@ static Rectangle feRect(float x, float y, float hw, float hh) { Vector2 c = fePo
 // A WXFE_MeshObjectDesc through the FE camera (0.54 rad at z 903.5 [observed, see FE_S]; Lighting: FrontendMeshLight): position (FE units), scale,
 // orientation (rad) and the mesh clip at t s
 extern "C" void glClear(unsigned int mask);
-static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, bool lit, const char *clip, float t) {
+static const int FE_DIVIDE_LIGHT = 2;  // feMesh light: 0 none, 1 the item's Lighting (FrontendMeshLight), 2 the BlueDivide's
+static void feMesh(const char *name, Vector3 pos, Vector3 scale, Vector3 rot, int light, const char *clip, float t) {
     Camera3D cam = {{0, 0, 903.5f}, {0, 0, 0}, {0, 1, 0}, 0.54f * RAD2DEG, CAMERA_PERSPECTIVE};
     glClear(0x100);
     rlSetClipPlanes(5, 15000);
     BeginMode3D(cam);
     Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateZYX(rot)), MatrixTranslate(pos.x, pos.y, pos.z));
-    Models::shade(Lit::frontendShader(lit));
+    Models::shade(light == FE_DIVIDE_LIGHT ? Lit::divideShader() : Lit::frontendShader(light));
     Models::draw(name, m, WHITE, clip, t / FE_ANIM_SPEED, false);
     Models::shade({});
     EndMode3D();
@@ -1202,7 +1203,7 @@ static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 
                    GC_SUBHEADER_BLUE[2] = {{128, 210, 255, 255}, {255, 255, 255, 255}}, GC_BOOK_BROWN[2] = {{93, 51, 0, 200}, {93, 51, 0, 200}},
                    GC_POPUP_RED[2] = {{148, 0, 0, 255}, {148, 0, 0, 255}}, GC_SCROLLTEXT[2] = {{0, 69, 109, 110}, {0, 69, 109, 110}},
                    GC_WHITE[2] = {WHITE, WHITE};
-static const Color BC_BLACK = BLACK, BC_WHITE = WHITE, BC_NONE = {0, 0, 0, 0}, BC_BOOK_EDGE = {255, 255, 255, 80};  // WXFE_BackgroundColours: the text outline
+static const Color BC_BLACK = BLACK, BC_NONE = {0, 0, 0, 0}, BC_BOOK_EDGE = {255, 255, 255, 80}, BC_SCROLLTEXT = {109, 151, 175, 32};  // WXFE_BackgroundColours (0x754dc0): the text outline
 
 // W4M TextAnim (docs/w4m/frontend.md "TextBox layout"): per glyph a High / Low pair of the HUD.FontAnim clips, the groups cycling by glyph, the
 // alternative by the LCG; (dy in FE units, y up, scale). kind: 1 LargeWobble, 2 SmallWobble, 3 TitleRandom, 4 MediumWobble
@@ -1356,7 +1357,7 @@ static void watermark(const char *title, float x, float t, float since = 99, flo
         rlTranslatef(o.x + x + shift, o.y, 0);
         rlRotatef(-90, 0, 0, 1);  // reads bottom to top
         rlScalef(k, 1, 1);
-        for (float u = -c.half * FE_S - w + (c.fwd ? run : w - run); u < c.half * FE_S; u += w) textG(tile.c_str(), u, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, BC_NONE);
+        for (float u = -c.half * FE_S - w + (c.fwd ? run : w - run); u < c.half * FE_S; u += w) textG(tile.c_str(), u, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, BC_SCROLLTEXT);
         rlPopMatrix();
     }
 }

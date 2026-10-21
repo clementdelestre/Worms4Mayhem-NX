@@ -103,6 +103,19 @@ Shader frontendShader(bool lit) {
     return s;
 }
 
+Shader divideShader() {
+    static Shader s;
+    if (s.id) return s;
+    s = shader(MVS, MFS, false);
+    const Vector3 dir = Vector3Normalize({0, 0.75f, 0.75f}), amb = {0.8f, 0.8f, 0.85f}, dif = {0.15f, 0.15f, 0.15f}, spec = {0.5f, 0.5f, 0.5f}, cam = {0, 0, 903.5f};
+    SetShaderValue(s, GetShaderLocation(s, "sunDir"), &dir, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, GetShaderLocation(s, "ambient"), &amb, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, GetShaderLocation(s, "diffuse"), &dif, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, GetShaderLocation(s, "specular"), &spec, SHADER_UNIFORM_VEC3);
+    SetShaderValue(s, GetShaderLocation(s, "camPos"), &cam, SHADER_UNIFORM_VEC3);
+    return s;
+}
+
 bool shadows = true;
 static const int SHADOW_SIZE = 1024;  // [0x95a100]+0x88: 1024 unless /SHADOWMAP (0x4d5cde)
 static unsigned fbo[2], depth[2];  // 0: static casters, 1: plus this frame's casters (sampled by the land)

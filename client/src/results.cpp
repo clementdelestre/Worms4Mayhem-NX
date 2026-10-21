@@ -19,12 +19,12 @@ uint32_t value(const Results::Worm &w, int type) {
     }
 }
 
-// AccoladeRulesImpl (0x619f40..0x61a5b0): the one worm with the greatest (or least) value; none when it is shared, or a greatest of 0
-bool pick(const Results::Scope &s, int type, bool positive, int &worm, uint32_t &v) {
+// AccoladeRulesImpl (0x619f40..0x61a5b0) over the match's n worms (WormData +0x125): the one with the greatest (or least) value; none when shared, or a greatest of 0
+bool pick(const Results::Scope &s, int n, int type, bool positive, int &worm, uint32_t &v) {
     bool greatest = (type == 4 || type == 6) ? !positive : positive;  // Boring and TeamKills reward the least
     uint32_t best = greatest ? 0 : 0xffffffffu;
     bool found = false, tied = false;
-    for (int i = 0; i < Results::WORMS; i++) {
+    for (int i = 0; i < n && i < Results::WORMS; i++) {
         uint32_t x = value(s.worm[i], type);
         if (x == best) tied = true;
         if (greatest ? x > best : x < best) best = x, worm = i, found = true, tied = false;
@@ -114,11 +114,12 @@ void Results::summarise(uint32_t seed) {
     std::mt19937 rng(seed);
     int order[7] = {0, 1, 2, 3, 4, 5, 6};
     for (int i = 0; i < 7; i++) std::swap(order[i], order[rng() % 6]);
-    int pos = 0, neg = 0, w;
+    int pos = 0, neg = 0, w, n = 0;
+    for (int t = 0; t < cfg.teams; t++) n += cfg.teamWorms(t);
     uint32_t v;
     for (int t = 0; t < 7; t++) {
-        if (pos < 4 && pick(current, t, true, w, v)) pos++;
-        if (neg < 4 && pick(current, t, false, w, v)) neg++;
+        if (pos < 4 && pick(current, n, t, true, w, v)) pos++;
+        if (neg < 4 && pick(current, n, t, false, w, v)) neg++;
     }
     if (pos + neg > 4) {
         if (pos < 2) neg = std::min(neg, 4 - pos);
@@ -129,7 +130,7 @@ void Results::summarise(uint32_t seed) {
     for (int k = 0; awards.size() < 4 && pos + neg > 0 && k < 14; k++) {
         const int t = order[k % 7];
         const bool positive = pos > 0;
-        if (!pick(current, t, positive, w, v)) continue;
+        if (!pick(current, n, t, positive, w, v)) continue;
         int team = 0, slot = w;  // worms are team-major
         while (team < cfg.teams - 1 && slot >= cfg.teamWorms(team)) slot -= cfg.teamWorms(team++);
         const char *key = TextFormat(positive ? "Stat.Accolade.Pve.%u" : "Stat.Accolade.Nve.%u", t);
