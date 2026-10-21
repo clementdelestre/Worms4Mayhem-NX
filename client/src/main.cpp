@@ -1950,6 +1950,7 @@ int main(int argc, char **argv) {
         }
 
         if (screen == Screen::Menu) {
+            Models::upload(GetTime() + 0.004);  // the match models finish uploading in the menus' idle frames
             // 0x4f10e0: the first update of a profile that has not seen it plays the Welcome movie (StoryMovie "Welcome"), then the menu
             static bool welcomeChecked = false;
             if (!welcomeChecked && !uiShot && !inScript && !netbot) {
