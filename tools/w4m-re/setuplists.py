@@ -14,8 +14,10 @@ graves.txt      "<model>\t<mesh>\t<text key>\t<name>" per WXFEP.SelectGraveList 
 flags.txt       "<Flag id>\t<ui png>\t<text key>" per WXFEP.SelectFlagList row (LOCAL FlagDataContainer: TargaName, TextResource)
 speech.txt      "<speech bank>\t<text key>" per WXFEP.SelectSoundbankList row (the bank is our voices/<bank without 'vo'>)
 stockweapons.json every LOCAL DATA.LockedWeapons stock Weapon Factory weapon (StockWeapon 1) in the client's weapons JSON: its
-                WeaponFactoryContainer pair (docs/w4m/weapons.md "Stock weapons"), meshes proj_<Factory.Proj name>
+                WeaponFactoryContainer pair (docs/w4m/weapons.md "Stock weapons"), meshes proj_<Factory.Proj name>, graphic its
+                WeaponGraphicsResourceID (0x5984a0)
 stockmodels.txt "<model>\t<Factory.Proj mesh>" per payload those weapons use, for w4m-models
+factorymodels.txt "<model>\t<mesh>" per held mesh of those weapons and of the WXD.Default* templates (factory/<mesh>), for w4m-models
 defteams.txt    DEFSAVE DATA.TeamBarracks in the client's teams.txt format (client/src/barracks.h)
 """
 import json, os, sys
@@ -41,6 +43,12 @@ def proj_model(pe, payload):
     return 'proj_' + pe.cstr(pe.u32(PAYLOAD_MESHES + 4 * payload)).split('Factory.Proj.', 1)[1].lower().replace('.', '_')
 
 
+def graphic(pe, w):  # 0x5984a0: "Factory.Proj.<payload>,," with no GraphicalResourceID, else "res,loc," per entry ("" past the locators)
+    res, loc = w['GraphicalResourceID'], w['GraphicalLocatorID']
+    if not res: return pe.cstr(pe.u32(PAYLOAD_MESHES + 4 * w['PayloadResourceId'])) + ',,'
+    return ''.join('%s,%s,' % (r, loc[i] if i < len(loc) else '') for i, r in enumerate(res))
+
+
 def stock_weapon(w, c, pe=PE()):
     assert w['Detonate'] in (0, 1, 3) and c['Detonate'] in (0, 3), w['Name']  # FirePress: no stock weapon
     kind = 'airstrike' if w['ProjectileLaunchType'] == 0 else 'homing' if w['Homing'] else 'shell'
@@ -49,7 +57,7 @@ def stock_weapon(w, c, pe=PE()):
          'avoid_land': bool(w['HomingAvoidLand']), 'poison': GAS_POISON if w['Poison'] else 0, 'cluster_poison': bool(c['Poison']),
          'clusters': w['ProjectileNumClusters'], 'cluster_spread': w['ClusterSpread'], 'collision': w['ProjectileCollisionRadius'],
          'cluster_collision': c['ProjectileCollisionRadius'], 'model': proj_model(pe, w['PayloadResourceId']), 'cluster_model': proj_model(pe, c['PayloadResourceId']),
-         'ariel': w['ArielFX'], 'count': 0, 'icon': 'Secret Weapon'}  # count: WXD.DefaultSchemeData WeaponFactoryWeapon.Ammo
+         'ariel': w['ArielFX'], 'graphic': graphic(pe, w), 'count': 0, 'icon': 'Secret Weapon'}  # count: WXD.DefaultSchemeData WeaponFactoryWeapon.Ammo
     for p, x in (('', w), ('cluster_', c)):
         d.update({p + 'land_damage': x['LandDamageRadius'], p + 'worm_radius': x['WormDamageRadius'], p + 'worm_damage': x['WormDamageMagnitude'], p + 'blast_strength': x['Push']})
     return d
@@ -93,6 +101,10 @@ def main(a):
     with open(os.path.join(out, 'stockmodels.txt'), 'w') as f:
         for p in sorted({x[k] for w in local['DATA.LockedWeapons']['Weapons'] if w['StockWeapon'] for x in (w['Weapon'], w['Cluster']) for k in ('PayloadResourceId',)}):
             f.write('%s\t%s\n' % (proj_model(pe, p), pe.cstr(pe.u32(PAYLOAD_MESHES + 4 * p))))
+    held = [w['Weapon'] for w in local['DATA.LockedWeapons']['Weapons'] if w['StockWeapon']] + [menu[k]['Weapon'] for k in ('WXD.DefaultWeapon', 'WXD.DefaultThrown', 'WXD.DefaultAirStrike')]
+    with open(os.path.join(out, 'factorymodels.txt'), 'w') as f:
+        for m in sorted({m for w in held for m in graphic(pe, w).split(',')[::2] if m}):
+            f.write('factory/%s\t%s\n' % (m.lower().replace('.', '_'), m))
     teams = dump(os.path.join(tw, 'DEFSAVE.XOM'))['DATA.TeamBarracks']['Teams']
     with open(os.path.join(out, 'defteams.txt'), 'w') as f:
         for t in teams:

@@ -95,7 +95,8 @@ int main() {
         assert(back.inputs.size() == rec.inputs.size() && back.checksum == rec.checksum && back.cfg.map == rec.cfg.map && back.cfg.wormpot == rec.cfg.wormpot);
         for (size_t t = 0; t < rec.cfg.teamSetup.size(); t++)
             assert(back.cfg.teamSetup[t].secret.has_value() == rec.cfg.teamSetup[t].secret.has_value() &&
-                   (!rec.cfg.teamSetup[t].secret || back.cfg.teamSetup[t].secret->name == rec.cfg.teamSetup[t].secret->name));
+                   (!rec.cfg.teamSetup[t].secret || (back.cfg.teamSetup[t].secret->name == rec.cfg.teamSetup[t].secret->name &&
+                                                         back.cfg.teamSetup[t].secret->graphic == rec.cfg.teamSetup[t].secret->graphic)));
         Game h;
         h.start(back.cfg);
         auto t0 = std::chrono::steady_clock::now();

@@ -32,6 +32,7 @@
 #include <malloc.h>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -313,11 +314,25 @@ static Vector3 fpOffset(const std::string &n) {
     return {};
 }
 
+// A Weapon Factory weapon's ProjectileLaunchType by its clone (0x598160): 0 Bomber, 1 Launched (+ Homing), 2 Thrown, 3 Dropped; -1 other weapons
+static int factoryType(const WeaponDef &d) {
+    const std::string &c = d.clone;
+    return c.empty() ? -1 : c == "Airstrike" ? 0 : c == "Grenade" ? 2 : c == "Dynamite" ? 3 : 1;
+}
+
 // Mesh held at the worm's WeaponLocator (WEAPTWK WeaponGraphicsResourceID), *clip its Holding clip, *aim its Aim clip or
-// nullptr (absent from the worm bundle, or the Holding clip itself, whose later 0x594d40 call wins on the shared handle)
+// nullptr (absent from the worm bundle, or the Holding clip itself, whose later 0x594d40 call wins on the shared handle).
+// A Weapon Factory weapon returns its WeaponDef::graphic (a "res,loc," list, Models::drawWeaponGraphic)
 static const char *heldModel(const WeaponDef &d, const char **clip, const char **aim = nullptr) {
     const std::string &n = d.name;
     const char *a = nullptr, *m = nullptr;
+    if (int L = factoryType(d); L >= 0) {  // 0x5983f0's clips; Thrown: WAE_Thrown (0x5973e6) hardcodes HoldThrown, AimThrown is not in the worm bundle
+        static const char *const HOLD[] = {"HoldAirstrike", "HoldWFGun", "HoldThrown", "HoldDynamite"};
+        static std::set<std::string> pool;  // stable pointers for WormAnim::Act::held
+        *clip = HOLD[L];
+        if (aim) *aim = L == 1 ? "AimBazooka" : nullptr;
+        return pool.insert(d.graphic).first->c_str();
+    }
     switch (d.kind) {
     case Kind::Shell:
         if (n == "Poison Arrow") *clip = "HoldBow", a = "AimBow", m = "hold_bow";
@@ -359,6 +374,8 @@ static const char *heldModel(const WeaponDef &d, const char **clip, const char *
 // WEAPTWK WXAnimDraw (WAE state 1, Accessory.Init); WAE_Thrown 0x595ed0 hardcodes DrawThrown for the five grenades
 static const char *drawClip(const WeaponDef &d) {
     const std::string &n = d.name;
+    static const char *const DRAW[] = {"DrawAirstrike", "DrawWFGun", "DrawThrown", "DrawDynamite"};  // a Weapon Factory weapon's, 0x5983f0
+    if (int L = factoryType(d); L >= 0) return DRAW[L];
     switch (d.kind) {
     case Kind::Shell: return n == "Poison Arrow" ? "DrawBow" : n == "Dynamite" ? "DrawDynamite" : d.fuse > 0 ? "DrawThrown" : "DrawBazooka";
     case Kind::Shotgun: return n == "Sniper Rifle" ? "DrawSniper" : "DrawShotgun";
@@ -383,6 +400,7 @@ static const char *drawClip(const WeaponDef &d) {
 // Clip of the powered windup (PoweringUpStart / PlayWindupAnim on FIRE press): WAE_Thrown WindupThrown, WAE_Mechanical the
 // WEAPTWK Fire clip (WindupBow); the other WAE classes ignore both messages
 static const char *windupClip(const WeaponDef &d) {
+    if (int L = factoryType(d); L >= 0) return L == 2 ? "WindupThrown" : nullptr;
     return d.kind != Kind::Shell || d.name == "Dynamite" ? nullptr : d.name == "Poison Arrow" ? "WindupBow" : d.fuse > 0 ? "WindupThrown" : nullptr;
 }
 
@@ -391,6 +409,13 @@ static const char *windupClip(const WeaponDef &d) {
 static const char *fireClip(const WeaponDef &d, bool *keep, float wind = 0) {
     const std::string &n = d.name;
     *keep = true;
+    switch (factoryType(d)) {  // 0x5983f0: Bomber FireAirstrike (not in the worm bundle), Launched FireWFGun; Thrown: WAE_Thrown's throw
+    case 0: *keep = false; return nullptr;
+    case 1: return "FireWFGun";
+    case 2: *keep = false; return wind > 0.6f ? "FireThrown" : "LobThrown";
+    case 3: *keep = false; return "FireDynamite";
+    default: break;
+    }
     switch (d.kind) {
     case Kind::Shell:
         if (n == "Poison Arrow") return "WindupBow";  // WAE_Mechanical loads WEAPTWK Fire in its fire slot too (0x58d932); EndFire FireBow is never read
@@ -428,7 +453,8 @@ static const char *tauntClip(const WeaponDef &d) {
         {"Inflatable Scouser", "TauntScouser"}, {"Sheep", "TauntSheep"}, {"Super Sheep", "TauntSheep"}, {"Starburst", "TauntStarburst"},
         {"Sentry Gun", "TauntSentrygun"}, {"Ninja Rope", "TauntNinjarope"}, {"Surrender", "TauntSurrender"},
         {"Bubble Trouble", "TauntBT"}, {"Icarus Potion", "TauntRedbull"}};
-    for (const auto &e : T) if (d.name == e.first) return e.second;
+    if (factoryType(d) == 1) return "TauntWFGun";  // 0x5983f0; the other launch types keep their clone's
+    for (const auto &e : T) if (kindName(d) == e.first) return e.second;
     return nullptr;
 }
 
@@ -731,7 +757,8 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         float ml = Models::clipLength(held, mc);
         Models::pick(teamClip(g, w.team));  // WAE_Standard Init: the held Sentry Gun's team clip
         const Matrix hm = !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m;
-        Models::draw(held, hm, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
+        if (strchr(held, ',')) Models::drawWeaponGraphic(held, hm);
+        else Models::draw(held, hm, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
         Models::pick(nullptr);
         // held mesh: its Payload_Spawn node, else its origin (0x594ed0)
         if (Matrix j; i == g.current) launchAt = Vector3Transform(Models::joint(held, "Payload_Spawn", ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt, false, &j) ? Vector3{j.m12, j.m13, j.m14} : Vector3{}, hm);
@@ -1339,7 +1366,8 @@ int main(int argc, char **argv) {
     TraceLog(LOG_INFO, "BOOT: icon %.0f ms, loading screen %.0f ms", iconMs, loadScreen ? (GetTime() - loadScreen) * 1000 : 0.0);
     TraceLog(LOG_INFO, "BOOT: so far %s", Models::bootStats());
     TraceLog(LOG_INFO, "BOOT: menu data (sounds, missions, pictures) ready %.0f ms after the menu scene", (GetTime() - tailT) * 1000);
-    // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit; --animshot <weapon>: a turn firing it, anim_<frame>.png
+    // --animshot <clip> [held] [aim clip] [aim t]: 8 poses of a worm clip (animshot.png) and quit, held a model or a WeaponDef::graphic;
+    // --animshot <weapon>: a turn firing it, anim_<frame>.png
     if (argc > 2 && !strcmp(argv[1], "--animshot") && (argv[2][0] < '0' || argv[2][0] > '9')) {
         const char *mdl = getenv("W4NX_MODEL") ? getenv("W4NX_MODEL") : "worm";  // W4NX_MODEL / W4NX_ZOOM: another model, camera distance x
         float L = Models::clipLength(mdl, argv[2]), zoom = getenv("W4NX_ZOOM") ? (float)atof(getenv("W4NX_ZOOM")) : 1;
@@ -1371,8 +1399,11 @@ int main(int argc, char **argv) {
                 for (const auto &hg : catalog().headgear(strcmp(hat, "-") ? hat : "", strcmp(gl, "-") ? gl : "", strcmp(ta, "-") ? ta : ""))
                     Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), MatrixMultiply(MatrixRotateY(getenv("W4NX_YAW") ? (float)atof(getenv("W4NX_YAW")) : PI / 2), MatrixTranslate(p.x, p.y, p.z))));
             const char *loc = getenv("W4NX_LOC") ? getenv("W4NX_LOC") : "WeaponLocator";  // W4NX_LOC: another attach joint (Pack_Locator)
-            if (argc > 3 && Models::joint("worm", loc, argv[2], L * k / 7, false, &m, aim, aimT))
-                Models::draw(argv[3], MatrixMultiply(!strcmp(argv[3], "hold_starburst") && !getenv("W4NX_LOC") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z))), WHITE, getenv("W4NX_LOC") || Models::clipLength(argv[3], argv[2]) > 0 ? argv[2] : "Rest", L * k / 7);
+            if (argc > 3 && Models::joint("worm", loc, argv[2], L * k / 7, false, &m, aim, aimT)) {
+                const Matrix hm = MatrixMultiply(!strcmp(argv[3], "hold_starburst") && !getenv("W4NX_LOC") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m, MatrixMultiply(MatrixRotateY(PI / 2), MatrixTranslate(p.x, p.y, p.z)));
+                if (strchr(argv[3], ',')) Models::drawWeaponGraphic(argv[3], hm);
+                else Models::draw(argv[3], hm, WHITE, getenv("W4NX_LOC") || Models::clipLength(argv[3], argv[2]) > 0 ? argv[2] : "Rest", L * k / 7);
+            }
         }
         EndMode3D();
         for (int k = 0; k < 8; k++) Ui::text(TextFormat("%.2fs", L * k / 7), 200 + (k % 4) * 290, k < 4 ? 20 : 380, 24, BLACK, 1);
@@ -1469,9 +1500,10 @@ int main(int argc, char **argv) {
     }
     if (shot) {
         GameConfig sc = {1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u};
-        std::vector<WeaponDef> mine;  // --utilshot <Factory weapon name>: team 0's Weapon Factory weapon
-        if (utilShot && loadCustomWeapons(DATA_DIR "custom_weapons.json", mine))
-            for (const WeaponDef &d : mine) if (d.name == utilShot) sc.teamSetup.resize(2), sc.teamSetup[0].secret = d;
+        std::vector<WeaponDef> mine;  // --utilshot <Factory weapon name>: both teams' Weapon Factory weapon (ours or a stock one)
+        for (const char *f : {DATA_DIR "custom_weapons.json", DATA_DIR "assets/stockweapons.json"})
+            if (utilShot && loadCustomWeapons(f, mine))
+                for (const WeaponDef &d : mine) if (d.name == utilShot) sc.teamSetup.resize(2), sc.teamSetup[0].secret = sc.teamSetup[1].secret = d;
         game.start(sc);
         Audio::preloadVoices(game.teams);
         game.terrain.remesh();

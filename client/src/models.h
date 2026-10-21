@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <string>
 #include "raylib.h"
 
 // W4M meshes converted by tools/w4m-models into assets/models/<name>.glb. Missing => draw() returns false
@@ -36,6 +37,9 @@ bool draw(const char *name, Vector3 pos, float yaw, float pitch = 0, Color tint 
           const char *aim = nullptr, float aimT = 0, const Layers *ly = nullptr);
 float clipLength(const char *name, const char *clip);  // seconds, 0 if absent
 bool has(const char *name);
+std::string factoryMesh(const std::string &res);  // the glb of a WeaponGraphicsResourceID mesh (tools/w4m-re setuplists.py factorymodels.txt)
+// W4M WeaponGraphicsResourceID "res,loc," x n (WeaponDef::graphic) at the WeaponLocator's world matrix at, as the Weapon Factory weapon is held
+bool drawWeaponGraphic(const std::string &graphic, Matrix at, Color tint = WHITE);
 bool fxLocator(const char *name, Vector3 *out);  // WEAPTWK FxLocator node of a payload model (model space, metres); false if absent
 float bottom(const char *name);  // depth of the mesh below its origin, 0 if missing
 // Model-space matrix of a joint (e.g. "WeaponLocator") in that clip pose; false if missing.

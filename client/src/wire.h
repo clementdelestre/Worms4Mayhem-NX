@@ -53,9 +53,9 @@ inline W &putWeapon(W &w, const WeaponDef &d) {
     w.u8(d.wind | d.avoid << 1).str(d.model.c_str()).str(d.icon.c_str());
     w.u8((uint8_t)d.launch).u8((uint8_t)d.detonate[0]).u8((uint8_t)d.detonate[1]).u32((uint32_t)d.fuseTime).u8(d.powersUp | d.cpoison << 1);
     for (float f : {d.maxPower, d.collision[0], d.collision[1]}) w.f32(f);
-    return w.str(d.cmodel.c_str()).str(d.ariel.c_str());
+    return w.str(d.cmodel.c_str()).str(d.ariel.c_str()).str(d.graphic.c_str());
 }
-inline WeaponDef getWeapon(R &r, bool container = true) {  // container: false for W4R6 replays, written before it
+inline WeaponDef getWeapon(R &r, int fields = 3) {  // fields: 1 for W4R6 replays (no container fields), 2 for W4R7 (no graphic)
     WeaponDef w{};
     w.name = r.str();
     w.kind = (Kind)std::min<int>(r.u8(), (int)Kind::ChangeWorm);
@@ -65,12 +65,13 @@ inline WeaponDef getWeapon(R &r, bool container = true) {  // container: false f
     uint8_t fl = r.u8();  // bit 0 wind, bit 1 HomingAvoidLand
     w.wind = fl & 1, w.avoid = fl & 2;
     w.model = r.str(), w.icon = r.str();
-    if (!container) return w;
+    if (fields < 2) return w;
     w.launch = (int8_t)r.u8(), w.detonate[0] = (int8_t)r.u8(), w.detonate[1] = (int8_t)r.u8(), w.fuseTime = (int32_t)r.u32();
     uint8_t b = r.u8();
     w.powersUp = b & 1, w.cpoison = b & 2;
     for (float *f : {&w.maxPower, &w.collision[0], &w.collision[1]}) *f = r.f32();
     w.cmodel = r.str(), w.ariel = r.str();
+    if (fields > 2) w.graphic = r.str();
     return w;
 }
 
@@ -84,7 +85,7 @@ inline W &putTeam(W &w, const GameConfig::Team &t) {
     w.u8(t.worms).u8((uint8_t)t.alliance).u8((uint8_t)t.handicap).u8(t.secret.has_value());
     return t.secret ? putWeapon(w, *t.secret) : w;
 }
-inline GameConfig::Team getTeam(R &r, int secret = 2) {  // secret: 0 for W4R5 replays, written before it, 1 for W4R6 (no container fields)
+inline GameConfig::Team getTeam(R &r, int secret = 3) {  // secret: 0 for W4R5 replays, written before it, else getWeapon's fields
     GameConfig::Team t;
     t.name = r.str(), t.cpu = r.u8();
     for (std::string *s : {&t.speech, &t.hat, &t.gloves, &t.glasses, &t.tash, &t.flag}) *s = r.str();
@@ -92,7 +93,7 @@ inline GameConfig::Team getTeam(R &r, int secret = 2) {  // secret: 0 for W4R5 r
     for (int i = 0, n = std::min<int>(r.u8(), 6); i < n; i++) t.wormNames.push_back(r.str());
     t.worms = (uint8_t)std::min<int>(r.u8(), 6), t.alliance = (int8_t)r.u8(), t.handicap = (int8_t)std::clamp<int>((int8_t)r.u8(), -1, 1);
     if (t.alliance > 3) t.alliance = -1;
-    if (secret && r.u8()) t.secret = getWeapon(r, secret > 1);
+    if (secret && r.u8()) t.secret = getWeapon(r, secret);
     return t;
 }
 inline W &putScheme(W &w, const Scheme &s) {

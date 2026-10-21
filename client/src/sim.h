@@ -89,6 +89,8 @@ struct WeaponDef {
     float maxPower = 0.5f, collision[2] = {1, 1};
     // "cluster_model", "ariel" (W4M ArielFx, Weapon Factory only); clone: the WEAPTWK weapon the payload copies (0x598160), set by factoryPayload
     std::string cmodel, ariel, clone;
+    // "graphic": W4M WeaponGraphicsResourceID, "res,loc," per held mesh (0x5984a0); factoryPayload fills it for our editor's weapons
+    std::string graphic;
     bool crest = false;   // bomblets / air strike bombs detonate at rest (W4M Detonate 3 of their container), else on impact
     bool powered = true;  // "powered": W4M IsPoweredWeapon of a Shell or Homing, else the launch speed is min_speed
     std::string preSfx;   // "pre_detonation_sfx": W4M PreDetonationSfx, played when the rest fuse starts
