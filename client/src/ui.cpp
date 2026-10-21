@@ -4330,7 +4330,7 @@ static const float HU = 720 / 480.0f;
 // A HUD root entity's centre in px: HUDTWK position x 0x4d4cc0 (x 4/3, y 1 at 16:9), 480 units high, centre origin, y up [disasm 0x4d4cc0]
 static Vector2 hudAt(float x, float y) { return {640 + x * 4 / 3.0f * HU, 360 - y * HU}; }
 // [ours, user-requested] every corner element's outer rim sits HUD_EDGE px from the screen edge, rims measured on the drawn sprites (alpha > 20)
-static const float HUD_EDGE = 16, COMPASS_R = 88, WIND_L = 31.7f, DISC_R = 47.4f, DISC_T = 45.9f, PREVIEW_R = 58, CLOCK_R = 44.9f, CLOCK_B = 44.9f;
+static const float HUD_EDGE = 16, COMPASS_R = 68, WIND_L = 31.7f, DISC_R = 47.4f, DISC_T = 45.9f, PREVIEW_R = 58, CLOCK_R = 44.9f, CLOCK_B = 44.9f;
 static Vector2 discNudge() { const Vector2 r = hudAt(253, 174); return {1280 - HUD_EDGE - DISC_R - r.x, HUD_EDGE + DISC_T - r.y}; }  // weapon disc, secondary disc, preview
 static Vector2 clockNudge() { const Vector2 r = hudAt(254, -170); return {1280 - HUD_EDGE - CLOCK_R - r.x, 720 - HUD_EDGE - CLOCK_B - r.y}; }  // clock, counter
 static float previewDx() { return 1280 - HUD_EDGE - PREVIEW_R - hudAt(252, 0).x; }
