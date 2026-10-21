@@ -4330,7 +4330,7 @@ static const float HU = 720 / 480.0f;
 // A HUD root entity's centre in px: HUDTWK position x 0x4d4cc0 (x 4/3, y 1 at 16:9), 480 units high, centre origin, y up [disasm 0x4d4cc0]
 static Vector2 hudAt(float x, float y) { return {640 + x * 4 / 3.0f * HU, 360 - y * HU}; }
 // [ours, user-requested] every corner element's outer rim sits HUD_EDGE px from the screen edge, rims measured on the drawn sprites (alpha > 20)
-static const float HUD_EDGE = 16, COMPASS_R = 68, WIND_L = 31.7f, DISC_R = 47.4f, DISC_T = 45.9f, PREVIEW_R = 58, CLOCK_R = 44.9f, CLOCK_B = 44.9f;
+static const float HUD_EDGE = 16, COMPASS_R = 88, DISC_R = 47.4f, DISC_T = 45.9f, PREVIEW_R = 58, CLOCK_R = 44.9f, CLOCK_B = 44.9f;
 static Vector2 discNudge() { const Vector2 r = hudAt(253, 174); return {1280 - HUD_EDGE - DISC_R - r.x, HUD_EDGE + DISC_T - r.y}; }  // weapon disc, secondary disc, preview
 static Vector2 clockNudge() { const Vector2 r = hudAt(254, -170); return {1280 - HUD_EDGE - CLOCK_R - r.x, 720 - HUD_EDGE - CLOCK_B - r.y}; }  // clock, counter
 static float previewDx() { return 1280 - HUD_EDGE - PREVIEW_R - hudAt(252, 0).x; }
@@ -4650,9 +4650,10 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         }
         cw = g.weapon, cf = fuse;
     }
-    radar(g, {HUD_EDGE + COMPASS_R, HUD_EDGE + COMPASS_R}, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
+    const Vector2 rc = {HUD_EDGE + COMPASS_R, HUD_EDGE + COMPASS_R};
+    radar(g, rc, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
     // W4M WindMeterEntity (docs/w4m/render.md): downwind arrow in the camera frame, tilted 0.75 rad; grey and fixed under 0.05
-    Vector2 wc = {HUD_EDGE + WIND_L, HUD_EDGE + COMPASS_R + 124};  // 124 px under the compass centre
+    Vector2 wc = {rc.x + (-268 + 241) * 4 / 3.0f * HU, rc.y + (167 - 90) * HU};  // exe: Wind.OnScreenPos (-268, 90) from Scanner.Position (-241, 167)
     float ratio = hypotf(g.wind, g.windZ);
     int speed = (int)(ratio * 10 + 0.5f);
     if (!sprite(g.cfg.scheme.wind ? "wind_back" : "wind_backdisabled", wc, 0.72f, {64, 64})) DrawCircleV(wc, 30, {0, 104, 138, 220});
