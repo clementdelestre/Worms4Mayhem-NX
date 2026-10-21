@@ -170,6 +170,8 @@ int main() {
         in = Input{};
         hud.input(g, in, true, 0, 2);
         assert(hud.open && hud.skipHp && !hud.readyScreen(g, false));
+        hud.open = false, hud.mine = false;  // a CPU or remote turn shows the ready screen too
+        assert(hud.readyScreen(g, false));
     }
     {  // victory fireworks (W4M 0x4ff8d0): nothing in the 4 s wait, PARTTWK emitters during the 5 s show, all burnt out after
         Fx::clear(), Fx::fireworks({40, 10, 40}, 40, 20);
