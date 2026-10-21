@@ -1839,7 +1839,7 @@ int main(int argc, char **argv) {
         resScreen.kind = results.over ? Ui::ResultsScreen::WinMatch : !strncmp(uiShot, "winround", 8) ? Ui::ResultsScreen::WinRound : Ui::ResultsScreen::PreRound;
         resScreen.net = strstr(uiShot, "net");
         if (!strncmp(uiShot, "preround", 8)) resScreen.kind = Ui::ResultsScreen::PreRound;
-        if (strstr(uiShot, "land")) resScreen.land = 2, resScreen.landShown = -9;  // WXFEP.SelectLandscape2 open
+        if (const char *l = strstr(uiShot, "land")) resScreen.land = atoi(l + 4), resScreen.landShown = -9;  // WXFEP.SelectLandscape2 open on map N (preroundland<N>)
         screen = Screen::Results;
     } else if (uiShot) {
         front.screen = !strcmp(uiShot, "main") || Ui::forceHelp ? Ui::Frontend::Main : !strcmp(uiShot, "setup") || !strcmp(uiShot, "setupslot") || !strcmp(uiShot, "setupcards") || !strncmp(uiShot, "setup2", 6) || !strncmp(uiShot, "setup3", 6) ? Ui::Frontend::SetupTeams

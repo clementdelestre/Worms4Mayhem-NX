@@ -265,20 +265,58 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
     if (slide(-256, -159, round ? &IN_PREV : nullptr, 0.3f, round ? &OUT_PREV : nullptr)) navButton(2, st.sel == Quit && !draw ? 1 : 0, {-256, -159}, 40), rlPopMatrix();
     if (round || pre)
         if (slide(264, -166, round ? &IN_SPRINGXY : &IN_NEXT, 0.3f, round ? &OUT_SCALEXY : nullptr)) navButton(pre ? 0 : 1, st.sel == Ok ? 1 : 0, {264, -166}, 40), rlPopMatrix();
-    if (st.land >= 0) {  // WXFEP.SelectLandscape2: centre (0, 25), 200 x 125, the list at (95, -20) 95 x 78, the picture at (-96, -20) 90 x 90 on its Paper Back (-92, -24)
-        DrawRectangle(0, 0, 1280, 720, {40, 40, 60, 160});
-        FeFlat flat;  // the popup's own offsets, not spread
-        popup(feRect(0, 25, 200, 125));
-        image("fe/paperpopup02", feRect(-92, -24, 90, 90), {255, 70, 70, 255});
-        Rectangle pr = feRect(-96, -20, 73, 73);
-        if (!cover(preview(maps[st.land]), pr)) DrawRectangleRec(pr, {30, 60, 40, 255});
-        pictureFrame(pr, false);
-        const int rows = 5, first = Clamp(st.land - rows / 2, 0, std::max(0, (int)maps.size() - rows));
-        for (int i = first; i < std::min((int)maps.size(), first + rows); i++) {
-            Rectangle rr = feRect(95, 40 - 25.0f * (i - first), 90, 12);
-            if (i == st.land) brush(rr);
-            FeBox b = {{95, 40 - 25.0f * (i - first)}, 90, 12, 22, 0, -1, 4, 0, true, i == st.land ? GC_WHITE : GC_LIST_LABLE_BLUE, BC_BLACK};
-            feText(mapTitle(maps[i]), b);
+    if (st.land >= 0) {  // WXFEP.SelectLandscape2 (docs/w4m/frontend.md "Landscape select"): BorderType 37 at (0, 25), Scale 200 x 125 (+16 border), offsets in FE from its centre
+        DrawRectangle(0, 0, 1280, 720, {40, 40, 60, 160});  // FullScreenColour
+        const Vector2 c = fePos(0, 25);
+        if (feItem(c, &IN_SCALEY, 0, nullptr, t - st.landShown, -1)) {
+            auto at = [&](float x, float y) { return Vector2{c.x + x * FE_S, c.y - y * FE_S}; };
+            bubble(c, 200 + 16, 125 + 16);
+            static const Scratch SCR[] = {{1, 1, -199, 134, 15, 35, 0, 255}, {1, 3, -211, -93, 19, 39, 0.17f, 255}, {1, 4, 200, 75, 15, 35, 0, 255}, {2, 1, -19, -87, 84, 92, 0, 50}};
+            scratches(c, SCR, 4);
+            FeBox title;  // PopUp Title (0, 109) 160 x 15, size 20, Button_Yellow, MediumWobble
+            title.c = {0, 25 + 109}, title.hw = 160, title.hh = 15, title.size = 20, title.autoScale = true, title.grad = GC_BUTTON_YELLOW, title.anim = 4;
+            feText(tr("FETXT.SelectLandscape", "Select a landscape"), title);
+            image("fe/speechpopup_divide", {at(-70, 89 + 8).x, at(0, 89 + 8).y, 140 * FE_S, 16 * FE_S});  // DIVIDE1, WXFE.PopUpDivide 70 x 8
+            Rectangle back = {at(-92 - 90, -24 + 90).x, at(0, -24 + 90).y, 180 * FE_S, 180 * FE_S};  // Paper Back, tinted
+            image("fe/paperpopup02", back, {255, 70, 70, 255});
+            const float hole = 90 * 98.0f / 115;  // LandscapeControl 90 outside its frame; PreRound's 115 holds a 98 picture
+            Rectangle pr = {at(-96 - hole, -20 + hole).x, at(0, -20 + hole).y, 2 * hole * FE_S, 2 * hole * FE_S};
+            if (!cover(preview(maps[st.land]), pr)) DrawRectangleRec(pr, {30, 60, 40, 255});
+            pictureFrame(pr, false);
+            // TablePopulationService 0x4cf620: a heading row (size 25, Solid_Black, MediumWobble) before each group, then its rows (25 + 2 FE, size 20, centred)
+            struct Row { int map; const char *key, *en; };
+            std::vector<Row> rows;
+            for (int g = 0; g < 3; g++) {
+                bool head = false;
+                for (int i = 0; i < (int)maps.size(); i++) {
+                    const bool w3d = maps[i].size() > 4 && maps[i].compare(maps[i].size() - 4, 4, "-w3d") == 0;
+                    if ((maps[i].empty() ? 0 : w3d ? 2 : 1) != g) continue;
+                    if (!head) head = true, rows.push_back({-1, g == 0 ? "FETXT.Random2" : g == 1 ? "FETXT.Prebuilt" : "FETXT.Worms3DSection", g == 0 ? "Random" : g == 1 ? "Prebuilt" : "Worms 3D"});
+                    rows.push_back({i, nullptr, nullptr});
+                }
+            }
+            const int n = (int)rows.size(), vis = 6;  // ceil(156 / 27): the list is 78 FE half high
+            int cur = 0;
+            for (int j = 0; j < n; j++) if (rows[j].map == st.land) cur = j;
+            const int first = Clamp(cur - vis / 2, 0, std::max(0, n - vis));
+            for (int j = first; j < std::min(n, first + vis); j++) {
+                const Row &r = rows[j];
+                Vector2 p = at(95, 44.5f - 27.0f * (j - first));
+                if (r.map < 0) {
+                    static const Color BLK[2] = {BLACK, BLACK};  // Solid_Black front [data]; the white outline is assumed (the back colour field was not matched)
+                    edText(tr(r.key, r.en), p, 25, BLK, 1, 190, {255, 255, 255, 255}, 4);
+                    continue;
+                }
+                const std::string lab = mapTitle(maps[r.map]);
+                const bool hi = r.map == st.land;
+                float w = fminf(feWidthPx(lab.c_str(), 20 * FE_S), 190 * FE_S);
+                if (hi) brush({p.x - w / 2 - 4 * FE_S, p.y - 11 * FE_S, w + 8 * FE_S, 22 * FE_S});
+                edText(lab.c_str(), p, 20, hi ? GC_WHITE : GC_LIST_LABLE_BLUE, 1, 190);
+            }
+            const Color ar = {165, 214, 252, 255};  // ListNavigation arrows 32 x 12 flush above / below the list [assumed: their placement in the list control is not decoded]
+            if (first > 0) feIcon("fe/speechpopup_navigation", 1, 2, 0, {at(95 - 16, 58 + 12).x, at(0, 58 + 12).y, 32 * FE_S, 12 * FE_S}, ar);
+            if (first + vis < n) feIcon("fe/speechpopup_navigation", 1, 2, 1, {at(95 - 16, -98).x, at(0, -98).y, 32 * FE_S, 12 * FE_S}, ar);
+            rlPopMatrix();
         }
     }
     if (st.confirm >= 0) {
