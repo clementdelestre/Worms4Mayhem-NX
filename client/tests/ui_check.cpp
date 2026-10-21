@@ -6,6 +6,7 @@
 #include <cstring>
 #include "../src/ui.h"
 #include "../src/barracks.h"
+#include "../src/results.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cassert>
@@ -340,6 +341,13 @@ int main() {
         const Catalog::Item *suit = k.attachment("WXFE.A.Hat.Spacesuit"), *star = k.attachment("WXFE.A.Glasses.Star");
         assert(suit && !suit->glasses && !suit->tash && k.attachment("WXFE.A.Hat.Afro")->glasses);
         assert(star && star->fePos[0] == 7 && star->feRot[0] == -0.3f && star->feScale[1] == 1.5f);
+    }
+    {  // round accolades weigh only the match's worms: the empty records past them never tie the least values away
+        Results r;
+        r.begin(GameConfig{1, 2, 2, "", 0u, {{"A"}, {"B"}}});
+        for (int w = 0; w < 4; w++) r.current.worm[w].damage = 10 + 20 * w, r.current.worm[w].survived = 30 + 15 * w;
+        r.summarise(3);
+        assert(std::any_of(r.awards.begin(), r.awards.end(), [](const Results::Award &a) { return !a.positive; }));
     }
     puts("ui_check ok");
 }

@@ -12,7 +12,7 @@ static const FeClip IN_SPRINGX = {keys(K_IN_SCALEY, false), {}, {}, {}}, IN_NEXT
 
 namespace {
 const float RESULTS_OUT = 0.25f;  // the items' Out_* clips (0.21 / 0.25 s x FE.AnimSpeed) are done
-const Color GC_HEADER_ORANGE[2] = {{255, 241, 174, 255}, {255, 163, 73, 255}}, GC_BLANK[2] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
+const Color GC_HEADER_ORANGE[2] = {{255, 241, 174, 255}, {255, 163, 73, 255}};
 const Color GC_TEAM[4][2] = {{{255, 74, 38, 255}, WHITE}, {{109, 148, 255, 255}, WHITE}, {{83, 255, 127, 255}, WHITE}, {{255, 224, 100, 255}, WHITE}};  // text colours 15..18
 const char *const W4M_WEAPON[31] = {"Bazooka", "Grenade", "ClusterGrenade", "Airstrike", "Dynamite", "HolyHandGrenade", "BananaBomb", "Landmine", "Shotgun",
                                     "BaseballBat", "Prod", "FirePunch", "HomingMissile", "Flood", "Sheep", "GasCanister", "OldWoman", "ConcreteDonkey",
@@ -23,9 +23,9 @@ const char *const W4M_WEAPON[31] = {"Bazooka", "Grenade", "ClusterGrenade", "Air
 void resultRow(Vector2 c, float w, float size, const char *label, const char *value, const Color *lg, const Color *vg, int anim) {
     float half = w * 0.48f, k = feK;  // the row's centre is spread like every FE position, its columns are not
     FeFlat flat;
-    FeBox b = {{c.x * k - (2.5f + half / 2), c.y}, half / 2, size / 2, size, 0, -1, 5, 0, true, lg, lg == GC_WHITE ? BC_WHITE : BC_BLACK};
+    FeBox b = {{c.x * k - (2.5f + half / 2), c.y}, half / 2, size / 2, size, 0, -1, 5, 0, true, lg, BC_BLACK};
     feText(label, b);
-    b = {{c.x * k + (2.5f + half / 2), c.y}, half / 2, size / 2, size, 0, -1, 3, anim, true, vg, vg == GC_WHITE ? BC_WHITE : BC_BLACK};
+    b = {{c.x * k + (2.5f + half / 2), c.y}, half / 2, size / 2, size, 0, -1, 3, anim, true, vg, BC_BLACK};
     feText(value, b);
 }
 }  // namespace
@@ -127,31 +127,16 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
         Fx::draw(cam);
         EndMode3D();
     }
-    if (!pre && !draw || draw) {  // Scrolling 2 / 3 / 1: FE.WinString, ScrollText with a Solid_Team_Red outline, wrapping, moving back
-        static const struct { float x, y, size, half, speed, delay; } SC[3] = {{-6, 229, 60, 340, 0.2f, 0.35f}, {-4, -225, 30, 340, 0.1f, 0.385f}, {-4, 186, 30, 340, 0.1f, 0.385f}};
-        for (const auto &c : SC) {
-            if (!feItem(fePos(c.x, c.y), &IN_SLIDEX, c.delay, nullptr, since, out)) continue;
-            std::string tile = r.winString + " ";
-            float px = c.size * FE_S * 0.85f, w = textWidth(tile.c_str(), px) * TEXT_X, shift = fmodf(floorf(t * 50) * c.speed * FE_S, w);
-            Vector2 o = fePos(c.x, c.y);
-            rlPushMatrix(), rlTranslatef(o.x, o.y, 0), rlRotatef(-0.026f * RAD2DEG, 0, 0, 1);
-            BeginScissorMode(0, (int)(o.y - px), 1280, (int)(2 * px));
-            for (float u = -1300 - shift; u < 1300; u += w) rlPushMatrix(), rlTranslatef(u, 0, 0), rlScalef(TEXT_X, 1, 1), textG(tile.c_str(), 0, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, {255, 78, 60, 255}), rlPopMatrix();
-            rlDrawRenderBatchActive();
-            EndScissorMode();
-            rlPopMatrix(), rlPopMatrix();
-        }
-    }
-    if (pre) {  // Scrolling 1..3 carry WXFE.PreRoundTitle
+    {  // Scrolling 2 / 3 / 1: FE.WinString (WXFE.PreRoundTitle on PreRound), ScrollText on a kBC_ScrollText outline, wrapping, moving back
         static const struct { float x, y, size, speed, delay; } SC[3] = {{-6, 229, 60, 0.2f, 0.35f}, {-4, -225, 30, 0.1f, 0.385f}, {-4, 186, 30, 0.1f, 0.385f}};
+        const std::string tile = (pre ? std::string(TextFormat(tr("FETXT.Round", "Round %u"), (unsigned)r.round + 1)) : r.winString) + " ";
         for (const auto &c : SC) {
             if (!feItem(fePos(c.x, c.y), &IN_SLIDEX, c.delay, nullptr, since, out)) continue;
-            std::string tile = std::string(TextFormat(tr("FETXT.Round", "Round %u"), (unsigned)r.round + 1)) + " ";
             float px = c.size * FE_S * 0.85f, w = textWidth(tile.c_str(), px) * TEXT_X, shift = fmodf(floorf(t * 50) * c.speed * FE_S, w);
             Vector2 o = fePos(c.x, c.y);
             rlPushMatrix(), rlTranslatef(o.x, o.y, 0), rlRotatef(-0.026f * RAD2DEG, 0, 0, 1);
             BeginScissorMode(0, (int)(o.y - px), 1280, (int)(2 * px));
-            for (float u = -1300 - shift; u < 1300; u += w) rlPushMatrix(), rlTranslatef(u, 0, 0), rlScalef(TEXT_X, 1, 1), textG(tile.c_str(), 0, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, {255, 78, 60, 255}), rlPopMatrix();
+            for (float u = -1300 - shift; u < 1300; u += w) rlPushMatrix(), rlTranslatef(u, 0, 0), rlScalef(TEXT_X, 1, 1), textG(tile.c_str(), 0, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, BC_SCROLLTEXT), rlPopMatrix();
             rlDrawRenderBatchActive();
             EndScissorMode();
             rlPopMatrix(), rlPopMatrix();
@@ -163,14 +148,12 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
                           : st.sel == 1 ? tr("FETIP.Ready", "Ready?") : st.sel == 2 ? tr("FETIP.Landscape2", "Select a landscape to battle on.") : tr("FETIP.Return", "Return to the main menu.");
         tickerText(t, tip), rlPopMatrix();
     }  // TickerTapeTXT
-    {  // HeaderBottom (white outline, Blank fill) under HeaderTop (Header_Orange, Button_Yellow on PreRound), both FE.WinString / PreRoundTitle
+    {  // HeaderBottom (Blank front, kBC_Black back) under HeaderTop (Header_Orange, Button_Yellow on PreRound): one fill on a black outline
         std::string head = pre ? TextFormat(tr("FETXT.Round", "Round %u"), (unsigned)r.round + 1) : r.winString;
         const FeClip *in = round ? &IN_SLIDEX : &IN_FLIPY;
         float delay = round ? 0.3f : 0.4f;
         if (slide(0, 200, in, delay, nullptr)) {
-            FeBox b = {{0, 200}, 220, 20, 40, 0, -1, 4, 1, true, GC_BLANK, BC_WHITE};
-            feText(head, b);
-            b.grad = pre ? GC_BUTTON_YELLOW : GC_HEADER_ORANGE, b.edge = BC_NONE;
+            FeBox b = {{0, 200}, 220, 20, 40, 0, -1, 4, 1, true, pre ? GC_BUTTON_YELLOW : GC_HEADER_ORANGE, BC_BLACK};
             feText(head, b);
             rlPopMatrix();
         }
@@ -180,7 +163,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
         const char *wins = round ? tr("FETXT.WinsTheRound", "Wins the round!", "Gagne le round !") : tr("FETXT.WinsTheMatch", "Wins the match!", "Gagne le match !");
         if (r.winner < 0 && !round && !draw) wins = "";  // (a draw ends in WinRound / DrawMatch)
         if (slide(0, 166, round ? &IN_SLIDEX : &IN_SPRINGX, round ? 0.35f : 0.6f, nullptr)) {  // WinsMatchTEXT / WinsRoundTEXT
-            FeBox b = {{0, 166}, 170, 10, 24, 0.03f, -1, 4, 4, true, GC_WHITE, BC_WHITE};
+            FeBox b = {{0, 166}, 170, 10, 24, 0.03f, -1, 4, 4, true, GC_WHITE, BC_BLACK};
             feText(wins, b), rlPopMatrix();
         }
     }
@@ -210,7 +193,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
             rlPopMatrix();
         }
         if (slide(0, by, &IN_SLIDEX, 0.8f, nullptr)) {  // ViewTeamsLABEL
-            FeBox b = {{0, by}, 41, 12, 22, 0, -1, 4, 0, true, GC_WHITE, BC_WHITE};
+            FeBox b = {{0, by}, 41, 12, 22, 0, -1, 4, 0, true, GC_WHITE, BC_BLACK};
             feText(tr("FETXT.Teams", "Teams"), b), rlPopMatrix();
         }
         for (int k = 0; k < 2; k++)  // Previous Team / Next Team
@@ -222,7 +205,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
     if (round) {  // Stat Row 1..4 (WXFE.WinRoundList rows 2..5), else the "No Stats" text (WXD.StatResultFailed)
         static const struct { float x, y, rot, delay; } ROW[4] = {{-20, 80, 0.05f, 0.4f}, {-20, 50, 0.05f, 0.57f}, {20, -30, -0.05f, 0.63f}, {20, -60, -0.05f, 0.7f}};
         if (r.awards.empty()) {
-            FeBox b = {{0, 0}, 250, 110, 30, -0.07f, fmaxf(since, 0), 4, 0, true, GC_WHITE, BC_WHITE};
+            FeBox b = {{0, 0}, 250, 110, 30, -0.07f, fmaxf(since, 0), 4, 0, true, GC_WHITE, BC_BLACK};
             feText(tr("FETXT.TutRecBody", "FETXT.TutRecBody"), b);
         }
         for (int i = 0; i < (int)r.awards.size() && i < 4; i++) {
@@ -232,9 +215,9 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
             Tilt tl(c, ROW[i].rot);
             const float k = feK;
             FeFlat flat;
-            FeBox b = {{ROW[i].x * k - (1.5f + 270 * 0.62f), ROW[i].y}, 270 * 0.62f, 15, 28, 0, -1, 5, 2, true, GC_WHITE, BC_WHITE};
+            FeBox b = {{ROW[i].x * k - (1.5f + 270 * 0.62f), ROW[i].y}, 270 * 0.62f, 15, 28, 0, -1, 5, 2, true, GC_WHITE, BC_BLACK};
             feText(a.label, b);
-            b = {{ROW[i].x * k + (1.5f + 270 * 0.35f), ROW[i].y}, 270 * 0.35f, 15, 28, 0, -1, 3, 2, true, GC_TEAM[r.cfg.alliance(a.team) & 3], BC_WHITE};
+            b = {{ROW[i].x * k + (1.5f + 270 * 0.35f), ROW[i].y}, 270 * 0.35f, 15, 28, 0, -1, 3, 2, true, GC_TEAM[r.cfg.alliance(a.team) & 3], BC_BLACK};
             feText(a.who, b);
             rlPopMatrix();
         }
@@ -248,7 +231,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
         if (slide(-147, 111, &IN_SLIDEX, 0.35f, nullptr)) edHeader(tr("FETXTSH.Landscape", "Landscape"), -147, 111, 120, 0.04f), rlPopMatrix();
         if (slide(123, 111, &IN_SLIDEX, 0.35f, nullptr)) edHeader(tr("FETXT.RoundsWon", "Rounds Won"), 123, 111, 120, -0.04f), rlPopMatrix();
         if (slide(120, -71, &IN_SCALEHITXY, 0.55f, nullptr)) {  // Prepare TEXT
-            FeBox b = {{120, -71}, 100, 30, 22, 0.05f, -1, 4, 4, true, GC_WHITE, BC_WHITE};
+            FeBox b = {{120, -71}, 100, 30, 22, 0.05f, -1, 4, 4, true, GC_WHITE, BC_BLACK};
             feText(tr("FETXT.PrepareTeams", "Prepare your teams for battle!"), b), rlPopMatrix();
         }
         if (slide(120, 18, &IN_SPRINGX, 0.4f, nullptr)) {  // PreRoundList: a row per team, its name (team colour) and its round wins
@@ -257,9 +240,9 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
             FeFlat flat;
             for (unsigned i = 0; i < n; i++) {
                 float y = 18 + 45 - 30.0f * i;
-                FeBox b = {{120 * k - (100 - 70), y}, 70, 13, 26, 0, -1, 3, 0, true, GC_TEAM[r.cfg.alliance((int)i) & 3], BC_WHITE};
+                FeBox b = {{120 * k - (100 - 70), y}, 70, 13, 26, 0, -1, 3, 0, true, GC_TEAM[r.cfg.alliance((int)i) & 3], BC_BLACK};
                 feText(Ui::teamName(r.cfg, (int)i), b);
-                b = {{120 * k + (100 - 15), y}, 15, 13, 26, 0, -1, 5, 0, true, GC_WHITE, BC_WHITE};
+                b = {{120 * k + (100 - 15), y}, 15, 13, 26, 0, -1, 5, 0, true, GC_WHITE, BC_BLACK};
                 feText(TextFormat("%d", r.roundWins[i]), b);
             }
             rlPopMatrix();

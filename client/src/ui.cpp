@@ -1202,7 +1202,7 @@ static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 
                    GC_SUBHEADER_BLUE[2] = {{128, 210, 255, 255}, {255, 255, 255, 255}}, GC_BOOK_BROWN[2] = {{93, 51, 0, 200}, {93, 51, 0, 200}},
                    GC_POPUP_RED[2] = {{148, 0, 0, 255}, {148, 0, 0, 255}}, GC_SCROLLTEXT[2] = {{0, 69, 109, 110}, {0, 69, 109, 110}},
                    GC_WHITE[2] = {WHITE, WHITE};
-static const Color BC_BLACK = BLACK, BC_WHITE = WHITE, BC_NONE = {0, 0, 0, 0}, BC_BOOK_EDGE = {255, 255, 255, 80};  // WXFE_BackgroundColours: the text outline
+static const Color BC_BLACK = BLACK, BC_NONE = {0, 0, 0, 0}, BC_BOOK_EDGE = {255, 255, 255, 80}, BC_SCROLLTEXT = {109, 151, 175, 32};  // WXFE_BackgroundColours (0x754dc0): the text outline
 
 // W4M TextAnim (docs/w4m/frontend.md "TextBox layout"): per glyph a High / Low pair of the HUD.FontAnim clips, the groups cycling by glyph, the
 // alternative by the LCG; (dy in FE units, y up, scale). kind: 1 LargeWobble, 2 SmallWobble, 3 TitleRandom, 4 MediumWobble
@@ -1356,7 +1356,7 @@ static void watermark(const char *title, float x, float t, float since = 99, flo
         rlTranslatef(o.x + x + shift, o.y, 0);
         rlRotatef(-90, 0, 0, 1);  // reads bottom to top
         rlScalef(k, 1, 1);
-        for (float u = -c.half * FE_S - w + (c.fwd ? run : w - run); u < c.half * FE_S; u += w) textG(tile.c_str(), u, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, BC_NONE);
+        for (float u = -c.half * FE_S - w + (c.fwd ? run : w - run); u < c.half * FE_S; u += w) textG(tile.c_str(), u, -px / 2, px, GC_SCROLLTEXT[0], GC_SCROLLTEXT[1], 0, BC_SCROLLTEXT);
         rlPopMatrix();
     }
 }
