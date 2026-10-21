@@ -52,6 +52,13 @@ struct Lobby {
         while (g < 3 && (held >> g & 1)) g++;
         return g;
     }
+    // human teams of this console whose pad is not in `present` move to its lowest pad; true when one moved
+    bool rehome(unsigned present) {
+        bool moved = false;
+        for (int k = 0; present && k < MAX_TEAMS; k++)
+            if (playing(k) && canEdit(k) && !cfg.teamSetup[k].cpu && !(present >> cfg.teamSetup[k].pad & 1)) cfg.teamSetup[k].pad = (uint8_t)__builtin_ctz(present), moved = true;
+        return moved;
+    }
     // the pads that human teams of this console use, as a bit set
     unsigned padsUsed() const {
         unsigned m = 0;

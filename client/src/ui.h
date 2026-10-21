@@ -73,7 +73,7 @@ struct Frontend {
     Net *net = nullptr;             // the connection of a network room: SetupTeams / Map / Rules then show net->lobby
     bool wantLan = false;           // Salon: Réseau local, else En ligne
     int timer = -1;                 // lobby timer seconds (ReadyTimer::seconds), -1 none
-    struct PadIn { int dx = 0, dy = 0, card = 0; bool ok = false, back = false, plus = false; };
+    struct PadIn { int dx = 0, dy = 0, card = 0; bool ok = false, back = false, plus = false, minus = false, pads = false; };
     static unsigned simPads;        // tests (--ui setup2): pads that count as connected and take `sim` instead of the real pad
     static PadIn sim[4];
     static std::string simText;     // tests (W4NX_INPUTSCRIPT): characters typed into a text entry, which the keyboard cannot send as key events

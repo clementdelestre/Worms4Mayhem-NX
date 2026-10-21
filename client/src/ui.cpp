@@ -411,10 +411,10 @@ bool P(std::initializer_list<int> b, std::initializer_list<int> k) {
 
 static bool dirFire[4][4];  // [pad][up, right, down, left] (raylib LEFT_FACE_* order): press or auto-repeat
 static float minusFor = 0;     // seconds - (desktop F1) has been held
-static bool minusTap = false;  // - released this frame before HOLD
 const float HOLD = 0.35f;
 bool forceHelp = false;
-bool helpHeld() { return forceHelp || minusFor >= HOLD; }
+static bool helpOff;  // the Teams screen: - removes a team, no controls diagram
+bool helpHeld() { return !helpOff && (forceHelp || minusFor >= HOLD); }
 
 static double cursorFrame = -1;  // when feCursor last drew: the OS pointer comes back on screens that do not
 void pollStick() {
@@ -430,7 +430,6 @@ void pollStick() {
     float dt = GetFrameTime();
     bool m = IsKeyDown(KEY_F1);
     for (int p = 0; p < 4; p++) m |= IsGamepadButtonDown(p, MINUS);
-    minusTap = !m && minusFor > 0 && minusFor < HOLD;
     minusFor = m ? minusFor + dt : 0;
     for (int p = 0; p < 4; p++) {
         float x = GetGamepadAxisMovement(p, GAMEPAD_AXIS_LEFT_X), y = up * GetGamepadAxisMovement(p, GAMEPAD_AXIS_LEFT_Y);
@@ -794,7 +793,7 @@ void controls(bool game) {
         {BY, 380, "Toggle the sky view\n(strikes, homing)", "E"}, {BA, 440, "Fire (hold = power)\nSky view: fire / lock", "Space"}, {BB, 482, "Jump (twice = backflip)\nSky view: leave", "Enter"},
         {RS, 530, "Camera orbit\nAim mode: aim (+ gyro)", "A/D/W/S"}};
     static const Call MENU[] = {
-        {MIN, 330, "Tap: controllers (setup)\nHold: controls", "F1"}, {LS, 414, "Move", "Arrows"}, {DPAD, 488, "Move / change value", "Arrows"},
+        {MIN, 330, "Teams screen: remove a team\nElsewhere, hold: controls", "F1"}, {LS, 414, "Move", "Arrows"}, {DPAD, 488, "Move / change value", "Arrows"},
         {PLS, 300, "Start match (setup)\nQuit (title screen)", "Esc"}, {BA, 430, "Confirm", "Enter"}, {BB, 482, "Back", "Esc"}};
     const float cx = 640, cy = 450;
     const Color BODY = {58, 62, 72, 255}, EDGE = {225, 228, 236, 255}, DARK = {30, 31, 36, 255};
@@ -1956,6 +1955,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     popDraw(t);
     if (room()) toNet();
+    helpOff = screen == SetupTeams;
     if (helpHeld()) controls(false);
     Loading::overlay(GetFrameTime());
     if (capture) {
@@ -2201,10 +2201,12 @@ void legend(const LegendEntry *all, int n) {
     }
 }
 
+const LegendEntry backLegend = {"B", "Esc", nullptr, "Back", "Retour"};
+
 void teamsLegend() {
-    static const LegendEntry L[] = {{"A", "Enter", nullptr, "Pick / settings", "Choisir / réglages"}, {"< >", "< >", nullptr, "Move", "Jeton"}, {"B", "Esc", "FETXT.RemoveTeam", "Remove", "Retirer"},
-                                    {"+", "N", nullptr, "Next", "Suivant"}};
-    legend(L, 4);
+    static const LegendEntry L[] = {{"A", "Enter", nullptr, "Pick / settings", "Choisir / réglages"}, {"-", "F1", nullptr, "Remove a team", "Enlever une équipe"},
+                                    {"X", "X", nullptr, "Controllers", "Manettes"}, {"+", "N", nullptr, "Next", "Suivant"}, backLegend};
+    legend(L, 5);
 }
 }  // namespace
 
@@ -2243,7 +2245,7 @@ Frontend::PadIn Frontend::padIn(int p) {
     in.dy = pressed(p, {DOWN}, {}) - pressed(p, {UP}, {});
     in.dx = pressed(p, {RIGHT}, {}) - pressed(p, {LEFT}, {});
     in.card = pressed(p, {GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, K({KEY_PAGE_DOWN})) - pressed(p, {GAMEPAD_BUTTON_LEFT_TRIGGER_1}, K({KEY_PAGE_UP}));
-    in.ok = pressed(p, {A}, K({KEY_ENTER, KEY_SPACE})), in.back = pressed(p, {B}, K({KEY_BACKSPACE, KEY_ESCAPE}));
+    in.minus = pressed(p, {MINUS}, K({KEY_F1})), in.pads = pressed(p, {GAMEPAD_BUTTON_RIGHT_FACE_UP}, K({KEY_X})), in.ok = pressed(p, {A}, K({KEY_ENTER, KEY_SPACE})), in.back = pressed(p, {B}, K({KEY_BACKSPACE, KEY_ESCAPE}));
     return in;
 }
 
@@ -3061,7 +3063,10 @@ bool Frontend::setupTeams(bool plus, float t) {
             cursors.slot[p] = own >= 0 ? own : std::max(free_, 0), tokenAt[p] = {-1, -1};
         }
     }
-    bool back = false, leave = false;
+    unsigned present = 0;
+    for (int p = 0; p < 4; p++) present |= padPresent(p) << p;
+    if (lobby.rehome(present) && !room()) saveSetup(c);
+    bool back = false, leave = false, openApplet = false;
     for (int p = 0; p < 4; p++) {
         PadIn in = padIn(p);
         int &s = cursors.slot[p];
@@ -3103,8 +3108,9 @@ bool Frontend::setupTeams(bool plus, float t) {
             cardPop[p].kind = Pop::Slot, cardPop[p].pad = p, cardPop[p].slot = s, cardPop[p].row = 0, cardPop[p].t0 = now();
             Audio::play(Audio::Sfx::FePopupIn);
         }
-        if (in.back && !mineSlot) back = true;
-        else if (in.back) releaseSlot(s), Audio::play(Audio::Sfx::FeClick);  // B takes the team out, like Remove Team
+        if (in.pads) openApplet = true;
+        if (in.back) back = true;
+        else if (in.minus && mineSlot) releaseSlot(s), Audio::play(Audio::Sfx::FeClick);  // - takes the team under the cursor out, like Remove Team
     }
     leave = back && room();
     const bool goOn = plus && padsReady(lobby) && (room() || lobby.canStart());
@@ -3113,7 +3119,7 @@ bool Frontend::setupTeams(bool plus, float t) {
     if (back && !room()) saveSetup(c), go(Local);
     if (goOn) screen = SetupMap;
 #ifdef __SWITCH__
-    if (minusTap) controllerApplet(__builtin_popcount(lobby.padsUsed()));
+    if (openApplet) controllerApplet(__builtin_popcount(lobby.padsUsed()));
 #endif
 
     const bool settled = from >= SetupTeams && from <= SetupRules && leaving < 0;  // coming from a sibling step: no slide-in
@@ -3151,7 +3157,7 @@ bool Frontend::setupTeams(bool plus, float t) {
     for (int k = 0; k < Lobby::MAX_TEAMS && !warn; k++)
         if (lobby.playing(k) && lobby.canEdit(k) && !c.teamSetup[k].cpu && !padPresent(c.teamSetup[k].pad))
             warn = true, tip = TextFormat(tr(nullptr, "Pad %d missing: + opens the controller screen", "Manette %d absente : + ouvre l'écran des manettes"), c.teamSetup[k].pad + 1);
-    setupFront(t, tip, warn, 0);
+    setupFront(t, tip, warn, -1);
     teamsLegend();
     return leave;
 }
@@ -3171,8 +3177,8 @@ void Frontend::setupMap(int dx, int dy, bool back, bool plus, const std::vector<
     setupBack(room() ? tr("FETXTH.GameLobby", "GAME LOBBY", "SALON") : tr("FETXTH.LOCALGAME", "LOCAL GAME", "PARTIE LOCALE"), 1, t, settled ? 1 : subIn(t), room() ? timer : -2);
     FeFlat flat;
     {  // the big preview on the left, in its ButtonBig frame, the name on its foot
-        feTextPx(TextFormat("%s  %d / %d", tr("FETXT.Landscape", "Landscape", "Terrain"), mapSel + 1, n), 64, 132, 24, GC_LIST_LABLE_BLUE, 0);
-        Rectangle pv = {80, 172, 430, 280};
+        feTextPx(TextFormat("%s  %d / %d", tr("FETXT.Landscape", "Landscape", "Terrain"), mapSel + 1, n), 64, 164, 24, GC_LIST_LABLE_BLUE, 0);
+        Rectangle pv = {80, 208, 430, 280};
         if (!cover(preview(lobby.cfg.map), pv)) DrawRectangleRec(pv, {30, 60, 40, 255});
         DrawRectangleGradientV((int)pv.x, (int)(pv.y + pv.height - 82), (int)pv.width, 82, {0, 0, 0, 0}, {0, 0, 0, 170});
         pictureFrame(pv, false);
@@ -3191,6 +3197,9 @@ void Frontend::setupMap(int dx, int dy, bool back, bool plus, const std::vector<
         marquee(nm.c_str(), {d.x + 8, d.y + th - 15 - 16, d.width - 16, 32}, 16, i == mapSel ? GC_BUTTON_YELLOW : GC_WHITE, 0, BC_BLACK, now());
     }
     setupFront(t, lobby.canEditMatch() ? tr("FETIP.Landscape2", "Select a landscape to battle on.", nullptr) : tr(nullptr, "The host picks the map", "L'hôte choisit le terrain"), false, 0);
+    const LegendEntry L[] = {{"Y", "Y", nullptr, "Random", "Au hasard"}, {"+", "N", nullptr, "Next", "Suivant"}, backLegend};
+    const bool host = lobby.canEditMatch();
+    legend(L + !host, 3 - !host);
 }
 
 bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
@@ -3228,14 +3237,14 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
     if (rulesRow != helpRow) helpRow = rulesRow, helpSince = t;
     FeFlat flat;
     if (help) {  // the help panel on the right: the selected row's title and W4M's text, scrolling when it overflows (AutoScrollSpeed)
-        Rectangle pn = {664, 140, 576, 360};
+        Rectangle pn = {664, 170, 576, 360};
         if (!comPanel(pn)) DrawRectangleRounded(pn, 0.06f, 6, PANEL);
         feTextPx(title, pn.x + 30, pn.y + 44, 36, GC_SUBHEADER_BLUE, 0);
         FeBox b;
         b.c = {(pn.x + pn.width / 2 - 640) / FE_S, (360 - (pn.y + 208)) / FE_S}, b.hw = (pn.width - 60) / 2 / FE_S, b.hh = 128 / FE_S, b.size = 16, b.just = 0, b.scrollT = t - helpSince;
         feText(plain(help), b);
     }
-    float y = 140;
+    float y = 170;
     for (int i = 0; i < (int)rows.size(); i++) {
         if (i == FirstRule || i == Pot) y += 12;
         float a = settled ? 1.0f : rowAppear(t - entered, leaving >= 0 ? t - leaving : -1, i + 3);
@@ -3250,6 +3259,8 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
     const char *tip = !mayEdit ? tr(nullptr, "The host sets the rules", "L'hôte règle la partie") : rulesRow == Scheme_ ? tr("FETIP.GameStyle", "Game styles contain game and weapon settings.", nullptr)
                       : rulesRow == Pot ? tr("FETIP.Wormpot", "Wormpot modifies the game rules to create new ways to play.", nullptr) : nullptr;
     setupFront(t, tip, false, 0);
+    const LegendEntry L[] = {{"< >/A", "< >/Enter", nullptr, "Change", "Modifier"}, {"+", "N", nullptr, room() ? "Ready / Start" : "Start", room() ? "Prêt / Lancer" : "Lancer"}, backLegend};
+    legend(L + !mayEdit, 3 - !mayEdit);
     return start;
 }
 

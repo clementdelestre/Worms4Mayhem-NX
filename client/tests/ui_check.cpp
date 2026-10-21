@@ -29,6 +29,14 @@ int main() {
         l.cfg.teamSetup[0].name = "A", l.cfg.teamSetup[2].name = "C", l.place(3, 0, cpu);
         GameConfig m = l.match();  // playing slots 0, 2, 3 in order
         assert(m.teams == 3 && m.teamSetup.size() == 3 && m.teamSetup[0].name == "A" && m.teamSetup[1].name == "C" && m.teamSetup[2].name == "D");
+        {  // a human team on an absent pad moves to the lowest present pad; present pads, CPU and other consoles' teams stay
+            Lobby r = l;
+            r.cfg.teamSetup[0].pad = 3, r.cfg.teamSetup[2].pad = 1, r.cfg.teamSetup[3].pad = 3;
+            assert(r.rehome(0b0011) && r.cfg.teamSetup[0].pad == 0 && r.cfg.teamSetup[2].pad == 1 && r.cfg.teamSetup[3].pad == 3 && !r.rehome(0b0011));
+            r.owner[2] = 7, r.cfg.teamSetup[0].pad = 2;
+            assert(r.rehome(0b0001) && r.cfg.teamSetup[0].pad == 0 && r.cfg.teamSetup[2].pad == 1);
+            assert(!r.rehome(0) && r.cfg.teamSetup[0].pad == 0);
+        }
         l.owner[0] = 7;  // another console's slot is read-only
         assert(!l.ownedBy(0, 1) && !l.release(0) && !l.place(0, 1, h) && l.padsUsed() == 0b10);
     }
