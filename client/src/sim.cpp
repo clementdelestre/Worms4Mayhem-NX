@@ -1187,8 +1187,9 @@ static float sweepHit(Vector3 p, Vector3 d, Vector3 c, float s) {
     return t1 <= 0 || t0 > 1 ? -1 : fmaxf(t0, 0);
 }
 
+static bool sheepLike(Kind k) { return k == Kind::Sheep || k == Kind::SuperSheep || k == Kind::OldWoman || k == Kind::Scouser; }  // WEAPTWK ColliderFlags 128: collider 0x88
 // the CollisionManagerService records whose flags meet mask, but id skip; worms (10 units about Position + 10, 0x519ed0: w.pos), objects,
-// gravestones [assumed: W4M's creation order]
+// gravestones, flying payloads (flag 8, id -2 - index) [assumed: W4M's creation order]
 void Game::colliders(Colliders &out, uint32_t mask, int skip) const {
     out.clear();
     for (size_t i = 0; i < worms.size(); i++)
@@ -1200,6 +1201,13 @@ void Game::colliders(Colliders &out, uint32_t mask, int skip) const {
     }
     if (mask & 0x400)
         for (const Grave &g : graves) if (UID_BASE + g.uid != skip) out.push_back({g.pos, GRAVE_R, 0x400, UID_BASE + g.uid});
+    if (mask & 0x88)  // 0x58246d: Radius, ColliderFlags | 8; the bomber plane and the UFO are no payloads
+        for (size_t i = 0; i < shots.size(); i++) {
+            const Projectile &s = shots[i];
+            const WeaponDef &wd = WEAPONS[s.weapon];
+            if (wd.kind == Kind::Abduction || (wd.kind == Kind::Airstrike && !s.child) || -2 - (int)i == skip) continue;
+            if (uint32_t f = (sheepLike(wd.kind) ? 0x88 : 8) & mask) out.push_back({s.pos, s.child ? wd.csize : wd.size, f, -2 - (int)i});
+        }
 }
 
 // W4M 0x57ef80 -> 0x518f40: v.n <= 0: vt x T - vn n x P, else n |v| P; both 0 stop it. stop: under Bounce.MinSpeed 0.03 units/ms it
@@ -1214,7 +1222,6 @@ Vector3 payBounce(Vector3 v, Vector3 n, const float damp[2], bool stop) {
     return rl > 0 && rl < KEEP ? Vector3Scale(r, KEEP / rl) : r;
 }
 
-static bool sheepLike(Kind k) { return k == Kind::Sheep || k == Kind::SuperSheep || k == Kind::OldWoman || k == Kind::Scouser; }  // WEAPTWK ColliderFlags 128: collider 0x88
 static const char *named(const std::string &s) { return s.empty() ? nullptr : s.c_str(); }  // an empty WEAPTWK effect or sound starts nothing (0x57fd00)
 // PARTTWK: the DetonationFx effects holding the WXP_GasCloud emitter, whose particle poisons the worms it touches
 static bool gasCloud(const std::string &fx) {
@@ -1445,7 +1452,7 @@ void Game::stepObjects() {
         const Vector3 d = Vector3Scale(o.vel, DT);
         for (const Collider &c : cs) {
             const float t = sweepHit(o.pos, d, c.c, c.r + 0.5f * o.scale);
-            if (t < 0) continue;
+            if (t < 0 || (c.flags & 0x80)) continue;  // a walker: the active worm's collect (`sheep` below)
             if (c.flags & 0x26) {
                 bool falling = false;
                 for (const Object &x : objects) falling |= UID_BASE + x.uid == c.id && !x.bounced && Vector3LengthSqr(x.vel) > 0;
@@ -1461,6 +1468,26 @@ void Game::stepObjects() {
         }
         return on;
     };
+    // a mine is a Landmine payload: 0x581dc0 sweep (mask 0x3c37), the earliest head-on contact; there 0x577da0 -> 0x580db0 bounces it
+    // (DetonatesOn*Impact 0), stop = no expiry yet (unarmed); [ours] the rest of the tick is skipped, as a crate's
+    auto mineSweep = [&](Object &o) {
+        const WeaponDef *mineWd = nullptr;
+        for (const WeaponDef &w : WEAPONS) if (w.kind == Kind::Mine) { mineWd = &w; break; }
+        if (!mineWd || Vector3LengthSqr(o.vel) == 0) return false;
+        colliders(cs, 0x3c37, UID_BASE + o.uid);
+        const Vector3 d = Vector3Scale(o.vel, DT);
+        float best = 2;
+        Vector3 n{};
+        for (const Collider &c : cs) {
+            const float t = sweepHit(o.pos, d, c.c, c.r + 0.15f);
+            if (t < 0 || t >= best) continue;
+            const Vector3 m = Vector3Normalize(Vector3Subtract(Vector3Add(o.pos, Vector3Scale(d, t)), c.c));
+            if (Vector3DotProduct(o.vel, m) < 0) best = t, n = m;
+        }
+        if (best > 1) return false;
+        o.pos = Vector3Add(o.pos, Vector3Scale(d, best)), o.vel = payBounce(o.vel, n, mineWd->damp, o.fuse < 0);
+        return true;
+    };
     for (size_t i = 0; i < objects.size();) {
         Object &o = objects[i];
         float h = restHalf(o), up = colliderCentre(o).y - o.pos.y, rad = o.type == Object::Barrel ? DRUM_R : h;  // wall and ceiling probes at the collider
@@ -1474,7 +1501,7 @@ void Game::stepObjects() {
             o.pos = Vector3Add(o.pos, Vector3Scale(o.vel, DT));
         }
         Vector3 v0 = o.vel;
-        const bool onObj = crateLike(o) && !o.sunk && !o.hooked && !o.pinned && crateSweep(o);
+        const bool onObj = !o.sunk && !o.hooked && !o.pinned && (crateLike(o) ? crateSweep(o) : o.type == Object::Mine && mineSweep(o));
         if (o.sunk) {
         } else if (o.hooked || o.pinned || onObj) {  // on the rope (step()), or held by a collider this tick
         } else if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
@@ -1865,7 +1892,7 @@ void Game::stepCount() {
         for (int j : countGroup) was.push_back(worms[j].hp);
         deathBlast(x, i);
         // 0x5a9310 -> Gravestone.Create 0x4f5ac0: the team's gravestone (GraveIndex < 21) 20 units over Position, the worm's yaw
-        if (int gi = x.team < (int)cfg.teamSetup.size() ? cfg.teamSetup[x.team].grave : 0; gi < 21) graves.push_back({{x.pos.x, x.pos.y - R + 1, x.pos.z}, {}, x.yaw, gi, uids++});
+        if (int gi = x.team < (int)cfg.teamSetup.size() ? cfg.teamSetup[x.team].grave : 0; gi < 21) graves.push_back({{x.pos.x, x.pos.y - R + 1, x.pos.z}, {}, x.yaw, gi, uids++, clock});
         for (size_t k = countGroup.size(); k-- > 0;)  // hurt now: shown at the next ApplyDamage
             if (worms[countGroup[k]].hp != was[k]) worms[countGroup[k]].counted = was[k], countGroup.erase(countGroup.begin() + k);
     } else if (shown && !deathQueue.empty() && shots.empty() && !active()) {

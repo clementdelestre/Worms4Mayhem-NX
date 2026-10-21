@@ -912,10 +912,12 @@ static void drawBubbles(const Game &g, float dt) {
     rlEnableDepthMask(), rlEnableBackfaceCulling();
 }
 
-// W4M GraveStoneGraphicEntity 0x5ce680: the team's mesh (GraveIndex, 0x725eda) at the logic position less its radius, the logic's yaw
-static void drawGrave(const Game::Grave &g) {
+// W4M GraveStoneGraphicEntity 0x5ce680: the team's mesh (GraveIndex, 0x725eda) at the logic position less its radius, the logic's yaw,
+// its Go clip looped from t = 0 at creation (0x5ce87a)
+static void drawGrave(const Game &game, const Game::Grave &g) {
     const auto &list = catalog().graves;
-    if (!list.empty()) Models::draw(list[g.grave < (int)list.size() ? g.grave : 0].model.c_str(), {g.pos.x, g.pos.y - Game::GRAVE_R, g.pos.z}, g.yaw);
+    if (!list.empty())
+        Models::draw(list[g.grave < (int)list.size() ? g.grave : 0].model.c_str(), {g.pos.x, g.pos.y - Game::GRAVE_R, g.pos.z}, g.yaw, 0, WHITE, "Go", (game.clock - g.born) * Game::DT);
 }
 
 // Bovine Blitz, W4M SuperBomberGraphicEntity (the SuperAirstrike chopper, banked into its turns) and
@@ -1100,6 +1102,12 @@ static bool shellPose(const Projectile &s, const WeaponDef &d, const char *m, fl
     return true;
 }
 
+// Old Woman: AnimIntermediate "Steal" while she stands after a theft (Payload.PlayIntermediateAnim 0x5933c2), else Walk looped
+static const char *oldWomanClip(const Projectile &s, float clock, float *t) {
+    *t = s.stage > 0 ? (msTicks(800) - s.stage) * Game::DT : clock;
+    return s.stage > 0 ? "Steal" : "Walk";
+}
+
 // Where the ArielFx emitters sit: the payload model's FxLocator in the world (0x5c1470), else the payload itself
 static Vector3 arielAt(const Projectile &s, float clock, const Terrain &t, int now) {
     const WeaponDef &d = WEAPONS[s.weapon];
@@ -1107,8 +1115,12 @@ static Vector3 arielAt(const Projectile &s, float clock, const Terrain &t, int n
     Vector3 at = s.shown(now), fx{};
     float yaw, pitch;
     if (customWeapon(s.weapon) || d.ariel.empty() || !Models::fxLocator(m, &fx)) return at;
-    if (d.kind == Kind::OldWoman) at.y -= 0.3f, yaw = atan2f(s.vel.x, s.vel.z), pitch = 0;  // as drawShot poses her
-    else if (!shellPose(s, d, m, clock, t, now, &at, &yaw, &pitch)) return s.shown(now);
+    if (d.kind == Kind::OldWoman) {  // as drawShot poses her; her FxLocator (rest pose) moved by the hips bone's skinning matrix
+        float ct;
+        const char *clip = oldWomanClip(s, clock, &ct);
+        if (Matrix j; Models::joint(m, "hips_bone", clip, ct, s.stage <= 0, &j)) fx = Vector3Transform(fx, j);
+        at.y -= 0.3f, yaw = atan2f(s.vel.x, s.vel.z), pitch = 0;
+    } else if (!shellPose(s, d, m, clock, t, now, &at, &yaw, &pitch)) return s.shown(now);
     return Vector3Add(at, Vector3Transform(fx, MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw))));
 }
 
@@ -1154,9 +1166,11 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now
     Vector3 v = d.stick > 0 && s.stage ? s.aim : s.vel;  // a stuck arrow keeps the heading it hit with
     float h = sqrtf(v.x * v.x + v.z * v.z), yaw = atan2f(v.x, v.z);
     if (d.kind == Kind::Sheep || d.kind == Kind::Donkey) return Models::draw(m, P, yaw, 0, WHITE, "Run", clock);
-    if (d.kind == Kind::OldWoman)  // AnimIntermediate "Steal" while she stands after a theft (Payload.PlayIntermediateAnim 0x5933c2)
-        return Models::draw(m, {P.x, P.y - 0.3f, P.z}, yaw, 0, WHITE, s.stage > 0 ? "Steal" : "Walk",
-                            s.stage > 0 ? (msTicks(800) - s.stage) * Game::DT : clock, s.stage <= 0);
+    if (d.kind == Kind::OldWoman) {
+        float ct;
+        const char *clip = oldWomanClip(s, clock, &ct);
+        return Models::draw(m, {P.x, P.y - 0.3f, P.z}, yaw, 0, WHITE, clip, ct, s.stage <= 0);
+    }
     if (d.kind == Kind::SuperSheep && n != "Starburst") return Models::draw(m, P, yaw, atan2f(s.vel.y, h), WHITE, "Fly", clock);
     if (d.kind == Kind::Scouser) return Models::draw(m, P, clock * 0.7f);
     if (Vector3 at; shellPose(s, d, m, clock, t, now, &at, &sy, &sp)) return Models::draw(m, at, sy, sp);
@@ -2676,7 +2690,7 @@ int main(int argc, char **argv) {
             for (const Worm &w : game.worms)
                 if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawWorm(game, w, clock), at.push_back({w.pos.x, w.pos.y, w.pos.z, 2});
             for (const Game::Grave &gr : game.graves)
-                if (Models::visible(gr.pos, 2)) drawGrave(gr), at.push_back({gr.pos.x, gr.pos.y, gr.pos.z, 2});
+                if (Models::visible(gr.pos, 2)) drawGrave(game, gr), at.push_back({gr.pos.x, gr.pos.y, gr.pos.z, 2});
             for (const Projectile &s : game.shots) {
                 const Vector3 sp = s.shown(game.clock);
                 drawShot(s, clock, game.terrain, game.clock), at.push_back({sp.x, sp.y, sp.z, 3});
@@ -2720,7 +2734,7 @@ int main(int argc, char **argv) {
         game.terrain.draw();
         lap(T_TERRAIN);
         // W4M bin 8 (3D, registry default scene of every shot, crate, mine, barrel, grave): opaque shapes are drawn before the water, a transparent one after it (0x6ee277)
-        for (const Game::Grave &gr : game.graves) drawGrave(gr);
+        for (const Game::Grave &gr : game.graves) drawGrave(game, gr);
         if (game.roped)
             for (int k = 0; k < game.rope.n; k++) DrawLine3D(game.rope.pt[k], k + 1 < game.rope.n ? game.rope.pt[k + 1] : cur.pos, BROWN);
         if (game.grapple.on) DrawLine3D(game.grapple.at, cur.pos, BROWN);  // the hook in flight (rope mode 2)
