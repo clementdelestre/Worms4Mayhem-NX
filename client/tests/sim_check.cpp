@@ -3908,6 +3908,26 @@ static void checkMineDuds() {
     assert(g.objects[0].fuse < 0);  // a dud never re-arms
 }
 
+// W4M Payload.CollideWithLand 0x577cb9 -> 0x580db0: a thrown mine hitting land bounces with kWeaponLandmine T 0.4 / P 0.2 (stop = 1) and ends at rest.
+static void checkMineLanding() {
+    Game g;
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    settle(g);
+    Vector3 at = g.worms[0].pos;
+    for (Worm &w : g.worms) w.pos.x += 30;
+    g.objects = {{Object::Mine, {at.x, at.y + 0.3f, at.z}, {2, -9, 0}, -1, -1, false, false}};
+    float vy = -9;
+    int bounces = 0;
+    for (int k = 0; k < 400 && !g.objects.empty(); k++) {
+        g.step(Input{});
+        const Vector3 v = g.objects[0].vel;
+        if (bounces == 0 && vy < -1 && v.y > 0) assert(v.y > 0.5f && Vector3Length(v) < 0.5f * Vector3Length({2, 9, 0}));  // T 0.4 / P 0.2: it leaves the land
+        bounces += vy < -1 && v.y > 0;
+        vy = v.y;
+    }
+    assert(bounces >= 1 && Vector3LengthSqr(g.objects[0].vel) == 0);
+}
+
 // W4M payload Explosion handler: a blast only pushes a mine, up and away; it does not arm it.
 static void checkMineBlast() {
     Game g;
@@ -5247,6 +5267,7 @@ int main() {
     checkEndlessGun();
     checkFactoryBlast();
     checkMineBlast();
+    checkMineLanding();
     checkMineFlyby();
     checkMineTypes();
     checkRopeShots();

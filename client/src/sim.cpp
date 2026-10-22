@@ -1470,10 +1470,13 @@ void Game::stepObjects() {
     };
     // a mine is a Landmine payload: 0x581dc0 sweep (mask 0x3c37), the earliest head-on contact; there 0x577da0 -> 0x580db0 bounces it
     // (DetonatesOn*Impact 0), stop = no expiry yet (unarmed); [ours] the rest of the tick is skipped, as a crate's
+    auto mineDamp = [] {
+        for (const WeaponDef &w : WEAPONS) if (w.kind == Kind::Mine) return w.damp;
+        static const float NONE[2] = {0, 0};  // no Landmine in the table: W4M's both-0 response, v = 0
+        return NONE;
+    };
     auto mineSweep = [&](Object &o) {
-        const WeaponDef *mineWd = nullptr;
-        for (const WeaponDef &w : WEAPONS) if (w.kind == Kind::Mine) { mineWd = &w; break; }
-        if (!mineWd || Vector3LengthSqr(o.vel) == 0) return false;
+        if (Vector3LengthSqr(o.vel) == 0) return false;
         colliders(cs, 0x3c37, UID_BASE + o.uid);
         const Vector3 d = Vector3Scale(o.vel, DT);
         float best = 2;
@@ -1485,7 +1488,7 @@ void Game::stepObjects() {
             if (Vector3DotProduct(o.vel, m) < 0) best = t, n = m;
         }
         if (best > 1) return false;
-        o.pos = Vector3Add(o.pos, Vector3Scale(d, best)), o.vel = payBounce(o.vel, n, mineWd->damp, o.fuse < 0);
+        o.pos = Vector3Add(o.pos, Vector3Scale(d, best)), o.vel = payBounce(o.vel, n, mineDamp(), o.fuse < 0);
         return true;
     };
     for (size_t i = 0; i < objects.size();) {
@@ -1507,6 +1510,7 @@ void Game::stepObjects() {
         } else if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
             Vector3 n = terrain.normal({o.pos.x, o.pos.y - h, o.pos.z});
             if (crateLike(o)) crateBounce(o);  // the chute closes (0x5c9503)
+            else if (o.type == Object::Mine) o.vel = payBounce(o.vel, n, mineDamp(), true);  // Payload.CollideWithLand 0x577cb9: stop = 1, no slide
             else if (n.y < SLIDE_NY) o.vel = {(o.vel.x + n.x * n.y * gravity() * DT) * SLIDE_FRICTION, 0, (o.vel.z + n.z * n.y * gravity() * DT) * SLIDE_FRICTION};  // too steep: W4M Sliding, as wormBody
             else o.vel = {o.vel.x * 0.8f, 0, o.vel.z * 0.8f};
             o.falling = false, v0 = o.vel;
