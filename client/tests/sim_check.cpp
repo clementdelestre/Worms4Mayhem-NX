@@ -5531,6 +5531,47 @@ static void checkLandBlobs() {
     assert(live(c) == 1 && c.nfree == LandBlobs::POOL - 1);
 }
 
+// W4M 0x46d290 skips a PERM frame (0x476738, test [frame + 0x16], 0x10 at 0x46d329): a blast leaves its cells, voxels and frame cells; the details inside the
+// radius still go (0x473530 > 0x5cc960 runs before the frames), those past it stay; a non-PERM cell next to it is cut
+static void checkPermBlast() {
+    Terrain t;
+    assert(t.load("HighNoonHiJinx", 1) && !t.framePerm.empty() && !t.permPt.empty() && !t.sharp.permAt.empty());
+    const float R = 3;
+    Vector3 c = {};
+    std::vector<size_t> perms, others;  // W4M cells within the blast: PERM ones, the rest
+    for (const Terrain::WCell &w : t.wcells) {
+        if (!w.perm || w.frame < 0 || (!perms.empty() && !others.empty())) continue;
+        perms.clear(), others.clear(), c = w.ctr;
+        for (size_t i = 0; i < t.wcells.size(); i++)
+            if (Vector3Distance(t.wcells[i].ctr, c) < R - 0.3f) (t.wcells[i].perm ? perms : others).push_back(i);
+        perms.erase(std::remove_if(perms.begin(), perms.end(), [&](size_t i) { return !t.solid(t.wcells[i].ctr); }), perms.end());
+    }
+    assert(!perms.empty() && !others.empty());  // a PERM frame among other land
+    std::vector<size_t> pts;  // grid points a PERM cell holds inside the sphere
+    for (int z = (int)((c.z - R) * Terrain::IVOX); z <= (int)((c.z + R) * Terrain::IVOX); z++)
+        for (int y = (int)((c.y - R) * Terrain::IVOX); y <= (int)((c.y + R) * Terrain::IVOX); y++)
+            for (int x = (int)((c.x - R) * Terrain::IVOX); x <= (int)((c.x + R) * Terrain::IVOX); x++)
+                if (t.permHeld(Terrain::idx(x, y, z)) && Vector3Distance({x * Terrain::VOX, y * Terrain::VOX, z * Terrain::VOX}, c) < R) {
+                    pts.push_back(Terrain::idx(x, y, z));
+                    assert(t.d[pts.back()] > 0);
+                }
+    assert(pts.size() > 20);
+    const std::vector<std::vector<char>> alive = t.frameAlive;
+    auto details = [&](bool inside) {
+        size_t n = 0;
+        for (const Terrain::Object &o : t.objects) n += o.frame >= 0 && t.framePerm[o.frame] && (Vector3Distance(o.pos, c) < R) == inside;
+        return n;
+    };
+    const size_t past = details(false);
+    t.carve(c, R);
+    for (size_t i : perms) assert(!t.wdead[i] && t.solid(t.wcells[i].ctr));
+    for (size_t i : pts) assert(t.d[i] > 0);
+    assert(t.frameAlive == alive && details(true) == 0 && details(false) == past);
+    bool cut = false;
+    for (size_t i : others) cut |= t.wdead[i] && !t.solid(t.wcells[i].ctr);
+    assert(cut);
+}
+
 // W4M 0x46c680 / 0x46d290 / 0x463c90: a cleared cell throws one piece off its centre at (0, 0.07, 0) units/ms; a blast one for the 1st, 3rd, 5th... destroyed
 // cell of a Visible frame (none for a hidden or PERM one), pushed by (1.5 - d² / R²) x 0.07 plus n x (0.09 - 5 v.n | 0.09 + 4 v.n); each heightmap vertex it lowers one
 static void checkLandDebris() {
@@ -5788,6 +5829,7 @@ int main() {
     checkClearVoxel();
     checkLandBlobs();
     checkLandDebris();
+    checkPermBlast();
     checkHiddenLand();
     checkLandUV();
     checkPlacement();

@@ -346,6 +346,7 @@ damage in Icarus flight (W4M flag 0x40, 0x587446, disasm); none on a jetpack lan
 
 ### Exact land (`SharpLand`, sharp.h; `Terrain::sample` / `normal` / `cast`)
 
+PERM frames survive a blast: docs/w4m/formats.md (PERM; `Terrain::keepPerm`, `SharpLand::keep`) [ours].
 Blast on the heightmap: see docs/w4m/formats.md §25 (`SharpLand::lower` / `relist`; `carve(.., blast)` lists its sphere before the `HM` op) [ours].
 
 Imported maps carry `<map>.cells` (format: docs/w4m/formats.md §22): for every voxel cell (0.25 or 0.5 m) the surface crosses, the ordered list of the

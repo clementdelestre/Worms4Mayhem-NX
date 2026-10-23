@@ -393,7 +393,7 @@ void SharpLand::strip(size_t c, const std::function<bool(uint32_t)> &gone) {
 void SharpLand::drop(const std::vector<uint32_t> &hexes) {
     if (!on || hexes.empty()) return;
     std::vector<bool> gone(hexP0.size(), false);
-    for (uint32_t h : hexes) if (h < gone.size()) gone[h] = true;
+    for (uint32_t h : hexes) if (h < gone.size()) { gone[h] = true; if (h < perm.size()) perm[h] = 0; }  // a cleared coded frame is not spared any more
     for (size_t k = 0; k < bits.size(); k++)
         for (size_t w = 0; w < bits[k].size(); w++)
             for (uint64_t b = bits[k][w]; b; b &= b - 1) strip(k << 15 | w * 64 | __builtin_ctzll(b), [&](uint32_t h) { return h < gone.size() && gone[h]; });
@@ -487,12 +487,46 @@ void SharpLand::relist(const std::vector<Col> &cols, int box[6]) {
                     }
                 }
                 if (!put && need) o.push_back(need);
+                if (!mixed(ci) && !perm.empty() && !keep(ci, x, y, z, false, o)) continue;  // an unlisted filled cell keeps the PERM pieces in it, whatever the heightmap does
                 if (o.empty() || (o.size() == 1 && o[0] == FULL)) { if (mixed(ci)) setOps(ci, nullptr, 0); }
                 else setOps(ci, o.data(), (uint32_t)o.size());
                 const int at[3] = {x, y, z};
                 for (int k = 0; k < 3; k++) box[k] = std::min(box[k], at[k]), box[k + 3] = std::max(box[k + 3], at[k]);
             }
         }
+}
+
+bool SharpLand::keep(size_t c, int x, int y, int z, bool listed, std::vector<uint32_t> &out) const {
+    std::vector<uint32_t> seen;  // out may hold other ops: the pieces put there by this call only
+    auto has = [&](uint32_t h) { return std::find(seen.begin(), seen.end(), h) != seen.end(); };
+    if (listed) {
+        const uint32_t *o = ops(c);
+        for (uint32_t i = 1; i <= o[0]; i++) {
+            const bool hex = (o[i] & KIND) == HEX;
+            if (hex && (o[i] & ID) < perm.size() && perm[o[i] & ID] && !has(o[i] & ID)) out.push_back(o[i]), out.push_back(o[i + 1]), seen.push_back(o[i] & ID);
+            i += hex;
+        }
+        return true;
+    }
+    for (auto it = std::lower_bound(permAt.begin(), permAt.end(), std::array<uint32_t, 3>{(uint32_t)c, 0, 0}); it != permAt.end() && (*it)[0] == c; ++it)
+        for (uint32_t h = (*it)[1]; h < (*it)[1] + (*it)[2]; h++) {
+            if (h >= perm.size() || !perm[h]) continue;
+            uint32_t mask = 0;  // the planes the cell straddles; every corner outside one: that piece misses the cell
+            bool miss = false;
+            for (uint32_t q = hexP0[h]; q < planeEnd(h) && !miss; q++) {
+                int in = 0;
+                for (int k = 0; k < 8; k++) {
+                    const Vector4 &p = planes[q];
+                    in += p.x * (x + (k & 1)) * VOX + p.y * (y + (k >> 1 & 1)) * VOX + p.z * (z + (k >> 2)) * VOX - p.w <= 1e-5f;
+                }
+                miss = in == 0;
+                if (in < 8) mask |= 1u << (q - hexP0[h]);
+            }
+            if (miss) continue;
+            if (!mask) return false;
+            if (!has(h)) out.push_back(h), out.push_back(mask), seen.push_back(h);
+        }
+    return true;
 }
 
 void SharpLand::carve(const Bricks<signed char> &d, Vector3 c, float r, int box[6], bool blast) {
@@ -502,7 +536,7 @@ void SharpLand::carve(const Bricks<signed char> &d, Vector3 c, float r, int box[
     int lo[3], hi[3];
     const float cc[3] = {c.x, c.y, c.z}, dim[3] = {NX - 1.0f, NY - 1.0f, NZ - 1.0f};
     for (int a = 0; a < 3; a++) lo[a] = std::max(0, (int)floorf((cc[a] - r) * IVOX)), hi[a] = std::min((int)dim[a] - 1, (int)floorf((cc[a] + r) * IVOX));
-    std::vector<uint32_t> o;
+    std::vector<uint32_t> o, kp;
     for (int z = lo[2]; z <= hi[2]; z++)
         for (int y = lo[1]; y <= hi[1]; y++)
             for (int x = lo[0]; x <= hi[0]; x++) {
@@ -517,16 +551,20 @@ void SharpLand::carve(const Bricks<signed char> &d, Vector3 c, float r, int box[
                 if (hs == 2) continue;
                 const size_t ci = cid(x, y, z);
                 const bool m = mixed(ci);
-                if (!m && (dx <= r * r || d[ci] <= 0)) continue;
+                if (!m && d[ci] <= 0) continue;
+                kp.clear();
+                if (!perm.empty() && !keep(ci, x, y, z, m, kp)) continue;
+                if (!m && dx <= r * r && kp.empty()) continue;
                 const int at[3] = {x, y, z};
                 for (int a = 0; a < 3; a++) box[a] = std::min(box[a], at[a]), box[a + 3] = std::max(box[a + 3], at[a]);
-                if (dx <= r * r && hs != 1) { setOps(ci, nullptr, 0); continue; }
+                if (dx <= r * r && hs != 1) { setOps(ci, kp.data(), (uint32_t)kp.size()); continue; }
                 if (m) { const uint32_t *p = ops(ci); o.assign(p + 1, p + 1 + p[0]); }
                 else o.assign(1, FULL);
-                // the sphere cuts what precedes it: before the heightmap op, which stays
+                // the sphere cuts what precedes it: before the heightmap op, which stays; the PERM pieces come back after it
                 size_t at2 = o.size();
                 if (hs == 1) for (size_t i = 0; i < o.size(); i += 1 + ((o[i] & KIND) == HEX)) if ((o[i] & KIND) == HM) { at2 = i; break; }
                 o.insert(o.begin() + at2, SPHERE | id);
+                o.insert(o.begin() + at2 + 1, kp.begin(), kp.end());
                 setOps(ci, o.data(), (uint32_t)o.size());
             }
 }

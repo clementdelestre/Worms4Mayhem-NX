@@ -134,6 +134,10 @@ struct Terrain {
     void blastCells(Vector3 c, float radius, Vector3 n);  // 0x46d290: the debris of the cells a blast destroys, n the explosion message's +0x20
     std::vector<unsigned char> wbytes;
     std::vector<std::pair<int, uint16_t>> shareCnt;  // grid point -> the cells still holding it, for points two or more cells hold
+    std::vector<std::pair<int, int>> permPt;  // grid points held by a PERM cell (voxel index runs [first, last), sorted, merged): a blast leaves them
+    std::vector<char> framePerm;  // per json frame: its cells are PERM (a blast keeps frameAlive)
+    void keepPerm();  // after sharp.load: fills permPt, framePerm, sharp.perm / permAt from wcells
+    bool permHeld(size_t i) const;
     bool clearCell(Vector3 p);  // Land.ClearVoxel: the one W4M land cell holding p, nothing else; false when none (heightmap, PERM frame)
     bool clearCoded(const char *code);  // Land.ClearCoded 0x475170: the frames of that 4-byte code go at once; false: none
     double loadMs[3] = {};  // last load: voxels (.vox + .thin), cells, navgrid (Game::start); for the MAP log line

@@ -208,7 +208,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
     loadMs[0] = loadMs[1] = loadMs[2] = 0;
     objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
-    thinOnly.clear(), thinVox.clear(), thinAt.clear(), codes.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear();
+    thinOnly.clear(), thinVox.clear(), thinAt.clear(), codes.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear(), permPt.clear(), framePerm.clear();
     sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), uvOf.clear(), landUV.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -264,6 +264,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         if (j["wcells"].type == Json::Str) loadWCells(dir + j["wcells"].s());
         double t1 = now();
         if (j["cells"].type == Json::Str && !sharp.load(dir + j["cells"].s())) TraceLog(LOG_WARNING, "map %s: bad cells file '%s'", map.c_str(), j["cells"].s().c_str());
+        keepPerm();
         loadMs[0] = t1 - t0, loadMs[1] = now() - t1;
     } else if (kind != "none") {
         bool isl = kind == "island";
@@ -373,7 +374,7 @@ void Terrain::loadThin(const std::string &path) {
     std::vector<int> anchors;
     anchors = thinVox;
     std::sort(anchors.begin(), anchors.end()), anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
-    thinOnly.clear(), thinAt.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear();
+    thinOnly.clear(), thinAt.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear(), permPt.clear(), framePerm.clear();
     for (int v : anchors) {
         int x, y, z;
         xyz(v, x, y, z);
@@ -489,7 +490,7 @@ void Terrain::mergeBlocks() {
 
 void Terrain::generate(unsigned seed) {
     setGrid(352, 256, 352);
-    thinOnly.clear(), thinAt.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear();
+    thinOnly.clear(), thinAt.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear(), permPt.clear(), framePerm.clear();
     theme.clear(), mats.clear(), uvOf.clear(), landUV.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
@@ -688,6 +689,7 @@ bool Terrain::carve(Vector3 c, float radius, Vector3 n) {
         for (int y = lo[1]; y <= hi[1]; y++)
             for (int x = lo[0]; x <= hi[0]; x++) {
                 size_t i = idx(x, y, z);
+                if (permHeld(i)) continue;
                 signed char nv = std::min(d[i], qd(Vector3Distance({x * VOX, y * VOX, z * VOX}, c) - radius));
                 const float t = hm ? sharp.top[z * NX + x] : NAN;
                 if (nv < d[i] && !std::isnan(t)) nv = std::max(nv, std::min(d[i], qd(t - y * VOX)));  // a blast never cuts the heightmap
@@ -701,7 +703,7 @@ bool Terrain::carve(Vector3 c, float radius, Vector3 n) {
     blastCells(c, radius, n);
     std::vector<char> hit(frameCells.size(), 0);
     for (size_t f = 0; f < frameCells.size(); f++)
-        for (size_t k = 0; k < frameCells[f].size(); k++)
+        for (size_t k = 0; k < frameCells[f].size() && !(f < framePerm.size() && framePerm[f]); k++)
             if (frameAlive[f][k] && Vector3Distance(frameCells[f][k], c) < radius) frameAlive[f][k] = 0, hit[f] = 1;
     dropDetails(hit, c, radius, true);
     for (Emitter &e : emitters) e.alive = e.alive && Vector3Distance(e.pos, c) >= radius;
@@ -909,6 +911,34 @@ bool Terrain::clearCoded(const char *code) {  // exact on 4 bytes (0x47519c); no
     codes.erase(it);
     edits++;
     return true;
+}
+
+// W4M 0x46d290 skips a PERM frame (0x476738): its pieces, grid points and frame cells stay through a blast; Land.ClearCoded 0x475170 still takes them
+void Terrain::keepPerm() {
+    if (!sharp.on) return;
+    sharp.perm.assign(sharp.hexP0.size(), 0);
+    std::vector<std::pair<int, int>> runs;
+    for (const WCell &w : wcells) {
+        if (!w.perm) continue;
+        if (w.frame >= 0) framePerm.resize(std::max<size_t>(framePerm.size(), w.frame + 1), 0), framePerm[w.frame] = 1;
+        for (uint32_t h = w.hex; h < w.hex + w.nhex && h < sharp.perm.size(); h++) sharp.perm[h] = 1;
+        for (int z = w.lo[2]; z < w.lo[2] + w.n[2] && z < NZ - 1; z++)
+            for (int y = w.lo[1]; y < w.lo[1] + w.n[1] && y < NY - 1; y++)
+                for (int x = w.lo[0]; x < w.lo[0] + w.n[0] && x < NX - 1; x++) sharp.permAt.push_back({(uint32_t)idx(x, y, z), w.hex, w.nhex});
+        size_t at = w.alone;
+        for (int part = 0; part < 2; part++)
+            wRuns(at, [&](size_t v) { if (!runs.empty() && runs.back().second == (int)v) runs.back().second++; else runs.push_back({(int)v, (int)v + 1}); });
+    }
+    std::sort(sharp.permAt.begin(), sharp.permAt.end());
+    std::sort(runs.begin(), runs.end());
+    for (const auto &r : runs)
+        if (!permPt.empty() && r.first <= permPt.back().second) permPt.back().second = std::max(permPt.back().second, r.second);
+        else permPt.push_back(r);
+}
+
+bool Terrain::permHeld(size_t i) const {
+    auto it = std::upper_bound(permPt.begin(), permPt.end(), (int)i, [](int v, const std::pair<int, int> &r) { return v < r.first; });
+    return it != permPt.begin() && (int)i < (--it)->second;
 }
 
 // .wcells "W4K2" (docs/w4m/formats.md §22): u32 size, then the deflated records; the runs stay encoded in wbytes
