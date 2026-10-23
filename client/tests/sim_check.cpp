@@ -164,6 +164,22 @@ static void checkDrawRound() {
     assert(over && g.phase == Phase::GameOver && g.winner == -1);
 }
 
+// W4M Worm_Damaged_Current: the active worm hurt (blast, mine, fall) in its turn or its retreat ends it at once, no retreat time
+static void checkHurtEndsTurn() {
+    for (Phase ph : {Phase::Aim, Phase::Retreat})
+        for (bool fall : {false, true}) {
+            Game g;
+            g.start({1, 2, 2, "", 0}), g.hotSeat = 0;
+            for (int t = 0; t < 120; t++) g.step(Input{});
+            g.phase = ph, g.timer = 600;
+            Worm &w = g.worms[g.current];
+            if (fall) w.pos.y += 15, w.grounded = false, w.vel = {0, 0, 0};
+            else g.hurt(w, 5, true, 0);
+            for (int t = 0; t < 240 && g.phase == ph; t++) g.step(Input{});
+            assert(g.phase == Phase::Settle && g.worms[g.current].hp < 100);
+        }
+}
+
 // W4M death queue: dead worms of one count blow up one after another.
 static void checkDeathQueue() {
     Game g;
@@ -5141,6 +5157,7 @@ static void checkPayloadColliders() {
 int main() {
     checkTeamSlots();
     checkAlliances();
+    checkHurtEndsTurn();
     checkPlacementSolid();
     checkDetailRemoval();
     checkHiddenLand();

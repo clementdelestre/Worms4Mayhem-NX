@@ -1,6 +1,7 @@
 // Every W4M mission (assets/missions, a Lua script) starts, runs with the AI on every team to its end without a Lua error, and lists
 // what its script asked that we do not model yet; a scripted mission replays bit-identically.
 // Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only, W4NX_MISSION=movies / crates those checks)
+#define private public  // the hurt test calls hurt() directly
 #include <map>
 #include "../src/ai.h"
 #include "../src/controls.h"
@@ -131,6 +132,14 @@ static void checkLot2(const std::vector<MissionSpec> &list) {
         run(id, g, 1);
         for (const auto &t : g.cfg.teamSetup) assert(t.cpu == 0 || t.cpu == 2);
     }
+    {  // WXWormGraphicEntity 0x5a49a0: Worm.DataNN ATT_Hat, else Team.DataNN's
+        Game g;
+        run("HighNoonHiJinx", g, 1);
+        assert(std::any_of(g.wormAtt.begin(), g.wormAtt.end(), [](const auto &a) { return a[0] == "WXFE.A.Hat.Cowboy.Bk"; }));
+        Game d;
+        run("DeathMatch4", d, 1);
+        assert(std::any_of(d.cfg.teamSetup.begin(), d.cfg.teamSetup.end(), [](const auto &t) { return !t.hat.empty(); }));
+    }
 }
 
 // Level movies (docs/missions.md "Movies"): played in the sim at the W4M player's pace, its camera paths holding the end; skipped
@@ -223,6 +232,29 @@ static void checkCrates(const std::vector<MissionSpec> &list) {
         g.objects.back().tag = 50;
         assert(collect(g, 50).second == 11);
     }
+}
+
+// W4M Worm_Damaged_Current (stdlib): the active worm hurt in its turn, a CPU's too, runs EndTurn at once
+static void checkHurtEndsTurn(const std::vector<MissionSpec> &list) {
+    Game g;
+    for (const MissionSpec &m : list) if (m.id == "DeathMatch6") g.start(missionConfig(m, 1));
+    assert(g.script);
+    for (auto &t : g.cfg.teamSetup) t.cpu = std::max<uint8_t>(t.cpu, 3);
+    Ai ai;
+    Input skip;
+    skip.flags = Input::SKIP_MOVIE;
+    int cpuTurns = 0;
+    for (int t = 0, since = 0; t < 60 * 60 * 5 && cpuTurns < 3; t++) {
+        bool play = g.phase == Phase::Aim && !scriptMovieOn(g) && g.worms[g.current].alive;
+        since = play ? since + 1 : 0;
+        if (play && since > 60 * (cpuTurns + 1) && g.worms[g.current].team != 0) {
+            g.hurt(g.worms[g.current], 5, true, 0);
+            g.step(ai.think(g));
+            assert(g.phase == Phase::Settle);
+            cpuTurns++, since = 0;
+        } else g.step(play ? ai.think(g) : skip);
+    }
+    assert(cpuTurns == 3);
 }
 
 // A crate a script makes with Crate.AddToWormInventory books to the collector's own Inventory.WormNN (0x5c8820), not the alliance's;
@@ -415,6 +447,7 @@ int main() {
     }
     if (only && !strcmp(only, "movies")) return checkMovies(list), 0;
     if (only && !strcmp(only, "crates")) return checkCrates(list), 0;
+    if (only && !strcmp(only, "hurt")) return checkHurtEndsTurn(list), 0;
     if (only && !strcmp(only, "wormcrate")) return checkWormInventoryCrate(list), 0;
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
@@ -423,6 +456,7 @@ int main() {
     checkLot2(list);
     checkCrates(list);
     checkWormInventoryCrate(list);
+    checkHurtEndsTurn(list);
     checkCratePlacement(list);
     checkDeaths(list);
     checkMovies(list);
