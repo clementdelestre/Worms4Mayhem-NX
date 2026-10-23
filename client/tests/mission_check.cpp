@@ -14,22 +14,37 @@
 #include <cstring>
 
 // Where the AI cannot reach a W4M goal (crates to collect, targets, triggers, enemies that never take a turn): the player's turn
-// collects the crates and triggers it may one a tick, pops the targets, blasts one trigger it may destroy, then ends with the
-// enemies at 0 hp (they die at the turn's ApplyDamage) and the worms that never play poisoned (hurt at the turn's ApplyPoison:
-// the accuracy dummies)
-static void assist(Game &g) {
+// collects the crates and triggers it may one a tick, lures an enemy-team trigger's worm in, pops a target or blasts a trigger (one a
+// turn when the script answers Trigger_Destroyed), then ends with the enemies not allied to the player at 0 hp (they die at the turn's
+// ApplyDamage) and the never-playing worms poisoned (the accuracy dummies, on the player's team); `survive` spares the enemies; trigIndex, if >= 0, is the
+// only trigger index blasted
+static void assist(Game &g, bool survive, int trigIndex, bool &blasted) {
     Worm &me = g.worms[g.current];
+    if (g.phase != Phase::Aim) blasted = false;
     if (g.phase != Phase::Aim || me.team != 0 || !me.alive || scriptMovieOn(g)) return;  // a movie leaves the player no control
-    for (Object &o : g.objects) if (o.tag >= 0 && o.type == Object::Target) o.dead = true;
+    for (Object &o : g.objects) {  // a target's blast may destroy a trigger, which starts a movie: one of those a turn
+        if (o.tag < 0 || o.type != Object::Target || o.dead) continue;
+        bool hits = std::any_of(g.triggers.begin(), g.triggers.end(), [&](const Game::Trigger &t) { return !t.gone && Vector3Distance(t.pos, o.pos) < 4; });
+        if (hits && blasted) continue;
+        o.dead = true, blasted |= hits;
+    }
     for (const Object &o : g.objects)
         if (o.tag >= 0 && o.type == Object::Crate && (o.teamCollect < 0 || o.teamCollect == g.alliance(0))) { me.pos = o.pos, me.vel = {}; return; }
     for (const Game::Trigger &t : g.triggers)  // only the kind the script answers: a silent one would be lost
         if (scriptDefines(g, "Trigger_Collected") && (t.mask & 1) && !t.gone && t.teamCollect <= 0 && (t.wormCollect == -1 || t.wormCollect == g.current)) {
-            me.pos = t.pos, me.vel = {};
+            me.pos = {t.pos.x, t.pos.y + t.radius / 2, t.pos.z}, me.vel = {};  // inside its sphere, above water (ChuteToVictory's last one sits just under it)
             return;
         }
-    for (Game::Trigger &t : g.triggers) if (scriptDefines(g, "Trigger_Destroyed") && !t.gone && t.teamDestroy <= 0) { t.gone = Game::TRIG_DESTROYED; break; }
-    for (Worm &w : g.worms) if (w.team != 0 && w.alive) w.hp = 0;
+    for (const Game::Trigger &t : g.triggers)  // a trigger only an enemy team collects (TurkishDelights' lights): lure one of its worms in
+        if (scriptDefines(g, "Trigger_Collected") && (t.mask & 1) && !t.gone && t.teamCollect > 0 && g.alliance(t.teamCollect) != g.alliance(0))
+            for (Worm &w : g.worms) if (w.team == t.teamCollect && w.alive && w.turns) { w.pos = t.pos, w.vel = {}; return; }
+    if (!blasted)  // one blast a turn, as a player: the movies one trigger starts must end before the next
+        for (Game::Trigger &t : g.triggers)
+            if (scriptDefines(g, "Trigger_Destroyed") && !t.gone && t.teamDestroy <= 0 && (trigIndex < 0 || t.index == trigIndex)) { t.gone = Game::TRIG_DESTROYED, blasted = true; break; }
+    if (survive) return g.timer = 1, void();
+    bool foes = std::any_of(g.worms.begin(), g.worms.end(), [&](const Worm &w) { return w.turns && w.alive && g.alliance(w.team) != g.alliance(0); });
+    for (Worm &w : g.worms)  // allies and, while enemies play, the never-playing ones (CarpetCapers' Prof, TheLand's classmate) are spared
+        if (w.alive && g.alliance(w.team) != g.alliance(0) && (w.turns || !foes)) w.hp = 0;
     for (Worm &w : g.worms) if (!w.turns && w.alive) w.poison = 5;
     g.timer = 1;
 }
@@ -42,8 +57,12 @@ static Run scripted(const MissionSpec &m, uint32_t seed, int cap) {
     for (auto &t : g.cfg.teamSetup) t.cpu = std::max<uint8_t>(t.cpu, 3);
     Ai ai;
     Run r;
+    // The AI player cannot play these: NiceToSiegeYou is survived (its enemies' death blasts and respawns dig the spawn markers under water),
+    // DoomCanyon's rising water drowns a worm that does not climb, TraitorousWaters wants the gun about to fire destroyed (its Index 4 + g_nGunFiring)
+    bool blasted = false, survive = m.id == "NiceToSiegeYou" || m.id == "TraitorousWaters";
+    int from = m.id == "DoomCanyon" || m.id == "TraitorousWaters" ? 0 : 60 * 60 * 3;
     for (; r.ticks < cap && (g.phase != Phase::GameOver || scriptMovieOn(g)); r.ticks++) {  // and its game-over movie
-        if (r.ticks > (getenv("TMPA") ? atoi(getenv("TMPA")) : 60 * 60 * 3)) assist(g);
+        if (r.ticks > from) assist(g, survive, m.id == "TraitorousWaters" ? 4 + (int)scriptEval(g, "return g_nGunFiring") : -1, blasted);
         g.step(ai.think(g));
         for (const GameEvent &e : g.events) r.comments += e.kind == GameEvent::Comment, r.emitters += e.kind == GameEvent::Emitter;
     }

@@ -93,7 +93,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
     Active and no worm is in the slot [disasm 0x5b4f70]. Our worms are team-major, so Reinitialise keeps 16 - (slots set up) spare
     columns per team for slots set up later; a new slot takes its team's first free column, else a gone worm's [ours: W4M's 16 slots
     hold any team]. Worm.DieQuietly / WXWormManager.UnspawnWorm / EFMV UnspawnWorm remove the slot's worm (WormData.Active 0) with no
-    blast or grave, and Worm_Died fires (DeadWorm.Id = the slot, sent on the next step) [disasm 0x5b4af0, 0x68e18f]: it waits, dead, under the map.
+    blast or grave, and Worm_Died fires inside the call (DeadWorm.Id = the slot: the entity delete sends TaskDeathMessage, Cleanup sends Worm.Died at once, docs/w4m/missions.md §23.10) [disasm 0x5b4af0, 0x68e18f, 0x68cb82]; NiceToSiegeYou's `Turn == 0` guard in Worm_Died relies on it (the intro's DieQuietly 3, 8, 9 come before StartFirstTurn's TurnStarted): it waits, dead, under the map.
   - Before the first ActivateNextWorm (`Game::noTurn`) CurrentTeamIndex and ActiveWormIndex are -1 [disasm 0x5b5c4c] for the trigger and
     crate team rules. An ActivateNextWorm that finds no worm leaves the turn without one: Timer_TurnTimedOut comes after HotSeatTime +
     TurnTime [ours: W4M asserts there, 0x5b5b0f; its clocks still run in the stdlib flow]. TraitorousWaters gets there when a house
@@ -213,7 +213,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   Crate.Delete removes the crates of that Index and calls Crate_Destroyed at once (W4M dispatch is synchronous); Crate.RadarHide /
   RadarDisplay hide / show them on the radar.
 - **Triggers** (docs/w4m/missions.md §23.10): GameLogic.CreateTrigger adds a `Game::Trigger` at the Trigger.Spawn marker itself with
-  the Trigger.* keys (WormCollect turned into our worm index at creation: -2 when the slot has none [ours]). `Game::stepTriggers` (after
+  the Trigger.* keys (WormCollect kept as the slot and turned into our worm index by `bindTriggers` at creation, Reinitialise and every Respawn: -2 when the slot has none [ours]; ChuteToVictory spawns its triggers before its worms). `Game::stepTriggers` (after
   the objects) collects: a live worm whose sphere (10 units, 5 above its feet) meets it, TeamCollect / WormCollect matching; a
   sheep-like shot (Sheep, Super Sheep, Starburst, Old Woman, Scouser; WEAPTWK ColliderFlags 128) or another shell, homing missile,
   donkey or bomblet (flags 8) of the active team, with SheepCollect / PayloadCollect, by its Radius. `Game::explode` destroys it.
@@ -259,41 +259,55 @@ Point lights: `Land.EnablePointLight` / `DisablePointLight` call `Terrain::point
 first 4 characters; a change marks the chunks its sphere reaches dirty for the async remesh); render only, never read by the sim or
 the checksum (docs/maps.md "Point lights").
 
-`make mission_check` plays every W4M mission with the AI on all teams (after 3 game minutes it collects the crates it may, pops targets,
-walks into a trigger the script answers with Trigger_Collected or blasts one it may destroy when it answers Trigger_Destroyed, ends the
-player's turn with the enemies at 0 hp and the never-playing worms poisoned) until the script ends it, and asserts no Lua error, no
-missing data key and that all 51 end (within 90 game minutes: ChuteToVictory's round clock stands through ~8 s of movie camera a
-turn). The assist never acts during a movie (the player has no control then). Result after lot 3 (movies played in full, 2026-10-06):
-51 of 51 end. A movie now lasts its real length, so a trigger blown while one plays (a shell still flying) starts no second movie
-(EFMV.Play ignored while EFMV.Active, as W4M): DinerMight's 4th trigger then never ends it, as it would in W4M. Still logged as not modelled:
+`make mission_check` plays every W4M mission with the AI on all teams (after 3 game minutes, or at once for DoomCanyon and TraitorousWaters, the
+player's turn collects the crates it may, pops targets, walks into a trigger the script answers with Trigger_Collected, lures a worm of the
+enemy team into one only that team collects, or blasts one it may destroy when it answers Trigger_Destroyed; then ends with the enemies not
+allied to the player at 0 hp and the never-playing worms poisoned) until the script ends it, and asserts no Lua error, no missing data key and
+that all 51 end (within 90 game minutes: ChuteToVictory's round clock stands through ~8 s of movie camera a turn). The assist never acts during
+a movie (the player has no control then) [ours: test]. Result 2026-10-23: 51 of 51 end, 50 won. A movie lasts its real length, so a trigger blown
+while one plays starts no second movie (EFMV.Play ignored while EFMV.Active, as W4M): the assist therefore blasts one trigger-hitting target or
+trigger a turn. The assist's own limits, each a mission the AI player cannot play, not a divergence [ours: test, traced 2026-10-23]:
+- DoomCanyon: the water rises 10 units a turn and drowns a worm that does not climb (turn 4, ~70 s), so the assist starts at once.
+- TraitorousWaters: each turn the gun about to fire (Index 4 + g_nGunFiring) must be destroyed, else a house falls; the assist does that and spares
+  the enemies (a dying worm's blast would destroy a second gun the same turn, which breaks the script's gun count: docs/w4m/missions.md §23.10).
+- NiceToSiegeYou (survive 15 min): killing the enemies every turn makes their respawns dig the spawn markers under the water (an endless
+  die / respawn loop that holds the turn); so the assist only passes the turn. It is then lost at ~434 s: an enemy blast (130 hp on the Prof, 147 on a
+  player worm) kills the passive player, the Prof (slot 3) dying fails. A player who fights back is not modelled.
+- CarpetCapers / TheLandThatWormsForgot: the Prof (never-playing, allied) and the lost classmate (never-playing, enemy team) must live; the assist
+  spares allies, and the never-playing enemies while an enemy plays (the accuracy dummies are killed when none does).
+- TurkishDelights: the lights are TeamCollect 1, a baddie must step in (it is DieQuietly'd by Trigger_Collected); the assist walks one in.
+- TheWindyWizard, ChuteToVictory: assist limits too (all four island targets popped in one turn start wizard movies that swallow MidSequence2's
+  EFMV.Play; the last trigger sits under the water line, so the worm is put half a radius above it).
+Host divergences found by this pass, fixed: Worm_Died of a quiet unspawn runs at once (NiceToSiegeYou's `Turn == 0` guard), a trigger's
+WormCollect is the slot resolved at collect time (ChuteToVictory spawns its triggers before its worms). Still logged as not modelled:
 
 | mission | end | not modelled (count) |
 |---|---|---|
-| DinerMight | lost 3102 s | - |
+| DinerMight | won 237 s | - |
 | SneakyBridgeThieves | won 206 s | - |
-| BuildingSiteSaboteurs | lost 212 s | - |
-| TheCrateEscape | won 198 s | - |
-| DestructAndServe | won 270 s | SetData WXD.StoryMovie x1 |
-| StormTheCastle | won 250 s | - |
-| TheWindyWizard | lost 3061 s | - |
-| RobInTheHood | lost 115 s | - |
-| JoustAboutIt | lost 1847 s | - |
-| NiceToSiegeYou | lost 131 s | - |
-| MineAllMine | won 254 s | - |
-| GhostHillGraveyard | won 275 s | - |
-| TinCanWally | lost 1945 s | - |
-| DoomCanyon | lost 70 s | - |
-| HighNoonHiJinx | won 225 s | SetData WXD.StoryMovie x1 |
-| TurkishDelights | lost 503 s | - |
-| NoRoomForError | won 225 s | - |
-| CarpetCapers | lost 230 s | - |
-| TraitorousWaters | lost 325 s | - |
-| GibbonTake | won 250 s | SetData WXD.StoryMovie x1 |
+| BuildingSiteSaboteurs | won 239 s | - |
+| TheCrateEscape | won 210 s | - |
+| DestructAndServe | won 334 s | SetData WXD.StoryMovie x1 |
+| StormTheCastle | won 241 s | - |
+| TheWindyWizard | won 269 s | - |
+| RobInTheHood | won 264 s | - |
+| JoustAboutIt | won 317 s | - |
+| NiceToSiegeYou | lost 434 s | - |
+| MineAllMine | won 257 s | - |
+| GhostHillGraveyard | won 276 s | - |
+| TinCanWally | won 306 s | - |
+| DoomCanyon | won 71 s | - |
+| HighNoonHiJinx | won 231 s | SetData WXD.StoryMovie x1 |
+| TurkishDelights | won 218 s | - |
+| NoRoomForError | won 215 s | - |
+| CarpetCapers | won 220 s | - |
+| TraitorousWaters | won 142 s | - |
+| GibbonTake | won 230 s | SetData WXD.StoryMovie x1 |
 | FastFoodDino | won 189 s | - |
-| EscapeFromTreeRex | won 264 s | - |
-| ChuteToVictory | lost 4938 s | - |
-| TheLandThatWormsForgot | lost 222 s | - |
-| ValleyOfDinoWorms | won 250 s | - |
+| EscapeFromTreeRex | won 259 s | - |
+| ChuteToVictory | won 199 s | - |
+| TheLandThatWormsForgot | won 246 s | - |
+| ValleyOfDinoWorms | won 242 s | - |
 | ChallengeSniper | won 195 s | - |
 | ChallengeJetpack | won 195 s | - |
 | ChallengeSheep | won 195 s | - |
@@ -306,17 +320,17 @@ turn). The assist never acts during a movie (the player has no control then). Re
 | ChallengeJetpack2 | won 180 s | - |
 | ChallengeSheep2 | won 180 s | - |
 | ChallengeShotgun2 | won 180 s | - |
-| ChallengeAccuracy2 | won 209 s | - |
+| ChallengeAccuracy2 | won 212 s | - |
 | ChallengeNavigation2 | won 180 s | - |
 | ChallengeCrate2 | won 180 s | - |
-| DeathMatch1 | won 204 s | - |
-| DeathMatch2 | won 233 s | - |
+| DeathMatch1 | won 229 s | - |
+| DeathMatch2 | won 226 s | - |
 | DeathMatch3 | won 207 s | - |
-| DeathMatch4 | won 202 s | - |
-| DeathMatch5 | won 240 s | - |
-| DeathMatch6 | won 238 s | - |
-| DeathMatch7 | won 236 s | - |
-| DeathMatch8 | won 276 s | - |
-| DeathMatch9 | won 259 s | - |
-| DeathMatch10 | won 213 s | - |
-| DeathMatch11 | won 225 s | - |
+| DeathMatch4 | won 204 s | - |
+| DeathMatch5 | won 213 s | - |
+| DeathMatch6 | won 216 s | - |
+| DeathMatch7 | won 213 s | - |
+| DeathMatch8 | won 231 s | - |
+| DeathMatch9 | won 212 s | - |
+| DeathMatch10 | won 208 s | - |
+| DeathMatch11 | won 236 s | - |
