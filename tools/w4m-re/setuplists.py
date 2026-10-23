@@ -17,8 +17,9 @@ speech.txt      "<speech bank>\t<text key>" per WXFEP.SelectSoundbankList row (t
 stockweapons.json every LOCAL DATA.LockedWeapons stock Weapon Factory weapon (StockWeapon 1) in the client's weapons JSON: its
                 WeaponFactoryContainer pair (docs/w4m/weapons.md "Stock weapons"), meshes proj_<Factory.Proj name>, graphic its
                 WeaponGraphicsResourceID (0x5984a0)
-stockmodels.txt "<model>\t<Factory.Proj mesh>" per payload those weapons use, for w4m-models
-factorymodels.txt "<model>\t<mesh>" per held mesh of those weapons and of the WXD.Default* templates (factory/<mesh>), for w4m-models
+stockmodels.txt "<model>\t<Factory.Proj mesh>" per payload (all 62: the editor shows any of them), for w4m-models
+factorymodels.txt "<model>\t<mesh>" per gun part the editor offers (Tank / Ray / Revolver / Blaster x Body / Barrel / Butt / Sight, with and without the 1 suffix),
+                every payload mesh (a Thrown weapon holds its payload), the Radio and the held meshes of the stock weapons (factory/<mesh>), for w4m-models
 defteams.txt    DEFSAVE DATA.TeamBarracks in the client's teams.txt format (client/src/barracks.h)
 """
 import json, os, sys
@@ -37,6 +38,8 @@ def column_text(r):
 
 
 PAYLOAD_MESHES = 0x91fda8  # WeaponPayLoadEnum -> Factory.Proj.* mesh (0x5983f0 at 0x599486)
+PAYLOADS = 62  # 0..57 the Payload popup, 58..61 Revolver / Blaster / Tank / Ray set by the Barrel row (0x7409f5)
+GUN_PARTS = [f'Factory.{g}Gun{p}{v}' for g in ('Tank', 'Ray', 'Revolver', 'Blaster') for p in ('Body', 'Barrel', 'Butt', 'Sight') for v in ('', '1')]
 GAS_POISON = 10  # PARTTWK WXP_GasCloud ParticleCollisionWormPoisonMagnitude: the Poison payload's cloud
 
 
@@ -101,11 +104,10 @@ def main(a):
         f.write('[\n' + ',\n'.join('  ' + json.dumps(w) for w in stock) + '\n]\n')
     pe = PE()
     with open(os.path.join(out, 'stockmodels.txt'), 'w') as f:
-        for p in sorted({x[k] for w in local['DATA.LockedWeapons']['Weapons'] if w['StockWeapon'] for x in (w['Weapon'], w['Cluster']) for k in ('PayloadResourceId',)}):
-            f.write('%s\t%s\n' % (proj_model(pe, p), pe.cstr(pe.u32(PAYLOAD_MESHES + 4 * p))))
+        for p in range(PAYLOADS): f.write('%s\t%s\n' % (proj_model(pe, p), pe.cstr(pe.u32(PAYLOAD_MESHES + 4 * p))))
     held = [w['Weapon'] for w in local['DATA.LockedWeapons']['Weapons'] if w['StockWeapon']] + [menu[k]['Weapon'] for k in ('WXD.DefaultWeapon', 'WXD.DefaultThrown', 'WXD.DefaultAirStrike')]
     with open(os.path.join(out, 'factorymodels.txt'), 'w') as f:
-        for m in sorted({m for w in held for m in graphic(pe, w).split(',')[::2] if m}):
+        for m in sorted({m for w in held for m in graphic(pe, w).split(',')[::2] if m} | set(GUN_PARTS) | {pe.cstr(pe.u32(PAYLOAD_MESHES + 4 * p)) for p in range(PAYLOADS)}):
             f.write('factory/%s\t%s\n' % (m.lower().replace('.', '_'), m))
     teams = dump(os.path.join(tw, 'DEFSAVE.XOM'))['DATA.TeamBarracks']['Teams']
     with open(os.path.join(out, 'defteams.txt'), 'w') as f:

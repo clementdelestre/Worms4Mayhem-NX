@@ -58,6 +58,7 @@ struct WeaponDef {
     std::string model, icon;  // Weapon Factory: projectile model, icon weapon name (cosmetic, "" = default)
     bool userFuse = false;    // "user_fuse": the thrower picks 1..5 s (W4M grenade, cluster, banana), fuse = default
     bool keepFx = false;      // "keep_fx_at_rest": the ArielFx runs on after the payload stops (W4M StopFxAtRest 0)
+    bool press = false;       // W4M DetonatesOnFirePress (a Weapon Factory Thrown weapon's User detonation): FIRE after the launch detonates it (set by factoryPayload)
     bool restFuse = false;    // "rest_fuse": the fuse only burns once the shell has stopped (W4M Holy Hand Grenade)
     bool pins = false;        // "pins": a melee that nails its victim in the ground (W4M Tail Nail)
     bool fuseShown = false;   // "fuse_shown": W4M IsFuseDisplayed, the last 5 s float over the shot (0x57b1e0)
@@ -118,10 +119,26 @@ extern const WeaponDef NO_WEAPON;  // Kind::None
 inline const WeaponDef &weaponDef(int k) { return k < 0 ? NO_WEAPON : WEAPONS[k]; }  // -1: the empty hand
 bool loadWeapons(const char *path);
 bool loadCustomWeapons(const char *path, std::vector<WeaponDef> &out);  // same JSON as weapons.json
-int factoryLaunch(const WeaponDef &w);  // W4M ProjectileLaunchType 0 Bomber, 1 Launched, 2 Thrown, 3 Dropped (0x598160)
 bool customWeapon(int i);  // the Weapon Factory slot (appended after the loaded table at start())
 bool saveCustomWeapons(const char *path, const std::vector<WeaponDef> &list);
-void factoryPayload(WeaponDef &w);  // W4M 0x5983f0: sliders -> crater, damage, impulse and DetonationFx of the payload and its clusters
+// W4M Weapon Factory (docs/w4m/weapons.md "Weapon Factory payload", "Weapon Factory editor"). A weapon in container form holds the WeaponFactoryContainer
+// fields (launch 0 Bomber / 1 Launched / 2 Thrown / 3 Dropped, kind Homing = Homing, detonate, fuseTime, powersUp, maxPower, wind, avoid, poison, clusters, spread,
+// sliders, model / cmodel = PayloadResourceId, graphic, ariel); factoryPayload turns it into the payload (S: the team's SuperScale)
+void factoryPayload(WeaponDef &w, float S = 1);
+constexpr int FACTORY_PAYLOADS = 58, FACTORY_PAYLOADS_ALL = 62;  // the Payload popup's, and with the Barrel row's four
+enum class FactoryRow : uint8_t { Body, Barrel, Butt, Sight, PowerUp, MaxPower, Homing, AvoidLand, Wind, Poison, Land, Worm, Blast, Clusters, Spread, Detonation, Payload };
+WeaponDef factoryTemplate(int launch);                         // WXD.DefaultAirStrike / DefaultWeapon / DefaultThrown
+void factoryType(WeaponDef &w, int launch);                    // the editor's LaunchType: that type's template, the name kept
+void factoryAdjust(WeaponDef &w, FactoryRow row, int dir, bool cluster = false);  // AdjustFactoryList: one step of a row
+void factoryPayloadPick(WeaponDef &w, int id);                 // the Payload popup's pick
+bool factorySame(const WeaponDef &a, const WeaponDef &b);      // the editor's Changed: the container fields differ from the loaded ones
+std::string factoryPayloadGraphic(int id);                     // the held graphic of a payload's own mesh
+float factoryCost(const WeaponDef &w);                         // 0x738992: the gauge, over 1 = refused
+std::string factoryPayloadModel(int id);                       // model name of payload id (w4m-models proj_*)
+int factoryPayloadOf(const std::string &model);                // its id, -1 none
+std::string factoryPayloadKey(int id);                         // FETXT key of its name
+int factoryGunRing(const WeaponDef &w, int part);              // 0..7 position of a gun part in Tank, Tank1, Ray, ... (-1 none)
+std::string factoryGunKey(int ring);                           // FETXT key of that part's name
 
 // W4M worm physics state beside Velocity: stuck count (entity +0x12c), air control (Flags bit0), Sliding (state 3) and its
 // spin rate / target (+0x120 / +0x124, rad per 20 ms), SupportNormal (pData +0x80). input: this tick's stick, not state

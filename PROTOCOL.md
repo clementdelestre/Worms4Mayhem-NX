@@ -89,7 +89,7 @@ C = client → server, S = server → client.
 - **Weapon** (a team's Weapon Factory weapon, in its `team` record) = `str name, u8 kind` (clamped to `Kind::ChangeWorm` on read), 5 × f32 (speed, fuse, bounce, poison,
   cluster spread), 8 × f32 Weapon Factory sliders (land damage, worm radius, worm damage, blast strength; then the cluster's), 4 × i32 (count, clusters, shots, crate weight), u8 wind, str model, str icon,
   then the W4M WeaponFactoryContainer fields: i8 launch, i8 detonate, i8 cluster detonate, i32 fuse time, u8 flags (bit 0 powers up, bit 1 cluster poison),
-  3 × f32 (max power, collision, cluster collision), str cluster model, str ariel, str graphic` (graphic: W4M WeaponGraphicsResourceID, the held meshes; f32 = IEEE-754 bits as u32; -1 launch / detonate: our editor's weapon).
+  3 × f32 (max power, collision, cluster collision), str cluster model, str ariel, str graphic` (graphic: W4M WeaponGraphicsResourceID, the held meshes; f32 = IEEE-754 bits as u32; the speed, fuse and bounce f32 are unused by a Weapon Factory weapon; -1 launch: a weapon of the previous editor, converted by `factoryUpgrade`).
   Every client puts them in the one Weapon Factory slot after its `weapons.json` table, the playing
   team's at each turn start (`Game::wieldSecret`), so the table (part of the checksum) is the same everywhere. `factoryPayload` builds the rest on every
   peer from the launch type's `weapons.json` weapon (W4M 0x598160 clone) and the sliders (docs/w4m/weapons.md "Template clone").

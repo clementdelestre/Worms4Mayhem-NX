@@ -2579,7 +2579,7 @@ static void checkWormpotModes() {
     }
     int t = g.worms[g.current].team;
     g.superWeapon[t] = Game::W4M_FACTORY;
-    assert(g.superScale(Game::W4M_FACTORY).x == 2 && g.superScale(Game::W4M_FACTORY).y == 1 && g.superScale(1).x == 1);
+    assert(g.superScale(Game::W4M_FACTORY).x == 1 && g.superScale(Game::W4M_FACTORY).y == 1 && g.superScale(1).x == 1);  // the Factory's S is in its payload (wieldSecret)
     Worm &v = g.worms[g.current];
     v.hp = 300;
     for (int k = 0; k < 3; k++) g.hurt(v, 60, false, 4);
@@ -2778,16 +2778,6 @@ static void checkStockWeapons() {
         WeaponDef w = start(g, "FETXT.Factory.Blaster");
         assert(w.clone == "Bazooka" && w.wind && g.windy((int)base) && !g.windy((int)base, true) && w.clusters == 5 && w.crest && near(w.cspeed[1], 0.35f / 2 * 50));
     }
-    {  // our editor's weapons hold their launch type's WXD.Default* graphic
-        WeaponDef w{};
-        w.name = "ours", w.kind = Kind::Shell;
-        factoryPayload(w);
-        assert(w.graphic.rfind("Factory.TankGunBody,TANK_body_locator,", 0) == 0);
-        w = WeaponDef{}, w.kind = Kind::Shell, w.fuse = 3, factoryPayload(w);
-        assert(w.graphic == "Factory.Proj.Grenade,,");
-        w = WeaponDef{}, w.kind = Kind::Airstrike, factoryPayload(w);
-        assert(w.graphic == "Radio,,");
-    }
     {  // Bomber, 10 bombs AtRest: divider 3, WXP_ExploCluster (n >= 6), the bombs bounce (the Grenade's damping) and rest
         WeaponDef w = start(g, "FETXT.WipeOut");
         assert(w.clusters == 10 && w.crest && w.cfx == "WXP_ExploCluster" && near(w.cdamage, 25 / 3.0f / 0.35f) && near(w.cradius, 58 / 3.0f / 0.65f / 20));
@@ -2830,24 +2820,151 @@ static void checkStockWeapons() {
     assert(WEAPONS.size() == base);
 }
 
+// W4M Weapon Factory editor (docs/w4m/weapons.md "Weapon Factory editor"): the templates, the type reload, one step of each row (0x7409f5), the cost (0x738992)
+static void checkFactoryEditor() {
+    using R = FactoryRow;
+    auto near = [](float a, float b) { return fabsf(a - b) < 2e-3f; };
+    WeaponDef a = factoryTemplate(0), l = factoryTemplate(1), t = factoryTemplate(2);
+    assert(a.launch == 0 && a.clusters == 5 && near(a.spread, 0.24f) && a.graphic == "Radio,," && a.model == "proj_classic" && a.kind == Kind::Airstrike);
+    assert(l.launch == 1 && l.wind && l.powersUp && l.model == "proj_dlc1_payload3" && l.ariel == "WXP_BazookaTrailPack" && l.graphic.rfind("Factory.TankGunBody,TANK_body_locator,", 0) == 0);
+    assert(t.launch == 2 && t.detonate[0] == 1 && t.fuseTime == -1 && t.model == "proj_grenade" && t.graphic == "Factory.Proj.Grenade,," && !t.wind);
+    for (const WeaponDef &w : {a, l, t}) assert(factoryCost(w) <= 1 && factorySame(w, w));
+    l.name = "x";  // a type change reloads that type's template, the same type keeps the edits
+    factoryAdjust(l, R::Land, 1);
+    assert(near(l.slider[0][0], 0.6f) && !factorySame(l, factoryTemplate(1)));
+    factoryType(l, 1);
+    assert(near(l.slider[0][0], 0.6f));
+    factoryType(l, 2);
+    assert(l.launch == 2 && l.name == "x" && near(l.slider[0][0], 0.5f) && l.detonate[0] == 1);
+    l = factoryTemplate(1);  // the gun parts: the ring Tank, Tank1, Ray, ...; the barrel sets the payload and the ArielFx, the body the four locators
+    factoryAdjust(l, R::Barrel, 1);
+    assert(factoryGunRing(l, 1) == 1 && l.model == "proj_tank" && l.ariel == "WXP_BazookaTrailPack");
+    factoryAdjust(l, R::Barrel, 1);
+    assert(factoryGunRing(l, 1) == 2 && l.model == "proj_ray" && l.ariel == "LOC^WXP_PlasmaBomb");
+    factoryAdjust(l, R::Body, -1);
+    assert(factoryGunRing(l, 0) == 7 && factoryGunRing(l, 1) == 2 && l.graphic.find("Factory.BlasterGunBody1,BLASTER_body_Root_locator,") == 0 && l.graphic.find("TANK_") == std::string::npos);
+    factoryAdjust(l, R::Butt, 1), factoryAdjust(l, R::Sight, -1);
+    assert(factoryGunRing(l, 2) == 1 && factoryGunRing(l, 3) == 7);
+    factoryAdjust(l, R::Homing, 1);  // Homing: FuseTime 15000, no AvoidLand; off again keeps the flag
+    assert(l.kind == Kind::Homing && l.fuseTime == 15000 && !l.avoid);
+    factoryAdjust(l, R::AvoidLand, 1), factoryAdjust(l, R::Homing, 1);
+    assert(l.kind == Kind::Shell && l.avoid);
+    factoryAdjust(l, R::Poison, 1), assert(l.poison == Game::GAS_POISON);
+    factoryAdjust(l, R::Poison, 1), assert(l.poison == 0);
+    t = factoryTemplate(2);  // the Payload row: wraps 0..57, sets the cluster's too and the held mesh; a Launched weapon's follows its barrel
+    factoryPayloadPick(t, 41), assert(t.model == "proj_poo" && t.cmodel == "proj_poo" && t.graphic == "Factory.Proj.Poo,,");
+    factoryAdjust(t, R::Payload, 1), assert(t.model == "proj_present");
+    factoryPayloadPick(t, 0), factoryAdjust(t, R::Payload, -1), assert(factoryPayloadOf(t.model) == 57 && t.model == "proj_dlc1_payload5");
+    factoryAdjust(t, R::Payload, 1), assert(factoryPayloadOf(t.model) == 0);
+    const std::string kept = l.model;
+    factoryAdjust(l, R::Payload, 1), assert(l.model == kept);
+    t = factoryTemplate(2);  // Detonation: Impact, Fuse, User (FuseTime 7000), At rest (2000); a Bomber only Impact and At rest; the cluster's Impact or At rest
+    for (int want : {2, 3, 0, 1}) factoryAdjust(t, R::Detonation, 1), assert(t.detonate[0] == want && t.fuseTime == (want == 2 ? 7000 : want == 3 ? 2000 : -1));
+    factoryAdjust(t, R::Detonation, -1, false), assert(t.detonate[0] == 0);
+    for (int want : {3, 0, 3}) factoryAdjust(a, R::Detonation, 1), assert(a.detonate[0] == want);
+    factoryAdjust(t, R::Detonation, 1, true), assert(t.detonate[1] == 3);
+    factoryAdjust(t, R::Detonation, 1, true), assert(t.detonate[1] == 0);
+    a.clusters = 1, factoryAdjust(a, R::Clusters, -1), assert(a.clusters == 10);  // Clusters wrap: a Bomber 1..10, else 0..5
+    factoryAdjust(a, R::Clusters, 1), assert(a.clusters == 1);
+    t.clusters = 0, factoryAdjust(t, R::Clusters, -1), assert(t.clusters == 5);
+    factoryAdjust(t, R::Clusters, 1), assert(t.clusters == 0);
+    t.slider[0][3] = 1, factoryAdjust(t, R::Blast, 1), assert(t.slider[0][3] == 0);  // a slider past an end wraps (0x73447e)
+    factoryAdjust(t, R::Blast, -1), assert(t.slider[0][3] == 1);
+    t.slider[1][2] = 0.9f, factoryAdjust(t, R::Worm, 1, true), assert(t.slider[1][2] == 1);
+    t.spread = 1, factoryAdjust(t, R::Spread, 1), assert(t.spread == 0);
+    {  // the cost: a weapon over 1 is not built (0x599990), the template stays as cloned; a stock weapon's cost is 0.95..0.995
+        WeaponDef big = factoryTemplate(1);
+        for (float &v : big.slider[0]) v = 1;
+        big.poison = Game::GAS_POISON;
+        assert(factoryCost(big) > 1);
+        const WeaponDef &bz = WEAPONS[weaponNamed("Bazooka")];
+        factoryPayload(big);
+        assert(big.damage == bz.damage && big.radius == bz.radius && big.clone == "Bazooka");
+        for (const WeaponDef &s : catalog().stock) assert(factoryCost(s) > 0.949f && factoryCost(s) < 0.9951f);
+    }
+    {  // SuperScale S (0x598670): the crater, the damage and the impulse, not the reach
+        WeaponDef x = factoryTemplate(1), y = x;
+        factoryPayload(x), factoryPayload(y, 2);
+        assert(near(y.damage, 2 * x.damage) && near(y.radius, 2 * x.radius) && near(y.blast[1], 2 * x.blast[1]) && near(y.blast[0], x.blast[0]));
+        GameConfig c{28, 2, 1, "", 0};
+        c.wormpot = WP_SECRET_WEAPON, c.teamSetup.resize(2), c.teamSetup[0].secret = c.teamSetup[1].secret = factoryTemplate(1);
+        c.teamSetup[0].secret->name = c.teamSetup[1].secret->name = "Super";
+        Game g;
+        g.start(c);
+        const int wi = (int)WEAPONS.size() - 1;
+        g.superWeapon[0] = Game::W4M_FACTORY, g.superWeapon[1] = 0;
+        g.wieldSecret(1), assert(near(WEAPONS[wi].damage, x.damage));
+        g.wieldSecret(0), assert(near(WEAPONS[wi].damage, 2 * x.damage) && near(WEAPONS[wi].blast[1], 2 * x.blast[1]));
+    }
+    {  // Detonate 2 (DetonatesOnFirePress): LifeTime 10000, a press after the launch detonates it
+        WeaponDef w = factoryTemplate(2);
+        w.name = "Press", w.detonate[0] = 2, w.fuseTime = 7000;
+        WeaponDef p = w;
+        factoryPayload(p);
+        assert(p.press && p.fuse == 10 && !p.userFuse && !p.restFuse);
+        int boom[2];
+        for (int press = 0; press < 2; press++) {
+            GameConfig c{28, 2, 1, "", 0};
+            c.teamSetup.resize(2), c.teamSetup[0].secret = c.teamSetup[1].secret = w;
+            Game g;
+            g.start(c), g.hotSeat = 0;
+            settle(g);
+            const int wi = (int)WEAPONS.size() - 1;
+            Worm &me = g.worms[g.current];
+            g.weapon = wi, g.ammo[me.team][wi] = 1, g.delays[me.team][wi] = 0;
+            Vector3 ground;
+            assert(g.terrain.raycast({{20, 55, 20}, {0, -1, 0}}, 60, &ground));
+            me.pos = {20, ground.y + 1.5f, 20}, me.vel = {0, 0, 0}, me.yaw = 0, me.pitch = 0.5f, me.grounded = true;
+            Input fire;
+            fire.buttons = Input::FIRE;
+            g.step(fire);
+            boom[press] = -1;
+            for (int n = 1; n < 60 * 12 && boom[press] < 0; n++) {
+                g.step(press && n == 60 ? fire : Input{});
+                for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) boom[press] = n;
+            }
+        }
+        assert(boom[1] > 0 && boom[1] <= 62 && boom[0] >= 590 && boom[0] <= 610);
+    }
+    Game none;  // drops the Weapon Factory slot the games above appended
+    none.start({51, 2, 2, "", 0});
+}
+
 static void checkCustomWeapons() {
     size_t base = WEAPONS.size();
     WeaponDef w = {"Test Lobber", Kind::Shell, 4, 70, 25, 2, 0.5f, 1.5f, 20, 2, 3, 1, false, 4};
     w.model = "holy", w.icon = "Secret Weapon";
     WeaponDef a = w;
     a.name = "Test Strike", a.kind = Kind::Airstrike, a.clusters = 3;
-    assert(saveCustomWeapons("custom_weapons_test.json", {w, a}));
+    {  // a file of the previous editor (its keys: launch speed, fuse, bounce, model, icon, crate weight, ammo)
+        FILE *f = fopen("custom_weapons_test.json", "wb");
+        assert(f);
+        fputs("[{\"name\": \"Test Lobber\", \"kind\": \"shell\", \"speed\": 25, \"fuse\": 2, \"bounce\": 0.5, \"land_damage\": 0.5, \"worm_radius\": 0.75, \"worm_damage\": 0.5, "
+              "\"blast_strength\": 0.5, \"clusters\": 3, \"cluster_land_damage\": 0.5, \"cluster_worm_radius\": 0.75, \"cluster_worm_damage\": 0.5, \"cluster_blast_strength\": 0.5, "
+              "\"count\": 2, \"shots\": 1, \"crate_weight\": 4, \"model\": \"holy\", \"icon\": \"Bazooka\"},\n"
+              " {\"name\": \"Test Strike\", \"kind\": \"airstrike\", \"clusters\": 3, \"land_damage\": 0.5, \"worm_radius\": 0.75, \"worm_damage\": 0.5, \"blast_strength\": 0.5, "
+              "\"cluster_land_damage\": 0.5, \"cluster_worm_radius\": 0.75, \"cluster_worm_damage\": 0.5, \"cluster_blast_strength\": 0.5, \"count\": 2, \"shots\": 1}]\n", f);
+        fclose(f);
+    }
     std::vector<WeaponDef> list;
     assert(loadCustomWeapons("custom_weapons_test.json", list));
     remove("custom_weapons_test.json");
     {  // HomingAvoidLand survives the JSON round trip
-        WeaponDef h = a;
-        h.kind = Kind::Homing, h.avoid = true;
+        WeaponDef h = factoryTemplate(1);
+        h.name = "Test Missile", h.kind = Kind::Homing, h.avoid = true;
         std::vector<WeaponDef> hl;
         assert(saveCustomWeapons("custom_weapons_test.json", {h}) && loadCustomWeapons("custom_weapons_test.json", hl) && hl.size() == 1 && hl[0].avoid);
         remove("custom_weapons_test.json");
     }
-    assert(list.size() == 2 && list[0].name == w.name && list[0].fuse == w.fuse && list[0].bounce == w.bounce && list[0].model == "holy" && list[1].kind == Kind::Airstrike);
+    // saved by the previous editor: Launch type, Model and the speed, fuse and bounce rows are gone, the container of its type's template is left
+    assert(list.size() == 2 && list[0].name == w.name && list[0].launch == 2 && list[0].detonate[0] == 1 && list[0].clusters == 3 && list[0].model == "proj_grenade" && list[0].icon == "Secret Weapon");
+    assert(list[1].kind == Kind::Airstrike && list[1].launch == 0 && list[1].clusters == 3 && list[1].graphic == "Radio,,");
+    assert(saveCustomWeapons("custom_weapons_test.json", list));
+    {  // the new format round trips
+        std::vector<WeaponDef> again;
+        assert(loadCustomWeapons("custom_weapons_test.json", again) && again.size() == 2 && factorySame(again[0], list[0]) && factorySame(again[1], list[1]));
+        remove("custom_weapons_test.json");
+    }
     GameConfig c{51, 2, 2, "", 0};
     c.teamSetup.resize(2);
     c.teamSetup[0].secret = list[0], c.teamSetup[1].secret = list[1];
@@ -2868,13 +2985,13 @@ static void checkCustomWeapons() {
         assert(h.ammo[1][base] == 0 && !h.allowed(1, (int)base) && h.ammo[0][base] == 1);
     }
     WeaponDef &s1 = *c.teamSetup[1].secret;
-    s1.kind = Kind::Homing;
+    s1 = factoryTemplate(1), s1.name = "Test Missile", s1.kind = Kind::Homing;
     g.start(c), g.hotSeat = 0, g.wieldSecret(1);
     assert(WEAPONS[base].postLaunch == 0 && WEAPONS[base].clone == "Homing Missile");  // kWeaponHomingMissile's clone
     {  // HomingAvoidLand (0x5611b0): heading at the ground 3 m away, the forward probe hits and the missile is pushed up, within MaxHomingSpeed 0.25
         float vy[2];
         for (int avoid = 0; avoid < 2; avoid++) {
-            s1.kind = Kind::Homing, s1.avoid = avoid, s1.fuse = 0, s1.speed = 12;
+            s1.kind = Kind::Homing, s1.avoid = avoid;
             g.start(c), g.hotSeat = 0, g.wieldSecret(1);
             Vector3 hit, p = g.worms[0].pos, tgt = Vector3Add(p, {30, 0, 0});
             assert(g.terrain.raycast({Vector3Add(p, {0, 20, 0}), {0, -1, 0}}, 40, &hit));
@@ -2885,7 +3002,7 @@ static void checkCustomWeapons() {
         }
         assert(vy[1] > vy[0] + 5);
     }
-    s1.kind = Kind::Airstrike, s1.avoid = false;
+    s1 = factoryTemplate(0), s1.name = "Test Strike";
     g.start(c), g.hotSeat = 0;
     uint32_t with = g.checksum();
     for (int k = 0; k < 2; k++) {  // both teams armed with each weapon in turn, so the first worm fires it
@@ -5292,6 +5409,53 @@ static void checkDetailRemoval() {
     assert(false);
 }
 
+// W4M Land.ClearVoxel 0x4733b0 > 0x46c680: only the cell holding the ray's solid sample goes (its pieces, the points only it holds, its frame's
+// details by 0x46c630); neighbour cells stay; a heightmap point (frame 0xffff, 0x473470) is refused
+static void checkClearVoxel() {
+    Terrain t;
+    assert(t.load("ChallengeNavigation2", 1) && !t.wcells.empty());
+    int rock = -1;
+    for (size_t i = 0; i < t.objects.size() && rock < 0; i++)
+        if (t.objModels[t.objects[i].model] == "arabian6" && t.objects[i].frame >= 0) rock = (int)i;
+    assert(rock >= 0);
+    const Terrain::Object o = t.objects[rock];
+    const Vector3 cell = t.frameCells[o.frame][o.cell];
+    Vector3 hit;
+    assert(t.raycast({{cell.x, cell.y + 2, cell.z}, {0, -1, 0}}, 4, &hit));
+    const size_t n0 = t.objects.size(), cells0 = t.wcells.size();
+    const unsigned e0 = t.edits;
+    assert(t.solid(hit) && t.clearCell(hit));
+    assert(!t.solid(hit) && t.edits > e0 && t.objects.size() <= n0 && t.wcells.size() == cells0);
+    assert(!t.clearCell(hit));  // nothing holds it any more
+    // one cell: the land it held is gone, the cells around it stand (a probe 1 m away along each axis keeps its land)
+    Terrain u;
+    assert(u.load("DinerMight", 1));
+    int cleared = 0, kept = 0;
+    for (float x = 8; x < 40 && cleared < 8; x += 1.7f)
+        for (float z = 8; z < 40 && cleared < 8; z += 1.3f) {
+            Vector3 h;
+            if (!u.raycast({{x, 30, z}, {0, -1, 0}}, 40, &h) || u.heightmap(h)) continue;
+            const Vector3 side[4] = {{h.x + 1.5f, h.y, h.z}, {h.x - 1.5f, h.y, h.z}, {h.x, h.y, h.z + 1.5f}, {h.x, h.y, h.z - 1.5f}};
+            bool solid[4];
+            for (int k = 0; k < 4; k++) solid[k] = u.solid(side[k]);
+            if (!u.clearCell(h)) continue;
+            cleared++;
+            assert(!u.solid(h));
+            for (int k = 0; k < 4; k++) kept += solid[k] && u.solid(side[k]);
+        }
+    assert(cleared >= 4 && kept > 0);
+    // a heightmap point is refused
+    Terrain v;
+    assert(v.load("Accuracy", 1));
+    for (size_t i = 0; i < v.d.size(); i++) {
+        if ((v.mats[i] != 65 && v.mats[i] != 66) || v.d[i] <= 0) continue;
+        int x, y, z;
+        v.xyz(i, x, y, z);
+        assert(!v.clearCell({(x + 0.5f) * Terrain::VOX, (y + 0.5f) * Terrain::VOX, (z + 0.5f) * Terrain::VOX}) && v.d[i] > 0);
+        break;
+    }
+}
+
 // W4M 0x46e6b9 / 0x468200: a Visible 0 land frame is solid and never drawn (material 67); the TheWindyWizard "CODE AAAA" frame goes with Land.ClearCoded
 static void checkHiddenLand() {
     for (const char *map : {"TheWindyWizard", "ChallengeCrate2", "DestructAndServe"}) {
@@ -5409,53 +5573,6 @@ static void checkPlacement() {
                     checked++;
                 }
             }
-// W4M Land.ClearVoxel 0x4733b0 > 0x46c680: only the cell holding the ray's solid sample goes (its pieces, the points only it holds, its frame's
-// details by 0x46c630); neighbour cells stay; a heightmap point (frame 0xffff, 0x473470) is refused
-static void checkClearVoxel() {
-    Terrain t;
-    assert(t.load("ChallengeNavigation2", 1) && !t.wcells.empty());
-    int rock = -1;
-    for (size_t i = 0; i < t.objects.size() && rock < 0; i++)
-        if (t.objModels[t.objects[i].model] == "arabian6" && t.objects[i].frame >= 0) rock = (int)i;
-    assert(rock >= 0);
-    const Terrain::Object o = t.objects[rock];
-    const Vector3 cell = t.frameCells[o.frame][o.cell];
-    Vector3 hit;
-    assert(t.raycast({{cell.x, cell.y + 2, cell.z}, {0, -1, 0}}, 4, &hit));
-    const size_t n0 = t.objects.size(), cells0 = t.wcells.size();
-    const unsigned e0 = t.edits;
-    assert(t.solid(hit) && t.clearCell(hit));
-    assert(!t.solid(hit) && t.edits > e0 && t.objects.size() <= n0 && t.wcells.size() == cells0);
-    assert(!t.clearCell(hit));  // nothing holds it any more
-    // one cell: the land it held is gone, the cells around it stand (a probe 1 m away along each axis keeps its land)
-    Terrain u;
-    assert(u.load("DinerMight", 1));
-    int cleared = 0, kept = 0;
-    for (float x = 8; x < 40 && cleared < 8; x += 1.7f)
-        for (float z = 8; z < 40 && cleared < 8; z += 1.3f) {
-            Vector3 h;
-            if (!u.raycast({{x, 30, z}, {0, -1, 0}}, 40, &h) || u.heightmap(h)) continue;
-            const Vector3 side[4] = {{h.x + 1.5f, h.y, h.z}, {h.x - 1.5f, h.y, h.z}, {h.x, h.y, h.z + 1.5f}, {h.x, h.y, h.z - 1.5f}};
-            bool solid[4];
-            for (int k = 0; k < 4; k++) solid[k] = u.solid(side[k]);
-            if (!u.clearCell(h)) continue;
-            cleared++;
-            assert(!u.solid(h));
-            for (int k = 0; k < 4; k++) kept += solid[k] && u.solid(side[k]);
-        }
-    assert(cleared >= 4 && kept > 0);
-    // a heightmap point is refused
-    Terrain v;
-    assert(v.load("Accuracy", 1));
-    for (size_t i = 0; i < v.d.size(); i++) {
-        if ((v.mats[i] != 65 && v.mats[i] != 66) || v.d[i] <= 0) continue;
-        int x, y, z;
-        v.xyz(i, x, y, z);
-        assert(!v.clearCell({(x + 0.5f) * Terrain::VOX, (y + 0.5f) * Terrain::VOX, (z + 0.5f) * Terrain::VOX}) && v.d[i] > 0);
-        break;
-    }
-}
-
         }
     assert(checked > 0 && overhang > 0);  // layer 1: ground under an overhang
 }
@@ -5491,6 +5608,7 @@ int main() {
     checkMineBlastEndsTurn();
     checkPlacementSolid();
     checkDetailRemoval();
+    checkClearVoxel();
     checkHiddenLand();
     checkLandUV();
     checkPlacement();
@@ -5597,6 +5715,7 @@ int main() {
     checkWormpotModes();
     checkMystery();
     checkCustomWeapons();
+    checkFactoryEditor();
     checkStockWeapons();
     checkFuse();
     checkParachute();
@@ -5608,7 +5727,6 @@ int main() {
     checkJetpackDrown();
     checkToolGaps();
     checkEmptyHand();
-    checkClearVoxel();
     checkSchemeFactory();
     checkTelepads();
     checkMysteryTeleport();

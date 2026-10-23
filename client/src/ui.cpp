@@ -61,7 +61,7 @@ const int A = GAMEPAD_BUTTON_RIGHT_FACE_RIGHT, B = GAMEPAD_BUTTON_RIGHT_FACE_DOW
           MINUS = GAMEPAD_BUTTON_MIDDLE_LEFT, UP = GAMEPAD_BUTTON_LEFT_FACE_UP, DOWN = GAMEPAD_BUTTON_LEFT_FACE_DOWN, LEFT = GAMEPAD_BUTTON_LEFT_FACE_LEFT,
           RIGHT = GAMEPAD_BUTTON_LEFT_FACE_RIGHT, PLUS = GAMEPAD_BUTTON_MIDDLE_RIGHT;
 const int PANEL_ROWS = 7, PANEL_COLS = 6;  // W4M weapon panel grid (0x920e58)
-const int MAX_CUSTOM = 8;  // Weapon Factory slots
+const int MAX_CUSTOM = 20;  // Weapon Factory slots (0x739ae9: Create Weapon only under 20)
 const Color GOLDEN = {255, 210, 60, 255}, PANEL = {24, 74, 92, 230};  // W4M teal paper
 // Scheme edit page: one row per Scheme byte, in struct order. names: enum labels (min = 0).
 struct SchemeField { const char *label, *fmt; int min, max, step; const char *names[9]; };
@@ -3298,7 +3298,11 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
 
 void Frontend::captureState(const std::string &what) {
     loadTeams();
-    if (what == "selectteam") screen = Local, openTeams(Pop::Mission, -1, 0, 0);
+    if (what.compare(0, 6, "weapon") == 0 && what.size() >= 8) {  // weapon<launch type 0 Air Strike, 1 Launched, 2 Thrown>_<page>[_pop: the delivery type popup, _payload: the payload one]
+        factoryOpen(-1);
+        factoryType(facW, what[6] - '0'), facBackup = facW, facPage = what[8] - '0';
+        facPop = what.find("_pop") != std::string::npos ? 1 : what.find("_payload") != std::string::npos ? 2 : 0;
+    } else if (what == "selectteam") screen = Local, openTeams(Pop::Mission, -1, 0, 0);
     else if (what == "createask") screen = MyWorms, startCreate(Pop::Create);
     else if (what.compare(0, 8, "teamedit") == 0 && what.size() >= 9) {  // teamedit<page>[_<picker>][@<team>]: picker head, eyes, face, hands, sound, weapon, flag, grave
         size_t at = what.find('@');
@@ -3430,15 +3434,6 @@ void wrapped(const char *s, float cx, float y, float w, float size, Color c) {
     if (!line.empty()) text(line.c_str(), cx, y, size, c, 1);
 }
 
-const char *LAUNCH[] = {"Bazooka", "Grenade", "Airstrike", "Homing"};
-const char *SHOT_MODELS[] = {"bazooka", "grenade", "cluster", "banana", "holy", "homing", "airstrike", "dynamite", "gas", "arrow", "sheep", "mine", "barrel", "starburst"};
-const char *ICONS[] = {"Secret Weapon", "Bazooka", "Grenade", "Cluster Grenade", "Banana Bomb", "Holy Hand Grenade", "Homing Missile", "Airstrike",
-                       "Super Airstrike", "Dynamite", "Gas Canister", "Sheep", "Pipe Gun", "Tail Nail", "Mad Cow Strike", "Bubble Trubble"};
-int launchOf(const WeaponDef &w) { return w.kind == Kind::Airstrike ? 2 : w.kind == Kind::Homing ? 3 : w.fuse > 0 ? 1 : 0; }
-template <size_t N> int indexOf(const char *(&list)[N], const std::string &v) {
-    for (size_t i = 0; i < N; i++) if (v == list[i]) return (int)i;
-    return 0;
-}
 }  // namespace
 
 std::string iconOf(const WeaponDef &w) { return weaponIcon(w.icon.empty() ? w.name : w.icon); }
@@ -3505,33 +3500,165 @@ void Frontend::wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, floa
     if ((back || ok) && !spinning) screen = SetupRules;
 }
 
+// ---- Weapon Factory editor (docs/w4m/weapons.md "Weapon Factory editor"): WXFE.WeaponFactory1, rows built by 0x73c8b1 / 0x73cc5a / 0x73df27
+
+int factoryPages(const WeaponDef &w) { return w.launch == 0 ? 1 : w.launch == 1 ? 3 : 2; }
+
+std::vector<FactoryRowSpec> factoryPage(const WeaponDef &w, int page) {
+    using R = FactoryRow;
+    std::vector<FactoryRowSpec> v;
+    auto yesNo = [](bool b) { return std::string(b ? tr("FETXT.Yes", "Yes", "Oui") : tr("FETXT.No", "No", "Non")); };
+    auto str = [&](const char *label, std::string value, R row, bool cluster = false, bool popup = false) {
+        v.push_back({label, std::move(value), row, cluster, false, false, popup, 0});
+    };
+    auto off = [&](const char *label, R row, bool cluster, bool gauge) { v.push_back({label, "---", row, cluster, gauge, true, false, 0}); };  // the rows a missing part disables
+    auto gauge = [&](const char *label, float x, R row, bool cluster = false) { v.push_back({label, "", row, cluster, true, false, false, x}); };
+    const char *land = tr("FETXT.LandDamage", "Land Damage"), *worm = tr("FETXT.WormDamage", "Worm Damage"), *blast = tr("FETXT.BlastStrength", "Blast Strength");
+    const char *wind = tr("FETXT.AffectedByWind", "Wind Affected"), *poison = tr("FETXT.Poison", "Poison");
+    auto payload = [&] { const int id = factoryPayloadOf(w.model); return std::string(id < 0 ? "" : tr(factoryPayloadKey(id).c_str(), "")); };
+    auto detonation = [&](int d) {
+        static const char *const KEY[4] = {"FETXT.Impact", "FETXT.Fuse", "FETXT.UserDetonated", "FETXT.StopsMoving"}, *const EN[4] = {"Impact", "Fuse", "User", "Stops Moving"};
+        return std::string(tr(KEY[d & 3], EN[d & 3]));
+    };
+    const bool homing = w.kind == Kind::Homing;
+    if (w.launch == 1) {  // Launched
+        const int n = w.clusters;
+        const char *spread = tr("FETXT.ClusterSpread", "Cluster Spread"), *det = tr("FETXT.DetonationTrigger", "Detonation");
+        if (page == 0) {
+            static const char *const PART[4] = {"FETXT.WeaponBody", "FETXT.WeaponBarrel", "FETXT.WeaponButt", "FETXT.WeaponSight"}, *const EN[4] = {"Gun Body", "Gun Barrel", "Gun Butt", "Gun Sight"};
+            for (int p = 0; p < 4; p++) {
+                const int ring = factoryGunRing(w, p);
+                str(tr(PART[p], EN[p]), ring < 0 ? "" : tr(factoryGunKey(ring).c_str(), ""), (R)p);
+            }
+            str(tr("FETXT.Poweruplaunch", "Power Up Launch"), yesNo(w.powersUp), R::PowerUp);
+            gauge(w.powersUp ? tr("FETXT.MaxLaunchPower", "Max Launch Power") : tr("FETXT.PresetLaunchPower", "Preset Launch Power"), w.maxPower, R::MaxPower);
+            str(tr("FETXT.Homing", "Homing"), yesNo(homing), R::Homing);
+            if (homing) str(tr("FETXT.AdvancedHoming", "Advanced Homing"), yesNo(w.avoid), R::AvoidLand);
+            else off(tr("FETXT.AdvancedHoming", "Advanced Homing"), R::AvoidLand, false, false);
+        } else if (page == 1) {
+            if (homing) off(wind, R::Wind, false, false);
+            else str(wind, yesNo(w.wind), R::Wind);
+            str(poison, yesNo(w.poison > 0), R::Poison);
+            gauge(land, w.slider[0][0], R::Land), gauge(worm, w.slider[0][2], R::Worm), gauge(blast, w.slider[0][3], R::Blast);
+        } else {
+            str(tr("FETXT.NumClusters", "Clusters"), std::to_string(n), R::Clusters, true);
+            if (n) {
+                str(det, detonation(w.detonate[1]), R::Detonation, true);
+                gauge(spread, w.spread, R::Spread, true);
+                gauge(land, w.slider[1][0], R::Land, true), gauge(worm, w.slider[1][2], R::Worm, true), gauge(blast, w.slider[1][3], R::Blast, true);
+            } else {
+                off(det, R::Detonation, true, false), off(spread, R::Spread, true, false);
+                off(land, R::Land, true, true), off(worm, R::Worm, true, true), off(blast, R::Blast, true, true);
+            }
+        }
+    } else if (w.launch == 0) {  // Air Strike
+        str(tr("FETXT.Payload", "Payload"), payload(), R::Payload, false, true);
+        str(tr("FETXT.NumBomblets", "Bombs"), std::to_string(w.clusters), R::Clusters);
+        str(wind, yesNo(w.wind), R::Wind);
+        str(tr("FETXT.DetonationTrigger", "Detonation"), detonation(w.detonate[0]), R::Detonation);
+        str(poison, yesNo(w.poison > 0), R::Poison);
+        gauge(land, w.slider[0][0], R::Land), gauge(worm, w.slider[0][2], R::Worm), gauge(blast, w.slider[0][3], R::Blast);
+    } else if (page == 0) {  // Thrown
+        str(tr("FETXT.Payload", "Payload"), payload(), R::Payload, false, true);
+        gauge(tr("FETXT.MaxThrowStrength", "Max Throw Strength"), w.maxPower, R::MaxPower);
+        str(wind, yesNo(w.wind), R::Wind);
+        str(tr("FETXT.DetonationTrigger", "Detonation"), detonation(w.detonate[0]), R::Detonation);
+        str(poison, yesNo(w.poison > 0), R::Poison);
+        gauge(land, w.slider[0][0], R::Land), gauge(worm, w.slider[0][2], R::Worm), gauge(blast, w.slider[0][3], R::Blast);
+    } else {
+        const char *spread = tr("FETXT.ClusterSpread", "Cluster Spread"), *det = tr("FETXT.DetonationTrigger", "Detonation");
+        str(tr("FETXT.NumClusters", "Clusters"), std::to_string(w.clusters), R::Clusters, true);
+        if (w.clusters) {
+            gauge(spread, w.spread, R::Spread, true);
+            str(det, detonation(w.detonate[1]), R::Detonation, true);
+            gauge(land, w.slider[1][0], R::Land, true), gauge(worm, w.slider[1][2], R::Worm, true), gauge(blast, w.slider[1][3], R::Blast, true);
+        } else {
+            off(spread, R::Spread, true, false), off(det, R::Detonation, true, false);
+            off(land, R::Land, true, true), off(worm, R::Worm, true, true), off(blast, R::Blast, true, true);
+        }
+    }
+    return v;
+}
+
+bool factoryNameOk(const std::string &name, const std::vector<WeaponDef> &others) {  // 0x73bf08's CheckName: 3+ characters, no leading space or '*', not a stock weapon's or another's
+    if (name.size() < 3 || name[0] == ' ' || name[0] == '*') return false;
+    for (const WeaponDef &o : others) if (o.name == name) return false;
+    for (const WeaponDef &o : catalog().stock) if (o.name == name || tr(o.name.c_str(), o.name.c_str()) == name) return false;
+    return true;
+}
+
+namespace {
+// WXFEP.SelectDroppedList: the payloads sorted by their displayed text, byte-wise (docs/w4m/frontend.md)
+const std::vector<int> &payloadOrder() {
+    static std::vector<int> order;
+    static const char *lang = nullptr;
+    if (order.empty() || lang != tr("FETXT.Yes", "Yes")) {
+        lang = tr("FETXT.Yes", "Yes");
+        order.resize(FACTORY_PAYLOADS);
+        for (int i = 0; i < FACTORY_PAYLOADS; i++) order[i] = i;
+        std::stable_sort(order.begin(), order.end(), [](int a, int b) { return strcmp(tr(factoryPayloadKey(a).c_str(), ""), tr(factoryPayloadKey(b).c_str(), "")) < 0; });
+    }
+    return order;
+}
+
+// WXFE_Item_PowerBar 0x782712: 10 segments, segment i lit when the value > i / 10 + 0.05 (the colours from blue to red), a Grow bar
+void powerBar(Rectangle r, float v) {
+    static const Color LIT[10] = {{0, 129, 157, 255}, {0, 168, 147, 255}, {0, 183, 88, 255}, {0, 199, 29, 255}, {127, 224, 15, 255},
+                                  {255, 249, 0, 255}, {255, 200, 0, 255}, {255, 150, 0, 255}, {242, 81, 0, 255}, {229, 12, 0, 255}};
+    const float sx = r.width / 20;
+    for (int i = 0; i < 10; i++) {
+        const float h = r.height * (1 + i / 10.0f) / 2;
+        DrawRectangleRec({r.x + 2 * sx * i, r.y + r.height - h, sx * 1.6f, h}, v > i / 10.0f + 0.05f ? LIT[i] : Color{72, 104, 121, 200});
+    }
+}
+
+// The pressure gauge (clip Gauge_Pressure: the needle at cost x 70 % of the dial, 70 % = the red zone's start; Gauge_Wobble shakes it there): ours drawn as a dial
+void costGauge(Vector2 c, float cost, float t) {
+    const float r = 62, a0 = 200 * DEG2RAD, sweep = 140 * DEG2RAD, red = 0.7f;
+    DrawCircleV(c, r + 8, Fade(BLACK, 0.55f));
+    for (int i = 0; i < 40; i++) {
+        const float f0 = i / 40.0f, f1 = (i + 1) / 40.0f, a = -a0 + sweep * f0, b = -a0 + sweep * f1;
+        const Vector2 p0 = {c.x + cosf(a) * (r - 6), c.y + sinf(a) * (r - 6)}, p1 = {c.x + cosf(b) * (r - 6), c.y + sinf(b) * (r - 6)};
+        DrawLineEx(p0, p1, 8, f0 >= red ? Color{229, 12, 0, 255} : Color{0, 183, 88, 255});
+    }
+    const bool shake = cost >= 1;  // at the red threshold: Gauge_Wobble
+    const float f = fminf(cost * red, 1), a = -a0 + sweep * f + (shake ? sinf(t * 40) * 0.04f : 0);
+    DrawLineEx(c, {c.x + cosf(a) * (r - 8), c.y + sinf(a) * (r - 8)}, 4, WHITE);
+    DrawCircleV(c, 6, WHITE);
+}
+}  // namespace
+
+void Frontend::factoryOpen(int index) {
+    facW = index < 0 ? factoryTemplate(1) : customs[index];
+    if (index < 0) facW.name.clear();
+    facBackup = facW, facIndex = index, facFocus = -1, facPage = 0, facPop = 0, facStage = 0, facConfirm = false, facPopSel = 0;
+    screen = FactoryEdit;
+}
+
+// the container differs from the loaded one and costs at most 1: Accept Changes (0x73eab2)
+bool Frontend::factoryAcceptable() const { return !factorySame(facW, facBackup) && factoryCost(facW) <= 1; }
+
 void Frontend::factory(int dx, int dy, bool ok, bool back) {
     (void)dx;
     int n = (int)customs.size(), slots = std::min(n + 1, MAX_CUSTOM);
     facSel = clampWrap(facSel + dy, slots);
     heading("Weapon Factory", 640, 14, 48);
     popup({290, 84, 700, 590});
-    for (int i = 0; i < slots; i++) {
-        Rectangle r = {310, 100 + i * 70.0f, 660, 62};
+    const int shown = 8, first = Clamp(facSel - shown / 2, 0, std::max(0, slots - shown));
+    for (int k = 0; k < std::min(slots, shown); k++) {
+        const int i = first + k;
+        Rectangle r = {310, 100 + k * 70.0f, 660, 62};
         bool hi = i == facSel;
         if (hi) brush(r);
-        if (i == n) { text("+ Create a weapon", r.x + r.width / 2, r.y + 16, 28, ink(hi), 1); continue; }
+        if (i == n) { text(tr("FETXT.CreateWeapon", "Create Weapon"), r.x + r.width / 2, r.y + 16, 28, ink(hi), 1); continue; }
         const WeaponDef &w = customs[i];
         if (!image(iconOf(w), {r.x + 8, r.y + 3, 56, 56})) DrawRectangleRounded({r.x + 8, r.y + 3, 56, 56}, 0.3f, 4, GRAY);
         text(w.name.c_str(), r.x + 80, r.y + 6, 28, ink(hi));
-        text(TextFormat("%s  -  %.0f dmg, radius %.1f%s", LAUNCH[launchOf(w)], w.kind == Kind::Airstrike ? w.cdamage : w.damage,
-                        w.kind == Kind::Airstrike ? w.cradius : w.radius, w.clusters ? TextFormat(", %d x %.0f", w.clusters, w.cdamage) : ""),
-             r.x + 80, r.y + 36, 18, LIGHTGRAY);
+        static const char *const TYPE[3] = {"FETXT.AirStrike", "FETXT.Launched", "FETXT.Thrown"}, *const EN[3] = {"Air Strike", "Launched", "Thrown"};
+        text(TextFormat("%s%s", tr(TYPE[w.launch % 3], EN[w.launch % 3]), w.clusters && w.launch ? TextFormat(", %d %s", w.clusters, tr("FETXT.NumClusters", "Clusters")) : ""), r.x + 80, r.y + 36, 18, LIGHTGRAY);
     }
     hints({{"A", "Enter", facSel == n ? "Create" : "Edit"}, {"Y", "Delete", "Delete"}, {"B", "Esc", "Save & back"}});
-    if (ok && facSel == n) {
-        WeaponDef w = {TextFormat("Custom %d", n + 1), Kind::Shell, 0, 0, 30, 0, 0, 0, 0, 1, 0, 1, true, 2};
-        w.model = "bazooka", w.icon = "Secret Weapon";
-        for (auto &c : w.slider) c[0] = 0.5f, c[1] = 0.75f, c[2] = 0.5f, c[3] = 0.5f;  // WXD.DefaultWeapon
-        factoryPayload(w);
-        customs.push_back(w);
-    }
-    if (ok) screen = FactoryEdit, facRow = 0;
+    if (ok) factoryOpen(facSel == n ? -1 : facSel);
     if (facSel < n && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_DELETE})) customs.erase(customs.begin() + facSel);
     if (back) {
         if (!saveCustomWeapons(DATA_DIR "custom_weapons.json", customs)) TraceLog(LOG_WARNING, "cannot save custom_weapons.json");
@@ -3540,89 +3667,156 @@ void Frontend::factory(int dx, int dy, bool ok, bool back) {
 }
 
 void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, float t) {
-    if (customs.empty()) { screen = Factory; return; }
-    WeaponDef &w = customs[std::min<int>(facSel, (int)customs.size() - 1)];
-    int launch = launchOf(w);
-    bool bomber = launch == 2, noCluster = bomber || !w.clusters;
-    // W4M WXFE.WeaponFactory1List rows (0x73cc5a Launched, 0x73df27 Thrown, 0x73c8b1 Air Strike): the 0..1 sliders are gauges, +-0.1 (0x7409f5)
-    struct Num { const char *label; float *f; int *i; float lo, hi, step; const char *fmt; bool gauge, off; };
-    const Num nums[] = {
-        {"Launch speed", &w.speed, nullptr, 5, 50, 1, "%.0f", false, false}, {"Fuse", &w.fuse, nullptr, 1, 5, 0.5f, "%.1f s", false, launch != 1},
-        {tr("FETXT.LandDamage", "Land Damage", "Dégâts au sol"), &w.slider[0][0], nullptr, 0, 1, 0.1f, "%.1f", true, false},
-        {tr("FETXT.WormDamage", "Worm Damage", "Dégâts sur le worm"), &w.slider[0][2], nullptr, 0, 1, 0.1f, "%.1f", true, false},
-        {tr("FETXT.BlastStrength", "Blast Strength", "Force de l'explosion"), &w.slider[0][3], nullptr, 0, 1, 0.1f, "%.1f", true, false},
-        {bomber ? tr("FETXT.NumBomblets", "Bombs", "Bombes") : tr("FETXT.NumClusters", "Clusters", "Fragments"), nullptr, &w.clusters, bomber ? 1.0f : 0, bomber ? 10.0f : 5, 1, "%d", false, false},
-        {tr("FETXT.ClusterSpread", "Cluster Spread", "Propagation des fragments"), &w.spread, nullptr, 0, 1, 0.1f, "%.1f", true, noCluster},
-        {tr("FETXT.LandDamage", "Land Damage", "Dégâts au sol"), &w.slider[1][0], nullptr, 0, 1, 0.1f, "%.1f", true, noCluster},
-        {tr("FETXT.WormDamage", "Worm Damage", "Dégâts sur le worm"), &w.slider[1][2], nullptr, 0, 1, 0.1f, "%.1f", true, noCluster},
-        {tr("FETXT.BlastStrength", "Blast Strength", "Force de l'explosion"), &w.slider[1][3], nullptr, 0, 1, 0.1f, "%.1f", true, noCluster},
-        {"Bounce", &w.bounce, nullptr, 0, 1, 0.05f, "%.2f", false, false},
-        {"Crate weight", nullptr, &w.weight, 0, 10, 1, "%d", false, false}, {"Ammo", nullptr, &w.count, -1, 9, 1, "%d", false, false},
+    const int pages = factoryPages(facW);
+    facPage = Clamp(facPage, 0, pages - 1);
+    std::vector<FactoryRowSpec> rows = factoryPage(facW, facPage);
+    const int n = (int)rows.size();
+    // WXFE.WeaponFactory1 navigation (MENUTWKX): the type, the list, Prev / Next page, Accept Changes, Back; a disabled button is skipped
+    enum { TYPE = -1, PREV = 1000, NEXT, ACCEPT, BACK };
+    const bool prevOn = facPage > 0, nextOn = facPage < pages - 1, accOn = factoryAcceptable();
+    auto below = [&] { return prevOn ? PREV : nextOn ? NEXT : accOn ? ACCEPT : BACK; };
+    auto above = [&](int from) {  // the button row's way up
+        if (from == ACCEPT) return nextOn ? (int)NEXT : prevOn ? (int)PREV : n - 1;
+        return n - 1;
     };
-    const int N = 5 + (int)(sizeof nums / sizeof *nums);  // name, launch, model, icon, wind + numbers
-    facRow = clampWrap(facRow + dy, N);
-    if (dx) switch (facRow) {
-    case 1:
-        launch = clampWrap(launch + dx, 4);
-        w.kind = launch == 2 ? Kind::Airstrike : launch == 3 ? Kind::Homing : Kind::Shell;
-        w.fuse = launch == 1 ? fmaxf(w.fuse, 3) : 0;
-        if (launch == 2) w.clusters = Clamp(w.clusters ? w.clusters : 5, 1, 10);  // WXD.DefaultAirStrike 5 bombs
-        else w.clusters = std::min(w.clusters, 5);
-        break;
-    case 2: w.model = SHOT_MODELS[clampWrap(indexOf(SHOT_MODELS, w.model) + dx, (int)(sizeof SHOT_MODELS / sizeof *SHOT_MODELS))]; break;
-    case 3: w.icon = ICONS[clampWrap(indexOf(ICONS, w.icon) + dx, (int)(sizeof ICONS / sizeof *ICONS))]; break;
-    case 4: (launch == 3 ? w.avoid : w.wind) ^= 1; break;  // Homing: HomingAvoidLand instead of wind (a W4M Factory homing missile ignores wind)
-    default: {
-        const Num &k = nums[facRow - 5];
-        if (k.off) break;
-        if (k.gauge) {  // 0x73447e: past 0 - 0.05 wraps to 1, past 1 + 0.05 to 0
-            float v = *k.f + dx * 0.1f;
-            *k.f = v < -0.05f ? 1 : v > 1.05f ? 0 : Clamp(v, 0, 1);
-        } else if (k.f) *k.f = Clamp(roundf((*k.f + dx * k.step) / k.step) * k.step, k.lo, k.hi);
-        else {  // NoOfCluster wraps (0x740e97): Bomber 1..10, else 0..5
-            int v = *k.i + dx;
-            *k.i = k.i == &w.clusters ? (v < k.lo ? (int)k.hi : v > k.hi ? (int)k.lo : v) : (int)Clamp(v, k.lo, k.hi);
+    const bool popped = facPop != 0 || facConfirm || facStage == 1;
+    auto startName = [&] {
+        facNaming = true;
+        edit(facW.name, "Weapon name");
+#ifdef __SWITCH__
+        facNaming = false;
+#endif
+    };
+    if (facStage == 1) {  // Accept Changes: the name (0x741caa, WXFEP.NewWeaponName), then the weapon is stored under it
+        std::vector<WeaponDef> others;
+        for (size_t i = 0; i < customs.size(); i++) if ((int)i != facIndex) others.push_back(customs[i]);
+        if (typing) facNaming = false;
+        else if (!facNaming) {
+            if (factoryNameOk(facW.name, others)) {
+                if (facIndex < 0) customs.push_back(facW), facSel = (int)customs.size() - 1;
+                else customs[facIndex] = facW;
+                facStage = 0, screen = Factory;
+                return;
+            }
+            startName();
         }
     }
+    if (!popped) {
+        if (back) {
+            if (factorySame(facW, facBackup)) screen = Factory;
+            else facConfirm = true, facPopSel = 0;  // WXFEP.QuitWeaponFactory
+        } else if (dy) {
+            int f = facFocus;
+            if (f == TYPE) f = dy > 0 ? 0 : TYPE;
+            else if (f >= 0) f = dy < 0 ? (f > 0 ? f - 1 : TYPE) : (f < n - 1 ? f + 1 : below());
+            else if (f == PREV || f == NEXT) f = dy < 0 ? n - 1 : accOn ? ACCEPT : f;
+            else if (f == ACCEPT) f = dy < 0 ? above(ACCEPT) : f;
+            else if (f == BACK) f = dy < 0 ? below() == BACK ? n - 1 : (prevOn ? PREV : NEXT) : f;
+            facFocus = f;
+        } else if (dx) {
+            if (facFocus >= 0 && facFocus < n) {
+                const FactoryRowSpec &r = rows[facFocus];
+                if (!r.disabled && !r.popup) factoryAdjust(facW, r.row, dx, r.cluster);
+            } else if (facFocus == PREV && dx > 0) facFocus = nextOn ? NEXT : facFocus;
+            else if (facFocus == NEXT && dx < 0) facFocus = prevOn ? PREV : BACK;
+            else if ((facFocus == PREV && dx < 0) || (facFocus == ACCEPT && dx < 0)) facFocus = BACK;
+            else if (facFocus == BACK && dx > 0) facFocus = accOn ? ACCEPT : facFocus;
+        } else if (ok) {
+            if (facFocus == TYPE) facPop = 1, facPopSel = facW.launch == 1 ? 0 : facW.launch == 2 ? 1 : 2;
+            else if (facFocus == PREV) facPage--, facFocus = prevOn && facPage > 0 ? PREV : NEXT;
+            else if (facFocus == NEXT) facPage++, facFocus = facPage < pages - 1 ? NEXT : PREV;
+            else if (facFocus == ACCEPT) {
+                if (facW.name.empty()) {  // "<FETXT.CustomWeaponBase> %d", the first free
+                    for (int k = 1; facW.name.empty(); k++) {
+                        std::string c = std::string(tr("FETXT.CustomWeaponBase", "Weapon")) + " " + std::to_string(k);
+                        bool used = false;
+                        for (size_t i = 0; i < customs.size(); i++) used |= customs[i].name == c && (int)i != facIndex;
+                        if (!used) facW.name = c;
+                    }
+                }
+                facStage = 1, startName();
+            } else if (facFocus == BACK) {
+                if (factorySame(facW, facBackup)) screen = Factory;
+                else facConfirm = true, facPopSel = 0;
+            } else if (facFocus >= 0 && facFocus < n && !rows[facFocus].disabled) {
+                if (rows[facFocus].row == FactoryRow::Payload) facPop = 2, facPopSel = std::max(0, factoryPayloadOf(facW.model));
+                else factoryAdjust(facW, rows[facFocus].row, 1, rows[facFocus].cluster);
+            }
+        }
+        rows = factoryPage(facW, facPage);
+    } else if (facPop == 1) {  // WXFEP.SelectWFType: Launched, Thrown, Air Strike
+        facPopSel = clampWrap(facPopSel + dy, 3);
+        if (back) facPop = 0;
+        if (ok) {
+            static const int TYPE_LAUNCH[3] = {1, 2, 0};
+            const int to = TYPE_LAUNCH[facPopSel];
+            if (to != facW.launch) facPage = 0;
+            factoryType(facW, to), facPop = 0, facFocus = 0;
+            rows = factoryPage(facW, facPage);
+        }
+    } else if (facPop == 2) {  // WXFEP.SelectDropped: the payloads by their name, a highlight shows the mesh
+        const int count = FACTORY_PAYLOADS;
+        facPopSel = clampWrap(facPopSel + dy + 10 * dx, count);
+        if (back) facPop = 0;
+        if (ok) factoryPayloadPick(facW, payloadOrder()[facPopSel]), facPop = 0;
+    } else if (facConfirm) {  // WXFEP.QuitWeaponFactory: Continue / Quit
+        facPopSel = clampWrap(facPopSel + dy, 2);
+        if (back) facConfirm = false;
+        if (ok) {
+            if (facPopSel == 1) screen = Factory;
+            facConfirm = false;
+        }
     }
-    if (ok && facRow == 0) edit(w.name, "Weapon name");
-    if (ok && facRow == 4) (launch == 3 ? w.avoid : w.wind) ^= 1;
-    if (dx || ok) factoryPayload(w);
 
-    heading("Weapon Factory", 640, 14, 48);
-    popup({200, 64, 640, 616});
-    Rectangle pv = {870, 120, 300, 300};
-    panel(pv, false);
-    if (!image(iconOf(w), {pv.x + 50, pv.y + 30, 200, 200})) text("?", pv.x + 150, pv.y + 80, 90, WHITE, 1);
-    text(w.name.c_str(), pv.x + 150, pv.y + 244, 28, GOLDEN, 1);
-    wrapped("In every match's weapon panel. Online, the host's weapons are used.", 1020, 444, 300, 20, LIGHTGRAY);
-    for (int i = 0; i < N; i++) {
-        Rectangle r = {216, 76 + i * 33.0f, 608, 31};
-        bool hi = i == facRow;
-        std::string v;
-        const char *label = i == 0 ? "Name" : i == 1 ? "Launch" : i == 2 ? "Model" : i == 3 ? "Icon" : i == 4 ? (launch == 3 ? "Avoid land" : "Wind") : nums[i - 5].label;
-        const Num *k = i >= 5 ? &nums[i - 5] : nullptr;
-        if (i == 0) v = w.name + (typing && fmodf(t, 1) < 0.5f ? "_" : "");
-        else if (i == 1) v = LAUNCH[launch];
-        else if (i == 2) v = w.model;
-        else if (i == 3) v = w.icon;
-        else if (i == 4) v = launch == 3 ? (w.avoid ? "Yes" : "No") : w.wind ? "Affected" : "Not affected";
-        else if (k->off) v = k->f == &w.fuse ? "Impact" : "---";
-        else v = k->i == &w.count && w.count < 0 ? "Infinite" : k->f ? TextFormat(k->fmt, *k->f) : TextFormat(k->fmt, *k->i);
-        if (hi) brush(r);
-        text(label, r.x + 10, r.y + 4, 22, ink(hi));
-        if (k && k->gauge && !k->off) {  // WXFE_PowerColumns
-            Rectangle g = {r.x + r.width - 250, r.y + 9, 180, 13};
-            DrawRectangleRec(g, Fade(BLACK, 0.5f));
-            DrawRectangleRec({g.x, g.y, g.width * *k->f, g.height}, hi ? GOLDEN : LIGHTGRAY);
-            DrawRectangleLinesEx(g, 1, WHITE);
-        }
-        text(TextFormat(hi && i && !(k && k->off) ? "< %s >" : "%s", v.c_str()), r.x + r.width - 10, r.y + 4, 22, WHITE, 2);
+    heading(tr("FETXTH.WeaponFactory", "WEAPON FACTORY"), 640, 14, 48);
+    popup({150, 64, 700, 616});
+    text(tr("FETXTSH.Settings", "Settings"), 500, 80, 26, GOLDEN, 1);
+    static const char *const TYPE_KEY[3] = {"FETXT.AirStrike", "FETXT.Launched", "FETXT.Thrown"}, *const TYPE_EN[3] = {"Air Strike", "Launched", "Thrown"};
+    feRow({176, 112, 648, 31}, facFocus == TYPE && !popped ? 1 : 0, tr("FETXTSH.WeaponType", "Weapon Type"), tr(TYPE_KEY[facW.launch % 3], TYPE_EN[facW.launch % 3]), false);
+    for (int i = 0; i < n; i++) {
+        Rectangle r = {176, 160 + i * 33.0f, 648, 31};
+        const FactoryRowSpec &s = rows[i];
+        const int state = s.disabled ? 2 : facFocus == i && !popped ? 1 : 0;
+        feRow(r, state, s.label.c_str(), s.gauge && !s.disabled ? "" : s.value.c_str(), !s.disabled && !s.popup);
+        if (s.gauge && !s.disabled) powerBar({r.x + r.width - 280, r.y + 5, 190, 21}, s.v);
     }
+    // page, Prev / Next (WXFE.MissionPage = "FETXT.Page<n>/<pages>")
+    const float py = 160 + 9 * 33.0f + 12;
+    text(TextFormat("%s/%d", tr(TextFormat("FETXT.Page%d", facPage + 1), TextFormat("Page %d", facPage + 1)), pages), 500, py, 22, WHITE, 1);
+    const Color on = WHITE, offc = Fade(WHITE, 0.3f);
+    text("<", 330, py, 28, facPage > 0 ? (facFocus == PREV ? GOLDEN : on) : offc, 1), text(">", 670, py, 28, facPage < pages - 1 ? (facFocus == NEXT ? GOLDEN : on) : offc, 1);
+    text(plain(tr("FETXT.Generic.Back", "Back")).c_str(), 280, 628, 26, facFocus == BACK ? GOLDEN : WHITE, 1);
+    text(tr("FETXT.Accept", "Accept"), 640, 628, 26, !accOn ? offc : facFocus == ACCEPT ? GOLDEN : WHITE, 1);
+
+    // the preview (the gun parts or the payload, WXFE_WeaponFactoryMeshDesc) and the pressure gauge
+    Rectangle pv = {870, 100, 300, 300};
+    DrawRectangleRounded(pv, 0.08f, 6, Fade(BLACK, 0.35f));
+    feWeapon(facPop == 2 ? factoryPayloadGraphic(payloadOrder()[facPopSel]) : facW.graphic, {250, 40, 0}, 4.5f, {0.31f, 0.82f, 0.21f});  // a payload's highlight shows its mesh
+    text(facW.name.empty() ? "" : facW.name.c_str(), pv.x + 150, pv.y + 250, 26, GOLDEN, 1);
+    costGauge({1020, 520}, factoryCost(facW), t);
     if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
-    else if (facRow == 0) hints({{"A", "Enter", "Rename"}, {"D-pad", "Up/Down", "Move"}, {"B", "Esc", "Back"}});
-    else hints({{"D-pad", "Up/Down", "Move"}, {"D-pad", "Left/Right", "Change"}, {"B", "Esc", "Back"}});
-    if (back) screen = Factory;
+    else hints({{"D-pad", "Up/Down", "Move"}, {"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Select"}, {"B", "Esc", "Back"}});
+
+    if (facPop) {  // popups over the editor
+        const bool types = facPop == 1;
+        const int count = types ? 3 : FACTORY_PAYLOADS, shown = types ? 3 : 9, first = Clamp(facPopSel - shown / 2, 0, count - shown);
+        popup({types ? 560.0f : 480.0f, 160, types ? 300.0f : 360.0f, 60.0f + shown * 36});
+        text(types ? tr("FETXT.DeliveryMethod", "Delivery Method") : tr("FETXT.SelectWeapon", "Select a weapon"), types ? 710 : 660, 172, 24, GOLDEN, 1);
+        for (int k = 0; k < shown; k++) {
+            const int i = first + k;
+            static const int LAUNCH_OF[3] = {1, 2, 0};
+            const char *label = types ? tr(TYPE_KEY[LAUNCH_OF[i]], TYPE_EN[LAUNCH_OF[i]]) : tr(factoryPayloadKey(payloadOrder()[i]).c_str(), "");
+            Rectangle r = {types ? 580.0f : 500.0f, 210 + k * 36.0f, types ? 260.0f : 320.0f, 32};
+            if (i == facPopSel) brush(r);
+            text(label, r.x + r.width / 2, r.y + 4, 22, ink(i == facPopSel), 1);
+        }
+    }
+    if (facConfirm) {
+        popup({420, 250, 440, 200});
+        wrapped(tr("FETXT.ConfirmNoSave", "Are you sure you want to lose changes?"), 640, 275, 380, 24, WHITE);
+        text(tr("FETXT.No", "No"), 640, 360, 26, ink(facPopSel == 0), 1);
+        text(tr("FETXT.Yes", "Yes"), 640, 400, 26, ink(facPopSel == 1), 1);
+    }
 }
 
 // ---------------------------------------------------------------- HUD
@@ -4443,7 +4637,7 @@ static void namePlate(Texture2D t, float w, float h) {
 static const char *weaponHelp(const WeaponDef &w, bool factory) {
     if (factory) {
         static const char *const LAUNCH[3] = {"HelpText.kSecretWeaponBomber", "HelpText.kSecretWeaponLaunched", "HelpText.kSecretWeaponThrown"};
-        int l = factoryLaunch(w);
+        int l = w.launch;
         if (const char *s = l < 3 ? tr(LAUNCH[l], nullptr) : nullptr) return s;
         return tr("HelpText.kWeaponSecretWeapon0", "");
     }

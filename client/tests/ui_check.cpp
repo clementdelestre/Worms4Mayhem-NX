@@ -402,5 +402,30 @@ int main() {
         m = Acting::lightMul(0);
         assert(m.x == 1 && m.y == 1 && m.z == 1);
     }
+    {  // Weapon Factory editor pages (0x73c8b1, 0x73cc5a, 0x73df27): rows in the builders' order, gauges for the sliders, `---` for the rows a part disables
+        using R = FactoryRow;
+        auto labels = [](const WeaponDef &w, int page) {
+            std::string s;
+            for (const Ui::FactoryRowSpec &r : Ui::factoryPage(w, page)) s += r.label + (r.disabled ? "=---" : r.gauge ? "=~" : "=" + r.value) + "|";
+            return s;
+        };
+        WeaponDef l = factoryTemplate(1), t = factoryTemplate(2), a = factoryTemplate(0);
+        assert(Ui::factoryPages(a) == 1 && Ui::factoryPages(l) == 3 && Ui::factoryPages(t) == 2);
+        assert(labels(l, 0) == "Gun Body=Desert|Gun Barrel=Desert|Gun Butt=Desert|Gun Sight=Desert|Power Up Launch=Yes|Max Launch Power=~|Homing=No|Advanced Homing=---|");
+        assert(labels(l, 1) == "Wind Affected=Yes|Poison=No|Land Damage=~|Worm Damage=~|Blast Strength=~|");
+        assert(labels(l, 2) == "Clusters=0|Detonation=---|Cluster Spread=---|Land Damage=---|Worm Damage=---|Blast Strength=---|");
+        factoryAdjust(l, R::Homing, 1), factoryAdjust(l, R::PowerUp, 1), l.clusters = 2;
+        assert(labels(l, 0).find("Preset Launch Power=~|Homing=Yes|Advanced Homing=No|") != std::string::npos && labels(l, 1).rfind("Wind Affected=---|", 0) == 0);
+        assert(labels(l, 2) == "Clusters=2|Detonation=Impact|Cluster Spread=~|Land Damage=~|Worm Damage=~|Blast Strength=~|");
+        assert(labels(t, 0) == "Payload=Special Grenade|Max Throw Strength=~|Wind Affected=No|Detonation=Fuse|Poison=No|Land Damage=~|Worm Damage=~|Blast Strength=~|");
+        assert(Ui::factoryPage(t, 0)[0].popup && labels(t, 1) == "Clusters=0|Cluster Spread=---|Detonation=---|Land Damage=---|Worm Damage=---|Blast Strength=---|");
+        t.clusters = 1, t.detonate[1] = 3;
+        assert(labels(t, 1) == "Clusters=1|Cluster Spread=~|Detonation=Stops Moving|Land Damage=~|Worm Damage=~|Blast Strength=~|");
+        assert(labels(a, 0) == "Payload=Classic Bomb|Bombs=5|Wind Affected=No|Detonation=Impact|Poison=No|Land Damage=~|Worm Damage=~|Blast Strength=~|");
+        assert(Ui::factoryNameOk("Boom", {}) && !Ui::factoryNameOk("ab", {}) && !Ui::factoryNameOk(" Boom", {}) && !Ui::factoryNameOk("*Boom", {}));
+        WeaponDef same = a;
+        same.name = "Boom";
+        assert(!Ui::factoryNameOk("Boom", {same}));
+    }
     puts("ui_check ok");
 }

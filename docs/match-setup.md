@@ -139,8 +139,7 @@ Pixels of the 1280 x 720 screen. 4 player slots side by side (`Frontend::teamSlo
   list (5 rows, the soundbank's 8, scrolled to keep the highlight, the ListNavigation arrows past either end) sorted by text byte-wise with the "nothing" row (`FETXT.Nothing`) first. Previews: the attachment
   model (hat, glasses, tash) at (0, 90) x 6 moved by its FrontEndOffsets (attachments.txt columns 10..12), the grave model (graves/*.glb, metres x 80 = W4M's scale 4) at (0, 22) turned (-0.29, -2.43, 0.2),
   the HUD.Flag cloth (`hud_flag.glb`, clip Go looped) at the FlagObject's place, the flag's TGA (flipped: ours are top-down) on it, FlagScale (9, 8, 8), item Orientation (0.35, -0.2, -0.1) [data + disasm, frontend.md], the gloves' FrontEndMeshID mesh (`gloves/<x>p`, attachments.txt columns 14..15). The highlight moves only the preview; A sets the field, B leaves it unchanged [data: Highlighted / Selected messages].
-- Open [not exported by w4m-models: the models agent's]: the Weapon Factory weapon mesh,
-  the grave picker's `WXP_FE_Ghost` particle. The gloves are not drawn on the worm in the editor (skinned model: the models agent's) [open].
+- Open [not exported by w4m-models: the models agent's]: the grave picker's `WXP_FE_Ghost` particle. The gloves are not drawn on the worm in the editor (skinned model: the models agent's) [open].
 
 ## Team pickers [W4M `WXFEP.SelectTeam`, docs/w4m/frontend.md "Single player WXFEP.SelectTeam", "Online"]
 - Story and Challenges (Local menu): the human saved teams then "Créer une équipe" (no CPU question), title `FETXT.SelectStoryTeam` / `SelectChallengeTeam`; the pick sets `missionTeam` and goes to the book / list, whose progress is that team's (above).

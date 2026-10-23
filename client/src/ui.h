@@ -64,6 +64,12 @@ extern bool forceHelp;      // --ui help captures
 struct MenuItem;  // ui.cpp: one W4M menu entry and its place on screen
 // Title, main menu, match setup, options. frame() updates and draws (inside Begin/EndDrawing).
 
+// One row of a Weapon Factory editor page (0x73c8b1 / 0x73cc5a / 0x73df27): a gauge row shows a 0..1 bar, a disabled one "---"; cluster rows edit the Cluster container
+struct FactoryRowSpec { std::string label, value; FactoryRow row; bool cluster, gauge, disabled, popup; float v; };
+int factoryPages(const WeaponDef &w);
+std::vector<FactoryRowSpec> factoryPage(const WeaponDef &w, int page);
+bool factoryNameOk(const std::string &name, const std::vector<WeaponDef> &others);  // CheckName: 3+ characters, no leading ' ' or '*', not a stock weapon's or another's
+
 struct Frontend {
     enum Screen { Title, Main, Options, Controls, SchemeEdit, Wormpot, Factory, FactoryEdit, Local, Network, MyWorms, HelpOpts, Confirm, Missions, SetupTeams, SetupMap, SetupRules, TeamEdit } screen = Title;  // Missions: hands over to missionMenu(); SetupTeams / Map / Rules: the match setup, local or in a network room (lobby); TeamEdit: W4M WXFE.TeamOptions
     enum Action { None, StartLocal, Quit, Replays, SinglePlayer, QuickMatch, Salon, RoomStart, LeaveRoom };  // Salon: open the network salon (wantLan); RoomStart: the host starts the room's match; LeaveRoom: B on the room's first screen
@@ -175,7 +181,14 @@ private:
     void saveSetup(const GameConfig &cfg) const;
     bool edit(std::string &s, const char *hint);  // true when s changed (Switch: swkbd, desktop: starts inline entry)
     // Wormpot slot machine (3 reels) and Weapon Factory (custom_weapons.json, sent to the room in Start)
-    int reel = 0, spinTo[3] = {}, facSel = 0, facRow = 0;
+    int reel = 0, spinTo[3] = {}, facSel = 0;
+    // the Weapon Factory editor (WXD.EditWeapon / WXD.BackupWeapon): facIndex the weapon in customs (-1 new), facFocus the item, facPage its list page,
+    // facPop the popup (0 none, 1 delivery type, 2 payload), facStage 1 the name entry, facConfirm WXFEP.QuitWeaponFactory
+    WeaponDef facW, facBackup;
+    int facIndex = -1, facFocus = -1, facPage = 0, facPop = 0, facPopSel = 0, facStage = 0;
+    bool facConfirm = false, facNaming = false;
+    void factoryOpen(int index);
+    bool factoryAcceptable() const;
     float spinEnd[3] = {};
     std::vector<WeaponDef> customs;
     void wormpot(GameConfig &cfg, int dx, int dy, bool ok, bool back, float t);

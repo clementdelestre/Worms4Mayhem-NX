@@ -1982,7 +1982,7 @@ int main(int argc, char **argv) {
             front.screen = !strncmp(uiShot, "netmap", 6) ? Ui::Frontend::SetupMap : !strncmp(uiShot, "netrules", 8) ? Ui::Frontend::SetupRules : Ui::Frontend::SetupTeams;
         }
         if (!strcmp(uiShot, "wormpot")) front.screen = Ui::Frontend::Wormpot, opt.wormpot = WP_DOUBLE_DAMAGE | WP_CRATE_SHOWER << 8 | WP_QUICK_WALK << 16;
-        if (!strcmp(uiShot, "factory") || !strcmp(uiShot, "weapon")) front.screen = !strcmp(uiShot, "weapon") ? Ui::Frontend::FactoryEdit : Ui::Frontend::Factory;
+        if (!strcmp(uiShot, "factory")) front.screen = Ui::Frontend::Factory;
         if (REPLAYS && (!strcmp(uiShot, "replays") || !strcmp(uiShot, "playback"))) replayFiles = listReplays(DATA_DIR "replays"), screen = Screen::Replays;
         if (REPLAYS && !strcmp(uiShot, "playback") && !replayFiles.empty() && play.load(DATA_DIR "replays/" + replayFiles[0])) playing = true, startMatch(play.cfg);
         // missions | challenges | missionhud | missionend | missionpause | missionbrief [mission id]
