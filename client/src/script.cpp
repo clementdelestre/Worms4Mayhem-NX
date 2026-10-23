@@ -469,7 +469,7 @@ struct ScriptHost {
         Vector3 p;
         if (!marker(g, at, p)) return (void)TraceLog(LOG_WARNING, "script: no explosion marker '%s'", at.c_str());
         // 0x4f9970: impulse centre ImpulseOffset units above the blast; ParticleEffect, empty: WXP_ExplosionX_Med (0x4f9a8c)
-        g.explode(p, Blast{crater / 20, reach / 20, dmg, imp * 50, impReach / 20, -offset / 20}, 0, 0, -1, intern(fx.empty() ? "WXP_ExplosionX_Med" : fx));  // units, units/ms -> m, m/s
+        g.explode(p, Blast{crater / 20, reach / 20, dmg, imp * 50, impReach / 20, -offset / 20}, 0, -1, intern(fx.empty() ? "WXP_ExplosionX_Med" : fx));  // units, units/ms -> m, m/s
     }
 
     // UI-only events: queued here, never read back by the sim or the checksum
@@ -831,7 +831,7 @@ struct ScriptHost {
         bool current = false;
         for (const GameEvent &e : ev) {  // 0x5ab7e0, each hit: Worm.Damaged.Current (the active worm, any phase, not types 5 / 6), then Worm.Damaged
             if (e.kind != GameEvent::Hurt || e.worm < 0) continue;
-            if (e.worm == g.current && e.weapon != 6 && S->started) current = true, call("Worm_Damaged_Current");
+            if (e.worm == g.current && !quietDamage(e.weapon) && S->started) current = true, call("Worm_Damaged_Current");
             put("DamagedWorm.Id", slotOf(e.worm)), call("Worm_Damaged");
         }
         if (g.selfHurt && !S->hurtSent && !current && S->started) call("Worm_Damaged_Current");  // drowned (0x5ad77d), vapourised: no Hurt event

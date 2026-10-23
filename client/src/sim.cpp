@@ -793,7 +793,7 @@ void Game::stepFactory() {
     const FactoryData &d = factoryData;
     if (f.damaged ? clock > f.die : f.pos.y + 10 * U < water) {
         f.on = false;
-        explode(f.pos, {d.crater * U, d.reach * U, d.damage, d.push * 1000 * U, d.pushReach * U, 5 * U}, 0, 0, -1, "WXP_Explosion_MineMachine");
+        explode(f.pos, {d.crater * U, d.reach * U, d.damage, d.push * 1000 * U, d.pushReach * U, 5 * U}, 0, -1, "WXP_Explosion_MineMachine");
         return;
     }
     if (f.state == 1) f.until = clock + msTicks(2000), f.state = 2;
@@ -836,13 +836,13 @@ int Game::mineType() { return mineDet >= DT_NORMAL && mineDet <= DT_BIGPUSH ? mi
 // (0x57f35e), then its bomblets; BigPush: Explode 0x57f1c6 doubles the impulse and its radius, x0.3 damage, reach and crater
 void Game::mineBlast(Vector3 p, int type) {
     if (type == DT_CLUSTERS) {
-        explode(p, MINE_CLUSTER_BLAST, 0, 3, -1, "WXP_ExplosionX_Med");  // kWeaponLandmineCluster: no DetonationSfx
+        explode(p, MINE_CLUSTER_BLAST, 3, -1, "WXP_ExplosionX_Med");  // kWeaponLandmineCluster: no DetonationSfx
         for (size_t i = 0; i < WEAPONS.size(); i++) if (WEAPONS[i].kind == Kind::Mine && !customWeapon((int)i)) { bomblets(p, (int)i, shots); break; }
         return;
     }
     Blast b = superBlast(MINE_BLAST, W4M_LANDMINE);
     if (type == DT_BIGPUSH) b.push *= 2, b.pushReach *= 2, b.damage *= 0.3f, b.reach *= 0.3f, b.crater *= 0.3f;
-    explode(p, b, 0, 0, -1, type == DT_FIRE ? "WXP_Napalm" : "WXP_Explosion_Mine", "global/ExplosionRegular");
+    explode(p, b, 0, -1, type == DT_FIRE ? "WXP_Napalm" : "WXP_Explosion_Mine", "global/ExplosionRegular");
 }
 
 // 0x5519d0, one per 20 ms update from the blast point: azimuth 2 pi r, tilt from up ConeAngle r, speed Min + (Max - Min) r; the
@@ -1440,7 +1440,7 @@ void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
     Blast bl = blastOf(sd, false);
     bl.crater = 0;  // ShotLandDamageRadius 0.1 units: no crater
     bl.pushOff = {-dir.x * 0.1f, -0.1f, -dir.z * 0.1f};  // 0x56c110: the impulse centre 2 units behind the hit and 2 low
-    explode(h.at, bl, 0, 0, o.weapon, nullptr, nullptr, nullptr, int(&o - objects.data()));
+    explode(h.at, bl, 0, o.weapon, nullptr, nullptr, nullptr, int(&o - objects.data()));
     if (h.obj >= 0) crateHit(objects[h.obj], bl.damage * (doubled() ? 2 : 1));
 }
 
@@ -1587,7 +1587,7 @@ void Game::stepObjects() {
                 else if (o.type == Object::Target || o.weapon < -1) {  // a target or a script's custom crate: no contents (0x5cb61e)
                 } else if (o.weapon < 0) {  // NumContents (0x5c86af); label jumps on pickup (W4M); Worm.Antidote also clears 0x400 (0x5adecd)
                     int hp = o.count == CRATE_STOCK ? cfg.scheme.crateHealth : o.count;
-                    w.hp += hp, w.counted += hp, w.poison = 0, w.abducted = false;
+                    w.hp += hp, w.counted += hp, antidote(w);
                 }
                 else if (WEAPONS[o.weapon].kind == Kind::DoubleDamage) doubleDamage = true;
                 else if (WEAPONS[o.weapon].kind == Kind::CrateSpy) spy[w.team] = 1;  // never reset (0x5c8b20)
@@ -1604,9 +1604,9 @@ void Game::stepObjects() {
         if (opened >= 0) openMystery(opened, worms[opener]);
         if (boom && !gone) {
             if (x.type == Object::Mine) mineBlast(x.pos, det);
-            else if (x.type == Object::Barrel) explode(x.pos, BARREL_BLAST, 0, 0, -1, "WXP_Explosion_OilDrum", "weapons/ExplosionLarge");  // 0x5d1540
-            else if (x.type == Object::Sentry) explode(sentryBase(x), blastOf(WEAPONS[x.weapon], true), 0, 0, -1, named(WEAPONS[x.weapon].cfx));  // 0x56bfb0: Death*, ExplosionFx, no ExplosionSfx
-            else explode(x.pos, CRATE_BLAST, 0, 0, -1, "WXP_ExpiryExplosion");  // 0x5c59e9
+            else if (x.type == Object::Barrel) explode(x.pos, BARREL_BLAST, 0, -1, "WXP_Explosion_OilDrum", "weapons/ExplosionLarge");  // 0x5d1540
+            else if (x.type == Object::Sentry) explode(sentryBase(x), blastOf(WEAPONS[x.weapon], true), 0, -1, named(WEAPONS[x.weapon].cfx));  // 0x56bfb0: Death*, ExplosionFx, no ExplosionSfx
+            else explode(x.pos, CRATE_BLAST, 0, -1, "WXP_ExpiryExplosion");  // 0x5c59e9
             if (x.type == Object::Mine && wp(WP_MINE_RESPAWN)) respawns.push_back({x.pos, msTicks(500)});
         }
     }
@@ -2031,7 +2031,7 @@ void Game::use(Worm &w) {
         Blast b = gunBlast(weapon);
         b.pushOff = h.worm >= 0 || h.sentry >= 0 ? Vector3{-dir.x * 0.1f, -0.1f, -dir.z * 0.1f} : Vector3Scale(dir, -0.05f);
         if (h.land && h.dist < GUN_RANGE) clearVoxel(h.at, dir);  // LandDamageMagnitude 25 >= 15: every land hit (0x55d8c0)
-        if (h.dist < GUN_RANGE) explode(h.at, b, 0, 0, weapon);
+        if (h.dist < GUN_RANGE) explode(h.at, b, 0, weapon);
         if (h.obj >= 0) crateHit(objects[h.obj], b.damage * (doubled() ? 2 : 1));  // DamageImpulseMessage 0x518c20 -> 0x5c8a90, x2 under DoubleDamage
         if (--shotsLeft == 0 && endlessGun) shotsLeft = 1;  // Challenge.EndlessGun (0x55efbf): no last shot, the worm may move (0x55d54f)
         else if (shotsLeft == 0) phase = Phase::Flying;
@@ -2160,7 +2160,7 @@ void Game::stepWorm(Worm &w) {
         bool winged = icarus == 2 && &w == &worms[current];  // W4M Redbull sets flag 0x40 each flight frame (0x587446)
         int dmg = winged ? 0 : fallDamage(speed), wi = int(&w - worms.data());
         if (speed >= FALL_SAFE && !w.motion.slide && !winged && cfg.scheme.fallDamage && !wp(WP_WORMS_DROWN)) w.hardAt = clock;  // 0x5af601: kWE 15 only walking, flags 0x8840 (no-damage) land soft
-        if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi), events.back().count = dmg, emit(GameEvent::Fall, w.pos, wi); }
+        if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi, 1), events.back().count = dmg, emit(GameEvent::Fall, w.pos, wi); }
     };
     bool jet = jetting && &w == &worms[current];  // W4M jetpack contact 0x5633e9: walls and ceilings bounce at 0.8; it lands itself, no Ballistic
     w.motion.input = &w == &worms[current] ? steerIn : Vector3{};
@@ -2245,7 +2245,7 @@ void Game::deathBlast(const Worm &w, int wi) {
     Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z}, at = feet;
     if (surfaceY(water, 0) >= feet.y) at.y = surfaceY(water, 1);
     if (w.drowned) emit(GameEvent::Pop, {w.pos.x, surfaceY(water, 1), w.pos.z}, wi), events.back().fx = "WXP_WormDrownPopSplash";
-    explode(feet, DEATH_BLAST, 0, 0, -1, "WXP_Explosion_Small", nullptr, &at);
+    explode(feet, DEATH_BLAST, 0, -1, "WXP_Explosion_Small", nullptr, &at);
     emit(GameEvent::Death, w.pos, wi);
 }
 
@@ -2473,6 +2473,11 @@ void Game::impulse(Worm &o, Vector3 v) {
     o.vel = Vector3Scale(v, doubled() ? 2 : 1), o.grounded = false;
 }
 
+void Game::antidote(Worm &w) {
+    w.poison = 0, w.abducted = false;
+    emit(GameEvent::Antidote, w.pos, int(&w - worms.data()));
+}
+
 void Game::hurt(Worm &w, int dmg, bool blast, int type) {
     if (doubled()) dmg *= 2;  // W4M 0x518da5 doubles the message first,
     if (blast && w.armour) dmg = dmg * ARMOUR / 100;  // then the worm's Shield.DamageScale (explosions only)
@@ -2483,9 +2488,9 @@ void Game::hurt(Worm &w, int dmg, bool blast, int type) {
     if (dmg <= 0 || wp(WP_WORMS_DROWN)) return;
     w.hp -= dmg;
     int wi = int(&w - worms.data());
-    emit(GameEvent::Hurt, w.pos, wi);
+    emit(GameEvent::Hurt, w.pos, wi, type);
     events.back().count = dmg;
-    if (wi == current) { selfHurt = true; return; }
+    if (wi == current) { selfHurt |= !quietDamage(type); return; }
     Worm &h = worms[current];
     if (cfg.rules & RULE_VAMPIRE) h.hp = std::max(h.hp, std::min(200, h.hp + (int)(dmg * 0.5f + 0.5f)));
 }
@@ -2601,7 +2606,7 @@ void Game::openMystery(int item, Worm &w) {
         break;
     case MY_HEALTH: case MY_SUPER_HEALTH: {  // MysteryHealth / MysterySuperHealth.HealthValue, Worm.Antidote
         int hp = item == MY_HEALTH ? 25 : 100;
-        w.hp += hp, w.counted += hp, w.poison = 0, w.abducted = false;
+        w.hp += hp, w.counted += hp, antidote(w);
         break;
     }
     case MY_DAMAGE:  // MysteryDamage.DamageValue 25, type 0, ApplyDamage at once
@@ -2639,7 +2644,7 @@ Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
     return d < b.pushReach && d > 1e-4f ? Vector3Scale(to, b.push * 1.2f * (b.pushReach - d) / b.pushReach / d) : Vector3{0, 0, 0};
 }
 
-void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapon, const char *fx, const char *sfx, const Vector3 *fxAt, int self) {
+void Game::explode(Vector3 p, const Blast &b0, int type, int weapon, const char *fx, const char *sfx, const Vector3 *fxAt, int self) {
     Blast b = b0;  // W4M ExplosionMessage 0x518d80: DoubleDamage doubles the radii and the impulse too (hurt() doubles the damage)
     if (doubled()) b.crater *= 2, b.reach *= 2, b.push *= 2, b.pushReach *= 2;
     for (Bubble &bb : bubbles) bb.rest = 0;  // 0x54effa: any Explosion lets it fall again
@@ -2658,10 +2663,10 @@ void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapo
         const Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z};  // 0x5ae4f0 measures from WormData Position (+0x38)
         int dmg = blastDamage(b, p, feet);
         Vector3 kick = blastKick(b, p, feet);
-        if (!dmg && poison <= 0 && Vector3LengthSqr(kick) == 0) continue;
-        if (w.nailed && Vector3Distance(w.pos, p) < b.crater + R) w.nailed = false;  // the ground around it is gone
+        float skin = fmaxf(0, Vector3Distance(feet, p) - R);
+        if (w.nailed && skin < b.reach && skin < b.crater) w.nailed = false;  // 0x5ae4f0: inside WormDamageRadius, a worm closer than LandDamageRadius comes loose
+        if (!dmg && Vector3LengthSqr(kick) == 0) continue;
         if (dmg) hurt(w, dmg, true, type);
-        if (poison > 0 && Vector3Distance(w.pos, p) < b.reach + R && !wp(WP_WORMS_DROWN)) w.poison = std::max(w.poison, (int)poison), w.abducted = false;  // Worm.Poison clears 0x400 (0x5addd1)
         if (w.nailed) continue;
         w.vel = Vector3Add(w.vel, Vector3Scale(kick, (wp(WP_STICKY) ? 0.5f : 1) * (w.armour ? 0.5f : 1)));  // W4M shield: half
         w.motion.air = w.motion.slide = false;  // ImpulseWorm 0x5ad010: air control off, then Ballistic or Sliding
@@ -3121,7 +3126,7 @@ void Game::stepShots(const Input &in, bool detonate) {
             if (smash && !lifeEnd) at = Vector3Subtract(np, {0, wd.lift, 0});  // 0x553970: a land-only blast of Radius at the centre, then Explode Radius below it
             else if (smash) at = np;  // expiry: Detonate at the entity
             // a smash is Explode + DetonationFx (0x553970), no DetonationSfx; kind by container name prefix kWeaponCluster/Factory (0x57f32c)
-            explode(at, b, s.child ? 0 : wd.poison, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0, smash || wd.stick > 0 ? s.weapon : -1,
+            explode(at, b, (size_t)s.weapon >= baseWeapons ? 4 : wd.name == "Cluster Grenade" ? 2 : 0, smash || wd.stick > 0 ? s.weapon : -1,
                     named(s.child ? wd.cfx : wd.fx), smash && !lifeEnd ? nullptr : named(s.child ? wd.csfx : wd.sfx));
             if (wd.name == "Starburst" && !s.child && worms[current].alive) vapourize(worms[current]);  // Detonate 0x588dd0: the blast, then Worm.Vapourize
             bool fly = !s.child && ((wd.kind == Kind::Homing && !wd.avoid) || (wd.kind == Kind::SuperSheep && (wd.name == "Starburst" ? !starLit(s) : !wd.walks || s.stage)));
@@ -3132,7 +3137,7 @@ void Game::stepShots(const Input &in, bool detonate) {
         if (fatBlast > 0) {  // 0x555066: WormDamage / ImpulseMagnitude kept, the three radii scaled, the impulse at the centre
             Blast b = superBlast(blastOf(wd, false), containerOf(s.weapon, false));
             b.crater *= fatBlast, b.reach *= fatBlast, b.pushReach *= fatBlast, b.pushDepth = 0;
-            explode(s.pos, b, 0, 0, s.weapon, wd.radius * fatBlast < 3 ? "WXP_Explosion_Small" : "WXP_ExplosionX_Med");  // LandDamageRadius x scale < 60 units
+            explode(s.pos, b, 0, s.weapon, wd.radius * fatBlast < 3 ? "WXP_Explosion_Small" : "WXP_ExplosionX_Med");  // LandDamageRadius x scale < 60 units
         }
         if (!boom && !s.child && wd.name == "Starburst" && !starLit(s) && worms[current].alive) {  // 0x5891e0: attached at launch, takes the rocket's position and velocity
             Worm &r = worms[current];
@@ -3302,7 +3307,7 @@ void Game::step(const Input &raw) {
         spend(w.team, weapon), bubbleAt = -1;
     }
     if (icarus == 3 && clock >= flapAt) {  // 0x587750 at the PostLaunchDelay: Worm.Antidote; its heal up to WormData InitialEnergy never
-        w.poison = 0, w.abducted = false;     // fires: no code writes that field (only the serializer, data default 0), so hp >= it
+        antidote(w);                          // fires: no code writes that field (only the serializer, data default 0), so hp >= it
         icarus = 1;
     }
     if (icarus == 1 && !w.grounded) icarus = 2, flapAt = clock + FLAP_WAIT, drift = {};  // took off: PackAccessory.Wield
@@ -3407,7 +3412,7 @@ void Game::step(const Input &raw) {
     for (size_t i = 0; i < gas.size();) {
         Gas &c = gas[i];  // WXP_GasCloud's ParticleMass 0 cancels its wind (0x5b7450): the cloud stays put
         for (Worm &x : worms)
-            if (x.alive && Vector3Distance(x.pos, c.pos) < GAS_RADIUS && !wp(WP_WORMS_DROWN)) x.poison = std::max(x.poison, (int)c.poison), x.abducted = false;
+            if (x.alive && Vector3Distance(x.pos, c.pos) < GAS_RADIUS + R && !wp(WP_WORMS_DROWN)) poisonWorm(x, (int)c.poison);  // 0x516350: collider spheres overlap strictly
         if ((c.life -= DT) <= 0) gas.erase(gas.begin() + i);
         else i++;
     }

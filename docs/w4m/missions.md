@@ -169,6 +169,8 @@ paths below set `EFMV.GameOverMovie` (`Outro`, `OutroSuccess`) first.
   explosions), Damage.Impulse 0x5ae3f7, fall damage 0x5ac3e0 (type 1), poison 0x5ac060 (type 6), Vapourize 0x5ac160, the Mystery Damage
   crate 0x5cafdc; no phase test, no once-per-turn guard; none at damage 0 (0x5ab805) or with WormData +0xec & 0x800 (0x5ab847, flag not
   named). Drowning posts Worm.Damaged.Current itself (0x5ad77d).
+- Damage types [disasm 0x5ab7e0 REA decompile, callers 0x5ae4f0 / 0x5ae320 / 0x57f140]: 0 blast, DamageImpulse (0x5ae320 passes 0), Vapourize and the Mystery Damage crate (0x5cafdc pushes 0); 1 fall; 2 Cluster, 3 payload of kind +0x14c == 3, 4 Weapon Factory (kWeaponCluster / kWeaponFactory name prefixes, 0x57f32c..0x57f3a8); 5 Dim-Mak melee; 6 poison / abductee roll; 7 fire ("Worm on fire" log, 0x5abc0a).
+  Types 5 and 6 skip, together: `Turn.Boring` reset, `Worm.Damaged.Current`, `Turn.Mistake`, `Turn.FriendlyDamage` / `Turn.EnemyDamage` (0x5ab8a8). Every type posts `Worm.Damaged`. Ours: `Game::hurt` / `applyPoison` put the type in `GameEvent::weapon` of Hurt; `quietDamage` (sim.h) is the shared filter of script.cpp `events` and of `selfHurt` [ours].
 - Drowning, 0x5ad640 each frame (not in states 7 / 8, nor with [0x955640] set): once the worm is under Water.Level less its drown
   offset: `Turn.Boring` 0 if it was > 0; a vital worm (WormData +0xec & 0x100) posts WormManager.SurrenderTeamById; **only if it is
   the active worm** ([0x95fb98] == this, 0x5ad754) Worm.Damaged.Current (0x5ad77d), whose stdlib handler runs EndTurn; then the active

@@ -629,6 +629,10 @@ void Acting::event(const Game &g, const GameEvent &e) {
             }
         break;
     }
+    case GameEvent::Antidote:  // 0x5adf3e: the worm's scene ends (0x60ae60), its default face becomes Happy (0x5adf55)
+        if (e.worm >= 0 && actors[e.worm].run >= 0) release(actors[e.worm].run);
+        if (e.worm >= 0) actors[e.worm].dflt = "Happy";
+        break;
     case GameEvent::SentryHit: maxDamage |= e.weapon == 1; break;  // a sentry in the full-damage core: Turn.MaxDamage (0x56d3a2)
     case GameEvent::Death:
         if (cur == NONE || e.worm < 0) break;

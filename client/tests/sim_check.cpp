@@ -4172,6 +4172,71 @@ static void checkGasCloud() {
     assert(g.gas.empty());
 }
 
+// W4M 0x516350: the cloud's 100-unit collider and the worm's sphere overlap strictly; Worm.Poison (0x5add14) skips a poisoned worm.
+static void checkGasContact() {
+    Game g;
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    settle(g);
+    Worm &v = g.worms[1 - g.current];
+    g.gas = {{Vector3Add(v.pos, {0, 0.5f, 0}), 8, Game::GAS_POISON}};
+    const Vector3 c = g.gas[0].pos;
+    for (float off : {Game::GAS_RADIUS + Game::R - 0.05f, Game::GAS_RADIUS + Game::R + 0.05f}) {
+        v.poison = 0, v.pos = Vector3Add(c, {off, 0, 0}), v.vel = {0, 0, 0};
+        g.step(Input{});
+        assert((v.poison == Game::GAS_POISON) == (off < Game::GAS_RADIUS + Game::R));
+    }
+    v.poison = 3, v.pos = c;
+    g.step(Input{});
+    assert(v.poison == 3);
+}
+
+// W4M 0x5ab7e0: damage types 5 (Dim-Mak) and 6 (poison) post no Worm.Damaged.Current and do not end the turn; the event carries the type.
+static void checkQuietDamage() {
+    Game g;
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    settle(g);
+    Worm &a = g.worms[g.current];
+    for (int type : {5, 0}) {
+        g.events.clear(), g.selfHurt = false;
+        g.hurt(a, 5, false, type);
+        assert(g.events.back().kind == GameEvent::Hurt && g.events.back().weapon == type && g.selfHurt == !quietDamage(type));
+    }
+    g.events.clear(), g.selfHurt = false, a.poison = 4, a.hp = 50;
+    g.applyPoison();
+    assert(a.hp == 46 && g.events.back().weapon == 6 && !g.selfHurt);
+}
+
+// W4M 0x5ae4f0: a nailed worm inside the WormDamageRadius that is closer (from its skin) than the LandDamageRadius comes loose.
+static void checkNailedBlast() {
+    Game g;
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    settle(g);
+    Worm &a = g.worms[g.current];
+    const Blast b = {1, 4, 10, 0, 0, 0};
+    for (float skin : {2.0f, 0.5f}) {
+        a.nailed = true;
+        g.explode({a.pos.x + Game::R + skin, a.pos.y - Game::R, a.pos.z}, b);  // measured from the feet
+        assert(a.nailed == (skin >= b.crater));
+    }
+    a.nailed = true;
+    g.explode({a.pos.x + Game::R + 0.5f, a.pos.y - Game::R, a.pos.z}, {5, 0.4f, 10, 0, 0, 0});  // LandDamageRadius over the reach: outside the reach it stays
+    assert(a.nailed);
+}
+
+// W4M Worm.Antidote 0x5ade7f: poison off and the default face Happy, on any health crate or the Icarus potion.
+static void checkAntidote() {
+    Game g;
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    settle(g);
+    Worm &a = g.worms[g.current];
+    a.poison = 5, a.abducted = true, g.events.clear();
+    g.openMystery(MY_HEALTH, a);
+    assert(a.poison == 0 && !a.abducted);
+    bool seen = false;
+    for (const GameEvent &e : g.events) seen |= e.kind == GameEvent::Antidote && e.worm == g.current;
+    assert(seen);
+}
+
 // W4M Bovine Blitz (IsControlledBomber, NumStrikeBombs 3): a steered plane, FIRE drops a cow, 0.8 s apart.
 static void checkBomber() {
     Game g;
@@ -5278,6 +5343,10 @@ int main() {
     checkWallStuck();
     checkJumpAtWall();
     checkSelfHurtEndsTurn();
+    checkQuietDamage();
+    checkGasContact();
+    checkNailedBlast();
+    checkAntidote();
     checkDynamite();
     checkOffMapShot();
     checkCrateHold();

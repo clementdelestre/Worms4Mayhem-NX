@@ -126,7 +126,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   heal (W4M RedbullUtilityLogicEntity 0x587600 → Weapon.PostLaunchDelay → 0x587750, disasm); the turn stays in `Aim`. We have no Bridge Kit (1).
 - Poison Arrow (`stick` 2 in weapons.json, W4M PreDetonationTime; docs/w4m/weapons.md "Poison Arrow"): a worm contact detonates it at once, a land
   contact stops it (`Projectile::stage` 1, heading kept in `aim`, `fuse` counting down) and it detonates 2 s later; the detonation has no damage, knock
-  or crater and puts down the gas cloud (`Game::gas`), which poisons. `GameEvent::Arm` is the impact (ArmSfxLoop BowImpact). When the voxel half a
+  or crater and puts down the gas cloud (`Game::gas`), which poisons. Contact [disasm, docs/w4m/weapons.md "Gas cloud contact"]: the cloud's 5 m sphere against the worm's sphere (`GAS_RADIUS + R`, strict), `poisonWorm` at the cloud's rate (a poisoned worm keeps its own); the explosion itself poisons nothing. `GameEvent::Arm` is the impact (ArmSfxLoop BowImpact). When the voxel half a
   voxel ahead of a stuck arrow is gone (our stand-in for Land.NewShape's "its land frame is gone", 0x5777f0 / 0x574d10) it falls again (`stage` 2,
   fuse still running); stopping again keeps the first detonation time (the first Payload.Detonate stays queued) [disasm; voxel probe ours]. It skims
   as every SkimsOnWater payload (below, "Shots in water").

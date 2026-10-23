@@ -267,12 +267,14 @@ enum : int { MY_MINE_LAYER, MY_MINE_TRIPLET, MY_BARREL_TRIPLET, MY_FLOOD, MY_DIS
              MY_HEALTH, MY_DAMAGE, MY_SUPER_HEALTH, MY_SPECIAL_WEAPON, MY_BAD_POISON, MY_GOOD_POISON };
 
 // Things that happened this tick, for audio/fx; not part of the checksum. worm/weapon = -1 when not applicable.
-// Hurt: weapon 6 = W4M damage type 6 (poison, an abductee's roll), else -1.
+// Hurt: weapon = the W4M damage type (0x5ab7e0: 0 blast, 1 fall, 2..4 capped payloads, 5 Dim-Mak, 6 poison / an abductee's roll).
+// W4M 0x5ab7e0: damage types 5 and 6 post no Worm.Damaged.Current and skip the Turn.* damage counters.
+inline bool quietDamage(int type) { return type == 5 || type == 6; }
 struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
                           Comment, CommentClear, Emitter, EmitterOff, Shake, Pop,
-                          Movie, Speech, MovieSound, MovieStart, MovieEnd, SuddenDeath, SentryHit } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
+                          Movie, Speech, MovieSound, MovieStart, MovieEnd, SuddenDeath, SentryHit, Antidote } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;
     const char *fx = nullptr;  // Boom, Splash, Pop: the PARTTWK effect its W4M caller starts (render only)
@@ -754,7 +756,7 @@ private:
     bool underwater(const Worm &w) const;
     void stepShots(const Input &in, bool detonate);
     void deathBlast(const Worm &w, int wi);
-    void explode(Vector3 p, const Blast &b, float poison = 0, int type = 0, int weapon = -1, const char *fx = nullptr, const char *sfx = nullptr, const Vector3 *fxAt = nullptr, int self = -1);  // weapon, fx, sfx, fxAt (default p): carried by the Boom event; self: the sentry whose bullet it is (0x56dc30 skips its own)
+    void explode(Vector3 p, const Blast &b, int type = 0, int weapon = -1, const char *fx = nullptr, const char *sfx = nullptr, const Vector3 *fxAt = nullptr, int self = -1);  // weapon, fx, sfx, fxAt (default p): carried by the Boom event; self: the sentry whose bullet it is (0x56dc30 skips its own)
     void steal(const Worm &victim);  // old woman ammo theft
     void impulse(Worm &o, Vector3 v);  // direct-hit knock (gun, melee): sets the velocity, x2 under Double Damage
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies
@@ -769,7 +771,8 @@ private:
     void clearVoxel(Vector3 at, Vector3 dir);  // a bullet's Land.ClearVoxel on the land it hit
     void openMystery(int item, Worm &w);  // CrateLogicEntity 0x5ca1f0
     void crateHit(Object &o, float dmg);  // a crate or target takes blast or bullet damage
-    void poisonWorm(Worm &w) { if (!w.poison) w.poison = POISON_DEFAULT, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm
+    void poisonWorm(Worm &w, int rate = POISON_DEFAULT) { if (!w.poison) w.poison = rate, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm; rate = Worm.Poison.Default, a gas cloud sets its magnitude
+    void antidote(Worm &w);  // Worm.Antidote 0x5ade7f: poison and the abducted flag off; the worm's default face becomes Happy (0x5adf55)
     Object *hooked();  // the object on the rope, if any
 };
 // A tick's move as the velocity went v0 -> v1: W4M's constant-acceleration path whatever our tick (lag 0: Parabolic payloads,
