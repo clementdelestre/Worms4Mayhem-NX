@@ -366,7 +366,7 @@ static void checkCratePlacement(const std::vector<MissionSpec> &list) {
 // PlaceWormAtSpawnPoint 0x5b4180: a worm named by a locator stands at its exact x, z (no random search) and, after the first Update
 // (EstablishPhysicsState 0x5a6af0), on the ground under it: no fall, no fall damage; ground over 1000 units down: it falls
 static void checkWormSpawn(const std::vector<MissionSpec> &list) {
-    int placed = 0, settled = 0;
+    int placed = 0, settled = 0, dup = 0;
     for (const MissionSpec &m : list) {
         Game g;
         g.start(missionConfig(m, 3));
@@ -382,13 +382,19 @@ static void checkWormSpawn(const std::vector<MissionSpec> &list) {
             for (const Terrain::Marker &x : g.terrain.markers) if (fabsf(x.pos.x - w.pos.x) < 1e-3f && fabsf(x.pos.z - w.pos.z) < 1e-3f) k = &x;
             if (!k) continue;  // a worm of the random "spawn" search or one moved by the script
             placed++;
-            bool facing = false;  // several locators can share a spot (Player, STANDIN Worm0): the worm took one of them
+            bool facing = false;  // locators can share a spot (Player, STANDIN Worm0): the worm took one of them
             for (const Terrain::Marker &x : g.terrain.markers) {
                 if (fabsf(x.pos.x - w.pos.x) > 1e-3f || fabsf(x.pos.z - w.pos.z) > 1e-3f) continue;
+                // 0x5cc7c0: Orientation is written by every detail of the name, so the worm faces the name's last one
+                const Terrain::Marker *o = &x;
+                int same = 0;
+                for (const Terrain::Marker &y : g.terrain.markers) if (!strcasecmp(y.name.c_str(), x.name.c_str())) o = &y, same++;
+                if (same > 1 && m.id == "DeathMatch8" && !strcasecmp(x.name.c_str(), "Enemy1")) assert(o == &x);  // slot 4 of 2 details: Position of the (4+1)th match = the last
+                if (same > 1) dup++, printf("  duplicate locator: %s worm %zu on '%s' (%d details)\n", m.id.c_str(), i, x.name.c_str(), same);
                 // 0x69c118 identity, then 0x69c1a9 / 0x69c209 / 0x69c269 (each the transposed rotation) fill the matrix; 0x4453c0 + 0x519120 turn its row 2 into the yaw
                 float M[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
                 for (int ax = 0; ax < 3; ax++) {
-                    const float a = (&x.euler.x)[ax], c = cosf(a), sn = sinf(a);
+                    const float a = (&o->euler.x)[ax], c = cosf(a), sn = sinf(a);
                     const int i = ax == 0 ? 1 : 0, j = ax == 2 ? 1 : 2;
                     for (int r = 0; r < 3; r++) {
                         const float p = M[r][i], q = M[r][j];
@@ -406,7 +412,7 @@ static void checkWormSpawn(const std::vector<MissionSpec> &list) {
             if (g.worms[i].hp == w.hp && g.worms[i].alive) assert(fabsf(g.worms[i].pos.y - w.pos.y) < 0.3f);  // it stays: no fall
         }
     }
-    printf("worm spawn: %d worms at their marker's x, z, %d settled on the ground under it\n", placed, settled);
+    printf("worm spawn: %d worms at their marker's x, z, %d settled on the ground under it, %d on a name shared by several details\n", placed, settled, dup);
     assert(placed > 20 && settled == placed);
 }
 

@@ -303,10 +303,16 @@ struct ScriptHost {
             NodeCache nodes;
             p = g.placeWorm(grid, nodes, w.yaw);
         } else {
-            const Terrain::Marker *k = nullptr;
-            for (const Terrain::Marker &m : g.terrain.markers) if (!strcasecmp(m.name.c_str(), sp->s.c_str())) { k = &m; break; }
-            if (!k) return TraceLog(LOG_WARNING, "script: worm %d has no spawn marker '%s'", s, sp->s.c_str()), false;
-            p = k->pos, w.yaw = k->heading();
+            // 0x5cc7c0 in store order: Position is written by the first s+1 same-named details, Orientation by every one
+            const Terrain::Marker *last = nullptr;
+            int n = 0;
+            for (const Terrain::Marker &m : g.terrain.markers)
+                if (!strcasecmp(m.name.c_str(), sp->s.c_str())) {
+                    if (++n <= s + 1) p = m.pos;
+                    last = &m;
+                }
+            if (!last) return TraceLog(LOG_WARNING, "script: worm %d has no spawn marker '%s'", s, sp->s.c_str()), false;
+            w.yaw = last->heading();
         }
         p = g.establishFeet(p);
         w.pos = {p.x, p.y + Game::R, p.z}, w.alive = true, w.hp = w.counted = std::max(1, (int)fnum(c, "Energy"));

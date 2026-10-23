@@ -85,7 +85,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
 - **Worms** (`WormManager.Reinitialise`): the Worm.DataNN slots the script set up, team-major by TeamIndex then slot, at their Spawn
   marker, as W4M's PlaceWormAtSpawnPoint 0x5b4180 (docs/w4m/missions.md "Worm spawn placement"): the locator's exact x, z and heading (`Marker::heading`: row 2 of the matrix
   built from the marker's exported `euler`, [disasm 0x5b4747..0x5b4772]), settled by `Game::establishFeet` onto the highest of the 4 foot rays down 50 m (EstablishPhysicsState 0x5a6af0, no fall,
-  no damage; no ground: it falls) [disasm]; the name "spawn" is the random search (`Game::placeWorm`) [disasm]; Active 0 slots are unspawned placeholders;
+  no damage; no ground: it falls) [disasm]; a name shared by several details: Position of the (slot + 1)th match (the last if fewer), Orientation of the last (docs/w4m/missions.md "Worm spawn placement") [disasm]; the name "spawn" is the random search (`Game::placeWorm`) [disasm]; Active 0 slots are unspawned placeholders;
   `IsAllowedToTakeTurn` 0 never plays (`Worm::turns`). Team names and CPU levels from Team.DataNN `IsAIControlled` and the AIParams.CPUn
   copied to its worms; none copied: CPU2, the AIService init's copy into every AIParams.WormNN [disasm 0x4b3390]. The AI reads the
   thinking worm's own level (`Game::wormCpu`, kept by `syncCpu` at Reinitialise, Respawn and every AIParams.WormNN copy); the team's
@@ -288,28 +288,28 @@ WormCollect is the slot resolved at collect time (ChuteToVictory spawns its trig
 | DinerMight | won 237 s | - |
 | SneakyBridgeThieves | won 206 s | - |
 | BuildingSiteSaboteurs | won 239 s | - |
-| TheCrateEscape | won 210 s | - |
-| DestructAndServe | won 334 s | SetData WXD.StoryMovie x1 |
-| StormTheCastle | won 241 s | - |
+| TheCrateEscape | won 193 s | - |
+| DestructAndServe | won 330 s | SetData WXD.StoryMovie x1 |
+| StormTheCastle | won 249 s | - |
 | TheWindyWizard | won 269 s | - |
-| RobInTheHood | won 264 s | - |
+| RobInTheHood | won 270 s | - |
 | JoustAboutIt | won 317 s | - |
 | NiceToSiegeYou | lost 434 s | - |
-| MineAllMine | won 257 s | - |
+| MineAllMine | won 255 s | - |
 | GhostHillGraveyard | won 276 s | - |
-| TinCanWally | won 306 s | - |
+| TinCanWally | won 302 s | - |
 | DoomCanyon | won 71 s | - |
-| HighNoonHiJinx | won 231 s | SetData WXD.StoryMovie x1 |
-| TurkishDelights | won 218 s | - |
-| NoRoomForError | won 215 s | - |
+| HighNoonHiJinx | won 227 s | SetData WXD.StoryMovie x1 |
+| TurkishDelights | won 224 s | - |
+| NoRoomForError | won 224 s | - |
 | CarpetCapers | won 220 s | - |
 | TraitorousWaters | won 142 s | - |
 | GibbonTake | won 230 s | SetData WXD.StoryMovie x1 |
 | FastFoodDino | won 189 s | - |
-| EscapeFromTreeRex | won 259 s | - |
+| EscapeFromTreeRex | won 260 s | - |
 | ChuteToVictory | won 199 s | - |
 | TheLandThatWormsForgot | won 246 s | - |
-| ValleyOfDinoWorms | won 242 s | - |
+| ValleyOfDinoWorms | won 245 s | - |
 | ChallengeSniper | won 195 s | - |
 | ChallengeJetpack | won 195 s | - |
 | ChallengeSheep | won 195 s | - |
@@ -322,17 +322,17 @@ WormCollect is the slot resolved at collect time (ChuteToVictory spawns its trig
 | ChallengeJetpack2 | won 180 s | - |
 | ChallengeSheep2 | won 180 s | - |
 | ChallengeShotgun2 | won 180 s | - |
-| ChallengeAccuracy2 | won 212 s | - |
+| ChallengeAccuracy2 | won 221 s | - |
 | ChallengeNavigation2 | won 180 s | - |
 | ChallengeCrate2 | won 180 s | - |
-| DeathMatch1 | won 229 s | - |
-| DeathMatch2 | won 226 s | - |
+| DeathMatch1 | won 218 s | - |
+| DeathMatch2 | won 233 s | - |
 | DeathMatch3 | won 207 s | - |
-| DeathMatch4 | won 204 s | - |
-| DeathMatch5 | won 213 s | - |
-| DeathMatch6 | won 216 s | - |
-| DeathMatch7 | won 213 s | - |
-| DeathMatch8 | won 231 s | - |
-| DeathMatch9 | won 212 s | - |
-| DeathMatch10 | won 208 s | - |
-| DeathMatch11 | won 236 s | - |
+| DeathMatch4 | won 213 s | - |
+| DeathMatch5 | won 205 s | - |
+| DeathMatch6 | won 215 s | - |
+| DeathMatch7 | won 208 s | - |
+| DeathMatch8 | won 219 s | - |
+| DeathMatch9 | won 257 s | - |
+| DeathMatch10 | won 209 s | - |
+| DeathMatch11 | lost 207 s | - (an AI-vs-AI duel [ours: test, 2026-10-23]; no value tuned) |
