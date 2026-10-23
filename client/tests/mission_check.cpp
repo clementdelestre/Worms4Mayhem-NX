@@ -43,7 +43,7 @@ static Run scripted(const MissionSpec &m, uint32_t seed, int cap) {
     Ai ai;
     Run r;
     for (; r.ticks < cap && (g.phase != Phase::GameOver || scriptMovieOn(g)); r.ticks++) {  // and its game-over movie
-        if (r.ticks > 60 * 60 * 3) assist(g);
+        if (r.ticks > (getenv("TMPA") ? atoi(getenv("TMPA")) : 60 * 60 * 3)) assist(g);
         g.step(ai.think(g));
         for (const GameEvent &e : g.events) r.comments += e.kind == GameEvent::Comment, r.emitters += e.kind == GameEvent::Emitter;
     }
@@ -443,6 +443,23 @@ static void checkAttachments(const std::vector<MissionSpec> &list) {
     assert(worn > 0 && teamWorn > 0);
 }
 
+// lib_SetupTeam / lib_SetupWorm copy the picked team (GM.GameInitData T1_*) into the human team and worms
+static void checkPickedTeam(const std::vector<MissionSpec> &list) {
+    GameConfig::Team me;
+    me.name = "Zorglub", me.flag = "Flag.Spaceman", me.speech = "voalien", me.grave = 3, me.hat = "WXFE.A.Hat.Cowboy.Bk", me.gloves = "WXFE.A.Gloves.Ringed";
+    me.glasses = "WXFE.A.Glasses.Monocle", me.tash = "WXFE.A.Mustache.Professor", me.wormNames = {"Aa", "Bb", "Cc", "Dd", "Ee", "Ff"};
+    for (const MissionSpec &m : list) {
+        if (m.id != "BuildingSiteSaboteurs") continue;
+        Game g;
+        g.start(missionConfig(m, 1, &me));
+        const GameConfig::Team &t = g.cfg.teamSetup[0];
+        assert(t.name == me.name && t.flag == me.flag && t.speech == me.speech && t.grave == me.grave);
+        assert(t.hat == me.hat && t.gloves == me.gloves && t.glasses == me.glasses && t.tash == me.tash);
+        assert(!t.wormNames.empty() && t.wormNames[0] == "Aa");
+        assert(g.cfg.teamSetup[1].name != me.name && g.cfg.teamSetup[1].hat != me.hat);  // the CPU team keeps its own
+    }
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<MissionSpec> list = listMissions("./romfs/", "./");
@@ -483,6 +500,7 @@ int main() {
         Run r = scripted(m, 5, 60 * 60 * 90);  // ChuteToVictory: its round clock (50 min) stands through ~8 s of movie camera a turn
         printf("%-24s %-9s %s after %5d s, Lua errors %d%s%s, comments %d, emitters %d\n", m.id.c_str(), m.kind.c_str(), r.result > 0 ? "won " : r.result < 0 ? "lost" : "NOT ENDED",
                r.ticks / 60, r.rep.errors, r.rep.errors ? ": " : "", r.rep.lastError.c_str(), r.comments, r.emitters);
+        if (m.id == "JoustAboutIt") assert(r.result > 0);  // the Wizard's DieQuietly reaches Worm_Died: 4 deaths start wave 2, 10 the hourglass
         if (m.id == "SneakyBridgeThieves") assert(r.emitters >= 8);  // Initialise's emitters reach the events
         if (m.id == "EscapeFromTreeRex") assert(r.comments >= 1);    // its skipped intro's Critical Comment
         if (!r.egg.item.empty()) printf("    easter egg: %s (%s, %d coins)\n", r.egg.item.c_str(), r.egg.name.c_str(), r.egg.coins);
@@ -497,10 +515,10 @@ int main() {
     if (only && !strcmp(only, "crates")) return checkCrates(list), 0;
     if (only && !strcmp(only, "hurt")) return checkHurtEndsTurn(list), 0;
     if (only && !strcmp(only, "attach")) return checkAttachments(list), 0;
+    if (only && !strcmp(only, "picked")) return checkPickedTeam(list), 0;
     if (only && !strcmp(only, "wormcrate")) return checkWormInventoryCrate(list), 0;
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
-        if (m.id == "JoustAboutIt") assert(r.result > 0);  // the Wizard's DieQuietly reaches Worm_Died: 4 deaths start wave 2, 10 the hourglass
     if (only && !strcmp(only, "target")) return checkScriptedTarget(list), 0;
     if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
     if (only) return 0;
@@ -510,6 +528,7 @@ int main() {
     checkHurtEndsTurn(list);
     checkCratePlacement(list);
     checkDeaths(list);
+    checkPickedTeam(list);
     checkMovies(list);
     for (const MissionSpec &x : list)  // a scripted mission plays the same twice (its Lua state is in the checksum)
         if (x.id == "DeathMatch1") {

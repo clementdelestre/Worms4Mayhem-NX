@@ -21,7 +21,7 @@ struct MissionSpec {
 bool loadMission(const std::string &path, MissionSpec &out);
 // All missions whose map is available, sorted by kind, campaign, order.
 std::vector<MissionSpec> listMissions(const char *romfsDir, const char *dataDir);
-GameConfig missionConfig(const MissionSpec &m, uint32_t seed);  // cfg.mission points at m: keep m alive during the match
+GameConfig missionConfig(const MissionSpec &m, uint32_t seed, const GameConfig::Team *human = nullptr);  // human: the picked team, GM.GameInitData T1_*; cfg.mission points at m: keep m alive during the match
 void placeMapObjects(Game &g);           // W4M GameLogic.PlaceObjects: mines and oil drums on the map's markers
 void missionEnd(Game &g, bool won);      // result, GameOver
 

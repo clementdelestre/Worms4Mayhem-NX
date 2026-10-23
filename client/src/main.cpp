@@ -1781,6 +1781,7 @@ int main(int argc, char **argv) {
         loader = std::thread([&] {
             Loading::pinCore(1), game.start(loadCfg), game.terrain.decodeTextures();
             if (std::string f = Fx::skyFile(game.terrain.theme, game.terrain.time); FileExists(f.c_str())) Models::decode(f.c_str());
+            if (loadCfg.mission) for (size_t k = 0; k < game.cfg.teamSetup.size(); k++) Audio::setTeamVoice((int)k, Ui::voiceBankOf(game.cfg.teamSetup[k].speech));  // the script's Team.DataNN SfxBankName
             Audio::preloadVoices(game.teams), Audio::efmvLevel(loadCfg.mission ? loadCfg.mission->bank.c_str() : nullptr), loaderDone = true;
         });
         tick = 0;
@@ -1859,7 +1860,9 @@ int main(int argc, char **argv) {
     };
     auto startMission = [&](int i, bool preStart = true) {
         missionIdx = i, missionSaved = eggShown = false, online = false;
-        startMatch(missionConfig(missions[i], (uint32_t)(GetTime() * 1000)), preStart);
+        const int saved = front.barracks.find(front.missionTeamName());
+        const GameConfig::Team human = saved >= 0 ? front.barracks.teams[saved].slot() : GameConfig::Team{};
+        startMatch(missionConfig(missions[i], (uint32_t)(GetTime() * 1000), saved >= 0 ? &human : nullptr), preStart);
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu
     Ui::forceHelp = uiShot && (!strcmp(uiShot, "help") || !strcmp(uiShot, "helpmenu"));

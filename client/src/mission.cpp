@@ -50,9 +50,10 @@ std::vector<MissionSpec> listMissions(const char *romfsDir, const char *dataDir)
     return out;
 }
 
-GameConfig missionConfig(const MissionSpec &m, uint32_t seed) {
+GameConfig missionConfig(const MissionSpec &m, uint32_t seed, const GameConfig::Team *human) {
     GameConfig c;
     c.seed = seed, c.map = m.map, c.scheme = m.scheme, c.mission = &m;
+    if (human) c.teamSetup.assign(1, *human);
     c.teams = 0, c.wormsPerTeam = 1;  // the script builds the teams (WormManager.Reinitialise)
     return c;
 }

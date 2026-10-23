@@ -310,6 +310,7 @@ struct ScriptHost {
     // Worm.Respawn 0x5b4f70: a worm that exists stays; else a fresh one at its Spawn (SpawnWorm 0x5b31b0), joining the turns if
     // IsAllowedToTakeTurn. A slot new since Reinitialise takes its team's first free column [ours: the team-major layout]
     // The AI reads the thinking worm's AIParams.WormNN: CPU2 unless the script copied another (AIService init 0x4b3390)
+    static constexpr const char *GIDATT[4] = {"Hat", "Gloves", "Glasses", "Tash"};
     static constexpr const char *ATT[4] = {"ATT_Hat", "ATT_Gloves", "ATT_Glasses", "ATT_Tash"};  // GameConfig::Team order
     static void syncCpu() {
         Game &g = *G;
@@ -357,8 +358,8 @@ struct ScriptHost {
         auto drop = [&](std::vector<int> &v) { v.erase(std::remove(v.begin(), v.end(), i), v.end()); };
         drop(g.countGroup), drop(g.deathQueue);
         if (g.dyingWorm == i) g.dyingWorm = -1;
-    }
         S->quiet.push_back(s);
+    }
 
     // WormManager.Reinitialise: the worms of the Worm.DataNN slots the script set up, by TeamIndex then slot (our worms are team-major)
     static void reinitialise() {
@@ -400,7 +401,17 @@ struct ScriptHost {
         for (int t = 0; t < teams; t++) {
             Ctn *c = ctn(slotName("Team.Data%02d", t));
             GameConfig::Team &ts = g.cfg.teamSetup[t];
+            ts = {};  // the picked team's slot 0 holds only what the script copied into Team.DataNN / Worm.DataNN
             if (const Val *nm = field(c, "Name")) ts.name = nm->s;
+            if (const Val *v = field(c, "FlagGfxName")) ts.flag = v->s;
+            if (const Val *v = field(c, "SfxBankName")) ts.speech = v->s;
+            ts.grave = (uint8_t)Clamp((int)fnum(c, "GraveIndex"), 0, 255);
+            for (int k = 0; k < per; k++) {
+                const Val *v = S->wormSlot[t * per + k] >= 0 ? field(ctn(slotName("Worm.Data%02d", S->wormSlot[t * per + k])), "Name") : nullptr;
+                ts.wormNames.push_back(v ? v->s : "");
+                if (ts.speech.empty() && v)  // lib_SetupWorm gives the worms the speech, the team keeps none
+                    if (const Val *sb = field(ctn(slotName("Worm.Data%02d", S->wormSlot[t * per + k])), "SfxBankName")) ts.speech = sb->s;
+            }
             for (int k = 0; k < 4; k++) if (const Val *v = field(c, ATT[k])) ts.attachment(k) = v->s;
             int lv = 0;
             for (int k = 0; k < per && !lv; k++) if (S->wormSlot[t * per + k] >= 0) lv = S->ai[S->wormSlot[t * per + k]];
@@ -715,6 +726,7 @@ struct ScriptHost {
     static void message(const char *m, float a, const char *s) {
         Game &g = *G;
         auto is = [&](const char *x) { return !strcmp(m, x); };
+        if (getenv("TMPDBG") && (strstr(m, "Die") || strstr(m, "Unspawn") || strstr(m, "Respawn"))) fprintf(stderr, "TMPDBG msg %s %g\n", m, a);
         S->dirty = true;
         if (is("GameLogic.ActivateNextWorm")) activateNext();
         else if (is("GameLogic.EndTurn")) endTurn();
@@ -821,6 +833,7 @@ struct ScriptHost {
             S->died[i] = true;
             put("DeadWorm.Id", slotOf((int)i)), call("Worm_Died");
         }
+        for (int s : std::exchange(S->quiet, {})) put("DeadWorm.Id", s), call("Worm_Died");  // 0x5a6970 after an unspawn
         for (const Object &o : S->tagged) {  // a crate with an Index left: collected, sunk or destroyed
             if (std::any_of(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.tag == o.tag && x.type == o.type; })) continue;
             bool got = std::any_of(ev.begin(), ev.end(), [&](const GameEvent &e) { return e.kind == GameEvent::Collect && Vector3Distance(e.pos, o.pos) < 1; });
@@ -832,7 +845,6 @@ struct ScriptHost {
         triggers();
     }
 
-        for (int s : std::exchange(S->quiet, {})) put("DeadWorm.Id", s), call("Worm_Died");  // 0x5a6970 after an unspawn
     // 0x5d49b0 / 0x5d47f0: Trigger.Index (and Trigger.Collector, a slot), then its message; also before a queued callback, as
     // a skipped movie's blast posts Trigger.Destroyed before its EFMV.Terminated
     static void triggers() {
@@ -842,6 +854,7 @@ struct ScriptHost {
         static const char *const FN[] = {"", "Trigger_Collected", "Trigger_SheepCollected", "Trigger_PayloadCollected", "Trigger_Destroyed"};
         for (const Game::Trigger &t : gone) {
             put("Trigger.Index", t.index);
+            if (getenv("TMPDBG")) fprintf(stderr, "TMPDBG trig idx %d kind %d\n", t.index, (int)t.gone);
             if (t.gone != Game::TRIG_DESTROYED) put("Trigger.Collector", slotOf(t.collector));
             call(FN[t.gone]);
         }
@@ -851,6 +864,7 @@ struct ScriptHost {
 // The 14 C functions (0x6958d2). No C++ object with a destructor is alive in them: a Lua error longjmps out.
 static int lSend(lua_State *L) {
     const char *m = lua_tostring(L, 1);
+    if (m && getenv("TMPDBG") && (strstr(m, "Failure") || strstr(m, "Success") || strstr(m, "Draw"))) { lua_Debug d; for (int i = 1; lua_getstack(L, i, &d) && i < 4; i++) { lua_getinfo(L, "nSl", &d); fprintf(stderr, "TMPDBG %s <- %s line %d\n", m, d.name ? d.name : "?", d.currentline); } }
     if (m) ScriptHost::message(m, lua_type(L, 2) == LUA_TNUMBER ? (float)lua_tonumber(L, 2) : 0, lua_type(L, 2) == LUA_TSTRING ? lua_tostring(L, 2) : nullptr);
     return 0;
 }
@@ -1094,6 +1108,13 @@ bool scriptStart(Game &g, const std::string &dir, const std::string &script, con
     auto copy = [&](const char *from, const char *fmt, int n) { for (int i = 0; i < n; i++) if (Ctn *c = ctn(slotName(fmt, i)); c && ctn(from)) *c = *ctn(from); };
     copy("Inventory.Worm.Default", "Inventory.Worm%02d", SLOTS), copy("Inventory.Team.Default", "Inventory.Team%02d", 4);
     copy("Inventory.Alliance.Default", "Inventory.Alliance%02d", 4), copy("Inventory.WeaponDelays.Default", "Inventory%d.WeaponDelays", 4);
+    if (!g.cfg.teamSetup.empty()) {  // lib_SetupTeam / SetupWorm read the picked team from GM.GameInitData T1_*
+        const GameConfig::Team &t = g.cfg.teamSetup[0];
+        auto set = [&](const std::string &k, const std::string &s, double n = 0) { if (Val *v = field(ctn("GM.GameInitData"), k.c_str())) v->s = s, v->n = n; };
+        set("T1_Name", t.name), set("T1_Speech", t.speech), set("T1_Flag", t.flag), set("T1_Grave", "", t.grave);
+        for (int k = 0; k < 4; k++) set(std::string("T1_") + ScriptHost::GIDATT[k] + "Attachment", t.attachment(k));
+        for (int k = 0; k < 6; k++) set("T1_W" + std::to_string(k + 1) + "_Name", k < (int)t.wormNames.size() ? t.wormNames[k] : "");
+    }
     for (const std::string &n : scriptUnlocks) if (Val *st = field(ctn(n), "State")) st->n = 2;  // the save's unlocks over DEFSAVE
     lua_State *L = S->L = lua_open();
     luaopen_base(L), luaopen_math(L), lua_settop(L, 0);  // XLuaBaseLibrary, XLuaMathLibrary (0x6958d2)
