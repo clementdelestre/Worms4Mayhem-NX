@@ -77,6 +77,7 @@ const SchemeField SCHEME_FIELDS[] = {
     {"Mystery crates", "%d", 0, 100, 10, {}},  // SchemeData MysteryChance
     {"Mine factory", nullptr, 0, 1, 1, {"Off", "On"}},  // SchemeData MineFactoryOn
     {"Number of Rounds", "%d", 1, 9, 1, {}},  // SchemeData Wins: Scheme^Wins^ steps 1..9 and wraps (0x752b9b)
+    {"Telepads", nullptr, 0, 1, 1, {"Off", "On"}},  // SchemeData TelepadsOn (FETXT.Telepads)
 };
 static_assert(sizeof SCHEME_FIELDS / sizeof *SCHEME_FIELDS == sizeof(Scheme), "one row per Scheme byte");
 

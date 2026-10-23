@@ -32,7 +32,7 @@ int start(const char *name, Vector3 at, float unit = 0.05f);  // a PARTTWK effec
 void place(int handle, Vector3 at);  // an attached effect follows its locator (0x5c1470)
 void stop(int handle);  // fading delete (0x5bfde0)
 // mission script emitters by the script's handle: Particle.NewEmitter; DelGraphicalEmitter (now: ...Imm, its particles too)
-void scripted(int handle, const char *name, Vector3 at);
+bool scripted(int handle, const char *name, Vector3 at);  // false: the effect is not loaded (yet)
 void scriptedOff(int handle, bool now);
 void shakeFor(float mag, float secs);  // Camera.ShakeStart: Camera.Shake.Magnitude (m per axis), fading linearly over Length
 // Flood (FloodLogicEntity): rain and storm cloud at `at` (Land.Center, Land.MaxHeight + 800 units) 1 s on, the rain stopped `stop` s after the call

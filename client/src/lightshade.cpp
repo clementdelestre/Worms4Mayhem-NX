@@ -46,7 +46,7 @@ void LightShade::step(const Game &g, float dt, const std::vector<Spot> &extra) {
     if ((acc += dt) < 0.02f) return;  // the per-frame task queue's 20 ms (0x68d57a)
     acc = fmodf(acc, 0.02f);
     // the entities with a light, W4M's creators of 0x48ebe0: worm 0x5a49a0 (own light, offset 10 0x5a4ac8), crates 0x5c4d10 / oil drums
-    // 0x5d0f40 (pooled), mines 0x57cad0 / sentries 0x56b2d0 / graves 0x5ce7e0 / shots 0x57cad0 / the mine factory 0x5cf1e0 / bubble machines 0x54e720 / the girder preview 0x5588c0
+    // 0x5d0f40 (pooled), mines 0x57cad0 / sentries 0x56b2d0 / graves 0x5ce7e0 / shots 0x57cad0 / the mine factory 0x5cf1e0 / bubble machines 0x54e720 / the girder preview 0x5588c0 / telepads 0x5d2920
     // (own, offset 0), the saucer 0x5463b0 (pooled)
     std::vector<Entry> now;
     for (size_t i = 0; i < g.worms.size(); i++)
@@ -60,6 +60,7 @@ void LightShade::step(const Game &g, float dt, const std::vector<Spot> &extra) {
     if (g.girderOn && g.phase == Phase::Aim) put(key(Girder, 0), g.girder, 0, false, now);
     if (g.factory.on) put(key(Factory, 0), g.factory.pos, 0, false, now);
     for (size_t i = 0; i < g.bubbles.size(); i++) put(key(Bubble, (int)i), g.bubbles[i].pos, 0, false, now);
+    for (size_t i = 0; i < g.telepads.size(); i++) if (g.telepads[i].st != 5) put(key(Telepad, (int)i), g.telepads[i].pos, 0, false, now);  // telepads 0x5d2920 (own, offset 0)
     for (const Spot &s : extra) put(s.key, s.pos, 0, s.pool, now);
     // the details' pooled lights (0x5cccf0, offset and position: their mesh's bounding sphere, 0x5cd4f5); one without a model yet is a slot only
     size_t phantom = 0;

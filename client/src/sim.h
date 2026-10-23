@@ -275,6 +275,7 @@ struct GameEvent {
     enum Kind : uint8_t { Boom, BigBoom, Fire, Bounce, Splash, Death, Hurt, Jump, TurnStart, GameOver, CrateDrop, Collect, MineArm, Hallelujah, CrateLand,
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
                           Comment, CommentClear, Emitter, EmitterOff, Shake, Pop,
+                          Vanish, Appear,  // a telepad's worm clips TelepadVanish / TelepadAppear (0x5d4120, 0x5d42e0)
                           Movie, Speech, MovieSound, MovieStart, MovieEnd, SuddenDeath, SentryHit, Antidote } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
     int worm, weapon;
@@ -307,9 +308,10 @@ struct Scheme {
     uint8_t mysteryShare = 0;                              // W4M SchemeData MysteryChance (+0x130), rolled after the other three shares
     uint8_t mineFactory = 0;                               // W4M SchemeData MineFactoryOn (BnG, All Action, Mega Power)
     uint8_t wins = 2;                                      // W4M SchemeData Wins (+0x114, editor 1..9): round wins that take the match
+    uint8_t telepads = 1;                                  // W4M SchemeData TelepadsOn (Standard, Pro, Multi Destruction, Quick Game, Ranked; WXD.DefaultSchemeData)
     enum : uint8_t { FUSE_RANDOM = 6, SD_ONE_HP = 0, SD_NOTHING, SD_DRAW, SET_DEFAULT = 0, SET_BNG, SET_CRATES, SET_UNLIMITED };
 };
-static_assert(sizeof(Scheme) == 21, "Scheme must stay plain bytes");
+static_assert(sizeof(Scheme) == 22, "Scheme must stay plain bytes");
 // W4M Wormpot modes: the ids of SetupModes' jump table (0x5d6bc0, names FETXT.WPotName.* at 0x9205e0); 1 = empty reel.
 // GameConfig::wormpot holds the three reels' ids, reel r in byte r (W4M FE.Wormpot.Reel1..3); 0 = empty too.
 enum WormpotMode : uint8_t {
@@ -484,6 +486,15 @@ struct Game {
     std::vector<Worm> worms;
     std::vector<Projectile> shots;
     std::vector<Object> objects;
+    // W4M TelepadLogicEntity (0x5d3ba0, update 0x5d42e0): st 0 ready, 1 vanishing (holds `worm`), 2 spent until the turn ends, 3 destination, 4 arriving, 5 dead
+    struct Telepad { Vector3 pos; int group = 0; uint8_t st = 0; int worm = -1, dest = -1, at = 0, boomAt = -1, onAt = 0; bool exploded = false, landed = false; };
+    std::vector<Telepad> telepads;  // dead pads stay in the list, so `dest` indices hold
+    static constexpr float PAD_UP = 0.35f, PAD_R = 0.1f, PAD_PULL = 0.08f;  // sphere 7 units over the pad, radius 2 units; the pull 8 % per 20 ms
+    static constexpr int PAD_VANISH = msTicks(3000), PAD_CUT = msTicks(500), PAD_ARRIVE = msTicks(450), PAD_APPEAR = msTicks(3000), PAD_BOOM = msTicks(100);  // clips TelepadVanish / TelepadAppear 3.0 s
+    static constexpr Blast PAD_BLAST = {1.75f, 1.75f, 20, 10, 1.75f, 0.4f};  // 0x5d2c70: WormDamage 20, Impulse 0.5 units/ms, radii 35 units, push centre 8 units lower
+    bool padHeld(int wi) const { for (const Telepad &p : telepads) if (p.st == 1 || p.st == 4) if (p.worm == wi) return true; return false; }  // Worm.OverridePhysics 0x40
+    void placeTelepads();  // GameLogic.PlaceTelepads 0x4fd9f0 / 0x4fe36b
+    void createTelepad(Vector3 pos, int group, bool snap);  // CreateTelepad 0x4fadb0
     // W4M GraveStoneLogicEntity: the dead worm's team gravestone, a 9-unit sphere (flags 0x400, mask 0xc37); onLand: at rest on land
     struct Grave { Vector3 pos, vel; float yaw; int grave, uid, born; bool moving = true, onLand = false; };  // born: `clock` at creation (the Go clip)
     std::vector<Grave> graves;
@@ -646,6 +657,9 @@ struct Game {
     std::vector<Trigger> triggers;
     void stepTriggers();  // 0x5d5180: worm and payload contacts
     void stepFactory();
+    void stepTelepads();
+    void telepadsRearm() { for (Telepad &p : telepads) if (p.st == 2) p.st = 0, p.onAt = clock; }  // GameLogic.Turn.Ended 0x5d4010
+    void telepadHit(Vector3 at, float r);  // Explosion 0x5d3440: a blast of land radius r
     bool noTurn = false;  // a mission script before its first turn: W4M CurrentTeamIndex and ActiveWormIndex are -1
     int turnTeam() const { return noTurn ? -1 : worms[current].team; }
     std::vector<int8_t> allied;  // per team: W4M TeamData.AlliedGroup, from cfg at start(), the scripts' own in missions
@@ -717,7 +731,7 @@ struct Game {
     Blast gunBlast(int weapon) const;                  // one hit's explosion, Wormpot super firearms included
     bool steered() const;    // a live shot takes the stick (old woman, scouser, super sheep, Bovine Blitz)
     bool fireable(const Worm &w) const;  // the weapon in hand may fire now (W4M CanFire)
-    bool ambulatory(const Worm &w) const { return w.grounded && !w.motion.slide && !vault.t && !jumpDelay; }  // W4M kWPS_Ambulatory (state 0)
+    bool ambulatory(const Worm &w) const { return w.grounded && !w.motion.slide && !vault.t && !jumpDelay && !padHeld(int(&w - worms.data())); }  // W4M kWPS_Ambulatory (state 0)
     bool retreating() const;  // Flying / Retreat and the worm may move: W4M timer started (0x549bb0), no FlyCam holding WormMoving
     bool wielding() const;    // W4M weapon logic alive: Aim, or fired and its PostLaunchDelay not over (0x549bb0 posts Weapon.Delete)
     bool windy(int weapon, bool child = false) const;  // W4M IsAffectedByWind, Wormpot WindEffectMore included

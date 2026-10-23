@@ -3762,6 +3762,50 @@ static void checkSchemeFactory() {
     assert(g.factory.wait == g.factoryData.inactive - 1);
 }
 
+// W4M TelepadLogicEntity (0x5d42e0): TelepadsOn puts four random pads on a map with no `telepad` detail; any worm touching a ready pad is pulled in, put on
+// another pad 2.5 s later and freed 3.45 s after that; the pads stay spent until GameLogic.Turn.Ended; the turn is untouched; a blast sets a pad off.
+static void checkTelepads() {
+    GameConfig c{29, 2, 1, "", 0};
+    Game g;
+    c.scheme.telepads = 0;
+    g.start(c);
+    assert(g.telepads.empty());
+    c.scheme.telepads = 1;
+    g.start(c), g.hotSeat = 0;
+    assert(g.telepads.size() == 4);
+    for (const Game::Telepad &p : g.telepads) assert(p.st == 0 && p.pos.y > g.water);
+    int cur = g.current, other = 1 - cur;
+    Worm &w = g.worms[other];
+    Game::Telepad &src = g.telepads[0];
+    Vector3 from = src.pos;
+    w.pos = {from.x, from.y + Game::R, from.z}, w.vel = {0, 0, 0}, w.grounded = true;
+    g.step(Input{});  // a worm that is not the one playing counts too
+    assert(src.st == 1 && src.worm == other && g.padHeld(other) && g.telepads[src.dest].st == 3 && src.dest != 0);
+    int dest = src.dest, spent = 0;
+    for (const Game::Telepad &p : g.telepads) spent += p.st == 2;
+    assert(spent == 2);  // the others of the group
+    Phase ph = g.phase;
+    int t;
+    for (t = 0; t < 400 && src.st == 1; t++) g.step(Input{});
+    Vector3 to = g.telepads[dest].pos;
+    assert(src.st == 4 && std::abs(t - Game::PAD_VANISH + Game::PAD_CUT) <= 2 && fabsf(w.pos.x - to.x) < 1e-4f && fabsf(w.pos.z - to.z) < 1e-4f);
+    assert(w.pos.y - Game::R > to.y + 0.2f && w.pos.y - Game::R < to.y + 0.3f && g.padHeld(other));  // 5 units over the destination, held
+    Vector3 held = w.pos;
+    for (t = 0; t < 400 && src.st == 4; t++) g.step(Input{});
+    assert(std::abs(t - Game::PAD_ARRIVE - Game::PAD_APPEAR) <= 3 && Vector3Distance(w.pos, held) < 0.01f);
+    assert(!g.padHeld(other) && src.st == 2 && g.telepads[dest].st == 2 && g.current == cur && g.phase == ph);  // the turn goes on
+    for (int k = 0; k < 120; k++) g.step(Input{});  // standing on the spent pad: nothing
+    assert(!g.padHeld(other));
+    endSettle(g);
+    for (const Game::Telepad &p : g.telepads) assert(p.st == 0 || p.worm >= 0 || g.padHeld(other));  // Turn.Ended: spent pads are ready again
+    // an explosion within the land radius + 5 units of a pad destroys it 100 ms later
+    Game::Telepad &q = g.telepads[1];
+    for (Worm &x : g.worms) x.pos = {1, 1, 1};  // out of the way
+    g.explode({q.pos.x, q.pos.y + 0.25f, q.pos.z}, Game::MINE_BLAST);
+    for (int k = 0; k < Game::PAD_BOOM + 2; k++) g.step(Input{});
+    assert(q.st == 5 && q.exploded);
+}
+
 // W4M GameLogic.Turn.Started (0x566d57): every turn starts with the empty hand (kWeaponUndefined); FIRE does nothing.
 static void checkEmptyHand() {
     Game g;
@@ -5499,6 +5543,7 @@ int main() {
     checkToolGaps();
     checkEmptyHand();
     checkSchemeFactory();
+    checkTelepads();
     checkGunObjects();
     checkObjectCollisions();
     checkWormColliders();

@@ -497,6 +497,7 @@ static void animEvent(const Game &g, const GameEvent &e) {
     }
     else if (e.kind == GameEvent::Hurt && !a.clip) a = {g.worms[e.worm].nailed ? "NailedHitFront" : "Hit_Front"};  // W4M 0x5a9100: Nailed* variant
     else if (e.kind == GameEvent::Splash) a = {"FallDrown"};
+    else if (e.kind == GameEvent::Vanish || e.kind == GameEvent::Appear) a = {e.kind == GameEvent::Vanish ? "TelepadVanish" : "TelepadAppear"};  // 0x5d4120, 0x5d42e0
     if (a.clip && !strcmp(a.clip, "FireNMN")) a.t = 0.7f;  // the sim hits at once: start at the hammer's downswing
 }
 
@@ -805,6 +806,26 @@ static void crateChute(const Object &o, size_t i, float dt) {
 }
 
 // W4M mine ExpiryFx: a dud mine with none within 1 m last frame has just fizzled (render-only, no sim event).
+// TelepadGraphicEntity 0x5d27c0 / 0x5d2850: a ready pad plays its On clip once and the WXP_TelePad emitter on its "emitter" node; a spent one has neither
+static void drawTelepad(const Game &g, const Game::Telepad &p) {
+    Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Telepad, (int)(&p - g.telepads.data()))));
+    Models::draw("telepad", MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), MatrixTranslate(p.pos.x, p.pos.y, p.pos.z)), WHITE, p.st == 0 ? "On" : nullptr, (g.clock - p.onAt) * Game::DT, false);
+    Models::lightMul({1, 1, 1});
+}
+static void telepadFx(const Game &g) {
+    static std::vector<char> on;
+    const int BASE = 1 << 20;  // Fx::scripted handles of the pads
+    for (size_t i = 0; i < std::max(on.size(), g.telepads.size()); i++) {
+        bool want = i < g.telepads.size() && g.telepads[i].st == 0;
+        if (i >= on.size()) on.resize(i + 1, 0);
+        if (want && !on[i]) {
+            const Vector3 p = g.telepads[i].pos;
+            Matrix m;
+            Vector3 at = Models::joint("telepad", "emitter", nullptr, 0, false, &m) ? Vector3Transform(Vector3Transform({0, 0, 0}, m), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), MatrixTranslate(p.x, p.y, p.z))) : Vector3{p.x, p.y + Game::PAD_UP, p.z};
+            on[i] = Fx::scripted(BASE + (int)i, "WXP_TelePad", at);
+        } else if (!want && on[i]) Fx::scriptedOff(BASE + (int)i, false), on[i] = 0;
+    }
+}
 static void dudFx(const std::vector<Object> &objs) {
     static std::vector<Vector3> was;
     std::vector<Vector3> now;
@@ -2793,6 +2814,8 @@ int main(int argc, char **argv) {
             }
         }
         dudFx(game.objects);
+        telepadFx(game);
+        for (const Game::Telepad &p : game.telepads) if (p.st != 5 && Models::visible(p.pos, 3)) drawTelepad(game, p);
         for (const Object &o : game.objects) {
             if (o.type == Object::Crate || o.type == Object::Target) crateChute(o, &o - game.objects.data(), pause.open ? 0 : dt);
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute

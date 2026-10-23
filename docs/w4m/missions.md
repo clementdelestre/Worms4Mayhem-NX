@@ -216,7 +216,7 @@ JoustAboutIt [data: Joust.lub, JOUSTABOUTIT.XOM]: Worm_Died counts every DeadWor
 
 - The message permission table behind 0x69968b.
 - PlaceMine, GameToFrontEndDelayTime: §23.9. Worm.Respawn / DieQuietly and CreateTrigger: §23.10.
-- Telepad details (PlaceObjects "telepad", 0x4fadb0).
+- Telepads (PlaceObjects "telepad", 0x4fadb0): docs/w4m/weapons.md "Telepads".
 
 ### 23.8 What the scripts drive in the UI and render [disasm unless tagged]
 

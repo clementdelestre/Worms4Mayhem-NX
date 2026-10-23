@@ -429,6 +429,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkToolGaps` | W4M tool details: secondary kept on landing, UtilityFire panel, D-pad forward, HeadCam zoom, No Bombing, girder. |
 | `checkEmptyHand` | W4M kWeaponUndefined at turn start: FIRE fires nothing, takes no ammo; NEXT_WEAPON picks a usable one. |
 | `checkSchemeFactory` | Scheme `mineFactory` (W4M MineFactoryOn): the factory exists at start and counts down at each turn end. |
+| `checkTelepads` | Scheme `telepads` (W4M TelepadsOn): four random pads; a worm that is not the one playing is pulled in, put on another pad after 2.5 s, freed 3.45 s later, the pads spent until the turn ends, the turn untouched; a blast destroys a pad 100 ms later. |
 | `checkGunObjects` | W4M gun mask 0x1c3f: the bullet stops on a mine or an oil drum in its way. |
 | `checkWormColliders` | W4M worm resolver (mask 0x811): a fall onto a drum lands on its top and holds there, falls once it is gone; a walk into a drum climbs over it, never inside its sphere out of a vault; a fall onto a worm lands on its head; a knock-back into a drum rebounds; crates and gravestones are not in the worm's colliders; the jetpack bounces off a drum's underside and ends on its top with v kept. |
 | `checkCrateColliders` | W4M 0x5cb7e0: a crate dropped on a drum rests on it ("Crate Spawn" released) and drops to the slab once the drum is gone; a drum dropped on a crate falls through it to the land. |

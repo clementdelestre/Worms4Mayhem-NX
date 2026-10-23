@@ -1088,11 +1088,12 @@ int start(const char *name, Vector3 at, float unit) {  // a comma list starts ea
 }
 void place(int handle, Vector3 at) { for (Live &l : lives) if (l.handle == handle) l.at = at; }
 void stop(int handle) { kill(handle); }
-void scripted(int handle, const char *name, Vector3 at) {
+bool scripted(int handle, const char *name, Vector3 at) {
     const std::vector<const Emit *> *fx = name ? fxNamed(name) : nullptr;
-    if (!fx) return (void)TraceLog(LOG_WARNING, "fx: no effect '%s'", name ? name : "");
+    if (!fx) return TraceLog(LOG_WARNING, "fx: no effect '%s'", name ? name : ""), false;
     scriptedOff(handle, false);
     scriptFx[handle] = effect(*fx, at, levelUnit, SCRIPT_LEVEL + lastHandle + 1);  // effect() takes lastHandle + 1
+    return true;
 }
 void scriptedOff(int handle, bool now) {
     auto it = scriptFx.find(handle);

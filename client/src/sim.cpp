@@ -297,17 +297,17 @@ const std::vector<int> WORMPOT_REEL[3] = {{2, 3, 4, 5, 6, 11, 10, 17, 9, 16, 15,
 // (Objects: 3 = 15 mines + 10 drums, 2 = drums only), mine fuse, sudden death, fall damage, wind, weapon set (ours), water speed, mystery share (*Chance, 0x4fa4b0);
 // then the SchemeData delays and WeaponFactoryWeapon.Ammo (LOCAL DATA.LockedSchemes).
 const std::vector<SchemePreset> SCHEMES = {
-    {"Standard", {45, 5, 10, 20, 100, 40, 30, 30, 20, 25, 15, 10, 3, 1, 1, 1, 0, 2}, "Airstrike 5|Banana Bomb 8|Holy Hand Grenade 3|Homing Missile 2|Super Sheep 5|Icarus Potion 2|Binoculars 2|* 3", 1},
-    {"Beginner", {90, 5, 10, 20, 100, 50, 30, 30, 20, 50, 15, 10, 5, 0, 1, 0, 0, 1}, "Homing Missile 2", 2},
-    {"Pro", {30, 0, 10, 20, 100, 30, 10, 30, 50, 25, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 3, 0, 3}, "Icarus Potion 4|Sentry Gun 5|Sniper Rifle 3|Starburst 4|Binoculars 3", 2},
-    {"BnG", {30, 5, 10, 10, 150, 40, 40, 10, 40, 25, 15, 10, 5, 1, 1, 1, Scheme::SET_BNG, 2, 0, 1}, "Concrete Donkey 3|Icarus Potion 2|Bubble Trouble 3|* 8", 1},
-    {"Shopping", {60, 5, 10, 20, 100, 100, 60, 20, 20, 25, 0, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_CRATES, 1}, "", 0},
-    {"All Action", {30, 5, 10, 10, 200, 40, 30, 30, 20, 25, 15, 10, 1, 1, 1, 1, 0, 1, 20, 1}, "Airstrike 5|Banana Bomb 5|Homing Missile 2|Super Sheep 3|Super Airstrike 6", 2},
-    {"Strategy", {30, 0, 10, 30, 100, 40, 10, 10, 50, 25, 15, 10, 5, 0, 1, 3, 0, 3}, "Airstrike 6|Baseball Bat 2|Dynamite 4|Jetpack 4|Shotgun 3|Icarus Potion 4|Sniper Rifle 4|* 4", 1},
-    {"Family", {90, 8, 10, 20, 125, 50, 30, 30, 20, 50, 15, 10, 8, 0, 1, 0, 0, 1, 0, 0, 1}, "", 2},
-    {"Mega Power", {30, 5, 10, 10, 200, 50, 40, 40, 20, 100, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_UNLIMITED, 1, 30, 1}, "Concrete Donkey 8|Alien Abduction 8|Fatkins Strike 8|Sentry Gun 8|Super Airstrike 8", 2},
-    {"Holy Grail", {45, 5, 10, 30, 100, 60, 30, 30, 30, 50, 15, 10, 1, 0, 1, 1, 0, 2}, "Concrete Donkey 16|Super Sheep 4", 2},
-    {"Darksider", {45, 5, 10, 30, 100, 50, 10, 10, 50, 25, 15, 10, 5, 0, 1, 1, 0, 1}, "Airstrike 4|Cluster Grenade 2|Dynamite 2|Homing Missile 6|Landmine 2|Shotgun 2|Flood 2|Tail Nail 2|Poison Arrow 2|Sniper Rifle 2|Starburst 2|* 2", 2},
+    {"Standard", {45, 5, 10, 20, 100, 40, 30, 30, 20, 25, 15, 10, 3, 1, 1, 1, 0, 2, 0, 0, 2, 1}, "Airstrike 5|Banana Bomb 8|Holy Hand Grenade 3|Homing Missile 2|Super Sheep 5|Icarus Potion 2|Binoculars 2|* 3", 1},
+    {"Beginner", {90, 5, 10, 20, 100, 50, 30, 30, 20, 50, 15, 10, 5, 0, 1, 0, 0, 1, 0, 0, 2, 0}, "Homing Missile 2", 2},
+    {"Pro", {30, 0, 10, 20, 100, 30, 10, 30, 50, 25, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 3, 0, 3, 0, 0, 2, 1}, "Icarus Potion 4|Sentry Gun 5|Sniper Rifle 3|Starburst 4|Binoculars 3", 2},
+    {"BnG", {30, 5, 10, 10, 150, 40, 40, 10, 40, 25, 15, 10, 5, 1, 1, 1, Scheme::SET_BNG, 2, 0, 1, 2, 0}, "Concrete Donkey 3|Icarus Potion 2|Bubble Trouble 3|* 8", 1},
+    {"Shopping", {60, 5, 10, 20, 100, 100, 60, 20, 20, 25, 0, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_CRATES, 1, 0, 0, 2, 0}, "", 0},
+    {"All Action", {30, 5, 10, 10, 200, 40, 30, 30, 20, 25, 15, 10, 1, 1, 1, 1, 0, 1, 20, 1, 2, 0}, "Airstrike 5|Banana Bomb 5|Homing Missile 2|Super Sheep 3|Super Airstrike 6", 2},
+    {"Strategy", {30, 0, 10, 30, 100, 40, 10, 10, 50, 25, 15, 10, 5, 0, 1, 3, 0, 3, 0, 0, 2, 0}, "Airstrike 6|Baseball Bat 2|Dynamite 4|Jetpack 4|Shotgun 3|Icarus Potion 4|Sniper Rifle 4|* 4", 1},
+    {"Family", {90, 8, 10, 20, 125, 50, 30, 30, 20, 50, 15, 10, 8, 0, 1, 0, 0, 1, 0, 0, 1, 0}, "", 2},
+    {"Mega Power", {30, 5, 10, 10, 200, 50, 40, 40, 20, 100, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_UNLIMITED, 1, 30, 1, 2, 0}, "Concrete Donkey 8|Alien Abduction 8|Fatkins Strike 8|Sentry Gun 8|Super Airstrike 8", 2},
+    {"Holy Grail", {45, 5, 10, 30, 100, 60, 30, 30, 30, 50, 15, 10, 1, 0, 1, 1, 0, 2, 0, 0, 2, 0}, "Concrete Donkey 16|Super Sheep 4", 2},
+    {"Darksider", {45, 5, 10, 30, 100, 50, 10, 10, 50, 25, 15, 10, 5, 0, 1, 1, 0, 1, 0, 0, 2, 0}, "Airstrike 4|Cluster Grenade 2|Dynamite 2|Homing Missile 6|Landmine 2|Shotgun 2|Flood 2|Tail Nail 2|Poison Arrow 2|Sniper Rifle 2|Starburst 2|* 2", 2},
 };
 
 static constexpr float GRAVITY = 12.5f;  // W4M Gravity -0.00025 units/ms² (WEAPTWK), 20 units = 1 m
@@ -1044,6 +1044,7 @@ void Game::start(const GameConfig &c) {
     }
     Vector3 fp;  // stdvs Initialise: MineFactoryOn -> CreateRandMineFactory (0x4fe18e), a 40-unit sphere 40 up clear on the ground
     if (cfg.scheme.mineFactory && !cfg.mission && dropPoint(Object::Mine, fp, 40 / 20.0f)) factoryCreate(fp);
+    if (cfg.scheme.telepads && !cfg.mission) placeTelepads();  // stdvs Initialise: TelepadsOn -> GameLogic.PlaceTelepads
     if (wp(WP_SPECIALIST) && most > 1) {
         teamAmmo.assign(teams, std::vector<int>(WEAPONS.size(), 0));  // Wormpot.lub SetSpecialistTeam(n, team), teams of n > 1: a class per worm by team size and place, the team's ammo set
         static const uint8_t CLASS[7][6] = {{}, {}, {1, 2}, {1, 3, 4}, {5, 6, 3, 4}, {5, 6, 3, 4, 6}, {5, 6, 3, 4, 6, 3}};
@@ -1319,6 +1320,115 @@ bool Game::dropPoint(Object::Type t, Vector3 &out, float radius) {
         if (clear) { out = hit; return true; }
     }
     return t == Object::Crate;
+}
+
+// CreateTelepad 0x4fadb0: snap = 0x5d2e90 (a ray down from the position, 1000 units), else 0x5d3790: up to 40 random land spots over the water, clear of the
+// other pads (0x5d2f10: squared distance 140000 - 2000 x try, units), with at most one of four probes 20 units off the spot more than 12 units from its height
+void Game::createTelepad(Vector3 pos, int group, bool snap) {
+    const float U = 0.05f;
+    Telepad p;
+    p.pos = pos, p.group = group, p.onAt = clock;
+    Vector3 hit;
+    if (snap) {
+        if (terrain.raycast({pos, {0, -1, 0}}, 1000 * U, &hit)) p.pos = hit;
+    } else {
+        bool found = false;
+        for (int n = 0; n < 40 && !found; n++) {
+            float x = rand01() * Terrain::NX * Terrain::VOX, z = rand01() * Terrain::NZ * Terrain::VOX;
+            if (!terrain.raycast({{x, landTop() + 100 * U, z}, {0, -1, 0}}, 2000 * U, &hit) || hit.y <= water) continue;
+            bool apart = true;
+            for (const Telepad &o : telepads) apart = apart && (o.st == 5 || Vector3DistanceSqr(hit, o.pos) >= (140000 - 2000 * n) * U * U);
+            if (!apart) continue;
+            int bad = 0;
+            for (Vector2 o : {Vector2{-20, 20}, {20, 20}, {-20, -20}, {20, -20}}) {
+                Vector3 q;
+                bad += !terrain.raycast({{x + o.x * U, hit.y + 100 * U, z + o.y * U}, {0, -1, 0}}, 2000 * U, &q) || q.y <= water || fabsf(q.y - hit.y) > 12 * U;
+            }
+            if (bad < 2) p.pos = hit, found = true;
+        }
+        if (!found) return;
+    }
+    telepads.push_back(p);
+}
+
+// GameLogic.PlaceTelepads 0x4fd9f0: a pad at every map detail named "telepad"; none: four random pads (0x4fe36b)
+void Game::placeTelepads() {
+    bool any = false;
+    for (const Terrain::Marker &k : terrain.markers) if (k.name == "telepad") createTelepad(k.pos, 0, true), any = true;
+    for (int i = 0; i < 4 && !any; i++) createTelepad({0, 0, 0}, 0, false);
+}
+
+// Explosion 0x5d3440: a blast whose land radius reaches 5 units past the pad's centre (5 units up) sets the pad off 100 ms later
+void Game::telepadHit(Vector3 at, float r) {
+    for (Telepad &p : telepads) {
+        float reach = r + 5 * 0.05f;
+        if (!p.exploded && Vector3DistanceSqr(at, {p.pos.x, p.pos.y + 0.25f, p.pos.z}) < reach * reach) p.boomAt = clock + PAD_BOOM;
+    }
+}
+
+// TelepadLogicEntity update 0x5d42e0, every tick here
+void Game::stepTelepads() {
+    for (size_t i = 0; i < telepads.size(); i++) {
+        Telepad &p = telepads[i];
+        if (p.st == 5) continue;
+        const Vector3 c = {p.pos.x, p.pos.y + PAD_UP, p.pos.z};
+        if (p.st == 0) {
+            Colliders cs;
+            colliders(cs, 1);
+            for (const Collider &k : cs) {  // 0x5d4120: the first worm collider of the sphere, whoever's turn it is, but not one in its throes or drowning
+                float r = PAD_R + k.r;
+                if (k.id >= (int)worms.size() || k.id == dyingWorm || worms[k.id].drowned || Vector3DistanceSqr(k.c, c) >= r * r) continue;
+                std::vector<int> live;  // 0x5d3e10: a random other pad of the group, the pad itself when it is the only one
+                int same = 0;
+                for (size_t j = 0; j < telepads.size(); j++) if (telepads[j].st != 5) live.push_back((int)j), same += telepads[j].group == p.group;
+                p.dest = (int)i;
+                while (same > 1 && (p.dest == (int)i || telepads[p.dest].group != p.group)) p.dest = live[std::min<int>((int)live.size() - 1, (int)(rand01() * live.size()))];
+                emit(GameEvent::Pop, p.pos), events.back().fx = "WXP_Teleport";
+                for (size_t j = 0; j < telepads.size(); j++) if (j != i && telepads[j].st != 5 && telepads[j].group == p.group) telepads[j].st = 2;  // 0x5d34e0
+                if (p.dest != (int)i) telepads[p.dest].st = 3;
+                p.st = 1, p.worm = k.id, p.at = clock + PAD_VANISH;
+                if (k.id == current) roped = jetting = chute = false;  // 0x5d3210: Jetpack / NinjaRope / Parachute.Kill, then Worm.OverridePhysics 0x40
+                emit(GameEvent::Vanish, p.pos, k.id);
+                break;
+            }
+        } else if (p.st == 1) {
+            Worm &w = worms[p.worm];
+            const float k = 1 - powf(1 - PAD_PULL, DT / 0.02f);  // 8 % of the way to the pad's centre each 20 ms; Velocity 0
+            Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z};
+            feet = Vector3Subtract(feet, Vector3Scale(Vector3Subtract(feet, c), k));
+            w.pos = {feet.x, feet.y + R, feet.z}, w.vel = {0, 0, 0};
+            if (p.at - PAD_CUT < clock) {  // 0x5d3570: the ground below the destination, lifted over the colliders on it, + 5 units
+                const Telepad &d = telepads[p.dest];
+                Vector3 g;
+                if (!terrain.raycast({{d.pos.x, d.pos.y + 800 * 0.05f, d.pos.z}, {0, -1, 0}}, 1000 * 0.05f, &g)) g = d.pos;
+                Colliders cs;
+                colliders(cs, 0xc19);
+                for (bool again = true; again;) {
+                    again = false;
+                    for (const Collider &o : cs)
+                        if (Vector3DistanceSqr(o.c, g) < (R + o.r) * (R + o.r)) { g.y = o.c.y + 2 * o.r + R; again = true; break; }
+                }
+                w.pos = {d.pos.x, g.y + 5 * 0.05f + R, d.pos.z};
+                p.st = 4, p.at = clock + PAD_ARRIVE, p.landed = false;
+            }
+        } else if (p.st == 4) {
+            if (!p.landed) {
+                if (p.at < clock) {
+                    p.landed = true, p.at = clock + PAD_APPEAR;
+                    emit(GameEvent::Appear, worms[p.worm].pos, p.worm);
+                    emit(GameEvent::Pop, telepads[p.dest].pos), events.back().fx = "WXP_Teleport";
+                }
+            } else if (p.at < clock) {  // Worm.OverridePhysics off: it falls from where it stands
+                worms[p.worm].grounded = false;
+                telepads[p.dest].st = 2, p.st = 2, p.worm = p.dest = -1;
+            }
+        }
+        if ((p.st == 0 && p.pos.y < water) || (p.boomAt >= 0 && p.boomAt < clock)) {  // 0x5d2c70; a ready pad under Water.Level goes off at once
+            p.exploded = true, p.boomAt = -1;
+            explode(p.pos, PAD_BLAST, 0, -1, "WXP_Explosion_Teleporter");
+        }
+        if (p.exploded && (p.st == 0 || p.st == 2)) p.st = 5;
+    }
 }
 
 // lift > 0: a crate dropped from that height above the land (CreateRandomCrate: no parachute, "Crate Spawn" until it rests)
@@ -1883,6 +1993,7 @@ void Game::doPostActivity() {
     Worm &w = worms[current];
     if (!crated) {
         crated = true;
+        telepadsRearm();  // GameLogic.Turn.Ended opens DoPostActivity
         std::vector<int> t6 = applyPoison();
         applyDamage(&t6);
         doubleDamage = false;
@@ -2178,7 +2289,7 @@ bool Game::fireable(const Worm &w) const {
 
 void Game::stepWorm(Worm &w) {
     if (w.drowned && w.counted > 0) return floatStep(w);
-    if (!w.alive || aboard(int(&w - worms.data()))) return;
+    if (!w.alive || aboard(int(&w - worms.data())) || padHeld(int(&w - worms.data()))) return;
     if (w.abducted) zapStep(w);
     if (w.nailed) { w.vel = {0, 0, 0}, w.grounded = true; if (underwater(w)) drown(w); return; }
     if (vault.t && &w == &worms[current]) return;  // W4M: no Ballistic while Vaulting
@@ -2673,6 +2784,7 @@ Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
 void Game::explode(Vector3 p, const Blast &b0, int type, int weapon, const char *fx, const char *sfx, const Vector3 *fxAt, int self) {
     Blast b = b0;  // W4M ExplosionMessage 0x518d80: DoubleDamage doubles the radii and the impulse too (hurt() doubles the damage)
     if (doubled()) b.crater *= 2, b.reach *= 2, b.push *= 2, b.pushReach *= 2;
+    telepadHit(p, b.crater);
     for (Bubble &bb : bubbles) bb.rest = 0;  // 0x54effa: any Explosion lets it fall again
     for (size_t i = 0; i < bubbles.size();) {  // 0x54eff0: only a blast inside pops it (Health 1)
         float d = Vector3Distance(p, bubbles[i].pos);
@@ -3229,7 +3341,7 @@ void Game::step(const Input &raw) {
         if (vault.t) {  // W4M 0x5ab3d0: the camera-relative stick, here the heading or the facing
             float y = head ? in.turn * PI / 128 : w.yaw;
             vaultStep(w.pos, vault, aimCursor ? Vector3{} : Vector3Scale(flat(y), in.walk));
-        } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed && !artillery() && !gunState) {  // W4M Sliding: no walking
+        } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed && !artillery() && !gunState && !padHeld(current)) {  // W4M Sliding: no walking
             Vector3 walkV = Vector3Scale(flat(w.yaw), in.walk / 127.0f * INPUT_IMPULSE), was = w.pos, gn;  // W4M Velocity = InputImpulse (0x546f10)
             Colliders cs;
             colliders(cs, WORM_MASK, current);
@@ -3243,7 +3355,7 @@ void Game::step(const Input &raw) {
         } else if (!vault.t) walkVel = {};  // idle branch 0x5b1c1b zeroes Velocity
         steerIn = aimCursor ? Vector3{} : Vector3Scale(head ? flat(in.turn * PI / 128) : flat(w.yaw), in.walk / 127.0f);
         Vector3 jv;
-        if ((pressed & Input::JUMP) && !jumpDelay && !vault.t && w.grounded && !w.motion.slide && !tool && !w.nailed && !wp(WP_NO_JUMPING) && !artillery() && !gunState) jumpDelay = JUMP_WINDOW, jumpKind = 2;
+        if ((pressed & Input::JUMP) && !jumpDelay && !vault.t && w.grounded && !w.motion.slide && !tool && !w.nailed && !padHeld(current) && !wp(WP_NO_JUMPING) && !artillery() && !gunState) jumpDelay = JUMP_WINDOW, jumpKind = 2;
         else if (int ev = jumpDelay ? jumpTick(jumpDelay, jumpKind, in, pressed, w.yaw, jv) : 0; ev && w.grounded) {
             w.vel = jv, w.grounded = false, w.motion.air = true;  // DetectJump: Flags |= 1
             emit(GameEvent::Jump, w.pos, current, ev);  // weapon: the W4M kWE code (animation)
@@ -3414,6 +3526,7 @@ void Game::step(const Input &raw) {
         o->pos = Vector3Add(p, off);
     }
     stepObjects();
+    stepTelepads();
     stepGraves();
     stepTriggers();
     stepFactory();
@@ -3602,6 +3715,7 @@ uint32_t Game::checksum() const {
     if (vault.t) mix(&vault, sizeof vault);
     mix(&selfHurt, sizeof selfHurt);
     mix(&cfg.scheme, sizeof cfg.scheme);
+    for (const Telepad &t : telepads) mix(&t.st, sizeof t.st), mix(&t.pos, sizeof t.pos), mix(&t.worm, sizeof t.worm);
     mix(&cfg.rules, sizeof cfg.rules);
     mix(&cfg.wormpot, sizeof cfg.wormpot);
     mix(&suddenDeath, sizeof suddenDeath);

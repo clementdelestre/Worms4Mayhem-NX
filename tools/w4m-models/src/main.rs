@@ -81,6 +81,7 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("bomber", "BomberHelicopter", 4.1, false, &["bombrun_end", "bombrun_end2", "bombrun_end3", "bombrun_end4", "bombrun_end5", "bombrun_start", "bombrun_start2", "bombrun_start3"]),  // Airstrike (BomberGraphicEntity, table 0x91f39c)
     ("ufo", "AlienAbduction", 0.0, false, &["AbductStart", "AbductViolate+AbductLoop2", "AbductOpenDoors+AbductLoop2", "AbductLoop", "AbductLoop2", "AbductCloseBeam", "AbductEnd+AbductLoop2", "AbductFail"]),  // AlienAbductionGraphicEntity: raw units, origin on the beam axis; saucer, pods, BeamCone, CreatePoint; +AbductLoop2: BeamCone stays closed after AbductCloseBeam
     ("warpgate", "AbductionWarpGate", 0.0, false, &["WXM_DefSource"]),  // the portal the UFO arrives and leaves through
+    ("telepad", "Telepad", 0.0, false, &["On"]),  // TelepadGraphicEntity 0x5d27c0: plays On once when the pad is ready (raw units)
     ("cow", "Cow.Payload", 0.0, false, &["Hang", "Skydive"]),  // ParachutePayloadGraphicEntity: Crate.Chute at its "Parachute" node
     // Hats (Bundl172-248, one "Hat.<Name>" XMeshDescriptor each; attach at the worm's HatLocator like held items at WeaponLocator)
     ("hats/afro", "Hat.Afro", 0.0, false, &[]),

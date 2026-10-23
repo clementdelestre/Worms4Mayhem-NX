@@ -58,11 +58,12 @@ GameConfig missionConfig(const MissionSpec &m, uint32_t seed, const GameConfig::
     return c;
 }
 
-void placeMapObjects(Game &g) {  // 0x4fb490: detail objects named exactly "mine" (a CreateMine), "oildrum", "minefactory"; "Mine1" is a PlaceMine spot
+void placeMapObjects(Game &g) {  // 0x4fb490: detail objects named exactly "mine" (a CreateMine), "oildrum", "minefactory", "telepad"; "Mine1" is a PlaceMine spot
     for (const Terrain::Marker &k : g.terrain.markers)
         if (k.name == "mine") g.objects.push_back(g.newMine(k.pos));
         else if (k.name == "oildrum") g.objects.push_back({Object::Barrel, k.pos, {0, 0, 0}, -1, -1, false, false});
         else if (k.name == "minefactory") g.factoryCreate(k.pos);  // 0x4f64f0
+        else if (k.name == "telepad") g.createTelepad(k.pos, 0, false);  // 0x4fadb0 with snap 0: a random spot, the detail's position unused
 }
 
 void missionStart(Game &g) {

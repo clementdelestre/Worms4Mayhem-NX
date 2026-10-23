@@ -18,6 +18,7 @@ ROOTS = ['XXX_PlaceholderPP', 'WXP_RainFall', 'WXP_RainFallBG', 'WXP_ExplosionX_
          'WXP_LandMineUpShot', 'WXP_MineMachineShot', 'WXP_Explosion_MineMachine']  # MineFactoryLogicEntity 0x5cf667, 0x5cfc70
 ROOTS += ['WXP_Explosion_OilDrum', 'WXP_OildrumFireExp', 'WXP_ExpiryExplosion']  # OilDrumLogicEntity 0x5d1370 / 0x5d1580, crate destroyed 0x5c59e9
 ROOTS += ['WXP_WaterSplash', 'WXP_WaterSmallSplash', 'WXP_WaterLargeSplash', 'WXP_WormDrownPopSplash']  # water: Drowning 0x5ad640, death blast 0x5a9400, crates, WEAPTWK SplashFx / SplishFx
+ROOTS += ['WXP_TelePad', 'WXP_Teleport', 'WXP_Explosion_Teleporter']  # TelepadLogicEntity 0x5d27c0 (emitter), 0x5d2670, 0x5d2c70
 ROOTS += ['WXP_UnderWaterBubbles']  # sinking payload / mine (SinkingFx 0x580aa0)
 ROOTS += ['WXP_Wep_Sentry_Fire', 'WXP_Wep_Sentry_Warmup', 'WXP_Wep_Sentry_Hit', 'WXP_Smoke_ThinBase_Light']  # NewSentryGunGraphicEntity 0x56b5d6, 0x56b9f3, damage smoke 0x56b0b0; bullet 0x56ca6a
 ROOTS += ['WXP_Explosion_Mine', 'WXP_Napalm']  # Landmine DetonationFx; its kDT_Fire FX (Detonate 0x5813cc)

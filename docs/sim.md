@@ -298,6 +298,15 @@ W4M side: docs/w4m/weapons.md "Mystery crates".
   - Crate Spy shows the item.
   - The model is `crate_mystery` (tools/w4m-models `Crate.Mystery`), falling back to the weapon crate.
 
+## Telepads (`Game::telepads`, `placeTelepads`, `stepTelepads`; W4M docs/w4m/weapons.md "Telepads")
+
+- **Scheme**: `Scheme::telepads` (W4M SchemeData TelepadsOn, [data] 1 in Standard and Pro; the scheme editor's "Telepads" row), appended after `wins`. `start` runs `placeTelepads` after the mine factory (stdvs Initialise order, [disasm]) unless a mission runs: a pad at every map marker named exactly `telepad` (ground-snapped by a ray down), else four random pads (`createTelepad`: 40 tries over the land box above the water, squared distance to another pad at least 140000 - 2000 x try units², at most one of four probes 1 m off the spot more than 0.6 m from its height). Mission `GameLogic.PlaceObjects` (`placeMapObjects`) makes a random pad for each `telepad` marker [disasm].
+- **State** (`Telepad::st`, one update per tick): 0 ready, 1 vanishing, 2 spent, 3 destination, 4 arriving, 5 dead (dead pads stay in the list so `dest` indices hold).
+- **Trigger**: a ready pad's sphere (0.35 m over the pad, radius 0.1 m) against the worm colliders (`colliders(cs, 1)`, strict sum of radii); the first worm hit, any worm and not only the one playing, not the dying or the drowned, is held (`padHeld`: `stepWorm` returns, `ambulatory` is false, the playing worm cannot walk or jump) [disasm]. The destination is a random other pad (the pad itself when alone), the group's other pads are spent, the playing worm's rope, jetpack and parachute end, the event `Vanish` starts the worm clip TelepadVanish. The turn clock, the phase and the hot seat are untouched.
+- **Timeline** (ticks of `msTicks`): the worm moves 8 % per 20 ms of the way to the pad's centre for 2.5 s; it is put 0.25 m over the ground under the destination (lifted over the colliders on it) and the state is 4; 450 ms later `Appear` starts TelepadAppear and the destination plays WXP_Teleport; 3 s later the worm is freed (`grounded` false: it falls), both pads are spent until `doPostActivity`'s first pass (GameLogic.Turn.Ended) calls `telepadsRearm`.
+- **Blast**: `explode` calls `telepadHit` (land radius + 0.25 m from the pad's centre + 0.25 m up, 100 ms later `Game::PAD_BLAST`: 20 hp, 10 m/s, 1.75 m radii, push centre 0.4 m lower, WXP_Explosion_Teleporter); a ready pad under `water` goes off at once. A pad in state 0 or 2 that has gone off is dead.
+- **Render** (`main.cpp` `drawTelepad`, `telepadFx`): `telepad.glb` (tools/w4m-models "Telepad", clip On played once while the pad is ready, 0.05 scale like the warpgate) and the WXP_TelePad emitter while it is ready; the worm clips come from `animEvent`.
+
 ## Movement and collisions (shared with the AI)
 
 Free functions in sim.cpp, also called by `ai.cpp` (`Mover`, `stepBody`) so the CPU predicts exactly what the sim does.
