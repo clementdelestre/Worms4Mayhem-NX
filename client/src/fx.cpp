@@ -356,7 +356,7 @@ const std::vector<const Emit *> FIREWORKS[] = {  // WXPF_Firework1-5
 // ---- data effects: assets/fx/parttwk.json (tools/w4m-re/parttwk.py), started by name like ParticleHandlerService 0x5c09d0 ----
 // PARTTWK MeshSet: models/fx/<name>.glb, MeshAnimNodeName clips; its .blend (tools/w4m-models): first part's XBlendModeGL and the clip's
 // texture offset change (u, v over t1 s, 2-key linear)
-struct MeshSet { std::string model, clip, clip2; bool loop = false; int src = -1, dst = -1; float u = 0, v = 0, t1 = 0; };
+struct MeshSet { std::string model, clip; bool loop = false; int src = -1, dst = -1; float u = 0, v = 0, t1 = 0; };
 std::vector<MeshSet> meshes;
 std::deque<Emit> dataEmits;
 int rainSplashTex = -1;
@@ -414,16 +414,15 @@ void decodeData() {
         e.tex = sp == sprites.end() ? 255 : (unsigned char)sp->second.tex, e.add = sp != sprites.end() && sp->second.add;
         e.head = set.find(',') != std::string::npos;  // "A,B": B drawn at the particles (0x5bc735)
         if (c["MeshSet"].size() && !c["MeshSet"][0].s().empty()) {
-            std::string clips = c["MeshAnimNodeName"].s(), c1, c2;
-            bool loop = false;
+            // "[loop:]A+[loop:]B": clips played together (0x8751e8), one baked glb clip "A+B"; the first part's prefix sets the loop
+            std::string clips = c["MeshAnimNodeName"].s(), joined;
+            bool loop = lower(clips).rfind("loop:", 0) == 0;
             for (size_t k = 0, n = 0; k <= clips.size(); k++)
                 if (k == clips.size() || clips[k] == '+') {
                     std::string part = clips.substr(n, k - n);
-                    if (c1.empty()) loop = lower(part).rfind("loop:", 0) == 0;  // `LOOP:` prefix, any case
-                    part = part.substr(part.find(':') + 1);
-                    (c1.empty() ? c1 : c2) = part, n = k + 1;
+                    joined += (joined.empty() ? "" : "+") + part.substr(part.find(':') + 1), n = k + 1;
                 }
-            MeshSet ms{lower(c["MeshSet"][0].s()), c1, c2, loop};
+            MeshSet ms{lower(c["MeshSet"][0].s()), joined, loop};
             if (char *b = LoadFileText((DATA_DIR "assets/models/fx/" + ms.model + ".blend").c_str())) {
                 float rot;
                 sscanf(b, "%d %d %f %f %f %f", &ms.src, &ms.dst, &rot, &ms.u, &ms.v, &ms.t1);

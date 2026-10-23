@@ -185,6 +185,14 @@ int main() {
         hud.open = false, hud.mine = false;  // a CPU or remote turn shows the ready screen too
         assert(hud.readyScreen(g, false));
     }
+    {  // MeshAnimNodeName "A+B" (clips played together, 0x8751e8): each exported glb holds the pair as one clip (assets are gitignored: skipped when absent)
+        static const char *const PAIRS[][2] = {{"particle.wxpmesh28", "WXM_Wings+WXM_Flight"}, {"particle.wxpmesh31", "WXM_SGull_Location+WXM_SGull_WingFlap"}, {"particle.wxpmesh34", "CMover+CBody"}};
+        for (const auto &p : PAIRS) {
+            int n = 0;
+            unsigned char *f = LoadFileData(TextFormat("assets/models/fx/%s.glb", p[0]), &n);
+            if (f) assert(memmem(f, n, p[1], strlen(p[1]))), UnloadFileData(f);
+        }
+    }
     {  // victory fireworks (W4M 0x4ff8d0): nothing in the 4 s wait, PARTTWK emitters during the 5 s show, all burnt out after
         Fx::clear(), Fx::fireworks({40, 10, 40}, 40, 20);
         for (int t = 0; t < 240; t++) Fx::update(1 / 60.f);

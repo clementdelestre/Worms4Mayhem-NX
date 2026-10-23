@@ -812,14 +812,17 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let base_name = wanted.iter().find_map(|w| w.strip_prefix("Base=")).unwrap_or("Base");
     let base = lib.iter().find(|c| c.name == base_name);
     let animated = s.parts.iter().any(|p| !p.skin.is_empty()) && (!lib.is_empty() || wanted.contains(&"Rest"));
-    // "A+B": clip A layered over B (channels A lacks come from B, then Base); "A@s": only A's first s seconds;
+    // "A+B": clip A layered over B (channels A lacks come from B, then Base); "A@s": only A's first s seconds; "A+B@longest": the longest clip sets the length;
     // "Rest": one frame of Base, else of the stored transforms (a held mesh with no slot clip playing)
     let chosen: Vec<(&str, Vec<&Clip>, f32)> = if !animated { vec![] } else {
         wanted.iter().map(|n| {
-            let (n, cap) = n.split_once('@').map_or((*n, f32::MAX), |(n, c)| (n, c.parse().unwrap_or(f32::MAX)));
+            let (n, spec) = n.split_once('@').map_or((*n, ""), |(n, c)| (n, c));
+            let cap = spec.parse().unwrap_or(f32::MAX);
             if n == "Rest" { return (n, base.into_iter().collect(), 0.0); }
             if n.starts_with("Base=") { return ("Base", base.into_iter().collect(), cap); }
-            (n, n.split('+').filter_map(|n| lib.iter().find(|c| c.name == n)).collect::<Vec<_>>(), cap)
+            let mut layers = n.split('+').filter_map(|n| lib.iter().find(|c| c.name == n)).collect::<Vec<_>>();
+            if spec == "longest" { layers.sort_by(|a, b| b.dur.total_cmp(&a.dur)); }
+            (n, layers, cap)
         }).filter(|l| !l.1.is_empty() || l.0 == "Rest").collect()
     };
     let animated = animated && !chosen.is_empty();
@@ -976,8 +979,10 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     // "A <clip> <primitive> <length s> <alpha at 60 fps>": key 0x3000200 on "<shape>_<shader>" is the alpha of the shape's
     // XConstColorSet (AnimInstance 0x7ad37f: flag 2 -> XShape Geometry -> ColorSet, field 0), which the Col CG programs multiply in;
     // only a blended shape shows it (GL blend is off unless its shader has an XBlendModeGL, 0x793df0); a blended shape without the key is "1"
+    let mut keyed = std::collections::HashSet::new();
     for (_, layers, cap) in chosen.iter().filter(|_| animated) {
         let Some(c) = layers.first() else { continue };
+        if !keyed.insert((c.name.clone(), cap.to_bits())) { continue; }  // the longest-first pair repeats its first clip's lines
         for (pi, pt) in s.parts.iter().enumerate().filter(|(_, pt)| pt.blend.is_some()) {
             // shapes sharing one XConstColorSet share its animated alpha (SplashFirst / SplashSecond)
             let kf = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && s.parts.iter().any(|q| q.shape == leaf(n) && q.cset == pt.cset)).map(|(_, k)| k);
@@ -1169,7 +1174,9 @@ fn main() {
     // PARTTWK MeshSet meshes with their MeshAnimNodeName clips, listed by tools/w4m-re/parttwk.py: raw units
     for l in fs::read_to_string(out.join("../fx/sets.txt")).unwrap_or_default().lines() {
         let Some((desc, clips)) = l.strip_prefix("mesh ").and_then(|r| r.split_once(' ')) else { continue };
-        let wanted: Vec<&str> = clips.split('+').filter(|c| *c != "-").map(|c| &*Box::leak(c.to_string().into_boxed_str())).collect();
+        // each clip alone (its alpha track) and, for MeshAnimNodeName "A+B" (played together, 0x8751e8), the pair as one clip
+        let mut wanted: Vec<&str> = clips.split('+').filter(|c| *c != "-").map(|c| &*Box::leak(c.to_string().into_boxed_str())).collect();
+        if wanted.len() > 1 { wanted.push(Box::leak(format!("{clips}@longest").into_boxed_str())); }
         todo.push((format!("fx/{}", desc.to_lowercase()), desc.to_string(), 0.0, false, Box::leak(wanted.into_boxed_slice())));
     }
     // team outfits and graves, listed by tools/w4m-re/setuplists.py: raw units (attachments at the worm's locators), graves 20 units per metre about their origin
