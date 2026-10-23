@@ -2703,8 +2703,8 @@ static void checkMystery() {
     g.openMystery(MY_MINE_LAYER, w), assert(g.objects.size() == objs + 5);
     float sea = g.water;
     g.openMystery(MY_FLOOD, w), assert(g.water > sea);
-    Vector3 at = w.pos;
-    g.openMystery(MY_TELEPORT, w), assert(Vector3Distance(at, w.pos) > 1);
+    g.openMystery(MY_TELEPORT, w), assert(g.mysteryTeleports.size() == 1);  // checkMysteryTeleport: the move itself
+    g.mysteryTeleports.clear();
     g.beginTurn(team);  // turn end: Low.Gravity.GameDefault, Worm.VelocityScale 1
     assert(g.gravity() == grav && g.walkScale() == 1);
 }
@@ -3804,6 +3804,25 @@ static void checkTelepads() {
     g.explode({q.pos.x, q.pos.y + 0.25f, q.pos.z}, Game::MINE_BLAST);
     for (int k = 0; k < Game::PAD_BOOM + 2; k++) g.step(Input{});
     assert(q.st == 5 && q.exploded);
+}
+
+// W4M Mystery Teleport (CrateLogicEntity 0x5ca1f0, GameLogic MysteryTeleport.End 0x4f76a0): held 3.0 s (TelepadVanish), then put on the spot found, freed at once
+static void checkMysteryTeleport() {
+    Game g;
+    g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+    int cur = g.current;
+    Worm &w = g.worms[cur];
+    Vector3 from = w.pos;
+    Phase ph = g.phase;
+    int timer = g.timer;
+    g.openMystery(MY_TELEPORT, w);
+    assert(g.mysteryTeleports.size() == 1 && g.padHeld(cur) && Vector3Distance(from, w.pos) < 1e-5f);
+    Vector3 to = g.mysteryTeleports[0].to;
+    assert(!g.terrain.solid(to) && to.y > g.water);
+    int t;
+    for (t = 0; t < 400 && g.padHeld(cur); t++) g.step(Input{});
+    assert(std::abs(t - Game::PAD_VANISH) <= 2 && g.mysteryTeleports.empty());
+    assert(Vector3Distance(w.pos, to) < 0.05f && g.current == cur && g.phase == ph && g.timer >= timer - t - 2);  // the turn goes on, no time charged
 }
 
 // W4M GameLogic.Turn.Started (0x566d57): every turn starts with the empty hand (kWeaponUndefined); FIRE does nothing.
@@ -5544,6 +5563,7 @@ int main() {
     checkEmptyHand();
     checkSchemeFactory();
     checkTelepads();
+    checkMysteryTeleport();
     checkGunObjects();
     checkObjectCollisions();
     checkWormColliders();

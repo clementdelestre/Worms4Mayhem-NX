@@ -492,7 +492,14 @@ struct Game {
     static constexpr float PAD_UP = 0.35f, PAD_R = 0.1f, PAD_PULL = 0.08f;  // sphere 7 units over the pad, radius 2 units; the pull 8 % per 20 ms
     static constexpr int PAD_VANISH = msTicks(3000), PAD_CUT = msTicks(500), PAD_ARRIVE = msTicks(450), PAD_APPEAR = msTicks(3000), PAD_BOOM = msTicks(100);  // clips TelepadVanish / TelepadAppear 3.0 s
     static constexpr Blast PAD_BLAST = {1.75f, 1.75f, 20, 10, 1.75f, 0.4f};  // 0x5d2c70: WormDamage 20, Impulse 0.5 units/ms, radii 35 units, push centre 8 units lower
-    bool padHeld(int wi) const { for (const Telepad &p : telepads) if (p.st == 1 || p.st == 4) if (p.worm == wi) return true; return false; }  // Worm.OverridePhysics 0x40
+    // Mystery Teleport (CrateLogicEntity 0x5ca1f0): the worm is held for the TelepadVanish clip, then MysteryTeleport.End (GameLogic 0x4f76a0) puts it at `to`
+    struct MysteryTeleport { int worm; Vector3 to; int at; };
+    std::vector<MysteryTeleport> mysteryTeleports;
+    bool padHeld(int wi) const {  // Worm.OverridePhysics 0x40
+        for (const Telepad &p : telepads) if ((p.st == 1 || p.st == 4) && p.worm == wi) return true;
+        for (const MysteryTeleport &m : mysteryTeleports) if (m.worm == wi) return true;
+        return false;
+    }
     void placeTelepads();  // GameLogic.PlaceTelepads 0x4fd9f0 / 0x4fe36b
     void createTelepad(Vector3 pos, int group, bool snap);  // CreateTelepad 0x4fadb0
     // W4M GraveStoneLogicEntity: the dead worm's team gravestone, a 9-unit sphere (flags 0x400, mask 0xc37); onLand: at rest on land
@@ -658,6 +665,7 @@ struct Game {
     void stepTriggers();  // 0x5d5180: worm and payload contacts
     void stepFactory();
     void stepTelepads();
+    void stepMysteryTeleports();
     void telepadsRearm() { for (Telepad &p : telepads) if (p.st == 2) p.st = 0, p.onAt = clock; }  // GameLogic.Turn.Ended 0x5d4010
     void telepadHit(Vector3 at, float r);  // Explosion 0x5d3440: a blast of land radius r
     bool noTurn = false;  // a mission script before its first turn: W4M CurrentTeamIndex and ActiveWormIndex are -1

@@ -1431,6 +1431,19 @@ void Game::stepTelepads() {
     }
 }
 
+// GameLogic MysteryTeleport.End (0x4f76a0): the worm at the destination, Worm.OverridePhysics off, WXP_Teleport there, the clip TelepadAppear
+void Game::stepMysteryTeleports() {
+    for (size_t i = 0; i < mysteryTeleports.size();) {
+        const MysteryTeleport m = mysteryTeleports[i];
+        if (m.at >= clock) { i++; continue; }
+        mysteryTeleports.erase(mysteryTeleports.begin() + i);
+        Worm &w = worms[m.worm];
+        w.pos = m.to, w.vel = {0, 0, 0}, w.grounded = false;
+        emit(GameEvent::Pop, m.to), events.back().fx = "WXP_Teleport";
+        emit(GameEvent::Appear, w.pos, m.worm);
+    }
+}
+
 // lift > 0: a crate dropped from that height above the land (CreateRandomCrate: no parachute, "Crate Spawn" until it rests)
 bool Game::addObject(Object::Type t, float lift) {
     Vector3 p;
@@ -2729,10 +2742,10 @@ void Game::openMystery(int item, Worm &w) {
             if (!dropPoint(Object::Mine, p, 0.75f)) continue;
             Vector3 to = {p.x, p.y + 0.1f + R, p.z};
             if (terrain.solid(to)) continue;
-            emit(GameEvent::Poof, w.pos, int(&w - worms.data()));
             if (&w == &worms[current]) roped = jetting = chute = false;  // NinjaRope / Jetpack / Parachute.Kill
-            w.pos = to, w.vel = {0, 0, 0}, w.grounded = false;
-            emit(GameEvent::Zap, w.pos, int(&w - worms.data()));
+            emit(GameEvent::Pop, w.pos), events.back().fx = "WXP_Teleport";
+            emit(GameEvent::Vanish, w.pos, int(&w - worms.data()));
+            mysteryTeleports.push_back({int(&w - worms.data()), to, clock + PAD_VANISH});  // Worm.OverridePhysics 0x40 now, MysteryTeleport.End after the clip
             break;
         }
         break;
@@ -3527,6 +3540,7 @@ void Game::step(const Input &raw) {
     }
     stepObjects();
     stepTelepads();
+    stepMysteryTeleports();
     stepGraves();
     stepTriggers();
     stepFactory();
@@ -3716,6 +3730,7 @@ uint32_t Game::checksum() const {
     mix(&selfHurt, sizeof selfHurt);
     mix(&cfg.scheme, sizeof cfg.scheme);
     for (const Telepad &t : telepads) mix(&t.st, sizeof t.st), mix(&t.pos, sizeof t.pos), mix(&t.worm, sizeof t.worm);
+    for (const MysteryTeleport &m : mysteryTeleports) mix(&m, sizeof m);
     mix(&cfg.rules, sizeof cfg.rules);
     mix(&cfg.wormpot, sizeof cfg.wormpot);
     mix(&suddenDeath, sizeof suddenDeath);
