@@ -93,6 +93,7 @@ struct Terrain {
     BoundingBox takeStale() { BoundingBox b = stale; stale = {{1e9f, 1e9f, 1e9f}, {-1e9f, -1e9f, -1e9f}}; return b; }
     void staleGrow(Vector3 lo, Vector3 hi);
     mutable std::vector<float> objR;  // per decor model: its bounding radius (drawObjects loads them)
+    mutable std::vector<Vector3> objC;  // and its bounding sphere centre, in model space
     // Draw groups: GxGxG chunks' land parts merged per material on the GPU (a draw call per part cost ~8 us on Switch),
     // rebuilt from the chunk meshes when one of them swaps
     static constexpr int G = 4;

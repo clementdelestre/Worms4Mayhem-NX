@@ -1,6 +1,7 @@
 #include "terrain.h"
 #include "fx.h"
 #include "json.h"
+#include "lightshade.h"
 #include "lit.h"
 #include "models.h"
 #include "raymath.h"
@@ -1891,6 +1892,7 @@ uniform vec4 colDiffuse;
 uniform vec3 sunDir;
 uniform vec3 ambient;
 uniform vec3 diffuse;
+uniform float lightK;  // the detail light's shadow fade (0x47c800 pooled level)
 uniform vec3 camPos;
 uniform vec3 emissive;
 uniform vec3 state;  // alpha test ref, lit, blended
@@ -1903,7 +1905,7 @@ void main() {
     if (c.a < state.x) discard;
     vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
     float r = 1.0 - max(dot(v, nn), 0.0);
-    vec3 l = (diffuse * max(dot(nn, sunDir), 0.0) + ambient + emissive) * c.rgb + (0.15 + 0.2 * diffuse) * r * r;
+    vec3 l = (diffuse * (lightK * max(dot(nn, sunDir), 0.0)) + ambient + emissive) * c.rgb + (0.15 + 0.2 * diffuse) * r * r;
     gl_FragColor = vec4(state.y > 0.5 ? l : c.rgb, state.z > 0.5 ? c.a : 1.0);
 }
 )";
@@ -1917,13 +1919,13 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
     struct State { int src = -1, dst = -1, cull = -1; float ref = 0.5f; bool zwrite = true, lit = true; Vector3 emit{}; std::vector<Vector2> uv; };
     // st: per model material (0 = raylib's default); clip: W4M 0x5cd38e plays "Go" looped from a random time, "GoSync" from 0;
     // anim: tools/w4m-models' skinned copy when the clip moves parts
-    struct Entry { Model m{}; float r = 0; std::vector<State> st; std::string clip, anim; float len = 0; };
+    struct Entry { Model m{}; float r = 0; Vector3 c{}; std::vector<State> st; std::string clip, anim; float len = 0; };
     static std::map<std::string, Entry> cache;  // loaded on first use, kept across matches
     static Shader sh{}, ash{};
-    static int emitLoc = -1, stateLoc = -1, uvLoc = -1;
+    static int emitLoc = -1, stateLoc = -1, uvLoc = -1, kLoc = -1;
     if (objects.empty()) return;
     if (!sh.id) {
-        sh = Lit::shader(Lit::MVS, DFS), emitLoc = GetShaderLocation(sh, "emissive"), stateLoc = GetShaderLocation(sh, "state"), uvLoc = GetShaderLocation(sh, "uvOff");
+        sh = Lit::shader(Lit::MVS, DFS), kLoc = GetShaderLocation(sh, "lightK"), emitLoc = GetShaderLocation(sh, "emissive"), stateLoc = GetShaderLocation(sh, "state"), uvLoc = GetShaderLocation(sh, "uvOff");
         ash = Lit::modelShader();
     }
     std::vector<const Entry *> ms;
@@ -1967,13 +1969,14 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
                     if (Lit::aniso > 1) rlTextureParameters(t.id, RL_TEXTURE_FILTER_ANISOTROPIC, Lit::aniso);
                 }
             }
-            if (e.m.meshCount) { BoundingBox b = GetModelBoundingBox(e.m); e.r = Vector3Distance(b.min, b.max) / 2; }
+            if (e.m.meshCount) { BoundingBox b = GetModelBoundingBox(e.m); e.r = Vector3Distance(b.min, b.max) / 2, e.c = Vector3Scale(Vector3Add(b.min, b.max), 0.5f); }
             it = cache.emplace(name, e).first;
         }
         ms.push_back(&it->second);
     }
     objR.resize(ms.size());
-    for (size_t i = 0; i < ms.size(); i++) objR[i] = ms[i]->r;
+    objC.resize(ms.size());
+    for (size_t i = 0; i < ms.size(); i++) objR[i] = ms[i]->r, objC[i] = ms[i]->c;
     if (!draw) return;
     static const int GL[12] = {RL_ZERO, RL_ONE, RL_DST_COLOR, RL_ONE_MINUS_DST_COLOR, RL_SRC_COLOR, RL_ONE_MINUS_SRC_COLOR, RL_SRC_ALPHA,
                                RL_ONE_MINUS_SRC_ALPHA, RL_DST_ALPHA, RL_ONE_MINUS_DST_ALPHA, RL_SRC_ALPHA_SATURATE, RL_ONE};  // XBlendModeGL kBlendFactor*
@@ -1987,10 +1990,12 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
             if (at && pass == 0) at->push_back({o.pos.x, o.pos.y, o.pos.z, 2 * size});
             bool loop = e.clip == "Go" || e.clip == "GoSync";  // another clip waits for Detail.PlayAnim, then plays once and holds its last key (0x7ad288)
             float t = e.len <= 0 ? 0 : !loop ? (o.playFrom < 0 ? 0 : fminf(clock - o.playFrom, e.len)) : fmodf(clock + (e.clip == "Go" ? (hash3((int)(&o - objects.data()), 0, 0, 0x60u) + 1) / 2 * e.len : 0), e.len);
+            const float shade = LightShade::k(LightShade::key(LightShade::Detail, (int)(&o - objects.data())));
             if (!e.anim.empty()) {  // raw mesh units (20 per W4M unit)
-                Models::shade(ash), Models::draw(e.anim.c_str(), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), o.m), WHITE, e.clip.c_str(), t, true, 1 + pass), Models::shade({});
+                Models::lightMul({1, 1, 1}, shade), Models::shade(ash), Models::draw(e.anim.c_str(), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), o.m), WHITE, e.clip.c_str(), t, true, 1 + pass), Models::shade({}), Models::lightMul({1, 1, 1});
                 continue;
             }
+            SetShaderValue(sh, kLoc, &shade, SHADER_UNIFORM_FLOAT);
             for (int i = 0; i < e.m.meshCount; i++) {
                 const State &q = e.st[e.m.meshMaterial[i]];
                 bool blended = q.src >= 0 && !(q.src == 1 && q.dst == 0);

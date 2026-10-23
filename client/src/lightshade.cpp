@@ -1,5 +1,6 @@
 #include "lightshade.h"
 #include "acting.h"
+#include "raymath.h"
 #include <algorithm>
 #include <unordered_map>
 
@@ -60,12 +61,18 @@ void LightShade::step(const Game &g, float dt, const std::vector<Spot> &extra) {
     if (g.factory.on) put(key(Factory, 0), g.factory.pos, 0, false, now);
     for (size_t i = 0; i < g.bubbles.size(); i++) put(key(Bubble, (int)i), g.bubbles[i].pos, 0, false, now);
     for (const Spot &s : extra) put(s.key, s.pos, 0, s.pool, now);
+    // the details' pooled lights (0x5cccf0, offset and position: their mesh's bounding sphere, 0x5cd4f5); one without a model yet is a slot only
+    size_t phantom = 0;
+    const Terrain &t = g.terrain;
+    for (size_t i = 0; i < t.objects.size(); i++) {
+        const Terrain::Object &o = t.objects[i];
+        if (o.model < (int)t.objC.size() && t.objR[o.model] > 0) put(key(Detail, (int)i), Vector3Transform(t.objC[o.model], o.m), t.objR[o.model] * Vector3Length({o.m.m0, o.m.m1, o.m.m2}) * 20, true, now);
+        else phantom++;
+    }
     entries.swap(now);
     at.clear();
     for (size_t i = 0; i < entries.size(); i++) at[entries[i].key] = i;
-    const Terrain &t = g.terrain;
-    // the details' pooled lights (0x5cccf0) take slots of the rotation without a cost here
-    const size_t slots = entries.size() + t.objects.size();
+    const size_t slots = entries.size() + phantom;
     // 0x47cbf0: the new entries' first update, a ray each, from the opposite side (0x47b760)
     for (Entry &e : entries)
         if (e.fresh) cast(t, e, true), e.fresh = false, smooth(e);
