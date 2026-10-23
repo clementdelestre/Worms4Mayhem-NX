@@ -375,9 +375,10 @@ static void checkObjects() {
     assert(g.objects.empty() && g.ammo[team][wi] == before + 1 && g.worms[g.current].hp == 125);
 
     Vector3 sky = {5, 50, 5};  // open air: nothing else in reach
-    g.objects = {{Object::Barrel, sky, {0, 0, 0}, -1, -1, false, true}, {Object::Barrel, {7.5f, 50, 5}, {0, 0, 0}, -1, -1, false, false},
+    g.objects = {{Object::Barrel, sky, {0, 0, 0}, -1, -1, false, false}, {Object::Barrel, {7.5f, 50, 5}, {0, 0, 0}, -1, -1, false, false},
                  {Object::Barrel, {25, 50, 5}, {0, 0, 0}, -1, -1, false, false}};
-    g.step(Input{});
+    g.objects[0].lit = 0;
+    for (int t = 0; t < 4 * Game::BARREL_END; t++) g.step(Input{});
     assert(g.objects.size() == 1);  // chain: the barrel in reach went off, the far one survives
 
     int victim = g.current, hp = g.worms[victim].hp;
@@ -1610,6 +1611,7 @@ static void checkDeathBlast() {
     Game g;
     g.start({24, 2, 2, "", 0}), g.hotSeat = 0;
     settle(g);
+    g.objects.clear();  // no mine armed by the neighbour (2.75 m) going off before the death blast
     Worm &d = g.worms[0], &n = g.worms[2];
     n.pos = Vector3Add(d.pos, {0.8f, 0, 0}), n.vel = {0, 0, 0};
     settle(g);
@@ -4001,6 +4003,8 @@ static void checkMineTypes() {
     };
     Out normal = blast(Game::DT_NORMAL), push = blast(Game::DT_BIGPUSH), fire = blast(Game::DT_FIRE), cl = blast(Game::DT_CLUSTERS);
     assert(normal.hp > 0 && normal.fx == "WXP_Explosion_Mine" && fire.hp == normal.hp && fire.fx == "WXP_Napalm");
+    assert(normal.g.gas.empty() && push.g.gas.empty() && cl.g.gas.empty());  // only WXP_Napalm holds WXP_GasCloud (poison 10, 8 s)
+    assert(fire.g.gas.size() == 1 && fire.g.gas[0].poison == Game::GAS_POISON && fire.g.gas[0].life > Game::GAS_LIFE - 0.1f);
     assert(push.hp == 0 && push.kick > normal.kick && push.fx == "WXP_Explosion_Mine");
     assert(cl.hp > 0 && cl.hp < normal.hp && cl.fx == "WXP_ExplosionX_Med" && cl.g.shots.size() == 5);
     const int stages[] = {0, 1, 2, 4, 5};
@@ -4028,6 +4032,59 @@ static void checkMineFlyby() {
     assert(g.objects[0].fuse < 0);
     g.step(Input{}), g.step(Input{});
     assert(g.objects[0].fuse >= 0);
+    for (float d : {2.7f, 2.8f}) {  // the arming sphere (45 units) overlaps the worm's (10): centres 55 units apart
+        g.objects = {{Object::Mine, {5, 60, 5}, {0, 0, 0}, -1, -1, false, false}};
+        for (int t = 0; t < 2; t++) v.pos = {5 + d, 60, 5}, v.vel = {0, 0, 0}, v.grounded = true, g.step(Input{});
+        assert((g.objects[0].fuse >= 0) == (d < 2.75f));
+    }
+}
+
+// W4M OilDrumLogicEntity 0x5d2200: a drum set off blasts 50 ms later (0x5d1370), starts its fire effect and goes at 100 ms (0x5d1580); the Explosion
+// handler 0x5d1e80 sets it off within LandDamageRadius + 9 units of its centre, the gun's Damage.Impulse (0x5d1fa0) at any damage over 0
+static void checkBarrelFuse() {
+    Game g;
+    g.start({23, 2, 1, "", 0}), g.hotSeat = 0;
+    settle(g);
+    const Vector3 sky = {5, 80, 5};
+    g.objects = {{Object::Barrel, sky, {0, 0, 0}, -1, -1, false, false}};
+    g.objects[0].lit = 0;
+    g.events.clear();
+    auto seen = [&](GameEvent::Kind k, const char *fx) {
+        for (const GameEvent &e : g.events) if (e.kind == k && e.fx && !strcmp(e.fx, fx)) return true;
+        return false;
+    };
+    for (int t = 1; t < Game::BARREL_FUSE; t++) g.step(Input{});
+    assert(g.objects.size() == 1 && !seen(GameEvent::Boom, "WXP_Explosion_OilDrum") && !seen(GameEvent::BigBoom, "WXP_Explosion_OilDrum"));
+    g.step(Input{});
+    assert(g.objects.size() == 1 && (seen(GameEvent::Boom, "WXP_Explosion_OilDrum") || seen(GameEvent::BigBoom, "WXP_Explosion_OilDrum")));
+    g.events.clear();
+    for (int t = Game::BARREL_FUSE; t < Game::BARREL_END - 1; t++) g.step(Input{});
+    assert(g.objects.size() == 1 && !seen(GameEvent::Pop, "WXP_OildrumFireExp"));
+    g.step(Input{});
+    assert(g.objects.empty() && seen(GameEvent::Pop, "WXP_OildrumFireExp"));
+
+    for (float d : {2.6f, 2.7f}) {  // LandDamageRadius 45 + 9 units = 2.7 m from its centre, not the 3.75 m worm reach
+        g.objects = {{Object::Barrel, {sky.x + d, sky.y, sky.z}, {0, 0, 0}, -1, -1, false, false}};
+        g.explode(sky, Game::BARREL_BLAST);
+        assert((g.objects[0].lit >= 0) == (Vector3Distance(Vector3Add(g.objects[0].pos, {0, 0.45f, 0}), sky) < 2.7f));
+    }
+    g.objects = {{Object::Barrel, {sky.x + 2.6f, sky.y, sky.z}, {0, 0, 0}, -1, -1, false, false}};
+    g.explode(sky, Game::BARREL_BLAST);
+    g.objects[0].lit = 1;
+    g.explode(sky, Game::BARREL_BLAST);
+    assert(g.objects[0].lit == 1);  // already set off: ignored
+
+    Game h;  // a shotgun pellet hitting a drum sets it off
+    h.start({25, 2, 1, "", 0}), h.hotSeat = 0;
+    Worm &a = h.worms[h.current];
+    a.pos = {10, 55, 10}, a.yaw = 0, a.pitch = 0;
+    h.worms[1 - h.current].pos = {30, 55, 30};
+    h.weapon = weaponNamed("Shotgun");
+    h.objects = {{Object::Barrel, {10, 55 + Game::EYE - Game::R - 0.45f, 15}, {0, 0, 0}, -1, -1, false, false}};
+    Input in;
+    in.buttons = Input::FIRE;
+    h.step(in);
+    assert(!h.objects.empty() && h.objects[0].lit >= 0);
 }
 
 // open air over a floor at 45 m (voxel row 179), the active worm standing on it at (20, 45.5, 20) facing +z, the rope in hand
@@ -5385,6 +5442,7 @@ int main() {
     checkMineBlast();
     checkMineLanding();
     checkMineFlyby();
+    checkBarrelFuse();
     checkMineTypes();
     checkRopeShots();
     checkGrapple();

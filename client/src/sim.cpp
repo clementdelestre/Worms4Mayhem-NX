@@ -843,6 +843,7 @@ void Game::mineBlast(Vector3 p, int type) {
     Blast b = superBlast(MINE_BLAST, W4M_LANDMINE);
     if (type == DT_BIGPUSH) b.push *= 2, b.pushReach *= 2, b.damage *= 0.3f, b.reach *= 0.3f, b.crater *= 0.3f;
     explode(p, b, 0, -1, type == DT_FIRE ? "WXP_Napalm" : "WXP_Explosion_Mine", "global/ExplosionRegular");
+    if (type == DT_FIRE) gas.push_back({Vector3Add(p, {0, 0.5f, 0}), GAS_LIFE, GAS_POISON});  // WXP_Napalm holds WXP_GasCloud: collider offset (0, 10, 0) units
 }
 
 // 0x5519d0, one per 20 ms update from the blast point: azimuth 2 pi r, tilt from up ConeAngle r, speed Min + (Max - Min) r; the
@@ -1157,6 +1158,7 @@ static Vector3 ropePoint(const Object &o) { return {o.pos.x, o.pos.y - (o.type =
 // a drum's Position is its base, its collider sphere (radius 9 units) is centred 9 units above it (0x5d1c60, 0x5d2070)
 static constexpr float DRUM_R = 0.45f;
 static Vector3 colliderCentre(const Object &o) { return o.type == Object::Barrel ? Vector3{o.pos.x, o.pos.y + DRUM_R, o.pos.z} : o.pos; }
+static void lightBarrel(Object &o) { if (o.lit < 0) o.lit = 0; }  // OilDrumLogicEntity 0x5d1e80 / 0x5d1fa0: a drum already set off ignores any more
 static float halfHeight(Object::Type t) { return t == Object::Mine ? 0.15f : t == Object::Barrel ? 0 : t == Object::Sentry ? 0.5f : 0.45f; }
 // W4M effect height over Water.Level: it quantised to 1/16 unit with the low bit set (0x48b260), plus off units (drown, death blast 1; payload 2)
 static float surfaceY(float water, float off) { return Terrain::WATER + (((int)((water - Terrain::WATER) * 20 * 16) | 1) / 16.0f + off) / 20; }
@@ -1441,7 +1443,7 @@ void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
     bl.crater = 0;  // ShotLandDamageRadius 0.1 units: no crater
     bl.pushOff = {-dir.x * 0.1f, -0.1f, -dir.z * 0.1f};  // 0x56c110: the impulse centre 2 units behind the hit and 2 low
     explode(h.at, bl, 0, o.weapon, nullptr, nullptr, nullptr, int(&o - objects.data()));
-    if (h.obj >= 0) crateHit(objects[h.obj], bl.damage * (doubled() ? 2 : 1));
+    if (h.obj >= 0 && objects[h.obj].type != Object::Barrel) crateHit(objects[h.obj], bl.damage * (doubled() ? 2 : 1));  // a sentry bullet sends no Damage.Impulse
 }
 
 void Game::stepObjects() {
@@ -1541,7 +1543,7 @@ void Game::stepObjects() {
         }
 
         if (o.type == Object::Sentry) stepSentry(o);
-        bool gone = !crateLike(o) && o.type != Object::Mine && o.type != Object::Sentry && o.pos.y < water, boom = o.dead && (o.type == Object::Barrel || o.type == Object::Sentry || crateLike(o));  // 0x5c5810: every crate type blows up
+        bool gone = !crateLike(o) && o.type != Object::Mine && o.type != Object::Sentry && o.pos.y < water, boom = o.dead && (o.type == Object::Sentry || crateLike(o));  // 0x5c5810: every crate type blows up
         if (crateLike(o)) {  // 0x5c5b70: at or under Water.Level it sinks, chute off, WaterSmallSplash at y = 1 unit absolute; 20 units under: Crate.Sunk (0x5c81a0)
             if (!o.sunk && o.pos.y <= water) {
                 o.sunk = true, o.falling = false;
@@ -1597,6 +1599,10 @@ void Game::stepObjects() {
                 gone = true;
                 break;
             }
+        if (o.type == Object::Barrel && o.lit >= 0) {  // 0x5d2200: the blast once set off for 50 ms, then the fire effect and removal at 100 ms
+            if (++o.lit == BARREL_FUSE) explode(o.pos, BARREL_BLAST, 0, -1, "WXP_Explosion_OilDrum", "weapons/ExplosionLarge");  // 0x5d1370
+            else if (o.lit >= BARREL_END) emit(GameEvent::Pop, o.pos), events.back().fx = "WXP_OildrumFireExp", gone = true;  // 0x5d1580
+        }
         if (!gone && !boom && !o.dead) { i++; continue; }
         Object x = o;
         objects.erase(objects.begin() + i);  // before explode(), which only flags the others
@@ -1604,7 +1610,6 @@ void Game::stepObjects() {
         if (opened >= 0) openMystery(opened, worms[opener]);
         if (boom && !gone) {
             if (x.type == Object::Mine) mineBlast(x.pos, det);
-            else if (x.type == Object::Barrel) explode(x.pos, BARREL_BLAST, 0, -1, "WXP_Explosion_OilDrum", "weapons/ExplosionLarge");  // 0x5d1540
             else if (x.type == Object::Sentry) explode(sentryBase(x), blastOf(WEAPONS[x.weapon], true), 0, -1, named(WEAPONS[x.weapon].cfx));  // 0x56bfb0: Death*, ExplosionFx, no ExplosionSfx
             else explode(x.pos, CRATE_BLAST, 0, -1, "WXP_ExpiryExplosion");  // 0x5c59e9
             if (x.type == Object::Mine && wp(WP_MINE_RESPAWN)) respawns.push_back({x.pos, msTicks(500)});
@@ -1703,11 +1708,11 @@ Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet, int self, ui
     };
     for (size_t i = 0; i < worms.size(); i++)
         if (float t = worms[i].alive && &worms[i] != &shooter ? across(worms[i].pos, R) : -1; t > 0) h.dist = t, h.worm = (int)i, h.land = false;
-    for (size_t i = 0; i < objects.size(); i++) {  // only a crate or target is hurt directly; a mine or drum only by the hit's Explosion
+    for (size_t i = 0; i < objects.size(); i++) {  // a crate, target or drum gets the gun's Damage.Impulse (0x55df90); a mine only the hit's Explosion
         Vector3 c;
         float cr;
         uint32_t f = (int)i != self ? collider(terrain, objects[i], c, cr) & mask : 0;
-        if (float t = f ? across(c, cr) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = f & 0x26 ? (int)i : -1, h.sentry = f & 0x800 ? (int)i : -1;
+        if (float t = f ? across(c, cr) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = f & 0x36 ? (int)i : -1, h.sentry = f & 0x800 ? (int)i : -1;
     }
     Colliders cs;
     colliders(cs, mask & 0x400);  // gravestones: the bullet stops, no message for them (0x55e10f)
@@ -1745,7 +1750,7 @@ bool Game::active() const {
     for (const Worm &x : worms) if ((x.alive && (!x.grounded || Vector3LengthSqr(x.vel) >= 0.01f)) || (x.drowned && x.counted > 0)) return true;
     for (const Object &o : objects) {
         bool moving = Vector3LengthSqr(o.vel) >= 0.01f;
-        if ((o.type == Object::Mine && (o.fuse >= 0 || moving)) || (o.type == Object::Crate && o.spawning) || o.dead || (o.type == Object::Sentry && (moving || o.turret.state == Object::Turret::Track || o.turret.state == Object::Turret::Fire || o.turret.state == Object::Turret::Dying)))
+        if ((o.type == Object::Mine && (o.fuse >= 0 || moving)) || (o.type == Object::Crate && o.spawning) || o.dead || o.lit >= 0 || (o.type == Object::Sentry && (moving || o.turret.state == Object::Turret::Track || o.turret.state == Object::Turret::Fire || o.turret.state == Object::Turret::Dying)))
             return true;
     }
     return camHold > 0 || (factory.on && factory.state);
@@ -2032,7 +2037,11 @@ void Game::use(Worm &w) {
         b.pushOff = h.worm >= 0 || h.sentry >= 0 ? Vector3{-dir.x * 0.1f, -0.1f, -dir.z * 0.1f} : Vector3Scale(dir, -0.05f);
         if (h.land && h.dist < GUN_RANGE) clearVoxel(h.at, dir);  // LandDamageMagnitude 25 >= 15: every land hit (0x55d8c0)
         if (h.dist < GUN_RANGE) explode(h.at, b, 0, weapon);
-        if (h.obj >= 0) crateHit(objects[h.obj], b.damage * (doubled() ? 2 : 1));  // DamageImpulseMessage 0x518c20 -> 0x5c8a90, x2 under DoubleDamage
+        if (h.obj >= 0) {  // DamageImpulseMessage 0x518c20 -> a crate 0x5c8a90, x2 under DoubleDamage; a drum 0x5d1fa0 goes off at any damage over 0
+            Object &hit = objects[h.obj];
+            if (hit.type != Object::Barrel) crateHit(hit, b.damage * (doubled() ? 2 : 1));
+            else if (b.damage > 0) lightBarrel(hit);
+        }
         if (--shotsLeft == 0 && endlessGun) shotsLeft = 1;  // Challenge.EndlessGun (0x55efbf): no last shot, the worm may move (0x55d54f)
         else if (shotsLeft == 0) phase = Phase::Flying;
         break;
@@ -2572,7 +2581,7 @@ void Game::openMystery(int item, Worm &w) {
         }
         break;
     case MY_BARREL_TRIPLET:  // a 1-unit blast at each drum: its own explosion
-        for (int j : triplet(Object::Barrel)) objects[j].dead = true;
+        for (int j : triplet(Object::Barrel)) lightBarrel(objects[j]);
         break;
     case MY_FLOOD:  // the Flood weapon's FloodLogicEntity
         if (int f = named("Flood"); f >= 0) water += WEAPONS[f].speed;
@@ -2683,7 +2692,7 @@ void Game::explode(Vector3 p, const Blast &b0, int type, int weapon, const char 
             if (o.pushable && !o.pinned) o.vel = Vector3Add(o.vel, Vector3Scale(blastKick(b, p, o.pos), 1 / 1.2f));
         } else if (o.type == Object::Sentry) {
             if (int(&o - objects.data()) != self) sentryHit(o, p, b);
-        } else if (Vector3Distance(o.pos, p) < b.reach) o.dead = true;
+        } else if (o.type == Object::Barrel && Vector3Distance(colliderCentre(o), p) < b.crater + DRUM_R) lightBarrel(o);  // OilDrumLogicEntity Explosion 0x5d1e80: LandDamageRadius + 9 units
     }
     for (Trigger &t : triggers) {  // 0x5d4cb0: within WormDamageRadius + its radius, WormDamageMagnitude (1 - d²/R²), at least 1
         float r2 = (b.reach + t.radius) * (b.reach + t.radius), d2 = Vector3LengthSqr(Vector3Subtract(t.pos, p));
@@ -3593,7 +3602,7 @@ uint32_t Game::checksum() const {
     mix(&bubbleAt, sizeof bubbleAt);
     mix(&icarus, sizeof icarus), mix(&flapAt, sizeof flapAt), mix(&drift, sizeof drift), mix(&doubleDamage, 1), mix(&changing, 1), mix(spy.data(), spy.size());
     mix(&scout.t, sizeof scout.t), mix(&scout.power, sizeof scout.power), mix(&scout.pitch, sizeof scout.pitch);
-    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); mix(&o.dud, 1); mix(&o.courtesy, sizeof o.courtesy); mix(&o.hooked, 1); mix(&o.spawning, 1); mix(&o.delay, sizeof o.delay); mix(&o.fizzle, 1); if (o.type == Object::Sentry) mix(&o.turret.state, 1), mix(&o.turret.target, 1), mix(&o.turret.timer, sizeof o.turret.timer), mix(&o.turret.scan, sizeof o.turret.scan), mix(&o.hp, sizeof o.hp); if (o.mystery >= 0) mix(&o.mystery, sizeof o.mystery); if (o.id >= 0) mix(&o.id, sizeof o.id); if (crateLike(o)) mix(&o.hp, sizeof o.hp), mix(&o.count, sizeof o.count), mix(&o.teamCollect, 2), mix(&o.pinned, 1), mix(&o.pushable, 1), mix(&o.scale, sizeof o.scale); }
+    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); mix(&o.dud, 1); mix(&o.courtesy, sizeof o.courtesy); mix(&o.hooked, 1); mix(&o.spawning, 1); mix(&o.delay, sizeof o.delay); mix(&o.fizzle, 1); if (o.lit >= 0) mix(&o.lit, sizeof o.lit); if (o.type == Object::Sentry) mix(&o.turret.state, 1), mix(&o.turret.target, 1), mix(&o.turret.timer, sizeof o.turret.timer), mix(&o.turret.scan, sizeof o.turret.scan), mix(&o.hp, sizeof o.hp); if (o.mystery >= 0) mix(&o.mystery, sizeof o.mystery); if (o.id >= 0) mix(&o.id, sizeof o.id); if (crateLike(o)) mix(&o.hp, sizeof o.hp), mix(&o.count, sizeof o.count), mix(&o.teamCollect, 2), mix(&o.pinned, 1), mix(&o.pushable, 1), mix(&o.scale, sizeof o.scale); }
     if (factory.on) {
         const Factory &f = factory;
         mix(&f.pos, sizeof f.pos), mix(&f.damaged, 1), mix(&f.state, sizeof f.state), mix(&f.wait, sizeof f.wait), mix(&f.toSpawn, sizeof f.toSpawn), mix(&f.until, sizeof f.until), mix(&f.die, sizeof f.die);

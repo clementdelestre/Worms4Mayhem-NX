@@ -439,7 +439,8 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkDonkey` | Concrete Donkey: smashes down every 0.75 s until its 8 s LifeTime or the water. |
 | `checkMineDuds` | Mine.DudProbability: about one CreateMine mine (`newMine`) in ten fizzles; a laid mine never does. |
 | `checkMineBlast` | A blast only pushes a mine, up and away; it does not arm it. |
-| `checkMineFlyby` | ArmingRadius 45 units: a worm blown past 2 m off arms it; a laid mine waits ArmingCourtesyTime. |
+| `checkMineFlyby` | ArmingRadius 45 + the worm's 10 units: a worm blown past 2 m off arms it, a worm standing 2.7 m away does, 2.8 m does not; a laid mine waits ArmingCourtesyTime. |
+| `checkBarrelFuse` | A drum set off blasts at msTicks(50) with WXP_Explosion_OilDrum, starts WXP_OildrumFireExp and goes at msTicks(100); a blast sets off a drum within LandDamageRadius + 9 units of its centre (2.6 m yes, 2.7 m no), not again once lit; a shotgun pellet sets a drum off. |
 | `checkRopeShots` | Ninja.NumShots: 5 launches a turn; the hook catches a crate, which swings about the worm's feet at the rope's length while reeled in and out; jump lets go. |
 | `checkRope` | Ninja rope in the open air: the hook angle and length, the yaw kept, gravity's first pull, the body on the circle, a damped swing past the bottom, the release velocity; the stick's swing (0x571820 thresholds); reel at 10 m/s within MinLength / MaxLength; a wrap round a bar and its unwrap; a bounce off a worm's collider. |
 | `checkWaterShots` | Payload water: a Bazooka skims (SkimDamping, set on the Radius plane); a Grenade splashes, is disarmed at SinkDepth, sinks at 4..5 m/s without a blast and goes at Water.ExpiryDepth; a homing missile homing only splashes. |

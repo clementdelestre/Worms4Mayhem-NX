@@ -216,7 +216,7 @@ ended for the AI's PreferVariety only; `GameEvent::TurnStart`. Crates fall befor
   worm's AlliedGroup. `hp` starts at 12 (TWEAK Crate.Hitpoints 25 x HitpointsMultiplier 0.5); at 0 any crate type blows up with the
   Crate.* blast (0x5c5810). A pushable crate gets the blast's push / 1.2 (`blastKick`: ImpulseMagnitude (R - e) / R, 0x5c5ae0); a pinned
   one (Gravity 0) never moves. JSON missions' crates stay pinned and unbreakable, their targets pinned and popped by any hit [ours].
-- **Mines**: armed by any worm within 2.25 m (W4M Landmine ArmingRadius 45, data) after a 2.5 s courtesy (ArmingCourtesyTime, data).
+- **Mines**: armed by any worm whose centre is within 2.75 m (W4M arming sphere 45 units meets the worm's 10: 55 units, [disasm 0x5806f0], docs/w4m/weapons.md "Landmine trigger") after a 2.5 s courtesy (ArmingCourtesyTime, data). A Fire mine also puts down the poison cloud ([data] "Landmine Fire type"). Oil drums: `Object::lit`, docs/w4m/weapons.md "Drum fuse" [ours].
   `Game::newMine` is W4M CreateMine (docs/w4m/missions.md §23.9, disasm): the dud roll (`mineDud`, Mine.DudProbability 0.1; none under
   Mine Respawn), then the fuse `mineMin` + trunc((`mineMax` - `mineMin`) r) ms; a match takes Min / Max from the scheme's MineFuse
   (lib_SetupMinesAndOildrums: -1 -> 0..5000 ms, else MineFuse x 1000 both), a mission script from Mine.* keys. Random, map and

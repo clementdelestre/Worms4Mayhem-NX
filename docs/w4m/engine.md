@@ -137,7 +137,7 @@ Tables below: listens = handles subscribed via 0x690e3e; sends = handles resolve
 | MainServiceStartupLogicEntity | boots services, verifies message IDs (0x508d80) | LogicEntity | 0x838284 | 0x83825c | 0x509460 | 0x508d80 | `Net.ConnectToServer`, `Net.CreateServer`, `Net.ShutdownComplete` |  | 3 |
 | MatchStatsSummaryLogicEntity |  | StatsSummaryLogicEntity | 0x86b814 | - | 0x619a50 |  |  |  | 0 |
 | MineFactoryLogicEntity | mines | LogicEntity | 0x86245c | 0x8623dc | 0x5d0510 |  |  | `MineFactory.Fire`, `MineFactory.FireEnd`, `MineFactory.Start` | 2 |
-| OilDrumLogicEntity | oil drum | LogicEntity | 0x8627ec | 0x862778 | 0x5d2520 | 0x5d2330 | `Earthquake.Impulse`, `Explosion`, `Land.NewShape`, `NinjaRope.EndSwing` | `NinjaRope.Kill` | 5 |
+| OilDrumLogicEntity | oil drum | LogicEntity | 0x8627ec | 0x862778 | 0x5d2520 | 0x5d2330 | `Damage.Impulse`, `Earthquake.Impulse`, `Explosion`, `Land.NewShape`, `NinjaRope.EndSwing` | `NinjaRope.Kill` | 5 |
 | ParticleEmitterLogicEntity |  | LogicEntity | 0x860fc4 | 0x860f9c | None | 0x5be2e0 | `GameLogic.Turn.Started`, `Particle.DelLogicalEmitter`, `Particle.DelLogicalEmitterImm` | `Camera.ShakeStart`, `Worm.Antidote`, `Worm.ApplyLightside`, `Worm.Poison` | 4 |
 | RoundStatsSummaryLogicEntity |  | StatsSummaryLogicEntity | 0x86b9fc | - | 0x619a50 |  |  |  | 0 |
 | SpectatorMasterLogicEntity | spectator | LogicEntity | 0x851e28 | - | 0x50e500 | 0x50e3d0 | `GameLogic.Turn.Started`, `Net.DisableAllInput` |  | 2 |

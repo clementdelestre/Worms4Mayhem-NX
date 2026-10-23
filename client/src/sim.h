@@ -240,6 +240,7 @@ struct Object {
     bool bounced = false;   // crate: bounced once (+0x8c, 0x5c8900); another crate's sweep ignores it while it never did, nor rests
     float delay = -1;  // mine: fuse s drawn at creation (W4M CreateMine 0x4f97cf); -1: drawn when armed
     bool fizzle = false;  // mine: its dud roll, drawn with delay
+    int lit = -1;  // barrel: ticks since it was set off (OilDrumLogicEntity +0x80 / +0x84, 0x5d2200); -1 not lit
     bool sunk = false;  // crate: sinking (0x5c81a0); mine: under the disarm plane, disarmed, sinking
     int mystery = -1;  // crate: W4M kMystery item - 0x32 (MYSTERY_ITEMS), drawn at spawn; weapon stays -1
     int uid = -1;  // contact identity (W4M collider owner id), numbered by Game::stepShots
@@ -415,7 +416,7 @@ struct Game {
     }
     float gravity() const;
     static constexpr float MINE_DUD = 0.1f;  // W4M Mine.DudProbability
-    static constexpr float MINE_ARM = 2.25f;  // W4M Landmine ArmingRadius 45: any worm this close arms it
+    static constexpr float MINE_ARM = 2.75f;  // W4M arming sphere (ArmingRadius 45) overlaps a worm's (10): centres under 55 units apart (0x5806f0, 0x516350)
     static constexpr int MINE_COURTESY = 150;  // W4M ArmingCourtesyTime 2500 ms: a laid mine ignores worms that long
     static constexpr int ARMOUR = 25;        // W4M Shield.DamageScale 0.25 (explosion handler 0x5ae71c): share of the damage still taken
     // W4M WXWormLogicEntity explosion handler 0x5ae4f0 (docs/weapons-audit.md "Blast formula"); shared with the AI
@@ -426,6 +427,7 @@ struct Game {
     // W4M kWeaponLandmine, OilDrum.* and Crate.* (TWEAK.XOM); impulse depth: drum 9 units (0x5d13ce), crate its radius 10 x Crate.Scale (0x5c5879)
     static constexpr Blast MINE_BLAST = {2.625f, 3.73f, 40, 12.5f, 5, 2.5f}, BARREL_BLAST = {2.25f, 3.75f, 55, 20, 3.75f, 0.45f},
                            CRATE_BLAST = {3, 3.5f, 60, 9, 2.5f, 0.5f};
+    static constexpr int BARREL_FUSE = msTicks(50), BARREL_END = msTicks(100);  // OilDrumLogicEntity 0x5d2200: ticks from being set off to the blast, to its fire effect and removal
     static constexpr Blast MINE_CLUSTER_BLAST = {2.025f, 2.9f, 25, 10, 4.25f, 2.25f};  // W4M kWeaponLandmineCluster (kDT_Clusters)
     enum : int { DT_NORMAL = 1, DT_FIRE, DT_CLUSTERS, DT_BIGPUSH };  // W4M DetonationTypeEnum 0x90c8f0
     static constexpr int ROPE_SHOTS = 5;     // W4M Ninja.NumShots: hooks on land per turn (0x573ea3; misses and objects are free)
