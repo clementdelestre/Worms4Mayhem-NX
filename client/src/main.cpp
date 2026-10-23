@@ -815,7 +815,7 @@ static void dudFx(const std::vector<Object> &objs) {
     was.swap(now);
 }
 
-// W4M GirderKitGraphicEntity 0x5586c0: the Girder mesh x (3, 3.5, 3) units, opaque, tinted red where it can't go or after 45
+// W4M GirderKitGraphicEntity 0x5586c0: the Girder mesh x (3, 3.5, 3) units, opaque; its light colour (0x48ec50 -> 0x47ac50) is (1, 0, 0) where it can't go or after 45, else (1, 1, 1)
 static void drawUtilities(const Game &g) {
     if (g.girderOn && g.phase == Phase::Aim) {
         bool bad = g.girderFits(g.girder) || g.girders >= Game::GIRDER_MAX;
@@ -825,7 +825,10 @@ static void drawUtilities(const Game &g) {
         if (!Vector3Equals(to, g.girder)) from = Vector3Distance(at, g.girder) < 1 ? at : g.girder, to = g.girder, t0 = GetTime();
         at = Vector3Lerp(from, to, fminf((float)(GetTime() - t0) / 0.02f, 1));
         Matrix m = MatrixMultiply(MatrixScale(0.15f, 0.175f, 0.15f), MatrixTranslate(at.x, at.y, at.z));
-        if (!Models::draw("girder", m, bad ? red : WHITE)) {  // no glb: GirderSmall.xom's boxes
+        Models::lightMul(bad ? Vector3{1, 0, 0} : Vector3{1, 1, 1});
+        const bool drawn = Models::draw("girder", m, WHITE);
+        Models::lightMul({1, 1, 1});
+        if (!drawn) {  // no glb: GirderSmall.xom's boxes
             rlPushMatrix();
             rlTranslatef(at.x, at.y, at.z);
             DrawCube({0, 0.5f, 0}, 4, 1, 4, bad ? red : LIGHTGRAY);
