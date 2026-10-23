@@ -207,7 +207,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
     loadMs[0] = loadMs[1] = loadMs[2] = 0;
     objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
-    thinOnly.clear(), thinVox.clear();
+    thinOnly.clear(), thinVox.clear(), codes.clear();
     sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), uvOf.clear(), landUV.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -255,7 +255,10 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     if (j["voxels"].type == Json::Str) {
         auto now = [] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
         double t0 = now();
-        if (!loadVoxels(dir + j["voxels"].s())) TraceLog(LOG_WARNING, "map %s: bad voxel file '%s'", map.c_str(), j["voxels"].s().c_str());
+        if (!loadVoxels(dir + j["voxels"].s())) {  // a map without its voxels is invalid: the procedural island, like any other bad map
+            TraceLog(LOG_WARNING, "map %s: bad voxel file '%s'", map.c_str(), j["voxels"].s().c_str());
+            return load("", seed), false;
+        }
         if (j["thin"].type == Json::Str) loadThin(dir + j["thin"].s());
         double t1 = now();
         if (j["cells"].type == Json::Str && !sharp.load(dir + j["cells"].s())) TraceLog(LOG_WARNING, "map %s: bad cells file '%s'", map.c_str(), j["cells"].s().c_str());

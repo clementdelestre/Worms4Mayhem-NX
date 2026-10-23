@@ -439,6 +439,20 @@ int main() {
         Terrain t;
         assert(t.load(stem, 1) && !t.mats.empty());
     }
+    {  // an old-format .vox under a valid .cells is an invalid map: the procedural island, and a blast stays inside it
+        char *js = LoadFileText("assets/maps/Accuracy.json");
+        if (js && FileExists("assets/maps/Accuracy.cells")) {
+            std::string txt = js, from = "Accuracy.vox";
+            txt.replace(txt.find(from), from.size(), "zz_stale.vox");
+            SaveFileText("assets/maps/zz_stale.json", txt.data());
+            SaveFileData("assets/maps/zz_stale.vox", (void *)"W4V3 stale", 10);
+            Terrain t;
+            assert(!t.load("zz_stale", 1) && !t.sharp.on && t.theme.empty() && t.codes.empty() && t.landUV.empty());
+            assert(t.carve({Terrain::NX * Terrain::VOX / 2, 8, Terrain::NZ * Terrain::VOX / 2}, 3));
+            remove("assets/maps/zz_stale.json"), remove("assets/maps/zz_stale.vox");
+        }
+        UnloadFileText(js);
+    }
     const char *only = getenv("W4NX_MISSION");
     int imported = 0, ended = 0;
     for (const MissionSpec &m : list) {

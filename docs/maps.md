@@ -1,6 +1,6 @@
 # Map format
 
-A map is `maps/<name>.json`. Lookup order: `sdmc:/switch/worms4nx/assets/maps/` (desktop `./assets/maps/`, for user/imported maps), then `romfs:/maps/`. Missing or invalid file => procedural island. Same file + match seed => identical terrain on every client.
+A map is `maps/<name>.json`. Lookup order: `sdmc:/switch/worms4nx/assets/maps/` (desktop `./assets/maps/`, for user/imported maps), then `romfs:/maps/`. Missing or invalid file, or a `voxels` file that fails to load (old format, truncated) => procedural island (`Terrain::load` returns false; no `.cells`, thin or codes state kept) [ours]. Same file + match seed => identical terrain on every client.
 
 World: a grid of 0.25 m voxels (`Terrain::VOX`; int8 density + u8 material), its size per map (`grid`, multiples of the 32-voxel chunk; 352 x 256 x 352 = 88 x 64 x 88 m for the generated island and the `romfs` maps), water at y = 3 (below = drown). All units are metres; imported maps are at the W4M scale, 20 units per m [ours].
 
