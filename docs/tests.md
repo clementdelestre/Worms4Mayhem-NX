@@ -385,6 +385,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkPoison` | Poison Arrow: a worm hit gives the gas cloud and poison with no damage or knock; land stops it, the cloud comes 2 s later; poison ticks off at the next turn start. |
 | `checkMelee` | Fire Punch and the other melee weapons: reach, height, behind, knock-back, W4M 0-damage push. |
 | `checkShotgun` | A gun hit takes the weapon's full damage, not a blast falloff. |
+| `checkGunWait` | After the shotgun's first shot FIRE is refused until the gun's wait ends: 3 updates on a miss, longer while the hit worm flies; the turn clock stands still. |
 | `checkHoming` | Homing missile flies along the aim, then dives onto the reticle point. |
 | `checkTeamWeapon` | Each turn starts empty-handed (W4M Turn.Started); `picked` keeps the last weapon (AI variety) and is checksummed. |
 | `checkCrateWalk` | Walking into a crate (real input) collects it: health heals, a weapon adds ammo. |
@@ -474,6 +475,7 @@ AI vs AI. Prints weapon usage, damage per turn and planning cost.
 | `pointBlank` | Enemy right next to the CPU: it attacks (10 of 12 seeds), with a close-range plan where it stands (melee, dropped explosive, mine) or a ranged weapon from over 5 m (W4M targets over 100 units from the move node, 0x49fcf6). |
 | `shots` | First shots with a given planning budget: same plan sliced or in one tick. |
 | `wallAhead` | Thin wall in front, enemy behind: no walk or jump against it, no shot into it, at levels 1, 3, 5. |
+| `shotgunGap` | A CPU shotgun's second shot comes at least 1100 ms (Delay 1000 + Delay 100, then a new think) plus DelayBeforeFire after the first, at every level. |
 
 `main` also asserts: every map and level deals damage, most matches finish; CPU5 beats CPU1 in 2 of 3 games; every preset
 scheme plays with sudden death; a King + Vampire match replays bit-identically.

@@ -10,7 +10,7 @@ struct Ai {
     static int firstContact(const Game &g, const Projectile &s);  // ticks until a ballistic shot's first contact (land, worm, fuse, water), -1 none in 10 s
     bool striking() const { return mode == Mode::Act && plan.weapon >= 0 && targeted(WEAPONS[plan.weapon].kind); }  // seen from the Blimp
 
-    // rank: score x taste; origin: index in origins (-1: re-aimed where the worm stands); view: the Blimp yaw a strike is called with
+    // rank: score x taste; origin: index in origins; view: the Blimp yaw a strike is called with
     struct Plan { int weapon = -1, charge = 0, target = -1; float yaw = 0, pitch = 0, score = -1e9f, rank = -1e9f; int origin = -1; float view = 0; };
     struct Step { Vector3 to; float yaw = 0; uint8_t move = 0; };  // W4M path move: 0 WALK to `to`, 1 JUMP_FORWARD, 2 JUMP_BACKFLIP along yaw
     struct StepRun { int t = 0; bool air = false, done = false, stuck = false; };  // stuck: a walk held off its node
@@ -29,7 +29,7 @@ struct Ai {
         float yaw = 0, weight = 1;
         std::vector<Step> before, after;
         Route to, back;
-        bool path = false, close = false, near = false;  // near: targets within 5 m allowed (a re-aim, not a W4M plan)
+        bool path = false, close = false;
     };
     long budget = 20000;  // Terrain::samples per frame: ~0.7 ms on desktop, plus at most one unit (< 2.5 ms)
     struct Walk { static constexpr int STEPS = 300; Vector3 p{}, v{}, best{}; int i = 0; };  // a walker's planned walk, resumed per unit
@@ -52,7 +52,6 @@ private:
     // moved: W4M 0x9560ba, a path ran since the last shot; noMove: 0x9560f8, too many repaths
     bool pathFailed = false, moved = false, noMove = false, fireAfterWalk = false, retreatTaken = false;
     std::vector<Origin> origins;  // this think's attack origins
-    Origin reaim;                 // the shotgun's next shot, where the worm stands
     int origin = 0, built = -1, pairs = 0, pairM = -1, pairR = -1;  // origin under evaluation, the one tpos was built for
     bool pairing = false, pairOk = false;
     float pairScore = 0, pairYaw = 0;
@@ -93,7 +92,7 @@ private:
     bool follow(const Game &g, Input &in);
     bool repath(const Game &g);
     void decide(const Game &g);
-    void finish(const Game &g, bool again = false);
+    void finish(const Game &g);
     Input act(const Game &g);
     Input blimp(const Game &g) const;
     Input retreat(const Game &g);

@@ -720,7 +720,8 @@ void Ai::searchStep(const Game &g) {
             if (ok) {
                 walking = r, walking.purpose = Route::Rewalk, repaths = 0;
                 takePath(g, std::move(steps));
-                wait = walks++ ? (int)(levelOf(g).nonFirstMove / DT) : 0;  // DelayBeforeNonFirstMove
+                wait = moved ? (int)(levelOf(g).nonFirstMove / DT) : 0;  // 0x4983a0: DelayBeforeNonFirstMove once a path ran since the last shot
+                walks++;
                 moved = true, fireAfterWalk = false, mode = Mode::Walk;
                 return;
             }
@@ -992,6 +993,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
     const int team = w.team;
     const Level &L = levelOf(g);
     const float wind = g.wind;  // W4M solves with the exact wind at every level
+    if (g.shotsLeft && wi != g.weapon) return 0;  // locked to the weapon with shots left (0x493500)
     if (!g.usable(team, wi) && !(g.shotsLeft && wi == g.weapon)) return 0;  // W4M SchemeData Delay: not before its turn
     if (w.nailed && !nailUsable(wd.kind)) return 0;  // Tail Nail: the sim refuses it
     static const char *BLIMPED[] = {"Homing Missile", "Airstrike", "Super Airstrike", "Concrete Donkey", "Fatkins Strike"};
@@ -999,7 +1001,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
     // W4M root plans (CloseRange: melee, dropped explosives, landmine; Special: Flood) stand where the worm is; Projectile, Direct,
     // Strike and Animal plans come from each move -> retreat pair, for targets over 100 units (5 m) from it (0x49fcf6)
     const bool close = wd.kind == Kind::Melee || wd.kind == Kind::Mine || wd.kind == Kind::Flood || (wd.kind == Kind::Shell && dropped(wd));
-    if (close != O.close && !O.near) return 0;
+    if (close != O.close) return 0;
     // W4M 0x498a0a, 0x49c060: a positive score ×(1 ± PlanScoreRandomise) ×Pref(weapon) ×(1 − PreferVariety if last turn's weapon)
     uint32_t h = (salt ^ (uint32_t)wi * 2654435761u) * 2246822519u;
     const std::string &n = wd.name;
@@ -1027,7 +1029,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
     for (size_t k = only < 0 ? 0 : only; k < (only < 0 ? tpos.size() : only + 1); k++) {
         const Vector3 e = tpos[k];
         const int ti = tworm[k];
-        if (!close && !O.near && Vector3Distance(targetPos(g, ti), O.pos) <= 5) continue;
+        if (!close && Vector3Distance(targetPos(g, ti), O.pos) <= 5) continue;
         const bool isWorm = Vector3Equals(e, targetPos(g, ti));
         const Vector3 to = e - w.pos;
         const float yawE = atan2f(to.x, to.z), horiz = sqrtf(to.x * to.x + to.z * to.z);
@@ -1163,10 +1165,10 @@ void Ai::regress(const Game &g) {
 
 // Shot is ready: W4M 0x4a4580 scales each launch-velocity component by 1 ± ShotError / (1 + MemoryImproveAccuracyEffect · match)
 // (0x4a5d00, game-derived seed); then 0x49e6d0 queues the path before, the weapon and, under plan flag 0x100, the path after.
-void Ai::finish(const Game &g, bool again) {
+void Ai::finish(const Game &g) {
     const Level &L = levelOf(g);
     const Kind k = WEAPONS[plan.weapon].kind;
-    const Origin &O = plan.origin >= 0 ? origins[plan.origin] : reaim;
+    const Origin &O = origins[plan.origin];
     uint32_t r = (salt ^ (uint32_t)g.shotsLeft * 2654435761u) + (uint32_t)walks * 40503u;  // turn-start state: not the think's length
     Vector3 at = plan.target >= 0 ? targetPos(g, plan.target) : O.pos;
     float match = 0;  // W4M 0x4a5640: effect x (1 - d_from / R)(1 - d_at / R) within MatchRadius R 200 units, any worm's records
@@ -1194,11 +1196,11 @@ void Ai::finish(const Game &g, bool again) {
     }
     mode = Mode::Act;
     charged = aimed = 0;
-    if (again) return;  // the shotgun's next shot: same retreat
     afterPath.clear(), afterRoute = {}, retreatTaken = false;
     // W4M flag 0x100 (plan constructors 0x49cb00..0x49dbb0): projectile, homing, direct, strike, close-range explosive, Old Woman and
     // Scouser retreat; melee, Sheep, Super Sheep, Starburst and Flood do not
-    const bool retreats = k != Kind::Melee && k != Kind::Sheep && k != Kind::SuperSheep && k != Kind::Flood;
+    // a gun that may move between shots keeps its retreat path for the last shot only (0x4a0cb4)
+    const bool retreats = k != Kind::Melee && k != Kind::Sheep && k != Kind::SuperSheep && k != Kind::Flood && !(WEAPONS[plan.weapon].shots > 1 && g.shotsLeft != 1);
     if (retreats && O.path) afterPath = O.after, afterRoute = O.back;
     else if (retreats && O.close && moves) {
         // ours: W4M walks next to the target and back along its approach (0x4a22d0); ours sets it down where it stands, so it takes the
@@ -1216,7 +1218,8 @@ void Ai::finish(const Game &g, bool again) {
     if (O.path) {  // W4M: Delay(DelayBeforeFirstMove, NonFirstMove after a rethink), the path, Delay 0.5 s, then the weapon
         walking = O.to, repaths = 0;
         takePath(g, std::vector<Step>(O.before));
-        wait = walks++ ? (int)(L.nonFirstMove / DT) : 0;
+        wait = moved ? (int)(L.nonFirstMove / DT) : 0;  // 0x4983a0: NonFirstMove while a path ran since the last shot (0x9560ba)
+        walks++;
         moved = true, fireAfterWalk = true, mode = Mode::Walk;
     }
 }
@@ -1263,6 +1266,12 @@ void Ai::decide(const Game &g) {
         if (c.route.purpose < 0) return finish(g);
         return startSearch(g, c.route);  // the walk if found, else back here for the next plan
     }
+    if (g.shotsLeft) {  // 0x499ad0: locked with shots left and no plan: aim up (SetAimAngle 0x3fc90fdb), Delay 1000, fire again
+        plan = Plan{g.weapon, 0, -1};
+        plan.yaw = w.yaw, plan.pitch = Clamp(PI / 2, -1.2f, 1.45f);
+        mode = Mode::Act, charged = 0, aimed = 1 << 20, wait = msTicks(1000);
+        return;
+    }
     int skip = owned(g, team, Kind::SkipGo);
     if (skip >= 0) { plan = Plan{skip, 0, -1}; plan.yaw = w.yaw; plan.pitch = w.pitch; mode = Mode::Act; }
     else wait = 1 << 20;  // "Want to skip turn but can't use the skip turn utility, so just delaying for a long time"
@@ -1278,16 +1287,9 @@ Input Ai::act(const Game &g) {
     Input in;
     const Worm &w = g.worms[g.current];
     if (plan.weapon < 0) return in;
-    if (g.shotsLeft && g.shotsLeft != shotsSeen) {  // shotgun: re-aim the next shot at where things are now
+    if (g.shotsLeft && g.shotsLeft != shotsSeen) {  // after the shot the queue holds Delay 1000, Delay 100, Rethink (0x49e6d0, 0x499830)
         shotsSeen = g.shotsLeft;
-        Plan keep = plan;
-        plan = Plan{};
-        plan.target = keep.target;
-        reaim = Origin{}, reaim.pos = w.pos, reaim.yaw = w.yaw, reaim.near = true;
-        targetsFor(g, reaim), built = -1;
-        evalWeapon(g, g.weapon, -1, -1, reaim, -1);
-        if (plan.weapon < 0) plan = keep;
-        else finish(g, true);
+        wait = msTicks(1100), stage = -1, mode = Mode::Eval;
         return in;
     }
     if (!select(g, plan.weapon, in)) return in;
@@ -1387,6 +1389,7 @@ Input Ai::think(const Game &g) {
     case Mode::Eval:
     case Mode::Search:
         if (!w.grounded || Vector3LengthSqr(w.vel) > 0.01f) return in;  // wait to stand still
+        if (mode == Mode::Eval && stage < 0 && g.shotsLeft && g.tokens() > 1) return in;  // AIService 0x4b3e1d: ObjectCount.Active <= 2 with the gun's token
         if (mode == Mode::Eval && stage < 0) startEval(g);
         if (mode == Mode::Eval && stage < 0) return in;  // no enemy
         slice(g);

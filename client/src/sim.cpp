@@ -1112,7 +1112,7 @@ void Game::beginTurn(int last, bool sameTeam) {
         }
         roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = jetInit, boost = 0, secondary = launched = -1;
         for (Object &o : objects) o.hooked = false;
-        shotsLeft = ropeShots = 0, rope.swung = false;
+        shotsLeft = ropeShots = gunState = 0, gunSent = false, rope.swung = false;
         weapon = -1;  // W4M GameLogic.Turn.Started (0x566d57): kWeaponUndefined, the empty hand
         for (Object &o : objects) if (o.type == Object::Sentry) o.turret.state = Object::Turret::Scan, o.turret.target = -1, o.turret.fresh = true;  // GameLogic.Turn.Started 0x56dc30: scan afresh, a burst under way is cut
         emit(GameEvent::TurnStart, worms[c].pos, c);
@@ -1746,14 +1746,29 @@ Vector3 Game::strikeStart(const WeaponDef &wd, Vector3 tgt, Vector3 dir, Vector3
 // (0x5d1f86), a sentry falling (0x56cdc3), tracking or firing (0x56ce5e, released in state 6) or dying (0x56d456), the FlyCam hold (0x528457). The only emitter of interest, WeaponGasCanJet, is never spawned.
 bool Game::efmvActive() const { return ufo() || scriptMovieOn(*this); }
 
-bool Game::active() const {
-    for (const Worm &x : worms) if ((x.alive && (!x.grounded || Vector3LengthSqr(x.vel) >= 0.01f)) || (x.drowned && x.counted > 0)) return true;
+int Game::activeTokens() const {
+    int n = 0;
+    for (const Worm &x : worms) n += (x.alive && (!x.grounded || Vector3LengthSqr(x.vel) >= 0.01f)) || (x.drowned && x.counted > 0);
     for (const Object &o : objects) {
         bool moving = Vector3LengthSqr(o.vel) >= 0.01f;
-        if ((o.type == Object::Mine && (o.fuse >= 0 || moving)) || (o.type == Object::Crate && o.spawning) || o.dead || o.lit >= 0 || (o.type == Object::Sentry && (moving || o.turret.state == Object::Turret::Track || o.turret.state == Object::Turret::Fire || o.turret.state == Object::Turret::Dying)))
-            return true;
+        n += (o.type == Object::Mine && (o.fuse >= 0 || moving)) || (o.type == Object::Crate && o.spawning) || o.dead || o.lit >= 0 || (o.type == Object::Sentry && (moving || o.turret.state == Object::Turret::Track || o.turret.state == Object::Turret::Fire || o.turret.state == Object::Turret::Dying));
     }
-    return camHold > 0 || (factory.on && factory.state);
+    return n + (camHold > 0) + (factory.on && factory.state);
+}
+
+// Shots, damage displays (0x5abc50, "Worm Displaying Damage Taken" until DamageComplete), "Worm Waiting To Die" (queued) and "Worm Dying" tokens besides
+int Game::tokens() const {
+    return activeTokens() + (int)shots.size() + (countT < COUNT_DAMAGE ? (int)countGroup.size() : 0) + (int)deathQueue.size() + (dyingWorm >= 0);
+}
+
+// W4M GunWeaponLogicEntity 0x55ed10, states 3 and 4 after a shot with shots left: state 3 waits for ObjectCount.Active < 3 (the gun holds one
+// token), sends ApplyDamage, and when still < 3 goes on; state 4 returns to 0 (FirePressed accepted) once < 3
+void Game::stepGun() {
+    if (gunState == 3) {
+        if (!gunSent && tokens() > 1) return;
+        if (!gunSent) applyDamage(), gunSent = true;
+        if (tokens() <= 1) gunState = 4;
+    } else if (gunState == 4 && tokens() <= 1) gunState = 0, gunSent = false;
 }
 
 // WormManager.GetActiveAlliances: a team stands until its last worm has died (Worm.Died at its blast) or it surrendered
@@ -1923,7 +1938,7 @@ void Game::stepCount() {
     }
     if (shown && deathQueue.empty() && dyingWorm < 0) {
         for (int i : countGroup) worms[i].counted = std::max(0, worms[i].hp);
-        countGroup.clear(), timer = 1;  // back to WaitUntilNoActivity
+        countGroup.clear();
     }
 }
 
@@ -2044,6 +2059,7 @@ void Game::use(Worm &w) {
         }
         if (--shotsLeft == 0 && endlessGun) shotsLeft = 1;  // Challenge.EndlessGun (0x55efbf): no last shot, the worm may move (0x55d54f)
         else if (shotsLeft == 0) phase = Phase::Flying;
+        if (shotsLeft) gunState = 3, gunSent = false;
         break;
     }
     case Kind::Rope: break;  // above
@@ -3180,6 +3196,7 @@ void Game::step(const Input &raw) {
     bool detonate = phase != Phase::Aim && (pressed & Input::FIRE), tool = roped || jetting || hooked();
     if (camHold > 0) camHold--;
     Phase before = phase;
+    stepGun();
     if (in.walk || in.turn || (pressed & Input::JUMP)) changing = false;  // W4M 0x59a6b9: a move or jump ends the worm select
 
     if (phase == Phase::Aim && hotSeat > 0) hotSeat = in.turn || in.walk || in.aim || (in.buttons & ~Input::TARGET) || in.flags ? 0 : hotSeat - 1;
@@ -3211,7 +3228,7 @@ void Game::step(const Input &raw) {
         if (vault.t) {  // W4M 0x5ab3d0: the camera-relative stick, here the heading or the facing
             float y = head ? in.turn * PI / 128 : w.yaw;
             vaultStep(w.pos, vault, aimCursor ? Vector3{} : Vector3Scale(flat(y), in.walk));
-        } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed && !artillery()) {  // W4M Sliding: no walking
+        } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed && !artillery() && !gunState) {  // W4M Sliding: no walking
             Vector3 walkV = Vector3Scale(flat(w.yaw), in.walk / 127.0f * INPUT_IMPULSE), was = w.pos, gn;  // W4M Velocity = InputImpulse (0x546f10)
             Colliders cs;
             colliders(cs, WORM_MASK, current);
@@ -3225,7 +3242,7 @@ void Game::step(const Input &raw) {
         } else if (!vault.t) walkVel = {};  // idle branch 0x5b1c1b zeroes Velocity
         steerIn = aimCursor ? Vector3{} : Vector3Scale(head ? flat(in.turn * PI / 128) : flat(w.yaw), in.walk / 127.0f);
         Vector3 jv;
-        if ((pressed & Input::JUMP) && !jumpDelay && !vault.t && w.grounded && !w.motion.slide && !tool && !w.nailed && !wp(WP_NO_JUMPING) && !artillery()) jumpDelay = JUMP_WINDOW, jumpKind = 2;
+        if ((pressed & Input::JUMP) && !jumpDelay && !vault.t && w.grounded && !w.motion.slide && !tool && !w.nailed && !wp(WP_NO_JUMPING) && !artillery() && !gunState) jumpDelay = JUMP_WINDOW, jumpKind = 2;
         else if (int ev = jumpDelay ? jumpTick(jumpDelay, jumpKind, in, pressed, w.yaw, jv) : 0; ev && w.grounded) {
             w.vel = jv, w.grounded = false, w.motion.air = true;  // DetectJump: Flags |= 1
             emit(GameEvent::Jump, w.pos, current, ev);  // weapon: the W4M kWE code (animation)
@@ -3287,7 +3304,7 @@ void Game::step(const Input &raw) {
                 weapon = secondary, secondary = -1, power = 0;
                 use(w);
                 weapon = tool;
-            } else if (armed && weapon >= 0 && ((stock(w.team, weapon) && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(weaponDef(weapon).kind))) {
+            } else if (armed && !gunState && weapon >= 0 && ((stock(w.team, weapon) && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(weaponDef(weapon).kind))) {
                 Vector3 h;
                 // W4M CanFire is asked on Input.FirePressed only (0x586092); a charge started goes on to its release
                 if (!powered(weaponDef(weapon))) { if ((pressed & Input::FIRE) && fireable(w) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
@@ -3429,11 +3446,12 @@ void Game::step(const Input &raw) {
     clock++;  // TimerLogicEntity 0x50f17d: the round clock also runs in the hot seat
     // stdvs Worm_Died: the turn ends once AllianceCount < 2 (worms die at their blast, not at 0 hp)
     bool over = !cfg.mission && activeAlliances() <= 1;
+    if (phase != Phase::Settle && (!countGroup.empty() || !deathQueue.empty() || dyingWorm >= 0)) stepCount();  // a gun's ApplyDamage mid-turn
     switch (phase) {
     case Phase::Aim:  // a script ends the turn through its Timer_* / Worm_Damaged_Current callbacks (stdlib EndTurn)
         // 0x586e75: a powered weapon's FirePressed posts Timer.EndTurn (0x549ad0), clearing the turn-running flag +0x6a until the shot
-        if (script) { if (!hotSeat && power <= 0 && !scriptMovieCamera(*this) && --timer <= 0) scriptEvent(*this, "Timer_TurnTimedOut"); }  // 0x50f383
-        else if (!w.alive || selfHurt || over || (!hotSeat && power <= 0 && --timer <= 0)) { phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
+        if (script) { if (!hotSeat && power <= 0 && !gunState && !scriptMovieCamera(*this) && --timer <= 0) scriptEvent(*this, "Timer_TurnTimedOut"); }  // 0x50f383
+        else if (!w.alive || selfHurt || over || (!hotSeat && power <= 0 && !gunState && --timer <= 0)) { phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
         break;
     case Phase::Flying:
         if (shots.empty()) phase = Phase::Retreat;
@@ -3444,7 +3462,9 @@ void Game::step(const Input &raw) {
         break;
     case Phase::Settle:  // stdlib.lub EndTurn: timer > 0 WaitUntilNoActivity, < 0 PostActivityTime; no timeout, as W4M
         if (in.flags & Input::SKIP_COUNT) countT = std::max(countT, COUNT_DAMAGE);  // observed in W4M by the user, 2026-10-03: X ends the display, deaths follow as usual
-        if (!countGroup.empty() || !deathQueue.empty() || dyingWorm >= 0) stepCount();  // displays and dying worms are active objects
+        if (!countGroup.empty() || !deathQueue.empty() || dyingWorm >= 0) {  // displays and dying worms are active objects
+            if (stepCount(); countGroup.empty() && deathQueue.empty() && dyingWorm < 0) timer = 1;  // back to WaitUntilNoActivity
+        }
         else if (timer < 0) {
             if (++timer < 0) break;
             if (script) scriptEvent(*this, "Timer_PostActivityTimedOut");

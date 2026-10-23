@@ -159,14 +159,14 @@ static void wallAhead(uint32_t seed, uint8_t level, float x0, bool bazooka) {
         for (const GameEvent &e : g.events) if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) nearBoom = fminf(nearBoom, Vector3Distance(e.pos, a.pos));
     }
     printf("wall %.2f m ahead, CPU%d: furthest x %.2f, nearest blast %.1f m, hp %d -> %d\n", 21.83f - x0, level, far, nearBoom, hp, a.hp);
-    assert(far < fmaxf(x0 + 0.05f, 21.5f) && a.hp == hp && nearBoom > 2);  // 21.5: the face less 0.33 m
+    assert(far < fmaxf(x0 + 0.05f, 21.6f) && a.hp == hp && nearBoom > 2);  // 21.6: the last node whose Fits rods (0.3 m ahead) clear the face
 }
 
 // Flat floor at y 50 m (x 4..75 m, z 4..20 m), only `weapon` (+ Skip Go), CPU5 at x 10 m, its enemy `dist` m ahead.
-static Game arena(const char *weapon, float dist) {
+static Game arena(const char *weapon, float dist, uint8_t level = 5) {
     Game g;
     GameConfig c{5, 2, 1, "", RULE_NO_DELAYS};
-    c.teamSetup = {{"CPU", 5}, {"CPU", 5}};
+    c.teamSetup = {{"CPU", level}, {"CPU", level}};
     g.start(c);
     for (int z = 16; z < 80; z++)
         for (int y = 176; y < 248; y++)
@@ -360,9 +360,30 @@ static void secondActions() {
     }
 }
 
+// A CPU shotgun's second shot: after the first the queue holds Delay 1000, Delay 100, then Rethink (W4M 0x49e6d0, 0x499830), a whole new think
+// locked to the shotgun, and its own DelayBeforeFire (0x49eb8b); the gun accepts no press before that (0x55ed10 states 3 / 4).
+static void shotgunGap() {
+    for (uint8_t level = 1; level <= 5; level++)
+        for (float dist : {8.f, 20.f}) {
+            Game g = arena("Shotgun", dist, level);
+            const int me = g.current;
+            Ai ai;
+            std::vector<int> at;
+            for (int t = 0; t < 60 * 60 && at.size() < 2 && g.phase != Phase::GameOver; t++) {
+                g.step(ai.think(g));
+                for (const GameEvent &e : g.events) if (e.kind == GameEvent::Fire && e.worm == me) at.push_back(t);
+            }
+            assert(at.size() == 2);
+            const int gap = at[1] - at[0], fireDelay = (int)((level == 5 ? 0.2f : 0.5f) / Game::DT);  // DelayBeforeFire
+            printf("shotgun CPU%d at %.0f m: second shot %d ms after the first\n", level, dist, gap * 1000 / 60);
+            assert(gap >= msTicks(1100) + fireDelay);
+        }
+}
+
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
+    shotgunGap();
     secondActions();
     targetSides();
     targetWeights();

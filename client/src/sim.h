@@ -467,7 +467,9 @@ struct Game {
     std::vector<Abductee> abductees;
     bool crated = false;     // stdlib done_once_per_turn_functions: DoPostActivity's first pass is done
     int camHold = 0;         // W4M FlyCam's "Hold the FlyCamera" active object: PauseDuration after its shot's blast
-    bool active() const;     // W4M ObjectCount.Active > 0 (ActiveObjectRegistrationService 0x4d3af0 users), shots aside
+    int activeTokens() const;  // W4M ObjectCount.Active (ActiveObjectRegistrationService 0x4d3af0 users), one per token, shots and displays aside
+    bool active() const { return activeTokens() > 0; }
+    int tokens() const;        // ObjectCount.Active less the gun's own token: what the gun's wait (0x55ed10 states 3 / 4) and the AI think (0x4b3e1d) test
     int abdCam = -1;  // its m_uCameraWorm (+0x74): the first worm lifted, the AlienAbductionCamera's
     bool aboard(int wi) const { for (const Abductee &a : abductees) if (a.worm == wi && a.st) return true; return false; }  // Worm.OverridePhysics
     const Projectile *ufo() const { for (const Projectile &s : shots) if (WEAPONS[s.weapon].kind == Kind::Abduction) return &s; return nullptr; }
@@ -574,6 +576,8 @@ struct Game {
     int launched = -1;  // the weapon use() last fired (a dropped secondary, not the tool kept in hand): its retreat times the turn
     int held() const { return secondary >= 0 ? secondary : weapon; }  // what NEXT_WEAPON and the panel step
     int shotsLeft = 0;
+    int gunState = 0;   // W4M GunWeaponLogicEntity (0x55ed10) state 3 / 4 after a shot with shots left; 0 accepts Input.FirePressed
+    bool gunSent = false;  // state 3 has sent GameLogic.ApplyDamage
     int ropeShots = 0;  // rope hooks on land this turn
     Phase phase = Phase::Aim;
     uint8_t prevButtons = 0;
@@ -737,6 +741,7 @@ private:
     void checkActivity();
     void doPostActivity();
     void stepCount();
+    void stepGun();
     void floatStep(Worm &w);
     void surrender(int team);
     void dropCrates(int n, bool roll);

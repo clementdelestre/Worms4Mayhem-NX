@@ -508,6 +508,34 @@ static void checkShotgun(uint32_t wormpot = 0) {
     assert(v.hp == 100 - (int)WEAPONS[g.weapon].damage * (g.wp(WP_SUPER_FIREARMS) ? 2 : 1));
 }
 
+// W4M GunWeaponLogicEntity 0x55ed10 states 3 / 4: after a shot with shots left FirePressed is refused until the gun's wait ends: ApplyDamage,
+// then at most one other active object (ObjectCount.Active < 3 with the gun's token). The turn clock stands still meanwhile.
+static void checkGunWait() {
+    for (bool hit : {false, true}) {
+        Game g;
+        g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
+        for (int z = 16; z < 80; z++)  // a flat floor at y 50 m, as the AI arena
+            for (int y = 176; y < 248; y++)
+                for (int x = 16; x < 300; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+        Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+        a.pos = {10, 50.6f, 6}, v.pos = {hit ? 10.f : 40.f, 50.6f, hit ? 10.f : 6.f}, a.vel = v.vel = {}, a.yaw = hit ? 0 : -PI / 2, a.pitch = 0;
+        settle(g);
+        g.weapon = weaponNamed("Shotgun");
+        const int hp = v.hp, timer = g.timer;
+        Input fire;
+        fire.buttons = Input::FIRE;
+        g.step(fire);
+        assert(g.shotsLeft == 1 && g.gunState == 3);
+        int t = 1;
+        for (; g.shotsLeft == 1 && t < 600; t++) {  // pressed every other tick
+            g.step(t % 2 ? fire : Input{});
+            if (g.shotsLeft == 1 && g.gunState) assert(g.timer == timer);
+        }
+        printf("shotgun %s: second shot %d ticks after the first\n", hit ? "hit" : "miss", t);
+        assert(hit ? t > 6 && v.hp < hp : t == 4 && v.hp == hp);  // a miss: states 3, 4, 0 on the updates after the shot
+    }
+}
+
 // Homing missile: flies off along the aim, then dives onto the reticle point.
 static void checkHoming() {
     Game g;
@@ -5380,6 +5408,7 @@ int main() {
     checkCameraHold();
     checkCrateWalk();
     checkShotgun();
+    checkGunWait();
     checkHoming();
     checkTeamWeapon();
     checkSentry();
