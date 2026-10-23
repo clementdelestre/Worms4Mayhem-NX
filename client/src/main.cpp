@@ -1860,8 +1860,8 @@ int main(int argc, char **argv) {
     };
     auto startMission = [&](int i, bool preStart = true) {
         missionIdx = i, missionSaved = eggShown = false, online = false;
-        const int saved = front.barracks.find(front.missionTeamName());
-        const GameConfig::Team human = saved >= 0 ? front.barracks.teams[saved].slot() : GameConfig::Team{};
+        const int saved = front.savedTeams().find(front.missionTeamName());
+        const GameConfig::Team human = saved >= 0 ? front.savedTeams().teams[saved].slot() : GameConfig::Team{};
         startMatch(missionConfig(missions[i], (uint32_t)(GetTime() * 1000), saved >= 0 ? &human : nullptr), preStart);
     };
     // help | helpmenu: the hold - controls overlay over a match / the main menu

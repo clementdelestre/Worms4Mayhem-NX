@@ -70,6 +70,7 @@ struct Frontend {
     const char *capture = nullptr;  // screenshot path for the next frame (--ui)
     int missionTab = 0;             // SinglePlayer: 0 story missions, 1 challenges
     std::string missionTeamName();  // missionTeam if it is still a saved team, else the first human one (null name: none)
+    const Barracks &savedTeams() const { return barracks; }
     std::string missionTeam;        // the saved team picked for them (W4M WXFE.MissionTeamName): its progress, its name on the Challenges page
     Net *net = nullptr;             // the connection of a network room: SetupTeams / Map / Rules then show net->lobby
     bool wantLan = false;           // Salon: Réseau local, else En ligne
