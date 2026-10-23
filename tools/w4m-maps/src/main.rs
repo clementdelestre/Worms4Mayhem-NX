@@ -786,9 +786,11 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         if !n.starts_with("visible") {  // W4M 0x5cd27d: upper(name[..7]) == "VISIBLE" only, so the "VISABLE" typos stay hidden
             let t = marker_type(&lib, &n).unwrap_or("locator");  // any named detail: a script's spawn, explosion or effect spot
             // TimedPathCam 0x637510: a knot looks along its detail's local -Z in the world (Maya XYZ angles, land frame included)
-            let rm = local(&Poxel { rot: detail_euler(&r.w, [f[3], f[4], f[5]]), ..Default::default() }, false);
+            // euler: the detail's Orientation (+0xd4 of GetDetailInfo 0x5cc7c0 = the Rotate of 0x504170), a worm's heading comes from it
+            let eu = detail_euler(&r.w, [f[3], f[4], f[5]]);
+            let rm = local(&Poxel { rot: eu, ..Default::default() }, false);
             let (dx, dy, dz) = (-rm[0][2], -rm[1][2], -rm[2][2]);
-            marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}],\"dir\":[{dx:.4},{dy:.4},{dz:.4}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2]));
+            marks.push(format!("{{\"name\":\"{}\",\"type\":\"{t}\",\"pos\":[{:.2},{:.2},{:.2}],\"dir\":[{dx:.4},{dy:.4},{dz:.4}],\"euler\":[{:.7},{:.7},{:.7}]}}", name.replace(['"', '\\'], ""), pos[0], pos[1], pos[2], eu[0], eu[1], eu[2]));
             continue;
         }
         if pos[1] < 0.0 || pos[0] < 0.0 || pos[2] < 0.0 || pos[0] > nx() as f32 * VOX || pos[2] > nz() as f32 * VOX { continue; }

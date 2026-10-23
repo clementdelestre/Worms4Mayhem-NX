@@ -382,6 +382,24 @@ static void checkWormSpawn(const std::vector<MissionSpec> &list) {
             for (const Terrain::Marker &x : g.terrain.markers) if (fabsf(x.pos.x - w.pos.x) < 1e-3f && fabsf(x.pos.z - w.pos.z) < 1e-3f) k = &x;
             if (!k) continue;  // a worm of the random "spawn" search or one moved by the script
             placed++;
+            bool facing = false;  // several locators can share a spot (Player, STANDIN Worm0): the worm took one of them
+            for (const Terrain::Marker &x : g.terrain.markers) {
+                if (fabsf(x.pos.x - w.pos.x) > 1e-3f || fabsf(x.pos.z - w.pos.z) > 1e-3f) continue;
+                // 0x69c118 identity, then 0x69c1a9 / 0x69c209 / 0x69c269 (each the transposed rotation) fill the matrix; 0x4453c0 + 0x519120 turn its row 2 into the yaw
+                float M[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+                for (int ax = 0; ax < 3; ax++) {
+                    const float a = (&x.euler.x)[ax], c = cosf(a), sn = sinf(a);
+                    const int i = ax == 0 ? 1 : 0, j = ax == 2 ? 1 : 2;
+                    for (int r = 0; r < 3; r++) {
+                        const float p = M[r][i], q = M[r][j];
+                        if (ax == 1) M[r][i] = p * c + q * sn, M[r][j] = q * c - p * sn;
+                        else M[r][i] = p * c - q * sn, M[r][j] = q * c + p * sn;
+                    }
+                }
+                const float len = hypotf(M[2][0], M[2][2]), yaw = M[2][0] >= 0 ? acosf(M[2][2] / len) : -acosf(M[2][2] / len);
+                facing |= fabsf(remainderf(w.yaw - yaw, 2 * PI)) < 1e-4f;
+            }
+            assert(facing);
             const float feet = w.pos.y - Game::R;
             assert(feet <= k->pos.y + 5 * 0.05f);  // settled onto the ground under the marker; a marker in the land lifts it by a walking step (<= 5 units)
             if (k->pos.y - feet < 1000 * 0.05f) settled++;

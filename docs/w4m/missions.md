@@ -408,6 +408,11 @@ Worms (WXWormManagerService HandleMessage 0x5b5e70):
     name is looked up as a locator through `Land.GetDetailInfo` (0x59a8b0) and the worm takes the detail's position (+0xd0, 3 floats) and orientation
     (+0xd4, 3 floats, copied into the orientation matrix by 0x69c118 identity then rotations about x, y, z 0x69c1a9 / 0x69c209 / 0x69c269) exactly (0x5b4689..0x5b46e3):
     no ground search, no offset, no yaw draw. Both branches then store the position at WormData +0x38 (0x5b46f2) and the heading at +0x8c (0x5b478f).
+  - Heading [REA decompile + disasm 0x5b4701..0x5b4794, 0x69c1a9 / 0x69c209 / 0x69c269 / 0x4453c0 / 0x519120, imports _CIcos 0x815180 / _CIsin 0x81517c / _CIacos 0x8151dc]: the matrix is the identity (0x69c118) post-multiplied
+    by the transposed rotations about x, y, z in that order, i.e. the transpose of Rz*Ry*Rx. The vector (m[2][0], 0, m[2][2]) is normalised (0x4453c0 asserts a non-zero length: a locator pitched 90 degrees has none) and 0x519120 returns
+    acos(z) (negated when x < 0), stored as Orientation (0, yaw, 0). With R = Rz*Ry*Rx that is atan2(R02, R22) = atan2(cz sy cx + sz sx, cy cx): all three Euler angles count, a tilted locator turns the worm by its projected -Z, not by y alone.
+  - The Euler is the detail's Orientation [disasm 0x5cc7c0, the handler of FindSpawnPointMessage (name compared by strcmp; Detail.Position +0x8 and Detail.Orientation +0x20 of the detail), 0x5cccf0 writes +0x20 through 0x504390 = the Rotate of render.md "Level scenery"]: w4m-maps exports it as the marker's `euler`.
+  - Several details with one name [disasm 0x5cc7c0]: a counter counts the matches; Position is written only while count <= the message's limit (WormData index + 1, 0x59a8b0), Orientation by every match, so the last match's Orientation and the (limit)th match's Position win [assumed: details are visited in store order; ours takes the first marker of the name for both].
   - SpawnWorm 0x5b31b0 -> 0x5a9ac0 gives the worm entity PhysicsState kWPS_Undefined (9) (+0xf0 = 9), velocity 0, acceleration set by 0x5a6d20, collider
     flags 1 mask 0x811 radius 10 centred 5 units over the feet. Nothing else places it.
   - Its first Update (dispatcher 0x5b1d60, state 9 at 0x5b1ff2, which logs "WXWormLogicEntity::Update state = kWPS_Undefined") runs

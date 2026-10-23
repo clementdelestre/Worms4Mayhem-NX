@@ -293,7 +293,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     }
     d.shareAll();  // the island and the shapes gave their chunks own blocks
 
-    for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz}), vec(m["dir"], {0, 0, 0})});
+    for (const Json &m : j["markers"].arr) markers.push_back({m["name"].s(), m["type"].s(), vec(m["pos"], {cx, 8, cz}), vec(m["dir"], {0, 0, 0}), vec(m["euler"], {0, 0, 0})});
     for (const Json &b : j["blocks"].arr) blocks.push_back({b[0].f(), b[1].f(), b[2].f(), b[3].f()});  // imported: already merged
     mergeBlocks();
     const Json &ob = j["objects"];

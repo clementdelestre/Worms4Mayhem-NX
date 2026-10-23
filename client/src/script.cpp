@@ -292,7 +292,7 @@ struct ScriptHost {
 
     static Worm blank() { return Worm{{Terrain::NX * Terrain::VOX / 2, -50, Terrain::NZ * Terrain::VOX / 2}, {0, 0, 0}, 0, 0.3f, 0, 0, false, false}; }
     // A slot's worm from its Worm.DataNN (PlaceWormAtSpawnPoint 0x5b4180): Spawn "spawn" is the random placement, any other name the
-    // locator's exact position and yaw (Orientation.y from its -Z [assumed: flat locator, Euler x = z = 0]); then the first Update's settle
+    // locator's exact position and heading (its exported Euler); then the first Update's settle
     static bool place(Game &g, Worm &w, Ctn *c, int s) {
         w.team = std::min(3, (int)fnum(c, "TeamIndex")), w.turns = fnum(c, "IsAllowedToTakeTurn", 1) != 0;
         const Val *sp = field(c, "Spawn");
@@ -306,7 +306,7 @@ struct ScriptHost {
             const Terrain::Marker *k = nullptr;
             for (const Terrain::Marker &m : g.terrain.markers) if (!strcasecmp(m.name.c_str(), sp->s.c_str())) { k = &m; break; }
             if (!k) return TraceLog(LOG_WARNING, "script: worm %d has no spawn marker '%s'", s, sp->s.c_str()), false;
-            p = k->pos, w.yaw = k->dir.x == 0 && k->dir.z == 0 ? 0 : atan2f(-k->dir.x, -k->dir.z);
+            p = k->pos, w.yaw = k->heading();
         }
         p = g.establishFeet(p);
         w.pos = {p.x, p.y + Game::R, p.z}, w.alive = true, w.hp = w.counted = std::max(1, (int)fnum(c, "Energy"));

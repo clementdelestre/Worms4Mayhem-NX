@@ -2,6 +2,7 @@
 #include "raylib.h"
 #include "bricks.h"
 #include "sharp.h"
+#include <cmath>
 #include <map>
 #include <string>
 #include <vector>
@@ -48,7 +49,12 @@ struct Terrain {
     Material mat{};  // loaded on first remesh, so the sim runs without a GL context
 
     // Filled by load(): fixed spawn points (team-major order), theme palette.
-    struct Marker { std::string name, type; Vector3 pos, dir{}; };  // W4M script markers (missions): worm, target, crate, mine...; dir: its local -Z
+    struct Marker {
+        std::string name, type;
+        Vector3 pos, dir{}, euler{};
+        // PlaceWormAtSpawnPoint 0x5b4180: row 2 of the orientation matrix (0x69c1a9 / 0x69c209 / 0x69c269) = (R02, R22) of Rz*Ry*Rx, normalised, then 0x519120
+        float heading() const { return atan2f(cosf(euler.z) * sinf(euler.y) * cosf(euler.x) + sinf(euler.z) * sinf(euler.x), cosf(euler.y) * cosf(euler.x)); }
+    };  // W4M script markers (missions): worm, target, crate, mine...; dir: its local -Z, euler: its Orientation (x, y, z of T*Rz*Ry*Rx)
     std::vector<Marker> markers;
     std::vector<Vector4> blocks;  // W4M AI NodeGrid boxes (x0, z0, x1, z1 in m): heightmap and land pieces, merged (AddLandBlock)
     void addBlock(Vector4 b);     // W4M AddLandBlock 0x4b22e0: drops a box under 250 units², else merges it into the first it touches
