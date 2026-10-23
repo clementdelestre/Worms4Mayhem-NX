@@ -9,6 +9,9 @@
 // WXSceneManagerService (docs/worm-reactions.md). Picks come from a hash of seed, worm and tick, never from the sim rng.
 namespace Acting {
 void event(const Game &g, const GameEvent &e);
+// The shot's damage as GameLogic.ApplyDamage (0x5b22a0) counts it for worm cur's turn: hp lost since the turn start, less damage types 5 / 6 (0x5ab8a8)
+struct TurnDamage { int enemy = 0, friendly = 0; bool dies = false, hurtSelf = false; };
+TurnDamage turnDamage(const Game &g, int cur);
 void movie(const Game &g, const GameEvent &e);  // a level movie's MovieStart / Movie / MovieEnd events (script.h MovieView)
 // busy[i]: worm i walks, flies or plays a sim-driven clip: its gestures fade out (WormPoseManager +0x194), their clips run on
 void update(const Game &g, float dt, const std::vector<uint8_t> &busy, const Camera3D &cam);

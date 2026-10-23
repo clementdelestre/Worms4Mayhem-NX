@@ -511,7 +511,7 @@ Replays main-menu row and the `--ui replays` / `playback` captures [ours].
 
 `main` selects each usable weapon in the HUD panel; the direct pick lands on it whatever the ticks per
 frame (0 to 2). Before that: `Lobby` team add / remove / pads / permissions, `ReadyTimer` (30 s from the 2nd player, restarted by a join,
-off under 2 players, fires once), `Ui::multiplayerMaps` against `assets/multimaps.txt` (docs/match-setup.md).
+off under 2 players, fires once), `Ui::multiplayerMaps` against `assets/multimaps.txt` (docs/match-setup.md). `Acting::turnDamage` leaves out damage types 5 / 6 (0x5ab8a8) and counts the rest; `WXP_OildrumFireExp` starts particles that burn out (`Fx::start`).
 
 ## movie_check.cpp
 

@@ -1840,12 +1840,12 @@ std::vector<int> Game::applyPoison() {
         if (!x.alive) continue;
         int wi = int(&x - worms.data()), was = x.hp;
         if (x.poison && !wp(WP_WORMS_DROWN)) {
-            if (x.hp > 1) x.hp -= std::min(x.poison, x.hp - 1), emit(GameEvent::Hurt, x.pos, wi, 6);
+            if (x.hp > 1) { int d = std::min(x.poison, x.hp - 1); x.hp -= d, emit(GameEvent::Hurt, x.pos, wi, 6), events.back().count = d; }
         } else if (x.abducted) {
             if (x.calm >= 0 && x.hp >= x.calm) {
                 int h = (int)(rand01() * 100);
                 if (h != x.hp) emit(GameEvent::AbdDamage, x.pos, wi);
-                if (h < x.hp) emit(GameEvent::Hurt, x.pos, wi, 6);
+                if (h < x.hp) emit(GameEvent::Hurt, x.pos, wi, 6), events.back().count = x.hp - h;
                 x.hp = h;
             }
             x.calm = x.hp;

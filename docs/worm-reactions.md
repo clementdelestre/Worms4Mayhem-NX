@@ -90,7 +90,7 @@ Options: A = sets the priority and clears "bored", B = a bored worm in a scene m
 | FastRecover | No trigger has this name: dead movie | – | n/a |
 | Death | Start of the death convulsions (0x5a3ffb). Drowned worms skip it. | `g.dying()` except drowning. Death15/20 "Sick" for a poisoned worm. | done |
 | Poisoned | 0x5a1a89 | Poison increases | done |
-| Mistake, FirstBlood, MaxDamage, DamageInflicted, Boring | On `GameLogic.ApplyDamage` (0x5b22a0), in this order: Mistake if damage to friends > damage to foes / 3 and the shooter hurt himself; FirstBlood for the match's first death; MaxDamage if a worm is in the explosion's core, 1.2·(range − d)/range ≥ 1 (0x5ae6b5); Boring if nobody is hit and no payload went off; DamageInflicted otherwise. | On entering Settle | done |
+| Mistake, FirstBlood, MaxDamage, DamageInflicted, Boring | On `GameLogic.ApplyDamage` (0x5b22a0), in this order: Mistake if damage to friends > damage to foes / 3 and the shooter hurt himself (damage types 5 and 6 are not counted, 0x5ab8a8: `Acting::turnDamage`); FirstBlood for the match's first death; MaxDamage if a worm is in the explosion's core, 1.2·(range − d)/range ≥ 1 (0x5ae6b5); Boring if nobody is hit and no payload went off; DamageInflicted otherwise. | On entering Settle | done |
 | Boring (NoDamageA/B) | Its `Special` track has no candidate (empty special pool), and the other tracks target the empty track 0. The movie is thus always rejected. | Same logic: it never plays. | as W4M (dead) |
 | Missed | Nobody is hit and a payload went off (0x50fe0d) | On entering Settle | done |
 | ShortOnTime, Waiting | The displayed clock reaches 5 s, then 15 s (HudClockEntity 0x5f0191, 0x5f01db) | Same | done. Waiting is no longer "still for 12 s" |

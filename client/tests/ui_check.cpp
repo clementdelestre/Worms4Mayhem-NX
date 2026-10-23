@@ -1,5 +1,6 @@
 // Weapon panel: its direct pick (Input::pick) must land on the weapon whatever the ticks per frame.
 // From client/: make ui_check
+#include "../src/acting.h"
 #include "../src/audio.h"
 #include "../src/fx.h"
 #include "../src/controls.h"
@@ -194,6 +195,15 @@ int main() {
         for (int t = 0; t < 600; t++) Fx::update(1 / 60.f);
         assert(Fx::count() == 0);
     }
+    {  // the oil drum's fire blast (WXP_OildrumFireExp = WXP_PetrolBomb + WXP_PetrolBombFlameSFX, parttwk.py ROOTS) is in the export and spawns particles
+        SetConfigFlags(FLAG_WINDOW_HIDDEN);
+        InitWindow(64, 64, "ui_check");  // the sprite sets upload to the GPU
+        Fx::clear(), Fx::start("WXP_OildrumFireExp", {40, 10, 40});
+        int peak = 0;
+        for (int t = 0; t < 900; t++) Fx::update(1 / 60.f), peak = std::max(peak, Fx::count());
+        assert(peak > 0 && Fx::count() == 0);
+        CloseWindow();
+    }
     {  // wind meter needle (0x5fc6e0): ArrowOrien tilt and roll, the -sin(-268 / 640) yaw term, grey fixed at -pi/2
         Vector2 grey = Ui::windPointer(false, 1, 0, {0, 1});
         assert(fabsf(grey.x - cosf(0.2f)) < 1e-4f && fabsf(grey.y - sinf(0.2f)) < 1e-4f);
@@ -348,6 +358,25 @@ int main() {
         for (int w = 0; w < 4; w++) r.current.worm[w].damage = 10 + 20 * w, r.current.worm[w].survived = 30 + 15 * w;
         r.summarise(3);
         assert(std::any_of(r.awards.begin(), r.awards.end(), [](const Results::Award &a) { return !a.positive; }));
+    }
+    {  // W4M 0x5ab8a8: Dim-Mak (5) and poison (6) skip Turn.EnemyDamage / Turn.FriendlyDamage; the shot's other damage still counts
+        Game g;
+        g.start({23, 2, 2, "", 0});
+        Acting::update(g, 0, {}, Camera3D{});
+        int cur = g.current, foe = -1, mate = -1;
+        for (int i = 0; i < (int)g.worms.size(); i++) (g.worms[i].team != g.worms[cur].team ? foe : mate) = i;
+        assert(foe >= 0 && mate >= 0 && mate != cur);
+        auto hit = [&](int w, int dmg, int type) { g.worms[w].hp -= dmg, g.events = {GameEvent{GameEvent::Hurt, g.worms[w].pos, w, type}}, g.events[0].count = dmg;
+            Acting::event(g, g.events[0]);
+        };
+        hit(foe, 7, 5), hit(mate, 9, 6), hit(cur, 4, 5);
+        Acting::TurnDamage d = Acting::turnDamage(g, cur);
+        assert(d.enemy == 0 && d.friendly == 0 && !d.hurtSelf);
+        hit(foe, 6, 0), hit(mate, 3, 0);
+        d = Acting::turnDamage(g, cur);
+        assert(d.enemy == 6 && d.friendly == 3 && !d.hurtSelf);
+        hit(cur, 2, 0);
+        assert(Acting::turnDamage(g, cur).hurtSelf);
     }
     puts("ui_check ok");
 }

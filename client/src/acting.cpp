@@ -77,7 +77,7 @@ struct Actor {
     float aimMs = 0, coolMs = 0, calm = 0, sickW = 0, abdW = 0;
     bool kicked = false, flying = false, air = false, dead = false, slid = false, sank = false;
     float vy = 0;
-    int poison = 0, hp0 = 0;
+    int poison = 0, hp0 = 0, quiet = 0;  // quiet: hp lost to damage types 5 / 6 since hp0
     struct Fx { std::string name; float t; } fx[3]; int nfx = 0;
     // lip sync (0x59d570): rows +0x1b8, cursor +0x1a8, clock +0x1b0 (25 a second); visemes new +0xdc / old +0xe0 (0 Rest .. 8 QUW, -1
     // none) with their last SetTimeAndWeight w and +0x17c / +0x178; blend +0x180, open +0x19c toward +0x1c8
@@ -600,7 +600,7 @@ void Acting::event(const Game &g, const GameEvent &e) {
     switch (e.kind) {
     case GameEvent::TurnStart:
         fired = maxDamage = false, lastSec = -1;
-        for (size_t i = 0; i < actors.size(); i++) actors[i].hp0 = g.worms[i].hp;
+        for (size_t i = 0; i < actors.size(); i++) actors[i].hp0 = g.worms[i].hp, actors[i].quiet = 0;
         if (cur != NONE) fire(g, START_TURN, cur);
         break;
     case GameEvent::Fire: {
@@ -621,6 +621,7 @@ void Acting::event(const Game &g, const GameEvent &e) {
         for (const GameEvent &x : g.events) if (x.kind == GameEvent::TurnStart) return;  // poison tick
         if (e.worm < 0) break;
         actors[e.worm].kicked = true;
+        if (quietDamage(e.weapon)) actors[e.worm].quiet += e.count;
         for (const GameEvent &x : g.events)  // a worm in the blast's full-damage core: Turn.MaxDamage (0x5ae6b5)
             if (x.kind == GameEvent::Boom && x.weapon >= 0) {
                 Blast b = blastOf(WEAPONS[x.weapon], false);
@@ -726,6 +727,17 @@ void Acting::taunt(const Game &g, int worm, const std::string &weapon) {
     for (const auto &e : T) if (weapon == e.first) return fire(g, e.second, worm);
 }
 
+Acting::TurnDamage Acting::turnDamage(const Game &g, int cur) {
+    TurnDamage t;
+    for (size_t i = 0; i < g.worms.size() && i < actors.size(); i++) {
+        int d = actors[i].hp0 - std::max(0, g.worms[i].hp), c = d - actors[i].quiet;  // 0x5ab8a8: types 5 / 6 skip the Turn.* counters
+        if (c > 0) (g.worms[i].team == g.worms[cur].team ? t.friendly : t.enemy) += c;
+        t.dies |= d > 0 && g.worms[i].hp <= 0;
+        if ((int)i == cur) t.hurtSelf = c > 0;
+    }
+    return t;
+}
+
 void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, const Camera3D &cam) {
     if (!loaded) load();
     G = &g, camPos = cam.position;
@@ -735,7 +747,7 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         runs.clear(), rested.clear();
         for (size_t i = 0; i < n; i++) {
             Actor &a = actors[i];
-            a.dflt = pick(g, (int)i, 1) & 0x100 ? "Frown" : "Angry", a.poison = g.worms[i].poison, a.hp0 = g.worms[i].hp;
+            a.dflt = pick(g, (int)i, 1) & 0x100 ? "Frown" : "Angry", a.poison = g.worms[i].poison, a.hp0 = g.worms[i].hp, a.quiet = 0;
         }
         if (g.clock == 0) anyDeath = false;
         ambientIn = (float)(pick(g, 0, 8) % 5000), ambientIdx = 0;  // 0x5b51d0: rand % 5000, rotation from 0
@@ -748,14 +760,9 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
 
     // the shot is over (GameLogic.ApplyDamage, evaluator 0x5b22a0): Mistake, FirstBlood, MaxDamage, Boring or DamageInflicted
     if (lastPhase != Phase::Settle && g.phase == Phase::Settle && cur != NONE) {
-        int enemy = 0, friendly = 0;
-        bool dies = false;
-        for (size_t i = 0; i < n; i++) {
-            int d = actors[i].hp0 - std::max(0, g.worms[i].hp);
-            if (d > 0) (g.worms[i].team == g.worms[cur].team ? friendly : enemy) += d;
-            dies |= d > 0 && g.worms[i].hp <= 0;
-        }
-        bool hurtSelf = actors[cur].hp0 > g.worms[cur].hp, mistake = friendly > enemy / 3;
+        Acting::TurnDamage t = Acting::turnDamage(g, cur);
+        int enemy = t.enemy, friendly = t.friendly;
+        bool dies = t.dies, hurtSelf = t.hurtSelf, mistake = friendly > enemy / 3;
         // a script's Turn.Boring 0 / Turn.MaxDamage 1 (TinCanWally) force the MaxDamage branch and drop Boring / Missed
         bool boring = enemy + friendly == 0 && scriptNum(g, "Turn.Boring", 1) > 0, maxDmg = maxDamage || scriptNum(g, "Turn.MaxDamage", 0) == 1;
         if (mistake && hurtSelf) fire(g, MISTAKE, cur);

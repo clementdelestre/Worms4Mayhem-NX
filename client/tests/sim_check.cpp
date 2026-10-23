@@ -4260,7 +4260,7 @@ static void checkQuietDamage() {
     }
     g.events.clear(), g.selfHurt = false, a.poison = 4, a.hp = 50;
     g.applyPoison();
-    assert(a.hp == 46 && g.events.back().weapon == 6 && !g.selfHurt);
+    assert(a.hp == 46 && g.events.back().weapon == 6 && g.events.back().count == 4 && !g.selfHurt);
 }
 
 // W4M 0x5ae4f0: a nailed worm inside the WormDamageRadius that is closer (from its skin) than the LandDamageRadius comes loose.
