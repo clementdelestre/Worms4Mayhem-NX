@@ -5252,6 +5252,25 @@ static void checkDetailRemoval() {
     assert(t.objects.size() == n0 - 1);
     t.carve(cp, 1.5f);  // the mesh position is in the blast
     assert(t.objects.size() == n0 - 2);
+    Terrain u;
+    assert(u.load("Accuracy", 1));
+    // W4M 0x46d9c2: a cell goes when its sum of squares is < 1, so a radius equal to the distance to its centre spares it
+    for (size_t f = 0; f < u.frameCells.size(); f++)
+        for (size_t a = 0; a < u.frameCells[f].size(); a++)
+            for (size_t b = a + 1; b < u.frameCells[f].size(); b++)
+                for (size_t c = b + 1; c < u.frameCells[f].size(); c++) {
+                    const Vector3 pa = u.frameCells[f][a];
+                    const float db = Vector3Distance(pa, u.frameCells[f][b]), dc = Vector3Distance(pa, u.frameCells[f][c]);
+                    if (!u.frameAlive[f][a] || !u.frameAlive[f][b] || !u.frameAlive[f][c] || fabsf(db - dc) < 0.05f) continue;
+                    // a scaled frame's cells are not on a unit grid: the radius between two neighbour spacings spares the farther cell
+                    const size_t far = db > dc ? b : c, near = db > dc ? c : b;
+                    u.carve(pa, (db + dc) / 2);
+                    assert(!u.frameAlive[f][a] && !u.frameAlive[f][near] && u.frameAlive[f][far]);
+                    u.carve(pa, Vector3Distance(pa, u.frameCells[f][far]));
+                    assert(u.frameAlive[f][far]);
+                    return;
+                }
+    assert(false);
 }
 
 // W4M 0x46e6b9 / 0x468200: a Visible 0 land frame is solid and never drawn (material 67); the TheWindyWizard "CODE AAAA" frame goes with Land.ClearCoded
@@ -5295,25 +5314,6 @@ static void checkLandUV() {
                 if (r[1] || r[5]) continue;  // the HeightMap moves corners along y
                 if (Vector3Distance(c.c[0], c.c[1]) < 0.05f || Vector3Distance(c.c[0], c.c[4]) < 0.05f) continue;  // millimetre cells: float precision of map metres
                 Vector2 u0, ux, uz;
-    Terrain u;
-    assert(u.load("Accuracy", 1));
-    // W4M 0x46d9c2: a cell goes when its sum of squares is < 1, so a radius equal to the distance to its centre spares it
-    for (size_t f = 0; f < u.frameCells.size(); f++)
-        for (size_t a = 0; a < u.frameCells[f].size(); a++)
-            for (size_t b = a + 1; b < u.frameCells[f].size(); b++)
-                for (size_t c = b + 1; c < u.frameCells[f].size(); c++) {
-                    const Vector3 pa = u.frameCells[f][a];
-                    const float db = Vector3Distance(pa, u.frameCells[f][b]), dc = Vector3Distance(pa, u.frameCells[f][c]);
-                    if (!u.frameAlive[f][a] || !u.frameAlive[f][b] || !u.frameAlive[f][c] || fabsf(db - dc) < 0.05f) continue;
-                    // a scaled frame's cells are not on a unit grid: the radius between two neighbour spacings spares the farther cell
-                    const size_t far = db > dc ? b : c, near = db > dc ? c : b;
-                    u.carve(pa, (db + dc) / 2);
-                    assert(!u.frameAlive[f][a] && !u.frameAlive[f][near] && u.frameAlive[f][far]);
-                    u.carve(pa, Vector3Distance(pa, u.frameCells[f][far]));
-                    assert(u.frameAlive[f][far]);
-                    return;
-                }
-    assert(false);
                 assert(t.landTex(c.uv, c.c[0], {}, kind, &u0) == kind);
                 t.landTex(c.uv, c.c[1], {}, kind, &ux), t.landTex(c.uv, c.c[4], {}, kind, &uz);
                 assert(fabsf(ux.x - u0.x - r[0]) < 2e-3f && fabsf(ux.y - u0.y - r[4]) < 2e-3f);
