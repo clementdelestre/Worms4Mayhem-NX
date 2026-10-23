@@ -468,7 +468,7 @@ static const char *tauntClip(const WeaponDef &d) {
 struct WormAnim {
     Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, nailed = false;
     const char *flip = nullptr;  // kWE 4 Backflip / 5 Fwdflip clip, until it lands
-    bool vaulting = false; float vaultT = 9, chute = -1, lr = 0, drowned = -1, spin = -1;  // spin: kWE 22 tumble angle, -1 off  // drowned: s since it sank  // vaultT: s since kWE 9; chute: s open, lr: WXWorm.ParachuteLR
+    bool vaulting = false; float vaultT = 9, chute = -1, lr = 0, drowned = -1, spin = -1; int hardAt = -1;  // spin: kWE 22 tumble angle, -1 off  // drowned: s since it sank  // vaultT: s since kWE 9; chute: s open, lr: WXWorm.ParachuteLR
     struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr, *from = nullptr; float fromT = 0; } act;  // aim: Aim* clip layered on the arms; from: windup frame faded out
     // WAE state 1 / 4 (current worm): drawT s since Accessory.Init, drawn: weapon in hand, wind: windup clock (s since FIRE press)
     float drawT = 0, wind = 0; int drawW = -1; bool drawn = false, charging = false;
@@ -546,11 +546,11 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
             continue;
         }
         // kWE 15 hard landing (vn <= -0.3 units/ms) after it: recover clip by the tumble angle (0x5a3dc1)
-        if (a.spin >= 0 && a.fallV <= -15 && w.alive) {
-            float s = a.spin;
+        if (w.hardAt != a.hardAt && w.alive) {
+            float s = fmaxf(a.spin, 0);
             a.act = {s < 0.75f * PI || s > 1.75f * PI ? "RecoverFront1" : s < 1.25f * PI ? "RecoverBurried1" : (i + g.clock) & 1 ? "RecoverBack1" : "RecoverBack2"};
         }
-        a.spin = -1;
+        a.spin = -1, a.hardAt = w.hardAt;
         if (a.air > 0.2f && a.fallV < -4 && w.alive) a.land = 0, Audio::play(Audio::Sfx::Land, w.pos);
         a.air = a.fallV = 0, a.land += dt, a.flip = nullptr;
         float step = dist;  // W4M blends Walk by |Velocity.xz| only: a turn in place (kWE 10..12) keeps the pose and the held weapon

@@ -2147,6 +2147,7 @@ void Game::stepWorm(Worm &w) {
     auto land = [&](float speed) {
         bool winged = icarus == 2 && &w == &worms[current];  // W4M Redbull sets flag 0x40 each flight frame (0x587446)
         int dmg = winged ? 0 : fallDamage(speed), wi = int(&w - worms.data());
+        if (speed >= FALL_SAFE && !w.motion.slide && !winged && cfg.scheme.fallDamage && !wp(WP_WORMS_DROWN)) w.hardAt = clock;  // 0x5af601: kWE 15 only walking, flags 0x8840 (no-damage) land soft
         if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi), events.back().count = dmg, emit(GameEvent::Fall, w.pos, wi); }
     };
     bool jet = jetting && &w == &worms[current];  // W4M jetpack contact 0x5633e9: walls and ceilings bounce at 0.8; it lands itself, no Ballistic

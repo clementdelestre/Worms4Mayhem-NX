@@ -150,6 +150,7 @@ struct Worm {
     int floatT = 0;        // DrownFloat timer, ticks: 0 until it reaches the surface, then DROWN_FLOAT down to the blast
     Motion motion;
     bool turns = true;  // W4M WormData IsAllowedToTakeTurn: false never takes a turn (accuracy dummies)
+    int hardAt = -1;    // `clock` of its last kWE 15 hard landing (0x5af601), read by the renderer for the Recover clip
 };
 bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd);  // p inside a's melee hit box (shared with the AI)
 // W4M Vaulting 0x5aca80: t ticks left (0 = walking), dir = the input when it began

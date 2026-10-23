@@ -180,6 +180,20 @@ static void checkHurtEndsTurn() {
         }
 }
 
+static void checkMinePushEndsTurn() {
+    for (float dx = 0; dx <= 6; dx += 0.25f)
+        for (float dy = -3; dy <= 3; dy += 0.25f) {
+            Game g;
+            g.start({1, 2, 2, "", 0}), g.hotSeat = 0;
+            for (int t = 0; t < 120; t++) g.step(Input{});
+            Worm &w = g.worms[g.current];
+            w.vel = {}, g.selfHurt = false;
+            int hp = w.hp;
+            g.explode(Vector3Add(w.pos, {dx, dy, 0}), Game::MINE_BLAST);
+            if (Vector3LengthSqr(w.vel) > 0) printf("dx %.2f dy %.2f hp %d->%d selfHurt %d\n", dx, dy, hp, w.hp, g.selfHurt);
+        }
+}
+
 // W4M death queue: dead worms of one count blow up one after another.
 static void checkDeathQueue() {
     Game g;
@@ -2414,7 +2428,13 @@ static void checkScheme() {
     w.vel = {0, 0, 0};
     w.grounded = false;
     for (int t = 0; t < 200; t++) g.step(Input{});
-    assert(w.hp == 150 || !w.alive);
+    assert(w.hp == 150 && w.hardAt < 0);  // no fall damage: a soft landing (0x5af601, flag 0x800)
+    c.scheme.fallDamage = 1;
+    g.start(c), g.hotSeat = 0;
+    Worm &v = g.worms[0];
+    v.pos.y += 15, v.vel = {0, 0, 0}, v.grounded = false;
+    for (int t = 0; t < 200; t++) g.step(Input{});
+    assert(v.hp < 150 && v.hardAt >= 0);  // the same drop hurts and lands hard
 }
 
 static int hitHp(uint32_t wormpot, int weapon = -1) {  // victim hp after a cluster bomblet lands on it
@@ -5158,6 +5178,7 @@ int main() {
     checkTeamSlots();
     checkAlliances();
     checkHurtEndsTurn();
+    checkMinePushEndsTurn();
     checkPlacementSolid();
     checkDetailRemoval();
     checkHiddenLand();

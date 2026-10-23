@@ -240,6 +240,7 @@ Each frame:
    - Otherwise it is a landing. With v = Velocity + Aftertouch: `vn = v·n` and `vt = v − vn·n`. When `|vt|² < vn²`, `|vt|²` is halved before the slide test.
      - Walkable (n.y ≥ cos SlideAngle[mat]) and `|vt|² < StartSlideVel²[mat]`, or Flags & 0x8040 → **land walking**:
        - if `vn ≤ −0.3` (hard) and entity +0x64 == 0 and no flags 0x8840: event 15 (hard land: poof + recover); otherwise event 8 (soft Land, param vn). If entity +0xdc is set, the threshold is 1000, so always 15.
+       - Decompiled (Ghidra, 0x5af430): the hard test is `vn ≤ −0.3`, else event 8; flags & 0x8840 (0x40 one-shot, 0x800 no fall damage, 0x8000) force event 8, so a worm with no fall damage (scheme FallDamage 0 → SetNoFallDamage, Worms Drown) lands soft at any speed; the slide branch (event 17) never sends 15 [disasm + decompiled].
        - if `vn < −0.3`: FallDamage(vn) and Velocity = 0. Otherwise Velocity = (vt.x, 0, vt.z).
        - state → **Ambulatory (0)**, support id stored.
      - Otherwise (steep, or too fast) → **slide**: FallDamage if vn < −0.3, Velocity = vt, event 17, state → **Sliding (3)**.
