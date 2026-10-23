@@ -954,6 +954,8 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         o.blast(at, blastOf(wd, false), L.threat, dropped(wd));  // ours: a dropped shell spares the thrower, it retreats
         return o.s + bonus(dropped(wd));
     };
+    // W4M close-range plans (0x4a22d0) set the blast next to their target; ours sets it down at the feet, so the target must be in it
+    auto inBlast = [&](Vector3 at, int ti, const Blast &b) { return Vector3Distance(g.worms[ti].pos, at) < b.reach; };
     for (size_t k = only < 0 ? 0 : only; k < (only < 0 ? tpos.size() : only + 1); k++) {
         const Vector3 e = tpos[k];
         const int ti = tworm[k];
@@ -965,7 +967,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         case Kind::Shell:
             if (dropped(wd) && pick()) {  // also set it down at the feet, facing the target
                 Vector3 d = dirOf(yawE, 0), out;
-                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), d * wd.speed, wind, false, out)) consider(shell(out), yawE, 0, 1, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), d * wd.speed, wind, false, out) && inBlast(out, ti, blastOf(wd, false))) consider(shell(out), yawE, 0, 1, ti);
             }
             // constant acceleration A: hit T at time t with V = (T - P - A t²/2) / t, the shells' closed-form parabola (arcMove)
             for (float t = 0.2f; t < 4.5f; t += 0.43f) {  // 11 arcs, as W4M samples about 11 speeds (0x4ace50)
@@ -1045,7 +1047,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
             break;
         case Kind::Mine: {  // W4M CAIPlanAttackLandmine: CloseRangeExplosive 0x4a2c70, the blast scored where it is laid
             Vector3 hit;
-            if (!isWorm || !pick() || !ground(g, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), hit)) break;
+            if (!isWorm || !pick() || !ground(g, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), hit) || !inBlast(hit, ti, Game::MINE_BLAST)) break;
             Outcome o(g, L, me, rating, vals);
             o.blast(hit, Game::MINE_BLAST, L.threat, true);  // as a dropped shell: retreat() walks clear
             consider(o.s + bonus(true), yawE, 0, 0, ti);

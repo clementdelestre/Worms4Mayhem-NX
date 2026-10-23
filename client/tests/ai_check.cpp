@@ -179,6 +179,30 @@ static Game arena(const char *weapon, float dist) {
     return g;
 }
 
+// A dropped explosive is never set down with nobody in its blast: W4M (0x4a22d0) sets it next to the target, ours at the feet, and
+// a blast reaching nobody must not win on the move bonus alone.
+static void dropsOnTarget() {
+    for (const char *weapon : {"Dynamite", "Landmine"})
+        for (uint8_t level : {1, 3, 5}) {
+            Game g = arena(weapon, 45);
+            for (int z = 16; z < 80; z++)  // a 35 m pit: no path, no throw to the enemy beyond it
+                for (int y = 176; y < 248; y++)
+                    for (int x = 60; x < 200; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = -64;
+            for (auto &t : g.cfg.teamSetup) t.cpu = level;
+            const int me = g.current, wi = (int)(std::find_if(WEAPONS.begin(), WEAPONS.end(), [&](const WeaponDef &d) { return d.name == weapon; }) - WEAPONS.begin());
+            Ai ai;
+            int fired = 0;
+            for (int t = 0; t < 60 * 45 && g.phase != Phase::Settle; t++) {
+                Input in = ai.think(g);
+                g.step(in);
+                for (const GameEvent &e : g.events)
+                    if (e.kind == GameEvent::Fire && e.worm == me && e.weapon == wi) fired++;
+            }
+            printf("%s, enemy beyond a pit, CPU%d: fired %d\n", weapon, level, fired);
+            assert(!fired);
+        }
+}
+
 // Two-action weapons, one CPU5 turn each: the strike target and the homing lock are confirmed from the Blimp (W4M SetStrikeTarget
 // 0x4b4c70), the Sheep is detonated (DetonateWhenGoingAwayFrom, Sheep only), the Super Sheep takes off. W4M has no plan class for
 // Teleport or Abduction, and no AI detonation of the Old Woman or Scouser.
@@ -222,6 +246,7 @@ int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
     secondActions();
+    dropsOnTarget();
     for (uint8_t level : {1, 3, 5}) wallAhead(5, level, 21.4f, true), wallAhead(5, level, 19.4f, false);
     for (auto &f : fires) f.assign(WEAPONS.size(), 0);
     blimpView();
