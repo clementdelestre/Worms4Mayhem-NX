@@ -569,10 +569,10 @@ std::string Models::factoryMesh(const std::string &res) {
 }
 
 // WAE_Standard 0x58fe80: the first mesh at the WeaponLocator, each next one at its locator of the first; each instance scaled 1.2
-bool Models::drawWeaponGraphic(const std::string &graphic, Matrix at, Color tint) {
+bool Models::drawWeaponGraphic(const std::string &graphic, Matrix at, Color tint, float scale) {
     std::vector<std::string> tok;
     for (size_t b = 0, e; (e = graphic.find(',', b)) != std::string::npos; b = e + 1) tok.push_back(graphic.substr(b, e - b));
-    const Matrix S = MatrixScale(1.2f, 1.2f, 1.2f), body = MatrixMultiply(S, at);
+    const Matrix S = MatrixScale(scale, scale, scale), body = MatrixMultiply(S, at);
     bool any = false;
     for (size_t i = 0; i + 1 < tok.size() && !tok[i].empty(); i += 2) {
         Matrix m = body;
@@ -639,15 +639,19 @@ static void addLayers(const Entry &e, const Transform *body, const Transform *co
         int p = b < (int)e.parent.size() ? e.parent[b] : -1;
         Transform rb, rl, r0;
         bool own = false;
-        Vector3 dt = {};
+        Vector3 dt = {}, sc = {};
+        float sw = 0;
         Quaternion dq = QuaternionIdentity();
-        for (int k = 0; k < nl; k++)  // XAnim sums every clip's channels (0x7ac1a0): the layers' offsets from Base add up
-            if (B && b < (int)e.base->boneCount && rel(e, L[k], b, &rl) && rel(e, B, b, &r0) &&
-                (Vector3Distance(rl.translation, r0.translation) > 1e-4f || fabsf(rl.rotation.x * r0.rotation.x + rl.rotation.y * r0.rotation.y + rl.rotation.z * r0.rotation.z + rl.rotation.w * r0.rotation.w) < 1 - 1e-6f))
-                own = true, dt = Vector3Add(dt, Vector3Scale(Vector3Subtract(rl.translation, r0.translation), w[k])),
-                dq = QuaternionMultiply(QuaternionSlerp(QuaternionIdentity(), QuaternionMultiply(rl.rotation, QuaternionInvert(r0.rotation)), w[k]), dq);
+        for (int k = 0; k < nl; k++)  // XAnim sums every clip's channels (0x7ac1a0): the layers' offsets from Base add up; a scale averages the layers that key it
+            if (B && b < (int)e.base->boneCount && rel(e, L[k], b, &rl) && rel(e, B, b, &r0)) {
+                if (Vector3Distance(rl.scale, r0.scale) > 1e-4f) own = true, sc = Vector3Add(sc, Vector3Scale(rl.scale, w[k])), sw += w[k];
+                if (Vector3Distance(rl.translation, r0.translation) > 1e-4f || fabsf(rl.rotation.x * r0.rotation.x + rl.rotation.y * r0.rotation.y + rl.rotation.z * r0.rotation.z + rl.rotation.w * r0.rotation.w) < 1 - 1e-6f)
+                    own = true, dt = Vector3Add(dt, Vector3Scale(Vector3Subtract(rl.translation, r0.translation), w[k])),
+                    dq = QuaternionMultiply(QuaternionSlerp(QuaternionIdentity(), QuaternionMultiply(rl.rotation, QuaternionInvert(r0.rotation)), w[k]), dq);
+            }
         if (own && rel(e, body, b, &rb)) {
-            Transform r = {Vector3Add(rb.translation, dt), QuaternionNormalize(QuaternionMultiply(dq, rb.rotation)), rb.scale};
+            if (sw > 0) sc = sw < 1 ? Vector3Add(sc, Vector3Scale(rb.scale, 1 - sw)) : Vector3Scale(sc, 1 / sw);
+            Transform r = {Vector3Add(rb.translation, dt), QuaternionNormalize(QuaternionMultiply(dq, rb.rotation)), sw > 0 ? sc : rb.scale};
             out[b] = p >= 0 ? MatrixMultiply(trs(r), out[p]) : trs(r), moved[b] = b;
         } else if (int a = p >= 0 ? moved[p] : -1; a >= 0) {
             if (!hasInv[a]) inv[a] = MatrixInvert(trs(body[a])), hasInv[a] = 1;

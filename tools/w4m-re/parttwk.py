@@ -25,6 +25,7 @@ ROOTS += ['WXP_Explosion_Mine', 'WXP_Napalm']  # Landmine DetonationFx; its kDT_
 ROOTS += ['WXP_FE_CrashBang', 'WXP_FE_BarrelSpark', 'WXP_FE_TreeFire', 'WXP_FE_BarrelPoison', 'WXP_FE_CrashFire', 'WXP_FE_CrashSparks',
           'WXP_FE_TreeSmoke', 'WXP_FE_Flies']  # MENUTWKXPCCOMMON WXFE.MainMenu Title Mesh EffectNames (WXFE_MeshObjectParticleEntity 0x76d27c)
 ROOTS += ['WXP_FE_Firework%d' % n for n in range(1, 7)]  # WXFE.WinMatch / WinRound Firework1..7 EffectNames
+ROOTS += ['WXP_PlasmaBomb', 'WXP_FE_GuageSteam']  # Ray gun ArielFx `LOC^WXP_PlasmaBomb` (0x581890) and WXFE_WeaponFactoryMeshEntity (0x761a1a, 0x76246f)
 FIELDS = ['EmitterType', 'SpriteSet', 'MeshSet', 'MeshAnimNodeName', 'EmitterLifeTime', 'EmitterLifeTimeRandomise', 'EmitterMaxParticles',
           'EmitterNumSpawn', 'EmitterNumSpawnRadnomise', 'EmitterOriginOffset', 'EmitterOriginRandomise', 'EmitterParticleExpireFX',
           'EmitterParticleFX', 'EmitterSoundFX', 'EmitterSoundFXVolume', 'EmitterSpawnFreq', 'EmitterSpawnFreqRansomise', 'EmitterStartDelay',

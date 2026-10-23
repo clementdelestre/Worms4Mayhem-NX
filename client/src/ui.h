@@ -38,7 +38,7 @@ extern const float IN_SCALEHIT_S[6][6], IN_SCALEHIT_X[7][6], IN_SCALEHIT_Y[7][6]
 // (assets/lang/<en|fr>.txt from tools/w4m-ui), else the built-in en / fr text (key may be null).
 extern int language;
 const char *tr(const char *key, const char *en, const char *fr = nullptr);
-void background();
+void background(bool fxOwn = false);  // fxOwn: the screen updates and draws Fx itself (the Weapon Factory preview's steam)
 std::string teamName(const GameConfig &c, int team);
 std::string resultBanner(const Game &g);  // versus game-over FE.WinString; empty in a mission or challenge (missionEnd shows the result)
 const char *resultLine(const Game &g);    // the line under it: FETXT.WinsTheMatch, or FETXT.WinsTheRound after a draw
@@ -183,10 +183,10 @@ private:
     // Wormpot slot machine (3 reels) and Weapon Factory (custom_weapons.json, sent to the room in Start)
     int reel = 0, spinTo[3] = {}, facSel = 0;
     // the Weapon Factory editor (WXD.EditWeapon / WXD.BackupWeapon): facIndex the weapon in customs (-1 new), facFocus the item, facPage its list page,
-    // facPop the popup (0 none, 1 delivery type, 2 payload), facStage 1 the name entry, facConfirm WXFEP.QuitWeaponFactory
+    // facPop the popup (0 none, 1 delivery type, 2 payload), facStage 1 the name entry, facConfirm WXFEP.QuitWeaponFactory, facDelete the list's WXFEP.ConfirmDeleteWeapon
     WeaponDef facW, facBackup;
     int facIndex = -1, facFocus = -1, facPage = 0, facPop = 0, facPopSel = 0, facStage = 0;
-    bool facConfirm = false, facNaming = false;
+    bool facConfirm = false, facNaming = false, facDelete = false;
     void factoryOpen(int index);
     bool factoryAcceptable() const;
     float spinEnd[3] = {};

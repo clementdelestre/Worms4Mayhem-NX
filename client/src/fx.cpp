@@ -1003,7 +1003,8 @@ void trail(const Projectile &s, Vector3 at, float dt, Vector3 fxAt) {
         if (s.child) return;
         const Vector3 where = factory ? at : fxAt;
         if (me.fx > 0 && !d.keepFx && Vector3Length(s.vel) < 1) stop(me.fx), me.fx = -1;
-        if (!me.fx) me.fx = start(d.ariel.c_str(), where);
+        const char *caret = strchr(d.ariel.c_str(), '^');  // `LOC^<fx>`: the effect's name follows the ^ (0x581890)
+        if (!me.fx) me.fx = start(caret ? caret + 1 : d.ariel.c_str(), where);
         if (me.fx > 0) place(me.fx, where);
         return;
     }

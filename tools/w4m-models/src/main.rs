@@ -170,6 +170,9 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("seagull", "Particle.WXPMesh31", 0.0, false, &["WXM_SGull_WingFlap+WXM_SGull_Location"]),
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
+    // WXFE_WeaponFactoryMeshEntity (0x761c77): the editor's preview and pressure gauge, raw units; its clips are the entity's own (In_* / Loop_* / Gauge_*)
+    ("wfactory", "WX.Mesh.WFactory", 0.0, false, &["Base", "Gauge_Pressure", "Gauge_Wobble", "In_All", "In_Gun", "In_Payload01", "In_Payload02", "In_Payload03", "In_Strike", "In_Worm", "Loop_Gun", "Loop_Strike", "Out_All", "Out_GunStrike", "Out_Payload01", "Out_Payload02", "Out_Payload03", "Out_Worm"]),
+    ("wxfe_factory_airstrike", "WXFE.Factory.Airstrike", 0.0, false, &["Airstrike_Loop"]),
 const WORM_CLIPS: &[&str] = &[
     "Base", "Walk", "Jump_Start", "Jump", "Fall", "Land", "Backflip", "Fwdflip", "Blastflight2", "AimBazooka", "AimGrenade", "AimShotgun", "HoldShotgun", "HoldSniper", "HoldBow", "HoldHomingMissile", "JetpackRotLR",
     "HoldBazooka", "HoldThrown", "Wounded", "Victorious_Grin", "Hit_Front", "HoldAirstrike", "HoldNinjarope", "Wave",
@@ -877,7 +880,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     let norm = if feet { mul(&sc([0.05; 3]), &tr([0.0, 3.0, 0.0])) } else if size < 0.0 { sc([-size; 3]) } else if size > 0.0 { mul(&sc([k; 3]), &tr(c.map(|v| -v))) } else { ID };
     // extra joints without vertices: their pose is the locator's world matrix, where held meshes/hats attach
     const LOCATORS: &[&str] = &["WeaponLocator", "HatLocator", "Pack_Locator", "Parachute", "trail1", "trail2", "persp", "smokelocator", "beam", "CreatePoint", "Blend", "Payload_Spawn",
-        "Tree_Smoke", "Tree_Fire", "Crash_Fire", "Crash_FireSpark", "Crash_Sparks", "Barrel_Poison", "Barrel_Spark", "Flies", "barrel|effect", "gun|Smoke1", "gun|Smoke2"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0); Tree_Smoke..Flies: the title island's effect locators; barrel|effect: the sentry gun's muzzle (0x56b5e1); gun|Smoke*: its damage smoke (0x56b0b0)
+        "Tree_Smoke", "Tree_Fire", "Crash_Fire", "Crash_FireSpark", "Crash_Sparks", "Barrel_Poison", "Barrel_Spark", "Flies", "barrel|effect", "gun|Smoke1", "gun|Smoke2",
+        "locator1", "Steam", "Payload_01", "Payload_02", "Payload_03"];  // trail*: Bomber.EffectName; persp: its scene camera; beam, CreatePoint: the UFO's nozzle and warp gate; Payload_Spawn: Weapon.GetLaunchPosition (0x594ed0); Tree_Smoke..Flies: the title island's effect locators; barrel|effect: the sentry gun's muzzle (0x56b5e1); gun|Smoke*: its damage smoke (0x56b0b0)
     // Blend: the worm's WormPoseManager control node (arm modes in Translate.x/y, head/eye mode in Rotate.y)
     let sockets: Vec<(usize, &str)> = LOCATORS.iter()
         .filter_map(|&loc| s.groups.iter().position(|g| animated && g.path.ends_with(loc)).map(|i| (i, loc))).collect();

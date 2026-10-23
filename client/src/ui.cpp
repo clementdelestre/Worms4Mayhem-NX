@@ -899,12 +899,12 @@ bool preload(double until) {
     return false;
 }
 
-void background() {
+void background(bool fxOwn) {
     uploadArt();  // one GPU upload per frame
     Texture2D t = tex("back/loadbackgeneric");
     if (t.id) DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {0, 0, 1280, 720}, {}, 0, WHITE);
     else DrawRectangleGradientV(0, 0, 1280, 720, {40, 80, 150, 255}, {120, 170, 220, 255});
-    FrontBg::draw(GetFrameTime());
+    FrontBg::draw(GetFrameTime(), !fxOwn);
 }
 
 // MENUTWKXINGAME FE.AnimSpeed (FrontEndService +0x134, 0x72a244): item clips last their length x it (0x6a03d0, 0x7a9cf8)
@@ -1794,7 +1794,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
 
     BeginDrawing();
-    background();
+    background(screen == FactoryEdit);
     switch (screen) {
     case Title: {
         logo(640, 90, 760);
@@ -3612,19 +3612,114 @@ void powerBar(Rectangle r, float v) {
     }
 }
 
-// The pressure gauge (clip Gauge_Pressure: the needle at cost x 70 % of the dial, 70 % = the red zone's start; Gauge_Wobble shakes it there): ours drawn as a dial
-void costGauge(Vector2 c, float cost, float t) {
-    const float r = 62, a0 = 200 * DEG2RAD, sweep = 140 * DEG2RAD, red = 0.7f;
-    DrawCircleV(c, r + 8, Fade(BLACK, 0.55f));
-    for (int i = 0; i < 40; i++) {
-        const float f0 = i / 40.0f, f1 = (i + 1) / 40.0f, a = -a0 + sweep * f0, b = -a0 + sweep * f1;
-        const Vector2 p0 = {c.x + cosf(a) * (r - 6), c.y + sinf(a) * (r - 6)}, p1 = {c.x + cosf(b) * (r - 6), c.y + sinf(b) * (r - 6)};
-        DrawLineEx(p0, p1, 8, f0 >= red ? Color{229, 12, 0, 255} : Color{0, 183, 88, 255});
+// WXFE_WeaponFactoryMeshEntity (0x761c77, 0x761e82, 0x762457): WX.Mesh.WFactory at the item's pose, the gun parts, the payload meshes and the
+// Airstrike mesh on its locators, its In_* / Loop_* / Out_Payload* clips over Base and the Gauge_Pressure needle following the cost
+struct FactoryMesh {
+    int kind = -1, payload = -1;  // the launch type and the payload (a Launched weapon: its barrel's family) on show
+    std::string gun;              // the WeaponGraphicsResourceID on show
+    float born = 0, inT = 0, payT = 0, outT = -1, wobT = -1, gauge = 0, last = -10;
+    bool outAll = false;
+    int steam = 0, plasma[2] = {0, 0};
+    int toKind = 0, toPayload = 0;
+};
+FactoryMesh fm;
+
+// Launched payload family from the Barrel part (0x7618a0: Factory.Ray / Revolver / Blaster by prefix, else Tank)
+int barrelFamily(const std::string &graphic) {
+    std::vector<std::string> tok;
+    for (size_t b = 0, e; (e = graphic.find(',', b)) != std::string::npos; b = e + 1) tok.push_back(graphic.substr(b, e - b));
+    const std::string barrel = tok.size() > 2 ? tok[2] : "";
+    return barrel.rfind("Factory.Ray", 0) == 0 ? 1 : barrel.rfind("Factory.Revolver", 0) == 0 ? 2 : barrel.rfind("Factory.Blaster", 0) == 0 ? 3 : 0;
+}
+
+void factoryPreview(const WeaponDef &w, float cost, float t, Vector3 pos) {
+    const float k = 1 / FE_ANIM_SPEED, dt = fminf(t - fm.last, 0.1f);
+    const char *const MESH = "wfactory";
+    auto len = [&](const char *c) { return Models::clipLength(MESH, c); };
+    if (t - fm.last > 0.25f) {  // the item is new: its effects and clips start over
+        Fx::stop(fm.steam), Fx::stop(fm.plasma[0]), Fx::stop(fm.plasma[1]);
+        fm = {};
     }
-    const bool shake = cost >= 1;  // at the red threshold: Gauge_Wobble
-    const float f = fminf(cost * red, 1), a = -a0 + sweep * f + (shake ? sinf(t * 40) * 0.04f : 0);
-    DrawLineEx(c, {c.x + cosf(a) * (r - 8), c.y + sinf(a) * (r - 8)}, 4, WHITE);
-    DrawCircleV(c, 6, WHITE);
+    fm.last = t;
+    Fx::update(dt);
+    const int kind = w.launch, pay = kind == 1 ? barrelFamily(w.graphic) : factoryPayloadOf(w.model);
+    // 0x761e82: the first build and a rebuild after the Out clips play the In clips; a payload swap plays Out_Payload then In_Payload;
+    // a Launched weapon's gun parts change at once
+    if (fm.kind < 0) fm.kind = kind, fm.payload = pay, fm.gun = w.graphic, fm.born = fm.inT = fm.payT = t;
+    else if (fm.outT >= 0) {
+        if (t - fm.outT >= len("Out_Payload01")) {
+            fm.kind = fm.toKind, fm.payload = fm.toPayload, fm.gun = w.graphic, fm.outT = -1, fm.payT = t;
+            if (fm.outAll) fm.inT = t;
+        }
+    } else if (kind != fm.kind || pay != fm.payload) fm.outT = t, fm.outAll = kind != fm.kind, fm.toKind = kind, fm.toPayload = pay;
+    else fm.gun = w.graphic;
+    // 0x762457: the needle moves 0.05 s of the clip a frame to cost x 70 % of it; from the red zone's start Gauge_Wobble loops and the steam rises
+    const float L = len("Gauge_Pressure"), target = fminf(L, L / 100 * cost * 70), step = 0.05f * dt * 60;
+    fm.gauge = fabsf(target - fm.gauge) <= step ? target : fm.gauge + copysignf(step, target - fm.gauge);
+    const bool wobble = fm.gauge > L / 100 * 70;
+    if (wobble && fm.wobT < 0) fm.wobT = t;
+    if (!wobble) fm.wobT = -1;
+
+    Models::Layers ly;
+    int n = 0;
+    const bool launched = fm.kind == 1, strike = fm.kind == 0;
+    const bool out = fm.outT >= 0;
+    ly.add[n] = "In_All", ly.addT[n++] = (t - fm.born) * k;  // the stand, tray and gauge come in when the item is created (0x761e2f)
+    const char *in = launched ? "In_Gun" : strike ? "In_Strike" : "In_Worm", *loop = launched ? "Loop_Gun" : strike ? "Loop_Strike" : nullptr;
+    if (out && fm.outAll) ly.add[n] = strike || launched ? "Out_GunStrike" : "Out_Worm", ly.addT[n++] = (t - fm.outT) * k;
+    else if (!out) {
+        const float bt = (t - fm.inT) * k, il = len(in);
+        ly.add[n] = bt < il || !loop ? in : loop, ly.addT[n++] = bt < il || !loop ? bt : fmodf(bt - il, len(loop));
+    }
+    static const char *const IN[3] = {"In_Payload01", "In_Payload02", "In_Payload03"}, *const OUT[3] = {"Out_Payload01", "Out_Payload02", "Out_Payload03"};
+    for (int i = launched ? 0 : 2; i < (launched ? 2 : 3); i++)
+        ly.add[n] = out ? OUT[i] : IN[i], ly.addT[n++] = (t - (out ? fm.outT : fm.payT)) * k;
+    if (wobble) ly.add[n] = "Gauge_Wobble", ly.addT[n++] = fmodf((t - fm.wobT) * k, len("Gauge_Wobble"));
+
+    Camera3D cam = feCamera(900);
+    glClear(0x100);
+    rlSetClipPlanes(5, 15000);
+    BeginMode3D(cam);
+    const Matrix item = MatrixMultiply(MatrixMultiply(MatrixScale(0.8f, 0.8f, 1), MatrixRotateZYX({0.31f, 0.82f, 0.21f})), MatrixTranslate(pos.x, pos.y, pos.z));
+    Models::shade(Lit::frontendShader(true));
+    Models::draw(MESH, item, "Base", 0, false, "Gauge_Pressure", fm.gauge, ly);
+    auto at = [&](const char *loc, Matrix *m) {
+        Matrix j;
+        if (!Models::joint(MESH, loc, "Base", 0, false, &j, "Gauge_Pressure", fm.gauge, &ly)) return false;
+        return *m = MatrixMultiply(j, item), true;
+    };
+    auto fx = [&](int &h, const char *name, const Matrix &m) {
+        const Vector3 p = {m.m12, m.m13, m.m14};
+        if (!h) h = Fx::start(name, p, 1);
+        else Fx::place(h, p);
+    };
+    auto payload = [&](const char *res, const char *loc) {
+        Matrix m;
+        if (at(loc, &m)) Models::draw(Models::factoryMesh(res).c_str(), m);
+    };
+    Matrix m;
+    if (launched) {
+        if (at("locator1", &m)) Models::drawWeaponGraphic(fm.gun, m, WHITE, 1);
+        static const char *const PROJ[4] = {"Factory.Proj.Tank", nullptr, "Factory.Proj.Revolver", "Factory.Proj.Blaster"};
+        const char *res = PROJ[fm.payload];
+        for (int i = 0; i < 2; i++) {
+            const char *loc = i ? "Payload_02" : "Payload_01";
+            if (res) payload(res, loc);
+            else if (at(loc, &m)) fx(fm.plasma[i], "WXP_PlasmaBomb", m);  // the Ray gun: the PlasmaLoc meshes are hidden, WXP_PlasmaBomb burns at the locators (0x761a1a)
+        }
+        if (res) Fx::stop(fm.plasma[0]), Fx::stop(fm.plasma[1]), fm.plasma[0] = fm.plasma[1] = 0;
+    } else {
+        Fx::stop(fm.plasma[0]), Fx::stop(fm.plasma[1]), fm.plasma[0] = fm.plasma[1] = 0;
+        if (strike && at("locator1", &m)) Models::draw("wxfe_factory_airstrike", m, WHITE, "Airstrike_Loop", t * k, true);
+        const std::string g = fm.payload >= 0 ? factoryPayloadGraphic(fm.payload) : "";
+        if (!g.empty()) payload(g.substr(0, g.find(',')).c_str(), "Payload_03");
+    }
+    if (wobble && at("Steam", &m)) fx(fm.steam, "WXP_FE_GuageSteam", m);
+    else if (!wobble) Fx::stop(fm.steam), fm.steam = 0;
+    Fx::draw(cam);
+    Models::shade({});
+    EndMode3D();
+    rlSetClipPlanes(0.01, 1000);
 }
 }  // namespace
 
@@ -3640,7 +3735,18 @@ bool Frontend::factoryAcceptable() const { return !factorySame(facW, facBackup) 
 
 void Frontend::factory(int dx, int dy, bool ok, bool back) {
     (void)dx;
-    int n = (int)customs.size(), slots = std::min(n + 1, MAX_CUSTOM);
+    int n = (int)customs.size();
+    if (facDelete) {  // WXFEP.ConfirmDeleteWeapon (0x73e5b3): No is the default row, Yes removes the weapon (CustomWeapon^Remove)
+        facPopSel = clampWrap(facPopSel + dy, 2);
+        if (back) facDelete = false;
+        else if (ok) {
+            if (facPopSel == 1 && facSel < n) customs.erase(customs.begin() + facSel);
+            facDelete = false;
+        }
+        dy = 0, ok = back = false;
+    }
+    n = (int)customs.size();
+    const int slots = std::min(n + 1, MAX_CUSTOM);
     facSel = clampWrap(facSel + dy, slots);
     heading("Weapon Factory", 640, 14, 48);
     popup({290, 84, 700, 590});
@@ -3659,7 +3765,12 @@ void Frontend::factory(int dx, int dy, bool ok, bool back) {
     }
     hints({{"A", "Enter", facSel == n ? "Create" : "Edit"}, {"Y", "Delete", "Delete"}, {"B", "Esc", "Save & back"}});
     if (ok) factoryOpen(facSel == n ? -1 : facSel);
-    if (facSel < n && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_DELETE})) customs.erase(customs.begin() + facSel);
+    if (facDelete) {
+        popup({420, 250, 440, 200});
+        text(customs[facSel].name.c_str(), 640, 275, 26, GOLDEN, 1);
+        text(tr("FETXT.No", "No"), 640, 340, 26, ink(facPopSel == 0), 1);
+        text(tr("FETXT.Yes", "Yes"), 640, 380, 26, ink(facPopSel == 1), 1);
+    } else if (facSel < n && P({GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_DELETE})) facDelete = true, facPopSel = 0;
     if (back) {
         if (!saveCustomWeapons(DATA_DIR "custom_weapons.json", customs)) TraceLog(LOG_WARNING, "cannot save custom_weapons.json");
         screen = HelpOpts;
@@ -3788,12 +3899,13 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
     text(plain(tr("FETXT.Generic.Back", "Back")).c_str(), 280, 628, 26, facFocus == BACK ? GOLDEN : WHITE, 1);
     text(tr("FETXT.Accept", "Accept"), 640, 628, 26, !accOn ? offc : facFocus == ACCEPT ? GOLDEN : WHITE, 1);
 
-    // the preview (the gun parts or the payload, WXFE_WeaponFactoryMeshDesc) and the pressure gauge
-    Rectangle pv = {870, 100, 300, 300};
+    // the preview: WX.Mesh.WFactory with its pressure gauge (WXFE_WeaponFactoryMeshDesc)
+    Rectangle pv = {845, 62, 350, 340};
     DrawRectangleRounded(pv, 0.08f, 6, Fade(BLACK, 0.35f));
-    feWeapon(facPop == 2 ? factoryPayloadGraphic(payloadOrder()[facPopSel]) : facW.graphic, {250, 40, 0}, 4.5f, {0.31f, 0.82f, 0.21f});  // a payload's highlight shows its mesh
-    text(facW.name.empty() ? "" : facW.name.c_str(), pv.x + 150, pv.y + 250, 26, GOLDEN, 1);
-    costGauge({1020, 520}, factoryCost(facW), t);
+    WeaponDef shown = facW;
+    if (facPop == 2) factoryPayloadPick(shown, payloadOrder()[facPopSel]);  // a payload's highlight shows its mesh
+    factoryPreview(shown, factoryCost(facW), t, {160, 0, 660});
+    text(facW.name.empty() ? "" : facW.name.c_str(), pv.x + pv.width / 2, pv.y + pv.height + 8, 26, GOLDEN, 1);
     if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
     else hints({{"D-pad", "Up/Down", "Move"}, {"D-pad", "Left/Right", "Change"}, {"A", "Enter", "Select"}, {"B", "Esc", "Back"}});
 
