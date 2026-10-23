@@ -136,6 +136,7 @@ void FrontBg::draw(float dt, bool particles) {
         static const float FE_WATER[14] = {0.5f, 60, 1, 0.2f, 1, 5, 15, 6, 6, 1, 0.4f, 0.4f, 1, 0.1f};  // TWEAK.XOM FE.Water
         Fx::theme("frontend", {150, 200, 240, 255}, "day", false), Fx::clear();  // FE.DAYWater set
         std::copy(FE_WATER, FE_WATER + 14, Lit::sun.water);
+        Lit::sun.dir = {0, 0.7f, -0.52f}, Lit::sun.ambient = Lit::sun.diffuse = Lit::sun.specular = Vector3Scale({1, 1, 1}, 128 / 255.0f);  // FE.Water light (0x47fdd0 sets Water.TweakName)
     }
     lastDraw = GetTime();
     elapsed += dt;
@@ -160,7 +161,7 @@ void FrontBg::draw(float dt, bool particles) {
         float ct;
         Matrix m;
         const char *clip = titleClip(introT, &ct, &m);
-        Models::draw("title", m, WHITE, clip, ct, true);  // Lighting 0: no FrontendMeshLight, the worm light (0x77887d) [disasm]
+        Models::draw("title", m, WHITE, clip, ct, true);  // Lighting 0: no FrontendMeshLight, the FE.Water level light [assumed, docs/w4m/render.md]
     }
     rlEnableBackfaceCulling();
     Fx::drawWater(cam, -WATER_DROP * S, elapsed, 12000 * S);

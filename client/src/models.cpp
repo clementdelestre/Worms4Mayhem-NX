@@ -461,7 +461,7 @@ bool Models::menuReady() { return menuLeft == 0; }
 
 static void compileBeam();
 bool Models::upload(double until) {
-    if (!shader.id) shader = Lit::modelShader(true), compileBeam();  // textured, alpha-tested (teeth/eye overlays), W4M worm light
+    if (!shader.id) shader = Lit::modelShader(), compileBeam();  // textured, alpha-tested (teeth/eye overlays), entity light
     static Job cur;
     static bool busy = false, finished = false;
     if (finished || files.empty()) return false;
@@ -953,8 +953,9 @@ static void select(Entry &e, const char *clip, float t, bool loop, const char *a
 
 static const Texture2D *overTex = nullptr;
 static Vector3 lightScale = {1, 1, 1};
+static float lightShade = 1;
 static const Vector3 ONE3 = {1, 1, 1};
-void Models::lightMul(Vector3 m) { lightScale = m; }
+void Models::lightMul(Vector3 m, float k) { lightScale = m, lightShade = k; }
 static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // part: 0 all, 1 opaque only, 2 blended (keyed shapes, glow) only
     Model &m = e.m;
     Shader keep = m.materials[0].shader;
@@ -964,6 +965,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
     bool anyKeyed = std::find(e.keyed.begin(), e.keyed.end(), 1) != e.keyed.end();
     int lmLoc = GetShaderLocation(m.materials[0].shader, "lightMul");
     if (lmLoc >= 0) SetShaderValue(m.materials[0].shader, lmLoc, &lightScale, SHADER_UNIFORM_VEC3);
+    if (int lk = GetShaderLocation(m.materials[0].shader, "lightK"); lk >= 0) SetShaderValue(m.materials[0].shader, lk, &lightShade, SHADER_UNIFORM_FLOAT);
     bool anyAdd = std::find(e.add.begin(), e.add.end(), 1) != e.add.end();
     int last = part == 1 ? 0 : anyAdd ? 2 : anyKeyed;
     for (int pass = part == 2; pass <= last; pass++) {  // DrawModel's loop with each mesh's alpha: opaque, then the keyed blended shapes, then the additive ones (z write off, two-sided); the glow materials after

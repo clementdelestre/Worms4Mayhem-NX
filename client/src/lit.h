@@ -18,8 +18,8 @@ extern int aniso;  // anisotropic filtering of land and decor textures (1 = off)
 extern const char *MVS;  // the model vertex shader: other passes reuse it so their depths match
 // GLSL 100 source, macro-wrapped for 330; lit: refreshed by frame(); es3: GLSL ES 3.00 on GLES (sampler2DShadow, SHADOW_SAMPLER)
 Shader shader(const char *vs, const char *fs, bool lit = true, bool es3 = false);
-// Textured, alpha-tested, two-sided lambert + rim. worm: W4M's fixed worm light, else the map light.
-Shader modelShader(bool worm);
+// Textured, alpha-tested, two-sided lambert + rim, lit by the level light like every LightingService entity light (0x47bc70).
+Shader modelShader();
 // FrontendMeshLight (FrontEndService 0x729662, WXFE.* TWEAK.XOM): the menu meshes' shader, drawn from the FE camera at (0, 0, 900); lit = the mesh item's Lighting flag
 Shader frontendShader(bool lit);
 // WX.Mesh.BlueDivide's own light (FrontEndService 0x729942): it travels (0, -0.75, -0.75), the opposite of the FE layers' light

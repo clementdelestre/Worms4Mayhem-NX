@@ -748,7 +748,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     const size_t wi = &w - g.worms.data();
     auto att = [&](int k) -> const std::string & { return wi < g.wormAtt.size() && !g.wormAtt[wi][k].empty() ? g.wormAtt[wi][k] : tm.attachment(k); };
     Models::gloves(catalog().drawName(att(1)));
-    Models::lightMul(Acting::lightMul(i));  // 0x5a1bb1: the worm light colour, sick / abducted only, no team colour
+    Models::lightMul(Acting::lightMul(i), Acting::lightShade(i));  // 0x5a1bb1: the worm light colour, sick / abducted only, no team colour; 0x47bc70: its shadow fade
     bool drawn = Models::draw("worm", p, w.yaw, roll, WHITE, clip, t, loop, aim, aimT, ly);
     Models::lightMul({1, 1, 1}), Models::gloves(nullptr);
     if (!drawn) return false;

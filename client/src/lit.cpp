@@ -19,11 +19,8 @@ extern "C" void glGenTextures(int, unsigned *), glBindTexture(unsigned, unsigned
 namespace Lit {
 Light sun;
 int aniso = 16;  // measured free over 4x (docs/tests.md "Render budget")
-struct Entry { Shader s; bool worm; int loc[6]; };  // worm: fixed worm light; loc: sunDir, ambient, diffuse, specular, camPos, shadowMatrix
+struct Entry { Shader s; int loc[6]; };  // loc: sunDir, ambient, diffuse, specular, camPos, shadowMatrix
 static std::vector<Entry> shaders;
-
-// Worm.Light.Ambient / Worm.Light.Diffuse from Data/Tweak/TWEAK.XOM.
-static const Vector3 WORM_AMB = {0.5f, 0.5f, 0.6f}, WORM_DIF = {0.7f, 0.7f, 0.6f};
 
 const char *MVS = R"(
 attribute vec3 vertexPosition;
@@ -50,7 +47,8 @@ uniform vec3 ambient;
 uniform vec3 diffuse;
 uniform vec3 specular;
 uniform vec3 camPos;
-uniform vec3 lightMul;  // the worm light colour scale (Sick / Abducted, 0x5a1bb1): ambient, diffuse and specular, unclamped
+uniform vec3 lightMul;  // the entity light colour scale (Sick / Abducted, 0x5a1bb1): ambient, diffuse and specular, unclamped
+uniform float lightK;  // the entity light intensity x shadow fade (0x47bc70): diffuse and specular only
 uniform vec4 material[4];  // FixedFunction.cg materialMatrix rows: specular, emissive, fresnel, (fresnel power, specular power)
 varying vec2 uv;
 varying vec3 n;
@@ -61,9 +59,9 @@ void main() {
     vec4 c = texture2D(texture0, uv) * colDiffuse * vc;  // the Col CG programs multiply the vertex colour in
     if (c.a < (blended > 0.5 ? 0.004 : 0.5)) discard;
     vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
-    vec3 base = (diffuse * max(dot(nn, sunDir), 0.0) + ambient) * lightMul + material[1].xyz;
+    vec3 base = (diffuse * (lightK * max(dot(nn, sunDir), 0.0)) + ambient) * lightMul + material[1].xyz;
     float sp = material[3].y > 0.0 ? pow(max(dot(nn, normalize(sunDir + v)), 0.0), material[3].y) : 1.0;
-    vec3 add = specular * lightMul * material[0].xyz * sp + material[2].xyz * clamp(pow(max(1.0 - dot(v, nn), 0.0), material[3].x), 0.0, 1.0);
+    vec3 add = specular * lightK * lightMul * material[0].xyz * sp + material[2].xyz * clamp(pow(max(1.0 - dot(v, nn), 0.0), material[3].x), 0.0, 1.0);
     gl_FragColor = vec4(clamp(base * c.rgb + add, 0.0, 1.0), blended > 0.5 ? c.a : 1.0);
 }
 )";
@@ -78,19 +76,16 @@ Shader shader(const char *vs, const char *fs, bool lit, bool es3) {
                                : (es ? "#version 300 es\nprecision highp float;\n" : "#version 330\n") + F3;
     Shader s = LoadShaderFromMemory((v + vs).c_str(), (f + fs).c_str());
     if (int lm = GetShaderLocation(s, "lightMul"); lm >= 0) SetShaderValue(s, lm, &ONE, SHADER_UNIFORM_VEC3);
+    if (int lk = GetShaderLocation(s, "lightK"); lk >= 0) SetShaderValue(s, lk, &ONE.x, SHADER_UNIFORM_FLOAT);
     if (lit && s.id != rlGetShaderIdDefault()) {
         static const char *U[6] = {"sunDir", "ambient", "diffuse", "specular", "camPos", "shadowMatrix"};
-        shaders.push_back({s, false, {}});
+        shaders.push_back({s, {}});
         for (int i = 0; i < 6; i++) shaders.back().loc[i] = GetShaderLocation(s, U[i]);
     }
     return s;
 }
 
-Shader modelShader(bool worm) {
-    Shader s = shader(MVS, MFS);
-    if (worm && !shaders.empty() && shaders.back().s.id == s.id) shaders.back().worm = true;
-    return s;
-}
+Shader modelShader() { return shader(MVS, MFS); }
 
 Shader frontendShader(bool lit) {
     static Shader sh[2];
@@ -222,8 +217,8 @@ void frame(Vector3 cam) {
     Vector3 l = Vector3Normalize(sun.dir);
     for (const Entry &x : shaders) {
         SetShaderValue(x.s, x.loc[0], &l, SHADER_UNIFORM_VEC3);
-        SetShaderValue(x.s, x.loc[1], x.worm ? &WORM_AMB : &sun.ambient, SHADER_UNIFORM_VEC3);
-        SetShaderValue(x.s, x.loc[2], x.worm ? &WORM_DIF : &sun.diffuse, SHADER_UNIFORM_VEC3);
+        SetShaderValue(x.s, x.loc[1], &sun.ambient, SHADER_UNIFORM_VEC3);
+        SetShaderValue(x.s, x.loc[2], &sun.diffuse, SHADER_UNIFORM_VEC3);
         SetShaderValue(x.s, x.loc[3], &sun.specular, SHADER_UNIFORM_VEC3);
         SetShaderValue(x.s, x.loc[4], &cam, SHADER_UNIFORM_VEC3);
         if (x.loc[5] >= 0) SetShaderValueMatrix(x.s, x.loc[5], shadowMtx);

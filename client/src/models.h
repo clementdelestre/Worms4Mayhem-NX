@@ -51,7 +51,7 @@ void zwrite(bool on);  // the depth mask draw() restores after its blended shape
 void shade(Shader s);  // every draw() uses s until shade({})
 void pick(const char *clip, float t = 0);
 void texture(const Texture2D *t);  // every draw() shows t in place of each material's diffuse map (the W4M flag cloth's TGA), until texture(nullptr)
-void lightMul(Vector3 m);  // scales the light colours of the draw() calls after it (W4M entity light colour, unclamped); {1, 1, 1} resets
+void lightMul(Vector3 m, float k = 1);  // the draw() calls after it: light colour scale (W4M entity light colour, unclamped) and diffuse / specular fade k; {1, 1, 1} resets
 void gloves(const char *name);  // every posed draw() of a model with W4M hand shapes shows this glove model's in their place, until gloves(nullptr)  // every draw() also plays this W4M clip's XChildSelector keys (looped) until pick(nullptr)
 bool visible(Vector3 c, float r);  // sphere vs the current BeginMode3D view frustum
 bool visible(Vector3 c, float r, const Matrix &mvp);  // sphere vs that view-projection's frustum

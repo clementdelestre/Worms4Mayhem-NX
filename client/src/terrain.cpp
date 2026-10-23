@@ -750,6 +750,14 @@ bool Terrain::cast(Vector3 a, Vector3 dir, float len, float *tOut, Vector3 *nOut
     return true;
 }
 
+// 0x47bc70 / 0x47c800: a land ray of 1000 units from p + 10 units x LightDirection (raw), towards the sun; the target is the hit unit / 1000, 1 on a miss
+float Terrain::sunShade(Vector3 p) const {
+    const float u = 1.0f / 20;  // m per W4M unit
+    float t;
+    if (!cast(Vector3Add(p, Vector3Scale(Lit::sun.dir, 10 * u)), Vector3Normalize(Lit::sun.dir), 1000 * u, &t, nullptr)) return 1;
+    return t < 1000 * u ? t / u / 1000 : 1;
+}
+
 // W4M 0x46a070 on a ray starting in land (0x468490 keeps the start in both records): the nearest face of the start cell whose
 // neighbour is empty, whatever the ray's direction, else -dir [disasm]; nearest by distance, W4M's cell fractions [assumed]
 Vector3 Terrain::startNormal(Vector3 p, size_t c, Vector3 dir) const {
@@ -1914,7 +1922,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
     if (objects.empty()) return;
     if (!sh.id) {
         sh = Lit::shader(Lit::MVS, DFS), emitLoc = GetShaderLocation(sh, "emissive"), stateLoc = GetShaderLocation(sh, "state"), uvLoc = GetShaderLocation(sh, "uvOff");
-        ash = Lit::modelShader(false);
+        ash = Lit::modelShader();
     }
     std::vector<const Entry *> ms;
     for (const std::string &name : objModels) {

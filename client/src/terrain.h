@@ -139,6 +139,7 @@ struct Terrain {
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
     size_t voxelBytes() const { return d.bytes() + mats.bytes() + uvOf.bytes() + steel.bytes(); }  // density, materials, uv frames, steel
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
+    float sunShade(Vector3 p) const;  // an entity light's shadow target at p (LightingService 0x47bc70): 1 in the open, less under land towards the sun
     // the first land along unit dir within len (*t from a, *n its normal); exact where listed, else sampled VOX/4 and bisected to
     // the last point out of land (6e-5 m)
     bool cast(Vector3 a, Vector3 dir, float len, float *t, Vector3 *n) const;
