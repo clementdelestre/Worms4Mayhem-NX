@@ -39,6 +39,7 @@ The user wants it identical to the real W4M. Report to the coordinator in French
   `make mission_check`, `make ui_check` build what changed then run; `make obj/bin/<test>` builds only. No hand-written g++ lines.
 - While developing: only the tests of your area. Once at the end: the full suite (the five above, `tests/quit_check.sh`,
   `tests/netbot.sh`, and `cargo test` in server/ if the wire changed).
+- Tests are silent (user): hidden / test runs set the master volume to 0 (audio.cpp after InitAudioDevice). Never run a test or capture that plays sound on the desktop; if a run is audible, mute it first.
 - Run the game hidden (`W4NX_HIDDEN=1`), under 60 s, one instance at a time. Kill only your own PIDs, never `pkill -x w4nx`
   (other agents run games), and never let a wait loop match itself with `pgrep -f`.
 - Other agents edit the same tree: re-read a file right before editing it, use targeted edits.
