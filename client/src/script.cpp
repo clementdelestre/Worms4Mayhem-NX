@@ -266,10 +266,10 @@ struct ScriptHost {
                 Worm &w = g.worms[S->slotWorm[i]];
                 if (w.alive) w.hp = w.counted = std::max(1, (int)fnum(ctn(n), "Energy"));
             }
-        } else if (sscanf(n.c_str(), "AIParams.Worm%d", &i) == 1 && i >= 0 && i < SLOTS && from) {
+        } else if (sscanf(n.c_str(), "AIParams.Worm%d", &i) == 1 && i >= 0 && i < SLOTS) {
             int lv = 0;
-            if (sscanf(from->c_str(), "AIParams.CPU%d", &lv) == 1) S->ai[i] = lv;
-            else if (sscanf(from->c_str(), "AIParams.Worm%d", &lv) == 1 && lv >= 0 && lv < SLOTS) S->ai[i] = S->ai[lv];
+            if (from && sscanf(from->c_str(), "AIParams.CPU%d", &lv) == 1) S->ai[i] = lv;
+            else if (from && sscanf(from->c_str(), "AIParams.Worm%d", &lv) == 1 && lv >= 0 && lv < SLOTS) S->ai[i] = S->ai[lv];
             syncCpu();
         } else if (!n.compare(0, 10, "Inventory.")) {
             for (int t = 0; t < g.teams && S->built; t++) pushInventory(t);
@@ -312,10 +312,12 @@ struct ScriptHost {
     static constexpr const char *ATT[4] = {"ATT_Hat", "ATT_Gloves", "ATT_Glasses", "ATT_Tash"};  // GameConfig::Team order
     static void syncCpu() {
         Game &g = *G;
-        g.wormCpu.assign(g.worms.size(), 0), g.wormAtt.assign(g.worms.size(), {});
+        g.wormCpu.assign(g.worms.size(), 0), g.wormTarget.assign(g.worms.size(), {}), g.wormAtt.assign(g.worms.size(), {});
         for (size_t i = 0; i < g.worms.size() && i < S->wormSlot.size(); i++)
             if (int s = S->wormSlot[i]; s >= 0) {
                 g.wormCpu[i] = (uint8_t)Clamp(S->ai[s] ? S->ai[s] : 2, 1, 5);
+                if (const Val *t = field(ctn(slotName("AIParams.Worm%02d", s)), "TargetDetailObject"); t && !t->s.empty())
+                    for (const Terrain::Marker &k : g.terrain.markers) if (!strcasecmp(k.name.c_str(), t->s.c_str())) g.wormTarget[i].push_back(k.pos);
                 Ctn *w = ctn(slotName("Worm.Data%02d", s));
                 for (int k = 0; k < 4; k++) if (const Val *v = field(w, ATT[k])) g.wormAtt[i][k] = v->s;
             }

@@ -68,21 +68,36 @@ static bool stepBody(const Game &g, Body &b, float &yaw) {
     return b.pos.y >= g.water;
 }
 
+// W4M 0x4a46f0: a target is an active worm of a team that has not surrendered
+static bool targeted(const Game &g, const Worm &x) { return x.alive && !g.surrendered[x.team]; }
+
+// W4M c_plstTargets after the worms (0x4ab730, 0x4a5070): the thinking worm's TargetDetailObject markers, value 1, hp 1 (any hit is lethal),
+// no threat rating
+static const std::vector<Vector3> &scripted(const Game &g) {
+    static const std::vector<Vector3> none;
+    return g.current < (int)g.wormTarget.size() ? g.wormTarget[g.current] : none;
+}
+static size_t targetCount(const Game &g) { return g.worms.size() + scripted(g).size(); }
+static Vector3 targetPos(const Game &g, size_t i) { return i < g.worms.size() ? g.worms[i].pos : scripted(g)[i - g.worms.size()]; }
+static int targetHp(const Game &g, size_t i) { return i < g.worms.size() ? g.worms[i].hp : 1; }
+static bool targetAlive(const Game &g, size_t i) { return i >= g.worms.size() || g.worms[i].alive; }
+
 // W4M 0x4a9260 target value, once per think (0x4ab730) from where the worm stands: allies (self included; the same AlliedGroup,
-// 0x4a4790) are -v·K, enemies v/K, with K = (enemies / allies)^WormExchange
+// 0x4a4790) are -v·K, enemies v/K, with K = (enemies / allies)^WormExchange, 1 without a worm on each side (0x4a9b20)
 static float targetValue(const Game &g, const Level &L, int me, int i) {
     const Worm &w = g.worms[i];
     const int team = g.worms[me].team;
-    int left = 0, foes = 0, friends = 0;
-    for (const Worm &x : g.worms) if (x.alive) left += x.team == w.team, (g.alliance(x.team) == g.alliance(team) ? friends : foes)++;
-    float K = powf((float)std::max(foes, 1) / std::max(friends, 1), L.exchange);
-    float v = (1 + 0.04f * w.hp + fmaxf(0.1f, 1 - 0.08f * w.poison)) * (left == 1 ? 2 : 1);
-    if (g.alliance(w.team) == g.alliance(team)) return -v * K;
+    int foes = 0, friends = 0;
+    for (const Worm &x : g.worms) if (targeted(g, x)) (g.alliance(x.team) == g.alliance(team) ? friends : foes)++;
+    const bool ally = g.alliance(w.team) == g.alliance(team);
+    float K = foes && friends ? powf((float)foes / friends, L.exchange) : 1;
+    float v = (1 + 0.04f * w.hp + fmaxf(0.1f, 1 - 0.08f * w.poison)) * ((ally ? friends : foes) == 1 ? 2 : 1);  // LastInTeam: its side's last worm
+    if (ally) return -v * K;
     bool human = w.team >= (int)g.cfg.teamSetup.size() || !g.cfg.teamSetup[w.team].cpu;
     return v / K * powf(10 / fmaxf(Vector3Distance(w.pos, g.worms[me].pos), 10), L.nearby) * (human ? L.humans : 1);
 }
 
-// W4M plan scoring: 0x49f190 for a blast, 0x49ed30 for each worm it hurts. Every worm counts, self included, where it stands.
+// W4M plan scoring: 0x49f190 for a blast, 0x49ed30 for each target it hurts. Every target counts, self included, where it stands.
 struct Outcome {
     const Game &g;
     const Level &L;
@@ -96,15 +111,15 @@ struct Outcome {
     // W4M 0x49ed30: d hp on worm i; armour unless melee; a lethal hit is max(hp, KillTarget 200), else the knock weight `a`
     // pulls d toward hp by the threat rating t and scales WeightingAttack 2 by 1 + a·t
     void hurt(int i, float d, float a, bool melee = false) {
-        const Worm &w = g.worms[i];
-        if (!w.alive) return;
-        if (w.armour && !melee) d = (float)((int)d * Game::ARMOUR / 100);
+        if (!targetAlive(g, i)) return;
+        const int hp = targetHp(g, i);
+        if (i < (int)g.worms.size() && g.worms[i].armour && !melee) d = (float)((int)d * Game::ARMOUR / 100);
         float attack = 2;
-        if (w.hp <= d) d = fmaxf((float)w.hp, 200);
+        if (hp <= d) d = fmaxf((float)hp, 200);
         else if (a != 0) {
             const float t = rating[i];
             attack *= 1 + t * a;
-            d = fminf((float)w.hp, d + a * t * (w.hp - d));
+            d = fminf((float)hp, d + a * t * (hp - d));
         }
         s += d * attack * vals[i];
     }
@@ -112,8 +127,8 @@ struct Outcome {
     void blast(Vector3 p, const Blast &b, float a, bool skipSelf = false) {
         started = true;
         if (b.reach <= 0) return;
-        for (size_t i = 0; i < g.worms.size(); i++) {
-            const float d = Vector3Distance(g.worms[i].pos, p), k = d < b.reach ? (1 - d / b.reach) * L.secondary : 0;
+        for (size_t i = 0; i < targetCount(g); i++) {
+            const float d = Vector3Distance(targetPos(g, i), p), k = d < b.reach ? (1 - d / b.reach) * L.secondary : 0;
             if (k > 0 && !(skipSelf && (int)i == self)) hurt((int)i, k * b.damage * (g.doubled() ? 2 : 1), a);
         }
     }
@@ -825,16 +840,17 @@ void Ai::startEval(const Game &g) {
     const Level &L = levelOf(g);
     plan = Plan{};
     threats.clear(), origins.clear(), choices.clear(), choiceAt = 0, moves.reset();
-    rating.assign(g.worms.size(), 0), away.assign(g.worms.size(), {}), vals.assign(g.worms.size(), 0);
-    bool enemy = false;
+    rating.assign(targetCount(g), 0), away.assign(targetCount(g), {}), vals.assign(targetCount(g), 0);
+    bool enemy = !scripted(g).empty();
     float sum = 0;
     int live = 0;
     for (size_t i = 0; i < g.worms.size(); i++) {
-        if (!g.worms[i].alive) continue;
+        if (!targeted(g, g.worms[i])) continue;
         threats.push_back((int)i);  // rated by unit()
         vals[i] = targetValue(g, L, me, (int)i), sum += fabsf(vals[i]), live++;
         enemy |= g.alliance(g.worms[i].team) != g.alliance(w.team);
     }
+    for (size_t i = g.worms.size(); i < targetCount(g); i++) vals[i] = 1, sum += 1, live++;
     if (!enemy) return;
     norm = live && sum != 0 ? sum / live : 1;
     stage = sub = origin = pairs = 0, built = -1;
@@ -855,13 +871,12 @@ void Ai::startEval(const Game &g) {
 void Ai::targetsFor(const Game &g, const Origin &o) {
     const Level &L = levelOf(g);
     tpos.clear(), tworm.clear();
-    for (size_t i = 0; i < g.worms.size(); i++) {
-        const Worm &e = g.worms[i];
-        if (!e.alive || g.alliance(e.team) == g.alliance(g.worms[g.current].team)) continue;
-        Vector3 to = e.pos - o.pos;  // also the ground just short of it: a shell there still splashes
-        tpos.insert(tpos.end(), {e.pos, e.pos - Vector3Normalize({to.x, 0, to.z}) * 1.5f});
+    for (size_t i = 0; i < targetCount(g); i++) {
+        if (i < g.worms.size() && (!targeted(g, g.worms[i]) || g.alliance(g.worms[i].team) == g.alliance(g.worms[g.current].team))) continue;
+        const Vector3 e = targetPos(g, i), to = e - o.pos;  // also the ground just short of it: a shell there still splashes
+        tpos.insert(tpos.end(), {e, e - Vector3Normalize({to.x, 0, to.z}) * 1.5f});
         tworm.insert(tworm.end(), {(int)i, (int)i});
-        if (L.sweet > 0 && Vector3LengthSqr(away[i]) > 0) tpos.push_back(e.pos + away[i] * L.sweet), tworm.push_back((int)i);
+        if (L.sweet > 0 && Vector3LengthSqr(away[i]) > 0) tpos.push_back(e + away[i] * L.sweet), tworm.push_back((int)i);
     }
 }
 
@@ -884,7 +899,7 @@ static bool bombLands(const Game &g, const WeaponDef &wd, Vector3 T, Vector3 D, 
 // the last heading checked by 0x49e1e0 was refused (impossible). view: the Blimp yaw that sets it.
 static bool strikeHeading(const Game &g, const Level &L, const WeaponDef &wd, int target, const std::vector<float> &vals,
                           const std::vector<float> &rating, const std::vector<Vector3> &away, float top, float &view) {
-    const Vector3 T = g.worms[target].pos;
+    const Vector3 T = targetPos(g, target);
     const float rb = blastOf(wd, wd.kind == Kind::Airstrike).reach, reach = 2 * Game::BOMBER_SPEED + 2 * rb, gap = 2 * Game::BOMBER_SPEED / 6;
     const bool bomber = wd.kind == Kind::Airstrike || wd.name == "Fatkins Strike";  // WEAPTWK IsBomberWeapon
     float best = -1e6f;
@@ -893,17 +908,17 @@ static bool strikeHeading(const Game &g, const Level &L, const WeaponDef &wd, in
         const float r = a * PI / 180;
         const Vector3 D = {cosf(r), 0, -sinf(r)};
         float total = 0;
-        for (size_t k = 0; k < g.worms.size(); k++) {
-            const Worm &x = g.worms[k];
-            if (!x.alive || Vector3Distance(x.pos, T) >= reach) continue;
-            const Vector3 aim = rating[k] > 0 ? x.pos + away[k] * STRIKE_SWEET : x.pos;
+        for (size_t k = 0; k < targetCount(g); k++) {
+            const Vector3 xp = targetPos(g, k);
+            if (!targetAlive(g, k) || Vector3Distance(xp, T) >= reach) continue;
+            const Vector3 aim = rating[k] > 0 ? xp + away[k] * STRIKE_SWEET : xp;
             float sum = 0;
             for (int i = 0; i < 6; i++) {
                 const Vector3 b = T + D * (gap * (i - 2.5f));
                 const float d = Vector3Distance(b, aim), f = (rb - d) / rb, t = f * vals[k];
                 if (d >= rb) continue;
                 sum += t;
-                if (f > 0 && f < 0.8f && L.thrust && i < 5) sum += Vector3DotProduct(D, Vector3Normalize(x.pos - b)) * t * 0.5f;
+                if (f > 0 && f < 0.8f && L.thrust && i < 5) sum += Vector3DotProduct(D, Vector3Normalize(xp - b)) * t * 0.5f;
             }
             if (sum > 0) total += (int)k == target ? sum : sum * L.others;
         }
@@ -955,12 +970,12 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         return o.s + bonus(dropped(wd));
     };
     // W4M close-range plans (0x4a22d0) set the blast next to their target; ours sets it down at the feet, so the target must be in it
-    auto inBlast = [&](Vector3 at, int ti, const Blast &b) { return Vector3Distance(g.worms[ti].pos, at) < b.reach; };
+    auto inBlast = [&](Vector3 at, int ti, const Blast &b) { return Vector3Distance(targetPos(g, ti), at) < b.reach; };
     for (size_t k = only < 0 ? 0 : only; k < (only < 0 ? tpos.size() : only + 1); k++) {
         const Vector3 e = tpos[k];
         const int ti = tworm[k];
-        if (!close && !O.near && Vector3Distance(g.worms[ti].pos, O.pos) <= 5) continue;
-        const bool isWorm = Vector3Equals(e, g.worms[ti].pos);
+        if (!close && !O.near && Vector3Distance(targetPos(g, ti), O.pos) <= 5) continue;
+        const bool isWorm = Vector3Equals(e, targetPos(g, ti));
         const Vector3 to = e - w.pos;
         const float yawE = atan2f(to.x, to.z), horiz = sqrtf(to.x * to.x + to.z * to.z);
         switch (wd.kind) {
@@ -1084,7 +1099,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
 // W4M think start 0x49af70: CheckPlanResult 0x4a6ab0 (the last attack failed if its target kept its hp and place), then
 // RegressFailedMemory 0x4a5b10 (x0.99, 0 once the target changed) and RegressImproveAccuracyMemory 0x4a6080 (x0.95); < 0.1 is dropped
 void Ai::regress(const Game &g) {
-    auto same = [&](int t, Vector3 at, int hp) { const Worm &x = g.worms[t]; return x.hp == hp && x.pos.x == at.x && x.pos.y == at.y && x.pos.z == at.z; };
+    auto same = [&](int t, Vector3 at, int hp) { if (t >= (int)targetCount(g)) return false; const Vector3 p = targetPos(g, t); return targetHp(g, t) == hp && p.x == at.x && p.y == at.y && p.z == at.z; };
     if (recent.weapon >= 0 && same(recent.target, recent.at, recent.hp)) failed.push_back(recent);
     recent.weapon = -1;
     for (Fail &f : failed) f.effect = same(f.target, f.at, f.hp) ? f.effect * 0.99f : 0;
@@ -1100,14 +1115,14 @@ void Ai::finish(const Game &g, bool again) {
     const Kind k = WEAPONS[plan.weapon].kind;
     const Origin &O = plan.origin >= 0 ? origins[plan.origin] : reaim;
     uint32_t r = (salt ^ (uint32_t)g.shotsLeft * 2654435761u) + (uint32_t)walks * 40503u;  // turn-start state: not the think's length
-    Vector3 at = plan.target >= 0 ? g.worms[plan.target].pos : O.pos;
+    Vector3 at = plan.target >= 0 ? targetPos(g, plan.target) : O.pos;
     float match = 0;  // W4M 0x4a5640: effect x (1 - d_from / R)(1 - d_at / R) within MatchRadius R 200 units, any worm's records
     for (const Shot &s : memory) {
         float a = Vector3Distance(s.from, O.pos), b = Vector3Distance(s.at, at);
         if (a < 10 && b < 10) match += s.effect * (1 - a / 10) * (1 - b / 10);
     }
     memory.push_back({O.pos, at, 1});
-    if (plan.target >= 0) recent = {plan.weapon, g.current, plan.target, at, g.worms[plan.target].hp, 1};  // StorePlanAttackMemory 0x4a6360
+    if (plan.target >= 0) recent = {plan.weapon, g.current, plan.target, at, targetHp(g, plan.target), 1};  // StorePlanAttackMemory 0x4a6360
     const float recall = 1 + L.memory * match;
     strikeOff = {};
     if (k == Kind::Airstrike || k == Kind::Donkey) {  // W4M 0x4a1b00: target + ShotErrorStrike·(2r-1) per component, no accuracy memory
@@ -1176,8 +1191,8 @@ void Ai::decide(const Game &g) {
                 choices.push_back({s * slow * taste(), {Route::Crate, 200, limit, false, o.pos}});
             }
             if (!moved) {
-                for (size_t i = 0; i < g.worms.size(); i++)  // W4M 0x4a88a0, 0x4a8ac0: 10 x the target's value, 500 iterations, a partial path
-                    if (g.worms[i].alive && vals[i] > 0) choices.push_back({10 * vals[i] * slow * taste(), {Route::Closer, 500, -1, true, g.worms[i].pos}});
+                for (size_t i = 0; i < targetCount(g); i++)  // W4M 0x4a88a0, 0x4a8ac0: 10 x the target's value, 500 iterations, a partial path
+                    if (targetAlive(g, i) && vals[i] > 0) choices.push_back({10 * vals[i] * slow * taste(), {Route::Closer, 500, -1, true, targetPos(g, i)}});
                 for (int k = 0; k < 5; k++) {  // W4M 0x4a7330: 5 nodes within RandomSmallMoveRange, score 0, 100 iterations
                     const float dx = noise(r) * SMALL_MOVE, dz = noise(r) * SMALL_MOVE;
                     const int i = grid->ci(w.pos.x + dx), j = grid->cj(w.pos.z + dz);
@@ -1245,7 +1260,7 @@ Input Ai::blimp(const Game &g) const {
     const Kind k = WEAPONS[plan.weapon].kind;
     const float dv = k == Kind::Airstrike || k == Kind::Donkey ? wrapPi(plan.view - g.cursorYaw) : 0;
     in.turn = q(dv / (Game::BLIMP_TURN * DT));
-    const Vector3 t = g.worms[plan.target].pos + strikeOff - Vector3{0, R, 0};
+    const Vector3 t = targetPos(g, plan.target) + strikeOff - Vector3{0, R, 0};
     const float y = g.cursorYaw, back = (g.cursor.y - t.y) / tanf(g.cursorPitch), dx = t.x - sinf(y) * back - g.cursor.x,
                 dz = t.z - cosf(y) * back - g.cursor.z, step = Game::CURSOR_SPEED * DT;
     in.walk = q((sinf(y) * dx + cosf(y) * dz) / step);  // Game::step's cursor axes
@@ -1272,20 +1287,20 @@ Input Ai::think(const Game &g) {
         for (const Projectile &s : g.shots) {
             Kind k = WEAPONS[s.weapon].kind;
             if (k == Kind::Airstrike && WEAPONS[s.weapon].fuse > 0 && !s.child) {  // bomber: head for the target, drop with the lead
-                if (plan.target < 0 || !g.worms[plan.target].alive || (!s.prey && s.stage > 0)) continue;  // held for STRIKE_LEAD
-                Vector3 e = g.worms[plan.target].pos + strikeOff, land = s.pos + s.vel * (0.3f * (s.pos.y - e.y) / Game::COW_CHUTE);
+                if (plan.target < 0 || !targetAlive(g, plan.target) || (!s.prey && s.stage > 0)) continue;  // held for STRIKE_LEAD
+                Vector3 e = targetPos(g, plan.target) + strikeOff, land = s.pos + s.vel * (0.3f * (s.pos.y - e.y) / Game::COW_CHUTE);
                 in.turn = q(wrapPi(yawTo(s.pos, e) - atan2f(s.vel.x, s.vel.z)) / (0.8f * DT));
                 if (Vector2Distance({land.x, land.z}, {e.x, e.z}) < 1.5f && !g.prevButtons) in.buttons = Input::FIRE;
                 continue;
             }
             // W4M queues DetonateWhenGoingAwayFrom for the Sheep only (flag 0x800, 0x49d848): no AI press for the Old Woman or Scouser
             if (s.child || (k != Kind::Sheep && k != Kind::SuperSheep) || plan.target < 0) continue;
-            const Vector3 e = g.worms[plan.target].pos, n = s.pos + s.vel * DT;
+            const Vector3 e = targetPos(g, plan.target), n = s.pos + s.vel * DT;
             bool near = k == Kind::SuperSheep && WEAPONS[s.weapon].walks && !s.stage;  // take off at once
             if (k == Kind::SuperSheep)
                 for (const Worm &x : g.worms) near |= x.alive && g.alliance(x.team) != g.alliance(w.team) && Vector3Distance(s.pos, x.pos) < 1.5f;
             else near = Vector2Distance({n.x, n.z}, {e.x, e.z}) > Vector2Distance({s.pos.x, s.pos.z}, {e.x, e.z});  // 0x57e130: the next step goes away
-            if (k == Kind::SuperSheep && g.worms[plan.target].alive) steer(g, s.pos, WEAPONS[s.weapon].walks ? s.vel : s.aim, e, in);  // Starburst: its heading
+            if (k == Kind::SuperSheep && targetAlive(g, plan.target)) steer(g, s.pos, WEAPONS[s.weapon].walks ? s.vel : s.aim, e, in);  // Starburst: its heading
             if (near && !g.prevButtons) in.buttons = Input::FIRE;
         }
         return in;

@@ -90,11 +90,14 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
 
 Target value `targetValue()`, once per think from where the worm stands (W4M 0x4ab730 calls 0x4a9260 once, **disasm**), in `vals`:
 
-- v = (1 + 0.04·hp + max(0.1, 1 − 0.08·poison)) × (2 if last of its team) — WormHealth 0.04, WormPoisoned 0.08, LastInTeam 2 (**data**).
+- v = (1 + 0.04·hp + max(0.1, 1 − 0.08·poison)) × (2 if the last target of its side, an alliance) — WormHealth 0.04, WormPoisoned 0.08, LastInTeam 2 (**data**).
   W4M multiplies by Vital first and adds the poison term after; ours has no Vital flag (CPU worms are all value 1).
-- K = (foes / friends)^exchange. Ally (self included): −v·K. Enemy: v/K × (10 / max(d, 10))^nearby × (humans if human team) (**disasm**).
+- K = (foes / friends)^exchange, 1 without a foe or without a friend (0x4a9b20, **disasm**). Ally (self included): −v·K. Enemy: v/K × (10 / max(d, 10))^nearby × (humans if human team) (**disasm**).
   Allies are the worms whose team shares the thinking worm's AlliedGroup (0x4a4790, `Game::alliance`: the match slots'
   alliances, `GameConfig::Team::alliance`, or the mission script's); the targets and the enemy tests of the plan and of the sheep's detonation use the same rule (**disasm**).
+  The targets are the alive worms of the teams that have not surrendered (`targeted()`, 0x4a46f0, **disasm**), in `foes`, `friends` and `startEval`.
+- Scripted targets (`scripted()`, 0x4a5070): the markers named by the thinking worm's AIParams `TargetDetailObject` (`Game::wormTarget`, set by `syncCpu`) are targets after the worms: value 1,
+  hp 1, threat 0, in the plans' `tpos`, the blast and strike scorers, the move-closer plans and the failed-plan memory (**disasm**). Only TinCanWally writes it (**data**).
 - ThisWormValue (1) and WormNearbyWorms / WormMilesAway are not ported.
 
 Plan rank (W4M 0x498a0a, 0x49c060, **disasm**):

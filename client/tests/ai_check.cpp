@@ -1,5 +1,6 @@
 // AI vs AI: matches deal damage and finish, replay bit-identically, CPU5 beats CPU1.
 // Run from client/ (romfs maps). Prints weapon usage, damage per turn and planning cost.
+#define private public  // targetSides reads the think's target values
 #include "../src/ai.h"
 #include "../src/controls.h"
 #include "raymath.h"
@@ -203,6 +204,47 @@ static void dropsOnTarget() {
         }
 }
 
+// W4M target set and values: the worms of a surrendered team are no targets (0x4a46f0), K is 1 without a worm on each side (0x4a9b20),
+// LastInTeam doubles the last worm of a side, an alliance, not of a team (0x4a9260)
+static void targetSides() {
+    for (bool surrendered : {false, true}) {
+        GameConfig c{3, 3, 1, "", RULE_NO_DELAYS};
+        c.teamSetup.resize(3), c.allyToStart = 0;
+        for (int t = 0; t < 3; t++) c.teamSetup[t].worms = 1, c.teamSetup[t].cpu = 5, c.teamSetup[t].alliance = t ? 1 : 0;
+        Game g;
+        g.start(c);
+        if (surrendered) g.surrender(2);
+        Ai ai;
+        for (int t = 0; t < 600 && ai.vals.size() != g.worms.size(); t++) g.step(ai.think(g));
+        assert(ai.vals.size() == g.worms.size() && g.worms[g.current].team == 0);
+        const float v = 1 + 0.04f * g.worms[1].hp + 1;  // CPU5: WormExchange 0.5, no distance weight
+        printf("target sides, team 2 %s: values %.3f %.3f %.3f\n", surrendered ? "surrendered" : "allied to team 1", ai.vals[0], ai.vals[1], ai.vals[2]);
+        assert(fabsf(ai.vals[1] - (surrendered ? 2 * v : v / sqrtf(2))) < 1e-3f);
+        assert(surrendered ? ai.vals[2] == 0 : fabsf(ai.vals[2] - v / sqrtf(2)) < 1e-3f);
+    }
+}
+
+// W4M scripted targets (0x4ab730 + 0x4a5070, AIParams.WormNN TargetDetailObject): the marker joins the targets with value 1 and hp 1, so a
+// CPU whose only enemy is out of reach fires at it
+static void scriptedTarget() {
+    Game g = arena("Bazooka", 140);
+    const int me = g.current;
+    const Vector3 marker = {25, 50.6f, 12};
+    g.wormTarget.assign(g.worms.size(), {}), g.wormTarget[me] = {marker};
+    Ai ai;
+    float miss = 1e9f;
+    bool fired = false;
+    for (int t = 0; t < 60 * 60 && g.phase != Phase::Settle; t++) {
+        g.step(ai.think(g));
+        for (const GameEvent &e : g.events) {
+            fired |= e.kind == GameEvent::Fire && e.worm == me;
+            if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) miss = std::min(miss, Vector3Distance(e.pos, marker));
+        }
+    }
+    printf("scripted target: fired %d, blast %.1f m from the marker\n", fired, miss), fflush(stdout);
+    assert(fired && miss < 3);
+}
+
 // Two-action weapons, one CPU5 turn each: the strike target and the homing lock are confirmed from the Blimp (W4M SetStrikeTarget
 // 0x4b4c70), the Sheep is detonated (DetonateWhenGoingAwayFrom, Sheep only), the Super Sheep takes off. W4M has no plan class for
 // Teleport or Abduction, and no AI detonation of the Old Woman or Scouser.
@@ -246,6 +288,8 @@ int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
     secondActions();
+    targetSides();
+    scriptedTarget();
     dropsOnTarget();
     for (uint8_t level : {1, 3, 5}) wallAhead(5, level, 21.4f, true), wallAhead(5, level, 19.4f, false);
     for (auto &f : fires) f.assign(WEAPONS.size(), 0);

@@ -375,6 +375,24 @@ static void checkDeaths(const std::vector<MissionSpec> &list) {
         }
 }
 
+// TinCanWally's CreateTarget writes AIParams.Worm01 TargetDetailObject = AITargN at each CPU turn: the AI worm's scripted target is that marker
+static void checkScriptedTarget(const std::vector<MissionSpec> &list) {
+    Game g;
+    for (const MissionSpec &m : list) if (m.id == "TinCanWally") g.start(missionConfig(m, 3));
+    assert(!g.worms.empty());
+    Input skip;
+    skip.flags = Input::SKIP_MOVIE;
+    for (int t = 0; t < 60 * 600 && !(g.phase == Phase::Aim && g.worms[g.current].team == 1 && !scriptMovieOn(g)); t++) {
+        g.step(t % 30 ? Input{} : skip);
+        if (g.phase == Phase::Aim && g.worms[g.current].team == 0 && !scriptMovieOn(g)) g.timer = 1;  // the player's turn ends
+    }
+    assert(g.phase == Phase::Aim && g.worms[g.current].team == 1);
+    Vector3 at{};
+    for (const Terrain::Marker &k : g.terrain.markers) if (k.name == "AITarg1") at = k.pos;
+    printf("scripted target: AI worm %d, %zu marker(s)\n", g.current, g.wormTarget[g.current].size());
+    assert(g.wormTarget[g.current].size() == 1 && Vector3Equals(g.wormTarget[g.current][0], at) && !Vector3Equals(at, Vector3{}));
+}
+
 // A human team that gets no input: no AI drives it, and Controls::read / tick give a zero Input, so nothing walks, turns or slides
 static void idleOn(Game &g) {
     assert(!g.cfg.teamSetup[0].cpu);
@@ -482,6 +500,7 @@ int main() {
     if (only && !strcmp(only, "wormcrate")) return checkWormInventoryCrate(list), 0;
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
+    if (only && !strcmp(only, "target")) return checkScriptedTarget(list), 0;
     if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
     if (only) return 0;
     checkLot2(list);

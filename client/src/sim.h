@@ -554,6 +554,7 @@ struct Game {
     std::vector<uint8_t> special;  // per worm: Wormpot.lub SetSpecialistTeam class 1..6, 0 none
     std::vector<std::array<std::string, 4>> wormAtt;  // per worm (hat, gloves, glasses, tash) ids: mission Worm.DataNN ATT_*, empty = the team's
     std::vector<uint8_t> wormCpu;  // per worm: W4M AIParams.WormNN level 1..5 (mission scripts), 0 = the team's (cfg.teamSetup cpu)
+    std::vector<std::vector<Vector3>> wormTarget;  // per worm: the map markers named by its AIParams.WormNN TargetDetailObject, the AI's scripted targets (0x4a5070)
     bool artillery() const { return wp(WP_TUG_O_WORMS); }  // WormData.ArtilleryMode (0x5d6a10): no walking, no jump (0x5ac390)
     bool jetLanded() const { return jetUsed && !jetting && weaponDef(weapon).kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x562f72: entity kept
     bool pickable(int team, int wi) const { return wi == weapon || usable(team, wi); }  // a direct pick (pick()) is legal
