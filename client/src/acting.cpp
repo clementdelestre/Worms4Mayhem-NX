@@ -74,7 +74,7 @@ struct Actor {
     float eyeMove = 10, eyeOld = 10, mode = 0;     // PermittedEyeMovement now / before (+0x16c / +0x170; degrees, default 10), head mode
     float coy = 0, coyOff = 0;                     // the emote's Coyness (+0x188, radians), the head's offset from it (+0x18c)
     bool threatened = false, abducted = false, targeted = false, onScreen = false;
-    float aimMs = 0, coolMs = 0, calm = 0, sickW = 0, abdW = 0, shade = -1;
+    float aimMs = 0, coolMs = 0, calm = 0, sickW = 0, abdW = 0;
     bool kicked = false, flying = false, air = false, dead = false, slid = false, sank = false;
     float vy = 0;
     int poison = 0, hp0 = 0, quiet = 0;  // quiet: hp lost to damage types 5 / 6 since hp0
@@ -872,10 +872,6 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
             a.sickW = Clamp(a.sickW + Clamp((g.worms[i].poison > 0) - a.sickW, -0.05f, 0.05f), 0, 1);
             a.abdW = Clamp(a.abdW + Clamp(a.abducted - a.abdW, -0.05f, 0.05f), 0, 1);
         }
-        if (step) {  // light shadow +0x1c: the first target at once, then (target - cur) / 2 within 0.1 per update (0x47a1a0)
-            const float tg = g.terrain.sunShade(feet(g.worms[i]));
-            a.shade = a.shade < 0 ? tg : a.shade + Clamp((tg - a.shade) / 2, -0.1f, 0.1f);
-        }
         stepFx(g, (int)i, dt);
     }
 }
@@ -910,8 +906,6 @@ void Acting::speak(const Game &g, int worm, Audio::Voice v) { G = &g, line(worm,
 void Acting::headMode(int i, float deg) {
     if (i >= 0 && i < (int)actors.size()) actors[i].mode = deg;
 }
-
-float Acting::lightShade(int i) { return i >= 0 && i < (int)actors.size() && actors[i].shade >= 0 ? actors[i].shade : 1; }
 
 Vector3 Acting::lightMul(int i) {
     if (i < 0 || i >= (int)actors.size()) return {1, 1, 1};

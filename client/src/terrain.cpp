@@ -750,12 +750,14 @@ bool Terrain::cast(Vector3 a, Vector3 dir, float len, float *tOut, Vector3 *nOut
     return true;
 }
 
-// 0x47bc70 / 0x47c800: a land ray of 1000 units from p + 10 units x LightDirection (raw), towards the sun; the target is the hit unit / 1000, 1 on a miss
-float Terrain::sunShade(Vector3 p) const {
+// 0x47bc70 / 0x47c800 / 0x47b760: see terrain.h; [0x952cfc] is the hit distance truncated to whole units (0x468c25)
+Terrain::Shade Terrain::sunShade(Vector3 p, float off, bool back) const {
     const float u = 1.0f / 20;  // m per W4M unit
+    const float sg = back ? -1.0f : 1.0f;
+    const Vector3 a = Vector3Add(p, Vector3Scale(Lit::sun.dir, sg * off * u)), d = Vector3Scale(Vector3Normalize(Lit::sun.dir), sg);
     float t;
-    if (!cast(Vector3Add(p, Vector3Scale(Lit::sun.dir, 10 * u)), Vector3Normalize(Lit::sun.dir), 1000 * u, &t, nullptr)) return 1;
-    return t < 1000 * u ? t / u / 1000 : 1;
+    if (!cast(a, d, 1000 * u, &t, nullptr) || t >= 1000 * u) return {1, false, {}};
+    return {floorf(t / u) / 1000, true, Vector3Add(a, Vector3Scale(d, t + 0.05f))};
 }
 
 // W4M 0x46a070 on a ray starting in land (0x468490 keeps the start in both records): the nearest face of the start cell whose

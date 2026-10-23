@@ -10,6 +10,7 @@
 #include "fx.h"
 #include "turret.h"
 #include "lanhost.h"
+#include "lightshade.h"
 #include "lit.h"
 #include "loading.h"
 #include "mission.h"
@@ -193,7 +194,8 @@ static bool drawObject(const Game &g, const Object &o) {
         if (Vector3Distance(viewEye, o.pos) > 15 && Models::has("mine_low")) model = "mine_low", clip = nullptr;
     }
     Models::pick(clip, t);
-    if (o.type == Object::Sentry) { bool ok = Turret::draw(g, o); return Models::pick(nullptr), ok; }
+    Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Object, (int)(&o - g.objects.data()))));  // the object's light: crates, drums, mines, sentries
+    if (o.type == Object::Sentry) { bool ok = Turret::draw(g, o); return Models::pick(nullptr), Models::lightMul({1, 1, 1}), ok; }
     float yaw = (&o - g.objects.data()) * 1.3f;
     static char gfx[16];  // W4M custom crate: its CustomGraphic detail mesh (CrateGraphicEntity 0x5c4ea1), raw units like the target's
     const char *custom = o.type == Object::Crate && o.weapon < -1 ? scriptCrateGraphic(g, o.tag) : nullptr;
@@ -202,7 +204,7 @@ static bool drawObject(const Game &g, const Object &o) {
     float k = (o.type == Object::Crate || o.type == Object::Target ? o.scale : 1) / (model == gfx || o.type == Object::Target ? 20 : 1);  // Crate.Scale
     Vector3 at = o.pos;
     bool ok = k == 1 ? Models::draw(model, at, yaw) : Models::draw(model, MatrixMultiply(MatrixMultiply(MatrixScale(k, k, k), MatrixRotateY(yaw)), MatrixTranslate(at.x, at.y, at.z)));
-    return Models::pick(nullptr), ok;
+    return Models::pick(nullptr), Models::lightMul({1, 1, 1}), ok;
 }
 static void floodFx(const Game &g, float stop) {  // FloodLogicEntity 0x555720: Land.Center x / z, Land.MaxHeight + 800 units
     Vector3 c = g.landCenter();
@@ -748,10 +750,11 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     const size_t wi = &w - g.worms.data();
     auto att = [&](int k) -> const std::string & { return wi < g.wormAtt.size() && !g.wormAtt[wi][k].empty() ? g.wormAtt[wi][k] : tm.attachment(k); };
     Models::gloves(catalog().drawName(att(1)));
-    Models::lightMul(Acting::lightMul(i), Acting::lightShade(i));  // 0x5a1bb1: the worm light colour, sick / abducted only, no team colour; 0x47bc70: its shadow fade
+    const float shade = LightShade::k(LightShade::key(LightShade::Worm, i));  // 0x47bc70
+    Models::lightMul(Acting::lightMul(i), shade);  // 0x5a1bb1: the worm light colour, sick / abducted only, no team colour
     bool drawn = Models::draw("worm", p, w.yaw, roll, WHITE, clip, t, loop, aim, aimT, ly);
-    Models::lightMul({1, 1, 1}), Models::gloves(nullptr);
-    if (!drawn) return false;
+    Models::lightMul({1, 1, 1}, shade), Models::gloves(nullptr);  // the attachments take the worm's fade [assumed: its scene entity's bin]
+    if (!drawn) return Models::lightMul({1, 1, 1}), false;
     Matrix m;
     bool loc = Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly);
     if (loc && i == g.current) launchAt = Vector3Transform({}, MatrixMultiply(m, root));  // no held mesh: the worm's WeaponLocator (0x594630)
@@ -783,7 +786,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     const auto head = catalog().headgear(att(0), att(2), att(3), tool && g.jetting);  // W4M's jetpack helmet
     if (!head.empty() && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
         for (const auto &hg : head) Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), root));
-    return true;
+    return Models::lightMul({1, 1, 1}), true;
 }
 
 // W4M Crate.Chute: Open on the drop then Fall while descending, Close on landing (render-only state, by object index).
@@ -825,7 +828,7 @@ static void drawUtilities(const Game &g) {
         if (!Vector3Equals(to, g.girder)) from = Vector3Distance(at, g.girder) < 1 ? at : g.girder, to = g.girder, t0 = GetTime();
         at = Vector3Lerp(from, to, fminf((float)(GetTime() - t0) / 0.02f, 1));
         Matrix m = MatrixMultiply(MatrixScale(0.15f, 0.175f, 0.15f), MatrixTranslate(at.x, at.y, at.z));
-        Models::lightMul(bad ? Vector3{1, 0, 0} : Vector3{1, 1, 1});
+        Models::lightMul(bad ? Vector3{1, 0, 0} : Vector3{1, 1, 1}, LightShade::k(LightShade::key(LightShade::Girder, 0)));
         const bool drawn = Models::draw("girder", m, WHITE);
         Models::lightMul({1, 1, 1});
         if (!drawn) {  // no glb: GirderSmall.xom's boxes
@@ -876,7 +879,9 @@ static void drawFactory(const Game &g, float dt) {
         Fx::start("WXP_MineMachineShot", spawn), fired = true;
     }
     last = f.state;
+    Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Factory, 0)));
     Models::draw("mine_factory", m, WHITE, clip, fmaxf(t, 0));
+    Models::lightMul({1, 1, 1});
 }
 
 // BubbleTroubleGraphicEntity: the machine at the base, WXP_Bubbles_Small at its "bubble" node (17.66 units up); the bubble
@@ -898,7 +903,9 @@ static void sinkBubbles(const Game &g) {
 static void drawBubbles(const Game &g, float dt) {
     static Shader sh = Lit::shader(BUBBLE_VS, BUBBLE_FS, false);
     for (const Game::Bubble &b : g.bubbles) {
+        Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Bubble, (int)(&b - g.bubbles.data()))));
         Models::draw("bubble_machine", MatrixMultiply(MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), MatrixRotateY(b.yaw)), MatrixTranslate(b.pos.x, b.pos.y, b.pos.z)));
+        Models::lightMul({1, 1, 1});
         if (GetRandomValue(0, 999) < dt * 1000 / 0.32f) Fx::soap(Vector3Add(b.pos, {0, 0.93f, 0}));
     }
     static float spawn = 0;  // BubbleMachineLoop (WXP_Bubbles_Small's EmitterSoundFX, 0x5bd960): its sound definition respawns every 500 ms
@@ -922,8 +929,11 @@ static void drawBubbles(const Game &g, float dt) {
 // its Go clip looped from t = 0 at creation (0x5ce87a)
 static void drawGrave(const Game &game, const Game::Grave &g) {
     const auto &list = catalog().graves;
-    if (!list.empty())
+    if (!list.empty()) {
+        Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Grave, (int)(&g - game.graves.data()))));
         Models::draw(list[g.grave < (int)list.size() ? g.grave : 0].model.c_str(), {g.pos.x, g.pos.y - Game::GRAVE_R, g.pos.z}, g.yaw, 0, WHITE, "Go", (game.clock - g.born) * Game::DT);
+        Models::lightMul({1, 1, 1});
+    }
 }
 
 // Bovine Blitz, W4M SuperBomberGraphicEntity (the SuperAirstrike chopper, banked into its turns) and
@@ -995,7 +1005,10 @@ static bool bomberCam(Camera3D *c) {
 
 static void drawBomber(float dt) {
     auto &f = bomber;
-    if (!f.model || !Models::draw(f.model, f.at, WHITE, f.clip, f.t)) {
+    Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Bomber, 0)));
+    const bool shown = f.model && Models::draw(f.model, f.at, WHITE, f.clip, f.t);
+    Models::lightMul({1, 1, 1});
+    if (!shown) {
         f.puffs = 0;
         Audio::loop(Audio::Sfx::Airstrike, false);
         return;
@@ -1072,7 +1085,9 @@ static bool ufoCam(Camera3D *c) {
 static void drawUfo(float dt) {
     auto &f = ufo;
     if (!f.live) return;
+    Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Ufo, 0)));
     Models::draw("ufo", f.at, WHITE, f.clip, f.t);
+    Models::lightMul({1, 1, 1});
     float gate = f.stage == Game::ABD_ARRIVING || f.stage == Game::ABD_FAILING ? f.u : f.stage == Game::ABD_LEAVING ? f.u - 0.25f : -1;  // WXM_DefSource at the CreatePoint on arrival, and 250 ms into AbductEnd (0x546170)
     Vector3 gp = ufoJoint("CreatePoint");
     if (gate >= 0 && gate < 4.58f) Models::draw("warpgate", MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), MatrixTranslate(gp.x, gp.y, gp.z)), WHITE, "WXM_DefSource", gate);
@@ -1182,6 +1197,13 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now
     if (Vector3 at; shellPose(s, d, m, clock, t, now, &at, &sy, &sp)) return Models::draw(m, at, sy, sp);
     if (d.stick > 0 && s.stage) return Models::draw(m, P, yaw, atan2f(v.y, h), WHITE, "Hit", d.stick - s.fuse, false);  // AnimImpact, played once on Payload.Impact
     return Models::draw(m, P, yaw, atan2f(v.y, h));
+}
+
+// W4M PayloadGraphicEntity 0x57cad0 (and the other projectile graphics 0x54cab0, 0x551020, 0x5897e0, 0x579e80: own light, offset 0)
+static bool drawShotLit(const Game &g, const Projectile &s, float clock) {
+    Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Shot, (int)(&s - g.shots.data()))));
+    const bool ok = drawShot(s, clock, g.terrain, g.clock);
+    return Models::lightMul({1, 1, 1}), ok;
 }
 
 // malloc heap in use / reserved (newlib mallinfo on Switch, glibc mallinfo2), MB. Switch: UsedMemorySize is the whole heap libnx
@@ -2693,6 +2715,10 @@ int main(int argc, char **argv) {
             Xray::done();
         };
         lap(T_CAMERA);
+        std::vector<LightShade::Spot> lights;  // the render-only entities' lights: the saucer 0x5463b0 (pooled), the bomber 0x54cab0 / 0x5897e0
+        if (ufo.live) lights.push_back({LightShade::key(LightShade::Ufo, 0), {ufo.at.m12, ufo.at.m13, ufo.at.m14}, true});
+        if (bomber.model) lights.push_back({LightShade::key(LightShade::Bomber, 0), {bomber.at.m12, bomber.at.m13, bomber.at.m14}, false});
+        LightShade::step(game, dt, lights);
         animateWorms(game, dt, view);
         // W4M lighting pass: land and still decor cached until remeshed; clip-played decor, worms, graves, shots and objects every frame
         Lit::shadowPass(game.terrain.bounds, Terrain::meshVer, game.terrain.takeStale(), [&] { game.terrain.drawShadow(), game.terrain.drawObjects(0, true, 1); }, [&](std::vector<Vector4> &at) {
@@ -2703,7 +2729,7 @@ int main(int argc, char **argv) {
                 if (Models::visible(gr.pos, 2)) drawGrave(game, gr), at.push_back({gr.pos.x, gr.pos.y, gr.pos.z, 2});
             for (const Projectile &s : game.shots) {
                 const Vector3 sp = s.shown(game.clock);
-                drawShot(s, clock, game.terrain, game.clock), at.push_back({sp.x, sp.y, sp.z, 3});
+                drawShotLit(game, s, clock), at.push_back({sp.x, sp.y, sp.z, 3});
             }
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) drawObject(game, o), at.push_back({o.pos.x, o.pos.y, o.pos.z, 2});
@@ -2722,7 +2748,7 @@ int main(int argc, char **argv) {
             Fx::drawSky(pipView, game.terrain.origin, 1.0f / 20);
             game.terrain.setView(pipView.position);
             game.terrain.draw();
-            for (const Projectile &s : game.shots) if (!drawShot(s, clock, game.terrain, game.clock)) DrawSphere(s.shown(game.clock), 0.2f, DARKGRAY);
+            for (const Projectile &s : game.shots) if (!drawShotLit(game, s, clock)) DrawSphere(s.shown(game.clock), 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) drawObject(game, o);
             Fx::drawWater(pipView, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
@@ -2753,7 +2779,7 @@ int main(int argc, char **argv) {
         drawUfo(pause.open ? 0 : dt);
         for (const Projectile &s : game.shots) {
             const WeaponDef &d = WEAPONS[s.weapon];
-            if (drawShot(s, clock, game.terrain, game.clock)) continue;
+            if (drawShotLit(game, s, clock)) continue;
             Vector3 f = Vector3Normalize({s.vel.x, 0, s.vel.z});
             switch (d.kind) {
             case Kind::Sheep:
