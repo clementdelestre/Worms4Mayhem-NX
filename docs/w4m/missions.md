@@ -464,6 +464,7 @@ Crates (CrateLogicEntity, vtable 0x8619a0, HandleMessage 0x5cb330, spawn 0x5c9bd
   WXP_WaterSmallSplash. Fall 0x5c9420 casts a point 1 radius under the centre (0x5c94d0 `y - [+0x44]`, 20 ms parabola 0x466ae0, land only):
   a hit within 20 ms is a landing and 0x5c8900 gives v = 0.2 (vx, -vy, vz), at rest under 0.02 units/ms position = the hit + radius (0x5c89b1..0x5c89cb).
   SneakyBridgeThieves Crate5 [data: .xan cells at 20 units per voxel]: the bridge rail top lies 9.1 units under the marker and the rail is
+  NoRoomForError [data: script, disasm 0x5cb7e0]: Initialise sets Crate1ShotgunCollected true after spawning Crate1, so each turn's SpawnNextCrate drops another Crate1 on the same CrateSpawn1; the twin lands on the first crate's collider (a top contact, v <= 1), not on the ground.
   6.5 units thick on its column, so the Fall point 10 units under the centre starts inside the rail [assumed: a cast starting in land lands at once].
   Gravity 0 never casts or moves. RandomSpawnPos 1 (0x5c6560): x, z uniform in the team-0 spawn box (tables 0x955788 centre / 0x955800 half size,
   both set at Land.Import 0x477060), a land ray from Land.MaxHeight (+0x315c), 100 tries each needing the hit above Water.Level and no worm

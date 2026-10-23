@@ -323,13 +323,16 @@ static void checkCratePlacement(const std::vector<MissionSpec> &list) {
             if (o.type != Object::Crate && o.type != Object::Target) continue;
             n++;
             if (o.pinned) { pinned++; continue; }
+            bool stacked = false;  // rests on another crate's collider (0x5cb7e0), e.g. NoRoomForError's script respawns Crate1 on its uncollected twin
+            for (const Object &p : g.objects) stacked |= &p != &o && (p.type == Object::Crate || p.type == Object::Target) && p.pos.y < o.pos.y && Vector3Distance(p.pos, o.pos) <= 0.5f * (o.scale + p.scale);
             Vector3 hit;
+            if (stacked) { over++; continue; }
             if (o.vel.x != 0 || o.vel.y != 0 || o.vel.z != 0 || o.spawning || !g.terrain.raycast({o.pos, {0, -1, 0}}, 3, &hit)) { over++; continue; }
             float gap = o.pos.y - hit.y - 0.5f * o.scale;
             worst = fmaxf(worst, fabsf(gap)), rest++;
             if (fabsf(gap) > 0.3f) printf("    %s crate %d: centre %.2f m over the ground, W4M %.2f\n", m.id.c_str(), o.tag, o.pos.y - hit.y, 0.5f * o.scale);
         }
-        if (n) printf("%-24s crates %2d: pinned %2d, rested %2d (worst %.2f m off 10 x Scale), moving or over water %2d\n", m.id.c_str(), n, pinned, rest, worst, over);
+        if (n) printf("%-24s crates %2d: pinned %2d, rested %2d (worst %.2f m off 10 x Scale), moving, stacked or over water %2d\n", m.id.c_str(), n, pinned, rest, worst, over);
         assert(worst < 0.3f);
         if (m.id == "BuildingSiteSaboteurs") {  // the six crates side by side on the heightmap ledge (.hmp vertices at 150 / 99 m): one height
             float lo = 99, hi = -99;
