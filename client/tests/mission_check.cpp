@@ -435,6 +435,10 @@ int main() {
     remove("progress_check.txt"), remove("progress_check_team.txt");
     assert(q.get("a").done && q.get("a").best == 900 && !q.get("b").done && q.unlocks == p.unlocks && q.storyIntro);
     if (list.empty()) return puts("mission_check: no W4M mission imported (assets/missions), nothing to run"), 0;
+    for (const char *stem : {"DinerMight", "DoomCanyon", "HighNoonHiJinx"}) {  // a stale import (older .vox format) leaves the voxels empty under the cells
+        Terrain t;
+        assert(t.load(stem, 1) && !t.mats.empty());
+    }
     const char *only = getenv("W4NX_MISSION");
     int imported = 0, ended = 0;
     for (const MissionSpec &m : list) {
