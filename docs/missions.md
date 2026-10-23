@@ -293,7 +293,7 @@ WormCollect is the slot resolved at collect time (ChuteToVictory spawns its trig
 | StormTheCastle | won 249 s | - |
 | TheWindyWizard | won 269 s | - |
 | RobInTheHood | won 270 s | - |
-| JoustAboutIt | won 317 s | - |
+| JoustAboutIt | won 317 s (assisted); `checkJoust`: won 403 s with no hp write, drowned / blasted enemies, natural movies, the picked team [ours] | - |
 | NiceToSiegeYou | lost 434 s | - |
 | MineAllMine | won 255 s | - |
 | GhostHillGraveyard | won 276 s | - |

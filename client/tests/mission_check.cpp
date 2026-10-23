@@ -9,6 +9,7 @@
 #include "../src/script.h"
 #include "raymath.h"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -476,6 +477,70 @@ static void checkDeaths(const std::vector<MissionSpec> &list) {
         }
 }
 
+// JoustAboutIt as a player plays it, with no hp write: the AI plays every team and the picked human team, its movies run, a player's turn
+// blasts or drowns one enemy and ends. g_EnemyDead counts the Wizard's DieQuietly and every death (4: wave 2, 7: wave 3, 10: the
+// hourglass, Crate.Index 1), which a worm then walks to: floors reachable from the human spawns, in through the pavilion's east door.
+static void checkJoust(const std::vector<MissionSpec> &list) {
+    GameConfig::Team mine;
+    mine.name = "Zorglub", mine.flag = "Flag.Spaceman", mine.speech = "voalien", mine.hat = "WXFE.A.Hat.Cowboy.Bk", mine.wormNames = {"Aa", "Bb", "Cc", "Dd", "Ee", "Ff"};
+    for (const MissionSpec &m : list) {
+        if (m.id != "JoustAboutIt") continue;
+        Game g;
+        g.start(missionConfig(m, 5, &mine));
+        for (auto &tm : g.cfg.teamSetup) tm.cpu = std::max<uint8_t>(tm.cpu, 3);
+        Ai ai;
+        auto foes = [&] { return (int)std::count_if(g.worms.begin(), g.worms.end(), [](const Worm &w) { return w.team != 0 && w.alive; }); };
+        auto hourglass = [&]() -> const Object * {
+            for (const Object &o : g.objects) if (o.tag == 1 && o.type == Object::Crate) return &o;
+            return nullptr;
+        };
+        int dead = 0, kills = 0, t = 0, waves = 0;
+        bool done = false, door = false;
+        for (; t < 60 * 60 * 40 && g.phase != Phase::GameOver; t++) {
+            Worm &me = g.worms[g.current];
+            Input in = ai.think(g);
+            if (g.phase != Phase::Aim || me.team != 0) done = false;
+            if (scriptMovieOn(g)) in = Input{};
+            else if (g.phase == Phase::Aim && me.team == 0 && !hourglass() && !done) {
+                for (Worm &w : g.worms)
+                    if (w.team != 0 && w.alive && Vector3Distance(w.pos, me.pos) < 200) {
+                        if (kills++ % 2) w.pos.y = g.water - 2, w.grounded = false;  // drowned
+                        else g.explode(w.pos, Blast{3, 6, 400, 30, 2.25f, 0.5f});
+                        done = true, g.timer = 1;
+                        break;
+                    }
+            } else if (const Object *c = hourglass(); c && g.phase == Phase::Aim && me.team == 0 && !scriptMovieOn(g)) {
+                if (!door) {  // in at the east door: a stick held toward the crate, a jump when held up
+                    float x = 66.5f;
+                    Vector3 at;
+                    assert(g.terrain.raycast(Ray{{x, 14, c->pos.z}, {0, -1, 0}}, 30, &at));
+                    me.pos = {at.x, at.y + Game::R, at.z}, me.vel = {}, door = true;
+                }
+                Vector3 d = Vector3Subtract(c->pos, me.pos);
+                static Vector3 was{};
+                static int still = 0;
+                still = Vector3Distance(was, me.pos) < 0.02f ? still + 1 : 0, was = me.pos;
+                in = Input{};
+                in.buttons = Input::HEADING | (still > 20 && t % 40 < 2 ? Input::JUMP : 0);
+                in.turn = (int8_t)fmaxf(-127, fminf(127, atan2f(d.x, d.z) / PI * 128)), in.walk = 127;
+                g.timer = 600;
+            }
+            g.step(in);
+            int n = (int)scriptEval(g, "return g_EnemyDead");
+            if (n != dead) {
+                assert(n == dead + 1);
+                if (n == 4 || n == 7) waves++, assert(foes() == 3 && !hourglass());  // a wave of three
+                if (n == 10) assert(hourglass() && foes() == 0);
+                assert(n == 10 || !hourglass());
+                dead = n;
+            }
+        }
+        printf("%-24s real play: %s after %d s, g_EnemyDead %d, waves %d\n", m.id.c_str(), g.run.result > 0 ? "won" : "NOT WON", t / 60, dead, waves);
+        fflush(stdout);
+        assert(dead == 10 && waves == 2 && g.phase == Phase::GameOver && g.run.result > 0);
+    }
+}
+
 // TinCanWally's CreateTarget writes AIParams.Worm01 TargetDetailObject = AITargN at each CPU turn: the AI worm's scripted target is that marker
 static void checkScriptedTarget(const std::vector<MissionSpec> &list) {
     Game g;
@@ -621,6 +686,7 @@ int main() {
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
     if (only && !strcmp(only, "target")) return checkScriptedTarget(list), 0;
+    if (only && !strcmp(only, "joust")) return checkJoust(list), 0;
     if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
     if (only && !strcmp(only, "cratestack")) return checkCrateStack(list), 0;
     if (only && !strcmp(only, "wormspawn")) return checkWormSpawn(list), 0;
@@ -632,6 +698,7 @@ int main() {
     checkCratePlacement(list);
     checkCrateStack(list);
     checkWormSpawn(list);
+    checkJoust(list);
     checkDeaths(list);
     checkPickedTeam(list);
     checkMovies(list);
