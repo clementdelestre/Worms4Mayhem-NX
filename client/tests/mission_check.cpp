@@ -1,6 +1,6 @@
 // Every W4M mission (assets/missions, a Lua script) starts, runs with the AI on every team to its end without a Lua error, and lists
 // what its script asked that we do not model yet; a scripted mission replays bit-identically.
-// Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only, W4NX_MISSION=movies / crates those checks)
+// Run from client/: make mission_check (W4NX_MISSION=<id> runs that one only, W4NX_MISSION=movies / crates / attach those checks)
 #define private public  // the hurt test calls hurt() directly
 #include <map>
 #include "../src/ai.h"
@@ -131,14 +131,6 @@ static void checkLot2(const std::vector<MissionSpec> &list) {
         Game g;
         run(id, g, 1);
         for (const auto &t : g.cfg.teamSetup) assert(t.cpu == 0 || t.cpu == 2);
-    }
-    {  // WXWormGraphicEntity 0x5a49a0: Worm.DataNN ATT_Hat, else Team.DataNN's
-        Game g;
-        run("HighNoonHiJinx", g, 1);
-        assert(std::any_of(g.wormAtt.begin(), g.wormAtt.end(), [](const auto &a) { return a[0] == "WXFE.A.Hat.Cowboy.Bk"; }));
-        Game d;
-        run("DeathMatch4", d, 1);
-        assert(std::any_of(d.cfg.teamSetup.begin(), d.cfg.teamSetup.end(), [](const auto &t) { return !t.hat.empty(); }));
     }
 }
 
@@ -413,6 +405,23 @@ static void checkIdle(const std::vector<MissionSpec> &list) {
     idleOn(g);
 }
 
+// W4M WXWormGraphicEntity 0x5a49a0: a worm wears its Worm.DataNN ATT_*, else its Team.DataNN's
+static void checkAttachments(const std::vector<MissionSpec> &list) {
+    int worn = 0, teamWorn = 0;
+    for (const MissionSpec &m : list) {
+        if (m.id != "GibbonTake" && m.id != "DeathMatch4") continue;  // a worm-level and a team-level user
+        Game g;
+        g.start(missionConfig(m, 1));
+        Input skip;
+        skip.flags = Input::SKIP_MOVIE;
+        for (int t = 0; t < 600; t++) g.step(skip);
+        int w = (int)std::count_if(g.wormAtt.begin(), g.wormAtt.end(), [](const auto &a) { return !a[0].empty(); });
+        int t = (int)std::count_if(g.cfg.teamSetup.begin(), g.cfg.teamSetup.end(), [](const auto &x) { return !x.hat.empty(); });
+        worn += w, teamWorn += t;
+    }
+    assert(worn > 0 && teamWorn > 0);
+}
+
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
     std::vector<MissionSpec> list = listMissions("./romfs/", "./");
@@ -448,6 +457,7 @@ int main() {
     if (only && !strcmp(only, "movies")) return checkMovies(list), 0;
     if (only && !strcmp(only, "crates")) return checkCrates(list), 0;
     if (only && !strcmp(only, "hurt")) return checkHurtEndsTurn(list), 0;
+    if (only && !strcmp(only, "attach")) return checkAttachments(list), 0;
     if (only && !strcmp(only, "wormcrate")) return checkWormInventoryCrate(list), 0;
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;

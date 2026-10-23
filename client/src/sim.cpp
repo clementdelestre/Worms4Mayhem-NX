@@ -1034,7 +1034,7 @@ void Game::start(const GameConfig &c) {
 
     picked.assign(teams, weapon);
     surrendered.assign(teams, 0);
-    special.assign(worms.size(), 0), wormCpu.assign(worms.size(), 0);
+    special.assign(worms.size(), 0), wormCpu.assign(worms.size(), 0), wormAtt.assign(worms.size(), {});
     if ((cfg.rules & RULE_SUDDEN_DEATH) && cfg.scheme.roundTime == 0) {  // stdvs Initialise: RoundTime 0 starts sudden death
         suddenDeath = true;
         if (cfg.scheme.sdType == Scheme::SD_ONE_HP) for (Worm &x : worms) x.hp = x.counted = 1;

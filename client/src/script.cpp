@@ -309,11 +309,16 @@ struct ScriptHost {
     // Worm.Respawn 0x5b4f70: a worm that exists stays; else a fresh one at its Spawn (SpawnWorm 0x5b31b0), joining the turns if
     // IsAllowedToTakeTurn. A slot new since Reinitialise takes its team's first free column [ours: the team-major layout]
     // The AI reads the thinking worm's AIParams.WormNN: CPU2 unless the script copied another (AIService init 0x4b3390)
+    static constexpr const char *ATT[4] = {"ATT_Hat", "ATT_Gloves", "ATT_Glasses", "ATT_Tash"};  // GameConfig::Team order
     static void syncCpu() {
         Game &g = *G;
-        g.wormCpu.assign(g.worms.size(), 0);
+        g.wormCpu.assign(g.worms.size(), 0), g.wormAtt.assign(g.worms.size(), {});
         for (size_t i = 0; i < g.worms.size() && i < S->wormSlot.size(); i++)
-            if (int s = S->wormSlot[i]; s >= 0) g.wormCpu[i] = (uint8_t)Clamp(S->ai[s] ? S->ai[s] : 2, 1, 5);
+            if (int s = S->wormSlot[i]; s >= 0) {
+                g.wormCpu[i] = (uint8_t)Clamp(S->ai[s] ? S->ai[s] : 2, 1, 5);
+                Ctn *w = ctn(slotName("Worm.Data%02d", s));
+                for (int k = 0; k < 4; k++) if (const Val *v = field(w, ATT[k])) g.wormAtt[i][k] = v->s;
+            }
     }
 
     static void respawn(int s) {
@@ -389,6 +394,7 @@ struct ScriptHost {
             Ctn *c = ctn(slotName("Team.Data%02d", t));
             GameConfig::Team &ts = g.cfg.teamSetup[t];
             if (const Val *nm = field(c, "Name")) ts.name = nm->s;
+            for (int k = 0; k < 4; k++) if (const Val *v = field(c, ATT[k])) ts.attachment(k) = v->s;
             int lv = 0;
             for (int k = 0; k < per && !lv; k++) if (S->wormSlot[t * per + k] >= 0) lv = S->ai[S->wormSlot[t * per + k]];
             ts.cpu = fnum(c, "IsAIControlled") != 0 ? (uint8_t)Clamp(lv ? lv : 2, 1, 5) : 0;  // none copied: AIService init's CPU2 (0x4b3390)

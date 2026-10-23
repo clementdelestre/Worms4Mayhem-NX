@@ -743,7 +743,12 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     const Vector3 ROOT = {0, 0.15f, 0};
     if (roll) p = Vector3Add(p, Vector3Subtract(Vector3Transform(ROOT, MatrixRotateY(w.yaw)), Vector3Transform(ROOT, MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)))));
     Matrix root = MatrixMultiply(MatrixMultiply(MatrixRotateX(-roll), MatrixRotateY(w.yaw)), MatrixTranslate(p.x, p.y, p.z));
-    Models::gloves(w.team < (int)g.cfg.teamSetup.size() ? catalog().drawName(g.cfg.teamSetup[w.team].gloves) : nullptr);
+    static const GameConfig::Team none;
+    const GameConfig::Team &tm = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team] : none;
+    // WXWormGraphicEntity 0x5a49a0: the worm's ATT_* (Worm.DataNN) when set, else its team's
+    const size_t wi = &w - g.worms.data();
+    auto att = [&](int k) -> const std::string & { return wi < g.wormAtt.size() && !g.wormAtt[wi][k].empty() ? g.wormAtt[wi][k] : tm.attachment(k); };
+    Models::gloves(catalog().drawName(att(1)));
     bool drawn = Models::draw("worm", p, w.yaw, roll, tint, clip, t, loop, aim, aimT, ly);
     Models::gloves(nullptr);
     if (!drawn) return false;
@@ -775,9 +780,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     if (rk && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly)) Models::draw("hold_starburst", MatrixMultiply(m, root), WHITE, "FireStarburst", rk->fuse < WEAPONS[rk->weapon].fuse - 3.5f ? 3.5f : WEAPONS[rk->weapon].fuse - rk->fuse);  // WAE_Starburst 0x5917d0
     if (i == g.current && g.icarus == 2 && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly))  // WAE 0x5953d1
         Models::draw("wings", MatrixMultiply(m, root), WHITE, "FlyRedBull", t);
-    static const GameConfig::Team none;
-    const GameConfig::Team &tm = w.team < (int)g.cfg.teamSetup.size() ? g.cfg.teamSetup[w.team] : none;
-    const auto head = catalog().headgear(tm.hat, tm.glasses, tm.tash, tool && g.jetting);  // W4M's jetpack helmet
+    const auto head = catalog().headgear(att(0), att(2), att(3), tool && g.jetting);  // W4M's jetpack helmet
     if (!head.empty() && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
         for (const auto &hg : head) Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), root));
     return true;
