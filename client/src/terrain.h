@@ -68,7 +68,7 @@ struct Terrain {
     std::vector<std::string> texFiles;  // per material: top, side, roof, fringe (paths, "" = none)
     std::vector<Vector2> texRepeat;     // per material: metres per texture repeat (top, side)
     std::vector<Material> texMats, fringeMats;  // per material, built with the textures on first remesh
-    struct Thin { int at, n; unsigned char mat; uint16_t uv; Vector3 c[8]; };  // a sub-voxel W4M cell, drawn while one of thinVox[at..at+n) is solid
+    struct Thin { int at, n; unsigned char mat; uint16_t uv; Vector3 c[8]; bool live = true; };  // a sub-voxel W4M cell, drawn while one of thinVox[at..at+n) is solid
     // W4M land texture mapping of a lattice frame (GLG 0x446be0 / 0x457130): uv = row . lattice point + offset, floor (top and
     // roof faces) or wall rows; a: map metres -> frame-centred lattice before EdgeOffset, w: its inverse's 3x3, e: EdgeOffset1/2 per layer
     struct LandUV { float a[12], w[9], t[16]; int n[3]; std::vector<Vector4> e; };
@@ -79,6 +79,7 @@ struct Terrain {
     Face landTex(int f, Vector3 p, Vector3 n, int kind, Vector2 *uv) const;
     std::vector<std::vector<Thin>> thin;  // per chunk of the cell's first voxel
     std::vector<int> thinVox;
+    std::vector<std::pair<int, int>> thinAt;  // per .thin entry: its chunk and index in thin[chunk] (-1: not loaded)
     std::vector<int> thinOnly;  // sorted voxels solid only for thin cells: not meshed
     std::vector<Texture2D> textures;
     std::map<std::string, Image> decoded;  // decodeTextures() output, uploaded by the first remesh
@@ -117,6 +118,13 @@ struct Terrain {
     // W4M coded land frames (name "...CODE xxxx", subtree included): their cells (HEX ids) and the voxels only they hold
     struct Coded { std::vector<uint32_t> hex; std::vector<std::pair<int, int>> vox; };
     std::map<std::string, Coded> codes;
+    // W4M cells as Land.ClearVoxel (0x4733b0) clears them (`.wcells`): pieces (ids in the .cells hexahedra, ascending), the grid cells they list in,
+    // `.thin` entry + 1, frame / cell indices into frameCells (-1 none), PERM; alone / shared: offsets of the voxel runs in wbytes
+    struct WCell { uint32_t hex, nhex, thin; int lo[3], n[3], frame, cell; bool perm; size_t alone, shared; };
+    std::vector<WCell> wcells;
+    std::vector<unsigned char> wbytes;
+    std::vector<std::pair<int, uint16_t>> shareCnt;  // grid point -> the cells still holding it, for points two or more cells hold
+    bool clearCell(Vector3 p);  // Land.ClearVoxel: the one W4M land cell holding p, nothing else; false when none (heightmap, PERM frame)
     bool clearCoded(const char *code);  // Land.ClearCoded 0x475170: the frames of that 4-byte code go at once; false: none
     double loadMs[3] = {};  // last load: voxels (.vox + .thin), cells, navgrid (Game::start); for the MAP log line
     Vector3 origin{};  // W4M world origin in map metres (map "origin"), for the sky
@@ -131,12 +139,11 @@ struct Terrain {
     static inline thread_local unsigned long samples = 0;  // field() reads (exact-land work in the same unit): the AI's deterministic measure of its own work
     bool solid(Vector3 p) const { return sample(p) > 0; }
     Vector3 normal(Vector3 p, float e = VOX) const;  // the exact face in a listed cell, else -gradient over +-e (e < VOX: VOX where flat)
-    // blast false: Land.ClearVoxel (0x4733b0), the cells inside the sphere and the details of their frames only (no 0x5cc960 radius rule)
     bool lowerHeightmap(Vector3 c, float radius, int box[6]);  // a blast's heightmap bowl (carve)
-    bool carve(Vector3 c, float radius, bool blast = true);  // true when some voxel changed (W4M Land.Changed)
+    bool carve(Vector3 c, float radius);  // true when some voxel changed (W4M Land.Changed)
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
     void addCell(const Vector3 *c);  // a convex land cell, exact as an imported map's (corners bit 1 +x, 2 +y, 4 +z)
-    bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff, which Land.ClearVoxel 0x473470 refuses
+    bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
     size_t voxelBytes() const { return d.bytes() + mats.bytes() + uvOf.bytes() + steel.bytes(); }  // density, materials, uv frames, steel
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
@@ -181,5 +188,11 @@ private:
     void loadGradients();
     bool loadVoxels(const std::string &path);
     void loadThin(const std::string &path);
+    void loadWCells(const std::string &path);
+    uint32_t wvarint(size_t &p) const;
+    template <class F> void wRuns(size_t &p, F f) const;
+    void dropDetails(const std::vector<char> &hit, Vector3 c, float radius, bool blast);
+    void dirtyBox(const int box[6]);
+    void voxelOut(size_t i, int box[6]);
     void loadTextures();
 };

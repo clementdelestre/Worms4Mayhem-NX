@@ -379,24 +379,45 @@ bool SharpLand::edge(size_t c, Vector3 a, Vector3 b, Vector3 *q, Vector3 *n) con
     return Vector3LengthSqr(*n) > 0;
 }
 
+void SharpLand::strip(size_t c, const std::function<bool(uint32_t)> &gone) {
+    const uint32_t *p = ops(c);
+    std::vector<uint32_t> o;
+    for (uint32_t i = 1; i <= p[0]; i++) {
+        bool hex = (p[i] & KIND) == HEX;
+        if (!hex || !gone(p[i] & ID)) { o.push_back(p[i]); if (hex) o.push_back(p[i + 1]); }
+        i += hex;
+    }
+    if (o.size() != p[0]) setOps(c, o.data(), (uint32_t)o.size());
+}
+
 void SharpLand::drop(const std::vector<uint32_t> &hexes) {
     if (!on || hexes.empty()) return;
     std::vector<bool> gone(hexP0.size(), false);
     for (uint32_t h : hexes) if (h < gone.size()) gone[h] = true;
-    std::vector<uint32_t> o;
     for (size_t k = 0; k < bits.size(); k++)
         for (size_t w = 0; w < bits[k].size(); w++)
-            for (uint64_t b = bits[k][w]; b; b &= b - 1) {
-                size_t c = k << 15 | w * 64 | __builtin_ctzll(b);
-                const uint32_t *p = ops(c);
-                o.clear();
-                for (uint32_t i = 1; i <= p[0]; i++) {
-                    bool hex = (p[i] & KIND) == HEX;
-                    if (!hex || !gone[p[i] & ID]) { o.push_back(p[i]); if (hex) o.push_back(p[i + 1]); }
-                    i += hex;
-                }
-                if (o.size() != p[0]) setOps(c, o.data(), (uint32_t)o.size());
+            for (uint64_t b = bits[k][w]; b; b &= b - 1) strip(k << 15 | w * 64 | __builtin_ctzll(b), [&](uint32_t h) { return h < gone.size() && gone[h]; });
+}
+
+void SharpLand::drop(uint32_t first, uint32_t n, const int lo[3], const int size[3]) {
+    if (!on) return;
+    for (int z = lo[2]; z < lo[2] + size[2]; z++)
+        for (int y = lo[1]; y < lo[1] + size[1]; y++)
+            for (int x = lo[0]; x < lo[0] + size[0]; x++) {
+                const size_t c = Terrain::idx(x, y, z);
+                if (mixed(c)) strip(c, [&](uint32_t h) { return h - first < n; });
             }
+}
+
+uint32_t SharpLand::holder(size_t c, Vector3 p) const {
+    if (!mixed(c)) return ~0u;
+    const uint32_t *o = ops(c);
+    for (uint32_t i = 1; i <= o[0]; i++) {
+        const bool hex = (o[i] & KIND) == HEX;
+        if (hex && inside(o[i] & ID, p)) return o[i] & ID;
+        i += hex;
+    }
+    return ~0u;
 }
 
 static int hmSt(const float *t, int y) {

@@ -5409,6 +5409,53 @@ static void checkPlacement() {
                     checked++;
                 }
             }
+// W4M Land.ClearVoxel 0x4733b0 > 0x46c680: only the cell holding the ray's solid sample goes (its pieces, the points only it holds, its frame's
+// details by 0x46c630); neighbour cells stay; a heightmap point (frame 0xffff, 0x473470) is refused
+static void checkClearVoxel() {
+    Terrain t;
+    assert(t.load("ChallengeNavigation2", 1) && !t.wcells.empty());
+    int rock = -1;
+    for (size_t i = 0; i < t.objects.size() && rock < 0; i++)
+        if (t.objModels[t.objects[i].model] == "arabian6" && t.objects[i].frame >= 0) rock = (int)i;
+    assert(rock >= 0);
+    const Terrain::Object o = t.objects[rock];
+    const Vector3 cell = t.frameCells[o.frame][o.cell];
+    Vector3 hit;
+    assert(t.raycast({{cell.x, cell.y + 2, cell.z}, {0, -1, 0}}, 4, &hit));
+    const size_t n0 = t.objects.size(), cells0 = t.wcells.size();
+    const unsigned e0 = t.edits;
+    assert(t.solid(hit) && t.clearCell(hit));
+    assert(!t.solid(hit) && t.edits > e0 && t.objects.size() <= n0 && t.wcells.size() == cells0);
+    assert(!t.clearCell(hit));  // nothing holds it any more
+    // one cell: the land it held is gone, the cells around it stand (a probe 1 m away along each axis keeps its land)
+    Terrain u;
+    assert(u.load("DinerMight", 1));
+    int cleared = 0, kept = 0;
+    for (float x = 8; x < 40 && cleared < 8; x += 1.7f)
+        for (float z = 8; z < 40 && cleared < 8; z += 1.3f) {
+            Vector3 h;
+            if (!u.raycast({{x, 30, z}, {0, -1, 0}}, 40, &h) || u.heightmap(h)) continue;
+            const Vector3 side[4] = {{h.x + 1.5f, h.y, h.z}, {h.x - 1.5f, h.y, h.z}, {h.x, h.y, h.z + 1.5f}, {h.x, h.y, h.z - 1.5f}};
+            bool solid[4];
+            for (int k = 0; k < 4; k++) solid[k] = u.solid(side[k]);
+            if (!u.clearCell(h)) continue;
+            cleared++;
+            assert(!u.solid(h));
+            for (int k = 0; k < 4; k++) kept += solid[k] && u.solid(side[k]);
+        }
+    assert(cleared >= 4 && kept > 0);
+    // a heightmap point is refused
+    Terrain v;
+    assert(v.load("Accuracy", 1));
+    for (size_t i = 0; i < v.d.size(); i++) {
+        if ((v.mats[i] != 65 && v.mats[i] != 66) || v.d[i] <= 0) continue;
+        int x, y, z;
+        v.xyz(i, x, y, z);
+        assert(!v.clearCell({(x + 0.5f) * Terrain::VOX, (y + 0.5f) * Terrain::VOX, (z + 0.5f) * Terrain::VOX}) && v.d[i] > 0);
+        break;
+    }
+}
+
         }
     assert(checked > 0 && overhang > 0);  // layer 1: ground under an overhang
 }
@@ -5561,6 +5608,7 @@ int main() {
     checkJetpackDrown();
     checkToolGaps();
     checkEmptyHand();
+    checkClearVoxel();
     checkSchemeFactory();
     checkTelepads();
     checkMysteryTeleport();

@@ -371,7 +371,7 @@ primitives reaching it [ours]. The sim reads that land exactly; so does the mesh
   `.cells` (the bundled `romfs` maps, the generated island, test fields): sampled every VOX/4 and bisected to the last point out of land,
   normal = gradient over ±VOX/4 [ours].
 - Edits are incremental, before `d` changes: `carve` appends a sphere to each cell it cuts (a cell it swallows leaves the lists),
-  `weld` a box, `Terrain::addCell` a convex cell (test arenas, `checkLowLedges`); replaced lists become garbage, compacted when it
+  `weld` a box, `Terrain::addCell` a convex cell (test arenas, `checkLowLedges`), `Terrain::clearCell` takes a W4M cell's pieces out of the lists they reach (`SharpLand::drop(first, n, box)`, W4M Land.ClearVoxel, docs/w4m/formats.md "Land.ClearVoxel"); replaced lists become garbage, compacted when it
   exceeds half the pool. Lists shared by several cells stay shared [ours].
 - The instant replay's undo log does not restore the lists (replay disabled for now, docs/w4m/README.md).
 - Memory: the cell bits are kept per 32³ chunk (`bits`, empty for a chunk without listed cells), the lists in an open-addressing

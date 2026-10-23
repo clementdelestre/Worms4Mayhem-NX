@@ -1545,8 +1545,8 @@ void Game::sentryHit(Object &o, Vector3 p, const Blast &b) {
     emit(GameEvent::SentryHit, sentryBase(o), -1, f >= 1), events.back().count = o.id, events.back().amount = dmg;  // f 1: Turn.MaxDamage (0x56d3a2)
 }
 
-// ours: W4M clears the hit land voxel (Land.ClearVoxel: guns 0x55d8c0, sentry 0x56cb43); the importer keeps no cell grid, so a 0.5 m sphere 0.5 m deep stands in
-void Game::clearVoxel(Vector3 at, Vector3 dir) { terrain.carve(Vector3Add(at, Vector3Scale(dir, 0.5f)), 0.5f, false); }
+// W4M Land.ClearVoxel on the cell the bullet's land ray hit (guns 0x55d8c0, sentry 0x56cb43): `at` is the ray's first land sample
+void Game::clearVoxel(Vector3 at) { terrain.clearCell(at); }
 
 // one bullet: a cone of 0.4 r^2 around the aim (10 units over the feet), the nearest hit within 3000 units takes the Shot* ExplosionMessage
 void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
@@ -1561,7 +1561,7 @@ void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
     Vector3 land;
     if (terrain.raycast({from, dir}, 150, &land)) emit(GameEvent::Pop, land), events.back().fx = "WXP_Wep_Sentry_Hit";  // at the land hit even past a nearer worm
     if (h.dist >= 150) return;
-    if (h.land) return clearVoxel(h.at, dir);  // 0x56cb43: land first, no Explosion
+    if (h.land) return clearVoxel(h.at);  // 0x56cb43: land first, no Explosion
     Blast bl = blastOf(sd, false);
     bl.crater = 0;  // ShotLandDamageRadius 0.1 units: no crater
     bl.pushOff = {-dir.x * 0.1f, -0.1f, -dir.z * 0.1f};  // 0x56c110: the impulse centre 2 units behind the hit and 2 low
@@ -2175,7 +2175,7 @@ void Game::use(Worm &w) {
         // behind the worm (and 2 low) / 1 unit behind the land hit; the worm's own damage and impulse come from that message
         Blast b = gunBlast(weapon);
         b.pushOff = h.worm >= 0 || h.sentry >= 0 ? Vector3{-dir.x * 0.1f, -0.1f, -dir.z * 0.1f} : Vector3Scale(dir, -0.05f);
-        if (h.land && h.dist < GUN_RANGE) clearVoxel(h.at, dir);  // LandDamageMagnitude 25 >= 15: every land hit (0x55d8c0)
+        if (h.land && h.dist < GUN_RANGE) clearVoxel(h.at);  // LandDamageMagnitude 25 >= 15: every land hit (0x55d8c0)
         if (h.dist < GUN_RANGE) explode(h.at, b, 0, weapon);
         if (h.obj >= 0) {  // DamageImpulseMessage 0x518c20 -> a crate 0x5c8a90, x2 under DoubleDamage; a drum 0x5d1fa0 goes off at any damage over 0
             Object &hit = objects[h.obj];
@@ -2336,7 +2336,7 @@ void Game::stepWorm(Worm &w) {
                 float t;
                 const Vector3 a = {w.pos.x + w.vel.x * DT + o.x, w.pos.y + w.vel.y * DT - R, w.pos.z + w.vel.z * DT + o.y};
                 if (!terrain.cast(a, {0, 1, 0}, 1, &t, nullptr)) continue;
-                dug = rising && !terrain.heightmap({a.x, a.y + t + 0.1f, a.z}) && terrain.carve({a.x, a.y + t + 0.5f, a.z}, 0.5f, false);
+                dug = rising && terrain.clearCell({a.x, a.y + t + 0.01f, a.z});
                 punching = dug;
                 break;
             }

@@ -208,7 +208,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
     loadMs[0] = loadMs[1] = loadMs[2] = 0;
     objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
-    thinOnly.clear(), thinVox.clear(), codes.clear();
+    thinOnly.clear(), thinVox.clear(), thinAt.clear(), codes.clear(), wcells.clear(), wbytes.clear(), shareCnt.clear();
     sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), uvOf.clear(), landUV.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -261,6 +261,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
             return load("", seed), false;
         }
         if (j["thin"].type == Json::Str) loadThin(dir + j["thin"].s());
+        if (j["wcells"].type == Json::Str) loadWCells(dir + j["wcells"].s());
         double t1 = now();
         if (j["cells"].type == Json::Str && !sharp.load(dir + j["cells"].s())) TraceLog(LOG_WARNING, "map %s: bad cells file '%s'", map.c_str(), j["cells"].s().c_str());
         loadMs[0] = t1 - t0, loadMs[1] = now() - t1;
@@ -348,13 +349,14 @@ void Terrain::loadThin(const std::string &path) {
     std::vector<unsigned char> b(raw < (1u << 28) ? raw : 0);
     if (raw >= 4 && b.size() == raw && sinflate(b.data(), (int)raw, f + 8, size - 8) == (int)raw) memcpy(&count, b.data(), 4);
     UnloadFileData(f);
-    thinVox.clear();
+    thinVox.clear(), thinAt.clear();
     for (size_t p = 4; count-- && p + 107 <= raw;) {
         const unsigned char *r = b.data() + p;
         uint16_t v[3], k;
         memcpy(v, r, 6), memcpy(&k, r + 105, 2);
         if (p + 107 + 6 * (size_t)k > raw) break;
         p += 107 + 6 * (size_t)k;
+        thinAt.push_back({-1, 0});
         if (v[0] >= NX || v[1] >= NY || v[2] >= NZ) continue;
         Thin t{(int)thinVox.size(), 1, r[6], (uint16_t)(r[7] | r[8] << 8), {}};
         memcpy(t.c, r + 9, 96);
@@ -363,13 +365,15 @@ void Terrain::loadThin(const std::string &path) {
             memcpy(v, r + 107 + 6 * i, 6);
             if (v[0] < NX && v[1] < NY && v[2] < NZ) thinVox.push_back((int)idx(v[0], v[1], v[2])), t.n++;
         }
-        thin[(thinVox[t.at] >> 15)].push_back(t);
+        const int ch = thinVox[t.at] >> 15;
+        thinAt.back() = {ch, (int)thin[ch].size()};
+        thin[ch].push_back(t);
     }
     // voxels standing only for thin cells (no other solid neighbour): their blob is not meshed, the hexahedra show instead
     std::vector<int> anchors;
     anchors = thinVox;
     std::sort(anchors.begin(), anchors.end()), anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
-    thinOnly.clear();
+    thinOnly.clear(), thinAt.clear(), wcells.clear(), wbytes.clear(), shareCnt.clear();
     for (int v : anchors) {
         int x, y, z;
         xyz(v, x, y, z);
@@ -485,7 +489,7 @@ void Terrain::mergeBlocks() {
 
 void Terrain::generate(unsigned seed) {
     setGrid(352, 256, 352);
-    thinOnly.clear();
+    thinOnly.clear(), thinAt.clear(), wcells.clear(), wbytes.clear(), shareCnt.clear();
     theme.clear(), mats.clear(), uvOf.clear(), landUV.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
@@ -591,10 +595,41 @@ bool Terrain::lowerHeightmap(Vector3 c, float radius, int box[6]) {
     return !cols.empty();
 }
 
-bool Terrain::carve(Vector3 c, float radius, bool blast) {
+// W4M 0x5cc960 (blast only): a detail (and its emitter, 0x5cc8c0) goes when |pos - blast|² < radius²; 0x46c630: or when its frame lost a cell
+// (hit[frame]) and the detail's own cell is not solid
+void Terrain::dropDetails(const std::vector<char> &hit, Vector3 c, float radius, bool blast) {
+    objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const Object &o) {
+        float dist = Vector3Distance(o.pos, c);
+        if ((!blast || dist >= radius) && !(o.frame >= 0 && hit[o.frame] && (o.cell < 0 || !frameAlive[o.frame][o.cell]))) return false;
+        float r = o.model < (int)objR.size() ? 2 * objR[o.model] * Vector3Length({o.m.m0, o.m.m1, o.m.m2}) : 1e9f;
+        staleGrow(Vector3SubtractValue(o.pos, r), Vector3AddValue(o.pos, r));
+        return true;
+    }), objects.end());
+}
+
+// chunk cells sample one voxel past their bounds, so neighbours of the box are dirty too
+void Terrain::dirtyBox(const int box[6]) {
+    for (int z = std::max(0, box[2] - 1) / CS; z <= std::min(NZ - 1, box[5] + 1) / CS; z++)
+        for (int y = std::max(0, box[1] - 1) / CS; y <= std::min(NY - 1, box[4] + 1) / CS; y++)
+            for (int x = std::max(0, box[0] - 1) / CS; x <= std::min(NX - 1, box[3] + 1) / CS; x++)
+                dirty[(z * CY + y) * CX + x] = true;
+}
+
+// a land voxel gone with no debris, sound or damage (Land.ClearCoded 0x475170, Land.ClearVoxel 0x4733b0): worms lose support (Land.NewShape)
+void Terrain::voxelOut(size_t i, int box[6]) {
+    if (undo && d[i] > 0) undo->emplace_back((int)i, d[i]);
+    d.set(i, std::min(d[i], (signed char)-127));
+    if (!mats.empty()) mats.set(i, 0);  // generated land has no material table
+    int x, y, z;
+    xyz(i, x, y, z);
+    box[0] = std::min(box[0], x), box[1] = std::min(box[1], y), box[2] = std::min(box[2], z);
+    box[3] = std::max(box[3], x), box[4] = std::max(box[4], y), box[5] = std::max(box[5], z);
+}
+
+bool Terrain::carve(Vector3 c, float radius) {
     int box[6] = {NX, NY, NZ, -1, -1, -1};  // changed voxels and listed cells: only their chunks remesh
     bool changed = false;
-    const bool hm = blast && sharp.on && !sharp.top.empty();
+    const bool hm = sharp.on && !sharp.top.empty();
     if (hm) changed = lowerHeightmap(c, radius, box);
     sharp.carve(d, c, radius, box, hm);
     int lo[3], hi[3];
@@ -621,21 +656,9 @@ bool Terrain::carve(Vector3 c, float radius, bool blast) {
     for (size_t f = 0; f < frameCells.size(); f++)
         for (size_t k = 0; k < frameCells[f].size(); k++)
             if (frameAlive[f][k] && Vector3Distance(frameCells[f][k], c) < radius) frameAlive[f][k] = 0, hit[f] = 1;
-    // W4M 0x5cc960: a detail (and its emitter, 0x5cc8c0) goes when |pos - blast|² < radius²; 0x46c630: or when its frame lost a cell
-    // and the detail's own cell is not solid
-    objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const Object &o) {
-        float dist = Vector3Distance(o.pos, c);
-        if ((!blast || dist >= radius) && !(o.frame >= 0 && hit[o.frame] && (o.cell < 0 || !frameAlive[o.frame][o.cell]))) return false;
-        float r = o.model < (int)objR.size() ? 2 * objR[o.model] * Vector3Length({o.m.m0, o.m.m1, o.m.m2}) : 1e9f;
-        staleGrow(Vector3SubtractValue(o.pos, r), Vector3AddValue(o.pos, r));
-        return true;
-    }), objects.end());
-    for (Emitter &e : emitters) e.alive = e.alive && (!blast || Vector3Distance(e.pos, c) >= radius);
-    // chunk cells sample one voxel past their bounds, so neighbours of the box are dirty too
-    for (int z = std::max(0, box[2] - 1) / CS; z <= std::min(NZ - 1, box[5] + 1) / CS; z++)
-        for (int y = std::max(0, box[1] - 1) / CS; y <= std::min(NY - 1, box[4] + 1) / CS; y++)
-            for (int x = std::max(0, box[0] - 1) / CS; x <= std::min(NX - 1, box[3] + 1) / CS; x++)
-                dirty[(z * CY + y) * CX + x] = true;
+    dropDetails(hit, c, radius, true);
+    for (Emitter &e : emitters) e.alive = e.alive && Vector3Distance(e.pos, c) >= radius;
+    dirtyBox(box);
     edits += changed;
     return changed;
 }
@@ -832,20 +855,111 @@ bool Terrain::clearCoded(const char *code) {  // exact on 4 bytes (0x47519c); no
     if (it == codes.end()) return false;
     remeshWait();
     sharp.drop(it->second.hex);
+    int box[6] = {NX, NY, NZ, -1, -1, -1};
     for (auto [at, n] : it->second.vox)
-        for (int i = at; i < at + n && i < (int)d.size(); i++) {
-            if (undo && d[i] > 0) undo->emplace_back(i, d[i]);
-            d.set(i, std::min(d[i], (signed char)-127)), mats.set(i, 0);
-            int x, y, z;
-            xyz(i, x, y, z);
-            for (int dz = -1; dz <= 1; dz++)
-                for (int dy = -1; dy <= 1; dy++)
-                    for (int dx = -1; dx <= 1; dx++) {
-                        int cx = (x + dx) / CS, cy = (y + dy) / CS, cz = (z + dz) / CS;
-                        if (x + dx >= 0 && y + dy >= 0 && z + dz >= 0 && cx < CX && cy < CY && cz < CZ) dirty[(cz * CY + cy) * CX + cx] = true;
-                    }
-        }
+        for (int i = at; i < at + n && i < (int)d.size(); i++) voxelOut(i, box);
+    dirtyBox(box);
     codes.erase(it);
+    edits++;
+    return true;
+}
+
+// .wcells "W4K1" (docs/w4m/formats.md §22): u32 size, then the deflated records; the runs stay encoded in wbytes
+void Terrain::loadWCells(const std::string &path) {
+    int size = 0;
+    unsigned char *f = LoadFileData(path.c_str(), &size);
+    uint32_t raw = 0, count = 0;
+    if (f && size >= 8 && !memcmp(f, "W4K1", 4)) memcpy(&raw, f + 4, 4);
+    wbytes.assign(raw < (1u << 28) ? raw : 0, 0);
+    if (raw >= 4 && wbytes.size() == raw && sinflate(wbytes.data(), (int)raw, f + 8, size - 8) == (int)raw) memcpy(&count, wbytes.data(), 4);
+    UnloadFileData(f);
+    size_t p = 4;
+    uint32_t end = 0;
+    std::vector<int> held;
+    for (uint32_t k = 0; k < count && p < wbytes.size(); k++) {
+        WCell w{};
+        w.hex = end + wvarint(p), w.nhex = wvarint(p), end = w.hex + w.nhex;
+        for (int a = 0; a < 3; a++) w.lo[a] = (int)wvarint(p);
+        for (int a = 0; a < 3; a++) w.n[a] = (int)wvarint(p);
+        w.thin = wvarint(p), w.frame = (int)wvarint(p) - 1, w.cell = (int)wvarint(p) - 1, w.perm = wvarint(p) != 0;
+        w.alone = p, wRuns(p, [](size_t) {});
+        w.shared = p, wRuns(p, [&](size_t v) { held.push_back((int)v); });
+        wcells.push_back(w);
+    }
+    std::sort(held.begin(), held.end());
+    for (size_t i = 0; i < held.size();) {
+        size_t j = i;
+        while (j < held.size() && held[j] == held[i]) j++;
+        shareCnt.push_back({held[i], (uint16_t)(j - i)}), i = j;
+    }
+}
+
+uint32_t Terrain::wvarint(size_t &p) const {
+    uint32_t v = 0;
+    for (int s = 0; p < wbytes.size(); s += 7) {
+        const unsigned char c = wbytes[p++];
+        v |= (uint32_t)(c & 127) << s;
+        if (!(c & 128)) break;
+    }
+    return v;
+}
+
+template <class F> void Terrain::wRuns(size_t &p, F f) const {
+    size_t end = 0;
+    for (uint32_t n = wvarint(p); n; n--) {
+        const size_t at = end + wvarint(p), len = wvarint(p);
+        for (size_t i = 0; i < len; i++) f(at + i);
+        end = at + len;
+    }
+}
+
+// W4M Land.ClearVoxel 0x4733b0: the one land cell holding p (the solid sample of the ray that hit, 0x468e26) is cleared: its pieces leave the
+// lists, the grid points only it holds go, the others when their last holder has; its `.thin` entry stops drawing, and 0x46c630 removes its
+// frame's details whose own cell is empty. A heightmap point (frame 0xffff) and a PERM frame (0x46c680) are refused. false: nothing cleared
+bool Terrain::clearCell(Vector3 p) {
+    const int ix = (int)floorf(p.x * IVOX), iy = (int)floorf(p.y * IVOX), iz = (int)floorf(p.z * IVOX);
+    if (wcells.empty()) {  // no W4M cells (generated land, test fields): the grid points are the cells, the nearest solid one of p's grid cell goes
+        size_t at = 0;
+        float near = 1e9f;
+        for (int k = 0; k < 8; k++) {
+            const int x = ix + (k & 1), y = iy + (k >> 1 & 1), z = iz + (k >> 2);
+            if (x < 0 || y < 0 || z < 0 || x >= NX || y >= NY || z >= NZ || d[idx(x, y, z)] <= 0) continue;
+            if (const float q = Vector3DistanceSqr({x * VOX, y * VOX, z * VOX}, p); q < near) near = q, at = idx(x, y, z);
+        }
+        if (near == 1e9f) return false;
+        remeshWait();
+        int box[6] = {NX, NY, NZ, -1, -1, -1};
+        voxelOut(at, box), dirtyBox(box), edits++;
+        return true;
+    }
+    uint32_t hex = ~0u;
+    for (int k = 0; k < 27 && sharp.on && hex == ~0u; k++) {  // the cell's pieces list in every grid cell they reach, a filled grid cell has none
+        const int x = ix + k % 3 - 1, y = iy + k / 3 % 3 - 1, z = iz + k / 9 - 1;
+        if (x >= 0 && y >= 0 && z >= 0 && x < NX - 1 && y < NY - 1 && z < NZ - 1) hex = sharp.holder(idx(x, y, z), p);
+    }
+    auto it = std::upper_bound(wcells.begin(), wcells.end(), hex, [](uint32_t h, const WCell &w) { return h < w.hex; });
+    if (hex == ~0u || it == wcells.begin() || hex >= (--it)->hex + it->nhex || it->perm) return false;
+    const WCell &w = *it;
+    remeshWait();
+    sharp.drop(w.hex, w.nhex, w.lo, w.n);
+    int box[6] = {w.lo[0], w.lo[1], w.lo[2], w.lo[0] + w.n[0], w.lo[1] + w.n[1], w.lo[2] + w.n[2]};
+    size_t at = w.alone;
+    wRuns(at, [&](size_t v) { voxelOut(v, box); });
+    wRuns(at, [&](size_t v) {
+        auto s = std::lower_bound(shareCnt.begin(), shareCnt.end(), (int)v, [](const auto &a, int b) { return a.first < b; });
+        if (s != shareCnt.end() && s->first == (int)v && --s->second == 0) voxelOut(v, box);
+    });
+    if (w.thin && w.thin <= thinAt.size() && thinAt[w.thin - 1].first >= 0) {
+        const auto [ch, k] = thinAt[w.thin - 1];
+        thin[ch][k].live = false, dirty[ch] = true;
+    }
+    if (w.frame >= 0 && w.frame < (int)frameCells.size()) {
+        if (w.cell >= 0) frameAlive[w.frame][w.cell] = 0;
+        std::vector<char> hit(frameCells.size(), 0);
+        hit[w.frame] = 1;
+        dropDetails(hit, p, 0, false);
+    }
+    dirtyBox(box);
     edits++;
     return true;
 }
@@ -1210,7 +1324,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
     // sub-voxel W4M cells (ropes, twigs): their own hexahedron, flat shaded, while their voxel stands [ours: voxel-forced]
     if (ci < (int)thin.size())
         for (const Thin &t : thin[ci]) {
-            if (std::none_of(thinVox.begin() + t.at, thinVox.begin() + t.at + t.n, [&](int v) { return d[v] > 0; })) continue;
+            if (!t.live || std::none_of(thinVox.begin() + t.at, thinVox.begin() + t.at + t.n, [&](int v) { return d[v] > 0; })) continue;
             Builder &b = builder(t.mat);
             Vector3 cen = {0, 0, 0};
             for (const Vector3 &q : t.c) cen = Vector3Add(cen, Vector3Scale(q, 0.125f));

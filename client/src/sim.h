@@ -798,7 +798,7 @@ private:
     void stepSentry(Object &o);  // NewSentryGunLogicEntity update 0x56de80
     void sentryShot(const Object &o, const Vector3 &up, int target);  // 0x56c810
     void sentryHit(Object &o, Vector3 p, const Blast &b);  // Explosion 0x56d2a0
-    void clearVoxel(Vector3 at, Vector3 dir);  // a bullet's Land.ClearVoxel on the land it hit
+    void clearVoxel(Vector3 at);  // a bullet's Land.ClearVoxel on the land cell at its first land sample
     void openMystery(int item, Worm &w);  // CrateLogicEntity 0x5ca1f0
     void crateHit(Object &o, float dmg);  // a crate or target takes blast or bullet damage
     void poisonWorm(Worm &w, int rate = POISON_DEFAULT) { if (!w.poison) w.poison = rate, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm; rate = Worm.Poison.Default, a gas cloud sets its magnitude

@@ -93,6 +93,7 @@ struct Poxel {
     tex: [f32; 2], // floor X / wall Y texture vector lengths (texture repeats per local unit)
     uvm: [[f32; 4]; 4], // floor u, floor v, wall u, wall v: texture vector (lattice units) and offset (GLG 0x446be0)
     name: usize, code: Option<[u8; 4]>,
+    perm: bool,  // the name holds "PERM" (0x476738)
 }
 
 fn parse_poxel(d: &[u8]) -> Poxel {
@@ -195,7 +196,11 @@ fn detail_euler(w: &M4, rd: [f32; 3]) -> [f32; 3] {
 
 // Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index; `parts`: the convex pieces of the
 // land W4M samples in it (lattice.rs)
-struct Cell { frame: usize, at: [usize; 3], c: [[f32; 3]; 8], ctr: [f32; 3], parts: Vec<[[f32; 3]; 8]>, mat: u8, tex: [f32; 2], code: u16, visible: bool }
+// a W4M cell as Land.ClearVoxel (0x4733b0) clears it: its pieces (indices in `hexes`), the grid cells they list in (grid units), its
+// `.thin` entry + 1 (0 none) and the grid points it holds (client voxel indices)
+struct Rec { cell: usize, hex: (usize, usize), lo: V3, hi: V3, thin: u32, vox: Vec<usize> }
+
+struct Cell { frame: usize, at: [usize; 3], c: [[f32; 3]; 8], ctr: [f32; 3], parts: Vec<[[f32; 3]; 8]>, mat: u8, tex: [f32; 2], code: u16, visible: bool, perm: bool }
 
 // Detail entity reference with its poxel's world matrix (the poxel's own scale included, its parents' not).
 struct DetRef { ctn: usize, w: M4, frame: usize }
@@ -247,9 +252,10 @@ fn second_pass(blocks: &mut Vec<[f32; 4]>) {
 // code: 1 + index in `codes` of the coded frame above (W4M 0x46e1d0: a frame named "...CODE?xxxx" and its whole subtree), 0 none
 // uvf: (poxel, world matrix) of each frame with a lattice, in visit order
 fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &mut Vec<Cell>, dets: &mut Vec<DetRef>, blocks: &mut Vec<[f32; 4]>, depth: u32,
-           code: u16, codes: &mut Vec<[u8; 4]>, uvf: &mut Vec<(usize, M4)>) {
+           code: u16, perm: bool, codes: &mut Vec<[u8; 4]>, uvf: &mut Vec<(usize, M4)>) {
     let Some(x) = px.get(&k) else { return };
     if depth > 64 { return; }
+    let perm = perm || x.perm;  // flag saved and restored around each frame's children (0x476683): a PERM frame's subtree
     let code = match x.code { Some(c) if code == 0 => { codes.push(c); codes.len() as u16 } _ => code };
     let (w, wn) = if root { (*parent, *parent) } else { (mul(parent, &local(x, true)), mul(parent, &local(x, false))) };
     let [sx, sy, sz] = x.size;
@@ -292,13 +298,13 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
                     for n in 0..8 { c[n] = corner(xx + (n & 1), y + ((n >> 1) & 1), z + (n >> 2)); }
                     let tops = [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(i, k)| lattice::usage(solid, xx as i32 + i, y as i32, z as i32 + k));
                     let parts = lattice::pieces(&c, tops, x.falloff);
-                    out.push(Cell { frame: k, at: [xx, y, z], c, ctr: centre(xx, y, z), parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible });
+                    out.push(Cell { frame: k, at: [xx, y, z], c, ctr: centre(xx, y, z), parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible, perm });
                 }
             }
         }
     }
     dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w, frame: k }));
-    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1, code, codes, uvf); }
+    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1, code, perm, codes, uvf); }
 }
 
 // Case-insensitive path lookup (game data uses Windows paths).
@@ -474,6 +480,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     // W4M 0x46e1d0: the code is the 4 bytes 5 past "CODE" in the frame name ("CODE:JEFF", "CODE AAAA")
     for x in px.values_mut() {
         x.code = xom.s.get(x.name).and_then(|n| n.find("CODE").and_then(|i| n.as_bytes().get(i + 5..i + 9))).map(|b| [b[0], b[1], b[2], b[3]]);
+        x.perm = xom.s.get(x.name).is_some_and(|n| n.contains("PERM"));
     }
     let (mut cells, mut dets, mut blocks) = (Vec::new(), Vec::new(), Vec::new());
 
@@ -518,7 +525,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         if c1 >= 0 { add_block(&mut blocks, [c0 as f32 * HMP_CELL - HMP_EXTENT, r0 as f32 * HMP_CELL - HMP_EXTENT, c1 as f32 * HMP_CELL - HMP_EXTENT, r1 as f32 * HMP_CELL - HMP_EXTENT]); }
     }
     let (mut codes, mut uvf) = (Vec::new(), Vec::new());
-    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, &mut blocks, 0, 0, &mut codes, &mut uvf);
+    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, &mut blocks, 0, 0, false, &mut codes, &mut uvf);
     let uv_of: HashMap<usize, u16> = uvf.iter().enumerate().map(|(i, f)| (f.0, i as u16 + 1)).collect();  // poxel -> landuv entry + 1
     second_pass(&mut blocks);
     // W4M world bounds of everything solid above the water (the seabed may be cropped)
@@ -608,9 +615,12 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let mut thin = 0u32.to_le_bytes().to_vec();
     let mut nthin = 0u32;
     let mut vox: Vec<[usize; 3]> = Vec::new();  // the grid points of the current cell's pieces
+    let (mut recs, mut first, mut blo, mut bhi) = (Vec::<Rec>::new(), 0, [0.0f32; 3], [0.0f32; 3]);  // Land.ClearVoxel records (`.wcells`)
     let mut claimed = HashSet::new();
     for (hi, h) in hexes.iter().enumerate() {
-        if hi == 0 || hex_cell[hi - 1] != hex_cell[hi] { vox.clear(); }
+        if hi == 0 || hex_cell[hi - 1] != hex_cell[hi] { vox.clear(); (first, blo, bhi) = (hi, h.lo, h.hi); }
+        blo = [0, 1, 2].map(|i| blo[i].min(h.lo[i]));
+        bhi = [0, 1, 2].map(|i| bhi[i].max(h.hi[i]));
         let (code, from, uv) = (hex_code[hi], vox.len(), uv_of[&cells[hex_cell[hi]].frame]);
         for (x, y, z) in points(h.lo, h.hi) {
             if h.inside([x as f32, y as f32, z as f32]) {
@@ -635,8 +645,10 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let (e1, e2, e3) = (sub(c[1], c[0]), sub(c[2], c[0]), sub(c[4], c[0]));
         let area = |a: V3, b: V3| { let c = cross(a, b); dot(c, c).sqrt() };
         let thickness = dot(cross(e1, e2), e3).abs() / area(e1, e2).max(area(e2, e3)).max(area(e1, e3)).max(1e-6);  // volume over the widest face
+        let mut thin_id = 0;
         if !vox.is_empty() && h.mat != HIDDEN && (vox.len() <= 2 || thickness < 1.0) {
             nthin += 1;
+            thin_id = nthin;
             for v in vox[0] { thin.extend((v as u16).to_le_bytes()); }
             thin.push(h.mat);
             thin.extend(uv.to_le_bytes());
@@ -644,6 +656,9 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             thin.extend(((vox.len() - 1) as u16).to_le_bytes());
             for a in &vox[1..] { for v in a { thin.extend((*v as u16).to_le_bytes()); } }
         }
+        // the heightmap's grid points stay (W4M frame 0xffff is refused, 0x473470)
+        let held = vox.iter().filter(|p| !below_hm(p.map(|v| v as f32))).map(|p| ci(p[0], p[1], p[2])).collect();
+        recs.push(Rec { cell: hex_cell[hi], hex: (first, hi + 1 - first), lo: blo, hi: bhi, thin: thin_id, vox: held });
     }
     thin[0..4].copy_from_slice(&nthin.to_le_bytes());
     let mut tf = b"W4T4".to_vec();
@@ -870,15 +885,65 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         format!("{{\"a\":[{}],\"n\":[{},{},{}],\"t\":[{}],\"e\":[{}]}}", f(&mut a.iter().flatten().copied()), x.size[0], x.size[1], x.size[2],
             f(&mut x.uvm.iter().flatten().copied()), f(&mut e.into_iter()))
     }).collect();
+    write_wcells(out_dir, stem, &cells, &recs, &hex_id, &frame_cells, &cell_of)?;
     let codes_json = if code_json.is_empty() { String::new() } else { format!("  \"codes\": {{{}}},\n", code_json.join(", ")) };
     let json = format!(
-        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"vox\": {VOX},\n  \"grid\": [{},{},{}],\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n{codes_json}  \"markers\": [\n    {}\n  ],\n  \"frames\": [{}],\n  \"landuv\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ],\n  \"lights\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"name\": \"{stem}\",\n{title}  \"theme\": \"{}\",\n{pv}  \"base\": {{\"type\": \"none\"}},\n  \"voxels\": \"{stem}.vox\",\n  \"thin\": \"{stem}.thin\",\n  \"cells\": \"{stem}.cells\",\n  \"wcells\": \"{stem}.wcells\",\n  \"vox\": {VOX},\n  \"grid\": [{},{},{}],\n{rain}  \"origin\": [{ox:.3},{WATER:.3},{oz:.3}],\n{lit}  \"palette\": [{}],\n  \"textures\": [{}],\n  \"blocks\": [{}],\n{codes_json}  \"markers\": [\n    {}\n  ],\n  \"frames\": [{}],\n  \"landuv\": [\n    {}\n  ],\n  \"objects\": [\n    {}\n  ],\n  \"emitters\": [\n    {}\n  ],\n  \"lights\": [\n    {}\n  ]\n}}\n",
         theme_name(&theme), nx(), ny(), nz(), palette.join(","), texs.join(","), blk.join(","),
         marks.join(",\n    "), frames_json.join(","), landuv.join(",\n    "), objs.join(",\n    "), emits.join(",\n    "), lights.iter().map(|l| l.1.as_str()).collect::<Vec<_>>().join(",\n    ")
     );
     fs::write(out_dir.join(format!("{stem}.json")), json).map_err(|e| e.to_string())?;
     Ok(format!("{} cells ({} hidden), {faces} faces, {exact}, {} objects, {} emitters, grid {}x{}x{}, {solid} voxels, {} KB, theme {theme}, span {:.0}x{:.0}x{:.0}",
         cells.len(), cells.iter().filter(|c| !c.visible).count(), objs.len(), emits.len(), nx(), ny(), nz(), vox.len() / 1024, span[0], hi[1] - lo[1], span[1]))
+}
+
+// `<stem>.wcells` "W4K1": u32 size, then that many bytes raw-deflated: u32 records, then per record (varints, ascending): first piece id minus
+// the previous record's end, piece count, grid-cell box lo xyz and size xyz (the cells its pieces list in), `.thin` entry + 1 (0 none),
+// frame (index in the json `frames` + 1, 0 none), cell in that frame (+ 1, 0 none), PERM (0x476738: Land.ClearVoxel refuses it, 0x46c680),
+// then the grid points only this cell holds and those it shares, each as a count of runs (start minus previous end, length) in the client's voxel index
+fn write_wcells(out: &Path, stem: &str, cells: &[Cell], recs: &[Rec], hex_id: &[usize], frames: &[(usize, Vec<usize>)], cell_of: &HashMap<(usize, [usize; 3]), usize>) -> Result<(), String> {
+    let mut pairs: Vec<(usize, usize)> = recs.iter().enumerate().flat_map(|(r, x)| x.vox.iter().map(move |&v| (v, r))).collect();
+    pairs.sort_unstable();
+    let (mut alone, mut shared) = (vec![Vec::new(); recs.len()], vec![Vec::new(); recs.len()]);
+    for g in pairs.chunk_by(|a, b| a.0 == b.0) {
+        for &(v, r) in g { (if g.len() == 1 { &mut alone } else { &mut shared })[r].push(v); }
+    }
+    let runs = |b: &mut Vec<u8>, v: &[usize]| {
+        let mut rs: Vec<[usize; 2]> = Vec::new();
+        for &x in v { match rs.last_mut() { Some(r) if r[0] + r[1] == x => r[1] += 1, _ => rs.push([x, 1]) } }
+        varint(b, rs.len() as u32);
+        let mut end = 0;
+        for r in rs { varint(b, (r[0] - end) as u32); varint(b, r[1] as u32); end = r[0] + r[1]; }
+    };
+    let mut b = (recs.len() as u32).to_le_bytes().to_vec();
+    let mut end = 0;
+    for (r, x) in recs.iter().enumerate() {
+        let id = hex_id[x.hex.0];
+        if (0..x.hex.1).any(|k| hex_id[x.hex.0 + k] != id + k) { return Err("pieces of a cell are not consecutive".into()); }
+        varint(&mut b, (id - end) as u32);
+        varint(&mut b, x.hex.1 as u32);
+        end = id + x.hex.1;
+        let lo = [0, 1, 2].map(|i| (x.lo[i] - 1e-4).floor().max(0.0) as usize);
+        let hi = [nx(), ny(), nz()].map(|n| n - 1);
+        for i in 0..3 { varint(&mut b, lo[i] as u32); }
+        for i in 0..3 { varint(&mut b, ((x.hi[i] + 1e-4).floor().max(0.0) as usize).min(hi[i]).saturating_sub(lo[i]) as u32 + 1); }
+        varint(&mut b, x.thin);
+        let c = &cells[x.cell];
+        varint(&mut b, frames.iter().position(|f| f.0 == c.frame).map_or(0, |f| f as u32 + 1));
+        varint(&mut b, cell_of.get(&(c.frame, c.at)).map_or(0, |&k| k as u32 + 1));
+        varint(&mut b, c.perm as u32);
+        runs(&mut b, &alone[r]);
+        runs(&mut b, &shared[r]);
+    }
+    let mut f = b"W4K1".to_vec();
+    f.extend((b.len() as u32).to_le_bytes());
+    f.extend(deflate::deflate(&b));
+    fs::write(out.join(format!("{stem}.wcells")), f).map_err(|e| e.to_string())
+}
+
+fn varint(out: &mut Vec<u8>, mut v: u32) {
+    while v >= 128 { out.push(v as u8 | 128); v >>= 7; }
+    out.push(v as u8);
 }
 
 // W4M 0x5cd6c7: atof of each space-split token of name[8..]: colour bytes, radius (units), code = token 4's first 4 bytes
