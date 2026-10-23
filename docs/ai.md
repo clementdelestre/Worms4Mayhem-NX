@@ -46,7 +46,7 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   which Shotgun and Sniper Rifle override with ShotErrorDirectNonStrafe (0x4a0d90 at 0x823970 / 0x8239a4); StrafeTowards (0x4974d0,
   StrafeProgressiveErrorScale +0xe0) is queued only under plan flag 0x200 (0x49ebed), which no CAIPlan constructor sets (flags
   0x147, 0x1d7, 0x1147, 0x170, 0x2444, 0x541, 0x1047, 0x40, 0x140, or 8 added) (**disasm**). Both fields are dead.
-- Not ported: WeightingWormVital, JetpackAboutToCrossLineLookAhead, ClusterDistanceAboveTarget, WeightingPunchThroughLand,
+- Not ported: JetpackAboutToCrossLineLookAhead, ClusterDistanceAboveTarget, WeightingPunchThroughLand,
   BestMissShotMultipleUse, AttractorZoneRadius (no script attractors). (MortarMaximumAimAngleAllowed has no W4M read either.)
 - Shared by every level (**data**): AddScoreMove 10, AddScoreMoveIfNotMoved 20, RandomSmallMoveRange 100 units (`SMALL_MOVE` 5 m),
   StrikeSweetSpotDistance 2 units (`STRIKE_SWEET` 0.1 m). Per level: ConsidersStrikeThrustDirection (`thrust`, CPU3+) and
@@ -90,15 +90,24 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
 
 Target value `targetValue()`, once per think from where the worm stands (W4M 0x4ab730 calls 0x4a9260 once, **disasm**), in `vals`:
 
-- v = (1 + 0.04·hp + max(0.1, 1 − 0.08·poison)) × (2 if the last target of its side, an alliance) — WormHealth 0.04, WormPoisoned 0.08, LastInTeam 2 (**data**).
-  W4M multiplies by Vital first and adds the poison term after; ours has no Vital flag (CPU worms are all value 1).
-- K = (foes / friends)^exchange, 1 without a foe or without a friend (0x4a9b20, **disasm**). Ally (self included): −v·K. Enemy: v/K × (10 / max(d, 10))^nearby × (humans if human team) (**disasm**).
+- v = Vital × (1 + 0.04·hp) + max(0.1, 1 − 0.08·poison), Vital = `Level::vital` (WeightingWormVital: 1, 1.5, 3, 5, 1000) for a worm with W4M flag 0x100 (`Game::vital`:
+  Vital Worm, each team's first worm) and 1 otherwise (0x4a92c7, **disasm**). WormHealth 0.04, WormPoisoned 0.08, LastInTeam 2 (**data**).
+- K = (foes / friends)^exchange, 1 without a foe or without a friend, and then both counts are 1, so every target is "the last of its side" (0x4a9b20, **disasm**).
+  Ally (self included): −v·K. Enemy: v/K. Then for both: ×2 when its side's count is 1, ×(10 / max(d, 10))^nearby, ×the target's ThisWormValue
+  (`Game::wormTweak`, the target's AIParams.WormNN, 1 unless a script writes it), ×humans (PreferAttackHumans) when v > 0 and the team is human (**disasm**).
   Allies are the worms whose team shares the thinking worm's AlliedGroup (0x4a4790, `Game::alliance`: the match slots'
   alliances, `GameConfig::Team::alliance`, or the mission script's); the targets and the enemy tests of the plan and of the sheep's detonation use the same rule (**disasm**).
-  The targets are the alive worms of the teams that have not surrendered (`targeted()`, 0x4a46f0, **disasm**), in `foes`, `friends` and `startEval`.
+  The targets are the alive worms of the teams that have not surrendered (`targeted()`, 0x4a46f0, **disasm**), counted in `foes`, `friends` and `startEval`.
+- The list (`listed`, W4M c_plstTargets) keeps a target within MaximumDistanceTargetConsidered of the thinker and, with the thinker's
+  ForbidShotsWhenMightAffectAITrigger == 1, outside every AffectsAI trigger (`considered()`, 0x4ab730 / 0x4a9260, **disasm**); both come from the thinking worm's
+  AIParams.WormNN (`Game::wormTweak`, `Game::Trigger::affectsAI`, `syncCpu` / `createTrigger`). The counts above are taken before this filter, as W4M does (**disasm**).
+  Only the install's `*-w3d.lub` scripts (applecore, cropcircle, funfair, helterskelter, highstakes...) set the flag, none of the imported missions or challenges (**data**).
+- Threat rating (`threatOf()`, 0x4a9e90 / 0x4ab070, **disasm**): every list entry, scripted markers included, from the probe's ground height; the other targets in it count only with a positive value, weighted value / `threatNorm`, the previous think's mean |value| (0 before the first, as W4M's uninitialised 0x959868).
+- Second pass (`secondPass()`, 0x4a9c50, **disasm**): each target moves by −(1 − d/5 m)·v_j·0.02 for every target j of the other sign within 5 m, and gains 10% of
+  its value when no other-side target is within 50 m; `norm` is the mean |value| after it.
 - Scripted targets (`scripted()`, 0x4a5070): the markers named by the thinking worm's AIParams `TargetDetailObject` (`Game::wormTarget`, set by `syncCpu`) are targets after the worms: value 1,
-  hp 1, threat 0, in the plans' `tpos`, the blast and strike scorers, the move-closer plans and the failed-plan memory (**disasm**). Only TinCanWally writes it (**data**).
-- ThisWormValue (1) and WormNearbyWorms / WormMilesAway are not ported.
+  hp 1, threat 0, in the plans' `tpos`, the blast and strike scorers, the move-closer plans and the failed-plan memory (**disasm**); they skip the list filter. Only TinCanWally writes it (**data**).
+- WormData CPUActionRadius and CPUFixedWeapon are read by nothing in W4M (docs/w4m/ai.md), so no code here reads them.
 
 Plan rank (W4M 0x498a0a, 0x49c060, **disasm**):
 

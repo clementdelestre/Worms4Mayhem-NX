@@ -1034,7 +1034,7 @@ void Game::start(const GameConfig &c) {
 
     picked.assign(teams, weapon);
     surrendered.assign(teams, 0);
-    special.assign(worms.size(), 0), wormCpu.assign(worms.size(), 0), wormTarget.assign(worms.size(), {}), wormAtt.assign(worms.size(), {});
+    special.assign(worms.size(), 0), wormCpu.assign(worms.size(), 0), wormTweak.assign(worms.size(), {}), wormTarget.assign(worms.size(), {}), wormAtt.assign(worms.size(), {});
     if ((cfg.rules & RULE_SUDDEN_DEATH) && cfg.scheme.roundTime == 0) {  // stdvs Initialise: RoundTime 0 starts sudden death
         suddenDeath = true;
         if (cfg.scheme.sdType == Scheme::SD_ONE_HP) for (Worm &x : worms) x.hp = x.counted = 1;
@@ -1810,7 +1810,7 @@ void Game::applyDamage(const std::vector<int> *type6) {
         if (x.hp != x.counted) countGroup.push_back(i);
         if (x.hp <= 0) {
             deathQueue.push_back(i);  // GameLogic.AddMeToDeathQueue
-            if ((cfg.rules & RULE_KING) && wormSlot(i) == 0) surrender(x.team);  // flag 0x100 (0x5abf26)
+            if (vital(i)) surrender(x.team);  // flag 0x100 (0x5abf26)
         }
     }
 }
@@ -1902,7 +1902,7 @@ void Game::stepCount() {
     } else if (shown && !deathQueue.empty() && shots.empty() && !active()) {
         dyingWorm = deathQueue.front(), throes = COUNT_THROES;  // Worm.TimeToDie
         deathQueue.erase(deathQueue.begin());
-        if ((cfg.rules & RULE_KING) && wormSlot(dyingWorm) == 0) surrender(worms[dyingWorm].team);  // 0x5a7287
+        if (vital(dyingWorm)) surrender(worms[dyingWorm].team);  // 0x5a7287
     }
     if (shown && deathQueue.empty() && dyingWorm < 0) {
         for (int i : countGroup) worms[i].counted = std::max(0, worms[i].hp);
@@ -2207,7 +2207,7 @@ void Game::vapourize(Worm &w) {
     int wi = int(&w - worms.data());
     // unspawned in the blast's own dispatch: its graphic never shows the blast's hurt
     events.erase(std::remove_if(events.begin(), events.end(), [&](const GameEvent &e) { return e.worm == wi && e.kind == GameEvent::Hurt; }), events.end());
-    if ((cfg.rules & RULE_KING) && wormSlot(wi) == 0) surrender(w.team);
+    if (vital(wi)) surrender(w.team);
     w.alive = false, w.hp = w.counted = 0, w.vel = {0, 0, 0};
     if (wi == current) selfHurt = true;
 }
@@ -2219,7 +2219,7 @@ bool Game::underwater(const Worm &w) const { return w.pos.y - R < water - 0.35f;
 void Game::drown(Worm &w) {
     int wi = int(&w - worms.data());
     if (wp(WP_VAMPIRE) && wormSlot(current) == 0 && wi != current) worms[current].hp += w.counted / 2;
-    if ((cfg.rules & RULE_KING) && wormSlot(wi) == 0) surrender(w.team);
+    if (vital(wi)) surrender(w.team);
     if (w.grounded || w.motion.slide) w.vel = {w.vel.x / 2, -1.5f, w.vel.z / 2};  // from Ambulatory / Sliding (0x5ad91f): -0.03 units/ms
     w.alive = false, w.drowned = true, w.floatT = 0;
     w.hp = 0, w.counted = std::max(1, w.counted);  // counted > 0: afloat, drawn until its blast

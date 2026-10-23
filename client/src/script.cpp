@@ -312,11 +312,14 @@ struct ScriptHost {
     static constexpr const char *ATT[4] = {"ATT_Hat", "ATT_Gloves", "ATT_Glasses", "ATT_Tash"};  // GameConfig::Team order
     static void syncCpu() {
         Game &g = *G;
-        g.wormCpu.assign(g.worms.size(), 0), g.wormTarget.assign(g.worms.size(), {}), g.wormAtt.assign(g.worms.size(), {});
+        g.wormCpu.assign(g.worms.size(), 0), g.wormTweak.assign(g.worms.size(), {}), g.wormTarget.assign(g.worms.size(), {}), g.wormAtt.assign(g.worms.size(), {});
         for (size_t i = 0; i < g.worms.size() && i < S->wormSlot.size(); i++)
             if (int s = S->wormSlot[i]; s >= 0) {
                 g.wormCpu[i] = (uint8_t)Clamp(S->ai[s] ? S->ai[s] : 2, 1, 5);
-                if (const Val *t = field(ctn(slotName("AIParams.Worm%02d", s)), "TargetDetailObject"); t && !t->s.empty())
+                Ctn *ai = ctn(slotName("AIParams.Worm%02d", s));
+                g.wormTweak[i] = {(float)fnum(ai, "WeightingThisWormValue", 1), (float)fnum(ai, "MaximumDistanceTargetConsidered", 1e5) / 20,
+                                  fnum(ai, "ForbidShotsWhenMightAffectAITrigger") == 1};
+                if (const Val *t = field(ai, "TargetDetailObject"); t && !t->s.empty())
                     for (const Terrain::Marker &k : g.terrain.markers) if (!strcasecmp(k.name.c_str(), t->s.c_str())) g.wormTarget[i].push_back(k.pos);
                 Ctn *w = ctn(slotName("Worm.Data%02d", s));
                 for (int k = 0; k < 4; k++) if (const Val *v = field(w, ATT[k])) g.wormAtt[i][k] = v->s;
@@ -651,7 +654,7 @@ struct ScriptHost {
         if (!(r > 0)) r = 1;  // 'Error Invalid Trigger Radius'
         int worm = wc < 0 ? wc : wc < SLOTS && S->slotWorm[wc] >= 0 ? S->slotWorm[wc] : -2;  // ours: the slot's worm now
         g.triggers.push_back({p, r / 20, (int)num("Trigger.Index", -1), std::max(1, (int)num("Trigger.HitPoints")), tc, worm,
-                              (int)num("Trigger.TeamDestroy", -1), sc, pc, mask, num("Trigger.Visibility") == 1});  // 0x5d567b: shown if 1
+                              (int)num("Trigger.TeamDestroy", -1), sc, pc, mask, num("Trigger.Visibility") == 1, num("Trigger.AffectsAI") != 0});  // 0x5d567b: shown if 1
     }
 
     static void placeMine(const char *at) {  // 0x4fdf90: the detail object by name (0x4f9400), CreateMine there, Mine.Id = the mine

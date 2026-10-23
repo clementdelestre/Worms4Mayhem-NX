@@ -68,11 +68,12 @@ private:
     std::shared_ptr<struct Search> search;  // A* in progress (ai.cpp)
     std::vector<Vector3> tpos;  // targets: enemy worms, the ground short of them, their sweet spots
     std::vector<int> tworm;     // worm aimed at
-    std::vector<int> threats;   // worms whose threat rating is still to be found
+    std::vector<int> threats;   // targets whose threat rating is still to be found
     std::vector<float> rating;  // W4M target threat rating (+0x1c, 0..1) per worm
     std::vector<Vector3> away;  // per worm: away from its worst threat (+0x20), zero if none
+    std::vector<bool> listed;   // W4M c_plstTargets membership (0x4ab730): a target of its side not too far, not inside an AI trigger
     std::vector<float> vals;    // W4M target value (+8, 0x4a9260) per worm, at the think's start
-    float norm = 1;             // their mean |value| (0x4ac5e6)
+    float norm = 0, threatNorm = 0;  // their mean |value| (0x4ac5e6), and the previous think's, which the threat ratings use (0x959868)
     struct Shot { Vector3 from, at; float effect; };
     std::vector<Shot> memory;  // W4M AIPlanMemory ImproveAccuracy records: repeats get more accurate
     struct Fail { int weapon, worm, target; Vector3 at; int hp; float effect; };

@@ -19,16 +19,19 @@ struct Level {
     float jumpErr, sweet;  // MovementJumpError; ProjectileSweetSpotDistance in m
     bool thrust;           // ConsidersStrikeThrustDirection
     float others;          // WeightStrikeSecondaryTarget
+    float vital;           // WeightingWormVital
 };
 static const Level LEVELS[5] = {
-    {0.3f, 0.05f, 1, 0.05f, 0, 0, 1.5f, 0.2f, 0.8f, 0.5f, 2, 1000, 25, 5, 40, 0.2f, false, 1, 1, 0.9f, false, 0, 0, false, 0},
-    {0.2f, 0.02f, 0.5f, 0.1f, 0.5f, 1, 1, 0.2f, 1, 0.5f, 0, 5000, 25, 10, 30, 1, true, 1, 1, 0.9f, false, 0.2f, 0.25f, false, 0.3f},
-    {0.1f, 0.01f, 0.25f, 0.1f, 0.5f, 1, 0.5f, 0.1f, 1, 0.5f, 0, 20000, 25, 5, 30, 1, true, 1, 1, 0.9f, false, 0.1f, 0.25f, true, 5},
-    {0.05f, 0.005f, 0.25f, 0.5f, 0.8f, 2, 0.1f, 0.2f, 1.2f, 0.5f, 0, 30000, 25, 5, 20, 1.5f, true, 0.8f, 0.5f, 0.8f, true, 0.05f, 0.5f, true, 1},
-    {0, 0, 0, 0.5f, 1, 4, 0, 0, 1.8f, 0.2f, 0, 60000, 50, 5, 20, 1, true, 0.3f, 0.5f, 0.7f, true, 0, 0.25f, true, 1},
+    {0.3f, 0.05f, 1, 0.05f, 0, 0, 1.5f, 0.2f, 0.8f, 0.5f, 2, 1000, 25, 5, 40, 0.2f, false, 1, 1, 0.9f, false, 0, 0, false, 0, 1},
+    {0.2f, 0.02f, 0.5f, 0.1f, 0.5f, 1, 1, 0.2f, 1, 0.5f, 0, 5000, 25, 10, 30, 1, true, 1, 1, 0.9f, false, 0.2f, 0.25f, false, 0.3f, 1.5f},
+    {0.1f, 0.01f, 0.25f, 0.1f, 0.5f, 1, 0.5f, 0.1f, 1, 0.5f, 0, 20000, 25, 5, 30, 1, true, 1, 1, 0.9f, false, 0.1f, 0.25f, true, 5, 3},
+    {0.05f, 0.005f, 0.25f, 0.5f, 0.8f, 2, 0.1f, 0.2f, 1.2f, 0.5f, 0, 30000, 25, 5, 20, 1.5f, true, 0.8f, 0.5f, 0.8f, true, 0.05f, 0.5f, true, 1, 5},
+    {0, 0, 0, 0.5f, 1, 4, 0, 0, 1.8f, 0.2f, 0, 60000, 50, 5, 20, 1, true, 0.3f, 0.5f, 0.7f, true, 0, 0.25f, true, 1, 1000},
 };
 // Shared by all five levels (AITWK): AddScoreMove, AddScoreMoveIfNotMoved, RandomSmallMoveRange 100 units, StrikeSweetSpotDistance 2 units
 static constexpr float MOVE_BONUS = 10, FIRST_MOVE_BONUS = 20, SMALL_MOVE = 5, STRIKE_SWEET = 0.1f;
+// WeightingWormNearbyWorms and WeightingWormMilesAway: the same in all five (AITWK), read by 0x4a9c50
+static constexpr float NEARBY_WORMS = 0.02f, MILES_AWAY = 0.1f;
 
 // The thinking worm's AIParams.WormNN (W4M per worm), else its team's level; a human team played by the AI is CPU5, copied over
 // its worms' params as /ALLAIPLAYERS does (0x4b39b4)
@@ -82,19 +85,57 @@ static Vector3 targetPos(const Game &g, size_t i) { return i < g.worms.size() ? 
 static int targetHp(const Game &g, size_t i) { return i < g.worms.size() ? g.worms[i].hp : 1; }
 static bool targetAlive(const Game &g, size_t i) { return i >= g.worms.size() || g.worms[i].alive; }
 
-// W4M 0x4a9260 target value, once per think (0x4ab730) from where the worm stands: allies (self included; the same AlliedGroup,
-// 0x4a4790) are -v·K, enemies v/K, with K = (enemies / allies)^WormExchange, 1 without a worm on each side (0x4a9b20)
+static const Game::AiTweak &tweakOf(const Game &g, int i) {
+    static const Game::AiTweak none;
+    return i < (int)g.wormTweak.size() ? g.wormTweak[i] : none;
+}
+
+// W4M 0x4ab730 + 0x4a9260: a target of the thinker (me) is dropped beyond its MaximumDistanceTargetConsidered, and with
+// ForbidShotsWhenMightAffectAITrigger 1 inside an AffectsAI trigger (3D, d <= radius)
+static bool considered(const Game &g, int me, int i) {
+    const Game::AiTweak &t = tweakOf(g, me);
+    const Vector3 p = g.worms[i].pos;
+    if (Vector3DistanceSqr(p, g.worms[me].pos) > t.reach * t.reach) return false;
+    if (t.forbid) for (const Game::Trigger &x : g.triggers) if (x.affectsAI && Vector3DistanceSqr(p, x.pos) <= x.radius * x.radius) return false;
+    return true;
+}
+
+// W4M 0x4a9260 target value, once per think (0x4ab730) from where the worm stands: v = Vital · (1 + 0.04·hp) + max(0.1, 1 − 0.08·poison); allies (self
+// included; the same AlliedGroup, 0x4a4790) are −v·K, enemies v/K, K = (enemies / allies)^WormExchange, and both side counts are 1 without a worm on
+// each side (0x4a9b20); then ×LastInTeam when its side has 1 left, ×nearby, ×the target's ThisWormValue, ×PreferAttackHumans when v > 0 and human
 static float targetValue(const Game &g, const Level &L, int me, int i) {
     const Worm &w = g.worms[i];
     const int team = g.worms[me].team;
     int foes = 0, friends = 0;
     for (const Worm &x : g.worms) if (targeted(g, x)) (g.alliance(x.team) == g.alliance(team) ? friends : foes)++;
+    float K = 1;
+    if (foes && friends) K = powf((float)foes / friends, L.exchange);
+    else foes = friends = 1;
     const bool ally = g.alliance(w.team) == g.alliance(team);
-    float K = foes && friends ? powf((float)foes / friends, L.exchange) : 1;
-    float v = (1 + 0.04f * w.hp + fmaxf(0.1f, 1 - 0.08f * w.poison)) * ((ally ? friends : foes) == 1 ? 2 : 1);  // LastInTeam: its side's last worm
-    if (ally) return -v * K;
-    bool human = w.team >= (int)g.cfg.teamSetup.size() || !g.cfg.teamSetup[w.team].cpu;
-    return v / K * powf(10 / fmaxf(Vector3Distance(w.pos, g.worms[me].pos), 10), L.nearby) * (human ? L.humans : 1);
+    float v = (g.vital(i) ? L.vital : 1) * (1 + 0.04f * w.hp) + fmaxf(0.1f, 1 - 0.08f * w.poison);
+    v = ally ? -v * K : v / K;
+    if ((ally ? friends : foes) == 1) v *= 2;
+    v *= powf(10 / fmaxf(Vector3Distance(w.pos, g.worms[me].pos), 10), L.nearby) * tweakOf(g, i).value;
+    const bool human = w.team >= (int)g.cfg.teamSetup.size() || !g.cfg.teamSetup[w.team].cpu;
+    return v > 0 && human ? v * L.humans : v;
+}
+
+// W4M 0x4a9c50 DoValueSecondPass, on the first-pass values: a target moves by −(1 − d/100 units)·v·WormNearbyWorms for each target of the other side
+// (value of the other sign) within 100 units, and by WormMilesAway·v when none is within 1000 units
+static void secondPass(const Game &g, const std::vector<bool> &listed, std::vector<float> &vals) {
+    std::vector<float> adj(vals.size(), 0);
+    for (size_t i = 0; i < vals.size(); i++) {
+        if (!listed[i]) continue;
+        float nearest = INFINITY;
+        for (size_t j = 0; j < vals.size(); j++) {
+            if (j == i || !listed[j] || (vals[i] > 0) == (vals[j] > 0)) continue;
+            const float d = Vector3Distance(targetPos(g, j), targetPos(g, i)) * 20;
+            nearest = fminf(nearest, d);
+            if (d < 100) adj[i] -= (1 - d / 100) * vals[j] * NEARBY_WORMS;
+        }
+        if (nearest >= 1000) adj[i] += MILES_AWAY * vals[i];
+    }
+    for (size_t i = 0; i < vals.size(); i++) vals[i] += adj[i];
 }
 
 // W4M plan scoring: 0x49f190 for a blast, 0x49ed30 for each target it hurts. Every target counts, self included, where it stands.
@@ -426,7 +467,7 @@ static void posScore(const Game &g, const Grid &gr, Moves &mv, const std::vector
     const Vector3 p = {c.x, (n.lo + n.hi) / 2, c.y};
     float mult = layer ? 5.0f : 1.0f, allies = 0, mines = 0, drums = 0;
     for (size_t k = 0; k < g.worms.size(); k++) {
-        if (!g.worms[k].alive || vals[k] > 0 || (int)k == me) continue;
+        if (!g.worms[k].alive || vals[k] >= 0 || (int)k == me) continue;  // 0x4aa78a: only negative (ally) values
         const float d = Vector3Distance(g.worms[k].pos, p) * 20;
         if (d < 100) allies -= (100 - d) * (vals[k] / norm) * 0.01f;
     }
@@ -439,7 +480,7 @@ static void posScore(const Game &g, const Grid &gr, Moves &mv, const std::vector
     mult *= expf(logf(0.02f) * mines);
     mult *= expf(logf(0.05f) * drums);
     mult *= logf(1.05f * expf((n.hi - g.water) * 20 * 0.01f));  // as W4M writes it, not 1.05^h
-    if (g.worms[me].alive && vals[me] <= 0) mult *= -vals[me] / norm;
+    if (g.worms[me].alive && vals[me] < 0) mult *= -vals[me] / norm;
     float a = 0, b = 0;
     for (int di = -12; di <= 12; di++)
         for (int dj = -12; dj <= 12; dj++) {
@@ -753,11 +794,13 @@ void Ai::slice(const Game &g) {
     debt = std::min(debt, 2 * budget);
 }
 
-// W4M 0x4a9e90: threat rating of a worm, probed in 8 directions at 50..200 units (0x90ebf8), weight 2/(k+2) by range: water or no
-// land 0.2, a drop over 30 units 0.05, and within 100 units with a linear falloff mines 0.1, oil drums 0.05 (GameLogicService
-// m_OilDrumIds, 0x4f56a0) and other worms 0.05. Returns the total capped at 1; `away` is opposite the worst direction (zero if none).
-static float threatOf(const Game &g, const Worm &e, Vector3 &away) {
+// W4M 0x4a9e90: threat rating of target i at `at`, probed in 8 directions at 50..200 units (0x90ebf8), weight 2/(k+2) by range, from the ground height
+// of the probe: water or no land 0.2, a drop over 30 units 0.05, and within 100 units with a linear falloff mines 0.1, oil drums 0.05 (GameLogicService
+// m_OilDrumIds, 0x4f56a0) and every other listed target of positive value 0.05 · value / norm (norm: the previous think's mean, 0x959868, still
+// unset at the first). Returns the total capped at 1; `away` is opposite the worst direction (zero if none).
+static float threatOf(const Game &g, size_t i, const std::vector<float> &vals, const std::vector<bool> &listed, float norm, Vector3 &away) {
     static const float RANGE[4] = {2.5f, 5, 7.5f, 10};
+    const Vector3 at = targetPos(g, i);
     float worst = 0, total = 0;
     int dir = -1;
     for (int d = 0; d < 8; d++) {
@@ -765,12 +808,16 @@ static float threatOf(const Game &g, const Worm &e, Vector3 &away) {
         float t = 0;
         for (int k = 0; k < 4; k++) {
             const float wgt = 2.0f / (k + 2);
-            Vector3 p = e.pos + f * RANGE[k], hit;
-            if (!g.terrain.raycast({{p.x, e.pos.y + 3, p.z}, {0, -1, 0}}, 30, &hit) || hit.y < g.water) t += 0.2f * wgt;
-            else if (e.pos.y - R - hit.y > 1.5f) t += 0.05f * wgt;
+            Vector3 p = at + f * RANGE[k], hit;
+            if (!g.terrain.raycast({{p.x, at.y + 3, p.z}, {0, -1, 0}}, 30, &hit) || hit.y < g.water) t += 0.2f * wgt;
+            else {
+                p.y = hit.y;
+                if (at.y - R - hit.y > 1.5f) t += 0.05f * wgt;
+            }
             for (const Object &o : g.objects)
                 if (o.type == Object::Mine || o.type == Object::Barrel) t += (o.type == Object::Mine ? 0.1f : 0.05f) * wgt * fmaxf(0, 1 - Vector3Distance(o.pos, p) / 5);
-            for (const Worm &x : g.worms) if (x.alive && &x != &e) t += 0.05f * wgt * fmaxf(0, 1 - Vector3Distance(x.pos, p) / 5);
+            for (size_t j = 0; j < vals.size(); j++)
+                if (const float dist = Vector3Distance(targetPos(g, j), p); j != i && listed[j] && vals[j] > 0 && dist < 5) t += vals[j] / norm * (1 - dist / 5) * 0.05f * wgt;
         }
         total += t;
         if (t > worst) worst = t, dir = d;
@@ -782,8 +829,8 @@ static float threatOf(const Game &g, const Worm &e, Vector3 &away) {
 void Ai::unit(const Game &g) {
     if (search) return searchStep(g);
     if (!threats.empty()) {  // threat rating; ProjectileSweetSpotDistance (0x4a9be0) aims that far on a threatened enemy's safe side
-        const int i = threats.back();
-        rating[i] = threatOf(g, g.worms[i], away[i]);
+        const size_t i = threats.back();
+        rating[i] = threatOf(g, i, vals, listed, threatNorm, away[i]);
         threats.pop_back();
         return;
     }
@@ -842,19 +889,23 @@ void Ai::startEval(const Game &g) {
     const Level &L = levelOf(g);
     plan = Plan{};
     threats.clear(), origins.clear(), choices.clear(), choiceAt = 0, moves.reset();
-    rating.assign(targetCount(g), 0), away.assign(targetCount(g), {}), vals.assign(targetCount(g), 0);
+    rating.assign(targetCount(g), 0), away.assign(targetCount(g), {}), vals.assign(targetCount(g), 0), listed.assign(targetCount(g), false);
     bool enemy = !scripted(g).empty();
     float sum = 0;
     int live = 0;
     for (size_t i = 0; i < g.worms.size(); i++) {
         if (!targeted(g, g.worms[i])) continue;
+        enemy |= g.alliance(g.worms[i].team) != g.alliance(w.team);  // before the filter (0x4ab730 sets bVar1 first)
+        if (!(listed[i] = considered(g, me, (int)i))) continue;
         threats.push_back((int)i);  // rated by unit()
-        vals[i] = targetValue(g, L, me, (int)i), sum += fabsf(vals[i]), live++;
-        enemy |= g.alliance(g.worms[i].team) != g.alliance(w.team);
+        vals[i] = targetValue(g, L, me, (int)i);
     }
-    for (size_t i = g.worms.size(); i < targetCount(g); i++) vals[i] = 1, sum += 1, live++;
-    if (!enemy) return;
+    for (size_t i = g.worms.size(); i < targetCount(g); i++) vals[i] = 1, listed[i] = true, threats.push_back((int)i);
+    secondPass(g, listed, vals);
+    for (size_t i = 0; i < vals.size(); i++) if (listed[i]) sum += fabsf(vals[i]), live++;
+    threatNorm = norm;  // 0x4ab070 rates the threats before 0x959868 is renewed
     norm = live && sum != 0 ? sum / live : 1;
+    if (!enemy) return;
     stage = sub = origin = pairs = 0, built = -1;
     thinkTimer = g.timer;
     regress(g);
@@ -874,7 +925,7 @@ void Ai::targetsFor(const Game &g, const Origin &o) {
     const Level &L = levelOf(g);
     tpos.clear(), tworm.clear();
     for (size_t i = 0; i < targetCount(g); i++) {
-        if (i < g.worms.size() && (!targeted(g, g.worms[i]) || g.alliance(g.worms[i].team) == g.alliance(g.worms[g.current].team))) continue;
+        if (i < g.worms.size() && (!listed[i] || g.alliance(g.worms[i].team) == g.alliance(g.worms[g.current].team))) continue;
         const Vector3 e = targetPos(g, i), to = e - o.pos;  // also the ground just short of it: a shell there still splashes
         tpos.insert(tpos.end(), {e, e - Vector3Normalize({to.x, 0, to.z}) * 1.5f});
         tworm.insert(tworm.end(), {(int)i, (int)i});

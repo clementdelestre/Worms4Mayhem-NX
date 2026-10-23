@@ -224,6 +224,80 @@ static void targetSides() {
     }
 }
 
+// W4M 0x4a9260 / 0x4ab730 weights: Vital worm flag 0x100 (WeightingWormVital), the target's ThisWormValue, nearby and ThisWormValue on allies too,
+// MaximumDistanceTargetConsidered and ForbidShotsWhenMightAffectAITrigger (an AffectsAI trigger) drop a worm from the list
+static void targetWeights() {
+    for (int level : {5, 1}) {
+        GameConfig c{3, 2, 1, "", RULE_NO_DELAYS | (level == 5 ? RULE_KING : 0u)};
+        c.teamSetup.resize(2), c.allyToStart = 0;
+        for (int t = 0; t < 2; t++) c.teamSetup[t].worms = 2, c.teamSetup[t].cpu = level, c.teamSetup[t].alliance = t;
+        auto think = [&](int what, Ai &ai, Game &g) {
+            g.start(c);
+            for (int i = 0; i < 4; i++) g.worms[i].pos = g.worms[0].pos + Vector3{12.0f * (i % 2), 0, 20.0f * (i / 2)};  // opposite sides 5 to 50 m apart: no second-pass term
+            if (what == 1) g.wormTweak[3].value = 3;
+            if (what == 2) g.wormTweak[0].reach = 0.5f;
+            if (what == 3) g.wormTweak[0].forbid = true, g.triggers.push_back({g.worms[3].pos, 1, 0, 1, -1, -1, -1, -1, -1, 0, false, true});
+            if (what == 4) g.wormTweak[0].forbid = true, g.triggers.push_back({g.worms[3].pos, 1, 0, 1, -1, -1, -1, -1, -1, 0, false, false});
+            for (int t = 0; t < 600 && ai.vals.size() != g.worms.size(); t++) g.step(ai.think(g));
+            assert(ai.vals.size() == g.worms.size() && g.current == 0);
+        };
+        Game g;
+        Ai ai;
+        think(0, ai, g);
+        const float vital = level == 5 ? 1000 : 1, nearby = level == 5 ? 0 : 1.5f;  // CPU5 / CPU1 WeightingWormVital, WeightingPreferNearbyTargets
+        auto base = [&](int i) { return (g.vital(i) ? vital : 1) * (1 + 0.04f * g.worms[i].hp) + 1; };
+        auto near = [&](int i) { return powf(10 / fmaxf(Vector3Distance(g.worms[i].pos, g.worms[0].pos), 10), nearby); };
+        printf("target weights CPU%d: %.3f %.3f %.3f %.3f\n", level, ai.vals[0], ai.vals[1], ai.vals[2], ai.vals[3]);
+        assert(g.vital(0) == (level == 5) && !g.vital(1));
+        assert(fabsf(ai.vals[1] + base(1) * near(1)) < 1e-3f * base(1));  // an ally: negative, scaled by its distance like an enemy
+        assert(fabsf(ai.vals[2] - base(2) * near(2)) < 1e-3f * base(2) && fabsf(ai.vals[3] - base(3) * near(3)) < 1e-3f * base(3));
+        if (level != 5) continue;
+        assert(ai.vals[2] > 100 * ai.vals[3]);  // CPU5: WeightingWormVital 1000
+        const float v3 = ai.vals[3];
+        Game h1, h2, h3, h4;
+        Ai a1, a2, a3, a4;
+        think(1, a1, h1), think(2, a2, h2), think(3, a3, h3), think(4, a4, h4);
+        assert(fabsf(a1.vals[3] - 3 * v3) < 1e-3f * v3);
+        assert(a2.vals[3] == 0 && a2.vals[2] == 0 && !a2.listed[3]);
+        assert(a3.vals[3] == 0 && !a3.listed[3] && a3.vals[2] != 0);
+        assert(a4.vals[3] != 0 && a4.listed[3]);  // a trigger that does not affect the AI drops nobody
+    }
+}
+
+// W4M 0x4a9c50 second value pass: a target near the other side moves by (1 - d / 100 units)·v·0.02, one with none within 1000 units gains 10%
+static void valueSecondPass() {
+    GameConfig c{3, 2, 1, "", RULE_NO_DELAYS};
+    c.teamSetup.resize(2), c.allyToStart = 0;
+    for (int t = 0; t < 2; t++) c.teamSetup[t].worms = 2, c.teamSetup[t].cpu = 5, c.teamSetup[t].alliance = t;
+    Game g;
+    g.start(c);
+    for (int t = 0; t < 240; t++) g.step(Input{});  // the worms land
+    const Vector3 at[4] = {{0, 0, 0}, {30, 0, 0}, {0, 0, 100}, {30, 0, 2.5f}};  // thinker, ally, a far enemy, an enemy 50 units from the ally
+    for (int i = 0; i < 4; i++) g.worms[i].pos = at[i], g.worms[i].hp = 100;
+    Ai ai;
+    for (int t = 0; t < 600 && ai.vals.size() != g.worms.size(); t++) ai.think(g);  // the game stands still
+    assert(ai.vals.size() == 4 && g.current == 0);
+    const float v = 1 + 0.04f * 100 + 1;
+    printf("second pass: %.3f %.3f %.3f %.3f\n", ai.vals[0], ai.vals[1], ai.vals[2], ai.vals[3]);
+    const float want[4] = {-v, -v - 0.5f * v * 0.02f, v + 0.1f * v, v + 0.5f * v * 0.02f};
+    for (int i = 0; i < 4; i++) assert(fabsf(ai.vals[i] - want[i]) < 1e-3f);
+}
+
+// W4M 0x4ab070 rates every list entry's threat (0x4a9e90), a scripted target included: a marker with no land around it rates 1
+static void scriptedThreat() {
+    GameConfig c{3, 2, 1, "", RULE_NO_DELAYS};
+    c.teamSetup.resize(2), c.allyToStart = 0;
+    for (int t = 0; t < 2; t++) c.teamSetup[t].worms = 1, c.teamSetup[t].cpu = 5, c.teamSetup[t].alliance = t;
+    Game g;
+    g.start(c);
+    for (int t = 0; t < 240; t++) g.step(Input{});  // the worms land
+    g.wormTarget.assign(g.worms.size(), {}), g.wormTarget[g.current] = {{1000, 50, 1000}};
+    Ai ai;
+    for (int t = 0; t < 3000 && !(ai.vals.size() == 3 && ai.threats.empty()); t++) ai.think(g);
+    printf("scripted threat: rating %.2f\n", ai.rating.size() == 3 ? ai.rating[2] : -1.0f);
+    assert(ai.rating.size() == 3 && ai.listed[2] && ai.rating[2] == 1);
+}
+
 // W4M scripted targets (0x4ab730 + 0x4a5070, AIParams.WormNN TargetDetailObject): the marker joins the targets with value 1 and hp 1, so a
 // CPU whose only enemy is out of reach fires at it
 static void scriptedTarget() {
@@ -234,7 +308,7 @@ static void scriptedTarget() {
     Ai ai;
     float miss = 1e9f;
     bool fired = false;
-    for (int t = 0; t < 60 * 60 && g.phase != Phase::Settle; t++) {
+    for (int t = 0; t < 60 * 60 && !(g.phase == Phase::Settle && g.shots.empty()); t++) {  // the far enemy drowns: the shell still lands
         g.step(ai.think(g));
         for (const GameEvent &e : g.events) {
             fired |= e.kind == GameEvent::Fire && e.worm == me;
@@ -248,10 +322,12 @@ static void scriptedTarget() {
 // Two-action weapons, one CPU5 turn each: the strike target and the homing lock are confirmed from the Blimp (W4M SetStrikeTarget
 // 0x4b4c70), the Sheep is detonated (DetonateWhenGoingAwayFrom, Sheep only), the Super Sheep takes off. W4M has no plan class for
 // Teleport or Abduction, and no AI detonation of the Old Woman or Scouser.
+// Strikes start 40 m apart: the CPU walks in before the bombs, and a target's threat rating no longer counts its enemy (0x4a9e90), so a strike
+// from beside it scores below the damage it does the thrower
 static void secondActions() {
     struct Case { const char *name; float dist; };
-    for (Case c : {Case{"Sheep", 14}, {"Super Sheep", 18}, {"Old Woman", 8}, {"Inflatable Scouser", 8}, {"Airstrike", 20}, {"Super Airstrike", 20},
-                   {"Fatkins Strike", 20}, {"Concrete Donkey", 20}, {"Homing Missile", 20}, {"Landmine", 2}, {"Dynamite", 2}, {"Alien Abduction", 15},
+    for (Case c : {Case{"Sheep", 14}, {"Super Sheep", 18}, {"Old Woman", 8}, {"Inflatable Scouser", 8}, {"Airstrike", 40}, {"Super Airstrike", 40},
+                   {"Fatkins Strike", 40}, {"Concrete Donkey", 40}, {"Homing Missile", 20}, {"Landmine", 2}, {"Dynamite", 2}, {"Alien Abduction", 15},
                    {"Teleport", 15}}) {
         Game g = arena(c.name, c.dist);
         const int wi = (int)(std::find_if(WEAPONS.begin(), WEAPONS.end(), [&](const WeaponDef &d) { return d.name == c.name; }) - WEAPONS.begin());
@@ -289,6 +365,9 @@ int main() {
     assert(loadWeapons("romfs/weapons.json"));
     secondActions();
     targetSides();
+    targetWeights();
+    valueSecondPass();
+    scriptedThreat();
     scriptedTarget();
     dropsOnTarget();
     for (uint8_t level : {1, 3, 5}) wallAhead(5, level, 21.4f, true), wallAhead(5, level, 19.4f, false);

@@ -2805,7 +2805,7 @@ int main(int argc, char **argv) {
                 for (float s : {-0.13f, 0.13f})
                     DrawSphere(Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 0.3f), Vector3Add(Vector3Scale(side, s), {0, 0.4f, 0}))), 0.1f, WHITE);
             }
-            if ((game.cfg.rules & RULE_KING) && game.wormSlot(int(&w - game.worms.data())) == 0)
+            if (game.vital(int(&w - game.worms.data())))
                 DrawCylinderEx({w.pos.x, w.pos.y + 0.55f, w.pos.z}, {w.pos.x, w.pos.y + 0.8f, w.pos.z}, 0.28f, 0.08f, 6, GOLD);
         }
         // TriggerGraphicEntity 0x58be60 (Trigger.Visibility 1): the 1-unit Trigger.Ball x its radius, its 8x8 texture one colour,

@@ -505,6 +505,7 @@ struct Game {
     std::vector<int> teamFirst;  // worms are team-major: team t's are teamFirst[t] .. teamFirst[t + 1] - 1
     int teamSize(int t) const { return teamFirst[t + 1] - teamFirst[t]; }
     int wormSlot(int i) const { return i - teamFirst[worms[i].team]; }  // its place in its team (W4M PositionInTeam)
+    bool vital(int i) const { return (cfg.rules & RULE_KING) && wormSlot(i) == 0; }  // W4M worm flag 0x100 (+0xec), set by Vital Worm on each team's first worm (0x5d6970)
     std::vector<std::vector<int>> allyQueue;  // W4M alliance queues (+0x9c): the teams of each AlliedGroup, the next to play first
     int allyStart = 0;  // the first alliance to play
     int clock = 0;      // ticks played: sudden death after cfg.scheme.roundTime
@@ -554,6 +555,9 @@ struct Game {
     std::vector<uint8_t> special;  // per worm: Wormpot.lub SetSpecialistTeam class 1..6, 0 none
     std::vector<std::array<std::string, 4>> wormAtt;  // per worm (hat, gloves, glasses, tash) ids: mission Worm.DataNN ATT_*, empty = the team's
     std::vector<uint8_t> wormCpu;  // per worm: W4M AIParams.WormNN level 1..5 (mission scripts), 0 = the team's (cfg.teamSetup cpu)
+    // per worm, from its AIParams.WormNN (mission scripts): WeightingThisWormValue, MaximumDistanceTargetConsidered (m), ForbidShotsWhenMightAffectAITrigger == 1
+    struct AiTweak { float value = 1, reach = 1e5f / 20; bool forbid = false; };
+    std::vector<AiTweak> wormTweak;
     std::vector<std::vector<Vector3>> wormTarget;  // per worm: the map markers named by its AIParams.WormNN TargetDetailObject, the AI's scripted targets (0x4a5070)
     bool artillery() const { return wp(WP_TUG_O_WORMS); }  // WormData.ArtilleryMode (0x5d6a10): no walking, no jump (0x5ac390)
     bool jetLanded() const { return jetUsed && !jetting && weaponDef(weapon).kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x562f72: entity kept
@@ -628,7 +632,7 @@ struct Game {
     // W4M TriggerLogicEntity (scripts' GameLogic.CreateTrigger, 0x5d5360): a sphere at a marker that worms or payloads collect and
     // blasts destroy. Team fields as W4M (-1 any, else that team; 4 and up: never); wormCollect: our worm index (-1 any, -2 none);
     // mask: what it collides with (0x5d4b50: 1 worms, 8 payloads, 0x80 sheep-like payloads)
-    struct Trigger { Vector3 pos; float radius; int index, hp, teamCollect, wormCollect, teamDestroy, sheepCollect, payloadCollect; uint16_t mask; bool visible; uint8_t gone = 0; int collector = -1; };
+    struct Trigger { Vector3 pos; float radius; int index, hp, teamCollect, wormCollect, teamDestroy, sheepCollect, payloadCollect; uint16_t mask; bool visible; bool affectsAI; uint8_t gone = 0; int collector = -1; };
     enum : uint8_t { TRIG_COLLECTED = 1, TRIG_SHEEP, TRIG_PAYLOAD, TRIG_DESTROYED };  // gone: the message it posts (W4M Trigger.*), once
     std::vector<Trigger> triggers;
     void stepTriggers();  // 0x5d5180: worm and payload contacts
