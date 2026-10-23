@@ -170,6 +170,9 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     // Title screen diorama (Bundl06/10), raw units: island + wreck, cloud dome, seagull (flight path is its Location clip)
     ("title", "WX.Mesh.Title", 0.0, false, &["Intro_Title", "Loop_Title"]),  // WXFE.MainMenu Title Mesh: Land flies in, the trees sway
     ("frontend/sky", "FRONTEND.Sky", 0.0, false, &[]),
+    // WXFE_WeaponFactoryMeshEntity (0x761c77): the editor's preview and pressure gauge, raw units; its clips are the entity's own (In_* / Loop_* / Gauge_*)
+    ("wfactory", "WX.Mesh.WFactory", 0.0, false, &["Base", "Gauge_Pressure", "Gauge_Wobble", "In_All", "In_Gun", "In_Payload01", "In_Payload02", "In_Payload03", "In_Strike", "In_Worm", "Loop_Gun", "Loop_Strike", "Out_All", "Out_GunStrike", "Out_Payload01", "Out_Payload02", "Out_Payload03", "Out_Worm"]),
+    ("wxfe_factory_airstrike", "WXFE.Factory.Airstrike", 0.0, false, &["Airstrike_Loop"]),
     ("storybook", "WX.Mesh.StoryBook", 0.0, false, &["Intro_Book", "Outro_Book"]),  // WXFE.Story's MESH Book
     ("bluedivide", "WX.Mesh.BlueDivide", 0.0, false, &["In_Split", "Out_Split"]),  // FrontEndService's background panel, Split shape (match results, PreRound)
     ("filmtape1", "FE.FilmTape001", 0.0, false, &["Film01Start"]),  // WXFE.MoviePlayer's film frame, raw units
@@ -177,9 +180,6 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("seagull", "Particle.WXPMesh31", 0.0, false, &["WXM_SGull_WingFlap+WXM_SGull_Location"]),
 ];
 // Worm clips exported (the rest of its 329 are emotes, weapon-specific holds and lip sync).
-    // WXFE_WeaponFactoryMeshEntity (0x761c77): the editor's preview and pressure gauge, raw units; its clips are the entity's own (In_* / Loop_* / Gauge_*)
-    ("wfactory", "WX.Mesh.WFactory", 0.0, false, &["Base", "Gauge_Pressure", "Gauge_Wobble", "In_All", "In_Gun", "In_Payload01", "In_Payload02", "In_Payload03", "In_Strike", "In_Worm", "Loop_Gun", "Loop_Strike", "Out_All", "Out_GunStrike", "Out_Payload01", "Out_Payload02", "Out_Payload03", "Out_Worm"]),
-    ("wxfe_factory_airstrike", "WXFE.Factory.Airstrike", 0.0, false, &["Airstrike_Loop"]),
 const WORM_CLIPS: &[&str] = &[
     "Base", "Walk", "Jump_Start", "Jump", "Fall", "Land", "Backflip", "Fwdflip", "Blastflight2", "AimBazooka", "AimGrenade", "AimShotgun", "HoldShotgun", "HoldSniper", "HoldBow", "HoldHomingMissile", "JetpackRotLR",
     "HoldBazooka", "HoldThrown", "Wounded", "Victorious_Grin", "Hit_Front", "HoldAirstrike", "HoldNinjarope", "Wave",
