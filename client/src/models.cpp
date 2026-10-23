@@ -82,6 +82,7 @@ struct Entry {
     bool hideHands = false;
     std::vector<float> alpha;  // per mesh, from the last draw's clip
     std::vector<std::array<float, 16>> mat;  // per mesh: its W4M materialMatrix rows (w4m-models primitive extras "w4m")
+    std::vector<char> add;  // per mesh: XBlendModeGL SrcAlpha / One (primitive extras "blend"), drawn after the opaque meshes
     std::vector<char> keyed;  // meshes whose shape alpha the clip keys: blended shapes, drawn after the opaque ones
     // skinned poses in their own buffers: a worm drawn in the shadow pass then the view is skinned once a frame
     // pose: the skinned meshes' positions and normals, all meshes in one buffer each (a pose is two uploads)
@@ -140,6 +141,7 @@ struct Job {
     Tracks tracks, alphas;
     std::vector<int> hands;
     std::vector<std::array<float, 16>> mat;
+    std::vector<char> add;
     unsigned char *rest = nullptr;  // prepare(early): the file again, for every clip once this job (Base only) is out
     int restSize = 0;
     bool clipsOnly = false;  // anims only: they replace the drawn model's
@@ -258,6 +260,10 @@ Job prepare(const char *path, bool early = false) {
             if (char *x = pr.extras.data ? strstr(pr.extras.data, "\"w4m\":[") : nullptr)
                 for (int c = 0; c < 11; c++) v[c] = strtof(x + (c ? 1 : 7), &x);  // past '"w4m":[', then each ','
             auto &m = j.mat.emplace_back();
+            char *bl = pr.extras.data ? strstr(pr.extras.data, "\"blend\":[") : nullptr;
+            int src = -1, dst = -1;
+            if (bl) sscanf(bl + 9, "%d,%d", &src, &dst);
+            j.add.push_back(src == 6 && dst == 1);
             for (int r = 0; r < 3; r++) memcpy(&m[4 * r], &v[3 * r], 12);
             m[12] = v[9], m[13] = v[10];
             use(pr.indices);
@@ -366,7 +372,7 @@ void add(Job &j) {
     if (strstr(j.path.c_str(), "/frontend/")) return (void)(spare[j.path] = e.m);  // FrontBg's scene, freed by FrontBg
     for (int k = 0; k < e.m.materialCount; k++)
         if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
-    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.locs = std::move(j.locs), e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.hands = std::move(j.hands), e.mat = std::move(j.mat);
+    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.locs = std::move(j.locs), e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.hands = std::move(j.hands), e.mat = std::move(j.mat), e.add = std::move(j.add);
     for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
     for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
         const char *n = e.m.skeleton.bones[b].name;
@@ -958,11 +964,14 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
     bool anyKeyed = std::find(e.keyed.begin(), e.keyed.end(), 1) != e.keyed.end();
     int lmLoc = GetShaderLocation(m.materials[0].shader, "lightMul");
     if (lmLoc >= 0) SetShaderValue(m.materials[0].shader, lmLoc, &lightScale, SHADER_UNIFORM_VEC3);
-    for (int pass = part == 2; pass < (part == 1 ? 1 : 1 + anyKeyed); pass++) {  // DrawModel's loop with each mesh's alpha: opaque, then the keyed blended shapes (z write off, two-sided); the glow materials after
+    bool anyAdd = std::find(e.add.begin(), e.add.end(), 1) != e.add.end();
+    int last = part == 1 ? 0 : anyAdd ? 2 : anyKeyed;
+    for (int pass = part == 2; pass <= last; pass++) {  // DrawModel's loop with each mesh's alpha: opaque, then the keyed blended shapes, then the additive ones (z write off, two-sided); the glow materials after
         if (pass) rlDrawRenderBatchActive(), rlDisableDepthMask(), rlDisableBackfaceCulling();
-        if (blendLoc >= 0) { float v = pass; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
+        if (pass == 2) BeginBlendMode(BLEND_ADDITIVE);
+        if (blendLoc >= 0) { float v = pass > 0; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
         for (int i = 0; i < m.meshCount; i++) {
-            if ((i < (int)e.keyed.size() && e.keyed[i]) != (pass == 1)) continue;
+            if ((i < (int)e.add.size() && e.add[i] ? 2 : i < (int)e.keyed.size() && e.keyed[i]) != pass) continue;
             if (e.hideHands && std::find(e.hands.begin(), e.hands.end(), i) != e.hands.end()) continue;
             int mi = m.meshMaterial[i];
             if (std::find(e.glow.begin(), e.glow.end(), mi) != e.glow.end()) continue;
@@ -981,8 +990,9 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
             mat.maps[MATERIAL_MAP_DIFFUSE].color = c;  // maps is shared with the model's material
             mat.maps[MATERIAL_MAP_DIFFUSE].texture = keepTex;
         }
+        if (pass == 2) rlDrawRenderBatchActive(), EndBlendMode();
     }
-    if (anyKeyed && part != 1) {
+    if (last > 0) {
         if (blendLoc >= 0) { float v = 0; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
         rlDrawRenderBatchActive(), zOn ? rlEnableDepthMask() : rlDisableDepthMask(), rlEnableBackfaceCulling();
     }

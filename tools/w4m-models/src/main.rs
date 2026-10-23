@@ -944,7 +944,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             attrs += &format!(",\"JOINTS_0\":{a_j},\"WEIGHTS_0\":{a_w}");
         }
         let mat = images.iter().position(|&i| i == pt.img).map_or(String::new(), |m| format!(",\"material\":{m}"));
-        let m = if pt.mat == [0.0; 11] { String::new() } else { format!(",\"extras\":{{\"w4m\":[{}]}}", pt.mat.map(|v| v.to_string()).join(",")) };
+        let bl = pt.blend.map_or(String::new(), |(a, b)| format!(",\"blend\":[{a},{b}]"));  // XBlendModeGL source / destination factors
+        let m = if pt.mat == [0.0; 11] && bl.is_empty() { String::new() } else { format!(",\"extras\":{{\"w4m\":[{}]{bl}}}", pt.mat.map(|v| v.to_string()).join(",")) };
         prims.push(format!("{{\"attributes\":{{{attrs}}},\"indices\":{a_idx}{mat}{m}}}"));
     }
     let mats: Vec<String> = (0..images.len()).map(|i| format!("{{\"pbrMetallicRoughness\":{{\"baseColorTexture\":{{\"index\":{i}}},\"metallicFactor\":0}}}}")).collect();
