@@ -658,7 +658,7 @@ static void markLaunches(Game &g) {
     }
 }
 
-// W4M worm: team-tinted, animation picked from the sim state (aim clips map pitch to their timeline).
+// W4M worm: animation picked from the sim state (aim clips map pitch to their timeline).
 static bool drawWorm(const Game &g, const Worm &w, float clock) {
     int i = int(&w - g.worms.data()), st = -1;
     for (const Game::Abductee &b : g.abductees) if (b.worm == i) st = b.st;
@@ -735,7 +735,6 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         const float at[4] = {0, o.x + 1, o.y + 1, o.z + 1};
         std::copy(add, add + 4, fpl.add), std::copy(at, at + 4, fpl.addT), ly = &fpl, aim = aim ? "AimFP" : nullptr;
     }
-    Color tint = Acting::tint(i, WHITE);  // 0x5a1bb1: sick / abducted only, no team colour
     Vector3 p = {w.pos.x, w.pos.y - Game::R, w.pos.z};
     // W4M turns the model about its node origin (0x5a26d3): worm.glb origin + the 3 unit lift (0.15 m)
     // rider (0x588fd0, once launched): pitch = the rocket's elevation; during the fuse the worm stands, not attached (0x5891e0)
@@ -749,8 +748,9 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     const size_t wi = &w - g.worms.data();
     auto att = [&](int k) -> const std::string & { return wi < g.wormAtt.size() && !g.wormAtt[wi][k].empty() ? g.wormAtt[wi][k] : tm.attachment(k); };
     Models::gloves(catalog().drawName(att(1)));
-    bool drawn = Models::draw("worm", p, w.yaw, roll, tint, clip, t, loop, aim, aimT, ly);
-    Models::gloves(nullptr);
+    Models::lightMul(Acting::lightMul(i));  // 0x5a1bb1: the worm light colour, sick / abducted only, no team colour
+    bool drawn = Models::draw("worm", p, w.yaw, roll, WHITE, clip, t, loop, aim, aimT, ly);
+    Models::lightMul({1, 1, 1}), Models::gloves(nullptr);
     if (!drawn) return false;
     Matrix m;
     bool loc = Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly);
@@ -2467,6 +2467,7 @@ int main(int argc, char **argv) {
         if (aimShot && frame > 30 && getenv("W4NX_PITCH")) game.worms[game.current].pitch = (float)atof(getenv("W4NX_PITCH")) * DEG2RAD;  // that aim pitch, degrees
         if (int a, b, v = 127; shot && getenv("W4NX_WALK") && sscanf(getenv("W4NX_WALK"), "%d %d %d", &a, &b, &v) >= 2 && frame >= a) Controls::forceAim = 0, in.walk = frame < b ? (int8_t)v : 0;  // W4NX_WALK="from to [walk]": the active worm walks, out of the forced aim
         if (shot && getenv("W4NX_DIE") && frame == atoi(getenv("W4NX_DIE"))) game.worms[game.current].hp = 0, game.selfHurt = true;  // W4NX_DIE=<frame>: the active worm dies (gravestone captures)
+        if (shot && getenv("W4NX_POISON") && frame == atoi(getenv("W4NX_POISON"))) game.worms[game.current].poison = 5;  // W4NX_POISON=<frame>: the active worm is poisoned (sick tint captures)
         if (aimBench && frame >= 60) in = Input{}, in.buttons = Controls::targetView(game) ? Input::TARGET | (frame == 61 && getenv("W4NX_LOCK") ? Input::FIRE : 0) : 0;
         if (irSwallow) {
             if (in.buttons & (Input::FIRE | Input::JUMP)) in.buttons &= ~(Input::FIRE | Input::JUMP);

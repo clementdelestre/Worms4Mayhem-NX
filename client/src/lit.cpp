@@ -50,6 +50,7 @@ uniform vec3 ambient;
 uniform vec3 diffuse;
 uniform vec3 specular;
 uniform vec3 camPos;
+uniform vec3 lightMul;  // the worm light colour scale (Sick / Abducted, 0x5a1bb1): ambient, diffuse and specular, unclamped
 uniform vec4 material[4];  // FixedFunction.cg materialMatrix rows: specular, emissive, fresnel, (fresnel power, specular power)
 varying vec2 uv;
 varying vec3 n;
@@ -60,13 +61,14 @@ void main() {
     vec4 c = texture2D(texture0, uv) * colDiffuse * vc;  // the Col CG programs multiply the vertex colour in
     if (c.a < (blended > 0.5 ? 0.004 : 0.5)) discard;
     vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
-    vec3 base = diffuse * max(dot(nn, sunDir), 0.0) + ambient + material[1].xyz;
+    vec3 base = (diffuse * max(dot(nn, sunDir), 0.0) + ambient) * lightMul + material[1].xyz;
     float sp = material[3].y > 0.0 ? pow(max(dot(nn, normalize(sunDir + v)), 0.0), material[3].y) : 1.0;
-    vec3 add = specular * material[0].xyz * sp + material[2].xyz * clamp(pow(max(1.0 - dot(v, nn), 0.0), material[3].x), 0.0, 1.0);
+    vec3 add = specular * lightMul * material[0].xyz * sp + material[2].xyz * clamp(pow(max(1.0 - dot(v, nn), 0.0), material[3].x), 0.0, 1.0);
     gl_FragColor = vec4(clamp(base * c.rgb + add, 0.0, 1.0), blended > 0.5 ? c.a : 1.0);
 }
 )";
 
+static const Vector3 ONE = {1, 1, 1};
 Shader shader(const char *vs, const char *fs, bool lit, bool es3) {
     bool es = rlGetVersion() == RL_OPENGL_ES_20 || rlGetVersion() == RL_OPENGL_ES_30;
     static const std::string F3 = "#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n"
@@ -75,6 +77,7 @@ Shader shader(const char *vs, const char *fs, bool lit, bool es3) {
     std::string f = es && !es3 ? "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
                                : (es ? "#version 300 es\nprecision highp float;\n" : "#version 330\n") + F3;
     Shader s = LoadShaderFromMemory((v + vs).c_str(), (f + fs).c_str());
+    if (int lm = GetShaderLocation(s, "lightMul"); lm >= 0) SetShaderValue(s, lm, &ONE, SHADER_UNIFORM_VEC3);
     if (lit && s.id != rlGetShaderIdDefault()) {
         static const char *U[6] = {"sunDir", "ambient", "diffuse", "specular", "camPos", "shadowMatrix"};
         shaders.push_back({s, false, {}});

@@ -907,16 +907,15 @@ void Acting::headMode(int i, float deg) {
     if (i >= 0 && i < (int)actors.size()) actors[i].mode = deg;
 }
 
-Color Acting::tint(int i, Color c) {
-    if (i < 0 || i >= (int)actors.size()) return c;
+Vector3 Acting::lightMul(int i) {
+    if (i < 0 || i >= (int)actors.size()) return {1, 1, 1};
     const Actor &a = actors[i];
     // 0x5a1bb1: 1 + 2 (sick (Sick.Colour/255 - .5) + abducted (Abducted.Colour/255 - .5)), green as /255 * .5 (sic)
     const float SICK[3] = {120, 120, 110}, ABD[3] = {0, 120, 255};
-    unsigned char *ch[3] = {&c.r, &c.g, &c.b};
+    float m[3];
     for (int k = 0; k < 3; k++) {
         auto f = [&](float v) { return k == 1 ? v / 255 * 0.5f : v / 255 - 0.5f; };
-        float m = 1 + 2 * (a.sickW * f(SICK[k]) + a.abdW * f(ABD[k]));
-        *ch[k] = (unsigned char)Clamp(*ch[k] * m, 0, 255);
+        m[k] = 1 + 2 * (a.sickW * f(SICK[k]) + a.abdW * f(ABD[k]));
     }
-    return c;
+    return {m[0], m[1], m[2]};
 }

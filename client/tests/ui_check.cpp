@@ -378,5 +378,21 @@ int main() {
         hit(cur, 2, 0);
         assert(Acting::turnDamage(g, cur).hurtSelf);
     }
+    {  // W4M 0x5a1a10 / 0x5a1bb1: poison > 0 at once ramps the Sick weight 0.05 per 20 ms; the worm light scale 1 + 2 w (Sick.Colour/255 - .5), green /255 x .5, above 1
+        Game g;
+        g.start({23, 2, 2, "", 0});
+        Acting::update(g, 0, {}, Camera3D{});
+        Vector3 m = Acting::lightMul(0);
+        assert(m.x == 1 && m.y == 1 && m.z == 1);
+        g.worms[0].poison = 5;
+        for (int t = 0; t < 20; t++) Acting::update(g, 0.02f, std::vector<uint8_t>(g.worms.size()), Camera3D{});
+        m = Acting::lightMul(0);
+        assert(fabsf(m.x - (1 + 2 * (120 / 255.f - .5f))) < 1e-3f && fabsf(m.z - (1 + 2 * (110 / 255.f - .5f))) < 1e-3f);
+        assert(fabsf(m.y - (1 + 2 * (120 / 255.f * .5f))) < 1e-3f && m.y > 1.4f);
+        g.worms[0].poison = 0;
+        for (int t = 0; t < 20; t++) Acting::update(g, 0.02f, std::vector<uint8_t>(g.worms.size()), Camera3D{});
+        m = Acting::lightMul(0);
+        assert(m.x == 1 && m.y == 1 && m.z == 1);
+    }
     puts("ui_check ok");
 }

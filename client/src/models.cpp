@@ -946,6 +946,9 @@ static void select(Entry &e, const char *clip, float t, bool loop, const char *a
 }
 
 static const Texture2D *overTex = nullptr;
+static Vector3 lightScale = {1, 1, 1};
+static const Vector3 ONE3 = {1, 1, 1};
+void Models::lightMul(Vector3 m) { lightScale = m; }
 static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // part: 0 all, 1 opaque only, 2 blended (keyed shapes, glow) only
     Model &m = e.m;
     Shader keep = m.materials[0].shader;
@@ -953,6 +956,8 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
     Matrix xf = MatrixMultiply(m.transform, MatrixTranslate(pos.x, pos.y, pos.z));
     int blendLoc = over.id ? GetShaderLocation(over, "blended") : -1, matLoc = GetShaderLocation(m.materials[0].shader, "material");
     bool anyKeyed = std::find(e.keyed.begin(), e.keyed.end(), 1) != e.keyed.end();
+    int lmLoc = GetShaderLocation(m.materials[0].shader, "lightMul");
+    if (lmLoc >= 0) SetShaderValue(m.materials[0].shader, lmLoc, &lightScale, SHADER_UNIFORM_VEC3);
     for (int pass = part == 2; pass < (part == 1 ? 1 : 1 + anyKeyed); pass++) {  // DrawModel's loop with each mesh's alpha: opaque, then the keyed blended shapes (z write off, two-sided); the glow materials after
         if (pass) rlDrawRenderBatchActive(), rlDisableDepthMask(), rlDisableBackfaceCulling();
         if (blendLoc >= 0) { float v = pass; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
@@ -999,6 +1004,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
         EndBlendMode();
         zOn ? rlEnableDepthMask() : rlDisableDepthMask(), rlEnableBackfaceCulling();  // back to the caller's mask (Xray::hidden writes no z)
     }
+    if (lmLoc >= 0) SetShaderValue(m.materials[0].shader, lmLoc, &ONE3, SHADER_UNIFORM_VEC3);
     for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = keep;
 }
 
