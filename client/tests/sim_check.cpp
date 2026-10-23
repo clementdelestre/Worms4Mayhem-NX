@@ -180,17 +180,21 @@ static void checkHurtEndsTurn() {
         }
 }
 
-static void checkMinePushEndsTurn() {
+// W4M 0x5ae4f0: a blast hurts the worm iff |worm - epicentre| - 10 units < WormDamageRadius (the push has its own, wider radius, no
+// Worm.Damaged.Current at 0 damage, 0x5ab805); the hurt active worm ends its turn
+static void checkMineBlastEndsTurn() {
     for (float dx = 0; dx <= 6; dx += 0.25f)
-        for (float dy = -3; dy <= 3; dy += 0.25f) {
+        for (float dy = -3; dy <= 3; dy += 0.5f) {
             Game g;
             g.start({1, 2, 2, "", 0}), g.hotSeat = 0;
             for (int t = 0; t < 120; t++) g.step(Input{});
             Worm &w = g.worms[g.current];
-            w.vel = {}, g.selfHurt = false;
-            int hp = w.hp;
-            g.explode(Vector3Add(w.pos, {dx, dy, 0}), Game::MINE_BLAST);
-            if (Vector3LengthSqr(w.vel) > 0) printf("dx %.2f dy %.2f hp %d->%d selfHurt %d\n", dx, dy, hp, w.hp, g.selfHurt);
+            const Vector3 at = Vector3Add(w.pos, {dx, dy, 0});
+            const bool hit = Vector3Distance(w.pos, at) - Game::R < Game::MINE_BLAST.reach;
+            g.explode(at, Game::MINE_BLAST);
+            assert((w.hp < 100) == hit && g.selfHurt == hit);
+            for (int t = 0; t < 240 && g.phase == Phase::Aim; t++) g.step(Input{});
+            assert(!hit || g.phase == Phase::Settle);  // a pushed-only worm may still hurt itself on landing, later
         }
 }
 
@@ -5178,7 +5182,7 @@ int main() {
     checkTeamSlots();
     checkAlliances();
     checkHurtEndsTurn();
-    checkMinePushEndsTurn();
+    checkMineBlastEndsTurn();
     checkPlacementSolid();
     checkDetailRemoval();
     checkHiddenLand();
