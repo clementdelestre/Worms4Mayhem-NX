@@ -83,7 +83,9 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   Worm.DataNN (Energy, Active; Energy written back), Inventory.TeamNN / AllianceNN (ammo, below), InventoryN.WeaponDelays (delays),
   GM.SchemeData (crate chance and shares), AIParams.WormNN copies (the CPU level).
 - **Worms** (`WormManager.Reinitialise`): the Worm.DataNN slots the script set up, team-major by TeamIndex then slot, at their Spawn
-  marker (dropped onto the ground below, facing the map centre [ours]); Active 0 slots are unspawned placeholders;
+  marker, as W4M's PlaceWormAtSpawnPoint 0x5b4180 (docs/w4m/missions.md "Worm spawn placement"): the locator's exact x, z and yaw (Orientation.y from the
+  marker's -Z `dir` [assumed: flat locator]), settled by `Game::establishFeet` onto the highest of the 4 foot rays down 50 m (EstablishPhysicsState 0x5a6af0, no fall,
+  no damage; no ground: it falls) [disasm]; the name "spawn" is the random search (`Game::placeWorm`) [disasm]; Active 0 slots are unspawned placeholders;
   `IsAllowedToTakeTurn` 0 never plays (`Worm::turns`). Team names and CPU levels from Team.DataNN `IsAIControlled` and the AIParams.CPUn
   copied to its worms; none copied: CPU2, the AIService init's copy into every AIParams.WormNN [disasm 0x4b3390]. The AI reads the
   thinking worm's own level (`Game::wormCpu`, kept by `syncCpu` at Reinitialise, Respawn and every AIParams.WormNN copy); the team's

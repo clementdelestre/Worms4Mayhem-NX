@@ -1022,6 +1022,7 @@ void Game::start(const GameConfig &c) {
         for (int k = 0, n = teamSize(t); k < n; k++) {
             Worm w = {{cx, (Terrain::NY - 1) * Terrain::VOX, cz}, {0, 0, 0}, 0, 0.3f, std::max(1, handicapHealth(cfg.scheme.health, t < (int)c.teamSetup.size() ? c.teamSetup[t].handicap : 0)), t, true, false};
             Vector3 c = placeWorm(grid, nodes, w.yaw);
+            c = establishFeet(c);
             w.pos = {c.x, c.y + R, c.z};
             // SetDavidAndGolithHealth(100 x the largest team, n): Davids total / 2n, the first the rest (Energy truncated)
             if (wp(WP_GOLIATH)) { float david = 100.0f * most / (2 * n); w.hp = k ? (int)david : (int)(100 * most - (n - 1) * david); }
@@ -1238,6 +1239,17 @@ static bool sphereInLand(const Terrain &t, Vector3 c, float r) {
             for (float z = -r; z <= r; z += Terrain::SUB)
                 if (x * x + y * y + z * z <= r * r && t.solid({c.x + x, c.y + y, c.z + z})) return true;
     return false;
+}
+
+// W4M EstablishPhysicsState 0x5a6af0, run by the first Update of a spawned worm (state kWPS_Undefined 0x5b1ff2, set by 0x5a9ac0): the 4 foot rays
+// down 1000 units; the nearest hit puts the feet there (Ambulatory, no landing, no fall damage), none: Ballistic, the worm falls from where it is
+Vector3 Game::establishFeet(Vector3 feet) const {
+    float best = -1e9f;
+    for (const Vector2 &p : PROBE) {
+        float th;
+        if (terrain.cast({feet.x + p.x, feet.y, feet.z + p.y}, {0, -1, 0}, 1000 * 0.05f, &th, nullptr)) best = fmaxf(best, feet.y - th);
+    }
+    return best > -1e8f ? Vector3{feet.x, best, feet.z} : feet;
 }
 
 // W4M PlaceWormAtSpawnPoint (0x5b4180, Spawn "spawn"): a random yaw, then up to 1000 random walkable cells (0x4ae810), each

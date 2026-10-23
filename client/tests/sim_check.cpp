@@ -5126,9 +5126,8 @@ static void checkPlacement() {
             for (size_t i = 0; i < g.worms.size(); i++) {
                 const Worm &w = g.worms[i];
                 const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2;
-                bool fallback = fabsf(w.pos.y - (g.landTop() + 0.5f + Game::R)) < 1e-3f && fabsf(w.pos.x - cx) <= 2.5f && fabsf(w.pos.z - cz) <= 2.5f;
-                for (size_t j = 0; j < i; j++)  // 0x5b4180: sphere 10 units; the no-point fallback (Land.MaxHeight + 10 units) is unchecked there too
-                    assert(fallback || Vector3Distance(w.pos - Vector3{0, Game::R, 0}, g.worms[j].pos - Vector3{0, Game::R - 0.25f, 0}) >= 1.0f - 0.01f);  // its feet vs their colliders
+                // the no-point fallback (Land.MaxHeight + 10 units, then settled onto the ground by the first Update 0x5a6af0)
+                bool fallback = w.pos.y <= g.landTop() + 0.5f + Game::R + 1e-3f && fabsf(w.pos.x - cx) <= 2.5f && fabsf(w.pos.z - cz) <= 2.5f;
                 if (fallback) continue;
                 const float x = w.pos.x + sinf(w.yaw) * 0.25f, z = w.pos.z + cosf(w.yaw) * 0.25f;  // less the ZOffset -5 units
                 const int ci = gr.ci(x), cj = gr.cj(z);
@@ -5136,10 +5135,16 @@ static void checkPlacement() {
                 int on = -1;
                 for (int l = 0; l < 2; l++) {
                     const NodeH h = nodeH(g.terrain, g.water, gr, nc, ci, cj, l);
-                    if (h.flag == 0 && fabsf((h.lo + h.hi) / 2 + 1.0f + Game::R - w.pos.y) < 1e-3f) on = l;
+                    if (h.flag == 0 && w.pos.y <= (h.lo + h.hi) / 2 + 1.0f + Game::R + 1e-3f) on = l;  // the chosen point; the first Update settles the feet down onto the ground
                 }
                 assert(on >= 0);  // a walkable cell (0x4ae810), +20 units
                 if (on == 1) overhang++;
+            }
+            for (int k = 0; k < 3; k++) {  // 0x5b4180: a counted point's 10-unit sphere is free of the worms already there (the no-point fallback is unchecked)
+                float yaw;
+                const Vector3 c = g.placeWorm(gr, nc, yaw);
+                if (fabsf(c.y - (g.landTop() + 0.5f)) < 1e-3f) continue;
+                for (const Worm &o : g.worms) assert(Vector3Distance(c, {o.pos.x, o.pos.y - Game::R + 0.25f, o.pos.z}) >= 1.0f - 0.01f);
             }
             for (const Object &o : g.objects) {
                 float r = o.type == Object::Mine ? 0.15f : 0.45f;

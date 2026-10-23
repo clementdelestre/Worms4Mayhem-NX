@@ -10,7 +10,7 @@ Stored at pData+0xF0 (pData = per-worm physics data arg passed to Update* funcs;
 
 ### WXWormLogicEntity functions (disasm, via debug strings)
 - 0x5a5d30 / 0x5d59c0: read WXWorm.SlideAngle_Default/_Slippy, SlideFriction_Default/_Slippy, JumpHeight/Distance
-- 0x5a6af0 EstablishPhysicsState; 0x5aa7f0 ChangeState (logs "Worm Sliding"); 0x5aaac0 Activate (spawn placement: partial X/Y, left/right up/down probes)
+- 0x5a6af0 EstablishPhysicsState (the first Update of a spawned worm, state 9: feet onto the ground within 1000 units below, Ambulatory, no landing; else Ballistic, docs/w4m/missions.md "Worm spawn placement"); 0x5aa7f0 ChangeState (logs "Worm Sliding"); 0x5aaac0 Activate (spawn placement: partial X/Y, left/right up/down probes)
 - 0x5ab3d0 CalculateGlobalControlInput; 0x5a9880 reads Worm.Walk.Speed; 0x5ac3e0 Worm.FallDamageRatio
 - 0x5acba0 Fall (->Ballistic); 0x5acea0 Rebound; 0x5ad010 ImpulseWorm; 0x5adcf0 MsgOverridePhysics; 0x5aea10 UpdateBurning
 - 0x5aecb0 UpdatePassive; 0x5afbe0 UpdateSliding (-> Ambulatory + kWE_Landed); 0x5b0da0 UpdateWalking; 0x5b1d60 Update (dispatcher)

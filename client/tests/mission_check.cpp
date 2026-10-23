@@ -363,6 +363,64 @@ static void checkCratePlacement(const std::vector<MissionSpec> &list) {
     }
 }
 
+// PlaceWormAtSpawnPoint 0x5b4180: a worm named by a locator stands at its exact x, z (no random search) and, after the first Update
+// (EstablishPhysicsState 0x5a6af0), on the ground under it: no fall, no fall damage; ground over 1000 units down: it falls
+static void checkWormSpawn(const std::vector<MissionSpec> &list) {
+    int placed = 0, settled = 0;
+    for (const MissionSpec &m : list) {
+        Game g;
+        g.start(missionConfig(m, 3));
+        Input skip;
+        skip.flags = Input::SKIP_MOVIE;
+        for (int t = 0; t < 2; t++) g.step(skip);
+        std::vector<Worm> was = g.worms;
+        for (int t = 0; t < 120; t++) g.step(skip);
+        for (size_t i = 0; i < was.size() && i < g.worms.size(); i++) {
+            const Worm &w = was[i];
+            if (!w.alive) continue;
+            const Terrain::Marker *k = nullptr;
+            for (const Terrain::Marker &x : g.terrain.markers) if (fabsf(x.pos.x - w.pos.x) < 1e-3f && fabsf(x.pos.z - w.pos.z) < 1e-3f) k = &x;
+            if (!k) continue;  // a worm of the random "spawn" search or one moved by the script
+            placed++;
+            const float feet = w.pos.y - Game::R;
+            assert(feet <= k->pos.y + 5 * 0.05f);  // settled onto the ground under the marker; a marker in the land lifts it by a walking step (<= 5 units)
+            if (k->pos.y - feet < 1000 * 0.05f) settled++;
+            if (g.worms[i].hp == w.hp && g.worms[i].alive) assert(fabsf(g.worms[i].pos.y - w.pos.y) < 0.3f);  // it stays: no fall
+        }
+    }
+    printf("worm spawn: %d worms at their marker's x, z, %d settled on the ground under it\n", placed, settled);
+    assert(placed > 20 && settled == placed);
+}
+
+// NoRoomForError creates Crate1 at its marker on top of the uncollected twin that already fell from it (0.85 m lower, spheres
+// overlapping): 0x5cb7e0 finds the overlap (0x516350), v = 0 <= 0.02 and the twin below, so it rests where it was made, never pushed out
+static void checkCrateStack(const std::vector<MissionSpec> &list) {
+    for (const MissionSpec &m : list) {
+        if (m.id != "NoRoomForError") continue;
+        Game g;
+        g.start(missionConfig(m, 3));
+        Input skip;
+        skip.flags = Input::SKIP_MOVIE;
+        std::map<std::pair<int, int>, float> first;  // an overlapping resting pair's separation when first seen
+        float closest = 99;
+        for (int t = 0; t < 60 * 90; t++) {
+            g.step(t % 30 ? Input{} : skip);
+            for (size_t i = 0; i < g.objects.size(); i++)
+                for (size_t j = i + 1; j < g.objects.size(); j++) {
+                    const Object &a = g.objects[i], &b = g.objects[j];
+                    if (a.type != Object::Crate || b.type != Object::Crate || a.pinned || b.pinned) continue;
+                    if (Vector3LengthSqr(a.vel) != 0 || Vector3LengthSqr(b.vel) != 0 || a.spawning || b.spawning) continue;
+                    const float d = Vector3Distance(a.pos, b.pos);
+                    if (d >= 1.0f) continue;
+                    closest = fminf(closest, d);
+                    assert(fabsf(d - first.emplace(std::make_pair(a.uid, b.uid), d).first->second) < 1e-4f);
+                }
+        }
+        printf("%-24s overlapping resting crates %zu, closest centres %.3f m (sum of radii 1.00)\n", m.id.c_str(), first.size(), closest);
+        assert(!first.empty() && closest > 0.8f);
+    }
+}
+
 // The player's last worm dies in its own turn (drowned, blown up, fallen off the map): the turn ends and the script's TurnEnded fails
 // the mission (GetActiveAlliances 0); the enemies drowned in the player's turn reach Worm_Died (DeadWorm.Id) and win it
 static void checkDeaths(const std::vector<MissionSpec> &list) {
@@ -540,12 +598,16 @@ int main() {
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
     if (only && !strcmp(only, "target")) return checkScriptedTarget(list), 0;
     if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
+    if (only && !strcmp(only, "cratestack")) return checkCrateStack(list), 0;
+    if (only && !strcmp(only, "wormspawn")) return checkWormSpawn(list), 0;
     if (only) return 0;
     checkLot2(list);
     checkCrates(list);
     checkWormInventoryCrate(list);
     checkHurtEndsTurn(list);
     checkCratePlacement(list);
+    checkCrateStack(list);
+    checkWormSpawn(list);
     checkDeaths(list);
     checkPickedTeam(list);
     checkMovies(list);

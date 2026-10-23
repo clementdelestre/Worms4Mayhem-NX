@@ -399,8 +399,25 @@ Worms (WXWormManagerService HandleMessage 0x5b5e70):
   which does not exist"; else 0x5aaac0(0) on it, ActiveWormIndex = -1 if it was the active one, WormData.Active (+0x124) = 0, the logical
   worm is deleted (0x68b927) and the team lists updated (0x5b3f60). No death blast, no gravestone; the logical worm's delete (0x68e18f) sends the entity TaskDeathMessage 0x42, which 0x5b07c0 routes to Cleanup 0x5a6970: DeadWorm.Id = slot then Worm.Died, so `Worm_Died` runs for a quiet death too, inside the DieQuietly call: 0x68b927 > 0x68e176 > 0x68e18f calls the entity's HandleMessage (vtable +0x1c) directly, and Cleanup sends Worm.Died through 0x68b89e > 0x68cb43 > 0x68cb82, which calls the target's HandleMessage at once (no queue) [REA decompile 0x68e18f, 0x68cb82, 0x5b07c0, 0x5a6970; NiceToSiegeYou's Worm_Died starts with `if Turn == 0 return` for the intro's DieQuietly 3 / 8 / 9 before StartFirstTurn; JoustAboutIt counts the Wizard's DieQuietly as its 4th enemy death].
 - `Worm.Respawn` (int slot < 16) 0x5b4f70: a worm already in the slot logs "A worm which currently exists tried to respawn" and nothing
-  happens. Else PlaceWormAtSpawnPoint 0x5b4180 (WormData.Spawn: a detail named other than "spawn" gives its exact position, only "spawn" searches random ground [REA decompile 0x5b4180]), and only if WormData.Active: SpawnWorm 0x5b31b0, its speech bank, and
+  happens. Else PlaceWormAtSpawnPoint 0x5b4180 (WormData.Spawn: a detail named other than "spawn" gives its exact position, only "spawn" searches random ground [REA decompile 0x5b4180]; see "Worm spawn placement" below), and only if WormData.Active: SpawnWorm 0x5b31b0, its speech bank, and
   with IsAllowedToTakeTurn (+0x12d) its team joins its alliance's list and the worm its team's (+0x128 PositionInTeam = its index).
+- **Worm spawn placement** [REA decompile 0x5b4180, 0x5a9ac0, 0x5a6af0, 0x5b1d60; disasm 0x5b4180..0x5b47c3]:
+  - The Spawn string is compared with strcmp (0x638a62) against "spawn", case-sensitive. Equal: the random search (docs/w4m/turn.md "Worm"). Else the
+    name is looked up as a locator through `Land.GetDetailInfo` (0x59a8b0) and the worm takes the detail's position (+0xd0, 3 floats) and orientation
+    (+0xd4, 3 floats, copied into the orientation matrix by 0x69c118 identity then rotations about x, y, z 0x69c1a9 / 0x69c209 / 0x69c269) exactly (0x5b4689..0x5b46e3):
+    no ground search, no offset, no yaw draw. Both branches then store the position at WormData +0x38 (0x5b46f2) and the heading at +0x8c (0x5b478f).
+  - SpawnWorm 0x5b31b0 -> 0x5a9ac0 gives the worm entity PhysicsState kWPS_Undefined (9) (+0xf0 = 9), velocity 0, acceleration set by 0x5a6d20, collider
+    flags 1 mask 0x811 radius 10 centred 5 units over the feet. Nothing else places it.
+  - Its first Update (dispatcher 0x5b1d60, state 9 at 0x5b1ff2, which logs "WXWormLogicEntity::Update state = kWPS_Undefined") runs
+    EstablishPhysicsState 0x5a6af0: the 4 land rays of the foot probe (CastRays 0x59ec70, mask 0xf = the foot tripod and the centre, direction (0, -1, 0), length 10000)
+    from the worm position and a sphere sweep of the worm collider downward (0x519dd0, 10000, filter -1, hit time = global 0x95c28c). Sweep time T < 1000: the nearer of the
+    two wins (rod nearest <= T: the nearest rod hit point less its probe offset, HitPointRel 0x59ec00 index 0x7f; else the position + T x down, and the surface id is kept);
+    T >= 1000: nearest rod <= 1000 puts the feet on its hit point, else "EstablishPhysicsState going Ballistic" (+0xf0 = 2). Ground found: state 0 (Ambulatory), position
+    on the ground, no kWE_Landed event and no ChangeState, so no fall damage (that is in the Ballistic landing, docs/w4m/physics.md); `DAT_00955640` set (frontend / passive) forces state 6.
+    A marker over more than 1000 units (50 m) of air makes the worm fall (Ballistic) and take the landing damage.
+  - A ray starting inside land counts as a hit at distance 0 [assumed from 0x466ae0's first sample being its start, docs/w4m/physics.md "Land ray primitive"].
+  - The sphere sweep against the colliders (a worm or object closer below than the ground) is not modelled by ours [assumed to matter only when a collider sits under the marker].
+  - Respawn (0x5b4f70), EFMV SpawnWorm and WormManager.Reinitialise all route through PlaceWormAtSpawnPoint + SpawnWorm: one rule for every spawn.
 - WormManager.Reinitialise (0x5b5bf0) sets CurrentTeamIndex -1 (0x5b5c4c); ActivateNextWorm 0x5b59b0 sets ActiveWormIndex and
   CurrentTeamIndex; with no worm to activate it asserts `m_nActiveWormIndex!=-1` (0x5b5b0f). Not traced: what the release build does
   then (ours runs the turn's clocks without a worm, docs/missions.md "Worms").
@@ -472,7 +489,7 @@ Crates (CrateLogicEntity, vtable 0x8619a0, HandleMessage 0x5cb330, spawn 0x5c9bd
   WXP_WaterSmallSplash. Fall 0x5c9420 casts a point 1 radius under the centre (0x5c94d0 `y - [+0x44]`, 20 ms parabola 0x466ae0, land only):
   a hit within 20 ms is a landing and 0x5c8900 gives v = 0.2 (vx, -vy, vz), at rest under 0.02 units/ms position = the hit + radius (0x5c89b1..0x5c89cb).
   SneakyBridgeThieves Crate5 [data: .xan cells at 20 units per voxel]: the bridge rail top lies 9.1 units under the marker and the rail is
-  NoRoomForError [data: script, disasm 0x5cb7e0]: Initialise sets Crate1ShotgunCollected true after spawning Crate1, so each turn's SpawnNextCrate drops another Crate1 on the same CrateSpawn1; the twin lands on the first crate's collider (a top contact, v <= 1), not on the ground.
+  NoRoomForError [data: script, disasm 0x5cb7e0 + REA decompile]: Initialise sets Crate1ShotgunCollected true after spawning Crate1, so each turn's SpawnNextCrate creates another Crate1 at the same CrateSpawn1 marker, 0.851 m above where the first one rests (the first fell from the marker to the ground, centre 0.5 above it). The new crate's first sweep has v = 0, so 0x516c80 picks the overlap iterator 0x516350 (the zero-length case, `|v|^2 == 0`): the landed twin (+0x62 / +0x63 / +0x8c set) is a contact, |v| <= 0.02 and its centre is below, so +0x63 = 1, v = 0 and the "Crate Spawn" token is released with the crate where it was made. 0x5cb7e0 never moves a slow crate: no rest distance, no overlap resolution; the pair rests 0.851 m apart (sum of radii 1.0), the crate floating on the twin, until the twin goes.
   6.5 units thick on its column, so the Fall point 10 units under the centre starts inside the rail [assumed: a cast starting in land lands at once].
   Gravity 0 never casts or moves. RandomSpawnPos 1 (0x5c6560): x, z uniform in the team-0 spawn box (tables 0x955788 centre / 0x955800 half size,
   both set at Land.Import 0x477060), a land ray from Land.MaxHeight (+0x315c), 100 tries each needing the hit above Water.Level and no worm
