@@ -189,8 +189,8 @@ static void checkMineBlastEndsTurn() {
             g.start({1, 2, 2, "", 0}), g.hotSeat = 0;
             for (int t = 0; t < 120; t++) g.step(Input{});
             Worm &w = g.worms[g.current];
-            const Vector3 at = Vector3Add(w.pos, {dx, dy, 0});
-            const bool hit = Vector3Distance(w.pos, at) - Game::R < Game::MINE_BLAST.reach;
+            const Vector3 feet = {w.pos.x, w.pos.y - Game::R, w.pos.z}, at = Vector3Add(feet, {dx, dy, 0});  // 0x5ae4f0: from Position (+0x38), the feet
+            const bool hit = Vector3Distance(feet, at) - Game::R < Game::MINE_BLAST.reach;
             g.explode(at, Game::MINE_BLAST);
             assert((w.hp < 100) == hit && g.selfHurt == hit);
             for (int t = 0; t < 240 && g.phase == Phase::Aim; t++) g.step(Input{});
@@ -292,7 +292,7 @@ static void checkDrownPair() {
         at = Vector3Add(near, Vector3Scale(k % 4 < 2 ? Vector3{1, 0, 0} : Vector3{0, 0, 1}, (k % 2 ? -0.2f : 0.2f) * (k / 4)));
     g.worms[a].pos = Vector3Add(at, {-1.0f, 0, 0}), g.worms[b].pos = Vector3Add(at, {1.6f, 0, 0});
     for (int i : {a, b}) g.worms[i].vel = {}, g.worms[i].grounded = false;
-    g.events.clear(), g.explode({at.x, at.y - 0.6f, at.z}, Game::MINE_BLAST);
+    g.events.clear(), g.explode({at.x, at.y - 1.1f, at.z}, Game::MINE_BLAST);  // 0.6 under the worms' feet (0x5ae4f0 measures from Position)
     int up[2] = {-1, -1}, died[2] = {-1, -1};
     for (int t = 0; t < 60 * 20 && (died[0] < 0 || died[1] < 0); t++) {
         g.step(Input{});

@@ -128,7 +128,9 @@ struct Outcome {
         started = true;
         if (b.reach <= 0) return;
         for (size_t i = 0; i < targetCount(g); i++) {
-            const float d = Vector3Distance(targetPos(g, i), p), k = d < b.reach ? (1 - d / b.reach) * L.secondary : 0;
+            Vector3 t = targetPos(g, i);
+            if (i < g.worms.size()) t.y -= Game::R;  // W4M target position = the worm's feet (+0x38)
+            const float d = Vector3Distance(t, p), k = d < b.reach ? (1 - d / b.reach) * L.secondary : 0;
             if (k > 0 && !(skipSelf && (int)i == self)) hurt((int)i, k * b.damage * (g.doubled() ? 2 : 1), a);
         }
     }

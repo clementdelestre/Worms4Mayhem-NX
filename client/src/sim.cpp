@@ -1705,7 +1705,7 @@ Game::GunHit Game::gunRay(Ray r, const Worm &shooter, float bullet, int self, ui
         Vector3 c = Vector3Add(bb.pos, {0, BUBBLE_UP, 0});
         if (float t = Vector3Distance(c, r.position) > BUBBLE_SHELL ? across(c, BUBBLE_SHELL) : -1; t > 0) h.dist = t, h.worm = -1, h.land = false, h.obj = -1, h.sentry = -1;
     }
-    h.at = h.worm >= 0 ? worms[h.worm].pos : h.sentry >= 0 ? sentryBase(objects[h.sentry]) : Vector3Add(r.position, Vector3Scale(dir, h.dist));  // 0x55e7d0: a sentry's Explosion at its base
+    h.at = h.worm >= 0 ? Vector3{worms[h.worm].pos.x, worms[h.worm].pos.y - R, worms[h.worm].pos.z} : h.sentry >= 0 ? sentryBase(objects[h.sentry]) : Vector3Add(r.position, Vector3Scale(dir, h.dist));  // 0x55e7d0: a sentry's Explosion at its base
     return h;
 }
 
@@ -2614,13 +2614,13 @@ Blast blastOf(const WeaponDef &d, bool child) {
     return {r, f[0] >= 0 ? f[0] : 1.4f * r, child ? d.cdamage : d.damage, f[1] >= 0 ? f[1] : 14.5f, pr, f[3] >= 0 ? f[3] : 0.4f * pr};
 }
 
-// full damage out to 1/6 of the reach, then linear; distance from the worm's skin; at least 1 hp
+// full damage out to 1/6 of the reach, then linear; w = the worm's feet, distance from its skin; at least 1 hp
 int Game::blastDamage(const Blast &b, Vector3 p, Vector3 w) {
     float d = fmaxf(0, Vector3Distance(w, p) - R);
     return d < b.reach && b.damage > 0 ? std::max(1, (int)(b.damage * fminf(1, 1.2f * (b.reach - d) / b.reach))) : 0;
 }
 
-// away from a point pushDepth under the blast, so worms beside it fly up; 1.2x the magnitude at that point
+// away from a point pushDepth under the blast, so worms beside it fly up (w = feet for a worm); 1.2x the magnitude at that point
 Vector3 Game::blastKick(const Blast &b, Vector3 p, Vector3 w) {
     Vector3 to = Vector3Subtract(w, {p.x + b.pushOff.x, p.y - b.pushDepth + b.pushOff.y, p.z + b.pushOff.z});
     float d = Vector3Length(to);
@@ -2643,8 +2643,9 @@ void Game::explode(Vector3 p, const Blast &b0, float poison, int type, int weapo
     emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, fxAt ? *fxAt : p, -1, weapon), events.back().fx = fx, events.back().sfx = sfx;
     for (Worm &w : worms) {
         if (!w.alive || int(&w - worms.data()) == dyingWorm || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
-        int dmg = blastDamage(b, p, w.pos);
-        Vector3 kick = blastKick(b, p, w.pos);
+        const Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z};  // 0x5ae4f0 measures from WormData Position (+0x38)
+        int dmg = blastDamage(b, p, feet);
+        Vector3 kick = blastKick(b, p, feet);
         if (!dmg && poison <= 0 && Vector3LengthSqr(kick) == 0) continue;
         if (w.nailed && Vector3Distance(w.pos, p) < b.crater + R) w.nailed = false;  // the ground around it is gone
         if (dmg) hurt(w, dmg, true, type);
