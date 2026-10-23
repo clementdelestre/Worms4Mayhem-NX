@@ -106,7 +106,7 @@ struct WeaponDef {
 inline bool powered(const WeaponDef &d) { return (d.kind == Kind::Shell || d.kind == Kind::Homing) && d.powered; }  // hold FIRE to charge, release to fire
 inline const std::string &kindName(const WeaponDef &d) { return d.clone.empty() ? d.name : d.clone; }  // the name the client keys meshes and sounds on
 // W4M ExplosionMessage: crater (LandDamageRadius), worm damage reach and max, knockback m/s, its reach and its epicentre depth.
-struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns)
+struct Blast { float crater, reach, damage, push, pushReach, pushDepth; Vector3 pushOff = {0, 0, 0}, normal = {0, 0, 0}; };  // pushOff: the impulse centre's offset from the blast point (guns); normal: the ExplosionMessage's +0x20 (a payload's contact normal)
 Blast blastOf(const WeaponDef &d, bool child);
 // Set down at the worm's feet (dynamite): the worm retreats while the fuse burns.
 // W4M IsPoweredWeapon: BasePower + ShotPower x MaxPower, ShotPower 0..1 over Tweaks.MaxPowerUpTime 1500 ms
@@ -690,6 +690,7 @@ struct Game {
     std::vector<int8_t> allied;  // per team: W4M TeamData.AlliedGroup, from cfg at start(), the scripts' own in missions
     int alliance(int team) const { return team >= 0 && team < (int)allied.size() ? allied[team] : team; }
     bool indestructible = false;  // W4M Land.Indestructable (scripts): the Land Explosion handler returns (0x47356d)
+    bool landLocked() const { return wp(WP_MINE_RESPAWN) || indestructible; }  // Land.Indestructable (0x69dab0): 0x473530, Land.ClearVoxel 0x4733b0 and 0x473470 return; MineRespawn sets it
     // Settle (W4M stdlib.lub): GameLogic.ApplyDamage starts every hurt worm's damage display at once, then the death queue
     // blows the dead up one by one, each once nothing else is active (0x4f9b30). docs/death-sequence.md
     static constexpr int COUNT_DAMAGE = msTicks(2500);     // W4M Worm.DamageComplete posted 2500 ms after the damage (0x5abe94)
@@ -793,7 +794,7 @@ private:
     void pick(int team, int k);  // W4M WeaponSelected 0x565d30
     void use(Worm &w);
     void emit(GameEvent::Kind k, Vector3 p, int worm = -1, int weapon = -1) { events.push_back({k, p, worm, weapon}); }
-    void blastLand(Vector3 p, float r) { if (terrain.carve(p, r)) emit(GameEvent::Debris, p); }  // W4M Land Explosion handler 0x473530: weapons/Debris once Land.Changed
+    void blastLand(Vector3 p, float r, Vector3 n = {0, 0, 0}) { if (terrain.carve(p, r, n)) emit(GameEvent::Debris, p); }  // W4M Land Explosion handler 0x473530: weapons/Debris once Land.Changed
     void stepWorm(Worm &w);
     void avoidLand(Projectile &s);  // HomingAvoidLand steering (W4M 0x5611b0)
     bool stepUfo(Projectile &s);  // false once it has left
@@ -816,6 +817,7 @@ private:
     void sentryShot(const Object &o, const Vector3 &up, int target);  // 0x56c810
     void sentryHit(Object &o, Vector3 p, const Blast &b);  // Explosion 0x56d2a0
     void clearVoxel(Vector3 at);  // a bullet's Land.ClearVoxel on the land cell at its first land sample
+    bool clearCell(Vector3 p) { return !landLocked() && terrain.clearCell(p); }  // 0x4733b0 / 0x473470
     void openMystery(int item, Worm &w);  // CrateLogicEntity 0x5ca1f0
     void crateHit(Object &o, float dmg);  // a crate or target takes blast or bullet damage
     void poisonWorm(Worm &w, int rate = POISON_DEFAULT) { if (!w.poison) w.poison = rate, w.abducted = false; }  // Worm.Poison 0x5add14: only an unpoisoned worm; rate = Worm.Poison.Default, a gas cloud sets its magnitude

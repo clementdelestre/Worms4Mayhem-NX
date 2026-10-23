@@ -127,8 +127,8 @@ Commentary (lib_Comment, lib_Display{Failure,Success,SuddenDeath}Comment: Commen
 - **BlimpView** (+0x44): byte 0x90ea75 = 0 and `Camera.Disable "Blimp"`.
   - SetCamera 0x51e4e0 then refuses the Blimp; targeting still works from the aim view (0x583a10).
   - The AI skips Homing (0x4a03ab) and the Airstrike, Donkey, SuperAirstrike and Fatkins plans (0x4a0f18).
-- **MineRespawn** (+0x45): `Land.Indestructable` 1. The land Explosion handler 0x473530 returns at once, so blasts leave no crater; a gun's
-  Land.ClearVoxel (0x4733b0) is not gated.
+- **MineRespawn** (+0x45): `Land.Indestructable` 1. The land Explosion handler 0x473530 returns at once, so blasts leave no crater; Land.ClearVoxel (0x4733b0) and
+  Firepunch's 0x473470 return too (`Game::landLocked`): the key is the same.
   - Mine Detonate 0x580f10 clears the dud flag (0x581179) and posts `GameLogic.RespawnMine` 500 ms later (0x5812af).
   - Handler 0x4ff56a: CreateMine at `Payload.Deleted.LastPosition` if it is above Water.Level.
   - CreateMine skips the dud roll in this mode (0x4f97c9, 0x4f9d9d).

@@ -3942,6 +3942,51 @@ static void checkMysteryTeleport() {
     assert(Vector3Distance(w.pos, to) < 0.05f && g.current == cur && g.phase == ph && g.timer >= timer - t - 2);  // the turn goes on, no time charged
 }
 
+// W4M Worm.OverridePhysics 0x40 (0x5adf8b: a mask above 0 is state 5, a mask AND to 0 is ChangeState Ballistic): the physics state gates the input, no clip does.
+// A telepad keeps the override through TelepadAppear (0x5d4589: released at the clip's end), so the worm cannot walk, jump or fire a payload weapon (CanFire 0x54a2d0:
+// state 0) but selects weapons; the Mystery Teleport frees it at once (0x4f76a0), so it lands and walks while TelepadAppear plays.
+static void checkTeleportInput() {
+    GameConfig c{29, 2, 1, "", 0};
+    c.scheme.telepads = 1;
+    Game g;
+    g.start(c), g.hotSeat = 0;
+    const int cur = g.current, bazooka = weaponNamed("Bazooka"), shotgun = weaponNamed("Shotgun");
+    Worm &w = g.worms[cur];
+    Game::Telepad &src = g.telepads[0];
+    w.pos = {src.pos.x, src.pos.y + Game::R, src.pos.z}, w.vel = {0, 0, 0}, w.grounded = true;
+    g.ammo[w.team][bazooka] = -1, g.delays[w.team][bazooka] = 0;
+    g.weapon = bazooka;
+    g.step(Input{});
+    assert(src.st == 1 && g.padHeld(cur));
+    for (int t = 0; t < 400 && src.st != 4; t++) g.step(Input{});
+    assert(src.st == 4 && g.padHeld(cur));
+    const Vector3 held = w.pos;
+    Input go;
+    go.walk = 127, go.buttons = Input::JUMP | Input::FIRE;
+    for (int t = 0; t < 400 && src.st == 4; t++) {
+        g.step(t % 2 ? go : Input{});
+        if (src.st != 4) break;  // the clip's end frees it
+        assert(Vector3Distance(w.pos, held) < 0.01f && g.shots.empty() && g.padHeld(cur));  // the whole clip: nothing moves, nothing flies
+        if (t == 30) g.step(Input::pick(shotgun)), assert(g.weapon == shotgun), g.step(Input::pick(bazooka)), assert(g.weapon == bazooka);  // selecting is free
+    }
+    assert(!g.padHeld(cur) && src.st == 2);
+    // the Mystery Teleport: free at once
+    Game m;
+    m.start({29, 2, 1, "", 0}), m.hotSeat = 0;
+    Worm &v = m.worms[m.current];
+    m.openMystery(MY_TELEPORT, v);
+    int t;
+    for (t = 0; t < 400 && !m.mysteryTeleports.empty(); t++) m.step(Input{});
+    assert(m.mysteryTeleports.empty() && !m.padHeld(m.current));
+    for (t = 0; t < 120 && !v.grounded; t++) m.step(Input{});  // Ballistic until it lands
+    assert(v.grounded && t < 60);
+    const Vector3 p = v.pos;
+    Input walk;
+    walk.walk = 127;
+    for (int k = 0; k < 60; k++) m.step(walk);  // 1 s of the 3 s clip
+    assert(Vector3Distance(v.pos, p) > 0.5f && Game::PAD_APPEAR > 60);
+}
+
 // W4M GameLogic.Turn.Started (0x566d57): every turn starts with the empty hand (kWeaponUndefined); FIRE does nothing.
 static void checkEmptyHand() {
     Game g;
@@ -5456,6 +5501,138 @@ static void checkClearVoxel() {
     }
 }
 
+// W4M LandBlobBlastEntity (0x4654a0 / 0x465ea0 / 0x464fc0): 300 pieces, a spawn with none free is dropped; Position += v dt, then v.y += g dt, the spin once per
+// step, and a piece under the floor goes back on the free list
+static void checkLandBlobs() {
+    LandBlobs b;
+    auto live = [&](const LandBlobs &x) { int n = 0; x.each([&](const LandBlobs::Piece &) { n++; }); return n; };
+    for (int i = 0; i < LandBlobs::POOL + 40; i++) b.spawn({1, 10, 1}, {0, 0.0035f, 0}, 3, i % 3, i % 4 == 0);
+    assert(live(b) == LandBlobs::POOL && b.nfree == 0);
+    int building = 0;
+    b.each([&](const LandBlobs::Piece &q) { assert(q.model < 6 && q.slot < 3 && q.mat == 3); building += q.model >= 3; });
+    assert(building == LandBlobs::POOL / 4);  // flag: Blob_4..6 (BuildingBlob), else Blob_1..3 (LandBlob)
+    LandBlobs c;
+    const float g = -12.5e-6f, dt = 1000.0f / 60;  // Gravity -0.00025 units/ms² = -12.5 m/s²
+    Vector3 pos = {1, 10, 1}, vel = {0.001f, 0.0035f, -0.002f};
+    c.spawn(pos, vel, 0, 0, false);
+    const LandBlobs::Piece *q = nullptr;
+    c.each([&](const LandBlobs::Piece &x) { q = &x; });
+    assert(q && Vector3Distance(q->pos, pos) == 0 && q->rot.m0 == 1 && q->rot.m5 == 1);
+    for (int k = 0; k < 20; k++) {
+        c.step(dt, g, 0);
+        pos = Vector3Add(pos, Vector3Scale(vel, dt)), vel.y += g * dt;
+    }
+    assert(Vector3Distance(q->pos, pos) < 1e-4f && fabsf(q->vel.y - vel.y) < 1e-9f);
+    assert(q->rot.m0 != 1 && fabsf(q->rot.m0 * q->rot.m0 + q->rot.m1 * q->rot.m1 + q->rot.m2 * q->rot.m2 - 1) < 1e-3f);  // turned, still a rotation
+    int steps = 20;
+    for (c.step(0, g, 0); live(c) && steps < 400; steps++) c.step(dt, g, 9.99f);  // a zero step does nothing
+    assert(live(c) == 0 && c.nfree == LandBlobs::POOL && steps > 30 && steps < 60);  // 2 v / g = 0.56 s up and back to 10 m, then under 9.99
+    c.spawn({1, 5, 1}, {0, 0, 0}, 0, 0, false);
+    assert(live(c) == 1 && c.nfree == LandBlobs::POOL - 1);
+}
+
+// W4M 0x46c680 / 0x46d290 / 0x463c90: a cleared cell throws one piece off its centre at (0, 0.07, 0) units/ms; a blast one for the 1st, 3rd, 5th... destroyed
+// cell of a Visible frame (none for a hidden or PERM one), pushed by (1.5 - d² / R²) x 0.07 plus n x (0.09 - 5 v.n | 0.09 + 4 v.n); each heightmap vertex it lowers one
+static void checkLandDebris() {
+    Terrain t;
+    assert(t.load("DinerMight", 1) && !t.wcells.empty() && t.wdead.size() == t.wcells.size());
+    auto cellOf = [&](Vector3 p) {
+        for (size_t i = 0; i < t.wcells.size(); i++) if (Vector3Distance(t.wcells[i].ctr, p) == 0) return (int)i;
+        return -1;
+    };
+    int cleared = 0;
+    for (float x = 8; x < 40 && cleared < 6; x += 1.7f)
+        for (float z = 8; z < 40 && cleared < 6; z += 1.3f) {
+            Vector3 h;
+            if (!t.raycast({{x, 30, z}, {0, -1, 0}}, 40, &h) || t.heightmap(h)) continue;
+            t.blobs.clear();
+            if (!t.clearCell(h)) continue;
+            std::vector<LandBlobs::Piece> got;
+            t.blobs.each([&](const LandBlobs::Piece &q) { got.push_back(q); });
+            assert(got.size() == 1);
+            const int w = cellOf(got[0].pos);
+            assert(w >= 0 && t.wdead[w]);
+            const Terrain::WCell &c = t.wcells[w];
+            assert(got[0].mat == c.mat && got[0].slot == (c.at[0] + c.at[1] + c.at[2]) % 3 && (got[0].model >= 3) == c.blob);
+            assert(got[0].vel.x == 0 && got[0].vel.z == 0 && fabsf(got[0].vel.y - 0.07f / 20) < 1e-7f && Vector3Distance(c.ctr, h) < 3);
+            assert(!t.clearCell(h) && t.blobs.nfree == LandBlobs::POOL - 1);  // nothing holds it any more, no second piece
+            cleared++;
+        }
+    assert(cleared >= 4);
+    // a blast: per frame (Visible, not PERM) ceil(destroyed / 2) pieces, each at its cell's centre, pushed away from the blast
+    for (Vector3 n : {Vector3{0, 0, 0}, Vector3{0, 1, 0}}) {
+        Terrain u;
+        assert(u.load("DinerMight", 1));
+        Vector3 c = {};
+        for (const std::vector<uint32_t> &f : u.wframes)  // the middle of the first Visible frame of 20 cells or more
+            if (f.size() >= 20 && u.wcells[f[0]].visible && !u.wcells[f[0]].perm) { c = Vector3Add(u.wcells[f[f.size() / 2]].ctr, {0, 0.01f, 0}); break; }  // off the centre: a cell right at the epicentre throws nothing
+        assert(c.x > 0);
+        const float R = 4;
+        u.blobs.clear();
+        const std::vector<char> was = u.wdead;
+        u.carve(c, R, n);
+        int frames = 0, big = 0;
+        std::vector<int> spawned(u.wframes.size(), 0);
+        u.blobs.each([&](const LandBlobs::Piece &q) {
+            for (size_t i = 0; i < u.wcells.size(); i++) {
+                if (Vector3Distance(u.wcells[i].ctr, q.pos) != 0) continue;
+                spawned[u.wcells[i].fr]++;
+                Vector3 d = Vector3Subtract(q.pos, c), v = Vector3Scale(Vector3Normalize(d), (1.5f - Vector3DotProduct(d, d) / (R * R)) * 0.07f);
+                const float dot = Vector3DotProduct(v, n);
+                v = Vector3Add(v, Vector3Scale(n, dot < 0 ? 0.09f - 5 * dot : 0.09f + 4 * dot));
+                assert(Vector3Distance(q.vel, Vector3Scale(v, 1 / 20.0f)) < 1e-6f && u.wdead[i] && !was[i]);
+                break;
+            }
+        });
+        for (size_t f = 0; f < u.wframes.size(); f++) {
+            int destroyed = 0;
+            for (uint32_t i : u.wframes[f]) destroyed += u.wdead[i] && !was[i];
+            if (u.wframes[f].empty() || !destroyed) continue;
+            const Terrain::WCell &first = u.wcells[u.wframes[f][0]];
+            frames++, big += destroyed >= 3;
+            assert(spawned[f] == (first.perm || !first.visible ? 0 : (destroyed + 1) / 2));
+        }
+        assert(frames > 0 && big > 0);
+    }
+    // the heightmap: a piece per vertex under the sphere, on the 1.5 m lattice, LandBlob models, the first or second heightmap material's floor texture
+    Terrain m;
+    assert(m.load("DinerMight", 1) && !m.sharp.top.empty());
+    Vector3 h;
+    assert(m.raycast({{24, 30, 24}, {0, -1, 0}}, 40, &h) && m.heightmap(h));
+    m.blobs.clear();
+    m.carve({h.x, h.y - 0.2f, h.z}, 3);
+    int n = 0;
+    m.blobs.each([&](const LandBlobs::Piece &q) {
+        n++;
+        const float i = (q.pos.x - m.origin.x + 75) / 1.5f, j = (q.pos.z - m.origin.z + 75) / 1.5f;
+        assert(fabsf(i - roundf(i)) < 1e-3f && fabsf(j - roundf(j)) < 1e-3f && q.model < 3 && q.slot == 0 && (q.mat == 64 || q.mat == 65));
+        assert(fabsf(q.pos.x - h.x) < 4 && fabsf(q.pos.z - h.z) < 4);
+    });
+    assert(n >= 6 && n <= 40);
+    // Land.Indestructable (0x69dab0): Land.ClearVoxel returns, no cell, no piece
+    GameConfig cfg{29, 2, 1, "DinerMight", 0};
+    Game g;
+    g.start(cfg);
+    Terrain probe;  // a point whose cell a clear takes
+    assert(probe.load("DinerMight", 1));
+    bool found = false;
+    for (float x = 8; x < 40 && !found; x += 1.7f)
+        for (float z = 8; z < 40 && !found; z += 1.3f) found = probe.raycast({{x, 30, z}, {0, -1, 0}}, 40, &h) && !probe.heightmap(h) && probe.clearCell(h);
+    assert(found);
+    g.indestructible = true;
+    const unsigned e0 = g.terrain.edits;
+    g.terrain.blobs.clear();
+    g.clearVoxel(h);
+    assert(g.terrain.edits == e0 && g.terrain.blobs.nfree == LandBlobs::POOL && g.terrain.solid(h));
+    g.indestructible = false;
+    g.clearVoxel(h);
+    assert(g.terrain.edits > e0 && g.terrain.blobs.nfree == LandBlobs::POOL - 1);
+    Vector3 at;
+    g.terrain.blobs.each([&](const LandBlobs::Piece &q) { at = q.pos; });
+    for (int k = 0; k < 10; k++) g.step(Input{});  // Game::step runs the pool: the piece rose
+    g.terrain.blobs.each([&](const LandBlobs::Piece &q) { assert(q.pos.y > at.y && q.vel.y < 0.07f / 20); });
+}
+
 // W4M 0x46e6b9 / 0x468200: a Visible 0 land frame is solid and never drawn (material 67); the TheWindyWizard "CODE AAAA" frame goes with Land.ClearCoded
 static void checkHiddenLand() {
     for (const char *map : {"TheWindyWizard", "ChallengeCrate2", "DestructAndServe"}) {
@@ -5609,6 +5786,8 @@ int main() {
     checkPlacementSolid();
     checkDetailRemoval();
     checkClearVoxel();
+    checkLandBlobs();
+    checkLandDebris();
     checkHiddenLand();
     checkLandUV();
     checkPlacement();
@@ -5730,6 +5909,7 @@ int main() {
     checkSchemeFactory();
     checkTelepads();
     checkMysteryTeleport();
+    checkTeleportInput();
     checkGunObjects();
     checkObjectCollisions();
     checkWormColliders();

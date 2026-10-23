@@ -1754,7 +1754,7 @@ void Game::sentryHit(Object &o, Vector3 p, const Blast &b) {
 }
 
 // W4M Land.ClearVoxel on the cell the bullet's land ray hit (guns 0x55d8c0, sentry 0x56cb43): `at` is the ray's first land sample
-void Game::clearVoxel(Vector3 at) { terrain.clearCell(at); }
+void Game::clearVoxel(Vector3 at) { clearCell(at); }
 
 // one bullet: a cone of 0.4 r^2 around the aim (10 units over the feet), the nearest hit within 3000 units takes the Shot* ExplosionMessage
 void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
@@ -2544,7 +2544,7 @@ void Game::stepWorm(Worm &w) {
                 float t;
                 const Vector3 a = {w.pos.x + w.vel.x * DT + o.x, w.pos.y + w.vel.y * DT - R, w.pos.z + w.vel.z * DT + o.y};
                 if (!terrain.cast(a, {0, 1, 0}, 1, &t, nullptr)) continue;
-                dug = rising && terrain.clearCell({a.x, a.y + t + 0.01f, a.z});
+                dug = rising && clearCell({a.x, a.y + t + 0.01f, a.z});
                 punching = dug;
                 break;
             }
@@ -3015,7 +3015,7 @@ void Game::explode(Vector3 p, const Blast &b0, int type, int weapon, const char 
         i++;
     }
     if (factory.on && !factory.damaged && Vector3Distance(p, Vector3Add(factory.pos, {0, 2, 0})) < b.crater + 2) factory.damaged = true, factory.die = clock + msTicks(100);
-    if (b.crater > 0 && !wp(WP_MINE_RESPAWN) && !indestructible) blastLand(p, b.crater);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
+    if (b.crater > 0 && !landLocked()) blastLand(p, b.crater, b.normal);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
     emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, fxAt ? *fxAt : p, -1, weapon), events.back().fx = fx, events.back().sfx = sfx;
     for (Worm &w : worms) {
         if (!w.alive || int(&w - worms.data()) == dyingWorm || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
@@ -3243,6 +3243,7 @@ void Game::stepShots(const Input &in, bool detonate) {
         const WeaponDef &wd = WEAPONS[s.weapon];
         float fatBlast = 0;  // Fatkins: this contact's blast scale
         bool boom = false, lifeEnd = false, stuck = wd.stick > 0 && s.stage == 1 && !s.child;
+        Vector3 boomN = {0, 0, 0};  // the contact normal Detonate hands Explode (0x57f140); the zero vector on expiry (0x57fb78)
         // W4M DetonatesAtRest: the shell's restFuse (PreDetonationTime = fuse), a Weapon Factory bomblet's crest (0 ms)
         const bool rests = s.child ? wd.crest : wd.restFuse, missile = wd.kind == Kind::Homing && !s.child;  // a homing weapon's bomblets fly as shells
         bool timed = s.child ? wd.crest : wd.fuse > 0 || wd.restFuse || (wd.stick > 0 && s.stage);
@@ -3318,6 +3319,7 @@ void Game::stepShots(const Input &in, bool detonate) {
                 now |= m;
                 bool obj = touchesObj(s, np, rad, nowObj) && star;  // 0x57fc00 DetonatesOnObjectImpact: Starburst 1, Super Sheep 0 (flies on)
                 boom = terrain.solid(np) || (m & ~s.touching) || obj || shell(was, np, &sn);
+                if (terrain.solid(np)) boomN = terrain.normal(np);
             }
             s.touching = now, s.touchObj = nowObj;
             np = s.pos;
@@ -3434,7 +3436,7 @@ void Game::stepShots(const Input &in, bool detonate) {
                 const float *damp = s.child ? wd.cdamp : wd.damp;
                 if (shell(s.pos, np, &sn)) {  // Bubble.Hit; under 0.15 (units/ms)^2 the velocity first gets x (1.1, 1.5, 1.1) (0x577e64)
                     if (impact && wd.stick > 0) { stick(s); break; }
-                    if (impact) { boom = true; break; }
+                    if (impact) { boom = true, boomN = sn; break; }
                     if (Vector3Length(s.vel) < sqrtf(0.15f) * 50) s.vel = {s.vel.x * 1.1f, s.vel.y * 1.5f, s.vel.z * 1.1f};
                     s.vel = payBounce(s.vel, sn, damp, rests || !timed);
                     break;
@@ -3445,7 +3447,7 @@ void Game::stepShots(const Input &in, bool detonate) {
                 else solid = touchesObj(s, np, rad, nowObj, &sn);
                 if (solid) {
                     if (impact && wd.stick > 0) { stick(s); break; }
-                    if (impact) { boom = true; break; }
+                    if (impact) { boom = true, boomN = sn; break; }
                     s.vel = payBounce(s.vel, sn, damp, land || rests || !timed);  // Payload.CollideWithLand passes 1 (0x577cb9)
                     if (Vector3Length(s.vel) > 2) {
                         emit(GameEvent::Bounce, np, -1, s.weapon);
@@ -3480,9 +3482,10 @@ void Game::stepShots(const Input &in, bool detonate) {
             s.pos = np;
             if (wd.stick > 0 && !stuck) emit(GameEvent::Arm, np, -1, s.weapon);  // a worm hit: armed by the impact, detonated in the same call (0x586520)
             Blast b = superBlast(blastOf(wd, s.child), containerOf(s.weapon, s.child));
+            b.normal = boomN;
             Vector3 at = np;
             bool smash = wd.kind == Kind::Donkey && wd.clusters == 0;
-            if (smash && !lifeEnd && !wp(WP_MINE_RESPAWN) && !indestructible) blastLand(np, wd.lift * (doubled() ? 2 : 1));
+            if (smash && !lifeEnd && !landLocked()) blastLand(np, wd.lift * (doubled() ? 2 : 1));
             if (smash && !lifeEnd) at = Vector3Subtract(np, {0, wd.lift, 0});  // 0x553970: a land-only blast of Radius at the centre, then Explode Radius below it
             else if (smash) at = np;  // expiry: Detonate at the entity
             // a smash is Explode + DetonationFx (0x553970), no DetonationSfx; kind by container name prefix kWeaponCluster/Factory (0x57f32c)
@@ -3513,6 +3516,7 @@ void Game::stepShots(const Input &in, bool detonate) {
 
 void Game::step(const Input &raw) {
     events.clear();  // also when over: GameOver must reach the listeners once
+    terrain.blobs.step(DT * 1000, gravity() / 1e6f * -1, terrain.origin.y);  // 0x464fc0 each game clock step; the pieces are render only
     if (phase == Phase::GameOver && !scriptMovieOn(*this)) return;  // the world runs on under the EFMV.GameOverMovie
     if (raw.flags & Input::SKIP_MOVIE) scriptSkipMovie(*this);
     if (raw.flags & Input::DRAW) { phase = Phase::GameOver, winner = -1, emit(GameEvent::GameOver, {0, 0, 0}); return; }  // the round to "Nobody" (0x4fd105)

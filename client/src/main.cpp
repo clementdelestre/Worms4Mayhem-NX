@@ -812,6 +812,19 @@ static void drawTelepad(const Game &g, const Game::Telepad &p) {
     Models::draw("telepad", MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), MatrixTranslate(p.pos.x, p.pos.y, p.pos.z)), WHITE, p.st == 0 ? "On" : nullptr, (g.clock - p.onAt) * Game::DT, false);
     Models::lightMul({1, 1, 1});
 }
+// W4M LandBlobBlastEntity pieces (0x464fc0): Blob_n in raw units (0.05 m), the big ones x 0.7 (0x90c4bc), wearing the thrown cell's land texture
+static void drawBlobs(const Terrain &t) {
+    static const char *const NAME[6] = {"blob_1", "blob_2", "blob_3", "blob_4", "blob_5", "blob_6"};
+    static const float K[6] = {0.7f, 1, 1, 0.7f, 1, 1};
+    t.blobs.each([&](const LandBlobs::Piece &q) {
+        if (!Models::visible(q.pos, 1)) return;
+        const Texture2D *tx = t.blobTexture(q.mat, q.slot);
+        if (tx) Models::texture(tx);
+        const float k = 0.05f * K[q.model];
+        Models::draw(NAME[q.model], MatrixMultiply(MatrixMultiply(MatrixScale(k, k, k), q.rot), MatrixTranslate(q.pos.x, q.pos.y, q.pos.z)));
+        if (tx) Models::texture(nullptr);
+    });
+}
 static void telepadFx(const Game &g) {
     static std::vector<char> on;
     const int BASE = 1 << 20;  // Fx::scripted handles of the pads
@@ -2816,6 +2829,7 @@ int main(int argc, char **argv) {
         dudFx(game.objects);
         telepadFx(game);
         for (const Game::Telepad &p : game.telepads) if (p.st != 5 && Models::visible(p.pos, 3)) drawTelepad(game, p);
+        drawBlobs(game.terrain);
         for (const Object &o : game.objects) {
             if (o.type == Object::Crate || o.type == Object::Target) crateChute(o, &o - game.objects.data(), pause.open ? 0 : dt);
             if (!Models::visible(Vector3Add(o.pos, {0, 1, 0}), 2.5f)) continue;  // incl. the parachute

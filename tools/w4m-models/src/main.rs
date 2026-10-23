@@ -82,6 +82,13 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("ufo", "AlienAbduction", 0.0, false, &["AbductStart", "AbductViolate+AbductLoop2", "AbductOpenDoors+AbductLoop2", "AbductLoop", "AbductLoop2", "AbductCloseBeam", "AbductEnd+AbductLoop2", "AbductFail"]),  // AlienAbductionGraphicEntity: raw units, origin on the beam axis; saucer, pods, BeamCone, CreatePoint; +AbductLoop2: BeamCone stays closed after AbductCloseBeam
     ("warpgate", "AbductionWarpGate", 0.0, false, &["WXM_DefSource"]),  // the portal the UFO arrives and leaves through
     ("telepad", "Telepad", 0.0, false, &["On"]),  // TelepadGraphicEntity 0x5d27c0: plays On once when the pad is ready (raw units)
+    // LandBlobBlastEntity pieces (0x4654a0 "Blob_%d", Bundl09): raw units; 1-3 LandBlob Big / Medium / Small, 4-6 BuildingBlob Big / Medium / Small
+    ("blob_1", "Blob_1", 0.0, false, &[]),
+    ("blob_2", "Blob_2", 0.0, false, &[]),
+    ("blob_3", "Blob_3", 0.0, false, &[]),
+    ("blob_4", "Blob_4", 0.0, false, &[]),
+    ("blob_5", "Blob_5", 0.0, false, &[]),
+    ("blob_6", "Blob_6", 0.0, false, &[]),
     ("cow", "Cow.Payload", 0.0, false, &["Hang", "Skydive"]),  // ParachutePayloadGraphicEntity: Crate.Chute at its "Parachute" node
     // Hats (Bundl172-248, one "Hat.<Name>" XMeshDescriptor each; attach at the worm's HatLocator like held items at WeaponLocator)
     ("hats/afro", "Hat.Afro", 0.0, false, &[]),

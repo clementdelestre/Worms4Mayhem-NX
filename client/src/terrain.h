@@ -2,6 +2,7 @@
 #include "raylib.h"
 #include "bricks.h"
 #include "sharp.h"
+#include "landblobs.h"
 #include <cmath>
 #include <map>
 #include <string>
@@ -120,8 +121,17 @@ struct Terrain {
     std::map<std::string, Coded> codes;
     // W4M cells as Land.ClearVoxel (0x4733b0) clears them (`.wcells`): pieces (ids in the .cells hexahedra, ascending), the grid cells they list in,
     // `.thin` entry + 1, frame / cell indices into frameCells (-1 none), PERM; alone / shared: offsets of the voxel runs in wbytes
-    struct WCell { uint32_t hex, nhex, thin; int lo[3], n[3], frame, cell; bool perm; size_t alone, shared; };
+    // fr / at: the importer's frame and the cell's x y z in it; blob: BuildingBlob debris; visible: its frame's Visible; mat: the W4M material; ctr: 0x467aa0, map m
+    struct WCell { uint32_t hex, nhex, thin; int lo[3], n[3], frame, cell; bool perm; size_t alone, shared; int fr, at[3]; bool blob, visible; uint8_t mat; Vector3 ctr; };
     std::vector<WCell> wcells;
+    std::vector<std::vector<uint32_t>> wframes;  // per importer frame, its cells in the order 0x46d290 walks them (7-cell chunks z, x, y, then z, x, y)
+    std::vector<char> wdead;  // per wcell: gone, for the debris (a blast, Land.ClearVoxel)
+    LandBlobs blobs;  // the land debris pool (0x465ea0), stepped by Game::step
+    const Texture2D *blobTexture(int mat, int slot) const;
+    void blobCell(const WCell &w, Vector3 vel);  // 0x465ea0: the cell's centre throws a piece, vel in W4M units/ms
+    void blastHeightmap(Vector3 c, float radius, Vector3 n);  // 0x463c90: the debris of the heightmap vertices a blast lowers
+    std::vector<float> hmv;  // the 100 x 100 heightmap vertices' h (0..1) after the blasts, for that debris
+    void blastCells(Vector3 c, float radius, Vector3 n);  // 0x46d290: the debris of the cells a blast destroys, n the explosion message's +0x20
     std::vector<unsigned char> wbytes;
     std::vector<std::pair<int, uint16_t>> shareCnt;  // grid point -> the cells still holding it, for points two or more cells hold
     bool clearCell(Vector3 p);  // Land.ClearVoxel: the one W4M land cell holding p, nothing else; false when none (heightmap, PERM frame)
@@ -140,7 +150,7 @@ struct Terrain {
     bool solid(Vector3 p) const { return sample(p) > 0; }
     Vector3 normal(Vector3 p, float e = VOX) const;  // the exact face in a listed cell, else -gradient over +-e (e < VOX: VOX where flat)
     bool lowerHeightmap(Vector3 c, float radius, int box[6]);  // a blast's heightmap bowl (carve)
-    bool carve(Vector3 c, float radius);  // true when some voxel changed (W4M Land.Changed)
+    bool carve(Vector3 c, float radius, Vector3 n = {0, 0, 0});  // true when some voxel changed (W4M Land.Changed); n: the Explosion's +0x20, the debris' push
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
     void addCell(const Vector3 *c);  // a convex land cell, exact as an imported map's (corners bit 1 +x, 2 +y, 4 +z)
     bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff

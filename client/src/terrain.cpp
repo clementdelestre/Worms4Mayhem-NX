@@ -208,7 +208,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
     loadMs[0] = loadMs[1] = loadMs[2] = 0;
     objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
-    thinOnly.clear(), thinVox.clear(), thinAt.clear(), codes.clear(), wcells.clear(), wbytes.clear(), shareCnt.clear();
+    thinOnly.clear(), thinVox.clear(), thinAt.clear(), codes.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear();
     sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), uvOf.clear(), landUV.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
@@ -373,7 +373,7 @@ void Terrain::loadThin(const std::string &path) {
     std::vector<int> anchors;
     anchors = thinVox;
     std::sort(anchors.begin(), anchors.end()), anchors.erase(std::unique(anchors.begin(), anchors.end()), anchors.end());
-    thinOnly.clear(), thinAt.clear(), wcells.clear(), wbytes.clear(), shareCnt.clear();
+    thinOnly.clear(), thinAt.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear();
     for (int v : anchors) {
         int x, y, z;
         xyz(v, x, y, z);
@@ -489,7 +489,7 @@ void Terrain::mergeBlocks() {
 
 void Terrain::generate(unsigned seed) {
     setGrid(352, 256, 352);
-    thinOnly.clear(), thinAt.clear(), wcells.clear(), wbytes.clear(), shareCnt.clear();
+    thinOnly.clear(), thinAt.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear();
     theme.clear(), mats.clear(), uvOf.clear(), landUV.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
@@ -569,6 +569,52 @@ bool Terrain::heightmap(Vector3 p) const {
     return mats[idx(x, y, z)] == 65 || mats[idx(x, y, z)] == 66;
 }
 
+// W4M 0x463c90's vertices: 100 x 100 over x, z in [-75, 75] m (spacing 150 / 99), y = HMP_BASE + HMP_SCALE h; hmv holds h, sampled from `sharp.top` on first use
+static constexpr float HMP_EXTENT = 75, HMP_SCALE = 4.8f, HMP_BASE = -1.3f;
+
+// 0x463c90 for the debris: each vertex under the blast sphere takes h = (h + cy - sqrt(1 - d²) R / size y) / 2 and throws a piece from its (i, j) x 1.5 m
+// (0x463fbc: / 100, not / 99), pushed like 0x46d290's; the heightmap land itself is `lowerHeightmap`'s
+void Terrain::blastHeightmap(Vector3 c, float radius, Vector3 n) {
+    if (!sharp.on || sharp.top.empty()) return;
+    const float N = 100;
+    if (hmv.empty()) {
+        hmv.assign((size_t)N * N, 0);
+        for (int j = 0; j < N; j++)
+            for (int i = 0; i < N; i++) {
+                const float x = (origin.x + i * 2 * HMP_EXTENT / (N - 1)) * IVOX, z = (origin.z + j * 2 * HMP_EXTENT / (N - 1)) * IVOX;
+                const int x0 = std::min((int)x, NX - 2), z0 = std::min((int)z, NZ - 2);
+                if (x < 0 || z < 0 || x0 < 0 || z0 < 0) continue;
+                const float fx = x - x0, fz = z - z0, *t = &sharp.top[z0 * NX + x0];
+                const float q[4] = {t[0], t[1], t[NX], t[NX + 1]};
+                if (std::isnan(q[0] + q[1] + q[2] + q[3])) continue;  // the importer keeps no land under the sea cut
+                const float y = (q[0] * (1 - fx) + q[1] * fx) * (1 - fz) + (q[2] * (1 - fx) + q[3] * fx) * fz;
+                hmv[j * (int)N + i] = Clamp((y - origin.y - HMP_BASE) / HMP_SCALE, 0, 1);
+            }
+    }
+    const float cx = (c.x - origin.x + HMP_EXTENT) / (2 * HMP_EXTENT), cz = (c.z - origin.z + HMP_EXTENT) / (2 * HMP_EXTENT), cy = (c.y - origin.y - HMP_BASE) / HMP_SCALE;
+    const float rx = radius / (2 * HMP_EXTENT), ry = radius / HMP_SCALE;
+    for (int j = 0; j < N; j++)
+        for (int i = 0; i < N; i++) {
+            float &h = hmv[j * (int)N + i];
+            const float u = (i / (N - 1) - cx) / rx, w = (j / (N - 1) - cz) / rx, v = (h - cy) / ry;
+            const float d2 = u * u + w * w + (v < 0 ? v * v : 0);
+            if (d2 >= 1) continue;
+            h = (h + (cy - sqrtf(1 - d2) * ry)) * 0.5f;
+            const Vector3 at = {origin.x - HMP_EXTENT + i * 2 * HMP_EXTENT / N, origin.y + HMP_BASE + HMP_SCALE * h, origin.z - HMP_EXTENT + j * 2 * HMP_EXTENT / N};
+            const Vector3 d = Vector3Subtract(at, c);
+            const float l2 = Vector3DotProduct(d, d);
+            if (!(l2 > 0)) continue;
+            Vector3 vel = Vector3Scale(Vector3Normalize(d), (1.5f - l2 / (radius * radius)) * 0.07f);
+            const float dot = Vector3DotProduct(vel, n);
+            vel = Vector3Add(vel, Vector3Scale(n, dot < 0 ? 0.09f - 5 * dot : 0.09f + 4 * dot));
+            int mat = 64;  // 0x45e100: the vertex's mask picks the first or second heightmap material, its floor texture
+            const int gx = Clamp((int)(at.x * IVOX + 0.5f), 0, NX - 1), gz = Clamp((int)(at.z * IVOX + 0.5f), 0, NZ - 1);
+            for (int y = std::min(NY - 1, (int)(at.y * IVOX) + 1); y >= 0 && !mats.empty(); y--)
+                if (const unsigned char m = mats[idx(gx, y, gz)]; m == 65 || m == 66) { mat = m - 1; break; }
+            blobs.spawn(at, Vector3Scale(vel, 1 / 20.0f), mat, 0, false);
+        }
+}
+
 // W4M 0x463c90 (docs/w4m/formats.md §25): the blast lowers the heightmap's columns; their voxels and cell lists follow
 bool Terrain::lowerHeightmap(Vector3 c, float radius, int box[6]) {
     const std::vector<SharpLand::Col> cols = sharp.lower(c, radius);
@@ -626,11 +672,11 @@ void Terrain::voxelOut(size_t i, int box[6]) {
     box[3] = std::max(box[3], x), box[4] = std::max(box[4], y), box[5] = std::max(box[5], z);
 }
 
-bool Terrain::carve(Vector3 c, float radius) {
+bool Terrain::carve(Vector3 c, float radius, Vector3 n) {
     int box[6] = {NX, NY, NZ, -1, -1, -1};  // changed voxels and listed cells: only their chunks remesh
     bool changed = false;
     const bool hm = sharp.on && !sharp.top.empty();
-    if (hm) changed = lowerHeightmap(c, radius, box);
+    if (hm) blastHeightmap(c, radius, n), changed = lowerHeightmap(c, radius, box);
     sharp.carve(d, c, radius, box, hm);
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {(float)NX, (float)NY, (float)NZ};
@@ -652,6 +698,7 @@ bool Terrain::carve(Vector3 c, float radius) {
                 box[3] = std::max(box[3], x), box[4] = std::max(box[4], y), box[5] = std::max(box[5], z);
             }
     // W4M 0x46d290: a cell whose centre (0x467aa0) has (frame-space offset x Scale / radius)² summed < 1 goes; rigid parents make that the world sphere
+    blastCells(c, radius, n);
     std::vector<char> hit(frameCells.size(), 0);
     for (size_t f = 0; f < frameCells.size(); f++)
         for (size_t k = 0; k < frameCells[f].size(); k++)
@@ -864,12 +911,12 @@ bool Terrain::clearCoded(const char *code) {  // exact on 4 bytes (0x47519c); no
     return true;
 }
 
-// .wcells "W4K1" (docs/w4m/formats.md §22): u32 size, then the deflated records; the runs stay encoded in wbytes
+// .wcells "W4K2" (docs/w4m/formats.md §22): u32 size, then the deflated records; the runs stay encoded in wbytes
 void Terrain::loadWCells(const std::string &path) {
     int size = 0;
     unsigned char *f = LoadFileData(path.c_str(), &size);
     uint32_t raw = 0, count = 0;
-    if (f && size >= 8 && !memcmp(f, "W4K1", 4)) memcpy(&raw, f + 4, 4);
+    if (f && size >= 8 && !memcmp(f, "W4K2", 4)) memcpy(&raw, f + 4, 4);
     wbytes.assign(raw < (1u << 28) ? raw : 0, 0);
     if (raw >= 4 && wbytes.size() == raw && sinflate(wbytes.data(), (int)raw, f + 8, size - 8) == (int)raw) memcpy(&count, wbytes.data(), 4);
     UnloadFileData(f);
@@ -882,10 +929,28 @@ void Terrain::loadWCells(const std::string &path) {
         for (int a = 0; a < 3; a++) w.lo[a] = (int)wvarint(p);
         for (int a = 0; a < 3; a++) w.n[a] = (int)wvarint(p);
         w.thin = wvarint(p), w.frame = (int)wvarint(p) - 1, w.cell = (int)wvarint(p) - 1, w.perm = wvarint(p) != 0;
+        w.fr = (int)wvarint(p);
+        for (int a = 0; a < 3; a++) w.at[a] = (int)wvarint(p);
+        const uint32_t fl = wvarint(p);
+        w.blob = fl & 1, w.visible = fl & 2, w.mat = (uint8_t)wvarint(p);
+        if (p + 12 <= wbytes.size()) memcpy(&w.ctr, &wbytes[p], 12);
+        p += 12;
         w.alone = p, wRuns(p, [](size_t) {});
         w.shared = p, wRuns(p, [&](size_t v) { held.push_back((int)v); });
         wcells.push_back(w);
     }
+    wdead.assign(wcells.size(), 0), wframes.clear();
+    for (uint32_t i = 0; i < wcells.size(); i++) {
+        if ((size_t)wcells[i].fr >= wframes.size()) wframes.resize(wcells[i].fr + 1);
+        wframes[wcells[i].fr].push_back(i);
+    }
+    // 0x46d290 walks a frame's 7-cell chunks z, then x, then y, and the cells of each the same way
+    for (std::vector<uint32_t> &f : wframes)
+        std::sort(f.begin(), f.end(), [&](uint32_t a, uint32_t b) {
+            const int *p = wcells[a].at, *q = wcells[b].at;  // x, y, z
+            const int ka[6] = {p[2] / 7, p[0] / 7, p[1] / 7, p[2] % 7, p[0] % 7, p[1] % 7}, kb[6] = {q[2] / 7, q[0] / 7, q[1] / 7, q[2] % 7, q[0] % 7, q[1] % 7};
+            return std::lexicographical_compare(ka, ka + 6, kb, kb + 6);
+        });
     std::sort(held.begin(), held.end());
     for (size_t i = 0; i < held.size();) {
         size_t j = i;
@@ -910,6 +975,38 @@ template <class F> void Terrain::wRuns(size_t &p, F f) const {
         const size_t at = end + wvarint(p), len = wvarint(p);
         for (size_t i = 0; i < len; i++) f(at + i);
         end = at + len;
+    }
+}
+
+const Texture2D *Terrain::blobTexture(int mat, int slot) const {  // 0x4750f0: the material's three textures (floor, wall, roof), nullptr before they are built
+    if (mat < 0 || mat >= (int)texMats.size() || !texMats[mat].maps) return nullptr;
+    const Texture2D &t = texMats[mat].maps[slot == 0 ? MATERIAL_MAP_DIFFUSE : slot == 1 ? MATERIAL_MAP_SPECULAR : MATERIAL_MAP_NORMAL].texture;
+    return t.id ? &t : nullptr;
+}
+
+void Terrain::blobCell(const WCell &w, Vector3 v) {
+    blobs.spawn(w.ctr, Vector3Scale(v, 1 / 20.0f), w.mat, (w.at[0] + w.at[1] + w.at[2]) % 3, w.blob);
+}
+
+// W4M 0x46d290, per land frame: a PERM frame is skipped; a Visible frame throws a piece for its 1st, 3rd, 5th... destroyed cell (a hidden one, none), pushed
+// away from the blast by (1.5 - d² / R²) x 0.07 units/ms, plus n x (0.09 - 5 v.n, or 0.09 + 4 v.n for v.n >= 0)
+void Terrain::blastCells(Vector3 c, float radius, Vector3 n) {
+    for (const std::vector<uint32_t> &f : wframes) {
+        if (f.empty() || wcells[f[0]].perm) continue;
+        int left = wcells[f[0]].visible ? 1 : -1;
+        for (uint32_t i : f) {
+            const WCell &w = wcells[i];
+            const Vector3 d = Vector3Subtract(w.ctr, c);
+            const float l2 = Vector3DotProduct(d, d);
+            if (wdead[i] || !(sqrtf(l2) < radius)) continue;
+            wdead[i] = 1;
+            if (--left) continue;
+            left = 2;
+            if (!(l2 > 0)) continue;
+            Vector3 v = Vector3Scale(Vector3Normalize(d), (1.5f - l2 / (radius * radius)) * 0.07f);
+            const float dot = Vector3DotProduct(v, n);
+            blobCell(w, Vector3Add(v, Vector3Scale(n, dot < 0 ? 0.09f - 5 * dot : 0.09f + 4 * dot)));
+        }
     }
 }
 
@@ -940,6 +1037,7 @@ bool Terrain::clearCell(Vector3 p) {
     auto it = std::upper_bound(wcells.begin(), wcells.end(), hex, [](uint32_t h, const WCell &w) { return h < w.hex; });
     if (hex == ~0u || it == wcells.begin() || hex >= (--it)->hex + it->nhex || it->perm) return false;
     const WCell &w = *it;
+    if (!wdead[&w - wcells.data()]) blobCell(w, {0, 0.07f, 0}), wdead[&w - wcells.data()] = 1;  // 0x46c680: a piece off the cell centre, (0, 0.07, 0) units/ms
     remeshWait();
     sharp.drop(w.hex, w.nhex, w.lo, w.n);
     int box[6] = {w.lo[0], w.lo[1], w.lo[2], w.lo[0] + w.n[0], w.lo[1] + w.n[1], w.lo[2] + w.n[2]};
