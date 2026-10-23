@@ -397,9 +397,9 @@ Message delivery:
 Worms (WXWormManagerService HandleMessage 0x5b5e70):
 - `Worm.DieQuietly` and `WXWormManager.UnspawnWorm` (int slot) both run 0x5b4af0: no worm in the slot logs "request to unspawn a worm
   which does not exist"; else 0x5aaac0(0) on it, ActiveWormIndex = -1 if it was the active one, WormData.Active (+0x124) = 0, the logical
-  worm is deleted (0x68b927) and the team lists updated (0x5b3f60). No death blast, no gravestone; the logical worm's delete (0x68e18f) sends the entity TaskDeathMessage 0x42, which 0x5b07c0 routes to Cleanup 0x5a6970: DeadWorm.Id = slot then Worm.Died, so `Worm_Died` runs for a quiet death too [REA decompile 0x68e18f, 0x5b07c0, 0x5a6970; JoustAboutIt counts the Wizard's DieQuietly as its 4th enemy death].
+  worm is deleted (0x68b927) and the team lists updated (0x5b3f60). No death blast, no gravestone; the logical worm's delete (0x68e18f) sends the entity TaskDeathMessage 0x42, which 0x5b07c0 routes to Cleanup 0x5a6970: DeadWorm.Id = slot then Worm.Died, so `Worm_Died` runs for a quiet death too, inside the DieQuietly call: 0x68b927 > 0x68e176 > 0x68e18f calls the entity's HandleMessage (vtable +0x1c) directly, and Cleanup sends Worm.Died through 0x68b89e > 0x68cb43 > 0x68cb82, which calls the target's HandleMessage at once (no queue) [REA decompile 0x68e18f, 0x68cb82, 0x5b07c0, 0x5a6970; NiceToSiegeYou's Worm_Died starts with `if Turn == 0 return` for the intro's DieQuietly 3 / 8 / 9 before StartFirstTurn; JoustAboutIt counts the Wizard's DieQuietly as its 4th enemy death].
 - `Worm.Respawn` (int slot < 16) 0x5b4f70: a worm already in the slot logs "A worm which currently exists tried to respawn" and nothing
-  happens. Else PlaceWormAtSpawnPoint 0x5b4180 (WormData.Spawn), and only if WormData.Active: SpawnWorm 0x5b31b0, its speech bank, and
+  happens. Else PlaceWormAtSpawnPoint 0x5b4180 (WormData.Spawn: a detail named other than "spawn" gives its exact position, only "spawn" searches random ground [REA decompile 0x5b4180]), and only if WormData.Active: SpawnWorm 0x5b31b0, its speech bank, and
   with IsAllowedToTakeTurn (+0x12d) its team joins its alliance's list and the worm its team's (+0x128 PositionInTeam = its index).
 - WormManager.Reinitialise (0x5b5bf0) sets CurrentTeamIndex -1 (0x5b5c4c); ActivateNextWorm 0x5b59b0 sets ActiveWormIndex and
   CurrentTeamIndex; with no worm to activate it asserts `m_nActiveWormIndex!=-1` (0x5b5b0f). Not traced: what the release build does
@@ -408,6 +408,14 @@ Worms (WXWormManagerService HandleMessage 0x5b5e70):
   {WormId}: WXWormManager.UnspawnWorm (EFMVMovieLogicEntity 0x525e7b, 0x525fa0). TheWindyWizard's intro has a Critical UnspawnWorm [data].
 - The AI's allies (0x4a4790, used by the target value 0x4a9260) are the worms whose team has the same AlliedGroup colour (0x50cae0) as
   the thinking worm's [disasm]; TraitorousWaters' villagers (VillageTeam AlliedGroup 0) are the player's allies [data].
+- TraitorousWaters [data: lua.py]: the intro's EFMV_Terminated sends DieQuietly 10 (Villager6, last slot); each gun / house trigger is a Trigger_Destroyed:
+  guns (Index 5..11 = gun + 4) count once a turn (DONTDOTRIGGERCHECK, reset by TurnStarted) while g_bGunDestroyed is set every time, so a gun
+  destroyed in a turn after another leaves g_nNumberOfGunsRemaining above 0 with every g_bGunDestroyed true: TurnStarted then loops for ever looking
+  for a gun to fire. SilentKillWormInTheAir (3 s after a house dies) unspawns slot g_nNextHouseToBlowUp, 0 (the player) before the first BlowThemHousesUp.
+- TheWindyWizard [data: lua.py]: the 4 island triggers are destroyed by their Target crates' blasts (or shells); the 4th Trigger_Destroyed (Destroyedtrig 5)
+  starts MidSequence2 1 s later, whose Critical SpawnWorm 9 gives the 4th wizard; an IslandNBlowUp movie still playing then ignores that EFMV.Play.
+- ChuteToVictory [data]: Trig1-5 are WormCollect 0 (slot 0), spawned before lib_SetupWorm; Trig5 sits 0.9 m under the 3 m water line (radius 5 m).
+- TurkishDelights [data]: the light triggers are TeamCollect 1 (the baddie team): Trigger.Collector is a baddie, whose Trigger_Collected DieQuietly's it.
 
 Triggers (TriggerLogicEntity, vtable 0x862c78, HandleMessage 0x5d5730, init 0x5d5360):
 - Keys read at creation: Spawn (the detail object by name, its exact position, 0x5d4f30; none: logs "Couldn't find Trigger Spawn

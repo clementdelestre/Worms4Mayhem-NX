@@ -630,9 +630,9 @@ struct Game {
     MissionRun run;
     std::shared_ptr<struct ScriptState> script;  // W4M mission script (script.h): it starts and ends the turns
     // W4M TriggerLogicEntity (scripts' GameLogic.CreateTrigger, 0x5d5360): a sphere at a marker that worms or payloads collect and
-    // blasts destroy. Team fields as W4M (-1 any, else that team; 4 and up: never); wormCollect: our worm index (-1 any, -2 none);
+    // blasts destroy. Team fields as W4M (-1 any, else that team; 4 and up: never); wormCollect: our worm index of the slot WormCollect names (-1 any, -2 none), slot: that W4M slot;
     // mask: what it collides with (0x5d4b50: 1 worms, 8 payloads, 0x80 sheep-like payloads)
-    struct Trigger { Vector3 pos; float radius; int index, hp, teamCollect, wormCollect, teamDestroy, sheepCollect, payloadCollect; uint16_t mask; bool visible; bool affectsAI; uint8_t gone = 0; int collector = -1; };
+    struct Trigger { Vector3 pos; float radius; int index, hp, teamCollect, wormCollect, teamDestroy, sheepCollect, payloadCollect; uint16_t mask; bool visible; bool affectsAI; uint8_t gone = 0; int collector = -1, slot = -1; };
     enum : uint8_t { TRIG_COLLECTED = 1, TRIG_SHEEP, TRIG_PAYLOAD, TRIG_DESTROYED };  // gone: the message it posts (W4M Trigger.*), once
     std::vector<Trigger> triggers;
     void stepTriggers();  // 0x5d5180: worm and payload contacts

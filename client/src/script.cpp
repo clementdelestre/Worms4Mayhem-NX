@@ -63,7 +63,6 @@ struct ScriptState {
     std::vector<Object> tagged;  // last tick's crates with an Index
     std::map<int, std::string> graphic;  // custom crate Index -> CustomGraphic, render only
     std::vector<bool> died;
-    std::vector<int> quiet;  // slots unspawned this tick: their Worm_Died is still to send
     std::vector<std::vector<int>> shown;  // per team: the ammo last given to the sim, from the inventories of
     std::vector<int> ammoSlot;            // this worm slot (the team's active worm)
     std::set<int> toWorm;                 // Crate.Index of the crates made with Crate.AddToWormInventory
@@ -339,6 +338,7 @@ struct ScriptHost {
             if (!g.worms[g.teamFirst[t] + k].alive && !g.worms[g.teamFirst[t] + k].drowned) i = g.teamFirst[t] + k, S->slotWorm[S->wormSlot[i]] = -1;
         if (i < 0) return (void)TraceLog(LOG_WARNING, "script: no room for worm %d in team %d", s, t);
         S->slotWorm[s] = i, S->wormSlot[i] = s, S->touched[s] = true;
+        bindTriggers();
         Worm w = blank();
         if (!place(g, w, ctn(slotName("Worm.Data%02d", s)), s)) return;
         g.worms[i] = w, S->died[i] = false, g.special[i] = 0;
@@ -346,7 +346,7 @@ struct ScriptHost {
     }
 
     // Worm.DieQuietly and WXWormManager.UnspawnWorm (both 0x5b4af0): the worm entity goes, WormData.Active = 0; no blast, no grave;
-    // deleting the entity sends it TaskDeathMessage 0x42 (0x68e18f), whose Cleanup 0x5a6970 posts Worm.Died
+    // deleting the entity sends it TaskDeathMessage 0x42 (0x68e18f), whose Cleanup 0x5a6970 sends Worm.Died at once (0x68cb82 calls the handler)
     static void unspawn(int s) {
         Game &g = *G;
         int i = s >= 0 && s < SLOTS ? S->slotWorm[s] : -1;
@@ -358,7 +358,7 @@ struct ScriptHost {
         auto drop = [&](std::vector<int> &v) { v.erase(std::remove(v.begin(), v.end(), i), v.end()); };
         drop(g.countGroup), drop(g.deathQueue);
         if (g.dyingWorm == i) g.dyingWorm = -1;
-        S->quiet.push_back(s);
+        put("DeadWorm.Id", s), call("Worm_Died");
     }
 
     // WormManager.Reinitialise: the worms of the Worm.DataNN slots the script set up, by TeamIndex then slot (our worms are team-major)
@@ -384,6 +384,7 @@ struct ScriptHost {
             place(g, worms[i], c, s);
         }
         g.worms = worms, g.teams = teams, g.current = 0;
+        bindTriggers();
         g.teamFirst.clear();
         for (int t = 0; t <= teams; t++) g.teamFirst.push_back(t * per);
         g.allied.assign(teams, 0);
@@ -665,9 +666,14 @@ struct ScriptHost {
         uint16_t mask = (in(tc, 4) || in(wc, SLOTS) ? 1 : 0) | (in(sc, 4) ? 0x80 : 0) | (in(pc, 4) ? 8 : 0) | (num("Trigger.GirderCollect") != 0 ? 0x200 : 0);
         float r = (float)num("Trigger.Radius");
         if (!(r > 0)) r = 1;  // 'Error Invalid Trigger Radius'
-        int worm = wc < 0 ? wc : wc < SLOTS && S->slotWorm[wc] >= 0 ? S->slotWorm[wc] : -2;  // ours: the slot's worm now
-        g.triggers.push_back({p, r / 20, (int)num("Trigger.Index", -1), std::max(1, (int)num("Trigger.HitPoints")), tc, worm,
-                              (int)num("Trigger.TeamDestroy", -1), sc, pc, mask, num("Trigger.Visibility") == 1, num("Trigger.AffectsAI") != 0});  // 0x5d567b: shown if 1
+        g.triggers.push_back({p, r / 20, (int)num("Trigger.Index", -1), std::max(1, (int)num("Trigger.HitPoints")), tc, -1,
+                              (int)num("Trigger.TeamDestroy", -1), sc, pc, mask, num("Trigger.Visibility") == 1, num("Trigger.AffectsAI") != 0, 0, -1, wc});  // 0x5d567b: shown if 1
+        bindTriggers();
+    }
+
+    // A worm collects a trigger by its slot (0x5d4d70, read at collect time): ours resolves the slot to the worm now, -2 while none
+    static void bindTriggers() {
+        for (Game::Trigger &t : G->triggers) t.wormCollect = t.slot < 0 ? t.slot : t.slot < SLOTS && S->slotWorm[t.slot] >= 0 ? S->slotWorm[t.slot] : -2;
     }
 
     static void placeMine(const char *at) {  // 0x4fdf90: the detail object by name (0x4f9400), CreateMine there, Mine.Id = the mine
@@ -726,7 +732,6 @@ struct ScriptHost {
     static void message(const char *m, float a, const char *s) {
         Game &g = *G;
         auto is = [&](const char *x) { return !strcmp(m, x); };
-        if (getenv("TMPDBG") && (strstr(m, "Die") || strstr(m, "Unspawn") || strstr(m, "Respawn"))) fprintf(stderr, "TMPDBG msg %s %g\n", m, a);
         S->dirty = true;
         if (is("GameLogic.ActivateNextWorm")) activateNext();
         else if (is("GameLogic.EndTurn")) endTurn();
@@ -833,7 +838,6 @@ struct ScriptHost {
             S->died[i] = true;
             put("DeadWorm.Id", slotOf((int)i)), call("Worm_Died");
         }
-        for (int s : std::exchange(S->quiet, {})) put("DeadWorm.Id", s), call("Worm_Died");  // 0x5a6970 after an unspawn
         for (const Object &o : S->tagged) {  // a crate with an Index left: collected, sunk or destroyed
             if (std::any_of(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.tag == o.tag && x.type == o.type; })) continue;
             bool got = std::any_of(ev.begin(), ev.end(), [&](const GameEvent &e) { return e.kind == GameEvent::Collect && Vector3Distance(e.pos, o.pos) < 1; });
@@ -854,7 +858,6 @@ struct ScriptHost {
         static const char *const FN[] = {"", "Trigger_Collected", "Trigger_SheepCollected", "Trigger_PayloadCollected", "Trigger_Destroyed"};
         for (const Game::Trigger &t : gone) {
             put("Trigger.Index", t.index);
-            if (getenv("TMPDBG")) fprintf(stderr, "TMPDBG trig idx %d kind %d\n", t.index, (int)t.gone);
             if (t.gone != Game::TRIG_DESTROYED) put("Trigger.Collector", slotOf(t.collector));
             call(FN[t.gone]);
         }
@@ -864,7 +867,6 @@ struct ScriptHost {
 // The 14 C functions (0x6958d2). No C++ object with a destructor is alive in them: a Lua error longjmps out.
 static int lSend(lua_State *L) {
     const char *m = lua_tostring(L, 1);
-    if (m && getenv("TMPDBG") && (strstr(m, "Failure") || strstr(m, "Success") || strstr(m, "Draw"))) { lua_Debug d; for (int i = 1; lua_getstack(L, i, &d) && i < 4; i++) { lua_getinfo(L, "nSl", &d); fprintf(stderr, "TMPDBG %s <- %s line %d\n", m, d.name ? d.name : "?", d.currentline); } }
     if (m) ScriptHost::message(m, lua_type(L, 2) == LUA_TNUMBER ? (float)lua_tonumber(L, 2) : 0, lua_type(L, 2) == LUA_TSTRING ? lua_tostring(L, 2) : nullptr);
     return 0;
 }
