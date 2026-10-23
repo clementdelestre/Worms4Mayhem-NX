@@ -615,11 +615,11 @@ bool Terrain::carve(Vector3 c, float radius, bool blast) {
                 box[0] = std::min(box[0], x), box[1] = std::min(box[1], y), box[2] = std::min(box[2], z);
                 box[3] = std::max(box[3], x), box[4] = std::max(box[4], y), box[5] = std::max(box[5], z);
             }
-    // W4M 0x46d290: a frame cell whose centre is within the radius is destroyed [assumed: world sphere, W4M tests the frame-space ellipsoid]
+    // W4M 0x46d290: a cell whose centre (0x467aa0) has (frame-space offset x Scale / radius)² summed < 1 goes; rigid parents make that the world sphere
     std::vector<char> hit(frameCells.size(), 0);
     for (size_t f = 0; f < frameCells.size(); f++)
         for (size_t k = 0; k < frameCells[f].size(); k++)
-            if (frameAlive[f][k] && Vector3Distance(frameCells[f][k], c) <= radius) frameAlive[f][k] = 0, hit[f] = 1;
+            if (frameAlive[f][k] && Vector3Distance(frameCells[f][k], c) < radius) frameAlive[f][k] = 0, hit[f] = 1;
     // W4M 0x5cc960: a detail (and its emitter, 0x5cc8c0) goes when |pos - blast|² < radius²; 0x46c630: or when its frame lost a cell
     // and the detail's own cell is not solid
     objects.erase(std::remove_if(objects.begin(), objects.end(), [&](const Object &o) {

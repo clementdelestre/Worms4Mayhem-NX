@@ -195,7 +195,7 @@ fn detail_euler(w: &M4, rd: [f32; 3]) -> [f32; 3] {
 
 // Solid voxel as its 8 deformed lattice corners in W4M world space, plus theme material index; `parts`: the convex pieces of the
 // land W4M samples in it (lattice.rs)
-struct Cell { frame: usize, at: [usize; 3], c: [[f32; 3]; 8], parts: Vec<[[f32; 3]; 8]>, mat: u8, tex: [f32; 2], code: u16, visible: bool }
+struct Cell { frame: usize, at: [usize; 3], c: [[f32; 3]; 8], ctr: [f32; 3], parts: Vec<[[f32; 3]; 8]>, mat: u8, tex: [f32; 2], code: u16, visible: bool }
 
 // Detail entity reference with its poxel's world matrix (the poxel's own scale included, its parents' not).
 struct DetRef { ctn: usize, w: M4, frame: usize }
@@ -274,6 +274,14 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
             let pz = a[1] + (sz as f32 + b[1] - a[1]) * kk as f32 / sz as f32;
             xform(&w, [px - sx as f32 / 2.0, y - sy as f32 / 2.0, pz - sz as f32 / 2.0])
         };
+        // W4M 0x467aa0: the cell centre the frame blast tests (x, z + 0.5 through the EdgeOffset lerp, y + 0.5 + the 4 HeightMap corners' mean)
+        let hmc = |i: usize, kk: usize| { let h = x.hm.get(kk * (sx + 1) + i).copied().unwrap_or(0.0); if h.is_finite() && h.abs() < 64.0 { h } else { 0.0 } };
+        let centre = |i: usize, j: usize, kk: usize| -> [f32; 3] {
+            let y = j as f32 + 0.5 + (hmc(i, kk) + hmc(i + 1, kk) + hmc(i, kk + 1) + hmc(i + 1, kk + 1)) * 0.25;
+            let (a, b) = (edge(&x.l1, y), edge(&x.l2, y));
+            let (fx, fz) = (i as f32 + 0.5, kk as f32 + 0.5);
+            xform(&w, [a[0] + (sx as f32 + b[0] - a[0]) * fx / sx as f32 - sx as f32 / 2.0, y - sy as f32 / 2.0, a[1] + (sz as f32 + b[1] - a[1]) * fz / sz as f32 - sz as f32 / 2.0])
+        };
         let solid = |a: i32, b: i32, e: i32| a >= 0 && b >= 0 && e >= 0 && (a as usize) < sx && (b as usize) < sy && (e as usize) < sz && x.vox[b as usize + sy * (a as usize + sx * e as usize)] & 3 != 0;
         for z in 0..sz {
             for xx in 0..sx {
@@ -284,7 +292,7 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
                     for n in 0..8 { c[n] = corner(xx + (n & 1), y + ((n >> 1) & 1), z + (n >> 2)); }
                     let tops = [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(i, k)| lattice::usage(solid, xx as i32 + i, y as i32, z as i32 + k));
                     let parts = lattice::pieces(&c, tops, x.falloff);
-                    out.push(Cell { frame: k, at: [xx, y, z], c, parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible });
+                    out.push(Cell { frame: k, at: [xx, y, z], c, ctr: centre(xx, y, z), parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, tex: x.tex, code, visible: x.visible });
                 }
             }
         }
@@ -848,7 +856,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             runs.iter().map(|r| format!("[{},{}]", r[0], r[1])).collect::<Vec<_>>().join(","))
     }).collect();
     let frames_json: Vec<String> = frame_cells.iter().map(|(_, l)| {
-        let c = l.iter().map(|&i| { let m = cells[i].c.iter().fold([0.0; 3], |s, p| madd(s, *p, 0.125)); format!("{:.2},{:.2},{:.2}", m[0] + ox, m[1] + WATER, m[2] + oz) });
+        let c = l.iter().map(|&i| { let m = cells[i].ctr; format!("{:.3},{:.3},{:.3}", m[0] + ox, m[1] + WATER, m[2] + oz) });
         format!("[{}]", c.collect::<Vec<_>>().join(","))
     }).collect();
     // per lattice frame (GLG 0x446be0 / 0x457130 / 0x4566d0): map metres -> frame-centred lattice before EdgeOffset (a: 3x4),
