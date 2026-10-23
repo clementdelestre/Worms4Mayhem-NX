@@ -5535,7 +5535,7 @@ static void checkLandBlobs() {
 // radius still go (0x473530 > 0x5cc960 runs before the frames), those past it stay; a non-PERM cell next to it is cut
 static void checkPermBlast() {
     Terrain t;
-    assert(t.load("HighNoonHiJinx", 1) && !t.framePerm.empty() && !t.permPt.empty() && !t.sharp.permAt.empty());
+    assert(t.load("HighNoonHiJinx", 1) && !t.framePerm.empty() && !t.permPt.empty() && !t.sharp.holdAt.empty());
     const float R = 3;
     Vector3 c = {};
     std::vector<size_t> perms, others;  // W4M cells within the blast: PERM ones, the rest
@@ -5702,6 +5702,59 @@ static void checkHiddenLand() {
     for (size_t i : held) assert(t.d[i] <= 0);
 }
 
+// W4M 0x463c90 edits heightmap vertices only: a blast that lowers the heightmap over a live W4M cell keeps that cell's pieces in the grid cell
+static void checkHeightmapKeepsCells() {
+    Terrain t;
+    assert(t.load("DinerMight", 1) && !t.sharp.top.empty() && !t.wcells.empty());
+    const float R = 1.5f;
+    size_t wi = 0, at = 0;
+    Vector3 c = {};
+    for (size_t i = 0; i < t.wcells.size() && !at; i++) {  // a grid cell wholly under the heightmap, unlisted, held by a W4M cell the blast's centre is R away from
+        const Terrain::WCell &w = t.wcells[i];
+        if (w.perm || w.nhex == 0) continue;
+        for (int z = w.lo[2]; z < w.lo[2] + w.n[2] && !at; z++)
+            for (int y = w.lo[1]; y < w.lo[1] + w.n[1] && !at; y++)
+                for (int x = w.lo[0]; x < w.lo[0] + w.n[0] && !at; x++) {
+                    const size_t ci = Terrain::idx(x, y, z);
+                    const float top = t.sharp.top[z * Terrain::NX + x];
+                    const Vector3 q = {(x + 0.5f) * Terrain::VOX, top + 0.4f, (z + 0.5f) * Terrain::VOX};
+                    bool in = false;  // one of the cell's pieces holds the grid cell's centre
+                    for (uint32_t h = w.hex; h < w.hex + w.nhex; h++) in |= t.sharp.inside(h, {(x + 0.5f) * Terrain::VOX, (y + 0.5f) * Terrain::VOX, (z + 0.5f) * Terrain::VOX});
+                    if (!in || t.sharp.hmState(x, y, z) != 2 || fabsf(top - 0.55f - (y + 0.5f) * Terrain::VOX) > 0.05f || t.sharp.mixed(ci) || t.d[ci] <= 0 || Vector3Distance(w.ctr, q) < R + 0.2f) continue;
+                    wi = i, at = ci, c = q;
+                }
+    }
+    assert(at);
+    int x, y, z;
+    t.xyz(at, x, y, z);
+    t.carve(c, R);
+    const Terrain::WCell &w = t.wcells[wi];
+    assert(!t.wdead[wi]);
+    assert(t.sharp.hmState(x, y, z) == 1);  // the blast lowered the heightmap under it
+    bool held = !t.sharp.mixed(at);  // unlisted: still filled
+    if (!held) {
+        const uint32_t *o = t.sharp.ops(at);
+        for (uint32_t i = 1; i <= o[0]; i++) held |= (o[i] & SharpLand::KIND) == SharpLand::HEX && (o[i] & SharpLand::ID) - w.hex < w.nhex, i += (o[i] & SharpLand::KIND) == SharpLand::HEX;
+    }
+    assert(held);
+}
+
+// W4M Land.ClearCoded 0x475170: the cells it takes are gone for Land.ClearVoxel and for a blast's debris
+static void checkClearCodedDead() {
+    Terrain t;
+    assert(t.load("TheWindyWizard", 1) && t.codes.count("AAAA"));
+    std::vector<size_t> cells;
+    for (size_t i = 0; i < t.wcells.size(); i++)
+        for (uint32_t h : t.codes["AAAA"].hex) if (h - t.wcells[i].hex < t.wcells[i].nhex) { cells.push_back(i); break; }
+    assert(!cells.empty());
+    for (size_t i : cells) assert(!t.wdead[i]);
+    assert(t.clearCoded("AAAA"));
+    t.blobs.clear();
+    const unsigned e0 = t.edits;
+    for (size_t i : cells) assert(t.wdead[i] && !t.clearCell(t.wcells[i].ctr));
+    assert(t.edits == e0 && t.blobs.nfree == LandBlobs::POOL);
+}
+
 // W4M GLG 0x457130: uv = floor / wall row . lattice point + offset; a thin cell's corner 1 (4) is its corner 0 one lattice step along x (z)
 static void checkLandUV() {
     Terrain t;
@@ -5830,6 +5883,8 @@ int main() {
     checkLandBlobs();
     checkLandDebris();
     checkPermBlast();
+    checkHeightmapKeepsCells();
+    checkClearCodedDead();
     checkHiddenLand();
     checkLandUV();
     checkPlacement();

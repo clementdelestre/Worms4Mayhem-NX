@@ -904,6 +904,8 @@ bool Terrain::clearCoded(const char *code) {  // exact on 4 bytes (0x47519c); no
     if (it == codes.end()) return false;
     remeshWait();
     sharp.drop(it->second.hex);
+    for (uint32_t h : it->second.hex)
+        if (auto w = std::upper_bound(wcells.begin(), wcells.end(), h, [](uint32_t v, const WCell &c) { return v < c.hex; }); w != wcells.begin() && h < (--w)->hex + w->nhex) wdead[w - wcells.begin()] = 1;
     int box[6] = {NX, NY, NZ, -1, -1, -1};
     for (auto [at, n] : it->second.vox)
         for (int i = at; i < at + n && i < (int)d.size(); i++) voxelOut(i, box);
@@ -913,23 +915,24 @@ bool Terrain::clearCoded(const char *code) {  // exact on 4 bytes (0x47519c); no
     return true;
 }
 
-// W4M 0x46d290 skips a PERM frame (0x476738): its pieces, grid points and frame cells stay through a blast; Land.ClearCoded 0x475170 still takes them
+// W4M 0x46d290 skips a PERM frame (0x476738): its pieces, grid points and frame cells stay through a blast; Land.ClearCoded 0x475170 still takes them.
+// Every W4M cell is indexed by the grid cells it reaches: the heightmap blast 0x463c90 lowers heightmap vertices only, never a frame's cell
 void Terrain::keepPerm() {
     if (!sharp.on) return;
-    sharp.perm.assign(sharp.hexP0.size(), 0);
+    sharp.perm.assign(sharp.hexP0.size(), 0), sharp.live.assign(sharp.hexP0.size(), 1);
     std::vector<std::pair<int, int>> runs;
     for (const WCell &w : wcells) {
+        for (int z = w.lo[2]; z < w.lo[2] + w.n[2] && z < NZ - 1; z++)
+            for (int y = w.lo[1]; y < w.lo[1] + w.n[1] && y < NY - 1; y++)
+                for (int x = w.lo[0]; x < w.lo[0] + w.n[0] && x < NX - 1; x++) sharp.holdAt.push_back({(uint32_t)idx(x, y, z), w.hex, w.nhex});
         if (!w.perm) continue;
         if (w.frame >= 0) framePerm.resize(std::max<size_t>(framePerm.size(), w.frame + 1), 0), framePerm[w.frame] = 1;
         for (uint32_t h = w.hex; h < w.hex + w.nhex && h < sharp.perm.size(); h++) sharp.perm[h] = 1;
-        for (int z = w.lo[2]; z < w.lo[2] + w.n[2] && z < NZ - 1; z++)
-            for (int y = w.lo[1]; y < w.lo[1] + w.n[1] && y < NY - 1; y++)
-                for (int x = w.lo[0]; x < w.lo[0] + w.n[0] && x < NX - 1; x++) sharp.permAt.push_back({(uint32_t)idx(x, y, z), w.hex, w.nhex});
         size_t at = w.alone;
         for (int part = 0; part < 2; part++)
             wRuns(at, [&](size_t v) { if (!runs.empty() && runs.back().second == (int)v) runs.back().second++; else runs.push_back({(int)v, (int)v + 1}); });
     }
-    std::sort(sharp.permAt.begin(), sharp.permAt.end());
+    std::sort(sharp.holdAt.begin(), sharp.holdAt.end());
     std::sort(runs.begin(), runs.end());
     for (const auto &r : runs)
         if (!permPt.empty() && r.first <= permPt.back().second) permPt.back().second = std::max(permPt.back().second, r.second);
@@ -1030,6 +1033,7 @@ void Terrain::blastCells(Vector3 c, float radius, Vector3 n) {
             const float l2 = Vector3DotProduct(d, d);
             if (wdead[i] || !(sqrtf(l2) < radius)) continue;
             wdead[i] = 1;
+            for (uint32_t h = w.hex; h < w.hex + w.nhex && h < sharp.live.size(); h++) sharp.live[h] = 0;
             if (--left) continue;
             left = 2;
             if (!(l2 > 0)) continue;

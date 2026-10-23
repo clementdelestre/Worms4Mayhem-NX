@@ -125,7 +125,7 @@ struct Terrain {
     struct WCell { uint32_t hex, nhex, thin; int lo[3], n[3], frame, cell; bool perm; size_t alone, shared; int fr, at[3]; bool blob, visible; uint8_t mat; Vector3 ctr; };
     std::vector<WCell> wcells;
     std::vector<std::vector<uint32_t>> wframes;  // per importer frame, its cells in the order 0x46d290 walks them (7-cell chunks z, x, y, then z, x, y)
-    std::vector<char> wdead;  // per wcell: gone, for the debris (a blast, Land.ClearVoxel)
+    std::vector<char> wdead;  // per wcell: gone (a blast, Land.ClearVoxel, Land.ClearCoded)
     LandBlobs blobs;  // the land debris pool (0x465ea0), stepped by Game::step
     const Texture2D *blobTexture(int mat, int slot) const;
     void blobCell(const WCell &w, Vector3 vel);  // 0x465ea0: the cell's centre throws a piece, vel in W4M units/ms
@@ -136,7 +136,7 @@ struct Terrain {
     std::vector<std::pair<int, uint16_t>> shareCnt;  // grid point -> the cells still holding it, for points two or more cells hold
     std::vector<std::pair<int, int>> permPt;  // grid points held by a PERM cell (voxel index runs [first, last), sorted, merged): a blast leaves them
     std::vector<char> framePerm;  // per json frame: its cells are PERM (a blast keeps frameAlive)
-    void keepPerm();  // after sharp.load: fills permPt, framePerm, sharp.perm / permAt from wcells
+    void keepPerm();  // after sharp.load: fills permPt, framePerm, sharp.perm / live / holdAt from wcells
     bool permHeld(size_t i) const;
     bool clearCell(Vector3 p);  // Land.ClearVoxel: the one W4M land cell holding p, nothing else; false when none (heightmap, PERM frame)
     bool clearCoded(const char *code);  // Land.ClearCoded 0x475170: the frames of that 4-byte code go at once; false: none

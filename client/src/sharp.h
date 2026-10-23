@@ -25,9 +25,9 @@ struct SharpLand {
     std::vector<std::vector<uint64_t>> bits;  // per 32³ chunk, empty or a bit per cell: holds a list
     std::vector<uint32_t> key, val, pool;  // open addressing cell + 1 -> pool offset of: word count, ops (cells may share one)
     size_t used = 0, dead = 0;    // keyed slots; pool words no cell points to
-    // PERM frames (W4M 0x46d290 skips them): perm[hex] = a PERM piece; permAt = {grid cell, first piece, count} of every PERM W4M cell reaching it, sorted
-    std::vector<char> perm;
-    std::vector<std::array<uint32_t, 3>> permAt;
+    // perm[hex] = a PERM piece (W4M 0x46d290 skips them); live[hex] = its W4M cell not cleared; holdAt = {grid cell, first piece, count} of every W4M cell reaching it, sorted
+    std::vector<char> perm, live;
+    std::vector<std::array<uint32_t, 3>> holdAt;
 
     size_t bytes() const {
         return planes.capacity() * sizeof(Vector4) + sph.capacity() * sizeof(Vector4) + box.capacity() * sizeof(Vector3) + top.capacity() * 4 +
@@ -74,7 +74,7 @@ struct SharpLand {
 
 private:
     uint32_t cell(const Vector3 *c, int64_t flags);
-    bool keep(size_t c, int x, int y, int z, bool listed, std::vector<uint32_t> &out) const;  // cell c's PERM pieces as ops; false: one fills the whole cell
+    bool keep(size_t c, int x, int y, int z, bool listed, std::vector<uint32_t> &out, bool all = false) const;  // cell c's PERM pieces (all: every live W4M cell's) as ops; false: one fills the whole cell
     void strip(size_t c, const std::function<bool(uint32_t)> &gone);  // cell c's list without the hexes `gone` names
     float hm(float x, float z) const;
     Vector3 hmNormal(float x, float z) const;

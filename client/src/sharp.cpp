@@ -393,7 +393,7 @@ void SharpLand::strip(size_t c, const std::function<bool(uint32_t)> &gone) {
 void SharpLand::drop(const std::vector<uint32_t> &hexes) {
     if (!on || hexes.empty()) return;
     std::vector<bool> gone(hexP0.size(), false);
-    for (uint32_t h : hexes) if (h < gone.size()) { gone[h] = true; if (h < perm.size()) perm[h] = 0; }  // a cleared coded frame is not spared any more
+    for (uint32_t h : hexes) if (h < gone.size()) { gone[h] = true; if (h < perm.size()) perm[h] = live[h] = 0; }  // a cleared coded frame is not spared any more
     for (size_t k = 0; k < bits.size(); k++)
         for (size_t w = 0; w < bits[k].size(); w++)
             for (uint64_t b = bits[k][w]; b; b &= b - 1) strip(k << 15 | w * 64 | __builtin_ctzll(b), [&](uint32_t h) { return h < gone.size() && gone[h]; });
@@ -401,6 +401,7 @@ void SharpLand::drop(const std::vector<uint32_t> &hexes) {
 
 void SharpLand::drop(uint32_t first, uint32_t n, const int lo[3], const int size[3]) {
     if (!on) return;
+    for (uint32_t h = first; h < first + n && h < live.size(); h++) live[h] = 0;
     for (int z = lo[2]; z < lo[2] + size[2]; z++)
         for (int y = lo[1]; y < lo[1] + size[1]; y++)
             for (int x = lo[0]; x < lo[0] + size[0]; x++) {
@@ -487,7 +488,7 @@ void SharpLand::relist(const std::vector<Col> &cols, int box[6]) {
                     }
                 }
                 if (!put && need) o.push_back(need);
-                if (!mixed(ci) && !perm.empty() && !keep(ci, x, y, z, false, o)) continue;  // an unlisted filled cell keeps the PERM pieces in it, whatever the heightmap does
+                if (!mixed(ci) && !live.empty() && !keep(ci, x, y, z, false, o, true)) continue;  // an unlisted filled cell keeps the live W4M pieces in it: the heightmap is not what holds them
                 if (o.empty() || (o.size() == 1 && o[0] == FULL)) { if (mixed(ci)) setOps(ci, nullptr, 0); }
                 else setOps(ci, o.data(), (uint32_t)o.size());
                 const int at[3] = {x, y, z};
@@ -496,7 +497,7 @@ void SharpLand::relist(const std::vector<Col> &cols, int box[6]) {
         }
 }
 
-bool SharpLand::keep(size_t c, int x, int y, int z, bool listed, std::vector<uint32_t> &out) const {
+bool SharpLand::keep(size_t c, int x, int y, int z, bool listed, std::vector<uint32_t> &out, bool all) const {
     std::vector<uint32_t> seen;  // out may hold other ops: the pieces put there by this call only
     auto has = [&](uint32_t h) { return std::find(seen.begin(), seen.end(), h) != seen.end(); };
     if (listed) {
@@ -508,9 +509,9 @@ bool SharpLand::keep(size_t c, int x, int y, int z, bool listed, std::vector<uin
         }
         return true;
     }
-    for (auto it = std::lower_bound(permAt.begin(), permAt.end(), std::array<uint32_t, 3>{(uint32_t)c, 0, 0}); it != permAt.end() && (*it)[0] == c; ++it)
+    for (auto it = std::lower_bound(holdAt.begin(), holdAt.end(), std::array<uint32_t, 3>{(uint32_t)c, 0, 0}); it != holdAt.end() && (*it)[0] == c; ++it)
         for (uint32_t h = (*it)[1]; h < (*it)[1] + (*it)[2]; h++) {
-            if (h >= perm.size() || !perm[h]) continue;
+            if (h >= perm.size() || !(all ? live[h] : perm[h])) continue;
             uint32_t mask = 0;  // the planes the cell straddles; every corner outside one: that piece misses the cell
             bool miss = false;
             for (uint32_t q = hexP0[h]; q < planeEnd(h) && !miss; q++) {
