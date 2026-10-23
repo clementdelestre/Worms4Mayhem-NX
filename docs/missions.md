@@ -93,7 +93,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
     Active and no worm is in the slot [disasm 0x5b4f70]. Our worms are team-major, so Reinitialise keeps 16 - (slots set up) spare
     columns per team for slots set up later; a new slot takes its team's first free column, else a gone worm's [ours: W4M's 16 slots
     hold any team]. Worm.DieQuietly / WXWormManager.UnspawnWorm / EFMV UnspawnWorm remove the slot's worm (WormData.Active 0) with no
-    blast, grave or Worm_Died: it waits, dead, under the map [disasm 0x5b4af0].
+    blast or grave, and Worm_Died fires (DeadWorm.Id = the slot, sent on the next step) [disasm 0x5b4af0, 0x68e18f]: it waits, dead, under the map.
   - Before the first ActivateNextWorm (`Game::noTurn`) CurrentTeamIndex and ActiveWormIndex are -1 [disasm 0x5b5c4c] for the trigger and
     crate team rules. An ActivateNextWorm that finds no worm leaves the turn without one: Timer_TurnTimedOut comes after HotSeatTime +
     TurnTime [ours: W4M asserts there, 0x5b5b0f; its clocks still run in the stdlib flow]. TraitorousWaters gets there when a house

@@ -63,6 +63,7 @@ struct ScriptState {
     std::vector<Object> tagged;  // last tick's crates with an Index
     std::map<int, std::string> graphic;  // custom crate Index -> CustomGraphic, render only
     std::vector<bool> died;
+    std::vector<int> quiet;  // slots unspawned this tick: their Worm_Died is still to send
     std::vector<std::vector<int>> shown;  // per team: the ammo last given to the sim, from the inventories of
     std::vector<int> ammoSlot;            // this worm slot (the team's active worm)
     std::set<int> toWorm;                 // Crate.Index of the crates made with Crate.AddToWormInventory
@@ -343,8 +344,8 @@ struct ScriptHost {
         syncCpu();
     }
 
-    // Worm.DieQuietly and WXWormManager.UnspawnWorm (both 0x5b4af0): the worm entity goes, WormData.Active = 0; no blast, no grave,
-    // no Worm.Died
+    // Worm.DieQuietly and WXWormManager.UnspawnWorm (both 0x5b4af0): the worm entity goes, WormData.Active = 0; no blast, no grave;
+    // deleting the entity sends it TaskDeathMessage 0x42 (0x68e18f), whose Cleanup 0x5a6970 posts Worm.Died
     static void unspawn(int s) {
         Game &g = *G;
         int i = s >= 0 && s < SLOTS ? S->slotWorm[s] : -1;
@@ -357,6 +358,7 @@ struct ScriptHost {
         drop(g.countGroup), drop(g.deathQueue);
         if (g.dyingWorm == i) g.dyingWorm = -1;
     }
+        S->quiet.push_back(s);
 
     // WormManager.Reinitialise: the worms of the Worm.DataNN slots the script set up, by TeamIndex then slot (our worms are team-major)
     static void reinitialise() {
@@ -830,6 +832,7 @@ struct ScriptHost {
         triggers();
     }
 
+        for (int s : std::exchange(S->quiet, {})) put("DeadWorm.Id", s), call("Worm_Died");  // 0x5a6970 after an unspawn
     // 0x5d49b0 / 0x5d47f0: Trigger.Index (and Trigger.Collector, a slot), then its message; also before a queued callback, as
     // a skipped movie's blast posts Trigger.Destroyed before its EFMV.Terminated
     static void triggers() {

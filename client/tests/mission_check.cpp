@@ -500,6 +500,7 @@ int main() {
     if (only && !strcmp(only, "wormcrate")) return checkWormInventoryCrate(list), 0;
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
+        if (m.id == "JoustAboutIt") assert(r.result > 0);  // the Wizard's DieQuietly reaches Worm_Died: 4 deaths start wave 2, 10 the hourglass
     if (only && !strcmp(only, "target")) return checkScriptedTarget(list), 0;
     if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
     if (only) return 0;

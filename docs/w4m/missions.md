@@ -397,7 +397,7 @@ Message delivery:
 Worms (WXWormManagerService HandleMessage 0x5b5e70):
 - `Worm.DieQuietly` and `WXWormManager.UnspawnWorm` (int slot) both run 0x5b4af0: no worm in the slot logs "request to unspawn a worm
   which does not exist"; else 0x5aaac0(0) on it, ActiveWormIndex = -1 if it was the active one, WormData.Active (+0x124) = 0, the logical
-  worm is deleted (0x68b927) and the team lists updated (0x5b3f60). No death blast, no gravestone, no Worm.Died.
+  worm is deleted (0x68b927) and the team lists updated (0x5b3f60). No death blast, no gravestone; the logical worm's delete (0x68e18f) sends the entity TaskDeathMessage 0x42, which 0x5b07c0 routes to Cleanup 0x5a6970: DeadWorm.Id = slot then Worm.Died, so `Worm_Died` runs for a quiet death too [REA decompile 0x68e18f, 0x5b07c0, 0x5a6970; JoustAboutIt counts the Wizard's DieQuietly as its 4th enemy death].
 - `Worm.Respawn` (int slot < 16) 0x5b4f70: a worm already in the slot logs "A worm which currently exists tried to respawn" and nothing
   happens. Else PlaceWormAtSpawnPoint 0x5b4180 (WormData.Spawn), and only if WormData.Active: SpawnWorm 0x5b31b0, its speech bank, and
   with IsAllowedToTakeTurn (+0x12d) its team joins its alliance's list and the worm its team's (+0x128 PositionInTeam = its index).
