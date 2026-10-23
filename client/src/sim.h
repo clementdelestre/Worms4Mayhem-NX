@@ -577,6 +577,7 @@ struct Game {
     int held() const { return secondary >= 0 ? secondary : weapon; }  // what NEXT_WEAPON and the panel step
     int shotsLeft = 0;
     int gunState = 0;   // W4M GunWeaponLogicEntity (0x55ed10) state 3 / 4 after a shot with shots left; 0 accepts Input.FirePressed
+    bool gunWaiting = false;  // GameLogicService+0x1b1, set by GameLogic.GunWaiting, cleared by the next death-queue pop
     bool gunSent = false;  // state 3 has sent GameLogic.ApplyDamage
     int ropeShots = 0;  // rope hooks on land this turn
     Phase phase = Phase::Aim;

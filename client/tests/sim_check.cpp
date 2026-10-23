@@ -536,6 +536,28 @@ static void checkGunWait() {
     }
 }
 
+// W4M 0x4f9b30 + GunWaiting (0x4fe8df): a worm the first shotgun shot kills is popped from the death queue while the gun waits
+// (active tokens <= queue size + 2), so its throes start before the second shot, not after the display.
+static void checkGunWaitDeath() {
+    Game g;
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
+    for (int z = 16; z < 80; z++)
+        for (int y = 176; y < 248; y++)
+            for (int x = 16; x < 300; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp((50 - y * Terrain::VOX) * Terrain::Q, -64, 64);
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    a.pos = {10, 50.6f, 6}, v.pos = {10, 50.6f, 10}, a.vel = v.vel = {}, a.yaw = 0, a.pitch = 0;
+    settle(g);
+    g.weapon = weaponNamed("Shotgun");
+    v.hp = v.counted = 1;
+    Input fire;
+    fire.buttons = Input::FIRE;
+    g.step(fire);
+    assert(g.shotsLeft == 1 && g.gunState == 3);
+    int t = 1;
+    for (; g.shotsLeft == 1 && g.dyingWorm < 0 && t < 600; t++) g.step(t % 2 ? fire : Input{});
+    assert(g.shotsLeft == 1 && g.dyingWorm >= 0 && v.alive && g.countT < Game::COUNT_DAMAGE);  // dying before shot 2, inside the display
+}
+
 // Homing missile: flies off along the aim, then dives onto the reticle point.
 static void checkHoming() {
     Game g;
@@ -5409,6 +5431,7 @@ int main() {
     checkCrateWalk();
     checkShotgun();
     checkGunWait();
+    checkGunWaitDeath();
     checkHoming();
     checkTeamWeapon();
     checkSentry();

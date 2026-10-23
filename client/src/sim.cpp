@@ -980,7 +980,7 @@ void Game::start(const GameConfig &c) {
             }
     if (wp(WP_MAX_HEALTH)) cfg.scheme.crateHealth = 100;  // after the preset match: the scheme's delays stay
     if (wp(WP_ONE_SHOT)) cfg.scheme.health = 1;
-    countGroup.clear(), deathQueue.clear(), countT = throes = camHold = 0, dyingWorm = -1, crated = false;
+    countGroup.clear(), deathQueue.clear(), countT = throes = camHold = 0, dyingWorm = -1, crated = false, gunWaiting = false;
     respawns.clear(), wobble = {}, mysteryWalk = mysteryLow = false;
     girderOn = false, girderWait = girders = 0, bubbles.clear(), bubbleAt = -1, icarus = flapAt = 0, drift = {}, doubleDamage = changing = false;
     roped = jetting = jetUsed = chute = false, fuel = jetInit, boost = 0, secondary = launched = -1;
@@ -1766,7 +1766,7 @@ int Game::tokens() const {
 void Game::stepGun() {
     if (gunState == 3) {
         if (!gunSent && tokens() > 1) return;
-        if (!gunSent) applyDamage(), gunSent = true;
+        if (!gunSent) applyDamage(), gunSent = gunWaiting = true;  // AboutToApplyDamage, ApplyDamage, GunWaiting
         if (tokens() <= 1) gunState = 4;
     } else if (gunState == 4 && tokens() <= 1) gunState = 0, gunSent = false;
 }
@@ -1913,8 +1913,8 @@ void Game::dropCrates(int n, bool roll) {
         if ((!roll || (int)(rand01() * 100) < cfg.scheme.crateChance) && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
 }
 
-// The damage display (COUNT_DAMAGE), then the death queue 0x4f9b30: the front worm's throes once nothing else is active, its blast
-// 3 s later; a living worm its blast hurts keeps that damage pending for the next ApplyDamage.
+// The damage display (COUNT_DAMAGE), then the death queue 0x4f9b30: the front worm's throes once nothing else is active (or, after
+// GunWaiting, once the active tokens, the gun's included, are at most the queue size + 2), its blast 3 s later; a living worm its blast hurts keeps that damage pending for the next ApplyDamage.
 void Game::stepCount() {
     ++countT;
     bool shown = countGroup.empty() || countT >= COUNT_DAMAGE;
@@ -1931,7 +1931,8 @@ void Game::stepCount() {
         if (int gi = x.team < (int)cfg.teamSetup.size() ? cfg.teamSetup[x.team].grave : 0; gi < 21) graves.push_back({{x.pos.x, x.pos.y - R + 1, x.pos.z}, {}, x.yaw, gi, uids++, clock});
         for (size_t k = countGroup.size(); k-- > 0;)  // hurt now: shown at the next ApplyDamage
             if (worms[countGroup[k]].hp != was[k]) worms[countGroup[k]].counted = was[k], countGroup.erase(countGroup.begin() + k);
-    } else if (shown && !deathQueue.empty() && shots.empty() && !active()) {
+    } else if (!deathQueue.empty() && ((shown && shots.empty() && !active()) || (gunWaiting && tokens() + (shotsLeft > 0) <= (int)deathQueue.size() + 2))) {
+        gunWaiting = false;
         dyingWorm = deathQueue.front(), throes = COUNT_THROES;  // Worm.TimeToDie
         deathQueue.erase(deathQueue.begin());
         if (vital(dyingWorm)) surrender(worms[dyingWorm].team);  // 0x5a7287
@@ -3608,6 +3609,7 @@ uint32_t Game::checksum() const {
     if (locked) mix(&lockAt, sizeof lockAt);
     mix(countGroup.data(), countGroup.size() * sizeof(int)), mix(&countT, sizeof countT), mix(deathQueue.data(), deathQueue.size() * sizeof(int));
     mix(&dyingWorm, sizeof dyingWorm), mix(&throes, sizeof throes);
+    if (gunWaiting) mix(&gunWaiting, sizeof gunWaiting);
     for (const Gas &c : gas) mix(&c, sizeof c);
     if (crated) mix(&crated, 1);
     if (camHold) mix(&camHold, sizeof camHold);
