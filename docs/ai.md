@@ -77,8 +77,9 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   (×2 doubled); a melee hits only the plan target with its damage; Flood 1000 below the level; Starburst its rider's hp with knock 1 (disasm: rider vapourized; user unsure, 2026-10-04).
   Armour ×ARMOUR/100 except bat, prod, fire punch. Lethal (d ≥ hp): max(hp, 200). Else, with knock weight a (threat for blasts and
   melee, 0 for guns and Flood): t = the worm's threat rating, d = min(hp, d + a·t·(hp − d)), weight 2·(1 + a·t). Score += d·weight·value(i).
-  Guns: one shot as the sim's: `Game::gunRay` (land, worms, targets, bubbles) and `Game::gunBlast` (Wormpot super firearms), the blast
-  on the struck worm's centre or at the ray's end, as `Game::fire` explodes it. Strikes: one blast at the target of reach 2 s × 7.5 m/s + 2·reach.
+  Guns (Shotgun, Sniper Rifle: one `Kind::Shotgun` path): the blast `Game::gunBlast` (Wormpot super firearms) is scored at the plan's
+  target point, the target's feet + Worm.EyeLevelOffset / 2 (W4M 0x49f190 measures from plan +0x14, **disasm**), whoever the ray strikes;
+  the land sweep to that point is IsPossible (0x4ac880); `Game::gunRay` only gates that the sim's shot strikes within range (**ours**). Strikes: one blast at the target of reach 2 s × 7.5 m/s + 2·reach.
   Animals (sheep, old woman, scouser): the walker's closest approach within 2 m, blast there. No knockback simulation, chains,
   poison, vampire or tie-breaker terms (W4M has none).
 - Bonus (W4M 0x49bd60, **disasm**): +AddScoreMove 10, +AddScoreMoveIfNotMoved 20 while no path ran since the last shot (`moved`, W4M

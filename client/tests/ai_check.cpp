@@ -380,10 +380,42 @@ static void shotgunGap() {
         }
 }
 
+// W4M scores a direct plan's blast at the plan's target point (0x49f190 from 0x4a0a20), not where the ray strikes: an oil drum on the
+// line to an enemy, out of any worm's reach, leaves the plan's score as it was.
+static float drumOnLine(bool drum) {
+    Game g = arena("Shotgun", 20, 5);
+    for (int z = 16; z < 80; z++)  // a 2 m wide platform x 4..13 m (no way around the drum), then a pit: the enemy beyond it
+        for (int y = 176; y < 248; y++)
+            for (int x = 16; x < 300; x++)
+                if ((x >= 52 && x < 200) || z < 44 || z > 52) g.terrain.d.w(Terrain::idx(x, y, z)) = -64;
+    const int me = g.current;
+    g.worms[me].pos = {10, 50.6f, 12};
+    g.worms[1 - me].pos = {52, 50.6f, 12};
+    if (drum) g.objects.push_back({Object::Barrel, {12, 50.6f, 12}, {0, 0, 0}, -1, -1, false, false});
+    Ai ai;
+    Ai::Plan p;
+    for (int t = 0; t < 60 * 30 && g.phase != Phase::GameOver; t++) {
+        g.step(ai.think(g));
+        if (ai.plan.weapon >= 0) p = ai.plan;
+        bool fired = false;
+        for (const GameEvent &e : g.events) fired |= e.kind == GameEvent::Fire && e.worm == me;
+        if (fired) break;
+    }
+    return p.score;
+}
+
+static void drumInLine() {
+    const float on = drumOnLine(true), off = drumOnLine(false);
+    printf("oil drum on the line: score %.2f, without: %.2f\n", on, off);
+    fflush(stdout);
+    assert(off > 50 && on > 0.9f * off);  // the drum only moves the target threat ratings a little
+}
+
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
     shotgunGap();
+    drumInLine();
     secondActions();
     targetSides();
     targetWeights();
