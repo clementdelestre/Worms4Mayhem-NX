@@ -493,6 +493,7 @@ Crates (CrateLogicEntity, vtable 0x8619a0, HandleMessage 0x5cb330, spawn 0x5c9bd
   worm's with AddToWormInventory, 0x5c8820: that container's count alone is read as a u8, left when 0xff, else set to count + NumContents
   as a u8, so NumContents -1 on 0 gives infinite) [disasm], health 0x5c8660 (energy + NumContents, ApplyDamage, Worm.Antidote), mystery 0x5ca1f0,
   target and custom a pickup sound only; then Crate.Index, Crate.Collected.
+- NiceToSiegeYou [data NICETOSIEGEYOU.XOM, scripts/NiceToSiegeYou.lub]: Crate1..4 are health crates with TeamCollectable 0, the EasterEgg trigger TeamCollect 0, the AIAttack1 target crate TeamCollectable 5; Team.Data AlliedGroup: Human Team 0, ProfsTeam 0, CPU Team 1, CPU_Archers 1. So no enemy worm collects any of them by 0x5c8370 / 0x5d4d70: walking through is W4M behaviour.
 - Explosion 0x5c9a10 (active, not collected): d = |crate - damage epicentre|; d < LandDamageRadius: WormDamageMagnitude (R - d) / R to
   0x5c87a0 (TeamDestructible -1 or the active worm's AlliedGroup; Hitpoints -= trunc; <= 0 destroys). Then a Pushable crate within
   ImpulseRadius of the impulse epicentre gets v += ImpulseMagnitude (R - e) / R away from it and leaves the ground (0x5c5ae0). Bullets
