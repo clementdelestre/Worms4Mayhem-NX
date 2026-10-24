@@ -174,6 +174,9 @@ ends it at 5.03 s, so it is one pass of the 5.85 s clip [ours]: started with a 1
 three crate kinds (W4M PickupUtil −11, PickupHealthCrate −6);
 `FeBookOut` has event volume 0 in W4M (silent); `BubbleLoop` plays one of Bubble1–6 per 500 ms spawn of WXP_Bubbles_Small (FEV spawn 500..500 on a oneshot instance, fmod_event 0x1001a3ec; the emitter starts its event once, 0x5bdcf4).
 
+## Pause [ours; W4M side: docs/w4m/audio.md "Pause"]
+`Audio::pause(on, efmv)`, called every frame from main.cpp with the pause menu state and `Game::efmvActive`: pauses every sfx, voice and EFMV slot playing (raylib PauseSound, W4M pauses the SpotEffect and Speech categories), freezes the audio clock (trigger delays, fade-in ramps, emitter and EFMV envelopes) and sets the music factor 0.5 on open / 1 on close, both only while EFMV.Active is 0 [ours + disasm]. Music, the FrontendDay ambience and the `Audio::movie` ducking are untouched; `musicLevel` (FMV 0.5) multiplies with the pause factor. The loops (Tick, Dynamite, Homing, MineBeep, HolyHeld, held and charge sounds) keep their normal conditions in pause: their sim is frozen, there is no per-sound pause guard [ours]. Sounds started during the pause (menu sounds) play [assumed, see the W4M doc].
+
 ## Level movies (EFMV) and lip sync
 
 W4M side: docs/w4m/acting.md §19 "Speech, lip-sync, sound banks". Files: docs/import.md (`efmv/`, `voices/*/lip.txt`).

@@ -2060,6 +2060,7 @@ int main(int argc, char **argv) {
         if (inScript && (screen != shown || frame == 0)) printf("frame %d screen %d\n", frame, (int)(shown = screen)), fflush(stdout);
         if (scriptEnd) break;
         Ui::pollStick();
+        Audio::pause(screen == Screen::Play && pause.open, game.efmvActive());
         Audio::update();
         Controls::update(dt);
 
@@ -2639,8 +2640,8 @@ int main(int argc, char **argv) {
         // W4M HudClockEntity 0x5efe80 on the displayed seconds (rounded up): ClockFast loops at 5 and under (0x5efd80), ClockSlow from 15
         // at volume min(1, (15 - s) 0.11) (0x5efc40, Event property 1); both stop at 0, past 15 and during EFMV.Active
         int sec = game.phase == Phase::Aim && !game.hotSeat && cur.alive && !game.efmvActive() && game.timer > 0 ? (game.timer + 59) / 60 : 0;
-        Audio::loop(Audio::Sfx::Tick, sec > 0 && sec <= 5 && !pause.open);
-        Audio::loop(Audio::Sfx::TickSlow, sec > 5 && sec <= 15 && !pause.open, nullptr, fminf(1, (15 - sec) * 0.11f));
+        Audio::loop(Audio::Sfx::Tick, sec > 0 && sec <= 5);
+        Audio::loop(Audio::Sfx::TickSlow, sec > 5 && sec <= 15, nullptr, fminf(1, (15 - sec) * 0.11f));
         if (sec > 0 && sec <= 5 && sec != lastSec) Controls::rumble(livePad, 0.12f, 0.05f);
         lastSec = sec;
         if (netbot && botDone > 1e8f && (game.phase == Phase::GameOver || turns >= botTurns)) botDone = clock + 2;  // let the last inputs and sums out
@@ -2662,20 +2663,20 @@ int main(int argc, char **argv) {
         for (const Projectile &s : game.shots) if (WEAPONS[s.weapon].name == "Dynamite") stick = &s.pos;
         for (const Object &o : game.objects) if (o.type == Object::Mine && o.fuse >= 0 && !o.dead) mine = &o.pos;
         const bool onMatch = screen == Screen::Play;  // the exit above may have left it this frame: stopSfx must stick
-        Audio::loop(Audio::Sfx::Dynamite, onMatch && stick && !pause.open, stick);
+        Audio::loop(Audio::Sfx::Dynamite, onMatch && stick, stick);
         // MissileLoop: Bazooka WEAPTWK LoopSfx, Homing via WXP_HomingMissileGlow's EmitterSoundFX; follows the shot, 1 s trigger delay, Time envelope ends at 5.03 s
         static float rocketAge = 0;
         const Vector3 *rocket = nullptr;
         for (const Projectile &s : game.shots)
             if (!s.child && (kindName(WEAPONS[s.weapon]) == "Bazooka" || WEAPONS[s.weapon].kind == Kind::Homing)) rocket = &s.pos;  // a Factory clone of either too
         rocketAge = rocket ? rocketAge + GetFrameTime() : 0;
-        Audio::hold(Audio::Sfx::Homing, onMatch && rocket && rocketAge < 5.029f && !pause.open, rocket);
-        Audio::loop(Audio::Sfx::MineBeep, onMatch && mine && !pause.open, mine);
-        Audio::loop(Audio::Sfx::HolyHeld, onMatch && game.phase == Phase::Aim && cur.alive && wd.name == "Holy Hand Grenade" && !pause.open, &cur.pos);
+        Audio::hold(Audio::Sfx::Homing, onMatch && rocket && rocketAge < 5.029f, rocket);
+        Audio::loop(Audio::Sfx::MineBeep, onMatch && mine, mine);
+        Audio::loop(Audio::Sfx::HolyHeld, onMatch && game.phase == Phase::Aim && cur.alive && wd.name == "Holy Hand Grenade", &cur.pos);
         Audio::loop(Audio::Sfx::Cheer, onMatch && game.phase == Phase::GameOver && won(game));
         // W4M PowerbarMeterEntity 0x5f5c70: PoweringUpStart plays the type's sound on the worm, cut at the launch (0x1a = kWeaponPoisonArrow, table 0x90c920)
         const WeaponDef &sw = weaponDef(game.weapon);
-        bool charging = onMatch && game.phase == Phase::Aim && cur.alive && game.power > 0 && powered(sw) && !pause.open;
+        bool charging = onMatch && game.phase == Phase::Aim && cur.alive && game.power > 0 && powered(sw);
         const bool homingId = sw.kind == Kind::Homing && !customWeapon(game.weapon);  // by weapon id: the Weapon Factory's (21) is RocketPowerUp
         Audio::hold(Audio::Sfx::PowerRocket, charging && !homingId && sw.name != "Poison Arrow", &cur.pos);
         Audio::hold(Audio::Sfx::PowerHoming, charging && homingId, &cur.pos);
@@ -2696,10 +2697,10 @@ int main(int argc, char **argv) {
             if (float len = tc ? Models::clipLength("worm", tc) : 0)
                 wormAnims[game.current].act = {tc, 0, hm && hm[0] ? hm : nullptr, nullptr}, tauntEnd[game.current] = GetTime() + len;
         }
-        Audio::hold(Audio::Sfx::HeldSheep, hand && wd.name == "Sheep", &cur.pos);
-        Audio::loop(Audio::Sfx::HeldSentry, hand && wd.name == "Sentry Gun", &cur.pos);
-        Audio::hold(Audio::Sfx::HeldScouser, hand && wd.name == "Inflatable Scouser", &cur.pos);
-        Audio::hold(Audio::Sfx::HeldOldWoman, hand && wd.name == "Old Woman", &cur.pos);
+        Audio::hold(Audio::Sfx::HeldSheep, aiming && wd.name == "Sheep", &cur.pos);
+        Audio::loop(Audio::Sfx::HeldSentry, aiming && wd.name == "Sentry Gun", &cur.pos);
+        Audio::hold(Audio::Sfx::HeldScouser, aiming && wd.name == "Inflatable Scouser", &cur.pos);
+        Audio::hold(Audio::Sfx::HeldOldWoman, aiming && wd.name == "Old Woman", &cur.pos);
         Audio::hold(Audio::Sfx::PowerBow, charging && sw.name == "Poison Arrow", &cur.pos);
         bool chase = game.phase != Phase::Aim && !game.shots.empty() && !dropped(WEAPONS[game.shots[0].weapon]);  // dynamite: the camera stays on the worm
         Controls::Reticle ret = Controls::reticle(game);

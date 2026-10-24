@@ -244,6 +244,16 @@ bool musicLoaded = false, musicOn = false;
 float fade = 1;
 // AudioService 0x605720: EFMV.Play / Terminated timers (+0x24 500 ms, +0x20 2000 ms, the latter first) scale the music; none running: held
 float duck = 1, duckOut = 0, duckIn = 0;
+// App.Pause pauses the SpotEffect and Speech FMOD categories (FlowControlService 0x4f0dc0), so every sfx and voice slot; music and ambience play on.
+// The audio clock stops with them (delays, fade-ins, envelopes resume where they stopped); halve = AudioService 0x605720 music x 0.5.
+bool paused = false;
+double pausedAt = 0, lost = 0;
+float halve = 1;
+std::vector<Sound> held;  // slots pause() paused: raylib reports a paused sound as not playing
+double now() { return (paused ? pausedAt : GetTime()) - lost; }
+bool live(const Sound &s) {
+    return IsSoundPlaying(s) || std::any_of(held.begin(), held.end(), [&](const Sound &h) { return h.stream.buffer == s.stream.buffer; });
+}
 Vector3 ear{}, earRight{1, 0, 0};
 unsigned plays = 0;
 }  // namespace
@@ -338,14 +348,14 @@ Slot *playRandom(Variants &v, const Def &d, float volume, const Vector3 *at, boo
     int busy = 0;
     Slot *oldest = nullptr, *free = nullptr;
     for (Slot &x : v.slot)
-        if (IsSoundPlaying(x.s)) busy++, oldest = !oldest || x.born < oldest->born ? &x : oldest;
+        if (live(x.s)) busy++, oldest = !oldest || x.born < oldest->born ? &x : oldest;
         else if (x.variant == k && !free) free = &x;
     if (busy >= d.maxpb && oldest) StopSound(oldest->s), free = free ? free : oldest;
     if (!free) return nullptr;
     float g = place(free->s, d, volume * powf(10, d.db / 20), at);
     free->born = ++plays;
     if (d.pitchRand > 0) SetSoundPitch(free->s, exp2f(4 * d.pitchRand * (GetRandomValue(0, 32767) / 16383.5f - 1)));
-    if (ramp && d.fade > 0) SetSoundVolume(free->s, 0), ramps.push_back({free->s, GetTime(), g, d.fade});
+    if (ramp && d.fade > 0) SetSoundVolume(free->s, 0), ramps.push_back({free->s, now(), g, d.fade});
     PlaySound(free->s);
     return free;
 }
@@ -370,7 +380,7 @@ struct Pending { Variants *v; const Def *d; float vol; bool has; Vector3 at; dou
 std::vector<Pending> pending;
 int between(const int *r) { return r[0] == r[1] ? r[0] : r[0] + GetRandomValue(0, r[1] - r[0] - 1); }
 void trigger(Variants &v, const Def &d, float vol, const Vector3 *at, int id = -1) {
-    if (int ms = between(d.delay)) return pending.push_back({&v, &d, vol, at != nullptr, at ? *at : Vector3{}, GetTime() + ms / 1000.0, id});
+    if (int ms = between(d.delay)) return pending.push_back({&v, &d, vol, at != nullptr, at ? *at : Vector3{}, now() + ms / 1000.0, id});
     playRandom(v, d, vol, at, true);
 }
 
@@ -479,7 +489,7 @@ void stopSfx() {
     for (auto &v : sfx) for (Slot &k : v.slot) StopSound(k.s);
     efmvStop();
     for (auto &b : banks) for (auto &v : b.lines) for (Slot &k : v.slot) StopSound(k.s);
-    pending.clear(), ramps.clear();
+    pending.clear(), ramps.clear(), held.clear();
 }
 
 struct EmitterVoice { Sfx id; Slot *slot; unsigned born, frame; bool stolen; double t0; };
@@ -498,9 +508,9 @@ void update() {
             it = emitters.erase(it);
         }
         else ++it;
-    emitterFrame++;
+    emitterFrame += !paused;
     for (size_t i = 0; i < pending.size();)
-        if (Pending p = pending[i]; GetTime() >= p.due) pending.erase(pending.begin() + i), playRandom(*p.v, *p.d, p.vol, p.has ? &p.at : nullptr, true);
+        if (Pending p = pending[i]; now() >= p.due) pending.erase(pending.begin() + i), playRandom(*p.v, *p.d, p.vol, p.has ? &p.at : nullptr, true);
         else i++;
     if (outGain > 0) {
         outGain -= GetFrameTime() / 2 * powf(10, trackDb("theme") / 20);
@@ -513,13 +523,13 @@ void update() {
     }
     for (size_t i = 0; i < ramps.size();) {
         Ramp &r = ramps[i];
-        float k = (float)((GetTime() - r.t0) / r.len);
-        if (k >= 1 || !IsSoundPlaying(r.s)) { if (IsSoundPlaying(r.s)) SetSoundVolume(r.s, r.gain); ramps.erase(ramps.begin() + i); }
+        float k = (float)((now() - r.t0) / r.len);
+        if (k >= 1 || !live(r.s)) { if (live(r.s)) SetSoundVolume(r.s, r.gain); ramps.erase(ramps.begin() + i); }
         else SetSoundVolume(r.s, r.gain * k), i++;
     }
     if (stopping && musicLoaded) {
         if ((fade -= GetFrameTime() / 2) <= 0) fade = 0, stopping = false, StopMusicStream(theme);
-        else SetMusicVolume(theme, fade * duck * powf(10, trackDb(track) / 20)), UpdateMusicStream(theme);
+        else SetMusicVolume(theme, fade * duck * halve * powf(10, trackDb(track) / 20)), UpdateMusicStream(theme);
         return;
     }
     if (!musicLoaded || !musicOn) return;
@@ -527,7 +537,7 @@ void update() {
     if (duckIn > 0) duck = (duckIn -= ms) > 0 ? 1 - duckIn / 2000 : 1;
     else if (duckOut > 0) duck = (duckOut -= ms) > 0 ? duckOut / 500 : 0;
     fade = fminf(fade + GetFrameTime(), 1);
-    SetMusicVolume(theme, fade * duck * powf(10, trackDb(track) / 20));
+    SetMusicVolume(theme, fade * duck * halve * powf(10, trackDb(track) / 20));
     UpdateMusicStream(theme);
 }
 
@@ -581,7 +591,7 @@ void hold(Sfx id, bool on, const Vector3 *at) {
     if (!on) pending.erase(std::remove_if(pending.begin(), pending.end(), [&](const Pending &p) { return p.id == (int)id; }), pending.end());
     for (Slot &k : sfx[(int)id].slot) {
         if (!on) StopSound(k.s);
-        else if (IsSoundPlaying(k.s)) busy = true, place(k.s, d, powf(10, d.db / 20), at);
+        else if (live(k.s)) busy = true, place(k.s, d, powf(10, d.db / 20), at);
     }
     float &w = wait[(int)id];
     w = fmaxf(0, w - GetFrameTime() * 1000);
@@ -609,7 +619,7 @@ void emitter(int key, Sfx id, Vector3 at) {
             if (!used && (!free || x.variant == k)) free = &x;
         }
         if (!free) return;
-        it = emitters.emplace(key, EmitterVoice{id, free, ++plays, emitterFrame, false, GetTime()}).first;
+        it = emitters.emplace(key, EmitterVoice{id, free, ++plays, emitterFrame, false, now()}).first;
         if (d.layer >= 0) trigger(sfx[d.layer], DEFS[d.layer], 1, &at, d.layer);
     }
     EmitterVoice &e = it->second;
@@ -619,10 +629,10 @@ void emitter(int key, Sfx id, Vector3 at) {
     if (d.env) {
         const float *end = d.env;
         while (*end >= 0) end += 3;
-        g = envelope(d.env, end, (float)(GetTime() - e.t0));
+        g = envelope(d.env, end, (float)(now() - e.t0));
     }
     place(e.slot->s, d, g * powf(10, d.db / 20), &at);
-    if (!IsSoundPlaying(e.slot->s)) PlaySound(e.slot->s);
+    if (!live(e.slot->s)) PlaySound(e.slot->s);
 }
 
 void loop(Sfx id, bool on, const Vector3 *at, float volume) {
@@ -634,7 +644,7 @@ void loop(Sfx id, bool on, const Vector3 *at, float volume) {
     if (at) last[(int)id] = *at;
     g = d.fade > 0 ? Clamp(g + (on ? 1 : -1) * GetFrameTime() / d.fade, 0, 1) : on;
     if (g <= 0) { for (Slot &k : v.slot) StopSound(k.s); return; }
-    for (Slot &k : v.slot) if (IsSoundPlaying(k.s)) return void(place(k.s, d, g * volume * powf(10, d.db / 20), &last[(int)id]));
+    for (Slot &k : v.slot) if (live(k.s)) return void(place(k.s, d, g * volume * powf(10, d.db / 20), &last[(int)id]));
     if (on) playRandom(v, d, g * volume, &last[(int)id]);
 }
 
@@ -660,7 +670,7 @@ static const Lip *voice(int team, Voice id, const Vector3 *at) {
     Bank &b = bankOf(team);
     const Def &d = id == Voice::SadSigh || id == Voice::Yawn ? SPEECH_SOFT : SPEECH;
     for (Variants &v : b.lines)  // a new line is dropped while the bank's voice is still speaking (no queue, no gap)
-        for (Slot &x : v.slot) if (IsSoundPlaying(x.s)) return nullptr;
+        for (Slot &x : v.slot) if (live(x.s)) return nullptr;
     for (int hop = 0; hop < 4 && !b.lines[(int)id].n; hop++) id = FALLBACK[(int)id];
     Slot *s = playRandom(b.lines[(int)id], d, 1, at);
     if (s) TraceLog(LOG_DEBUG, "AUDIO: voice %s/%s_%d", GetFileName(b.dir.c_str()), VOICE_NAMES[(int)id], s->variant + 1);
@@ -707,7 +717,7 @@ void music(bool on, const char *name, bool option) {
     if (!musicLoaded) return;
     // level tracks fade in (Music.FadeIn, 0x7290b4); femusic (FEV fade-in 0, started by FrontEndService init) and the jingle do not
     if (on && !IsMusicStreamPlaying(theme))
-        fade = track == "victory" || track == "theme" ? 1 : 0, SetMusicVolume(theme, fade * duck * powf(10, trackDb(track) / 20)), PlayMusicStream(theme);
+        fade = track == "victory" || track == "theme" ? 1 : 0, SetMusicVolume(theme, fade * duck * halve * powf(10, trackDb(track) / 20)), PlayMusicStream(theme);
     else if (!on && track == "theme" && IsMusicStreamPlaying(theme)) stopping = true;
     else if (!on) StopMusicStream(theme);
     if (on) stopping = false;
@@ -762,7 +772,7 @@ Efmv *findEfmv(const char *name) {
 }
 Slot *playEfmv(Efmv &e, const Vector3 *at) {
     Slot *s = playRandom(e.v, e.d, 1, at);
-    if (s && !e.env.empty()) envs.push_back({s->s, &e, GetTime(), powf(10, e.d.db / 20)});
+    if (s && !e.env.empty()) envs.push_back({s->s, &e, now(), powf(10, e.d.db / 20)});
     TraceLog(LOG_INFO, "AUDIO: EFMV %s %.1f dB%s, lip %d rows", e.name.c_str(), e.d.db, e.d.loop ? " loop" : "", (int)e.lip.size());
     return s;
 }
@@ -817,13 +827,30 @@ void efmvStop() {
     for (Efmv &e : efmvs) for (Slot &k : e.v.slot) StopSound(k.s);
 }
 
+void pause(bool on, bool efmv) {
+    if (on == paused) return;
+    if (!efmv) halve = on ? 0.5f : 1;  // both messages are ignored while EFMV.Active
+    if (on) {
+        pausedAt = GetTime();
+        auto cut = [](Slot &k) { if (IsSoundPlaying(k.s)) PauseSound(k.s), held.push_back(k.s); };
+        for (auto &v : sfx) for (Slot &k : v.slot) cut(k);
+        for (auto &b : banks) for (auto &v : b.lines) for (Slot &k : v.slot) cut(k);
+        for (Efmv &e : efmvs) for (Slot &k : e.v.slot) cut(k);
+    } else {
+        lost += GetTime() - pausedAt;
+        for (Sound &s : held) ResumeSound(s);
+        held.clear();
+    }
+    paused = on;
+}
+
 // EFMV Time envelopes through envelope()
 void efmvUpdate() {
     for (size_t i = 0; i < envs.size();) {
         Env &v = envs[i];
-        if (!IsSoundPlaying(v.s)) { envs.erase(envs.begin() + i); continue; }
+        if (!live(v.s)) { envs.erase(envs.begin() + i); continue; }
         const std::vector<float> &p = v.e->env;
-        float g = envelope(p.data(), p.data() + p.size(), fminf(1, (float)(GetTime() - v.t0) * v.e->rate));
+        float g = envelope(p.data(), p.data() + p.size(), fminf(1, (float)(now() - v.t0) * v.e->rate));
         SetSoundVolume(v.s, v.gain * g);
         i++;
     }
