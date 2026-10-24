@@ -414,6 +414,15 @@ Worms (WXWormManagerService HandleMessage 0x5b5e70):
   (docs/w4m/formats.md "PERM"): blasts leave the castle whole and only lower the heightmap ground. The Prof is an AI target like any active
   worm of another alliance (docs/w4m/ai.md "Target list": only Surrendered and WormData +0x124 filter; Flags 0x10 is not the Vital 0x100);
   his death sets ProfHasDiedOrHumanTeamAllDead and TurnEnded fails the mission.
+- NiceToSiegeYou intro blasts and the all-AI loss [data: NiceToSiegeYou.json movies + map locators; REA decompile 0x5257b0, 0x4f9970]:
+  - The movie event CreateExplosion (dispatcher 0x5257b0) sets Explosion.DetailObject / WormDamageMagnitude / ImpulseMagnitude / WormDamageRadius /
+    LandDamageRadius / ImpulseRadius / ParticleEffect / ImpulseOffset and runs 0x4f9970, which builds a real explosion entity (constructor 0x518ce0)
+    at the locator: it damages worms like any blast, during an EFMV too. The Intro's EFMVExplosion9-12 (Damage 100, radius 50 u, locators at
+    (40-44, 5, 60-62)) and 13-16 (at (65-67, 6.8, 69-71)) sit on the spawn positions of Enemy5 (15 HP) and Enemy6 (15 HP): the movie kills them,
+    then EFMV_Terminated's DieQuietly 8 / 9 removes them (Worm_Died returns at Turn 0). Our HP -57 / -137 before DieQuietly is that data.
+  - The mission is lost when Worm_Died sets ProfHasDiedOrHumanTeamAllDead and TurnEnded sends GameLogic.Mission.Failure; it is won only when
+    DoOncePerTurnFunctions reads RoundTimeRemaining < 0 (RoundTime 900000 ms). In an all-AI run the CPU teams (Prof is a target, AlliedGroup 0)
+    kill the Prof around 400-600 s, so the run is lost (same before the Worm.DataNN mirror: lost at 418 s vs 591 s). W4M behaviour, nothing to fix.
 - **Worm spawn placement** [REA decompile 0x5b4180, 0x5a9ac0, 0x5a6af0, 0x5b1d60; disasm 0x5b4180..0x5b47c3]:
   - The Spawn string is compared with strcmp (0x638a62) against "spawn", case-sensitive. Equal: the random search (docs/w4m/turn.md "Worm"). Else the
     name is looked up as a locator through `Land.GetDetailInfo` (0x59a8b0) and the worm takes the detail's position (+0xd0, 3 floats) and orientation
