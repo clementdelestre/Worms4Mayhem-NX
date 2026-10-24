@@ -91,7 +91,8 @@ const Lip *efmvSpeech(const char *line, Vector3 at, int speaker);  // TriggerSpe
 void efmvSfx(const char *name, bool looping, Vector3 at);  // TriggerSoundEffect: EFMV/<level>/<name>; one looping instance at a time
 void movie(bool playing);  // EFMV.Play: music out over 500 ms; EFMV.Terminated: the looping sfx stops, music back over 2000 ms
 void musicLevel(float g);  // W4M FMV: the frontend music at half (FrontEndService 0x726aa3) while a .wmv plays, 1 restores
-void pause(bool on, bool efmv);  // W4M App.Pause / App.Resume: sfx and voices paused, music x 0.5 (not while efmv = EFMV.Active); call every frame
+void pause(bool on, bool efmv);  // W4M App.Pause / App.Resume: sfx and voices paused (new ones start paused), music x 0.5 on a 20 ms step (not while efmv = EFMV.Active); call every frame
+void sample(Sfx id);  // W4M WXMsg.PlaySample (FrontEndService 0x726ef7): a 2D sound that a pause holds and App.Resume plays
 void narrator(int n);      // EFMV/Failures/Failures_Narrator_0n, n 1..5  // open the stream now (an SD read of ~40 ms on Switch); its next music() call takes it
 
 }  // namespace Audio

@@ -245,14 +245,20 @@ float fade = 1;
 // AudioService 0x605720: EFMV.Play / Terminated timers (+0x24 500 ms, +0x20 2000 ms, the latter first) scale the music; none running: held
 float duck = 1, duckOut = 0, duckIn = 0;
 // App.Pause pauses the SpotEffect and Speech FMOD categories (FlowControlService 0x4f0dc0), so every sfx and voice slot; music and ambience play on.
-// The audio clock stops with them (delays, fade-ins, envelopes resume where they stopped); halve = AudioService 0x605720 music x 0.5.
-bool paused = false;
+// The audio clock stops with them (delays, fade-ins, envelopes resume where they stopped).
+bool paused = false, ran = true;  // ran: the frame before this pause() call was not paused (W4M's clock moved in it)
 double pausedAt = 0, lost = 0;
+// AudioService +0x28 / +0x29 (App.Pause / App.Resume) wait for an update whose 20 ms clock moved (0x605a70); halve is the 0.5 they set or clear
+bool wantHalf = false, wantFull = false;
 float halve = 1;
-std::vector<Sound> held;  // slots pause() paused: raylib reports a paused sound as not playing
+double clockMs = 0;
+long stepAt = 0;
+// held: slots pause() paused; born: started while paused, so started paused (FMOD); keep: a WXMsg.PlaySample sound (FrontEndService +0x154)
+struct Held { Sound s; bool born, keep; };
+std::vector<Held> held;
 double now() { return (paused ? pausedAt : GetTime()) - lost; }
 bool live(const Sound &s) {
-    return IsSoundPlaying(s) || std::any_of(held.begin(), held.end(), [&](const Sound &h) { return h.stream.buffer == s.stream.buffer; });
+    return IsSoundPlaying(s) || std::any_of(held.begin(), held.end(), [&](const Held &h) { return h.s.stream.buffer == s.stream.buffer; });
 }
 Vector3 ear{}, earRight{1, 0, 0};
 unsigned plays = 0;
@@ -350,13 +356,17 @@ Slot *playRandom(Variants &v, const Def &d, float volume, const Vector3 *at, boo
     for (Slot &x : v.slot)
         if (live(x.s)) busy++, oldest = !oldest || x.born < oldest->born ? &x : oldest;
         else if (x.variant == k && !free) free = &x;
-    if (busy >= d.maxpb && oldest) StopSound(oldest->s), free = free ? free : oldest;
+    if (busy >= d.maxpb && oldest) {
+        StopSound(oldest->s), free = free ? free : oldest;
+        held.erase(std::remove_if(held.begin(), held.end(), [&](const Held &h) { return h.s.stream.buffer == oldest->s.stream.buffer; }), held.end());
+    }
     if (!free) return nullptr;
     float g = place(free->s, d, volume * powf(10, d.db / 20), at);
     free->born = ++plays;
     if (d.pitchRand > 0) SetSoundPitch(free->s, exp2f(4 * d.pitchRand * (GetRandomValue(0, 32767) / 16383.5f - 1)));
     if (ramp && d.fade > 0) SetSoundVolume(free->s, 0), ramps.push_back({free->s, now(), g, d.fade});
-    PlaySound(free->s);
+    if (paused) held.push_back({free->s, true, false});  // a channel under a paused category group starts paused (fmodex 0x1006dead)
+    else PlaySound(free->s);
     return free;
 }
 
@@ -527,15 +537,24 @@ void update() {
         if (k >= 1 || !live(r.s)) { if (live(r.s)) SetSoundVolume(r.s, r.gain); ramps.erase(ramps.begin() + i); }
         else SetSoundVolume(r.s, r.gain * k), i++;
     }
+    if (ran) clockMs += GetFrameTime() * 1000;
+    long t = (long)ceil(clockMs / 20) * 20, ms = t - stepAt;  // TaskManager per-frame time 0x68d57f, frozen while paused
+    if (ms > 0) {
+        stepAt = t;
+        if (musicLoaded && IsMusicStreamPlaying(theme)) {  // 0x605720, only with a music instance (+0x34)
+            bool timer = duckIn > 0 || duckOut > 0;
+            if (duckIn > 0) duck = (duckIn -= ms) > 0 ? 1 - duckIn / 2000 : 1;
+            else if (duckOut > 0) duck = (duckOut -= ms) > 0 ? duckOut / 500 : 0;
+            if (wantHalf) wantHalf = false, halve = 0.5f;
+            else if (wantFull || timer) wantFull = false, halve = 1;
+        }
+    }
     if (stopping && musicLoaded) {
         if ((fade -= GetFrameTime() / 2) <= 0) fade = 0, stopping = false, StopMusicStream(theme);
         else SetMusicVolume(theme, fade * duck * halve * powf(10, trackDb(track) / 20)), UpdateMusicStream(theme);
         return;
     }
     if (!musicLoaded || !musicOn) return;
-    float ms = GetFrameTime() * 1000;
-    if (duckIn > 0) duck = (duckIn -= ms) > 0 ? 1 - duckIn / 2000 : 1;
-    else if (duckOut > 0) duck = (duckOut -= ms) > 0 ? duckOut / 500 : 0;
     fade = fminf(fade + GetFrameTime(), 1);
     SetMusicVolume(theme, fade * duck * halve * powf(10, trackDb(track) / 20));
     UpdateMusicStream(theme);
@@ -827,18 +846,28 @@ void efmvStop() {
     for (Efmv &e : efmvs) for (Slot &k : e.v.slot) StopSound(k.s);
 }
 
+void sample(Sfx id) {
+    play(id);
+    for (Held &h : held)
+        for (Slot &k : sfx[(int)id].slot) h.keep |= h.born && h.s.stream.buffer == k.s.stream.buffer;
+}
+
 void pause(bool on, bool efmv) {
+    ran = !paused;
     if (on == paused) return;
-    if (!efmv) halve = on ? 0.5f : 1;  // both messages are ignored while EFMV.Active
+    if (!efmv) (on ? wantHalf : wantFull) = true;  // both messages are ignored while EFMV.Active
     if (on) {
         pausedAt = GetTime();
-        auto cut = [](Slot &k) { if (IsSoundPlaying(k.s)) PauseSound(k.s), held.push_back(k.s); };
+        auto cut = [](Slot &k) { if (IsSoundPlaying(k.s)) PauseSound(k.s), held.push_back({k.s, false, false}); };
         for (auto &v : sfx) for (Slot &k : v.slot) cut(k);
         for (auto &b : banks) for (auto &v : b.lines) for (Slot &k : v.slot) cut(k);
         for (Efmv &e : efmvs) for (Slot &k : e.v.slot) cut(k);
     } else {
         lost += GetTime() - pausedAt;
-        for (Sound &s : held) ResumeSound(s);
+        // the menu items that started the other born sounds were killed before App.Resume (KillPopUpNamed first), stopping them (0x6fdde0)
+        for (Held &h : held)
+            if (!h.born) ResumeSound(h.s);
+            else if (h.keep) PlaySound(h.s);
         held.clear();
     }
     paused = on;

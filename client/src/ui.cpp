@@ -5294,7 +5294,7 @@ Pause::Action Pause::update() {
     }
     bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = plus || P({B}, {KEY_BACKSPACE});
     if (brief >= 0) {  // Return / Cancel kill it; MenuGoingAway: click3, App.Resume (back to the match, not the pause menu)
-        if (ok || back) brief = -1, open = false, Audio::play(S::HpTick);
+        if (ok || back) brief = -1, open = false, Audio::sample(S::HpTick);
         return None;
     }
     if (help) {
@@ -5303,18 +5303,18 @@ Pause::Action Pause::update() {
     }
     if (confirm >= 0) {  // ConfirmList: No / Cancel re-create WXFEP.Pause, Yes resumes and acts
         yes = clampWrap(yes + P({DOWN}, {}) - P({UP}, {}), 2);
-        if (back || (ok && !yes)) Audio::play(S::HpTick), popUp(-1);
+        if (back || (ok && !yes)) Audio::sample(S::HpTick), popUp(-1);
         if (!ok || !yes) return None;
         int c = confirm;
-        open = false, confirm = -1, Audio::play(S::HpTick);
+        open = false, confirm = -1, Audio::sample(S::HpTick);
         return c == Draw ? DoDraw : c == Restart ? DoRestart : DoQuit;
     }
     std::vector<int> r = rows();
     row = clampWrap(row + P({DOWN}, {}) - P({UP}, {}), (int)r.size());
-    if (back || (ok && r[row] == Continue)) open = false, Audio::play(S::HpTick);  // KillPopUpNamed$WXFEP.Pause, App.Resume, EFMV.Borders.On
+    if (back || (ok && r[row] == Continue)) open = false, Audio::sample(S::HpTick);  // KillPopUpNamed$WXFEP.Pause, App.Resume, EFMV.Borders.On
     else if (ok && r[row] == Options) help = true, Audio::play(S::FeController);
-    else if (ok && r[row] == Briefing) brief = shown = t, Audio::play(S::HpTick);  // the Pause's kill (click3), no App.Resume
-    else if (ok) Audio::play(S::HpTick), popUp(r[row]);
+    else if (ok && r[row] == Briefing) brief = shown = t, Audio::sample(S::HpTick);  // the Pause's kill (click3), no App.Resume
+    else if (ok) Audio::sample(S::HpTick), popUp(r[row]);
     return None;
 }
 
