@@ -80,7 +80,8 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
 - **Enum fields** (WormData WeaponIndex, TeamData WormpotSuperWeapon, WXFE_UnlockableItem State) reach Lua as their value name less the
   enum's common prefix (State "Unlocked", WeaponIndex "WeaponShotgun"); a script writes them by full or short name [disasm 0x6c7078].
 - **Containers**: Query returns a field table, Edit `(lock, table)` and Close writes the table back [disasm]. Synced with the game:
-  Worm.DataNN (Energy, Active; Energy written back), Inventory.TeamNN / AllianceNN (ammo, below), InventoryN.WeaponDelays (delays),
+  Worm.DataNN (Energy, Active; Energy written back; a read refreshes them only when the slot's worm changed since the script's last write, so
+  a lib_SetupWorm on an unspawned slot keeps its copied Energy for Worm.Respawn: W4M's WormData is the worm's own state [ours = data]), Inventory.TeamNN / AllianceNN (ammo, below), InventoryN.WeaponDelays (delays),
   GM.SchemeData (crate chance and shares), AIParams.WormNN copies (the CPU level).
 - **Worms** (`WormManager.Reinitialise`): the Worm.DataNN slots the script set up, team-major by TeamIndex then slot, at their Spawn
   marker, as W4M's PlaceWormAtSpawnPoint 0x5b4180 (docs/w4m/missions.md "Worm spawn placement"): the locator's exact x, z and heading (`Marker::heading`: row 2 of the matrix

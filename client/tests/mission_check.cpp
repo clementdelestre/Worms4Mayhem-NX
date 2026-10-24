@@ -417,6 +417,28 @@ static void checkWormSpawn(const std::vector<MissionSpec> &list) {
     assert(placed > 20 && settled == placed);
 }
 
+// NiceToSiegeYou's lib_SetupWorm on an unspawned slot (CopyContainer, then EditContainer) keeps the copied Energy for Worm.Respawn:
+// ProfInGame 200 after the intro, Enemy7 30 for a dead Enemy1, and Enemy1 50 again when that one dies [data: NICETOSIEGEYOU.XOM]
+static void checkRespawnEnergy(const std::vector<MissionSpec> &list) {
+    for (const MissionSpec &m : list) {
+        if (m.id != "NiceToSiegeYou") continue;
+        Game g;
+        g.start(missionConfig(m, 3));
+        Input skip;
+        skip.flags = Input::SKIP_MOVIE;
+        for (int t = 0; t < 60 * 120 && !(g.phase == Phase::Aim && !scriptMovieOn(g)); t++) g.step(t % 30 ? Input{} : skip);
+        auto hp = [&](int team) { for (const Worm &w : g.worms) if (w.alive && w.team == team) return w.hp; return -1; };
+        assert(g.phase == Phase::Aim && hp(3) == 200);
+        scriptEval(g, "SendIntMessage(\"Worm.DieQuietly\", 4)");
+        assert(hp(2) == 30);
+        scriptEval(g, "SendIntMessage(\"Worm.DieQuietly\", 10)");
+        int n50 = 0;
+        for (const Worm &w : g.worms) n50 += w.alive && w.team == 1 && w.hp == 50;
+        printf("%-24s Prof %d, Enemy7 30, Enemy1 back: %d worms of team 1 at 50\n", m.id.c_str(), hp(3), n50);
+        assert(n50 == 4 && hp(2) < 0);
+    }
+}
+
 // NoRoomForError creates Crate1 at its marker on top of the uncollected twin that already fell from it (0.85 m lower, spheres
 // overlapping): 0x5cb7e0 finds the overlap (0x516350), v = 0 <= 0.02 and the twin below, so it rests where it was made, never pushed out
 static void checkCrateStack(const std::vector<MissionSpec> &list) {
@@ -690,6 +712,7 @@ int main() {
     if (only && !strcmp(only, "deaths")) return checkDeaths(list), 0;
     if (only && !strcmp(only, "cratestack")) return checkCrateStack(list), 0;
     if (only && !strcmp(only, "wormspawn")) return checkWormSpawn(list), 0;
+    if (only && !strcmp(only, "respawn")) return checkRespawnEnergy(list), 0;
     if (only) return 0;
     checkLot2(list);
     checkCrates(list);
@@ -698,6 +721,7 @@ int main() {
     checkCratePlacement(list);
     checkCrateStack(list);
     checkWormSpawn(list);
+    checkRespawnEnergy(list);
     checkJoust(list);
     checkDeaths(list);
     checkPickedTeam(list);

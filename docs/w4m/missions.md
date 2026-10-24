@@ -406,6 +406,14 @@ Worms (WXWormManagerService HandleMessage 0x5b5e70):
 - `Worm.Respawn` (int slot < 16) 0x5b4f70: a worm already in the slot logs "A worm which currently exists tried to respawn" and nothing
   happens. Else PlaceWormAtSpawnPoint 0x5b4180 (WormData.Spawn: a detail named other than "spawn" gives its exact position, only "spawn" searches random ground [REA decompile 0x5b4180]; see "Worm spawn placement" below), and only if WormData.Active: SpawnWorm 0x5b31b0, its speech bank, and
   with IsAllowedToTakeTurn (+0x12d) its team joins its alliance's list and the worm its team's (+0x128 PositionInTeam = its index).
+- NiceToSiegeYou worms and teams [data: NICETOSIEGEYOU.XOM WormDataContainer / TeamDataContainer, NiceToSiegeYou.lub]: Worm1-3 125 Energy (team 0
+  "Human Team", AlliedGroup 0); Prof 160 (intro only, DieQuietly 3 at the intro's end) then ProfInGame 200 (slot 3, Worm.Respawn): TeamIndex 3
+  "ProfsTeam" (Active 0, AlliedGroup 0: the player's alliance, TeamMustSurvive 1, IsAIControlled 1), Flags 0x10, IsAllowedToTakeTurn 0; Enemy1-4
+  50 and Enemy5 / 6 15 (team 1 "CPU Team", AlliedGroup 1; 5 / 6 parachute in); Enemy7-10 30 (team 2 "CPU_Archers", AlliedGroup 1); Cuckoo
+  150. A dead Enemy1-4 (slot 4-7) respawns Enemy7-10 in slot 10-13 and back. Lua sets no Land.Indestructable, but every map frame is PERM
+  (docs/w4m/formats.md "PERM"): blasts leave the castle whole and only lower the heightmap ground. The Prof is an AI target like any active
+  worm of another alliance (docs/w4m/ai.md "Target list": only Surrendered and WormData +0x124 filter; Flags 0x10 is not the Vital 0x100);
+  his death sets ProfHasDiedOrHumanTeamAllDead and TurnEnded fails the mission.
 - **Worm spawn placement** [REA decompile 0x5b4180, 0x5a9ac0, 0x5a6af0, 0x5b1d60; disasm 0x5b4180..0x5b47c3]:
   - The Spawn string is compared with strcmp (0x638a62) against "spawn", case-sensitive. Equal: the random search (docs/w4m/turn.md "Worm"). Else the
     name is looked up as a locator through `Land.GetDetailInfo` (0x59a8b0) and the worm takes the detail's position (+0xd0, 3 floats) and orientation

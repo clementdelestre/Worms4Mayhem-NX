@@ -32,6 +32,7 @@ struct ScriptState {
     std::vector<std::string> lockName;
     int slotWorm[SLOTS], ai[SLOTS];  // W4M worm slot -> our worm (-1), its AIParams.CPUn level (0 none)
     bool touched[SLOTS] = {};        // Worm.DataNN set up by the script
+    std::pair<int, int> mirror[SLOTS];  // the slot's worm (hp, alive) last written to its Worm.DataNN: W4M's WormData is the worm's own state
     std::vector<int> wormSlot;
     bool built = false, started = false, hurtSent = false, endless = false, roundOn = false, timedOut = false;
     int64_t idleDue = -1;  // a turn with no worm times out then (game ms)
@@ -81,7 +82,7 @@ struct ScriptState {
     static constexpr int DEPTH = 4;
     std::string buf, tmp[DEPTH];  // checksum serialisation, owned here: no destructor runs inside the protected call
     std::vector<std::pair<size_t, size_t>> ent[DEPTH];
-    ScriptState() { std::fill(slotWorm, slotWorm + SLOTS, -1), std::fill(ai, ai + SLOTS, 0); }
+    ScriptState() { std::fill(slotWorm, slotWorm + SLOTS, -1), std::fill(ai, ai + SLOTS, 0), std::fill(mirror, mirror + SLOTS, std::make_pair(-1 << 30, -1)); }
     ~ScriptState() { if (L) lua_close(L); }
 };
 
@@ -252,6 +253,8 @@ struct ScriptHost {
             for (auto &kv : ctn(n)->f) if (int k = weaponOf(kv.first.c_str()); k >= 0) kv.second.n = g.delays[i][k];
         } else if (sscanf(n.c_str(), "Worm.Data%d", &i) == 1 && i < SLOTS && S->slotWorm[i] >= 0) {
             const Worm &w = g.worms[S->slotWorm[i]];
+            if (S->mirror[i] == std::make_pair(w.hp, (int)w.alive)) return;  // the script's last write stays until the worm changes
+            S->mirror[i] = {w.hp, w.alive};
             if (Val *e = field(ctn(n), "Energy")) e->n = std::max(0, w.hp);
             if (Val *a = field(ctn(n), "Active")) a->n = w.alive;
         }
@@ -266,6 +269,7 @@ struct ScriptHost {
             if (S->slotWorm[i] >= 0) {
                 Worm &w = g.worms[S->slotWorm[i]];
                 if (w.alive) w.hp = w.counted = std::max(1, (int)fnum(ctn(n), "Energy"));
+                S->mirror[i] = {w.hp, w.alive};
             }
         } else if (sscanf(n.c_str(), "AIParams.Worm%d", &i) == 1 && i >= 0 && i < SLOTS) {
             int lv = 0;
