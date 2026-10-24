@@ -260,13 +260,39 @@ static void checkHurtEndsTurn(const std::vector<MissionSpec> &list) {
         bool play = g.phase == Phase::Aim && !scriptMovieOn(g) && g.worms[g.current].alive;
         since = play ? since + 1 : 0;
         if (play && since > 60 * (cpuTurns + 1) && g.worms[g.current].team != 0) {
-            g.hurt(g.worms[g.current], 5, true, 0);
-            g.step(ai.think(g));
-            assert(g.phase == Phase::Settle);
+            const int was = g.current;
+            Input in = ai.think(g);
+            if (cpuTurns == 1) {  // a first shotgun shot at its own feet: Weapon.Delete drops the gun's second, the next turn still comes
+                Worm &w = g.worms[g.current];
+                g.weapon = int(std::find_if(WEAPONS.begin(), WEAPONS.end(), [](const WeaponDef &d) { return d.kind == Kind::Shotgun; }) - WEAPONS.begin());
+                g.ammo[g.row(w.team)][g.weapon] = 1, g.delays[w.team][g.weapon] = 0, w.pitch = -1.4f;
+                for (int k = 0; k < 60; k++, t++) g.step(Input{}), w.pitch = -1.4f;  // at rest, the button up
+                g.hotSeat = 0;
+                in = Input{}, in.buttons = Input::FIRE;
+            } else g.hurt(g.worms[g.current], 5, true, 0);
+            g.step(in);
+            assert(g.phase == Phase::Settle && (cpuTurns != 1 || (g.gunState == 5 && scriptEval(g, "return WaitUntilNoActivity and 1 or 0") == 1)));  // EndTurn counts the gun's token
+            for (int k = 0; k < 60 * 30 && g.phase == Phase::Settle; k++, t++) g.step(Input{});
+            assert(g.phase == Phase::Aim && g.current != was && !g.gunState);
             cpuTurns++, since = 0;
         } else g.step(play ? ai.think(g) : skip);
     }
     assert(cpuTurns == 3);
+}
+
+// W4M direct plan IsPossible (0x4ac880): a CPU never fires a gun into land short of its target. MineAllMine's CPU worms, 4 minutes of
+// AI play (seed 1 shot the wall at their feet from move nodes, 165 s and 242 s in)
+static void checkSelfShot(const std::vector<MissionSpec> &list) {
+    Game g;
+    for (const MissionSpec &m : list) if (m.id == "MineAllMine") g.start(missionConfig(m, 1));
+    for (auto &t : g.cfg.teamSetup) t.cpu = std::max<uint8_t>(t.cpu, 3);
+    Ai ai;
+    for (int t = 0; t < 60 * 60 * 4 && g.phase != Phase::GameOver; t++) {
+        const int me = g.current, hp = g.worms[me].hp;
+        const bool gun = g.phase == Phase::Aim && g.weapon >= 0 && WEAPONS[g.weapon].kind == Kind::Shotgun;
+        g.step(ai.think(g));
+        assert(!(gun && g.current == me && g.worms[me].hp < hp));
+    }
 }
 
 // A crate a script makes with Crate.AddToWormInventory books to the collector's own Inventory.WormNN (0x5c8820), not the alliance's;
@@ -705,6 +731,7 @@ int main() {
     if (only && !strcmp(only, "movies")) return checkMovies(list), 0;
     if (only && !strcmp(only, "crates")) return checkCrates(list), 0;
     if (only && !strcmp(only, "hurt")) return checkHurtEndsTurn(list), 0;
+    if (only && !strcmp(only, "selfshot")) return checkSelfShot(list), 0;
     if (only && !strcmp(only, "attach")) return checkAttachments(list), 0;
     if (only && !strcmp(only, "picked")) return checkPickedTeam(list), 0;
     if (only && !strcmp(only, "wormcrate")) return checkWormInventoryCrate(list), 0;
@@ -721,6 +748,7 @@ int main() {
     checkCrates(list);
     checkWormInventoryCrate(list);
     checkHurtEndsTurn(list);
+    checkSelfShot(list);
     checkCratePlacement(list);
     checkCrateStack(list);
     checkWormSpawn(list);

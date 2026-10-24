@@ -2106,10 +2106,16 @@ int Game::tokens() const {
     return activeTokens() + (int)shots.size() + (countT < COUNT_DAMAGE ? (int)countGroup.size() : 0) + (int)deathQueue.size() + (dyingWorm >= 0);
 }
 
+// Weapon.Delete (0x55db30): a gun with shots fired goes to state 5, which applies no more damage; its token stays until it dies
+void Game::deleteWeapon() {
+    if (gunState) gunState = 5, gunSent = false, shotsLeft = 0;
+}
+
 // W4M GunWeaponLogicEntity 0x55ed10, states 3 and 4 after a shot with shots left: state 3 waits for ObjectCount.Active < 3 (the gun holds one
 // token), sends ApplyDamage, and when still < 3 goes on; state 4 returns to 0 (FirePressed accepted) once < 3
 void Game::stepGun() {
-    if (gunState == 3) {
+    if (gunState == 5) gunState = 0;  // the entity dies past WaitForSoundDelay (5 ms): the next 20 ms frame
+    else if (gunState == 3) {
         if (!gunSent && tokens() > 1) return;
         if (!gunSent) applyDamage(), gunSent = gunWaiting = true;  // AboutToApplyDamage, ApplyDamage, GunWaiting
         if (tokens() <= 1) gunState = 4;
@@ -2218,7 +2224,7 @@ std::vector<int> Game::applyPoison() {
 
 // stdlib CheckActivity: anything active (shots, worms, displays, the death queue) -> wait for GameLogic_NoActivity, else DoPostActivity
 void Game::checkActivity() {
-    if (!shots.empty() || active() || !countGroup.empty() || !deathQueue.empty()) timer = 1;
+    if (!shots.empty() || active() || gunState || !countGroup.empty() || !deathQueue.empty()) timer = 1;
     else doPostActivity();
 }
 
@@ -3806,14 +3812,14 @@ void Game::step(const Input &raw) {
     case Phase::Aim:  // a script ends the turn through its Timer_* / Worm_Damaged_Current callbacks (stdlib EndTurn)
         // 0x586e75: a powered weapon's FirePressed posts Timer.EndTurn (0x549ad0), clearing the turn-running flag +0x6a until the shot
         if (script) { if (!hotSeat && power <= 0 && !gunState && !scriptMovieCamera(*this) && --timer <= 0) scriptEvent(*this, "Timer_TurnTimedOut"); }  // 0x50f383
-        else if (!w.alive || selfHurt || over || (!hotSeat && power <= 0 && !gunState && --timer <= 0)) { phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
+        else if (!w.alive || selfHurt || over || (!hotSeat && power <= 0 && !gunState && --timer <= 0)) { deleteWeapon(); phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
         break;
     case Phase::Flying:
         if (shots.empty()) phase = Phase::Retreat;
         [[fallthrough]];
     case Phase::Retreat:  // W4M Timer_RetreatTimedOut / Worm_Damaged_Current -> EndTurn, which waits for the shots (ObjectCount.Active)
         if (script) { if (--timer <= 0) scriptEvent(*this, "Timer_RetreatTimedOut"); }
-        else if (!w.alive || selfHurt || over || --timer <= 0) phase = Phase::Settle, timer = 1, jumpDelay = 0, roped = jetting = chute = false;
+        else if (!w.alive || selfHurt || over || --timer <= 0) deleteWeapon(), phase = Phase::Settle, timer = 1, jumpDelay = 0, roped = jetting = chute = false;
         break;
     case Phase::Settle:  // stdlib.lub EndTurn: timer > 0 WaitUntilNoActivity, < 0 PostActivityTime; no timeout, as W4M
         if (in.flags & Input::SKIP_COUNT) countT = std::max(countT, COUNT_DAMAGE);  // observed in W4M by the user, 2026-10-03: X ends the display, deaths follow as usual
@@ -3824,7 +3830,7 @@ void Game::step(const Input &raw) {
             if (++timer < 0) break;
             if (script) scriptEvent(*this, "Timer_PostActivityTimedOut");
             else applyDamage(), checkActivity();  // Timer_PostActivityTimedOut: AboutToApplyDamage, ApplyDamage, CheckActivity
-        } else if (shots.empty() && !active()) {
+        } else if (shots.empty() && !active() && !gunState) {
             if (script) scriptNoActivity(*this);
             else timer = -POST_ACTIVITY;  // GameLogic_NoActivity -> Timer.StartPostActivity
         }

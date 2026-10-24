@@ -166,7 +166,7 @@ struct ScriptHost {
 
     static void pullKey(const char *k) {
         Game &g = *G;
-        if (!strcmp(k, "ObjectCount.Active")) put(k, !g.shots.empty() || g.active() || !g.countGroup.empty() || !g.deathQueue.empty() || g.dyingWorm >= 0);
+        if (!strcmp(k, "ObjectCount.Active")) put(k, !g.shots.empty() || g.active() || g.gunState || !g.countGroup.empty() || !g.deathQueue.empty() || g.dyingWorm >= 0);
         else if (!strcmp(k, "RoundTimeRemaining") && S->started) put(k, std::max<int64_t>(0, (int64_t)num("RoundTime") - (S->roundOn ? roundMs() : 0)));
         else if (!strcmp(k, "CurrentTeamIndex") && S->started) put(k, g.worms[g.current].team);
         else if (!strcmp(k, "ActiveWormIndex") && S->started) put(k, slotOf(g.current));
@@ -752,6 +752,7 @@ struct ScriptHost {
         S->dirty = true;
         if (is("GameLogic.ActivateNextWorm")) activateNext();
         else if (is("GameLogic.EndTurn")) endTurn();
+        else if (is("Weapon.Delete")) g.deleteWeapon();
         else if (is("Timer.StartGame")) roundBook(), S->roundEl = 0, S->roundOn = num("RoundTime") > 0;  // 0x50fa23
         else if (is("GameLogic.RoundTime.Pause") || is("GameLogic.RoundTime.Resume")) roundBook(), S->roundPause = is("GameLogic.RoundTime.Pause");  // +0x6f (0x510018)
         else if (is("Timer.StartPostActivity")) {
@@ -824,7 +825,7 @@ struct ScriptHost {
         else if (is("Camera.ShakeStart")) ui(GameEvent::Shake, {(float)num("Camera.Shake.Magnitude"), 0, 0}, (int)num("Camera.Shake.Length"));  // 0x522c29
         else if (is("Timer.StartHotSeatTimer") || is("Timer.StartTurn") || is("Timer.EndTurn") || is("Timer.EndRetreatTimer") || is("GameLogic.Turn.Started") ||
                  is("GameLogic.Turn.Ended") || is("GameLogic.AboutToApplyDamage") || is("AI.PerformDefaultAITurn") || is("AI.ExecuteActions") ||
-                 is("Weapon.Delete") || is("Utility.Delete") || is("Weapon.DisableWeaponChange") || is("Net.DisableAllInput") ||
+                 is("Utility.Delete") || is("Weapon.DisableWeaponChange") || is("Net.DisableAllInput") ||
                  is("Weapon.Wield")) {
             // covered by the sim's own turn: ActivateNextWorm sets the clocks, EndTurn the tools, our AI polls;
             // Weapon.Wield: the holstered weapon's draw pose and EquipSfx only (WeaponAccessoryEntity 0x597739)
