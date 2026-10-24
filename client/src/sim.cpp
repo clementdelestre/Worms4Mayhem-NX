@@ -1452,13 +1452,27 @@ static bool sphereInLand(const Terrain &t, Vector3 c, float r) {
     return false;
 }
 
+void Game::numberObjects() { for (Object &o : objects) if (o.uid < 0) o.uid = uids++; }
+
 // W4M EstablishPhysicsState 0x5a6af0, run by the first Update of a spawned worm (state kWPS_Undefined 0x5b1ff2, set by 0x5a9ac0): the 4 foot rays
 // down 1000 units; the nearest hit puts the feet there (Ambulatory, no landing, no fall damage), none: Ballistic, the worm falls from where it is
-Vector3 Game::establishFeet(Vector3 feet) const {
+// [ours: a ray starting inside a collider is a miss, assumed]
+Vector3 Game::establishFeet(Vector3 feet) {
+    numberObjects();
     float best = -1e9f;
     for (const Vector2 &p : PROBE) {
         float th;
         if (terrain.cast({feet.x + p.x, feet.y, feet.z + p.y}, {0, -1, 0}, 1000 * 0.05f, &th, nullptr)) best = fmaxf(best, feet.y - th);
+    }
+    // 0x519dd0 from the feet against every collider (id filter -1): under 1000 units, nearer than the rods, it sets the feet on the contact
+    Colliders cs;
+    colliders(cs, ~0u, -1);
+    for (const Collider &c : cs) {
+        const Vector3 o = Vector3Subtract(feet, c.c);
+        const float b = o.y, disc = b * b - (Vector3DotProduct(o, o) - c.r * c.r);  // down ray (0, -1, 0)
+        if (disc < 0) continue;
+        const float t = b - sqrtf(disc);
+        if (t >= 0 && t < 1000 * 0.05f) best = fmaxf(best, feet.y - t);
     }
     return best > -1e8f ? Vector3{feet.x, best, feet.z} : feet;
 }
@@ -1779,7 +1793,7 @@ void Game::sentryShot(const Object &o, const Vector3 &up, int target) {
 
 void Game::stepObjects() {
     Colliders cs;
-    for (Object &o : objects) if (o.uid < 0) o.uid = uids++;
+    numberObjects();
     // CrateLogicEntity 0x5c8900, land or collider: v = 0.2 (vx, -vy, vz), at rest under 0.02 units/ms, "Crate Spawn" released there
     auto crateRest = [&](Object &o) {
         if (o.spawning) emit(GameEvent::CrateLand, o.pos, -1, o.mystery >= 0 ? -2 : o.weapon);
@@ -3190,7 +3204,7 @@ void Game::stepShots(const Input &in, bool detonate) {
         for (size_t k = 0; k < worms.size() && k < 63; k++) if (worms[k].alive && Vector3Distance(p, worms[k].pos) < r) m |= 1ull << k;
         return m;
     };
-    for (Object &o : objects) if (o.uid < 0) o.uid = uids++;
+    numberObjects();
     // 0x581dc0, payload mask 0x3c37 but worms (`touches`): the contacts' uids into `now`; the flags of the first one not touched
     // last tick, n its normal (0x517ba0)
     Colliders objCs;
@@ -3523,7 +3537,7 @@ void Game::step(const Input &raw) {
     Input in = scriptMovieOn(*this) ? Input{} : raw;  // a movie leaves only its own input group (EFMVMovie, 0x5074a0): no worm control
     if (wp(WP_NO_BLIMP)) in.buttons &= ~Input::TARGET;  // Camera.Disable "Blimp" (0x5d6fea): targeting from the aim view only
     ropeIn = {};
-    for (Object &o : objects) if (o.uid < 0) o.uid = uids++;  // colliders' owner ids
+    numberObjects();  // colliders' owner ids
     int chosen = (in.buttons & Input::NEXT_WEAPON) && in.aim ? (uint8_t)in.aim - 1 : -1;
     if (chosen >= 0) in.aim = 0;
     // user-requested (2026-10-03, retest vs W4M later): the press that cancels the hot seat (W4M 0x50fce0) is never a shot, jump or view change

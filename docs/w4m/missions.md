@@ -437,13 +437,13 @@ Worms (WXWormManagerService HandleMessage 0x5b5e70):
     flags 1 mask 0x811 radius 10 centred 5 units over the feet. Nothing else places it.
   - Its first Update (dispatcher 0x5b1d60, state 9 at 0x5b1ff2, which logs "WXWormLogicEntity::Update state = kWPS_Undefined") runs
     EstablishPhysicsState 0x5a6af0: the 4 land rays of the foot probe (CastRays 0x59ec70, mask 0xf = the foot tripod and the centre, direction (0, -1, 0), length 10000)
-    from the worm position and a sphere sweep of the worm collider downward (0x519dd0, 10000, filter -1, hit time = global 0x95c28c). Sweep time T < 1000: the nearer of the
+    from the worm position and a ray from the worm position straight down against every collider (0x519d10 sets the origin, 0x519dd0 with length 10000 and id filter -1; same call as the targeting ray, docs/w4m/targeting.md; hit time = global 0x95c28c) [REA decompile 0x5a6af0, 0x519dd0]. Sweep time T < 1000: the nearer of the
     two wins (rod nearest <= T: the nearest rod hit point less its probe offset, HitPointRel 0x59ec00 index 0x7f; else the position + T x down, and the surface id is kept);
     T >= 1000: nearest rod <= 1000 puts the feet on its hit point, else "EstablishPhysicsState going Ballistic" (+0xf0 = 2). Ground found: state 0 (Ambulatory), position
     on the ground, no kWE_Landed event and no ChangeState, so no fall damage (that is in the Ballistic landing, docs/w4m/physics.md); `DAT_00955640` set (frontend / passive) forces state 6.
     A marker over more than 1000 units (50 m) of air makes the worm fall (Ballistic) and take the landing damage.
   - A ray starting inside land counts as a hit at distance 0 [assumed from 0x466ae0's first sample being its start, docs/w4m/physics.md "Land ray primitive"].
-  - The sphere sweep against the colliders (a worm or object closer below than the ground) is not modelled by ours [assumed to matter only when a collider sits under the marker].
+  - The collider ray hits an object under the marker: MineAllMine's Spawn2, Spawn3, Spawn4 sit over an `oildrum` detail (same x, z within 0.45 m, marker 2-3 units over the drum), so those worms stand on the drum's top (collider sphere radius 9 units, centre Position + 9) instead of the ground beside it [data: MineAllMine map markers + decompile]. Ours: `Game::establishFeet` casts the ray against `colliders()` (objects numbered at placement, `numberObjects`); a ray starting inside a collider is a miss [assumed: 0x516c80's inside case not read]. Worm colliders are not in the list at placement [assumed].
   - Respawn (0x5b4f70), EFMV SpawnWorm and WormManager.Reinitialise all route through PlaceWormAtSpawnPoint + SpawnWorm: one rule for every spawn.
 - WormManager.Reinitialise (0x5b5bf0) sets CurrentTeamIndex -1 (0x5b5c4c); ActivateNextWorm 0x5b59b0 sets ActiveWormIndex and
   CurrentTeamIndex; with no worm to activate it asserts `m_nActiveWormIndex!=-1` (0x5b5b0f). Not traced: what the release build does

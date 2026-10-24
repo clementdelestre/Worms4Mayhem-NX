@@ -367,7 +367,7 @@ static void checkCratePlacement(const std::vector<MissionSpec> &list) {
 // PlaceWormAtSpawnPoint 0x5b4180: a worm named by a locator stands at its exact x, z (no random search) and, after the first Update
 // (EstablishPhysicsState 0x5a6af0), on the ground under it: no fall, no fall damage; ground over 1000 units down: it falls
 static void checkWormSpawn(const std::vector<MissionSpec> &list) {
-    int placed = 0, settled = 0, dup = 0;
+    int placed = 0, settled = 0, dup = 0, overlap = 0;
     for (const MissionSpec &m : list) {
         Game g;
         g.start(missionConfig(m, 3));
@@ -407,6 +407,9 @@ static void checkWormSpawn(const std::vector<MissionSpec> &list) {
                 facing |= fabsf(remainderf(w.yaw - yaw, 2 * PI)) < 1e-4f;
             }
             assert(facing);
+            Colliders cs;  // the spawn's collider ray (0x519dd0) stops the feet on a collider under the marker: no overlap with an object
+            g.colliders(cs, ~1u, -1);
+            for (const Collider &c : cs) if (Vector3Distance(w.pos, c.c) < Game::R + c.r - 0.01f) printf("OVERLAP %s worm %zu collider flags %x worm %.2f %.2f %.2f was %.2f drum %.2f %.2f %.2f\n", m.id.c_str(), i, c.flags, w.pos.x, w.pos.y, w.pos.z, was[i].pos.y, c.c.x, c.c.y, c.c.z), overlap++;
             const float feet = w.pos.y - Game::R;
             assert(feet <= k->pos.y + 5 * 0.05f);  // settled onto the ground under the marker; a marker in the land lifts it by a walking step (<= 5 units)
             if (k->pos.y - feet < 1000 * 0.05f) settled++;
@@ -414,7 +417,7 @@ static void checkWormSpawn(const std::vector<MissionSpec> &list) {
         }
     }
     printf("worm spawn: %d worms at their marker's x, z, %d settled on the ground under it, %d on a name shared by several details\n", placed, settled, dup);
-    assert(placed > 20 && settled == placed);
+    assert(placed > 20 && settled == placed && overlap == 0);
 }
 
 // NiceToSiegeYou's lib_SetupWorm on an unspawned slot (CopyContainer, then EditContainer) keeps the copied Energy for Worm.Respawn:
