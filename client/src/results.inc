@@ -255,7 +255,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
         }
         if (slide(-144, -12, &IN_SPRINGX, 0.4f, nullptr)) {  // LandscapeControl: the picture in its ButtonBig frame, 115 FE outside
             Tilt tl(fePos(-144, -12), 0.03f);
-            Rectangle pr = feRect(-144, -12, 98, 98);
+            Rectangle pr = feRect(-144, -12, 115 * PICTURE_IN_FRAME, 115 * PICTURE_IN_FRAME);
             if (!cover(preview(map), pr)) DrawRectangleRec(pr, {30, 60, 40, 255});
             pictureFrame(pr, st.sel == Land);
             rlPopMatrix();
@@ -279,7 +279,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
             image("fe/speechpopup_divide", {at(-70, 89 + 8).x, at(0, 89 + 8).y, 140 * FE_S, 16 * FE_S});  // DIVIDE1, WXFE.PopUpDivide 70 x 8
             Rectangle back = {at(-92 - 90, -24 + 90).x, at(0, -24 + 90).y, 180 * FE_S, 180 * FE_S};  // Paper Back, tinted
             image("fe/paperpopup02", back, {255, 70, 70, 255});
-            const float hole = 90 * 98.0f / 115;  // LandscapeControl 90 outside its frame; PreRound's 115 holds a 98 picture
+            const float hole = 90 * PICTURE_IN_FRAME;  // LandscapeControl Scale 90
             Rectangle pr = {at(-96 - hole, -20 + hole).x, at(0, -20 + hole).y, 2 * hole * FE_S, 2 * hole * FE_S};
             if (!cover(preview(maps[st.land]), pr)) DrawRectangleRec(pr, {30, 60, 40, 255});
             pictureFrame(pr, false);

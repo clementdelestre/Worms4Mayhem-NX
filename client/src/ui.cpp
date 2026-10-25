@@ -205,13 +205,12 @@ bool comPanel(Rectangle r) {
     return true;
 }
 
-// The ButtonBig hand-drawn frame fitted around `in` (the picture's rect): the sprite's frame is 33 / 37 / 41 / 40 px (left, top, right, bottom) thick, 44 / 46 / 52 / 50 highlighted,
-// and its picture hole is 420 px wide, so the scale follows the picture's short side [assumed: W4M's placement of the border around LandscapeControl is not traced]
-void pictureFrame(Rectangle in, bool hi, float scale = 0) {
-    static const float T[2][4] = {{33, 37, 41, 40}, {44, 46, 52, 50}};
-    const float *b = T[hi];
-    float k = scale ? scale : fminf(in.width, in.height) / 420;
-    nineAt(hi ? "fe/buttonbig_highlight" : "fe/buttonbig_normal", {14, 14, 494, 494}, 80, {in.x - b[0] * k, in.y - b[1] * k, in.width + (b[0] + b[2]) * k, in.height + (b[1] + b[3]) * k}, k);
+// WXFE_Border_Button over a picture `in`: the whole ButtonBig sprite stretched on the control's quad, the picture 0.915789 of it (0x764ee0, 0x775967)
+const float PICTURE_IN_FRAME = 0.915789f;
+void pictureFrame(Rectangle in, bool hi) {
+    Texture2D t = tex(hi ? "fe/buttonbig_highlight" : "fe/buttonbig_normal");
+    float w = in.width / PICTURE_IN_FRAME, h = in.height / PICTURE_IN_FRAME;
+    if (t.id) DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {in.x + in.width / 2 - w / 2, in.y + in.height / 2 - h / 2, w, h}, {}, 0, WHITE);
 }
 
 // A team card's backdrop: W4M's blue text box (the blue top half of fe/text_border_list) as a 9-slice
