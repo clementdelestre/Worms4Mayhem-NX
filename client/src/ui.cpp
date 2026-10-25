@@ -1479,7 +1479,7 @@ void feCursor() {
     float d = 20 * FE_S;
     rlPushMatrix();
     rlTranslatef(m.x + 14 * FE_S, m.y + 14 * FE_S, 0);
-    rlRotatef(0.98f * RAD2DEG, 0, 0, 1);  // clockwise: the arrow's tip then lands next to the pointer [assumed sign]
+    rlRotatef(-0.98f * RAD2DEG, 0, 0, 1);  // Orientation z 0.98: counter-clockwise like every FE sprite (0x69f020, 0x79b4f0)
     DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {-d / 2, -d / 2, d, d}, {}, 0, WHITE);
     rlPopMatrix();
 #endif
