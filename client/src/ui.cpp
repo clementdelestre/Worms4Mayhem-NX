@@ -3361,7 +3361,7 @@ void Frontend::backToRoom() { screen = SetupTeams, cursors = {}, rulesRow = 0; }
 void Frontend::fromNet(const std::vector<std::string> &maps) {
     const Net::Lobby &n = net->lobby;
     GameConfig &c = lobby.cfg;
-    lobby.self = (int)net->id, lobby.host = (int)net->hostId;
+    lobby.self = (int)net->id, lobby.host = (int)net->hostId, lobby.online = true;
     c.teams = std::min<int>((int)n.teams.size(), Lobby::MAX_TEAMS);
     lobby.used = (1u << c.teams) - 1;
     c.teamSetup.resize(Lobby::MAX_TEAMS);

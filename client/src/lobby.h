@@ -12,6 +12,7 @@ struct Lobby {
     int owner[MAX_TEAMS] = {};       // console id of each team
     bool ready[MAX_TEAMS] = {};      // per team slot: its console is ready (network)
     int self = 0, host = 0;          // this console, the host's console
+    bool online = false;             // a network room
     bool isHost() const { return self == host; }
     bool canEdit(int team) const { return team >= 0 && team < cfg.teams && owner[team] == self; }  // its team's settings, remove
     bool canEditMatch() const { return isHost(); }  // map, scheme, rules, worms per team, wormpot
@@ -43,8 +44,10 @@ struct Lobby {
         for (int k = 0; k < MAX_TEAMS; k++) if (playing(k) && k != except) n += cfg.teamWorms(k);
         return n;
     }
-    int newWorms() const { return std::min(4, MAX_MATCH_WORMS - wormsIn()); }  // a team enters with min(4, 16 - the worms already in); < 1: the match is full
-    int maxWorms(int k) const { return std::min(6, MAX_MATCH_WORMS - wormsIn(k)); }
+    // the cap is 15 online with 3 teams in a 4-player room (WXNET.Value.MaxPlayers 4; ours always takes 4 teams): 0x4c0c1a, 0x73620f
+    int wormCap(int teams) const { return online && teams == 3 ? MAX_MATCH_WORMS - 1 : MAX_MATCH_WORMS; }
+    int newWorms() const { return std::min(4, wormCap(count() + 1) - wormsIn()); }  // a team enters with min(4, cap - the worms already in); < 1: the match is full
+    int maxWorms(int k) const { return std::min(6, wormCap(count()) - wormsIn(k)); }
     int freeAlliance() const {  // AddTeam 0x737633: the lowest group no team in holds
         unsigned held = 0;
         for (int k = 0; k < MAX_TEAMS; k++) if (playing(k) && cfg.teamSetup[k].alliance >= 0) held |= 1u << cfg.teamSetup[k].alliance;

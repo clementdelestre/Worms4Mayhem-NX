@@ -481,5 +481,16 @@ int main() {
         assert(models("WXFE.A.Hat.Cowboy", true).find("jetpack|") == 0 && models("WXFE.A.Hat.Cowboy", true).find("cowboy") == std::string::npos);
         assert(models("WXFE.A.Hat.Terminator", true).find("terminator") != std::string::npos && models("WXFE.A.Hat.Cowboy", true).find("rayban") != std::string::npos);
     }
+    {  // online, the match keeps one worm free for a 4th team once 3 are in (cap 15, 0x4c0c1a / 0x73620f); local stays 16
+        Lobby L;
+        L.cfg.teams = Lobby::MAX_TEAMS, L.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
+        GameConfig::Team t;
+        t.worms = 6, L.place(0, 0, t), L.place(1, 1, t);
+        assert(L.newWorms() == 4 && L.maxWorms(0) == 6);
+        L.online = true;
+        assert(L.newWorms() == 3);
+        t.worms = 3, L.place(2, 2, t);
+        assert(L.maxWorms(2) == 3 && L.newWorms() == 1);
+    }
     puts("ui_check ok");
 }
