@@ -73,7 +73,8 @@ struct Terrain {
     // W4M land texture mapping of a lattice frame (GLG 0x446be0 / 0x457130): uv = row . lattice point + offset, floor (top and
     // roof faces) or wall rows; a: map metres -> frame-centred lattice before EdgeOffset, w: its inverse's 3x3, e: EdgeOffset1/2 per layer
     // h: HeightMap per lattice column (empty: zero); cell per voxel y + Y (x + X z): -2 empty, -1 solid, else its wcells index
-    struct LandUV { float a[12], w[9], t[16]; int n[3]; std::vector<Vector4> e; std::vector<float> h; std::vector<int> cell; };
+    // slip: the frame's name or an ancestor's holds SLIPPY (W4M frame flag +0x16 bit 0, IsSlippy 0x475770)
+    struct LandUV { float a[12], w[9], t[16]; int n[3]; std::vector<Vector4> e; std::vector<float> h; std::vector<int> cell; bool slip = false; };
     std::vector<LandUV> landUV;
     Bricks<uint16_t> uvOf;  // per voxel: landUV index + 1 of the frame its material came from, 0 none (heightmap, steel)
     enum Face { FLOOR, WALL, ROOF, TRIPLANAR };
@@ -159,6 +160,9 @@ struct Terrain {
     bool carve(Vector3 c, float radius, Vector3 n = {0, 0, 0});  // true when some voxel changed (W4M Land.Changed); n: the Explosion's +0x20, the debris' push
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
     void addCell(const Vector3 *c);  // a parallelepiped land cell, exact as an imported map's: a 1x1x1 lattice frame (corners bit 1 +x, 2 +y, 4 +z)
+    int frameAt(Vector3 p, Vector3 *q = nullptr) const;  // the landUV frame whose sampled land holds p, -1 none
+    bool slippy(Vector3 p) const { const int f = anySlip ? frameAt(p) : -1; return f >= 0 && landUV[f].slip; }  // W4M IsSlippy of the solid sample p
+    bool anySlip = false;
     bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
     size_t voxelBytes() const { return d.bytes() + mats.bytes() + uvOf.bytes() + steel.bytes(); }  // density, materials, uv frames, steel
@@ -195,6 +199,8 @@ private:
     const std::vector<Run> &runsInView() const;  // the land in the current frustum, by material
     static void drawRuns(const Run *rs, size_t n, const Material &m);
     Vector3 startNormal(Vector3 p, size_t c, Vector3 dir) const;  // a cast starting in land, in listed cell c
+    static int frameCell(const LandUV &L, int x, int y, int z);  // its lattice cell: -2 empty or outside, -1 solid, else the wcells index
+    bool frameSolid(const LandUV &L, int x, int y, int z) const;
     void reset(signed char fill);
     void island(float bh, float height, float rough, float rad, unsigned s);
     void buildChunk(int ci);

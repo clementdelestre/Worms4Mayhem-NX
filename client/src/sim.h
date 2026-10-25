@@ -146,7 +146,8 @@ std::string factoryGunKey(int ring);                           // FETXT key of t
 enum : int { STUCK_UP = 10, STUCK_DOWN = 5, STUCK_MAX = 120 };
 // on: the collider it stands on (+0xe8, -1 land or none), onAt: that collider's centre when last checked (+0x130)
 // flags: the other WormData Flags bits we model (WF_*)
-struct Motion { int stuck = 0; bool air = false, slide = false; float spin = 0, spinTo = 0; Vector3 normal{0, 1, 0}, input{}; int on = -1; Vector3 onAt{}; uint16_t flags = 0; };
+// mat: the surface material of its last land contact (+0x44: 0 Default, 1 Slippy), indexing the slide tables
+struct Motion { int stuck = 0; bool air = false, slide = false; float spin = 0, spinTo = 0; Vector3 normal{0, 1, 0}, input{}; int on = -1; Vector3 onAt{}; uint16_t flags = 0; int mat = 0; };
 // W4M WormData Flags: 0x10 pinned (no Ballistic / Sliding / push: Tail Nail with 0x20, Prof by data), 0x40 the next hard landing is free, 0x8000 SetNoFallDamage
 enum : uint16_t { WF_PINNED = 0x10, WF_FALL_ONCE = 0x40, WF_NO_FALL = 0x8000 };
 // W4M CollisionManagerService record: a collider sphere, its flags and owner id (worm index, or Game::UID_BASE + Object / Grave uid)
@@ -178,7 +179,7 @@ struct Vault { Vector3 from{}, to{}, dir{}, vel{}; int t = 0; };  // vel: the wa
 // Ground walk, shared with the AI's prediction. walkStep: true when it walked off a ledge. A 5..20-unit ledge starts *vault
 // (pos unchanged) when given, else it is climbed at once. *ground: the ground normal of a step that moved, else up.
 // cs: the worm sphere's colliders (mask 0x811, itself left out); m->on: the collider the step stands on, -1 none.
-bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault = nullptr, Vector3 *ground = nullptr, const Colliders *cs = nullptr, Motion *m = nullptr);
+bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vault = nullptr, Vector3 *ground = nullptr, const Colliders *cs = nullptr, Motion *m = nullptr, uint64_t pot = 0);
 void vaultStep(Vector3 &pos, Vault &v, Vector3 input);  // one vault tick
 bool fits(const Terrain &t, Vector3 from, Vector3 to);  // the upper body at `to` is out of land, or no deeper than at `from`
 // A tick's move cut into sub-steps of at most Terrain::SUB (shots, objects, walkers), so nothing skips thin land.

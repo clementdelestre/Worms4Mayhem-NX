@@ -1842,6 +1842,44 @@ static void checkLowLedges() {
             }
 }
 
+// W4M IsSlippy 0x475770 / GroundNormal 0x59ef90: a worm on a SLIPPY frame takes the _Slippy slide values (cos 10 deg, Start / StopSlideVel
+// 0.01 units/ms, friction 0.999), with or without the Slippy wormpot, which only moves the _Default ones (0x5d59c0)
+static void checkSlippyLand() {
+    for (int slip = 0; slip < 2; slip++)
+        for (uint64_t pot : {(uint64_t)0, (uint64_t)1 << WP_SLIPPY}) {
+            Game g;
+            g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
+            clearArena(g, 16, 176, 176, 248, 16, 80);
+            landBox(g, {0, 0, 0}, {1, 0, 0}, 4, 44, 48, 50, 4, 20);
+            Vector3 c[8];  // 20 deg up along x: n.y 0.94, walkable on Default (60 deg) and under the wormpot (35 deg), not on Slippy (10 deg)
+            for (int k = 0; k < 8; k++) c[k] = {k & 1 ? 20.0f : 10.0f, (k & 2 ? 50.0f : 48.0f) + (k & 1 ? 10 * tanf(20 * DEG2RAD) : 0), k & 4 ? 40.0f : 30.0f};
+            g.terrain.addCell(c);
+            if (slip) {
+                for (Terrain::LandUV &L : g.terrain.landUV) L.slip = true;
+                g.terrain.anySlip = true;
+            }
+            assert(g.terrain.slippy({20, 49.9f, 12}) == (bool)slip && !g.terrain.slippy({20, 50.1f, 12}));
+            Motion m;  // Ballistic onto flat land at 2 m/s along it: under Default (10 m/s) and wormpot (5.25 m/s) StartSlideVel it walks
+            Vector3 p = {20, 50.6f, 12}, vel = {2, -3, 0};
+            bool grounded = false;
+            float yaw = 0;
+            for (int t = 0; t < 120 && !grounded && !m.slide; t++) wormBody(g.terrain, p, vel, grounded, m, yaw, g.gravity(), pot);
+            assert(grounded && m.mat == slip && m.slide == (bool)slip);
+            for (int t = 0; t < 60; t++) wormBody(g.terrain, p, vel, grounded, m, yaw, g.gravity(), pot);
+            assert(m.slide == (bool)slip && (!slip || p.x > 21.5f));  // friction 0.999 a frame: still over 0.5 m/s a second later
+            Motion w;  // a step up the 20 deg slope: walks, Slides on SLIPPY land (0x5b19c0 mat, then n.y < cos SlideAngle[mat])
+            Vector3 q = {15, 50 + 5 * tanf(20 * DEG2RAD) + Game::R + 0.01f, 35}, gn, v{};
+            walkStep(g.terrain, q, PI / 2, 0.05f, nullptr, &gn, nullptr, &w, pot);
+            slideIfSteep(gn, v, w, {1, 0, 0}, pot);
+            assert(q.x > 15.04f && w.mat == slip && w.slide == (bool)slip);
+        }
+    for (auto [map, n] : {std::pair{"TheWindyWizard", 2}, {"DoomCanyon", 5}, {"DestructAndServe", 0}}) {  // SLIPPY_BonfireCollision, _FlamingTorch frames
+        Terrain t;
+        assert(t.load(map, 1));
+        assert(std::count_if(t.landUV.begin(), t.landUV.end(), [](const Terrain::LandUV &L) { return L.slip; }) == n && t.anySlip == (n > 0));
+    }
+}
+
 // W4M 0x46a070 on a ray starting in land: the start cell's face nearest in lattice fractions (here -x at 0.1, +y at 0.3, while +y is
 // the nearer plane), whatever the ray's direction; frames do not see each other's cells (the box at -x leaves that face open)
 static void checkStartNormal() {
@@ -6001,6 +6039,7 @@ int main() {
     checkHurtEndsTurn();
     checkMineBlastEndsTurn();
     checkDetailRemoval();
+    checkSlippyLand();
     checkClearVoxel();
     checkLandBlobs();
     checkLandDebris();

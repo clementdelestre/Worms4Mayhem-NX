@@ -211,7 +211,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1, hmPerm = false;
     thinOnly.clear(), thinVox.clear(), thinAt.clear(), codes.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear(), permPt.clear(), framePerm.clear();
     sharp = SharpLand{};
-    theme.clear(), time = "day", mats.clear(), uvOf.clear(), landUV.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
+    theme.clear(), time = "day", mats.clear(), uvOf.clear(), landUV.clear(), anySlip = false, palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
     top = {86, 150, 60, 255}, side = {130, 95, 60, 255}, beach = {194, 178, 128, 255}, sky = {120, 170, 230, 255};
     Json j;
     std::string dir;
@@ -332,6 +332,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         l.cell.assign((size_t)l.n[0] * l.n[1] * l.n[2], -2);
         for (size_t k = 0; k + 1 < u["s"].size(); k += 2)
             for (size_t v = (size_t)u["s"][k].num, e = std::min(l.cell.size(), v + (size_t)u["s"][k + 1].num); v < e; v++) l.cell[v] = -1;
+        l.slip = u["slip"].is(), anySlip |= l.slip;
         if (u["k"].type != Json::Num) TraceLog(LOG_WARNING, "map %s: landuv entry without its frame: re-import the map (tools/w4m-maps)", map.c_str());
         uvOfFrame[(int)u["k"].f(-1)] = (int)landUV.size();
         landUV.push_back(std::move(l));
@@ -510,7 +511,7 @@ void Terrain::mergeBlocks() {
 void Terrain::generate(unsigned seed) {
     setGrid(352, 256, 352);
     thinOnly.clear(), thinAt.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear(), permPt.clear(), framePerm.clear();
-    theme.clear(), mats.clear(), uvOf.clear(), landUV.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1, hmPerm = false;
+    theme.clear(), mats.clear(), uvOf.clear(), landUV.clear(), anySlip = false, texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1, hmPerm = false;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
@@ -860,28 +861,44 @@ Terrain::Shade Terrain::sunShade(Vector3 p, float off, bool back) const {
     return {floorf(t / u) / 1000, true, Vector3Add(a, Vector3Scale(d, t + 0.05f))};
 }
 
-// W4M 0x46a070 on a ray starting in land (0x468490 keeps the start in both records): the first frame (0x473190's order) whose
-// sampled land holds p; of its lattice cell's faces, the nearest in lattice fractions whose neighbour is empty, whatever the ray's
-// direction, else -dir [disasm, exe run: lattice.h]. Frames before the heightmap (0x466ae0 keeps the first of equal hits).
-Vector3 Terrain::startNormal(Vector3 p, size_t c, Vector3 dir) const {
-    for (const LandUV &L : landUV) {
+// The first frame (0x473190's order) whose sampled land holds p, -1 none (heightmap, edits); *q: p in its lattice
+int Terrain::frameAt(Vector3 p, Vector3 *q) const {
+    for (size_t f = 0; f < landUV.size(); f++) {
+        const LandUV &L = landUV[f];
         const float *a = L.a;
-        const Vector3 q = lattice::toLattice(L.n, L.e, L.h, {a[0] * p.x + a[1] * p.y + a[2] * p.z + a[3] + L.n[0] * 0.5f,
+        const Vector3 l = lattice::toLattice(L.n, L.e, L.h, {a[0] * p.x + a[1] * p.y + a[2] * p.z + a[3] + L.n[0] * 0.5f,
                                                               a[4] * p.x + a[5] * p.y + a[6] * p.z + a[7] + L.n[1] * 0.5f,
                                                               a[8] * p.x + a[9] * p.y + a[10] * p.z + a[11] + L.n[2] * 0.5f});
-        // 0x43e0d0 on the frame's own voxel bits, less the cells blasts and clears took
-        auto cellAt = [&](int x, int y, int z) { return x < 0 || y < 0 || z < 0 || x >= L.n[0] || y >= L.n[1] || z >= L.n[2] ? -2 : L.cell[y + L.n[1] * (x + L.n[0] * z)]; };
-        auto solid = [&](int x, int y, int z) { const int v = cellAt(x, y, z); return v == -1 || (v >= 0 && !wdead[v]); };
-        const int x = (int)floorf(q.x), y = (int)floorf(q.y), z = (int)floorf(q.z), v = cellAt(x, y, z);
-        if (!solid(x, y, z)) continue;
+        const int x = (int)floorf(l.x), y = (int)floorf(l.y), z = (int)floorf(l.z), v = frameCell(L, x, y, z);
+        if (!frameSolid(L, x, y, z)) continue;
         if (v >= 0) {  // the sampler (§23): one of the cell's pieces holds p
             const WCell &w = wcells[v];
             uint32_t h = w.hex;
             while (h < w.hex + w.nhex && !sharp.inside(h, p)) h++;
             if (h == w.hex + w.nhex) continue;
         }
+        if (q) *q = l;
+        return (int)f;
+    }
+    return -1;
+}
+
+// 0x43e0d0 on the frame's own voxel bits, less the cells blasts and clears took
+int Terrain::frameCell(const LandUV &L, int x, int y, int z) {
+    return x < 0 || y < 0 || z < 0 || x >= L.n[0] || y >= L.n[1] || z >= L.n[2] ? -2 : L.cell[y + L.n[1] * (x + L.n[0] * z)];
+}
+bool Terrain::frameSolid(const LandUV &L, int x, int y, int z) const { const int v = frameCell(L, x, y, z); return v == -1 || (v >= 0 && !wdead[v]); }
+
+// W4M 0x46a070 on a ray starting in land (0x468490 keeps the start in both records): the first frame whose sampled land holds p; of
+// its lattice cell's faces, the nearest in lattice fractions whose neighbour is empty, whatever the ray's direction, else -dir
+// [disasm, exe run: lattice.h]. Frames before the heightmap (0x466ae0 keeps the first of equal hits).
+Vector3 Terrain::startNormal(Vector3 p, size_t c, Vector3 dir) const {
+    Vector3 q;
+    if (const int f = frameAt(p, &q); f >= 0) {
+        const LandUV &L = landUV[f];
+        const float *a = L.a;
         Vector3 n;
-        if (!lattice::startFace(L.n, L.e, L.h, q, solid, &n)) return Vector3Negate(dir);
+        if (!lattice::startFace(L.n, L.e, L.h, q, [&](int x, int y, int z) { return frameSolid(L, x, y, z); }, &n)) return Vector3Negate(dir);
         return Vector3Normalize({a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z});
     }
     Vector3 n{};  // the heightmap's slope (W4M 0x462910), an edit's own normal
