@@ -5,6 +5,7 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "script.h"
+#include "wormpose.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -41,7 +42,7 @@ enum : uint32_t { CRIT = 1, FRIEND = 2, FOE = 4, SICK_T = 8, ABDUCTED_T = 0x10, 
                   LOS = 0x200000 };
 const char *const TOKENS[22] = {"crit", "friend", "foe", "sick", "abducted", "see", "blind", "near", "special", "payload", "infront",
                                 "behind", "active", "onscreen", "idle", "targeted", "interesting", "safe", "threat", "goodies", "distraction", "los"};
-constexpr int NONE = 127, CAMERA = 126, STOP = 125;  // W4M actor ids 0x7f (none), 0x7e (track -1: the render camera, 0x59d47e), 0x7d
+constexpr int NONE = 127, CAMERA = 126, STOP = 125, SKID_TARGET = 124;  // W4M actor ids 0x7f (none), 0x7e (track -1: the render camera, 0x59d47e), 0x7d; ours: a sliding worm's WORM%dTARGET
 const float SEE_COS = cosf(1.22173f);            // 0x60c4a3: See / Blind / InFront cone, 70 degrees
 
 struct Ev { int ms; char op; std::string arg; int n; };
@@ -67,6 +68,7 @@ struct Actor {
     struct Gest { std::string clip; float t = 0, w = 0; } act[2];
     float actS = 1, stopRate = 0;
     int look = NONE, gest = NONE; Vector3 lookAt{}, gestAt{};
+    WormPose::Skid skid;  // anim state 6 (0x5a2d70)
     // WormPoseManager (0x59da40), radians: head (+0x134/8), eyes (+0x154/8), gesture (+0x160/+0x15c); old: their snapshot (0x59bb90)
     struct Pose { float hy = 0, hp = 0, ey = 0, ep = 0, gy = 0, gp = 0; } cur, old;
     float headY = 0, headP = 0;                    // head target (+0x128 / +0x130)
@@ -549,7 +551,7 @@ void aimAt(int i, int id, Vector3 &stored, float *yaw, float *pitch) {
     if (id == NONE || id == STOP) return void(*yaw = *pitch = 0);
     const Worm &w = G->worms[i];
     Vector3 t = id == CAMERA ? camPos : isWorm(id) ? Vector3Add(feet(G->worms[id]), {0, 9 * UNIT, 0}) : stored;
-    if (!isWorm(id) && id != CAMERA)
+    if (!isWorm(id) && id != CAMERA && id != SKID_TARGET)
         for (const Projectile &s : G->shots) if (Vector3Distance(s.pos, stored) < 3) t = stored = s.pos;  // follows a payload in flight
     Vector3 d = Vector3Subtract(t, Vector3Add(feet(w), {0, 9 * UNIT, 0}));
     float mx = d.x * cosf(w.yaw) - d.z * sinf(w.yaw), mz = d.x * sinf(w.yaw) + d.z * cosf(w.yaw);
@@ -814,6 +816,8 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         a.calm = reset ? 0 : fminf(a.calm + dt, 90), a.vy = w.vel.y, a.slid = w.motion.slide, a.sank = g.drowned((int)i);
         // kWE 7 (support lost without a jump or a blast) and 17 (slide): the worm's scene stops, StopAnimation blend 200 (0x60ae60, 0x60ba40)
         if (((!w.grounded && !a.air && !a.kicked && w.vel.y <= 0) || slide) && a.run >= 0) release(a.run), a.stopRate = 20.f / 200;
+        if (slide) a.skid.start(!a.air, pick(g, (int)i, 0x5d1d));  // kWE 17 0x5a3f1d: 30 frames of delay from the ground state, else 1
+        if (!w.motion.slide) a.skid.on = false;
         if (!w.grounded) {
             // kWE 13/14 and 22 put the anim in blast flight (state 4, then 3); Blasted only when taking off at vy > 0.1 units/ms (0x5a3b44)
             if (a.kicked && !a.flying && w.vel.y > 0.1f * UNIT * 1000) fire(g, BLASTED, (int)i);
@@ -874,6 +878,11 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         a.poseT += dt;
         // the aiming worm: weapons set Forbid Lookaround (0x59f3a0)
         if (step) lookStep(a, (int)i, (int)i == g.current && g.phase == Phase::Aim, busy[i]), mouthStep(a.mouth, ticks);
+        if (step && a.skid.on) {
+            const Worm &w = g.worms[i];
+            a.lookAt = WormPose::skidTarget(feet(w), w.motion.normal, w.vel);
+            if (a.skid.step((float)ticks, Models::clipLength("worm", "SkidArms"))) snap(a), a.look = SKID_TARGET, a.coyOff = a.coy, a.gest = STOP;  // 0x60bae0 LookAt, 0x60bb40 GestureAt(0x7d)
+        }
         if (step) {  // Sick / Abducted tint weights +0x90 / +0x1ec: linear, 0.05 per update (0x5a1afd)
             a.sickW = Clamp(a.sickW + Clamp((g.worms[i].poison > 0) - a.sickW, -0.05f, 0.05f), 0, 1);
             a.abdW = Clamp(a.abdW + Clamp(a.abducted - a.abdW, -0.05f, 0.05f), 0, 1);
@@ -904,6 +913,7 @@ void Acting::layers(const Game &g, int i, float clock, Models::Layers *ly) {
         static const char *const VISEME[9] = {nullptr, "A", "Cons", "EI", "FV", "L", "MBP", "O", "QUW"};  // clips bound by 0x59cf50
         for (int k = 0; k < 2; k++) ly->lip[k] = a.mouth.clip[k] > 0 ? VISEME[a.mouth.clip[k]] : nullptr, ly->lipW[k] = a.mouth.w[k];
         ly->open = a.mouth.open;
+        if (a.skid.on) ly->act[2] = "SkidArms", ly->actT[2] = a.skid.t, ly->actW[2] = a.skid.w;
     }
 }
 

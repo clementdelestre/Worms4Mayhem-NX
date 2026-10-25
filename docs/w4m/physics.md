@@ -578,7 +578,7 @@ Clip API, an XAnim scheduler on the entity at graphic +0x24 (disasm):
 | 2 one-shot | 0x5a01a0 | clip +0x1ac plays at 0.02 s per 20 ms (real time), weight → 1. At the end it **holds the last frame** and blends in **AT_FB / AT_LR**, time-scrubbed by the aftertouch input (phase = (1 − input·facing)/2 and (1 − input·right)/2, rate 0.1). No automatic chain: the next event (Land, Fall, 22...) switches the state |
 | 3 / 4 blast flight | 0x5a0460 | the flight clip (+0x1b8) loops at 0.02 s per frame. Mode 0/2: body pitch follows the velocity (atan2). Mode 1: tumble, angle += spin·0.02 per frame (wraps at 2π). State 4 snaps on its first frame, then 3 eases at max 6°/frame |
 | 5 recover | 0x5a2c90 | one-shot +0x1c8 at weight 1. At its end: state 0, clip weight 0, pose reset |
-| 6 slide | 0x5a2d70 | **SkidArms** with random arm targets (rand 0x68c07b), WXActor face calls (0x60bae0 / 0x60bb40). Velocity terms ±0.006, 2000 ms constant (not decoded) |
+| 6 slide | 0x5a2d70 | **SkidArms** with random arm targets and the worm looking at its target actor: see "Slide arms and look" below |
 | 8 drown | 0x5a06b0 | FallDrown (slot +0x100, loaded at 0x5a568b) scrubbed by clamp(vy·10, −1, 1), with pitch and roll easing back to 0 |
 
 Recover clip after a hard land from blast flight (0x5a3d64):
@@ -589,7 +589,14 @@ Recover clip after a hard land from blast flight (0x5a3d64):
 - the angles +0x150/+0x158/+0x15c go to the model node (graphic +0x24, vfunc 0x54, 0x5a26d3): the body turns about the mesh's own origin;
 - mode 2 → random RecoverBack1/2.
 
-Smoothing helper 0x569f20(&v, target, a, rate, dt): approaches the target with the step clamped to rate·dt (disasm, exact law approximate). Most anim weights use rate 0.1 per 20 ms frame, i.e. about 0.2 s for 0 → 1.
+Smoothing helper 0x569f20(&v, target, a, rate, dt) [disasm]: n = (a·v + dt·target) / (dt + a); the step is capped at rate·dt: v += rate·dt if n − v > rate·dt, v −= rate·dt if v − n > rate·dt, else v = n. The worm passes a = 1 and dt = graphic +0x198 (frames of 20 ms): half the way per frame, capped at the rate. Callers [disasm, xref]: 0x5a01a0 (one-shot), 0x5a07d0 (TailAngle / TipAngle weights, rate 0.2 toward 0 and 0.1 toward 1 with a = 3 / 7), 0x5a2710 (yaw: rate 0.08 at 0x5a290a; second angle 0.1 at 0x5a29d9), 0x5a2a00 (Walk phase 0.05 at 0x5a2ac4, Walk weight 0.1 at 0x5a2b23 / 0x5a2b95).
+
+#### Slide arms and look (anim state 6) [disasm]
+
+- **Setup, kWE 17 (0x5a3f1d)**: after the common resets (0x5a1060, 0x5a1200, 0x5a1270, 0x5a07d0) it zeroes SkidArms time +0x1cc and weight +0x1d0, the retarget countdown +0x1d8, sets the rate +0x1dc = 0.02 and the look delay +0x1e0 = 30 frames when the previous anim state was 0 (ground), else 1; state = 6.
+- **Update 0x5a2d70** (once per worm update, `dt` = +0x198 frames, L = SkidArms length 0x6a0600): the retarget countdown −= dt; at <= 0: target +0x1d4 = rand01 · L and the countdown = rand01 · 50 + 10 (rand 0x68c07b). Delay > 0: delay −= dt, and at <= 0 the worm actor (+0x51 = its WORM%dTARGET actor) gets LookAt(target) (0x60bae0: flag +0x6d bit 0, byte +0) and GestureAt(0x7d) (0x60bb40: bit 1, byte +1 = 0x7d); delay <= 0: weight = 0x47a1a0(w, to 1, k 1, max 0.2). Then t += rate, wrapped into [0, L); the rate changes by ±0.002 with t_ = t / 2 as the reference: target <= t: −0.002 when t − target < t_, else +0.002; target > t: −0.002 when t_ <= target − t, else +0.002; clamp ±0.006; SetTimeAndWeight(SkidArms, t, w) (0x6a04c0). Body one-shot weights, pose manager and the angles +0x158 / +0x15c are reset every update (0x5a0120, 0x5a07d0, 0x59da40).
+- **Target actor**: position = Position + 20 · (support normal x, 0, z) normalised + 2000 · (v − (n·v) n) + (0, 9, 0), with n = the support normal +0x80..+0x88 and v = Velocity +0x50..+0x58 in units/ms, written every update (actor +0x18..+0x20), also before the delay ends.
+
 
 WormPoseManager (0x59da40, disasm): `Blend` is an XTransform node of the worm whose clip channels drive the layers: Translate.x / .y = left / right arm mode (0x59b870), Rotate.y in degrees = head/eye mode (0x59be40), Scale.y = PoseBlend, Scale.z = EmoteBlend, Scale.x = visemes. Its smoothing helper 0x47a1a0(&v, to, k, max) is v += clamp((to − v)/(k + 1), ±max) per call. Arms, eyes and head: docs/worm-reactions.md.
 

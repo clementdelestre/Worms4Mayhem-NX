@@ -24,6 +24,7 @@
 #include "results.h"
 #include "barracks.h"
 #include "xray.h"
+#include "wormpose.h"
 #include <unordered_map>
 #include <algorithm>
 #include <atomic>
@@ -472,8 +473,9 @@ struct WormAnim {
     const char *flip = nullptr;  // kWE 4 Backflip / 5 Fwdflip clip, until it lands
     bool vaulting = false; float vaultT = 9, chute = -1, lr = 0, drowned = -1, spin = -1; int hardAt = -1;  // spin: kWE 22 tumble angle, -1 off  // drowned: s since it sank  // vaultT: s since kWE 9; chute: s open, lr: WXWorm.ParachuteLR
     struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr, *from = nullptr; float fromT = 0; } act;  // aim: Aim* clip layered on the arms; from: windup frame faded out
-    // WAE state 1 / 4 (current worm): drawT s since Accessory.Init, drawn: weapon in hand, wind: windup clock (s since FIRE press)
-    float drawT = 0, wind = 0; int drawW = -1; bool drawn = false, charging = false;
+    // WAE state 1 / 4 (current worm): wae.draw s since Accessory.Init, drawn: weapon in hand, wind: windup clock (s since FIRE press), left: walking or airborne last frame
+    float wind = 0; int drawW = -1; bool drawn = false, charging = false, left = false;
+    WormPose::Wae wae;
     float lockT = -1, jlr = 0;  // lockT: s since HUD.Target.Selected (homing), jlr: WXWorm.JetpackLR
     float jumpT = -1;  // s since kWE 2 (StartJump), -1 outside the DetectJump window
 };
@@ -482,6 +484,7 @@ static std::vector<WormAnim> wormAnims;
 static void animEvent(const Game &g, const GameEvent &e) {
     if (e.worm < 0 || e.worm >= (int)g.worms.size()) return;
     wormAnims.resize(g.worms.size());
+    if (e.kind == GameEvent::Fire) wormAnims[e.worm].wae.playFire();  // WeaponAccessoryEntity 0x58c0b8
     if (e.kind == GameEvent::Jump && e.weapon >= 0) wormAnims[e.worm].flip = e.weapon == 4 ? "Backflip" : e.weapon == 5 ? "Fwdflip" : nullptr;
     WormAnim::Act &a = wormAnims[e.worm].act;
     const char *c = nullptr, *h = nullptr;
@@ -536,7 +539,7 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
             bool air = !w.grounded && fabsf(w.vel.y) > 1, leap = !strcmp(c.clip, "Fire2Firepunch"), drown = !strcmp(c.clip, "FallDrown");
             c.t += dt;
             bool done = c.t >= Models::clipLength("worm", c.clip) || (leap ? w.grounded && c.t > 0.3f : !drown && (strncmp(c.clip, "Recover", 7) ? air || a.moving : a.air > 0.2f));  // state 5: a recovery plays to its end (0x5a2c90) unless it really falls (kWE 7)
-            if (c.held && strncmp(c.clip, "Taunt", 5) && (int)i == g.current && g.phase == Phase::Aim && c.t > 0.4f) done = true;  // shotgun: aiming the next shot
+            if (c.held && (int)i == g.current && g.phase == Phase::Aim && c.t > 0.4f) done = true;  // shotgun: aiming the next shot
             if (done) c = {};
         }
         if (!w.grounded && (fabsf(w.vel.y) > 1 || a.air > 0)) {  // ignore slope-contact flicker; the apex (|vy| < 1) stays airborne
@@ -572,10 +575,15 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
     for (size_t i = 0; i < g.worms.size(); i++) {
         WormAnim &a = wormAnims[i];
         const char *pc;
-        bool drawn = (int)i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && g.worms[i].alive && !a.moving && a.air == 0 &&
-                     heldModel(weaponDef(g.weapon), &pc);
-        if (drawn && (!a.drawn || a.drawW != g.weapon)) a.drawT = 0, a.drawW = g.weapon, a.wind = 0;
-        else a.drawT += dt;
+        const WeaponDef &wd = weaponDef(g.weapon);
+        const char *tc = tauntClip(wd);
+        a.wae.step(dt, tc ? Models::clipLength("worm", tc) : 0);
+        bool can = (int)i == g.current && g.phase == Phase::Aim && !g.roped && !g.jetting && g.worms[i].alive;
+        bool leave = a.moving || a.air > 0;  // kWE 1 (walk) and 2 (jump) holster it (0x5a3692, 0x5a36ed); stopping or landing runs Accessory.Init (0x5b1bed)
+        if (!can || (leave && !a.left)) a.wae.holster();
+        if (can && (a.drawW != g.weapon || (!leave && (a.left || a.wae.state == 0)))) a.wae.init(), a.wind = 0;
+        a.drawW = can ? g.weapon : -1, a.left = leave;
+        bool drawn = can && !leave && a.wae.state != 0 && heldModel(wd, &pc);
         a.drawn = drawn, a.charging = drawn && g.power > 0;
         if (a.charging) a.wind = g.power * 1.5f;
         a.lockT = drawn && g.locked ? (a.lockT < 0 ? 0 : a.lockT + dt) : -1;  // WAE_Standard 0x590ae0: TargetSelected once on the mesh
@@ -689,16 +697,22 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool scene19 = f
     const float aimAt = w.pitch / (PI / 2) + 1;  // WAE Aim clip time, s: WeaponAngle / (pi / 2) + 1 (0x58f63d)
     float aimT = aimAt;
     Models::Layers wl;  // WAE layers over the body clip, on top of ly's
+    const char *tauntC = nullptr;  // state 2: the Taunt clip drawn at tauntW over Hold and Aim at 1 - tauntW
+    float tauntW = 0;
     auto aimPose = [&] {  // the weapon in hand: Draw, Windup or Hold, with the Aim clip added
         const char *ac = nullptr, *wc = windupClip(weaponDef(g.weapon)), *dc = drawClip(weaponDef(g.weapon));
         if (!(held = heldModel(weaponDef(g.weapon), &clip, &ac))) return false;
         float dl = Models::clipLength("worm", dc);
-        t = fmaxf(a.drawT - dl, 0), loop = true, aim = ac;  // state 1: Hold loops on its own clock, run from the Draw's end (0x58f8a3)
+        t = fmaxf(a.wae.draw - dl, 0), loop = true, aim = ac;  // state 1: Hold loops on its own clock, run from the Draw's end (0x58f8a3)
         if (!ly) return true;
-        if (a.charging && wc) clip = wc, t = a.wind, loop = false;  // state 4: Windup and Aim at 1, Hold 0
-        else if (dl > 0 && a.drawT < dl) {  // state 1: Draw at 1, Aim at drawT / length, Hold 0 (0x58f731)
-            wl = *ly, wl.aimW = a.drawT / dl, ly = &wl;
-            clip = dc, t = a.drawT, loop = false;
+        const char *tc = a.wae.state == 2 ? tauntClip(weaponDef(g.weapon)) : nullptr;
+        if (float tl = tc ? Models::clipLength("worm", tc) : 0; tl > 0) {  // state 2 (0x58f910): Taunt at min(1, 4 (len - t), 4 t), Aim and Hold at the rest
+            tauntC = tc, tauntW = a.wae.weight(tl);
+            wl = *ly, wl.act[2] = tc, wl.actT[2] = a.wae.taunt, wl.actW[2] = tauntW, wl.aimW = 1 - tauntW, ly = &wl;
+        } else if (a.charging && wc) clip = wc, t = a.wind, loop = false;  // state 4: Windup and Aim at 1, Hold 0
+        else if (dl > 0 && a.wae.draw < dl) {  // state 1: Draw at 1, Aim at draw / length, Hold 0 (0x58f731)
+            wl = *ly, wl.aimW = a.wae.draw / dl, ly = &wl;
+            clip = dc, t = a.wae.draw, loop = false;
         }
         return true;
     };
@@ -729,7 +743,8 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool scene19 = f
     else if (air) {
         clip = a.flip ? a.flip : w.vel.y > 0 ? "Jump" : "Fall";
         if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
-    } else if (a.vaultT < Models::clipLength("worm", "Vault")) clip = "Vault", t = a.vaultT, loop = false;  // kWE 9: Walking -> Vaulting
+    } else if (w.motion.slide && w.grounded) clip = "Base";  // anim state 6 0x5a2d70: SkidArms alone over Base (Acting::layers)
+    else if (a.vaultT < Models::clipLength("worm", "Vault")) clip = "Vault", t = a.vaultT, loop = false;  // kWE 9: Walking -> Vaulting
     else if (a.moving || (a.walk > 0 && !a.drawn)) clip = "Walk", t = a.walk;  // a drawn weapon shows at once on stopping (0x5b1bed), the walk ease is skipped
     else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0 && !(i == g.current && g.phase == Phase::Aim)) clip = "Land", t = a.land, loop = false;
     else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up
@@ -777,7 +792,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool scene19 = f
         const char *mc = clip;
         float mt = t;
         bool once = !loop, bow = !strcmp(held, "hold_bow");
-        if (!strcmp(held, "hold_flood")) mc = "DrawFlood", mt = a.drawT, once = true;
+        if (!strcmp(held, "hold_flood")) mc = "DrawFlood", mt = a.wae.draw, once = true;
         else if (bow && !strcmp(clip, "WindupBow")) mc = a.act.clip ? "FireBow" : "Windup", mt = a.act.clip ? a.act.t : a.wind;
         else if (!strcmp(held, "hold_homing") && a.lockT >= 0 && !a.act.clip) mc = "AimLockHomingMissile", mt = a.lockT, once = true;
         float ml = Models::clipLength(held, mc);
@@ -785,7 +800,11 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool scene19 = f
         Models::lightMul(wormLit(weaponDef(g.weapon)) ? lit : ONE, shade);
         const Matrix hm = !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m;
         if (strchr(held, ',')) Models::drawWeaponGraphic(held, hm);
-        else Models::draw(held, hm, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
+        else if (tauntC) {  // the mesh plays the same Taunt clip at the same weight (0x594d40)
+            Models::Layers tl;
+            tl.act[2] = tauntC, tl.actT[2] = a.wae.taunt, tl.actW[2] = tauntW;
+            Models::draw(held, hm, ml > 0 ? mc : "Rest", mt, loop, nullptr, 0, tl);
+        } else Models::draw(held, hm, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
         Models::pick(nullptr), Models::lightMul(lit, shade);
         // held mesh: its Payload_Spawn node, else its origin (0x594ed0)
         if (Matrix j; i == g.current) launchAt = Vector3Transform(Models::joint(held, "Payload_Spawn", ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt, false, &j) ? Vector3{j.m12, j.m13, j.m14} : Vector3{}, hm);
@@ -2700,18 +2719,22 @@ int main(int argc, char **argv) {
         static int equipW = -1, equipWorm = -1;
         static double equipAt[256];
         bool aiming = onMatch && game.phase == Phase::Aim && cur.alive, hand = aiming && !pause.open;
-        if (aiming && game.weapon >= 0 && (game.weapon != equipW || game.current != equipWorm) && (unsigned)game.current < 256 && GetTime() > equipAt[game.current] + 9)
-            Audio::equip(kindName(wd).c_str(), cur.pos), equipAt[game.current] = GetTime();  // a Factory weapon: its clone's EquipSfx
+        auto equip = [&] {
+            if ((unsigned)game.current < 256 && GetTime() > equipAt[game.current] + 9)
+                Audio::equip(kindName(wd).c_str(), cur.pos), equipAt[game.current] = GetTime();  // a Factory weapon: its clone's EquipSfx
+        };
+        if (aiming && game.weapon >= 0 && (game.weapon != equipW || game.current != equipWorm)) equip();
         equipW = aiming ? game.weapon : -1, equipWorm = aiming ? game.current : -1;
         // WAE_* Input.TauntPressed (DIK 20, no joypad), state 1 -> 2: the Acting taunt scene plus the WXAnimTaunt clip until it ends.
         // It needs kWPS_Ambulatory (WormData+0xf0 == 0) and no PlayFireAnim since Accessory.Init (+0xc5, 0x58c333): not between shotgun shots
-        static double tauntEnd[256];
         bool ambulatory = cur.grounded && !cur.motion.slide && game.vault.t <= 0;
-        if (hand && ambulatory && !game.shotsLeft && IsKeyPressed(KEY_T) && (unsigned)game.current < 256 && (size_t)game.current < wormAnims.size() && GetTime() > tauntEnd[game.current]) {
-            Acting::taunt(game, game.current, wd.name);
-            const char *tc = tauntClip(wd), *hc = nullptr, *hm = heldModel(wd, &hc);
-            if (float len = tc ? Models::clipLength("worm", tc) : 0)
-                wormAnims[game.current].act = {tc, 0, hm && hm[0] ? hm : nullptr, nullptr}, tauntEnd[game.current] = GetTime() + len;
+        if (hand && ambulatory && IsKeyPressed(KEY_T) && (unsigned)game.current < 256 && (size_t)game.current < wormAnims.size()) {
+            const char *tc = tauntClip(wd), *dc = drawClip(wd);
+            switch (wormAnims[game.current].wae.press(ambulatory, tc, dc ? Models::clipLength("worm", dc) : 0)) {
+            case WormPose::Wae::Equip: equip(); break;  // holstered: the weapon is drawn again
+            case WormPose::Wae::Taunt: Acting::taunt(game, game.current, wd.name); break;
+            default: break;
+            }
         }
         Audio::hold(Audio::Sfx::HeldSheep, aiming && wd.name == "Sheep", &cur.pos);
         Audio::loop(Audio::Sfx::HeldSentry, aiming && wd.name == "Sentry Gun", &cur.pos);
