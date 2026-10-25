@@ -2256,14 +2256,15 @@ uniform vec3 diffuse;
 uniform float lightK;  // the detail light's shadow fade (0x47c800 pooled level)
 uniform vec3 camPos;
 uniform vec3 emissive;
-uniform vec3 state;  // alpha test ref, lit, blended
+uniform vec4 state;  // alpha test ref, lit, blended, alpha test function (W4M CompareFunction, -1 none)
 uniform vec2 uvOff;  // texture offset clip (W4M Go / GoSync)
 varying vec2 uv;
 varying vec3 n;
 varying vec3 wp;
 void main() {
     vec4 c = texture2D(texture0, uv + uvOff) * colDiffuse;
-    if (c.a < state.x) discard;
+    float f = state.w, r = state.x;
+    if (f > -0.5 && f < 6.5 && !(f > 5.5 ? c.a >= r : f > 4.5 ? c.a != r : f > 3.5 ? c.a > r : f > 2.5 ? c.a <= r : f > 1.5 ? c.a == r : f > 0.5 && c.a < r)) discard;
     vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
     float r = 1.0 - max(dot(v, nn), 0.0);
     vec3 l = (diffuse * (lightK * max(dot(nn, sunDir), 0.0)) + ambient + emissive) * c.rgb + (0.15 + 0.2 * diffuse) * r * r;
@@ -2277,7 +2278,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
 #else
     static const std::string dir = "./assets/models/decor/";
 #endif
-    struct State { int src = -1, dst = -1, cull = -1; float ref = 0.5f; bool zwrite = true, lit = true; Vector3 emit{}; std::vector<Vector2> uv; };
+    struct State { int src = -1, dst = -1, cull = -1; int test = -1; float ref = 0; bool zwrite = true, lit = true; Vector3 emit{}; std::vector<Vector2> uv; };
     // st: per model material (0 = raylib's default); clip: W4M 0x5cd38e plays "Go" looped from a random time, "GoSync" from 0;
     // anim: tools/w4m-models' skinned copy when the clip moves parts
     struct Entry { Model m{}; float r = 0; Vector3 c{}; std::vector<State> st; std::string clip, anim; float len = 0; };
@@ -2298,7 +2299,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
             if (FileExists(path.c_str())) e.m = LoadModel(path.c_str());
             e.st.assign(e.m.materialCount, State{});
             if (char *t = LoadFileText((dir + name + ".mat").c_str())) {
-                int k = 1, test[2], z, l, em[3], motion = 0, used = 0;
+                int k = 1, z, l, em[3], motion = 0, used = 0;
                 char clip[32];
                 std::vector<char *> lines;
                 for (char *c = strtok(t, "\n"); c; c = strtok(nullptr, "\n")) lines.push_back(c);  // one sscanf per line
@@ -2309,8 +2310,8 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
                 }
                 for (char *line; li < lines.size() && (line = lines[li]) && k < e.m.materialCount; li++, k++) {
                     State &q = e.st[k];
-                    if (sscanf(line, "%d %d %d %d %d %d %d %d %d %d%n", &q.src, &q.dst, &test[0], &test[1], &z, &q.cull, &l, &em[0], &em[1], &em[2], &used) != 10) break;
-                    q.ref = test[0] < 0 ? 0.5f : test[0] == 7 ? 0 : test[1] / 255.0f + (test[0] == 4 ? 0.5f / 255 : 0), q.zwrite = z, q.lit = l;  // 4 Greater, 6 GreaterEqual, 7 Always
+                    if (sscanf(line, "%d %d %d %f %d %d %d %d %d %d%n", &q.src, &q.dst, &q.test, &q.ref, &z, &q.cull, &l, &em[0], &em[1], &em[2], &used) != 10) break;
+                    q.zwrite = z, q.lit = l;  // glAlphaFunc(0x200 + test, ref) with the raw ref (0x79e6e0)
                     q.emit = {em[0] / 255.0f, em[1] / 255.0f, em[2] / 255.0f};
                     int n = 0, at = 0;
                     if (sscanf(line + used, "%d%n", &n, &at) == 1)
@@ -2359,14 +2360,14 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
                 const State &q = e.st[e.m.meshMaterial[i]];
                 bool blended = q.src >= 0 && !(q.src == 1 && q.dst == 0);
                 if (blended != (pass == 1)) continue;
-                Vector3 st = {q.ref, q.lit ? 1.0f : 0.0f, blended ? 1.0f : 0.0f};
+                Vector4 st = {q.ref, q.lit ? 1.0f : 0.0f, blended ? 1.0f : 0.0f, (float)q.test};
                 Vector2 uv = {0, 0};
                 if (q.uv.size() > 1 && e.len > 0) {
                     float f = t / e.len * (q.uv.size() - 1);
                     int k = std::min((int)f, (int)q.uv.size() - 2);
                     uv = Vector2Lerp(q.uv[k], q.uv[k + 1], f - k);
                 }
-                SetShaderValue(sh, emitLoc, &q.emit, SHADER_UNIFORM_VEC3), SetShaderValue(sh, stateLoc, &st, SHADER_UNIFORM_VEC3), SetShaderValue(sh, uvLoc, &uv, SHADER_UNIFORM_VEC2);
+                SetShaderValue(sh, emitLoc, &q.emit, SHADER_UNIFORM_VEC3), SetShaderValue(sh, stateLoc, &st, SHADER_UNIFORM_VEC4), SetShaderValue(sh, uvLoc, &uv, SHADER_UNIFORM_VEC2);
                 if (q.cull == 2 || q.cull == 4) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_BACK);
                 else if (q.cull == 1 || q.cull == 3) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_FRONT);
                 else rlDisableBackfaceCulling();  // kCullModeOff, or no XCullFace [ours: two-sided]
