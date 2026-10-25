@@ -661,6 +661,13 @@ static void markLaunches(Game &g) {
     }
 }
 
+// Whether the held mesh takes the active worm's light (0x5a15d0 -> 0x6a0d00): every WAE class but Thrown 0x595ed0 and Starburst 0x5910a0
+static bool wormLit(const WeaponDef &d) {
+    const char *clip = nullptr;
+    heldModel(d, &clip);
+    return !clip || (strcmp(clip, "HoldThrown") && strcmp(clip, "HoldStarburst"));
+}
+
 // W4M worm: animation picked from the sim state (aim clips map pitch to their timeline).
 static bool drawWorm(const Game &g, const Worm &w, float clock) {
     int i = int(&w - g.worms.data()), st = -1;
@@ -750,11 +757,13 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     // WXWormGraphicEntity 0x5a49a0: the worm's ATT_* (Worm.DataNN) when set, else its team's
     const size_t wi = &w - g.worms.data();
     auto att = [&](int k) -> const std::string & { return wi < g.wormAtt.size() && !g.wormAtt[wi][k].empty() ? g.wormAtt[wi][k] : tm.attachment(k); };
-    Models::gloves(catalog().drawName(att(1)));
+    const bool bare = Acting::reloaded(i);  // 0x5a22a0 rebuilt the worm after the spit-out: plain hands, no hat / glasses / tash (the jetpack helmet is the weapon's)
+    Models::gloves(bare ? nullptr : catalog().drawName(att(1)));
     const float shade = LightShade::k(LightShade::key(LightShade::Worm, i));  // 0x47bc70
-    Models::lightMul(Acting::lightMul(i), shade);  // 0x5a1bb1: the worm light colour, sick / abducted only, no team colour
+    const Vector3 lit = Acting::lightMul(i), ONE = {1, 1, 1};
+    Models::lightMul(lit, shade);  // 0x5a1bb1: the worm light colour, sick / abducted only, no team colour
     bool drawn = Models::draw("worm", p, w.yaw, roll, WHITE, clip, t, loop, aim, aimT, ly);
-    Models::lightMul({1, 1, 1}, shade), Models::gloves(nullptr);  // the attachments take the worm's fade [assumed: its scene entity's bin]
+    Models::gloves(nullptr);  // what 0x6a0d00 lights with the worm's XLightScope keeps its colour and fade: hat / glasses / tash, WAE_Dropped / Mechanical / Melee / Standard meshes, the pack class
     if (!drawn) return Models::lightMul({1, 1, 1}), false;
     Matrix m;
     bool loc = Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly);
@@ -771,20 +780,23 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         else if (!strcmp(held, "hold_homing") && a.lockT >= 0 && !a.act.clip) mc = "AimLockHomingMissile", mt = a.lockT, once = true;
         float ml = Models::clipLength(held, mc);
         Models::pick(teamClip(g, w.team));  // WAE_Standard Init: the held Sentry Gun's team clip
+        Models::lightMul(wormLit(weaponDef(g.weapon)) ? lit : ONE, shade);
         const Matrix hm = !strcmp(held, "hold_starburst") ? MatrixMultiply(MatrixRotateX(-PI / 2), m) : m;
         if (strchr(held, ',')) Models::drawWeaponGraphic(held, hm);
         else Models::draw(held, hm, WHITE, ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt);
-        Models::pick(nullptr);
+        Models::pick(nullptr), Models::lightMul(lit, shade);
         // held mesh: its Payload_Spawn node, else its origin (0x594ed0)
         if (Matrix j; i == g.current) launchAt = Vector3Transform(Models::joint(held, "Payload_Spawn", ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt, false, &j) ? Vector3{j.m12, j.m13, j.m14} : Vector3{}, hm);
     }
     bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
     if (tool && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE,
                                               g.jetting ? "JetpackRotLR" : opening ? "FireParachute" : clip, g.jetting ? fminf(aimT, 2 - 1e-3f) : opening ? a.chute : t);
+    Models::lightMul(ONE, shade);  // WAE_Starburst 0x5910a0 and the Redbull wings call no 0x6a0d00
     if (rk && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly)) Models::draw("hold_starburst", MatrixMultiply(m, root), WHITE, "FireStarburst", rk->fuse < WEAPONS[rk->weapon].fuse - 3.5f ? 3.5f : WEAPONS[rk->weapon].fuse - rk->fuse);  // WAE_Starburst 0x5917d0
     if (i == g.current && g.icarus == 2 && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly))  // WAE 0x5953d1
         Models::draw("wings", MatrixMultiply(m, root), WHITE, "FlyRedBull", t);
-    const auto head = catalog().headgear(att(0), att(2), att(3), tool && g.jetting);  // W4M's jetpack helmet
+    Models::lightMul(lit, shade);
+    const auto head = bare ? catalog().headgear("", "", "", tool && g.jetting) : catalog().headgear(att(0), att(2), att(3), tool && g.jetting);  // W4M's jetpack helmet: 'JetpackHat' of the pack class (0x58c700)
     if (!head.empty() && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
         for (const auto &hg : head) Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), root));
     return Models::lightMul({1, 1, 1}), true;

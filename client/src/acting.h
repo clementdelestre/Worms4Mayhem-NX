@@ -21,5 +21,6 @@ void layers(const Game &g, int i, float clock, Models::Layers *ly);
 void taunt(const Game &g, int worm, const std::string &weapon);
 void speak(const Game &g, int worm, Audio::Voice v);  // the worm says a line of its team's bank, its mouth following the line's LIP rows
 void headMode(int i, float deg);  // the drawn clip's Blend.Rotate.y (Models::blend z): 0 head and eyes follow, 1 eyes only, 2 neither
+bool reloaded(int i);  // WXWormGraphicEntity 0x5a22a0 rebuilt the worm once it was spat out: plain W4.Worm, no hat / glasses / tash, no gloves, for the rest of the match
 Vector3 lightMul(int i);  // W4M Sick.Colour / Abducted.Colour: the worm light colour scale (0x5a1bb1), channels above 1 allowed
 }  // namespace Acting

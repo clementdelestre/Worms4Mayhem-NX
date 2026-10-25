@@ -74,6 +74,8 @@ struct Actor {
     float eyeMove = 10, eyeOld = 10, mode = 0;     // PermittedEyeMovement now / before (+0x16c / +0x170; degrees, default 10), head mode
     float coy = 0, coyOff = 0;                     // the emote's Coyness (+0x188, radians), the head's offset from it (+0x18c)
     bool threatened = false, abducted = false, targeted = false, onScreen = false;
+    bool reloaded = false, faceOff = false;  // reloaded: WXWormGraphicEntity rebuilt its worm (0x5a22a0); faceOff: no emote clip until the next WormEmote
+    struct { float eye = 0, coy = 0; bool set = false; } pend;  // a WormEmote met while abducted: the pose manager reads it once the bit is clear
     float aimMs = 0, coolMs = 0, calm = 0, sickW = 0, abdW = 0;
     bool kicked = false, flying = false, air = false, dead = false, slid = false, sank = false;
     float vy = 0;
@@ -509,7 +511,9 @@ void apply(int r, int k, const Ev &e) {
         float eye = 0, coy = 0;
         std::string em = e.arg.substr(0, e.arg.find(','));
         if (em.size() < e.arg.size()) sscanf(e.arg.c_str() + em.size(), ",%f,%f", &eye, &coy);
-        a.emote = em == "Default" ? "" : em, a.eyeOld = a.eyeMove, a.eyeMove = eye, a.coy = coy * DEG2RAD;  // 0x59e7e6
+        a.emote = em == "Default" ? "" : em, a.faceOff = false;
+        if (a.abducted) a.pend = {eye, coy * DEG2RAD, true};  // 0x59e7e6 is reached only with the abducted bit clear (0x59e708)
+        else a.eyeOld = a.eyeMove, a.eyeMove = eye, a.coy = coy * DEG2RAD;
         break;
     }
     case 'p':  // 0x59c990: the playing gesture becomes the old one (weight at most 0.9), the same clip is not restarted
@@ -823,6 +827,8 @@ void Acting::update(const Game &g, float dt, const std::vector<uint8_t> &busy, c
         if (w.poison > a.poison) fire(g, POISONED, (int)i);  // 0x5a1a89
         a.poison = w.poison;
         a.abducted = w.abducted;  // 0x547d39 sets it as the UFO spits the worm out, poison and Worm.Antidote clear it (0x5ade00, 0x5adf13)
+        if (a.abducted) a.reloaded = a.faceOff = true, a.eyeMove = a.coy = a.coyOff = 0;  // 0x5a22a0 latch; 0x59e708: no emote clip, PermittedEyeMovement and Coyness 0
+        else if (a.pend.set) a.eyeOld = a.eyeMove, a.eyeMove = a.pend.eye, a.coy = a.pend.coy, a.pend.set = false;
     }
     // a Parabolic payload comes to rest, once until it moves again (0x577158 flag, cleared 0x5777da): TimedPayload by the whole seconds
     // to its expiry (no expiry: Five), the Grenade* rows instead for Grenade.Weapon (0x577181..0x5771c0). Mines are Parabolic payloads too.
@@ -887,7 +893,7 @@ void Acting::layers(const Game &g, int i, float clock, Models::Layers *ly) {
     e = emote;
     {
         *ly = {};
-        ly->face = face ? (has(face) ? face : nullptr) : e.c_str(), ly->faceT = clock + i * 1.3f;
+        ly->face = a.abducted ? "Abductee" : a.faceOff && !sick ? nullptr : face ? (has(face) ? face : nullptr) : e.c_str(), ly->faceT = clock + i * 1.3f;  // 0x59e708
         float A = poseA(a);
         auto at = [&](float o, float c) { return o + A * (c - o); };  // A new + (1 - A) old
         ly->lookYaw = a.lookW * at(a.old.hy, a.cur.hy), ly->lookPitch = a.lookW * at(a.old.hp, a.cur.hp);
@@ -906,6 +912,8 @@ void Acting::speak(const Game &g, int worm, Audio::Voice v) { G = &g, line(worm,
 void Acting::headMode(int i, float deg) {
     if (i >= 0 && i < (int)actors.size()) actors[i].mode = deg;
 }
+
+bool Acting::reloaded(int i) { return i >= 0 && i < (int)actors.size() && actors[i].reloaded; }
 
 Vector3 Acting::lightMul(int i) {
     if (i < 0 || i >= (int)actors.size()) return {1, 1, 1};

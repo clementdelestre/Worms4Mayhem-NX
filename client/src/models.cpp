@@ -400,6 +400,7 @@ void add(Job &j) {
         bool left = me.vertices[0] > 0;  // the worm's left is +x
         e.uv0.emplace(left ? e.uv0.begin() : e.uv0.end(), me.texcoords, me.texcoords + 2 * me.vertexCount);
         e.pupil.insert(left ? e.pupil.begin() : e.pupil.end(), i);
+        SetTextureWrap(e.m.materials[e.m.meshMaterial[i]].maps[MATERIAL_MAP_ALBEDO].texture, TEXTURE_WRAP_CLAMP);  // XOglTextureMap AddressMode 3 (0x8b48d0: GL_CLAMP_TO_EDGE)
     }
     models[name] = e;
 }
@@ -802,6 +803,7 @@ static void eyeOffsets(const Models::Layers *ly, float uv[3]) {  // left u, righ
                                      {0.93310547f, 0.35913086f, 0.93310547f, 0.35913086f, 1, 0}, {0.9375f, 0.34692383f, 0.9375f, 0.34692383f, 2, 0.36987305f}};
     float lr = ly ? 1 + ly->eyeYaw / (PI / 2) : 1, ud = ly ? 1 - ly->eyePitch / (PI / 2) : 1;  // 0x59b752; the keys hold past 0 and 2
     float u = Models::curve(UD_U, 5, ud);  // both clips key the u channel: XAnim adds them (attribute flags 0x04)
+    if (ly && ly->face && !strcmp(ly->face, "Abductee")) u += 7.1992188f;  // the Abductee clip's shadercolor2 U key, summed too (Bundl474)
     uv[0] = Models::curve(LR_L, 3, lr) + u, uv[1] = Models::curve(LR_R, 3, lr) + u, uv[2] = Models::curve(UD_V, 3, ud);
 }
 
