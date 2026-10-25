@@ -260,10 +260,15 @@ double now() { return (paused ? pausedAt : GetTime()) - lost; }
 bool live(const Sound &s) {
     return IsSoundPlaying(s) || std::any_of(held.begin(), held.end(), [&](const Held &h) { return h.s.stream.buffer == s.stream.buffer; });
 }
+// Audio.Vol.Sfx / Audio.Vol.Ambient (DEFSAVE 1.0); fmvOn: a .wmv with sound is open, femusic and FrontendDay at 0 (MoviePlayerPC::Open 0x7be8c8)
+float volSfx = 1, volAmbient = 1;
+bool fmvOn = false;
 Vector3 ear{}, earRight{1, 0, 0};
 unsigned plays = 0;
 }  // namespace
 void efmvUpdate(), efmvStop();
+float themeGain() { return fmvOn ? 0 : fade * duck * halve * powf(10, trackDb(track) / 20); }
+float dayGain() { return fmvOn ? 0 : volSfx * volAmbient * powf(10, -3.0f / 20); }
 namespace {
 
 // A directory's file list read once: one SD request instead of a FileExists() per variant
@@ -529,7 +534,7 @@ void update() {
     }
     if (dayLoaded && IsMusicStreamPlaying(day)) {
         if (!dayOn && (dayFade -= GetFrameTime() / 2) <= 0) dayFade = 0, StopMusicStream(day);
-        else SetMusicVolume(day, dayFade * powf(10, -3.0f / 20)), UpdateMusicStream(day);
+        else SetMusicVolume(day, dayFade * dayGain()), UpdateMusicStream(day);
     }
     for (size_t i = 0; i < ramps.size();) {
         Ramp &r = ramps[i];
@@ -551,12 +556,12 @@ void update() {
     }
     if (stopping && musicLoaded) {
         if ((fade -= GetFrameTime() / 2) <= 0) fade = 0, stopping = false, StopMusicStream(theme);
-        else SetMusicVolume(theme, fade * duck * halve * powf(10, trackDb(track) / 20)), UpdateMusicStream(theme);
+        else SetMusicVolume(theme, themeGain()), UpdateMusicStream(theme);
         return;
     }
     if (!musicLoaded || !musicOn) return;
     fade = fminf(fade + GetFrameTime(), 1);
-    SetMusicVolume(theme, fade * duck * halve * powf(10, trackDb(track) / 20));
+    SetMusicVolume(theme, themeGain());
     UpdateMusicStream(theme);
 }
 
@@ -736,7 +741,7 @@ void music(bool on, const char *name, bool option) {
     if (!musicLoaded) return;
     // level tracks fade in (Music.FadeIn, 0x7290b4); femusic (FEV fade-in 0, started by FrontEndService init) and the jingle do not
     if (on && !IsMusicStreamPlaying(theme))
-        fade = track == "victory" || track == "theme" ? 1 : 0, SetMusicVolume(theme, fade * duck * halve * powf(10, trackDb(track) / 20)), PlayMusicStream(theme);
+        fade = track == "victory" || track == "theme" ? 1 : 0, SetMusicVolume(theme, themeGain()), PlayMusicStream(theme);
     else if (!on && track == "theme" && IsMusicStreamPlaying(theme)) stopping = true;
     else if (!on) StopMusicStream(theme);
     if (on) stopping = false;
@@ -836,7 +841,15 @@ void movie(bool on) {
     TraceLog(LOG_INFO, "AUDIO: movie %s", on ? "start: music out 500 ms" : "end: music in 2000 ms");
 }
 
-void musicLevel(float g) { duck = g; }
+void volumes(float sfx, float ambient) { volSfx = sfx, volAmbient = ambient; }
+
+bool fmvOpen() {
+    if (volSfx < 0.1f) return false;
+    fmvOn = true;
+    return true;
+}
+
+void fmvClose() { fmvOn = false; }
 
 void narrator(int n) {
     if (Efmv *e = n >= 1 && n <= 5 ? findEfmv(TextFormat("Failures_Narrator_0%d", n)) : nullptr) playEfmv(*e, nullptr);

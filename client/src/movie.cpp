@@ -148,13 +148,12 @@ void start(const char *name) {
     P->tex = LoadTextureFromImage(blank);
     UnloadImage(blank);
     P->subs.load(name);
-    if (FileExists(path(name, "ogg"))) {
+    if (Audio::fmvOpen() && FileExists(path(name, "ogg"))) {
         P->snd = LoadMusicStream(path(name, "ogg"));
         P->snd.looping = false;
         P->sound = IsMusicValid(P->snd);
         if (P->sound) PlayMusicStream(P->snd);
     }
-    Audio::musicLevel(0.5f);
     P->t0 = GetTime();
     P->th = std::thread([] { P->run(); });
     TraceLog(LOG_INFO, "MOVIE: %s %dx%d %d fps", name, hd.w, hd.h, hd.fps);
@@ -216,6 +215,6 @@ void stop() {
     fclose(P->f);
     delete P;
     P = nullptr;
-    Audio::musicLevel(1);
+    Audio::fmvClose();
 }
 }  // namespace Movie
