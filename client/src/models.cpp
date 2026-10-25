@@ -1,4 +1,5 @@
 #include "models.h"
+#include "msvc_sort.h"
 #include "lit.h"
 #include "loading.h"
 #include "raymath.h"
@@ -1195,7 +1196,7 @@ void Models::binOpen(const Camera3D &cam) { binOn = true, bin8.clear(), binEye =
 void Models::binAdd(Vector3 at, std::function<void()> draw) { if (binOn) bin8.push_back({viewZ(at), std::move(draw)}); else draw(); }
 int Models::binDraw() {
     binOn = false;
-    std::stable_sort(bin8.begin(), bin8.end(), [](const BinRec &a, const BinRec &b) { return a.z < b.z; });
+    MsvcSort::sort(bin8, [](const BinRec &a, const BinRec &b) { return a.z < b.z; });
     for (const BinRec &r : bin8) r.draw();
     int n = (int)bin8.size();
     return bin8.clear(), n;

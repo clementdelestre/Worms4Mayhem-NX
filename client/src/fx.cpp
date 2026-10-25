@@ -1,4 +1,5 @@
 #include "fx.h"
+#include "msvc_sort.h"
 #include "lit.h"
 #include "audio.h"
 #include "loading.h"
@@ -1339,8 +1340,8 @@ static void particles(const Camera3D &cam, int bin) {
         rlSetTexture(tex[t].id), rlBegin(RL_QUADS), runTex = t, runAdd = add;
     };
     // records: an emitter's sprite set (sprites by slot, 0x79b4f0) or one shown mesh particle, appended in creation order (0x6c36bd);
-    // std::sort (0x6ee54a) by texture in the opaque bin (0x6ec293), by view z far first in the blended one (0x6eb43f), where every
-    // sprite set's bound sits at the origin (0x6ab950) [equal keys past 32 records: MSVC introsort order, not reproduced]
+    // std::sort (0x6ee54a, MsvcSort) by texture in the opaque bin (0x6ec293), by view z far first in the blended one (0x6eb43f), where
+    // every sprite set's bound sits at the origin (0x6ab950)
     auto depth = [&](Vector3 q) { return -Vector3DotProduct(Vector3Subtract(q, cam.position), camLook); };
     const float originKey = depth(skyOrigin);
     std::vector<int> order;
@@ -1351,8 +1352,8 @@ static void particles(const Camera3D &cam, int bin) {
     for (int i = 0; i < (int)ps.size(); i++)
         if (ps[i].age >= 0 && ps[i].bin == bin) order.push_back(i);
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ps[a].seq != ps[b].seq ? ps[a].seq < ps[b].seq : ps[a].slot < ps[b].slot; });
-    if (pass == 0) std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ps[a].tex < ps[b].tex; });  // XImage +0x38: creation serial (0x6e0998); ours: texture load order
-    else std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+    if (pass == 0) MsvcSort::sort(order, [&](int a, int b) { return ps[a].tex < ps[b].tex; });  // XImage +0x38: creation serial (0x6e0998); ours: texture load order
+    else MsvcSort::sort(order, [&](int a, int b) {
         return (ps[a].mesh >= 0 ? depth(ps[a].p) : originKey) < (ps[b].mesh >= 0 ? depth(ps[b].p) : originKey);
     });
     for (int i : order) {

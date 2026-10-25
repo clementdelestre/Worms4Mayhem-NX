@@ -4,6 +4,7 @@
 #include "../src/audio.h"
 #include "../src/fx.h"
 #include "../src/models.h"
+#include "../src/msvc_sort.h"
 #include "../src/terrain.h"
 #include "../src/controls.h"
 #include <cstring>
@@ -228,6 +229,12 @@ int main() {
             t.unload();
         }
         CloseWindow();
+    }
+    {  // the bins' std::sort (MSVC 8 introsort, 0x6ed4d3): past 32 records equal keys leave in its partition order, not creation order
+        std::vector<int> v;
+        for (int i = 0; i < 40; i++) v.push_back(i);
+        MsvcSort::sort(v, [](int a, int b) { return a % 3 < b % 3; });
+        assert(v == (std::vector<int>{0, 27, 15, 3, 30, 33, 6, 18, 36, 9, 39, 21, 12, 24, 1, 4, 7, 10, 13, 16, 19, 28, 22, 31, 25, 34, 37, 2, 5, 8, 11, 14, 17, 23, 29, 32, 35, 26, 38, 20}));
     }
     {  // scene 8's blended bin (render.md "Render bins"): the telepad's blended shape waits for the water, both drawn far first
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
