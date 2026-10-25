@@ -185,8 +185,8 @@ W4M's `/*token*/` markup is dropped and space runs collapse (`plain`). `+` start
 - Terrain and Règles: the host edits (host edits `net->lobby`, `pushLobby()` when it changed); the others see them read-only with a note, and the help panel stays readable.
 - Ready: ZR / R on any screen, or `+` on Règles for a non-host; Règles' button reads PRÊT / PAS PRÊT, and START for the host once `Net::allReady()` and at least 2 teams
   (a host's `+` that cannot start toggles its own ready). The lobby timer (`ReadyTimer`, lobby.h; `main.cpp`) follows W4M: 30 s once 2 players are there, restarted by each join,
-  off under 2 players, shown in the heading disc as `%.2d` / `--`; at its end the console sets itself ready [data, docs/w4m/network.md]. START stays the host's press
-  (W4M's Steam gate starts by itself) [ours]. `W4NX_LOBBY_TIMER=<s>` shortens it for tests.
+  off under 2 players, shown in the heading disc as `%.2d` / `--`; at its end the console sets itself ready [W4M sends `Net.LocalSelectTeam`, which selects each local player's pre-picked team: its ready, docs/w4m/network.md; ours]. START stays the host's press
+  (W4M's NetService starts by itself, `Net.BeginGame`, once every player has a team and there are 2 players or more, 0x70b334) [ours]. `W4NX_LOBBY_TIMER=<s>` shortens it for tests.
 - A change of map / rules / scheme / wormpot leaves the ready flags as they are, as W4M's `LobbyDataChangeMsg` handler does (docs/w4m/network.md). A console arms its teams with its Weapon Factory weapons (`SavedTeam::slot(..., customs)`) before `sendTeams`.
 - After a match the room is shown again (`Frontend::backToRoom`), own ready cleared.
 - Tests: `--ui netteams|netmap|netrules[_ro]` (host / guest view of a 3-console room), `--ui salon|salonjoin`; `tests/netbot.sh` (2 consoles: the guest edits its team, the host sees it
