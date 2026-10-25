@@ -101,7 +101,7 @@ These are set by CMS HandleMessage 0x522710, from `Camera.*Pressed/Released`, `C
 | focus, strafe | ± right·MoveSpeed·dt·zoom, right ⟂ f in the horizontal plane | |
 | focus, mouse pan (middle mouse not held) | focus -= f·MouseYSpeed·dy; focus += right·MouseXSpeed·dx; no dt, no zoom factor | MouseXSpeed 1.5, MouseYSpeed 1.5 |
 | bounds | if \|focus - Land.Center\| > 4500, focus = Land.Center + normalize(focus - Land.Center)·4500 (3D sphere; constant 4500 at 0x8556a0) | |
-| focus.y | not changed by movement: it keeps the entry height (disasm: f.y is an explicit 0·k; right = f × global up at 0x91ea50, horizontal if that up is (0,1,0), assumed) | |
+| focus.y | not changed by movement: it keeps the entry height (disasm: f.y is an explicit 0·k; right = f × the global up at 0x91ea50 = (0, 1, 0) [data], so right is horizontal) | |
 
 - Zoom does not change StickLength. The camera's +0x5c factor is the lens zoom: CMS 0x51da00 eases the drawn camera's projection toward the default projection × +0x5c (tan of the half FOV), 0.9 / 0.1 an update, and snaps back to the default when +0x5c returns to 1 (0x51e06d–0x51e2f5; disasm, camera-w4m.md §11.5).
 - Unused or unclear: `Camera.Blimp.UpdateSpeed` 0.05 (asserted 0 < x <= 1, not used in this update), `MouseWheelSpeed` 0.1 (+0xac, not used here).
@@ -186,7 +186,7 @@ It subscribes to `Weapon.NotClearToFire`, `Camera.LogicalModeChanged`, `Weapon.D
    | water target | 0xffffa862 | (98,168,255) light blue |
    | valid | 0xffffffff | white |
 
-   The RGB triples assume memory bytes R,G,B,A; the alpha byte at +3 is confirmed by 0x69f660. The Bomber cursor tints its 5 dots the same way.
+   Bytes in memory are R, G, B, A: 0x69f660 copies the dword into the shape's XColor4ubSet, drawn through glColorPointer(4, GL_UNSIGNED_BYTE) (0x79b9e1, 0x79c088, 0x79d82c) [disasm]. The Bomber cursor tints its 5 dots the same way.
 3. Visible only when the view is 1 (Head) or 3 (Blimp) (slot 13 0x551fa0 / slot 14 0x552da0), and when the HUD flag `[0x96d030]+0x3c` / 0x7063f5 does not hide it.
 
 **Other slots.**
@@ -194,7 +194,7 @@ It subscribes to `Weapon.NotClearToFire`, `Camera.LogicalModeChanged`, `Weapon.D
 - `Camera.LogicalModeChanged` with param 1 in a cursor view re-runs Hide + Show (0x552a0e). The Targeting override 0x5f9d10 does this only for the ninja variant.
 - `Weapon.NotClearToFire` (slot 20, 0x552630): plays sound `weapons/Gong`, then the error anim, then the loop again.
 
-**Cursor position.** The cursor code never moves the mesh after init. The reticle is therefore screen-centre. Its layer is still not traced: the base create 0x552bb0 instances the mesh through XGraphicalResourceManager vfunc 0x8c (0x6f3d95, layer argument 0xff, as `HUD.PiP` 0x635de9), places it at the origin (0x552cfc) and hangs the bitmap under it (vfunc 0x60, 0x552cd2); what 0xff selects lies in the XOM scene-graph runtime (assumed: HUD). Not the same thing: `HUD.TargetingCursor` + `TargetingCursor.Scale` 16 (LOCAL) belong to WeaponCursorGraphicEntity 0x5fb9c0, the aiming reticle (not checked).
+**Cursor position and layer.** The cursor code never moves the mesh after init (only Show / Hide, 0x5522e0 / 0x552310). The base create 0x552bb0 instances the mesh and the bitmap through XGraphicalResourceManager vfunc 0x8c (0x6f3d95, layer 0xff = the descriptor's default scene, render.md §1), places the mesh at the zero vector 0x96e878 (vfunc +0x50 = SetPosition 0x6b6b90) and hangs the bitmap under its anim-root node (vfunc 0x60, 0x552cd2), which keeps the bitmap's own scene [disasm]. Default scenes [data: registry 0x911004.. / 0x917620..]: `Airstrike.Cursor.Mesh`, `Targeting.Cursor.Mesh` 8 (3D); `Homing.Cursor.Mesh`, `SuperBomber.Cursor.Mesh` 39; `Sniper.Cursor.Mesh` 34; the bitmaps `Airstrike.Cursor.Bitmap`, `Airstrike.Cursor.Dot`, `Targeting.Cursor.Bitmap`, `SuperBomber.Cursor.Bitmap` 39 (HUD4 / HUDFront); the shadows `Targeting.Cursor.Shadow`, `SuperBomber.Cursor.Shadow` 35 (HUD0). So the reticle is the bitmap, drawn in scene 39 at the HUD origin: the screen centre. `Target.xom` is two empty XGroups (`Target`, scale 0.75 x 0.75; `Target_Shadow`) [data Bundl09 #911]. `AirstrikeCursor.xom` holds a textured cut-out plane (pPlane*, lambert*, shape Flags 2) under `Aimer_Null` and each `Dot_Null_0n` [data Bundl09 #908], so its instance puts 6 planes in scene 8 at the world origin; whether they show (their clip keys) is not traced [assumed]. Not the same thing: `HUD.TargetingCursor` + `TargetingCursor.Scale` 16 (LOCAL) belong to WeaponCursorGraphicEntity 0x5fb9c0, the aiming reticle (not checked).
 
 ### Confirm and hand-off (disasm)
 
@@ -215,7 +215,7 @@ It subscribes to `Weapon.NotClearToFire`, `Camera.LogicalModeChanged`, `Weapon.D
 - `HomingPayloadLogicEntity::Initialize` 0x560bf0 reads `Payload.Target`.
 
 **Airstrike direction.**
-- dir = cross(`Airstrike.Direction`, `Airstrike.UpVector`) with y forced to 0, then normalised (0x54d931..0x54d97f). Operands: A = `Airstrike.Direction` (stack +0x44, read at 0x54d7e4), B = `Airstrike.UpVector` (+0x50, 0x54d812); x = A.y·B.z − A.z·B.y, so dir = forward × up, the camera's right vector in a right-handed frame (the renderer is OpenGL: XOglTextureMap). The bombers cross the screen from left to right, as the Bomber cursor's `Dots_Loop` arrows move toward +x (disasm + data).
+- dir = cross(`Airstrike.Direction`, `Airstrike.UpVector`) with y forced to 0, then normalised (0x54d931..0x54d97f). Operands: A = `Airstrike.Direction` (stack +0x44, read at 0x54d7e4), B = `Airstrike.UpVector` (+0x50, 0x54d812); x = A.y·B.z − A.z·B.y, so dir = forward × up, the camera's right vector: the view matrix (0x6e1e74, axes from vfunc +0x48 = 0x6e1d6c) has z = eye - target, y = up made orthogonal, x = y × z, the gluLookAt frame, so forward × up is screen +x [disasm]. The bombers cross the screen from left to right, as the Bomber cursor's `Dots_Loop` arrows move toward +x (disasm + data).
 - There is no left/right key. The player picks the direction by yawing the Blimp camera.
 - Start = target - dir · (BlitzDuration · GroundSpeed · 0.5) = 150 units before the target, only when NumBombs > 1 (0x54d9a8 `cmp NumBombs, 1; jbe`), then 0x54d460's fall lead; GroundSpeed is the float at entity +0x3c (0x54d81f), BlitzDuration the u32 read by `fild` (0x54d9ba) [disasm]. `Bomber.DropBomb` i is posted at T0 + i · (BlitzDuration / NumBombs) integer ms, T0 = now + the Begin clip length (0x54db75..0x54dbff) [disasm], so the bombs fall at start + 0..N-1 gaps.
 - Super Airstrike: the same flat right vector cross(Direction, UpVector), turned by pi/2 about (0, 1, 0) (axis-angle matrix 0x69cc4d: [[c,0,-s],[0,1,0],[s,0,c]], applied as a row vector at 0x58aa99), i.e. (r.z, 0, -r.x) = the view's forward; then steered with `Fly.Yaw.Left/Right`. Fire drops the cows. EFMV.Start/End are used [disasm].

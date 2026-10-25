@@ -140,7 +140,7 @@ Python access: `import scan; d = scan.index()` gives `d['calls'][target]`, `d['r
 - **Audio (§12):** the property-block fields +04/+08/+0C (pitch, pitch and volume randomisation) are named from FMOD Designer's order; some other fields, the sound-definition play-mode enum and the reverb block are unknown. Whether something else starts the HudClockEntity ClockFast/ClockSlow instances.
 - **Weapons (§13):** what crate types 1 and 3 are (hidden from CrateSpy); what spawns kWeaponFatkinsFood and kWeaponSentryGunPayload; readers of ColliderFlags. WeaponType has a single reader found (0x5973e6).
 - **Turn (§14):** acting trigger ids 0x1e and 0x2e are Missed and Retreat (name table 0x9214f0, docs/worm-reactions.md); camera mode 0xe, which freezes the turn clock, is not identified; RopeTime looks unused.
-- **Tactical (§10):** the render layer of the screen-centre reticle, and the left/right sense of the airstrike direction.
+- **Tactical (§10):** whether the 6 planes of `AirstrikeCursor.xom` (scene 8, world origin) show.
 - **Bundles (§15):** the 3 bytes after `CTNR`, the trailing bytes of `XMeshDescriptor` / `XCustomDescriptor`, key types 0x200 and 0x403, and the "cycle" channel setting.
 - **AI (§18):** some AITWK fields have no reader (MortarMaximumAimAngleAllowed, AddScoreTeleport, WeightTeleport*, WeightRetreat*).
 - **Rendering (§8):** the enum value orders are now read from the exe (`pe.py schema`); which render bin `kPS_Default` maps to is still unknown. Bloom and blur classes have no PC shader.

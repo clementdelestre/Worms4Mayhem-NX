@@ -14,7 +14,7 @@ Source: `WormsMayhem.exe` (PE32, base 0x400000), RTTI + objdump. Confidence: dat
 | Compare id | `0x68bcce(WORD msgId, handle*)` returns msgId == resolve(handle). Used in HandleMessage switch chains (1224 sites) | disasm |
 | Subscribe | `0x690e3e(task, &{.., id}, &member_token)`: called right after resolving a handle; stores the subscription in a member of the listener. 1158 sites; mostly in one init function per class. Uses vector at 0x96d0e4/0x96d0e8 | disasm |
 | Send | Message object: `+0 vtable` (base 0x81aa14), `+4 WORD id`, payload after. Built inline or via typed ctors 0x69151a (vt 0x884fac), 0x691951 (vt 0x8850d4), 0x6919e3 (vt 0x8850e4); posted by `0x6910e4(msg)` through dispatcher global 0x96d090 = MessageRegistrationService (returns E_FAIL 0x80004005 if null). Synchronous: its HandleMessage 0x690abd calls 0x69111c on the id's four subscriber lists (0x96d09c, 0x96d0a4, 0x96d0a0, 0x96d0a8), which calls each active subscriber's HandleMessage (0x68b89e) before the send returns | disasm |
-| Built-in task messages | Default handler 0x68b79e: id 0x40 -> `this+0x14 = param & 0x7fffffff` (schedule/wake), 0x41 -> `msg+0xc = 1` (ack/alive), 0x42 -> `this+0x14 = -1` (sleep). CMS HandleMessage also special-cases 0x40/0x42 first | disasm (meaning assumed) |
+| Built-in task messages | Fixed ids, sent by the TaskManager straight to the task's HandleMessage (vfunc +0x1c). 0x40 `TaskBirthMessage` (0x68e0e3, from TaskBirth 0x68de04): payload = the task's handle, bit 31 = the caller's flag; the default handler 0x68b79e stores `this+0x14 = payload & 0x7fffffff`, the task's own handle (BaseTask ctor 0x68b709 sets -1). 0x42 `TaskDeathMessage` (TaskKill 0x68e18f, after its children): `this+0x14 = -1`. 0x41: the handler sets `msg+0xc = 1`; its sender is not traced (no constant 0x41 message id in .text by byte scan). CMS HandleMessage also special-cases 0x40/0x42 first | disasm (0x41 not traced) |
 | Registry | `MessageRegistrationService` (vt 0x884ea0), `MRS.MaxMessages`, `Core.MessageBufferSize` strings; `MainServiceStartupLogicEntity` fn 0x508d80 prints "Verifying Message IDs..." | data/disasm |
 
 ### Common vtable layout (Service / LogicEntity, stdcall `this` on stack)
@@ -214,7 +214,7 @@ BitArray3D 0x81a6d8, CombineLandscapeAction 0x81ab5c, GenerateLandGeometry 0x81a
 | off | impl | meaning |
 |---|---|---|
 | +0x74 | 0x6a3ef0 | GetDescriptor(name, IXDataResourceDescriptor** out) |
-| +0x78 | 0x6a3f70 | 4-arg (ret 0x14); likely Create/Add resource (assumed) |
+| +0x78 | 0x6a3f70 | RegisterUpdateHook(name, owner, -, hook** out): looks the name up (0x6a2d60; unknown -> E_INVALIDARG), pops a hook from the pool (records of 0x1c bytes at +0x18, free stack +0x20 / +0x24; empty -> "Ran out of hooks", E_FAIL), stores owner at hook +4 / +0x10 and the descriptor at +8, then registers it through the descriptor's vfunc +0x30 |
 | +0x7c | 0x6a43b0 | get Color (type 7) -> ptr to value |
 | +0x80 | 0x6a4350 | get StringTable (6) |
 | +0x84 | 0x6a42f0 | get Container (5) |
