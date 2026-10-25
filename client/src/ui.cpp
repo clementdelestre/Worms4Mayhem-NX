@@ -1037,15 +1037,15 @@ static const MainRow MAIN_ALL[] = {
     {"Lang.Quit", "Quit", "Quitter", 35, 35, -0.03f},
 };
 static std::array<MenuItem, 6> mainMenu() {
-    // FE text size as feText (FE_EM); column = row width less its two 2-unit gap columns [assumed]
-    const float COL_W = (236 - 4) * MAIN_BIG, GAP = 2 * MAIN_BIG, TILT = 0.06f;
+    // FE text size as feText (FE_EM); the string fits 228 FE centred 1 FE left of the row's centre (0x7802e3 passes, 0x781dfd)
+    const float COL_W = 228 * MAIN_BIG, COL_X = -1 * MAIN_BIG, GAP = 2 * MAIN_BIG, TILT = 0.06f;
     std::array<MenuItem, 6> m{};
     float top = 110 * MAIN_BIG;  // y up, from the box centre
     for (int i = 0; i < MAIN_ITEMS; i++) {
         const MainRow &r = MAIN_ALL[mainItem(i)];
         float cy = top - r.height * MAIN_BIG / 2;
         top -= r.height * MAIN_BIG + GAP;
-        m[i] = {r.key, r.en, r.fr, 640 + (155 - cy * sinf(TILT)) * FE_S * FE_SPREAD, 360 - (19 + cy * cosf(TILT)) * FE_S, (r.font - 0.1f) * MAIN_BIG * FE_S * FE_EM,
+        m[i] = {r.key, r.en, r.fr, 640 + (155 + COL_X * cosf(TILT) - cy * sinf(TILT)) * FE_S * FE_SPREAD, 360 - (19 + COL_X * sinf(TILT) + cy * cosf(TILT)) * FE_S, (r.font - 0.1f) * MAIN_BIG * FE_S * FE_EM,
                 -(TILT + r.tilt) * RAD2DEG, COL_W * FE_S};
     }
     return m;
