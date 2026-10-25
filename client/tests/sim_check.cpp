@@ -9,6 +9,7 @@
 #include "../src/ui.h"
 #include "../src/barracks.h"
 #include "../src/lattice.h"
+#include "../src/wormpose.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cassert>
@@ -22,6 +23,64 @@ static void checkDiffuse() {
     assert(sum == 30);
     assert(Controls::diffuse(0, carry) == 0 && carry == 0);
     for (int t = 0; t < 10; t++) assert(Controls::diffuse(-300, carry) == -127);
+}
+
+// W4M worm pose arithmetic (docs/worm-reactions.md "Worm pose state")
+static void checkWormPose() {
+    using namespace WormPose;
+    auto near = [](float a, float b) { return fabsf(a - b) < 1e-5f; };
+    // 0x569f20: half the way, the step capped at rate x dt
+    assert(near(approach(0, 1, 1, 0.1f, 1), 0.1f) && near(approach(0, 0.05f, 1, 0.1f, 1), 0.025f) && near(approach(0, 1, 1, 0.1f, 2), 0.2f));
+    assert(near(approach(1, 0, 1, 0.1f, 1), 0.9f) && near(approach(0.5f, 0.5f, 1, 0.1f, 1), 0.5f));
+    // ground walk 0x5a2a00: the phase advances by 0.45 x speed per frame (0.05 units/ms = full stick), the weight gains 0.1 a frame; stopped, both ease off
+    Walk wk;
+    wk.step(1, 0.05f), assert(near(wk.phase, 0.0225f) && near(wk.w, 0.1f));
+    for (int f = 0; f < 30; f++) wk.step(1, 0.05f), assert(wk.phase >= 0 && wk.phase <= 0.5f);
+    assert(near(wk.w, 1));
+    wk.phase = 0.3f;
+    wk.step(1, 0), assert(near(wk.phase, 0.35f) && near(wk.w, 0.9f));  // toward 0.5 past 0.25, the step capped at 0.05
+    for (int f = 0; f < 40; f++) wk.step(1, 0);
+    assert(near(wk.phase, 0.5f) && near(wk.w, 0));
+    wk.phase = 0.2f, wk.step(1, 0), assert(near(wk.phase, 0.15f));
+    // slide: SkidArms weight stays 0 for the 30 frame look delay from the ground, then eases to 1 by 0.2 steps; the look fires once
+    Skid k;
+    k.start(true, 7);
+    int looks = 0, at = -1;
+    for (int f = 1; f <= 30; f++) {
+        bool l = k.step(1, 0.8f);
+        looks += l, at = l ? f : at;
+        assert(k.t >= 0 && k.t <= 0.8f && fabsf(k.rate) <= 0.006f + 1e-6f);
+        if (f < 30) assert(k.w == 0);
+    }
+    assert(looks == 1 && at == 30 && k.w == 0);
+    k.step(1, 0.8f), assert(near(k.w, 0.2f));
+    k.step(1, 0.8f), assert(near(k.w, 0.4f));
+    for (int f = 0; f < 40; f++) assert(!k.step(1, 0.8f));
+    assert(near(k.w, 1) || k.w > 0.99f);
+    k.start(false, 7), assert(k.step(1, 0.8f) && k.w == 0);  // from the air: 1 frame
+    // the target actor: 20 units along the horizontal normal, 2 s of the velocity along the support, 9 units up
+    Vector3 t = skidTarget({0, 0, 0}, {0.6f, 0.8f, 0}, {1, 0, 0});
+    assert(near(t.x, 1 + 1.28f) && near(t.y, -0.96f + 0.45f) && near(t.z, 0));
+    t = skidTarget({1, 2, 3}, {0, 1, 0}, {1, 0, 0}), assert(near(t.x, 3) && near(t.y, 2.45f) && near(t.z, 3));
+    // WAE taunt: blocked once fired until Accessory.Init; holstered it redraws; the Taunt clip fades in and out over the other layers
+    Wae w;
+    w.init();
+    w.playFire();
+    assert(w.press(true, true, 0.5f) == Wae::Ignored && w.state == 1);
+    w.init();
+    assert(w.press(false, true, 0.5f) == Wae::Ignored && w.state == 1);
+    assert(w.press(true, false, 0.5f) == Wae::Ignored && w.state == 1);
+    assert(w.press(true, true, 0.5f) == Wae::Taunt && w.state == 2 && w.draw == 0.5f);
+    assert(w.press(true, true, 0.5f) == Wae::Ignored);
+    const float len = 1;
+    assert(near(w.weight(len), 0));
+    w.step(0.125f, len), assert(near(w.weight(len), 0.5f));
+    w.step(0.125f, len), assert(near(w.weight(len), 1));
+    w.step(0.6f, len), assert(near(w.weight(len), 4 * 0.15f) && w.state == 2);
+    w.step(0.2f, len), assert(w.state == 1);
+    w.holster();
+    w.draw = 3;
+    assert(w.press(true, true, 0.5f) == Wae::Equip && w.state == 1 && w.draw == 0 && !w.fired);
 }
 
 static uint32_t run(std::vector<bool> &used) {
@@ -6078,6 +6137,7 @@ static void checkPayloadColliders() {
 }
 
 int main() {
+    checkWormPose();
     checkTeamSlots();
     checkAlliances();
     checkHurtEndsTurn();

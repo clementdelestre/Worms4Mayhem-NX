@@ -220,6 +220,8 @@ const WORM_CLIPS: &[&str] = &[
     "Vault", "ParachuteLR",
     // kWE 22 fast-fall tumble and the kWE 15 hard-landing recoveries (0x5a3a60, 0x5a3d64)
     "Skid", "RecoverFront1", "RecoverBurried1", "RecoverBack1", "RecoverBack2",
+    // anim state 6 arms (0x5a2d70)
+    "SkidArms",
 ];
 const FPS: f32 = 30.0;
 // (letter used by the ui/sky ramps, W4M theme name)
