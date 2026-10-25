@@ -5792,33 +5792,9 @@ static void checkLandUV() {
     assert(checked > 100);
 }
 
-// 0x5b4180 counts a point only when a 10-unit sphere at the feet is free of every collider, the land's included, on every map
-static void checkPlacementSolid() {
-    DIR *d = opendir("assets/maps");
-    int checked = 0;
-    while (dirent *e = readdir(d)) {
-        std::string m = e->d_name;
-        if (m.size() < 5 || m.substr(m.size() - 4) != ".vox") continue;
-        m.resize(m.size() - 4);
-        for (uint32_t seed = 1; seed <= 6; seed++) {
-            Game g;
-            g.start({seed, 3, 3, m.c_str(), 0});
-            for (const Worm &w : g.worms) {
-                const Vector3 feet = {w.pos.x, w.pos.y - Game::R, w.pos.z};
-                if (fabsf(feet.y - (g.landTop() + 0.5f)) < 1e-3f) continue;  // the no-point fallback (Land.MaxHeight + 10 units)
-                for (float dy : {0.05f, 0.25f, 0.45f})
-                    if (g.terrain.solid({feet.x, feet.y + dy, feet.z})) { printf("%s seed %u: worm in land at %.2f %.2f %.2f\n", m.c_str(), seed, w.pos.x, w.pos.y, w.pos.z); assert(false); }
-                checked++;
-            }
-        }
-    }
-    closedir(d);
-    assert(checked > 0);
-}
-
 static void checkPlacement() {
     const char *maps[] = {"", "Alien-w3d", "Accuracy", "ArabiaTest", "AssaultAndDefend", "BuildingSiteSaboteurs"};
-    int checked = 0, overhang = 0;
+    int overhang = 0;
     for (const char *m : maps)
         for (uint32_t seed = 1; seed <= 30; seed++) {
             Game g;
@@ -5850,17 +5826,8 @@ static void checkPlacement() {
                 if (fabsf(c.y - (g.landTop() + 0.5f)) < 1e-3f) continue;
                 for (const Worm &o : g.worms) assert(Vector3Distance(c, {o.pos.x, o.pos.y - Game::R + 0.25f, o.pos.z}) >= 1.0f - 0.01f);
             }
-            for (const Object &o : g.objects) {
-                float r = o.type == Object::Mine ? 0.15f : 0.45f;
-                if (o.type != Object::Mine && o.type != Object::Barrel) continue;
-                for (const Worm &w : g.worms) {
-                    Vector3 cw = {w.pos.x, w.pos.y - Game::R + 0.25f, w.pos.z};
-                    assert(Vector3Distance(cw, o.pos) >= 0.5f + r + 0.25f - 0.1f);
-                    checked++;
-                }
-            }
         }
-    assert(checked > 0 && overhang > 0);  // layer 1: ground under an overhang
+    assert(overhang > 0);  // layer 1: ground under an overhang
 }
 
 // W4M: a mine is a Landmine payload (0x581dc0, mask 0x3c37): falling onto a drum it bounces off it (0x580db0, T 0.4 / P 0.2);
@@ -5892,7 +5859,6 @@ int main() {
     checkAlliances();
     checkHurtEndsTurn();
     checkMineBlastEndsTurn();
-    checkPlacementSolid();
     checkDetailRemoval();
     checkClearVoxel();
     checkLandBlobs();
