@@ -4130,7 +4130,7 @@ void pipInset(const RenderTexture2D &scene, float show, float full) {
     rlPopMatrix();
 }
 
-void reticle(const WeaponDef &wd, Vector2 c) {
+static void reticleAt(const WeaponDef &wd, Vector2 c) {
     if (wd.name == "Sniper Rifle") {  // SniperCursorGraphicEntity (0x5f8de0, Sniper.Cursor.Mesh): navy all around a round view, dark tapered cross with three ovals per arm
         const Color NAVY = {6, 18, 36, 255};
         const float r = 300;
@@ -4164,6 +4164,10 @@ void reticle(const WeaponDef &wd, Vector2 c) {
         for (Vector2 d : {Vector2{1, 0}, Vector2{-1, 0}, Vector2{0, 1}, Vector2{0, -1}})
             DrawLineEx(Vector2Add(c, Vector2Scale(d, 14)), Vector2Add(c, Vector2Scale(d, 22)), 2, CREAM);
     }
+}
+
+void reticle(Bins &bins, const WeaponDef &wd, Vector2 c) {
+    bins.add(wd.name == "Sniper Rifle" ? 34 : 39, [wd, c] { reticleAt(wd, c); });  // Sniper.Cursor.Mesh 34; Weapon.FPSCursor / Parabolic bitmaps 39
 }
 
 // W4M HUD digits: "0-9 . m", '~' = infinity, ':' = two dots; h = cell height. Falls back to text().
@@ -4219,7 +4223,7 @@ static void healthBar(int colour, float x, float y, float w, float h, float frac
 
 // W4M Bomber / Targeting cursor (Bundl09 meshes and clips) at the screen centre, in HUD units: screen height / 480
 // (HUDTWK places the HUD in that space, e.g. AngleMeter.ScreenY -165); the cursor honours the HUD's hide flag.
-void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock, const Vector2 *at) {
+void targetCursor(Bins &bins, const WeaponDef &wd, int state, const Vector2 *lock, const Vector2 *at) {
     static double last = -1, start = 0, lockLast = -1, lockStart = 0;
     double now = GetTime();
     if (state >= 0 && now - last > 0.2) start = now;  // Show: the intro from t = 0
@@ -4234,7 +4238,7 @@ void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock, const Vec
         for (Vector2 b : k) { if (t <= b.x) return b.x > a.x ? Lerp(a.y, b.y, (t - a.x) / (b.x - a.x)) : b.y; a = b; }
         return a.y;
     };
-    auto quad = [&](const char *name, Vector2 at, float sx, float sy, float rad, Color col) {  // rad: mesh z rotation, counter-clockwise
+    auto quad = [u](const char *name, Vector2 at, float sx, float sy, float rad, Color col) {  // rad: mesh z rotation, counter-clockwise
         Texture2D x = tex(std::string("hud/") + name);
         if (x.id) DrawTexturePro(x, {0, 0, (float)x.width, (float)x.height}, {at.x, at.y, sx * u, sy * u}, {sx * u / 2, sy * u / 2}, -rad * RAD2DEG, col);
     };
@@ -4243,16 +4247,20 @@ void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock, const Vec
         float p = keys({{0, 84.5f}, {1.25f, 65}});  // Intro_Inner 1.25 s, then Loop_Inner / Loop_Outer 2.08 s
         if (t >= 1.25f) t = 1.25f + fmodf(t - 1.25f, 2.082f);
         float s = t < 1.25f ? keys({{0, 6.043f}, {1.166f, 0.8f}}) : keys({{1.25f, 0.8f}, {2.5f, 0.757f}, {3.332f, 0.8f}});
-        for (int i = 0; state >= 0 && in.id && i < 4; i++) {  // Inner_01 top, 04 bottom (18 x 54 units), 02 left, 03 right (54 x 18); one texture row each
-            const Vector2 D[4] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
-            const int ROW[4] = {3, 2, 1, 0};
-            Rectangle src = {0, ROW[i] * in.height / 4.0f, (float)in.width, in.height / 4.0f};
-            Vector2 at = {c.x + D[i].x * p * s * u, c.y + D[i].y * p * s * u};
-            DrawTexturePro(in, src, {at.x, at.y, 54 * s * u, 18 * s * u}, {27 * s * u, 9 * s * u}, i < 2 ? -90 : 0, WHITE);  // the Inner mesh is never tinted
-        }
+        if (state >= 0 && in.id) bins.add(39, [=] {  // Homing.Cursor.Mesh 39
+            for (int i = 0; i < 4; i++) {  // Inner_01 top, 04 bottom (18 x 54 units), 02 left, 03 right (54 x 18); one texture row each
+                const Vector2 D[4] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+                const int ROW[4] = {3, 2, 1, 0};
+                Rectangle src = {0, ROW[i] * in.height / 4.0f, (float)in.width, in.height / 4.0f};
+                Vector2 at = {c.x + D[i].x * p * s * u, c.y + D[i].y * p * s * u};
+                DrawTexturePro(in, src, {at.x, at.y, 54 * s * u, 18 * s * u}, {27 * s * u, 9 * s * u}, i < 2 ? -90 : 0, WHITE);  // the Inner mesh is never tinted
+            }
+        });
         auto corners = [&](Vector2 o, float x, float y, float k, Color col) {  // locators 1-4 at (-+x, +-y); 128-unit bitmaps (Size ±64) x the node scale k
-            const char *N[4] = {"homing_tl", "homing_tr", "homing_bl", "homing_br"};
-            for (int i = 0; i < 4; i++) quad(N[i], {o.x + (i % 2 ? x : -x) * u, o.y + (i / 2 ? y : -y) * u}, 128 * k, 128 * k, 0, col);
+            bins.add(35, [=] {  // HUD.Homing.Cursor.TL..BR 35
+                const char *N[4] = {"homing_tl", "homing_tr", "homing_bl", "homing_br"};
+                for (int i = 0; i < 4; i++) quad(N[i], {o.x + (i % 2 ? x : -x) * u, o.y + (i / 2 ? y : -y) * u}, 128 * k, 128 * k, 0, col);
+            });
         };
         float o = t < 1.25f ? keys({{0, 7.258f}, {0.375f, 0.752f}, {1.25f, 0.8f}}) : keys({{1.25f, 0.8f}, {2.125f, 0.747f}, {3.332f, 0.8f}});  // Intro / Loop_Outer
         if (state >= 0 && !lock) corners(c, 50 * o, 50 * o, 0.8f * o, tint);
@@ -4266,17 +4274,20 @@ void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock, const Vec
     } else if (wd.kind == Kind::Airstrike || wd.name == "Fatkins Strike") {  // Airstrike.Cursor.Mesh: 58-unit aimer, 5 x 16-unit arrows along the run
         float sy = keys({{0, 0}, {0.25f, 0.917f}, {0.333f, 0.789f}, {0.54f, 0.777f}, {0.667f, 0.8f}}), sx = keys({{0.4165f, 0.789f}, {0.54f, 0.777f}, {0.667f, 0.8f}});
         if (t > 0.667f) sx = sy = 0.7885f + 0.0115f * cosf(2 * PI * (t - 0.667f) / 0.833f);  // Cursor_Loop
-        quad("airstrike_outer", c, 58 * sx, 58 * sy, keys({{0, 1.57f}, {0.29f, -0.186f}, {0.5f, 0.057f}, {0.667f, 0}}), tint);
+        const float rot = keys({{0, 1.57f}, {0.29f, -0.186f}, {0.5f, 0.057f}, {0.667f, 0}});
         float run = t < 0.667f ? t / 0.667f : fmodf((t - 0.667f) / 0.4165f, 1);  // Airstrike_Intro, then Dots_Loop: one 30-unit step
-        for (int i = 0; i < 5; i++) {
-            float s = t < 0.667f ? 0.8f * Clamp((t - 0.042f - 0.083f * i) / 0.125f, 0, 1) * (i == 4 ? Clamp((0.667f - t) / 0.167f, 0, 1) : 1)
-                                 : i == 0 ? 0.8f * run : i == 4 ? 0.8f * (1 - run) : 0.8f;
-            quad("dot", {c.x + (-76 + 30.4f * (i + run)) * u, c.y}, 16 * s, 16 * s, 0, tint);
-        }
+        bins.add(39, [=] {  // Airstrike.Cursor.Bitmap, Airstrike.Cursor.Dot 39
+            quad("airstrike_outer", c, 58 * sx, 58 * sy, rot, tint);
+            for (int i = 0; i < 5; i++) {
+                float s = t < 0.667f ? 0.8f * Clamp((t - 0.042f - 0.083f * i) / 0.125f, 0, 1) * (i == 4 ? Clamp((0.667f - t) / 0.167f, 0, 1) : 1)
+                                     : i == 0 ? 0.8f * run : i == 4 ? 0.8f * (1 - run) : 0.8f;
+                quad("dot", {c.x + (-76 + 30.4f * (i + run)) * u, c.y}, 16 * s, 16 * s, 0, tint);
+            }
+        });
     } else {  // Targeting.Cursor.Mesh: 100 units, scale 0.75, spins in, then a turn per 3.33 s; Targeting.Cursor.Shadow at (2, -2)
         float s = keys({{0, 0}, {0.4165f, 0.75f}}), rot = t < 0.4165f ? keys({{0, -4.363f}, {0.4165f, 0}}) : 2 * PI * fmodf((t - 0.4165f) / 3.332f, 1);
-        quad("target", {c.x + 2 * u, c.y + 2 * u}, 100 * s, 100 * s, rot, {2, 43, 94, 100});  // tint 0x645e2b02
-        quad("target", c, 100 * s, 100 * s, rot, tint);
+        bins.add(35, [=] { quad("target", {c.x + 2 * u, c.y + 2 * u}, 100 * s, 100 * s, rot, {2, 43, 94, 100}); });  // Targeting.Cursor.Shadow 35, tint 0x645e2b02
+        bins.add(39, [=] { quad("target", c, 100 * s, 100 * s, rot, tint); });  // Targeting.Cursor.Bitmap 39
     }
 }
 
@@ -4435,15 +4446,16 @@ void hudEvent(const Game &g, const GameEvent &e) {
     }
 }
 
-static void drawSubtitle(float dt) {
+static void drawSubtitle(Bins &bins, float dt) {  // SubtitleGraphicEntity 0x5f93b0: FE.Font in scene 82
     if (subs.empty()) return;
     if (subs[0].lose > 0 && onNarrator) onNarrator(subs[0].lose);
     subs[0].lose = 0;
     if ((subAge += dt) > subs[0].life) { subs.erase(subs.begin()), subAge = 0; return; }
-    text(subs[0].s.c_str(), 640, 360 + 210 * 720 / 540.f - SUB_SIZE / 2, SUB_SIZE, WHITE, 1);
+    bins.add(82, [s = subs[0].s] { text(s.c_str(), 640, 360 + 210 * 720 / 540.f - SUB_SIZE / 2, SUB_SIZE, WHITE, 1); });
 }
 
-static void drawBanner(float dt, bool shown) {  // shown false: the hot seat hides the box (BaseHudObject 0x5dad00), its queue keeps running
+// CommentaryBoxGraphicEntity 0x5dd430: WXFE.Border.ComPanel in scene 41, its two FE.Font texts in 42
+static void drawBanner(Bins &bins, float dt, bool shown) {  // shown false: the hot seat hides the box (BaseHudObject 0x5dad00), its queue keeps running
     if (banners.empty()) return;
     const float LIFE = banners[0].life > 0 ? banners[0].life : banners.size() > 1 ? 2 : 3, SIZE = BANNER_SIZE;  // queued: keeps pace with the death queue (2 s a worm)
     if ((bannerAge += dt) > LIFE) { banners.erase(banners.begin()), bannerAge = 0; return; }
@@ -4454,8 +4466,8 @@ static void drawBanner(float dt, bool shown) {  // shown false: the hot seat hid
     w += 80;
     float h = 44 + 30 * lines.size(), y = 360 - 140 * 1.5f - h / 2 - (h + 60) * (fmaxf(0, 1 - bannerAge / 0.2f) + fmaxf(0, (bannerAge - LIFE + 0.2f) / 0.2f));  // HUD.Comment.Position y 140
     Rectangle r = {640 - w / 2, y, w, h};
-    if (!comPanel(r)) DrawRectangleRounded(r, 0.3f, 6, {0, 104, 138, 230});
-    for (size_t i = 0; i < lines.size(); i++) text(lines[i].c_str(), 640, y + 20 + 30 * i, SIZE, WHITE, 1);
+    bins.add(41, [r] { if (!comPanel(r)) DrawRectangleRounded(r, 0.3f, 6, {0, 104, 138, 230}); });
+    bins.add(42, [lines, y, SIZE] { for (size_t i = 0; i < lines.size(); i++) text(lines[i].c_str(), 640, y + 20 + 30 * i, SIZE, WHITE, 1); });
 }
 
 bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
@@ -4944,7 +4956,21 @@ void Hud::drawPanel(const Game &g, int secs) {
     rlPopMatrix();
 }
 
-void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
+std::vector<int> Bins::flush() {
+    std::vector<Step> run;
+    run.swap(q);
+    std::stable_sort(run.begin(), run.end(), [](const Step &a, const Step &b) { return a.scene < b.scene; });
+    std::vector<int> order;
+    for (const Step &s : run) s.draw(), order.push_back(s.scene);
+    return order;
+}
+
+std::vector<int> Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
+    queue(g, cam, tick);
+    return bins.flush();
+}
+
+void Hud::queue(const Game &g, const Camera3D &cam, uint32_t tick) {
     const Worm &cur = g.worms[g.current];
     const bool ready = readyNow;
     Vector3 fwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
@@ -4960,7 +4986,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (g.phase != barsPhase) barsWanted |= g.phase == Phase::Settle, barsPhase = g.phase;
     for (size_t i = 0; i < hpLast.size(); i++) barsWanted |= g.worms[i].hp < hpLast[i], hpLast[i] = g.worms[i].hp;
     syncSubs(g);
-    if (!quiet) drawBanner(fminf((tick - bannerTick) * Game::DT, 0.1f), !ready), drawSubtitle(fminf((tick - bannerTick) * Game::DT, 0.1f));
+    if (!quiet) drawBanner(bins, fminf((tick - bannerTick) * Game::DT, 0.1f), !ready), drawSubtitle(bins, fminf((tick - bannerTick) * Game::DT, 0.1f));
     bannerTick = tick;
     const bool borders = scriptMovie(g).borders;
     const std::string wormTxt = wormName(g.cfg, cur.team, g.wormSlot(g.current)), teamTxt = teamName(g.cfg, cur.team);
@@ -4977,7 +5003,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     if (hstOutro) {  // HotSeatTimeRemaining < 1: HST.OutroAnimName, 0.208 s, over the HUD it leaves
         float age = (tick - hstTick) * Game::DT;
         if (age >= HST_OUT_TIME) hstOutro = false;
-        else drawHst(hstWorm, hstTeam, hstCol, 0, age, true);
+        else bins.add(35, [w = hstWorm, t = hstTeam, c = hstCol, age] { drawHst(w, t, c, 0, age, true); });  // HST.Anims 35, its texts 39
     }
     if (g.phase == Phase::GameOver) {
         if (!g.cfg.mission) {  // missions and challenges end on missionEnd() only
@@ -4990,7 +5016,7 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
     const WeaponDef &wd = weaponDef(g.weapon);
     bool aiming = g.phase == Phase::Aim;
     if (ready) {  // W4M ready screen (HotSeatTimeGraphicEntity): the rest of the HUD hidden
-        drawHst(wormTxt, teamTxt, hstCol, (int)lroundf(g.hotSeat * Game::DT * 1000), (tick - hstTick) * Game::DT, false);
+        bins.add(35, [w = wormTxt, t = teamTxt, c = hstCol, ms = (int)lroundf(g.hotSeat * Game::DT * 1000), age = (tick - hstTick) * Game::DT] { drawHst(w, t, c, ms, age, false); });
         return;
     }
 
@@ -5006,36 +5032,42 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         cw = g.weapon, cf = fuse;
     }
     const Vector2 rc = {HUD_EDGE + COMPASS_R, HUD_EDGE + COMPASS_R};
-    radar(g, rc, Vector3Add(fwd, cam.up), aiming && mine);  // + up: a Blimp looking straight down keeps its heading
+    bins.add(37, [&g, rc, f = Vector3Add(fwd, cam.up), on = aiming && mine] { radar(g, rc, f, on); });  // HUD.Scanner 37; + up: a Blimp looking straight down keeps its heading
     // W4M WindMeterEntity (docs/w4m/render.md): downwind arrow in the camera frame, tilted 0.75 rad; grey and fixed under 0.05
     Vector2 wc = {rc.x + (-268 + 241) * 4 / 3.0f * HU, rc.y + (167 - 90) * HU};  // exe: Wind.OnScreenPos (-268, 90) from Scanner.Position (-241, 167)
     float ratio = hypotf(g.wind, g.windZ);
     int speed = (int)(ratio * 10 + 0.5f);
-    if (!sprite(g.cfg.scheme.wind ? "wind_back" : "wind_backdisabled", wc, 2 * 25 * HU / 128, {64, 64})) DrawCircleV(wc, 25 * HU, {0, 104, 138, 220});
+    bins.add(g.cfg.scheme.wind ? 37 : 39, [wc, on = g.cfg.scheme.wind] {  // HUD.WindBacking 37, HUD.WindDisabled 39
+        if (!sprite(on ? "wind_back" : "wind_backdisabled", wc, 2 * 25 * HU / 128, {64, 64})) DrawCircleV(wc, 25 * HU, {0, 104, 138, 220});
+    });
     Vector2 v = windPointer(ratio >= 0.05f, g.wind, g.windZ, {fwd.x + cam.up.x, fwd.z + cam.up.z});
     Color ac = ratio >= 0.05f ? Color{255, 170, 30, 255} : Color{150, 150, 150, 255};
     const float AK = (26.8f + 16) * 0.8f * HU / 117;  // arrow mesh tip -26.8 / tail +16 x Wind.Scale 0.8, over the sprite's 117 px of arrow
-    if (Texture2D t = tex("hud/wormlocarrow"); t.id)  // the needle's length foreshortened by its tilt
-        DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {wc.x, wc.y, t.width * AK, t.height * AK * Vector2Length(v)}, {64 * AK, 64 * AK * Vector2Length(v)},
-                       atan2f(v.y, v.x) * RAD2DEG - 90, ac);
-    else DrawLineEx(wc, Vector2Add(wc, Vector2Scale(v, 24)), 5, ac);
+    bins.add(38, [wc, v, ac, AK] {  // HUD.WindPointer(Grey) 38
+        if (Texture2D t = tex("hud/wormlocarrow"); t.id)  // the needle's length foreshortened by its tilt
+            DrawTexturePro(t, {0, 0, (float)t.width, (float)t.height}, {wc.x, wc.y, t.width * AK, t.height * AK * Vector2Length(v)}, {64 * AK, 64 * AK * Vector2Length(v)},
+                           atan2f(v.y, v.x) * RAD2DEG - 90, ac);
+        else DrawLineEx(wc, Vector2Add(wc, Vector2Scale(v, 24)), 5, ac);
+    });
     {  // WindMeterEntity 0x5fc0e0: tens at Wind.TextOffset, units after it, 'm' at 0.8 lowered 0.3 glyph; glyph size Wind.SpeedScale 12
         const float S = 12 * HU, bx = wc.x + 33 * HU, by = wc.y + 2 * HU;
         const int t = speed / 10, u = speed % 10;
         const float ux = bx + S * (HF_W[t] + 0.6f * HF_W[u]), mx = ux + S * HF_W[u] + 0.48f * S * HF_W[12];
-        hudGlyph('0' + t, bx, by, S, WHITE, speed == 0);
-        hudGlyph('0' + u, ux, by, S, WHITE, speed == 0);
-        hudGlyph('m', mx, by + 0.3f * S, 0.8f * S, WHITE, speed == 0);
+        const bool grey = speed == 0;  // the three glyphs in scenes 37, 38, 39 (0x5fced9)
+        bins.add(37, [=] { hudGlyph('0' + t, bx, by, S, WHITE, grey); });
+        bins.add(38, [=] { hudGlyph('0' + u, ux, by, S, WHITE, grey); });
+        bins.add(39, [=] { hudGlyph('m', mx, by + 0.3f * S, 0.8f * S, WHITE, grey); });
     }
     // ActiveWormHudInfoEntity (0x5d8320 init, 0x5d7bb0): HUD.WormInfoBack always, HUD.WeaponIcon only for a weapon; both half extent 44 (BackScale / WeapScale), no text
     const Vector2 wp = Vector2Add(hudAt(253, 174 - (300 - 174) * pipShow * (1 - pipFull)), discNudge());  // HUD.ActWormInfo.Pos -> PosPiP while the PiP shows
     {
         const float hs = 44 * HU;
         Texture2D back = tex("hud/secondback");
-        if (open) {  // WeaponPanel.Open hides every BaseHudObject
-        } else if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {wp.x - hs, wp.y - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
-        else DrawCircleV(wp, 0.7f * hs, {0, 119, 155, 230});
-        if (g.weapon >= 0 && !open) image(iconOf(wd), {wp.x - hs, wp.y - hs, 2 * hs, 2 * hs});
+        if (!open) bins.add(36, [back, wp, hs] {  // HUD.WormInfoBack 36; WeaponPanel.Open hides every BaseHudObject
+            if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {wp.x - hs, wp.y - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
+            else DrawCircleV(wp, 0.7f * hs, {0, 119, 155, 230});
+        });
+        if (g.weapon >= 0 && !open) bins.add(38, [ic = iconOf(wd), wp, hs] { image(ic, {wp.x - hs, wp.y - hs, 2 * hs, 2 * hs}); });  // HUD.WeaponIcon 38
     }
     // SecondaryWeaponGraphicEntity 0x5f82f0 (no text): root (220, 200) HUD units x (4/3, 1) from the centre, i.e. (253 - 220, 174 - 200) from the ActWormInfo spot;
     // HUD.SecondWeapon.Back half 25, HUD.SecondWeaponIcon half 20; In_WPreview while held, Out_MeleeHit when it goes [disasm + data]
@@ -5044,18 +5076,26 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         secIcon = g.secondary, secSince = tick;
     }
     if (open || ready) secOut = -1;
-    auto secondary = [&](int wi, float x, float y, float rz, float k) {
+    auto secondary = [&](int wi, float x, float y, float rz, float k) {  // HUD.SecondWeapon.Back 39, HUD.SecondWeaponIcon 40
         const Vector2 c = Vector2Add(hudAt(220, 200), discNudge());
-        rlPushMatrix();
-        rlTranslatef(c.x + x * HU, c.y - y * HU, 0);
-        rlRotatef(-rz * RAD2DEG, 0, 0, 1);
-        rlScalef(k, k, 1);
-        Texture2D back = tex("hud/secondback");
-        if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {-25 * HU, -25 * HU, 50 * HU, 50 * HU}, {}, 0, WHITE);
-        else DrawCircleV({}, 25 * HU, {0, 119, 155, 230});
-        const WeaponDef &sd = WEAPONS[wi];
-        if (!image(iconOf(sd), {-20 * HU, -20 * HU, 40 * HU, 40 * HU}, WHITE)) text(sd.name.substr(0, 4).c_str(), 0, -9, 18, WHITE, 1);
-        rlPopMatrix();
+        auto node = [=] {
+            rlPushMatrix();
+            rlTranslatef(c.x + x * HU, c.y - y * HU, 0);
+            rlRotatef(-rz * RAD2DEG, 0, 0, 1);
+            rlScalef(k, k, 1);
+        };
+        bins.add(39, [node] {
+            node();
+            Texture2D back = tex("hud/secondback");
+            if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {-25 * HU, -25 * HU, 50 * HU, 50 * HU}, {}, 0, WHITE);
+            else DrawCircleV({}, 25 * HU, {0, 119, 155, 230});
+            rlPopMatrix();
+        });
+        bins.add(40, [node, ic = iconOf(WEAPONS[wi]), name = WEAPONS[wi].name.substr(0, 4)] {
+            node();
+            if (!image(ic, {-20 * HU, -20 * HU, 40 * HU, 40 * HU}, WHITE)) text(name.c_str(), 0, -9, 18, WHITE, 1);
+            rlPopMatrix();
+        });
     };
     if (!open && !ready && secOut >= 0) {
         float t = (tick - secOutSince) * Game::DT;
@@ -5082,22 +5122,32 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         }
         clockF = frame;
         const Vector2 c = Vector2Add(hudAt(254, -170), clockNudge());
-        rlPushMatrix();
-        rlTranslatef(c.x, c.y, 0);
-        rlRotatef(0.1f * RAD2DEG, 0, 0, 1);
-        const float hs = 44 * HU;
-        Texture2D back = tex("hud/timer_back");
-        if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {-hs, -hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
-        else DrawCircleV({}, 0.7f * hs, {0, 119, 155, 230});
-        if (digitsOn) {
+        auto node = [c] {
+            rlPushMatrix();
+            rlTranslatef(c.x, c.y, 0);
+            rlRotatef(0.1f * RAD2DEG, 0, 0, 1);
+        };
+        bins.add(37, [node] {  // HUD.Clock.Back 37 (0x5f0d98)
+            const float hs = 44 * HU;
+            node();
+            Texture2D back = tex("hud/timer_back");
+            if (back.id) DrawTexturePro(back, {0, 0, (float)back.width, (float)back.height}, {-hs, -hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
+            else DrawCircleV({}, 0.7f * hs, {0, 119, 155, 230});
+            rlPopMatrix();
+        });
+        if (digitsOn) {  // HUD.Font 39 (0x5f0e02)
             const float f = (ms % 1000) / 1000.0f, S = 44 * (secs < 6 ? 1 + f * 0.3f : 1.0f) / 2.2f;  // the pulse of the last 5 s
             const int tens = std::min(secs / 10, 9), units = secs % 10;
             const float d = 0.85f * S * (HF_W[tens] + HF_W[units]), y = -(sh.roundClock ? 44 / 2.8f : 0) * HU;
             const Color tc = secs < 6 ? Color{255, (unsigned char)(255 - 200 * f), (unsigned char)(255 - 200 * f), 255} : WHITE;  // white -> HUD.Clock.ColourTurnEnd
-            hudGlyph('0' + tens, -d / 2 * HU, y, S * HU, tc, true);
-            hudGlyph('0' + units, d / 2 * HU, y, S * HU, tc, true);
+            bins.add(39, [=] {
+                node();
+                hudGlyph('0' + tens, -d / 2 * HU, y, S * HU, tc, true);
+                hudGlyph('0' + units, d / 2 * HU, y, S * HU, tc, true);
+                rlPopMatrix();
+            });
         }
-        if (sh.roundClock) {  // the "mm:ss" text in FE.Font, ColourGameTime; its "00:00" width is clockW units at a y offset clockY
+        if (sh.roundClock) {  // the "mm:ss" text in FE.Font 38 (0x5f0e81), ColourGameTime; its "00:00" width is clockW units at a y offset clockY
             std::string rt;
             if (!g.script) {
                 int round = std::max(0, g.cfg.scheme.roundTime * 3600 - g.clock) / 60;
@@ -5109,20 +5159,27 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             const bool tenths = sh.tenths && g.script && sh.roundTime != -1;
             // with tenths (0x5f071b..0x5f07b2): scale min(80 / width, the eased one) >= 2, the text up s / 4, the hundredths at 18 s / 2 under y
             const float units = tenths ? fmaxf(2, fminf(80 / em, clockW / em)) : clockW / em;
-            hudText(rt.c_str(), 0, clockY + (tenths ? units / 4 : 0), units, GT, BLANK, 1);
-            if (tenths) hudText(TextFormat("%02d", (int)(sh.clockMs % 1000) / 10), 0, clockY - units / 2, 18, GT, BLANK, 1);
+            const std::string tt = tenths ? TextFormat("%02d", (int)(sh.clockMs % 1000) / 10) : "";
+            bins.add(38, [=, y = clockY] {
+                node();
+                hudText(rt.c_str(), 0, y + (tenths ? units / 4 : 0), units, GT, BLANK, 1);
+                if (tenths) hudText(tt.c_str(), 0, y - units / 2, 18, GT, BLANK, 1);
+                rlPopMatrix();
+            });
         }
-        rlPopMatrix();
     }
     if (sh.counter) {  // CounterGraphicEntity 0x5e57c0: "%d" (+ "%" if Percent) on HUD.WindBacking x BackScale 30, TextScale 21, HUD.Counter.Position (222, -190)
         const Vector2 cp = Vector2Add(hudAt(222, -190), clockNudge());
         const float hs = 30 * HU;
-        Texture2D wb = tex("hud/wind_back");
-        if (wb.id) DrawTexturePro(wb, {0, 0, (float)wb.width, (float)wb.height}, {cp.x - hs, cp.y - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
-        else DrawCircleV(cp, 0.7f * hs, {0, 104, 138, 220});
-        const char *v = TextFormat(sh.percent ? "%d%%" : "%d", sh.value);
-        text(v, cp.x + 2, cp.y - 19 + 2, 39, BLACK, 1);  // HUD.Counter.ShadowColor
-        text(v, cp.x, cp.y - 19, 39, {255, 178, 0, 255}, 1);  // HUD.Counter.TextColor
+        bins.add(35, [cp, hs] {  // HUD.WindBacking 35 (0x5e5c67)
+            Texture2D wb = tex("hud/wind_back");
+            if (wb.id) DrawTexturePro(wb, {0, 0, (float)wb.width, (float)wb.height}, {cp.x - hs, cp.y - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
+            else DrawCircleV(cp, 0.7f * hs, {0, 104, 138, 220});
+        });
+        bins.add(39, [cp, v = std::string(TextFormat(sh.percent ? "%d%%" : "%d", sh.value))] {  // FE.Font 39 (0x5e5ce9)
+            text(v.c_str(), cp.x + 2, cp.y - 19 + 2, 39, BLACK, 1);  // HUD.Counter.ShadowColor
+            text(v.c_str(), cp.x, cp.y - 19, 39, {255, 178, 0, 255}, 1);  // HUD.Counter.TextColor
+        });
     }
     // team health: EnergyBarManagerEntity 0x5e9f10 / 0x5e97f0 / 0x5e9a00 (bottom centre) and HealthPreviewEntity 0x5ebe40 (top right)
     static float maxHp = 100;
@@ -5177,10 +5234,14 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             if (nowMs > lastBlink[t] + 500) lastBlink[t] = nowMs;
             white = nowMs > lastBlink[t] + 250;
         } else lastBlink[t] = nowMs;
-        text(teamName(g.cfg, t).c_str(), 574, y - 1, 24, white ? WHITE : teamTextColor(g, t), 2);
         const Catalog::Item *flag = t < (int)g.cfg.teamSetup.size() ? catalog().flag(g.cfg.teamSetup[t].flag) : nullptr;  // HUD.Energy.Flag*: the team's FlagGfxName
-        if (!flag || !hudFlag(flag->model, {606, y + 12})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, teamColor(g, t));
-        healthBar(g.alliance(t) & 3, 628, y, 240, 24, Clamp(b.len, 0, 1));
+        bins.add(36, [png = flag ? flag->model : std::string(), y, tc = teamColor(g, t)] {  // HUD.Flag 36 (0x5e887d)
+            if (png.empty() || !hudFlag(png, {606, y + 12})) DrawRectangleRounded({584, y - 4, 32, 32}, 0.2f, 4, tc);
+        });
+        bins.add(37, [name = teamName(g.cfg, t), y, nc = white ? WHITE : teamTextColor(g, t), col = g.alliance(t) & 3, len = Clamp(b.len, 0, 1)] {  // FE.Font 37, HUD.HealthBarBrick 37
+            text(name.c_str(), 574, y - 1, 24, nc, 2);
+            healthBar(col, 628, y, 240, 24, len);
+        });
     }
     // HealthPreviewEntity: In_WHealthAll when the HUD shows; Position (252, 88) / PositionPiP (252, 0) x (4/3, 1) from the centre, beside ActWormInfo (253, 174) / (253, 300)
     if (open) cpv.on = false;
@@ -5208,10 +5269,12 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         }
         const int n = (int)present.size();
         float age = (tick - cpv.since) * Game::DT;
-        rlPushMatrix();
-        rlTranslatef(hudAt(252, 0).x + previewDx(), cpv.y, 0);
-        if (n) {  // locator2: the bars (MiniBackResource, BarScale 8.8)
-            hudNode(xanimKeys(K_PV_IN_X2, 2, age, true), xanimKeys(K_PV_IN_Y2, 2, age, true), xanimKeys(K_PV_IN_R2, 2, age, true));
+        auto root = [x = hudAt(252, 0).x + previewDx(), y = cpv.y] {
+            rlPushMatrix();
+            rlTranslatef(x, y, 0);
+        };
+        if (n) {  // locator2: the bars (MiniBackResource, BarScale 8.8), team t's in scene 37 + t (0x5eae1f)
+            const Vector3 l2 = {xanimKeys(K_PV_IN_X2, 2, age, true), xanimKeys(K_PV_IN_Y2, 2, age, true), xanimKeys(K_PV_IN_R2, 2, age, true)};
             static const float A[5][4] = {{}, {-0.055f}, {-0.065f, 0.065f}, {-0.06f, 0.06f, -0.04f}, {-0.15f, 0, 0, 0.1f}},
                                B[5][4] = {{}, {-3}, {-3, 3}, {-3, -5, -1.5f}, {0, -3, 1.3f, 0.1f}};
             const float w = 8.8f * 4 / n, step = w * 1.6f, x0 = step * 0.5f - step * n * 0.5f;
@@ -5220,30 +5283,38 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
                 int t = present[k];
                 float ph = fmodf((tick - cpv.flash) * Game::DT, 1.0f), c = ph < 0.5f ? 128 + 127 * ph / 0.5f : 255 - 128 * (ph - 0.5f) / 0.5f;  // 0x5ebe40: 0x80 .. 0xff .. 0x7f a second
                 unsigned char v = flashing && t == cur.team ? (unsigned char)c : 255;
-                hudNode(x0 + k * step, B[n][k], A[n][k]);
-                miniBar(g.alliance(t) & 3, w, 8.8f, cpv.team[t] / 100, {v, v, v, 255});
-                rlPopMatrix();
+                bins.add(37 + t, [root, l2, x = x0 + k * step, y = B[n][k], r = A[n][k], col = g.alliance(t) & 3, w, frac = cpv.team[t] / 100, v] {
+                    root();
+                    hudNode(l2.x, l2.y, l2.z);
+                    hudNode(x, y, r);
+                    miniBar(col, w, 8.8f, frac, {v, v, v, 255});
+                    rlPopMatrix(), rlPopMatrix(), rlPopMatrix();
+                });
             }
-            rlPopMatrix();
         }
-        {  // locator1: the health in HUD.Font (TextScale 12.8), right edge at TextPosition (10, 20), shadow (0, 0, 0, 120) beside it
-            hudNode(xanimKeys(K_PV_IN_X1, 2, age, true), 0, xanimKeys(K_PV_IN_R1, 2, age, true));
-            int v = std::min(999, (int)cpv.text);
-            const char *str = v >= 100 ? TextFormat("%d", v) : TextFormat("%02d", v);  // 0x5eb100: a blank hundreds glyph under 100, tens always drawn
-            float h = 2 * 12.8f * HU;
-            digits(str, 10 * HU + 2 * HU, -20 * HU - h / 2 + 2 * HU, h, 2, false, {0, 0, 0, 120});
-            digits(str, 10 * HU, -20 * HU - h / 2, h, 2);
-            rlPopMatrix();
+        {  // locator1: the health in HUD.Font (TextScale 12.8), right edge at TextPosition (10, 20); shadow (0, 0, 0, 120) beside it in scene 40, glyphs 41 (0x5eaff0)
+            const float lx = xanimKeys(K_PV_IN_X1, 2, age, true), lr = xanimKeys(K_PV_IN_R1, 2, age, true), h = 2 * 12.8f * HU;
+            const int v = std::min(999, (int)cpv.text);
+            const std::string str = v >= 100 ? TextFormat("%d", v) : TextFormat("%02d", v);  // 0x5eb100: a blank hundreds glyph under 100, tens always drawn
+            for (int scene : {40, 41})
+                bins.add(scene, [root, lx, lr, h, str, shadow = scene == 40] {
+                    root();
+                    hudNode(lx, 0, lr);
+                    if (shadow) digits(str.c_str(), 10 * HU + 2 * HU, -20 * HU - h / 2 + 2 * HU, h, 2, false, {0, 0, 0, 120});
+                    else digits(str.c_str(), 10 * HU, -20 * HU - h / 2, h, 2);
+                    rlPopMatrix(), rlPopMatrix();
+                });
         }
-        {  // locator3: HUD.HealthIcon, or HUD.HealthShield while the worm wears armour (0x5eaeb0), IconScale 14.4 half extent at IconPosition (25, 20)
-            hudNode(xanimKeys(K_PV_IN_X3, 2, age, true), 0);
-            Texture2D ic = tex(cur.armour ? "hud/health_shield" : "fe/health_icon");
+        // locator3: HUD.HealthIcon, or HUD.HealthShield while the worm wears armour (0x5eaeb0, scene 41), IconScale 14.4 half extent at IconPosition (25, 20)
+        bins.add(41, [root, lx = xanimKeys(K_PV_IN_X3, 2, age, true), armour = cur.armour] {
+            root();
+            hudNode(lx, 0);
+            Texture2D ic = tex(armour ? "hud/health_shield" : "fe/health_icon");
             float hs = 14.4f * HU;
             if (ic.id) DrawTexturePro(ic, {0, 0, (float)ic.width, (float)ic.height}, {25 * HU - hs, -20 * HU - hs, 2 * hs, 2 * hs}, {}, 0, WHITE);
             else DrawCircleV({25 * HU, -20 * HU}, hs, WHITE);
-            rlPopMatrix();
-        }
-        rlPopMatrix();
+            rlPopMatrix(), rlPopMatrix();
+        });
     }
     // power (stacked blocks, fill from the bottom) and pitch arc (bottom left)
     Vector2 pb = {HUD_EDGE - 7 * 0.62f, 720 - HUD_EDGE - 60.6f - 70};  // rim: bar left texel 7, arc bottom 60.6 px below its pivot, pivot 70 px under the bar origin
@@ -5252,50 +5323,57 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
         float t = g.scout.t / 60.0f, k = Clamp((t - 2.7f) / 1.3f, 0, 1), sweep = 0.5f + 0.5f * sinf(t * 6);
         pf = Lerp(sweep, g.scout.power, k), aimAt = Lerp(sinf(t * 4) * 0.8f, g.scout.pitch, k);
     }
-    if (sprite("powerbar_off", pb, ps, {80, 30})) {
-        float top = 215 - (215 - 41) * pf;
-        if (pf > 0) sprite("powerbar_on", {pb.x, pb.y + (top - 30) * ps}, ps, {80, 0}, 0, WHITE, {0, top, 256, 256 - top});
-    } else {
-        DrawRectangleRounded({pb.x, pb.y, 40, 120}, 0.3f, 4, {0, 0, 0, 150});
-        DrawRectangleRounded({pb.x + 4, pb.y + 4 + 112 * (1 - pf), 32, 112 * pf}, 0.3f, 4, ColorLerp(YELLOW, RED, pf));
-    }
+    // HUD.PowerbarMeterBase 37, HUD.PowerbarMeter 39, HUD.AimBase 37, HUD.AimArrow 40 (registry defaults, layer 0xff)
+    const bool powerArt = tex("hud/powerbar_off").id, angleArt = tex("hud/angle_back").id;
+    bins.add(37, [=] {
+        if (powerArt) sprite("powerbar_off", pb, ps, {80, 30});
+        else {
+            DrawRectangleRounded({pb.x, pb.y, 40, 120}, 0.3f, 4, {0, 0, 0, 150});
+            DrawRectangleRounded({pb.x + 4, pb.y + 4 + 112 * (1 - pf), 32, 112 * pf}, 0.3f, 4, ColorLerp(YELLOW, RED, pf));
+        }
+    });
+    if (powerArt && pf > 0) bins.add(39, [=, top = 215 - (215 - 41) * pf] { sprite("powerbar_on", {pb.x, pb.y + (top - 30) * ps}, ps, {80, 0}, 0, WHITE, {0, top, 256, 256 - top}); });
     Vector2 ap = {pb.x + 80, pb.y + 70};  // arc pivot: flat edge centre
     float deg = -aimAt * RAD2DEG;
-    if (sprite("angle_back", ap, 0.6f, {70, 130})) sprite("angle_head", ap, 0.55f, {16, 32}, deg);
-    else {
-        DrawCircleSector(ap, 58, -90, 90, 16, {0, 104, 138, 210});
-        DrawLineEx(ap, {ap.x + cosf(-aimAt) * 56, ap.y + sinf(-aimAt) * 56}, 4, GOLDEN);
-        DrawCircleV(ap, 7, MAROON);
-    }
-    // state hints
-    if (g.shotsLeft) text(TextFormat("%d shot(s) left", g.shotsLeft), 190, 600, 22, WHITE);
-    if (g.roped) text("Rope: stick swings, aim = length, jump releases", 190, 600, 22, WHITE);
-    if (g.jetting) {
-        text(keyGlyphs() ? "Jetpack: Space thrust, arrows steer, Backspace drop" : "Jetpack: A/ZR thrust, stick steers, B drop", 190, 600, 22, WHITE);  // HelpText.kUtilityJetpack0
-        float full = fmaxf(g.jetInit, 0.01f);  // Jetpack.InitFuel
-        healthBar(1, 190, 630, 240, 16, Clamp(g.fuel / full, 0, 1));
-    }
+    bins.add(37, [=] {
+        if (angleArt) sprite("angle_back", ap, 0.6f, {70, 130});
+        else DrawCircleSector(ap, 58, -90, 90, 16, {0, 104, 138, 210});
+    });
+    bins.add(40, [=] {
+        if (angleArt) sprite("angle_head", ap, 0.55f, {16, 32}, deg);
+        else DrawLineEx(ap, {ap.x + cosf(-aimAt) * 56, ap.y + sinf(-aimAt) * 56}, 4, GOLDEN), DrawCircleV(ap, 7, MAROON);
+    });
+    // state hints and button legends: the help consoles are WXFE items of layer 5, scene 0x24 + 5 = 41 (0x5f8bd2, 0x5db702)
+    std::vector<std::string> states;
+    if (g.shotsLeft) states.push_back(TextFormat("%d shot(s) left", g.shotsLeft));
+    if (g.roped) states.push_back("Rope: stick swings, aim = length, jump releases");
+    if (g.jetting) states.push_back(keyGlyphs() ? "Jetpack: Space thrust, arrows steer, Backspace drop" : "Jetpack: A/ZR thrust, stick steers, B drop");  // HelpText.kUtilityJetpack0
+    const float fuel = g.jetting ? Clamp(g.fuel / fmaxf(g.jetInit, 0.01f), 0, 1) : -1;  // Jetpack.InitFuel
+    std::vector<Hint> legend;
     if (open) {}  // over its panel W4M draws no button legend
     else if (mine && !quiet && g.girderOn && g.phase == Phase::Aim)  // W4M HelpText.kUtilityGirder0: Movement, GirderRaise / Lower, Fire
-        hints({{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}});
+        legend = {{"LS", "Arrows", "Move"}, {"RS", "WASD", "Raise / lower, turn"}, {"A", "Space", "Place"}};
     else if (mine && !quiet && wd.kind == Kind::Binoculars && g.phase == Phase::Aim)  // HelpText.kUtilityBinoculars0
-        hints({{"L/ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}});
+        legend = {{"L/ZL", "RMB", "Look"}, {"A", "Space", "Select a target"}};
     else if (int sheep = mine && !quiet && !aiming ? sheepFlight(g) : 0; sheep) {  // ours: no W4M legend (docs/w4m/weapons.md §13)
         bool walking = sheep == 1;
-        std::vector<Hint> h = {{"A/ZR", "Space", walking ? tr(nullptr, "Take off", "Décoller") : tr(nullptr, "Detonate", "Exploser")}};
-        if (!walking) h.push_back({"LS", "Arrows", tr(nullptr, "Steer", "Diriger")});
-        hints(h);
+        legend = {{"A/ZR", "Space", walking ? tr(nullptr, "Take off", "Décoller") : tr(nullptr, "Detonate", "Exploser")}};
+        if (!walking) legend.push_back({"LS", "Arrows", tr(nullptr, "Steer", "Diriger")});
     }
     else if (mine && !quiet && g.secondary >= 0)  // W4M SecondaryWeaponHelpEntity: WXFE.HelpDropConsole, FETXT.Control.Secondry + FETXT.Drop
-        hints({{"R", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}});
+        legend = {{"R", g.jetting || g.jetLanded() ? "Backspace" : "Space", tr("FETXT.Drop", "Drop", "Lâcher")}};
     else if (mine && !quiet && Controls::targetView(g))  // W4M BlimpHelpEntity (WXFE.HelpBlimpConsole): Look, Pan, Zoom in / out
-        hints({{"A", "Space", "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"},
-               {"D-pad", "Z/X", "Zoom"}, {"B/Y", "Enter/E", "Leave"}});
+        legend = {{"A", "Space", "Fire"}, {"LS", "Arrows", "Pan"}, {"RS", "WASD", "Look"}, {"D-pad", "Z/X", "Zoom"}, {"B/Y", "Enter/E", "Leave"}};
     else if (mine && !quiet && g.phase == Phase::Aim && Controls::firstPerson(g))  // HeadCam: FETXT.Control.ZoomIn / ZoomOut
-        hints({{"A", "Space", "Fire"}, {"D-pad", "Wheel", "Zoom"}});
-    else if (mine && !quiet && aiming) hints(weaponHints(wd));
-    else if (tick < 300 && !quiet) hints({{"-", "F1", "Hold: controls"}});
-    drawPanel(g, sh.endless ? -1 : secs);
+        legend = {{"A", "Space", "Fire"}, {"D-pad", "Wheel", "Zoom"}};
+    else if (mine && !quiet && aiming) legend = weaponHints(wd);
+    else if (tick < 300 && !quiet) legend = {{"-", "F1", "Hold: controls"}};
+    bins.add(41, [states, fuel, legend] {
+        for (const std::string &st : states) text(st.c_str(), 190, 600, 22, WHITE);
+        if (fuel >= 0) healthBar(1, 190, 630, 240, 16, fuel);
+        if (!legend.empty()) hints(legend);
+    });
+    bins.add(41, [this, &g, secs = sh.endless ? -1 : secs] { drawPanel(g, secs); });  // HUD.WP.* 41..46 (0x6016b0)
 }
 
 // ---------------------------------------------------------------- pause

@@ -6,6 +6,7 @@
 #include "barracks.h"
 #include "sim.h"
 #include "audio.h"
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -202,16 +203,24 @@ private:
     void factoryEdit(int dx, int dy, bool ok, bool back, bool typing, float t);
 };
 
-// In-game HUD and W4M weapon panel (X / Q). A pick goes out as Input::pick() until game.held() shows it (a frame may run no tick).
-// First-person aim reticle at screen point c, per weapon like W4M (the Sniper Rifle: its scope).
-void reticle(const WeaponDef &wd, Vector2 c);
+// W4M render bins (table 0x91e2b8, index = draw order): screen-space draws queued with their scene, run in scene order, a scene in queue order
+struct Bins {
+    void add(int scene, std::function<void()> draw) { q.push_back({scene, std::move(draw)}); }
+    std::vector<int> flush();  // draws the queue, returns the scenes in the order drawn
+private:
+    struct Step { int scene; std::function<void()> draw; };
+    std::vector<Step> q;
+};
+// First-person aim reticle at screen point c, per weapon like W4M (the Sniper Rifle: its scope), queued in its bin.
+void reticle(Bins &bins, const WeaponDef &wd, Vector2 c);
 // W4M Blimp-view reticle at the screen centre: Bomber cursor (arrows = the run, left to right) or Targeting cursor.
-void targetCursor(const WeaponDef &wd, int state, const Vector2 *lock = nullptr, const Vector2 *at = nullptr);  // state: 0 valid, 1 water, 2 no target, -1 none; lock: homing marker; at: centre, default screen centre
+void targetCursor(Bins &bins, const WeaponDef &wd, int state, const Vector2 *lock = nullptr, const Vector2 *at = nullptr);  // state: 0 valid, 1 water, 2 no target, -1 none; lock: homing marker; at: centre, default screen centre
 Vector2 windPointer(bool live, float wx, float wz, Vector2 fwd);  // wind meter needle on screen (y down), length foreshortened
 float text3dPlace(Vector3 p, float scale, const Camera3D &cam, Vector3 fwd, Vector2 screen, Vector2 &at);  // Text3D em (px) and centre
 // W4M PiP (HUDTWK PiP.*, WXFE_Border_Bubble): the event camera's picture in its tilted inset; show / full as Controls::inset
 void pipInset(const RenderTexture2D &scene, float show, float full);
 int panelWeapon(int cell);  // our weapon in a W4M weapon panel cell (row-major, 7 x 6), -1 for none
+// In-game HUD and W4M weapon panel (X / Q). A pick goes out as Input::pick() until game.held() shows it (a frame may run no tick).
 struct Hud {
     bool skipHp = false;  // X pressed during the count (user-requested)
     int counting = -1;  // worm whose label is counting, camera on it; wait: camera travel / linger seconds
@@ -225,7 +234,8 @@ struct Hud {
     // local: a human here plays the current turn; tick: ticks simulated so far
     void input(const Game &g, Input &in, bool local, int pad, uint32_t tick);
     void labels(const Game &g, const Camera3D &cam, uint32_t tick);  // W4M bin 3DText (29): Text3Ds, under the reticles and the HUD; first each frame
-    void draw(const Game &g, const Camera3D &cam, uint32_t tick);
+    std::vector<int> draw(const Game &g, const Camera3D &cam, uint32_t tick);  // queues the HUD in `bins` with what the caller queued, flushes them: the scenes drawn
+    Bins bins;  // the frame's HUD-camera bins: the caller queues its reticles, PiP and borders before draw()
     void select(int weapon) { pick = weapon, open = false, swallow = true; }
     int slot() const { return cursor; }
     void view(bool o, int slot) { viewOpen = o, viewSlot = slot; }  // the remote active player's panel (PANEL), shown read-only
@@ -240,6 +250,7 @@ private:
     double panelSince = -1e9, hiSince = 0;
     int hiCell = -1;  // the cell WP_Highlight runs on since hiSince
     void drawPanel(const Game &g, int secs);  // secs: the turn clock, -1 none
+    void queue(const Game &g, const Camera3D &cam, uint32_t tick);  // draw()'s body: its draws go to `bins`, capturing by value
     int introWorm = -1;       // the worm whose turn it is: a change is a turn start
     // W4M hp count: labels/bars show `shown`, which ticks toward the sim's counted hp (Settle: timed by the sim)
     struct HpTrack { int seen = 0; float shown = 0, from = 0; bool poison = false; };

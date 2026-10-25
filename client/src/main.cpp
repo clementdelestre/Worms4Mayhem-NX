@@ -2981,15 +2981,15 @@ int main(int argc, char **argv) {
         bool locked = game.locked && wd.kind == Kind::Homing && Vector3DotProduct(Vector3Subtract(game.lockAt, view.position), Vector3Subtract(view.target, view.position)) > 0;
         if (ret == Controls::Reticle::Aim && wd.kind == Kind::Homing) {  // W4M Homing.Cursor in the aim view (observed), not the shell reticle
             Vector2 at = GetWorldToScreen(Controls::aimPoint(game), view);
-            Ui::targetCursor(wd, game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr, &at);
-        } else if (ret == Controls::Reticle::Aim) Ui::reticle(wd, GetWorldToScreen(Controls::aimPoint(game), view));  // W4M per-weapon aim reticle
+            Ui::targetCursor(hud.bins, wd, game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr, &at);
+        } else if (ret == Controls::Reticle::Aim) Ui::reticle(hud.bins, wd, GetWorldToScreen(Controls::aimPoint(game), view));  // W4M per-weapon aim reticle
         else if (ret == Controls::Reticle::Blimp) {
             Vector3 h;
             bool hit = !game.cursorOn || game.blimpHit(&h);
-            Ui::targetCursor(wd, !hit ? 2 : game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr);
-        } else if (ret == Controls::Reticle::Lock && locked) Ui::targetCursor(wd, -1, &lockAt);
-        if (pipOn) Ui::pipInset(pipRt, pipShow, pipFull);
-        if (!pause.open) Efmv::borders(game);  // WXFEP.Pause sends EFMV.Borders.Off; its Cancel and the briefing's close send .On (0x5e6e00)
+            Ui::targetCursor(hud.bins, wd, !hit ? 2 : game.target().y <= game.water + 1e-3f ? 1 : 0, locked ? &lockAt : nullptr);
+        } else if (ret == Controls::Reticle::Lock && locked) Ui::targetCursor(hud.bins, wd, -1, &lockAt);
+        if (pipOn) hud.bins.add(39, [&] { Ui::pipInset(pipRt, pipShow, pipFull); });  // HUD.PiP 39
+        if (!pause.open) hud.bins.add(81, [&] { Efmv::borders(game); });  // EFMV.Borders 81; WXFEP.Pause sends EFMV.Borders.Off, its Cancel and the briefing's close .On (0x5e6e00)
         hud.pipShow = pipOn ? pipShow : 0, hud.pipFull = pipFull;
         hud.quiet = pause.open || playing || irEnd >= 0;  // those draw their own hints
         hud.draw(game, view, tick);

@@ -517,5 +517,30 @@ int main() {
         t.worms = 3, L.place(2, 2, t);
         assert(L.maxWorms(2) == 3 && L.newWorms() == 1);
     }
+    {  // W4M render bins: an aim reticle (39) queued before the HUD lands over its parts of scenes <= 38 and under those >= 40
+        SetTraceLogLevel(LOG_WARNING);
+        SetConfigFlags(FLAG_WINDOW_HIDDEN);
+        InitWindow(1280, 720, "ui_check");
+        Ui::load();
+        Game g;
+        g.start({7, 2, 2, "", 0});
+        g.hotSeat = 0;
+        Ui::Hud hud;
+        hud.mine = true;
+        Camera3D cam = {{0, 10, 10}, {0, 0, 0}, {0, 1, 0}, 45, CAMERA_PERSPECTIVE};
+        BeginDrawing();
+        hud.labels(g, cam, 1);
+        int at = -1, n = 0;
+        Ui::reticle(hud.bins, WEAPONS[0], {640, 360});
+        hud.bins.add(39, [&] { at = n; });
+        for (int s = 30; s < 90; s++) hud.bins.add(s, [&] { n++; });
+        std::vector<int> order = hud.draw(g, cam, 1);
+        EndDrawing();
+        Ui::unload();
+        CloseWindow();
+        assert(std::is_sorted(order.begin(), order.end()) && at == 38 - 30 + 1);  // the probes of 30..38 ran before it, 39's after
+        assert(std::count_if(order.begin(), order.end(), [](int s) { return s < 39; }) > 9 + 2);  // HUD parts under the reticle (wind, clock, bars...)
+        assert(std::count_if(order.begin(), order.end(), [](int s) { return s > 39; }) > 50 + 2);  // and over it (preview digits and icon, hints)
+    }
     puts("ui_check ok");
 }
