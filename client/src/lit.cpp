@@ -25,6 +25,7 @@ static std::vector<Entry> shaders;
 
 const char *ALPHA_TEST = R"(
 bool alphaPass(float a, float f, float r) {
+    a = floor(clamp(a, 0.0, 1.0) * 255.0 + 0.5), r = floor(clamp(r, 0.0, 1.0) * 255.0 + 0.5);  // fixed-function alpha test compares 8-bit values (interpolated 1.0 stays >= 1.0)
     return f < -0.5 || f > 6.5 || (f > 5.5 ? a >= r : f > 4.5 ? a != r : f > 3.5 ? a > r : f > 2.5 ? a <= r : f > 1.5 ? a == r : f > 0.5 && a < r);
 }
 )";
@@ -80,8 +81,8 @@ Shader shader(const char *vs, const char *fs, bool lit, bool es3) {
     static const std::string F3 = "#define varying in\n#define texture2D texture\n#define gl_FragColor fragColor\nout vec4 fragColor;\n"
                                   "#define SHADOW_SAMPLER lowp sampler2DShadow\n";
     std::string v = es && !es3 ? "#version 100\n" : std::string(es ? "#version 300 es\n" : "#version 330\n") + "#define attribute in\n#define varying out\n";
-    std::string f = es && !es3 ? "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
-                               : (es ? "#version 300 es\nprecision highp float;\n" : "#version 330\n") + F3;
+    std::string f = es && !es3 ? "#version 100\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\nprecision highp sampler2D;\n#else\nprecision mediump float;\n#endif\n"
+                               : (es ? "#version 300 es\nprecision highp float;\nprecision highp sampler2D;\n" : "#version 330\n") + F3;
     Shader s = LoadShaderFromMemory((v + vs).c_str(), (f + fs).c_str());
     if (int lm = GetShaderLocation(s, "lightMul"); lm >= 0) SetShaderValue(s, lm, &ONE, SHADER_UNIFORM_VEC3);
     if (int at = GetShaderLocation(s, "atest"); at >= 0) { static const float NONE[2] = {-1, 0}; SetShaderValue(s, at, NONE, SHADER_UNIFORM_VEC2); }

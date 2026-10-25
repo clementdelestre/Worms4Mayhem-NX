@@ -25,6 +25,8 @@ ROOTS += ['WXP_Explosion_Mine', 'WXP_Napalm']  # Landmine DetonationFx; its kDT_
 ROOTS += ['WXP_FE_CrashBang', 'WXP_FE_BarrelSpark', 'WXP_FE_TreeFire', 'WXP_FE_BarrelPoison', 'WXP_FE_CrashFire', 'WXP_FE_CrashSparks',
           'WXP_FE_TreeSmoke', 'WXP_FE_Flies']  # MENUTWKXPCCOMMON WXFE.MainMenu Title Mesh EffectNames (WXFE_MeshObjectParticleEntity 0x76d27c)
 ROOTS += ['WXP_FE_Firework%d' % n for n in range(1, 7)]  # WXFE.WinMatch / WinRound Firework1..7 EffectNames
+ROOTS += ['WXP_PickupFX', 'WXP_Poof_VLarge', 'WXP_BubbleMachineExpire']  # crate pickup, Abducted worm's poof, Bubble Trouble machine's end
+ROOTS += ['WXP_PlaneWingTrails', 'WXP_JetpackFire']  # LOCAL Bomber.EffectName; WAE_Jetpack 0x58ca15 (JetLeft / JetRight)
 ROOTS += ['WXP_PlasmaBomb', 'WXP_FE_GuageSteam']  # Ray gun ArielFx `LOC^WXP_PlasmaBomb` (0x581890) and WXFE_WeaponFactoryMeshEntity (0x761a1a, 0x76246f)
 FIELDS = ['EmitterType', 'SpriteSet', 'MeshSet', 'MeshAnimNodeName', 'EmitterLifeTime', 'EmitterLifeTimeRandomise', 'EmitterMaxParticles',
           'EmitterNumSpawn', 'EmitterNumSpawnRadnomise', 'EmitterOriginOffset', 'EmitterOriginRandomise', 'EmitterParticleExpireFX',
@@ -87,7 +89,7 @@ def main(a):
     folded = {k.lower(): k for k in tw}  # the resource trie folds case (0x6bdff0)
     names = set(ROOTS)
     for c in dump(os.path.join(GAME, 'Data', 'Tweak', 'WEAPTWK.XOM')).values():  # every payload's DetonationFx (comma list, Detonate 0x581440) and ArielFx
-        if isinstance(c, dict): names.update(n for k in ('DetonationFx', 'ArielFx') for n in c.get(k, '').split(',') if n)  # + the payload's attached ArielFx (0x581890)
+        if isinstance(c, dict): names.update(n for k in ('DetonationFx', 'ArielFx', 'ExpiryFx') for n in c.get(k, '').split(',') if n)  # + the payload's attached ArielFx (0x581890)
     for f in glob.glob(os.path.join(assets, 'maps', '*.json')):
         names.update(e['fx'] for e in json.load(open(f)).get('emitters', []))
     for f in glob.glob(os.path.join(assets, 'scripts', '*.lub')):  # mission scripts: Particle.Name / lib_CreateEmitter constants

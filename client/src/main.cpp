@@ -267,7 +267,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
             break;
         }
         Audio::play(WEAPONS[e.weapon].fuse > 0 ? Sfx::CowFall : Sfx::BombWhistle, e.pos);
-        if (WEAPONS[e.weapon].fuse <= 0 && !customWeapon(e.weapon)) Fx::ariel(e.pos);  // a Weapon Factory Bomber's ArielFx is "" (0x59939c)
+        if (WEAPONS[e.weapon].fuse <= 0 && !customWeapon(e.weapon)) Fx::start("WXP_AirstrikeArielA", e.pos);  // a Weapon Factory Bomber's ArielFx is "" (0x59939c)
         break;
     case GameEvent::Splash: Fx::start(e.fx, e.pos); if (e.worm < 0) Controls::impact(e.pos); break;  // a shot sinking; the sounds are the effect's EmitterSoundFX
     case GameEvent::Pop: Fx::start(e.fx, e.pos); break;
@@ -652,18 +652,19 @@ static void jetAudio(const Game &g) {
 
 // Once per frame: jetpack exhaust (full jets while fuel burns) and the Fire Punch's flaming fist.
 static void toolFx(const Game &g, float dt) {
-    static float thrust = 0, lastFuel = 0, acc = 0;
+    static float thrust = 0, lastFuel = 0;
+    static int fire[2] = {};  // WXP_JetpackFire on JetLeft / JetRight while WXWorm.JetpackThrust > 0 (0x58ca15, killed at 0x58cc7d)
     thrust = g.jetting && g.fuel < lastFuel ? 0.1f : fmaxf(thrust - dt, 0);  // bridges frames without a sim tick
     lastFuel = g.fuel;
-    if (g.jetting && g.current < (int)g.worms.size()) {
-        const Worm &w = g.worms[g.current];
-        Matrix m = MatrixMultiply(MatrixTranslate(JETPACK_AT.x, JETPACK_AT.y, JETPACK_AT.z), rootMatrix(w, wormAnims[g.current].yw.a, {}));
-        for (acc += dt * (thrust > 0 ? 50 : 12); acc >= 1; acc--)
-            for (float x : {5.0f, -5.0f}) {  // JetLeft/JetRight nozzles
-                Vector3 n = Vector3Transform({x, -10, -6}, m), v = {w.vel.x, w.vel.y - (thrust > 0 ? 6 : 2), w.vel.z};
-                Fx::flame(n, v, thrust > 0 ? 0.3f : 0.12f, thrust > 0 ? 0.7f : 0.25f, 0.15f, true);
-                if (thrust > 0 && acc < 1.5f) Fx::puff(Vector3Add(n, {0, -0.5f, 0}), {0, -1.5f, 0}, 0.9f, 0.3f, 1.1f, {200, 200, 200, 120});
-            }
+    const bool burn = g.jetting && thrust > 0 && g.current < (int)g.worms.size();
+    Matrix m = burn ? MatrixMultiply(MatrixTranslate(JETPACK_AT.x, JETPACK_AT.y, JETPACK_AT.z), rootMatrix(g.worms[g.current], wormAnims[g.current].yw.a, {})) : MatrixIdentity();
+    for (int k = 0; k < 2; k++) {
+        if (!burn) {
+            if (fire[k]) Fx::stop(fire[k]), fire[k] = 0;
+            continue;
+        }
+        Vector3 n = Vector3Transform({k ? -5.0f : 5.0f, -10, -6}, m);  // nozzles
+        if (fire[k]) Fx::place(fire[k], n); else fire[k] = Fx::start("WXP_JetpackFire", n);
     }
     for (size_t i = 0; i < g.worms.size() && i < wormAnims.size(); i++) {
         const WormAnim::Act &c = wormAnims[i].act;
@@ -671,7 +672,7 @@ static void toolFx(const Game &g, float dt) {
         if (!c.clip || strcmp(c.clip, "Fire2Firepunch") || !Models::joint("worm", "WeaponLocator", c.clip, c.t, false, &h)) continue;
         const Worm &w = g.worms[i];
         Vector3 f = Vector3Transform({h.m12, h.m13, h.m14}, MatrixMultiply(MatrixRotateY(wormAnims[i].yw.a), MatrixTranslate(w.pos.x, w.pos.y - Game::R, w.pos.z)));
-        for (int k = 0; k < 2; k++) Fx::flame(f, {0, 1.5f, 0}, 0.35f, 0.5f, 0.15f, false);
+        for (int k = 0; k < 2; k++) Fx::flame(f, {0, 1.5f, 0}, 0.35f, 0.5f, 0.15f);
     }
 }
 
@@ -916,7 +917,7 @@ static void dudFx(const std::vector<Object> &objs) {
         if (o.type != Object::Mine || !o.dud) continue;
         bool old = false;
         for (Vector3 p : was) old |= Vector3Distance(p, o.pos) < 1;
-        if (!old) Fx::dud(o.pos);
+        if (!old) Fx::start("WXP_Wep_MineDudEffect", o.pos);  // WEAPTWK ExpiryFx
         now.push_back(o.pos);
     }
     was.swap(now);
@@ -1053,7 +1054,7 @@ static bool drawBovine(const Projectile &s, float clock) {
 
 // W4M BomberGraphicEntity / SuperBomberGraphicEntity: the chopper's clip runs on the sim plane's clock, then plays its
 // exit (bombrun_end*) on after the plane has left the sim. Wing trails at trail1/2, weapons/Bomber looped at the chopper.
-static struct { const char *model = nullptr, *clip = nullptr; Matrix at; float t = 0, bank = 0, last = 0, puffs = 0; int begin = 0, end = 0; bool live = false, fat = false; } bomber;
+static struct { const char *model = nullptr, *clip = nullptr; Matrix at; float t = 0, bank = 0, last = 0; int fx[2] = {}, begin = 0, end = 0; bool live = false, fat = false; } bomber;
 static const char *const BOMB_START[] = {"bombrun_start", "bombrun_start2", "bombrun_start3"}, *const BOMB_END[] = {"bombrun_end", "bombrun_end2", "bombrun_end3", "bombrun_end4", "bombrun_end5"};  // 0x91f38c, 0x91f39c
 
 static void updateBomber(const Game &g, float dt) {
@@ -1113,7 +1114,7 @@ static void drawBomber(float dt) {
     const bool shown = f.model && Models::draw(f.model, f.at, WHITE, f.clip, f.t);
     Models::lightMul({1, 1, 1});
     if (!shown) {
-        f.puffs = 0;
+        for (int &h : f.fx) if (h) Fx::stop(h), h = 0;
         Audio::loop(Audio::Sfx::Airstrike, false);
         return;
     }
@@ -1125,7 +1126,8 @@ static void drawBomber(float dt) {
     }
     Vector3 c = Vector3Lerp(tr[0], tr[1], 0.5f);
     Audio::loop(Audio::Sfx::Airstrike, dt > 0, &c);  // two instances at the rotors in W4M, FEV max playbacks 1
-    for (f.puffs += dt * 50; f.puffs >= 1; f.puffs--) Fx::wingTrail(tr[0]), Fx::wingTrail(tr[1]);  // EmitterNumSpawn 1 per update (0x5bf800, which returns 20 ms)
+    for (int k = 0; k < 2; k++)  // LOCAL Bomber.EffectName at each rotor
+        if (f.fx[k]) Fx::place(f.fx[k], tr[k]); else f.fx[k] = Fx::start("WXP_PlaneWingTrails", tr[k]);
 }
 
 // W4M AlienAbductionGraphicEntity (0x545d20) on the sim UFO's clock: AbductStart (it flies in through its warp gate; nozzle particles 4.975 s, the beam and

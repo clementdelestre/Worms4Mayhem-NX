@@ -29,7 +29,7 @@ namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
+enum Tex { GLOW, PUFF, FIRE, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, TOON, CROSS, QUESTION, BUBBLE, SOAP, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
 const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
 const int MAX = 1024;
 float waterY = 0;  // Water.Level, m
@@ -751,8 +751,8 @@ void quad(Vector3 p, Vector3 r, Vector3 u, Color c) {
 bool preload(double until) { return uploadData(until); }
 
 void load() {
-    for (int i = 0; i < JET; i++) tex[i] = loadTex("fe", TEX_FILES[i], false);
-    tex[JET] = loadTex("hud", "jetfire", false), tex[TOON] = loadTex("hud", "toonfire", false), tex[CROSS] = loadTex("hud", "wxp_sprite_006", false);
+    for (int i = 0; i < TOON; i++) tex[i] = loadTex("fe", TEX_FILES[i], false);
+    tex[TOON] = loadTex("hud", "toonfire", false), tex[CROSS] = loadTex("hud", "wxp_sprite_006", false);
     tex[QUESTION] = loadTex("hud", "wxp_sprite_022", false), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", false);  // W4M Particle.WXSprite22/23
     tex[SOAP] = loadTex("hud", "wxp_sprite_011", false);  // Particle.WXSprite11, the soap bubbles
     tex[WHITEOUT] = loadTex("fe", "whiteout", false);  // Particle.Whiteout: flat white, additive
@@ -924,12 +924,7 @@ int count() { return (int)ps.size(); }
 static void abductee(const GameEvent &e) {
     auto glow = [&](Vector3 p, Vector3 v, float delay, float life, float s0, float s1, Color c, unsigned char t = GLOW) { add({p, v, -delay, life, s0, s1, 0, rnd(-1, 1), 0, 2, c, t, true}); };
     auto column = [&](float y0, float h, float w, float life, Color c) { for (float y = y0; y < y0 + h; y += w) glow(Vector3Add(e.pos, {0, y, 0}), {}, 0, life, w, w * 0.5f, c); };
-    if (e.kind == GameEvent::Poof)  // 20 white to grey puffs, 0.7 +- 0.3 s
-        for (int i = 0; i < 20; i++) {
-            Vector3 d = rndDir();
-            add({Vector3Add(e.pos, {0, 0.15f, 0}), {d.x * 3, rnd(0, 1), d.z * 3}, 0, rnd(0.4f, 1), 0.3f, 0.05f, 0, rnd(-8, 8), -0.5f, 3, {(unsigned char)rnd(80, 255), 0, 0, 230}, PUFF, false});
-            ps.back().c.g = ps.back().c.b = ps.back().c.r;
-        }
+    if (e.kind == GameEvent::Poof) start("WXP_Poof_VLarge", e.pos);
     if (e.kind == GameEvent::Zap) {  // AbdTelep_Central (3 x 45 units), Stars / Stars2 (WXSprite26), Glow (3 x 90 units, alpha 0.1), GloTall (40 x 250 units)
         for (int i = 0; i < 3; i++) glow(e.pos, {}, 0, rnd(0.6f, 1.8f), rnd(1.75f, 2.75f), 0, {153, 255, 153, 255});
         for (int i = 0; i < 13; i++) glow(e.pos, Vector3Scale(rndDir(), rnd(1, 4)), i < 8 ? 0.02f : 0, rnd(0.5f, 1.1f), rnd(0.08f, 0.15f), 0.02f, {128, 255, 128, 255}, SPARK);
@@ -939,23 +934,6 @@ static void abductee(const GameEvent &e) {
     if (e.kind == GameEvent::AbdDamage) {  // Abd_DamageRand: 2 beams 10 x 600 units centred 300 units up, randomised 500; AbdDamageSputt: 30 +- 60 unit flickers for 0.5 s
         for (int i = 0; i < 2; i++) column(rnd(-12.5f, 12.5f), 30, 0.6f, 0.6f, {26, 255, 26, 77});
         for (int i = 0; i < 5; i++) glow(e.pos, {}, i * 0.1f, 0.1f, rnd(1.5f, 4.5f), 0, {51, 230, 51, 255});
-    }
-}
-
-// W4M WXP_BubbleMachineExpire at the machine (0x54e6a0). Poof / ExpBubb: 10 thrown ~8 units out (AlternateAcceleration
-// N 6500, S 2e-6: a drag); Plume / BubbPlum: 7 and 14 rising 0.25 m/s, accelerating up (Mass < 0), 2 +- 0.6 s.
-static void bubblePop(Vector3 p) {
-    for (int i = 0; i < 20; i++) {
-        bool soap = i >= 10;
-        Vector3 d = soap ? rndDir() : Vector3Normalize({rnd(-1, 1), 0.15f, rnd(-1, 1)});
-        Color c = soap ? WHITE : ColorLerp({102, 102, 102, 255}, {255, 153, 128, 255}, rnd());
-        add({p, Vector3Scale(d, soap ? 6.3f : 5.2f), 0, rnd(1.0f, 1.4f), 0.15f, 0, 0, 0, 0, 13, c, (unsigned char)(soap ? SOAP : PUFF), false});
-    }
-    for (int i = 0; i < 21; i++) {
-        bool soap = i >= 7;
-        Vector3 o = {rnd(-0.075f, 0.075f), 0.05f + rnd(-0.05f, 0.05f), rnd(-0.075f, 0.075f)};
-        Color c = soap ? WHITE : ColorLerp({230, 204, 153, 255}, {255, 102, 153, 255}, rnd());
-        add({Vector3Add(p, o), {0, 0.25f, 0}, soap ? -0.2f : 0, rnd(1.4f, 2.6f), rnd(0.05f, 0.15f), 0, 0, 0, -0.5f, 0, c, (unsigned char)(soap ? SOAP : PUFF), false});
     }
 }
 
@@ -995,31 +973,13 @@ void donkeyAriel(Vector3 at) {  // WXP_CrateSpawnLGRings: 30 sprites, 22 units, 
 
 void event(const GameEvent &e) {
     abductee(e);
-    if (e.kind == GameEvent::BubblePop) bubblePop(e.pos);
+    if (e.kind == GameEvent::BubblePop) start("WXP_BubbleMachineExpire", e.pos);  // at the machine (0x54e6a0)
     if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) {
         shake = fmaxf(shake, e.kind == GameEvent::BigBoom ? 0.6f : 0.18f);  // its ExplosionMessage shakes the camera like any blast
         if (e.fx) start(e.fx, e.pos);
         else if (e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun) gunBlast(e.pos);  // its only visual is WormCollisionFX / LandCollisionFX
     } else if (e.kind == GameEvent::Collect) {  // PARTTWK WXP_PickupFX (the only pickup effect the exe spawns): poof + sparklies + glow
-        Vector3 c = Vector3Add(e.pos, {0, 0.3f, 0});
-        add({c, {}, 0, 0.3f, 0.8f, 2.0f, 0, 0, 0, 0, {255, 215, 70, 255}, GLOW, true});
-        for (int i = 0; i < 6; i++)  // WXP_PickupGlow: additive (SrcAlpha, One) at alpha 0.3, 30 units, 350 +-100 ms
-            add({Vector3Add(c, Vector3Scale(rndDir(), 0.25f)), {}, 0, rnd(0.25f, 0.45f), rnd(1.25f, 1.75f), 0.5f, 0, 0, 0, 0, {128, 230, 255, 77}, GLOW, true});
-        for (int i = 0; i < 8; i++) {
-            Vector3 d = rndDir();
-            d.y = fabsf(d.y) * 0.5f + 0.1f;
-            float t = rnd(0, 0.6f);  // white -> (0.3, 0.85, 1) ramp, sampled per cloud
-            add({Vector3Add(c, Vector3Scale(d, 0.2f)), Vector3Scale(d, rnd(2, 3.5f)), -rnd(0.04f, 0.1f), rnd(0.8f, 1.1f), 0.3f, 1.4f, 0, rnd(-1, 1), -0.5f, 3,
-                 {(unsigned char)(255 - 178 * t), (unsigned char)(255 - 38 * t), 255, 190}, PUFF, false});
-        }
-        for (int i = 0; i < 24; i++) {
-            Vector3 d = rndDir();
-            d.y = fabsf(d.y) * 0.8f + 0.2f;
-            bool ray = i % 2;
-            Color col = ray ? Color{180, 245, 255, 255} : rnd() < 0.5f ? Color{51, 255, 255, 255} : Color{220, 255, 255, 255};
-            add({c, Vector3Scale(Vector3Normalize(d), ray ? rnd(9, 14) : rnd(4, 8)), 0, ray ? rnd(0.3f, 0.45f) : rnd(0.6f, 0.9f), ray ? 0.3f : 0.32f, 0.08f, 0,
-                 rnd(-6, 6), ray ? 0.0f : 3.0f, ray ? 4.0f : 2.5f, col, (unsigned char)(ray ? TRAIL_W : STAR), true, ray ? 0.07f : 0});
-        }
+        start("WXP_PickupFX", Vector3Add(e.pos, {0, 0.3f, 0}));
     }
 }
 
@@ -1098,34 +1058,6 @@ void trail(const Projectile &s, Vector3 at, float dt, Vector3 fxAt) {
     for (int i = batches(0.12f, 2.5f); i > 0; i--) emit(R_BAZ_PUFF, 100, 4, 1, 0.2f, 9.5f, 1.5f, 0.2f, 0.2f, 0.1f, 0.3f, false, PUFF);
 }
 
-void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire) {
-    add({p, v, 0, life, size0, size1, 0, rnd(-1, 1), fire ? -1.0f : -0.3f, 0.6f, c, (unsigned char)(fire ? FIRE : PUFF), fire});
-}
-
-// WXP_PlaneWingTrails. W4M scales ParticleVelocity and SizeVelocity by 0.01 per ms (0x5b97d0): drift 0..0.2 m/s,
-// 4 +-0.75 units shrinking 0.5 m/s, so gone in ~0.4 s, well before ParticleLife 2 s.
-void wingTrail(Vector3 p) {
-    float s = rnd(0.1625f, 0.2375f);
-    add({p, {rnd(0, 0.2f), rnd(-0.1f, 0.1f), rnd(0, 0.2f)}, 0, 0.04f + s / 0.5f, s, 0, 0, rnd(-1, 1), 0, 0, {200, 205, 190, 255}, PUFF, false});
-}
-
-// WXP_AirstrikeArielA: EmitterLifeTime 1 ms, so one burst of its MaxParticles 10 (0x5bbfa0); 0.08 m/s, shrinking 0.5 m/s.
-void ariel(Vector3 p) {
-    for (int i = 0; i < 10; i++)
-        add({p, Vector3Scale(rndDir(), 0.08f), 0, 0.4f, 0.2f, 0, 0, rnd(-8, 8) * 0.06f, 0, 0, ColorLerp({51, 51, 77, 220}, {128, 115, 140, 220}, rnd()), PUFF, false});
-}
-
-void dud(Vector3 p) {
-    auto lilac = [](float t) { return ColorLerp({242, 230, 255, 220}, {128, 110, 145, 220}, t); };  // ParticleColor ramps of both emitters
-    for (int i = 0; i < 20; i++) {  // WXP_MineDudPoof: 20 puffs blown out flat (normalised xz velocity), 1.2 +-0.2 s, shrinking
-        float a = rnd(0, 2 * PI), v = rnd(1.5f, 3);
-        add({p, {cosf(a) * v, rnd(0, 0.3f), sinf(a) * v}, 0, rnd(1.0f, 1.4f), 0.6f, 0.05f, 0, rnd(-8, 8), -0.5f, 3, lilac(rnd()), PUFF, false});
-    }
-    for (int i = 0; i < 10; i++)  // WXP_MineDud: one wisp per 100 ms for 1 s, rising, 2 +-0.6 s
-        add({Vector3Add(p, {rnd(-0.08f, 0.08f), rnd(0, 0.1f), rnd(-0.08f, 0.08f)}), {rnd(-0.1f, 0.1f), rnd(0.8f, 1.2f), rnd(-0.1f, 0.1f)}, -0.1f * i, rnd(1.4f, 2.6f), 0.5f, 0.2f, 0,
-             rnd(-4, 4), -0.1f, 0.5f, lilac(rnd(0, 0.6f)), PUFF, false});
-}
-
 void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble) {
     if ((int)ps.size() < MAX) ps.push_back({p, v, 0, life, size0, size1, 0, 0, grav, 0, c, (unsigned char)(bubble ? BUBBLE : QUESTION), false}), ps.back().seq = ++lastKey;
 }
@@ -1161,8 +1093,8 @@ void shakeFor(float mag, float secs) { shakeMag = mag, shakeLen = secs, shakeT =
 void flood(Vector3 at, float stop) { floodAt = at, floodStop = stop, floodT = 0; }
 void jetStop() { lives.erase(std::remove_if(lives.begin(), lives.end(), [](const Live &l) { return l.e == &JET_BASE; }), lives.end()); }
 
-void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet) {
-    add({Vector3Add(p, Vector3Scale(rndDir(), size0 * 0.25f)), Vector3Add(v, Vector3Scale(rndDir(), 0.5f)), 0, life, size0, size1, 0, rnd(-2, 2), 0, 2, jet ? Color{255, 200, 140, 255} : Color{255, 110, 30, 255}, (unsigned char)(jet ? JET : TOON), true});
+void flame(Vector3 p, Vector3 v, float life, float size0, float size1) {
+    add({Vector3Add(p, Vector3Scale(rndDir(), size0 * 0.25f)), Vector3Add(v, Vector3Scale(rndDir(), 0.5f)), 0, life, size0, size1, 0, rnd(-2, 2), 0, 2, Color{255, 110, 30, 255}, TOON, true});
 }
 
 // W4M AlienAbductionGraphicEntity (PARTTWK; g = s since the warp gate opened, < 0 closed; 20 units per metre, all cyan (0.5, 0.9, 1) WXSprite1 glows): WXP_AlienWarpGate at the gate, WXP_BeamStartParts
