@@ -64,6 +64,8 @@ struct Particle {
     float unit = 0.05f;  // m per W4M unit of the emitter, for the emitters it carries or leaves
     uint8_t bin = 23;  // render bin: Particle1-5 (23-27) or ParticleUnderWater (11), emitter-level choice 0x5bb510
     int level = -1;  // map emitter that spawned it: its deletion takes immortal particles (0x5bbfa9)
+    uint32_t seq = 0;  // its emitter's creation number (Live::key); 0: a hand-written spawn, numbered at add()
+    uint16_t slot = 0;  // its emitter's particle slot
 };
 // ParticleColorBand 0x5b77c0: edge[i] = end of segment c[i] -> c[i+1]; the last segment runs to 1
 struct Ramp { int n; Color c[5]; float edge[5]; };
@@ -89,6 +91,12 @@ enum RampId { R_NONE, R_STARBURST, R_BAZ_MAIN, R_BAZ_PUFF, R_HOM_SMOKE, R_HOM_GL
 struct Streak { Vector3 p, dir; float len, width; unsigned char tex; float tailW = -1; };  // tailW >= 0: the tail's half width
 
 std::vector<Texture2D> tex(TEX_COUNT);  // past TEX_COUNT: the data sprite sets (sprites.txt)
+// A sprite set's shader states (Bundl09 / Bundl10 via parttwk.py): blend, alpha test (function, raw ref), z write, depth function
+// (7 Always), transparency t (1: the scene's blended bin, else its opaque bin, drawn first, 0x6ee2de)
+struct SprState { int src = 6, dst = 7, test = -1; float ref = 0; bool zwrite = false, data = false; int depth = 3; int t = 1; };
+std::vector<SprState> texSt(TEX_COUNT), dataSt(TEX_COUNT);  // dataSt: decoded off the main thread, taken by uploadData
+Shader spriteSh{};
+int spriteTestLoc = -1;
 std::vector<Ramp> ramps(std::begin(RAMPS), std::end(RAMPS));
 std::vector<Particle> ps;
 std::vector<Streak> streaks;
@@ -126,9 +134,10 @@ Vector3 rndDir() {
     float z = rnd(-1, 1), a = rnd(0, 2 * PI), r = sqrtf(1 - z * z);
     return {r * cosf(a), z, r * sinf(a)};
 }
+int lastKey = 0;  // emitter creation numbers (Live::key, Particle::seq)
 void add(Particle p) {
     if ((int)ps.size() >= MAX) return;
-    p.rot = rnd(0, 2 * PI), p.p0 = p.p;
+    p.rot = rnd(0, 2 * PI), p.p0 = p.p, p.seq = ++lastKey;  // [ours] a hand-written spawn is its own record, in creation order
     ps.push_back(p);
 }
 
@@ -187,14 +196,15 @@ struct Emit {
 };
 // Running emitter (ParticleEmitterEffectEntity): age, spawn timer, its randoms (0x5ba3bc..0x5ba446), particle slot ends, batch progress
 struct Live {
-    const Emit *e; Vector3 at; uint32_t follow = 0; float clock = 0, next = 0, timer = 0, jitter = 0; bool started = false; std::vector<float> ends;
+    const Emit *e; Vector3 at; uint32_t follow = 0; float clock = 0, next = 0, timer = 0, jitter = 0; bool started = false;
+    std::vector<float> slot;  // per particle slot: its particle's end, s (< 0: never used); spawns take the lowest free one (0x5bb690)
     int key = 0, level = -1; float unit = 0.05f, lifeR = 0; int extra = 0, spawned = 0, batch = 0; bool init = false;  // level: map emitter index
     int handle = 0;  // its effect's (0x5c1410)
     uint8_t bin = 0;  // render bin, chosen once at the emitter's start (0x5bc070 -> 0x5bb510)
 };
 std::vector<Live> lives, born;  // running emitters; those created while they tick
 uint32_t lastId = 0;
-int lastKey = 0, curLevel = -1;  // curLevel: the map emitter spawn() is spawning for
+int curLevel = -1;  // curLevel: the map emitter spawn() is spawning for
 const float TRAIL_DT = 0.02f;
 const int TRAIL_SEGS = 24;  // TrailGraphicEntity: 25 points (0x5bc899), shifted once per 20 ms update (0x5c3aa0 -> 0x5c2ae0)
 
@@ -210,7 +220,7 @@ uint8_t binOf(const Emit &e, Vector3 at, float u) {
     return e.underWater || (e.canWater && at.y + e.off.y * u <= waterY) ? 11 : e.scene ? 22 + e.scene : 23;
 }
 
-float spawn(const Emit &e, Vector3 at, float u, uint8_t bin) {
+float spawn(const Emit &e, Vector3 at, float u, uint8_t bin, uint32_t seq, uint16_t slot) {
     auto r = [](float x) { return rnd(-x, x); };
     Vector3 v = {e.v.x + r(e.vR.x), e.v.y + r(e.vR.y), e.v.z + r(e.vR.z)}, o = {e.off.x + r(e.offR.x), e.off.y + r(e.offR.y), e.off.z + r(e.offR.z)};
     if (e.norm) v = Vector3Scale(Vector3Normalize(v), e.v.x + e.vR.x);
@@ -237,7 +247,7 @@ float spawn(const Emit &e, Vector3 at, float u, uint8_t bin) {
     }
     if ((int)ps.size() >= MAX) return q.life;
     q.unit = u, q.expireL = e.expireL, q.level = curLevel;
-    q.bin = bin;
+    q.bin = bin, q.seq = seq, q.slot = slot;
     if (e.fx || e.fxL) q.id = ++lastId;
     if (e.fx) born.push_back({e.fx, q.p, q.id});
     if (e.fxL)
@@ -271,9 +281,14 @@ void tickEmitters(float dt) {
                     L.started = true;
                     if (e.sfx >= 0 && !e.sfxLoop && !e.sfxHold) Audio::play((Audio::Sfx)e.sfx, L.at);
                 }
-                L.ends.erase(std::remove_if(L.ends.begin(), L.ends.end(), [&](float end) { return end <= L.next; }), L.ends.end());  // next only grows
-                for (bool go = L.timer >= e.freq + L.jitter; go && (int)L.ends.size() < pool;) {
-                    L.ends.push_back(L.next + spawn(e, L.at, L.unit, L.bin)), L.spawned++;
+                if (L.slot.empty()) L.slot.assign(pool, -1);
+                L.batch = 0;  // +0x94, reset every update: a batch cut short by full slots starts over
+                for (bool go = L.timer >= e.freq + L.jitter; go;) {
+                    // a slot frees at the update its particle dies in, after the scan passed it: reusable from the next update
+                    int s = 0;
+                    while (s < pool && L.slot[s] >= 0 && lroundf(L.slot[s] * 1000) > lroundf(L.next * 1000) - 20) s++;
+                    if (s == pool) break;
+                    L.slot[s] = L.next + spawn(e, L.at, L.unit, L.bin, L.key, s), L.spawned++;
                     if (++L.batch >= e.num + L.extra) L.batch = 0, L.timer -= e.freq + L.jitter, L.jitter = rr(e.freqR), L.extra = (int)rr((float)e.numR), go = false;
                 }
             }
@@ -390,16 +405,25 @@ void decodeData() {
     if (char *t = LoadFileText(DATA_DIR "assets/fx/sprites.txt")) {
         for (char *l = strtok(t, "\n"); l; l = strtok(nullptr, "\n")) {
             char name[96];
-            int src, dst;
-            if (sscanf(l, "%95s %d %d", name, &src, &dst) != 3) continue;
+            SprState st;
+            int z;
+            if (sscanf(l, "%95s %d %d %d %f %d %d %d", name, &st.src, &st.dst, &st.test, &st.ref, &z, &st.depth, &st.t) != 8) continue;
+            st.zwrite = z, st.data = true;
+            static const std::pair<const char *, Tex> BUILT[] = {{"particle.wxsprite1", GLOW}, {"particle.wxsprite4", PUFF}, {"particle.wxsprite30", FIRE},
+                {"particle.wxsprite26", SPARK}, {"particle.trailsprite_r", TRAIL_R}, {"particle.trailsprite_b", TRAIL_B}, {"particle.wxsprite7", STAR},
+                {"particle.trailsprite_w", TRAIL_W}, {"particle.wxsprite6", CROSS}, {"particle.wxsprite22", QUESTION}, {"particle.wxsprite23", BUBBLE},
+                {"particle.wxsprite11", SOAP}, {"particle.whiteout", WHITEOUT}};
+            for (const auto &[n, t] : BUILT) if (lower(name) == n) dataSt[t] = st;
             std::string f = DATA_DIR "assets/fx/" + lower(name) + ".png";
             if (!FileExists(f.c_str())) continue;
             Image img = LoadImage(f.c_str());
             if (!img.data) continue;
             ImageMipmaps(&img);
             int idx = texBase + (int)dataImages.size();
-            sprites[lower(name)] = {idx, dst == 1};  // XBlendModeGL: SrcAlpha / One additive, else SrcAlpha / OneMinusSrcAlpha
-            if (lower(name) == "particle.rainsplash") rainSplashTex = idx, rainSplashAdd = dst == 1;
+            sprites[lower(name)] = {idx, st.dst == 1};  // XBlendModeGL: SrcAlpha / One additive, else SrcAlpha / OneMinusSrcAlpha
+            if (lower(name) == "particle.rainsplash") rainSplashTex = idx, rainSplashAdd = st.dst == 1;
+            if ((int)dataSt.size() <= idx) dataSt.resize(idx + 1);
+            dataSt[idx] = st;
             dataImages.push_back(img);
         }
         UnloadFileText(t);
@@ -531,6 +555,7 @@ bool uploadData(double until) {
     }
     dataThread.join();
     ramps.insert(ramps.end(), dataRamps.begin(), dataRamps.end()), dataRamps.clear();
+    texSt = dataSt;
     return dataLoaded = true, false;
 }
 void loadData() { while (uploadData(1e30)) std::this_thread::yield(); }
@@ -657,6 +682,19 @@ varying vec2 uv;
 varying vec4 col;
 void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse * col; }
 )";
+// FFFragmentMainTexCol (texture x vertex colour) with the sprite set's alpha test (function, raw ref)
+const char *SPRITE_FS = R"(
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+uniform vec2 test;
+varying vec2 uv;
+varying vec4 col;
+void main() {
+    vec4 c = texture2D(texture0, uv) * colDiffuse * col;
+    if (!alphaPass(c.a, test.x, test.y)) discard;
+    gl_FragColor = c;
+}
+)";
 // W4M CG/water.cg WaterFragmentMain: colour from the three panned normal maps alone (no eye vector), constant alpha.
 // p0 = (ReflectionContrast, ReflectionStrength, SpecularPower), p3 = (SpecularContrast, NearOpacity, SubtractColourScale).
 const char *WATER_VS = R"(
@@ -717,6 +755,7 @@ void load() {
     static const char *WATER_U[6] = {"time", "textureScale", "p0", "ni", "ni1", "p3"};
     for (int i = 0; i < 6; i++) waterLoc[i] = GetShaderLocation(waterSh, WATER_U[i]);
     skyMeshSh = shader(SKYMESH_VS, SKYMESH_FS);
+    spriteSh = shader(SKYMESH_VS, (std::string(Lit::ALPHA_TEST) + SPRITE_FS).c_str()), spriteTestLoc = GetShaderLocation(spriteSh, "test");
     uvOffLoc = GetShaderLocation(skyMeshSh, "uvOff");
     flareTex = loadTex("hud", "lensflares", false);  // W4M Lens.Flares (LensFlares.tga)
     dome = GenMeshSphere(1, 12, 16);
@@ -799,7 +838,7 @@ void unload() {
     for (Texture2D &t : waterTex)
         if (t.id) UnloadTexture(t);
     UnloadMesh(dome), UnloadMesh(plane);
-    UnloadShader(skySh), UnloadShader(waterSh), UnloadShader(skyMeshSh), UnloadTexture(flareTex);
+    UnloadShader(skySh), UnloadShader(waterSh), UnloadShader(skyMeshSh), UnloadShader(spriteSh), UnloadTexture(flareTex);
     MemFree(skyMat.maps), MemFree(waterMat.maps);
 }
 
@@ -1079,7 +1118,7 @@ void dud(Vector3 p) {
 }
 
 void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble) {
-    if ((int)ps.size() < MAX) ps.push_back({p, v, 0, life, size0, size1, 0, 0, grav, 0, c, (unsigned char)(bubble ? BUBBLE : QUESTION), false});
+    if ((int)ps.size() < MAX) ps.push_back({p, v, 0, life, size0, size1, 0, 0, grav, 0, c, (unsigned char)(bubble ? BUBBLE : QUESTION), false}), ps.back().seq = ++lastKey;
 }
 
 void jetStart(Vector3 at) { effect({&JET_RING, &JET_BASE}, at); }
@@ -1175,7 +1214,7 @@ void update(float dt) {
         p.age += dt;
         if (p.age < 0) { if (w != i) ps[w] = p; w++; continue; }
         if (p.age >= p.life && !p.immortal) {
-            if (p.expire) lives.push_back({p.expire, p.p});
+            if (p.expire) { Live l{p.expire, p.p}; l.key = ++lastKey; lives.push_back(std::move(l)); }
             if (p.expireL) effect(*p.expireL, p.p, p.unit);
             continue;
         }
@@ -1263,24 +1302,50 @@ static void particles(const Camera3D &cam, int bin) {
     rlDrawRenderBatchActive();
     rlDisableDepthMask();
     rlDisableBackfaceCulling();
-    // One bin's records in creation order (0x6ee179 appends, no sort found); a run of one texture + blend is one batch
+    // The scene's opaque bin (sets with t != 1) then its blended one (0x6edeea); a run of one texture is one batch
+    // add: 0 / 1 the hand-written alpha / additive default of a texture without data, 2 a TrailGraphicEntity ribbon (its own additive draw, 0x5c2d30)
+    auto state = [](int t, int add) { SprState d; d.dst = add ? 1 : 7; return texSt[t].data && add != 2 ? texSt[t] : d; };
     int runTex = -1, runAdd = -1;
     auto endRun = [&] { if (runTex >= 0) rlEnd(), rlSetTexture(0); runTex = -1; };
     auto beginRun = [&](int t, int add) {
         if (t == runTex && add == runAdd) return;
         endRun();
-        BeginBlendMode(add ? BLEND_ADDITIVE : BLEND_ALPHA);
+        const SprState st = state(t, add);
+        rlDrawRenderBatchActive();
+        Models::blendGL(st.src, st.dst);
+        st.zwrite ? rlEnableDepthMask() : rlDisableDepthMask();
+        st.depth == 7 ? rlDisableDepthTest() : rlEnableDepthTest();
+        const Vector2 test = {(float)st.test, st.ref};
+        SetShaderValue(spriteSh, spriteTestLoc, &test, SHADER_UNIFORM_VEC2);
         rlSetTexture(tex[t].id), rlBegin(RL_QUADS), runTex = t, runAdd = add;
     };
+    // records: an emitter's sprite set (sprites by slot, 0x79b4f0) or one shown mesh particle, appended in creation order (0x6c36bd);
+    // std::sort (0x6ee54a) by texture in the opaque bin (0x6ec293), by view z far first in the blended one (0x6eb43f), where every
+    // sprite set's bound sits at the origin (0x6ab950) [equal keys past 32 records: MSVC introsort order, not reproduced]
+    auto depth = [&](Vector3 q) { return -Vector3DotProduct(Vector3Subtract(q, cam.position), camLook); };
+    const float originKey = depth(skyOrigin);
+    std::vector<int> order;
+    BeginShaderMode(spriteSh);
     Vector2 lastOff = {-1, -1};
-    for (const Particle &p : ps) {
-        if (p.age < 0 || p.bin != bin) continue;
+    for (int pass = 0; pass < 2; pass++) {
+    order.clear();
+    for (int i = 0; i < (int)ps.size(); i++)
+        if (ps[i].age >= 0 && ps[i].bin == bin) order.push_back(i);
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ps[a].seq != ps[b].seq ? ps[a].seq < ps[b].seq : ps[a].slot < ps[b].slot; });
+    if (pass == 0) std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ps[a].tex < ps[b].tex; });  // [assumed: XImage +0x38 in upload order]
+    else std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        return (ps[a].mesh >= 0 ? depth(ps[a].p) : originKey) < (ps[b].mesh >= 0 ? depth(ps[b].p) : originKey);
+    });
+    for (int i : order) {
+        const Particle &p = ps[i];
         if (p.mesh >= 0) {
+            if (pass == 0) continue;
             if (p.mesh >= (int)meshes.size()) continue;
             // MeshSet particles (0x5bd665): the mesh at the particle, scale (Size.x, Size.y, Size.x), ParticleOrientation (+ velocity) in XYZ order;
             // the particle alpha reaches no mesh, so AlphaVelocity < 0 shrinks it to 0 at end of life instead (0x5bd69e)
             const MeshSet &m = meshes[p.mesh];
             endRun();
+            rlEnableDepthTest();
             Vector2 sz = sizeAt(p, p.age, p.fadeA >= 0);
             Vector3 o = Vector3Add(p.ori, Vector3Scale(p.oriV, p.age));
             Matrix r = MatrixMultiply(MatrixMultiply(MatrixRotateX(o.x), MatrixRotateY(o.y)), MatrixRotateZ(o.z));
@@ -1295,7 +1360,8 @@ static void particles(const Camera3D &cam, int bin) {
             rlDrawRenderBatchActive(), rlDisableDepthMask(), rlDisableBackfaceCulling();  // Models::draw leaves both on after keyed shapes
             continue;
         }
-        bool body = tex[p.tex].id != 0, head = p.head && tex[GLOW].id;
+        const int mode = p.stretch > 0 ? 2 : p.add;
+        bool body = tex[p.tex].id != 0 && (state(p.tex, mode).t != 1) == (pass == 0), head = p.head && tex[GLOW].id && (state(GLOW, true).t != 1) == (pass == 0);
         if (!body && !head) continue;
         float k = p.immortal ? 0 : p.age / p.life;
         Vector2 sz = p.ramp ? sizeAt(p, p.age) : Vector2{Lerp(p.size0, p.size1, k) * 0.5f, Lerp(p.size0, p.size1, k) * 0.5f * p.aspect};
@@ -1313,7 +1379,7 @@ static void particles(const Camera3D &cam, int bin) {
         } else col.a = (unsigned char)(col.a * (1 - k) * fminf(1, k * 12 + 0.3f));
         if (head) beginRun(GLOW, 1), quad(p.p, r, u, col);
         if (!body) continue;
-        beginRun(p.tex, p.add);
+        beginRun(p.tex, mode);
         if (p.stretch > 0) {
             // TrailGraphicEntity 0x5c28f0 / 0x5c2ae0: a point per 20 ms update, edges +- n x Size.x (n across the view), u = 0 at the particle,
             // +n edge v = 1; the first point has no width; no colour set: the texture alone, additive (0x5c2d30)
@@ -1332,9 +1398,11 @@ static void particles(const Camera3D &cam, int bin) {
             }
         } else quad(p.p, r, u, col);
     }
+    }
     endRun();
     rlDrawRenderBatchActive();  // the last run is drawn here: rlEnable* do not flush, so z write and culling must still be off
-    rlEnableDepthMask();
+    EndShaderMode();
+    rlSetBlendMode(RL_BLEND_ALPHA), rlEnableDepthTest(), rlEnableDepthMask();
     rlEnableBackfaceCulling();
 }
 

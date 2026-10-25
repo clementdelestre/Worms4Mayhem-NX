@@ -22,6 +22,12 @@ int aniso = 16;  // measured free over 4x (docs/tests.md "Render budget")
 struct Entry { Shader s; int loc[6]; };  // loc: sunDir, ambient, diffuse, specular, camPos, shadowMatrix
 static std::vector<Entry> shaders;
 
+const char *ALPHA_TEST = R"(
+bool alphaPass(float a, float f, float r) {
+    return f < -0.5 || f > 6.5 || (f > 5.5 ? a >= r : f > 4.5 ? a != r : f > 3.5 ? a > r : f > 2.5 ? a <= r : f > 1.5 ? a == r : f > 0.5 && a < r);
+}
+)";
+
 const char *MVS = R"(
 attribute vec3 vertexPosition;
 attribute vec2 vertexTexCoord;

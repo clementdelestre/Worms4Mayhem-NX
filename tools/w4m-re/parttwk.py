@@ -48,27 +48,32 @@ def png(w, h, rgba):
 
 
 def sprite(bundles, name):
-    """Sprite set / bitmap descriptor -> (XImage, blend (src, dst) or None, frames [(u, v, w, h)]): descriptor -> XGroup -> XShape -> shader."""
+    """Sprite set / bitmap descriptor -> (XImage, blend (src, dst) or None, state, frames [(u, v, w, h)]): descriptor -> XGroup -> XShape -> shader.
+    state: alpha test (function, raw ref; -1 0 = none), z write, depth test function (-1 = none), the shape's transparency t (Flags bits 1-2)."""
     for x in bundles:
         desc = [i for i, (t, d) in enumerate(x.ctn, 1) if t in ('XSpriteSetDescriptor', 'XBitmapDescriptor') and x.strs[varint(d, 0)[0]] == name]
         if not desc: continue
         d = x.ctn[desc[0] - 1][1]
         _, q = varint(d, 0)
         g, _ = varint(d, q + 2)
+        t = 0
         while x.ctn[g - 1][0] not in ('XTexFont', 'XSimpleShader'):  # a bitmap descriptor names its shader directly
             r = x.decode(g, follow=False)
-            if r['_type'] == 'XShape': g = r['Shader']['ref']; continue
+            if r['_type'] == 'XShape': t = r['Flags'] >> 1 & 3; g = r['Shader']['ref']; continue
             if not r.get('Children'): print('sprite set %s: %s without children' % (name, r['_type'])); return None
             g = r['Children'][0]['ref']
         sh = x.decode(g, follow=False)
         img = x.decode(x.decode(sh['TextureStages'][0]['ref'], follow=False)['Texture']['ref'], follow=False)
-        blend = None
+        blend, test, zwrite, depth = None, (-1, 0.0), 1, -1
         for a in sh['Attributes']:
             r = x.decode(a['ref'], follow=False)
             if r['_type'] == 'XBlendModeGL': blend = (r['SourceFactor'], r['DestFactor'])
+            elif r['_type'] == 'XAlphaTest' and r['Enable']: test = (r['CompareFunction'], r['RefValue'])
+            elif r['_type'] == 'XZBufferWriteEnable': zwrite = int(r['Enable'])
+            elif r['_type'] == 'XDepthTest' and r['Enable']: depth = r['CompareFunction']
         frames = [c + s for c, s in zip(sh.get('CharCoords', [[0, 0]]), sh.get('CharSizes', [[1, 1]]))]
         if x.ctn[desc[0] - 1][0] == 'XBitmapDescriptor': frames = [[0, 0, 1, 1]]  # a bitmap is drawn whole (font glyph table unused)
-        return img, blend, frames
+        return img, blend, (*test, zwrite, depth, t), frames
     return None
 
 
@@ -117,14 +122,14 @@ def main(a):
         for n in sorted(s[7:] for s in sets if s.startswith('sprite ')):
             r = sprite(bundles, n)
             if not r: print('sprite set %s: not found' % n); continue
-            img, blend, frames = r
+            img, blend, state, frames = r
             px = img['Data']
             if img['Format'] == 0: px = [c for k in range(0, len(px), 3) for c in px[k:k + 3] + [255]]
             if img['Format'] not in (0, 1, 2): print('sprite set %s: image format %d' % (n, img['Format'])); continue
             w, h = img['Width'], img['Height']
             open(os.path.join(assets, 'fx', n.lower() + '.png'), 'wb').write(png(w, h, px[:w * h * 4]))
-            # name, blend factors (W4M BlendFactor, -1 -1 = none), frames (u v w h)
-            f.write('%s %d %d %s\n' % (n, *(blend or (-1, -1)), ' '.join('%g' % v for fr in frames for v in fr)))
+            # name, blend factors (W4M BlendFactor, -1 -1 = none), alpha test function and raw ref, z write, depth function, t, frames (u v w h)
+            f.write('%s %d %d %d %g %d %d %d %s\n' % (n, *(blend or (-1, -1)), *state, ' '.join('%g' % v for fr in frames for v in fr)))
     missing = sorted(n for n in names if n.lower() not in folded)
     print('%d effects, %d emitters, %d sets; not in PARTTWK (placeholder): %s' % (len(effects), len(emitters), len(sets), ' '.join(missing)))
 

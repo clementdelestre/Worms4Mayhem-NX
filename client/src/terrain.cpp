@@ -2263,8 +2263,7 @@ varying vec3 n;
 varying vec3 wp;
 void main() {
     vec4 c = texture2D(texture0, uv + uvOff) * colDiffuse;
-    float f = state.w, r = state.x;
-    if (f > -0.5 && f < 6.5 && !(f > 5.5 ? c.a >= r : f > 4.5 ? c.a != r : f > 3.5 ? c.a > r : f > 2.5 ? c.a <= r : f > 1.5 ? c.a == r : f > 0.5 && c.a < r)) discard;
+    if (!alphaPass(c.a, state.w, state.x)) discard;
     vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
     float r = 1.0 - max(dot(v, nn), 0.0);
     vec3 l = (diffuse * (lightK * max(dot(nn, sunDir), 0.0)) + ambient + emissive) * c.rgb + (0.15 + 0.2 * diffuse) * r * r;
@@ -2287,7 +2286,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
     static int emitLoc = -1, stateLoc = -1, uvLoc = -1, kLoc = -1;
     if (objects.empty()) return;
     if (!sh.id) {
-        sh = Lit::shader(Lit::MVS, DFS), kLoc = GetShaderLocation(sh, "lightK"), emitLoc = GetShaderLocation(sh, "emissive"), stateLoc = GetShaderLocation(sh, "state"), uvLoc = GetShaderLocation(sh, "uvOff");
+        sh = Lit::shader(Lit::MVS, (std::string(Lit::ALPHA_TEST) + DFS).c_str()), kLoc = GetShaderLocation(sh, "lightK"), emitLoc = GetShaderLocation(sh, "emissive"), stateLoc = GetShaderLocation(sh, "state"), uvLoc = GetShaderLocation(sh, "uvOff");
         ash = Lit::modelShader();
     }
     std::vector<const Entry *> ms;

@@ -15,6 +15,8 @@ struct Light {
 extern Light sun;  // set by Terrain::load from the map's "light"
 constexpr Vector3 LOW_LIGHT = {0, 0.26f, -0.78f};  // Sun.LightVector = Sun.LowLightVector, every theme (0x4e7ed0): land colour and shadow map
 extern int aniso;  // anisotropic filtering of land and decor textures (1 = off)
+// GLSL alphaPass(a, func, ref): glAlphaFunc(0x200 + func, ref) with W4M's CompareFunction (0x79e6e0), func < 0 or 7: no test
+extern const char *ALPHA_TEST;
 extern const char *MVS;  // the model vertex shader: other passes reuse it so their depths match
 // GLSL 100 source, macro-wrapped for 330; lit: refreshed by frame(); es3: GLSL ES 3.00 on GLES (sampler2DShadow, SHADOW_SAMPLER)
 Shader shader(const char *vs, const char *fs, bool lit = true, bool es3 = false);
