@@ -196,7 +196,7 @@ static bool drawObject(const Game &g, const Object &o) {
     Models::pick(clip, t);
     Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Object, (int)(&o - g.objects.data()))));  // the object's light: crates, drums, mines, sentries
     if (o.type == Object::Sentry) { bool ok = Turret::draw(g, o); return Models::pick(nullptr), Models::lightMul({1, 1, 1}), ok; }
-    float yaw = (&o - g.objects.data()) * 1.3f;
+    float yaw = o.type == Object::Mine ? (&o - g.objects.data()) * 1.3f : 0;  // crates, drums, targets: never turned (0x5c4f1d, 0x5d0e20)
     static char gfx[16];  // W4M custom crate: its CustomGraphic detail mesh (CrateGraphicEntity 0x5c4ea1), raw units like the target's
     const char *custom = o.type == Object::Crate && o.weapon < -1 ? scriptCrateGraphic(g, o.tag) : nullptr;
     for (int k = 0; custom && k < 15; k++) gfx[k] = (char)tolower((unsigned char)custom[k]);
