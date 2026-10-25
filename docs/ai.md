@@ -191,7 +191,7 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
   (`nodeH`, W4M 0x4aed70): flag (node, water/outside, blocked), lo, hi; layer 1 from 1 m under layer 0's lo, ours: it first leaves the
   land it starts in (W4M's ray from inside land is not read). Probes start at the last step over each column's highest solid voxel (`colTop`):
   same samples. Each ray is `landBelow` (W4M 0x466ae0 with refine 1): the first solid sample, 5 bisections, the last empty point [disasm], so a
-  node on flat ground is the standing worm's feet and an origin's `pos` (W4M +0x4c) is where the worm stands; `probe` (jump edges) uses the same ray.
+  node on flat ground is the standing worm's feet and an origin's `pos` (W4M +0x4c) is where the worm stands; jump edges read the stored node heights of the start (layer 0) and landing nodes (0x492510, **decompiled**).
 - Pairs (`pairOf`, W4M 0x4a8c60): each entry as a move node takes the best def within ±2 entries as its retreat; best def + 0.001·open
   wins if it beats entry 0 (the window's corner, as W4M reads it). `nextPair` paths to the move node (200 iterations) and on to the
   retreat (50); both found: an origin, both nodes blocked ±4 entries (`blockAround`, 0x4a9030); a leg not found blocks its node.
