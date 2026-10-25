@@ -2765,7 +2765,7 @@ int main(int argc, char **argv) {
         std::vector<LightShade::Spot> lights;  // the render-only entities' lights: the saucer 0x5463b0 (pooled), the bomber 0x54cab0 / 0x5897e0
         if (ufo.live) lights.push_back({LightShade::key(LightShade::Ufo, 0), {ufo.at.m12, ufo.at.m13, ufo.at.m14}, true});
         if (bomber.model) lights.push_back({LightShade::key(LightShade::Bomber, 0), {bomber.at.m12, bomber.at.m13, bomber.at.m14}, false});
-        LightShade::step(game, dt, lights);
+        LightShade::step(game, lights);
         animateWorms(game, dt, view);
         // W4M lighting pass: land and still decor cached until remeshed; clip-played decor, worms, graves, shots and objects every frame
         Lit::shadowPass(game.terrain.bounds, Terrain::meshVer, game.terrain.takeStale(), [&] { game.terrain.drawShadow(), game.terrain.drawObjects(0, true, 1); }, [&](std::vector<Vector4> &at) {

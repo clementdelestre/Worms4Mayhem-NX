@@ -12,7 +12,6 @@ std::vector<Entry> entries;
 std::unordered_map<uint32_t, size_t> at;
 size_t cursor = 0, forced = 0;  // the round-robin cursors [0x9558c0] / [0x9558bc]
 int last = 0;
-float acc = 0;
 
 void put(uint32_t key, Vector3 pos, float off, bool pool, std::vector<Entry> &out) {
     auto it = at.find(key);
@@ -40,11 +39,9 @@ float LightShade::k(uint32_t key) {
     return e.pool ? (float)std::clamp((int)(e.cur * 6), 0, 5) / 5 : e.cur;  // 0x47c800: pool level = int(intensity x fade x 6) clamped to 0..5, light level / 5
 }
 
-void LightShade::step(const Game &g, float dt, const std::vector<Spot> &extra) {
+void LightShade::step(const Game &g, const std::vector<Spot> &extra) {
     if (g.clock < last) entries.clear(), at.clear(), cursor = forced = 0;
     last = g.clock;
-    if ((acc += dt) < 0.02f) return;  // the per-frame task queue's 20 ms (0x68d57a)
-    acc = fmodf(acc, 0.02f);
     // the entities with a light, W4M's creators of 0x48ebe0: worm 0x5a49a0 (own light, offset 10 0x5a4ac8), crates 0x5c4d10 / oil drums
     // 0x5d0f40 (pooled), mines 0x57cad0 / sentries 0x56b2d0 / graves 0x5ce7e0 / shots 0x57cad0 / the mine factory 0x5cf1e0 / bubble machines 0x54e720 / the girder preview 0x5588c0 / telepads 0x5d2920
     // (own, offset 0), the saucer 0x5463b0 (pooled)
