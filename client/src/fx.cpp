@@ -924,12 +924,7 @@ int count() { return (int)ps.size(); }
 static void abductee(const GameEvent &e) {
     auto glow = [&](Vector3 p, Vector3 v, float delay, float life, float s0, float s1, Color c, unsigned char t = GLOW) { add({p, v, -delay, life, s0, s1, 0, rnd(-1, 1), 0, 2, c, t, true}); };
     auto column = [&](float y0, float h, float w, float life, Color c) { for (float y = y0; y < y0 + h; y += w) glow(Vector3Add(e.pos, {0, y, 0}), {}, 0, life, w, w * 0.5f, c); };
-    if (e.kind == GameEvent::Poof)  // 20 white to grey puffs, 0.7 +- 0.3 s
-        for (int i = 0; i < 20; i++) {
-            Vector3 d = rndDir();
-            add({Vector3Add(e.pos, {0, 0.15f, 0}), {d.x * 3, rnd(0, 1), d.z * 3}, 0, rnd(0.4f, 1), 0.3f, 0.05f, 0, rnd(-8, 8), -0.5f, 3, {(unsigned char)rnd(80, 255), 0, 0, 230}, PUFF, false});
-            ps.back().c.g = ps.back().c.b = ps.back().c.r;
-        }
+    if (e.kind == GameEvent::Poof) start("WXP_Poof_VLarge", e.pos);
     if (e.kind == GameEvent::Zap) {  // AbdTelep_Central (3 x 45 units), Stars / Stars2 (WXSprite26), Glow (3 x 90 units, alpha 0.1), GloTall (40 x 250 units)
         for (int i = 0; i < 3; i++) glow(e.pos, {}, 0, rnd(0.6f, 1.8f), rnd(1.75f, 2.75f), 0, {153, 255, 153, 255});
         for (int i = 0; i < 13; i++) glow(e.pos, Vector3Scale(rndDir(), rnd(1, 4)), i < 8 ? 0.02f : 0, rnd(0.5f, 1.1f), rnd(0.08f, 0.15f), 0.02f, {128, 255, 128, 255}, SPARK);
@@ -939,23 +934,6 @@ static void abductee(const GameEvent &e) {
     if (e.kind == GameEvent::AbdDamage) {  // Abd_DamageRand: 2 beams 10 x 600 units centred 300 units up, randomised 500; AbdDamageSputt: 30 +- 60 unit flickers for 0.5 s
         for (int i = 0; i < 2; i++) column(rnd(-12.5f, 12.5f), 30, 0.6f, 0.6f, {26, 255, 26, 77});
         for (int i = 0; i < 5; i++) glow(e.pos, {}, i * 0.1f, 0.1f, rnd(1.5f, 4.5f), 0, {51, 230, 51, 255});
-    }
-}
-
-// W4M WXP_BubbleMachineExpire at the machine (0x54e6a0). Poof / ExpBubb: 10 thrown ~8 units out (AlternateAcceleration
-// N 6500, S 2e-6: a drag); Plume / BubbPlum: 7 and 14 rising 0.25 m/s, accelerating up (Mass < 0), 2 +- 0.6 s.
-static void bubblePop(Vector3 p) {
-    for (int i = 0; i < 20; i++) {
-        bool soap = i >= 10;
-        Vector3 d = soap ? rndDir() : Vector3Normalize({rnd(-1, 1), 0.15f, rnd(-1, 1)});
-        Color c = soap ? WHITE : ColorLerp({102, 102, 102, 255}, {255, 153, 128, 255}, rnd());
-        add({p, Vector3Scale(d, soap ? 6.3f : 5.2f), 0, rnd(1.0f, 1.4f), 0.15f, 0, 0, 0, 0, 13, c, (unsigned char)(soap ? SOAP : PUFF), false});
-    }
-    for (int i = 0; i < 21; i++) {
-        bool soap = i >= 7;
-        Vector3 o = {rnd(-0.075f, 0.075f), 0.05f + rnd(-0.05f, 0.05f), rnd(-0.075f, 0.075f)};
-        Color c = soap ? WHITE : ColorLerp({230, 204, 153, 255}, {255, 102, 153, 255}, rnd());
-        add({Vector3Add(p, o), {0, 0.25f, 0}, soap ? -0.2f : 0, rnd(1.4f, 2.6f), rnd(0.05f, 0.15f), 0, 0, 0, -0.5f, 0, c, (unsigned char)(soap ? SOAP : PUFF), false});
     }
 }
 
@@ -995,31 +973,13 @@ void donkeyAriel(Vector3 at) {  // WXP_CrateSpawnLGRings: 30 sprites, 22 units, 
 
 void event(const GameEvent &e) {
     abductee(e);
-    if (e.kind == GameEvent::BubblePop) bubblePop(e.pos);
+    if (e.kind == GameEvent::BubblePop) start("WXP_BubbleMachineExpire", e.pos);  // at the machine (0x54e6a0)
     if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) {
         shake = fmaxf(shake, e.kind == GameEvent::BigBoom ? 0.6f : 0.18f);  // its ExplosionMessage shakes the camera like any blast
         if (e.fx) start(e.fx, e.pos);
         else if (e.weapon >= 0 && WEAPONS[e.weapon].kind == Kind::Shotgun) gunBlast(e.pos);  // its only visual is WormCollisionFX / LandCollisionFX
     } else if (e.kind == GameEvent::Collect) {  // PARTTWK WXP_PickupFX (the only pickup effect the exe spawns): poof + sparklies + glow
-        Vector3 c = Vector3Add(e.pos, {0, 0.3f, 0});
-        add({c, {}, 0, 0.3f, 0.8f, 2.0f, 0, 0, 0, 0, {255, 215, 70, 255}, GLOW, true});
-        for (int i = 0; i < 6; i++)  // WXP_PickupGlow: additive (SrcAlpha, One) at alpha 0.3, 30 units, 350 +-100 ms
-            add({Vector3Add(c, Vector3Scale(rndDir(), 0.25f)), {}, 0, rnd(0.25f, 0.45f), rnd(1.25f, 1.75f), 0.5f, 0, 0, 0, 0, {128, 230, 255, 77}, GLOW, true});
-        for (int i = 0; i < 8; i++) {
-            Vector3 d = rndDir();
-            d.y = fabsf(d.y) * 0.5f + 0.1f;
-            float t = rnd(0, 0.6f);  // white -> (0.3, 0.85, 1) ramp, sampled per cloud
-            add({Vector3Add(c, Vector3Scale(d, 0.2f)), Vector3Scale(d, rnd(2, 3.5f)), -rnd(0.04f, 0.1f), rnd(0.8f, 1.1f), 0.3f, 1.4f, 0, rnd(-1, 1), -0.5f, 3,
-                 {(unsigned char)(255 - 178 * t), (unsigned char)(255 - 38 * t), 255, 190}, PUFF, false});
-        }
-        for (int i = 0; i < 24; i++) {
-            Vector3 d = rndDir();
-            d.y = fabsf(d.y) * 0.8f + 0.2f;
-            bool ray = i % 2;
-            Color col = ray ? Color{180, 245, 255, 255} : rnd() < 0.5f ? Color{51, 255, 255, 255} : Color{220, 255, 255, 255};
-            add({c, Vector3Scale(Vector3Normalize(d), ray ? rnd(9, 14) : rnd(4, 8)), 0, ray ? rnd(0.3f, 0.45f) : rnd(0.6f, 0.9f), ray ? 0.3f : 0.32f, 0.08f, 0,
-                 rnd(-6, 6), ray ? 0.0f : 3.0f, ray ? 4.0f : 2.5f, col, (unsigned char)(ray ? TRAIL_W : STAR), true, ray ? 0.07f : 0});
-        }
+        start("WXP_PickupFX", Vector3Add(e.pos, {0, 0.3f, 0}));
     }
 }
 
