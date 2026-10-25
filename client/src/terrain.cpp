@@ -1332,6 +1332,16 @@ static void exactVertex(Vector3 o, const Vector3 *q, const Vector3 *n, int m, Ve
     *nrm = Vector3LengthSqr(ns) > 1e-6f ? Vector3Normalize(ns) : n[0];  // opposite faces (a slit) cancel out
 }
 
+// Trilinear weight over a vertex's 8 grid points (bit 0 x, 1 y, 2 z), the solid ones only: an air point carries none and must not dilute a surface vertex
+float gridWeight(const float c[8], const float w[8], Vector3 f) {
+    float sum = 0, tot = 0;
+    for (int q = 0; q < 8; q++) {
+        const float t = (q & 1 ? f.x : 1 - f.x) * (q & 2 ? f.y : 1 - f.y) * (q & 4 ? f.z : 1 - f.z) * (c[q] > 0);
+        sum += w[q] * t, tot += t;
+    }
+    return tot > 0 ? sum / tot : 0;
+}
+
 void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
     int x0 = ci % CX * CS, y0 = ci / CX % CY * CS, z0 = ci / (CX * CY) * CS;
     constexpr int S = MS, L = ML;  // cells x0-1 .. x0+CS-1, their corners x0-1 .. x0+CS
@@ -1445,15 +1455,16 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
         return Vector2{(p.x - origin.x + 75) * k, (p.z - origin.z + 75) * k};
     };
     auto fade = [&](Vector3 p) { return Clamp(roundf(((p.y - origin.y) * 20 + 25.5f) * 10), 0, 255) / 255; };
-    // B's weight at cell n's vertex: its 8 grid points' weights, trilinear at the vertex [ours: W4M's vertices are its cells' corners,
-    // midpoints and centres, 0x457130; ours are one per grid cell]
+    // B's weight at cell n's vertex: its 8 grid points' weights [ours: W4M's vertices are its cells' corners, midpoints and centres, 0x457130; ours are one per grid cell]
     auto weight = [&](int n) {
         const int i = n % S, j = n / S % S, k = n / (S * S);
         const Vector3 f = {Clamp(cp[n].x * IVOX - (x0 - 1 + i), 0, 1), Clamp(cp[n].y * IVOX - (y0 - 1 + j), 0, 1), Clamp(cp[n].z * IVOX - (z0 - 1 + k), 0, 1)};
-        float w = 0;
-        for (int q = 0; q < 8; q++)
-            w += wt[((k + (q >> 2)) * L + j + (q >> 1 & 1)) * L + i + (q & 1)] * (q & 1 ? f.x : 1 - f.x) * (q & 2 ? f.y : 1 - f.y) * (q & 4 ? f.z : 1 - f.z);
-        return w / 255;
+        float cs[8], ws[8];  // cs: densities, ws: weights
+        for (int q = 0; q < 8; q++) {
+            const int g = ((k + (q >> 2)) * L + j + (q >> 1 & 1)) * L + i + (q & 1);
+            cs[q] = c[g], ws[q] = wt[g];
+        }
+        return gridWeight(cs, ws, f) / 255;
     };
     // a vertex of colour c (alpha: the face kind); a: the pass's alpha, for the meshes that carry uv2
     auto emit = [&](Builder &b, Vector3 p, Vector3 nr, Color c, Face kind, Vector2 uv, float a) {

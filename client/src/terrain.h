@@ -11,6 +11,7 @@
 struct ChunkGeo;
 
 // Destructible voxel landscape: density field (>0 = solid, ~metres to surface), meshed per chunk (dual contouring where the land is exact).
+float gridWeight(const float c[8], const float w[8], Vector3 f);  // second-material weight at a vertex (bit 0 x, 1 y, 2 z corners), solid corners only
 struct Terrain {
     static constexpr int CS = 32;
     static constexpr float WATER = 3.0f, VOX = 0.25f, IVOX = 4, SUB = 0.125f;  // SUB: sim sub-step and march length, half a voxel

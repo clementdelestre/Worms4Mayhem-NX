@@ -1920,6 +1920,8 @@ static void checkSecondMaterial() {
     for (size_t i = 0; i < t.d.size(); i++)
         if (t.mats[i] == 65) hm++, masked += t.wgt[i] > 0, assert(t.sec[i] == 66);
     assert(hm > 0 && masked > 0 && masked < hm);
+    const float dens[8] = {1, 1, -1, -1, 1, 1, -1, -1}, w[8] = {255, 255, 0, 0, 255, 255, 0, 0}, none[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    assert(fabsf(gridWeight(dens, w, {0.5f, 0.5f, 0.5f}) - 255) < 1e-3f && gridWeight(none, w, {0.5f, 0.5f, 0.5f}) == 0);  // a surface vertex keeps its column's weight
 }
 
 // W4M 0x46a070 on a ray starting in land: the start cell's face nearest in lattice fractions (here -x at 0.1, +y at 0.3, while +y is
