@@ -256,7 +256,8 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
            code: u16, perm: bool, codes: &mut Vec<[u8; 4]>, uvf: &mut Vec<(usize, M4)>) {
     let Some(x) = px.get(&k) else { return };
     if depth > 64 { return; }
-    let perm = perm || x.perm;  // flag saved and restored around each frame's children (0x476683): a PERM frame's subtree
+    // flag saved and restored around each frame's children (0x476683): a PERM frame's subtree; the root's PERM is the heightmap's (0x477184)
+    let perm = perm || (!root && x.perm);
     let code = match x.code { Some(c) if code == 0 => { codes.push(c); codes.len() as u16 } _ => code };
     let (w, wn) = if root { (*parent, *parent) } else { (mul(parent, &local(x, true)), mul(parent, &local(x, false))) };
     let [sx, sy, sz] = x.size;
@@ -856,6 +857,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         .and_then(|f| f.get("Initialise").and_then(|i| i.calls.iter().rev().find(|(c, a)| c == "SetData" && a.first() == Some(&lua::Val::Str("Particle.Rain.Prob".into())))
             .and_then(|(_, a)| match a.get(1) { Some(lua::Val::Num(n)) => Some(*n), _ => None })))
         .map_or(String::new(), |p| format!("  \"rain_prob\": {p},\n"));
+    // Land.Import 0x477184: a root named ...PERM... sets the heightmap's +0x78 bit 1, which 0x463c90 tests before lowering it
+    let rain = if hmp.is_some() && px.get(&xom.root).is_some_and(|r| r.perm) { rain + "  \"hm_perm\": true,\n" } else { rain };
     let blk: Vec<String> = blocks.iter().map(|b| format!("[{:.2},{:.2},{:.2},{:.2}]", b[0] + ox, b[1] + oz, b[2] + ox, b[3] + oz)).collect();
     // per code: its cells (the .cells HEX ids) and the voxels (index runs) only they hold; several frames may share a code
     let mut by_code: Vec<([u8; 4], Vec<usize>, Vec<usize>)> = Vec::new();

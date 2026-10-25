@@ -144,6 +144,7 @@ struct Terrain {
     double loadMs[3] = {};  // last load: voxels (.vox + .thin), cells, navgrid (Game::start); for the MAP log line
     Vector3 origin{};  // W4M world origin in map metres (map "origin"), for the sky
     float rainProb = -1;  // >= 0: the level script's Particle.Rain.Prob (map "rain_prob")
+    bool hmPerm = false;  // W4M heightmap +0x78 bit 1 (map "hm_perm"): blasts leave the heightmap (0x463ce3)
 
     bool load(const std::string &map, unsigned seed);  // empty or missing map => generate(seed)
     static std::string mapTheme(const std::string &map);  // the map file's theme without loading it ("" if none)

@@ -208,7 +208,7 @@ std::string Terrain::mapTheme(const std::string &map) {
 bool Terrain::load(const std::string &map, unsigned seed) {
     remeshWait(), mesherForget(this);  // the old land's chunks
     loadMs[0] = loadMs[1] = loadMs[2] = 0;
-    objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1;
+    objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), markers.clear(), blocks.clear(), emitters.clear(), lights.clear(), rainProb = -1, hmPerm = false;
     thinOnly.clear(), thinVox.clear(), thinAt.clear(), codes.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear(), permPt.clear(), framePerm.clear();
     sharp = SharpLand{};
     theme.clear(), time = "day", mats.clear(), uvOf.clear(), landUV.clear(), palTop.clear(), palSide.clear(), texFiles.clear(), texRepeat.clear();
@@ -355,6 +355,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
     }
     if (j["origin"].type == Json::Arr) origin = vec(j["origin"], origin);
     rainProb = j["rain_prob"].f(-1);
+    hmPerm = j["hm_perm"].is();
     return true;
 }
 
@@ -509,7 +510,7 @@ void Terrain::mergeBlocks() {
 void Terrain::generate(unsigned seed) {
     setGrid(352, 256, 352);
     thinOnly.clear(), thinAt.clear(), wcells.clear(), wframes.clear(), wdead.clear(), hmv.clear(), blobs.clear(), wbytes.clear(), shareCnt.clear(), permPt.clear(), framePerm.clear();
-    theme.clear(), mats.clear(), uvOf.clear(), landUV.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1;
+    theme.clear(), mats.clear(), uvOf.clear(), landUV.clear(), texFiles.clear(), texRepeat.clear(), objects.clear(), frameCells.clear(), frameAlive.clear(), objModels.clear(), blocks.clear(), emitters.clear(), lights.clear(), origin = {NX * VOX / 2, WATER, NZ * VOX / 2}, rainProb = -1, hmPerm = false;
     reset(-127);
     float cx = NX * VOX / 2, cz = NZ * VOX / 2;
     island(6, 10, 4, cx * 0.8f, seed);
@@ -695,7 +696,7 @@ bool Terrain::carve(Vector3 c, float radius, Vector3 n) {
     int box[6] = {NX, NY, NZ, -1, -1, -1};  // changed voxels and listed cells: only their chunks remesh
     bool changed = false;
     const bool hm = sharp.on && !sharp.top.empty();
-    if (hm) blastHeightmap(c, radius, n), changed = lowerHeightmap(c, radius, box);
+    if (hm && !hmPerm) blastHeightmap(c, radius, n), changed = lowerHeightmap(c, radius, box);
     sharp.carve(d, c, radius, box, hm);
     int lo[3], hi[3];
     float cc[3] = {c.x, c.y, c.z}, dim[3] = {(float)NX, (float)NY, (float)NZ};

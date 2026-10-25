@@ -5877,6 +5877,20 @@ static void checkClearCodedDead() {
     assert(t.edits == e0 && t.blobs.nfree == LandBlobs::POOL);
 }
 
+// W4M Land.Import 0x477184: a root named ...PERM... (MineAllMine "PERM Main") makes the heightmap PERM, not the frames under it
+// (0x47712d clears the frames' flag): blasts leave the heightmap (0x463ce3) and take the root's other cells
+static void checkRootPerm() {
+    Terrain t;
+    assert(t.load("MineAllMine", 1) && t.hmPerm && !t.sharp.top.empty());
+    assert(std::count_if(t.wcells.begin(), t.wcells.end(), [](const Terrain::WCell &w) { return !w.perm; }) > (int)t.wcells.size() / 2);
+    size_t k = 0;
+    while (k < t.sharp.top.size() && std::isnan(t.sharp.top[k])) k++;
+    assert(k < t.sharp.top.size());
+    const std::vector<float> was = t.sharp.top;
+    t.carve({(k % Terrain::NX) * Terrain::VOX, t.sharp.top[k], (k / Terrain::NX) * Terrain::VOX}, 2, {0, 1, 0});
+    assert(!memcmp(t.sharp.top.data(), was.data(), was.size() * sizeof(float)));
+}
+
 // The imported lattice frames (landuv: matrix, EdgeOffsets, HeightMap, voxel bits) put each W4M cell's centre (0x467aa0) at its own
 // lattice cell's centre through 0x468200, on a map whose frames have both EdgeOffsets and HeightMaps
 static void checkLatticeFrames() {
@@ -6080,6 +6094,7 @@ int main() {
     checkLowLedges();
     checkStartNormal();
     checkLatticeFrames();
+    checkRootPerm();
     checkVault();
     checkNarrowSlot();
     checkW4MWalkRules();
