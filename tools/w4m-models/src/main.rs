@@ -266,7 +266,9 @@ fn exact(t: &str, b: &[u8], mut p: usize) -> Option<usize> {
         "XCustomDescriptor" => { v(&mut p); p + 4 }
         "XMeshDescriptor" => { v(&mut p); p += 2; v(&mut p); p + 2 }
         "XSpriteSetDescriptor" => { v(&mut p); p += 2; v(&mut p); p }
-        "XTextDescriptor" => { v(&mut p); p += 1; v(&mut p); v(&mut p); let k = u16le(b, p); p + 4 + 6 * k }
+        // W4M runtime Serialize (vtable +0x10): ResourceId, SectionId u16, TextGroup, NumChars u32, per char Index, MappedVal, Unicode u16
+        "XTextDescriptor" => { v(&mut p); p += 2; v(&mut p); let k = u32le(b, p) as usize; p + 4 + 6 * k }
+        "XNullDescriptor" => { v(&mut p); p + 2 }
         "XExpandedAnimInfo" => p + 7,
         "XAnimInfo" => p + 5,
         "XGraphSet" => {
@@ -1237,6 +1239,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn text_descriptor() {
+        // section 0x8103 (its high byte no varint) and a two-byte ref: name, section, ref 0x80 0x01, 2 chars
+        let b = [1, 0x03, 0x81, 0x80, 0x01, 2, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 0xaa];
+        assert_eq!(exact("XTextDescriptor", &b, 0), Some(b.len() - 1));
+        assert_eq!(exact("XNullDescriptor", &[1, 4, 0, 0xaa], 0), Some(3));
+    }
     #[test]
     fn bezier_and_decompose() {
         // flat tangents: a 0 -> 1 ease through 0.5, held after the last key

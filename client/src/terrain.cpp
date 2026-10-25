@@ -457,8 +457,8 @@ bool Terrain::loadVoxels(const std::string &path) {
 }
 
 // W4M GLG: a vertex's uv is the lattice point (before EdgeOffset and the frame matrix, 0x4566d0) dotted with the frame's floor rows
-// (top and bottom faces) or wall rows, plus the offset (0x446be0, 0x457130); the chunk's RoofFloor / WallTextureCentre it subtracts
-// is not traced [assumed: whole repeats]. Inverts the EdgeOffset lerp of 0x4566d0 per layer.
+// (top and bottom faces) or wall rows, plus the offset (0x446be0, 0x457130; the chunk's texture centres are 0). Inverts the EdgeOffset
+// lerp of 0x4566d0 per layer.
 Terrain::Face Terrain::landTex(int f, Vector3 p, Vector3 n, int kind, Vector2 *uv) const {
     *uv = {0, 0};
     if (f <= 0 || f > (int)landUV.size()) return TRIPLANAR;
