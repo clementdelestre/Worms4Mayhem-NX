@@ -49,6 +49,7 @@ const char *hatLabel(const std::string &id);  // W4M's name of an attachment id,
 const std::vector<std::string> &hatIds();     // "" (none), then the WXFE.A hats in W4M order
 std::vector<std::string> speechIds();         // "vo" + each voices/ bank
 int voiceBankOf(const std::string &speech);   // the Audio bank of a W4M speech id, -1 none (team default)
+Color rowOutline(int state);  // text outline of a 6 / 9 / 7 bordered list row: state 0 normal, 1 highlighted, 2 disabled
 std::string mapTitle(const std::string &map);  // display name: W4M's level name, else from the file name
 const char *wormName(const GameConfig &c, int team, int i);
 // pad -1 = any pad. D-pad buttons also fire on left-stick flicks and auto-repeat while held.

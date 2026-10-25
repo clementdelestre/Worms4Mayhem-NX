@@ -1219,7 +1219,7 @@ static const Color GC_BUTTON_YELLOW[2] = {{255, 255, 234, 255}, {255, 241, 120, 
                    GC_SUBHEADER_BLUE[2] = {{128, 210, 255, 255}, {255, 255, 255, 255}}, GC_BOOK_BROWN[2] = {{93, 51, 0, 200}, {93, 51, 0, 200}},
                    GC_POPUP_RED[2] = {{148, 0, 0, 255}, {148, 0, 0, 255}}, GC_SCROLLTEXT[2] = {{0, 69, 109, 110}, {0, 69, 109, 110}},
                    GC_WHITE[2] = {WHITE, WHITE};
-static const Color BC_BLACK = BLACK, BC_NONE = {0, 0, 0, 0}, BC_BOOK_EDGE = {255, 255, 255, 80}, BC_SCROLLTEXT = {109, 151, 175, 32};  // WXFE_BackgroundColours (0x754dc0): the text outline
+static const Color BC_BLACK = BLACK, BC_WHITE = WHITE, BC_NONE = {0, 0, 0, 0}, BC_BOOK_EDGE = {255, 255, 255, 80}, BC_SCROLLTEXT = {109, 151, 175, 32};  // WXFE_BackgroundColours (0x754dc0): the text outline
 
 // W4M TextAnim (docs/w4m/frontend.md "TextBox layout"): per glyph a High / Low pair of the HUD.FontAnim clips, the groups cycling by glyph, the
 // alternative by the LCG; (dy in FE units, y up, scale). kind: 1 LargeWobble, 2 SmallWobble, 3 TitleRandom, 4 MediumWobble
@@ -2018,6 +2018,9 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
 
 // ---------------------------------------------------------------- local match setup: Teams / Map / Rules (docs/frontend-setup.md)
 
+// text outline of a row in a list bordered 6 / 9 / 7 (CreateAGameList, TeamPage3List, WXNET lists): ColourBACK 2 / 3 / 2 [data MENUTWKX]
+Color rowOutline(int state) { return state == 1 ? BC_WHITE : BC_BLACK; }
+
 namespace {
 const int YB = GAMEPAD_BUTTON_RIGHT_FACE_LEFT;
 
@@ -2153,7 +2156,7 @@ void feRow(Rectangle r, int state, const char *label, const char *value, bool ar
     Texture2D a = tex("fe/textitem_arrows");
     Color ac = hi ? Color{42, 22, 0, 255} : GC_LIST_DATA_ORANGE[0];
     if (arrows && a.id) DrawTexturePro(a, {32, 0, 32, 64}, {right - aw, cy - ah / 2, aw, ah}, {}, 0, ac), right -= aw + 6;
-    Color edge = hi ? BC_NONE : BC_BLACK;  // black on the orange bar without the outline [assumed: readability]
+    Color edge = rowOutline(state);
     if (icon) feIcon(icon->sheet, icon->cols, icon->rows, icon->cell, {right - vw, cy - vw / 2, vw, vw});
     else marquee(value, {right - vw, cy - px, vw, 2 * px}, px, vg, 2, edge, now());  // a long value scrolls, never shrinks [user-requested]
     right -= vw;
@@ -2604,7 +2607,7 @@ void Frontend::cardList(Rectangle d, const Pop &c) {
         inRow(last, [&] {  // Close: W4M's popup text button (ConfirmList row 26: centred, List_Lable_Blue, Solid_White + charcoal brush on the highlight)
             const float px = 22, tw = feWidthPx(lab[last], px), cy = top + last * rh + 19, cx = d.x + d.width / 2;
             if (c.row == last) brush({cx - tw / 2 - px * 0.45f, cy - px * 0.55f, tw + px * 0.9f, px * 1.15f});
-            feTextPx(lab[last], cx, cy, px, c.row == last ? GC_WHITE : GC_LIST_LABLE_BLUE, 1, c.row == last ? BC_NONE : BC_BLACK);
+            feTextPx(lab[last], cx, cy, px, c.row == last ? GC_WHITE : GC_LIST_LABLE_BLUE, 1, BC_BLACK);  // ConfirmList ColourBACK 2 in every state
         });
         return;
     }
@@ -3060,7 +3063,7 @@ void Frontend::editor(PadIn in, float t) {
                     Tilt tl(q, D[i][2]);
                     const bool hi = i == ed.row;
                     edBox(q, 205, 27.8f, hi ? "fe/border_highlight" : "fe/border_normal");
-                    edText(fieldLabel(P3[i], getField(P3[i])).c_str(), q, 20, hi ? GC_BLACK : GC_TEXTBOX_YELLOW, 1, 180, hi ? BC_NONE : BC_BLACK);
+                    edText(fieldLabel(P3[i], getField(P3[i])).c_str(), q, 20, hi ? GC_BLACK : GC_TEXTBOX_YELLOW, 1, 180, rowOutline(hi));
                 }
                 rlPopMatrix();
             }

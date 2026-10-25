@@ -460,5 +460,9 @@ int main() {
         f.captureState("weapon1_0_next");
         assert(f.activated() == Audio::Sfx::FePage);
     }
+    {  // a highlighted row of the orange-bar lists keeps a white outline (CreateAGameList ColourBACK 2 / 3 / 2), black otherwise
+        Color n = Ui::rowOutline(0), h = Ui::rowOutline(1), d = Ui::rowOutline(2);
+        assert(n.r == 0 && n.a == 255 && h.r == 255 && h.g == 255 && h.b == 255 && h.a == 255 && d.r == 0 && d.a == 255);
+    }
     puts("ui_check ok");
 }
