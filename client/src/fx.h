@@ -19,12 +19,8 @@ void clear();
 void event(const GameEvent &e);
 void fireworks(Vector3 centre, float radius, float top);  // victory show (W4M GameOverLogicEntity: 4 s wait, 5 s) over Land.Center, Radius, MaxHeight
 void trail(const Projectile &s, Vector3 at, float dt, Vector3 fxAt);  // once per frame per live projectile, at: where it is drawn (Projectile::shown), fxAt: its model's FxLocator in the world
-void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire = false);  // one ambient particle (rises, slows down)
 void streak(Vector3 head, Vector3 tail, float halfWidth, float tailWidth);  // one W4M Particle.TrailSprite_W ribbon, additive, this frame
-void wingTrail(Vector3 p);  // one puff of W4M WXP_PlaneWingTrails (Bomber.EffectName)
 void donkeyAriel(Vector3 at);  // W4M WXP_CrateSpawnLARGE rings where the Concrete Donkey appears
-void ariel(Vector3 p);  // W4M WXP_AirstrikeArielA: the air strike bomb's one-off puff at its launch
-void dud(Vector3 p);  // mine fizzled: W4M ExpiryFx WXP_Wep_MineDudEffect
 void soap(Vector3 p);  // one W4M WXP_Bubbles_Small soap bubble, from the Bubble Trouble machine
 void jetStart(Vector3 at);  // W4M WAE_Jetpack PackAccessory.Trigger 0x58ce57: WXP_JetpackStartRing + WXP_JetPackStartBase, worm + 7 units
 void jetStop();  // its StartBase emitter is killed once the thrust stops (0x58cc94); the particles live on
@@ -37,8 +33,8 @@ void scriptedOff(int handle, bool now);
 void shakeFor(float mag, float secs);  // Camera.ShakeStart: Camera.Shake.Magnitude (m per axis), fading linearly over Length
 // Flood (FloodLogicEntity): rain and storm cloud at `at` (Land.Center, Land.MaxHeight + 800 units) 1 s on, the rain stopped `stop` s after the call
 void flood(Vector3 at, float stop);
-void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet);
-void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble);  // upright W4M "?" (WXSprite22) or bubble (WXSprite23)  // additive W4M jetfire (jet) or toonfire sprite
+void flame(Vector3 p, Vector3 v, float life, float size0, float size1);  // additive W4M toonfire sprite
+void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble);  // upright W4M "?" (WXSprite22) or bubble (WXSprite23)
 void ufo(Vector3 at, Vector3 nozzle, Vector3 gate, Vector3 ground, float e, float g, int stage, float dt);  // Alien Abduction: e s into the sequence (its beam cues), g into the warp gate; stage: Game::ABD_*
 void update(float dt);
 Color fog();  // horizon colour: clear colour and terrain/water fog

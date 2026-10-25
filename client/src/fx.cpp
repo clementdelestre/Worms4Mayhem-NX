@@ -29,7 +29,7 @@ namespace Fx {
 float shake = 0;
 
 namespace {
-enum Tex { GLOW, PUFF, FIRE, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, JET, TOON, CROSS, QUESTION, BUBBLE, SOAP, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
+enum Tex { GLOW, PUFF, FIRE, SPARK, TRAIL_R, TRAIL_B, STAR, TRAIL_W, TOON, CROSS, QUESTION, BUBBLE, SOAP, WHITEOUT, TEX_COUNT };  // also the draw order within a blend pass
 const char *TEX_FILES[] = {"wxp_sprite_001", "wxp_sprite_004", "wxp_sprite_030", "wxp_sprite_026", "wxp_trailsprite_r", "wxp_trailsprite_b", "wxp_sprite_007", "wxp_trailsprite_w"};
 const int MAX = 1024;
 float waterY = 0;  // Water.Level, m
@@ -751,8 +751,8 @@ void quad(Vector3 p, Vector3 r, Vector3 u, Color c) {
 bool preload(double until) { return uploadData(until); }
 
 void load() {
-    for (int i = 0; i < JET; i++) tex[i] = loadTex("fe", TEX_FILES[i], false);
-    tex[JET] = loadTex("hud", "jetfire", false), tex[TOON] = loadTex("hud", "toonfire", false), tex[CROSS] = loadTex("hud", "wxp_sprite_006", false);
+    for (int i = 0; i < TOON; i++) tex[i] = loadTex("fe", TEX_FILES[i], false);
+    tex[TOON] = loadTex("hud", "toonfire", false), tex[CROSS] = loadTex("hud", "wxp_sprite_006", false);
     tex[QUESTION] = loadTex("hud", "wxp_sprite_022", false), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", false);  // W4M Particle.WXSprite22/23
     tex[SOAP] = loadTex("hud", "wxp_sprite_011", false);  // Particle.WXSprite11, the soap bubbles
     tex[WHITEOUT] = loadTex("fe", "whiteout", false);  // Particle.Whiteout: flat white, additive
@@ -1098,34 +1098,6 @@ void trail(const Projectile &s, Vector3 at, float dt, Vector3 fxAt) {
     for (int i = batches(0.12f, 2.5f); i > 0; i--) emit(R_BAZ_PUFF, 100, 4, 1, 0.2f, 9.5f, 1.5f, 0.2f, 0.2f, 0.1f, 0.3f, false, PUFF);
 }
 
-void puff(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, bool fire) {
-    add({p, v, 0, life, size0, size1, 0, rnd(-1, 1), fire ? -1.0f : -0.3f, 0.6f, c, (unsigned char)(fire ? FIRE : PUFF), fire});
-}
-
-// WXP_PlaneWingTrails. W4M scales ParticleVelocity and SizeVelocity by 0.01 per ms (0x5b97d0): drift 0..0.2 m/s,
-// 4 +-0.75 units shrinking 0.5 m/s, so gone in ~0.4 s, well before ParticleLife 2 s.
-void wingTrail(Vector3 p) {
-    float s = rnd(0.1625f, 0.2375f);
-    add({p, {rnd(0, 0.2f), rnd(-0.1f, 0.1f), rnd(0, 0.2f)}, 0, 0.04f + s / 0.5f, s, 0, 0, rnd(-1, 1), 0, 0, {200, 205, 190, 255}, PUFF, false});
-}
-
-// WXP_AirstrikeArielA: EmitterLifeTime 1 ms, so one burst of its MaxParticles 10 (0x5bbfa0); 0.08 m/s, shrinking 0.5 m/s.
-void ariel(Vector3 p) {
-    for (int i = 0; i < 10; i++)
-        add({p, Vector3Scale(rndDir(), 0.08f), 0, 0.4f, 0.2f, 0, 0, rnd(-8, 8) * 0.06f, 0, 0, ColorLerp({51, 51, 77, 220}, {128, 115, 140, 220}, rnd()), PUFF, false});
-}
-
-void dud(Vector3 p) {
-    auto lilac = [](float t) { return ColorLerp({242, 230, 255, 220}, {128, 110, 145, 220}, t); };  // ParticleColor ramps of both emitters
-    for (int i = 0; i < 20; i++) {  // WXP_MineDudPoof: 20 puffs blown out flat (normalised xz velocity), 1.2 +-0.2 s, shrinking
-        float a = rnd(0, 2 * PI), v = rnd(1.5f, 3);
-        add({p, {cosf(a) * v, rnd(0, 0.3f), sinf(a) * v}, 0, rnd(1.0f, 1.4f), 0.6f, 0.05f, 0, rnd(-8, 8), -0.5f, 3, lilac(rnd()), PUFF, false});
-    }
-    for (int i = 0; i < 10; i++)  // WXP_MineDud: one wisp per 100 ms for 1 s, rising, 2 +-0.6 s
-        add({Vector3Add(p, {rnd(-0.08f, 0.08f), rnd(0, 0.1f), rnd(-0.08f, 0.08f)}), {rnd(-0.1f, 0.1f), rnd(0.8f, 1.2f), rnd(-0.1f, 0.1f)}, -0.1f * i, rnd(1.4f, 2.6f), 0.5f, 0.2f, 0,
-             rnd(-4, 4), -0.1f, 0.5f, lilac(rnd(0, 0.6f)), PUFF, false});
-}
-
 void sprite(Vector3 p, Vector3 v, float life, float size0, float size1, Color c, float grav, bool bubble) {
     if ((int)ps.size() < MAX) ps.push_back({p, v, 0, life, size0, size1, 0, 0, grav, 0, c, (unsigned char)(bubble ? BUBBLE : QUESTION), false}), ps.back().seq = ++lastKey;
 }
@@ -1161,8 +1133,8 @@ void shakeFor(float mag, float secs) { shakeMag = mag, shakeLen = secs, shakeT =
 void flood(Vector3 at, float stop) { floodAt = at, floodStop = stop, floodT = 0; }
 void jetStop() { lives.erase(std::remove_if(lives.begin(), lives.end(), [](const Live &l) { return l.e == &JET_BASE; }), lives.end()); }
 
-void flame(Vector3 p, Vector3 v, float life, float size0, float size1, bool jet) {
-    add({Vector3Add(p, Vector3Scale(rndDir(), size0 * 0.25f)), Vector3Add(v, Vector3Scale(rndDir(), 0.5f)), 0, life, size0, size1, 0, rnd(-2, 2), 0, 2, jet ? Color{255, 200, 140, 255} : Color{255, 110, 30, 255}, (unsigned char)(jet ? JET : TOON), true});
+void flame(Vector3 p, Vector3 v, float life, float size0, float size1) {
+    add({Vector3Add(p, Vector3Scale(rndDir(), size0 * 0.25f)), Vector3Add(v, Vector3Scale(rndDir(), 0.5f)), 0, life, size0, size1, 0, rnd(-2, 2), 0, 2, Color{255, 110, 30, 255}, TOON, true});
 }
 
 // W4M AlienAbductionGraphicEntity (PARTTWK; g = s since the warp gate opened, < 0 closed; 20 units per metre, all cyan (0.5, 0.9, 1) WXSprite1 glows): WXP_AlienWarpGate at the gate, WXP_BeamStartParts
