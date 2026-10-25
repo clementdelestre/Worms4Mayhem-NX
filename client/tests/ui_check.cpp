@@ -475,5 +475,11 @@ int main() {
         assert(r.size() == 8 && r[0].map < 0 && !strcmp(r[0].key, "FETXT.Random2") && r[1].map == 1 && !strcmp(r[2].key, "FETXT.Prebuilt"));
         assert(r[3].map == 3 && r[4].map == 0 && !strcmp(r[5].key, "FETXT.Worms3DSection") && r[6].map == 4 && r[7].map == 2);
     }
+    {  // the jetpack helmet masks a hat but not the Terminator's (Type 4); glasses and tash stay
+        const Catalog &k = catalog();
+        auto models = [&](const char *hat, bool jet) { std::string m; for (const auto &h : k.headgear(hat, "WXFE.A.Glasses.Rayban", "", jet)) m += h.model + std::string("|"); return m; };
+        assert(models("WXFE.A.Hat.Cowboy", true).find("jetpack|") == 0 && models("WXFE.A.Hat.Cowboy", true).find("cowboy") == std::string::npos);
+        assert(models("WXFE.A.Hat.Terminator", true).find("terminator") != std::string::npos && models("WXFE.A.Hat.Cowboy", true).find("rayban") != std::string::npos);
+    }
     puts("ui_check ok");
 }

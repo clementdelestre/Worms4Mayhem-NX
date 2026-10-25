@@ -205,7 +205,8 @@ std::vector<Catalog::Headgear> Catalog::headgear(const std::string &hat, const s
         out.push_back({model, m});
     };
     if (jetpack) out.push_back({"jetpack", MatrixIdentity()});
-    else if (const char *n = drawName(hat)) add(hat, n);
+    if (!jetpack || (h && h->type == 4))  // the jetpack helmet masks the hat unless it is the Terminator's (Type 4, 0x5a17d0)
+        if (const char *n = drawName(hat)) add(hat, n);
     if (wantGlasses) if (const char *n = drawName(glasses)) add(glasses, n);
     if (wantTash) if (const char *n = drawName(tash)) add(tash, n);
     return out;
