@@ -67,7 +67,7 @@ void tips(float now) {  // 0x608100: a new tip every 15 s, never the same twice
 }
 
 // TransitionFadeUp (0x510860): TransitionMesh's Circle_Out, a black disc whose texture alpha edge (row 207/256) slides out as its
-// V offset goes 0 -> 0.6 (flat keys at 0.042, 0.958 s); mesh scaled x max(aspect x 0.75, 1) (0x510630), FE units at 1.33 px
+// V offset goes 0 -> 0.6 (flat keys at 0.042, 0.958 s); mesh scaled uniformly by max(aspect x 0.75, 1) (0x510630), FE units at 1.5 px
 void iris(float ct) {
     static const float V[] = {0.75909f, 0.60787f, 0.47185f, 0.34496f, 0.23034f}, R[] = {0, 286.37f, 570.74f, 855.11f, 1139.47f};
     float s = fminf(fmaxf((ct - 0.041656f) / (0.958008f - 0.041656f), 0), 1), v = 207 / 256.0f - 0.59961f * s * s * (3 - 2 * s);
@@ -75,7 +75,7 @@ void iris(float ct) {
     int i = 0;
     while (i < 3 && v < V[i + 1]) i++;
     float r = v >= V[0] ? 0 : R[i] + (R[i + 1] - R[i]) * (V[i] - v) / (V[i] - V[i + 1]);
-    DrawRing({640, 360}, r * 1.3333f * 1.3333f, 800, 0, 360, 128, BLACK);
+    DrawRing({640, 360}, r * 1.3333f * (720 / 480.0f), 800, 0, 360, 128, BLACK);
 }
 
 // Stage 2: dark-blue panel with the "Loading" watermark, round worm, logo and a tip; ls: s since it opened
