@@ -668,20 +668,21 @@ static void addLayers(const Entry &e, const Transform *body, const Transform *co
 // The body clip at frame f under the acting gesture layers: XAnim sums w x value per channel (0x7ac1a0) and Base carries
 // weight 1, so a gesture at weight w is (1 - w) body + w gesture, scale averaged likewise (attribute flag 8, 0x7acc6f)
 static const Transform *layered(const Entry &e, const ModelAnimation &a, int f, const Models::Layers *ly) {
-    const ModelAnimation *c[3] = {};
-    int cf[3] = {}, n = (int)a.boneCount;
-    float w[3] = {};
-    for (int k = 0; ly && k < 3; k++)
+    const ModelAnimation *c[4] = {};
+    int cf[4] = {}, n = (int)a.boneCount;
+    float w[4] = {};
+    for (int k = 0; ly && k < 4; k++)
         if (ly->act[k] && ly->actW[k] > 0 && (c[k] = clipFrame(e, ly->act[k], ly->actT[k], false, &cf[k], false)) && (int)c[k]->boneCount >= n) w[k] = ly->actW[k];
-    if (!w[0] && !w[1] && !w[2]) return a.keyframePoses[f];
+    if (!w[0] && !w[1] && !w[2] && !w[3]) return a.keyframePoses[f];
     static std::vector<Transform> out;
     out.resize(n);
-    float wb = fmaxf(0, 1 - w[0] - w[1] - w[2]);
+    float sum = w[0] + w[1] + w[2] + w[3], wb = fmaxf(0, 1 - sum);
+    if (sum > 1) for (float &x : w) x /= sum;  // past 1 the layers share the pose
     for (int b = 0; b < n; b++) {
         Transform t = a.keyframePoses[f][b];
         Vector3 p = Vector3Scale(t.translation, wb), sc = Vector3Scale(t.scale, wb);
         Quaternion q = QuaternionScale(t.rotation, wb);
-        for (int k = 0; k < 3; k++) {
+        for (int k = 0; k < 4; k++) {
             if (!w[k]) continue;
             const Transform &u = c[k]->keyframePoses[cf[k]][b];
             Quaternion r = u.rotation;
@@ -964,7 +965,7 @@ static void select(Entry &e, const char *clip, float t, bool loop, const char *a
     add(clip, t, loop), add(aim, aimT, false), add(picked, pickedT, true);
     if (ly) {  // the worm's other XAnim layers: Base at weight 1, the acting gestures, the emote
         add("Base", t, true), add(ly->face, ly->faceT, true), add("Teeth", teethTime(e, clip, t, loop, ly), false);
-        for (int k = 0; k < 3; k++) if (ly->actW[k] > 0) add(ly->act[k], ly->actT[k], false);
+        for (int k = 0; k < 4; k++) if (ly->actW[k] > 0) add(ly->act[k], ly->actT[k], false);
     }
     for (size_t i = 0; i < e.sels.size() && i < 32; i++) {
         const Sel &s = e.sels[i];
@@ -1078,9 +1079,9 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
 
 static bool same(const Models::Layers &a, const Models::Layers &b) {
     return a.face == b.face && (int)(a.faceT * 60) == (int)(b.faceT * 60) && a.lookYaw == b.lookYaw && a.lookPitch == b.lookPitch &&
-           a.gestYaw == b.gestYaw && a.gestPitch == b.gestPitch && a.act[0] == b.act[0] && a.act[1] == b.act[1] && a.act[2] == b.act[2] && a.actW[0] == b.actW[0] &&
-           a.actW[1] == b.actW[1] && a.actW[2] == b.actW[2] && a.aimW == b.aimW && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) &&
-           (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60) && (int)(a.actT[2] * 60) == (int)(b.actT[2] * 60) &&
+           a.gestYaw == b.gestYaw && a.gestPitch == b.gestPitch && a.act[0] == b.act[0] && a.act[1] == b.act[1] && a.act[2] == b.act[2] && a.act[3] == b.act[3] && a.actW[0] == b.actW[0] &&
+           a.actW[1] == b.actW[1] && a.actW[2] == b.actW[2] && a.actW[3] == b.actW[3] && a.aimW == b.aimW && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) &&
+           (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60) && (int)(a.actT[2] * 60) == (int)(b.actT[2] * 60) && (int)(a.actT[3] * 60) == (int)(b.actT[3] * 60) &&
            a.lip[0] == b.lip[0] && a.lip[1] == b.lip[1] && a.lipW[0] == b.lipW[0] && a.lipW[1] == b.lipW[1] &&
            std::equal(a.add, a.add + 6, b.add) && std::equal(a.addT, a.addT + 6, b.addT);
 }

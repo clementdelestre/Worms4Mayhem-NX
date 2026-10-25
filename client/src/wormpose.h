@@ -21,6 +21,12 @@ struct Skid {
 // The WORM%dTARGET actor (0x5a2d70): feet + 20 units x the horizontal support normal + 2000 ms of the velocity along the support + 9 units up
 Vector3 skidTarget(Vector3 feet, Vector3 normal, Vector3 vel);
 
+// Anim state 0 / 7, ground handler 0x5a2a00: the Walk clip at (phase, weight), speed = |Velocity.xz| in units/ms
+struct Walk {
+    float phase = 0, w = 0;  // +0x19c (clip seconds, wraps past 0.5), +0x1a0
+    void step(float dt, float speed);
+};
+
 // WeaponAccessoryEntity pose state shared by the WAE_* classes (0x58c060 handler, 0x58f620 pose update)
 struct Wae {
     enum Press { Ignored, Equip, Taunt };

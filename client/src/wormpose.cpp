@@ -41,6 +41,12 @@ Vector3 skidTarget(Vector3 feet, Vector3 n, Vector3 v) {
     return Vector3Add(Vector3Add(feet, Vector3Scale(h, 20 / 20.f)), Vector3Add(Vector3Scale(along, 2), {0, 9 / 20.f, 0}));
 }
 
+void Walk::step(float dt, float speed) {
+    if (speed == 0) phase = approach(phase, phase <= 0.25f ? 0 : 0.5f, 1, 0.05f, dt), w = approach(w, 0, 1, 0.1f, dt);  // to the nearest rest pose
+    else phase += dt * speed * 0.45f, w = approach(w, 1, 1, 0.1f, dt);
+    while (phase > 0.5f) phase -= 0.5f;
+}
+
 Wae::Press Wae::press(bool ambulatory, bool hasClip, float drawLen) {
     if (fired || !ambulatory) return Ignored;
     if (state == 0) return init(), Equip;

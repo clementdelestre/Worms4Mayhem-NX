@@ -32,6 +32,16 @@ static void checkWormPose() {
     // 0x569f20: half the way, the step capped at rate x dt
     assert(near(approach(0, 1, 1, 0.1f, 1), 0.1f) && near(approach(0, 0.05f, 1, 0.1f, 1), 0.025f) && near(approach(0, 1, 1, 0.1f, 2), 0.2f));
     assert(near(approach(1, 0, 1, 0.1f, 1), 0.9f) && near(approach(0.5f, 0.5f, 1, 0.1f, 1), 0.5f));
+    // ground walk 0x5a2a00: the phase advances by 0.45 x speed per frame (0.05 units/ms = full stick), the weight gains 0.1 a frame; stopped, both ease off
+    Walk wk;
+    wk.step(1, 0.05f), assert(near(wk.phase, 0.0225f) && near(wk.w, 0.1f));
+    for (int f = 0; f < 30; f++) wk.step(1, 0.05f), assert(wk.phase >= 0 && wk.phase <= 0.5f);
+    assert(near(wk.w, 1));
+    wk.phase = 0.3f;
+    wk.step(1, 0), assert(near(wk.phase, 0.35f) && near(wk.w, 0.9f));  // toward 0.5 past 0.25, the step capped at 0.05
+    for (int f = 0; f < 40; f++) wk.step(1, 0);
+    assert(near(wk.phase, 0.5f) && near(wk.w, 0));
+    wk.phase = 0.2f, wk.step(1, 0), assert(near(wk.phase, 0.15f));
     // slide: SkidArms weight stays 0 for the 30 frame look delay from the ground, then eases to 1 by 0.2 steps; the look fires once
     Skid k;
     k.start(true, 7);

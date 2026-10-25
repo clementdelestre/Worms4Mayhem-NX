@@ -22,7 +22,7 @@ struct Layers {
     float lookYaw = 0, lookPitch = 0;               // head
     float gestYaw = 0, gestPitch = 0;               // GestureAt target
     float eyeYaw = 0, eyePitch = 0;                 // pupils, relative to the head
-    const char *act[3] = {}; float actT[3] = {}, actW[3] = {};  // over the body clip at weight actW: acting gestures (new, old), then SkidArms
+    const char *act[4] = {}; float actT[4] = {}, actW[4] = {};  // over the body clip at weight actW: acting gestures (new, old), then the worm's state clips (SkidArms, Walk, Taunt) and its one-shots (Land, Fall)
     float aimW = 1;  // weight of draw()'s aim clip
     const char *add[6] = {}; float addT[6] = {};  // clips summed over the pose at weight 1, like the aim clip (W4M FP, FPX, FPY, FPZ; the sentry gun's)
     // lip sync (0x59d570): viseme clips (new, old) added on the lips at weight = clip time; open (+0x19c) > 0.1 picks the Teeth time

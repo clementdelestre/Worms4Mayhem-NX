@@ -469,7 +469,9 @@ static const char *tauntClip(const WeaponDef &d) {
 // Render-only gait state: the sim walks worms by moving pos (vel stays 0), so the cycle follows position deltas.
 // act: one-shot clip started by a sim event (weapon use, flinch, drowning), held: item kept at the WeaponLocator meanwhile.
 struct WormAnim {
-    Vector3 pos{}; float yaw = 0, walk = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, nailed = false;
+    Vector3 pos{}; float yaw = 0, still = 1, air = 0, fallV = 0, land = 9; bool init = false, moving = false, nailed = false;
+    WormPose::Walk wk;  // anim state 0 Walk at (phase, weight), 0x5a2a00
+    float landW = 1, fallW = 1; bool fell = false;  // Land weight clamp(|vn| x 5, 0, 1) (0x5a3913); kWE 7 (support lost, no jump): Fall one-shot, its weight easing in (0x5a01a0)
     const char *flip = nullptr;  // kWE 4 Backflip / 5 Fwdflip clip, until it lands
     bool vaulting = false; float vaultT = 9, chute = -1, lr = 0, drowned = -1, spin = -1; int hardAt = -1;  // spin: kWE 22 tumble angle, -1 off  // drowned: s since it sank  // vaultT: s since kWE 9; chute: s open, lr: WXWorm.ParachuteLR
     struct Act { const char *clip = nullptr; float t = 0; const char *held = nullptr, *aim = nullptr, *from = nullptr; float fromT = 0; } act;  // aim: Aim* clip layered on the arms; from: windup frame faded out
@@ -514,6 +516,9 @@ static float blastPitch(const Worm &w) {
 static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
     wormAnims.resize(g.worms.size());
     const float L = fmaxf(Models::clipLength("worm", "Walk"), 0.1f);
+    static float tickAcc = 0;  // the worm graphic updates on 20 ms frames (0x5a47a0), as Acting::update
+    const int ticks = (int)((tickAcc += dt) / 0.02f);
+    if (ticks > 0) tickAcc = fmodf(tickAcc, 0.02f);
     for (size_t i = 0; i < g.worms.size(); i++) {
         const Worm &w = g.worms[i];
         WormAnim &a = wormAnims[i];
@@ -543,7 +548,9 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
             if (done) c = {};
         }
         if (!w.grounded && (fabsf(w.vel.y) > 1 || a.air > 0)) {  // ignore slope-contact flicker; the apex (|vy| < 1) stays airborne
-            a.air += dt, a.fallV = fminf(a.fallV, w.vel.y), a.walk = 0, a.moving = false;
+            if (a.air == 0) a.fell = w.vel.y <= 0 && !a.flip && w.alive, a.fallW = 0;  // kWE 7: support lost without a jump or a blast (0x5a36ed starts jumps at weight 1)
+            if (ticks > 0) a.fallW = WormPose::approach(a.fallW, 1, 1, 0.1f, (float)ticks);
+            a.air += dt, a.fallV = fminf(a.fallV, w.vel.y), a.wk = {}, a.moving = false;
             // kWE 22 (0x5a3a60): falling past 0.3 units/ms (15 m/s), not with Flags 0x8840 (0x5af994), Skid and a 2 pi rad/s tumble (0x5a0593)
             // the angle (+0x158) carries on: 0 from a jump or fall (0x5a01a0 zeroes it), the mode-0 flight pitch asin(vy/|v|) from a blast (0x5a0617)
             if (w.vel.y < -15 && a.spin < 0 && w.alive && !(w.motion.flags & (WF_FALL_ONCE | WF_NO_FALL)) && !((int)i == g.current && (g.roped || g.jetting || g.chute)))
@@ -557,16 +564,16 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
             a.act = {s < 0.75f * PI || s > 1.75f * PI ? "RecoverFront1" : s < 1.25f * PI ? "RecoverBurried1" : (i + g.clock) & 1 ? "RecoverBack1" : "RecoverBack2"};
         }
         a.spin = -1, a.hardAt = w.hardAt;
-        if (a.air > 0.2f && a.fallV < -4 && w.alive) a.land = 0, Audio::play(Audio::Sfx::Land, w.pos);
-        a.air = a.fallV = 0, a.land += dt, a.flip = nullptr;
+        if (a.air > 0.2f && a.fallV < -4 && w.alive) a.land = 0, a.landW = Clamp(-a.fallV * 0.1f, 0, 1), Audio::play(Audio::Sfx::Land, w.pos);  // vn in units/ms = 0.02 x m/s
+        a.air = a.fallV = 0, a.land += dt, a.flip = nullptr, a.fell = false;
         float step = dist;  // W4M blends Walk by |Velocity.xz| only: a turn in place (kWE 10..12) keeps the pose and the held weapon
         a.still = step > 1e-4f ? 0 : a.still + dt;
         a.moving = w.alive && a.still < 0.1f;  // bridges render frames that ran no sim tick
-        float before = a.walk, B = 0.4f * L;   // one body surge per cycle; B: where it lands
-        if (a.moving) a.walk += step / 3;      // in-place clip, 1x at the 3 u/s walk speed
-        else if (a.walk > 0) a.walk = a.walk < L / 2 ? fmaxf(a.walk - dt, 0) : a.walk + dt >= L ? 0 : a.walk + dt;  // ease to the upright pose
-        bool beat = floorf((a.walk - B) / L) > floorf((before - B) / L);
-        a.walk = fmodf(a.walk, L);
+        float before = a.wk.phase, B = 0.4f * L;  // one body surge per cycle; B: where it lands
+        float speed = (int)i == g.current ? 0.02f * hypotf(g.walkVel.x, g.walkVel.z) : 0;  // |Velocity.xz| in units/ms: the walk's InputImpulse
+        if (w.motion.slide) a.wk = {};
+        else if (ticks > 0) a.wk.step((float)ticks, speed);
+        bool beat = ticks > 0 && floorf((a.wk.phase + (a.wk.phase < before ? L : 0) - B) / L) > floorf((before - B) / L);
         bool self = (int)i == g.current && (g.phase == Phase::Aim || g.retreating()) && Vector3Length(w.vel) < 0.3f;  // not sliding
         if (a.moving && beat && self) Audio::play(Audio::Sfx::Step, w.pos);
     }
@@ -697,6 +704,13 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool scene19 = f
     const float aimAt = w.pitch / (PI / 2) + 1;  // WAE Aim clip time, s: WeaponAngle / (pi / 2) + 1 (0x58f63d)
     float aimT = aimAt;
     Models::Layers wl;  // WAE layers over the body clip, on top of ly's
+    Models::Layers ov;  // the worm's state and one-shot clips over Base: Walk (act[2]), Land and Fall (act[3])
+    auto over = [&](int k, const char *c, float ct, float wt) {
+        if (!ly || wt <= 0) return;
+        if (ly != &ov) ov = *ly, ly = &ov;
+        ov.act[k] = c, ov.actT[k] = ct, ov.actW[k] = wt;
+    };
+    const bool landing = a.land < Models::clipLength("worm", "Land") && w.hp > 0 && !(i == g.current && g.phase == Phase::Aim);
     const char *tauntC = nullptr;  // state 2: the Taunt clip drawn at tauntW over Hold and Aim at 1 - tauntW
     float tauntW = 0;
     auto aimPose = [&] {  // the weapon in hand: Draw, Windup or Hold, with the Aim clip added
@@ -741,16 +755,17 @@ static bool drawWorm(const Game &g, const Worm &w, float clock, bool scene19 = f
     } else if (a.spin >= 0 && a.air > 0) clip = "Skid", t = a.air;  // tumbling down
     else if (bool air = a.air > 0.15f || w.vel.y > 2; air && speed > 4) clip = "Blastflight2";  // knocked flying (short drops keep the pose)
     else if (air) {
-        clip = a.flip ? a.flip : w.vel.y > 0 ? "Jump" : "Fall";
-        if (w.vel.y > 0 || a.flip) t = a.air, loop = false;
+        if (a.fell) clip = "Base", over(3, "Fall", a.air, a.fallW);  // kWE 7 (0x5a36ed's twin for a lost support): Fall from t = 0, held at its end
+        else clip = a.flip ? a.flip : "Jump", t = a.air, loop = false;  // a jump holds its last frame until it lands (0x5a01a0)
     } else if (w.motion.slide && w.grounded) clip = "Base";  // anim state 6 0x5a2d70: SkidArms alone over Base (Acting::layers)
     else if (a.vaultT < Models::clipLength("worm", "Vault")) clip = "Vault", t = a.vaultT, loop = false;  // kWE 9: Walking -> Vaulting
-    else if (a.moving || (a.walk > 0 && !a.drawn)) clip = "Walk", t = a.walk;  // a drawn weapon shows at once on stopping (0x5b1bed), the walk ease is skipped
-    else if (a.land < Models::clipLength("worm", "Land") && w.hp > 0 && !(i == g.current && g.phase == Phase::Aim)) clip = "Land", t = a.land, loop = false;
+    else if (a.moving || (a.wk.w > 0 && !a.drawn)) clip = "Base", over(2, "Walk", a.wk.phase, a.wk.w);  // 0x5a2a00; a drawn weapon shows at once on stopping (0x5b1bed), the walk ease is skipped
+    else if (landing) clip = "Base";
     else if (w.hp <= 0) clip = "Wave";  // bye-bye until Settle blows it up
     else if (g.phase == Phase::GameOver && w.team == g.winner) clip = "Victorious_Grin";
     else if (aimNow && aimPose()) {
     } else if (w.hp < 25) clip = "Wounded";
+    if (landing && !strcmp(clip, "Base")) over(3, "Land", a.land, a.landW);  // kWE 8 (0x5a3913): the scheduler plays Land once over the ground pose
     if (i == g.current && g.icarus == 2 && w.alive) clip = "FlyRedBull", t = a.air, loop = true;  // RedBullWings wield 0x595437: the worm's clip too
     if (Vector3 bm; ly && Models::blend("worm", clip, t, loop, ly, &bm)) Acting::headMode(i, bm.z);  // read by the next Acting::update
     // WeaponAccessoryEntity 0x597630 / 0x594b50, each camera update: with the drawn camera within 10 units of the active worm's
