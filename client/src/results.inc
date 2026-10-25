@@ -133,7 +133,7 @@ int results(ResultsScreen &st, Results &r, const std::vector<std::string> &maps)
         for (int i = 0; i < 7; i++)
             if (out < 0 && since >= FW[i].delay && (!fired[i] || since >= firedAt[i] + FW[i].loop)) fired[i] = 1, firedAt[i] = since, Fx::start(FW[i].fx, {FW[i].x * 0.05f, FW[i].y * 0.05f, 0}, 0.05f);
         Fx::update(dt);
-        Camera3D cam = feCamera(900 * 0.05f);
+        Camera3D cam = feCamera(500 * 0.05f);  // the in-game HUD pose: the results menus show while the CMS runs (0x51f740)
         BeginMode3D(cam);
         Fx::draw(cam);
         EndMode3D();
