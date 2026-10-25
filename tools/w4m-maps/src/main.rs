@@ -94,6 +94,7 @@ struct Poxel {
     uvm: [[f32; 4]; 4], // floor u, floor v, wall u, wall v: texture vector (lattice units) and offset (GLG 0x446be0)
     name: usize, code: Option<[u8; 4]>,
     perm: bool,  // the name holds "PERM" (0x476738)
+    slippy: bool,  // the name holds "SLIPPY" (0x476714)
 }
 
 fn parse_poxel(d: &[u8]) -> Poxel {
@@ -251,20 +252,22 @@ fn second_pass(blocks: &mut Vec<[f32; 4]>) {
 }
 
 // code: 1 + index in `codes` of the coded frame above (W4M 0x46e1d0: a frame named "...CODE?xxxx" and its whole subtree), 0 none
-// uvf: (poxel, world matrix) of each frame with a lattice, in visit order
+// uvf: (poxel, world matrix, SLIPPY) of each frame with a lattice, in visit order
 fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &mut Vec<Cell>, dets: &mut Vec<DetRef>, blocks: &mut Vec<[f32; 4]>, depth: u32,
-           code: u16, perm: bool, codes: &mut Vec<[u8; 4]>, uvf: &mut Vec<(usize, M4)>) {
+           code: u16, perm: bool, slip: bool, codes: &mut Vec<[u8; 4]>, uvf: &mut Vec<(usize, M4, bool)>) {
     let Some(x) = px.get(&k) else { return };
     if depth > 64 { return; }
     // flag saved and restored around each frame's children (0x476683): a PERM frame's subtree; the root's PERM is the heightmap's (0x477184)
     let perm = perm || (!root && x.perm);
+    // SLIPPY holds for the subtree (0x476678 / 0x476f07); Land.Import 0x477127 seeds it from the root name
+    let slip = slip || x.slippy;
     let code = match x.code { Some(c) if code == 0 => { codes.push(c); codes.len() as u16 } _ => code };
     let (w, wn) = if root { (*parent, *parent) } else { (mul(parent, &local(x, true)), mul(parent, &local(x, false))) };
     let [sx, sy, sz] = x.size;
     if !x.vox.is_empty() { add_block(blocks, frame_box(x, &w)); }
     // W4M collides with every frame; only rendering reads Visible (0x46e6b9, 0x472380, 0x447810)
     if x.vox.len() == sx * sy * sz {
-        uvf.push((k, w));
+        uvf.push((k, w, slip));
         // EdgeOffset1/2 at lattice height y: layers floor(y) (clamped to YSize - 1) and the next, by the fraction past it (W4M 0x468200)
         let edge = |l: &Vec<[f32; 2]>, y: f32| {
             let j = (y.floor().max(0.0) as usize).min(sy - 1);
@@ -306,7 +309,7 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
         }
     }
     dets.extend(x.dets.iter().map(|&ctn| DetRef { ctn, w, frame: k }));
-    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1, code, perm, codes, uvf); }
+    for &kid in &x.kids { collect(px, kid, &wn, false, out, dets, blocks, depth + 1, code, perm, slip, codes, uvf); }
 }
 
 // Case-insensitive path lookup (game data uses Windows paths).
@@ -483,6 +486,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     for x in px.values_mut() {
         x.code = xom.s.get(x.name).and_then(|n| n.find("CODE").and_then(|i| n.as_bytes().get(i + 5..i + 9))).map(|b| [b[0], b[1], b[2], b[3]]);
         x.perm = xom.s.get(x.name).is_some_and(|n| n.contains("PERM"));
+        x.slippy = xom.s.get(x.name).is_some_and(|n| n.contains("SLIPPY"));
     }
     let (mut cells, mut dets, mut blocks) = (Vec::new(), Vec::new(), Vec::new());
 
@@ -527,7 +531,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         if c1 >= 0 { add_block(&mut blocks, [c0 as f32 * HMP_CELL - HMP_EXTENT, r0 as f32 * HMP_CELL - HMP_EXTENT, c1 as f32 * HMP_CELL - HMP_EXTENT, r1 as f32 * HMP_CELL - HMP_EXTENT]); }
     }
     let (mut codes, mut uvf) = (Vec::new(), Vec::new());
-    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, &mut blocks, 0, 0, false, &mut codes, &mut uvf);
+    collect(&px, xom.root, &[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]], true, &mut cells, &mut dets, &mut blocks, 0, 0, false, false, &mut codes, &mut uvf);
     let uv_of: HashMap<usize, u16> = uvf.iter().enumerate().map(|(i, f)| (f.0, i as u16 + 1)).collect();  // poxel -> landuv entry + 1
     second_pass(&mut blocks);
     // W4M world bounds of everything solid above the water (the seabed may be cropped)
@@ -881,7 +885,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     // per lattice frame (GLG 0x446be0 / 0x457130 / 0x4566d0): map metres -> frame-centred lattice before EdgeOffset (a: 3x4),
     // its size, the uv rows (floor u, v, wall u, v: lattice vector, offset), EdgeOffset1/2 (x, z) per layer
     let shift = [[1.0, 0.0, 0.0, -ox], [0.0, 1.0, 0.0, -WATER], [0.0, 0.0, 1.0, -oz]];
-    let landuv: Vec<String> = uvf.iter().map(|(k, w)| {
+    let landuv: Vec<String> = uvf.iter().map(|(k, w, slip)| {
         let x = &px[k];
         let a = mul(&inverse(w), &shift);
         let e = (0..=x.size[1]).flat_map(|j| { let (p, q) = (x.l1.get(j).copied().unwrap_or([0.0; 2]), x.l2.get(j).copied().unwrap_or([0.0; 2])); [p[0], p[1], q[0], q[1]] });
@@ -891,8 +895,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let h = if h.iter().all(|&v| v == 0.0) { String::new() } else { h.iter().map(|v| format!("{v}")).collect::<Vec<_>>().join(",") };
         let mut runs: Vec<[usize; 2]> = Vec::new();
         for i in (0..x.vox.len()).filter(|&i| x.vox[i] & 3 != 0) { match runs.last_mut() { Some(r) if r[0] + r[1] == i => r[1] += 1, _ => runs.push([i, 1]) } }
-        format!("{{\"a\":[{}],\"n\":[{},{},{}],\"t\":[{}],\"e\":[{}],\"k\":{k},\"h\":[{h}],\"s\":[{}]}}", f(&mut a.iter().flatten().copied()), x.size[0], x.size[1], x.size[2],
-            f(&mut x.uvm.iter().flatten().copied()), f(&mut e.into_iter()), runs.iter().map(|r| format!("{},{}", r[0], r[1])).collect::<Vec<_>>().join(","))
+        format!("{{\"a\":[{}],\"n\":[{},{},{}],\"t\":[{}],\"e\":[{}],\"k\":{k},{}\"h\":[{h}],\"s\":[{}]}}", f(&mut a.iter().flatten().copied()), x.size[0], x.size[1], x.size[2],
+            f(&mut x.uvm.iter().flatten().copied()), f(&mut e.into_iter()), if *slip { "\"slip\":true," } else { "" }, runs.iter().map(|r| format!("{},{}", r[0], r[1])).collect::<Vec<_>>().join(","))
     }).collect();
     write_wcells(out_dir, stem, &cells, &recs, &hex_id, &frame_cells, &cell_of, [ox, WATER, oz])?;
     let codes_json = if code_json.is_empty() { String::new() } else { format!("  \"codes\": {{{}}},\n", code_json.join(", ")) };
