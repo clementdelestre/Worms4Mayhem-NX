@@ -669,7 +669,9 @@ static bool wormLit(const WeaponDef &d) {
 }
 
 // W4M worm: animation picked from the sim state (aim clips map pitch to their timeline).
-static bool drawWorm(const Game &g, const Worm &w, float clock) {
+// scene19: only what 0x5a20c0 moves to OutlinedWorms1, the body and its hat / glasses / tash (+0x24..+0x30); the held mesh, pack,
+// jetpack helmet, rocket and wings stay in scene 8 (attached by 0x6b6950, no scene of their own)
+static bool drawWorm(const Game &g, const Worm &w, float clock, bool scene19 = false) {
     int i = int(&w - g.worms.data()), st = -1;
     for (const Game::Abductee &b : g.abductees) if (b.worm == i) st = b.st;
     if (st == 2) return true;  // aboard the UFO: hidden (AlienAbductionLogicEntity 0x547874)
@@ -768,7 +770,7 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
     Matrix m;
     bool loc = Models::joint("worm", "WeaponLocator", clip, t, loop, &m, aim, aimT, ly);
     if (loc && i == g.current) launchAt = Vector3Transform({}, MatrixMultiply(m, root));  // no held mesh: the worm's WeaponLocator (0x594630)
-    if (held && loc) {
+    if (held && loc && !scene19) {
         m = MatrixMultiply(m, root);
         // the mesh plays the worm's clip of the same name at its time and weight (0x594d40); WAE_Mechanical plays DrawFlood,
         // Windup and FireBow itself (0x58d89f, 0x58dc1a, 0x58dcd1), WAE_Standard TargetSelected (0x590ae0); one-shots hold their end (assumed)
@@ -789,16 +791,17 @@ static bool drawWorm(const Game &g, const Worm &w, float clock) {
         if (Matrix j; i == g.current) launchAt = Vector3Transform(Models::joint(held, "Payload_Spawn", ml > 0 ? mc : "Rest", once ? fminf(mt, ml - 1e-3f) : mt, false, &j) ? Vector3{j.m12, j.m13, j.m14} : Vector3{}, hm);
     }
     bool opening = a.chute >= 0 && a.chute < Models::clipLength("hold_chute", "FireParachute");  // PackAccessory.Wield 0x58f3d4
-    if (tool && !g.roped) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE,
+    if (tool && !g.roped && !scene19) Models::draw(g.jetting ? "hold_jetpack" : "hold_chute", rootMatrix(w, g.jetting ? JETPACK_AT : Vector3{}), WHITE,
                                               g.jetting ? "JetpackRotLR" : opening ? "FireParachute" : clip, g.jetting ? fminf(aimT, 2 - 1e-3f) : opening ? a.chute : t);
     Models::lightMul(ONE, shade);  // WAE_Starburst 0x5910a0 and the Redbull wings call no 0x6a0d00
-    if (rk && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly)) Models::draw("hold_starburst", MatrixMultiply(m, root), WHITE, "FireStarburst", rk->fuse < WEAPONS[rk->weapon].fuse - 3.5f ? 3.5f : WEAPONS[rk->weapon].fuse - rk->fuse);  // WAE_Starburst 0x5917d0
-    if (i == g.current && g.icarus == 2 && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly))  // WAE 0x5953d1
+    if (rk && !scene19 && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly)) Models::draw("hold_starburst", MatrixMultiply(m, root), WHITE, "FireStarburst", rk->fuse < WEAPONS[rk->weapon].fuse - 3.5f ? 3.5f : WEAPONS[rk->weapon].fuse - rk->fuse);  // WAE_Starburst 0x5917d0
+    if (i == g.current && g.icarus == 2 && !scene19 && Models::joint("worm", "Pack_Locator", clip, t, loop, &m, aim, aimT, ly))  // WAE 0x5953d1
         Models::draw("wings", MatrixMultiply(m, root), WHITE, "FlyRedBull", t);
     Models::lightMul(lit, shade);
     const auto head = bare ? catalog().headgear("", "", "", tool && g.jetting) : catalog().headgear(att(0), att(2), att(3), tool && g.jetting);  // W4M's jetpack helmet: 'JetpackHat' of the pack class (0x58c700)
     if (!head.empty() && Models::joint("worm", "HatLocator", clip, t, loop, &m, aim, aimT, ly))
-        for (const auto &hg : head) Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), root));
+        for (const auto &hg : head)
+            if (!scene19 || strcmp(hg.model, "jetpack")) Models::draw(hg.model, MatrixMultiply(MatrixMultiply(hg.local, m), root));
     return Models::lightMul({1, 1, 1}), true;
 }
 
@@ -2873,14 +2876,14 @@ int main(int argc, char **argv) {
         auto outlined = [&](const Worm &w) { return Models::has("worm") && shown(w) && (blimp || &w == &cur); };  // W4M OutlinedWorms1: the active worm only, outside the blimp view
         bool masked = false;  // every outlined worm's depth in one render-target bind
         for (const Worm &w : game.worms)
-            if (outlined(w) && (masked || (masked = Xray::mask()))) Xray::team(w.team), drawWorm(game, w, clock);
+            if (outlined(w) && (masked || (masked = Xray::mask()))) Xray::team(w.team), drawWorm(game, w, clock, true);
         if (masked) Xray::unmask();
         for (const Worm &w : game.worms) {
             if (!w.alive && w.counted <= 0) continue;
             if (!shown(w)) continue;
             if (Models::has("worm")) {  // the passes below draw the same pose: no re-skin
                 bool bin = masked && outlined(w);
-                if (bin) Xray::hidden(), drawWorm(game, w, clock), Xray::done();  // before the worm: only land (not the worm's own depth) can fail GREATER
+                if (bin) Xray::hidden(), drawWorm(game, w, clock, true), Xray::done();  // before the worm: only land (not the worm's own depth) can fail GREATER
                 drawFaded(w, &w == &cur ? curOp : 1);
             } else {
                 Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};
