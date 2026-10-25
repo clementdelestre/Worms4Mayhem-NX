@@ -2229,7 +2229,10 @@ void Terrain::draw() const {
             SetShaderValue(M.shader, scaleLoc, &s, SHADER_UNIFORM_VEC2);
         }
         for (j = i + 1; j < vis.size() && vis[j].mat == vis[i].mat;) j++;
+        const bool hm = vis[i].mat % SECOND >= 65;  // the heightmap's one XCullFace is kCullModeOff (0x45d755): two-sided
+        if (hm) rlDisableBackfaceCulling();
         drawRuns(vis.data() + i, j - i, M);
+        if (hm) rlEnableBackfaceCulling();
     }
 }
 

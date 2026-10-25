@@ -14,7 +14,7 @@ Little endian. Header 64 B: `MOIK`, …, `u32 @24` type count, `@28` container c
 | `.hmp` | 50000 B: 100×100 `f32` heights in 0..1 (row = z, column = x), then 100×100 `u8` second-texture mask (importer: bilinear, thresholded at 128 → `Heightmap.SecondTexture`). All zero for Worms 3D-era (`-w3d`) maps. |
 | `DAY/EVENING/NIGHT.csh` | engine cache, not decoded: byte-identical across the three times in 152/158 maps, so not sun lighting. Per-poxel blocks (u32 count, count × 4 B, `c5c5c5c5`, then a u16 per voxel). Ignored. |
 | `.txt` (some) | material list override, same layout as the theme file. |
-| `Data/<MAP>.XOM` | level databank: strings `Databank.MaterialFile` (e.g. `ThemeCamelot\ThemeCamelot.txt`), `Databank.Theme` (`CAMELOT`…), `TimeOfDay`, `Heightmap.BaseTexture`/`SecondTexture` (each value string precedes its key in `STRS`), plus mission data (worms, crates, cutscenes). LP_/SPLP_/Multi_ variants reuse their base level's databank. |
+| `Data/<MAP>.XOM` | level databank: strings `Databank.MaterialFile` (e.g. `ThemeCamelot\ThemeCamelot.txt`), `Databank.Theme` (`CAMELOT`…), `TimeOfDay`, `Heightmap.BaseTexture`/`SecondTexture` (XStringResourceDetails: Value, Name, Flags; an empty MaterialFile means the theme's file, render.md "Level scenery"), plus mission data (worms, crates, cutscenes). LP_/SPLP_/Multi_ variants reuse their base level's databank. |
 
 ### LandFrameStore (poxel)
 

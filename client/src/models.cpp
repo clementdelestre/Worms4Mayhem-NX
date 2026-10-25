@@ -1,4 +1,5 @@
 #include "models.h"
+#include "msvc_sort.h"
 #include "lit.h"
 #include "loading.h"
 #include "raymath.h"
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -60,8 +62,9 @@ Matrix trs(const Transform &p) {
     return MatrixMultiply(MatrixMultiply(MatrixScale(p.scale.x, p.scale.y, p.scale.z), QuaternionToMatrix(p.rotation)),
                           MatrixTranslate(p.translation.x, p.translation.y, p.translation.z));
 }
-// A shape's W4M render state after XInitTransparencyAction: XBlendModeGL (src < 0 none), XAlphaTest (func < 0 none, raw ref), z write, t = 1 (blended bin)
-struct RState { int src = -1, dst = -1, func = -1; float ref = 0; bool zw = true, t1 = false; };
+// A shape's W4M render state after XInitTransparencyAction: XBlendModeGL (src < 0 none), XAlphaTest (func < 0 none, raw ref), z write, t = 1 (blended bin);
+// key: a blended shape's sort point (its Bounds centre) in vertex space, and the joint moving it (-1 none)
+struct RState { int src = -1, dst = -1, func = -1; float ref = 0; bool zw = true, t1 = false; Vector3 key = {}; int joint = -1; };
 
 struct Entry {
     Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr, *aimed = nullptr; int frame = -1, aimFrame = -1;
@@ -267,6 +270,7 @@ Job prepare(const char *path, bool early = false) {
                 if (const char *b = strstr(x, "\"blend\":[")) sscanf(b + 9, "%d,%d", &r.src, &r.dst);
                 if (const char *b = strstr(x, "\"test\":[")) sscanf(b + 8, "%d,%f", &r.func, &r.ref);
                 r.zw = !strstr(x, "\"zw\":0"), r.t1 = strstr(x, "\"t\":1") != nullptr;
+                if (const char *b = strstr(x, "\"key\":[")) sscanf(b + 7, "%f,%f,%f,%d", &r.key.x, &r.key.y, &r.key.z, &r.joint);
             }
             for (int r = 0; r < 3; r++) memcpy(&m[4 * r], &v[3 * r], 12);
             m[12] = v[9], m[13] = v[10];
@@ -903,6 +907,7 @@ static bool zOn = true;
 void Models::zwrite(bool on) { zOn = on, on ? rlEnableDepthMask() : rlDisableDepthMask(); }
 static const char *picked = nullptr;
 static float pickedT = 0;
+static const char *gloveName = nullptr;
 void Models::pick(const char *clip, float t) { picked = clip, pickedT = t; }
 
 // The Blend node's Translate.z and Scale.x in pose p (main's frame)
@@ -977,11 +982,32 @@ static Vector3 lightScale = {1, 1, 1};
 static float lightShade = 1;
 static const Vector3 ONE3 = {1, 1, 1};
 void Models::lightMul(Vector3 m, float k) { lightScale = m, lightShade = k; }
+// Scene 8's transparent bin (render.md "Render bins"): while open, a drawn model's blended shapes wait in it, each redrawn by `again`
+struct BinRec { float z; std::function<void()> draw; };
+static std::vector<BinRec> bin8;
+static bool binOn = false;
+static Vector3 binEye, binLook;
+static std::function<void(int)> again;  // the public draw being run, replayed for one shape (0x6edeea draws the bin after the scene's opaque one)
+static int onlyMesh = -1;
+static const Matrix *bonesNow = nullptr;  // the drawn pose's bone matrices
+static float viewZ(Vector3 p) { return -Vector3DotProduct(Vector3Subtract(p, binEye), binLook); }  // 0x6eb43f sorts it ascending: far first
+
 static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // part: 0 all, 1 opaque only, 2 blended (keyed shapes, glow) only
     Model &m = e.m;
     Shader keep = m.materials[0].shader;
     for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = over;
     Matrix xf = MatrixMultiply(m.transform, MatrixTranslate(pos.x, pos.y, pos.z));
+    if (binOn && part == 0 && again) {
+        for (int i = 0; i < m.meshCount; i++) {
+            RState r = i < (int)e.rs.size() ? e.rs[i] : RState{};
+            bool glow = std::find(e.glow.begin(), e.glow.end(), m.meshMaterial[i]) != e.glow.end();
+            if (!r.t1 && !glow) continue;
+            if (e.hideHands && std::find(e.hands.begin(), e.hands.end(), i) != e.hands.end()) continue;
+            Vector3 k = r.joint >= 0 && bonesNow && r.joint < (int)m.skeleton.boneCount ? Vector3Transform(r.key, bonesNow[r.joint]) : r.key;
+            bin8.push_back({viewZ(Vector3Transform(k, xf)), [f = again, i] { f(i); }});
+        }
+        part = 1;
+    }
     int blendLoc = GetShaderLocation(m.materials[0].shader, "blended"), matLoc = GetShaderLocation(m.materials[0].shader, "material");
     int lmLoc = GetShaderLocation(m.materials[0].shader, "lightMul");
     if (lmLoc >= 0) SetShaderValue(m.materials[0].shader, lmLoc, &lightScale, SHADER_UNIFORM_VEC3);
@@ -996,7 +1022,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
         if (pass) rlDisableBackfaceCulling();
         for (int i = 0; i < m.meshCount; i++) {
             RState r = stateOf(i);
-            if (r.t1 != (pass == 1)) continue;
+            if (r.t1 != (pass == 1) || (onlyMesh >= 0 && i != onlyMesh)) continue;
             if (e.hideHands && std::find(e.hands.begin(), e.hands.end(), i) != e.hands.end()) continue;
             int mi = m.meshMaterial[i];
             if (std::find(e.glow.begin(), e.glow.end(), mi) != e.glow.end()) continue;
@@ -1033,7 +1059,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
         rlDisableDepthMask(), rlDisableBackfaceCulling();
         for (int i = 0; i < m.meshCount; i++) {
             int mi = m.meshMaterial[i];
-            if (std::find(e.glow.begin(), e.glow.end(), mi) == e.glow.end()) continue;
+            if (std::find(e.glow.begin(), e.glow.end(), mi) == e.glow.end() || (onlyMesh >= 0 && i != onlyMesh)) continue;
             Material mat = m.materials[mi];
             Vector2 shift = {0, -(float)fmod(GetTime(), 1.166) / 1.166f};  // fmod in double: on Switch GetTime() counts from console boot
             SetShaderValue(scroll, GetShaderLocation(scroll, "shift"), &shift, SHADER_UNIFORM_VEC2);
@@ -1061,10 +1087,29 @@ bool Models::visible(Vector3 c, float r, const Matrix &m) {
     return true;
 }
 
+static std::string str(const char *s) { return s ? s : ""; }
+static const char *cstr(const std::string &s, bool has) { return has ? s.c_str() : nullptr; }
+// The draw state a queued blended shape is redrawn with
+struct DrawState {
+    Shader sh; const Texture2D *tex; Vector3 light; float shade; std::string clip, glove; bool hasClip, hasGlove, z; float clipT;
+    static DrawState now() { return {over, overTex, lightScale, lightShade, str(picked), str(gloveName), picked != nullptr, gloveName != nullptr, zOn, pickedT}; }
+    void set() const { over = sh, overTex = tex, lightScale = light, lightShade = shade, picked = cstr(clip, hasClip), pickedT = clipT, gloveName = cstr(glove, hasGlove), Models::zwrite(z); }
+};
+static std::function<void(int)> replay(std::function<void()> call) {
+    return [call, st = std::make_shared<DrawState>(DrawState::now())](int mesh) {
+        DrawState keep = DrawState::now();
+        st->set(), onlyMesh = mesh;
+        call();
+        onlyMesh = -1, keep.set();
+    };
+}
+
 bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, float t, bool loop, int part) {
     auto it = models.find(name);
     if (it == models.end()) return false;
     Entry &e = it->second;
+    if (binOn && part == 0)
+        again = replay([n = std::string(name), m, tint, c = str(clip), hc = clip != nullptr, t, loop] { Models::draw(n.c_str(), m, tint, cstr(c, hc), t, loop, 2); });
     int f;
     if (const ModelAnimation *a = clip ? clipFrame(e, clip, t, loop, &f, false) : nullptr) {
         if ((a != e.posed || f != e.frame || e.aimed || e.layered) && e.m.boneMatrices && a->keyframeCount > 0) skin(e, *a, f, nullptr, -1, nullptr);
@@ -1072,7 +1117,9 @@ bool Models::draw(const char *name, Matrix m, Color tint, const char *clip, floa
     }
     e.m.transform = m;
     select(e, clip, t, loop, nullptr, 0, nullptr), fade(e, clip, t, loop);
+    bonesNow = e.m.boneMatrices;
     drawModel(e, {0, 0, 0}, tint, part);
+    again = nullptr;
     return true;
 }
 
@@ -1145,7 +1192,15 @@ static Entry::Slot &slotFor(Entry &e, const ModelAnimation *a, int f, const Mode
 }
 
 void Models::texture(const Texture2D *t) { overTex = t; }
-static const char *gloveName = nullptr;
+void Models::binOpen(const Camera3D &cam) { binOn = true, bin8.clear(), binEye = cam.position, binLook = Vector3Normalize(Vector3Subtract(cam.target, cam.position)); }
+void Models::binAdd(Vector3 at, std::function<void()> draw) { if (binOn) bin8.push_back({viewZ(at), std::move(draw)}); else draw(); }
+int Models::binDraw() {
+    binOn = false;
+    MsvcSort::sort(bin8, [](const BinRec &a, const BinRec &b) { return a.z < b.z; });
+    for (const BinRec &r : bin8) r.draw();
+    int n = (int)bin8.size();
+    return bin8.clear(), n;
+}
 void Models::gloves(const char *name) { gloveName = name; }
 
 // W4M glove (0x5a33a0, 0x756734): its hand shapes replace the body's, skinned on the body's bones of the same name
@@ -1184,7 +1239,7 @@ static void drawGloves(Entry &g, const Entry &body, const std::vector<Matrix> &b
     drawModel(g, pos, tint);
 }
 
-static bool drawLayered(Entry &e, Vector3 pos, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Models::Layers *ly);
+static bool drawLayered(Entry &e, Vector3 pos, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Models::Layers *ly, int part = 0);
 bool Models::draw(const char *name, Vector3 pos, float yaw, float pitch, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers *ly) {
     auto it = models.find(name);
     if (it == models.end()) return false;
@@ -1197,7 +1252,12 @@ bool Models::draw(const char *name, Matrix m, const char *clip, float t, bool lo
     it->second.m.transform = m;
     return drawLayered(it->second, {0, 0, 0}, WHITE, clip, t, loop, aim, aimT, &ly);
 }
-static bool drawLayered(Entry &e, Vector3 pos, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Models::Layers *ly) {
+static bool drawLayered(Entry &e, Vector3 pos, Color tint, const char *clip, float t, bool loop, const char *aim, float aimT, const Models::Layers *ly, int part) {
+    if (binOn && part == 0)
+        again = replay([&e, xf = e.m.transform, pos, tint, c = str(clip), hc = clip != nullptr, t, loop, a = str(aim), ha = aim != nullptr, aimT, l = ly ? *ly : Models::Layers{}, hl = ly != nullptr] {
+            e.m.transform = xf;
+            drawLayered(e, pos, tint, cstr(c, hc), t, loop, cstr(a, ha), aimT, hl ? &l : nullptr, 2);
+        });
     // CPU skinning into the pose's slot (skinned once while it stays in use)
     int f, af = -1;
     const ModelAnimation *am = aim ? clipFrame(e, aim, aimT, false, &af, false) : nullptr;
@@ -1209,13 +1269,17 @@ static bool drawLayered(Entry &e, Vector3 pos, Color tint, const char *clip, flo
         e.m.meshes = s.meshes.data();
         auto gl = gloveName && !e.hands.empty() ? models.find(gloveName) : models.end();
         e.hideHands = gl != models.end();
-        drawModel(e, pos, tint);
+        bonesNow = s.bones.data();
+        drawModel(e, pos, tint, part);
+        again = nullptr;
         e.hideHands = false;
         e.m.meshes = own;
-        if (gl != models.end()) drawGloves(gl->second, e, s.bones, pos, tint);
+        if (gl != models.end() && part != 2) drawGloves(gl->second, e, s.bones, pos, tint);
         return true;
     }
     eyes(e, ly, e.m.meshes, e.eyeUV);
-    drawModel(e, pos, tint);
+    bonesNow = e.m.boneMatrices;
+    drawModel(e, pos, tint, part);
+    again = nullptr;
     return true;
 }

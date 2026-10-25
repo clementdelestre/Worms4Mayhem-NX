@@ -515,14 +515,15 @@ fn decompose(m: &M4) -> ([f32; 3], [f32; 4], [f32; 3]) {
 }
 
 struct Group { path: String, xf: usize, parent: Option<usize> }
-// XShape / XSkinShape Name, from p just past Geometry: SortKey, Parameters, Pre / PostRenderFunc, Bounds + BoundMode
-fn shape_name(x: &Xom, d: &[u8], mut p: usize) -> String {
+// XShape / XSkinShape Name and XNode Bounds centre (+0x14), from p just past Geometry: SortKey, Parameters, Pre / PostRenderFunc, Bounds + BoundMode
+fn shape_name(x: &Xom, d: &[u8], mut p: usize) -> (String, [f32; 3]) {
     p += 4;
     skip_set(d, &mut p);
     vi(d, &mut p);
     vi(d, &mut p);
+    let centre = fl::<3>(d, p);
     p += 20;
-    x.str(vi(d, &mut p))
+    (x.str(vi(d, &mut p)), centre)
 }
 // Render state of a shape after XInitTransparencyAction (0x6e5d32): blend factors (W4M BlendFactor enum), alpha test function
 // (CompareFunction, -1 none) and raw ref, z write, the shader's final t (1 = blended bin)
@@ -563,7 +564,7 @@ fn transparency(x: &Xom, i: usize) -> u8 {
 // blend: the shader's XBlendModeGL (SourceFactor, DestFactor: W4M BlendFactor enum), None = opaque
 // mat: its XMaterial Specular rgb, Emissive rgb, Fresnel rgb, FresnelPower, Power (FixedFunction.cg materialMatrix, 0x792594)
 // hand: a W4M hand shape (worm boggyhand_*, glove hand_*), whose geometry a glove swaps in (0x5a33a0)
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, rs: Rs, mat: [f32; 11], sel: Option<usize>, hand: bool, cset: usize, shape: String }
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, rs: Rs, mat: [f32; 11], sel: Option<usize>, hand: bool, cset: usize, shape: String, bc: [f32; 3] }
 #[derive(Default)]
 // alts: per XChildSelector ($animTexN), its children's XImages in child order (a clip keys the child index + 0.5)
 struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize, alts: Vec<(String, Vec<usize>)> }
@@ -629,20 +630,22 @@ impl Scene {
             "XShape" => {
                 p += 4;
                 let (sh, geo) = (vi(d, &mut p), vi(d, &mut p));
-                self.part(x, sh, geo, &[], g, &shape_name(x, d, p));
+                let (name, bc) = shape_name(x, d, p);
+                self.part(x, sh, geo, &[], g, &name, bc);
             }
             "XSkinShape" => {
                 let bones = refs(&mut p);
                 p += 4;
                 let (sh, geo) = (vi(d, &mut p), vi(d, &mut p));
                 for &b in &bones { if !self.bones.iter().any(|x| x.0 == b) { self.bones.push((b, g.unwrap_or(0))); } }
-                self.part(x, sh, geo, &bones, g, &shape_name(x, d, p));
+                let (name, bc) = shape_name(x, d, p);
+                self.part(x, sh, geo, &bones, g, &name, bc);
             }
             _ => {}
         }
     }
 
-    fn part(&mut self, x: &Xom, shader: usize, geo: usize, bones: &[usize], g: Option<usize>, name: &str) {
+    fn part(&mut self, x: &Xom, shader: usize, geo: usize, bones: &[usize], g: Option<usize>, name: &str, bc: [f32; 3]) {
         if x.t(geo) != "XIndexedTriangleSet" { return; }
         let d = x.d(geo);
         let mut p = 3;
@@ -714,7 +717,7 @@ impl Scene {
             mat[9] = f32le(d, 103);
             mat[10] = f32le(d, 99);
         }
-        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, rs, mat, sel: None, hand: name.starts_with("boggyhand_") || name.starts_with("hand_"), cset: cl, shape: name.to_string() });
+        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, rs, mat, sel: None, hand: name.starts_with("boggyhand_") || name.starts_with("hand_"), cset: cl, shape: name.to_string(), bc });
     }
 
     // Local matrix of every group, with the clip's curves layered on Base (offsets for keys Base also has).
@@ -961,7 +964,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
     // static parts sharing a texture are merged (one draw call each), skinned ones kept as they are
-    struct Prim { img: usize, rs: Rs, mat: [f32; 11], anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize>, hand: bool }
+    // key: a blended-bin shape's sort point (its XNode Bounds centre, 0x6ebd44) placed like its vertices, + the joint that moves it (-1 none)
+    struct Prim { img: usize, rs: Rs, mat: [f32; 11], anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize>, hand: bool, key: Option<[f32; 4]> }
     let mut out: Vec<Prim> = Vec::new();
     for pt in &s.parts {
         let (pos, nrm): (Vec<f32>, Vec<f32>) = if animated {
@@ -980,7 +984,13 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let skin = if !animated { vec![] } else if pt.skin.len() == n { pt.skin.clone() } else { vec![([0; 4], [1.0, 0.0, 0.0, 0.0]); n] };
         let rgba: Vec<u8> = if pt.rgba.len() == n { pt.rgba.iter().flatten().copied().collect() } else { vec![255; 4 * n] };
         let anim = part_anim(pt);
-        if let Some(o) = out.iter_mut().find(|o| !animated && o.sel.is_none() && pt.sel.is_none() && o.img == pt.img && o.rs == pt.rs && o.mat == pt.mat && o.anim == anim && o.pos.len() / 3 + n < 65536) {
+        let key = (pt.rs.t == 1).then(|| if animated {
+            [pt.bc[0], pt.bc[1], pt.bc[2], skin.first().map_or(0.0, |s| s.0[0] as f32)]
+        } else {
+            let [x, y, z] = apply(&norm, pt.group.map_or(pt.bc, |g| apply(&rest[g], pt.bc, 1.0)), 1.0);
+            [x, y, z, -1.0]
+        });
+        if let Some(o) = out.iter_mut().find(|o| !animated && o.sel.is_none() && pt.sel.is_none() && o.img == pt.img && o.rs == pt.rs && o.mat == pt.mat && o.anim == anim && o.key == key && o.pos.len() / 3 + n < 65536) {
             let base = (o.pos.len() / 3) as u16;
             o.idx.extend(pt.idx.iter().map(|&i| i + base));
             o.pos.extend(pos);
@@ -988,7 +998,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             o.uv.extend(uv);
             o.rgba.extend(rgba);
         } else {
-            out.push(Prim { img: pt.img, rs: pt.rs, mat: pt.mat, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel, hand: pt.hand && animated });
+            out.push(Prim { img: pt.img, rs: pt.rs, mat: pt.mat, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel, hand: pt.hand && animated, key });
         }
     }
     let mut prims = Vec::new();
@@ -1015,7 +1025,8 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let r = &pt.rs;
         let bl = r.blend.map_or(String::new(), |(a, b)| format!(",\"blend\":[{a},{b}]"))
             + &(if r.test >= 0 { format!(",\"test\":[{},{}]", r.test, r.tref) } else { String::new() })
-            + if r.zw { "" } else { ",\"zw\":0" } + if r.t == 1 { ",\"t\":1" } else { "" };
+            + if r.zw { "" } else { ",\"zw\":0" } + if r.t == 1 { ",\"t\":1" } else { "" }
+            + &pt.key.map_or(String::new(), |k| format!(",\"key\":[{},{},{},{}]", k[0], k[1], k[2], k[3]));
         let m = if pt.mat == [0.0; 11] && bl.is_empty() { String::new() } else { format!(",\"extras\":{{\"w4m\":[{}]{bl}}}", pt.mat.map(|v| v.to_string()).join(",")) };
         prims.push(format!("{{\"attributes\":{{{attrs}}},\"indices\":{a_idx}{mat}{m}}}"));
     }

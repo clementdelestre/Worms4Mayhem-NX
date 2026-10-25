@@ -3,6 +3,8 @@
 #include "../src/acting.h"
 #include "../src/audio.h"
 #include "../src/fx.h"
+#include "../src/models.h"
+#include "../src/msvc_sort.h"
 #include "../src/terrain.h"
 #include "../src/controls.h"
 #include <cstring>
@@ -226,6 +228,29 @@ int main() {
             assert(base > 0 && second > 0);
             t.unload();
         }
+        CloseWindow();
+    }
+    {  // the bins' std::sort (MSVC 8 introsort, 0x6ed4d3): past 32 records equal keys leave in its partition order, not creation order
+        std::vector<int> v;
+        for (int i = 0; i < 40; i++) v.push_back(i);
+        MsvcSort::sort(v, [](int a, int b) { return a % 3 < b % 3; });
+        assert(v == (std::vector<int>{0, 27, 15, 3, 30, 33, 6, 18, 36, 9, 39, 21, 12, 24, 1, 4, 7, 10, 13, 16, 19, 28, 22, 31, 25, 34, 37, 2, 5, 8, 11, 14, 17, 23, 29, 32, 35, 26, 38, 20}));
+    }
+    {  // scene 8's blended bin (render.md "Render bins"): the telepad's blended shape waits for the water, both drawn far first
+        SetConfigFlags(FLAG_WINDOW_HIDDEN);
+        InitWindow(64, 64, "ui_check");
+        Models::start(), Models::start();
+        while (Models::upload(1e30)) {}
+        Camera3D cam = {{0, 0, 0}, {0, 0, -1}, {0, 1, 0}, 45, CAMERA_PERSPECTIVE};
+        std::vector<int> order;
+        BeginDrawing(), BeginMode3D(cam);
+        Models::binOpen(cam);
+        Models::binAdd({0, 0, -5}, [&] { order.push_back(5); });
+        assert(Models::draw("telepad", MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), MatrixTranslate(0, 0, -50))));
+        Models::binAdd({0, 0, -20}, [&] { order.push_back(20); });
+        assert(Models::binDraw() == 3 && order == (std::vector<int>{20, 5}));
+        EndMode3D(), EndDrawing();
+        Models::unload();
         CloseWindow();
     }
     {  // wind meter needle (0x5fc6e0): ArrowOrien tilt and roll, the -sin(-268 / 640) yaw term, grey fixed at -pi/2

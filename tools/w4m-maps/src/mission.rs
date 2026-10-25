@@ -1,7 +1,7 @@
 // W4M story missions, challenges and deathmatches -> Worms4NX mission JSON (format: docs/missions.md): the level list
 // (Data/Tweak/SCRIPTS.XOM), names and briefs; the level itself runs from its Lua script and databank (script.rs).
 use crate::lua::{self, Val};
-use crate::{find_ci, read_xom, u32le, vi};
+use crate::{find_ci, read_xom, string_keys, u32le, vi};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -15,16 +15,12 @@ pub fn esc(s: &str) -> String {
     o + "\""
 }
 
-// Language strings (XStringResourceDetails: 3 header bytes, varint value, varint key).
+// Language strings
 fn language(data: &Path) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for f in ["English.xom", "EngFE.xom", "EngLS.xom"] {
         let Some(x) = find_ci(&data.join("Language/PC"), f).and_then(|p| fs::read(p).ok()).and_then(|b| read_xom(&b)) else { continue };
-        for (_, d) in x.ctn.iter().filter(|c| c.0 == "XStringResourceDetails") {
-            let mut p = 3;
-            let (v, k) = (vi(d, &mut p), vi(d, &mut p));
-            if let (Some(k), Some(v)) = (x.s.get(k), x.s.get(v)) { out.insert(k.clone(), v.clone()); }
-        }
+        out.extend(string_keys(&x));
     }
     out
 }
