@@ -5070,10 +5070,12 @@ void Hud::draw(const Game &g, const Camera3D &cam, uint32_t tick) {
             } else if (sh.roundTime == -1) rt = "~";  // FXTXT.Infinity
             else rt = TextFormat("%02d:%02d", (int)(sh.clockMs / 1000) / 60, (int)(sh.clockMs / 1000) % 60);
             static const Color GT[2] = {{190, 215, 255, 255}, {190, 215, 255, 255}};
-            const float units = clockW / (textWidth("00:00", 1000) / 1000 * 56 / 50);
+            const float em = textWidth("00:00", 1000) / 1000 * 56 / 50;
             const bool tenths = sh.tenths && g.script && sh.roundTime != -1;
-            hudText(rt.c_str(), 0, clockY, units, GT, BLANK, 1);
-            if (tenths) hudText(TextFormat("%02d", (int)(sh.clockMs % 1000) / 10), clockW / 2 + 6, clockY - 4, 18, GT, BLANK, 1);  // [assumed: the tenths text's offset is not traced]
+            // with tenths (0x5f071b..0x5f07b2): scale min(80 / width, the eased one) >= 2, the text up s / 4, the hundredths at 18 s / 2 under y
+            const float units = tenths ? fmaxf(2, fminf(80 / em, clockW / em)) : clockW / em;
+            hudText(rt.c_str(), 0, clockY + (tenths ? units / 4 : 0), units, GT, BLANK, 1);
+            if (tenths) hudText(TextFormat("%02d", (int)(sh.clockMs % 1000) / 10), 0, clockY - units / 2, 18, GT, BLANK, 1);
         }
         rlPopMatrix();
     }
