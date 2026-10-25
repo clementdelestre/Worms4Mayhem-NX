@@ -62,6 +62,22 @@ static void checkWormPose() {
     Vector3 t = skidTarget({0, 0, 0}, {0.6f, 0.8f, 0}, {1, 0, 0});
     assert(near(t.x, 1 + 1.28f) && near(t.y, -0.96f + 0.45f) && near(t.z, 0));
     t = skidTarget({1, 2, 3}, {0, 1, 0}, {1, 0, 0}), assert(near(t.x, 3) && near(t.y, 2.45f) && near(t.z, 3));
+    // ground probes 0x5a07d0: flat land gives the rest times, a miss eases the tail weight in, buried land zeroes both
+    auto flatRay = [](float h) { return [h](Vector3 o, float u) { float d = (o.y - h) * 20; return d > u ? u + 1 : d; }; };
+    Tail tl;
+    tl.update(1, 0, true, true, {0, 0, 0}, 0, flatRay(0)), assert(near(tl.tailTime(), 1) && near(tl.tipTime(), 1) && !tl.buried);
+    tl.update(1, 0, true, true, {0, 0, 0}, 0, flatRay(-6 / 20.f)), assert(near(tl.phase, atanf(1) / 1.5708f));  // land 6 units under the feet: d = 13
+    tl.update(1, 0, true, false, {0, 0, 0}, 0, flatRay(-100)), assert(tl.far0 && near(tl.tail, 0.1f));
+    tl.update(1, 0, true, false, {0, 0, 0}, 0, flatRay(10)), assert(tl.buried && tl.tail == 0 && tl.tip == 0);
+    Tail::ring = 5, tl.update(1, 3, false, false, {0, 0, 0}, 0, flatRay(0)), assert(Tail::ring == 5);  // not its turn: no probe
+    // model yaw 0x5a2710: 0.08 rad a frame within 0.2 pi of the facing, the second angle at 0.1
+    Yaw yw;
+    yw.step(1, true, 1), assert(near(yw.a, 1 - 0.62831855f + 0.08f) && near(yw.b, 0.1f));
+    yw.step(1, false, 5), assert(near(yw.to, 1));  // an idle worm keeps its facing
+    // aftertouch arms 0x5a01a0: held at 0.5 while the one-shot plays, then the stick against the facing scrubs them
+    Aftertouch atc;
+    atc.step(1, false, {0, 0, 1}, 0), assert(atc.fb == 0.5f && atc.w == 0);
+    atc.step(1, true, {0, 0, 1}, 0), assert(near(atc.fb, 0.4f) && near(atc.lr, 0.5f) && near(atc.w, 0.1f));
     // WAE taunt: blocked once fired until Accessory.Init; holstered it redraws; the Taunt clip fades in and out over the other layers
     Wae w;
     w.init();
