@@ -5501,7 +5501,7 @@ bool movieFrame(float t) {
     }
     if (feItem(fePos(-4, -138), &IN_TITLEUNDERLINE, 0.08f, nullptr, t, -1)) {
         FeBox b;
-        b = {{-4, -138}, 260, 43, 20, 0.054f, -1, 4, 0, true, GC_WHITE, BC_BLACK};
+        b = {{-4, -138}, 260, 43, 20, 0.054f, -1, 4, 4, false, GC_WHITE, BC_BLACK};  // MovieText: AutoScale 0, size 20 (FontSizeOverride 0), TextAnim 4
         feText(Movie::subtitle(), b), rlPopMatrix();
     }
     return on;
