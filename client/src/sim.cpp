@@ -3741,7 +3741,7 @@ void Game::step(const Input &raw) {
             emit(GameEvent::Jump, w.pos, current, ev);  // weapon: the W4M kWE code (animation)
         }
     } else {
-        jumpDelay = 0, steerIn = {}, walkTick = 0;
+        jumpDelay = 0, steerIn = {}, walkTick = 0, walkVel = {};  // no input: the idle branch 0x5b1c1b zeroes Velocity
         if (vault.t) vaultStep(w.pos, vault, {});  // control gone: no input, back to the old pos
     }
     // rope and jetpack outlast the attack: still steered while the shot flies and during the retreat
