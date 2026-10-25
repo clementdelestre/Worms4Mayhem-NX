@@ -922,6 +922,22 @@ void slideIfSteep(Vector3 n, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot
         vel = walk, m.slide = true, m.spin = m.spinTo = 0, m.normal = n;  // event 17 (SupportNormal 0x5b1998); ChangeState zeroes the spin (0x5aaa0c)
 }
 
+// W4M ImpulseWorm 0x5ad010: onto its ground (impulse . SupportNormal < 0) the worm always Slides on (v + impulse) less its normal part, else it flies
+void impulseWorm(const Terrain &t, Worm &w, Vector3 imp) {
+    Motion &m = w.motion;
+    Vector3 n{0, 1, 0};
+    const bool ground = w.grounded && (m.slide ? (n = m.normal, true) : m.on >= 0 || footing(t, {w.pos.x, w.pos.y - Game::R - STANCE, w.pos.z}, &n));
+    m.air = false;
+    if (ground && Vector3DotProduct(imp, n) < 0) {
+        w.vel = Vector3Add(w.vel, imp);
+        w.vel = Vector3Subtract(w.vel, Vector3Scale(n, Vector3DotProduct(w.vel, n)));
+        if (!m.slide) m.slide = true, m.spin = m.spinTo = 0, m.normal = n;  // ChangeState zeroes the spin (0x5aaa0c)
+        return;
+    }
+    w.vel = Vector3Add(w.vel, imp);
+    w.grounded = m.slide = false;
+}
+
 float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Motion &m, float &yaw, float g, uint64_t pot, float e, Vector2 wind, const Colliders *cs) {
     const float R = Game::R;
     bool was = grounded;
@@ -949,7 +965,6 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
     Vector3 n{0, 1, 0};
     // a flight lands through its sweep (0x5af430); [ours] a worm put down at rest (spawn, teleport) stands where it is
     grounded = vel.y <= 0 && (was || Vector3LengthSqr(vel) == 0) && (m.on >= 0 || footing(t, {pos.x, pos.y - R - STANCE, pos.z}, &n));
-    if (grounded && was && Vector3LengthSqr(vel) > 0 && Vector3DotProduct(vel, n) >= 0) grounded = false;  // ImpulseWorm: not into the ground, Ballistic
     // [ours] idle and no fall Fits: W4M would Rebound to a stop, Slide, land with support 0xFFFF and stay (0x5b1a3e); ours stays at once
     if (!grounded && was && Vector3LengthSqr(vel) == 0 && !rodsFit(t, pos, {pos.x, pos.y - 0.05f, pos.z})) grounded = true;
     if (grounded) {
@@ -3159,8 +3174,7 @@ void Game::explode(Vector3 p, const Blast &b0, int type, int weapon, const char 
         if (!dmg && Vector3LengthSqr(kick) == 0) continue;
         if (dmg) hurt(w, dmg, true, type);
         if (w.motion.flags & WF_PINNED) continue;  // 0x5ae9c1: no ImpulseWorm
-        w.vel = Vector3Add(w.vel, Vector3Scale(kick, (wp(WP_STICKY) ? 0.5f : 1) * (w.armour ? 0.5f : 1)));  // W4M shield: half
-        w.motion.air = w.motion.slide = false;  // ImpulseWorm 0x5ad010: air control off, then Ballistic or Sliding
+        impulseWorm(terrain, w, Vector3Scale(kick, (wp(WP_STICKY) ? 0.5f : 1) * (w.armour ? 0.5f : 1)));  // W4M shield: half
     }
     for (Object &o : objects) {
         if (o.type == Object::Mine) {  // W4M payload 0x57f4d0: only pushed (no 1.2x), at least 0.3 of it upward; never set off

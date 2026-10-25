@@ -1844,6 +1844,23 @@ static void checkLowLedges() {
 
 // W4M IsSlippy 0x475770 / GroundNormal 0x59ef90: a worm on a SLIPPY frame takes the _Slippy slide values (cos 10 deg, Start / StopSlideVel
 // 0.01 units/ms, friction 0.999), with or without the Slippy wormpot, which only moves the _Default ones (0x5d59c0)
+// W4M ImpulseWorm 0x5ad010: a push into the ground always Slides (no StartSlideVel test), a push off it or a Sliding worm's flies
+static void checkImpulseWorm() {
+    Game g;
+    g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
+    clearArena(g, 16, 176, 176, 248, 16, 80);
+    landBox(g, {0, 0, 0}, {1, 0, 0}, 4, 44, 48, 50, 4, 20);
+    Worm &w = g.worms[0];
+    w.pos = {20, 50.6f, 12}, w.vel = {0, 0, 0}, w.grounded = true, w.motion = Motion{};
+    impulseWorm(g.terrain, w, {0.5f, -1, 0});  // far under StartSlideVel (10 m/s)
+    assert(w.grounded && w.motion.slide && fabsf(w.vel.x - 0.5f) < 1e-6f && w.vel.y == 0);
+    impulseWorm(g.terrain, w, {0, 1, 0});  // a Sliding worm blown up: Ballistic
+    assert(!w.grounded && !w.motion.slide && w.vel.y == 1);
+    w.pos.y = 50.6f, w.vel = {0, 0, 0}, w.grounded = true;
+    impulseWorm(g.terrain, w, {0.5f, 1, 0});
+    assert(!w.grounded && !w.motion.slide);
+}
+
 static void checkSlippyLand() {
     for (int slip = 0; slip < 2; slip++)
         for (uint64_t pot : {(uint64_t)0, (uint64_t)1 << WP_SLIPPY}) {
@@ -6064,6 +6081,7 @@ int main() {
     checkHurtEndsTurn();
     checkMineBlastEndsTurn();
     checkDetailRemoval();
+    checkImpulseWorm();
     checkSlippyLand();
     checkSecondMaterial();
     checkClearVoxel();

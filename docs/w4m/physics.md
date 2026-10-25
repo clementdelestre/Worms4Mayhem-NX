@@ -493,7 +493,7 @@ Ballistic, ours (sim.cpp `flyBody`, `sweep`, `rebound`, `rodsFit`; shared with t
 #### ImpulseWorm 0x5ad010 (blast)
 
 - Ignored in states 7/8. Magnitude ×WormPot.StickyModeScale when StickyMode is on. Air control off.
-- On the ground with `impulse·SupportNormal < 0`: Velocity = (v + impulse) minus its normal component, state → **Sliding**, hit clip 0x5a9100.
+- On the ground with `impulse·SupportNormal < 0`: Velocity = (v + impulse) minus its normal component, state → **Sliding**, hit clip 0x5a9100; no StartSlideVel test, the Sliding state's own stop test (0x5b04a6) ends it [decompiled]. A Sliding worm is on the ground too; state Ballistic skips the dot test.
 - Otherwise `Velocity += impulse`, state Ballistic, and the reaction depends on `d = facing · horizontal blast dir`:
   - d < −0.5: event 14 (blown backwards) and yaw = atan2(dir) + π;
   - −0.5 ≤ d < 0.4: event 13 with param = side (cross product) and yaw = atan2(dir);
