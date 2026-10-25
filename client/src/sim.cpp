@@ -1188,7 +1188,7 @@ void Game::start(const GameConfig &c) {
             }
     if (wp(WP_MAX_HEALTH)) cfg.scheme.crateHealth = 100;  // after the preset match: the scheme's delays stay
     if (wp(WP_ONE_SHOT)) cfg.scheme.health = 1;
-    countGroup.clear(), deathQueue.clear(), countT = throes = camHold = 0, dyingWorm = -1, crated = false, gunWaiting = false;
+    countGroup.clear(), deathQueue.clear(), throes.clear(), countT = camHold = 0, suddenDamage = crated = gunWaiting = false;
     respawns.clear(), wobble = {}, mysteryWalk = mysteryLow = false;
     girderOn = false, girderWait = girders = 0, bubbles.clear(), bubbleAt = -1, icarus = flapAt = 0, drift = {}, doubleDamage = changing = false;
     roped = jetting = jetUsed = chute = false, fuel = jetInit, boost = 0, secondary = launched = -1;
@@ -1599,7 +1599,7 @@ void Game::stepTelepads() {
             colliders(cs, 1);
             for (const Collider &k : cs) {  // 0x5d4120: the first worm collider of the sphere, whoever's turn it is, but not one in its throes or drowning
                 float r = PAD_R + k.r;
-                if (k.id >= (int)worms.size() || k.id == dyingWorm || worms[k.id].drowned || Vector3DistanceSqr(k.c, c) >= r * r) continue;
+                if (k.id >= (int)worms.size() || inThroes(k.id) || worms[k.id].drowned || Vector3DistanceSqr(k.c, c) >= r * r) continue;
                 std::vector<int> live;  // 0x5d3e10: a random other pad of the group, the pad itself when it is the only one
                 int same = 0;
                 for (size_t j = 0; j < telepads.size(); j++) if (telepads[j].st != 5) live.push_back((int)j), same += telepads[j].group == p.group;
@@ -2103,7 +2103,7 @@ int Game::activeTokens() const {
 
 // Shots, damage displays (0x5abc50, "Worm Displaying Damage Taken" until DamageComplete), "Worm Waiting To Die" (queued) and "Worm Dying" tokens besides
 int Game::tokens() const {
-    return activeTokens() + (int)shots.size() + (countT < COUNT_DAMAGE ? (int)countGroup.size() : 0) + (int)deathQueue.size() + (dyingWorm >= 0);
+    return activeTokens() + (int)shots.size() + (countT < COUNT_DAMAGE ? (int)countGroup.size() : 0) + (int)deathQueue.size() + (int)throes.size();
 }
 
 // Weapon.Delete (0x55db30): a gun with shots fired goes to state 5, which applies no more damage; its token stays until it dies
@@ -2265,31 +2265,35 @@ void Game::dropCrates(int n, bool roll) {
         if ((!roll || (int)(rand01() * 100) < cfg.scheme.crateChance) && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
 }
 
-// The damage display (COUNT_DAMAGE), then the death queue 0x4f9b30: the front worm's throes once nothing else is active (or, after
-// GunWaiting, once the active tokens, the gun's included, are at most the queue size + 2), its blast 3 s later; a living worm its blast hurts keeps that damage pending for the next ApplyDamage.
+// The damage display (COUNT_DAMAGE), then the death queue 0x4f9b30, ticked before the worms: the front worm's throes once nothing
+// else is active, after GunWaiting once the active tokens (the gun's included) are at most the queue size + 2, or at once under
+// SuddenDamageMode; its blast 3 s later. A living worm a blast hurts keeps that damage pending for the next ApplyDamage.
 void Game::stepCount() {
     ++countT;
     bool shown = countGroup.empty() || countT >= COUNT_DAMAGE;
-    if (dyingWorm >= 0) {
-        if (--throes > 0) return;
-        Worm &x = worms[dyingWorm];
-        int i = dyingWorm;
-        dyingWorm = -1;
+    size_t dying = throes.size();
+    if (!deathQueue.empty() && (suddenDamage || (!dying && shown && shots.empty() && !active()) || (gunWaiting && tokens() + (shotsLeft > 0) <= (int)deathQueue.size() + 2))) {
+        gunWaiting = false;
+        int i = deathQueue.front();
+        deathQueue.erase(deathQueue.begin());
+        throes.push_back({i, COUNT_THROES});  // Worm.TimeToDie
+        if (vital(i)) surrender(worms[i].team);  // 0x5a7287
+    }
+    for (size_t k = 0; k < dying;) {
+        if (--throes[k].left > 0) { k++; continue; }
+        int i = throes[k].worm;
+        throes.erase(throes.begin() + k), dying--;
+        Worm &x = worms[i];
         x.alive = false, x.counted = 0;
         std::vector<int> was;
         for (int j : countGroup) was.push_back(worms[j].hp);
         deathBlast(x, i);
         // 0x5a9310 -> Gravestone.Create 0x4f5ac0: the team's gravestone (GraveIndex < 21) 20 units over Position, the worm's yaw
         if (int gi = x.team < (int)cfg.teamSetup.size() ? cfg.teamSetup[x.team].grave : 0; gi < 21) graves.push_back({{x.pos.x, x.pos.y - R + 1, x.pos.z}, {}, x.yaw, gi, uids++, clock});
-        for (size_t k = countGroup.size(); k-- > 0;)  // hurt now: shown at the next ApplyDamage
-            if (worms[countGroup[k]].hp != was[k]) worms[countGroup[k]].counted = was[k], countGroup.erase(countGroup.begin() + k);
-    } else if (!deathQueue.empty() && ((shown && shots.empty() && !active()) || (gunWaiting && tokens() + (shotsLeft > 0) <= (int)deathQueue.size() + 2))) {
-        gunWaiting = false;
-        dyingWorm = deathQueue.front(), throes = COUNT_THROES;  // Worm.TimeToDie
-        deathQueue.erase(deathQueue.begin());
-        if (vital(dyingWorm)) surrender(worms[dyingWorm].team);  // 0x5a7287
+        for (size_t c = countGroup.size(); c-- > 0;)  // hurt now: shown at the next ApplyDamage
+            if (worms[countGroup[c]].hp != was[c]) worms[countGroup[c]].counted = was[c], countGroup.erase(countGroup.begin() + c);
     }
-    if (shown && deathQueue.empty() && dyingWorm < 0) {
+    if (shown && deathQueue.empty() && throes.empty()) {
         for (int i : countGroup) worms[i].counted = std::max(0, worms[i].hp);
         countGroup.clear();
     }
@@ -3038,7 +3042,7 @@ void Game::explode(Vector3 p, const Blast &b0, int type, int weapon, const char 
     if (b.crater > 0 && !landLocked()) blastLand(p, b.crater, b.normal);  // Land.Indestructable: the Land Explosion handler returns (0x47356d)
     emit(b.crater >= 5 ? GameEvent::BigBoom : GameEvent::Boom, fxAt ? *fxAt : p, -1, weapon), events.back().fx = fx, events.back().sfx = sfx;
     for (Worm &w : worms) {
-        if (!w.alive || int(&w - worms.data()) == dyingWorm || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
+        if (!w.alive || inThroes(int(&w - worms.data())) || shielded(w, p)) continue;  // ImpulseWorm ignores kWPS_DeathThroes (0x5ad010)
         const Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z};  // 0x5ae4f0 measures from WormData Position (+0x38)
         int dmg = blastDamage(b, p, feet);
         Vector3 kick = blastKick(b, p, feet);
@@ -3807,7 +3811,7 @@ void Game::step(const Input &raw) {
     clock++;  // TimerLogicEntity 0x50f17d: the round clock also runs in the hot seat
     // stdvs Worm_Died: the turn ends once AllianceCount < 2 (worms die at their blast, not at 0 hp)
     bool over = !cfg.mission && activeAlliances() <= 1;
-    if (phase != Phase::Settle && (!countGroup.empty() || !deathQueue.empty() || dyingWorm >= 0)) stepCount();  // a gun's ApplyDamage mid-turn
+    if (phase != Phase::Settle && (!countGroup.empty() || !deathQueue.empty() || !throes.empty())) stepCount();  // a gun's ApplyDamage mid-turn
     switch (phase) {
     case Phase::Aim:  // a script ends the turn through its Timer_* / Worm_Damaged_Current callbacks (stdlib EndTurn)
         // 0x586e75: a powered weapon's FirePressed posts Timer.EndTurn (0x549ad0), clearing the turn-running flag +0x6a until the shot
@@ -3823,8 +3827,8 @@ void Game::step(const Input &raw) {
         break;
     case Phase::Settle:  // stdlib.lub EndTurn: timer > 0 WaitUntilNoActivity, < 0 PostActivityTime; no timeout, as W4M
         if (in.flags & Input::SKIP_COUNT) countT = std::max(countT, COUNT_DAMAGE);  // observed in W4M by the user, 2026-10-03: X ends the display, deaths follow as usual
-        if (!countGroup.empty() || !deathQueue.empty() || dyingWorm >= 0) {  // displays and dying worms are active objects
-            if (stepCount(); countGroup.empty() && deathQueue.empty() && dyingWorm < 0) timer = 1;  // back to WaitUntilNoActivity
+        if (!countGroup.empty() || !deathQueue.empty() || !throes.empty()) {  // displays and dying worms are active objects
+            if (stepCount(); countGroup.empty() && deathQueue.empty() && throes.empty()) timer = 1;  // back to WaitUntilNoActivity
         }
         else if (timer < 0) {
             if (++timer < 0) break;
@@ -3970,7 +3974,10 @@ uint32_t Game::checksum() const {
     if (cursorOn) mix(&cursor, sizeof cursor), mix(&cursorYaw, sizeof cursorYaw), mix(&cursorPitch, sizeof cursorPitch);  // never on in replays from before the cursor: their checksums hold
     if (locked) mix(&lockAt, sizeof lockAt);
     mix(countGroup.data(), countGroup.size() * sizeof(int)), mix(&countT, sizeof countT), mix(deathQueue.data(), deathQueue.size() * sizeof(int));
-    mix(&dyingWorm, sizeof dyingWorm), mix(&throes, sizeof throes);
+    int dw = throes.empty() ? -1 : throes[0].worm, dl = throes.empty() ? 0 : throes[0].left;
+    mix(&dw, sizeof dw), mix(&dl, sizeof dl);
+    if (throes.size() > 1) mix(throes.data() + 1, (throes.size() - 1) * sizeof(Throes));
+    if (suddenDamage) mix(&suddenDamage, 1);
     if (gunWaiting) mix(&gunWaiting, sizeof gunWaiting);
     for (const Gas &c : gas) mix(&c, sizeof c);
     if (crated) mix(&crated, 1);

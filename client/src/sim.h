@@ -699,11 +699,15 @@ struct Game {
     static constexpr int POST_ACTIVITY = msTicks(2400);    // W4M PostActivityTime (LOCAL.XOM)
     std::vector<int> countGroup;  // worms whose damage display runs; countT: ticks since that ApplyDamage
     std::vector<int> deathQueue;  // W4M GameLogicService+0x1fc: the dead, in ApplyDamage order
-    int countT = 0, dyingWorm = -1, throes = 0;  // the worm in kWPS_DeathThroes, ticks left
+    struct Throes { int worm, left; };
+    std::vector<Throes> throes;  // W4M kWPS_DeathThroes in Worm.TimeToDie order: the worm, ticks left (+0x128)
+    int countT = 0;
+    bool suddenDamage = false;  // W4M GameLogic.SuddenDamageMode (GameLogicService+0x210): the death queue pops every tick
+    bool inThroes(int i) const { return std::any_of(throes.begin(), throes.end(), [&](const Throes &t) { return t.worm == i; }); }
     int countTicks(int i) const { return std::min(90, std::max(1, std::abs(std::max(0, worms[i].hp) - worms[i].counted) * 3 / 2)); }
     bool drowned(int i) const { return worms[i].drowned; }
     int dying() const {  // the dying worm the camera shows: in its throes, else afloat (W4M "Worm Dying" 0x5a7190)
-        if (dyingWorm >= 0) return dyingWorm;
+        if (!throes.empty()) return throes.front().worm;
         for (size_t i = 0; i < worms.size(); i++) if (worms[i].drowned && worms[i].counted > 0) return (int)i;
         return -1;
     }

@@ -554,8 +554,23 @@ static void checkGunWaitDeath() {
     g.step(fire);
     assert(g.shotsLeft == 1 && g.gunState == 3);
     int t = 1;
-    for (; g.shotsLeft == 1 && g.dyingWorm < 0 && t < 600; t++) g.step(t % 2 ? fire : Input{});
-    assert(g.shotsLeft == 1 && g.dyingWorm >= 0 && v.alive && g.countT < Game::COUNT_DAMAGE);  // dying before shot 2, inside the display
+    for (; g.shotsLeft == 1 && g.throes.empty() && t < 600; t++) g.step(t % 2 ? fire : Input{});
+    assert(g.shotsLeft == 1 && !g.throes.empty() && v.alive && g.countT < Game::COUNT_DAMAGE);  // dying before shot 2, inside the display
+}
+
+// W4M 0x4f9b30: GameLogic.SuddenDamageMode (graveyard-w3d) pops the death queue every tick, so the dead die together, each
+// with its own 3 s of throes; without it the second waits for the first worm's blast.
+static void checkSuddenDamage() {
+    for (bool sudden : {true, false}) {
+        Game g;
+        g.start({25, 4, 1, "", 0}), g.hotSeat = 0;
+        settle(g);
+        int a = (g.current + 1) % (int)g.worms.size(), b = (g.current + 2) % (int)g.worms.size();
+        g.worms[a].hp = g.worms[b].hp = 0, g.deathQueue = {a, b};
+        g.suddenDamage = sudden, g.phase = Phase::Settle, g.timer = 1;
+        for (int t = 0; t < 3; t++) g.step(Input{});
+        assert(g.inThroes(a) && g.inThroes(b) == sudden && g.deathQueue.size() == (sudden ? 0u : 1u));
+    }
 }
 
 // Homing missile: flies off along the aim, then dives onto the reticle point.
@@ -3832,7 +3847,7 @@ static void checkGravestone() {
     Worm &x = g.worms[k];
     x.pos = {P.x, top + Game::R, P.z}, x.vel = {}, x.hp = 0, x.yaw = 1;
     g.cfg.teamSetup.resize(g.teams), g.cfg.teamSetup[x.team].grave = 3;
-    g.dyingWorm = k, g.throes = 1;
+    g.throes = {{k, 1}};
     g.stepCount();
     assert(g.graves.size() == 1 && g.graves[0].grave == 3 && g.graves[0].yaw == 1 && fabsf(g.graves[0].pos.y - (top + 1)) < 1e-4f);
     auto settle = [&] { for (int t = 0; t < 240 && g.graves[0].moving; t++) g.stepGraves(); };
@@ -5955,6 +5970,7 @@ int main() {
     checkShotgun();
     checkGunWait();
     checkGunWaitDeath();
+    checkSuddenDamage();
     checkHoming();
     checkTeamWeapon();
     checkSentry();

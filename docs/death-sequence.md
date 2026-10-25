@@ -30,9 +30,10 @@ Settle (`docs/sim.md`, W4M stdlib.lub): wait for no activity (no timeout), PostA
 
 | t | Event |
 |---|---|
-| `COUNT_DAMAGE` and nothing else active | the front dead worm's throes (`dyingWorm`, Death5 / Death15 scene) |
+| `COUNT_DAMAGE` and nothing else active | the front dead worm's throes (`Game::throes`, Death5 / Death15 scene) |
 | + 3.0 s (`COUNT_THROES`) | blast at its feet (0x5a9400, `Game::DEATH_BLAST`), Death event, gravestone |
 | + 1 tick, once thrown worms have landed | the next dead worm's throes, or the queue ends |
+| `GameLogic.SuddenDamageMode` set (graveyard-w3d) | the queue pops one worm a tick whatever is active: the dead die together, each blast 3 s after its own throes began [disasm 0x4f9b30] |
 | queue over | wait for no activity, PostActivityTime, DoPostActivity (poison, crates), PostActivityTime, next turn |
 
 Camera: each dying worm asks a WormTrackCamera at the start of its throes or at its drowning (W4M "Worm Dying" 0x5a7190, from 0x5adcb6 and 0x5ad83d) [disasm]; the track lasts through its blast, then RestTime 1.5 s (docs/camera.md "Death queue, drowning, hp count").

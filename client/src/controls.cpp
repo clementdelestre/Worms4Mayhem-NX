@@ -473,7 +473,7 @@ static void watch(const Game &g, const Camera3D &cam, float dt) {
     lastCountT = g.countGroup.empty() ? 1 << 30 : g.countT;
     for (size_t i = 0; i < g.worms.size(); i++) {
         const Worm &w = g.worms[i];
-        bool dying = (int)i == g.dyingWorm || (w.drowned && w.counted > 0);  // "Worm Dying" 0x5a7190: Worm.TimeToDie 0x5adcb6, drowning 0x5ad83d
+        bool dying = g.inThroes((int)i) || (w.drowned && w.counted > 0);  // "Worm Dying" 0x5a7190: Worm.TimeToDie 0x5adcb6, drowning 0x5ad83d
         if (dying && !wasDying[i] && g.phase != Phase::GameOver) ask(g, cam, (int)i);
         wasDying[i] = dying;
         Vector3 was = lastVel[i];
@@ -557,7 +557,7 @@ static bool track(Camera3D &cam, const Game &g, bool &chase, float dt, bool fram
         wormTrack(g, pend.worm, pend.prio, pend.e, pend.d, false), sinceTrack = 0;
     if (tk.on && tk.worm >= 0) {  // WormTrackCamera: until the worm rests 1.5 s
         const Worm &w = g.worms[tk.worm];
-        bool gone = !w.alive && !(w.drowned && w.counted > 0) && tk.worm != g.dyingWorm;  // unspawned after its blast: frozen (0x533a61)
+        bool gone = !w.alive && !(w.drowned && w.counted > 0) && !g.inThroes(tk.worm);  // unspawned after its blast: frozen (0x533a61)
         tk.done |= gone || (w.alive && w.hp > 0 && w.grounded && Vector3Length(w.vel) < 0.1f);  // no activity token left (0x532e94)
         if ((tk.done && (tk.rest -= dt) <= 0) || (g.phase == Phase::Aim && !tk.force)) return tk = {}, false;  // then RestTime 1500 ms
         if (!gone && w.pos.y > g.water - 2) tk.obj = Vector3Add(w.pos, {0, 0.5f, 0}), tk.ov = w.vel;  // sinking: stops following

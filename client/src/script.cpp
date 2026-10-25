@@ -166,7 +166,7 @@ struct ScriptHost {
 
     static void pullKey(const char *k) {
         Game &g = *G;
-        if (!strcmp(k, "ObjectCount.Active")) put(k, !g.shots.empty() || g.active() || g.gunState || !g.countGroup.empty() || !g.deathQueue.empty() || g.dyingWorm >= 0);
+        if (!strcmp(k, "ObjectCount.Active")) put(k, !g.shots.empty() || g.active() || g.gunState || !g.countGroup.empty() || !g.deathQueue.empty() || !g.throes.empty());
         else if (!strcmp(k, "RoundTimeRemaining") && S->started) put(k, std::max<int64_t>(0, (int64_t)num("RoundTime") - (S->roundOn ? roundMs() : 0)));
         else if (!strcmp(k, "CurrentTeamIndex") && S->started) put(k, g.worms[g.current].team);
         else if (!strcmp(k, "ActiveWormIndex") && S->started) put(k, slotOf(g.current));
@@ -182,6 +182,7 @@ struct ScriptHost {
             g.wind = s * cosf(d), g.windZ = s * sinf(d);
         } else if (!strcmp(k, "DoubleDamage")) g.doubleDamage = num(k) != 0;
         else if (!strcmp(k, "Land.Indestructable")) g.indestructible = num(k) != 0;
+        else if (!strcmp(k, "GameLogic.SuddenDamageMode")) g.suddenDamage = num(k) != 0;
         else if (!strcmp(k, "DefaultRetreatTime")) g.cfg.scheme.retreatTime = (uint8_t)Clamp(num(k) / 1000, 0, 255);
         else if (!strcmp(k, "Crate.HealthInCrates")) g.cfg.scheme.crateHealth = (uint8_t)Clamp(num(k), 0, 255);
         else if (!strcmp(k, "Jetpack.Fuel")) g.fuel = (float)(num(k) / 1000);
@@ -374,7 +375,7 @@ struct ScriptHost {
         g.worms[i] = w, S->died[i] = true;
         auto drop = [&](std::vector<int> &v) { v.erase(std::remove(v.begin(), v.end(), i), v.end()); };
         drop(g.countGroup), drop(g.deathQueue);
-        if (g.dyingWorm == i) g.dyingWorm = -1;
+        g.throes.erase(std::remove_if(g.throes.begin(), g.throes.end(), [&](const Game::Throes &t) { return t.worm == i; }), g.throes.end());
         put("DeadWorm.Id", s), call("Worm_Died");
     }
 
@@ -850,7 +851,7 @@ struct ScriptHost {
         for (size_t i = 0; i < g.worms.size() && i < S->died.size(); i++) {  // Worm.Died at the worm's blast (0x5a6970)
             bool blast = std::any_of(ev.begin(), ev.end(), [&](const GameEvent &e) { return e.kind == GameEvent::Death && e.worm == (int)i; });
             const Worm &w = g.worms[i];
-            bool gone = blast || (!w.alive && !w.drowned && S->wormSlot[i] >= 0 && g.dyingWorm != (int)i &&
+            bool gone = blast || (!w.alive && !w.drowned && S->wormSlot[i] >= 0 && !g.inThroes((int)i) &&
                                   std::find(g.deathQueue.begin(), g.deathQueue.end(), (int)i) == g.deathQueue.end() && w.hp <= 0 && S->started);
             if (!gone || S->died[i]) continue;
             S->died[i] = true;
@@ -909,7 +910,7 @@ static int lGet(lua_State *L) {
 // a message counted itself (CreateTrigger, NewEmitter, ShakeStart, the commentary) are not counted twice.
 static bool modelled(const char *k) {
     static const char *USED[] = {"Crate.", "EFMV.", "Explosion.", "TurnTime", "HotSeatTime", "RoundTime", "PostActivityTime", "DefaultRetreatTime",
-                                 "RetreatTime", "Wind.", "DoubleDamage", "Land.Indestructable", "Jetpack.Fuel", "Particle.Rain.Prob",
+                                 "RetreatTime", "Wind.", "DoubleDamage", "Land.Indestructable", "GameLogic.SuddenDamageMode", "Jetpack.Fuel", "Particle.Rain.Prob",
                                  "Trigger.Spawn", "Trigger.Radius", "Trigger.Index", "Trigger.Team", "Trigger.HitPoints", "Trigger.SheepCollect",
                                  "Trigger.PayloadCollect", "Trigger.GirderCollect", "Trigger.WormCollect", "Trigger.Visibility", "Trigger.AffectsAI", "Particle.DetailObject", "Particle.Name",
                                  "Camera.Shake.", "CommentaryPanel.", "HUD.", "BriefingText.", "Water.Level", "Mine.",
