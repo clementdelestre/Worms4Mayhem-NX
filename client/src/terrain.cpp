@@ -834,7 +834,7 @@ Terrain::Shade Terrain::sunShade(Vector3 p, float off, bool back) const {
 }
 
 // W4M 0x46a070 on a ray starting in land (0x468490 keeps the start in both records): the nearest face of the start cell whose
-// neighbour is empty, whatever the ray's direction, else -dir [disasm]; nearest by distance, W4M's cell fractions [assumed]
+// neighbour is empty, whatever the ray's direction, else -dir [disasm]; by plane distance where W4M takes the lattice fraction
 Vector3 Terrain::startNormal(Vector3 p, size_t c, Vector3 dir) const {
     const uint32_t *o = sharp.ops(c);
     for (uint32_t i = 1; i <= o[0]; i++) {
