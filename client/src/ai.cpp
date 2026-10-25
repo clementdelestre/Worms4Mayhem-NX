@@ -58,20 +58,6 @@ static bool outside(const Game &g, Vector3 p) {
     return p.y < g.water - 2 || p.x < -20 || p.z < -20 || p.x > W + 20 || p.z > W + 20;
 }
 
-// Copy of Game::stepWorm without hp; false once drowned.
-struct Body { Vector3 pos, vel; bool grounded; Motion motion{}; };
-static const Colliders &wormColliders(const Game &g) {  // Game::stepWorm's: the active worm's sphere against the others
-    static thread_local Colliders cs;
-    g.colliders(cs, Game::WORM_MASK, g.current);
-    return cs;
-}
-
-static bool stepBody(const Game &g, Body &b, float &yaw) {
-    float speed = wormBody(g.terrain, b.pos, b.vel, b.grounded, b.motion, yaw, g.gravity(), g.pot, 0.3f, g.wormWind(), &wormColliders(g));
-    g.landDamage(b.motion, speed);  // spends a 0x40 flag on the landing, as the sim does
-    return b.pos.y >= g.water;
-}
-
 // W4M 0x4a46f0: a target is an active worm of a team that has not surrendered
 static bool targeted(const Game &g, const Worm &x) { return x.alive && !g.surrendered[x.team]; }
 
@@ -272,57 +258,8 @@ static bool ground(const Game &g, Vector3 p, Vector3 &hit) {
     return g.terrain.raycast({p + Vector3{0, 3, 0}, {0, -1, 0}}, 14, &hit);
 }
 
-// --- the walking mover: an exact copy of Game::step for the active worm ---
-
-struct Mover { Body b; float yaw, pitch; bool roped; Rope rope; uint8_t prev; int jump = 0; uint8_t kind = 0; Vault vault{}; Hook hook{}; int walkTick = 0; };
-
-static Vector3 feetOf(const Body &b) { return {b.pos.x, b.pos.y - R, b.pos.z}; }
-
-static bool stepRope(const Game &g, Mover &m, const Input &in) {  // Game::step's ropeTick on the feet
-    Vector3 feet = feetOf(m.b);
-    g.ropeTick(m.rope, feet, m.b.vel, Game::ropeSwing(in, m.yaw), in.aim, g.current);
-    m.b.pos = {feet.x, feet.y + R, feet.z};
-    return m.b.pos.y >= g.water;
-}
-
-static bool move(const Game &g, Mover &m, const Input &in, float ropeMax) {
-    uint8_t pressed = in.buttons & ~m.prev;
-    m.prev = in.buttons;
-    Body &b = m.b;
-    bool tool = m.roped;
-    if (!m.vault.t && !m.jump && !m.roped) m.yaw += in.turn / 127.0f * 2.5f * DT;
-    const float ws = Game::WALK_SPEED * g.walkScale();
-    const int wt = m.walkTick;
-    m.walkTick = 0;
-    if (m.vault.t) vaultStep(b.pos, m.vault, flat(m.yaw) * (float)in.walk);  // Game::step's vault
-    else if (b.grounded && !b.motion.slide && in.walk && !m.jump) {  // Game::step's walk
-        Vector3 walkV = flat(m.yaw) * (in.walk / 127.0f * Game::INPUT_IMPULSE), gn;
-        if (!Game::walkFrame(m.walkTick = wt + 1)) {
-        } else if (walkStep(g.terrain, b.pos, m.yaw, in.walk / 127.0f * ws * Game::WALK_FRAME, &m.vault, &gn, &wormColliders(g), &b.motion)) b.vel = walkV, b.motion.air = true;
-        else if (!m.vault.t) slideIfSteep(gn, b.vel, b.motion, walkV, g.pot);
-    }
-    b.motion.input = flat(m.yaw) * (in.walk / 127.0f);
-    Vector3 jv;  // Game::step's jump
-    if ((pressed & Input::JUMP) && !m.jump && !m.vault.t && b.grounded && !b.motion.slide && !tool && !g.wp(WP_NO_JUMPING)) m.jump = Game::JUMP_WINDOW, m.kind = 2;
-    else if (m.jump && Game::jumpTick(m.jump, m.kind, in, pressed, m.yaw, jv) && b.grounded) b.vel = jv, b.grounded = false, b.motion.air = true;
-    if (m.roped) {
-        if (pressed & Input::JUMP) m.roped = false, b.vel = g.ropeRelease(m.rope, feetOf(b), Game::ropeSwing(in, m.yaw));
-    } else {
-        m.pitch = Clamp(m.pitch + in.aim / 127.0f * 1.5f * DT, -1.2f, 1.45f);
-        if (pressed & Input::FIRE) m.hook = m.hook.on ? Hook{} : Game::grappleFire(feetOf(b), m.yaw, m.pitch, b.vel, m.rope.swung);
-    }
-    if (m.vault.t && (m.roped || Vector3LengthSqr(b.vel) > 0)) b.pos = m.vault.to, m.vault.t = 0;
-    if (m.roped) b.motion.slide = false;
-    bool ok = m.roped ? stepRope(g, m, in) : m.vault.t ? true : stepBody(g, b, m.yaw);
-    if (m.hook.on) {  // Game::step's grapple, objects aside
-        Vector3 hit;
-        int r = g.grappleStep(m.hook, feetOf(b), ropeMax, false, &hit, nullptr);
-        m.hook.on = r == 1;
-        if (r == 2) m.roped = true, b.grounded = false, b.motion.slide = false, g.ropeHang(m.rope, hit, feetOf(b), b.vel, m.yaw);
-    }
-    if (!m.roped && !m.hook.on && (b.grounded || m.vault.t)) m.rope.swung = false;
-    return ok;
-}
+// The thinker as stepInput reads it: W4M's AI plays real inputs, it never steps a body, so it predicts no fall damage (docs/w4m/ai.md "Movement is not simulated")
+struct Mover { Vector3 pos, vel; bool grounded; float yaw; uint8_t prev; int jump; Vault vault; };
 
 // --- paths: W4M AIPathManager A* (0x492d80) over a node grid; each edge is played with the sim's own walk and jump code ---
 
@@ -397,27 +334,27 @@ static bool probe(const Game &g, const Grid &gr, NodeCache &c, int i, int j, flo
 
 static Mover moverOf(const Game &g) {
     const Worm &w = g.worms[g.current];
-    return {{w.pos, w.vel, w.grounded, w.motion}, w.yaw, w.pitch, false, Rope{}, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, Hook{}, g.walkTick};
+    return {w.pos, w.vel, w.grounded, w.yaw, g.prevButtons, g.jumpDelay, g.vault};
 }
 
 // A player's inputs for one path step; r.done once the worm stands still after it.
 static Input stepInput(const Game &g, const Mover &m, const Ai::Step &s, Ai::StepRun &r) {
     Input in;
     r.t++;
-    const bool still = m.b.grounded && Vector3LengthSqr(m.b.vel) < 1e-4f && !m.jump && !m.vault.t;
+    const bool still = m.grounded && Vector3LengthSqr(m.vel) < 1e-4f && !m.jump && !m.vault.t;
     if (r.air) { r.done = still || r.t > 400; return in; }
     if (m.vault.t) { in.walk = 127; return in; }  // releasing the stick would drop it back (W4M Vaulting)
     if (s.move == 0) {
-        Vector3 d = s.to - m.b.pos;
+        Vector3 d = s.to - m.pos;
         float h = sqrtf(d.x * d.x + d.z * d.z), dy = wrapPi(atan2f(d.x, d.z) - m.yaw), ws = Game::WALK_SPEED * g.walkScale();
-        if (h < 0.05f || !m.b.grounded || r.t > 120) { r.stuck = h >= 0.05f && m.b.grounded; r.air = true; r.done = still; return in; }
+        if (h < 0.05f || !m.grounded || r.t > 120) { r.stuck = h >= 0.05f && m.grounded; r.air = true; r.done = still; return in; }
         in.turn = q(dy / (2.5f * DT));
         if (fabsf(dy) < 0.3f) in.walk = (int8_t)Clamp(roundf(127 * h / (ws * Game::WALK_FRAME)), 1, 127);
         return in;
     }
-    if (m.jump || !m.b.grounded) {  // forward jump pending, or flying
+    if (m.jump || !m.grounded) {  // forward jump pending, or flying
         if (s.move == 2 && m.jump) in.walk = -127, in.buttons = m.prev & Input::JUMP ? 0 : Input::JUMP;  // second press, stick back: backflip
-        r.air = !m.b.grounded;
+        r.air = !m.grounded;
         return in;
     }
     float dy = wrapPi(s.yaw + (s.move == 2 ? PI : 0) - m.yaw);  // a backflip leaves backwards
