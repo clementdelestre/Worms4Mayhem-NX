@@ -47,6 +47,24 @@ void Walk::step(float dt, float speed) {
     while (phase > 0.5f) phase -= 0.5f;
 }
 
+static float wrap(float a) { return a > PI ? a - 2 * PI : a < -PI ? a + 2 * PI : a; }
+
+void Yaw::step(float dt, bool follow, float yaw) {
+    if (follow) to = yaw;
+    float d = Clamp(wrap(a - to), -0.62831855f, 0.62831855f);
+    a = to + approach(d, 0, 1, 0.08f, dt);
+    d = Clamp(wrap(b - a), -1.5707964f, 1.5707964f);
+    b = a + approach(d, 0, 1, 0.1f, dt);
+}
+
+void Aftertouch::step(float dt, bool ended, Vector3 in, float yaw) {
+    if (!ended) return void((fb = lr = 0.5f, w = 0));
+    const float s = sinf(yaw), c = cosf(yaw);
+    fb = approach(fb, (1 - (in.x * s + in.z * c)) * 0.5f, 1, 0.1f, dt);
+    lr = approach(lr, (1 - (in.x * c - in.z * s)) * 0.5f, 1, 0.1f, dt);
+    w = approach(w, 1, 1, 0.1f, dt);
+}
+
 Wae::Press Wae::press(bool ambulatory, bool hasClip, float drawLen) {
     if (fired || !ambulatory) return Ignored;
     if (state == 0) return init(), Equip;

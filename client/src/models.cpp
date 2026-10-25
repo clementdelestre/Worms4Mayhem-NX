@@ -743,13 +743,13 @@ static void pose(const Entry &e, const ModelAnimation &a, int f, const ModelAnim
     int n = std::min(e.m.skeleton.boneCount, a.boneCount);
     out.resize(n);
     const Transform *src = layered(e, a, f, ly);
-    const Transform *L[7];
-    float lw[7];
+    const Transform *L[Models::Layers::ADD + 1];
+    float lw[Models::Layers::ADD + 1];
     int nl = 0;
     if (aim && (int)aim->boneCount >= n) L[nl] = aim->keyframePoses[af], lw[nl++] = ly ? ly->aimW : 1;
-    for (int k = 0, kf; ly && k < 6; k++)
+    for (int k = 0, kf; ly && k < Models::Layers::ADD; k++)
         if (const ModelAnimation *c = ly->add[k] ? clipFrame(e, ly->add[k], ly->addT[k], false, &kf, false) : nullptr; c && (int)c->boneCount >= n)
-            L[nl] = c->keyframePoses[kf], lw[nl++] = 1;
+            L[nl] = c->keyframePoses[kf], lw[nl++] = ly->addW[k];
     if (nl) addLayers(e, src, L, lw, nl, out);
     else for (int b = 0; b < n; b++) out[b] = trs(src[b]);
     if (!ly || e.head < 0 || e.head >= n || e.hat < 0 || e.hat >= n) return;
@@ -1130,7 +1130,7 @@ static bool same(const Models::Layers &a, const Models::Layers &b) {
            a.actW[1] == b.actW[1] && a.actW[2] == b.actW[2] && a.actW[3] == b.actW[3] && a.aimW == b.aimW && (int)(a.actT[0] * 60) == (int)(b.actT[0] * 60) &&
            (int)(a.actT[1] * 60) == (int)(b.actT[1] * 60) && (int)(a.actT[2] * 60) == (int)(b.actT[2] * 60) && (int)(a.actT[3] * 60) == (int)(b.actT[3] * 60) &&
            a.lip[0] == b.lip[0] && a.lip[1] == b.lip[1] && a.lipW[0] == b.lipW[0] && a.lipW[1] == b.lipW[1] &&
-           std::equal(a.add, a.add + 6, b.add) && std::equal(a.addT, a.addT + 6, b.addT);
+           std::equal(a.add, a.add + Models::Layers::ADD, b.add) && std::equal(a.addT, a.addT + Models::Layers::ADD, b.addT) && std::equal(a.addW, a.addW + Models::Layers::ADD, b.addW);
 }
 
 bool Models::blend(const char *name, const char *clip, float t, bool loop, const Layers *ly, Vector3 *out) {
