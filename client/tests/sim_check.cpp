@@ -859,11 +859,15 @@ static void checkSentry() {
     for (t = 0; t < 60 * 3 && g.objects[0].turret.state == T::Track; t++) tick({home.x + 0.3f, home.y, home.z});
     assert(t > 100 && t < 130 && g.objects[0].turret.state == T::Fire);  // 2000 ms
     for (t = 0; t < 60 * 12 && g.objects[0].turret.state == T::Fire; t++) tick({home.x + 0.3f, home.y, home.z});
-    assert(g.objects[0].turret.state == T::Done && w.hp < 100 && t > 60 * 9 && t < 60 * 11);  // WeaponReloadTime 10 s
+    assert(g.objects[0].turret.state == T::Done && w.hp < 100 && t > 60 * 2.8 && t < 60 * 3.2);  // kWeaponSentryGun WeaponReloadTime 3000 ms
     g.objects[0].team = w.team;  // an ally of the active worm: never targeted
     g.objects[0].turret.state = T::Scan, g.objects[0].turret.target = -1, g.objects[0].turret.fresh = true;
     for (t = 0; t < 60 * 6; t++) tick({home.x + (t % 2) * 2.0f, home.y, home.z});
     assert(g.objects[0].turret.state == T::Scan);
+    g.objects[0].team = 1 - w.team;  // MaxWeaponRange 600 units: a worm 25 m off is in range
+    g.objects[0].turret.state = T::Scan, g.objects[0].turret.target = -1, g.objects[0].turret.fresh = true;
+    for (t = 0; t < 60 * 4 && g.objects[0].turret.state == T::Scan; t++) tick({home.x + 25 + (t % 2) * 0.3f, home.y, 14});
+    assert(g.objects[0].turret.state == T::Track);
 
     // 0x56d2a0: an Explosion takes WormDamageMagnitude off WeaponHealth with the worms' falloff and stops it; at 0 hp it dies 5 s later (0x56bfb0)
     Object &s = g.objects[0];
@@ -5891,6 +5895,7 @@ int main() {
         assert(w.hp == 500 - 75 - 60 - 200 - 60);
     }
     assert(loadWeapons("romfs/weapons.json"));
+    checkSentry();
     checkPayloadBounce();
     checkGravestone();
     checkRope();

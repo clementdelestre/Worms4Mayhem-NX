@@ -150,7 +150,7 @@ For each hit below: direct contact, facing the target.
 
 **Sentry Gun**
 - Placed on the ground, it stays active during enemy turns.
-- Armed at each turn start, it fires at a random visible enemy worm within 15 m that moved over 5 units: 2 s of tracking, then bullets every 100 ms (5 HP each) for 10 s, once per turn.
+- Armed at each turn start, it fires at a random visible enemy worm within 30 m that moved over 5 units: 2 s of tracking, then bullets every 100 ms (5 HP each) for 3 s, once per turn.
 
 ## 5. Utilities and movement
 
