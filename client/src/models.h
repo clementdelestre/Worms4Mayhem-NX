@@ -49,7 +49,7 @@ bool joint(const char *name, const char *joint, const char *clip, float t, bool 
            const Layers *ly = nullptr);
 bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true, int part = 0);  // full world matrix; a clip not looping holds its last key; part 1 = opaque meshes only, 2 = blended ones only
 bool draw(const char *name, Matrix m, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers &ly);  // world matrix, with layers
-void zwrite(bool on);  // the depth mask draw() restores after its blended shapes
+void zwrite(bool on);  // the depth mask every draw() shape and blended pass respects (a shape that writes no z still never forces it on)
 void blendGL(int src, int dst);  // XBlendModeGL kBlendFactor pair as W4M sets it (0x79ea80), then RL_BLEND_CUSTOM; One / Zero is the caller's no-blend case
 void shade(Shader s);  // every draw() uses s until shade({})
 void pick(const char *clip, float t = 0);

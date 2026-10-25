@@ -1042,7 +1042,7 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
             if (blends) Models::blendGL(r.src, r.dst), touched = true;
             if (blendLoc >= 0) { float v = blends; SetShaderValue(mat.shader, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
             if (testLoc >= 0) { float v[2] = {(float)r.func, r.ref}; SetShaderValue(mat.shader, testLoc, v, SHADER_UNIFORM_VEC2); }
-            r.zw ? rlEnableDepthMask() : rlDisableDepthMask();
+            r.zw && zOn ? rlEnableDepthMask() : rlDisableDepthMask();
             DrawMesh(m.meshes[i], mat, xf);
             mat.maps[MATERIAL_MAP_DIFFUSE].color = c;  // maps is shared with the model's material
             mat.maps[MATERIAL_MAP_DIFFUSE].texture = keepTex;
