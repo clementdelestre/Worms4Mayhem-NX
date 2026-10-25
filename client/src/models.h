@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <functional>
 #include <string>
 #include "raylib.h"
 
@@ -45,12 +46,17 @@ float bottom(const char *name);  // depth of the mesh below its origin, 0 if mis
 // Model-space matrix of a joint (e.g. "WeaponLocator") in that clip pose; false if missing.
 bool joint(const char *name, const char *joint, const char *clip, float t, bool loop, Matrix *out, const char *aim = nullptr, float aimT = 0,
            const Layers *ly = nullptr);
-bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true, int part = 0);  // full world matrix; a clip not looping holds its last key; part 1 = opaque meshes only, 2 = blended ones only (W4M bins them after every opaque draw)
+bool draw(const char *name, Matrix m, Color tint = WHITE, const char *clip = nullptr, float t = 0, bool loop = true, int part = 0);  // full world matrix; a clip not looping holds its last key; part 1 = opaque meshes only, 2 = blended ones only
 bool draw(const char *name, Matrix m, const char *clip, float t, bool loop, const char *aim, float aimT, const Layers &ly);  // world matrix, with layers
 void zwrite(bool on);  // the depth mask draw() restores after its blended shapes
 void blendGL(int src, int dst);  // XBlendModeGL kBlendFactor pair as W4M sets it (0x79ea80), then RL_BLEND_CUSTOM; One / Zero is the caller's no-blend case
 void shade(Shader s);  // every draw() uses s until shade({})
 void pick(const char *clip, float t = 0);
+// W4M scene 8's transparent bin (0x6edeea, sorted by 0x6eb43f): between binOpen and binDraw each draw() queues its blended shapes at the view z
+// of their Bounds centre (0x6ebd44) instead of drawing them; binAdd queues another blended shape (the water plane); binDraw draws the queue far first
+void binOpen(const Camera3D &cam);
+void binAdd(Vector3 at, std::function<void()> draw);
+int binDraw();  // the shapes drawn
 void texture(const Texture2D *t);  // every draw() shows t in place of each material's diffuse map (the W4M flag cloth's TGA), until texture(nullptr)
 void lightMul(Vector3 m, float k = 1);  // the draw() calls after it: light colour scale (W4M entity light colour, unclamped) and diffuse / specular fade k; {1, 1, 1} resets
 void gloves(const char *name);  // every posed draw() of a model with W4M hand shapes shows this glove model's in their place, until gloves(nullptr)  // every draw() also plays this W4M clip's XChildSelector keys (looped) until pick(nullptr)

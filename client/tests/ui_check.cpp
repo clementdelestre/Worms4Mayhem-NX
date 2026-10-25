@@ -3,6 +3,7 @@
 #include "../src/acting.h"
 #include "../src/audio.h"
 #include "../src/fx.h"
+#include "../src/models.h"
 #include "../src/terrain.h"
 #include "../src/controls.h"
 #include <cstring>
@@ -226,6 +227,23 @@ int main() {
             assert(base > 0 && second > 0);
             t.unload();
         }
+        CloseWindow();
+    }
+    {  // scene 8's blended bin (render.md "Render bins"): the telepad's blended shape waits for the water, both drawn far first
+        SetConfigFlags(FLAG_WINDOW_HIDDEN);
+        InitWindow(64, 64, "ui_check");
+        Models::start(), Models::start();
+        while (Models::upload(1e30)) {}
+        Camera3D cam = {{0, 0, 0}, {0, 0, -1}, {0, 1, 0}, 45, CAMERA_PERSPECTIVE};
+        std::vector<int> order;
+        BeginDrawing(), BeginMode3D(cam);
+        Models::binOpen(cam);
+        Models::binAdd({0, 0, -5}, [&] { order.push_back(5); });
+        assert(Models::draw("telepad", MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), MatrixTranslate(0, 0, -50))));
+        Models::binAdd({0, 0, -20}, [&] { order.push_back(20); });
+        assert(Models::binDraw() == 3 && order == (std::vector<int>{20, 5}));
+        EndMode3D(), EndDrawing();
+        Models::unload();
         CloseWindow();
     }
     {  // wind meter needle (0x5fc6e0): ArrowOrien tilt and roll, the -sin(-268 / 640) yaw term, grey fixed at -pi/2

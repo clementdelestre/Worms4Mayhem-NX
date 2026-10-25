@@ -1250,6 +1250,12 @@ static bool drawShot(const Projectile &s, float clock, const Terrain &t, int now
 }
 
 // W4M PayloadGraphicEntity 0x57cad0 (and the other projectile graphics 0x54cab0, 0x551020, 0x5897e0, 0x579e80: own light, offset 0)
+// W4M's water plane (scene 8, blended): a unit quad scaled 12000 at (0, Water.Level, 0) (0x48b51b), so its sort point is that centre
+static void drawWater(const Camera3D &cam, const Game &game, float clock) {
+    const Vector2 c = {game.terrain.origin.x, game.terrain.origin.z};
+    Models::binAdd({c.x, game.water, c.y}, [&cam, &game, clock, c] { Fx::drawWater(cam, game.water, clock, 12000.0f / 20, c); });
+}
+
 static bool drawShotLit(const Game &g, const Projectile &s, float clock) {
     Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Shot, (int)(&s - g.shots.data()))));
     const bool ok = drawShot(s, clock, g.terrain, g.clock);
@@ -2799,10 +2805,12 @@ int main(int argc, char **argv) {
             Fx::drawSky(pipView, game.terrain.origin, 1.0f / 20);
             game.terrain.setView(pipView.position);
             game.terrain.draw();
+            Models::binOpen(pipView);
             for (const Projectile &s : game.shots) if (!drawShotLit(game, s, clock)) DrawSphere(s.shown(game.clock), 0.2f, DARKGRAY);
             for (const Object &o : game.objects)
                 if (Models::visible(o.pos, 2)) drawObject(game, o);
-            Fx::drawWater(pipView, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
+            drawWater(pipView, game, clock);
+            Models::binDraw();
             Fx::drawUnderWater(pipView);
             game.terrain.drawFringe();
             for (const Worm &w : game.worms) if ((w.alive || w.counted > 0) && Models::visible(w.pos, 2)) drawFaded(w, &w == &cur ? curOp : 1);
@@ -2820,7 +2828,8 @@ int main(int argc, char **argv) {
         game.terrain.setView(view.position);
         game.terrain.draw();
         lap(T_TERRAIN);
-        // W4M bin 8 (3D, registry default scene of every shot, crate, mine, barrel, grave): opaque shapes are drawn before the water, a transparent one after it (0x6ee277)
+        // W4M bin 8 (3D, registry default scene of every shot, crate, mine, barrel, grave): its opaque shapes, then its blended ones and the water far first
+        Models::binOpen(view);
         for (const Game::Grave &gr : game.graves) drawGrave(game, gr);
         if (game.roped)
             for (int k = 0; k < game.rope.n; k++) DrawLine3D(game.rope.pt[k], k + 1 < game.rope.n ? game.rope.pt[k + 1] : cur.pos, BROWN);
@@ -2863,8 +2872,9 @@ int main(int argc, char **argv) {
                 else DrawCube(o.pos, 0.8f, 0.8f, 0.8f, o.weapon < 0 ? RAYWHITE : BROWN);
             }
         }
-        // W4M bins: Land (4-5), 3D (8: opaque, then the transparent water), ParticleUnderWater (11), DetailObjects (16), LandFringe (17), worms (19-21), Particle1-5 (23-27)
-        Fx::drawWater(view, game.water, clock, 12000.0f / 20, {game.terrain.origin.x, game.terrain.origin.z});
+        // W4M bins: Land (4-5), 3D (8: opaque, then blended with the water), ParticleUnderWater (11), DetailObjects (16), LandFringe (17), worms (19-21), Particle1-5 (23-27)
+        drawWater(view, game, clock);
+        Models::binDraw();
         Fx::drawUnderWater(view);
         game.terrain.drawObjects(clock);
         game.terrain.drawFringe();
