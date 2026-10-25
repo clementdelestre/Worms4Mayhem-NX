@@ -143,4 +143,4 @@ Python access: `import scan; d = scan.index()` gives `d['calls'][target]`, `d['r
 - **Tactical (§10):** whether the 6 planes of `AirstrikeCursor.xom` (scene 8, world origin) show.
 - **Bundles (§15):** the 3 bytes after `CTNR`, the trailing bytes of `XMeshDescriptor` / `XCustomDescriptor`, key types 0x200 and 0x403, and the "cycle" channel setting.
 - **AI (§18):** some AITWK fields have no reader (MortarMaximumAimAngleAllowed, AddScoreTeleport, WeightTeleport*, WeightRetreat*).
-- **Rendering (§8):** the enum value orders are now read from the exe (`pe.py schema`); which render bin `kPS_Default` maps to is still unknown. Bloom and blur classes have no PC shader.
+- **Rendering (§8):** the enum value orders are now read from the exe (`pe.py schema`); `kPS_Default` keeps the drawable descriptor's DefaultSceneIndex, 23 for every particle sprite and mesh (render.md §1); the emitter flag 0x2000 bin path's callers are not traced. Bloom and blur classes have no PC shader.
