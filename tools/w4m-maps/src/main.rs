@@ -418,6 +418,20 @@ fn material_fields(txt: &str) -> Vec<[String; 6]> {
     out
 }
 
+// String data keys of a databank (XStringResourceDetails: 3 header bytes, varint value, varint name)
+fn string_keys(x: &Xom) -> HashMap<String, String> {
+    x.ctn.iter().filter(|c| c.0 == "XStringResourceDetails").filter_map(|(_, d)| {
+        let mut p = 3;
+        let (v, k) = (vi(d, &mut p), vi(d, &mut p));
+        Some((x.s.get(k)?.clone(), x.s.get(v)?.clone()))
+    }).collect()
+}
+
+// W4M 0x4e7f28: an empty Databank.MaterialFile keeps the theme's own file (theme table 0x910b18 +0x14)
+fn material_path(databank: Option<String>, theme: &str) -> Option<String> {
+    databank.or_else(|| Some(format!("Theme{theme}\\Theme{theme}.txt")).filter(|_| !theme_name(theme).is_empty()))
+}
+
 fn theme_name(t: &str) -> &'static str {
     match t.to_uppercase().as_str() {
         "ARABIAN" => "arabian", "WILDWEST" => "wildwest", "CAMELOT" => "camelot", "PREHISTORIC" => "jurassic",
@@ -520,12 +534,12 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     // LP_/SPLP_/Multi_ variants share the databank of their base level
     let base = stem.trim_start_matches("SPLP_").trim_start_matches("LP_");
     let lvl = [stem, base, base.trim_start_matches("Multi_")].iter()
-        .find_map(|n| find_ci(data, &format!("{n}.xom"))).and_then(|p| fs::read(p).ok()).and_then(|b| strings(&b).map(|s| s.0)).unwrap_or_default();
-    let before = |key: &str| lvl.iter().position(|s| s == key).filter(|&i| i > 0).map(|i| lvl[i - 1].clone());
+        .find_map(|n| find_ci(data, &format!("{n}.xom"))).and_then(|p| fs::read(p).ok()).and_then(|b| read_xom(&b)).map(|x| string_keys(&x)).unwrap_or_default();
+    let before = |key: &str| lvl.get(key).filter(|v| !v.is_empty()).cloned();
     let theme = before("Databank.Theme").unwrap_or_default();
     let time = before("Databank.TimeOfDay").unwrap_or("DAY".into());
     let lit = light.get(&format!("{}.{time}", theme.to_uppercase())).map_or(String::new(), |l| format!("  \"time\": \"{}\",\n  \"light\": {l},\n", time.to_lowercase()));
-    let matfile = before("Databank.MaterialFile").or_else(|| find_ci(&maps, &format!("{stem}.txt")).map(|_| format!("Maps\\{stem}.txt")));
+    let matfile = material_path(before("Databank.MaterialFile"), &theme);
     let txt = matfile.and_then(|m| find_ci(data, &m).or_else(|| find_ci(&data.join("Themes"), &m)))
         .and_then(|p| fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     let fields = material_fields(&txt);
@@ -1196,6 +1210,17 @@ mod tests {
     fn index_head_field() {
         let h = "{\n  \"name\": \"A\",\n  \"title\": \"Text.kX\",\n  \"theme\": \"camelot\",\n  \"preview\": \"map_a";
         assert_eq!((head_field(h, "\"title\": \""), head_field(h, "\"theme\": \""), head_field(h, "\"preview\": \"")), ("Text.kX", "camelot", ""));
+    }
+    #[test]
+    fn databank_material_file() {
+        // Deathmatch2-w3d: keys listed together in STRS, MaterialFile empty
+        let s = ["", "DAY", "Databank.MaterialFile", "Databank.Theme", "Databank.TimeOfDay", "ENGLAND"].map(String::from).to_vec();
+        let ctn = [(0, 2), (5, 3), (1, 4)].map(|(v, k)| ("XStringResourceDetails".to_string(), vec![0, 0, 0, v, k, 0x40, 0, 0, 0])).to_vec();
+        let keys = string_keys(&Xom { ctn, root: 0, s });
+        let get = |k: &str| keys.get(k).filter(|v| !v.is_empty()).cloned();
+        assert_eq!((get("Databank.Theme").as_deref(), get("Databank.TimeOfDay").as_deref()), (Some("ENGLAND"), Some("DAY")));
+        assert_eq!(material_path(get("Databank.MaterialFile"), "ENGLAND").as_deref(), Some("ThemeENGLAND\\ThemeENGLAND.txt"));
+        assert_eq!(material_path(Some("Maps/PLAICE-w3d.txt".into()), "ENGLAND").as_deref(), Some("Maps/PLAICE-w3d.txt"));
     }
     #[test]
     fn point_light_names() {
