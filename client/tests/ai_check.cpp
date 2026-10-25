@@ -3,6 +3,7 @@
 #define private public  // targetSides reads the think's target values
 #include "../src/ai.h"
 #include "../src/controls.h"
+#include "../src/navgrid.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cassert>
@@ -301,14 +302,15 @@ static void scriptedThreat() {
 // W4M scripted targets (0x4ab730 + 0x4a5070, AIParams.WormNN TargetDetailObject): the marker joins the targets with value 1 and hp 1, so a
 // CPU whose only enemy is out of reach fires at it
 static void scriptedTarget() {
-    Game g = arena("Bazooka", 140);
+    Game g = arena("Bazooka", 220);  // out of a Bazooka's reach (31.65 m/s, Gravity.Slow: 134 m) from anywhere on the floor
     const int me = g.current;
+    g.worms[1 - me].nailed = true;  // held over the sea beyond the land: the enemy lives on, however long the CPU thinks
     const Vector3 marker = {25, 50.6f, 12};
     g.wormTarget.assign(g.worms.size(), {}), g.wormTarget[me] = {marker};
     Ai ai;
     float miss = 1e9f;
     bool fired = false;
-    for (int t = 0; t < 60 * 60 && !(g.phase == Phase::Settle && g.shots.empty()); t++) {  // the far enemy drowns: the shell still lands
+    for (int t = 0; t < 60 * 60 && !(g.phase == Phase::Settle && g.shots.empty()); t++) {
         g.step(ai.think(g));
         for (const GameEvent &e : g.events) {
             fired |= e.kind == GameEvent::Fire && e.worm == me;
@@ -352,7 +354,8 @@ static void secondActions() {
         if (k == Kind::Teleport || k == Kind::Abduction) { assert(!fired); continue; }
         assert(fired);
         if (k == Kind::OldWoman || k == Kind::Scouser) assert(presses == 0);
-        else if (k != Kind::Mine) assert(dmg > 0);  // the mine waits for a worm to walk by
+        // the mine waits for a worm to walk by; W4M launches the Homing Missile along world +x (0x519a40 without acceleration), its homing does the rest
+        else if (k != Kind::Mine && k != Kind::Homing) assert(dmg > 0);
         if (k == Kind::Homing) assert(locked);
         if (k == Kind::Sheep) assert(presses == 1);
         if (k == Kind::SuperSheep) assert(tookOff && presses >= 1);
@@ -418,6 +421,45 @@ static void drumInLine() {
     assert(off > 50 && on > 0.9f * off);  // the drum only moves the target threat ratings a little
 }
 
+// W4M best miss (0x49be00): an enemy shut in a bunker has no clear arc, so the Bazooka plan is impossible and its clone aims at the
+// collision nearest it (+0x3c); with Land.Indestructable 1 no clone is made and the Bazooka is not fired
+static void bestMiss() {
+    for (bool hard : {false, true}) {
+        Game g = arena("Bazooka", 30);
+        for (int z = 36; z <= 60; z++)  // a 6 x 6 x 3.5 m box around the enemy at (40, 50, 12), walls and roof 0.5 m thick
+            for (int y = 200; y <= 214; y++)
+                for (int x = 148; x <= 172; x++)
+                    if (x < 150 || x > 170 || z < 38 || z > 58 || y > 212) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
+        g.indestructible = hard;
+        const int me = g.current;
+        Ai ai;
+        int fired = 0;
+        float boom = 1e9f;
+        bool miss = false;
+        for (int t = 0; t < 60 * 45 && g.phase != Phase::Settle; t++) {
+            g.step(ai.think(g));
+            for (const GameEvent &e : g.events) {
+                if (e.kind == GameEvent::Fire && e.worm == me && WEAPONS[e.weapon].name == "Bazooka") fired++, miss = ai.plan.miss;
+                if (e.kind == GameEvent::Boom || e.kind == GameEvent::BigBoom) boom = fminf(boom, Vector3Distance(e.pos, {40, 50, 12}));
+            }
+        }
+        printf("best miss, %s land: fired %d (miss %d), nearest blast %.1f m from the enemy\n", hard ? "indestructible" : "destructible", fired, miss, boom), fflush(stdout);
+        assert(hard ? !fired : fired && miss && boom < 4);
+    }
+}
+
+// W4M node heights (0x4ade10) are refined land-ray hits: a plan's shooter (+0x4c, the move node) stands where a worm stands
+static void nodeOnSurface() {
+    Game g = arena("Bazooka", 20);
+    for (int t = 0; t < 30; t++) g.step({});
+    const Worm &w = g.worms[g.current];
+    const Grid gr = makeGrid(g.terrain);
+    NodeCache nc;
+    const NodeH h = nodeH(g.terrain, g.water, gr, nc, gr.ci(w.pos.x), gr.cj(w.pos.z), 0);
+    printf("node mid %.4f, feet %.4f\n", (h.lo + h.hi) / 2, w.pos.y - Game::R);
+    assert(h.flag == 0 && fabsf((h.lo + h.hi) / 2 - 50) < 0.01f && fabsf((h.lo + h.hi) / 2 - (w.pos.y - Game::R)) < 0.01f);
+}
+
 // W4M aims the direct plan at its target point (feet + Worm.EyeLevelOffset / 2, Spawn 0x4a0840) from the muzzle: SetAimAngle is asin of
 // the aim vector (0x49e000 / 0x4ac880 / 0x4965d0), not the pitch to the target's centre.
 static void directAim() {
@@ -445,6 +487,8 @@ static void directAim() {
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
+    nodeOnSurface();
+    bestMiss();
     directAim();
     shotgunGap();
     drumInLine();

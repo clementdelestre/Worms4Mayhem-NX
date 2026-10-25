@@ -46,8 +46,8 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   which Shotgun and Sniper Rifle override with ShotErrorDirectNonStrafe (0x4a0d90 at 0x823970 / 0x8239a4); StrafeTowards (0x4974d0,
   StrafeProgressiveErrorScale +0xe0) is queued only under plan flag 0x200 (0x49ebed), which no CAIPlan constructor sets (flags
   0x147, 0x1d7, 0x1147, 0x170, 0x2444, 0x541, 0x1047, 0x40, 0x140, or 8 added) (**disasm**). Both fields are dead.
-- Not ported: JetpackAboutToCrossLineLookAhead, ClusterDistanceAboveTarget, WeightingPunchThroughLand,
-  BestMissShotMultipleUse, AttractorZoneRadius (no script attractors). (MortarMaximumAimAngleAllowed has no W4M read either.)
+- Not ported: JetpackAboutToCrossLineLookAhead, AttractorZoneRadius (no script attractors). BestMissShotMultipleUse is read only by the
+  direct plan's best-miss branch (0x4a0a20), and direct plans make no best miss (vtable +0x24 0): dead. (MortarMaximumAimAngleAllowed has no W4M read either.)
 - Shared by every level (**data**): AddScoreMove 10, AddScoreMoveIfNotMoved 20, RandomSmallMoveRange 100 units (`SMALL_MOVE` 5 m),
   StrikeSweetSpotDistance 2 units (`STRIKE_SWEET` 0.1 m). Per level: ConsidersStrikeThrustDirection (`thrust`, CPU3+) and
   WeightStrikeSecondaryTarget (`others`: 0 / 0.3 / 5 / 1 / 1).
@@ -115,27 +115,47 @@ Plan rank (W4M 0x498a0a, 0x49c060, **disasm**):
 - `taste = (1 + randomise·n) × pref × (0.6 if weapon == g.picked[team])`, n from `salt ^ wi·2654435761`, one per weapon per turn.
 - `rank = score × taste` for positive scores, else `score`. 0.6 = 1 − PreferVariety 0.4 (**data**); W4M matches recent plans, ours only
   last turn's weapon.
-- Failed-plan memory: see above. "Best miss" punch-through plans are not ported.
+- Failed-plan memory: see above (`rankOf`, shared by every attack plan).
 
 ## Shot candidates (`evalWeapon`)
 
-One unit = one (weapon, target, candidate). Targets (`startEval`): each enemy, the ground 1.5 m short of it, the sweet spot (below),
-and barrels / weapon crates within 7 m of an enemy when secondary > 0 (**ours**).
+One unit = one (weapon, target, candidate). Targets (`targetsFor`): each listed enemy and scripted target (W4M 0x49f8a0); each family
+sets its plan point from it (W4M +0x14, `feetOf`: a worm's feet).
 
 | kind | candidates | tag |
 |---|---|---|
-| Shell | flight times t = 0.2..4.5 s step 0.43 (11 arcs), exact `V = (T − P − A·t(t+DT)/2)/t`; reject if speed outside `launchSpeed(0)..speed`, pitch outside -1.2..1.45; charge `n = round(frac·90)` ticks; flight checked with `fly()` | W4M 11 speeds 0x4ace50 (**disasm**); ours samples times |
+| Shell, Homing, Super Sheep (projectile plans) | one plan per target (`project`): scored at its point now (`projScore`), solved when the list pops it (`solve`), below | W4M 0x49ffa0, 0x4a0540, IsPossible 0x49c340..0x49c400 (**decompiled**) |
 | Dropped shell | set down at the feet facing the target | W4M CheapDynamite* (**data**) |
-| Homing | pitch at the target, charges 30 / 60 / 90; `fly()` homes on the target's feet, locked from the Blimp (`blimp()`) | target set from the Blimp: W4M flags 0x1d7 (SetWeaponTarget, lock FireWeapon) (**disasm**); candidates **ours** |
+| Homing | a projectile plan; locked on its point from the Blimp (`blimp()`) | W4M flags 0x1d7 (SetWeaponTarget, lock FireWeapon) (**disasm**) |
 | Shotgun / Sniper | one blast scored at the plan's target point (feet + EyeLevelOffset / 2), whoever the ray strikes (`Game::gunRay` only gates a strike within range, ours); possible only when the land segment muzzle -> target point is clear over its first 98.9 % (`Terrain::raycast`, W4M IsPossible 0x4ac880, **disasm**); a full think for each shot, locked to the weapon (`act`: `wait` 1100 ms, then `Mode::Eval`; docs/w4m/ai.md §Turn flow item 6) | W4M Direct 0x4a0a20 (**data**, **disasm**): 0x49f190 measures from plan +0x14 |
 | Melee (incl. Tail Nail) | within 3.5 m; yaw ±0.8/±0.4/0 × pitch 0/0.5/1 (15), `meleeHits` | **ours** |
 | Sheep / Old Woman | `sheepWalk` copy; kept if closest approach < 2 m. Sheep: FIRE in flight once its next step moves away from the target (x, z) | detonation: W4M DetonateWhenGoingAwayFrom 0x57e130, queued for the Sheep only (flag 0x800, 0x49d848): the CPU never detonates the Old Woman or Scouser (**disasm**); candidates **ours** |
-| Super Sheep | pitch 0.3 / 0.9, flown by the `steer` autopilot (`superFly`), detonated within 1.5 m | **ours** |
+| Super Sheep | a projectile plan (0x49c400), launched level toward its point, flown by the `steer` autopilot, detonated within 1.5 m | plan **decompiled**; flight **ours** |
 | Airstrike / Donkey | one blast at the target worm, no worm aim. Heading: `strikeHeading`, W4M 0x4a13a0 (below); `blimp()` turns the Blimp view to it (W4M Airstrike.Direction = the view's forward), drives the cursor until its ray meets the target's feet (+ strikeErr), then FIRE; bomber (Super Airstrike, fuse > 0) steered in flight and dropped with lead | W4M 0x4a11d0 one blast, SetStrikeTarget 0x4b4c70 with the Blimp camera, SetStrikeDirection 0x4b4bc0 (**disasm**); cursor driving and bomber steering **ours** |
 | Starburst | as Super Sheep (`superFly`), with the W4M rocket: still 3.5 s, then `Game::starSpeed` (ours: the shared sim rule), plus its rider's death: all its hp on the thinking worm; the star rockets are not scored | W4M CAIPlanAttackStarburst 0x4a43a0: 0x49ed30 on the active worm with its hp (**disasm**; user unsure, 2026-10-04) |
 | Landmine | laid at the feet facing the target: `MINE_BLAST` on the ground under the launch point, self ignored as a dropped shell | W4M CAIPlanAttackLandmine = CloseRangeExplosive 0x4a2c70: the blast at the worm (**disasm**); the drop point and self **ours** |
 | Inflatable Scouser | our scouser's walk (`walkerStep`) until it touches a worm; that worm takes `damage`, or a kill if a drop of 1.2 m/s × `SCOUSER_FLOAT` drowns it, plus the fall damage | W4M CAIPlanAttackScouser exists (**data**); W4M scores an animal as its blast at the target (0x4a4210); ours scores our scouser, which swallows and drops (**ours**) |
 | Flood | one plan: every worm under `water + speed` (2.15 m, W4M Flood.Delta 43) counts a kill | W4M CAIPlanAttackFlood 0x4a3640: each target under Water.Level + Flood.Delta, 0x49ed30 with damage 1000 (**disasm**) |
+
+Projectile plans (`project`, `solve`, W4M **decompiled**, docs/w4m/ai.md "Shot evaluation"):
+
+- Point: Gas Canister and Super Sheep at the target's feet, Cluster Grenade 0.5 m (ClusterDistanceAboveTarget) over them, the others at the
+  sweet spot when the target's threat rating is positive. Weapon Factory weapons have no plan class: the CPU never fires them.
+- Score: AddScoreMove with a path, the blast at the point (knock NearbyThreat), + `punch` (WeightingPunchThroughLand 10 x max(0.5,
+  LandDamageRadius / d), d from the point to the target, also added to the strike, animal and Starburst scores), then `rankOf`.
+- Solve in W4M units and ms on `Para` (W4M's TargetParabola, kept across thinks like its globals): from the shooter's eye (`Origin::pos`, the
+  move node with a path), the payload's gravity and whole wind, BasePower .. BasePower + MaxPower. Bazooka, Poison Arrow, Homing: `arcSolve`
+  (10 speeds, the lower arc first; a land `sweep` before t - 10 ms refuses an arc; the Homing Missile has no acceleration, so both arcs are
+  (s, 0, 0), along world +x, with the times of the previous solve); Grenade, Cluster, Banana (+0.5 m): `timedSolve` (1 then 2 s, the
+  fuse set to it through FUSE_UP / FUSE_DOWN in `act`); Gas Canister, Holy Hand Grenade: `bounceSolve` (BounceToRest, `restOf`: payload
+  bounces with `payBounce`, each from the parabola's own velocity as W4M does); Super Sheep: from the feet, Gravity, 0 .. 0.5 units/ms,
+  impossible within 10 m. The launch velocity becomes yaw, pitch and charge ticks (`finish` adds the ShotError).
+- Best miss (`solve`, W4M 0x49be00): an impossible plan that is no clone, whose collision point is 2.5 m or more from the shooter's feet,
+  on destructible land (`landLocked`), spawns its clone (`Plan::miss`) at that point (the Homing Missile keeps its own), scored without
+  knock and inserted in the list (`insert`); a strike whose last heading check failed (`strikeHeading`) spawns, when popped, a clone at the
+  same target whose heading search skips the check. Not reproduced: a capped timed arc that is clear reads W4M's last land ray of any entity
+  (`timedSolve` leaves it out) and the melee plans' clone point is that same last land ray (ours plans melee within 3.5 m, no path).
+- Order: `decide` pops `choices` (the best inline plan, the projectile plans, the spawns, the move plans) best first, one solve per unit.
 
 Strike heading (`strikeHeading`, W4M 0x4a13a0, **disasm**): headings 0, 10 .. 350°, D = (cos a, 0, −sin a); 6 bombs 2.5 m apart along D
 through the target; each worm within 15 m + 2 reach scores value × Σ falloff at its aim point (+ 0.1 m from its worst threat),
@@ -168,7 +188,9 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 - Move window (`Moves`, W4M 0x4ab490): 21 × 21 entries at every other node (±20 nodes) × 2 layers, each scored by `posScore` (W4M
   0x4aa6a0): def (the retreat score) and open (the move score), formulas in docs/w4m/ai.md §18 "Plan selection". Node heights
   (`nodeH`, W4M 0x4aed70): flag (node, water/outside, blocked), lo, hi; layer 1 from 1 m under layer 0's lo, ours: it first leaves the
-  land it starts in (W4M's ray from inside land is not read). Probes start under each column's highest solid voxel (`colTop`): same samples.
+  land it starts in (W4M's ray from inside land is not read). Probes start at the last step over each column's highest solid voxel (`colTop`):
+  same samples. Each ray is `landBelow` (W4M 0x466ae0 with refine 1): the first solid sample, 5 bisections, the last empty point [disasm], so a
+  node on flat ground is the standing worm's feet and an origin's `pos` (W4M +0x4c) is where the worm stands; `probe` (jump edges) uses the same ray.
 - Pairs (`pairOf`, W4M 0x4a8c60): each entry as a move node takes the best def within ±2 entries as its retreat; best def + 0.001·open
   wins if it beats entry 0 (the window's corner, as W4M reads it). `nextPair` paths to the move node (200 iterations) and on to the
   retreat (50); both found: an origin, both nodes blocked ±4 entries (`blockAround`, 0x4a9030); a leg not found blocks its node.

@@ -3,9 +3,10 @@
 #include "raymath.h"
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <unordered_map>
 
-static constexpr float DT = Game::DT, R = Game::R;
+static constexpr float DT = Game::DT, R = Game::R, UNIT = 20;  // UNIT: W4M units per m
 
 static int8_t q(float v) { return (int8_t)Clamp(roundf(v * 127), -127, 127); }
 
@@ -382,14 +383,12 @@ static Grid aiGrid(const Terrain &t) {
 
 // W4M 0x4ade10: a node's heights from 3 x 3 rays down at ±spacing/3 around it from `from`: lo / hi = lowest / highest hit; false
 // (water, blocked) when a ray finds no land or lands in the water.
-static bool probe(const Game &g, const Grid &gr, int i, int j, float from, float &lo, float &hi) {
-    const Vector2 c = gr.at(i, j);
+static bool probe(const Game &g, const Grid &gr, NodeCache &c, int i, int j, float from, float &lo, float &hi) {
+    const Vector2 p = gr.at(i, j);
     lo = 1e9f, hi = -1e9f;
     for (int a = -1; a <= 1; a++)
         for (int b = -1; b <= 1; b++) {
-            float y = from;
-            const float x = c.x + a * gr.s / 3, z = c.y + b * gr.s / 3;
-            while (y > g.water && !g.terrain.solid({x, y, z})) y -= Terrain::SUB;
+            const float y = rayDown(g.terrain, g.water, c, p.x + a * gr.s / 3, p.y + b * gr.s / 3, from, false);
             if (y <= g.water) return false;
             lo = fminf(lo, y), hi = fmaxf(hi, y);
         }
@@ -594,7 +593,7 @@ struct Search {
         if (std::abs(dx) >= N || std::abs(dz) >= N) return false;
         const Grid::Entry &E = gr.reach[t][(size_t)N * std::abs(dz) + std::abs(dx)];
         float lo0, hi0, lo1, hi1;
-        if (!E.ok || !probe(g, gr, i0, j0, from.y - R + 1, lo0, hi0) || !probe(g, gr, i1, j1, to.y - R + 1, lo1, hi1)) return false;
+        if (!E.ok || !probe(g, gr, *mv, i0, j0, from.y - R + 1, lo0, hi0) || !probe(g, gr, *mv, i1, j1, to.y - R + 1, lo1, hi1)) return false;
         if (top(g, i0, j0) > hi0 + Terrain::VOX) return false;  // jumps only from layer 0 (0x4928d6)
         const float d1 = hi1 - lo0, d2 = lo1 - hi0;
         if (!(E.hi > d1 && E.lo < d1 && E.hi > d2 && E.lo < d2)) return false;
@@ -851,6 +850,7 @@ void Ai::unit(const Game &g) {
         return;
     }
     if (pairing) return nextPair(g);
+    if (deciding) return decide(g);
     if (origin < (int)origins.size()) {  // the shots, origin by origin
         if (built != origin) targetsFor(g, origins[origin]), built = origin;
         const int T = (int)tpos.size(), N = (int)WEAPONS.size() * T, team = g.worms[g.current].team;
@@ -862,7 +862,7 @@ void Ai::unit(const Game &g) {
         if (stage >= N) origin++, stage = sub = 0;
         return;
     }
-    stage = -1;
+    deciding = true;
     decide(g);
 }
 
@@ -889,7 +889,7 @@ void Ai::startEval(const Game &g) {
     const Worm &w = g.worms[me];
     const Level &L = levelOf(g);
     plan = Plan{};
-    threats.clear(), origins.clear(), choices.clear(), choiceAt = 0, moves.reset();
+    threats.clear(), origins.clear(), choices.clear(), pending.clear(), choiceAt = 0, deciding = false, moves.reset();
     rating.assign(targetCount(g), 0), away.assign(targetCount(g), {}), vals.assign(targetCount(g), 0), listed.assign(targetCount(g), false);
     bool enemy = !scripted(g).empty();
     float sum = 0;
@@ -921,22 +921,47 @@ void Ai::startEval(const Game &g) {
     mv.l0 = layerOf(g, *grid, mv, w.pos);
 }
 
-// Targets from one origin: each enemy, the ground 1.5 m short of it, its sweet spot.
-void Ai::targetsFor(const Game &g, const Origin &o) {
-    const Level &L = levelOf(g);
+// The plans' targets (W4M 0x49f8a0 spawns per c_plstTargets entry): each enemy; each weapon family sets its own point from it.
+void Ai::targetsFor(const Game &g, const Origin &) {
     tpos.clear(), tworm.clear();
     for (size_t i = 0; i < targetCount(g); i++) {
         if (i < g.worms.size() && (!listed[i] || g.alliance(g.worms[i].team) == g.alliance(g.worms[g.current].team))) continue;
-        const Vector3 e = targetPos(g, i), to = e - o.pos;  // also the ground just short of it: a shell there still splashes
-        tpos.insert(tpos.end(), {e, e - Vector3Normalize({to.x, 0, to.z}) * 1.5f});
-        tworm.insert(tworm.end(), {(int)i, (int)i});
-        if (L.sweet > 0 && Vector3LengthSqr(away[i]) > 0) tpos.push_back(e + away[i] * L.sweet), tworm.push_back((int)i);
+        tpos.push_back(targetPos(g, i)), tworm.push_back((int)i);
     }
 }
 
+// W4M target position (+0xc): a worm's feet, a scripted target's marker
+static Vector3 feetOf(const Game &g, int i) { return targetPos(g, i) - Vector3{0, i < (int)g.worms.size() ? R : 0, 0}; }
+
+// W4M 0x49f690 (projectile, direct, strike, animal scores): WeightingPunchThroughLand 10 x max(0.5, LandDamageRadius / d), d = the
+// plan point's distance to its target (0: 0.5); no LandDamageRadius: 0
+static float punch(const Game &g, float ldr, Vector3 at, int target) {
+    if (ldr == 0) return 0;
+    const float d = Vector3Distance(at, feetOf(g, target));
+    return 10 * (d > 0 ? fmaxf(0.5f, ldr / d) : 0.5f);
+}
+
+// W4M projectile families (0x49ffa0) by solve: 0x4ace50 arc, 0x4ad250 timed, 0x4ad770 bounce to rest; Super Sheep 0x49c400; -1 no plan class
+enum Solver { ARC, TIMED, BOUNCE, SHEEP };
+static int solverOf(const WeaponDef &wd) {
+    static const std::pair<const char *, int> PLANS[] = {{"Bazooka", ARC}, {"Poison Arrow", ARC}, {"Homing Missile", ARC}, {"Grenade", TIMED},
+        {"Cluster Grenade", TIMED}, {"Banana Bomb", TIMED}, {"Gas Canister", BOUNCE}, {"Holy Hand Grenade", BOUNCE}, {"Super Sheep", SHEEP}};
+    for (const auto &[n, k] : PLANS) if (wd.name == n) return k;
+    return -1;
+}
+
+// The plan point (+0x14, 0x49ffa0 / 0x4a2fe0): Gas Canister and Super Sheep at the target, Cluster Grenade ClusterDistanceAboveTarget
+// (10 units) over it, the others at its sweet spot (0x4a9be0) when its threat rating is positive
+static Vector3 projPoint(const Game &g, const WeaponDef &wd, int ti, float rating, Vector3 away, float sweet) {
+    const Vector3 f = feetOf(g, ti);
+    if (wd.name == "Gas Canister" || wd.name == "Super Sheep") return f;
+    if (wd.name == "Cluster Grenade") return f + Vector3{0, 10 / UNIT, 0};
+    return rating > 0 ? f + away * sweet : f;
+}
+
 // W4M IsBomberWeapon (0x49e1e0): the bomb aimed at T, dropped from Land.MaxHeight + Bomber.ExtraHeight along D at GroundSpeed
-// (BomberLogicEntity 0x54d460), must land within 10 units of it. Ours falls under the sim's gravity, land only.
-static bool bombLands(const Game &g, const WeaponDef &wd, Vector3 T, Vector3 D, float top) {
+// (BomberLogicEntity 0x54d460), must land within 10 units of it. Ours falls under the sim's gravity, land only; *hit: where it met land.
+static bool bombLands(const Game &g, const WeaponDef &wd, Vector3 T, Vector3 D, float top, std::optional<Vector3> &hit) {
     const float grav = g.gravity() * wd.grav, h = top + Game::STRIKE_EXTRA, lead = Game::BOMBER_SPEED * sqrtf(2 * fmaxf(h - T.y, 0) / grav);
     Vector3 p = {T.x - D.x * lead, h, T.z - D.z * lead}, v = D * Game::BOMBER_SPEED;
     for (int i = 0; i < 600 && p.y > g.water; i++) {
@@ -944,18 +969,158 @@ static bool bombLands(const Game &g, const WeaponDef &wd, Vector3 T, Vector3 D, 
         v.y -= grav * DT;
         const Vector3 d = arcMove(v0, v);
         for (int k = 0, n = substeps(v); k < n; k++)
-            if (p = p + d * (1.0f / n); g.terrain.solid(p)) return Vector3Distance(p, T) < 0.5f;
+            if (p = p + d * (1.0f / n); g.terrain.solid(p)) return hit = p, Vector3Distance(p, T) < 0.5f;
     }
     return false;
 }
 
+// --- W4M AIPlanUtilities projectile solves (docs/w4m/ai.md "Projectile IsPossible"), in W4M units (20 per m, origin Terrain::origin), ms ---
+static Vector3 toUnits(const Terrain &t, Vector3 m) { return (m - t.origin) * UNIT; }
+static Vector3 toMetres(const Terrain &t, Vector3 u) { return u * (1 / UNIT) + t.origin; }
+
+// W4M land ray 0x466ae0 along S + V k + A k²/2 for k = 0..steps ms: the first land, refined 5 times to its last empty point; step: its
+// truncation (0 from inside land, steps + 1 none). Ours samples it 2.5 units apart (Terrain::SUB).
+struct Sweep { int step; Vector3 at, n; };
+static Sweep sweep(const Terrain &t, Vector3 S, Vector3 V, Vector3 A, int steps) {
+    auto at = [&](float k) { return S + V * k + A * (0.5f * k * k); };
+    auto land = [&](float k) { return t.solid(toMetres(t, at(k))); };
+    const float floor = -t.origin.y * UNIT;  // the grid's bottom: no land under it
+    if (land(0)) return {0, S, {0, 1, 0}};
+    for (float k = 0; k < steps;) {
+        const float k2 = fminf((float)steps, k + fmaxf(Terrain::SUB * UNIT / fmaxf(Vector3Length(V + A * k), 1e-3f), 1e-2f));
+        if (land(k2)) {
+            float air = k, in = k2;
+            for (int i = 0; i < 5; i++) { const float m = (air + in) / 2; (land(m) ? in : air) = m; }
+            return {(int)air, at(air), t.normal(toMetres(t, at(air)))};
+        }
+        if (at(k2).y < floor && V.y + A.y * k2 <= 0) break;
+        k = k2;
+    }
+    return {steps + 1, {}, {0, 1, 0}};
+}
+
+// W4M TargetParabola 0x519a40: the arcs through T at speed s (v98 the lower, t2; v10 the higher, t1); none: false, v10 = 0. Without
+// acceleration both are (s, 0, 0) and the times are kept.
+static bool arcs(Ai::Para &p, float s) {
+    p.v10 = {};
+    const Vector3 D = p.T - p.S;
+    const float a2 = Vector3LengthSqr(p.A), dd = Vector3LengthSqr(D) * a2;
+    if (dd == 0) return p.v98 = p.v10 = {s, 0, 0}, true;
+    const float f = s * s + Vector3DotProduct(D, p.A), disc = f * f - dd;
+    if (disc < 0) return false;
+    const float r = sqrtf(disc), big = 2 * (f + r) / a2;
+    float first = 2 * (f - r) / a2, second = first;
+    if (big >= 0) first = big, second = second < 0 ? big : second;
+    p.t1 = sqrtf(first), p.t2 = sqrtf(second);
+    p.v10 = D / p.t1 - p.A * (p.t1 / 2), p.v98 = D / p.t2 - p.A * (p.t2 / 2);
+    return true;
+}
+
+// W4M 0x4aca20: clear when the sweep meets no land before min(ms, 9989) - 10; its hit is the new collision point (none: unknown, W4M
+// keeps the last land ray's)
+static bool clearArc(const Terrain &t, Ai::Para &p, Vector3 v, float ms) {
+    const float last = fminf(ms, 9989) - 10;
+    const int steps = std::min(10000, std::max(0, (int)floorf(last) + 1));  // a later hit cannot refuse it
+    const Sweep s = sweep(t, p.S, v, p.A, steps);
+    p.known = s.step <= steps, p.hit = s.at;
+    return last < (float)s.step;
+}
+
+// W4M 0x4ace50: speeds lo + (hi - lo) (f0 .. f1) in 10 steps, each speed's lower then higher arc; the first clear one is the launch v.
+// None: v and hit are the arc whose collision came nearest T (an unsolvable speed repeats the previous pair; none yet: the origin)
+static bool arcSolve(const Terrain &t, Ai::Para &p, float f0, float f1, Vector3 &v) {
+    float s = (p.hi - p.lo) * f0 + p.lo, end = (p.hi - p.lo) * f1 + p.lo, step = (end - s) / 10;
+    if (step == 0) step = 1, s -= 1;
+    float best = 1e8f;
+    Vector3 c1{}, c2{}, v1{}, v2{}, bh{}, bv{};
+    for (s += step, end += 1e-7f; s <= end; s += step) {
+        if (arcs(p, s)) {
+            if (clearArc(t, p, p.v98, p.t2)) return v = p.v98, true;
+            c1 = p.hit, v1 = p.v98;
+            if (clearArc(t, p, p.v10, p.t1)) return v = p.v10, true;
+            c2 = p.hit, v2 = p.v10;
+        }
+        if (const float e = Vector3DistanceSqr(p.T, c1); e < best) best = e, bh = c1, bv = v1;
+        if (const float e = Vector3DistanceSqr(p.T, c2); e < best) best = e, bh = c2, bv = v2;
+    }
+    p.hit = bh, p.known = true, v = bv;
+    return false;
+}
+
+// W4M 0x4ad250 (Grenade, Cluster, Banana): the arc through T in exactly 1 then 2 s, capped at hi; possible when within hi and clear, the
+// fuse that time. None: v and hit of the nearer collision; a capped arc that is clear leaves W4M the last land ray's hit [ours: not counted]
+static bool timedSolve(const Terrain &t, Ai::Para &p, Vector3 &v, int &fuse) {
+    float best = 1e8f;
+    Vector3 bh{}, bv{};
+    bool known = false;
+    for (int k = 1; k < 3; k++) {
+        const float ms = k * 1000.0f;
+        p.t1 = p.t2 = ms, p.v98 = p.v10 = (p.T - p.S - p.A * (0.5f * ms * ms)) / ms;  // 0x5198d0
+        const bool slow = Vector3LengthSqr(p.v10) <= p.hi * p.hi;
+        if (!slow) p.v10 = Vector3Normalize(p.v10) * p.hi;
+        if (clearArc(t, p, p.v10, ms) && slow) return v = p.v10, fuse = k, true;
+        if (!p.known) continue;
+        if (const float e = Vector3DistanceSqr(p.T, p.hit); e < best) best = e, bh = p.hit, bv = p.v10, known = true;
+    }
+    p.hit = bh, p.known = known, v = bv;
+    return false;
+}
+
+// W4M 0x4ad580: the rest point of a throw at v from S, up to 10 bounces (0x57ef80 with the payload's damping) until |v|² <= Bounce.MinSpeed
+// (0.03, compared squared); each bounce's velocity is the parabola's own v10 + A k (0x5193e0), not the throw's. No land in 10 s: the
+// v10 arc where it meets Water.Level - 100 units (0x519a00).
+static Vector3 restOf(const Terrain &t, const Ai::Para &p, const WeaponDef &wd, Vector3 v, float floor) {
+    constexpr float MIN_SPEED = 0.03f;
+    Vector3 pos = p.S, rest = p.hit;
+    if (Vector3LengthSqr(v) <= MIN_SPEED) return rest;
+    for (int i = 0; i < 10; i++) {
+        const Sweep s = sweep(t, pos, v, p.A, 10000);
+        if (s.step > 9999) {  // 0x5194c0: the first time past 0 the v10 arc is at that height, else the later one
+            const float c = p.S.y - floor, b = p.v10.y, a = p.A.y;
+            float k = -1;
+            if (a == 0) k = -c / b;
+            else if (const float d = b * b - 2 * a * c; d >= 0) {
+                const float r1 = (sqrtf(d) - b) / a, r2 = (-b - sqrtf(d)) / a, lo = fminf(r1, r2), hi = fmaxf(r1, r2);
+                k = lo > 0 ? lo : hi;
+            }
+            return k >= 0 ? p.S + p.v10 * k + p.A * (0.5f * k * k) : rest;
+        }
+        rest = pos = s.at;
+        v = payBounce((p.v10 + p.A * (float)s.step) * 50.0f, s.n, wd.damp, true) * (1 / 50.0f);  // units/ms <-> m/s
+        if (Vector3LengthSqr(v) <= MIN_SPEED) break;
+    }
+    return rest;
+}
+
+// W4M BounceToRest 0x4ad770 (Gas Canister, Holy Hand Grenade): from 0x4ace50's launch, 10 tries scaling the best throw by
+// (|T - shooter|² / |rest - shooter|²)^step (step 0.5, x2 after a better rest, then x0.5); possible when a rest comes within 10 units of T
+// and |v| <= 10 units/ms. hit: the best rest.
+static bool bounceSolve(const Terrain &t, Ai::Para &p, const WeaponDef &wd, Vector3 shooter, float water, Vector3 &v) {
+    arcSolve(t, p, 0, 1, v);
+    if (fabsf(v.x) <= 1.192e-7f && fabsf(v.y) <= 1.192e-7f && fabsf(v.z) <= 1.192e-7f) return false;  // 0x445310
+    const float floor = water - 100, target = Vector3DistanceSqr(p.T, shooter);
+    float best = 1e8f, step = 0.5f;
+    Vector3 keep = v, rest = p.hit;
+    bool ok = false;
+    for (int i = 0; i < 10 && !ok; i++) {
+        const Vector3 r = restOf(t, p, wd, v, floor);
+        if (const float e = Vector3DistanceSqr(p.T, r); e < best) step *= 2, keep = v, rest = r, best = e, ok = e <= 100;
+        if (ok) break;
+        v = keep * expf(logf(target / Vector3DistanceSqr(rest, shooter)) * step), step *= 0.5f;
+    }
+    v = keep, p.hit = rest, p.known = true;
+    return ok && Vector3Length(v) <= 10;
+}
+
 // W4M CAIPlanAttackStrike 0x4a13a0: the bomb line heading with the most value hit (docs/w4m/ai.md §18 "Strike heading"); false when
-// the last heading checked by 0x49e1e0 was refused (impossible). view: the Blimp yaw that sets it.
+// the last heading checked by 0x49e1e0 was refused (impossible), bomb: where that bomb met land (none: W4M's last land ray). view: the Blimp yaw
+// that sets it. A best-miss clone (+0x3c) skips the check.
 static bool strikeHeading(const Game &g, const Level &L, const WeaponDef &wd, int target, const std::vector<float> &vals,
-                          const std::vector<float> &rating, const std::vector<Vector3> &away, float top, float &view) {
+                          const std::vector<float> &rating, const std::vector<Vector3> &away, float top, float &view, bool miss,
+                          std::optional<Vector3> &bomb) {
     const Vector3 T = targetPos(g, target);
     const float rb = blastOf(wd, wd.kind == Kind::Airstrike).reach, reach = 2 * Game::BOMBER_SPEED + 2 * rb, gap = 2 * Game::BOMBER_SPEED / 6;
-    const bool bomber = wd.kind == Kind::Airstrike || wd.name == "Fatkins Strike";  // WEAPTWK IsBomberWeapon
+    const bool bomber = !miss && (wd.kind == Kind::Airstrike || wd.name == "Fatkins Strike");  // WEAPTWK IsBomberWeapon
     float best = -1e6f;
     bool ok = false;
     for (int a = 0; a < 360; a += 10) {
@@ -977,12 +1142,39 @@ static bool strikeHeading(const Game &g, const Level &L, const WeaponDef &wd, in
             if (sum > 0) total += (int)k == target ? sum : sum * L.others;
         }
         if (total > best) {
-            ok = !bomber || bombLands(g, wd, T - Vector3{0, R, 0}, D, top);
+            bomb.reset();
+            ok = !bomber || bombLands(g, wd, T - Vector3{0, R, 0}, D, top, bomb);
             if (ok) best = total, view = atan2f(D.x, D.z);  // W4M Airstrike.Direction is the Blimp view's forward
             else a += 30;
         }
     }
     return ok;
+}
+
+// The ranking every attack plan goes through: x the origin's weight (+0x58), the failed-plan memory (0x4a6590), then x taste for a positive
+// score (W4M 0x498a0a, 0x49c060: (1 ± PlanScoreRandomise) x Pref(weapon) x (1 − PreferVariety if last turn's weapon))
+float Ai::rankOf(const Game &g, int wi, int target, int origin, float &score) const {
+    const Level &L = levelOf(g);
+    const int me = g.current, team = g.worms[me].team;
+    score *= origins[origin].weight;
+    for (const Fail &f : failed)  // this worm at a target that survived it, x(1 - effect / 2), another weapon 0.2 of that
+        if (f.worm == me && f.target == target) score *= 1 - 0.5f * f.effect * (f.weapon == wi ? 1 : 0.2f);
+    const uint32_t h = (salt ^ (uint32_t)wi * 2654435761u) * 2246822519u;
+    const WeaponDef &wd = WEAPONS[wi];
+    const std::string &n = wd.name;
+    const float pref = n == "Prod" ? 0.3f : n == "Cluster Grenade" ? L.cluster : n == "Gas Canister" ? L.gas : wd.kind == Kind::Homing ? L.homing : 1;
+    const float taste = (1 + L.randomise * ((h >> 8) / 16777216.0f * 2 - 1)) * pref * (wi == g.picked[team] ? 0.6f : 1);
+    return score > 0 ? score * taste : score;
+}
+
+// W4M projectile Score 0x4a0540 (animal 0x4a4210 for the Super Sheep) at the plan point, before the origin weight: AddScoreMove when the plan
+// has a path (0x49bd60), the blast (WormDamageRadius, WormDamageMagnitude, knock NearbyThreat; none for a best-miss, 0x49efb5), the punch term
+float Ai::projScore(const Game &g, const Plan &p) const {
+    const Level &L = levelOf(g);
+    const WeaponDef &wd = WEAPONS[p.weapon];
+    Outcome o(g, L, g.current, rating, vals);
+    o.blast(p.at, blastOf(wd, false), p.miss ? 0 : L.threat);
+    return o.s + (origins[p.origin].path ? MOVE_BONUS + (moved ? 0 : FIRST_MOVE_BONUS) : 0) + punch(g, wd.radius, p.at, p.target);
 }
 
 int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, int oi) {
@@ -992,7 +1184,6 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
     const WeaponDef &wd = WEAPONS[wi];
     const int team = w.team;
     const Level &L = levelOf(g);
-    const float wind = g.wind;  // W4M solves with the exact wind at every level
     if (g.shotsLeft && wi != g.weapon) return 0;  // locked to the weapon with shots left (0x493500)
     if (!g.usable(team, wi) && !(g.shotsLeft && wi == g.weapon)) return 0;  // W4M SchemeData Delay: not before its turn
     if (w.nailed && !nailUsable(wd.kind)) return 0;  // Tail Nail: the sim refuses it
@@ -1002,20 +1193,19 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
     // Strike and Animal plans come from each move -> retreat pair, for targets over 100 units (5 m) from it (0x49fcf6)
     const bool close = wd.kind == Kind::Melee || wd.kind == Kind::Mine || wd.kind == Kind::Flood || (wd.kind == Kind::Shell && dropped(wd));
     if (close != O.close) return 0;
-    // W4M 0x498a0a, 0x49c060: a positive score ×(1 ± PlanScoreRandomise) ×Pref(weapon) ×(1 − PreferVariety if last turn's weapon)
-    uint32_t h = (salt ^ (uint32_t)wi * 2654435761u) * 2246822519u;
-    const std::string &n = wd.name;
-    const float pref = n == "Prod" ? 0.3f : n == "Cluster Grenade" ? L.cluster : n == "Gas Canister" ? L.gas : wd.kind == Kind::Homing ? L.homing : 1;
-    const float taste = (1 + L.randomise * ((h >> 8) / 16777216.0f * 2 - 1)) * pref * (wi == g.picked[team] ? 0.6f : 1);
     // W4M 0x49bd60: AddScoreMove, + AddScoreMoveIfNotMoved while no path ran since the last shot, for a plan with a path before or
     // always for a close-range explosive (0x4a2c70 forces it)
     auto bonus = [&](bool force) { return force || O.path ? MOVE_BONUS + (moved ? 0 : FIRST_MOVE_BONUS) : 0; };
     auto consider = [&](float score, float yaw, float pitch, int charge, int target, float view = 0) {
-        score *= O.weight;  // W4M +0x58
-        for (const Fail &f : failed)  // W4M 0x4a6590: this worm at a target that survived it, x(1 - effect / 2), another weapon 0.2 of that
-            if (f.worm == me && f.target == target) score *= 1 - 0.5f * f.effect * (f.weapon == wi ? 1 : 0.2f);
-        float rank = score > 0 ? score * taste : score;
-        if (rank > plan.rank) plan = {wi, charge, target, yaw, pitch, score, rank, oi, view};
+        const float rank = rankOf(g, wi, target, oi, score);
+        if (rank > plan.rank) plan = {wi, charge, target, yaw, pitch, score, rank, oi, view, feetOf(g, target)};
+    };
+    // a projectile plan (W4M 0x49ffa0, Super Sheep 0x4a2fe0): scored now, solved when the list pops it
+    auto project = [&](int target) {
+        Plan p{wi, 0, target};
+        p.origin = oi, p.at = projPoint(g, wd, target, rating[target], away[target], L.sweet);
+        p.score = projScore(g, p), p.rank = rankOf(g, wi, target, oi, p.score);
+        pending.push_back({p.rank, {}, p, true});
     };
     int cands = 0;
     auto pick = [&] { return sub < 0 || cands++ == sub; };  // sub >= 0: only that candidate, the rest are counted
@@ -1032,41 +1222,18 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         if (!close && Vector3Distance(targetPos(g, ti), O.pos) <= 5) continue;
         const bool isWorm = Vector3Equals(e, targetPos(g, ti));
         const Vector3 to = e - w.pos;
-        const float yawE = atan2f(to.x, to.z), horiz = sqrtf(to.x * to.x + to.z * to.z);
+        const float yawE = atan2f(to.x, to.z);
         switch (wd.kind) {
         case Kind::Shell:
             if (dropped(wd) && pick()) {  // also set it down at the feet, facing the target
                 Vector3 d = dirOf(yawE, 0), out;
-                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), d * wd.speed, wind, false, out) && inBlast(out, ti, blastOf(wd, false))) consider(shell(out), yawE, 0, 1, ti);
+                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), d * wd.speed, g.wind, false, out) && inBlast(out, ti, blastOf(wd, false))) consider(shell(out), yawE, 0, 1, ti);
             }
-            // constant acceleration A: hit T at time t with V = (T - P - A t²/2) / t, the shells' closed-form parabola (arcMove)
-            for (float t = 0.2f; t < 4.5f; t += 0.43f) {  // 11 arcs, as W4M samples about 11 speeds (0x4ace50)
-                const bool wf = g.windy(int(&wd - WEAPONS.data()));
-                Vector3 A = {wf ? wind * Game::WIND_ACCEL : 0, -g.gravity() * wd.grav, wf ? g.windZ * Game::WIND_ACCEL : 0}, P = launchPoint(wd, w.pos, yawE);
-                Vector3 V = (e - P - A * (0.5f * t * t)) / t;
-                float sp = Vector3Length(V), pitch = asinf(V.y / sp), yaw = atan2f(V.x, V.z);
-                const float lo = launchSpeed(wd, 0);
-                if (sp > wd.speed || sp < lo || pitch < -1.2f || pitch > 1.45f || !pick()) continue;
-                int n = std::max(1, (int)roundf((wd.base >= 0 ? (sp - lo) / (wd.speed - lo) : sp / wd.speed) * 90));  // ticks of charge
-                float pw = 0;
-                for (int j = 0; j < n; j++) pw = fminf(1, pw + DT / 1.5f);
-                Vector3 d = dirOf(yaw, pitch), out;
-                if (fly(g, wd, muzzle(g.terrain, w.pos, P), d * launchSpeed(wd, pw), wind, false, out)) consider(shell(out), yaw, pitch, n, ti);
-            }
+            if (!dropped(wd) && solverOf(wd) >= 0 && pick()) project(ti);  // a Weapon Factory weapon has no plan class
             break;
-        case Kind::Homing: {  // locked on the target's feet from the Blimp (act())
-            if (!isWorm) break;
-            float pitch = atan2f(to.y - R - 0.2f, horiz);
-            Vector3 tgt = e - Vector3{0, R, 0}, d = dirOf(yawE, pitch), out;
-            if (pitch < -1.2f) break;
-            for (int n : {30, 60, 90}) {
-                if (!pick()) continue;
-                float pw = 0;
-                for (int j = 0; j < n; j++) pw = fminf(1, pw + DT / 1.5f);
-                if (fly(g, wd, muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), d * launchSpeed(wd, pw), wind, false, out, &tgt)) consider(shell(out), yawE, pitch, n, ti);
-            }
+        case Kind::Homing:  // locked on the plan point from the Blimp (act())
+            if (pick()) project(ti);
             break;
-        }
         case Kind::Shotgun: {  // W4M CAIPlanAttackDirect 0x4a0a20: one shot (bCanMoveBetweenShots) as a WormDamageRadius blast, no knock
             if (!pick()) break;
             // the plan's target point +0x14: the target's position (feet) + Worm.EyeLevelOffset / 2 (Spawn 0x4a0840); IsPossible, the score and the aim all use it
@@ -1105,20 +1272,23 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
                 if (!pick()) continue;
                 if (c == 0) walk.p = walk.best = muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), walk.v = flat(yawE) * wd.speed, walk.i = 0;
                 sheepWalk(g, wd, walk, e, (c + 1) * Walk::STEPS);
-                if ((c + 1) * Walk::STEPS * DT >= wd.fuse && Vector3Distance(walk.best, e) < 2) consider(shell(walk.best), yawE, w.pitch, 0, ti);
+                if ((c + 1) * Walk::STEPS * DT >= wd.fuse && Vector3Distance(walk.best, e) < 2) consider(shell(walk.best) + punch(g, wd.radius, feetOf(g, ti), ti), yawE, w.pitch, 0, ti);
             }
             break;
         }
         case Kind::SuperSheep:  // and the Starburst: W4M CAIPlanAttackStarburst 0x4a43a0 adds its rider's death (0x49ed30, all its hp, knock 1)
-            if (!isWorm) break;
+            if (wd.name == "Super Sheep") {
+                if (pick()) project(ti);
+                break;
+            }
             for (float pitch : {0.3f, 0.9f}) {
                 if (!pick()) continue;
                 Vector3 out;
                 if (!superFly(g, wd, w.pos, yawE, pitch, e, out) || Vector3Distance(out, e) >= 2) continue;
                 Outcome o(g, L, me, rating, vals);
                 o.blast(out, blastOf(wd, false), L.threat);
-                if (wd.name == "Starburst") o.hurt(me, (float)w.hp, 1);  // Worm.Vapourize
-                consider(o.s + bonus(false), yawE, pitch, 0, ti);
+                o.hurt(me, (float)w.hp, 1);  // Worm.Vapourize
+                consider(o.s + bonus(false) + punch(g, wd.radius, feetOf(g, ti), ti), yawE, pitch, 0, ti);
             }
             break;
         case Kind::Mine: {  // W4M CAIPlanAttackLandmine: CloseRangeExplosive 0x4a2c70, the blast scored where it is laid
@@ -1141,14 +1311,31 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
             break;
         case Kind::Airstrike:  // W4M CAIPlanAttackStrike 0x4a11d0: one blast at the target (set from the Blimp, act()), radius
         case Kind::Donkey:     // BlitzDuration 2 s x GroundSpeed + 2 WormDamageRadius, the payload's WormDamageMagnitude
-            if (isWorm && pick()) {
+            if (pick()) {
+                auto score = [&](bool miss) {  // 0x4a11d0 at the target, before the heading search (IsPossible); a best-miss knocks nothing
+                    Blast b = blastOf(wd, wd.kind == Kind::Airstrike);
+                    b.reach = 2 * Game::BOMBER_SPEED + 2 * b.reach;
+                    Outcome oc(g, L, me, rating, vals);
+                    oc.blast(feetOf(g, ti), b, miss ? 0 : L.threat);
+                    return oc.s + bonus(false) + punch(g, wd.radius, feetOf(g, ti), ti);
+                };
                 float view = 0;
-                if (!strikeHeading(g, L, wd, ti, vals, rating, away, g.landTop(), view)) break;
-                Blast b = blastOf(wd, wd.kind == Kind::Airstrike);
-                b.reach = 2 * Game::BOMBER_SPEED + 2 * b.reach;
-                Outcome oc(g, L, me, rating, vals);
-                oc.blast(e, b, L.threat);
-                consider(oc.s + bonus(false), w.yaw, w.pitch, 0, ti, view);  // W4M strike plans queue no worm orientation (flags 0x170)
+                std::optional<Vector3> bomb;
+                if (strikeHeading(g, L, wd, ti, vals, rating, away, g.landTop(), view, false, bomb)) {
+                    consider(score(false), w.yaw, w.pitch, 0, ti, view);  // W4M strike plans queue no worm orientation (flags 0x170)
+                    break;
+                }
+                // 0x49be00: the refused bomb met land 50+ units from the shooter on destructible land: a clone at the same target (flag 0x10)
+                // whose heading search skips the check (+0x3c)
+                if (!bomb || Vector3DistanceSqr(*bomb, w.pos - Vector3{0, R, 0}) < 2500 / (UNIT * UNIT) || g.landLocked()) break;
+                float s0 = score(false), s1 = score(true);
+                const float r0 = rankOf(g, wi, ti, oi, s0);
+                strikeHeading(g, L, wd, ti, vals, rating, away, g.landTop(), view, true, bomb);
+                Plan c{wi, 0, ti, w.yaw, w.pitch, s1, 0, oi, view, feetOf(g, ti)};
+                c.miss = true, c.rank = rankOf(g, wi, ti, oi, c.score);
+                Choice spawn{r0, {}, c};
+                spawn.spawn = true;
+                pending.push_back(spawn);
             }
             break;
         default: break;  // sentry, abduction, bubble, girder, teleport and utilities: W4M has no AI plan for them (no CAIPlanAttack*)
@@ -1230,6 +1417,53 @@ void Ai::finish(const Game &g) {
     }
 }
 
+// A plan joining the list (W4M 0x4993a0, then the stable bubble sort 0x493cf0): popped before the plans it ties with
+void Ai::insert(const Choice &c) {
+    size_t i = choiceAt;
+    while (i < choices.size() && choices[i].score > c.score) i++;
+    choices.insert(choices.begin() + (long)i, c);
+}
+
+// W4M projectile IsPossible (0x49c340 .. 0x49c400): the plan's solve from its shooter (0x9560fc: the plan's +0x4c with a path, else the
+// worm's feet); possible: the launch velocity, as yaw, pitch and the charge ticks reaching its speed. Impossible: 0x49be00 spawns the
+// best-miss clone (+0x3c) at the solve's collision point when it is not one already, the point is 50+ units from the shooter and
+// Land.Indestructable is 0; the Homing Missile (flag 0x10) keeps its point.
+bool Ai::solve(const Game &g, Plan &p) {
+    const WeaponDef &wd = WEAPONS[p.weapon];
+    const Terrain &t = g.terrain;
+    const Vector3 shooter = toUnits(t, origins[p.origin].pos - Vector3{0, R, 0});
+    const int k = solverOf(wd);
+    para.T = toUnits(t, p.at);
+    Vector3 v{};
+    bool ok;
+    if (k == SHEEP) {  // 0x49c400: from the feet, Gravity only, speeds 0 .. 0.5 units/ms (0x4ac7b0), launched level toward the point
+        const float dx = para.T.x - shooter.x, dz = para.T.z - shooter.z;
+        if (sqrtf(dx * dx + dz * dz) < 200) return false;  // within 200 units: impossible, no best miss
+        para.S = shooter, para.A = {0, -g.gravity() * UNIT / 1e6f, 0}, para.lo = 0, para.hi = 0.5f;
+        if ((ok = arcSolve(t, para, 0.5f, 1, v))) p.yaw = atan2f(dx, dz), p.pitch = 0;
+    } else {  // 0x4acbc0: from the eye (0x4ac670), the payload's gravity and whole wind, BasePower .. BasePower + MaxPower
+        const bool wf = g.windy(p.weapon);
+        para.S = shooter + Vector3{0, Game::EYE * UNIT, 0};
+        para.A = Vector3{wf ? g.wind * Game::WIND_ACCEL : 0, -g.gravity() * wd.grav, wf ? g.windZ * Game::WIND_ACCEL : 0} * (UNIT / 1e6f);
+        para.lo = launchSpeed(wd, 0) * UNIT / 1000, para.hi = wd.speed * UNIT / 1000;
+        if (wd.name == "Banana Bomb") para.T.y += 10;  // 0x49c360: ClusterDistanceAboveTarget over its point
+        ok = k == ARC ? arcSolve(t, para, 0, 1, v) : k == TIMED ? timedSolve(t, para, v, p.fuse) : bounceSolve(t, para, wd, shooter, toUnits(t, {0, g.water, 0}).y, v);
+        if (ok) {
+            const Vector3 m = v * (1000 / UNIT);  // m/s
+            const float sp = Vector3Length(m), lo = launchSpeed(wd, 0);
+            p.yaw = atan2f(m.x, m.z), p.pitch = asinf(Clamp(m.y / sp, -1, 1));
+            p.charge = std::clamp((int)roundf((wd.base >= 0 ? (sp - lo) / (wd.speed - lo) : sp / wd.speed) * 90), 1, 90);  // ticks of charge
+        }
+    }
+    if (ok || p.miss || !para.known || Vector3DistanceSqr(para.hit, shooter) < 2500 || g.landLocked()) return ok;
+    Plan c = p;
+    c.miss = true, c.fuse = 0;
+    if (wd.kind != Kind::Homing) c.at = toMetres(t, para.hit);
+    c.score = projScore(g, c), c.rank = rankOf(g, c.weapon, c.target, c.origin, c.score);
+    insert({c.rank, {}, c, true});
+    return false;
+}
+
 // W4M AIPlan best first (0x49a7d0): the best scored plan that is possible wins, a negative score never; a move plan is possible
 // when its path is found. Path moves come only from A* edges (0x4b0c3c): never JETPACK, PARACHUTE or NINJA_ROPE.
 void Ai::decide(const Game &g) {
@@ -1241,7 +1475,8 @@ void Ai::decide(const Game &g) {
         const float slow = left < L.moveTime ? left / L.moveTime : 1;  // ReduceMoveScoreIfTimeLeftLessThan (0x4a75c0)
         uint32_t r = salt * 2891336453u + (uint32_t)walks;
         auto taste = [&] { return 1 + L.randomise * noise(r); };
-        if (plan.weapon >= 0) choices.push_back({plan.rank, {}});
+        if (plan.weapon >= 0) choices.push_back({plan.rank, {}, plan});
+        choices.insert(choices.end(), pending.begin(), pending.end());
         if (moves) {
             const int limit = pathLimit(thinkTimer);
             for (const Object &o : g.objects) {  // W4M CAIPlanCollectCrate
@@ -1267,11 +1502,18 @@ void Ai::decide(const Game &g) {
         std::stable_sort(choices.begin(), choices.end(), [](const Choice &a, const Choice &b) { return a.score > b.score; });
     }
     while (choiceAt < choices.size()) {
-        const Choice &c = choices[choiceAt++];
+        Choice c = choices[choiceAt++];
         if (c.score < 0) break;  // "Considered impossible as forbidding any plan with a -ve score"
-        if (c.route.purpose < 0) return finish(g);
-        return startSearch(g, c.route);  // the walk if found, else back here for the next plan
+        if (c.route.purpose >= 0) return startSearch(g, c.route);  // the walk if found, else back here for the next plan
+        if (c.spawn) {  // its IsPossible failed: the best-miss clone joins the list (0x4993a0), scored
+            insert({c.plan.rank, {}, c.plan});
+            continue;
+        }
+        if (c.lazy && !solve(g, c.plan)) return;  // one IsPossible per unit
+        plan = c.plan, deciding = false, stage = -1;
+        return finish(g);
     }
+    deciding = false, stage = -1;
     if (g.shotsLeft) {  // 0x499ad0: locked with shots left and no plan: aim up (SetAimAngle 0x3fc90fdb), Delay 1000, fire again
         plan = Plan{g.weapon, 0, -1};
         plan.yaw = w.yaw, plan.pitch = Clamp(PI / 2, -1.2f, 1.45f);
@@ -1299,6 +1541,10 @@ Input Ai::act(const Game &g) {
         return in;
     }
     if (!select(g, plan.weapon, in)) return in;
+    if (const int f = g.fuses[w.team]; plan.fuse > 0 && weaponDef(g.weapon).userFuse && f != plan.fuse) {  // W4M SetWeaponFuse (0x4b5510)
+        if (!(g.prevButtons & (Input::FUSE_UP | Input::FUSE_DOWN))) in.buttons = plan.fuse > f ? Input::FUSE_UP : Input::FUSE_DOWN;
+        return in;
+    }
     Kind k = weaponDef(g.weapon).kind;
     float dy = wrapPi(plan.yaw - w.yaw), dp = plan.pitch - w.pitch;
     in.turn = q(dy / (2.5f * DT));
@@ -1321,7 +1567,7 @@ Input Ai::blimp(const Game &g) const {
     const Kind k = WEAPONS[plan.weapon].kind;
     const float dv = k == Kind::Airstrike || k == Kind::Donkey ? wrapPi(plan.view - g.cursorYaw) : 0;
     in.turn = q(dv / (Game::BLIMP_TURN * DT));
-    const Vector3 t = targetPos(g, plan.target) + strikeOff - Vector3{0, R, 0};
+    const Vector3 t = plan.at + strikeOff;  // W4M SetWeaponTarget(+0x14)
     const float y = g.cursorYaw, back = (g.cursor.y - t.y) / tanf(g.cursorPitch), dx = t.x - sinf(y) * back - g.cursor.x,
                 dz = t.z - cosf(y) * back - g.cursor.z, step = Game::CURSOR_SPEED * DT;
     in.walk = q((sinf(y) * dx + cosf(y) * dz) / step);  // Game::step's cursor axes
@@ -1373,14 +1619,14 @@ Input Ai::think(const Game &g) {
     if (g.timer > lastTimer || g.current != worm) {
         worm = g.current;
         walks = charged = aimed = wait = afterFire = shotsSeen = 0;
-        if (g.clock < lastClock) memory.clear(), failed.clear(), recent.weapon = -1, grid.reset();  // new match
+        if (g.clock < lastClock) memory.clear(), failed.clear(), recent.weapon = -1, grid.reset(), para = Para{};  // new match
         lastClock = g.clock;
         if (!grid) grid = std::make_shared<const Grid>(aiGrid(g.terrain));
         pathFailed = moved = noMove = fireAfterWalk = retreatTaken = false, repaths = 0, walking = {}, blocked.clear();
         mode = Mode::Eval;
         stage = -1;
         search.reset(), moves.reset();
-        origins.clear(), choices.clear(), choiceAt = 0;
+        origins.clear(), choices.clear(), pending.clear(), choiceAt = 0, deciding = false;
         path.clear(), afterPath.clear();
         debt = 0;
         uint32_t hp = 0;  // not g.clock: how long earlier thinks took must not change this turn's taste
