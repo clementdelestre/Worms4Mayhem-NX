@@ -23,9 +23,9 @@ How W4M accumulates the per-worm stats that the round / match end screens and th
   - `Stats.Update` (0x9618f0): vtable +0x28 = 0x60ffe0, builds the mapper of the raw id (below) on **RoundStats + RoundShots only**,
     calls its Map(a, b), deletes it.
   - `Stats.PresentAwards` and `Stats.Compile`: vtable +0x34 = 0x610820: RoundStats +0x6c (0x614960, per-worm records folded into
-    their team record via +0x64; the fold 0x688f4c is not decoded [assumed: sum]), `RoundStats.log`, then +0x2c = 0x6106d0:
+    their team record via +0x64: for worm w, the team record `TeamStats[uTeamStatIndex]` takes the worm's record through 0x688f4c, which adds every one of the 25 values (`dest[i] += src[i]`, no max exception, asserts equal counts) [disasm 0x614960, 0x688f4c]), `RoundStats.log`, then +0x2c = 0x6106d0:
     MatchStats +0x5c(RoundStats), MatchStats +0x60(RoundStats), MatchShots +0x54(RoundShots), `MatchStats.log`; then +0x30
-    (savegame stats). PresentAwards also writes `ElapsedMatchTime` = `ElapsedRoundTime` / 1000 (seconds) [disasm 0x611320].
+    (savegame stats). PresentAwards also adds `ElapsedRoundTime` / 1000 (seconds, integer) to `ElapsedMatchTime`: it reads both and writes the sum [disasm 0x611320..0x611479].
   - `Stats.ResetRound`: RoundStats +0x38, RoundShots +0x38 and +0x3c. `Stats.ResetMatch`: MatchStats +0x38, MatchShots +0x38.
     `Stats.Delete`: RoundStats / MatchStats +0x68, RoundShots / MatchShots +0x38.
   - `Stats.Populate.Round`: vtable +0x40 = 0x60ffb0 (survival of every living worm, 27.3), then +0x38 = 0x610950 (a
@@ -41,13 +41,13 @@ How W4M accumulates the per-worm stats that the round / match end screens and th
   `GameOver.RoundNumber` is 0 or the NetService instance `[0x979ddc]` exists (0x705807) it posts `Stats.Delete`,
   `Stats.ResetMatch`, 0x617d90 (MatchStatsSummary), `Stats.ResetMatch`; then always `Stats.ResetRound`, 0x618f10
   (RoundStatsSummary), `Stats.ResetRound`. So the match stores reset at the first round, the round stores at every round.
-  [assumed: `[0x979ddc]` is non-null only in a network game, which then resets the match stores every round.]
+  `[0x979ddc]` is the NetService singleton: its only creator is the message handler 0x509460, on `Net.ConnectToServer` / `Net.CreateServer` (class NetService 0x89b1b4, creator 0x7085f8, ctor 0x705bce writes the global), and its destructor 0x705fa7 clears it (`Net.ShutdownComplete` handled at 0x5094d1). So it is non-null only in a network game, which resets the match stores every round [disasm]. The same condition (RoundNumber 0 or NetService) in `FlowControlService::InitialiseGameServices` 0x4eba10 (0x4ebf89..0x4ebfd5) also sets `ElapsedMatchTime` to 0 and every team's round wins (0x50c160 team 0..3, +0x14) to 0 [disasm]. A network win ends the match at one round win: after the IsLocalGame test (0x4fc0f2) the win threshold is forced to 1 (0x4fc10d) instead of SchemeData `Wins` [disasm].
 - `GameOver.RoundNumber` = 0 is written by `StartGame$Multiplayer` (FrontEndService 0x728508, 0x72864c) only when the new-match
   byte `[0x947f86]` is set; it also posts `ClearStats` there [disasm]. The win / draw paths add 1 (docs/w4m/turn.md §6).
 - Round end [disasm]: GameLogicService::HandleEndOfGame 0x4fb880 posts `Stats.PresentAwards` first (0x4fbc25, the merge), then per
   end message `Stats.Populate.Round` (and `.Match` at the match end) before `GameLogic.Win` / `Draw` etc. So the living worms'
   survival written by Populate.Round lands in RoundStats after the merge: the round screen shows it, MatchStats does not get it
-  [disasm order; assumed: 0x6910e4 dispatch keeps that order].
+  [disasm order; 0x6910e4 is a synchronous dispatch: 0x68b89e -> 0x68cb43 -> 0x68cb82 calls the registered recipient's vtable +0x1c (HandleMessage) with the message, then each interest of its chain in turn, and returns when all have run; nothing is queued, so the order of the posts is the order of the handlers].
 
 ## 27.3 Sources and mappers
 
@@ -61,11 +61,11 @@ a mapper class (vtable, Map = slot 0) [disasm]:
 | 3 | KillStatsMapper 0x86a158, 0x610ec0 | stat 1, 20 |
 | 4 | TeamKillStatsMapper 0x86a160, 0x60ec10 | stat 2, 20 |
 | 5 / 6 / 7 / 8 | Weapon / Utility / Health / MysteryCrateStatsMapper 0x60efb0 / 0x60f050 / 0x60ef10 / 0x60f0f0 | stat 10 / 12 / 11 / 13 |
-| 9 | HomeRunsStatsMapper 0x60f190 | stat 14 [assumed from the label] |
+| 9 | HomeRunsStatsMapper 0x60f190 | stat 14 (add, 0x60f19d) [disasm]; posted by WormStatsSource 0x612f00 (+1 for the worm responsible, with `Achv.TrackAchievement`; called at 0x5ad7af by the worm logic 0x5ad640) |
 | 10 (0xa) | SkipTurnStatsMapper 0x60f2d0 | stat 18 |
-| 11..13 | Barrel / Landmine / SentryGunStatsMapper 0x60ed30 / 0x60edd0 / 0x60ee70 | stats 3 / 4 / 5 [assumed from the labels] |
+| 11..13 | Barrel / Landmine / SentryGunStatsMapper 0x60ed30 / 0x60edd0 / 0x60ee70 | stats 3 / 4 / 5 (add at 0x60ed3d, 0x60eddd, 0x60ee7d) [disasm]; raw 11 is posted by 0x6119d0 (+1, called at 0x5d1565 by 0x5d1370), raw 12 by 0x612050 (+1, called at 0x57617e by the payload code 0x575fb0), raw 13 by no site |
 | 14 (0xe) | SurvivalStatsMapper 0x60f370 | stat 19 (max) |
-| 15 (0xf) | JetpackStatsMapper 0x60f230 | stat 17 [assumed from the label] |
+| 15 (0xf) | JetpackStatsMapper 0x60f230 | stat 17 (add, 0x60f23d) [disasm]; posted by JetpackStatsSourceEntity 0x611e40 (vtable 0x86ab10 +0x20) with `[+0x20] - [+0x24]` for the worm responsible |
 | 16 (0x10) | TeamDamageStatsMapper 0x60eb00 | stat 24 (the label says Dynamite Damage) |
 | 0x11..0x14, 0x15..0x18, 0x19..0x1c | TeamIndexDamage / TeamNumWormsDamaged / TeamNumWormsKilled (team 0..3) | not decoded |
 | 1 | none: asserts "Unknown Raw Stat Type!" | |
@@ -103,8 +103,7 @@ no stat is written for them. Weapon ids are WeaponNameEnum (table 0x90c920) [dat
   victim has no WormData. Killer == victim: nothing when `[0x921a40]` (last damage weapon) is 20 (Starburst), else a team kill.
   Same team, or teams sharing AlliedGroup (+0x6c): team kill. Otherwise an enemy kill. Posts raw 0x19 + victim team (1, killer),
   then raw 3 (enemy) or raw 4 (team) (1, killer). Kill mapper: stat 1 += 1; TeamKill mapper: stat 2 += 1; both stat 20 += 1 when
-  the kill weapon is Sheep (15), ConcreteDonkey (18) or SuperSheep (19) [assumed: the compared operand is held in a register
-  Ghidra does not follow, its source is not traced].
+  the kill weapon is Sheep (15), ConcreteDonkey (18) or SuperSheep (19): the compared value is not a register but the current shot record's weapon, read with the shot store's get (+0x48, field 2 = weapon) at 0x611023 (Kill) / 0x60ec66 (TeamKill) and compared at 0x611218 / 0x60ec91; the Kill mapper also adds 1 to the shot's field 3 ("kills this shot", 0x610ffd), stat 1 += 1 and posts `Achv.TrackAchievement` / `Ranked.IncrementKills` [disasm].
 - **10 / 11 / 12 / 13 crates** [disasm]: crate collection 0x5cb5a0 calls CrateStatsSource 0x611bd0(crate type +0x20) (table 0x611c40):
   type 0 weapon → raw 5 → stat 10, type 1 health → raw 7 → stat 11, type 2 utility → raw 6 → stat 12, type 4 mystery → raw 8 →
   stat 13; types 3 (target) and 5 (custom) post nothing. +1 for the worm responsible (weapon 0x43: the active worm), not the
@@ -129,4 +128,4 @@ no stat is written for them. Weapon ids are WeaponNameEnum (table 0x90c920) [dat
 - Round rows (`WXFE.WinRoundList`) [disasm]: accolade type t = 0 Damage (store 0), 1 Kills (1), 2 Accuracy (store 7 x 100 / store 6, rounded, 0 without a shot), 3 Greedy (10 + 11 + 12 + 13), 4 Boring (18), 5 Survivor (19), 6 TeamKills (2), evaluated per worm whose WormData +0x125 is set (the match's worms) by 0x618190 (rule factories 0x619f40 Damage, 0x619f80 Kills, 0x619f00 Accuracy, 0x619f60 Greedy, 0x619f20 Boring, 0x619fa0 Survivor, 0x619fc0 TeamKills). Positive = the greatest value, except Boring (the least) and TeamKills (the least); negative the opposite. The award goes to the one worm holding the value alone: none when it is shared, and none for a greatest of 0.
 - Text: `Stat.Accolade.Pve.<t>` / `Nve.<t>` plus a suffix per type ` (%u)`, ` (%u)`, ` (%u %%)`, none (Greedy), none (Boring), ` (%um %us)` (Survivor, seconds), ` (%u)`; the worm name (WormData +0xb0) in its team's colour `15 + AlliedGroup`.
 - Selection: the 7 types are shuffled (`for i in 0..6: swap(a[i], a[rand() % 6])`); P positives and N negatives counted over the types in order (each capped at 4). With P + N = 0 the `No Stats` text shows; P + N > 4 trims: P < 2 -> N = min(N, 4 - P); P >= 2 and N >= 2 -> P = N = 2; P >= 2 and N < 2 -> P = 4 - N. The rows then cycle the shuffled list (positive while positives remain, then negative), each success one row, up to 4 rows.
-- Match page (MatchStatsSummary): per team: damage / kills = the stored stats 0 / 1 summed over its worms, accuracy = the team's damaging shots (shot-list entries with a damage) x 100 / its stat 6, capped 100, weapon of choice = the first of W4M weapon ids 1..0x1e with strictly the most shots (0x619a90, ties keep the lower id), elapsed `ElapsedMatchTime` [disasm; the summing of worms into a team is assumed, §27 open items].
+- Match page (MatchStatsSummary): per team: damage / kills = the stored stats 0 / 1 summed over its worms, accuracy = the team's damaging shots (shot-list entries with a damage) x 100 / its stat 6, capped 100, weapon of choice = the first of W4M weapon ids 1..0x1e with strictly the most shots (0x619a90, ties keep the lower id), elapsed `ElapsedMatchTime` [disasm]. They are read from the team's record of MatchStats (get by team name, vtable +0x3c at 0x619b6d / 0x619b99 with stats 0, 1 and later 6), which is the sum of its worms' records: the round fold 0x614960 -> 0x688f4c (§27.1) then the round -> match merge 0x614b60.

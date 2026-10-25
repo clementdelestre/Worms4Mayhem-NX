@@ -91,8 +91,6 @@ void Results::finish(const Game &g) {
             if (g.alliance(t) == g.alliance(winner)) roundWins[t]++;
     over = winner >= 0 && roundWins[winner] >= std::max<int>(1, cfg.scheme.wins);
     const uint32_t secs = (uint32_t)g.clock / 60;
-    for (int i = 0; i < (int)g.worms.size() && i < WORMS; i++)
-        if (g.worms[i].hp > 0) current.worm[i].survived = std::max(current.worm[i].survived, secs);  // Stats.Populate.Round
     current.seconds = secs;
     // PresentAwards: the round into the match, summed except Survival (the greater)
     if (match.weaponShots.size() < current.weaponShots.size()) match.weaponShots = current.weaponShots;
@@ -105,6 +103,8 @@ void Results::finish(const Game &g) {
         m.crates += c.crates, m.boring += c.boring, m.survived = std::max(m.survived, c.survived);
     }
     match.seconds += secs;
+    for (int i = 0; i < (int)g.worms.size() && i < WORMS; i++)  // Stats.Populate.Round runs after the merge: the round screen sees it, the match does not
+        if (g.worms[i].hp > 0) current.worm[i].survived = std::max(current.worm[i].survived, secs);
     summarise((uint32_t)std::random_device{}());
 }
 

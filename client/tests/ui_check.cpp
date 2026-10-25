@@ -367,6 +367,16 @@ int main() {
         r.summarise(3);
         assert(std::any_of(r.awards.begin(), r.awards.end(), [](const Results::Award &a) { return !a.positive; }));
     }
+    {  // Stats.Populate.Round runs after PresentAwards (docs/w4m/stats.md §27.2): a living worm's survival reaches the round rows, not MatchStats
+        const GameConfig c{1, 2, 2, "", 0u, {{"A"}, {"B"}}};
+        Game g;
+        g.start({23, 2, 2, "", 0});
+        g.clock = 600;
+        Results r;
+        r.begin(c);
+        r.finish(g);
+        assert(r.current.worm[0].survived == 10 && r.match.worm[0].survived == 0);
+    }
     {  // W4M 0x5ab8a8: Dim-Mak (5) and poison (6) skip Turn.EnemyDamage / Turn.FriendlyDamage; the shot's other damage still counts
         Game g;
         g.start({23, 2, 2, "", 0});
