@@ -186,7 +186,7 @@ W4M lays the FE out about the screen centre in a 4:3 band [data]. Ours multiplie
   NewTeam = the parameter, the 6 worm names `User.HumanWorm1..6`, each first drawn by 0x737d86 from the comma list `FE.RandomWormNames` (text,
   e.g. "Habbers,Hannah,...") until it differs from the other five; Flag by `SAVE.Language` 0..12: Flag.UK, USA, Czech, France, Germany, Italy,
   Japan, Poland, RussianFederation, Spain, Slovakia, Innocent, Chinese; Speech `voclassi`; a CPU team (User.Skill > 0) gets Flag.Terminator; Skill;
-  the other fields keep the StoredTeamData defaults (Grave 0, no attachment) [assumed: container defaults]; `MCa.Team` = the name.
+  the other fields keep the StoredTeamData ctor defaults (0x667ff8, 0x66801b..0x668087: Grave 0, CustomWeapon `FETXT.Factory.Blaster`, Hat / Gloves / Glasses / Tash "", SecretWeapon null) [disasm]; `MCa.Team` = the name.
 - Lists [data, `tools/w4m-re/setuplists.py`]: graves = `WXFEP.SelectGraveList` rows, User.Grave 0..15 (Grave.Arabian Genie Lamp, Building
   Jackhammer, Camelot Sword in Stone, Cross Celtic Cross, Prehistoric Mystic Rocks, Pyramid Mystic Pyramid, Space Sci-Fi, Temple, WildWest
   Tombstone, Worm Statue, Bulb Weird, Obelisk, Marble, SkullnBones Chatting Skull, Eye The Eye, Brown Mystic Brown); in game 0x725eda maps

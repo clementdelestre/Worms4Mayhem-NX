@@ -464,5 +464,10 @@ int main() {
         Color n = Ui::rowOutline(0), h = Ui::rowOutline(1), d = Ui::rowOutline(2);
         assert(n.r == 0 && n.a == 255 && h.r == 255 && h.g == 255 && h.b == 255 && h.a == 255 && d.r == 0 && d.a == 255);
     }
+    {  // a new team carries StoredTeamData's default CustomWeapon (0x667ff8)
+        Barracks b;
+        int i = b.create("Newbies", 0, "A,B,C,D,E,F,G", "Flag.UK", 1);
+        assert(i >= 0 && b.teams[i].weapon == "FETXT.Factory.Blaster");
+    }
     puts("ui_check ok");
 }

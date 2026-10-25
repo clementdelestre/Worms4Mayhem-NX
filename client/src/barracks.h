@@ -12,7 +12,7 @@ struct SavedTeam {  // W4M StoredTeamData
     std::vector<std::string> worms = std::vector<std::string>(6);
     int skill = 0;  // 0 human, 1..5 CPU level, fixed at creation
     int grave = 0;  // graves.txt row
-    std::string flag, speech = "voclassi", weapon;  // weapon: CustomWeapon, the team's Weapon Factory weapon
+    std::string flag, speech = "voclassi", weapon = "FETXT.Factory.Blaster";  // weapon: CustomWeapon (StoredTeamData ctor 0x667ff8 default)
     std::string hat, gloves, glasses, tash;          // WXFE.A.* ids, "" none
     // the team in a match slot: worms 1..6 (0 = the match default), alliance 0..3 (-1 = AddTeam's), handicap -1..1; its weapon
     // looked up by name in the player's Weapon Factory list, then the stock weapons (AddTeam 0x73f311 copies the team's SecretWeapon into the slot)
