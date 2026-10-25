@@ -84,6 +84,7 @@ Distances: W4M units / 20 = our metres (200 units = 10 m). Times: 60 Hz ticks, `
   poison, vampire or tie-breaker terms (W4M has none).
 - Bonus (W4M 0x49bd60, **disasm**): +AddScoreMove 10, +AddScoreMoveIfNotMoved 20 while no path ran since the last shot (`moved`, W4M
   0x9560ba), for a plan from a move node (`Origin::path`) and always for a close-range explosive (0x4a2c70 forces it).
+- The CPU's planned walks and jumps step the thinker's own `Motion` (flags included) through `wormBody` and spend a landing's 0x40 flag through `Game::landDamage`, the sim's: Flags 0x8040 land walking, no damage (**ours**; the flags are docs/w4m/physics.md "WormData Flags", 0x5ac3e0).
 - A dropped shell or landmine plan needs its target inside the blast set down at the feet (**ours**: W4M's blast is next to the target, 0x4a22d0, so it always scores damage; at the feet a blast reaching nobody would win on the forced +30 bonus of 0x4a2c70 alone).
 - Dropped shells and landmines spare the thrower (**ours**: W4M walks next to the target first, 0x4a22d0); the thrower then takes the
   retreat W4M 0x4a8c60 would pair with its own node: the best def within ±2 window entries, 50 iterations (**ours**: W4M retreats along

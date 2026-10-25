@@ -59,7 +59,7 @@ static bool outside(const Game &g, Vector3 p) {
 }
 
 // Copy of Game::stepWorm without hp; false once drowned.
-struct Body { Vector3 pos, vel; bool grounded; float fall = 0; Motion motion{}; };
+struct Body { Vector3 pos, vel; bool grounded; Motion motion{}; };
 static const Colliders &wormColliders(const Game &g) {  // Game::stepWorm's: the active worm's sphere against the others
     static thread_local Colliders cs;
     g.colliders(cs, Game::WORM_MASK, g.current);
@@ -68,7 +68,7 @@ static const Colliders &wormColliders(const Game &g) {  // Game::stepWorm's: the
 
 static bool stepBody(const Game &g, Body &b, float &yaw) {
     float speed = wormBody(g.terrain, b.pos, b.vel, b.grounded, b.motion, yaw, g.gravity(), g.pot, 0.3f, g.wormWind(), &wormColliders(g));
-    b.fall += g.fallDamage(speed);
+    g.landDamage(b.motion, speed);  // spends a 0x40 flag on the landing, as the sim does
     return b.pos.y >= g.water;
 }
 
@@ -397,7 +397,7 @@ static bool probe(const Game &g, const Grid &gr, NodeCache &c, int i, int j, flo
 
 static Mover moverOf(const Game &g) {
     const Worm &w = g.worms[g.current];
-    return {{w.pos, w.vel, w.grounded, 0, w.motion}, w.yaw, w.pitch, false, Rope{}, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, Hook{}, g.walkTick};
+    return {{w.pos, w.vel, w.grounded, w.motion}, w.yaw, w.pitch, false, Rope{}, g.prevButtons, g.jumpDelay, g.jumpKind, g.vault, Hook{}, g.walkTick};
 }
 
 // A player's inputs for one path step; r.done once the worm stands still after it.

@@ -304,7 +304,7 @@ static void scriptedThreat() {
 static void scriptedTarget() {
     Game g = arena("Bazooka", 220);  // out of a Bazooka's reach (31.65 m/s, Gravity.Slow: 134 m) from anywhere on the floor
     const int me = g.current;
-    g.worms[1 - me].nailed = true;  // held over the sea beyond the land: the enemy lives on, however long the CPU thinks
+    g.worms[1 - me].nailed = true, g.worms[1 - me].motion.flags |= WF_PINNED;  // held over the sea beyond the land: the enemy lives on, however long the CPU thinks
     const Vector3 marker = {25, 50.6f, 12};
     g.wormTarget.assign(g.worms.size(), {}), g.wormTarget[me] = {marker};
     Ai ai;
@@ -336,7 +336,7 @@ static void secondActions() {
         const Kind k = WEAPONS[wi].kind;
         const int me = g.current, hp = g.worms[1 - me].hp;
         Ai ai;
-        bool fired = false, locked = false, tookOff = false, left = false;
+        bool fired = false, locked = false, tookOff = false, left = false, alongX = false, steered = false, seen = false;
         int presses = 0;  // FIRE presses while the shot is out: detonate, take off, drop
         for (int t = 0; t < 60 * 90 && !(left && g.phase == Phase::Settle && g.shots.empty()); t++) {
             Input in = ai.think(g);
@@ -346,7 +346,13 @@ static void secondActions() {
             g.step(in);
             locked |= g.locked;
             left |= g.phase != Phase::Aim;
-            for (const Projectile &s : g.shots) tookOff |= k == Kind::SuperSheep && !s.child && s.stage > 0;
+            for (const Projectile &s : g.shots) {
+                tookOff |= k == Kind::SuperSheep && !s.child && s.stage > 0;
+                if (k != Kind::Homing || s.weapon != wi) continue;
+                if (!seen) alongX = s.vel.x > 0 && fabsf(s.vel.y) + fabsf(s.vel.z) < 1e-4f * s.vel.x;  // the launch tick
+                seen = true;
+                steered |= fabsf(s.vel.z) > 0.5f;
+            }
             for (const GameEvent &e : g.events) fired |= e.kind == GameEvent::Fire && e.worm == me && e.weapon == wi;
         }
         const int dmg = hp - std::max(0, g.worms[1 - me].hp);
@@ -354,9 +360,10 @@ static void secondActions() {
         if (k == Kind::Teleport || k == Kind::Abduction) { assert(!fired); continue; }
         assert(fired);
         if (k == Kind::OldWoman || k == Kind::Scouser) assert(presses == 0);
-        // the mine waits for a worm to walk by; W4M launches the Homing Missile along world +x (0x519a40 without acceleration), its homing does the rest
+        // the mine waits for a worm to walk by; W4M launches the Homing Missile along world +x (0x519a40 without acceleration) and its
+        // homing steers it once the lock stage starts: whether it then hits depends on how far the target stood
         else if (k != Kind::Mine && k != Kind::Homing) assert(dmg > 0);
-        if (k == Kind::Homing) assert(locked);
+        if (k == Kind::Homing) assert(locked && alongX && steered);
         if (k == Kind::Sheep) assert(presses == 1);
         if (k == Kind::SuperSheep) assert(tookOff && presses >= 1);
         if (WEAPONS[wi].name == "Super Airstrike") assert(presses >= WEAPONS[wi].clusters);  // one cow per press, once the last has dropped

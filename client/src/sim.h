@@ -758,6 +758,7 @@ struct Game {
     Vector3 landCenter() const;
     Vector3 strikeDir() const { return {-cosf(cursorYaw), 0, sinf(cursorYaw)}; }  // the view's right: bombers cross the screen
     int retreatTicks(const WeaponDef &d) const { return msTicks(d.retreat >= 0 ? d.retreat : cfg.scheme.retreatTime * 1000); }
+    int landDamage(Motion &m, float speed) const;  // fallDamage unless Flags & 0x8040 (0x5ac3e0), which spends 0x40
     int fallDamage(float speed) const;  // W4M FallDamage 0x5ac3e0: hp lost landing at `speed` m/s, scheme and Wormpot included
     struct GunHit { Vector3 at; float dist; int worm; bool land; int obj = -1, sentry = -1; };  // at: the struck worm's centre or sentry's base, else the ray's end; worm / obj (a crate) / sentry -1: none
     static constexpr float GUN_RANGE = 9999 / 20.0f;  // WEAPTWK Range 9999 units, both guns

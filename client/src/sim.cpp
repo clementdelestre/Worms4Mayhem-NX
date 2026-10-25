@@ -1399,11 +1399,9 @@ static uint32_t collider(const Terrain &t, const Object &o, Vector3 &c, float &r
     c = colliderCentre(o), r = o.type == Object::Mine ? 0.15f : o.type == Object::Barrel ? DRUM_R : 0.5f * o.scale;
     return o.type == Object::Crate ? (o.weapon < 0 && o.mystery < 0 ? 4 : 2) : o.type == Object::Target ? 0x20 : o.type == Object::Barrel ? 0x10 : 8;
 }
-// W4M 0x5164b0: the fraction of d where spheres s apart first touch, 0 already overlapping, -1 none. [ours] within 0.1 mm is touching,
-// not overlapping: float rounding of a sphere moved to its contact would decide whether it may leave
+// W4M 0x5164b0: the fraction of d where spheres s apart first touch, 0 already overlapping, -1 none
 static float sweepHit(Vector3 p, Vector3 d, Vector3 c, float s) {
     const Vector3 o = Vector3Subtract(p, c);
-    s -= 1e-4f;
     const float a = Vector3DotProduct(d, d), b = Vector3DotProduct(o, d), k = Vector3DotProduct(o, o) - s * s;
     if (a == 0) return k < 0 ? 0 : -1;  // 0x516350: the overlap alone
     const float disc = b * b - a * k;
@@ -1843,30 +1841,33 @@ void Game::stepObjects() {
         if (o.spawning) emit(GameEvent::CrateLand, o.pos, -1, o.mystery >= 0 ? -2 : o.weapon);
         o.vel = {0, 0, 0}, o.spawning = false;
     };
-    auto crateBounce = [&](Object &o) {
+    auto crateBounce = [&](Object &o) {  // 0x5c8900: true when it rested (the +0x63 skip stays), else the fall runs this tick
         o.vel = {o.vel.x * 0.2f, -o.vel.y * 0.2f, o.vel.z * 0.2f}, o.bounced = true;
-        if (Vector3Length(o.vel) < 1) crateRest(o);
+        const bool rest = Vector3Length(o.vel) < 1;
+        if (rest) crateRest(o);
+        return rest;
     };
     // 0x5cb7e0, mask 0x83f but worms (the collect below), every contact; slow on a top: rests; faster and head-on: to the contact and
-    // bounced; any contact skips the fall this tick (+0x63). A crate never bounced and still falling is passed through
+    // bounced (0x5c8900 clears +0x63 unless it rested); any other contact skips the fall this tick (+0x63). A crate never bounced and
+    // still falling is passed through
     auto crateSweep = [&](Object &o) {
         bool on = false;
         colliders(cs, CRATE_MASK & ~1u, UID_BASE + o.uid);
-        const Vector3 d = Vector3Scale(o.vel, DT);
+        const Vector3 d = Vector3Scale(o.vel, DT), p0 = o.pos;  // the query is fixed for the whole loop (0x519db0)
         for (const Collider &c : cs) {
-            const float t = sweepHit(o.pos, d, c.c, c.r + 0.5f * o.scale);
+            const float t = sweepHit(p0, d, c.c, c.r + 0.5f * o.scale);
             if (t < 0 || (c.flags & 0x80)) continue;  // a walker: the active worm's collect (`sheep` below)
             if (c.flags & 0x26) {
                 bool falling = false;
                 for (const Object &x : objects) falling |= UID_BASE + x.uid == c.id && !x.bounced && Vector3LengthSqr(x.vel) > 0;
                 if (falling) continue;
             }
-            const Vector3 n = Vector3Normalize(Vector3Subtract(Vector3Add(o.pos, Vector3Scale(d, t)), c.c));
+            const Vector3 n = Vector3Normalize(Vector3Subtract(Vector3Add(p0, Vector3Scale(d, t)), c.c));
             if (Vector3Length(o.vel) <= 1) {
                 if (c.c.y < o.pos.y) on = true, o.falling = false, crateRest(o);
             } else {
                 on = true;
-                if (Vector3DotProduct(o.vel, n) <= 0) o.pos = Vector3Add(o.pos, Vector3Scale(d, t)), crateBounce(o);
+                if (Vector3DotProduct(o.vel, n) <= 0) o.pos = Vector3Add(o.pos, Vector3Scale(o.vel, DT * t)), on = crateBounce(o);  // 0x5cb7e0: the live v
             }
         }
         return on;
@@ -1906,8 +1907,8 @@ void Game::stepObjects() {
             }
             o.pos = Vector3Add(o.pos, Vector3Scale(o.vel, DT));
         }
-        Vector3 v0 = o.vel;
         const bool onObj = !o.sunk && !o.hooked && !o.pinned && (crateLike(o) ? crateSweep(o) : o.type == Object::Mine && mineSweep(o));
+        Vector3 v0 = o.vel;  // the fall reads the velocity the sweep left (0x5c9420 after 0x5cb7e0)
         if (o.sunk) {
         } else if (o.hooked || o.pinned || onObj) {  // on the rope (step()), or held by a collider this tick
         } else if (o.vel.y <= 0 && terrain.solid({o.pos.x, o.pos.y - h - 0.05f, o.pos.z})) {
@@ -2085,6 +2086,12 @@ bool Game::blimpHit(Vector3 *hit) const {
 int Game::fallDamage(float speed) const {
     if (speed <= FALL_SAFE || !cfg.scheme.fallDamage || wp(WP_WORMS_DROWN)) return 0;
     return (int)((speed - FALL_SAFE) * FALL_SCALE * (wp(WP_MAX_FALL) ? 2 : 1)) + 1;
+}
+
+int Game::landDamage(Motion &m, float speed) const {
+    if (!(m.flags & (WF_FALL_ONCE | WF_NO_FALL))) return fallDamage(speed);
+    if (speed > FALL_SAFE) m.flags &= ~WF_FALL_ONCE;  // 0x5ac3e0: 0x8040 spends 0x40, no damage
+    return 0;
 }
 
 // W4M 0x55e10f: the shooter is skipped by id (0x5b27e0 -> 0x519dd0); gun mask 0x1c3f has the bubble shell's 0x1000, not the 0x2000 it takes with the shooter inside
@@ -2625,8 +2632,7 @@ void Game::stepWorm(Worm &w) {
     auto land = [&](float speed) {
         const bool spared = w.motion.flags & (WF_FALL_ONCE | WF_NO_FALL);
         if (speed >= FALL_SAFE && !w.motion.slide && !spared) w.hardAt = clock;  // 0x5af601: kWE 15 only walking, flags 0x8840 land soft
-        if (spared && speed > FALL_SAFE) w.motion.flags &= ~WF_FALL_ONCE;  // FallDamage 0x5ac3e0: 0x8040 spends 0x40, no damage
-        int dmg = spared ? 0 : fallDamage(speed), wi = int(&w - worms.data());
+        int dmg = landDamage(w.motion, speed), wi = int(&w - worms.data());
         if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi, 1), events.back().count = dmg, emit(GameEvent::Fall, w.pos, wi); }
     };
     bool jet = jetting && &w == &worms[current];  // W4M jetpack contact 0x5633e9: walls and ceilings bounce at 0.8; it lands itself, no Ballistic
