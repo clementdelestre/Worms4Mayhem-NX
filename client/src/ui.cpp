@@ -653,8 +653,8 @@ static void textG(const char *t, float x, float y, float size, Color c, Color c2
         Vector2 q = Vector2Add(p, d);
         bool main = d.x == 0 && d.y == 0;
         Color col = main ? c : k;
-        auto at = [&](float vy) {
-            Color v = main ? ColorLerp(c, c2, Clamp((vy - q.y - size * 0.2f) / (size * 0.7f), 0, 1)) : col;
+        auto at = [&](bool top) {  // TopColor on each glyph quad's top vertices, BottomColor on its bottom ones (0x79d2b0)
+            Color v = main ? (top ? c : c2) : col;
             rlColor4ub(v.r, v.g, v.b, v.a);
         };
         rlColor4ub(col.r, col.g, col.b, col.a);
@@ -668,10 +668,10 @@ static void textG(const char *t, float x, float y, float size, Color c, Color c2
                 w *= sc, h *= sc, x = cx - w / 2, y = cy - h / 2;
             }
             float u1 = (r.x - pad + (r.width + 2 * pad)) / W, v1 = (r.y - pad + (r.height + 2 * pad)) / H;
-            at(y), rlTexCoord2f(u0, v0), rlVertex2f(x, y);
-            at(y + h), rlTexCoord2f(u0, v1), rlVertex2f(x, y + h);
+            at(true), rlTexCoord2f(u0, v0), rlVertex2f(x, y);
+            at(false), rlTexCoord2f(u0, v1), rlVertex2f(x, y + h);
             rlTexCoord2f(u1, v1), rlVertex2f(x + w, y + h);
-            at(y), rlTexCoord2f(u1, v0), rlVertex2f(x + w, y);
+            at(true), rlTexCoord2f(u1, v0), rlVertex2f(x + w, y);
         }
     }
     rlEnd();
