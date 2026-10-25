@@ -1194,7 +1194,8 @@ static Vector3 arielAt(const Projectile &s, float clock, const Terrain &t, int n
     return Vector3Add(at, Vector3Transform(fx, MatrixMultiply(MatrixRotateX(-pitch), MatrixRotateY(yaw))));
 }
 
-// A thrown landmine is an Object here: its ArielFx (kWeaponLandmine WXP_MineThrowerTrails, StopFxAtRest 1) runs at the mesh's FxLocator while it moves
+// A thrown landmine is an Object here: its ArielFx (kWeaponLandmine WXP_MineThrowerTrails) starts at its creation (0x581890) at the mesh's
+// FxLocator and stops for good at its first rest (StopFxAtRest 1: 0x5758c0 -> 0x57e290)
 static void mineAriel(const Game &g) {
     static std::unordered_map<int, int> fx;  // object uid -> effect handle (-1: stopped at rest)
     std::unordered_map<int, int> live;
@@ -1203,8 +1204,8 @@ static void mineAriel(const Game &g) {
         int h = fx.count(o.uid) ? fx[o.uid] : 0;
         Vector3 at = o.pos, loc{};
         if (Models::fxLocator("mine", &loc)) at = Vector3Add(at, Vector3Transform(loc, MatrixRotateY((&o - g.objects.data()) * 1.3f)));  // drawObject's yaw
-        if (h > 0 && Vector3Length(o.vel) < 1) Fx::stop(h), h = -1;
-        if (!h && Vector3Length(o.vel) >= 1 && !o.sunk) h = Fx::start("WXP_MineThrowerTrails", at);
+        if (!h && o.ariel) h = Fx::start("WXP_MineThrowerTrails", at);
+        if (h > 0 && Vector3LengthSqr(o.vel) == 0) Fx::stop(h), h = -1;
         if (h > 0) Fx::place(h, at);
         live[o.uid] = h;
     }

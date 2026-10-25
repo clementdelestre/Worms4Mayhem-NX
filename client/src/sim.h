@@ -261,6 +261,7 @@ struct Object {
     bool bounced = false;   // crate: bounced once (+0x8c, 0x5c8900); another crate's sweep ignores it while it never did, nor rests
     float delay = -1;  // mine: fuse s drawn at creation (W4M CreateMine 0x4f97cf); -1: drawn when armed
     bool fizzle = false;  // mine: its dud roll, drawn with delay
+    bool ariel = false;  // mine: thrown, W4M payload +0xa0 clear: its ArielFx starts at creation (0x581978); CreateMine's never does
     int lit = -1;  // barrel: ticks since it was set off (OilDrumLogicEntity +0x80 / +0x84, 0x5d2200); -1 not lit
     bool sunk = false;  // crate: sinking (0x5c81a0); mine: under the disarm plane, disarmed, sinking
     int mystery = -1;  // crate: W4M kMystery item - 0x32 (MYSTERY_ITEMS), drawn at spawn; weapon stays -1

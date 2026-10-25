@@ -2528,7 +2528,7 @@ void Game::use(Worm &w) {
         phase = Phase::Flying;
         break;
     case Kind::Mine:
-        objects.push_back({Object::Mine, from, carry, -1, -1, false, false, -1, -1, false, MINE_COURTESY});
+        objects.push_back({Object::Mine, from, carry, -1, -1, false, false, -1, -1, false, MINE_COURTESY}), objects.back().ariel = true;
         phase = Phase::Flying;
         break;
     case Kind::Sentry:
