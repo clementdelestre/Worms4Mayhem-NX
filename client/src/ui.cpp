@@ -957,14 +957,17 @@ const float IN_SCALEHIT_Y[7][6] = {{0, 0, 0.18823f, -0.98193f, 0.18823f, -0.9819
                                    {0.20825f, 1.1113f, 0.039368f, 0.99902f, 0.037415f, -0.99902f}, {0.25f, -0.00060606f, 0.037415f, -0.99902f, 0.062103f, 0.99805f},
                                    {0.2915f, 0.66895f, 0.062103f, 0.99805f, 0, 0}};
 
-// tilted deg about its centre
+// XSpriteSet / XBillboardSpriteSet / XMultiPageSpriteSet index a 256-entry sin/cos table with trunc(angle x 128 / pi) & 0xff [disasm 0x79b4f0, 0x79bb50, 0x79d2b0]
+static float spriteAngle(float rad) { return truncf(rad * 128 / PI) * PI / 128; }
+
+// tilted deg about its centre (spriteAngle)
 void logo(float cx, float y, float w, float deg, float stretch) {
     Texture2D t = tex("fe/tournament_vsus");
     Rectangle src = {130, 50, 780, 400};
     float h = w * src.height / src.width * stretch;
     rlPushMatrix();
     rlTranslatef(cx, y + h / 2, 0);
-    rlRotatef(deg, 0, 0, 1);
+    rlRotatef(spriteAngle(deg * DEG2RAD) * RAD2DEG, 0, 0, 1);
     if (t.id) {
         DrawTexturePro(t, src, {-w / 2, -h / 2, w, h}, {}, 0, WHITE);
     } else {
@@ -1814,9 +1817,9 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         bool confirm = screen == Confirm;
         float a = easeOut(titleIn(t) / 0.4f);  // the title's logo glides to its menu spot (backwards on B)
         float up = leaving >= 0 && next != Title ? easeOut((t - leaving) / LEAVE) : from == Title || leaving >= 0 ? 0 : 1 - easeOut((t - entered) / 0.35f);  // to / from a submenu
-        // WXFE.Vs: the 1024 x 512 texture as 440 x 236 FE about (-118, 102) [data], turned 0.145 rad [observed on the real menu; the data says 0.17]
-        const float ROT = 0.145f, w = 440 * 780 / 1024.0f * FE_S * MAIN_BIG, h = w * 400 / 780 * (236 / 220.0f);
-        const Vector2 off = Vector2Rotate({(520 - 512) / 1024.0f * 440, (256 - 250) / 512.0f * 236}, ROT), c = fePos(-118 + off.x, 102 + off.y);  // logo()'s crop centre
+        // WXFE.Vs: the 1024 x 512 texture as 440 x 236 FE about (-118, 102), turned Orientation z 0.17 rad [data] through the sprite angle table
+        const float ROT = 0.17f, w = 440 * 780 / 1024.0f * FE_S * MAIN_BIG, h = w * 400 / 780 * (236 / 220.0f);
+        const Vector2 off = Vector2Rotate({(520 - 512) / 1024.0f * 440, (256 - 250) / 512.0f * 236}, spriteAngle(ROT)), c = fePos(-118 + off.x, 102 + off.y);  // logo()'s crop centre
         logo(Lerp(640, c.x, a), Lerp(90, c.y - h / 2, a) - up * 300, Lerp(760, w, a), -ROT * RAD2DEG * a, 236 / 220.0f);
         text(TextFormat("Ver#%s", W4NX_VERSION), fePos(200, -220).x, fePos(200, -220).y - 20 * FE_S * 0.52f, 20 * FE_S, WHITE, 1);  // BuildNumber (200, -220), size 20, centred (Justification 4) [data]
         menu(MAIN_MENU.data(), MAIN_ITEMS, mainRow, confirm ? 0 : dy, t, !confirm);
@@ -4727,7 +4730,7 @@ static void armBorder(Texture2D t, float w, float h) {
 
 // WXFE_Border_NamePlate (0x7631cd, 0x76345c): 3 x 3 quads; the plate is stored upright in the sheet, its rows along u, its columns along v
 static void namePlate(Texture2D t, float w, float h) {
-    const float X[4] = {-w, 11 - w, w - 11, w}, Y[4] = {h, h - 11, 18 - h, -h}, U[4] = {204, 215, 235, 253}, V[4] = {2, 13, 178, 189};
+    const float X[4] = {-w, 11 - w, w - 11, w}, Y[4] = {h, h - 11, 18 - h, -h}, U[4] = {204, 215, 235, 253}, V[4] = {189, 178, 13, 2};  // index table 0x949df8: x = -w takes v 189
     float k = t.width / 256.0f;
     rlSetTexture(t.id);
     rlBegin(RL_QUADS);
