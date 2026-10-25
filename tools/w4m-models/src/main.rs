@@ -524,10 +524,46 @@ fn shape_name(x: &Xom, d: &[u8], mut p: usize) -> String {
     p += 20;
     x.str(vi(d, &mut p))
 }
+// Render state of a shape after XInitTransparencyAction (0x6e5d32): blend factors (W4M BlendFactor enum), alpha test function
+// (CompareFunction, -1 none) and raw ref, z write, the shader's final t (1 = blended bin)
+#[derive(Clone, Copy, PartialEq)]
+struct Rs { blend: Option<(u32, u32)>, test: i32, tref: f32, zw: bool, t: u8 }
+
+// W4M XInitTransparencyAction on the shader's attributes; t_in = the shader's Flags t, else its image's (0x6e18b8)
+fn transparency_defaults(rs: &mut Rs, t: u8, has_test: bool) {
+    rs.t = t;
+    if t == 1 {
+        rs.blend.get_or_insert((6, 7));
+        rs.zw = false;
+    } else if t == 2 && !has_test {
+        (rs.test, rs.tref) = if rs.blend == Some((6, 1)) { (4, 0.1) } else { (6, 1.0) };
+        rs.blend.get_or_insert((1, 0));
+    }
+    if rs.blend == Some((6, 1)) { rs.zw = false; rs.t = 1; }
+}
+
+// XImage transparency as W4M sets it at load (0x6e18b8, scan 0x6eaa9b): a value other than 0 / 255 -> 1, else a 0 -> 2, else 0
+// (RGB8 / X8R8G8B8 0, A8R8G8B8 scanned; the formats image() reads)
+fn transparency(x: &Xom, i: usize) -> u8 {
+    let d = x.d(i);
+    let mut p = 3;
+    vi(d, &mut p);
+    let q = p + 8;
+    let Some(q) = d.get(q).map(|&n| q + 1 + 4 * n as usize).and_then(|q| d.get(q).map(|&n| q + 1 + 4 * n as usize)) else { return 0 };
+    if u32le(d, q) != 1 { return 0; }
+    let Some((_, _, px)) = image(x, i) else { return 0 };
+    let mut t = 0;
+    for a in px.chunks(4).map(|c| c[3]) {
+        if a != 0 && a != 255 { return 1; }
+        if a == 0 { t = 2; }
+    }
+    t
+}
+
 // blend: the shader's XBlendModeGL (SourceFactor, DestFactor: W4M BlendFactor enum), None = opaque
 // mat: its XMaterial Specular rgb, Emissive rgb, Fresnel rgb, FresnelPower, Power (FixedFunction.cg materialMatrix, 0x792594)
 // hand: a W4M hand shape (worm boggyhand_*, glove hand_*), whose geometry a glove swaps in (0x5a33a0)
-struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, blend: Option<(u32, u32)>, mat: [f32; 11], sel: Option<usize>, hand: bool, cset: usize, shape: String }
+struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, group: Option<usize>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<[u8; 4]>, rs: Rs, mat: [f32; 11], sel: Option<usize>, hand: bool, cset: usize, shape: String }
 #[derive(Default)]
 // alts: per XChildSelector ($animTexN), its children's XImages in child order (a clip keys the child index + 0.5)
 struct Scene { groups: Vec<Group>, seen: HashMap<usize, usize>, bones: Vec<(usize, usize)>, parts: Vec<Part>, lib: usize, alts: Vec<(String, Vec<usize>)> }
@@ -653,7 +689,20 @@ impl Scene {
         let stages = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
         let img = stages.first().filter(|&&s| x.t(s) == "XOglTextureMap").map_or(0, |&s| { let mut q = 23; vi(x.d(s), &mut q) });
         let attrs: Vec<usize> = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
-        let blend = attrs.iter().find(|&&a| x.t(a) == "XBlendModeGL").map(|&a| (u32le(x.d(a), 3), u32le(x.d(a), 7)));
+        let mut rs = Rs { blend: None, test: -1, tref: 0.0, zw: true, t: 0 };
+        let mut has_test = false;
+        for &a in &attrs {
+            let d = x.d(a);
+            match x.t(a) {
+                "XBlendModeGL" => rs.blend = Some((u32le(d, 3), u32le(d, 7))),
+                "XAlphaTest" => { has_test = true; if d.get(3) == Some(&1) { (rs.test, rs.tref) = (u32le(d, 4) as i32, f32le(d, 8)); } }
+                "XZBufferWriteEnable" => rs.zw = d.get(3) == Some(&1),
+                _ => {}
+            }
+        }
+        let flags_t = if x.t(shader) == "XSimpleShader" { (u32le(sd, sp) >> 1 & 3) as u8 } else { 0 };  // XShader Flags, then Name
+        let t = if flags_t != 0 { flags_t } else if x.t(img) == "XImage" { transparency(x, img) } else { 0 };
+        transparency_defaults(&mut rs, t, has_test);
         let mut mat = [0.0; 11];
         if let Some(&a) = attrs.iter().find(|&&a| x.t(a) == "XMaterial") {
             let d = x.d(a);  // 3-byte header, Diffuse, Ambient, Specular, Emissive, Fresnel (rgbaf), 4 enum sources, Power, FresnelPower
@@ -661,7 +710,7 @@ impl Scene {
             mat[9] = f32le(d, 103);
             mat[10] = f32le(d, 99);
         }
-        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, blend, mat, sel: None, hand: name.starts_with("boggyhand_") || name.starts_with("hand_"), cset: cl, shape: name.to_string() });
+        self.parts.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, group: g, skin, rgba, rs, mat, sel: None, hand: name.starts_with("boggyhand_") || name.starts_with("hand_"), cset: cl, shape: name.to_string() });
     }
 
     // Local matrix of every group, with the clip's curves layered on Base (offsets for keys Base also has).
@@ -908,7 +957,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         img_json.push(format!("{{\"bufferView\":{v},\"mimeType\":\"image/png\"}}"));
     }
     // static parts sharing a texture are merged (one draw call each), skinned ones kept as they are
-    struct Prim { img: usize, blend: Option<(u32, u32)>, mat: [f32; 11], anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize>, hand: bool }
+    struct Prim { img: usize, rs: Rs, mat: [f32; 11], anim: [f32; 4], pos: Vec<f32>, nrm: Vec<f32>, uv: Vec<f32>, idx: Vec<u16>, skin: Vec<([u8; 4], [f32; 4])>, rgba: Vec<u8>, sel: Option<usize>, hand: bool }
     let mut out: Vec<Prim> = Vec::new();
     for pt in &s.parts {
         let (pos, nrm): (Vec<f32>, Vec<f32>) = if animated {
@@ -927,7 +976,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
         let skin = if !animated { vec![] } else if pt.skin.len() == n { pt.skin.clone() } else { vec![([0; 4], [1.0, 0.0, 0.0, 0.0]); n] };
         let rgba: Vec<u8> = if pt.rgba.len() == n { pt.rgba.iter().flatten().copied().collect() } else { vec![255; 4 * n] };
         let anim = part_anim(pt);
-        if let Some(o) = out.iter_mut().find(|o| !animated && o.sel.is_none() && pt.sel.is_none() && o.img == pt.img && o.blend == pt.blend && o.mat == pt.mat && o.anim == anim && o.pos.len() / 3 + n < 65536) {
+        if let Some(o) = out.iter_mut().find(|o| !animated && o.sel.is_none() && pt.sel.is_none() && o.img == pt.img && o.rs == pt.rs && o.mat == pt.mat && o.anim == anim && o.pos.len() / 3 + n < 65536) {
             let base = (o.pos.len() / 3) as u16;
             o.idx.extend(pt.idx.iter().map(|&i| i + base));
             o.pos.extend(pos);
@@ -935,7 +984,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             o.uv.extend(uv);
             o.rgba.extend(rgba);
         } else {
-            out.push(Prim { img: pt.img, blend: pt.blend, mat: pt.mat, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel, hand: pt.hand && animated });
+            out.push(Prim { img: pt.img, rs: pt.rs, mat: pt.mat, anim, pos, nrm, uv, idx: pt.idx.clone(), skin, rgba, sel: pt.sel, hand: pt.hand && animated });
         }
     }
     let mut prims = Vec::new();
@@ -958,7 +1007,11 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
             attrs += &format!(",\"JOINTS_0\":{a_j},\"WEIGHTS_0\":{a_w}");
         }
         let mat = images.iter().position(|&i| i == pt.img).map_or(String::new(), |m| format!(",\"material\":{m}"));
-        let bl = pt.blend.map_or(String::new(), |(a, b)| format!(",\"blend\":[{a},{b}]"));  // XBlendModeGL source / destination factors
+        // XBlendModeGL factors, XAlphaTest function + raw ref, z write off, final t = 1; absent keys are the defaults
+        let r = &pt.rs;
+        let bl = r.blend.map_or(String::new(), |(a, b)| format!(",\"blend\":[{a},{b}]"))
+            + &(if r.test >= 0 { format!(",\"test\":[{},{}]", r.test, r.tref) } else { String::new() })
+            + if r.zw { "" } else { ",\"zw\":0" } + if r.t == 1 { ",\"t\":1" } else { "" };
         let m = if pt.mat == [0.0; 11] && bl.is_empty() { String::new() } else { format!(",\"extras\":{{\"w4m\":[{}]{bl}}}", pt.mat.map(|v| v.to_string()).join(",")) };
         prims.push(format!("{{\"attributes\":{{{attrs}}},\"indices\":{a_idx}{mat}{m}}}"));
     }
@@ -993,12 +1046,12 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     }
     // "A <clip> <primitive> <length s> <alpha at 60 fps>": key 0x3000200 on "<shape>_<shader>" is the alpha of the shape's
     // XConstColorSet (AnimInstance 0x7ad37f: flag 2 -> XShape Geometry -> ColorSet, field 0), which the Col CG programs multiply in;
-    // only a blended shape shows it (GL blend is off unless its shader has an XBlendModeGL, 0x793df0); a blended shape without the key is "1"
+    // only a blended-bin shape (final t = 1) shows it; one without the key is "1"
     let mut keyed = std::collections::HashSet::new();
     for (_, layers, cap) in chosen.iter().filter(|_| animated) {
         let Some(c) = layers.first() else { continue };
         if !keyed.insert((c.name.clone(), cap.to_bits())) { continue; }  // the longest-first pair repeats its first clip's lines
-        for (pi, pt) in s.parts.iter().enumerate().filter(|(_, pt)| pt.blend.is_some()) {
+        for (pi, pt) in s.parts.iter().enumerate().filter(|(_, pt)| pt.rs.t == 1) {
             // shapes sharing one XConstColorSet share its animated alpha (SplashFirst / SplashSecond)
             let kf = c.ch.iter().find(|((n, t), _)| *t == 0x3000200 && s.parts.iter().any(|q| q.shape == leaf(n) && q.cset == pt.cset)).map(|(_, k)| k);
             let dur = c.dur.min(*cap);
@@ -1109,7 +1162,7 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     // per primitive: blend factors (-1 -1 = opaque), clip change of rotate Y (rad), offset U, V, last key time; then the clip
     // length and the Sun locator (SkyBoxEntity: lens flare)
     let mut side: String = out.iter().map(|p| {
-        let (a, b) = p.blend.map_or((-1, -1), |(a, b)| (a as i64, b as i64));
+        let (a, b) = p.rs.blend.filter(|&b| b != (1, 0)).map_or((-1, -1), |(a, b)| (a as i64, b as i64));  // One / Zero = no blend
         format!("{a} {b} {} {} {} {}\n", p.anim[0], p.anim[1], p.anim[2], p.anim[3])
     }).collect();
     if let Some(c) = sky_clip { side += &format!("clip {}\n", c.dur); }

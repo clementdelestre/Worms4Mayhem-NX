@@ -62,9 +62,10 @@ varying vec3 n;
 varying vec3 wp;
 varying vec4 vc;
 uniform float blended;
+uniform vec2 atest;  // the shape's XAlphaTest: function (-1 none), raw ref
 void main() {
     vec4 c = texture2D(texture0, uv) * colDiffuse * vc;  // the Col CG programs multiply the vertex colour in
-    if (c.a < (blended > 0.5 ? 0.004 : 0.5)) discard;
+    if (!alphaPass(c.a, atest.x, atest.y)) discard;
     vec3 nn = normalize(gl_FrontFacing ? n : -n), v = normalize(camPos - wp);
     vec3 base = (diffuse * (lightK * max(dot(nn, sunDir), 0.0)) + ambient) * lightMul + material[1].xyz;
     float sp = material[3].y > 0.0 ? pow(max(dot(nn, normalize(sunDir + v)), 0.0), material[3].y) : 1.0;
@@ -83,6 +84,7 @@ Shader shader(const char *vs, const char *fs, bool lit, bool es3) {
                                : (es ? "#version 300 es\nprecision highp float;\n" : "#version 330\n") + F3;
     Shader s = LoadShaderFromMemory((v + vs).c_str(), (f + fs).c_str());
     if (int lm = GetShaderLocation(s, "lightMul"); lm >= 0) SetShaderValue(s, lm, &ONE, SHADER_UNIFORM_VEC3);
+    if (int at = GetShaderLocation(s, "atest"); at >= 0) { static const float NONE[2] = {-1, 0}; SetShaderValue(s, at, NONE, SHADER_UNIFORM_VEC2); }
     if (int lk = GetShaderLocation(s, "lightK"); lk >= 0) SetShaderValue(s, lk, &ONE.x, SHADER_UNIFORM_FLOAT);
     if (lit && s.id != rlGetShaderIdDefault()) {
         static const char *U[6] = {"sunDir", "ambient", "diffuse", "specular", "camPos", "shadowMatrix"};
@@ -92,13 +94,13 @@ Shader shader(const char *vs, const char *fs, bool lit, bool es3) {
     return s;
 }
 
-Shader modelShader() { return shader(MVS, MFS); }
+Shader modelShader() { return shader(MVS, (std::string(ALPHA_TEST) + MFS).c_str()); }
 
 Shader frontendShader(bool lit) {
     static Shader sh[2];
     Shader &s = sh[lit];
     if (s.id) return s;
-    s = shader(MVS, MFS, false);
+    s = shader(MVS, (std::string(ALPHA_TEST) + MFS).c_str(), false);
     // WXFE.AmbientColour / DiffuseColour; WXFE.LightDirection (0, 0.75, 0.75) is the Cg towards-light uniform as stored (0x729662) [disasm, docs/w4m/frontend.md "FE mesh lighting"]
     const Vector3 dir = Vector3Normalize({0, 0.75f, 0.75f}), amb = lit ? Vector3{0.8f, 0.8f, 0.85f} : Vector3{1, 1, 1}, dif = lit ? Vector3{0.15f, 0.15f, 0.2f} : Vector3{0, 0, 0}, cam = {0, 0, 900.0f};
     SetShaderValue(s, GetShaderLocation(s, "sunDir"), &dir, SHADER_UNIFORM_VEC3);
@@ -111,7 +113,7 @@ Shader frontendShader(bool lit) {
 Shader divideShader() {
     static Shader s;
     if (s.id) return s;
-    s = shader(MVS, MFS, false);
+    s = shader(MVS, (std::string(ALPHA_TEST) + MFS).c_str(), false);
     const Vector3 dir = Vector3Normalize({0, -0.75f, -0.75f}), amb = {0.8f, 0.8f, 0.85f}, dif = {0.15f, 0.15f, 0.15f}, spec = {0.5f, 0.5f, 0.5f}, cam = {0, 0, 900.0f};
     SetShaderValue(s, GetShaderLocation(s, "sunDir"), &dir, SHADER_UNIFORM_VEC3);
     SetShaderValue(s, GetShaderLocation(s, "ambient"), &amb, SHADER_UNIFORM_VEC3);

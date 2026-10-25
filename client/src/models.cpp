@@ -60,6 +60,9 @@ Matrix trs(const Transform &p) {
     return MatrixMultiply(MatrixMultiply(MatrixScale(p.scale.x, p.scale.y, p.scale.z), QuaternionToMatrix(p.rotation)),
                           MatrixTranslate(p.translation.x, p.translation.y, p.translation.z));
 }
+// A shape's W4M render state after XInitTransparencyAction: XBlendModeGL (src < 0 none), XAlphaTest (func < 0 none, raw ref), z write, t = 1 (blended bin)
+struct RState { int src = -1, dst = -1, func = -1; float ref = 0; bool zw = true, t1 = false; };
+
 struct Entry {
     Model m; ModelAnimation *anims = nullptr; int count = 0; const ModelAnimation *posed = nullptr, *aimed = nullptr; int frame = -1, aimFrame = -1;
     std::vector<Matrix> invBind;
@@ -82,8 +85,7 @@ struct Entry {
     bool hideHands = false;
     std::vector<float> alpha;  // per mesh, from the last draw's clip
     std::vector<std::array<float, 16>> mat;  // per mesh: its W4M materialMatrix rows (w4m-models primitive extras "w4m")
-    std::vector<char> add;  // per mesh: XBlendModeGL SrcAlpha / One (primitive extras "blend"), drawn after the opaque meshes
-    std::vector<char> keyed;  // meshes whose shape alpha the clip keys: blended shapes, drawn after the opaque ones
+    std::vector<RState> rs;  // per mesh: its shader's state after XInitTransparencyAction (primitive extras blend / test / zw / t)
     // skinned poses in their own buffers: a worm drawn in the shadow pass then the view is skinned once a frame
     // pose: the skinned meshes' positions and normals, all meshes in one buffer each (a pose is two uploads)
     struct Slot { const ModelAnimation *a, *am; int f, af; bool lay; Models::Layers ly; float eyeUV[3]; unsigned long used; std::vector<Mesh> meshes; unsigned pose[2]; std::vector<Matrix> bones; };
@@ -141,7 +143,7 @@ struct Job {
     Tracks tracks, alphas;
     std::vector<int> hands;
     std::vector<std::array<float, 16>> mat;
-    std::vector<char> add;
+    std::vector<RState> rs;
     unsigned char *rest = nullptr;  // prepare(early): the file again, for every clip once this job (Base only) is out
     int restSize = 0;
     bool clipsOnly = false;  // anims only: they replace the drawn model's
@@ -260,10 +262,12 @@ Job prepare(const char *path, bool early = false) {
             if (char *x = pr.extras.data ? strstr(pr.extras.data, "\"w4m\":[") : nullptr)
                 for (int c = 0; c < 11; c++) v[c] = strtof(x + (c ? 1 : 7), &x);  // past '"w4m":[', then each ','
             auto &m = j.mat.emplace_back();
-            char *bl = pr.extras.data ? strstr(pr.extras.data, "\"blend\":[") : nullptr;
-            int src = -1, dst = -1;
-            if (bl) sscanf(bl + 9, "%d,%d", &src, &dst);
-            j.add.push_back(src == 6 && dst == 1);
+            RState &r = j.rs.emplace_back();
+            if (const char *x = pr.extras.data) {
+                if (const char *b = strstr(x, "\"blend\":[")) sscanf(b + 9, "%d,%d", &r.src, &r.dst);
+                if (const char *b = strstr(x, "\"test\":[")) sscanf(b + 8, "%d,%f", &r.func, &r.ref);
+                r.zw = !strstr(x, "\"zw\":0"), r.t1 = strstr(x, "\"t\":1") != nullptr;
+            }
             for (int r = 0; r < 3; r++) memcpy(&m[4 * r], &v[3 * r], 12);
             m[12] = v[9], m[13] = v[10];
             use(pr.indices);
@@ -372,7 +376,7 @@ void add(Job &j) {
     if (strstr(j.path.c_str(), "/frontend/")) return (void)(spare[j.path] = e.m);  // FrontBg's scene, freed by FrontBg
     for (int k = 0; k < e.m.materialCount; k++)
         if (shader.id != rlGetShaderIdDefault()) e.m.materials[k].shader = shader;
-    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.locs = std::move(j.locs), e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.hands = std::move(j.hands), e.mat = std::move(j.mat), e.add = std::move(j.add);
+    e.anims = j.anims, e.count = j.count, e.hasFx = j.hasFx, e.fx = j.fx, e.locs = std::move(j.locs), e.sels = std::move(j.sels), e.tracks = std::move(j.tracks), e.alphas = std::move(j.alphas), e.hands = std::move(j.hands), e.mat = std::move(j.mat), e.rs = std::move(j.rs);
     for (int b = 0; b < e.m.skeleton.boneCount; b++) e.invBind.push_back(MatrixInvert(trs(e.m.skeleton.bindPose[b])));
     for (int b = 0, s[2] = {-1, -1}; b < (int)e.m.skeleton.boneCount; b++) {
         const char *n = e.m.skeleton.bones[b].name;
@@ -932,15 +936,14 @@ static float trackAt(const SelTrack &k, float t, bool loop) {
     return last < 0 ? 0 : k.v[loop && last > 0 ? f % last : std::clamp(f, 0, last)];
 }
 
-// W4M XConstColorSet alpha of each mesh keyed by the playing clip (0x3000200), which the Col CG programs multiply in; 1 unkeyed
+// W4M XConstColorSet alpha of each mesh keyed by the playing clip (0x3000200), which the Col CG programs multiply in; 1 unkeyed (a keyed shape is a blended-bin one)
 static void fade(Entry &e, const char *clip, float t, bool loop) {
     e.alpha.assign(e.m.meshCount, 1);
-    e.keyed.assign(e.m.meshCount, 0);
     for (const char *p = clip; p && *p && !e.alphas.empty();) {
         size_t n = strcspn(p, "+");
         if (auto it = e.alphas.find(std::string(p, n)); it != e.alphas.end())
             for (const SelTrack &k : it->second)
-                if (k.sel < e.m.meshCount) { e.alpha[k.sel] = std::clamp(trackAt(k, t, loop), 0.0f, 1.0f), e.keyed[k.sel] = 1; }
+                if (k.sel < e.m.meshCount) { e.alpha[k.sel] = std::clamp(trackAt(k, t, loop), 0.0f, 1.0f); }
         p += n + (p[n] == '+');
     }
 }
@@ -979,19 +982,21 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
     Shader keep = m.materials[0].shader;
     for (int k = 0; over.id && k < m.materialCount; k++) m.materials[k].shader = over;
     Matrix xf = MatrixMultiply(m.transform, MatrixTranslate(pos.x, pos.y, pos.z));
-    int blendLoc = over.id ? GetShaderLocation(over, "blended") : -1, matLoc = GetShaderLocation(m.materials[0].shader, "material");
-    bool anyKeyed = std::find(e.keyed.begin(), e.keyed.end(), 1) != e.keyed.end();
+    int blendLoc = GetShaderLocation(m.materials[0].shader, "blended"), matLoc = GetShaderLocation(m.materials[0].shader, "material");
     int lmLoc = GetShaderLocation(m.materials[0].shader, "lightMul");
     if (lmLoc >= 0) SetShaderValue(m.materials[0].shader, lmLoc, &lightScale, SHADER_UNIFORM_VEC3);
     if (int lk = GetShaderLocation(m.materials[0].shader, "lightK"); lk >= 0) SetShaderValue(m.materials[0].shader, lk, &lightShade, SHADER_UNIFORM_FLOAT);
-    bool anyAdd = std::find(e.add.begin(), e.add.end(), 1) != e.add.end();
-    int last = part == 1 ? 0 : anyAdd ? 2 : anyKeyed;
-    for (int pass = part == 2; pass <= last; pass++) {  // DrawModel's loop with each mesh's alpha: opaque, then the keyed blended shapes, then the additive ones (z write off, two-sided); the glow materials after
-        if (pass) rlDrawRenderBatchActive(), rlDisableDepthMask(), rlDisableBackfaceCulling();
-        if (pass == 2) BeginBlendMode(BLEND_ADDITIVE);
-        if (blendLoc >= 0) { float v = pass > 0; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
+    int testLoc = GetShaderLocation(m.materials[0].shader, "atest");
+    auto stateOf = [&](int i) { return i < (int)e.rs.size() ? e.rs[i] : RState{}; };
+    bool anyBlended = false, touched = false;
+    for (int i = 0; i < m.meshCount; i++) anyBlended |= stateOf(i).t1;
+    int last = part == 1 ? 0 : anyBlended;
+    for (int pass = part == 2; pass <= last; pass++) {  // W4M's bins: opaque shapes, then the blended-bin ones (t = 1) with their blend and z write; the glow materials after
+        rlDrawRenderBatchActive();
+        if (pass) rlDisableBackfaceCulling();
         for (int i = 0; i < m.meshCount; i++) {
-            if ((i < (int)e.add.size() && e.add[i] ? 2 : i < (int)e.keyed.size() && e.keyed[i]) != pass) continue;
+            RState r = stateOf(i);
+            if (r.t1 != (pass == 1)) continue;
             if (e.hideHands && std::find(e.hands.begin(), e.hands.end(), i) != e.hands.end()) continue;
             int mi = m.meshMaterial[i];
             if (std::find(e.glow.begin(), e.glow.end(), mi) != e.glow.end()) continue;
@@ -1006,16 +1011,22 @@ static void drawModel(Entry &e, Vector3 pos, Color tint, int part = 0) {  // par
                 rlSetUniformMatrices(mat.shader.locs[SHADER_LOC_MATRIX_BONETRANSFORMS], m.boneMatrices, m.skeleton.boneCount);
             }
             if (matLoc >= 0 && i < (int)e.mat.size()) SetShaderValueV(mat.shader, matLoc, e.mat[i].data(), SHADER_UNIFORM_VEC4, 4);
+            bool blends = r.src >= 0 && !(r.src == 1 && r.dst == 0);  // One / Zero is no blend: the caller's mode stays
+            if (blends) Models::blendGL(r.src, r.dst), touched = true;
+            if (blendLoc >= 0) { float v = blends; SetShaderValue(mat.shader, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
+            if (testLoc >= 0) { float v[2] = {(float)r.func, r.ref}; SetShaderValue(mat.shader, testLoc, v, SHADER_UNIFORM_VEC2); }
+            r.zw ? rlEnableDepthMask() : rlDisableDepthMask();
             DrawMesh(m.meshes[i], mat, xf);
             mat.maps[MATERIAL_MAP_DIFFUSE].color = c;  // maps is shared with the model's material
             mat.maps[MATERIAL_MAP_DIFFUSE].texture = keepTex;
         }
-        if (pass == 2) rlDrawRenderBatchActive(), EndBlendMode();
+        rlDrawRenderBatchActive();
     }
-    if (last > 0) {
-        if (blendLoc >= 0) { float v = 0; SetShaderValue(over, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
-        rlDrawRenderBatchActive(), zOn ? rlEnableDepthMask() : rlDisableDepthMask(), rlEnableBackfaceCulling();
-    }
+    if (testLoc >= 0) { float v[2] = {-1, 0}; SetShaderValue(m.materials[0].shader, testLoc, v, SHADER_UNIFORM_VEC2); }
+    if (blendLoc >= 0) { float v = 0; SetShaderValue(m.materials[0].shader, blendLoc, &v, SHADER_UNIFORM_FLOAT); }
+    if (touched) rlSetBlendMode(RL_BLEND_ALPHA);
+    if (last > 0 || part == 2) rlEnableBackfaceCulling();
+    zOn ? rlEnableDepthMask() : rlDisableDepthMask();
     if (!e.glow.empty() && part != 1) {  // additive and unlit (BeamCone's WarpgateShader: the grey noise as cyan light)
         rlDrawRenderBatchActive();
         BeginBlendMode(BLEND_ADDITIVE);
