@@ -2275,10 +2275,10 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
 #else
     static const std::string dir = "./assets/models/decor/";
 #endif
-    struct State { int src = -1, dst = -1, cull = -1; int test = -1; float ref = 0; bool zwrite = true, lit = true; Vector3 emit{}; std::vector<Vector2> uv; };
+    struct State { int src = -1, dst = -1, cull = -1; int test = -1, t = 0; float ref = 0; bool zwrite = true, lit = true; Vector3 emit{}; std::vector<Vector2> uv; };
     // st: per model material (0 = raylib's default); clip: W4M 0x5cd38e plays "Go" looped from a random time, "GoSync" from 0;
     // anim: tools/w4m-models' skinned copy when the clip moves parts
-    struct Entry { Model m{}; float r = 0; Vector3 c{}; std::vector<State> st; std::string clip, anim; float len = 0; };
+    struct Entry { Model m{}; float r = 0; Vector3 c{}; std::vector<State> st; std::vector<Vector3> mc; std::string clip, anim; float len = 0; };  // mc: mesh bound centres
     static std::map<std::string, Entry> cache;  // loaded on first use, kept across matches
     static Shader sh{}, ash{};
     static int emitLoc = -1, stateLoc = -1, uvLoc = -1, kLoc = -1;
@@ -2307,7 +2307,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
                 }
                 for (char *line; li < lines.size() && (line = lines[li]) && k < e.m.materialCount; li++, k++) {
                     State &q = e.st[k];
-                    if (sscanf(line, "%d %d %d %f %d %d %d %d %d %d%n", &q.src, &q.dst, &q.test, &q.ref, &z, &q.cull, &l, &em[0], &em[1], &em[2], &used) != 10) break;
+                    if (sscanf(line, "%d %d %d %f %d %d %d %d %d %d %d%n", &q.src, &q.dst, &q.test, &q.ref, &z, &q.cull, &l, &em[0], &em[1], &em[2], &q.t, &used) != 11) break;
                     q.zwrite = z, q.lit = l;  // glAlphaFunc(0x200 + test, ref) with the raw ref (0x79e6e0)
                     q.emit = {em[0] / 255.0f, em[1] / 255.0f, em[2] / 255.0f};
                     int n = 0, at = 0;
@@ -2329,6 +2329,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
                 }
             }
             if (e.m.meshCount) { BoundingBox b = GetModelBoundingBox(e.m); e.r = Vector3Distance(b.min, b.max) / 2, e.c = Vector3Scale(Vector3Add(b.min, b.max), 0.5f); }
+            for (int i = 0; i < e.m.meshCount; i++) { BoundingBox b = GetMeshBoundingBox(e.m.meshes[i]); e.mc.push_back(Vector3Scale(Vector3Add(b.min, b.max), 0.5f)); }
             it = cache.emplace(name, e).first;
         }
         ms.push_back(&it->second);
@@ -2337,45 +2338,57 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
     objC.resize(ms.size());
     for (size_t i = 0; i < ms.size(); i++) objR[i] = ms[i]->r, objC[i] = ms[i]->c;
     if (!draw) return;
-    // W4M DetailObjects bin: opaque parts first, then the blended ones (XBlendModeGL other than One / Zero)
+    // W4M DetailObjects scene: the opaque bin, then the blended one (t = 1 shapes), sorted by view z far first (0x6eb43f: the shape's
+    // bound centre through its world matrix and the view, 0x6ebcfb); an `_anim` detail is drawn whole in each, keyed at its origin
+    struct Rec { float z; int o, i; };  // i: mesh, -1 the whole `_anim` model
+    std::vector<Rec> recs;
+    const Matrix view = rlGetMatrixModelview();
+    auto viewZ = [&](Vector3 p) { return view.m2 * p.x + view.m6 * p.y + view.m10 * p.z + view.m14; };
     for (int pass = 0; pass < 2; pass++) {
+        recs.clear();
         for (const Object &o : objects) {
             const Entry &e = *ms[o.model];
             float size = e.r * Vector3Length({o.m.m0, o.m.m1, o.m.m2});
             if (!e.m.meshCount || !Models::visible(o.pos, 2 * size)) continue;  // W4M: frustum only (XBoundAction); origin may sit on the box edge
             if (pick && (pick == 2) != (e.len > 0)) continue;
             if (at && pass == 0) at->push_back({o.pos.x, o.pos.y, o.pos.z, 2 * size});
+            const int oi = (int)(&o - objects.data());
+            if (!e.anim.empty()) { recs.push_back({viewZ(o.pos), oi, -1}); continue; }
+            for (int i = 0; i < e.m.meshCount; i++)
+                if ((e.st[e.m.meshMaterial[i]].t == 1) == (pass == 1)) recs.push_back({pass ? viewZ(Vector3Transform(e.mc[i], o.m)) : 0, oi, i});
+        }
+        if (pass == 1) std::stable_sort(recs.begin(), recs.end(), [](const Rec &a, const Rec &b) { return a.z < b.z; });
+        for (const Rec &r : recs) {
+            const Object &o = objects[r.o];
+            const Entry &e = *ms[o.model];
             bool loop = e.clip == "Go" || e.clip == "GoSync";  // another clip waits for Detail.PlayAnim, then plays once and holds its last key (0x7ad288)
-            float t = e.len <= 0 ? 0 : !loop ? (o.playFrom < 0 ? 0 : fminf(clock - o.playFrom, e.len)) : fmodf(clock + (e.clip == "Go" ? (hash3((int)(&o - objects.data()), 0, 0, 0x60u) + 1) / 2 * e.len : 0), e.len);
-            const float shade = LightShade::k(LightShade::key(LightShade::Detail, (int)(&o - objects.data())));
-            if (!e.anim.empty()) {  // raw mesh units (20 per W4M unit)
+            float t = e.len <= 0 ? 0 : !loop ? (o.playFrom < 0 ? 0 : fminf(clock - o.playFrom, e.len)) : fmodf(clock + (e.clip == "Go" ? (hash3(r.o, 0, 0, 0x60u) + 1) / 2 * e.len : 0), e.len);
+            const float shade = LightShade::k(LightShade::key(LightShade::Detail, r.o));
+            if (r.i < 0) {  // raw mesh units (20 per W4M unit)
                 Models::lightMul({1, 1, 1}, shade), Models::shade(ash), Models::draw(e.anim.c_str(), MatrixMultiply(MatrixScale(0.05f, 0.05f, 0.05f), o.m), WHITE, e.clip.c_str(), t, true, 1 + pass), Models::shade({}), Models::lightMul({1, 1, 1});
                 continue;
             }
             SetShaderValue(sh, kLoc, &shade, SHADER_UNIFORM_FLOAT);
-            for (int i = 0; i < e.m.meshCount; i++) {
-                const State &q = e.st[e.m.meshMaterial[i]];
-                bool blended = q.src >= 0 && !(q.src == 1 && q.dst == 0);
-                if (blended != (pass == 1)) continue;
-                Vector4 st = {q.ref, q.lit ? 1.0f : 0.0f, blended ? 1.0f : 0.0f, (float)q.test};
-                Vector2 uv = {0, 0};
-                if (q.uv.size() > 1 && e.len > 0) {
-                    float f = t / e.len * (q.uv.size() - 1);
-                    int k = std::min((int)f, (int)q.uv.size() - 2);
-                    uv = Vector2Lerp(q.uv[k], q.uv[k + 1], f - k);
-                }
-                SetShaderValue(sh, emitLoc, &q.emit, SHADER_UNIFORM_VEC3), SetShaderValue(sh, stateLoc, &st, SHADER_UNIFORM_VEC4), SetShaderValue(sh, uvLoc, &uv, SHADER_UNIFORM_VEC2);
-                if (Lit::lightingPass) {}  // the pass's own front-face culling wins
-                else if (q.cull == 2 || q.cull == 4) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_BACK);
-                else if (q.cull == 1 || q.cull == 3) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_FRONT);
-                else rlDisableBackfaceCulling();  // kCullModeOff, or no XCullFace [ours: two-sided]
-                if (blended) {
-                    Models::blendGL(q.src, q.dst);
-                    if (!q.zwrite) rlDisableDepthMask();
-                }
-                DrawMesh(e.m.meshes[i], e.m.materials[e.m.meshMaterial[i]], o.m);
-                if (blended) rlSetBlendMode(RL_BLEND_ALPHA), rlEnableDepthMask();
+            const int i = r.i;
+            const State &q = e.st[e.m.meshMaterial[i]];
+            bool blended = q.src >= 0 && !(q.src == 1 && q.dst == 0);
+            Vector4 st = {q.ref, q.lit ? 1.0f : 0.0f, blended ? 1.0f : 0.0f, (float)q.test};
+            Vector2 uv = {0, 0};
+            if (q.uv.size() > 1 && e.len > 0) {
+                float f = t / e.len * (q.uv.size() - 1);
+                int k = std::min((int)f, (int)q.uv.size() - 2);
+                uv = Vector2Lerp(q.uv[k], q.uv[k + 1], f - k);
             }
+            SetShaderValue(sh, emitLoc, &q.emit, SHADER_UNIFORM_VEC3), SetShaderValue(sh, stateLoc, &st, SHADER_UNIFORM_VEC4), SetShaderValue(sh, uvLoc, &uv, SHADER_UNIFORM_VEC2);
+            if (Lit::lightingPass) {}  // the pass's own front-face culling wins
+            else if (q.cull == 2 || q.cull == 4) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_BACK);
+            else if (q.cull == 1 || q.cull == 3) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_FRONT);
+            else rlDisableBackfaceCulling();  // kCullModeOff, or no XCullFace [ours: two-sided]
+            if (blended) Models::blendGL(q.src, q.dst);
+            if (!q.zwrite) rlDisableDepthMask();
+            DrawMesh(e.m.meshes[i], e.m.materials[e.m.meshMaterial[i]], o.m);
+            if (blended) rlSetBlendMode(RL_BLEND_ALPHA);
+            rlEnableDepthMask();
         }
     }
     if (!Lit::lightingPass) rlSetCullFace(RL_CULL_FACE_BACK), rlEnableBackfaceCulling();

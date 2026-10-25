@@ -122,11 +122,13 @@ fn apply(m: &M4, p: [f32; 3], w: f32) -> [f32; 3] { std::array::from_fn(|i| m[i]
 // XSimpleShader render attributes of a part (XBlendModeGL, XAlphaTest function and raw ref, XZBufferWriteEnable, XCullFace,
 // XLightingEnable, XMaterial emissive) after XInitTransparencyAction; absent ones stay at -1 / default.
 #[derive(Clone, Copy, PartialEq)]
-struct State { blend: [i32; 2], test: i32, tref: f32, zwrite: bool, cull: i32, lit: bool, emit: [u8; 3] }
-impl Default for State { fn default() -> Self { State { blend: [-1; 2], test: -1, tref: 0.0, zwrite: true, cull: -1, lit: true, emit: [0; 3] } } }
+struct State { blend: [i32; 2], test: i32, tref: f32, zwrite: bool, cull: i32, lit: bool, emit: [u8; 3], t: u8 }
+impl Default for State { fn default() -> Self { State { blend: [-1; 2], test: -1, tref: 0.0, zwrite: true, cull: -1, lit: true, emit: [0; 3], t: 0 } } }
 
-// W4M XInitTransparencyAction (0x6e5d32) on the shader's attributes, t = its image's transparency (0x6e18b8)
+// W4M XInitTransparencyAction (0x6e5d32) on the shader's attributes; t = the shader's Flags t, else its image's (0x6e18b8);
+// st.t ends as the shader's t: 1 sends the shape to the scene's blended bin (0x6ee2de)
 fn transparency_defaults(st: &mut State, t: u8, has_test: bool) {
+    st.t = t;
     if t == 1 {
         if st.blend[0] < 0 { st.blend = [6, 7]; }
         st.zwrite = false;
@@ -134,7 +136,7 @@ fn transparency_defaults(st: &mut State, t: u8, has_test: bool) {
         (st.test, st.tref) = if st.blend == [6, 1] { (4, 0.1) } else { (6, 1.0) };
         if st.blend[0] < 0 { st.blend = [1, 0]; }
     }
-    if st.blend == [6, 1] { st.zwrite = false; }
+    if st.blend == [6, 1] { st.zwrite = false; st.t = 1; }
 }
 
 struct Part { pos: Vec<[f32; 3]>, nrm: Vec<[f32; 3]>, uv: Vec<[f32; 2]>, idx: Vec<u16>, img: usize, st: State, node: String, world: M4 }
@@ -235,7 +237,9 @@ fn part(x: &Xom, shader: usize, geo: usize, world: M4, shape: &str, out: &mut Ve
             }
         }
     }
-    if x.t(img) == "XImage" { transparency_defaults(&mut st, transparency(x, img), has_test); }
+    let flags_t = if x.t(shader) == "XSimpleShader" { (u32le(sd, sp) >> 1 & 3) as u8 } else { 0 };  // XShader Flags, then Name
+    let t = if flags_t != 0 { flags_t } else if x.t(img) == "XImage" { transparency(x, img) } else { 0 };
+    transparency_defaults(&mut st, t, has_test);
     sp += 4;
     let node = format!("{shape}_{}", x.str(vi(sd, &mut sp)));  // texture offset channels name "<shape>_<shader>"
     out.push(Part { pos, nrm, uv, idx, img: if x.t(img) == "XImage" { img } else { 0 }, st, node, world });
@@ -403,10 +407,10 @@ pub fn convert(x: &Xom, desc: usize, unit: f32) -> Option<(Vec<u8>, String, [f32
         format!("{{\"pbrMetallicRoughness\":{{\"baseColorTexture\":{{\"index\":{i}}},\"metallicFactor\":0}}}}")
     }).collect();
     // sidecar: "clip <name> <s> <motion>" if any, then one line per glb material: blend src dst (-1 -1 = none), alpha test function
-    // and ref (raw, 0..1), z write, cull mode, lit, emissive rgb, then its texture offset track if animated (count, u v pairs)
+    // and ref (raw, 0..1), z write, cull mode, lit, emissive rgb, transparency t (1: blended bin), then its texture offset track if animated (count, u v pairs)
     let mut side = clip.map_or(String::new(), |c| format!("clip {} {} {}\n", c.name, c.dur, motion as u8));
     for (_, s, tk) in &keys {
-        side += &format!("{} {} {} {} {} {} {} {} {} {}", s.blend[0], s.blend[1], s.test, s.tref, s.zwrite as u8, s.cull, s.lit as u8, s.emit[0], s.emit[1], s.emit[2]);
+        side += &format!("{} {} {} {} {} {} {} {} {} {} {}", s.blend[0], s.blend[1], s.test, s.tref, s.zwrite as u8, s.cull, s.lit as u8, s.emit[0], s.emit[1], s.emit[2], s.t);
         if let Some(t) = tk.map(|i| &tracks[i]) { side += &format!(" {}", t.len()); for [u, v] in t { side += &format!(" {u:.4} {v:.4}"); } }
         side += "\n";
     }
