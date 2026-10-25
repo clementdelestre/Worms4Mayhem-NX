@@ -26,19 +26,32 @@ static int colTop(const Terrain &t, NodeCache &c, int x, int z) {
     return top;
 }
 
-// One of W4M 0x4ade10's rays: from y down in Terrain::SUB steps to the first solid sample, <= the water if none. Layer 0 starts at the
-// first step under every solid voxel `sample` can read there (same samples, fewer of them); layer 1 first leaves the land it starts in.
-static float rayDown(const Terrain &t, float water, NodeCache &c, float x, float z, float y, bool under) {
+// W4M's land ray 0x466ae0 straight down from (x, y, z): Terrain::SUB samples to the first solid one, then 5 bisections; the hit is the
+// last empty point (0x468ae3: within 1/32 step of the surface), the start if it is in land, <= the water if none
+float landBelow(const Terrain &t, float water, float x, float z, float y) {
+    const float step = Terrain::SUB, start = y;
+    while (y > water && !t.solid({x, y, z})) y -= step;
+    if (y <= water || y == start) return y;
+    float air = y + step;
+    for (int k = 0; k < 5; k++) {
+        const float m = (y + air) / 2;
+        (t.solid({x, m, z}) ? y : air) = m;
+    }
+    return air;
+}
+
+// One of W4M 0x4ade10's rays. Layer 0 starts at the last step over every solid voxel `sample` can read there (same samples, fewer of
+// them); layer 1 first leaves the land it starts in.
+float rayDown(const Terrain &t, float water, NodeCache &c, float x, float z, float y, bool under) {
     const float step = Terrain::SUB;
     if (under) while (y > water && t.solid({x, y, z})) y -= step;
     else {
         const int ix = (int)floorf(x * Terrain::IVOX), iz = (int)floorf(z * Terrain::IVOX);
         const int top = std::max(std::max(colTop(t, c, ix, iz), colTop(t, c, ix + 1, iz)), std::max(colTop(t, c, ix, iz + 1), colTop(t, c, ix + 1, iz + 1)));
         const float s = (top + 1) * Terrain::VOX;
-        if (y >= s) y -= (floorf((y - s) / step) + 1) * step;
+        if (y >= s) y -= floorf((y - s) / step) * step;
     }
-    while (y > water && !t.solid({x, y, z})) y -= step;
-    return y;
+    return landBelow(t, water, x, z, y);
 }
 
 // W4M 0x4aed70: layer 0 probed from the land's top, layer 1 from 20 units under layer 0's lowest hit (water if layer 0 is);

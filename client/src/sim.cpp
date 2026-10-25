@@ -1036,6 +1036,13 @@ Object Game::newMine(Vector3 p) {
     return o;
 }
 
+// The birth handler (TaskBirth, run inside AddTask) snaps Position to the land ray's hit 1000 units down; the collider sits 9 units over it
+Object Game::newDrum(Vector3 p) {
+    const float floor = p.y - 1000 * 0.05f, hit = landBelow(terrain, floor, p.x, p.z, p.y);
+    if (hit > floor) p.y = hit;  // none: W4M asserts bCollidesWithLand
+    return {Object::Barrel, p, {0, 0, 0}, -1, -1, false, false};
+}
+
 // Detonate 0x581113: Mine.DetonationType 1..4 forced; -1 and 0 (kWeaponLandmine DetonateMultiEffect 0, kDT_Random): (rand & 3) + 1
 int Game::mineType() { return mineDet >= DT_NORMAL && mineDet <= DT_BIGPUSH ? mineDet : (int)(rand01() * 4) + 1; }
 
@@ -1455,8 +1462,8 @@ void Game::numberObjects() { for (Object &o : objects) if (o.uid < 0) o.uid = ui
 // down 1000 units; the nearest hit puts the feet there (Ambulatory, no landing, no fall damage), none: Ballistic, the worm falls from where it is.
 // The collider ray (0x519dd0, id filter -1) is the worm's own collider (radius 10 units, mask 0x811: worms, drums, sentries) swept down from
 // the feet: 0x5164b0 adds its radius to each sphere's and counts a start inside as a hit at 0; the first collider with the smallest
-// rounded distance wins. `others`: the other worms' collider centres.
-Vector3 Game::establishFeet(Vector3 feet, const std::vector<Vector3> &others) {
+// rounded distance wins, and nearer than every rod it becomes the support (+0xe8). `others`: the other worms' colliders.
+Vector3 Game::establishFeet(Vector3 feet, const Colliders &others, int *on) {
     numberObjects();
     const float U = 0.05f;
     float best = -1e9f;
@@ -1466,30 +1473,42 @@ Vector3 Game::establishFeet(Vector3 feet, const std::vector<Vector3> &others) {
     }
     Colliders cs;
     colliders(cs, 0x810, -1);
-    for (const Vector3 &c : others) cs.push_back({c, R, 1, -1});
+    cs.insert(cs.end(), others.begin(), others.end());
     float hit = -1;
     long key = 10000;
+    int id = -1;
     for (const Collider &c : cs) {
         const float f = sweepHit(feet, {0, -1000 * U, 0}, c.c, c.r + R);
-        if (f >= 0 && lroundf(f * 1000) < key) key = lroundf(f * 1000), hit = f * 1000 * U;
+        if (f >= 0 && lroundf(f * 1000) < key) key = lroundf(f * 1000), hit = f * 1000 * U, id = c.id;
     }
-    if (hit >= 0 && hit < 1000 * U) best = fmaxf(best, feet.y - hit);
+    const bool support = hit >= 0 && hit < 1000 * U && feet.y - hit > best;
+    if (support) best = feet.y - hit;
+    if (on) *on = support ? id : -1;
     return best > -1e8f ? Vector3{feet.x, best, feet.z} : feet;
 }
 
-// A spawned worm's collider: the spawn point + 5 units until its first Update, then the point its establish call set (0x5a6af0 moves it to the
-// pre-establish position); worms spawned together update in creation order [assumed: entity list order, not traced]
+// A spawned worm's collider: the spawn point + 5 units until its first Update, then its Position + 10 units (0x5b2081, the Update's tail),
+// which also records its support's centre (+0x130, 0x5b20c5). Worms spawned together update in creation order: one class's tasks at
+// one wake time run by construction serial (TaskManager comparator 0x68e7c9: wake time, class name, serial +0x18).
 void Game::establishWorms(const std::vector<int> &order) {
     std::vector<Vector3> spawn;
     for (int i : order) spawn.push_back({worms[i].pos.x, worms[i].pos.y - R, worms[i].pos.z});
     for (size_t k = 0; k < order.size(); k++) {
-        std::vector<Vector3> others;
-        for (size_t j = 0; j < worms.size(); j++)  // worms spawned earlier: their collider centre, 10 units over the feet
-            if (worms[j].alive && std::find(order.begin(), order.end(), (int)j) == order.end()) others.push_back(worms[j].pos);
-        for (size_t m = 0; m < order.size(); m++)
-            if (m != k) others.push_back(m < k ? spawn[m] : Vector3Add(spawn[m], {0, 5 * 0.05f, 0}));
-        const Vector3 c = establishFeet(spawn[k], others);
-        worms[order[k]].pos = {c.x, c.y + R, c.z};
+        Colliders others;
+        for (size_t j = 0; j < worms.size(); j++)  // worms not of this spawn and the ones already updated: Position + 10 units
+            if (worms[j].alive && (int)j != order[k] && std::find(order.begin() + k, order.end(), (int)j) == order.end()) others.push_back({worms[j].pos, R, 1, (int)j});
+        for (size_t m = k + 1; m < order.size(); m++) others.push_back({Vector3Add(spawn[m], {0, 5 * 0.05f, 0}), R, 1, order[m]});
+        Worm &w = worms[order[k]];
+        int on;
+        const Vector3 c = establishFeet(spawn[k], others, &on);
+        w.pos = {c.x, c.y + R, c.z};
+        w.motion.on = -1;
+        if (on >= 0) {
+            Colliders now;  // the support's centre once this Update ends: a later worm's collider moves at its own Update
+            colliders(now, 0x810, -1);
+            now.insert(now.end(), others.begin(), others.end());
+            for (const Collider &s : now) if (s.id == on) w.motion.on = on, w.motion.onAt = s.c;
+        }
     }
 }
 
@@ -1691,7 +1710,7 @@ bool Game::addObject(Object::Type t, float lift) {
     Vector3 p;
     if (!dropPoint(t, p)) return false;
     Vector3 at = {p.x, lift > 0 ? p.y + lift : p.y + halfHeight(t) + 0.05f, p.z};  // CreateRandomCrate 0x5c67a8: the crate centre 300 units over the ground point
-    Object o = t == Object::Mine ? newMine(at) : Object{t, at, {0, 0, 0}, -1, -1, false, false};
+    Object o = t == Object::Mine ? newMine(at) : t == Object::Barrel ? newDrum(at) : Object{t, at, {0, 0, 0}, -1, -1, false, false};
     o.spawning = t == Object::Crate && lift > 0;
     const Scheme &sc = cfg.scheme;
     float pick = t == Object::Crate ? rand01() * (sc.healthShare + sc.weaponShare + sc.utilityShare + sc.mysteryShare) : -1;
@@ -1904,7 +1923,9 @@ void Game::stepObjects() {
         }
         Vector3 face = Vector3Scale(Vector3Normalize({o.vel.x, 0, o.vel.z}), rad);  // the leading side meets a wall, not the centre
         Vector3 d = arcMove(v0, o.vel, crateLike(o) ? EULER_X : 0);  // crates 0x5c961a: pos += v x 20, then v += a x 20
-        for (int k = 0, n = o.hooked || o.sunk || onObj ? 0 : substeps(o.vel); k < n; k++) {
+        // a drum at rest is static (0x5d2200 runs its fall only while +0x69): never lifted out of the land it was born in
+        const bool still = o.type == Object::Barrel && Vector3LengthSqr(o.vel) == 0 && terrain.solid({o.pos.x, o.pos.y - 0.05f, o.pos.z});
+        for (int k = 0, n = o.hooked || o.sunk || onObj || still ? 0 : substeps(o.vel); k < n; k++) {
             Vector3 np = Vector3Add(o.pos, Vector3Scale(d, 1.0f / n));
             if (terrain.solid({np.x + face.x, o.pos.y + up, np.z + face.z})) { o.vel.x = o.vel.z = d.x = d.z = 0; np.x = o.pos.x; np.z = o.pos.z; }
             if (o.vel.y > 0 && terrain.solid({np.x, np.y + up + rad, np.z})) { o.vel.y = d.y = 0; np.y = o.pos.y; }

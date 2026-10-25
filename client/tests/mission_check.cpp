@@ -406,7 +406,7 @@ static void checkEstablishRay(const std::vector<MissionSpec> &list) {
     g.objects.back().type = Object::Crate;
     assert(g.establishFeet({base.x, base.y + 3, base.z}, {}).y == base.y + 3);  // a crate is no ray target
     g.objects.pop_back();
-    assert(fabsf(g.establishFeet({base.x, base.y + 3, base.z}, {{base.x + 0.3f, base.y + 1, base.z}}).y - (base.y + 1 + sqrtf(4 * R * R - 0.09f))) < 2e-3f);  // a worm's collider
+    assert(fabsf(g.establishFeet({base.x, base.y + 3, base.z}, {{{base.x + 0.3f, base.y + 1, base.z}, R, 1, 0}}).y - (base.y + 1 + sqrtf(4 * R * R - 0.09f))) < 2e-3f);  // a worm's collider
     // PlaceWormAtSpawnPoint's 0x519e90 sees colliders only: a drum at the first spot moves the search, and the land inside the sphere does not reject a spot
     const Grid grid = makeGrid(g.terrain);
     NodeCache nodes;
@@ -487,7 +487,8 @@ static void checkWormSpawn(const std::vector<MissionSpec> &list) {
                 const float top = c.c.y + sqrtf(s2 - h2), want = k->pos.y > top ? top : k->pos.y;
                 if (fabsf(feet0 - want) < 2e-3f) onCollider = true, k->pos.y > top ? above++ : inside++;
             }
-            if (g.worms[i].hp == w.hp && g.worms[i].alive) assert(fabsf(g.worms[i].pos.y - w.pos.y) < 0.3f + (onCollider ? Game::R : 0));  // it stays, or drops onto the collider
+            // it stays; on a collider it hovers where the ray stopped it: Idle (0x5b1a3e) keeps a support whose centre has not moved
+            if (g.worms[i].hp == w.hp && g.worms[i].alive) assert(fabsf(g.worms[i].pos.y - w.pos.y) < (onCollider ? 1e-4f : 0.3f));
         }
     }
     printf("worm spawn: %d worms at their marker's x, z, %d settled on the ground under it, %d on a name shared by several details, %d stopped over a collider, %d inside one\n", placed, settled, dup, above, inside);
