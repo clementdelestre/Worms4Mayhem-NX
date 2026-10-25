@@ -2235,15 +2235,13 @@ void Terrain::drawFringe() const {
     rlEnableDepthMask(), rlEnableBackfaceCulling();
 }
 
-// W4M LightingLandscape*: depth only. Front faces culled [assumed: W4M sets no depth bias, and its lighting-pass cull state is not traced]
+// W4M LightingLandscape*: depth only, no depth bias; shadowPass culls the front faces
 void Terrain::drawShadow() const {
     static const char *SVS = "attribute vec3 vertexPosition;\nuniform mat4 mvp;\nvoid main() { gl_Position = mvp * vec4(vertexPosition, 1.0); }\n";
     static Material m{};
     if (!m.maps) m = LoadMaterialDefault(), m.shader = Lit::shader(SVS, "void main() { gl_FragColor = vec4(1.0); }\n", false);
     const std::vector<Run> &vis = runsInView();
-    rlSetCullFace(RL_CULL_FACE_FRONT);
     drawRuns(vis.data(), std::find_if(vis.begin(), vis.end(), [](const Run &r) { return r.mat >= SECOND; }) - vis.begin(), m);  // second meshes repeat the base
-    rlSetCullFace(RL_CULL_FACE_BACK);
 }
 
 // Decor: Lit model shading plus the part's W4M XSimpleShader states (models/decor/<name>.mat, one line per glb material)
@@ -2367,7 +2365,8 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
                     uv = Vector2Lerp(q.uv[k], q.uv[k + 1], f - k);
                 }
                 SetShaderValue(sh, emitLoc, &q.emit, SHADER_UNIFORM_VEC3), SetShaderValue(sh, stateLoc, &st, SHADER_UNIFORM_VEC4), SetShaderValue(sh, uvLoc, &uv, SHADER_UNIFORM_VEC2);
-                if (q.cull == 2 || q.cull == 4) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_BACK);
+                if (Lit::lightingPass) {}  // the pass's own front-face culling wins
+                else if (q.cull == 2 || q.cull == 4) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_BACK);
                 else if (q.cull == 1 || q.cull == 3) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_FRONT);
                 else rlDisableBackfaceCulling();  // kCullModeOff, or no XCullFace [ours: two-sided]
                 if (blended) {
@@ -2379,7 +2378,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
             }
         }
     }
-    rlSetCullFace(RL_CULL_FACE_BACK), rlEnableBackfaceCulling();
+    if (!Lit::lightingPass) rlSetCullFace(RL_CULL_FACE_BACK), rlEnableBackfaceCulling();
 }
 
 void Terrain::unload() {

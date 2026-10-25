@@ -18,6 +18,7 @@ extern "C" void glGenTextures(int, unsigned *), glBindTexture(unsigned, unsigned
 
 namespace Lit {
 Light sun;
+bool lightingPass = false;
 int aniso = 16;  // measured free over 4x (docs/tests.md "Render budget")
 struct Entry { Shader s; int loc[6]; };  // loc: sunDir, ambient, diffuse, specular, camPos, shadowMatrix
 static std::vector<Entry> shaders;
@@ -178,8 +179,10 @@ void shadowPass(BoundingBox box, unsigned ver, BoundingBox stale, const std::fun
         }
         if (k == 0) rlClearScreenBuffers();
         rlSetMatrixProjection(p), rlSetMatrixModelview(view);
+        rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_FRONT), lightingPass = true;
         draw();
         rlDrawRenderBatchActive();
+        rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_BACK), lightingPass = false;
         if (r) rlDisableScissorTest();
         rlColorMask(true, true, true, true), rlDisableDepthTest();
         EndTextureMode();

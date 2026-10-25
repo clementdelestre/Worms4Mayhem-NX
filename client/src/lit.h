@@ -33,5 +33,6 @@ void profile(float frameTime);  // once per frame, before BeginDrawing: picks th
 // every frame on top of it, listing the spheres (centre, radius) of what it drew.
 void shadowPass(BoundingBox land, unsigned ver, BoundingBox stale, const std::function<void()> &statics, const std::function<void(std::vector<Vector4> &)> &casters);
 Texture2D shadowMap();  // the sampled depth texture (made on first use)
+extern bool lightingPass;  // inside shadowPass's draws: every caster is drawn front faces culled (0x7933d6)
 extern bool shadows;  // false: no shadow map (land shader without sampler2DShadow, or incomplete depth FBO)
 }
