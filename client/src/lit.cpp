@@ -92,8 +92,8 @@ Shader frontendShader(bool lit) {
     Shader &s = sh[lit];
     if (s.id) return s;
     s = shader(MVS, MFS, false);
-    // WXFE.AmbientColour / DiffuseColour; WXFE.LightDirection (0, 0.75, 0.75) is stored unnegated as the light's travel direction (0x729ac9; the world lights negate Sun.LightVector, 0x5b35e8), so sunDir is its opposite [disasm]
-    const Vector3 dir = Vector3Normalize({0, -0.75f, -0.75f}), amb = lit ? Vector3{0.8f, 0.8f, 0.85f} : Vector3{1, 1, 1}, dif = lit ? Vector3{0.15f, 0.15f, 0.2f} : Vector3{0, 0, 0}, cam = {0, 0, 900.0f};
+    // WXFE.AmbientColour / DiffuseColour; WXFE.LightDirection (0, 0.75, 0.75) is the Cg towards-light uniform as stored (0x729662) [disasm, docs/w4m/frontend.md "FE mesh lighting"]
+    const Vector3 dir = Vector3Normalize({0, 0.75f, 0.75f}), amb = lit ? Vector3{0.8f, 0.8f, 0.85f} : Vector3{1, 1, 1}, dif = lit ? Vector3{0.15f, 0.15f, 0.2f} : Vector3{0, 0, 0}, cam = {0, 0, 900.0f};
     SetShaderValue(s, GetShaderLocation(s, "sunDir"), &dir, SHADER_UNIFORM_VEC3);
     SetShaderValue(s, GetShaderLocation(s, "ambient"), &amb, SHADER_UNIFORM_VEC3);
     SetShaderValue(s, GetShaderLocation(s, "diffuse"), &dif, SHADER_UNIFORM_VEC3);
@@ -105,7 +105,7 @@ Shader divideShader() {
     static Shader s;
     if (s.id) return s;
     s = shader(MVS, MFS, false);
-    const Vector3 dir = Vector3Normalize({0, 0.75f, 0.75f}), amb = {0.8f, 0.8f, 0.85f}, dif = {0.15f, 0.15f, 0.15f}, spec = {0.5f, 0.5f, 0.5f}, cam = {0, 0, 900.0f};
+    const Vector3 dir = Vector3Normalize({0, -0.75f, -0.75f}), amb = {0.8f, 0.8f, 0.85f}, dif = {0.15f, 0.15f, 0.15f}, spec = {0.5f, 0.5f, 0.5f}, cam = {0, 0, 900.0f};
     SetShaderValue(s, GetShaderLocation(s, "sunDir"), &dir, SHADER_UNIFORM_VEC3);
     SetShaderValue(s, GetShaderLocation(s, "ambient"), &amb, SHADER_UNIFORM_VEC3);
     SetShaderValue(s, GetShaderLocation(s, "diffuse"), &dif, SHADER_UNIFORM_VEC3);

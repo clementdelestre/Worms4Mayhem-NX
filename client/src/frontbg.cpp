@@ -161,7 +161,9 @@ void FrontBg::draw(float dt, bool particles) {
         float ct;
         Matrix m;
         const char *clip = titleClip(introT, &ct, &m);
-        Models::draw("title", m, WHITE, clip, ct, true);  // Lighting 0: no FrontendMeshLight, the FE.Water level light [assumed, docs/w4m/render.md]
+        Models::shade(Lit::frontendShader(false));  // Lighting 0: texture x vertex colour, no light (FFFragmentMainTexCol) [disasm, docs/w4m/frontend.md "FE mesh lighting"]
+        Models::draw("title", m, WHITE, clip, ct, true);
+        Models::shade({});
     }
     rlEnableBackfaceCulling();
     Fx::drawWater(cam, -WATER_DROP * S, elapsed, 12000 * S);

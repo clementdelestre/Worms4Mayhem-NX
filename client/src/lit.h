@@ -22,7 +22,7 @@ Shader shader(const char *vs, const char *fs, bool lit = true, bool es3 = false)
 Shader modelShader();
 // FrontendMeshLight (FrontEndService 0x729662, WXFE.* TWEAK.XOM): the menu meshes' shader, drawn from the FE camera at (0, 0, 900); lit = the mesh item's Lighting flag
 Shader frontendShader(bool lit);
-// WX.Mesh.BlueDivide's own light (FrontEndService 0x729942): it travels (0, -0.75, -0.75), the opposite of the FE layers' light
+// WX.Mesh.BlueDivide's own light (FrontEndService 0x729942): its towards-light vector is (0, -0.75, -0.75), the opposite of the FE layers' (0, 0.75, 0.75)
 Shader divideShader();
 void frame(Vector3 cam);  // push sun + camera to every Lit shader
 void profile(float frameTime);  // once per frame, before BeginDrawing: picks the Switch framebuffer size
