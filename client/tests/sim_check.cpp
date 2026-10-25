@@ -1880,6 +1880,31 @@ static void checkSlippyLand() {
     }
 }
 
+// W4M second material and covered floors (docs/w4m/formats.md §26): the import keeps B, its weight and the covered bit; the heightmap's
+// SecondTexture rides its mask on every heightmap voxel
+static void checkSecondMaterial() {
+    Terrain t;
+    assert(t.load("Accuracy", 1));
+    int blend = 0, covered = 0;
+    Vector3 land{};
+    for (size_t i = 0; i < t.d.size(); i++) {
+        if (t.d[i] <= 0) continue;
+        blend += (t.sec[i] & 0x7f) && (t.sec[i] & 0x7f) != t.mats[i] && t.wgt[i] > 0;
+        covered += (t.sec[i] & 0x80) != 0;
+        int x, y, z;
+        Terrain::xyz(i, x, y, z);
+        if (t.solid({x * Terrain::VOX, y * Terrain::VOX, z * Terrain::VOX})) land = {x * Terrain::VOX, y * Terrain::VOX, z * Terrain::VOX};
+    }
+    assert(blend > 0 && covered > 0);
+    const Vector3 air = {1, (Terrain::NY - 2) * Terrain::VOX, 1};
+    assert(t.coveredFloor(0x80, air) && !t.coveredFloor(0x05, air) && !t.coveredFloor(0x80, land));
+    assert(t.load("DinerMight", 1));
+    int hm = 0, masked = 0;
+    for (size_t i = 0; i < t.d.size(); i++)
+        if (t.mats[i] == 65) hm++, masked += t.wgt[i] > 0, assert(t.sec[i] == 66);
+    assert(hm > 0 && masked > 0 && masked < hm);
+}
+
 // W4M 0x46a070 on a ray starting in land: the start cell's face nearest in lattice fractions (here -x at 0.1, +y at 0.3, while +y is
 // the nearer plane), whatever the ray's direction; frames do not see each other's cells (the box at -x leaves that face open)
 static void checkStartNormal() {
@@ -5653,7 +5678,7 @@ static void checkClearVoxel() {
     Terrain v;
     assert(v.load("Accuracy", 1));
     for (size_t i = 0; i < v.d.size(); i++) {
-        if ((v.mats[i] != 65 && v.mats[i] != 66) || v.d[i] <= 0) continue;
+        if (v.mats[i] != 65 || v.d[i] <= 0) continue;
         int x, y, z;
         v.xyz(i, x, y, z);
         assert(!v.clearCell({(x + 0.5f) * Terrain::VOX, (y + 0.5f) * Terrain::VOX, (z + 0.5f) * Terrain::VOX}) && v.d[i] > 0);
@@ -6040,6 +6065,7 @@ int main() {
     checkMineBlastEndsTurn();
     checkDetailRemoval();
     checkSlippyLand();
+    checkSecondMaterial();
     checkClearVoxel();
     checkLandBlobs();
     checkLandDebris();

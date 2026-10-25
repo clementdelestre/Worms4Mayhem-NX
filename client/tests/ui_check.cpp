@@ -3,6 +3,7 @@
 #include "../src/acting.h"
 #include "../src/audio.h"
 #include "../src/fx.h"
+#include "../src/terrain.h"
 #include "../src/controls.h"
 #include <cstring>
 #include "../src/ui.h"
@@ -210,6 +211,21 @@ int main() {
         int peak = 0;
         for (int t = 0; t < 900; t++) Fx::update(1 / 60.f), peak = std::max(peak, Fx::count());
         assert(peak > 0 && Fx::count() == 0);
+        CloseWindow();
+    }
+    {  // W4M land second pass (docs/w4m/formats.md §26): B's meshes where a frame's corner bits weigh; the heightmap's SecondTexture by its mask
+        SetConfigFlags(FLAG_WINDOW_HIDDEN);
+        InitWindow(64, 64, "ui_check");
+        for (auto [map, b] : {std::pair{"Deathmatch1", -1}, {"DinerMight", 66}}) {
+            Terrain t;
+            assert(t.load(map, 1));
+            t.remesh();
+            int base = 0, second = 0;
+            for (const auto &ps : t.parts)
+                for (const Terrain::Part &p : ps) (p.mat >= Terrain::SECOND && (b < 0 || p.mat == b + Terrain::SECOND) ? second : base)++;
+            assert(base > 0 && second > 0);
+            t.unload();
+        }
         CloseWindow();
     }
     {  // wind meter needle (0x5fc6e0): ArrowOrien tilt and roll, the -sin(-268 / 640) yaw term, grey fixed at -pi/2

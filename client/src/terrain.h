@@ -65,11 +65,17 @@ struct Terrain {
     std::string time = "day";  // map's "time": day/evening/night (Fx::theme picks the matching sky/water set)
     // Imported maps ("voxels"): per-voxel material (0 = none) indexing palTop/palSide and texture files.
     Bricks<unsigned char> mats;
+    // W4M second material (docs/w4m/formats.md §26): per voxel B + 1 (0 none) | 0x80 covered (its frame voxel above was in the file),
+    // and per grid point B's weight 0..254 (heightmap: Heightmap.SecondTexture's mask 0..255)
+    Bricks<unsigned char> sec, wgt;
+    static constexpr int SECOND = 256;  // Part::mat of a second-material mesh: B + SECOND
+    // W4M 0x489870: the floor of a covered voxel (sec 0x80) takes field 6 once the land above it is gone (p: just over the floor)
+    bool coveredFloor(int s, Vector3 above) const { return (s & 0x80) && !solid(above); }
     std::vector<Color> palTop, palSide;
-    std::vector<std::string> texFiles;  // per material: top, side, roof, fringe (paths, "" = none)
+    std::vector<std::string> texFiles;  // per material: top, side, roof, fringe, covered top (paths, "" = none)
     std::vector<Vector2> texRepeat;     // per material: metres per texture repeat (top, side)
     std::vector<Material> texMats, fringeMats;  // per material, built with the textures on first remesh
-    struct Thin { int at, n; unsigned char mat; uint16_t uv; Vector3 c[8]; bool live = true; };  // a sub-voxel W4M cell, drawn while one of thinVox[at..at+n) is solid
+    struct Thin { int at, n; unsigned char mat, sec, wb; uint16_t uv; Vector3 c[8]; bool live = true; };  // a sub-voxel W4M cell, drawn while one of thinVox[at..at+n) is solid
     // W4M land texture mapping of a lattice frame (GLG 0x446be0 / 0x457130): uv = row . lattice point + offset, floor (top and
     // roof faces) or wall rows; a: map metres -> frame-centred lattice before EdgeOffset, w: its inverse's 3x3, e: EdgeOffset1/2 per layer
     // h: HeightMap per lattice column (empty: zero); cell per voxel y + Y (x + X z): -2 empty, -1 solid, else its wcells index
@@ -77,7 +83,7 @@ struct Terrain {
     struct LandUV { float a[12], w[9], t[16]; int n[3]; std::vector<Vector4> e; std::vector<float> h; std::vector<int> cell; bool slip = false; };
     std::vector<LandUV> landUV;
     Bricks<uint16_t> uvOf;  // per voxel: landUV index + 1 of the frame its material came from, 0 none (heightmap, steel)
-    enum Face { FLOOR, WALL, ROOF, TRIPLANAR };
+    enum Face { FLOOR, WALL, ROOF, TRIPLANAR, COVERED, HMAP };  // COVERED: a floor taking field 6; HMAP: the heightmap's planar uv
     // the W4M uv of point p of frame f (landUV index + 1) on a face of that kind; kind < 0: from normal n (its dominant lattice axis)
     Face landTex(int f, Vector3 p, Vector3 n, int kind, Vector2 *uv) const;
     std::vector<std::vector<Thin>> thin;  // per chunk of the cell's first voxel
@@ -165,7 +171,7 @@ struct Terrain {
     bool anySlip = false;
     bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
-    size_t voxelBytes() const { return d.bytes() + mats.bytes() + uvOf.bytes() + steel.bytes(); }  // density, materials, uv frames, steel
+    size_t voxelBytes() const { return d.bytes() + mats.bytes() + sec.bytes() + wgt.bytes() + uvOf.bytes() + steel.bytes(); }  // density, materials, second materials, uv frames, steel
     bool raycast(Ray r, float maxDist, Vector3 *hit) const;
     // an entity light's land ray (LightingService 0x47bc70 / 0x47b760): 1000 units from p + off x LightDirection towards the sun (back: from
     // p - off x it along its opposite, the light's first update); k = the whole units to the hit / 1000, 1 on a miss; in: a point inside the hit land
