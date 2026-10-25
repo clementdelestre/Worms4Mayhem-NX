@@ -527,7 +527,7 @@ fn shape_name(x: &Xom, d: &[u8], mut p: usize) -> String {
 // Render state of a shape after XInitTransparencyAction (0x6e5d32): blend factors (W4M BlendFactor enum), alpha test function
 // (CompareFunction, -1 none) and raw ref, z write, the shader's final t (1 = blended bin)
 #[derive(Clone, Copy, PartialEq)]
-struct Rs { blend: Option<(u32, u32)>, test: i32, tref: f32, zw: bool, t: u8 }
+struct Rs { blend: Option<(u32, u32)>, test: i32, tref: f32, zw: bool, t: u8, bin: (i8, i8) }  // bin: the XBinModifier (opaque, transparent) sums above it
 
 // W4M XInitTransparencyAction on the shader's attributes; t_in = the shader's Flags t, else its image's (0x6e18b8)
 fn transparency_defaults(rs: &mut Rs, t: u8, has_test: bool) {
@@ -615,6 +615,10 @@ impl Scene {
                 let first = self.parts.len();
                 for r in kids { self.walk(x, r, Some(gi), depth + 1); }
                 if let Some(k) = sel { for pt in &mut self.parts[first..] { pt.sel = Some(k); } }
+                if x.t(i) == "XBinModifier" {  // 0x6eddb3: its subtree's opaque / transparent bins shift by these (nested ones add up)
+                    let (mo, mt) = (d[3] as i8, d[4] as i8);
+                    for pt in &mut self.parts[first..] { pt.rs.bin = (pt.rs.bin.0 + mo, pt.rs.bin.1 + mt); }
+                }
             }
             "XSkin" => {
                 let root = vi(d, &mut p);
@@ -689,7 +693,7 @@ impl Scene {
         let stages = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
         let img = stages.first().filter(|&&s| x.t(s) == "XOglTextureMap").map_or(0, |&s| { let mut q = 23; vi(x.d(s), &mut q) });
         let attrs: Vec<usize> = if x.t(shader) == "XSimpleShader" { (0..vi(sd, &mut sp)).map(|_| vi(sd, &mut sp)).collect() } else { vec![] };
-        let mut rs = Rs { blend: None, test: -1, tref: 0.0, zw: true, t: 0 };
+        let mut rs = Rs { blend: None, test: -1, tref: 0.0, zw: true, t: 0, bin: (0, 0) };
         let mut has_test = false;
         for &a in &attrs {
             let d = x.d(a);
@@ -1159,11 +1163,13 @@ fn convert(x: &Xom, desc: usize, size: f32, feet: bool, wanted: &[&str]) -> Opti
     o.extend(&g.bin);
     let info = format!("{} parts, {} bones, {} images, {:.2}x{:.2}x{:.2} units (y {:.1}..{:.1}) -> scale {k:.4}{}{}", s.parts.len(), s.bones.len(), images.len(),
         hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], lo[1], hi[1], if clip_names.is_empty() { "" } else { ", clips: " }, clip_names.join(", "));
-    // per primitive: blend factors (-1 -1 = opaque), clip change of rotate Y (rad), offset U, V, last key time; then the clip
+    // per primitive: blend factors (-1 -1 = opaque), clip change of rotate Y (rad), offset U, V, last key time, alpha test function
+    // (-1 none) and raw ref, z write, its bin from the scene's opaque one (t = 1: 1; XBinModifiers add; odd = depth-sorted); then the clip
     // length and the Sun locator (SkyBoxEntity: lens flare)
     let mut side: String = out.iter().map(|p| {
         let (a, b) = p.rs.blend.filter(|&b| b != (1, 0)).map_or((-1, -1), |(a, b)| (a as i64, b as i64));  // One / Zero = no blend
-        format!("{a} {b} {} {} {} {}\n", p.anim[0], p.anim[1], p.anim[2], p.anim[3])
+        let bin = if p.rs.t == 1 { 1 + p.rs.bin.1 as i32 } else { p.rs.bin.0 as i32 };  // its bin within the scene: 0 opaque, 1 blended, 2 the next scene's opaque...
+        format!("{a} {b} {} {} {} {} {} {} {} {}\n", p.anim[0], p.anim[1], p.anim[2], p.anim[3], p.rs.test, p.rs.tref, p.rs.zw as u8, bin)
     }).collect();
     if let Some(c) = sky_clip { side += &format!("clip {}\n", c.dur); }
     if let Some(gi) = s.groups.iter().position(|g| leaf(&g.path) == "Sun") { side += &format!("sun {} {} {}\n", rest[gi][0][3], rest[gi][1][3], rest[gi][2][3]); }

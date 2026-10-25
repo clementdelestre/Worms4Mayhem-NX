@@ -112,11 +112,12 @@ Mesh dome{}, plane{};
 Material skyMat{}, waterMat{};
 Model skyModel{};  // W4M SkyBoxEntity scene "<THEME>.<TIME>Sky" (tools/w4m-models), W4M units
 // per sky mesh: XBlendModeGL source / dest factor (-1 opaque), clip change of rotate Y (rad) and texture offset U, V, last key s
-struct SkyPart { int src = -1, dst = -1; float rot = 0, u = 0, v = 0, t1 = 0; };
+struct SkyPart { int src = -1, dst = -1; float rot = 0, u = 0, v = 0, t1 = 0; int test = -1; float ref = 0; int zw = 1, bin = 0; Vector3 c{}; };  // bin: from the scene's opaque bin (odd: depth-sorted)
 std::vector<SkyPart> skyParts;
 float skyClip = 0, skyT = 0;  // SkyBoxEntity's one clip, looped (0x486019)
 constexpr float SKY_K = 0.04f;  // the ~20000-unit sky scene shrunk inside the far plane, centred on the camera
 Shader skyMeshSh{};
+int skyTestLoc = -1;
 int uvOffLoc = -1;
 bool hasSun = false;  // the scene's Sun locator: LensFlareGraphicEntity "LF.<sky>"
 Vector3 sunAt{};
@@ -678,9 +679,14 @@ void main() { uv = vertexTexCoord + uvOff; col = vertexColor; gl_Position = mvp 
 const char *SKYMESH_FS = R"(
 uniform sampler2D texture0;
 uniform vec4 colDiffuse;
+uniform vec2 atest;  // the shape's XAlphaTest: function (-1 none), raw ref (Models::draw sets it per mesh)
 varying vec2 uv;
 varying vec4 col;
-void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse * col; }
+void main() {
+    vec4 c = texture2D(texture0, uv) * colDiffuse * col;
+    if (!alphaPass(c.a, atest.x, atest.y)) discard;
+    gl_FragColor = c;
+}
 )";
 // FFFragmentMainTexCol (texture x vertex colour) with the sprite set's alpha test (function, raw ref)
 const char *SPRITE_FS = R"(
@@ -754,7 +760,8 @@ void load() {
     waterSh = shader(WATER_VS, WATER_FS);
     static const char *WATER_U[6] = {"time", "textureScale", "p0", "ni", "ni1", "p3"};
     for (int i = 0; i < 6; i++) waterLoc[i] = GetShaderLocation(waterSh, WATER_U[i]);
-    skyMeshSh = shader(SKYMESH_VS, SKYMESH_FS);
+    skyMeshSh = shader(SKYMESH_VS, (std::string(Lit::ALPHA_TEST) + SKYMESH_FS).c_str()), skyTestLoc = GetShaderLocation(skyMeshSh, "atest");
+    if (const Vector2 none = {-1, 0}; skyTestLoc >= 0) SetShaderValue(skyMeshSh, skyTestLoc, &none, SHADER_UNIFORM_VEC2);
     spriteSh = shader(SKYMESH_VS, (std::string(Lit::ALPHA_TEST) + SPRITE_FS).c_str()), spriteTestLoc = GetShaderLocation(spriteSh, "test");
     uvOffLoc = GetShaderLocation(skyMeshSh, "uvOff");
     flareTex = loadTex("hud", "lensflares", false);  // W4M Lens.Flares (LensFlares.tga)
@@ -800,10 +807,12 @@ void theme(const std::string &theme, Color sky, const std::string &time, bool le
         for (char *p = b; p && *p;) {
             SkyPart k;
             if (sscanf(p, "clip %f", &skyClip) == 1 || sscanf(p, "sun %f %f %f", &sunAt.x, &sunAt.y, &sunAt.z) == 3) hasSun |= *p == 's';
-            else sscanf(p, "%d %d %f %f %f %f", &k.src, &k.dst, &k.rot, &k.u, &k.v, &k.t1), skyParts.push_back(k);
+            else sscanf(p, "%d %d %f %f %f %f %d %f %d %d", &k.src, &k.dst, &k.rot, &k.u, &k.v, &k.t1, &k.test, &k.ref, &k.zw, &k.bin), skyParts.push_back(k);
             while (*p && *p++ != '\n') {}
         }
         if (b) UnloadFileText(b);
+        skyParts.resize(skyModel.meshCount);
+        for (int i = 0; i < skyModel.meshCount; i++) { BoundingBox bb = GetMeshBoundingBox(skyModel.meshes[i]); skyParts[i].c = Vector3Scale(Vector3Add(bb.min, bb.max), 0.5f); }
     }
     // TWEAK.XOM LF.<THEME>.<TIME>Sky -> Sky.Flare<n+1>: day 0, night 1, evening 2 (Wild West evening 1)
     flareSet = time == "night" || (time == "evening" && theme == "wildwest") ? 1 : time == "evening" ? 2 : 0;
@@ -1242,25 +1251,35 @@ void drawSky(const Camera3D &cam, Vector3 origin, float unit) {
     skyOrigin = origin, skyUnit = unit;
     rlDrawRenderBatchActive();
     if (skyModel.meshCount) {
-        // the ~20000-unit scene shrunk inside the far plane around the camera: opaque parts, then the blended ones in scene
-        // order with their XBlendModeGL; depth only sorts the sky's own parts and is cleared after
+        // the ~20000-unit scene shrunk inside the far plane around the camera, bin by bin (opaque, blended, then what XBinModifiers
+        // pushed further), an odd bin far first by view z (0x6eb43f); depth only sorts the sky's own parts and is cleared after
         Vector3 at = {cam.position.x, cam.position.y - skyDrop(cam) * SKY_K, cam.position.z};
         Matrix m = MatrixMultiply(MatrixScale(SKY_K, SKY_K, SKY_K), MatrixTranslate(at.x, at.y, at.z));
         float t = skyClip > 0 ? fmodf(skyT, skyClip) : 0;
+        const Matrix view = GetCameraMatrix(cam);
+        struct Rec { int bin; float z; int i; Matrix w; };
+        std::vector<Rec> recs;
+        for (int i = 0; i < skyModel.meshCount; i++) {
+            const SkyPart k = i < (int)skyParts.size() ? skyParts[i] : SkyPart{};
+            const float f = k.t1 > 0 ? fminf(t, k.t1) / k.t1 : 0;  // 2-key linear channels, held to the clip end
+            const Matrix w = MatrixMultiply(MatrixRotateY(k.rot * f), m);
+            const Vector3 c = Vector3Transform(Vector3Transform(k.c, w), view);  // the part's bound centre
+            recs.push_back({k.bin, k.bin % 2 ? c.z : 0, i, w});
+        }
+        std::stable_sort(recs.begin(), recs.end(), [](const Rec &a, const Rec &b) { return a.bin != b.bin ? a.bin < b.bin : a.z < b.z; });
         rlDisableBackfaceCulling();
-        for (int pass = 0; pass < 2; pass++)
-            for (int i = 0; i < skyModel.meshCount; i++) {
-                SkyPart k = i < (int)skyParts.size() ? skyParts[i] : SkyPart{};
-                auto [src, dst] = std::pair<int, int>{k.src, k.dst};
-                if ((src >= 0) != (pass == 1)) continue;
-                float f = k.t1 > 0 ? fminf(t, k.t1) / k.t1 : 0;  // 2-key linear channels, held to the clip end
-                Vector2 off = {k.u * f, k.v * f};
-                if (skyMeshSh.id != rlGetShaderIdDefault()) SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2);
-                if (pass) {
-                    Models::blendGL(src, dst), rlDisableDepthMask();
-                }
-                DrawMesh(skyModel.meshes[i], skyModel.materials[skyModel.meshMaterial[i]], MatrixMultiply(MatrixRotateY(k.rot * f), m));
-            }
+        for (const Rec &r : recs) {
+            const SkyPart k = r.i < (int)skyParts.size() ? skyParts[r.i] : SkyPart{};
+            const float f = k.t1 > 0 ? fminf(t, k.t1) / k.t1 : 0;
+            Vector2 off = {k.u * f, k.v * f};
+            const Vector2 test = {(float)k.test, k.ref};
+            if (skyMeshSh.id != rlGetShaderIdDefault()) SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2), SetShaderValue(skyMeshSh, skyTestLoc, &test, SHADER_UNIFORM_VEC2);
+            rlDrawRenderBatchActive();
+            k.src >= 0 ? Models::blendGL(k.src, k.dst) : rlSetBlendMode(RL_BLEND_ALPHA);
+            k.zw ? rlEnableDepthMask() : rlDisableDepthMask();
+            DrawMesh(skyModel.meshes[r.i], skyModel.materials[skyModel.meshMaterial[r.i]], r.w);
+        }
+        if (skyMeshSh.id != rlGetShaderIdDefault()) { const Vector2 none = {-1, 0}; SetShaderValue(skyMeshSh, skyTestLoc, &none, SHADER_UNIFORM_VEC2); }
         rlSetBlendMode(RL_BLEND_ALPHA), rlEnableDepthMask(), rlEnableBackfaceCulling();
         glClear(0x100);  // GL_DEPTH_BUFFER_BIT
         return;
@@ -1332,7 +1351,7 @@ static void particles(const Camera3D &cam, int bin) {
     for (int i = 0; i < (int)ps.size(); i++)
         if (ps[i].age >= 0 && ps[i].bin == bin) order.push_back(i);
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ps[a].seq != ps[b].seq ? ps[a].seq < ps[b].seq : ps[a].slot < ps[b].slot; });
-    if (pass == 0) std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ps[a].tex < ps[b].tex; });  // [assumed: XImage +0x38 in upload order]
+    if (pass == 0) std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return ps[a].tex < ps[b].tex; });  // XImage +0x38: creation serial (0x6e0998); ours: texture load order
     else std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
         return (ps[a].mesh >= 0 ? depth(ps[a].p) : originKey) < (ps[b].mesh >= 0 ? depth(ps[b].p) : originKey);
     });
