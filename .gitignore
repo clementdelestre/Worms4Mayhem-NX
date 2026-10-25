@@ -1,6 +1,6 @@
 third_party/raylib-nx/
 tools/*/target/
-client/assets/
+client/assets
 
 # NSP build (tools/nsp/build-nsp.sh): fetched/compiled hacBrewPack, packed exefs/control/nsp output
 tools/nsp/out/
