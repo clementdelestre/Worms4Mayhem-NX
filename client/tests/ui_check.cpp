@@ -453,5 +453,12 @@ int main() {
         same.name = "Boom";
         assert(!Ui::factoryNameOk("Boom", {same}));
     }
+    {  // A on the Weapon Factory's BUTTON Prev / Next plays its Audio_Activated 39 Page_Turn, elsewhere Click (MENUTWKX WXFE.WeaponFactory1)
+        Ui::Frontend f;
+        f.captureState("weapon1_0");
+        assert(f.screen == Ui::Frontend::FactoryEdit && f.activated() == Audio::Sfx::FeClick);
+        f.captureState("weapon1_0_next");
+        assert(f.activated() == Audio::Sfx::FePage);
+    }
     puts("ui_check ok");
 }

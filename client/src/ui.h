@@ -5,6 +5,7 @@
 #include "lobby.h"
 #include "barracks.h"
 #include "sim.h"
+#include "audio.h"
 #include <string>
 #include <vector>
 
@@ -89,6 +90,7 @@ struct Frontend {
     void backToRoom();              // a room match is over
     void dropRoom() { online = false, screen = Network, loaded = false; }  // the connection is gone
     int minePad(int idx) const { return idx >= 0 && idx < (int)myTeams.size() ? myTeams[idx].pad : 0; }  // local pad of this console's idx-th team
+    Audio::Sfx activated() const;   // the sound of A on the focused item (its Audio_Activated)
     void captureState(const std::string &what);  // tests (--ui captures): selectteam, createask, teamedit1..3, slotpopup: states the scripted pads cannot click to
     void go(Screen s);              // W4M menu change: current items fly out, then s slides in
     Action frame(GameConfig &cfg, const std::vector<std::string> &maps, std::string &host, int &port, std::string &name);
@@ -185,6 +187,7 @@ private:
     // the Weapon Factory editor (WXD.EditWeapon / WXD.BackupWeapon): facIndex the weapon in customs (-1 new), facFocus the item, facPage its list page,
     // facPop the popup (0 none, 1 delivery type, 2 payload), facStage 1 the name entry, facConfirm WXFEP.QuitWeaponFactory, facDelete the list's WXFEP.ConfirmDeleteWeapon
     WeaponDef facW, facBackup;
+    static constexpr int FAC_PREV = 1000;  // facFocus of BUTTON Prev (Next follows)
     int facIndex = -1, facFocus = -1, facPage = 0, facPop = 0, facPopSel = 0, facStage = 0;
     bool facConfirm = false, facNaming = false, facDelete = false;
     void factoryOpen(int index);

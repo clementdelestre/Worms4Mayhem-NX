@@ -411,13 +411,13 @@ const char *weaponName(const WeaponDef &w) {
 
 int clampWrap(int v, int n) { return n ? ((v % n) + n) % n : 0; }
 
-// single press of any button/key on any pad, with W4M's menu sound for it (menus only: the HUD calls pressed())
-bool P(std::initializer_list<int> b, std::initializer_list<int> k) {
+// single press of any button/key on any pad, with W4M's menu sound for it (menus only: the HUD calls pressed()); A plays the item's Audio_Activated
+bool P(std::initializer_list<int> b, std::initializer_list<int> k, Audio::Sfx activated = Audio::Sfx::FeClick) {
     if (!pressed(-1, b, k)) return false;
     using S = Audio::Sfx;
     int f = b.size() ? *b.begin() : -1;
     if (f == UP || f == DOWN || f == LEFT || f == RIGHT || f == A || f == B)
-        Audio::play(f == UP || f == DOWN ? S::FeHighlight : f == A ? S::FeClick : f == B ? S::FeCancel : S::FeChange);
+        Audio::play(f == UP || f == DOWN ? S::FeHighlight : f == A ? activated : f == B ? S::FeCancel : S::FeChange);
     return true;
 }
 }  // namespace
@@ -1777,7 +1777,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     }
     int dy = busy ? 0 : P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP});
     int dx = busy ? 0 : P({RIGHT}, {KEY_RIGHT}) - P({LEFT}, {KEY_LEFT});
-    bool ok = !busy && P({A}, {KEY_ENTER, KEY_SPACE}), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
+    bool ok = !busy && P({A}, {KEY_ENTER, KEY_SPACE}, activated()), back = !busy && P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
     bool plus = !busy && P({PLUS}, {KEY_N});  // next step / start
     int card = busy ? 0 : P({GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, {KEY_PAGE_DOWN}) - P({GAMEPAD_BUTTON_LEFT_TRIGGER_1}, {KEY_PAGE_UP});
     if (pop.kind != Pop::None) {  // a popup is modal: it takes the input (the Teams screen hands it its pad's presses)
@@ -2936,7 +2936,7 @@ void Frontend::editor(PadIn in, float t) {
         if (np != ed.page) {  // PrepareTeam$PageNext / PagePrev: 0x7398ee removes the page (no Out anim) and adds the next one
             ed.page = np, ed.row = std::min(ed.row, (np == 2 ? 3 : 6) - 1), ed.pageT = t, ed.pageSfx = true;
             while (off(ed.page, ed.row)) ed.row--;
-            Audio::play(Audio::Sfx::FeClick);  // the arrow's Audio_Activated 39 (kAUDIO_Page_Turn is the book's) [assumed: our L / R stand for clicking it]
+            Audio::play(Audio::Sfx::FePage);  // BUTTON Prev / Next Audio_Activated 39 kAUDIO_Page_Turn (0x754bfc): our L / R click them
         }
     }
     if (ed.pageSfx && t - ed.pageT >= 0.2f) ed.pageSfx = false, Audio::play(Audio::Sfx::FeNextIn);  // the page's Audio_Incoming In_Next, at its 200 ms delay
@@ -3301,10 +3301,11 @@ bool Frontend::setupRules(int dx, int dy, bool ok, bool back, bool plus) {
 
 void Frontend::captureState(const std::string &what) {
     loadTeams();
-    if (what.compare(0, 6, "weapon") == 0 && what.size() >= 8) {  // weapon<launch type 0 Air Strike, 1 Launched, 2 Thrown>_<page>[_pop: the delivery type popup, _payload: the payload one]
+    if (what.compare(0, 6, "weapon") == 0 && what.size() >= 8) {  // weapon<launch type 0 Air Strike, 1 Launched, 2 Thrown>_<page>[_pop: the delivery type popup, _payload: the payload one, _next: BUTTON Next focused]
         factoryOpen(-1);
         factoryType(facW, what[6] - '0'), facBackup = facW, facPage = what[8] - '0';
         facPop = what.find("_pop") != std::string::npos ? 1 : what.find("_payload") != std::string::npos ? 2 : 0;
+        if (what.find("_next") != std::string::npos) facFocus = FAC_PREV + 1;
     } else if (what == "selectteam") screen = Local, openTeams(Pop::Mission, -1, 0, 0);
     else if (what == "createask") screen = MyWorms, startCreate(Pop::Create);
     else if (what.compare(0, 8, "teamedit") == 0 && what.size() >= 9) {  // teamedit<page>[_<picker>][@<team>]: picker head, eyes, face, hands, sound, weapon, flag, grave
@@ -3736,6 +3737,12 @@ void Frontend::factoryOpen(int index) {
 // the container differs from the loaded one and costs at most 1: Accept Changes (0x73eab2)
 bool Frontend::factoryAcceptable() const { return !factorySame(facW, facBackup) && factoryCost(facW) <= 1; }
 
+// Audio_Activated of the focused item: 2 Click, but 39 Page_Turn on WXFE.WeaponFactory1's BUTTON Prev / Next [data MENUTWKX]
+Audio::Sfx Frontend::activated() const {
+    bool page = screen == FactoryEdit && pop.kind == Pop::None && !facPop && !facConfirm && !facStage && (facFocus == FAC_PREV || facFocus == FAC_PREV + 1);
+    return page ? Audio::Sfx::FePage : Audio::Sfx::FeClick;
+}
+
 void Frontend::factory(int dx, int dy, bool ok, bool back) {
     (void)dx;
     int n = (int)customs.size();
@@ -3786,7 +3793,7 @@ void Frontend::factoryEdit(int dx, int dy, bool ok, bool back, bool typing, floa
     std::vector<FactoryRowSpec> rows = factoryPage(facW, facPage);
     const int n = (int)rows.size();
     // WXFE.WeaponFactory1 navigation (MENUTWKX): the type, the list, Prev / Next page, Accept Changes, Back; a disabled button is skipped
-    enum { TYPE = -1, PREV = 1000, NEXT, ACCEPT, BACK };
+    enum { TYPE = -1, PREV = FAC_PREV, NEXT, ACCEPT, BACK };
     const bool prevOn = facPage > 0, nextOn = facPage < pages - 1, accOn = factoryAcceptable();
     auto below = [&] { return prevOn ? PREV : nextOn ? NEXT : accOn ? ACCEPT : BACK; };
     auto above = [&](int from) {  // the button row's way up
