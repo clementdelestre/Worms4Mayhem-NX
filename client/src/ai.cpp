@@ -1069,17 +1069,18 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         }
         case Kind::Shotgun: {  // W4M CAIPlanAttackDirect 0x4a0a20: one shot (bCanMoveBetweenShots) as a WormDamageRadius blast, no knock
             if (!pick()) break;
-            float pitch = atan2f(to.y - (isWorm ? 0 : 0.3f), horiz);
-            // the plan's target point +0x14: the target's position (feet) + Worm.EyeLevelOffset / 2 (Spawn 0x4a0840); IsPossible and the score both use it
+            // the plan's target point +0x14: the target's position (feet) + Worm.EyeLevelOffset / 2 (Spawn 0x4a0840); IsPossible, the score and the aim all use it
             const Vector3 P = e + Vector3{0, 0.5f * Game::EYE - (isWorm ? Game::R : 0), 0};
             const Vector3 m = muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), seg = P - m;
+            // the aim vector +0x20 = target point - muzzle (0x49e000 / 0x4ac880); 0x49e6d0 queues SetAimAngle(asin(y / |v|)) and the worm orientation from it
+            const float yawS = atan2f(seg.x, seg.z), pitch = asinf(Clamp(seg.y / fmaxf(Vector3Length(seg), 1e-6f), -1, 1));
             Vector3 land;  // IsPossible 0x4ac880: the muzzle -> target land sweep (1000 steps) must pass step 989
             if (g.terrain.raycast({m, Vector3Normalize(seg)}, Vector3Length(seg) * 0.989f, &land)) break;
-            const Game::GunHit hit = g.gunRay({m, dirOf(yawE, pitch)}, g.worms[me], wd.size);
+            const Game::GunHit hit = g.gunRay({m, dirOf(yawS, pitch)}, g.worms[me], wd.size);
             if (hit.dist < Game::GUN_RANGE && pitch > -1.2f && pitch < 1.45f) {  // ours: the sim's ray must strike within range
                 Outcome oc(g, L, me, rating, vals);
                 oc.blast(P, g.gunBlast(wi), 0);  // W4M 0x4a0a20: 0x49f190 scores the blast at the plan point, whoever the ray strikes
-                consider(oc.s + bonus(false), yawE, pitch, 0, ti);
+                consider(oc.s + bonus(false), yawS, pitch, 0, ti);
             }
             break;
         }

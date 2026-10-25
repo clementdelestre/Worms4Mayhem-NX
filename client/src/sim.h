@@ -815,7 +815,8 @@ private:
     void hurt(Worm &w, int dmg, bool blast = false, int type = 0);  // vampire/karma/highlander for the active worm; blast: armour applies
     Vector3 placeWorm(const struct Grid &gr, struct NodeCache &nc, float &yaw);  // a worm's feet
     void numberObjects();  // Object::uid of the objects not yet numbered: their colliders exist from creation
-    Vector3 establishFeet(Vector3 feet);  // a spawned worm's feet after its first Update (EstablishPhysicsState)
+    Vector3 establishFeet(Vector3 feet, const std::vector<Vector3> &others);  // a spawned worm's feet after its first Update (EstablishPhysicsState)
+    void establishWorms(const std::vector<int> &order);  // the first Update of worms spawned together, in order
     bool dropPoint(Object::Type t, Vector3 &out, float radius = -1);  // radius: the sphere 0x4f26b0 checks, -1 the object's
     bool addObject(Object::Type t, float lift);
     void stepObjects();

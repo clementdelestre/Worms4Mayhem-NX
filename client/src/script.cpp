@@ -297,7 +297,7 @@ struct ScriptHost {
 
     static Worm blank() { return Worm{{Terrain::NX * Terrain::VOX / 2, -50, Terrain::NZ * Terrain::VOX / 2}, {0, 0, 0}, 0, 0.3f, 0, 0, false, false}; }
     // A slot's worm from its Worm.DataNN (PlaceWormAtSpawnPoint 0x5b4180): Spawn "spawn" is the random placement, any other name the
-    // locator's exact position and heading (its exported Euler); then the first Update's settle
+    // locator's exact position and heading (its exported Euler); the first Update's settle is `settle`
     static bool place(Game &g, Worm &w, Ctn *c, int s) {
         w.team = std::min(3, (int)fnum(c, "TeamIndex")), w.turns = fnum(c, "IsAllowedToTakeTurn", 1) != 0;
         const Val *sp = field(c, "Spawn");
@@ -319,7 +319,6 @@ struct ScriptHost {
             if (!last) return TraceLog(LOG_WARNING, "script: worm %d has no spawn marker '%s'", s, sp->s.c_str()), false;
             w.yaw = last->heading();
         }
-        p = g.establishFeet(p);
         w.pos = {p.x, p.y + Game::R, p.z}, w.alive = true, w.hp = w.counted = std::max(1, (int)fnum(c, "Energy"));
         return true;
     }
@@ -360,6 +359,7 @@ struct ScriptHost {
         Worm w = blank();
         if (!place(g, w, ctn(slotName("Worm.Data%02d", s)), s)) return;
         g.worms[i] = w, S->died[i] = false, g.special[i] = 0;
+        g.establishWorms({i});  // the others' colliders are where they stand
         syncCpu();
     }
 
@@ -391,7 +391,9 @@ struct ScriptHost {
                 teams = std::max(teams, t + 1), per = std::max(per, ++n[t]), used++;
             }
         per += SLOTS - used;  // ours: columns for the slots a later Worm.Respawn sets up (W4M: 16 slots, any team)
-        std::vector<Worm> worms(teams * per, blank());
+        g.worms.assign(teams * per, blank());  // the spawned worms are colliders for the next placement (0x5a9ac0)
+        std::vector<Worm> &worms = g.worms;
+        std::vector<int> spawned;
         S->wormSlot.assign(worms.size(), -1);
         std::fill(n, n + 4, 0);
         for (int s = 0; s < SLOTS; s++) {
@@ -399,9 +401,10 @@ struct ScriptHost {
             Ctn *c = ctn(slotName("Worm.Data%02d", s));
             int t = std::min(3, (int)fnum(c, "TeamIndex")), i = t * per + n[t]++;
             S->slotWorm[s] = i, S->wormSlot[i] = s;
-            place(g, worms[i], c, s);
+            if (place(g, worms[i], c, s)) spawned.push_back(i);
         }
-        g.worms = worms, g.teams = teams, g.current = 0;
+        g.establishWorms(spawned);
+        g.teams = teams, g.current = 0;
         bindTriggers();
         g.teamFirst.clear();
         for (int t = 0; t <= teams; t++) g.teamFirst.push_back(t * per);

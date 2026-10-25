@@ -6,6 +6,7 @@
 #include "../src/ai.h"
 #include "../src/controls.h"
 #include "../src/mission.h"
+#include "../src/navgrid.h"
 #include "../src/script.h"
 #include "raymath.h"
 #include <algorithm>
@@ -392,11 +393,48 @@ static void checkCratePlacement(const std::vector<MissionSpec> &list) {
 
 // PlaceWormAtSpawnPoint 0x5b4180: a worm named by a locator stands at its exact x, z (no random search) and, after the first Update
 // (EstablishPhysicsState 0x5a6af0), on the ground under it: no fall, no fall damage; ground over 1000 units down: it falls
+// The spawn's collider ray (0x516c80 / 0x5164b0): the worm's own sphere (R) swept down the column; a drum (0x10) or another worm (1) is hit at the sum of
+// the radii, a start inside it at 0; a crate (flags 2, 4, 0x20) is outside the mask 0x811.
+static void checkEstablishRay(const std::vector<MissionSpec> &list) {
+    Game g;
+    g.start(missionConfig(list[0], 3));
+    const Vector3 base = {20, g.landTop() + 4, 20}, ctr = {base.x, base.y + 9 * 0.05f, base.z};
+    g.objects.push_back({Object::Barrel, base, {0, 0, 0}, -1, -1, false, false});
+    const float R = Game::R, DR = 9 * 0.05f;
+    assert(fabsf(g.establishFeet({base.x, base.y + 3, base.z}, {}).y - (ctr.y + R + DR)) < 2e-3f);  // radii add: R above the drum's top
+    assert(g.establishFeet({base.x, base.y + 0.3f, base.z}, {}).y == base.y + 0.3f);  // inside: stays
+    g.objects.back().type = Object::Crate;
+    assert(g.establishFeet({base.x, base.y + 3, base.z}, {}).y == base.y + 3);  // a crate is no ray target
+    g.objects.pop_back();
+    assert(fabsf(g.establishFeet({base.x, base.y + 3, base.z}, {{base.x + 0.3f, base.y + 1, base.z}}).y - (base.y + 1 + sqrtf(4 * R * R - 0.09f))) < 2e-3f);  // a worm's collider
+    // PlaceWormAtSpawnPoint's 0x519e90 sees colliders only: a drum at the first spot moves the search, and the land inside the sphere does not reject a spot
+    const Grid grid = makeGrid(g.terrain);
+    NodeCache nodes;
+    float yaw;
+    const uint32_t rng = g.rng;
+    const Vector3 p0 = g.placeWorm(grid, nodes, yaw);
+    g.objects.push_back({Object::Barrel, {p0.x, p0.y - DR, p0.z}, {0, 0, 0}, -1, -1, false, false});
+    g.rng = rng;
+    assert(Vector3Distance(g.placeWorm(grid, nodes, yaw), p0) > 0);
+    g.objects.pop_back();
+    int inLand = 0;
+    for (int n = 0; n < 400; n++) {
+        const Vector3 p = g.placeWorm(grid, nodes, yaw);
+        for (const Vector3 &d : {Vector3{0, 0, 0}, {0.5f, 0, 0}, {-0.5f, 0, 0}, {0, 0.5f, 0}, {0, -0.5f, 0}, {0, 0, 0.5f}, {0, 0, -0.5f}})
+            if (g.terrain.solid(Vector3Add(p, d))) { inLand++; break; }
+    }
+    printf("establish ray: radii add, inside stays, crates and worms by mask; %d of 400 spawn spots with land in their sphere\n", inLand);
+    assert(inLand > 0);
+}
+
 static void checkWormSpawn(const std::vector<MissionSpec> &list) {
-    int placed = 0, settled = 0, dup = 0, overlap = 0;
+    int placed = 0, settled = 0, dup = 0, overlap = 0, above = 0, inside = 0;
     for (const MissionSpec &m : list) {
         Game g;
         g.start(missionConfig(m, 3));
+        const std::vector<Worm> first = g.worms;  // as the first Update left them
+        Colliders at2;
+        g.colliders(at2, ~1u, -1);
         Input skip;
         skip.flags = Input::SKIP_MOVIE;
         for (int t = 0; t < 2; t++) g.step(skip);
@@ -436,14 +474,24 @@ static void checkWormSpawn(const std::vector<MissionSpec> &list) {
             Colliders cs;  // the spawn's collider ray (0x519dd0) stops the feet on a collider under the marker: no overlap with an object
             g.colliders(cs, ~1u, -1);
             for (const Collider &c : cs) if (Vector3Distance(w.pos, c.c) < Game::R + c.r - 0.01f) printf("OVERLAP %s worm %zu collider flags %x worm %.2f %.2f %.2f was %.2f drum %.2f %.2f %.2f\n", m.id.c_str(), i, c.flags, w.pos.x, w.pos.y, w.pos.z, was[i].pos.y, c.c.x, c.c.y, c.c.z), overlap++;
-            const float feet = w.pos.y - Game::R;
+            const float feet = w.pos.y - Game::R, feet0 = i < first.size() ? first[i].pos.y - Game::R : feet;
             assert(feet <= k->pos.y + 5 * 0.05f);  // settled onto the ground under the marker; a marker in the land lifts it by a walking step (<= 5 units)
             if (k->pos.y - feet < 1000 * 0.05f) settled++;
-            if (g.worms[i].hp == w.hp && g.worms[i].alive) assert(fabsf(g.worms[i].pos.y - w.pos.y) < 0.3f);  // it stays: no fall
+            // The collider ray (0x516c80 / 0x5164b0) sweeps the worm's own sphere (radius R) down the marker's column against drums and sentries:
+            // its radius adds to theirs, a start inside is a hit at 0, so the feet stop where the spheres touch (or stay on the marker).
+            bool onCollider = false;
+            for (const Collider &c : at2) {
+                if (!(c.flags & 0x810)) continue;
+                const float h2 = (k->pos.x - c.c.x) * (k->pos.x - c.c.x) + (k->pos.z - c.c.z) * (k->pos.z - c.c.z), s2 = (c.r + Game::R) * (c.r + Game::R);
+                if (h2 >= s2) continue;
+                const float top = c.c.y + sqrtf(s2 - h2), want = k->pos.y > top ? top : k->pos.y;
+                if (fabsf(feet0 - want) < 2e-3f) onCollider = true, k->pos.y > top ? above++ : inside++;
+            }
+            if (g.worms[i].hp == w.hp && g.worms[i].alive) assert(fabsf(g.worms[i].pos.y - w.pos.y) < 0.3f + (onCollider ? Game::R : 0));  // it stays, or drops onto the collider
         }
     }
-    printf("worm spawn: %d worms at their marker's x, z, %d settled on the ground under it, %d on a name shared by several details\n", placed, settled, dup);
-    assert(placed > 20 && settled == placed && overlap == 0);
+    printf("worm spawn: %d worms at their marker's x, z, %d settled on the ground under it, %d on a name shared by several details, %d stopped over a collider, %d inside one\n", placed, settled, dup, above, inside);
+    assert(placed > 20 && settled == placed && overlap == 0 && above > 0);
 }
 
 // NiceToSiegeYou's lib_SetupWorm on an unspawned slot (CopyContainer, then EditContainer) keeps the copied Energy for Worm.Respawn:
@@ -751,6 +799,7 @@ int main() {
     checkSelfShot(list);
     checkCratePlacement(list);
     checkCrateStack(list);
+    checkEstablishRay(list);
     checkWormSpawn(list);
     checkRespawnEnergy(list);
     checkJoust(list);

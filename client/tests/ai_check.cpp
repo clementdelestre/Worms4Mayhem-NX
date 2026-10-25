@@ -382,15 +382,22 @@ static void shotgunGap() {
 
 // W4M scores a direct plan's blast at the plan's target point (0x49f190 from 0x4a0a20), not where the ray strikes: an oil drum on the
 // line to an enemy, out of any worm's reach, leaves the plan's score as it was.
-static float drumOnLine(bool drum) {
-    Game g = arena("Shotgun", 20, 5);
-    for (int z = 16; z < 80; z++)  // a 2 m wide platform x 4..13 m (no way around the drum), then a pit: the enemy beyond it
+// Two worms 42 m apart on a 2 m wide platform with a pit between them: no path exists, the CPU shoots from where it stands.
+static Game ledge(const char *weapon) {
+    Game g = arena(weapon, 20, 5);
+    for (int z = 16; z < 80; z++)
         for (int y = 176; y < 248; y++)
             for (int x = 16; x < 300; x++)
                 if ((x >= 52 && x < 200) || z < 44 || z > 52) g.terrain.d.w(Terrain::idx(x, y, z)) = -64;
     const int me = g.current;
     g.worms[me].pos = {10, 50.6f, 12};
     g.worms[1 - me].pos = {52, 50.6f, 12};
+    return g;
+}
+
+static float drumOnLine(bool drum) {
+    Game g = ledge("Shotgun");
+    const int me = g.current;
     if (drum) g.objects.push_back({Object::Barrel, {12, 50.6f, 12}, {0, 0, 0}, -1, -1, false, false});
     Ai ai;
     Ai::Plan p;
@@ -411,9 +418,34 @@ static void drumInLine() {
     assert(off > 50 && on > 0.9f * off);  // the drum only moves the target threat ratings a little
 }
 
+// W4M aims the direct plan at its target point (feet + Worm.EyeLevelOffset / 2, Spawn 0x4a0840) from the muzzle: SetAimAngle is asin of
+// the aim vector (0x49e000 / 0x4ac880 / 0x4965d0), not the pitch to the target's centre.
+static void directAim() {
+    for (const char *name : {"Shotgun", "Sniper Rifle"}) {
+        Game g = ledge(name);
+        const int me = g.current, wi = (int)(std::find_if(WEAPONS.begin(), WEAPONS.end(), [&](const WeaponDef &d) { return d.name == name; }) - WEAPONS.begin());
+        g.pot |= 1ull << WP_TUG_O_WORMS;  // GetThinkingWormCanMove false (0x90ea74): no path, the plan is made where it stands
+        for (int t = 0; t < 30; t++) g.step({});
+        const Worm &w = g.worms[me];
+        const Vector3 v = g.worms[1 - me].pos + Vector3{0, 0.5f * Game::EYE - Game::R, 0} - Vector3{w.pos.x, w.pos.y - Game::R + Game::EYE, w.pos.z};
+        const float want = asinf(v.y / Vector3Length(v));
+        Ai ai;
+        bool fired = false;
+        float got = 0;  // the plan when the first shot goes (the shotgun's second think replaces it)
+        for (int t = 0; t < 60 * 30 && !fired; t++) {
+            g.step(ai.think(g));
+            got = ai.plan.pitch;
+            for (const GameEvent &e : g.events) fired |= e.kind == GameEvent::Fire && e.worm == me;
+        }
+        printf("%s: weapon %d (want %d) pitch %.5f, W4M %.5f\n", name, ai.plan.weapon, wi, got, want), fflush(stdout);
+        assert(fired && ai.plan.weapon == wi && fabsf(got - want) < 1e-4f);
+    }
+}
+
 int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
+    directAim();
     shotgunGap();
     drumInLine();
     secondActions();

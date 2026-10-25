@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <numeric>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1230,9 +1231,8 @@ void Game::start(const GameConfig &c) {
     for (int t = 0; t < teams; t++)
         for (int k = 0, n = teamSize(t); k < n; k++) {
             Worm w = {{cx, (Terrain::NY - 1) * Terrain::VOX, cz}, {0, 0, 0}, 0, 0.3f, std::max(1, handicapHealth(cfg.scheme.health, t < (int)c.teamSetup.size() ? c.teamSetup[t].handicap : 0)), t, true, false};
-            Vector3 c = placeWorm(grid, nodes, w.yaw);
-            c = establishFeet(c);
-            w.pos = {c.x, c.y + R, c.z};
+            const Vector3 c = placeWorm(grid, nodes, w.yaw);
+            w.pos = {c.x, c.y + R, c.z};  // the spawn point until the first Update (establishWorms)
             // SetDavidAndGolithHealth(100 x the largest team, n): Davids total / 2n, the first the rest (Energy truncated)
             if (wp(WP_GOLIATH)) { float david = 100.0f * most / (2 * n); w.hp = k ? (int)david : (int)(100 * most - (n - 1) * david); }
             if (wp(WP_ENERGY)) w.poison = POISON_DEFAULT;  // Wormpot.lub EnergyOrEnemy: PoisonRate = Worm.Poison.Default, then Worm.Poison
@@ -1241,6 +1241,11 @@ void Game::start(const GameConfig &c) {
     terrain.loadMs[2] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - navT0).count();
     for (int i = 0; i < cfg.scheme.mines; i++) addObject(Object::Mine, 0);
     for (int i = 0; i < cfg.scheme.barrels; i++) addObject(Object::Barrel, 0);
+    {
+        std::vector<int> all(worms.size());
+        std::iota(all.begin(), all.end(), 0);
+        establishWorms(all);
+    }
 
     picked.assign(teams, weapon);
     surrendered.assign(teams, 0);
@@ -1443,38 +1448,48 @@ static bool gasCloud(const std::string &fx) {
     return false;
 }
 
-// the land inside a sphere (0x519e90 tests every collider, the land's included), sampled every half voxel
-static bool sphereInLand(const Terrain &t, Vector3 c, float r) {
-    for (float x = -r; x <= r; x += Terrain::SUB)
-        for (float y = -r; y <= r; y += Terrain::SUB)
-            for (float z = -r; z <= r; z += Terrain::SUB)
-                if (x * x + y * y + z * z <= r * r && t.solid({c.x + x, c.y + y, c.z + z})) return true;
-    return false;
-}
-
 void Game::numberObjects() { for (Object &o : objects) if (o.uid < 0) o.uid = uids++; }
 
 // W4M EstablishPhysicsState 0x5a6af0, run by the first Update of a spawned worm (state kWPS_Undefined 0x5b1ff2, set by 0x5a9ac0): the 4 foot rays
-// down 1000 units; the nearest hit puts the feet there (Ambulatory, no landing, no fall damage), none: Ballistic, the worm falls from where it is
-// [ours: a ray starting inside a collider is a miss, assumed]
-Vector3 Game::establishFeet(Vector3 feet) {
+// down 1000 units; the nearest hit puts the feet there (Ambulatory, no landing, no fall damage), none: Ballistic, the worm falls from where it is.
+// The collider ray (0x519dd0, id filter -1) is the worm's own collider (radius 10 units, mask 0x811: worms, drums, sentries) swept down from
+// the feet: 0x5164b0 adds its radius to each sphere's and counts a start inside as a hit at 0; the first collider with the smallest
+// rounded distance wins. `others`: the other worms' collider centres.
+Vector3 Game::establishFeet(Vector3 feet, const std::vector<Vector3> &others) {
     numberObjects();
+    const float U = 0.05f;
     float best = -1e9f;
     for (const Vector2 &p : PROBE) {
         float th;
-        if (terrain.cast({feet.x + p.x, feet.y, feet.z + p.y}, {0, -1, 0}, 1000 * 0.05f, &th, nullptr)) best = fmaxf(best, feet.y - th);
+        if (terrain.cast({feet.x + p.x, feet.y, feet.z + p.y}, {0, -1, 0}, 1000 * U, &th, nullptr)) best = fmaxf(best, feet.y - th);
     }
-    // 0x519dd0 from the feet against every collider (id filter -1): under 1000 units, nearer than the rods, it sets the feet on the contact
     Colliders cs;
-    colliders(cs, ~0u, -1);
+    colliders(cs, 0x810, -1);
+    for (const Vector3 &c : others) cs.push_back({c, R, 1, -1});
+    float hit = -1;
+    long key = 10000;
     for (const Collider &c : cs) {
-        const Vector3 o = Vector3Subtract(feet, c.c);
-        const float b = o.y, disc = b * b - (Vector3DotProduct(o, o) - c.r * c.r);  // down ray (0, -1, 0)
-        if (disc < 0) continue;
-        const float t = b - sqrtf(disc);
-        if (t >= 0 && t < 1000 * 0.05f) best = fmaxf(best, feet.y - t);
+        const float f = sweepHit(feet, {0, -1000 * U, 0}, c.c, c.r + R);
+        if (f >= 0 && lroundf(f * 1000) < key) key = lroundf(f * 1000), hit = f * 1000 * U;
     }
+    if (hit >= 0 && hit < 1000 * U) best = fmaxf(best, feet.y - hit);
     return best > -1e8f ? Vector3{feet.x, best, feet.z} : feet;
+}
+
+// A spawned worm's collider: the spawn point + 5 units until its first Update, then the point its establish call set (0x5a6af0 moves it to the
+// pre-establish position); worms spawned together update in creation order [assumed: entity list order, not traced]
+void Game::establishWorms(const std::vector<int> &order) {
+    std::vector<Vector3> spawn;
+    for (int i : order) spawn.push_back({worms[i].pos.x, worms[i].pos.y - R, worms[i].pos.z});
+    for (size_t k = 0; k < order.size(); k++) {
+        std::vector<Vector3> others;
+        for (size_t j = 0; j < worms.size(); j++)  // worms spawned earlier: their collider centre, 10 units over the feet
+            if (worms[j].alive && std::find(order.begin(), order.end(), (int)j) == order.end()) others.push_back(worms[j].pos);
+        for (size_t m = 0; m < order.size(); m++)
+            if (m != k) others.push_back(m < k ? spawn[m] : Vector3Add(spawn[m], {0, 5 * 0.05f, 0}));
+        const Vector3 c = establishFeet(spawn[k], others);
+        worms[order[k]].pos = {c.x, c.y + R, c.z};
+    }
 }
 
 // W4M PlaceWormAtSpawnPoint (0x5b4180, Spawn "spawn"): a random yaw, then up to 1000 random walkable cells (0x4ae810), each
@@ -1501,15 +1516,19 @@ Vector3 Game::placeWorm(const Grid &gr, NodeCache &nc, float &yaw) {
         }
         return false;
     };
+    Colliders others;
+    numberObjects();
+    colliders(others, ~1u, -1);
     Vector3 best = {0, -1e4f, 0};
     int found = 0, i, j, l;
     for (int tries = 0; tries < 1000 && found < 3 && cell(i, j, l); tries++) {
         const NodeH h = nodeH(terrain, water, gr, nc, i, j, l);
         const Vector2 p = gr.at(i, j);
         const Vector3 c = Vector3Add({p.x, (h.lo + h.hi) / 2, p.y}, off);  // node position 0x4aeb00: mid-height
-        bool clear = true;
-        for (const Worm &o : worms) clear = clear && Vector3Distance({o.pos.x, o.pos.y - R + 5 * U, o.pos.z}, c) >= 20 * U;
-        if (!clear || sphereInLand(terrain, c, 10 * U)) continue;
+        bool clear = true;  // 0x519e90 sees colliders only (0x516350 tests spheres): no land test
+        for (const Worm &o : worms) clear = clear && (!o.alive || Vector3Distance({o.pos.x, o.pos.y - R + 5 * U, o.pos.z}, c) >= 20 * U);
+        for (const Collider &k : others) clear = clear && Vector3Distance(k.c, c) >= k.r + 10 * U;
+        if (!clear) continue;
         found++;
         if (c.y > best.y) best = c;
     }
