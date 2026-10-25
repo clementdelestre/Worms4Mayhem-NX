@@ -320,6 +320,7 @@ struct ScriptHost {
             w.yaw = last->heading();
         }
         w.pos = {p.x, p.y + Game::R, p.z}, w.alive = true, w.hp = w.counted = std::max(1, (int)fnum(c, "Energy"));
+        w.motion.flags = (uint16_t)fnum(c, "Flags");  // data: 0x40 on the challenge players, 0x10 on the Prof
         return true;
     }
 

@@ -541,9 +541,9 @@ static void animateWorms(const Game &g, float dt, const Camera3D &cam) {
         }
         if (!w.grounded && (fabsf(w.vel.y) > 1 || a.air > 0)) {  // ignore slope-contact flicker; the apex (|vy| < 1) stays airborne
             a.air += dt, a.fallV = fminf(a.fallV, w.vel.y), a.walk = 0, a.moving = false;
-            // kWE 22 (0x5a3a60): falling past 0.3 units/ms (15 m/s), Skid and a 2 pi rad/s tumble (0x5a0593)
+            // kWE 22 (0x5a3a60): falling past 0.3 units/ms (15 m/s), not with Flags 0x8840 (0x5af994), Skid and a 2 pi rad/s tumble (0x5a0593)
             // the angle (+0x158) carries on: 0 from a jump or fall (0x5a01a0 zeroes it), the mode-0 flight pitch asin(vy/|v|) from a blast (0x5a0617)
-            if (w.vel.y < -15 && a.spin < 0 && w.alive && !((int)i == g.current && (g.roped || g.jetting || g.chute)))
+            if (w.vel.y < -15 && a.spin < 0 && w.alive && !(w.motion.flags & (WF_FALL_ONCE | WF_NO_FALL)) && !((int)i == g.current && (g.roped || g.jetting || g.chute)))
                 a.spin = blastPitch(w) ? fmodf(blastPitch(w) + 2 * PI, 2 * PI) : 0;
             if (a.spin >= 0) a.spin = fmodf(a.spin + 2 * PI * dt, 2 * PI);
             continue;

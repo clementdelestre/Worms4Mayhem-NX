@@ -145,7 +145,10 @@ std::string factoryGunKey(int ring);                           // FETXT key of t
 // W4M stuck count +2 / -1 per 20 ms frame, landed at 20: kept x6 so our 5/6-frame tick adds whole steps (+10 / -5, at 120)
 enum : int { STUCK_UP = 10, STUCK_DOWN = 5, STUCK_MAX = 120 };
 // on: the collider it stands on (+0xe8, -1 land or none), onAt: that collider's centre when last checked (+0x130)
-struct Motion { int stuck = 0; bool air = false, slide = false; float spin = 0, spinTo = 0; Vector3 normal{0, 1, 0}, input{}; int on = -1; Vector3 onAt{}; };
+// flags: the other WormData Flags bits we model (WF_*)
+struct Motion { int stuck = 0; bool air = false, slide = false; float spin = 0, spinTo = 0; Vector3 normal{0, 1, 0}, input{}; int on = -1; Vector3 onAt{}; uint16_t flags = 0; };
+// W4M WormData Flags: 0x10 pinned (no Ballistic / Sliding / push: Tail Nail with 0x20, Prof by data), 0x40 the next hard landing is free, 0x8000 SetNoFallDamage
+enum : uint16_t { WF_PINNED = 0x10, WF_FALL_ONCE = 0x40, WF_NO_FALL = 0x8000 };
 // W4M CollisionManagerService record: a collider sphere, its flags and owner id (worm index, or Game::UID_BASE + Object / Grave uid)
 struct Collider { Vector3 c; float r; uint32_t flags; int id; };
 using Colliders = std::vector<Collider>;

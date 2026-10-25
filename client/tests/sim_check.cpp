@@ -2512,6 +2512,51 @@ static void checkScheme() {
     assert(v.hp < 150 && v.hardAt >= 0);  // the same drop hurts and lands hard
 }
 
+// W4M WormData Flags (docs/w4m/physics.md "+0xec"): 0x40 spares the next hard landing (FallDamage 0x5ac3e0), 0x8040 lands walking
+// (0x5af6f9), 0x10 pins (no push 0x5ae9c1 / 0x5ae409, no Ballistic 0x5aa831); Icarus sets 0x40 each flight frame, its removal clears it
+static void checkWormFlags() {
+    GameConfig c{37, 2, 2, "", 0};
+    c.scheme.mines = c.scheme.barrels = c.scheme.crateChance = 0;
+    Game g;
+    g.start(c), g.hotSeat = 0;
+    Worm &w = g.worms[0];
+    const int hp = w.hp;
+    auto drop = [&] { w.pos.y += 15, w.vel = {0, 0, 0}, w.grounded = false, w.hardAt = -1; for (int t = 0; t < 200; t++) g.step(Input{}); };
+    w.motion.flags |= WF_FALL_ONCE;
+    drop();
+    assert(w.hp == hp && w.hardAt < 0 && !(w.motion.flags & WF_FALL_ONCE));
+    drop();
+    assert(w.hp < hp && w.hardAt >= 0);
+
+    Worm &v = g.worms[1];
+    const Vector3 at = v.pos;
+    v.motion.flags = WF_PINNED;
+    g.explode({at.x + 0.5f, at.y - Game::R, at.z}, blastOf(WEAPONS[weaponNamed("Bazooka")], false));
+    g.impulse(v, {5, 5, 0});
+    for (int t = 0; t < 30; t++) g.step(Input{});
+    assert(Vector3Distance(v.pos, at) < 0.05f);
+
+    Motion m;  // a fast landing on flat land slides, unless 0x8040 makes it land walking
+    for (uint16_t fl : {0, (int)WF_NO_FALL}) {
+        m = Motion{}, m.flags = fl;
+        Vector3 p = {at.x, at.y + 0.5f, at.z}, vel = {25, -8, 0};
+        bool grounded = false;
+        float yaw = 0;
+        for (int t = 0; t < 120 && !grounded && !m.slide; t++) wormBody(g.terrain, p, vel, grounded, m, yaw, g.gravity(), 0);
+        assert(m.slide == !fl);
+    }
+
+    g.start(c), g.hotSeat = 0;
+    Worm &x = g.worms[g.current];
+    g.weapon = weaponNamed("Icarus Potion"), g.icarus = 2;
+    x.pos.y += 3, x.vel = {0, 0, 0}, x.grounded = false;
+    for (int t = 0; t < 200 && g.icarus == 2; t++) g.step(Input{});
+    assert(g.icarus == 1 && (x.motion.flags & WF_FALL_ONCE));  // landed: still set
+    g.weapon = weaponNamed("Bazooka");
+    g.step(Input{});
+    assert(!g.icarus && !(x.motion.flags & WF_FALL_ONCE));
+}
+
 static int hitHp(uint32_t wormpot, int weapon = -1) {  // victim hp after a cluster bomblet lands on it
     Game g;
     GameConfig c{6, 2, 1, "", 0};
@@ -5974,6 +6019,7 @@ int main() {
     checkSkipGo();
     checkWipeEndsMatch();
     checkScheme();
+    checkWormFlags();
     checkWormpot();
     checkWormpotModes();
     checkMystery();

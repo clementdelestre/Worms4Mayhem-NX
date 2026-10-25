@@ -412,7 +412,7 @@ Worms (WXWormManagerService HandleMessage 0x5b5e70):
   50 and Enemy5 / 6 15 (team 1 "CPU Team", AlliedGroup 1; 5 / 6 parachute in); Enemy7-10 30 (team 2 "CPU_Archers", AlliedGroup 1); Cuckoo
   150. A dead Enemy1-4 (slot 4-7) respawns Enemy7-10 in slot 10-13 and back. Lua sets no Land.Indestructable, but every map frame is PERM
   (docs/w4m/formats.md "PERM"): blasts leave the castle whole and only lower the heightmap ground. The Prof is an AI target like any active
-  worm of another alliance (docs/w4m/ai.md "Target list": only Surrendered and WormData +0x124 filter; Flags 0x10 is not the Vital 0x100);
+  worm of another alliance (docs/w4m/ai.md "Target list": only Surrendered and WormData +0x124 filter; Flags 0x10 is not the Vital 0x100: it pins the Prof, docs/w4m/physics.md "WormData Flags");
   his death sets ProfHasDiedOrHumanTeamAllDead and TurnEnded fails the mission.
 - NiceToSiegeYou intro blasts and the all-AI loss [data: NiceToSiegeYou.json movies + map locators; REA decompile 0x5257b0, 0x4f9970]:
   - The movie event CreateExplosion (dispatcher 0x5257b0) sets Explosion.DetailObject / WormDamageMagnitude / ImpulseMagnitude / WormDamageRadius /

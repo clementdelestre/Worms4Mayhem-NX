@@ -110,13 +110,28 @@ The `pData` argument that every `Update*` receives is the serialised `WormDataCo
 | +0x8c / +0x90 | Orientation (vec3, yaw at +0x90) | facing |
 | +0x98 | AngularVelocity | – |
 | +0xe8 | PhysicsOverride | – |
-| +0xec | Flags | bit0 = aftertouch (air control) on; 0x40 = skip the next fall damage once; 0x800 = no damage at all (FallDamage, ApplyDamage 0x5ab847, Worm.Poison 0x5add65) [disasm]; 0x8000 = set on the 16 worm slots by `GameLogic.SetNoFallDamage` (0x4ff6c1) [disasm]; 0x8040 / 0x8840 = no slide or hard-land on landing; 0x1000 = jump disabled; 0x20 = see 0x5ac390 (all disasm, meanings assumed from use) |
+| +0xec | Flags | See "WormData Flags" below [disasm + data] |
 | +0xf0 | PhysicsState | kWPS_* |
 | +0x114 | LogicAnimState (u32) | no gameplay writer in the exe: only the XOM default 0 (0x64cc5f). Lua sets it to 10 (countingsheep-w3d FunkySheep, helterskelter-w3d LookBaddie1-3). Its only reader, HudActiveWormArrowEntity 0x5ef6b4, skips the active-worm arrow update 0x5ee7f0 while it is 10 [disasm+data] |
 | +0x120 / +0x122 | SupportFrame / SupportVoxel | written on landing (Ballistic, Sliding) |
 | +0x124 | Active | cleared when DeathThroes / DrownFloat ends |
 | +0x12f | IsAfterTouching | – |
 | +0x130 | MovedByImpulse | tested by ImpulseWorm |
+
+#### WormData Flags (+0xec) [disasm + data]
+
+Writers: every immediate OR / AND / MOV on `[reg+0xec]` and on a register loaded from it, in a linear sweep of .text; the XOM field setter 0x4f3820 (schema Flags, push 0x64d6a7) loads it from data.
+- 1: aftertouch on (DetectJump / Ballistic `or 1`: 0x5aa924, 0x5ae0e1, 0x5af3f6; cleared `and ~1` in Fall / Rebound / ImpulseWorm).
+- 4: `or 4` at 0x5a70e0 (docs/w4m/turn.md).
+- 8: in a bubble (`or 8` 0x54f4c6, cleared 0x54f3ef / 0x54f5ff in the Bubble Trouble code); DamageImpulse 0x5ae320 skips a hit the bubble shields (0x5a61e0), the sentry ray skips the worm (0x56c6be).
+- 0x10: pinned. ChangeState 0x5aa831 refuses Ballistic (2) and Sliding (3); the Explosion handler skips ImpulseWorm (0x5ae9c1); DamageImpulse 0x5ae409 gives no impulse (with 0x20 only the hit clip 0x5a9100). Set with 0x20 by the Tail Nail (0x5ce392 `or 0x30`), cleared with it by a near blast (0x5ae63e) and 0x5d3353. Data: the Prof (NICETOSIEGEYOU*, VALLEYOFDINOWORMS: Prof, ProfInGame) carries Flags 0x10 alone.
+- 0x20: nailed (Tail Nail, see 0x5ac390).
+- 0x40: the next hard landing is free. Ballistic 0x5af6f9: Flags & 0x8040 lands walking (no slide) whatever the slope or speed; 0x5af739: Flags & 0x8840 never sends event 15 (hard land); FallDamage 0x5ac3e0 (only at vn < -0.3): Flags & 0x8040 clears 0x40 and deals none. Set by RedbullUtilityLogicEntity 0x587446 every frame of flight state 3 (also the frame it sees the worm Ambulatory and goes back to 2), cleared on the active worm by its removal (message 0x42, 0x587540 -> 0x587587); by AlienAbduction SpitOutWorm 0x547360 (`or 0x440`). Data: Flags 0x40 on PlayerWorm (CHALLENGECRATE, LP_CHALLENGECRATE), Player (CHALLENGEICARUS, CHALLENGEJETPACK, CHALLENGEJETPACK2, CHALLENGENAVIGATION), Player1 (CHALLENGEJETPACK2), Wizzard_Worm2 (THEWINDYWIZARD).
+- 0x80: armour (`or 0x80` at 0x5ae23f on Armour.Collected); DamageImpulse halves the impulse unless the damage type is 5.
+- 0x100: vital (docs/w4m/missions.md). 0x400: abductee (set by 0x547360, cleared `and ~0x400` by MsgOverridePhysics 0x5addd1 / 0x5aded9). 0x1000: jump disabled. 0x4000: abducted, no Explosion (`or 0x4000` 0x548661 in AlienAbduction, sentry 0x56c110).
+- 0x800: no damage at all (FallDamage 0x5ac405, ApplyDamage 0x5ab847, Worm.Poison 0x5add65, 0x5eb788). **No writer sets it**: no immediate with bit 0x800 reaches +0xec in the sweep, Lua never writes a worm's Flags (no `Flags` key in any Data/scripts/*.lub), and the 1223 WormDataContainers of the shipped XOMs hold only 0 (1208), 0x40 (8) and 0x10 (7). It is dead in the shipped game.
+- 0x8000: no fall damage, set on the 16 worm slots by `GameLogic.SetNoFallDamage` (0x4ff6c1), sent only by stdvs.lub SetupScheme when the scheme's FallDamage is 0 (and Wormpot Worms Drown).
+- Ours [ours]: `Motion::flags` holds WF_PINNED 0x10, WF_FALL_ONCE 0x40 and WF_NO_FALL 0x8000 (`Worm::nailed` stays the 0x20 bit, `Motion::air` the 1 bit, `Worm::armour` 0x80, `Worm::abducted` 0x400); a mission worm takes its WormData Flags (script.cpp `place`), `Game::start` sets 0x8000 like SetNoFallDamage, the Icarus flight / removal and the abductee spit set / clear 0x40; `wormBody` lands walking on 0x8040, `stepWorm` spends 0x40, a pinned worm stays put (`stepWorm`), takes no push (`explode`, `impulse`).
 
 Correction to the existing "UpdateWalking" text: the "no physics owner → Passive" test reads **entity** +0x54, not pData (`this` = esi at 0x5b0dd4). This flag is non-zero for the worm in control (assumed). Every other worm is put into Passive (6).
 
@@ -334,7 +349,7 @@ Ours (sim.cpp `feet`, `walkStep`, `footing`):
 
 #### FallDamage 0x5ac3e0(pData, vn) (disasm + data)
 
-- None if Flags & 0x800. If Flags & 0x8040: bit 0x40 is cleared and no damage (one-shot immunity).
+- None if Flags & 0x800 (never set, see "WormData Flags"). If Flags & 0x8040: bit 0x40 is cleared and no damage (one-shot immunity).
 - Otherwise `damage = trunc((−0.3 − vn) × Worm.FallDamageRatio) + 1`, with Worm.FallDamageRatio = 100 (LOCAL). Then ApplyDamage 0x5ab7e0(damage, 1) and a controller rumble via 0x4bc410(0, 100, worm pos, 500, −1, −1) (disasm): 0x4bc410 forwards to RumbleService 0x4bbc40(Light 0, Heavy 100, pos, Duration 500 ms, FadeIn −1, FadeOut −1), motors as bytes 0..255 (Light is the weak motor, Heavy the strong, assumed from the names in its ' Light=' / ' Heavy=' log, 0x827440); the position is only printed in the log, so the rumble is not positional. No camera shake and no sound. Same helper as the weapons' RumbleLight/RumbleHeavy (docs/w4m/weapons.md BaseWeaponContainer 0d/0e).
 - Jetpack contacts (JetpacUtilityLogicEntity update 0x562810, two paths) [disasm]:
   - **Land** (0x562e4b): its own WXVertexCollider (0x59f1e0: 8 points 0x91ffc8, feet (±4, 0, −3), (0, 0, 5), (0, 0, 0) flagged 1 at 0x91ffb8, the same 4 at y 20 flagged 0; rods (0,4) (1,5) (2,6) at 0x91ffc0) sweeps v over 20 ms (0x59ec70); the first point hit wins, a tie goes to the lower index, so a foot. A foot hit (0x59ec50) with the rods clear at the contact (Fits 0x59edf0) **lands the pack: v −= (v·n) n** (restitution 0, 0x562f72..0x562fb6), then OverridePhysics 0, PackAccessory.Hide, camera Default, super thrust 0. The worm goes Ballistic (0x5ae17a → 0x5aa7f0) with only the tangential speed, so FallDamage (vn < −0.3) cannot fire however fast the fall was. A head hit, or rods not clear: v −= 1.8 (v·n) n (0x5630dc), restitution 0.8. The contact is pos + v·nearest distance, the normal 0x59ef90 (0x562ecd) [disasm]. No normal test lies between the sweep (0x562e4b) and the landing (0x562f72) [disasm]: the 8 points are world-axis offsets (not rotated by the yaw), so a flat vertical wall is met by a foot and the head above it at the same distance, the strict `<` keeps the lower index (0x59ed7a, ah&5) and the foot lands the pack; a ceiling or a face only the heads reach bounces. Ours: `jetBody` in client/src/sim.cpp uses the Ballistic `sweep` (docs/sim.md) and applies this, with no n.y rule.

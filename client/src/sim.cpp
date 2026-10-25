@@ -926,7 +926,7 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
         vel = Vector3Subtract(vel, Vector3Scale(n, vn));  // vt
         float v2 = Vector3LengthSqr(vel);
         if (fall && v2 < vn * vn) v2 *= 0.5f;  // 0x5af6be: |vt|² halved when below vn²
-        if (n.y >= (slip ? SLIPPY_NY : SLIDE_NY) && v2 < start * start) vel = {0, 0, 0};  // lands walking
+        if ((fall && (m.flags & (WF_FALL_ONCE | WF_NO_FALL))) || (n.y >= (slip ? SLIPPY_NY : SLIDE_NY) && v2 < start * start)) vel = {0, 0, 0};  // lands walking (0x5af6f9: Flags 0x8040 always)
         else m.slide = true, m.spin = m.spinTo = 0;  // event 17, Sliding with Velocity = vt
         m.normal = n;  // SupportNormal 0x5af5ba
     };
@@ -1236,6 +1236,7 @@ void Game::start(const GameConfig &c) {
             // SetDavidAndGolithHealth(100 x the largest team, n): Davids total / 2n, the first the rest (Energy truncated)
             if (wp(WP_GOLIATH)) { float david = 100.0f * most / (2 * n); w.hp = k ? (int)david : (int)(100 * most - (n - 1) * david); }
             if (wp(WP_ENERGY)) w.poison = POISON_DEFAULT;  // Wormpot.lub EnergyOrEnemy: PoisonRate = Worm.Poison.Default, then Worm.Poison
+            if (!cfg.scheme.fallDamage || wp(WP_WORMS_DROWN)) w.motion.flags |= WF_NO_FALL;  // stdvs SetupScheme / Wormpot: GameLogic.SetNoFallDamage 0x4ff6c1
             worms.push_back(w);
         }
     terrain.loadMs[2] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - navT0).count();
@@ -1281,6 +1282,7 @@ void Game::start(const GameConfig &c) {
 void Game::beginTurn(int last, bool sameTeam) {
     ropeCleanup(), grapple.on = false;
     for (size_t i = 0; i < bubbles.size();) if (--bubbles[i].life <= 0) emit(GameEvent::BubblePop, bubbles[i].pos), bubbles.erase(bubbles.begin() + i); else i++;  // GameLogic.Turn.Ended
+    if (icarus && current >= 0) worms[current].motion.flags &= ~WF_FALL_ONCE;  // the Redbull's removal (0x587540)
     girderOn = false, icarus = 0, bubbleAt = -1, drift = {}, doubleDamage = changing = false, scout.t = -1, walkVel = {};  // DoPostActivity: SetData("DoubleDamage", 0)
     crated = false;
     wobble.weapon = -1;  // the gun entity is made anew each turn
@@ -2472,7 +2474,7 @@ void Game::use(Worm &w) {
             bool dimMak = wp(WP_DIM_MAK) && wd.name == "Prod";  // 0x5d6420: kWeaponProd InstantKill, WXP_Wep_DimMak; 0x567c03 deals the energy left, no impulse
             hurt(o, dimMak ? std::max(0, o.hp) : (int)(wd.damage * k.x), false, dimMak ? 5 : 0);
             if (dimMak) continue;
-            if (wd.pins) o.nailed = true, o.vel = {0, 0, 0}, o.pos.y -= 0.35f;  // sunk to the waist
+            if (wd.pins) o.nailed = true, o.motion.flags |= WF_PINNED, o.vel = {0, 0, 0}, o.pos.y -= 0.35f;  // sunk to the waist
             else impulse(o, Vector3Scale(Vector3Add(Vector3Scale(dir, wd.speed), {0, wd.bounce, 0}), k.y));
         }
         if (wd.fuse > 0) { w.vel.y = wd.fuse; w.grounded = false; punching = true; }
@@ -2555,12 +2557,13 @@ void Game::stepWorm(Worm &w) {
     if (w.drowned && w.counted > 0) return floatStep(w);
     if (!w.alive || aboard(int(&w - worms.data())) || padHeld(int(&w - worms.data()))) return;
     if (w.abducted) zapStep(w);
-    if (w.nailed) { w.vel = {0, 0, 0}, w.grounded = true; if (underwater(w)) drown(w); return; }
+    if (w.motion.flags & WF_PINNED) { w.vel = {0, 0, 0}, w.grounded = true; if (underwater(w)) drown(w); return; }  // ChangeState 0x5aa831: no Ballistic / Sliding
     if (vault.t && &w == &worms[current]) return;  // W4M: no Ballistic while Vaulting
     auto land = [&](float speed) {
-        bool winged = icarus == 2 && &w == &worms[current];  // W4M Redbull sets flag 0x40 each flight frame (0x587446)
-        int dmg = winged ? 0 : fallDamage(speed), wi = int(&w - worms.data());
-        if (speed >= FALL_SAFE && !w.motion.slide && !winged && cfg.scheme.fallDamage && !wp(WP_WORMS_DROWN)) w.hardAt = clock;  // 0x5af601: kWE 15 only walking, flags 0x8840 (no-damage) land soft
+        const bool spared = w.motion.flags & (WF_FALL_ONCE | WF_NO_FALL);
+        if (speed >= FALL_SAFE && !w.motion.slide && !spared) w.hardAt = clock;  // 0x5af601: kWE 15 only walking, flags 0x8840 land soft
+        if (spared && speed > FALL_SAFE) w.motion.flags &= ~WF_FALL_ONCE;  // FallDamage 0x5ac3e0: 0x8040 spends 0x40, no damage
+        int dmg = spared ? 0 : fallDamage(speed), wi = int(&w - worms.data());
         if (dmg > 0) { w.hp -= dmg; selfHurt |= wi == current; emit(GameEvent::Hurt, w.pos, wi, 1), events.back().count = dmg, emit(GameEvent::Fall, w.pos, wi); }
     };
     bool jet = jetting && &w == &worms[current];  // W4M jetpack contact 0x5633e9: walls and ceilings bounce at 0.8; it lands itself, no Ballistic
@@ -2871,6 +2874,7 @@ void Game::ropeCleanup() {  // 0x572620: a rope that hooked (+0x7b) decrements t
 
 // W4M DamageImpulseMessage 0x518cbf: a direct hit (gun, melee) sets the worm's velocity, doubled under Double Damage, and launches it
 void Game::impulse(Worm &o, Vector3 v) {
+    if (o.motion.flags & WF_PINNED) return;  // 0x5ae409: a pinned worm only takes the hit
     o.vel = Vector3Scale(v, doubled() ? 2 : 1), o.grounded = false;
 }
 
@@ -3066,10 +3070,10 @@ void Game::explode(Vector3 p, const Blast &b0, int type, int weapon, const char 
         int dmg = blastDamage(b, p, feet);
         Vector3 kick = blastKick(b, p, feet);
         float skin = fmaxf(0, Vector3Distance(feet, p) - R);
-        if (w.nailed && skin < b.reach && skin < b.crater) w.nailed = false;  // 0x5ae4f0: inside WormDamageRadius, a worm closer than LandDamageRadius comes loose
+        if (w.nailed && skin < b.reach && skin < b.crater) w.nailed = false, w.motion.flags &= ~WF_PINNED;  // 0x5ae4f0: inside WormDamageRadius, a worm closer than LandDamageRadius comes loose (0x30 cleared)
         if (!dmg && Vector3LengthSqr(kick) == 0) continue;
         if (dmg) hurt(w, dmg, true, type);
-        if (w.nailed) continue;
+        if (w.motion.flags & WF_PINNED) continue;  // 0x5ae9c1: no ImpulseWorm
         w.vel = Vector3Add(w.vel, Vector3Scale(kick, (wp(WP_STICKY) ? 0.5f : 1) * (w.armour ? 0.5f : 1)));  // W4M shield: half
         w.motion.air = w.motion.slide = false;  // ImpulseWorm 0x5ad010: air control off, then Ballistic or Sliding
     }
@@ -3164,7 +3168,7 @@ bool Game::stepUfo(Projectile &s) {
         Vector3 d = Vector3Subtract(a.from, s.pos);  // towards where it was taken, +-40 units in x and z
         d.x += rand01() * 4 - 2, d.z += rand01() * 4 - 2;
         o.pos = s.pos, o.vel = Vector3Scale(Vector3Normalize(d), ABD_OUT), o.grounded = false;
-        o.poison = 0, o.abducted = true, o.zap = -1, o.calm = -1;  // 0x547360: flags 0x440, poison cleared, then half its health
+        o.poison = 0, o.abducted = true, o.zap = -1, o.calm = -1, o.motion.flags |= WF_FALL_ONCE;  // 0x547360: flags 0x440, poison cleared, then half its health
         hurt(o, o.hp / 2);  // a DamageImpulseMessage: DoubleDamage doubles it, armour does not apply
         emit(GameEvent::Abducted, o.pos, a.worm);
         s.fuse = ABD_SPIT;
@@ -3338,7 +3342,7 @@ void Game::stepShots(const Input &in, bool detonate) {
                 int vi = int(&v - worms.data());
                 if (!v.alive || vi == current || vi == s.prey || Vector3Distance(np, v.pos) > R + 0.4f) continue;
                 if (wd.kind == Kind::Scouser) {  // 0x5931f7: swallows it, stops; it inflates the next update (0x591ac0)
-                    s.stage = 1, s.prey = vi, s.fuse = SCOUSER_FLOAT + DT, s.vel = {}, v.nailed = false;
+                    s.stage = 1, s.prey = vi, s.fuse = SCOUSER_FLOAT + DT, s.vel = {}, v.nailed = false, v.motion.flags &= ~WF_PINNED;
                     break;
                 }
                 if (wd.kind == Kind::OldWoman)  // W4M robs any worm but the thrower, stops 800 ms, then walks back (+0x160 negated)
@@ -3705,7 +3709,7 @@ void Game::step(const Input &raw) {
 
     if (secondary >= 0 && !toolOut() && !jetLanded()) weapon = secondary, secondary = -1, jetUsed = false, fuel = jetInit;
     if (ropeUsed >= 0 && weapon != ropeUsed) ropeCleanup();  // W4M 0x565920: rope, chute, jetpack dry
-    if (icarus && (weaponDef(weapon).kind != Kind::Icarus || !w.alive)) icarus = 0, drift = {};  // a weapon change deletes it (0x587540)
+    if (icarus && (weaponDef(weapon).kind != Kind::Icarus || !w.alive)) icarus = 0, drift = {}, w.motion.flags &= ~WF_FALL_ONCE;  // a weapon change deletes it (0x587540 clears 0x40)
     if (bubbleAt >= 0 && (weaponDef(weapon).kind != Kind::Bubble || !w.alive)) bubbleAt = -1;  // Weapon.Delete ends the utility first
     if (bubbleAt >= 0 && clock >= bubbleAt) {  // 0x550190: spawned beside the worm, then falls freely
         Vector3 f = flat(w.yaw), side = {cosf(w.yaw), 0, -sinf(w.yaw)};
@@ -3719,8 +3723,9 @@ void Game::step(const Input &raw) {
         icarus = 1;
     }
     if (icarus == 1 && !w.grounded) icarus = 2, flapAt = clock + FLAP_WAIT, drift = {};  // took off: PackAccessory.Wield
-    else if (icarus == 2 && w.grounded) icarus = 1;  // landed: the wings fold
+    else if (icarus == 2 && w.grounded) icarus = 1, w.motion.flags |= WF_FALL_ONCE;  // landed: the wings fold, 0x40 set that frame too
     if (icarus == 2) {  // 0x587970: JUMP and back-jump flap alike; too early restarts the wait, a missed window waits a beat
+        w.motion.flags |= WF_FALL_ONCE;  // 0x587446: each flight frame
         while (clock >= flapAt + FLAP_WAIT) flapAt += FLAP_BEAT;
         Vector3 was = drift, f = flat(w.yaw);
         drift = Vector3Add(drift, Vector3Scale(f, in.walk / 127.0f * AFTERTOUCH));  // WXWorm.AftertouchDelta 0.015 u/ms a frame
@@ -3958,7 +3963,7 @@ uint32_t Game::checksum() const {
         for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t *)p)[i]) * 16777619u;
     };
     mix(&walkTick, sizeof walkTick);
-    for (const Worm &w : worms) { mix(&w.pos, sizeof w.pos); mix(&w.vel, sizeof w.vel); mix(&w.hp, sizeof w.hp); mix(&w.yaw, sizeof w.yaw); mix(&w.pitch, sizeof w.pitch); mix(&w.alive, sizeof w.alive); mix(&w.poison, sizeof w.poison); mix(&w.counted, sizeof w.counted); mix(&w.nailed, 1); mix(&w.armour, 1); mix(&w.motion.stuck, sizeof w.motion.stuck), mix(&w.motion.air, 1), mix(&w.motion.slide, 1), mix(&w.motion.spin, sizeof w.motion.spin), mix(&w.motion.spinTo, sizeof w.motion.spinTo), mix(&w.motion.normal, sizeof w.motion.normal); if (w.motion.on >= 0) mix(&w.motion.on, sizeof w.motion.on), mix(&w.motion.onAt, sizeof w.motion.onAt); if (w.drowned) mix(&w.floatT, sizeof w.floatT); if (w.abducted) mix(&w.zap, sizeof w.zap), mix(&w.calm, sizeof w.calm), mix(&w.zapFound, 1), mix(&w.zapSpot, sizeof w.zapSpot); }
+    for (const Worm &w : worms) { mix(&w.pos, sizeof w.pos); mix(&w.vel, sizeof w.vel); mix(&w.hp, sizeof w.hp); mix(&w.yaw, sizeof w.yaw); mix(&w.pitch, sizeof w.pitch); mix(&w.alive, sizeof w.alive); mix(&w.poison, sizeof w.poison); mix(&w.counted, sizeof w.counted); mix(&w.nailed, 1); mix(&w.armour, 1); mix(&w.motion.stuck, sizeof w.motion.stuck), mix(&w.motion.air, 1), mix(&w.motion.slide, 1), mix(&w.motion.spin, sizeof w.motion.spin), mix(&w.motion.spinTo, sizeof w.motion.spinTo), mix(&w.motion.normal, sizeof w.motion.normal); if (w.motion.flags) mix(&w.motion.flags, sizeof w.motion.flags); if (w.motion.on >= 0) mix(&w.motion.on, sizeof w.motion.on), mix(&w.motion.onAt, sizeof w.motion.onAt); if (w.drowned) mix(&w.floatT, sizeof w.floatT); if (w.abducted) mix(&w.zap, sizeof w.zap), mix(&w.calm, sizeof w.calm), mix(&w.zapFound, 1), mix(&w.zapSpot, sizeof w.zapSpot); }
     for (const Projectile &s : shots) { mix(&s.pos, sizeof s.pos); mix(&s.vel, sizeof s.vel); mix(&s.weapon, sizeof s.weapon); mix(&s.fuse, sizeof s.fuse); mix(&s.hits, sizeof s.hits); mix(&s.stage, sizeof s.stage); mix(&s.prey, sizeof s.prey); mix(&s.aim, sizeof s.aim); mix(&s.touching, sizeof s.touching); mix(s.touchObj.data(), s.touchObj.size() * sizeof(int)); }
     mix(&chute, 1);
     if (chute) mix(&chuteDrift, sizeof chuteDrift), mix(&chuteAt, sizeof chuteAt), mix(&chuteAng, sizeof chuteAng), mix(&chuteSpin, sizeof chuteSpin),
