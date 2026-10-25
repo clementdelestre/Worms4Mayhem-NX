@@ -883,8 +883,13 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         let a = mul(&inverse(w), &shift);
         let e = (0..=x.size[1]).flat_map(|j| { let (p, q) = (x.l1.get(j).copied().unwrap_or([0.0; 2]), x.l2.get(j).copied().unwrap_or([0.0; 2])); [p[0], p[1], q[0], q[1]] });
         let f = |v: &mut dyn Iterator<Item = f32>| v.map(|v| format!("{v:.5}")).collect::<Vec<_>>().join(",");
-        format!("{{\"a\":[{}],\"n\":[{},{},{}],\"t\":[{}],\"e\":[{}]}}", f(&mut a.iter().flatten().copied()), x.size[0], x.size[1], x.size[2],
-            f(&mut x.uvm.iter().flatten().copied()), f(&mut e.into_iter()))
+        // the HeightMap per lattice column as the corners take it (empty when zero), and the solid voxels (y + Y (x + X z)) as runs
+        let h: Vec<f32> = (0..(x.size[0] + 1) * (x.size[2] + 1)).map(|i| x.hm.get(i).copied().filter(|h| h.is_finite() && h.abs() < 64.0).unwrap_or(0.0)).collect();
+        let h = if h.iter().all(|&v| v == 0.0) { String::new() } else { h.iter().map(|v| format!("{v}")).collect::<Vec<_>>().join(",") };
+        let mut runs: Vec<[usize; 2]> = Vec::new();
+        for i in (0..x.vox.len()).filter(|&i| x.vox[i] & 3 != 0) { match runs.last_mut() { Some(r) if r[0] + r[1] == i => r[1] += 1, _ => runs.push([i, 1]) } }
+        format!("{{\"a\":[{}],\"n\":[{},{},{}],\"t\":[{}],\"e\":[{}],\"k\":{k},\"h\":[{h}],\"s\":[{}]}}", f(&mut a.iter().flatten().copied()), x.size[0], x.size[1], x.size[2],
+            f(&mut x.uvm.iter().flatten().copied()), f(&mut e.into_iter()), runs.iter().map(|r| format!("{},{}", r[0], r[1])).collect::<Vec<_>>().join(","))
     }).collect();
     write_wcells(out_dir, stem, &cells, &recs, &hex_id, &frame_cells, &cell_of, [ox, WATER, oz])?;
     let codes_json = if code_json.is_empty() { String::new() } else { format!("  \"codes\": {{{}}},\n", code_json.join(", ")) };

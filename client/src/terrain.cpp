@@ -1,4 +1,5 @@
 #include "terrain.h"
+#include "lattice.h"
 #include "fx.h"
 #include "json.h"
 #include "lightshade.h"
@@ -314,6 +315,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         for (size_t k = 0; k + 2 < f.size(); k += 3) frameCells.back().push_back({f[k].f(), f[k + 1].f(), f[k + 2].f()});
         frameAlive.emplace_back(frameCells.back().size(), 1);
     }
+    std::map<int, int> uvOfFrame;  // importer frame (WCell::fr) -> landUV index
     for (const Json &u : j["landuv"].arr) {
         LandUV l{};
         for (int k = 0; k < 12; k++) l.a[k] = u["a"][k].f();
@@ -325,7 +327,23 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         auto c = [&](int i, int j) { return a[(j + 1) % 3 * 4 + (i + 1) % 3] * a[(j + 2) % 3 * 4 + (i + 2) % 3] - a[(j + 1) % 3 * 4 + (i + 2) % 3] * a[(j + 2) % 3 * 4 + (i + 1) % 3]; };
         const float det = a[0] * c(0, 0) + a[1] * c(1, 0) + a[2] * c(2, 0);
         for (int i = 0; i < 3; i++) for (int k = 0; k < 3; k++) l.w[i * 3 + k] = det ? c(i, k) / det : 0;
+        for (const Json &v : u["h"].arr) l.h.push_back(v.f());
+        if (l.h.size() != (size_t)(l.n[0] + 1) * (l.n[2] + 1)) l.h.clear();
+        l.cell.assign((size_t)l.n[0] * l.n[1] * l.n[2], -2);
+        for (size_t k = 0; k + 1 < u["s"].size(); k += 2)
+            for (size_t v = (size_t)u["s"][k].num, e = std::min(l.cell.size(), v + (size_t)u["s"][k + 1].num); v < e; v++) l.cell[v] = -1;
+        if (u["k"].type != Json::Num) TraceLog(LOG_WARNING, "map %s: landuv entry without its frame: re-import the map (tools/w4m-maps)", map.c_str());
+        uvOfFrame[(int)u["k"].f(-1)] = (int)landUV.size();
         landUV.push_back(std::move(l));
+    }
+    for (size_t i = 0; i < wcells.size(); i++) {
+        const WCell &w = wcells[i];
+        const auto f = uvOfFrame.find(w.fr);
+        if (f == uvOfFrame.end()) continue;
+        LandUV &L = landUV[f->second];
+        const int v = w.at[1] + L.n[1] * (w.at[0] + L.n[0] * w.at[2]);
+        if (v < 0 || v >= (int)L.cell.size()) continue;
+        L.cell[v] = (int)i;
     }
     for (const Json &e : j["emitters"].arr) emitters.push_back({e["fx"].s(), vec(e["pos"], {cx, 8, cz})});
     for (const Json &l : j["lights"].arr)
@@ -741,6 +759,14 @@ void Terrain::weld(Vector3 c, Vector3 half) {
 
 void Terrain::addCell(const Vector3 *c) {
     const uint32_t id = sharp.add(d, c);
+    LandUV l{};  // lattice x, y, z along c[1] - c[0], c[2] - c[0], c[4] - c[0]; a maps map metres to the lattice less 0.5
+    const Vector3 ax[3] = {Vector3Subtract(c[1], c[0]), Vector3Subtract(c[2], c[0]), Vector3Subtract(c[4], c[0])};
+    const Matrix m = MatrixInvert({ax[0].x, ax[1].x, ax[2].x, c[0].x, ax[0].y, ax[1].y, ax[2].y, c[0].y, ax[0].z, ax[1].z, ax[2].z, c[0].z, 0, 0, 0, 1});
+    const float la[12] = {m.m0, m.m4, m.m8, m.m12 - 0.5f, m.m1, m.m5, m.m9, m.m13 - 0.5f, m.m2, m.m6, m.m10, m.m14 - 0.5f};
+    std::copy(la, la + 12, l.a);
+    for (int i = 0; i < 3; i++) for (int k = 0; k < 3; k++) l.w[i * 3 + k] = (&ax[k].x)[i];
+    l.n[0] = l.n[1] = l.n[2] = 1, l.e.assign(2, {}), l.cell = {-1};
+    landUV.push_back(std::move(l));
     Vector3 lo = c[0], hi = c[0];
     for (int k = 0; k < 8; k++) lo = Vector3Min(lo, c[k]), hi = Vector3Max(hi, c[k]);
     int a[3] = {std::max(0, (int)ceilf(lo.x * IVOX)), std::max(0, (int)ceilf(lo.y * IVOX)), std::max(0, (int)ceilf(lo.z * IVOX))};
@@ -806,7 +832,7 @@ bool Terrain::cast(Vector3 a, Vector3 dir, float len, float *tOut, Vector3 *nOut
                 const size_t ci = idx(c[0], c[1], c[2]);
                 if (!sharp.mixed(ci)) {
                     if (d[ci] > 0 && (hit = t0) >= 0) {
-                        if (hit == 0) n = Vector3Negate(dir);  // inside the land: its neighbours are land too (0x46a070's fallback)
+                        if (hit == 0) n = startNormal(a, ci, dir);
                         else if (entered >= 0) (&n.x)[entered] = -(float)step[entered];
                     }
                 } else if ((hit = sharp.first(a, dir, t0, t1, ci)) == 0) n = startNormal(a, ci, dir);
@@ -833,27 +859,33 @@ Terrain::Shade Terrain::sunShade(Vector3 p, float off, bool back) const {
     return {floorf(t / u) / 1000, true, Vector3Add(a, Vector3Scale(d, t + 0.05f))};
 }
 
-// W4M 0x46a070 on a ray starting in land (0x468490 keeps the start in both records): the nearest face of the start cell whose
-// neighbour is empty, whatever the ray's direction, else -dir [disasm]; by plane distance where W4M takes the lattice fraction
+// W4M 0x46a070 on a ray starting in land (0x468490 keeps the start in both records): the first frame (0x473190's order) whose
+// sampled land holds p; of its lattice cell's faces, the nearest in lattice fractions whose neighbour is empty, whatever the ray's
+// direction, else -dir [disasm, exe run: lattice.h]. Frames before the heightmap (0x466ae0 keeps the first of equal hits).
 Vector3 Terrain::startNormal(Vector3 p, size_t c, Vector3 dir) const {
-    const uint32_t *o = sharp.ops(c);
-    for (uint32_t i = 1; i <= o[0]; i++) {
-        const uint32_t k = o[i] & SharpLand::KIND, id = o[i] & SharpLand::ID;
-        if (k != SharpLand::HEX) continue;
-        if (!sharp.inside(id, p)) { i++; continue; }
-        const uint32_t face = sharp.hexFace[id];  // the whole W4M cell of a rounded piece
-        uint32_t p0 = sharp.hexP0[face];
-        const uint32_t p1 = sharp.planeEnd(face);
-        Vector3 best = Vector3Negate(dir);
-        for (float bestD = 1e30f; p0 < p1; p0++) {
-            const Vector4 &pl = sharp.planes[p0];
-            const float in = pl.w - (pl.x * p.x + pl.y * p.y + pl.z * p.z);
-            if (in < bestD && !solid(Vector3Add(p, Vector3Scale({pl.x, pl.y, pl.z}, in + 0.02f)))) bestD = in, best = {pl.x, pl.y, pl.z};
+    for (const LandUV &L : landUV) {
+        const float *a = L.a;
+        const Vector3 q = lattice::toLattice(L.n, L.e, L.h, {a[0] * p.x + a[1] * p.y + a[2] * p.z + a[3] + L.n[0] * 0.5f,
+                                                              a[4] * p.x + a[5] * p.y + a[6] * p.z + a[7] + L.n[1] * 0.5f,
+                                                              a[8] * p.x + a[9] * p.y + a[10] * p.z + a[11] + L.n[2] * 0.5f});
+        // 0x43e0d0 on the frame's own voxel bits, less the cells blasts and clears took
+        auto cellAt = [&](int x, int y, int z) { return x < 0 || y < 0 || z < 0 || x >= L.n[0] || y >= L.n[1] || z >= L.n[2] ? -2 : L.cell[y + L.n[1] * (x + L.n[0] * z)]; };
+        auto solid = [&](int x, int y, int z) { const int v = cellAt(x, y, z); return v == -1 || (v >= 0 && !wdead[v]); };
+        const int x = (int)floorf(q.x), y = (int)floorf(q.y), z = (int)floorf(q.z), v = cellAt(x, y, z);
+        if (!solid(x, y, z)) continue;
+        if (v >= 0) {  // the sampler (§23): one of the cell's pieces holds p
+            const WCell &w = wcells[v];
+            uint32_t h = w.hex;
+            while (h < w.hex + w.nhex && !sharp.inside(h, p)) h++;
+            if (h == w.hex + w.nhex) continue;
         }
-        return best;
+        Vector3 n;
+        if (!lattice::startFace(L.n, L.e, L.h, q, solid, &n)) return Vector3Negate(dir);
+        return Vector3Normalize({a[0] * n.x + a[4] * n.y + a[8] * n.z, a[1] * n.x + a[5] * n.y + a[9] * n.z, a[2] * n.x + a[6] * n.y + a[10] * n.z});
     }
-    Vector3 n;  // the heightmap's slope (W4M 0x462910), an edit's own normal
-    sharp.eval(p, c, &n);
+    Vector3 n{};  // the heightmap's slope (W4M 0x462910), an edit's own normal
+    if (sharp.mixed(c)) sharp.eval(p, c, &n);
+    else if (p.y <= sharp.hm(p.x, p.z)) n = sharp.hmNormal(p.x, p.z);
     return Vector3LengthSqr(n) > 0 ? n : Vector3Negate(dir);
 }
 

@@ -368,8 +368,8 @@ primitives reaching it [ours]. The sim reads that land exactly; so does the mesh
   of its primitives (plane slabs, sphere roots, the heightmap bracketed and bisected), an unlisted solid cell its entry; the normal is
   taken in the cell where the land was found, so a face lying on a cell border is read from the cell that lists it [ours]. Of a W4M
   cell's planes it is the one the ray crossed last (`eval` given the ray), the face entered as W4M 0x46a070; a cast starting in land
-  takes `startNormal`, the start cell's nearest face with an empty neighbour (docs/w4m/physics.md §11 "Ballistic") [disasm; distance
-  for W4M's cell fraction assumed]. Maps without
+  takes `startNormal`, the face of the start's W4M lattice cell nearest in lattice fractions with an empty neighbour in its frame
+  (docs/w4m/physics.md §11 "Ballistic") [disasm, exe run], listed cell or not. Maps without
   `.cells` (the bundled `romfs` maps, the generated island, test fields): sampled every VOX/4 and bisected to the last point out of land,
   normal = gradient over ±VOX/4 [ours].
 - Edits are incremental, before `d` changes: `carve` appends a sphere to each cell it cuts (a cell it swallows leaves the lists),

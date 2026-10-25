@@ -72,7 +72,8 @@ struct Terrain {
     struct Thin { int at, n; unsigned char mat; uint16_t uv; Vector3 c[8]; bool live = true; };  // a sub-voxel W4M cell, drawn while one of thinVox[at..at+n) is solid
     // W4M land texture mapping of a lattice frame (GLG 0x446be0 / 0x457130): uv = row . lattice point + offset, floor (top and
     // roof faces) or wall rows; a: map metres -> frame-centred lattice before EdgeOffset, w: its inverse's 3x3, e: EdgeOffset1/2 per layer
-    struct LandUV { float a[12], w[9], t[16]; int n[3]; std::vector<Vector4> e; };
+    // h: HeightMap per lattice column (empty: zero); cell per voxel y + Y (x + X z): -2 empty, -1 solid, else its wcells index
+    struct LandUV { float a[12], w[9], t[16]; int n[3]; std::vector<Vector4> e; std::vector<float> h; std::vector<int> cell; };
     std::vector<LandUV> landUV;
     Bricks<uint16_t> uvOf;  // per voxel: landUV index + 1 of the frame its material came from, 0 none (heightmap, steel)
     enum Face { FLOOR, WALL, ROOF, TRIPLANAR };
@@ -156,7 +157,7 @@ struct Terrain {
     bool lowerHeightmap(Vector3 c, float radius, int box[6]);  // a blast's heightmap bowl (carve)
     bool carve(Vector3 c, float radius, Vector3 n = {0, 0, 0});  // true when some voxel changed (W4M Land.Changed); n: the Explosion's +0x20, the debris' push
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
-    void addCell(const Vector3 *c);  // a convex land cell, exact as an imported map's (corners bit 1 +x, 2 +y, 4 +z)
+    void addCell(const Vector3 *c);  // a parallelepiped land cell, exact as an imported map's: a 1x1x1 lattice frame (corners bit 1 +x, 2 +y, 4 +z)
     bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff
     bool isSteel(size_t i) const { return !steel.empty() && steel[i]; }
     size_t voxelBytes() const { return d.bytes() + mats.bytes() + uvOf.bytes() + steel.bytes(); }  // density, materials, uv frames, steel

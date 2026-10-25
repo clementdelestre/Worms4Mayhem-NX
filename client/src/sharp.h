@@ -60,6 +60,8 @@ struct SharpLand {
     void drop(uint32_t first, uint32_t n, const int lo[3], const int size[3]);  // hexes first..first+n leave the lists of the grid cells in that box (Land.ClearVoxel)
     uint32_t holder(size_t c, Vector3 p) const;  // the W4M cell piece of mixed cell c's list that holds p, else ~0u
     bool inside(uint32_t hex, Vector3 p) const;
+    float hm(float x, float z) const;  // the heightmap's top (m), -1e9 none
+    Vector3 hmNormal(float x, float z) const;
     // Snapshot undo: when set, every list change logs (cell, its list before; empty: unlisted)
     std::vector<std::pair<uint32_t, std::vector<uint32_t>>> *undo = nullptr;
     std::vector<uint32_t> list(size_t c) const { return mixed(c) ? std::vector<uint32_t>(ops(c) + 1, ops(c) + 1 + ops(c)[0]) : std::vector<uint32_t>{}; }
@@ -76,8 +78,6 @@ private:
     uint32_t cell(const Vector3 *c, int64_t flags);
     bool keep(size_t c, int x, int y, int z, bool listed, std::vector<uint32_t> &out, bool all = false) const;  // cell c's PERM pieces (all: every live W4M cell's) as ops; false: one fills the whole cell
     void strip(size_t c, const std::function<bool(uint32_t)> &gone);  // cell c's list without the hexes `gone` names
-    float hm(float x, float z) const;
-    Vector3 hmNormal(float x, float z) const;
     void setOps(size_t c, const uint32_t *o, uint32_t n);  // n == 0: the cell leaves the lists
     void mark(size_t c, bool listed);
     void compact();

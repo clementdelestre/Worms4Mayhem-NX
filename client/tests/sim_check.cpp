@@ -8,6 +8,7 @@
 #include "../src/ai.h"
 #include "../src/ui.h"
 #include "../src/barracks.h"
+#include "../src/lattice.h"
 #include "raymath.h"
 #include <algorithm>
 #include <cassert>
@@ -1839,6 +1840,24 @@ static void checkLowLedges() {
                 for (int t = 0; t < 120; t++) g.step(walk);
                 assert(w.pos.y > 50.5f + h - 0.05f && !w.motion.slide);
             }
+}
+
+// W4M 0x46a070 on a ray starting in land: the start cell's face nearest in lattice fractions (here -x at 0.1, +y at 0.3, while +y is
+// the nearer plane), whatever the ray's direction; frames do not see each other's cells (the box at -x leaves that face open)
+static void checkStartNormal() {
+    Game g;
+    g.start({33, 2, 1, "", 0}), g.hotSeat = 0;
+    clearArena(g, 16, 176, 176, 248, 16, 80);
+    landBox(g, {0, 0, 0}, {1, 0, 0}, 10, 14, 50, 51, 10, 14);
+    for (int other = 0; other < 2; other++) {
+        if (other) landBox(g, {0, 0, 0}, {1, 0, 0}, 6, 10, 50, 51, 10, 14);
+        for (Vector3 dir : {Vector3{0, -1, 0}, Vector3{0, 1, 0}, Vector3{1, 0, 0}}) {
+            float t;
+            Vector3 n;
+            assert(g.terrain.cast({10.4f, 50.7f, 12}, dir, 1, &t, &n) && t == 0);
+            assert(Vector3Distance(n, {-1, 0, 0}) < 1e-4f);
+        }
+    }
 }
 
 // W4M Vaulting 0x5aca80: a 16-unit ledge is climbed in 250 ms at 4 units per frame, not at once; the stick held along the start input
@@ -5858,6 +5877,26 @@ static void checkClearCodedDead() {
     assert(t.edits == e0 && t.blobs.nfree == LandBlobs::POOL);
 }
 
+// The imported lattice frames (landuv: matrix, EdgeOffsets, HeightMap, voxel bits) put each W4M cell's centre (0x467aa0) at its own
+// lattice cell's centre through 0x468200, on a map whose frames have both EdgeOffsets and HeightMaps
+static void checkLatticeFrames() {
+    Terrain t;
+    assert(t.load("NiceToSiegeYou", 1) && !t.landUV.empty());
+    int checked = 0;
+    for (const Terrain::LandUV &L : t.landUV)
+        for (int v = 0; v < (int)L.cell.size(); v++) {
+            if (L.cell[v] < 0) { assert(L.cell[v] == -1 || L.cell[v] == -2); continue; }
+            const Terrain::WCell &w = t.wcells[L.cell[v]];
+            assert(v == w.at[1] + L.n[1] * (w.at[0] + L.n[0] * w.at[2]));
+            const float *a = L.a;
+            const Vector3 p = w.ctr, q = lattice::toLattice(L.n, L.e, L.h, {a[0] * p.x + a[1] * p.y + a[2] * p.z + a[3] + L.n[0] * 0.5f,
+                a[4] * p.x + a[5] * p.y + a[6] * p.z + a[7] + L.n[1] * 0.5f, a[8] * p.x + a[9] * p.y + a[10] * p.z + a[11] + L.n[2] * 0.5f});
+            assert(fabsf(q.x - w.at[0] - 0.5f) < 2e-3f && fabsf(q.y - w.at[1] - 0.5f) < 2e-3f && fabsf(q.z - w.at[2] - 0.5f) < 2e-3f);
+            checked++;
+        }
+    assert(checked > 10000);
+}
+
 // W4M GLG 0x457130: uv = floor / wall row . lattice point + offset; a thin cell's corner 1 (4) is its corner 0 one lattice step along x (z)
 static void checkLandUV() {
     Terrain t;
@@ -6039,6 +6078,8 @@ int main() {
     checkWallClearance();
     checkWalkW4M();
     checkLowLedges();
+    checkStartNormal();
+    checkLatticeFrames();
     checkVault();
     checkNarrowSlot();
     checkW4MWalkRules();
