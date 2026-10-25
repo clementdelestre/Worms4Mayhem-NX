@@ -3038,7 +3038,8 @@ void Frontend::editor(PadIn in, float t) {
         if (ed.page == 0) {
             paper(164, -27, 155, 151, 0.01f);
             if (slideIn(169, 96, 0.2f)) edHeader(tr("FETXTSH.Worms", "Worms"), ox + 169, oy + 96, 100, -0.02f), rlPopMatrix();
-            // Worm1..6: TextEditBox, Border Edit / Highlight / Active, TextEdit_Turquoise (Solid_Black highlighted), centred, In_SlideX at 300..500 ms
+            // Worm1..6: TextEditBox, Border Edit / Highlight / Active, centred, In_SlideX at 300..500 ms; text colours by state, typing > highlight > normal (0x75d194):
+            // Colour_Front 22 / _Highlight 3 / _Edit 2 on Colour_Back 2 / _Highlight 3 / _Edit 2
             static const float W[6][4] = {{171, 62, -0.02f, 0.3f}, {164, 28, 0, 0.35f}, {177, -7, -0.03f, 0.4f}, {160, -40, -0.02f, 0.45f}, {171, -73, 0.03f, 0.45f}, {169, -109, -0.01f, 0.5f}};
             for (int i = 0; i < 6; i++) {
                 if (!slideIn(W[i][0], W[i][1], W[i][3])) continue;
@@ -3048,7 +3049,7 @@ void Frontend::editor(PadIn in, float t) {
                     const bool hi = i == ed.row, typing = editing == &ed.t.worms[i];
                     edBox(q, 211, 37.4f, typing ? "fe/border_active" : hi ? "fe/border_highlight" : "fe/border_edit");
                     std::string v = ed.t.worms[i] + (typing && fmodf(t, 1) < 0.5f ? "_" : "");
-                    edText(v.c_str(), q, 20, hi && !typing ? GC_BLACK : GC_TEXTEDIT_TURQUOISE, 1, 180, hi && !typing ? BC_NONE : BC_BLACK);
+                    edText(v.c_str(), q, 20, typing ? GC_WHITE : hi ? GC_BLACK : GC_TEXTEDIT_TURQUOISE, 1, 180, typing ? BC_BLACK : hi ? BC_WHITE : BC_BLACK);
                 }
                 rlPopMatrix();
             }
