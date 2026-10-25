@@ -2339,8 +2339,6 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
     objC.resize(ms.size());
     for (size_t i = 0; i < ms.size(); i++) objR[i] = ms[i]->r, objC[i] = ms[i]->c;
     if (!draw) return;
-    static const int GL[12] = {RL_ZERO, RL_ONE, RL_DST_COLOR, RL_ONE_MINUS_DST_COLOR, RL_SRC_COLOR, RL_ONE_MINUS_SRC_COLOR, RL_SRC_ALPHA,
-                               RL_ONE_MINUS_SRC_ALPHA, RL_DST_ALPHA, RL_ONE_MINUS_DST_ALPHA, RL_SRC_ALPHA_SATURATE, RL_ONE};  // XBlendModeGL kBlendFactor*
     // W4M DetailObjects bin: opaque parts first, then the blended ones (XBlendModeGL other than One / Zero)
     for (int pass = 0; pass < 2; pass++) {
         for (const Object &o : objects) {
@@ -2373,7 +2371,7 @@ void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4>
                 else if (q.cull == 1 || q.cull == 3) rlEnableBackfaceCulling(), rlSetCullFace(RL_CULL_FACE_FRONT);
                 else rlDisableBackfaceCulling();  // kCullModeOff, or no XCullFace [ours: two-sided]
                 if (blended) {
-                    rlSetBlendFactors(GL[std::clamp(q.src, 0, 11)], GL[std::clamp(q.dst, 0, 11)], RL_FUNC_ADD), rlSetBlendMode(RL_BLEND_CUSTOM);
+                    Models::blendGL(q.src, q.dst);
                     if (!q.zwrite) rlDisableDepthMask();
                 }
                 DrawMesh(e.m.meshes[i], e.m.materials[e.m.meshMaterial[i]], o.m);

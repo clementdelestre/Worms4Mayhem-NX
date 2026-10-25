@@ -190,6 +190,7 @@ struct Live {
     const Emit *e; Vector3 at; uint32_t follow = 0; float clock = 0, next = 0, timer = 0, jitter = 0; bool started = false; std::vector<float> ends;
     int key = 0, level = -1; float unit = 0.05f, lifeR = 0; int extra = 0, spawned = 0, batch = 0; bool init = false;  // level: map emitter index
     int handle = 0;  // its effect's (0x5c1410)
+    uint8_t bin = 0;  // render bin, chosen once at the emitter's start (0x5bc070 -> 0x5bb510)
 };
 std::vector<Live> lives, born;  // running emitters; those created while they tick
 uint32_t lastId = 0;
@@ -204,7 +205,12 @@ int Emit::pool() const {  // min(MaxParticles, (Life + LifeRand) / (SpawnFreq - 
 
 // CParticle setup 0x5b98e0: V + (2r - 1) Vrand per axis x 0.01 units/ms (IsNormalised: the unit vector x (V.x + Vrand.x)); returns the life, s.
 // u: metres per W4M unit (map emitters: the import scale k / 20)
-float spawn(const Emit &e, Vector3 at, float u = 0.05f) {
+// 0x5bb510: the entity's +0x70 is the emitter's y with EmitterOriginOffset added (0x5b9d50, base at +0x20)
+uint8_t binOf(const Emit &e, Vector3 at, float u) {
+    return e.underWater || (e.canWater && at.y + e.off.y * u <= waterY) ? 11 : e.scene ? 22 + e.scene : 23;
+}
+
+float spawn(const Emit &e, Vector3 at, float u, uint8_t bin) {
     auto r = [](float x) { return rnd(-x, x); };
     Vector3 v = {e.v.x + r(e.vR.x), e.v.y + r(e.vR.y), e.v.z + r(e.vR.z)}, o = {e.off.x + r(e.offR.x), e.off.y + r(e.offR.y), e.off.z + r(e.offR.z)};
     if (e.norm) v = Vector3Scale(Vector3Normalize(v), e.v.x + e.vR.x);
@@ -231,7 +237,7 @@ float spawn(const Emit &e, Vector3 at, float u = 0.05f) {
     }
     if ((int)ps.size() >= MAX) return q.life;
     q.unit = u, q.expireL = e.expireL, q.level = curLevel;
-    q.bin = e.underWater || (e.canWater && at.y <= waterY) ? 11 : e.scene ? 22 + e.scene : 23;  // 0x5bb510: the emitter's own y stands for the entity's +0x70 [assumed]
+    q.bin = bin;
     if (e.fx || e.fxL) q.id = ++lastId;
     if (e.fx) born.push_back({e.fx, q.p, q.id});
     if (e.fxL)
@@ -258,7 +264,7 @@ void tickEmitters(float dt) {
         curLevel = L.level;
         for (L.clock += dt; !done && L.clock >= L.next; L.next += 0.02f) {
             float t = L.next * 1000;
-            if (!L.init) L.init = true, L.timer = e.freq, L.jitter = rr(e.freqR), L.extra = (int)rr((float)e.numR), L.lifeR = rr(e.lifeTimeR);
+            if (!L.init) L.init = true, L.bin = binOf(e, L.at, L.unit), L.timer = e.freq, L.jitter = rr(e.freqR), L.extra = (int)rr((float)e.numR), L.lifeR = rr(e.lifeTimeR);
             else L.timer += 20;
             if (t >= e.delay) {
                 if (!L.started) {
@@ -267,7 +273,7 @@ void tickEmitters(float dt) {
                 }
                 L.ends.erase(std::remove_if(L.ends.begin(), L.ends.end(), [&](float end) { return end <= L.next; }), L.ends.end());  // next only grows
                 for (bool go = L.timer >= e.freq + L.jitter; go && (int)L.ends.size() < pool;) {
-                    L.ends.push_back(L.next + spawn(e, L.at, L.unit)), L.spawned++;
+                    L.ends.push_back(L.next + spawn(e, L.at, L.unit, L.bin)), L.spawned++;
                     if (++L.batch >= e.num + L.extra) L.batch = 0, L.timer -= e.freq + L.jitter, L.jitter = rr(e.freqR), L.extra = (int)rr((float)e.numR), go = false;
                 }
             }
@@ -1199,7 +1205,6 @@ void drawSky(const Camera3D &cam, Vector3 origin, float unit) {
     if (skyModel.meshCount) {
         // the ~20000-unit scene shrunk inside the far plane around the camera: opaque parts, then the blended ones in scene
         // order with their XBlendModeGL; depth only sorts the sky's own parts and is cleared after
-        static const int GL_FACTOR[11] = {0, 1, 0x306, 0x307, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305, 0x308};  // W4M BlendFactor -> GL, table 0x8b4b5c
         Vector3 at = {cam.position.x, cam.position.y - skyDrop(cam) * SKY_K, cam.position.z};
         Matrix m = MatrixMultiply(MatrixScale(SKY_K, SKY_K, SKY_K), MatrixTranslate(at.x, at.y, at.z));
         float t = skyClip > 0 ? fmodf(skyT, skyClip) : 0;
@@ -1213,8 +1218,7 @@ void drawSky(const Camera3D &cam, Vector3 origin, float unit) {
                 Vector2 off = {k.u * f, k.v * f};
                 if (skyMeshSh.id != rlGetShaderIdDefault()) SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2);
                 if (pass) {
-                    if (src < 11 && dst < 11) rlSetBlendFactors(GL_FACTOR[src], GL_FACTOR[dst], 0x8006);  // else glBlendFunc fails in W4M: state kept
-                    rlSetBlendMode(RL_BLEND_CUSTOM), rlDisableDepthMask();
+                    Models::blendGL(src, dst), rlDisableDepthMask();
                 }
                 DrawMesh(skyModel.meshes[i], skyModel.materials[skyModel.meshMaterial[i]], MatrixMultiply(MatrixRotateY(k.rot * f), m));
             }
@@ -1284,9 +1288,8 @@ static void particles(const Camera3D &cam, int bin) {
             float f = m.t1 > 0 ? (m.loop ? fmodf(p.age, m.t1) : fminf(p.age, m.t1)) / m.t1 : 0;
             Vector2 off = {m.u * f, m.v * f};
             if (off.x != lastOff.x || off.y != lastOff.y) SetShaderValue(skyMeshSh, uvOffLoc, &off, SHADER_UNIFORM_VEC2), lastOff = off;
-            static const int GL_FACTOR[11] = {0, 1, 0x306, 0x307, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305, 0x308};
             rlDrawRenderBatchActive();
-            if (m.src >= 0 && m.src < 11 && m.dst >= 0 && m.dst < 11) rlSetBlendFactors(GL_FACTOR[m.src], GL_FACTOR[m.dst], 0x8006), rlSetBlendMode(RL_BLEND_CUSTOM);
+            if (m.src >= 0) Models::blendGL(m.src, m.dst);
             else rlSetBlendMode(RL_BLEND_ALPHA);
             Models::shade(skyMeshSh), Models::draw(m.model.c_str(), w, WHITE, m.clip.empty() ? nullptr : m.clip.c_str(), p.age, m.loop), Models::shade({});
             rlDrawRenderBatchActive(), rlDisableDepthMask(), rlDisableBackfaceCulling();  // Models::draw leaves both on after keyed shapes
@@ -1296,7 +1299,8 @@ static void particles(const Camera3D &cam, int bin) {
         if (!body && !head) continue;
         float k = p.immortal ? 0 : p.age / p.life;
         Vector2 sz = p.ramp ? sizeAt(p, p.age) : Vector2{Lerp(p.size0, p.size1, k) * 0.5f, Lerp(p.size0, p.size1, k) * 0.5f * p.aspect};
-        float c = cosf(p.rot), sn = sinf(p.rot);
+        const float ang = truncf(p.rot * (128 / PI)) * (PI / 128);  // the sprite sets' 256-entry sin / cos table, index truncated (0x79b4f0, 0x79bb50)
+        float c = cosf(ang), sn = sinf(ang);
         Vector3 r = Vector3Scale(Vector3Add(Vector3Scale(right, c), Vector3Scale(up, sn)), sz.x), u = Vector3Scale(Vector3Subtract(Vector3Scale(up, c), Vector3Scale(right, sn)), sz.y);
         Color col = p.c;
         if (p.ramp) {

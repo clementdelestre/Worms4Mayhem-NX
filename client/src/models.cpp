@@ -882,6 +882,18 @@ varying vec2 uv;
 void main() { gl_FragColor = texture2D(texture0, uv) * colDiffuse; }
 )";
 static void compileBeam() { scroll = Lit::shader(SCROLL_VS, SCROLL_FS, false); }  // at boot: a compile on the first abduction drops frames
+void Models::blendGL(int src, int dst) {
+    static const int F[11] = {RL_ZERO, RL_ONE, RL_DST_COLOR, RL_ONE_MINUS_DST_COLOR, RL_SRC_COLOR, RL_ONE_MINUS_SRC_COLOR, RL_SRC_ALPHA,
+                              RL_ONE_MINUS_SRC_ALPHA, RL_DST_ALPHA, RL_ONE_MINUS_DST_ALPHA, RL_SRC_ALPHA_SATURATE};  // table 0x8b4b5c
+    if (src < 0 || src > 11 || dst < 0 || dst > 11 || (src == 11 && dst == 11)) return;  // glBlendFunc rejects it: state kept
+    rlDrawRenderBatchActive();
+    // kBlendFactorMinusOne (11): factor One with a subtract equation, source side reverse (0x79eb07)
+    if (src == 11) rlSetBlendFactors(RL_ONE, F[dst], 0x800b);
+    else if (dst == 11) rlSetBlendFactors(F[src], RL_ONE, 0x800a);
+    else rlSetBlendFactors(F[src], F[dst], RL_FUNC_ADD);
+    rlSetBlendMode(RL_BLEND_CUSTOM);
+}
+
 void Models::shade(Shader s) { over = s; }
 static bool zOn = true;
 void Models::zwrite(bool on) { zOn = on, on ? rlEnableDepthMask() : rlDisableDepthMask(); }
