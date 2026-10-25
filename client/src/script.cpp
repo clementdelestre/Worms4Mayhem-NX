@@ -1283,6 +1283,15 @@ uint32_t scriptChecksum(const Game &g) {
     return S->sum = h;
 }
 
+int scriptAssistLevel(const Game &g) {
+    if (!g.script) return -1;
+    Using u(g);
+    const Val *v = field(ctn("GM.SchemeData"), "AssistedShotLevel");
+    static const char *const NAMES[3] = {"AssistedShot.Beginner", "AssistedShot.Intermediate", "AssistedShot.Pro"};
+    for (int i = 0; v && i < 3; i++) if (v->s == NAMES[i]) return i;
+    return -1;
+}
+
 bool scriptDefines(const Game &g, const char *fn) {
     if (!g.script) return false;
     lua_State *L = g.script->L;

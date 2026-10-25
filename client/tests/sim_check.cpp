@@ -584,6 +584,30 @@ static void checkShotgun(uint32_t wormpot = 0) {
     assert(v.hp == 100 - (int)WEAPONS[g.weapon].damage * (g.wp(WP_SUPER_FIREARMS) ? 2 : 1));
 }
 
+// W4M Assisted Shot (0x583d40): a launch whose contact lies near an enemy is nudged onto it, never toward an ally, and an AI team's launch is untouched
+static void checkAssistedShot() {
+    Game g;
+    g.start({25, 2, 1, "", 0}), g.hotSeat = 0;
+    Worm &a = g.worms[g.current], &v = g.worms[1 - g.current];
+    a.pos = {10, 55, 10}, a.yaw = 0, a.pitch = 0.5f;
+    const WeaponDef &wd = WEAPONS[weaponNamed("Bazooka")];
+    const Vector3 dir = g.aimDir(a), from = a.pos, base = Vector3Scale(dir, wd.speed * 0.6f);
+    const Vector3 off = Vector3Scale({dir.x * cosf(0.03f) + dir.y * sinf(0.03f), dir.y * cosf(0.03f) - dir.x * sinf(0.03f), dir.z}, wd.speed * 0.6f);
+    const Vector3 at = Ai::firstEvent(g, wd, from, off), at0 = Ai::firstEvent(g, wd, from, base);
+    assert(Vector3Distance(at, at0) > 0.3f && Vector3Distance(at, at0) < 5);  // the tilted shot lands near the plain one, not on it
+    v.pos = {at.x, at.y + Game::R, at.z};
+    const Vector3 got = g.assistShot(wd, from, dir, base);
+    assert(Vector3Distance(Ai::firstEvent(g, wd, from, got), at) < Vector3Distance(at0, at));  // pulled toward the enemy
+    g.cfg.teamSetup.resize(2), g.cfg.teamSetup[a.team].cpu = 0, g.cfg.teamSetup[v.team].cpu = 3;
+    assert(Vector3Distance(g.assisted(a, wd, from, dir, base), base) > 0);  // human: assisted
+    g.cfg.teamSetup[a.team].cpu = 3;
+    assert(Vector3Distance(g.assisted(a, wd, from, dir, base), base) == 0);  // AI: kept
+    g.cfg.teamSetup[a.team].cpu = 0, v.team = a.team, g.allied.assign(g.teams, 0);
+    const Vector3 ally = g.assistShot(wd, from, dir, base);
+    assert(Vector3Distance(Ai::firstEvent(g, wd, from, ally), at) >= Vector3Distance(at0, at) - 1e-3f);  // an ally's spot is not sought
+    puts("assisted shot: pulled onto an enemy, not an ally, not for the AI");
+}
+
 // W4M GunWeaponLogicEntity 0x55ed10 states 3 / 4: after a shot with shots left FirePressed is refused until the gun's wait ends: ApplyDamage,
 // then at most one other active object (ObjectCount.Active < 3 with the gun's token). The turn clock stands still meanwhile.
 static void checkGunWait() {
@@ -6236,6 +6260,7 @@ int main() {
     checkCameraHold();
     checkCrateWalk();
     checkShotgun();
+    checkAssistedShot();
     checkGunWait();
     checkGunWaitDeath();
     checkSuddenDamage();

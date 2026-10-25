@@ -18,6 +18,7 @@ int scriptPostActivity(const Game &g);       // PostActivityTime, ticks
 // What a run did: messages and Critical movie events not modelled yet (name, count), data keys the store lacks, Lua errors
 struct ScriptReport { std::vector<std::pair<std::string, int>> ignored, missingKeys; int errors = 0; std::string lastError; };
 ScriptReport scriptReport(const Game &g);
+int scriptAssistLevel(const Game &g);  // GM.SchemeData AssistedShotLevel: 0 Beginner, 1 Intermediate, 2 Pro, -1 none
 bool scriptDefines(const Game &g, const char *fn);  // the script has this global function (a callback it answers)
 const char *scriptCrateGraphic(const Game &g, int index);  // a custom crate's Crate.CustomGraphic (a detail mesh name), null: none
 // HUD state a script sets (HUDTWK keys, CommentService flag); clock: RoundTime > 0 its remaining ms, 0 the elapsed ms, -1 none (infinity);

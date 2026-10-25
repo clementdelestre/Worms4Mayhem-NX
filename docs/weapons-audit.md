@@ -238,3 +238,10 @@ W4M side: docs/w4m/render.md "Weapon panel".
 - Help text: `HelpText.kWeapon<key>0` / `kUtility<key>0` (Factory slot: `HelpText.kSecretWeapon<Bomber / Launched / Thrown>` by `factoryLaunch`), its `/*FETXT.Control.X*/` tokens drawn as our buttons by `feTokens` (Switch pad glyph, desktop key: Fire A / Space, 1stPerson ZL / RMB, Jump B / Enter, Blimp Y / E, FuseUp D-pad / =, Inventory X / Q, ZoomIn R / X, ZoomOut L / Z, Ninja lengthen / shorten RS / S, W, girder raise / lower RS / W, S, Movement LS / Arrows, Aim RS / WASD).
 - [observed, user's screenshot 2026-10-21] the help panel group sits at (-205, -96) HUD units, 1.17 x its decoded size (its parent transform is not traced); the HUD panel texts are not TEXT_X wide (the title measures 192 units at em 24); the clock digits fill 0.8 of their box; the bottom-right turn clock is hidden while the panel shows.
 - No bottom hint bar while the panel shows (W4M draws none).
+
+## Assisted Shot (ours: `Game::assistShot`, assist.cpp; W4M docs/w4m/weapons.md "Assisted Shot")
+
+- `Game::use` sends a human team's (`cfg.teamSetup[team].cpu == 0`) Shell and Sheep launch through `Game::assisted` -> `assistShot`; an AI team's launch is untouched [disasm 0x585d70]. Landmine (Kind::Mine) is not sent.
+- Level: a script's `GM.SchemeData.AssistedShotLevel` (`scriptAssistLevel`), else `Game::assistLvl` = the preset's (`SchemePreset::assist`, LOCAL.XOM schemes) or Beginner for a custom scheme (WXD.DefaultSchemeData) [data].
+- Contact point of a candidate: `Ai::firstEvent`, the AI's ballistic `fly` without worm / object contacts (land, water, fuse end) [ours: our integrator stands for W4M's 0x466ae0 sweep]. Targets = standing worms' feet; mines and drums = `Object::Mine` / `Barrel` positions [ours: object centres].
+- Kind::Sheep gets the same grid on its walker's initial velocity; the walking Super Sheep and the other kinds are not sent (their W4M payloads are not Parabolic: Walking, Flying, Homing, Donkey) except the Super Sheep's Jumping take-off, whose launch our walker model does not take as a velocity [ours].

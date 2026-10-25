@@ -357,7 +357,7 @@ inline uint64_t wormpotModes(uint32_t wp) {  // the picked modes, bit = mode id
     return m;
 }
 inline bool wpOn(uint64_t modes, int mode) { return modes >> mode & 1; }
-struct SchemePreset { const char *name; Scheme s; const char *delays; int factoryAmmo; };  // delays: "Weapon N|..." (W4M SchemeData Delay), "*" = Weapon Factory; SchemeData WeaponFactoryWeapon.Ammo
+struct SchemePreset { const char *name; Scheme s; const char *delays; int factoryAmmo; uint8_t assist; };  // delays: "Weapon N|..." (W4M SchemeData Delay), "*" = Weapon Factory; SchemeData WeaponFactoryWeapon.Ammo
 extern const std::vector<SchemePreset> SCHEMES;  // [0] = Standard; values from W4M Data/Tweak/LOCAL.XOM
 struct GameConfig {
     uint32_t seed = 0;
@@ -645,6 +645,7 @@ struct Game {
     void factoryCreate(Vector3 p);
     void factoryStart();
     bool suddenDeath = false;
+    uint8_t assistLvl = 0;  // the scheme's AssistedShotLevel (a script's GM.SchemeData overrides it)
     std::vector<uint8_t> surrendered;  // per team: W4M TeamData +0x72 (SurrenderTeam 0x5b4d00): no turn, no longer standing
     // W4M GirderKitLogicEntity 0x55ada0: a preview 2 m ahead at eye level, 0.3 m steps camera-relative, each axis within
     // Weapon.Girder.MaxDistance 300 units of the worm; FIRE welds GirderSmall.xom (4 x 2 x 4 voxels of 1 m, profile 2,1,1,2)
@@ -738,6 +739,8 @@ struct Game {
     void step(const Input &in);
     uint32_t checksum() const;
     Vector3 aimDir(const Worm &w) const;
+    Vector3 assisted(const Worm &w, const WeaponDef &wd, Vector3 from, Vector3 dir, Vector3 vel) const;
+    Vector3 assistShot(const WeaponDef &wd, Vector3 from, Vector3 dir, Vector3 vel) const;  // assist.cpp
     Vector3 target() const;  // terrain point under the aim reticle, or at the Blimp view's centre
     // W4M Blimp: DefaultPitch 1 rad, StickLength 500, HeightAboveLand 6 units, focus within 4500 units of Land.Center (0x8556a0).
     // Full stick at MaxZoom 2: tweak x dt 0.02 x 100 CMS updates/s (0x51da9a, 0x533c90) = MoveSpeed 250 x 2 x 2 u/s,

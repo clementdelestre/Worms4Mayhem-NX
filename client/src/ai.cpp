@@ -166,7 +166,7 @@ struct Outcome {
 
 // Point copy of Game::stepShots for a ballistic or homing (aim != null) projectile; false when lost.
 // first: stop at the first contact (land, worm, fuse or water) and give its tick, as W4M FindFirstEvent (0x576580)
-static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float wind, bool child, Vector3 &out, const Vector3 *aim = nullptr, int *first = nullptr) {
+static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float wind, bool child, Vector3 &out, const Vector3 *aim = nullptr, int *first = nullptr, bool landOnly = false) {
     bool impact = child || wd.fuse == 0;
     float fuse = aim ? 0 : g.fuseOf(wd);  // the team's current fuse: the AI never changes it
     uint64_t touching = ~0ull;
@@ -189,7 +189,7 @@ static bool fly(const Game &g, const WeaponDef &wd, Vector3 p, Vector3 v, float 
             p = np;
             uint64_t m = touches(g, np);
             now |= m;
-            if ((impact || first) && wd.kind != Kind::Donkey && (m & ~touching)) return at(true);
+            if ((impact || first) && !landOnly && wd.kind != Kind::Donkey && (m & ~touching)) return at(true);
         }
         touching = now;
         if (!impact && (!wd.restFuse || fuse < wd.fuse || Vector3Length(v) < 1) && (fuse -= DT) < DT / 2) return at(true);
@@ -203,6 +203,13 @@ int Ai::firstContact(const Game &g, const Projectile &s) {
     Vector3 out;
     fly(g, WEAPONS[s.weapon], s.pos, s.vel, g.wind, s.child, out, nullptr, &n);
     return n;
+}
+
+Vector3 Ai::firstEvent(const Game &g, const WeaponDef &wd, Vector3 pos, Vector3 vel) {
+    Vector3 out = pos;
+    int n = -1;
+    fly(g, wd, pos, vel, g.wind, false, out, nullptr, &n, true);
+    return out;
 }
 
 // Copy of the sheep/old woman walk up to step `to`: its closest approach to `e` so far.

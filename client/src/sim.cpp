@@ -502,19 +502,19 @@ const std::vector<int> WORMPOT_REEL[3] = {{2, 3, 4, 5, 6, 11, 10, 17, 9, 16, 15,
 
 // Order: turn, retreat (LandTime), hot seat (10 s in every W4M scheme), round (min), energy, crate %, weapon/health/utility shares, crate hp, mines, barrels
 // (Objects: 3 = 15 mines + 10 drums, 2 = drums only), mine fuse, sudden death, fall damage, wind, weapon set (ours), water speed, mystery share (*Chance, 0x4fa4b0);
-// then the SchemeData delays and WeaponFactoryWeapon.Ammo (LOCAL DATA.LockedSchemes).
+// then the SchemeData delays and WeaponFactoryWeapon.Ammo (LOCAL DATA.LockedSchemes), and the AssistedShotLevel (0 Beginner, 1 Intermediate, 2 Pro).
 const std::vector<SchemePreset> SCHEMES = {
-    {"Standard", {45, 5, 10, 20, 100, 40, 30, 30, 20, 25, 15, 10, 3, 1, 1, 1, 0, 2, 0, 0, 2, 1}, "Airstrike 5|Banana Bomb 8|Holy Hand Grenade 3|Homing Missile 2|Super Sheep 5|Icarus Potion 2|Binoculars 2|* 3", 1},
-    {"Beginner", {90, 5, 10, 20, 100, 50, 30, 30, 20, 50, 15, 10, 5, 0, 1, 0, 0, 1, 0, 0, 2, 0}, "Homing Missile 2", 2},
-    {"Pro", {30, 0, 10, 20, 100, 30, 10, 30, 50, 25, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 3, 0, 3, 0, 0, 2, 1}, "Icarus Potion 4|Sentry Gun 5|Sniper Rifle 3|Starburst 4|Binoculars 3", 2},
-    {"BnG", {30, 5, 10, 10, 150, 40, 40, 10, 40, 25, 15, 10, 5, 1, 1, 1, Scheme::SET_BNG, 2, 0, 1, 2, 0}, "Concrete Donkey 3|Icarus Potion 2|Bubble Trouble 3|* 8", 1},
-    {"Shopping", {60, 5, 10, 20, 100, 100, 60, 20, 20, 25, 0, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_CRATES, 1, 0, 0, 2, 0}, "", 0},
-    {"All Action", {30, 5, 10, 10, 200, 40, 30, 30, 20, 25, 15, 10, 1, 1, 1, 1, 0, 1, 20, 1, 2, 0}, "Airstrike 5|Banana Bomb 5|Homing Missile 2|Super Sheep 3|Super Airstrike 6", 2},
-    {"Strategy", {30, 0, 10, 30, 100, 40, 10, 10, 50, 25, 15, 10, 5, 0, 1, 3, 0, 3, 0, 0, 2, 0}, "Airstrike 6|Baseball Bat 2|Dynamite 4|Jetpack 4|Shotgun 3|Icarus Potion 4|Sniper Rifle 4|* 4", 1},
-    {"Family", {90, 8, 10, 20, 125, 50, 30, 30, 20, 50, 15, 10, 8, 0, 1, 0, 0, 1, 0, 0, 1, 0}, "", 2},
-    {"Mega Power", {30, 5, 10, 10, 200, 50, 40, 40, 20, 100, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_UNLIMITED, 1, 30, 1, 2, 0}, "Concrete Donkey 8|Alien Abduction 8|Fatkins Strike 8|Sentry Gun 8|Super Airstrike 8", 2},
-    {"Holy Grail", {45, 5, 10, 30, 100, 60, 30, 30, 30, 50, 15, 10, 1, 0, 1, 1, 0, 2, 0, 0, 2, 0}, "Concrete Donkey 16|Super Sheep 4", 2},
-    {"Darksider", {45, 5, 10, 30, 100, 50, 10, 10, 50, 25, 15, 10, 5, 0, 1, 1, 0, 1, 0, 0, 2, 0}, "Airstrike 4|Cluster Grenade 2|Dynamite 2|Homing Missile 6|Landmine 2|Shotgun 2|Flood 2|Tail Nail 2|Poison Arrow 2|Sniper Rifle 2|Starburst 2|* 2", 2},
+    {"Standard", {45, 5, 10, 20, 100, 40, 30, 30, 20, 25, 15, 10, 3, 1, 1, 1, 0, 2, 0, 0, 2, 1}, "Airstrike 5|Banana Bomb 8|Holy Hand Grenade 3|Homing Missile 2|Super Sheep 5|Icarus Potion 2|Binoculars 2|* 3", 1, 1},
+    {"Beginner", {90, 5, 10, 20, 100, 50, 30, 30, 20, 50, 15, 10, 5, 0, 1, 0, 0, 1, 0, 0, 2, 0}, "Homing Missile 2", 2, 0},
+    {"Pro", {30, 0, 10, 20, 100, 30, 10, 30, 50, 25, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 3, 0, 3, 0, 0, 2, 1}, "Icarus Potion 4|Sentry Gun 5|Sniper Rifle 3|Starburst 4|Binoculars 3", 2, 2},
+    {"BnG", {30, 5, 10, 10, 150, 40, 40, 10, 40, 25, 15, 10, 5, 1, 1, 1, Scheme::SET_BNG, 2, 0, 1, 2, 0}, "Concrete Donkey 3|Icarus Potion 2|Bubble Trouble 3|* 8", 1, 1},
+    {"Shopping", {60, 5, 10, 20, 100, 100, 60, 20, 20, 25, 0, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_CRATES, 1, 0, 0, 2, 0}, "", 0, 0},
+    {"All Action", {30, 5, 10, 10, 200, 40, 30, 30, 20, 25, 15, 10, 1, 1, 1, 1, 0, 1, 20, 1, 2, 0}, "Airstrike 5|Banana Bomb 5|Homing Missile 2|Super Sheep 3|Super Airstrike 6", 2, 0},
+    {"Strategy", {30, 0, 10, 30, 100, 40, 10, 10, 50, 25, 15, 10, 5, 0, 1, 3, 0, 3, 0, 0, 2, 0}, "Airstrike 6|Baseball Bat 2|Dynamite 4|Jetpack 4|Shotgun 3|Icarus Potion 4|Sniper Rifle 4|* 4", 1, 2},
+    {"Family", {90, 8, 10, 20, 125, 50, 30, 30, 20, 50, 15, 10, 8, 0, 1, 0, 0, 1, 0, 0, 1, 0}, "", 2, 0},
+    {"Mega Power", {30, 5, 10, 10, 200, 50, 40, 40, 20, 100, 15, 10, Scheme::FUSE_RANDOM, 1, 1, 1, Scheme::SET_UNLIMITED, 1, 30, 1, 2, 0}, "Concrete Donkey 8|Alien Abduction 8|Fatkins Strike 8|Sentry Gun 8|Super Airstrike 8", 2, 1},
+    {"Holy Grail", {45, 5, 10, 30, 100, 60, 30, 30, 30, 50, 15, 10, 1, 0, 1, 1, 0, 2, 0, 0, 2, 0}, "Concrete Donkey 16|Super Sheep 4", 2, 1},
+    {"Darksider", {45, 5, 10, 30, 100, 50, 10, 10, 50, 25, 15, 10, 5, 0, 1, 1, 0, 1, 0, 0, 2, 0}, "Airstrike 4|Cluster Grenade 2|Dynamite 2|Homing Missile 6|Landmine 2|Shotgun 2|Flood 2|Tail Nail 2|Poison Arrow 2|Sniper Rifle 2|Starburst 2|* 2", 2, 1},
 };
 
 static constexpr float GRAVITY = 12.5f;  // W4M Gravity -0.00025 units/ms² (WEAPTWK), 20 units = 1 m
@@ -1216,6 +1216,7 @@ void Game::start(const GameConfig &c) {
     delays.assign(teams, std::vector<int>(WEAPONS.size()));
     const SchemePreset *preset = nullptr;  // a W4M preset brings its SchemeData; custom schemes have none (WXD.DefaultSchemeData)
     for (const SchemePreset &p : SCHEMES) if (!memcmp(&p.s, &cfg.scheme, sizeof(Scheme))) preset = &p;
+    assistLvl = preset ? preset->assist : 0;  // a custom scheme: WXD.DefaultSchemeData's Beginner
     if (preset && !(cfg.rules & RULE_NO_DELAYS))
             for (const char *q = preset->delays; *q;) {
                 const char *e = strchr(q, '|'), *end = e ? e : q + strlen(q), *sp = end;
@@ -2406,6 +2407,12 @@ Vector3 Game::target() const {
     return {far.x, water, far.z};
 }
 
+// 0x585d70: only a human team's Parabolic payload goes through the Assisted Shot (0x583d40); the AI's shots keep their launch
+Vector3 Game::assisted(const Worm &w, const WeaponDef &wd, Vector3 from, Vector3 dir, Vector3 vel) const {
+    const bool human = w.team >= (int)cfg.teamSetup.size() || !cfg.teamSetup[w.team].cpu;
+    return human ? assistShot(wd, from, dir, vel) : vel;
+}
+
 void Game::use(Worm &w) {
     launched = weapon;
     const WeaponDef &wd = weaponDef(weapon);
@@ -2457,13 +2464,14 @@ void Game::use(Worm &w) {
                   from = muzzle(terrain, w.pos, Vector3Add(launchPoint(wd, w.pos, w.yaw), carried ? Vector3Scale(Vector3Normalize(carry), 1.5f) : Vector3{}));
     emit(GameEvent::Fire, w.pos, current, weapon);
     switch (wd.kind) {
-    case Kind::Shell:
-        shots.push_back({from, Vector3Add(carry, dropped(wd) ? Vector3Scale(f, wd.speed) : Vector3Scale(dir, launchSpeed(wd, power))),
-                         weapon, fuseOf(wd), false, 1});  // dropped: W4M BasePower along the facing, not aimed
+    case Kind::Shell: {
+        const Vector3 aim = dropped(wd) ? f : dir;  // dropped: W4M BasePower along the facing, not aimed
+        shots.push_back({from, assisted(w, wd, from, aim, Vector3Add(carry, Vector3Scale(aim, dropped(wd) ? wd.speed : launchSpeed(wd, power)))), weapon, fuseOf(wd), false, 1});
         phase = Phase::Flying;
         break;
+    }
     case Kind::Sheep:
-        shots.push_back({from, Vector3Scale(f, wd.speed), weapon, wd.fuse, false, 1});
+        shots.push_back({from, assisted(w, wd, from, f, Vector3Scale(f, wd.speed)), weapon, wd.fuse, false, 1});
         phase = Phase::Flying;
         break;
     case Kind::Airstrike:
