@@ -199,7 +199,7 @@ const WORM_CLIPS: &[&str] = &[
     "TauntBazooka+HoldBazooka", "TauntThrown+HoldThrown", "TauntShotgun+HoldShotgun", "TauntSniper+HoldSniper", "TauntAirstrike+HoldAirstrike",
     "TauntBow+HoldBow", "TauntSentrygun+HoldSentrygun", "TauntOldWoman+HoldOldWoman", "TauntScouser+HoldScouser", "TauntSheep+HoldSheep",
     "TauntStarburst+HoldStarburst", "FireStarburst", "FlyStarburst", "TauntDynamite+HoldDynamite", "TauntBat+HoldBat", "TauntFirepunch+HoldFirepunch", "TauntProd+HoldProd",
-    "TauntNMN+HoldNMN", "TauntHomingMissile+HoldHomingMissile", "TauntNinjarope+HoldNinjarope", "SwingNinjarope", "JetpackFly", "FlyRedBull", "ParachuteWobble", "TelepadAppear", "BeamUpLoop",
+    "TauntNMN+HoldNMN", "TauntHomingMissile+HoldHomingMissile", "TauntNinjarope+HoldNinjarope", "SwingNinjarope", "JetpackFly", "FlyRedBull", "ParachuteWobble", "TelepadAppear", "BeamUpLoop", "Abductee",
     "FallDrown", "Nailed", "NailedHitFront", "DrawBT", "HoldBT", "FireBT", "TauntBT+HoldBT", "DrawRedbull", "HoldRedbull", "FireRedbull", "TauntRedbull+HoldRedbull",
     "DrawWFGun", "HoldWFGun", "FireWFGun", "TauntWFGun+HoldWFGun",  // a Launched Weapon Factory weapon (0x5983f0)
     // WORMACTING.XOM scene emotes (looped) and gestures, docs/worm-reactions.md
