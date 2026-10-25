@@ -420,7 +420,6 @@ void decodeData() {
             if (!FileExists(f.c_str())) continue;
             Image img = LoadImage(f.c_str());
             if (!img.data) continue;
-            ImageMipmaps(&img);
             int idx = texBase + (int)dataImages.size();
             sprites[lower(name)] = {idx, st.dst == 1};  // XBlendModeGL: SrcAlpha / One additive, else SrcAlpha / OneMinusSrcAlpha
             if (lower(name) == "particle.rainsplash") rainSplashTex = idx, rainSplashAdd = st.dst == 1;
@@ -551,7 +550,7 @@ bool uploadData(double until) {
     while (!dataImages.empty()) {
         if (GetTime() >= until) return true;
         Texture2D x = LoadTextureFromImage(dataImages.front());
-        SetTextureFilter(x, TEXTURE_FILTER_TRILINEAR);
+        SetTextureFilter(x, TEXTURE_FILTER_BILINEAR);  // sprite sets: MagFilter / MinFilter linear, MipFilter 0 (Bundl09 / Bundl10)
         UnloadImage(dataImages.front()), dataImages.erase(dataImages.begin());
         tex.push_back(x);
     }
@@ -752,10 +751,10 @@ void quad(Vector3 p, Vector3 r, Vector3 u, Color c) {
 bool preload(double until) { return uploadData(until); }
 
 void load() {
-    for (int i = 0; i < JET; i++) tex[i] = loadTex("fe", TEX_FILES[i], true);
-    tex[JET] = loadTex("hud", "jetfire", true), tex[TOON] = loadTex("hud", "toonfire", true), tex[CROSS] = loadTex("hud", "wxp_sprite_006", true);
-    tex[QUESTION] = loadTex("hud", "wxp_sprite_022", true), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", true);  // W4M Particle.WXSprite22/23
-    tex[SOAP] = loadTex("hud", "wxp_sprite_011", true);  // Particle.WXSprite11, the soap bubbles
+    for (int i = 0; i < JET; i++) tex[i] = loadTex("fe", TEX_FILES[i], false);
+    tex[JET] = loadTex("hud", "jetfire", false), tex[TOON] = loadTex("hud", "toonfire", false), tex[CROSS] = loadTex("hud", "wxp_sprite_006", false);
+    tex[QUESTION] = loadTex("hud", "wxp_sprite_022", false), tex[BUBBLE] = loadTex("hud", "wxp_sprite_023", false);  // W4M Particle.WXSprite22/23
+    tex[SOAP] = loadTex("hud", "wxp_sprite_011", false);  // Particle.WXSprite11, the soap bubbles
     tex[WHITEOUT] = loadTex("fe", "whiteout", false);  // Particle.Whiteout: flat white, additive
     skySh = shader(SKY_VS, SKY_FS);
     waterSh = shader(WATER_VS, WATER_FS);
