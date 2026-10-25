@@ -149,7 +149,7 @@ For each hit below: direct contact, facing the target.
 - The water level rises by about 2.15 m. A storm cloud forms over the island and it rains for 4.7 s (7.7 s from a mystery crate), with thunder.
 
 **Sentry Gun**
-- Placed on the ground, it stays active during enemy turns.
+- Placed on the ground 1.3 m ahead, only from a standing worm, on fairly flat land (within 45 degrees) no higher than 0.5 m above its feet and clear of worms and objects; elsewhere FIRE does nothing. It stays active during enemy turns.
 - Armed at each turn start, it fires at a random visible enemy worm within 30 m that moved over 5 units: 2 s of tracking, then bullets every 100 ms (5 HP each) for 3 s, once per turn.
 
 ## 5. Utilities and movement

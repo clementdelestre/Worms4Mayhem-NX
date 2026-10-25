@@ -149,7 +149,7 @@ void follow(Graphic &s, const Game &g, const Object &o) {
     s.base = sentryBase(o);
     if (moving) { s.moving = true, s.wake = false; return; }
     if (s.moving) {  // landed (0x56d7f0): the land normal, the resumed state's commands, then the deploy clip
-        s.moving = false, s.upTo = sentryUp(g.terrain, o);
+        s.moving = false, s.upTo = sentryUp(o);
         if (t.state == Object::Turret::Scan) command(s, 3), s.state = t.state, s.wake = false;
         command(s, 1);
     }

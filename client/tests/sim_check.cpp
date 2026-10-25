@@ -868,6 +868,11 @@ static void checkSentry() {
     g.objects[0].turret.state = T::Scan, g.objects[0].turret.target = -1, g.objects[0].turret.fresh = true;
     for (t = 0; t < 60 * 4 && g.objects[0].turret.state == T::Scan; t++) tick({home.x + 25 + (t % 2) * 0.3f, home.y, 14});
     assert(g.objects[0].turret.state == T::Track);
+    w.alive = false, w.drowned = true, w.counted = 50;  // DrownFloat: still WormData.Active (cleared at 0x5aa26d)
+    g.objects[0].turret.state = T::Scan, g.objects[0].turret.target = -1, g.objects[0].turret.fresh = true;
+    for (t = 0; t < 60 * 4 && g.objects[0].turret.state == T::Scan; t++) tick({home.x + 0.3f + 0.3f * (t % 2), home.y, home.z});
+    assert(g.objects[0].turret.state == T::Track);
+    w.alive = true, w.drowned = false, w.counted = w.hp;
 
     // 0x56d2a0: an Explosion takes WormDamageMagnitude off WeaponHealth with the worms' falloff and stops it; at 0 hp it dies 5 s later (0x56bfb0)
     Object &s = g.objects[0];
@@ -890,6 +895,40 @@ static void checkSentry() {
     g.water = sentryBase(g.objects[0]).y + 0.6f;
     tick(w.pos);
     assert(g.objects.empty());
+}
+
+// W4M Sentry Gun CanFire 0x56e190 (docs/w4m/weapons.md "Sentry Gun"): only Ambulatory, on land 25 units or more down within 45 deg, with
+// no collider in the 16-unit sphere over the spot; the sentry keeps that normal at its first landing and reads the land's after a hit
+static void checkSentrySpot() {
+    Game g;
+    g.start({37, 2, 2, "", 0}), g.hotSeat = 0;
+    settle(g);
+    Worm &w = g.worms[g.current];
+    Vector3 up{};
+    int yaw = 0;
+    for (; yaw < 16 && !g.sentrySpot(w, &up); yaw++) w.yaw = yaw * PI / 8;
+    assert(yaw < 16 && up.y >= 0.7071f);
+    const Vector3 f = flat(w.yaw), spot = {w.pos.x + f.x * 1.3f, w.pos.y, w.pos.z + f.z * 1.3f};
+    g.objects = {{Object::Crate, spot, {0, 0, 0}, -1, -1, false, false}};
+    g.numberObjects();
+    assert(!g.sentrySpot(w, nullptr));  // a crate in the 16-unit sphere
+    g.objects.clear();
+    w.grounded = false;
+    assert(!g.sentrySpot(w, nullptr));  // not Ambulatory
+    w.grounded = true;
+    Worm sunk = w;
+    sunk.pos.y -= 1.2f;
+    assert(!g.sentrySpot(sunk, nullptr));  // land under 25 units down: over 10 units above the feet
+    g.weapon = weaponNamed("Sentry Gun");
+    g.use(w);
+    assert(g.objects.size() == 1 && Vector3Distance(g.objects[0].turret.up, up) < 1e-5f);
+    const Vector3 tilt = Vector3Normalize({0.5f, 1, 0});
+    g.objects[0].turret.up = tilt;
+    for (int t = 0; t < 60; t++) g.step(Input{});
+    assert(Vector3Distance(g.objects[0].turret.up, tilt) < 1e-5f);  // the first landing keeps it
+    g.sentryHit(g.objects[0], Vector3Add(sentryBase(g.objects[0]), {0, 5, 0}), blastOf(WEAPONS[weaponNamed("Bazooka")], false));
+    for (int t = 0; t < 5; t++) g.step(Input{});
+    assert(Vector3Distance(g.objects[0].turret.up, g.terrain.normal(sentryBase(g.objects[0]))) < 1e-5f);  // landing again: the land's
 }
 
 // W4M SheepChaseCamera: behind and above the sheep (it rises when the land hides it), never under it.
@@ -3733,7 +3772,7 @@ static void checkObjectCollisions() {
         Object sentry = {Object::Sentry, {P.x, top + 0.55f, P.z}, {0, 0, 0}, weaponNamed("Sentry Gun"), -1, false, false, 1 - g.worms[g.current].team};
         g.objects = {sentry};
         g.weldLand(P, {4, 0.5f, 4});
-        const Vector3 c = Vector3Add(sentryBase(g.objects[0]), Vector3Scale(sentryUp(g.terrain, g.objects[0]), 0.8f));
+        const Vector3 c = Vector3Add(sentryBase(g.objects[0]), Vector3Scale(sentryUp(g.objects[0]), 0.8f));
         const int gren = weaponNamed("Grenade");
         fly({{c.x - 2, c.y, c.z}, {10, 0, 0}, gren, WEAPONS[gren].fuse, false, 1}, 30, [&] { return g.shots.empty() || g.shots[0].vel.x < 0; });
         assert(g.shots.size() == 1 && g.shots[0].vel.x < 0 && g.shots[0].pos.x < c.x - 0.8f);
@@ -5940,7 +5979,6 @@ int main() {
         assert(w.hp == 500 - 75 - 60 - 200 - 60);
     }
     assert(loadWeapons("romfs/weapons.json"));
-    checkSentry();
     checkPayloadBounce();
     checkGravestone();
     checkRope();
@@ -5990,6 +6028,7 @@ int main() {
     checkHoming();
     checkTeamWeapon();
     checkSentry();
+    checkSentrySpot();
     checkDiffuse();
     checkJumps();
     checkJumpTrajectory();

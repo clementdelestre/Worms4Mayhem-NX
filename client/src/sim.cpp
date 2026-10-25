@@ -1383,13 +1383,12 @@ static bool crateLike(const Object &o) { return o.type == Object::Crate || o.typ
 // crate: rests at 10 x Scale units (0x5c94d0), less the 0.05 m probe; drum: its base on the ground (0x5d1c60)
 float restHalf(const Object &o) { return crateLike(o) ? fmaxf(0, 0.5f * o.scale - 0.05f) : halfHeight(o.type); }
 Vector3 sentryBase(const Object &o) { return {o.pos.x, o.pos.y - restHalf(o) - 0.05f, o.pos.z}; }
-Vector3 sentryUp(const Terrain &t, const Object &o) { return t.normal(sentryBase(o)); }
 // W4M collider of an object (centre, radius, flags): crate 10 x Scale units at its centre, flags 4 health / 0x20 target / 2 others (0x5ca180);
 // drum 9 units centred 9 units over its Position, 0x10 (0x5d18b2, 0x5d1c60); mine: a Landmine payload, Radius 3 units, ColliderFlags 0 | 8 (0x58246d);
 // sentry 16 units, 16 up its normal, 0x800 (0x56cec0, 0x56df8f). Flags 0: none (one going off this tick)
 static uint32_t collider(const Terrain &t, const Object &o, Vector3 &c, float &r) {
     if (o.dead) return 0;
-    if (o.type == Object::Sentry) return c = Vector3Add(sentryBase(o), Vector3Scale(sentryUp(t, o), 0.8f)), r = 0.8f, 0x800;
+    if (o.type == Object::Sentry) return c = Vector3Add(sentryBase(o), Vector3Scale(sentryUp(o), 0.8f)), r = 0.8f, 0x800;
     c = colliderCentre(o), r = o.type == Object::Mine ? 0.15f : o.type == Object::Barrel ? DRUM_R : 0.5f * o.scale;
     return o.type == Object::Crate ? (o.weapon < 0 && o.mystery < 0 ? 4 : 2) : o.type == Object::Target ? 0x20 : o.type == Object::Barrel ? 0x10 : 8;
 }
@@ -1717,10 +1716,14 @@ void Game::stepSentry(Object &o) {
     Object::Turret &s = o.turret;
     const Vector3 base = sentryBase(o);
     if (water > base.y + 10 / 20.f) { o.dead = true; return; }  // 0x56df94, any state: Water.Level over the base + 10 units blows it up (0x56bfb0)
-    if (Vector3LengthSqr(o.vel) >= 0.01f) { s.fresh = s.state == Object::Turret::Scan; return; }  // falling (state 1): the state resumes on landing, a scan afresh (0x56cce0 case 2)
+    if (Vector3LengthSqr(o.vel) >= 0.01f) { s.fresh = s.state == Object::Turret::Scan, s.landed = false; return; }  // falling (state 1): the state resumes on landing, a scan afresh (0x56cce0 case 2)
+    if (!s.landed) {  // 0x56d7f0: the first landing keeps the placement normal (+0x6c), every later one reads the contact's (0x56d85e)
+        if (!s.keep) s.up = terrain.normal(base);
+        s.keep = false, s.landed = true;
+    }
     const WeaponDef &sd = WEAPONS[o.weapon];
     auto feet = [&](int i) { return Vector3{worms[i].pos.x, worms[i].pos.y - R, worms[i].pos.z}; };  // WormData Position +0x38
-    const Vector3 up = sentryUp(terrain, o);
+    const Vector3 up = sentryUp(o);
     auto rollScan = [&] { s.scan = msTicks(1000 + (int)(rand01() * 2000)); };
     auto aimAtTarget = [&] { s.look = Vector3Add(feet(s.target), {0, 0.5f, 0}); };  // 0x56d680 / 0x56d4d0: 10 units over Position
     switch (s.state) {
@@ -1738,7 +1741,8 @@ void Game::stepSentry(Object &o) {
         else if (s.scan--, s.target < 0) {  // 0x56c440
             int cand[16], n = 0;
             for (int i = 0; i < 16 && i < (int)worms.size(); i++) {
-                if (!worms[i].alive || alliance(worms[i].team) == alliance(o.team)) continue;  // WormData.Active, another AlliedGroup
+                const bool active = worms[i].alive || (worms[i].drowned && worms[i].counted > 0);  // WormData.Active: cleared as DeathThroes / DrownFloat end (0x5aa0af / 0x5aa26d)
+                if (!active || alliance(worms[i].team) == alliance(o.team)) continue;  // another AlliedGroup
                 if (Vector3DistanceSqr(feet(i), s.seen[i]) <= 25 / 400.0f) continue;  // not 5 units from where it was last counted
                 s.seen[i] = feet(i);
                 if (Vector3DistanceSqr(feet(i), base) <= sd.radius * sd.radius) cand[n++] = i;
@@ -1776,14 +1780,14 @@ void Game::stepSentry(Object &o) {
 // 0x56d2a0: within WormDamageRadius of a 16-unit sphere 16 units up its normal, the worms' falloff (at least 1 hp); the turret stops for this
 // turn (state 6), or at 0 hp starts dying (state 5, 5000 ms, restarted by each hit); never pushed
 void Game::sentryHit(Object &o, Vector3 p, const Blast &b) {
-    const float d = fmaxf(0, Vector3Distance(p, Vector3Add(sentryBase(o), Vector3Scale(sentryUp(terrain, o), 0.8f))) - 0.8f);
+    const float d = fmaxf(0, Vector3Distance(p, Vector3Add(sentryBase(o), Vector3Scale(sentryUp(o), 0.8f))) - 0.8f);
     if (!(d < b.reach)) return;
     const float f = fminf((b.reach - d) * 1.2f, b.reach) / b.reach;
     float dmg = f * b.damage * (doubled() ? 2 : 1);
     if (dmg > 0 && dmg < 1) dmg = 1;
     o.hp -= (int)dmg;
     Object::Turret &s = o.turret;
-    s.state = o.hp < 1 ? Object::Turret::Dying : Object::Turret::Done;
+    s.state = o.hp < 1 ? Object::Turret::Dying : Object::Turret::Done, s.landed = false;  // state 1: it lands again at once, reading the normal
     if (s.state == Object::Turret::Dying) s.timer = msTicks(5000);
     emit(GameEvent::SentryHit, sentryBase(o), -1, f >= 1), events.back().count = o.id, events.back().amount = dmg;  // f 1: Turn.MaxDamage (0x56d3a2)
 }
@@ -2487,6 +2491,7 @@ void Game::use(Worm &w) {
     case Kind::Sentry:
         objects.push_back({Object::Sentry, {}, {0, 0, 0}, weapon, -1, false, false, w.team});
         objects.back().hp = wd.health, objects.back().id = sentries++;  // 0x56d0e5: +0x7c = WeaponHealth
+        sentrySpot(w, &objects.back().turret.up);  // 0x56d20b: the CanFire normal
         objects.back().pos = muzzle(terrain, w.pos, Vector3Add(w.pos, Vector3Add(Vector3Scale(f, 26 / 20.f), {0, 10 / 20.f - R + restHalf(objects.back()) + 0.05f, 0})));  // 0x56e9ee: base 26 units ahead of Position, 10 up
         objects.back().turret.face = f, objects.back().turret.look = Vector3Add(sentryBase(objects.back()), Vector3Add(Vector3Scale(f, 50), {0, 0.75f, 0}));  // ours: W4M leaves +0x38 unset (0x56bda0)
         phase = Phase::Flying;
@@ -2548,9 +2553,46 @@ void Game::use(Worm &w) {
 // CanBeFiredWhenWormMoving (WEAPTWK: Dynamite, Fire Punch, Landmine, Sheep). Guns (0x55cd30) and utilities have no such test
 bool Game::fireable(const Worm &w) const {
     const WeaponDef &d = weaponDef(weapon);
+    if (d.kind == Kind::Sentry) return sentrySpot(w, nullptr);
     if (d.kind == Kind::Shotgun || utility(d.kind)) return true;
     bool moving = d.name == "Dynamite" || d.name == "Fire Punch" || d.kind == Kind::Mine || d.kind == Kind::Sheep;
     return moving || ambulatory(w);
+}
+
+// 0x56e190, Ambulatory only: 5 rays down from 35 units over the points (side, ahead) below must meet land 25 units or more down and
+// above Water.Level, each normal y >= cos 45; the 4 fans around the first and their sum too, each ray's normal within 0.7 of the sum,
+// and a 16-unit sphere 16 units up the sum over the first hit overlaps no collider of mask 0xc3f
+bool Game::sentrySpot(const Worm &w, Vector3 *up) const {
+    if (!ambulatory(w)) return false;
+    static const float AT[5][2] = {{0, 26}, {-10, 36}, {10, 36}, {-10, 16}, {10, 16}};  // 0x91f9cc, units
+    static const int FAN[4][2] = {{1, 2}, {2, 4}, {4, 3}, {3, 1}};
+    const float U = 1 / 20.f, COS45 = 0.70710677f;
+    const Vector3 f = flat(w.yaw), side = {f.z, 0, -f.x};
+    Vector3 p[5], n[5], sum{};
+    for (int i = 0; i < 5; i++) {
+        const Vector3 a = {w.pos.x + (side.x * AT[i][0] + f.x * AT[i][1]) * U, w.pos.y - R + 35 * U, w.pos.z + (side.z * AT[i][0] + f.z * AT[i][1]) * U};
+        const float len = roundf((a.y - water) / U);  // under water: no limit (the unsigned compare at 0x56e372)
+        float t;
+        if (!terrain.cast(a, {0, -1, 0}, len > 0 ? len * U : 1e4f, &t, &n[i])) return false;
+        const int d = (int)(t / U);  // whole units (0x952cfc)
+        n[i] = Vector3Normalize(n[i]);
+        if ((len > 0 && d > len) || d < 25 || n[i].y < COS45) return false;
+        p[i] = {a.x, a.y - t, a.z};
+    }
+    for (const auto &k : FAN) {
+        const Vector3 c = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(p[k[0]], p[0]), Vector3Subtract(p[k[1]], p[0])));  // 0x56e030
+        if (c.y < COS45) return false;
+        sum = Vector3Add(sum, c);
+    }
+    sum = Vector3Normalize(sum);
+    if (sum.y < COS45) return false;
+    for (const Vector3 &m : n) if (Vector3DotProduct(m, sum) < 0.7f) return false;
+    Colliders cs;
+    colliders(cs, 0xc3f, -1);
+    const Vector3 at = Vector3Add(p[0], Vector3Scale(sum, 16 * U));
+    for (const Collider &c : cs) if (Vector3DistanceSqr(c.c, at) < (c.r + 16 * U) * (c.r + 16 * U)) return false;  // strict (0x516445)
+    if (up) *up = sum;
+    return true;
 }
 
 void Game::stepWorm(Worm &w) {
@@ -4017,7 +4059,7 @@ uint32_t Game::checksum() const {
     mix(&bubbleAt, sizeof bubbleAt);
     mix(&icarus, sizeof icarus), mix(&flapAt, sizeof flapAt), mix(&drift, sizeof drift), mix(&doubleDamage, 1), mix(&changing, 1), mix(spy.data(), spy.size());
     mix(&scout.t, sizeof scout.t), mix(&scout.power, sizeof scout.power), mix(&scout.pitch, sizeof scout.pitch);
-    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); mix(&o.dud, 1); mix(&o.courtesy, sizeof o.courtesy); mix(&o.hooked, 1); mix(&o.spawning, 1); mix(&o.delay, sizeof o.delay); mix(&o.fizzle, 1); if (o.lit >= 0) mix(&o.lit, sizeof o.lit); if (o.type == Object::Sentry) mix(&o.turret.state, 1), mix(&o.turret.target, 1), mix(&o.turret.timer, sizeof o.turret.timer), mix(&o.turret.scan, sizeof o.turret.scan), mix(&o.hp, sizeof o.hp); if (o.mystery >= 0) mix(&o.mystery, sizeof o.mystery); if (o.id >= 0) mix(&o.id, sizeof o.id); if (crateLike(o)) mix(&o.hp, sizeof o.hp), mix(&o.count, sizeof o.count), mix(&o.teamCollect, 2), mix(&o.pinned, 1), mix(&o.pushable, 1), mix(&o.scale, sizeof o.scale); }
+    for (const Object &o : objects) { mix(&o.type, 1); mix(&o.pos, sizeof o.pos); mix(&o.vel, sizeof o.vel); mix(&o.weapon, sizeof o.weapon); mix(&o.fuse, sizeof o.fuse); mix(&o.falling, 1); mix(&o.dead, 1); mix(&o.team, sizeof o.team); mix(&o.tag, sizeof o.tag); mix(&o.dud, 1); mix(&o.courtesy, sizeof o.courtesy); mix(&o.hooked, 1); mix(&o.spawning, 1); mix(&o.delay, sizeof o.delay); mix(&o.fizzle, 1); if (o.lit >= 0) mix(&o.lit, sizeof o.lit); if (o.type == Object::Sentry) mix(&o.turret.up, sizeof o.turret.up), mix(&o.turret.state, 1), mix(&o.turret.target, 1), mix(&o.turret.timer, sizeof o.turret.timer), mix(&o.turret.scan, sizeof o.turret.scan), mix(&o.hp, sizeof o.hp); if (o.mystery >= 0) mix(&o.mystery, sizeof o.mystery); if (o.id >= 0) mix(&o.id, sizeof o.id); if (crateLike(o)) mix(&o.hp, sizeof o.hp), mix(&o.count, sizeof o.count), mix(&o.teamCollect, 2), mix(&o.pinned, 1), mix(&o.pushable, 1), mix(&o.scale, sizeof o.scale); }
     if (factory.on) {
         const Factory &f = factory;
         mix(&f.pos, sizeof f.pos), mix(&f.damaged, 1), mix(&f.state, sizeof f.state), mix(&f.wait, sizeof f.wait), mix(&f.toSpawn, sizeof f.toSpawn), mix(&f.until, sizeof f.until), mix(&f.die, sizeof f.die);
