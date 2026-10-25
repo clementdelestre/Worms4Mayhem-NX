@@ -202,7 +202,9 @@ fn detail_euler(w: &M4, rd: [f32; 3]) -> [f32; 3] {
 // `.thin` entry + 1 (0 none) and the grid points it holds (client voxel indices)
 struct Rec { cell: usize, hex: (usize, usize), lo: V3, hi: V3, thin: u32, vox: Vec<usize> }
 
-struct Cell { frame: usize, at: [usize; 3], c: [[f32; 3]; 8], ctr: [f32; 3], parts: Vec<[[f32; 3]; 8]>, mat: u8, wmat: u8, tex: [f32; 2], code: u16, visible: bool, perm: bool, building: bool }
+// sec: the second material B + 1 (0 when no corner of the cell is B's) | 0x80 covered (W4M 0x46ea40..0x46eb48); wb: its corners' second
+// texture bits (corner bit 1 +x, 2 +y, 4 +z)
+struct Cell { frame: usize, at: [usize; 3], c: [[f32; 3]; 8], ctr: [f32; 3], parts: Vec<[[f32; 3]; 8]>, mat: u8, wmat: u8, sec: u8, wb: u8, tex: [f32; 2], code: u16, visible: bool, perm: bool, building: bool }
 
 // Detail entity reference with its poxel's world matrix (the poxel's own scale included, its parents' not).
 struct DetRef { ctn: usize, w: M4, frame: usize }
@@ -293,6 +295,15 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
             let (fx, fz) = (i as f32 + 0.5, kk as f32 + 0.5);
             xform(&w, [a[0] + (sx as f32 + b[0] - a[0]) * fx / sx as f32 - sx as f32 / 2.0, y - sy as f32 / 2.0, a[1] + (sz as f32 + b[1] - a[1]) * fz / sz as f32 - sz as f32 / 2.0])
         };
+        // W4M SecondTextureBitArray (+0x1b4): a solid voxel with bits 8-9 and B != A sets the lattice points its corner flags (bits 16-23) name
+        let pi = |i: usize, j: usize, kk: usize| (kk * (sx + 1) + i) * (sy + 1) + j;
+        let mut pts = vec![false; (sx + 1) * (sy + 1) * (sz + 1)];
+        const CF: [(usize, usize, usize); 8] = [(1, 1, 1), (0, 1, 1), (1, 1, 0), (0, 1, 0), (1, 0, 1), (0, 0, 1), (1, 0, 0), (0, 0, 0)];  // bit 0 .. 7
+        for z in 0..sz { for xx in 0..sx { for y in 0..sy {
+            let v = x.vox[y + sy * (xx + sx * z)];
+            if v & 3 == 0 || v & 0x300 == 0 || (v >> 2) & 63 == (v >> 10) & 63 { continue; }
+            for (b, o) in CF.iter().enumerate() { if v >> 16 & 1 << b != 0 { pts[pi(xx + o.0, y + o.1, z + o.2)] = true; } }
+        } } }
         let solid = |a: i32, b: i32, e: i32| a >= 0 && b >= 0 && e >= 0 && (a as usize) < sx && (b as usize) < sy && (e as usize) < sz && x.vox[b as usize + sy * (a as usize + sx * e as usize)] & 3 != 0;
         for z in 0..sz {
             for xx in 0..sx {
@@ -303,7 +314,10 @@ fn collect(px: &HashMap<usize, Poxel>, k: usize, parent: &M4, root: bool, out: &
                     for n in 0..8 { c[n] = corner(xx + (n & 1), y + ((n >> 1) & 1), z + (n >> 2)); }
                     let tops = [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(i, k)| lattice::usage(solid, xx as i32 + i, y as i32, z as i32 + k));
                     let parts = lattice::pieces(&c, tops, x.falloff);
-                    out.push(Cell { frame: k, at: [xx, y, z], c, ctr: centre(xx, y, z), parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, wmat: ((v >> 2) & 63) as u8, tex: x.tex, code, visible: x.visible, perm, building: x.building });
+                    let wb = (0..8).fold(0u8, |m, n| m | (pts[pi(xx + (n & 1), y + (n >> 1 & 1), z + (n >> 2))] as u8) << n);
+                    let covered = y + 1 < sy && x.vox[y + 1 + sy * (xx + sx * z)] & 3 != 0;  // 0x46ea86: the frame's voxel above, in the file
+                    let sec = if wb != 0 { ((v >> 10) & 63) as u8 + 1 } else { 0 } | (covered as u8) << 7;
+                    out.push(Cell { frame: k, at: [xx, y, z], c, ctr: centre(xx, y, z), parts, mat: if x.visible { ((v >> 2) & 63) as u8 } else { HIDDEN - 1 }, wmat: ((v >> 2) & 63) as u8, sec, wb, tex: x.tex, code, visible: x.visible, perm, building: x.building });
                 }
             }
         }
@@ -464,6 +478,18 @@ impl Hex {
     fn inside(&self, p: V3) -> bool { self.planes.iter().all(|pl| pl[0] * p[0] + pl[1] * p[1] + pl[2] * p[2] - pl[3] <= 1e-4) }
 }
 
+// B's weight at grid point p of a cell (corners c, grid units): the corner bits wb trilinear at p's fractions along the cell's edges
+// from corner 0, x 254 (W4M 0xfe), truncated as 0x457130's sums [ours: our vertices are not W4M's corners, midpoints and centres]
+fn second_weight(c: &[V3; 8], wb: u8, p: V3) -> u8 {
+    let (e1, e2, e3, d) = (sub(c[1], c[0]), sub(c[2], c[0]), sub(c[4], c[0]), sub(p, c[0]));
+    let det = dot(e1, cross(e2, e3));
+    if det.abs() < 1e-9 { return if wb != 0 { 254 } else { 0 }; }
+    let f = [dot(d, cross(e2, e3)) / det, dot(e1, cross(d, e3)) / det, dot(e1, cross(e2, d)) / det].map(|v| v.clamp(0.0, 1.0));
+    let w: f32 = (0..8).filter(|n| wb >> n & 1 != 0)
+        .map(|n| [0, 1, 2].iter().map(|&a| if n >> a & 1 != 0 { f[a] } else { 1.0 - f[a] }).product::<f32>()).sum();
+    (w * 254.0) as u8
+}
+
 // Grid points (integer voxel coordinates) inside the box lo..hi, clamped to the grid.
 fn points(lo: V3, hi: V3) -> impl Iterator<Item = (usize, usize, usize)> {
     let r = |a: f32, b: f32, n: usize| (a.ceil().max(0.0) as usize)..((b.floor() + 1.0).clamp(0.0, n as f32) as usize);
@@ -504,15 +530,16 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         .and_then(|p| fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     let fields = material_fields(&txt);
     let find = |name: &str| Some(name.to_lowercase()).filter(|n| tex.contains_key(n));
-    // [top, side, roof, fringe] per material, then the 2 heightmap textures
-    let mut names: Vec<[Option<String>; 4]> = (0..64).map(|m| {
+    // [top, side, roof, fringe, covered top (field 6, NULL: the top, 0x4705b0)] per material, then the 2 heightmap textures
+    let mut names: Vec<[Option<String>; 5]> = (0..64).map(|m| {
         let f = |i: usize| fields.get(m).and_then(|f| find(&f[i]));
         let (top, side) = (f(0), f(1).or(f(0)));
-        [top.or(side.clone()), side.clone(), f(2).or(side), f(3)]
+        let top = top.or(side.clone());
+        [top.clone(), side.clone(), f(2).or(side), f(3), f(5).or(top)]
     }).collect();
     for key in ["Heightmap.BaseTexture", "Heightmap.SecondTexture"] {
         let t = before(key).and_then(|n| find(&n));
-        names.push([t.clone(), t.clone(), t, None]);
+        names.push([t.clone(), t.clone(), t.clone(), None, t]);
     }
     let pal: Vec<[u8; 6]> = names.iter().enumerate().map(|(m, [t, s, ..])| {
         let def = if m >= 64 { [110, 150, 70] } else { [150, 140, 120] };
@@ -560,6 +587,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let mut top = vec![f32::NAN; nx() * nz()];
     let mut grid = vec![0u8; nx() * ny() * nz()];
     let mut fgrid = vec![0u16; grid.len()];  // per grid point: the landuv entry + 1 of the frame its material came from, 0 none
+    // per grid point: its cell's `sec`, and B's weight there (0..254: the cell's corner bits, trilinear, as W4M's mesh vertices 0x457130)
+    let (mut sgrid, mut wgrid) = (vec![0u8; grid.len()], vec![0u8; grid.len()]);
     if let Some(hb) = &hmp {
         let mask = &hb[40000..];
         for z in 0..nz() { for x in 0..nx() {
@@ -576,8 +605,8 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             // bilinear mask, thresholded: smooth borders instead of 1.6 m squares
             let mv = |c: usize, r: usize| mask[r.min(99) * 100 + c.min(99)] as f32;
             let mb = (mv(c, r) * (1.0 - tc) + mv(c + 1, r) * tc) * (1.0 - tr) + (mv(c, r + 1) * (1.0 - tc) + mv(c + 1, r + 1) * tc) * tr;
-            let m = if mb > 127.5 { 66 } else { 65 };
-            for y in 0..ny().min(t.max(0.0).ceil() as usize) { if (y as f32) < t { grid[gi(x, y, z)] = m; } }
+            // W4M HeightmapGraphicEntity: Heightmap.BaseTexture under SecondTexture at the vertices' mask byte (0x45d080)
+            for y in 0..ny().min(t.max(0.0).ceil() as usize) { if (y as f32) < t { let g = gi(x, y, z); grid[g] = 65; sgrid[g] = 66; wgrid[g] = mb.round() as u8; } }
         } }
     }
     let below_hm = |p: V3| {
@@ -628,18 +657,26 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         blo = [0, 1, 2].map(|i| blo[i].min(h.lo[i]));
         bhi = [0, 1, 2].map(|i| bhi[i].max(h.hi[i]));
         let (code, from, uv) = (hex_code[hi], vox.len(), uv_of[&cells[hex_cell[hi]].frame]);
+        let cell = &cells[hex_cell[hi]];
+        let sec = if h.mat == HIDDEN { 0 } else { cell.sec };
+        let mut set = |g: usize, p: V3| {
+            if h.mat == HIDDEN && grid[g] != 0 { return; }  // a visible cell's material wins
+            grid[g] = h.mat;
+            fgrid[g] = uv;
+            sgrid[g] = sec;
+            wgrid[g] = if sec & 0x7f == 0 { 0 } else { second_weight(&cell.c.map(to_grid), cell.wb, p) };
+        };
         for (x, y, z) in points(h.lo, h.hi) {
             if h.inside([x as f32, y as f32, z as f32]) {
-                let g = &mut grid[gi(x, y, z)];
-                if h.mat != HIDDEN || *g == 0 { *g = h.mat; fgrid[gi(x, y, z)] = uv; }
+                set(gi(x, y, z), [x as f32, y as f32, z as f32]);
                 vox.push([x, y, z]);
                 if code > 0 && !other([x as f32, y as f32, z as f32], code) { coded[code as usize - 1].push(ci(x, y, z)); }
             }
         }
         let cen = h.c.iter().fold([0.0; 3], |s, p| madd(s, *p, 0.125)).map(|v| v.round());
         if vox.len() == from && cen.iter().zip([nx(), ny(), nz()]).all(|(&v, n)| v >= 0.0 && v < n as f32) {
-            let g = &mut grid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)];
-            if h.mat != HIDDEN || *g == 0 { *g = h.mat; fgrid[gi(cen[0] as usize, cen[1] as usize, cen[2] as usize)] = uv; }
+            let g = gi(cen[0] as usize, cen[1] as usize, cen[2] as usize);
+            set(g, cen);
             vox.push(cen.map(|v| v as usize));
             claimed.insert(gi(cen[0] as usize, cen[1] as usize, cen[2] as usize));
             if code > 0 && !other(cen, code) { coded[code as usize - 1].push(ci(cen[0] as usize, cen[1] as usize, cen[2] as usize)); }
@@ -657,6 +694,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             thin_id = nthin;
             for v in vox[0] { thin.extend((v as u16).to_le_bytes()); }
             thin.push(h.mat);
+            thin.extend([sec, cell.wb]);
             thin.extend(uv.to_le_bytes());
             for p in c { for v in p { thin.extend((v * VOX).to_le_bytes()); } }
             thin.extend(((vox.len() - 1) as u16).to_le_bytes());
@@ -667,7 +705,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
         recs.push(Rec { cell: hex_cell[hi], hex: (first, hi + 1 - first), lo: blo, hi: bhi, thin: thin_id, vox: held });
     }
     thin[0..4].copy_from_slice(&nthin.to_le_bytes());
-    let mut tf = b"W4T4".to_vec();
+    let mut tf = b"W4T5".to_vec();
     tf.extend((thin.len() as u32).to_le_bytes());
     tf.extend(deflate::deflate(&thin));
     fs::write(out_dir.join(format!("{stem}.thin")), &tf).map_err(|e| e.to_string())?;
@@ -717,24 +755,26 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let whole: Vec<_> = hex_cell.iter().map(|&i| (cells[i].parts.len() > 1 || cells[i].parts[0] != cells[i].c).then(|| cells[i].c.map(to_grid))).collect();
     let (cells_file, exact, hex_id) = cells::build(&hexes.iter().map(|h| h.c).collect::<Vec<_>>(), &whole, &top, &mut q, dq as i8, &claimed);
     fs::write(out_dir.join(format!("{stem}.cells")), &cells_file).map_err(|e| e.to_string())?;
-    // per 32³ chunk: u32 (mat | landuv << 8) << 1 for a chunk of one material and frame at the default density, else deflated
-    // size << 1 | 1 and, after the table, its 32768 materials, 32768 densities minus the default, landuv low then high bytes, x fastest
+    // per 32³ chunk: u32 (mat | landuv << 8) << 1 for a chunk of one material and frame at the default density, no second material,
+    // else deflated size << 1 | 1 and, after the table, its 32768 materials, 32768 densities minus the default, landuv low then high
+    // bytes, second materials (`sec`), their weights, x fastest
     let (cx, cy, cz) = (nx() / CS, ny() / CS, nz() / CS);
-    let mut vox = b"W4V4".to_vec();
+    let mut vox = b"W4V5".to_vec();
     for d in [nx(), ny(), nz()] { vox.extend((d as u16).to_le_bytes()); }
     vox.push(dq as u8);
     let mut payload = Vec::new();
     for c in 0..cx * cy * cz {
         let (x0, y0, z0) = (c % cx * CS, c / cx % cy * CS, c / (cx * cy) * CS);
-        let mut raw = vec![0u8; 4 << 15];
+        let mut raw = vec![0u8; 6 << 15];
         for k in 0..1 << 15 {
             let g = gi(x0 + (k & 31), y0 + (k >> 5 & 31), z0 + (k >> 10));
             raw[k] = grid[g];
             raw[(1 << 15) + k] = (q[g] as i32 - if grid[g] != 0 { dq } else { -dq }) as u8;
             [raw[(2 << 15) + k], raw[(3 << 15) + k]] = fgrid[g].to_le_bytes();
+            [raw[(4 << 15) + k], raw[(5 << 15) + k]] = [sgrid[g], wgrid[g]];
         }
         let same = |a: usize| raw[a << 15..(a + 1) << 15].iter().all(|&v| v == raw[a << 15]);
-        if same(0) && raw[1 << 15..2 << 15].iter().all(|&v| v == 0) && same(2) && same(3) {
+        if same(0) && raw[1 << 15..2 << 15].iter().all(|&v| v == 0) && same(2) && same(3) && raw[4 << 15..].iter().all(|&v| v == 0) {
             vox.extend(((raw[0] as u32 | (fgrid[gi(x0, y0, z0)] as u32) << 8) << 1).to_le_bytes());
         } else {
             let z = deflate::deflate(&raw);
@@ -769,7 +809,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
     let median = |v: &mut Vec<f32>| if v.is_empty() { TEX_REPEAT } else { v.sort_by(f32::total_cmp); v[v.len() / 2] };
     // textures of the materials actually present, as tex/<stem>.qoi shared by every map
     let mut used = [false; 68];
-    for &m in &grid { used[m as usize] = true; }
+    for &m in grid.iter().chain(sgrid.iter().map(|s| s & 0x7f).collect::<Vec<_>>().iter()) { used[m as usize] = true; }
     fs::create_dir_all(out_dir.join("tex")).map_err(|e| e.to_string())?;
     let mut texs = Vec::new();
     for (m, pair) in names.iter().enumerate() {
@@ -778,7 +818,7 @@ fn run(data: &Path, stem: &str, tex: &HashMap<String, Tex>, light: &HashMap<Stri
             format!("\"tex/{n}.qoi\"")
         }).unwrap_or("null".into()));
         let r = reps.get_mut(m).map_or([TEX_REPEAT; 2], |r| [median(&mut r[0]), median(&mut r[1])]);
-        texs.push(format!("[{},{},{:.2},{:.2},{},{}]", f[0], f[1], r[0], r[1], f[2], f[3]));
+        texs.push(format!("[{},{},{:.2},{:.2},{},{},{}]", f[0], f[1], r[0], r[1], f[2], f[3], f[4]));
     }
     // detail objects: "visible" entities whose library names a theme detail mesh (PREHISTORIC18...)
     let (mut objs, mut marks, mut emits, mut lights) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
