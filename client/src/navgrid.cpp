@@ -1,4 +1,5 @@
 #include "navgrid.h"
+#include "sim.h"
 #include <algorithm>
 
 Grid makeGrid(const Terrain &t) {
@@ -54,28 +55,38 @@ float rayDown(const Terrain &t, float water, NodeCache &c, float x, float z, flo
     return landBelow(t, water, x, z, y);
 }
 
+// 0x4ade10's per-ray steepness test (0x4ae004): the face the ray enters at `hit` (the last empty point) under cos SlideAngle of its frame's material
+static bool steep(const Terrain &t, Vector3 hit, uint64_t pot) {
+    float th;
+    Vector3 n;
+    if (!t.cast(hit, {0, -1, 0}, Terrain::SUB * 2, &th, &n)) return false;
+    return n.y <= slideCos(pot, t.slippy({hit.x, hit.y - th - 1e-3f, hit.z}));
+}
+
 // W4M 0x4aed70: layer 0 probed from the land's top, layer 1 from 20 units under layer 0's lowest hit (water if layer 0 is);
-// 3 x 3 rays at ±spacing/3 (0x4ade10), lo / hi = lowest / highest hit, any miss or water hit: water
-NodeH nodeH(const Terrain &t, float water, const Grid &gr, NodeCache &c, int i, int j, int layer) {
+// 3 x 3 rays at ±spacing/3 (0x4ade10), lo / hi = lowest / highest hit, any miss or water hit: water; a steep ray: flag 2
+NodeH nodeH(const Terrain &t, float water, const Grid &gr, NodeCache &c, int i, int j, int layer, uint64_t pot) {
     const int64_t key = nodeKey(i, j, layer);
     if (auto it = c.heights.find(key); it != c.heights.end()) return it->second;
     NodeH h{1, water, water};
     float from = (Terrain::NY - 1) * Terrain::VOX;
     bool ok = gr.has(i, j);
     if (ok && layer) {
-        const NodeH up = nodeH(t, water, gr, c, i, j, 0);
+        const NodeH up = nodeH(t, water, gr, c, i, j, 0, pot);
         from = up.lo - 1, ok = up.flag != 1;
     }
     if (ok) {
         const Vector2 p = gr.at(i, j);
         float lo = 1e9f, hi = -1e9f;
+        uint8_t flag = 0;
         for (int a = -1; a <= 1 && ok; a++)
             for (int b = -1; b <= 1 && ok; b++) {
                 const float y = rayDown(t, water, c, p.x + a * gr.s / 3, p.y + b * gr.s / 3, from, layer > 0);
                 if (y <= water) ok = false;
+                else if (steep(t, {p.x + a * gr.s / 3, y, p.y + b * gr.s / 3}, pot)) flag = 2;
                 lo = fminf(lo, y), hi = fmaxf(hi, y);
             }
-        if (ok) h = {(uint8_t)(hi - lo > 1 ? 3 : 0), lo, hi};
+        if (ok) h = {(uint8_t)(hi - lo > 1 ? 3 : flag), lo, hi};
     }
     return c.heights[key] = h;
 }

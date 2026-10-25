@@ -318,20 +318,6 @@ static Grid aiGrid(const Terrain &t) {
     return gr;
 }
 
-// W4M 0x4ade10: a node's heights from 3 x 3 rays down at ±spacing/3 around it from `from`: lo / hi = lowest / highest hit; false
-// (water, blocked) when a ray finds no land or lands in the water.
-static bool probe(const Game &g, const Grid &gr, NodeCache &c, int i, int j, float from, float &lo, float &hi) {
-    const Vector2 p = gr.at(i, j);
-    lo = 1e9f, hi = -1e9f;
-    for (int a = -1; a <= 1; a++)
-        for (int b = -1; b <= 1; b++) {
-            const float y = rayDown(g.terrain, g.water, c, p.x + a * gr.s / 3, p.y + b * gr.s / 3, from, false);
-            if (y <= g.water) return false;
-            lo = fminf(lo, y), hi = fmaxf(hi, y);
-        }
-    return true;
-}
-
 static Mover moverOf(const Game &g) {
     const Worm &w = g.worms[g.current];
     return {w.pos, w.vel, w.grounded, w.yaw, g.prevButtons, g.jumpDelay, g.vault};
@@ -389,7 +375,7 @@ struct Moves : NodeCache {
     int j(int k) const { return j0 + 2 * (k % 21 - 10); }
 };
 
-static NodeH nodeH(const Game &g, const Grid &gr, Moves &mv, int i, int j, int layer) { return nodeH(g.terrain, g.water, gr, mv, i, j, layer); }
+static NodeH nodeH(const Game &g, const Grid &gr, Moves &mv, int i, int j, int layer) { return nodeH(g.terrain, g.water, gr, mv, i, j, layer, g.pot); }
 
 // W4M node position (0x4aeb00): mid-height, here the worm's centre over it
 static Vector3 nodePos(const Grid &gr, const NodeH &h, int i, int j) { const Vector2 c = gr.at(i, j); return {c.x, (h.lo + h.hi) / 2 + R, c.y}; }
@@ -521,18 +507,16 @@ struct Search {
     bool started = false;
     int h(int i, int j) const { return octile(gi - i, gj - j); }  // W4M 0x4923a9
     float top(const Game &g, int i, int j) { return nodeH(g, *grid, *mv, i, j, 0).hi; }  // W4M layer 0: its highest height, water if none
-    // W4M 0x4928e1: a jump edge leaves a top-layer node for a reach-table cell whose node heights (lo, hi) give landing deltas
+    // W4M 0x4928e1: a jump edge leaves a layer-0 node for a reach-table cell whose node heights (lo, hi) give landing deltas
     // d1 = hi' - lo, d2 = lo' - hi inside the arc's heights there; stepping back from the landing to the start (0x492c0d), each
     // cell crossed keeps its top under the arc, interpolated by where the landing sits in that range.
-    bool jumpOk(const Game &g, int t, Vector3 from, Vector3 to) {
+    bool jumpOk(const Game &g, int t, Vector3 from, Vector3 to, const NodeH &a, const NodeH &b) {
         const Grid &gr = *grid;
         const int i0 = gr.ci(from.x), j0 = gr.cj(from.z), i1 = gr.ci(to.x), j1 = gr.cj(to.z), dx = i1 - i0, dz = j1 - j0, N = gr.n[t];
         if (std::abs(dx) >= N || std::abs(dz) >= N) return false;
         const Grid::Entry &E = gr.reach[t][(size_t)N * std::abs(dz) + std::abs(dx)];
-        float lo0, hi0, lo1, hi1;
-        if (!E.ok || !probe(g, gr, *mv, i0, j0, from.y - R + 1, lo0, hi0) || !probe(g, gr, *mv, i1, j1, to.y - R + 1, lo1, hi1)) return false;
-        if (top(g, i0, j0) > hi0 + Terrain::VOX) return false;  // jumps only from layer 0 (0x4928d6)
-        const float d1 = hi1 - lo0, d2 = lo1 - hi0;
+        if (!E.ok) return false;
+        const float lo0 = a.lo, hi0 = a.hi, d1 = b.hi - lo0, d2 = b.lo - hi0;  // the stored node heights (0x4aead0 / 0x4aeaa0)
         if (!(E.hi > d1 && E.lo < d1 && E.hi > d2 && E.lo < d2)) return false;
         const float frac = E.hi > E.lo ? (E.hi - (d1 + d2) / 2) / (E.hi - E.lo) : 0, slope = dz ? (float)std::abs(dx) / std::abs(dz) : 0;
         for (int i = i1, j = j1; i != i0 || j != j0;) {
@@ -588,7 +572,8 @@ struct Search {
                 Vector3 land;  // Game::jumpTick: tapped forward, or a backflip facing away
                 if (!jumpFrom(g, *mv, nodeKey(n.i, n.j, 0) * 16 + t * 8 + d, from, t ? f * -Game::FLIP_BACK + Vector3{0, Game::FLIP_UP, 0} : f * Game::JUMP_FWD + Vector3{0, Game::JUMP_UP, 0}, land)) continue;
                 const int i = gr.ci(land.x), j = gr.cj(land.z), l = layerOf(g, gr, *mv, land);
-                if ((i == n.i && j == n.j) || nodeH(g, gr, *mv, i, j, l).flag != 0 || !jumpOk(g, t, from, land)) continue;
+                const NodeH to = nodeH(g, gr, *mv, i, j, l);
+                if ((i == n.i && j == n.j) || to.flag != 0 || !jumpOk(g, t, from, land, here, to)) continue;
                 add(g, i, j, l, {land, yaw, (uint8_t)(t + 1)}, land, bi, n.g + octile(i - n.i, j - n.j) + (t ? 60 : 40));
             }
         }

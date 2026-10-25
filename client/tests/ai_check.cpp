@@ -462,9 +462,27 @@ static void nodeOnSurface() {
     const Worm &w = g.worms[g.current];
     const Grid gr = makeGrid(g.terrain);
     NodeCache nc;
-    const NodeH h = nodeH(g.terrain, g.water, gr, nc, gr.ci(w.pos.x), gr.cj(w.pos.z), 0);
+    const NodeH h = nodeH(g.terrain, g.water, gr, nc, gr.ci(w.pos.x), gr.cj(w.pos.z), 0, g.pot);
     printf("node mid %.4f, feet %.4f\n", (h.lo + h.hi) / 2, w.pos.y - Game::R);
     assert(h.flag == 0 && fabsf((h.lo + h.hi) / 2 - 50) < 0.01f && fabsf((h.lo + h.hi) / 2 - (w.pos.y - Game::R)) < 0.01f);
+}
+
+// W4M 0x4ade10: a ray whose face is past cos SlideAngle (60 deg, the wormpot's 35) flags its node 2, and a flag-2 node is no walk node
+static void steepNode() {
+    for (float slope : {0.5f, 1.0f, 2.0f})
+        for (uint64_t pot : {0ull, 1ull << WP_SLIPPY}) {
+            Game g = arena("Bazooka", 20);
+            for (int z = 16; z < 80; z++)
+                for (int y = 176; y < 248; y++)
+                    for (int x = 16; x < 300; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = (signed char)Clamp((50 + slope * (x * Terrain::VOX - 27) - y * Terrain::VOX) / sqrtf(1 + slope * slope) * Terrain::Q, -64, 64);  // a true distance field: no saturated gradient
+            g.landMax = 200;
+            const Grid gr = makeGrid(g.terrain);
+            NodeCache nc;
+            const NodeH h = nodeH(g.terrain, g.water, gr, nc, gr.ci(30), gr.cj(12), 0, pot);
+            const float ny = 1 / sqrtf(1 + slope * slope);
+            printf("slope %.1f pot %d: flag %d\n", slope, (int)pot, h.flag);
+            assert(h.flag == (ny <= (pot ? 0.81915f : 0.5f) ? 2 : 0));
+        }
 }
 
 // W4M aims the direct plan at its target point (feet + Worm.EyeLevelOffset / 2, Spawn 0x4a0840) from the muzzle: SetAimAngle is asin of
@@ -495,6 +513,7 @@ int main() {
     SetTraceLogLevel(LOG_WARNING);
     assert(loadWeapons("romfs/weapons.json"));
     nodeOnSurface();
+    steepNode();
     bestMiss();
     directAim();
     shotgunGap();

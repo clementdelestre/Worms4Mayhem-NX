@@ -6018,7 +6018,7 @@ static void checkPlacement() {
                 assert(fabsf(gr.at(ci, cj).x - x) < 1e-3f && fabsf(gr.at(ci, cj).y - z) < 1e-3f);
                 int on = -1;
                 for (int l = 0; l < 2; l++) {
-                    const NodeH h = nodeH(g.terrain, g.water, gr, nc, ci, cj, l);
+                    const NodeH h = nodeH(g.terrain, g.water, gr, nc, ci, cj, l, g.pot);
                     if (h.flag == 0 && w.pos.y <= (h.lo + h.hi) / 2 + 1.0f + Game::R + 1e-3f) on = l;  // the chosen point; the first Update settles the feet down onto the ground
                 }
                 assert(on >= 0);  // a walkable cell (0x4ae810), +20 units

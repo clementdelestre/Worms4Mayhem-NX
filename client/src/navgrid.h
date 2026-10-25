@@ -26,7 +26,7 @@ struct Grid {
 };
 Grid makeGrid(const Terrain &t);
 
-// A node's heights (W4M 0x4aed70): flag 0 a node, 1 water or outside the grid (heights: the water level), 3 blocked (over 20 units apart)
+// A node's heights (W4M 0x4aed70): flag 0 a node, 1 water or outside the grid (heights: the water level), 2 too steep (a ray's face past SlideAngle, 0x4ade10), 3 blocked (over 20 units apart); only 0 is a node
 struct NodeH { uint8_t flag = 1; float lo = 0, hi = 0; };
 struct NodeCache {
     std::unordered_map<int64_t, NodeH> heights;
@@ -34,6 +34,6 @@ struct NodeCache {
     long reads = 0;  // raw voxels read for them: work the samples don't count
 };
 inline int64_t nodeKey(int i, int j, int layer) { return (((int64_t)i + (1 << 20)) * (1 << 21) + (j + (1 << 20))) * 2 + layer; }
-NodeH nodeH(const Terrain &t, float water, const Grid &gr, NodeCache &c, int i, int j, int layer);
+NodeH nodeH(const Terrain &t, float water, const Grid &gr, NodeCache &c, int i, int j, int layer, uint64_t pot);  // pot: the match's wormpot modes (the slide tables)
 float landBelow(const Terrain &t, float water, float x, float z, float y);  // W4M land ray 0x466ae0 down: the last empty point over the land
 float rayDown(const Terrain &t, float water, NodeCache &c, float x, float z, float y, bool under);  // one 0x4ade10 ray: the land under (x, y, z)

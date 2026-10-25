@@ -197,6 +197,7 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
 // W4M payload bounce 0x57ef80 / 0x518f40 on n with damping {tangential, parallel}; stop: under Bounce.MinSpeed it stops, else it keeps 1 m/s
 Vector3 payBounce(Vector3 v, Vector3 n, const float damp[2], bool stop);
 // W4M UpdateWalking 0x5b19d0: a step onto ground n past SlideAngle starts Sliding with the walk velocity
+float slideCos(uint64_t pot, int mat);  // W4M table 0x92009c[mat]: cos SlideAngle, the wormpot included
 void slideIfSteep(Vector3 n, Vector3 &vel, Motion &m, Vector3 walk, uint64_t pot);
 void walkerStep(const Terrain &t, Vector3 &pos, Vector3 &vel, float gravity, const std::function<bool(Vector3)> &wall = nullptr);  // sheep, old woman, scouser on foot
 

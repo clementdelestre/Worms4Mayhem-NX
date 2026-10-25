@@ -536,6 +536,7 @@ static constexpr SlideMat SLIDE_DEFAULT{0.5f, 0.9582f, 10, 3}, SLIDE_SLIPPY{0.98
 // Wormpot Slippy (0x5d59c0): each *_Default moved halfway to *_Slippy: 35 deg, friction 0.9745, Start / StopSlideVel 0.105 / 0.035
 static constexpr SlideMat SLIDE_POT{0.81915f, 0.97870f, 5.25f, 1.75f};
 static const SlideMat &slideMat(uint64_t pot, int mat) { return mat ? SLIDE_SLIPPY : wpOn(pot, WP_SLIPPY) ? SLIDE_POT : SLIDE_DEFAULT; }
+float slideCos(uint64_t pot, int mat) { return slideMat(pot, mat).ny; }
 static const float WIND_CAP[] = {0, 0.3f, 0.5f, 1};  // WindMaxStrength / 10: the schemes' 0, 3, 10 and the editor's Medium 5 (0x7539b0)
 
 // W4M melee box: in front of the attacker, a worm height up or down; the Fire Punch (a leap) also reaches above.
@@ -1545,7 +1546,7 @@ Vector3 Game::placeWorm(const Grid &gr, NodeCache &nc, float &yaw) {
             i = std::min(b->i0 + (int)(rand01() * (b->i1 - b->i0)), b->i1 - 1);
             j = std::min(b->j0 + (int)(rand01() * (b->j1 - b->j0)), b->j1 - 1);
             l = (int)(rand01() * 2);
-            if (nodeH(terrain, water, gr, nc, i, j, l).flag == 0) return true;
+            if (nodeH(terrain, water, gr, nc, i, j, l, pot).flag == 0) return true;
         }
         return false;
     };
@@ -1555,7 +1556,7 @@ Vector3 Game::placeWorm(const Grid &gr, NodeCache &nc, float &yaw) {
     Vector3 best = {0, -1e4f, 0};
     int found = 0, i, j, l;
     for (int tries = 0; tries < 1000 && found < 3 && cell(i, j, l); tries++) {
-        const NodeH h = nodeH(terrain, water, gr, nc, i, j, l);
+        const NodeH h = nodeH(terrain, water, gr, nc, i, j, l, pot);
         const Vector2 p = gr.at(i, j);
         const Vector3 c = Vector3Add({p.x, (h.lo + h.hi) / 2, p.y}, off);  // node position 0x4aeb00: mid-height
         bool clear = true;  // 0x519e90 sees colliders only (0x516350 tests spheres): no land test
