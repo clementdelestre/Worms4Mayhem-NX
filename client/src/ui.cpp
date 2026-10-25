@@ -362,8 +362,23 @@ int voiceBankOf(const std::string &speech) {
 
 static std::string wireOf(const GameConfig::Team &t) { wire::W w(0); return putTeam(w, t).b; }
 
+// W4M's landscape list (0x4cf620 headings, 0x4c2e40 entries): rows sorted bytewise on "<group><name>", headings 01 Random2 / 05 Prebuilt /
+// 08 Worms3DSection, entries 04 procedural (our random island) / 07 prebuilt / 11 Worms 3D
+std::vector<LandRow> landscapeRows(const std::vector<std::string> &maps) {
+    std::vector<std::pair<std::string, LandRow>> k = {{"01", {-1, "FETXT.Random2", "-Random-"}}, {"05", {-1, "FETXT.Prebuilt", "Prebuilt"}},
+                                                      {"08", {-1, "FETXT.Worms3DSection", "Worms 3D"}}};
+    for (int i = 0; i < (int)maps.size(); i++) {
+        const bool w3d = maps[i].size() > 4 && lower(maps[i].substr(maps[i].size() - 4)) == "-w3d";
+        k.push_back({(maps[i].empty() ? "04" : w3d ? "11" : "07") + mapTitle(maps[i]), {i, nullptr, nullptr}});
+    }
+    std::stable_sort(k.begin(), k.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::vector<LandRow> rows;
+    for (const auto &e : k) rows.push_back(e.second);
+    return rows;
+}
+
 std::string mapTitle(const std::string &m) {
-    if (m.empty()) return tr("FETXT.Random", "Random island", "Aléatoire");  // W4M FETXT.Random, the random-landscape entry [assumed: the entry text of pass 0 not decoded]
+    if (m.empty()) return tr("FETXT.Random", "Random island", "Aléatoire");  // our procedural island, no W4M level: W4M's Random2 group lists its 5 procedural themes
     if (const std::string &t = mapInfo(m).title; !t.empty()) return tr(t.c_str(), m.c_str());
     std::string s, b = m;
     bool w3d = b.size() > 4 && lower(b.substr(b.size() - 4)) == "-w3d";
@@ -2825,6 +2840,18 @@ void bubble(Vector2 c, float sx, float sy, float pointerY = NAN) {  // NAN: kMT_
 }
 
 // a decorative ImageView of a W4M picker (WXFE.Scratches1 = 5 cells, Scratches2 = 3): FE offset, half extents, rz, alpha
+// A list control's two WXFE.ListNavigation arrows (0x75be1d): cell 0 up / 1 down, Arrow_Scale 32 x 12 half extents at the list centre +-(its half
+// height + 0.8 x 12), bobbing outward 0..3 FE by 3 / 20 per 20 ms tick (0x75ae6e), each over a black copy offset (+2, -2); hidden when the list cannot scroll that way (0x75b12f)
+void listArrows(Vector2 c, float hh, bool up, bool down, float t) {
+    const float bob = (int(t / 0.02f) % 21) * 3 / 20.0f;
+    for (int i = 0; i < 2; i++) {
+        if (!(i ? down : up)) continue;
+        const float y = (i ? -1 : 1) * (hh + 0.8f * 12 + bob);
+        for (int sh = 1; sh >= 0; sh--)
+            feIcon("fe/speechpopup_navigation", 1, 2, i, {c.x + (sh * 2 - 32) * FE_S, c.y - (y - sh * 2 + 12) * FE_S, 64 * FE_S, 24 * FE_S}, sh ? BLACK : Color{165, 214, 252, 255});
+    }
+}
+
 struct Scratch { int sheet, cell; float x, y, hw, hh, rz; unsigned char a; };
 void scratches(Vector2 c, const Scratch *s, int n) {
     for (int i = 0; i < n; i++) {
@@ -2884,7 +2911,7 @@ void Frontend::pickDraw() {
     title.c = {-125, k.titleY}, title.hw = 90, title.hh = 20, title.size = 20, title.autoScale = true, title.grad = GC_BUTTON_YELLOW, title.anim = 4;
     feText(tr(k.key, k.en), title);
     image("fe/speechpopup_divide", {c.x - 70 * FE_S, c.y - (k.divY + 8) * FE_S, 140 * FE_S, 16 * FE_S});  // DIVIDE1, WXFE.PopUpDivide 70 x 8
-    // the list: as many 27 FE rows as the box holds, scrolled to keep the highlight in view; the ListNavigation arrows (Arrow 32 x 12, (165, 214, 252)) past either end
+    // the list: as many 27 FE rows as the box holds, scrolled to keep the highlight in view; the ListNavigation arrows past either end
     const int n = (int)pop.vals.size(), vis = pickRows(u);
     const float top = k.listY + k.listHH - 13.5f;
     for (int j = 0; j < vis && pop.top + j < n; j++) {
@@ -2895,9 +2922,7 @@ void Frontend::pickDraw() {
         if (i == pop.row) brush({p.x - w / 2 - 4 * FE_S, p.y - 11 * FE_S, w + 8 * FE_S, 22 * FE_S});
         edText(lab.c_str(), p, 20, i == pop.row ? GC_WHITE : GC_LIST_LABLE_BLUE, 1, 2 * k.listHW);
     }
-    const Color ar = {165, 214, 252, 255};
-    if (pop.top > 0) feIcon("fe/speechpopup_navigation", 1, 2, 0, {c.x - 16 * FE_S, c.y - (k.listY + k.listHH + 15 + 6) * FE_S, 32 * FE_S, 12 * FE_S}, ar);
-    if (pop.top + vis < n) feIcon("fe/speechpopup_navigation", 1, 2, 1, {c.x - 16 * FE_S, c.y - (k.listY - k.listHH - 15 + 6) * FE_S, 32 * FE_S, 12 * FE_S}, ar);
+    listArrows({c.x, c.y - k.listY * FE_S}, k.listHH, pop.top > 0, pop.top + vis < n, now());
     rlPopMatrix();
     const std::string cur = pop.row < (int)pop.vals.size() ? pop.vals[pop.row] : "";
     const Catalog &cat = catalog();

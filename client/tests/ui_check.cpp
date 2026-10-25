@@ -469,5 +469,11 @@ int main() {
         int i = b.create("Newbies", 0, "A,B,C,D,E,F,G", "Flag.UK", 1);
         assert(i >= 0 && b.teams[i].weapon == "FETXT.Factory.Blaster");
     }
+    {  // the landscape list in W4M's order: Random2, the procedural entry, Prebuilt (by name), Worms 3D (by name), headings always there
+        std::vector<std::string> maps = {"Zed", "", "Bunker-w3d", "Abbey", "Attic-w3d"};
+        std::vector<Ui::LandRow> r = Ui::landscapeRows(maps);
+        assert(r.size() == 8 && r[0].map < 0 && !strcmp(r[0].key, "FETXT.Random2") && r[1].map == 1 && !strcmp(r[2].key, "FETXT.Prebuilt"));
+        assert(r[3].map == 3 && r[4].map == 0 && !strcmp(r[5].key, "FETXT.Worms3DSection") && r[6].map == 4 && r[7].map == 2);
+    }
     puts("ui_check ok");
 }

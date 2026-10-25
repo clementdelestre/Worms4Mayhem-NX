@@ -3,7 +3,7 @@
 What is on each screen and roughly where comes from the user's mockup (~/Downloads/worms4nx-local-match.html) [user-requested]; the look is W4M's frontend, not the
 mockup's: the blue divide, scrolling watermark, Title Control, list-row borders, FE fonts and gradients, the paper strip with its tooltip, NAV Prev / NAV Start
 and the tilts of `WXFE.CreateAGame` (MENUTWKX, docs/w4m/frontend.md "Match setup screens (WXFE.CreateAGame)") [data]. W4M splits the same steps: `WXFE.CreateAGame` team
-slots (`WXFEP.InsertTeam`), then `WXFEP.SelectLandscape2` (docs/w4m/frontend.md). The texts are W4M's own (`tr()` keys below), the labels without a key are ours (en / fr).
+slots (`WXFEP.InsertTeam`), then `WXFEP.SelectLandscape` (Deathmatch; docs/w4m/frontend.md). The texts are W4M's own (`tr()` keys below), the labels without a key are ours (en / fr).
 
 ## Look [data + ours]
 - Frame of the 3 screens and the Salon (`setupBack` / `setupFront`, ui.cpp): `divide` + `watermark` + `titleControl` as every submenu (title `FETXTH.LOCALGAME` locally, `FETXTH.GameLobby` in a room,
@@ -150,9 +150,7 @@ Pixels of the 1280 x 720 screen. 4 player slots side by side (`Frontend::teamSlo
 ## Screen 2, Terrain [user-requested layout, W4M skin]
 Left: `FETXT.Landscape` and the count, the big level picture (430 x 280, cropped to fill) in its ButtonBig frame with the map's name on its foot (white, over a dark gradient). Right: the maps as a grid of tiles (3 columns,
 4 rows visible, scrolls with the selection; no theme filter), each with its own frame, the selection in the highlight frame; D-pad moves, Y a random map (W4M: right mouse = random seed), `+` next, B back.
-The frame (`pictureFrame`) is the sprite `fe/buttonbig_normal / highlight` (512 x 512, frame 33 / 37 / 41 / 40 px thick, 44 / 46 / 52 / 50 highlighted, picture hole 420 px) cut as a 9-slice and fitted so its
-hole is the picture's rect, scale = picture's short side / 420 [data: sprite measurements; assumed: W4M's border placement around the picture]. W4M's LandscapeControl is 95 x 95 FE at (-174, 38) with borders 15 / 17 / 16 (docs/w4m/frontend.md) [data];
-how `WXFE_Border` sizes the sprite to a rect is not decoded. The jar (NAV Start) of the strip is the "next" button.
+The frame (`pictureFrame`) is W4M's WXFE_Border_Button: the whole sprite `fe/buttonbig_normal / highlight` stretched on a quad 1 / 0.915789 of the picture, centred on it, over the picture's edges [disasm 0x764ee0, 0x775967; docs/w4m/frontend.md]. W4M's LandscapeControl is 95 x 95 FE at (-174, 38) with borders 15 / 17 / 16 [data]. The jar (NAV Start) of the strip is the "next" button.
 The grid lists the random island, the W4M Prebuilt landscapes and the Worms 3D maps (user-requested to stay selectable) [data, below]. W4M's list is text with the 4 tab headings, ours a picture grid [user-requested].
 
 ## Screen 3, Règles [user-requested layout, W4M skin]
@@ -166,11 +164,11 @@ W4M's `/*token*/` markup is dropped and space runs collapse (`plain`). `+` start
 - Hat names: `WORMATTACHMENTS.XOM` `WXFE.A.Hat.*` holds `MeshID` (`Hat.Baseball.C`) and `MeshTextNameID` (`FETXT.Hat.Baseball.Camo`); the hat file is the
   lower-cased MeshID without `Hat.`, `.` -> `_` (`baseball_c.glb`) [data]. `tools/w4m-re/setuplists.py` writes `assets/attachments.txt`; a team's hat is its
   `WXFE.A` id (`Ui::hatIds`, W4M order), `Ui::hatLabel` shows the W4M text. The jetpack helmet (`jetpack.glb`) is no `WXFE.A.Hat` entry: it is no team hat [data].
-- Map list: `WXFEP.SelectLandscape2` (MENUTWKX) is built by TablePopulationService 0x4cf620 as four tabs: `FETXT.Random2` (random island), `FETXT.Prebuilt`,
-  `FETXT.Saved`, `FETXT.Worms3DSection` [disasm 0x4cf620, REA decompile]. The Prebuilt landscapes are the 74 SCRIPTS.XOM `WXFE_LevelDetails` of `Level_Type` 0
+- Map list: `WXFEP.SelectLandscapeListX` is built by TablePopulationService 0x4cf620 with the headings `FETXT.Random2`, `FETXT.Prebuilt`,
+  `FETXT.Worms3DSection`, `FETXT.Saved` and the entries of 0x4c2e40 (docs/w4m/frontend.md "Landscape select") [disasm]; our random island sits under Random2 [ours]. The Prebuilt landscapes are the 74 SCRIPTS.XOM `WXFE_LevelDetails` of `Level_Type` 0
   (`Multi.*`; `Level_FileName`, e.g. `Multi_CarpetCapers`, `ChallengeCrate` for Desert Oasis, `Alien-w3d`, `RandomArabian`..., which are procedural) [data]. Our list
   (`Ui::multiplayerMaps`, `assets/multimaps.txt` from `setuplists.py`) keeps those that exist as imported maps, the random island and every `*-w3d` map
-  (user-requested, docs/w4m/README.md). How W4M maps its tabs to the 4 `Level_Type`s of Destruction / Statue / Fort / Survivor lists (types 1, 2, 11, 3) was not traced [assumed: not offered here].
+  (user-requested, docs/w4m/README.md). W4M's Statue / Destruction / Survivor / Fort lists (PopulateTable modes 2 / 1 / 3 / 0xb, docs/w4m/frontend.md) are not offered here [ours].
 
 ## Network room [ours unless tagged]
 - Flow: Réseau local / En ligne (Network menu) -> Salon (`Ui::salon`: Créer un salon / Rejoindre un salon as the Network menu's gold entries with a black brush on the selection, the games as list rows; Rejoindre lists the LAN games heard or the server's rooms,
