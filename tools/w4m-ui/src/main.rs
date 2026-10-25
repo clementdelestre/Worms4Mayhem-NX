@@ -251,7 +251,7 @@ fn font(b: &[u8]) -> Option<(String, usize, usize, Vec<u8>)> {
     let skip = objects - tags.len();  // leading objects without a CTNR tag; refs are 1-based object indices
     let obj = |r: usize| -> Option<&[u8]> { let k = r.checked_sub(1 + skip)?; Some(&b[*tags.get(k)?..tags.get(k + 1).map_or(b.len(), |&e| e - 4)]) };
     let first: usize = (0..ty).map(count).sum();
-    let (pad, line, base) = (8usize, 56i32, 42i32);
+    let (pad, line, base) = (8usize, 56i32, 45i32);  // baseline 0.34 em (= -(Ascent + Descent) / 2, 0x6a7f00) under the line centre
     let mut glyphs: Vec<Glyph> = Vec::new();
     for r in first + 1..=first + count(ty) {
         let d = obj(r)?;
