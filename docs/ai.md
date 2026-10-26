@@ -188,8 +188,8 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
   worm stands × log 1.1 (r 0, no retreat). The worm cannot move: that last origin only.
 - Move window (`Moves`, W4M 0x4ab490): 21 × 21 entries at every other node (±20 nodes) × 2 layers, each scored by `posScore` (W4M
   0x4aa6a0): def (the retreat score) and open (the move score), formulas in docs/w4m/ai.md §18 "Plan selection". Node heights
-  (`nodeH`, W4M 0x4aed70): flag (node, water/outside, blocked), lo, hi; layer 1 from 1 m under layer 0's lo, ours: it first leaves the
-  land it starts in (W4M's ray from inside land is not read). Probes start at the last step over each column's highest solid voxel (`colTop`):
+  (`nodeH`, W4M 0x4aed70): flag (node, water/outside, blocked), lo, hi; layer 1 from 1 m under layer 0's lo; a ray whose hit is within 0.5 m of its start (a start in land) makes the cell no node
+  (W4M 0x4ade10, docs/w4m/ai.md §18 "Node height arrays"). Probes start at the last step over each column's highest solid voxel (`colTop`):
   same samples. Each ray is `landBelow` (W4M 0x466ae0 with refine 1): the first solid sample, 5 bisections, the last empty point [disasm], so a
   node on flat ground is the standing worm's feet and an origin's `pos` (W4M +0x4c) is where the worm stands; jump edges read the stored node heights of the start (layer 0) and landing nodes (0x492510, **decompiled**).
 - Pairs (`pairOf`, W4M 0x4a8c60): each entry as a move node takes the best def within ±2 entries as its retreat; best def + 0.001·open
