@@ -36,4 +36,4 @@ struct NodeCache {
 inline int64_t nodeKey(int i, int j, int layer) { return (((int64_t)i + (1 << 20)) * (1 << 21) + (j + (1 << 20))) * 2 + layer; }
 NodeH nodeH(const Terrain &t, float water, const Grid &gr, NodeCache &c, int i, int j, int layer, uint64_t pot);  // pot: the match's wormpot modes (the slide tables)
 float landBelow(const Terrain &t, float water, float x, float z, float y);  // W4M land ray 0x466ae0 down: the last empty point over the land
-float rayDown(const Terrain &t, float water, NodeCache &c, float x, float z, float y, bool under);  // one 0x4ade10 ray: the land under (x, y, z)
+float rayDown(const Terrain &t, float water, NodeCache &c, float x, float z, float y);  // one 0x4ade10 ray: the land under (x, y, z)

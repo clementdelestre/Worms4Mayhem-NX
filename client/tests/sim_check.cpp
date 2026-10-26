@@ -6114,6 +6114,21 @@ static void checkLandUV() {
     assert(checked > 100);
 }
 
+// W4M 0x4ade10: a layer-1 node needs air 1 m under layer 0's lowest hit and ground 0.5 m under that: none under a 2 m slab, one under a 0.4 m skin
+static void checkNodeUnderLand() {
+    Game g;
+    g.start({7, 2, 1, "", 0});
+    const float cx = Terrain::NX * Terrain::VOX / 2, cz = Terrain::NZ * Terrain::VOX / 2, y = g.landTop() + 6;
+    g.weldLand({cx - 10, y, cz}, {3, 1, 3});
+    g.weldLand({cx + 10, y, cz}, {3, 0.2f, 3});
+    const Grid gr = makeGrid(g.terrain);
+    NodeCache nc;
+    auto layer1 = [&](float x) { return nodeH(g.terrain, g.water, gr, nc, gr.ci(x), gr.cj(cz), 1, g.pot).flag; };
+    assert(nodeH(g.terrain, g.water, gr, nc, gr.ci(cx - 10), gr.cj(cz), 0, g.pot).hi > y);
+    assert(layer1(cx - 10) == 1);
+    assert(layer1(cx + 10) != 1);
+}
+
 static void checkPlacement() {
     const char *maps[] = {"", "Alien-w3d", "Accuracy", "ArabiaTest", "AssaultAndDefend", "BuildingSiteSaboteurs"};
     int overhang = 0;
@@ -6194,6 +6209,7 @@ int main() {
     checkClearCodedDead();
     checkHiddenLand();
     checkLandUV();
+    checkNodeUnderLand();
     checkPlacement();
     checkCountCamera();
     {  // user-requested: SKIP_COUNT ends the damage display at once; hp final

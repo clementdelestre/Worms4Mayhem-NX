@@ -41,17 +41,13 @@ float landBelow(const Terrain &t, float water, float x, float z, float y) {
     return air;
 }
 
-// One of W4M 0x4ade10's rays. Layer 0 starts at the last step over every solid voxel `sample` can read there (same samples, fewer of
-// them); layer 1 first leaves the land it starts in.
-float rayDown(const Terrain &t, float water, NodeCache &c, float x, float z, float y, bool under) {
+// One of W4M 0x4ade10's layer 0 rays: starts at the last step over every solid voxel `sample` can read there (same samples, fewer of them)
+float rayDown(const Terrain &t, float water, NodeCache &c, float x, float z, float y) {
     const float step = Terrain::SUB;
-    if (under) while (y > water && t.solid({x, y, z})) y -= step;
-    else {
-        const int ix = (int)floorf(x * Terrain::IVOX), iz = (int)floorf(z * Terrain::IVOX);
-        const int top = std::max(std::max(colTop(t, c, ix, iz), colTop(t, c, ix + 1, iz)), std::max(colTop(t, c, ix, iz + 1), colTop(t, c, ix + 1, iz + 1)));
-        const float s = (top + 1) * Terrain::VOX;
-        if (y >= s) y -= floorf((y - s) / step) * step;
-    }
+    const int ix = (int)floorf(x * Terrain::IVOX), iz = (int)floorf(z * Terrain::IVOX);
+    const int top = std::max(std::max(colTop(t, c, ix, iz), colTop(t, c, ix + 1, iz)), std::max(colTop(t, c, ix, iz + 1), colTop(t, c, ix + 1, iz + 1)));
+    const float s = (top + 1) * Terrain::VOX;
+    if (y >= s) y -= floorf((y - s) / step) * step;
     return landBelow(t, water, x, z, y);
 }
 
@@ -63,7 +59,7 @@ static bool steep(const Terrain &t, Vector3 hit, uint64_t pot) {
     return n.y <= slideCos(pot, t.slippy({hit.x, hit.y - th - 1e-3f, hit.z}));
 }
 
-// W4M 0x4aed70: layer 0 probed from the land's top, layer 1 from 20 units under layer 0's lowest hit (water if layer 0 is);
+// W4M 0x4aed70: layer 0 probed from the land's top, layer 1 from 20 units under layer 0's lowest hit (water if layer 0 is), no node where a ray's hit is within 10 units of its start;
 // 3 x 3 rays at ±spacing/3 (0x4ade10), lo / hi = lowest / highest hit, any miss or water hit: water; a steep ray: flag 2
 NodeH nodeH(const Terrain &t, float water, const Grid &gr, NodeCache &c, int i, int j, int layer, uint64_t pot) {
     const int64_t key = nodeKey(i, j, layer);
@@ -81,8 +77,8 @@ NodeH nodeH(const Terrain &t, float water, const Grid &gr, NodeCache &c, int i, 
         uint8_t flag = 0;
         for (int a = -1; a <= 1 && ok; a++)
             for (int b = -1; b <= 1 && ok; b++) {
-                const float y = rayDown(t, water, c, p.x + a * gr.s / 3, p.y + b * gr.s / 3, from, layer > 0);
-                if (y <= water) ok = false;
+                const float y = layer ? landBelow(t, water, p.x + a * gr.s / 3, p.y + b * gr.s / 3, from) : rayDown(t, water, c, p.x + a * gr.s / 3, p.y + b * gr.s / 3, from);
+                if (y <= water || y > from - 10 * 0.05f) ok = false;  // 0x4ade10: a hit within 10 units of the start (a start in land) is no node
                 else if (steep(t, {p.x + a * gr.s / 3, y, p.y + b * gr.s / 3}, pot)) flag = 2;
                 lo = fminf(lo, y), hi = fmaxf(hi, y);
             }
