@@ -1547,6 +1547,44 @@ static void checkEventCameras() {
         }
         assert(checked > 20);
     }
+    {  // homing after an earlier event camera slid off the PiP (PiP.GoneOffScreen drops only +0x2b0): the FlyCam is the logical camera, still drawn
+        Game g;
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+        settle(g);
+        Controls::reset();
+        g.phase = Phase::Retreat, g.timer = g.retreatTicks(WEAPONS[g.weapon]);
+        Worm &v = g.worms[1 - g.current];
+        v.vel = {6, 9, 0}, v.grounded = false;
+        Camera3D cam = away();
+        float sh, gr;
+        bool up = false, off = false;
+        for (int t = 0; t < 60 * 8 && !off; t++) {
+            Controls::camera(cam, g, false, false, Game::DT);
+            bool in = Controls::inset(pipV, sh, gr);
+            off = up && !in, up |= in;
+            g.timer = 60 * 20;  // the turn goes on: the inset slides off, it does not grow
+            g.step(Input{});
+        }
+        assert(off);
+        g = Game();  // the camera state stays: a new match turn
+        g.start({29, 2, 1, "", 0}), g.hotSeat = 0;
+        Worm &a = g.worms[g.current];
+        a.pos = {20, 55, 20}, a.yaw = 0, a.pitch = 0, a.grounded = true;
+        g.weapon = weaponNamed("Homing Missile");
+        g.ammo[a.team][g.weapon] = 1, g.delays[a.team][g.weapon] = 0;
+        Input in;
+        in.buttons = Input::FIRE;
+        for (Input i : {in, Input{}}) Controls::camera(cam, g, false, false, Game::DT), g.step(i), a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true;
+        for (int t = 0; t < 90 && g.shots.empty(); t++) Controls::camera(cam, g, false, false, Game::DT), g.step(in), a.pos = {20, 55, 20}, a.vel = {0, 0, 0}, a.grounded = true;
+        int checked = 0;
+        for (int t = 0; t < 60 * 6 && g.phase == Phase::Flying && !g.shots.empty(); t++) {
+            Controls::camera(cam, g, true, false, Game::DT);
+            const Projectile &s = g.shots[0];
+            if (t > 100) assert(Vector3Distance(cam.position, s.pos) < 18), checked++;
+            g.step(Input{});
+        }
+        assert(checked > 20);
+    }
     for (int wide : {0, 1}) {  // occlusion: a thin post on the centre ray leaves the camera out, a wall zooms it in at once
         Game g;
         g.start({25, 2, 1, "", 0}), g.hotSeat = 0;

@@ -811,7 +811,7 @@ static void logic(Camera3D &cam, const Camera3D &drawn, const Game &g, bool chas
     if (!tracked && !pip.mode) pipCam = drawn;  // TrackCam 0x5337c0 inherits the camera before
     bool wasTrack = tk.on, ev = track(pipCam, g, chase, dt, focusOn && !focusCrate);
     bool finished = wasTrack && !tk.on && !ev;  // TrackCam slot 7 0x5334b0: its RestTime over; the other cameras never finish
-    bool hidden = ev && serves == goneServe;  // PiP.GoneOffScreen 0x5228c5 drops +0x2b0: not drawn again until the next serve
+    bool hidden = ev && !fly.on && serves == goneServe;  // PiP.GoneOffScreen 0x5228c5 drops +0x2b0 (served cameras) until the next serve; a FlyCam is the logical one
     ev = ev && !hidden;
     pip.t += dt;
     // Every serve slides the PiP on while a worm is active (0x51c000); the main view stays the logical one until PiP.GoneFullScreen
