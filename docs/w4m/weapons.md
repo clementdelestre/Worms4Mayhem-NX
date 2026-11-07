@@ -460,6 +460,7 @@ Crate pickup 0x5c9800 switches on crate type − 0x22 (byte table 0x5c99ac): 44 
     to A, the change capped at 0.05 units/ms (0x569fa0), then v.y += s5c; canopy += 20 v; Position = canopy + (40 F.z sin θ, −40 cos θ,
     −40 F.x sin θ) when it Fits (0x59edf0), with Velocity = v, ForcedCameraOffset = −offset − (0, 40, 0); else it closes (0x57967e).
     The canopy graphic gets min(0.3 − 20 s5c, 1) (0x579488).
+    FireUtil on an open canopy closes it without reading the inventory [disasm 0x578db0: only the open branch spends ammo], so a worm with 0 parachutes left still closes by hand. A move that does not Fit (rods of 0x59edf0, land only) closes it at once: pressed against a wall the worm drops [disasm 0x5792a0 → 0x57967e]. [ours] sim.cpp Game::wormStep `hangTo` + `rodsFit`; HUD label "Open / close" is ours (FETXT has no short label).
   - **Gas cloud** [data PARTTWK + disasm]: WXP_GasCloud is one 8000 ms particle, velocity and acceleration 0, ParticleIsEffectedByWind 1
     but ParticleMass 0.0: the position is p0 + v t + 0.5 Mass (a + W) t² from the spawn time (0x5b7450, Mass +0x13c, wind flag +0x1bc),
     so it never drifts; a spiral of 2 units at 0.0035 rad/ms (0x5b75e0); collision radius 100 units at offset (0, 10, 0), poison 10.

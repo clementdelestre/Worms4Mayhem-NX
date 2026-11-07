@@ -791,7 +791,7 @@ static std::vector<Hint> weaponHints(const WeaponDef &wd) {
         {Kind::Jetpack, "Thrust", "Poussée", 1}, {Kind::Teleport, "Teleport", "Téléporter", 0}, {Kind::SuperSheep, "Launch / detonate", "Lancer / exploser", 1},
         {Kind::OldWoman, "Launch / detonate", "Lancer / exploser", 1}, {Kind::Melee, "Strike", "Frapper", 0}, {Kind::Homing, "Charge", "Charger", 0},
         {Kind::Mine, "Drop", "Lâcher", 0}, {Kind::Scouser, "Launch", "Lancer", 1}, {Kind::Sentry, "Place", "Poser", 0}, {Kind::Abduction, "Abduct", "Enlever", 0},
-        {Kind::Flood, "Flood", "Inonder", 0}, {Kind::Parachute, "Open", "Ouvrir", 1}, {Kind::SkipGo, "Skip turn", "Passer son tour", 0},
+        {Kind::Flood, "Flood", "Inonder", 0}, {Kind::Parachute, "Open / close", "Ouvrir / fermer", 1}, {Kind::SkipGo, "Skip turn", "Passer son tour", 0},
         {Kind::Surrender, "Surrender", "Abandonner", 0}, {Kind::ChangeWorm, "Next worm", "Ver suivant", 0}, {Kind::Bubble, "Deploy", "Déployer", 0},
         {Kind::Icarus, "Drink", "Boire", 0}};
     std::vector<Hint> h;
