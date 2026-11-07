@@ -1148,7 +1148,7 @@ bool Game::allowed(int team, int wi) const {
     if (customWeapon(wi) && (team >= (int)secrets.size() || secrets[team].name.empty())) return false;  // ours: a team without a factory weapon
     if (current < 0 || current >= (int)worms.size() || worms[current].team != team) return true;
     const std::string &n = WEAPONS[wi].name;
-    if (artillery() && WEAPONS[wi].kind == Kind::Jetpack) return false;  // AllowJetpack 0
+    if (wp(WP_TUG_O_WORMS) && WEAPONS[wi].kind == Kind::Jetpack) return false;  // AllowJetpack 0
     int c = current < (int)special.size() ? special[current] : 0;
     if (!c || n == "Skip Go" || n == "Surrender" || n == "Teleport" || n == "Binoculars") return true;  // DisallowAllWeapons leaves these
     for (int k = 0; k < 4; k++)
@@ -3724,7 +3724,7 @@ void Game::step(const Input &raw) {
         if (vault.t) {  // W4M 0x5ab3d0: the camera-relative stick, here the heading or the facing
             float y = head ? in.turn * PI / 128 : w.yaw;
             vaultStep(w.pos, vault, aimCursor ? Vector3{} : Vector3Scale(flat(y), in.walk));
-        } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed && !artillery() && !gunState && !padHeld(current)) {  // W4M Sliding: no walking
+        } else if (w.grounded && !w.motion.slide && in.walk && !aimCursor && !jumpDelay && !w.nailed && !artillery(w) && !gunState && !padHeld(current)) {  // W4M Sliding: no walking
             Vector3 walkV = Vector3Scale(flat(w.yaw), in.walk / 127.0f * INPUT_IMPULSE), was = w.pos, gn;  // W4M Velocity = InputImpulse (0x546f10)
             Colliders cs;
             colliders(cs, WORM_MASK, current);
@@ -3738,7 +3738,7 @@ void Game::step(const Input &raw) {
         } else if (!vault.t) walkVel = {};  // idle branch 0x5b1c1b zeroes Velocity
         steerIn = aimCursor ? Vector3{} : Vector3Scale(head ? flat(in.turn * PI / 128) : flat(w.yaw), in.walk / 127.0f);
         Vector3 jv;
-        if ((pressed & Input::JUMP) && !jumpDelay && !vault.t && w.grounded && !w.motion.slide && !tool && !w.nailed && !padHeld(current) && !wp(WP_NO_JUMPING) && !artillery() && !gunState) jumpDelay = JUMP_WINDOW, jumpKind = 2;
+        if ((pressed & Input::JUMP) && !jumpDelay && !vault.t && w.grounded && !w.motion.slide && !tool && !w.nailed && !padHeld(current) && !wp(WP_NO_JUMPING) && !artillery(w) && !gunState) jumpDelay = JUMP_WINDOW, jumpKind = 2;
         else if (int ev = jumpDelay ? jumpTick(jumpDelay, jumpKind, in, pressed, w.yaw, jv) : 0; ev && w.grounded) {
             w.vel = jv, w.grounded = false, w.motion.air = true;  // DetectJump: Flags |= 1
             emit(GameEvent::Jump, w.pos, current, ev);  // weapon: the W4M kWE code (animation)

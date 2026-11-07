@@ -270,6 +270,7 @@ struct ScriptHost {
             if (S->slotWorm[i] >= 0) {
                 Worm &w = g.worms[S->slotWorm[i]];
                 if (w.alive) w.hp = w.counted = std::max(1, (int)fnum(ctn(n), "Energy"));
+                w.artillery = fnum(ctn(n), "ArtilleryMode") != 0;
                 S->mirror[i] = {w.hp, w.alive};
             }
         } else if (sscanf(n.c_str(), "AIParams.Worm%d", &i) == 1 && i >= 0 && i < SLOTS) {
@@ -320,7 +321,7 @@ struct ScriptHost {
             w.yaw = last->heading();
         }
         w.pos = {p.x, p.y + Game::R, p.z}, w.alive = true, w.hp = w.counted = std::max(1, (int)fnum(c, "Energy"));
-        w.motion.flags = (uint16_t)fnum(c, "Flags");  // data: 0x40 on the challenge players, 0x10 on the Prof
+        w.motion.flags = (uint16_t)fnum(c, "Flags"), w.artillery = fnum(c, "ArtilleryMode") != 0;  // data: 0x40 on the challenge players, 0x10 on the Prof
         return true;
     }
 

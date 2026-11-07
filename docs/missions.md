@@ -298,7 +298,7 @@ WormCollect is the slot resolved at collect time (ChuteToVictory spawns its trig
 | NiceToSiegeYou | lost 434 s | - |
 | MineAllMine | won 255 s | - |
 | GhostHillGraveyard | won 276 s | - |
-| TinCanWally | won 302 s | - |
+| TinCanWally | won 446 s | - |
 | DoomCanyon | won 71 s | - |
 | HighNoonHiJinx | won 227 s | SetData WXD.StoryMovie x1 |
 | TurkishDelights | won 224 s | - |

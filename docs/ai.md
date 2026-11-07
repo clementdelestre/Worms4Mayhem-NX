@@ -181,7 +181,7 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 
 ## Plans (`startEval`, `unit`, `decide`, W4M AIPlan best first 0x49a7d0, **disasm**)
 
-- `canMove` (W4M GetThinkingWormCanMove): not nailed, not Tug O Worms artillery (0x90ea74), not past the repath limit (`noMove`, 0x9560f8).
+- `canMove` (W4M GetThinkingWormCanMove): not nailed, not in ArtilleryMode (the worm's WormData flag or Tug O Worms, 0x90ea74), not past the repath limit (`noMove`, 0x9560f8).
 - Origins (`Origin`, W4M CAIPlanAttack +0x4c): the root plans (close range: melee, dropped explosives, landmine; Special: Flood) where
   the worm stands, ×1 (0x495010, 0x4951a0). Projectile, homing, guns, strikes and animals: from up to 3 move → retreat pairs, for
   targets over 5 m from the move node, × log(1.1·e^r), r the retreat's def (0x49f8a0, 0x49fdd6); when no pair is left, from where the

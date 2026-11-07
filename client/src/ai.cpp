@@ -842,7 +842,7 @@ void Ai::startEval(const Game &g) {
     Origin close;  // the root plans: close range and Special (Flood), scored x1 where the worm stands
     close.pos = w.pos, close.yaw = w.yaw, close.close = true;
     origins.push_back(std::move(close));
-    pairing = !w.nailed && !g.artillery() && !noMove;  // W4M GetThinkingWormCanMove: 0x90ea74 (not Tug O Worms artillery), 0x9560f8
+    pairing = !w.nailed && !g.artillery(w) && !noMove;  // W4M GetThinkingWormCanMove: 0x90ea74 (not ArtilleryMode), 0x9560f8
     if (!pairing) return nextPair(g);
     moves = std::make_shared<Moves>();
     Moves &mv = *moves;
@@ -1166,7 +1166,7 @@ int Ai::evalWeapon(const Game &g, int wi, int only, int sub, const Origin &O, in
         case Kind::Shotgun: {  // W4M CAIPlanAttackDirect 0x4a0a20: one shot (bCanMoveBetweenShots) as a WormDamageRadius blast, no knock
             if (!pick()) break;
             // the plan's target point +0x14: the target's position (feet) + Worm.EyeLevelOffset / 2 (Spawn 0x4a0840); IsPossible, the score and the aim all use it
-            const Vector3 P = e + Vector3{0, 0.5f * Game::EYE - (isWorm ? Game::R : 0), 0};
+            const Vector3 P = (isWorm ? feetOf(g, ti) : e) + Vector3{0, 0.5f * Game::EYE, 0};
             const Vector3 m = muzzle(g.terrain, w.pos, launchPoint(wd, w.pos, yawE)), seg = P - m;
             // the aim vector +0x20 = target point - muzzle (0x49e000 / 0x4ac880); 0x49e6d0 queues SetAimAngle(asin(y / |v|)) and the worm orientation from it
             const float yawS = atan2f(seg.x, seg.z), pitch = asinf(Clamp(seg.y / fmaxf(Vector3Length(seg), 1e-6f), -1, 1));

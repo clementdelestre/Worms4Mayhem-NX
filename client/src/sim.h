@@ -171,6 +171,7 @@ struct Worm {
     int floatT = 0;        // DrownFloat timer, ticks: 0 until it reaches the surface, then DROWN_FLOAT down to the blast
     Motion motion;
     bool turns = true;  // W4M WormData IsAllowedToTakeTurn: false never takes a turn (accuracy dummies)
+    bool artillery = false;  // W4M WormData ArtilleryMode (+0x12a): no walking or jumping (0x5ac390), no AI move plans (0x4a4a04)
     int hardAt = -1;    // `clock` of its last kWE 15 hard landing (0x5af601), read by the renderer for the Recover clip
 };
 bool meleeHits(const Worm &a, Vector3 p, const WeaponDef &wd);  // p inside a's melee hit box (shared with the AI)
@@ -608,7 +609,7 @@ struct Game {
     struct AiTweak { float value = 1, reach = 1e5f / 20; bool forbid = false; };
     std::vector<AiTweak> wormTweak;
     std::vector<std::vector<Vector3>> wormTarget;  // per worm: the map markers named by its AIParams.WormNN TargetDetailObject, the AI's scripted targets (0x4a5070)
-    bool artillery() const { return wp(WP_TUG_O_WORMS); }  // WormData.ArtilleryMode (0x5d6a10): no walking, no jump (0x5ac390)
+    bool artillery(const Worm &w) const { return w.artillery || wp(WP_TUG_O_WORMS); }  // Tug O Worms sets every worm's ArtilleryMode (0x5d6a10)
     bool jetLanded() const { return jetUsed && !jetting && weaponDef(weapon).kind == Kind::Jetpack && fuel > JET_DRY; }  // 0x562f72: entity kept
     bool pickable(int team, int wi) const { return wi == weapon || usable(team, wi); }  // a direct pick (pick()) is legal
     bool selectable(int team, int wi) const;  // usable, and with a movement tool out only the tool itself or a toolDrop()

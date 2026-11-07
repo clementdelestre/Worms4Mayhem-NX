@@ -18,17 +18,17 @@
 // Where the AI cannot reach a W4M goal (crates to collect, targets, triggers, enemies that never take a turn): the player's turn
 // collects the crates and triggers it may one a tick, lures an enemy-team trigger's worm in, pops a target or blasts a trigger (one a
 // turn when the script answers Trigger_Destroyed), then ends with the enemies not allied to the player at 0 hp (they die at the turn's
-// ApplyDamage) and the never-playing worms poisoned (the accuracy dummies, on the player's team); `survive` spares the enemies; trigIndex, if >= 0, is the
-// only trigger index blasted
-static void assist(Game &g, bool survive, int trigIndex, bool &blasted) {
+// ApplyDamage) and the never-playing worms poisoned (the accuracy dummies, on the player's team); `survive` spares the enemies, and so does a turn
+// that popped a target (TinCanWally fails if Wally dies before its duel ends); trigIndex, if >= 0, is the only trigger index blasted
+static void assist(Game &g, bool survive, int trigIndex, bool &blasted, bool &popped) {
     Worm &me = g.worms[g.current];
-    if (g.phase != Phase::Aim) blasted = false;
+    if (g.phase != Phase::Aim) blasted = popped = false;
     if (g.phase != Phase::Aim || me.team != 0 || !me.alive || scriptMovieOn(g)) return;  // a movie leaves the player no control
     for (Object &o : g.objects) {  // a target's blast may destroy a trigger, which starts a movie: one of those a turn
         if (o.tag < 0 || o.type != Object::Target || o.dead) continue;
         bool hits = std::any_of(g.triggers.begin(), g.triggers.end(), [&](const Game::Trigger &t) { return !t.gone && Vector3Distance(t.pos, o.pos) < 4; });
         if (hits && blasted) continue;
-        o.dead = true, blasted |= hits;
+        o.dead = true, blasted |= hits, popped = true;
     }
     for (const Object &o : g.objects)
         if (o.tag >= 0 && o.type == Object::Crate && (o.teamCollect < 0 || o.teamCollect == g.alliance(0))) { me.pos = o.pos, me.vel = {}; return; }
@@ -43,7 +43,7 @@ static void assist(Game &g, bool survive, int trigIndex, bool &blasted) {
     if (!blasted)  // one blast a turn, as a player: the movies one trigger starts must end before the next
         for (Game::Trigger &t : g.triggers)
             if (scriptDefines(g, "Trigger_Destroyed") && !t.gone && t.teamDestroy <= 0 && (trigIndex < 0 || t.index == trigIndex)) { t.gone = Game::TRIG_DESTROYED, blasted = true; break; }
-    if (survive) return g.timer = 1, void();
+    if (survive || popped) return g.timer = 1, void();
     bool foes = std::any_of(g.worms.begin(), g.worms.end(), [&](const Worm &w) { return w.turns && w.alive && g.alliance(w.team) != g.alliance(0); });
     for (Worm &w : g.worms)  // allies and, while enemies play, the never-playing ones (CarpetCapers' Prof, TheLand's classmate) are spared
         if (w.alive && g.alliance(w.team) != g.alliance(0) && (w.turns || !foes)) w.hp = 0;
@@ -61,10 +61,10 @@ static Run scripted(const MissionSpec &m, uint32_t seed, int cap) {
     Run r;
     // The AI player cannot play these: NiceToSiegeYou is survived (its enemies' death blasts and respawns dig the spawn markers under water),
     // DoomCanyon's rising water drowns a worm that does not climb, TraitorousWaters wants the gun about to fire destroyed (its Index 4 + g_nGunFiring)
-    bool blasted = false, survive = m.id == "NiceToSiegeYou" || m.id == "TraitorousWaters";
+    bool blasted = false, popped = false, survive = m.id == "NiceToSiegeYou" || m.id == "TraitorousWaters";
     int from = m.id == "DoomCanyon" || m.id == "TraitorousWaters" ? 0 : 60 * 60 * 3;
     for (; r.ticks < cap && (g.phase != Phase::GameOver || scriptMovieOn(g)); r.ticks++) {  // and its game-over movie
-        if (r.ticks > from) assist(g, survive, m.id == "TraitorousWaters" ? 4 + (int)scriptEval(g, "return g_nGunFiring") : -1, blasted);
+        if (r.ticks > from) assist(g, survive, m.id == "TraitorousWaters" ? 4 + (int)scriptEval(g, "return g_nGunFiring") : -1, blasted, popped);
         g.step(ai.think(g));
         for (const GameEvent &e : g.events) r.comments += e.kind == GameEvent::Comment, r.emitters += e.kind == GameEvent::Emitter;
     }
@@ -694,6 +694,12 @@ static void checkScriptedTarget(const std::vector<MissionSpec> &list) {
     for (const Terrain::Marker &k : g.terrain.markers) if (k.name == "AITarg1") at = k.pos;
     printf("scripted target: AI worm %d, %zu marker(s)\n", g.current, g.wormTarget[g.current].size());
     assert(g.wormTarget[g.current].size() == 1 && Vector3Equals(g.wormTarget[g.current][0], at) && !Vector3Equals(at, Vector3{}));
+    // Wally (ArtilleryMode 1) plans from his post at that marker: the gun's plan point is the marker, not a worm's centre
+    assert(g.worms[g.current].artillery);
+    Ai ai;
+    for (int t = 0; t < 60 * 30 && ai.mode == Ai::Mode::Eval; t++) ai.think(g);
+    printf("scripted target: plan target %d, weapon %d\n", ai.plan.target, ai.plan.weapon);
+    assert(ai.plan.target >= (int)g.worms.size() && std::none_of(ai.origins.begin(), ai.origins.end(), [](const Ai::Origin &o) { return o.path; }));
 }
 
 // A human team that gets no input: no AI drives it, and Controls::read / tick give a zero Input, so nothing walks, turns or slides
