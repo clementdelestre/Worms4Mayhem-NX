@@ -337,7 +337,7 @@ undo log and `thinOnly` use it too); `field` reads the 8 corners from one block 
 | `walkerStep` | sheep, old woman, scouser on foot: steps up 0.6 m, hops at walls, whole-body roof test | ours |
 | `muzzle` | the launch point pulled back to the last free point on the segment eye → spawn | W4M 0x585a29 (disasm) |
 | `launchPoint` | the eye plus WEAPTWK LogicalLaunchZ / YOffset: dynamite 13 / −10, landmine 10 / −10, (super) sheep and Starburst 5, old woman 7, scouser 10 units, the rest 0 | data |
-| `restOn` | a payload at rest drawn `r` above the land along its normal | W4M 0x574e90 / 0x5761f0 (disasm) |
+| `restOn` | a payload at rest drawn `r` above the land along its normal: the face the downward ray enters by (`Terrain::cast`, W4M 0x46a070), not the nearest face, which on thin exact land (planks, rails) can be an underside and sank the dropped dynamite below the plank (GhostHillGraveyard, mission_check `dyn`) | W4M 0x574e90 / 0x5761f0 (disasm), 0x46a070 (data) |
 
 Constants (sim.h / sim.cpp): gravity 12.5 m/s² (W4M Gravity −0.00025 units/ms², data; low gravity × 0.5, Low.Gravity.OnValue);
 walk 3.0625 m/s (Walk.Speed, data; Quick Walk: VelocityScale 2, 0x5d6bc0, disasm); jumps: tapped or held forward (3.16, 7.91) m/s, held still: vertical 9.35 m/s,

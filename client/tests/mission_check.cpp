@@ -340,6 +340,43 @@ static void checkWormInventoryCrate(const std::vector<MissionSpec> &list) {
     assert(scriptReport(g).errors == 0);
 }
 
+// A dropped Dynamite at rest is drawn standing on the land under the worm (restOn): never pushed below the surface it rests on
+static void checkDroppedDynamite(const std::vector<MissionSpec> &list) {
+    int wi = -1, bad = 0, n = 0;
+    for (size_t k = 0; k < WEAPONS.size(); k++) if (WEAPONS[k].name == "Dynamite") wi = (int)k;
+    for (const MissionSpec &m : list) {
+        if (m.id != "GhostHillGraveyard") continue;  // thin plank / rail props: the land's exact faces under and beside the rest point
+        Game g;
+        g.start(missionConfig(m, 3));
+        Input skip;
+        skip.flags = Input::SKIP_MOVIE;
+        for (int t = 0; t < 60 * 120 && !(g.phase == Phase::Aim && g.worms[g.current].team == 0 && !scriptMovieOn(g)); t++) g.step(t % 30 ? Input{} : skip);
+        const Terrain &T = g.terrain;
+        for (float x = T.origin.x + 3; x < T.origin.x + Terrain::NX * Terrain::VOX - 3; x += 2.3f)
+            for (float z = T.origin.z + 3; z < T.origin.z + Terrain::NZ * Terrain::VOX - 3; z += 2.3f) {
+                Vector3 hit;
+                if (!T.raycast({{x, T.origin.y + Terrain::NY * Terrain::VOX, z}, {0, -1, 0}}, 1000, &hit) || hit.y < g.water) continue;
+                Game h = g;
+                Worm &w = h.worms[h.current];
+                w.pos = {hit.x, hit.y + Game::R, hit.z}, w.vel = {}, h.hotSeat = 0;
+                for (int t = 0; t < 8; t++) h.step(Input{});
+                if (!w.grounded || h.phase != Phase::Aim) continue;
+                h.weapon = wi;
+                Input fire;
+                fire.buttons = Input::FIRE;
+                h.step(fire);
+                for (int t = 0; t < 16; t++) h.step(Input{});
+                if (h.shots.empty()) continue;
+                const Vector3 P = h.shots[0].pos, base = restOn(h.terrain, P, 0), at = restOn(h.terrain, P, 0.2f);
+                n++;
+                if (at.y < base.y) { if (bad++ < 8) printf("dyn pushed under: shot %.2f %.2f %.2f drawn %.2f %.2f %.2f\n", P.x, P.y, P.z, at.x, at.y, at.z); }
+            }
+    }
+    printf("dropped dynamite: %d drops, %d drawn below their rest surface\n", n, bad);
+    fflush(stdout);
+    assert(n > 0 && bad == 0);
+}
+
 // Mission crates: every one that falls or snaps ends with its centre 10 x Scale units over the ground (0x5c94d0, GroundSnap 0x5c8137),
 // within the 0.25 m voxel; a pinned one (Gravity 0) stays at its marker
 static void checkCratePlacement(const std::vector<MissionSpec> &list) {
@@ -784,6 +821,7 @@ int main() {
     if (only && !strcmp(only, "attach")) return checkAttachments(list), 0;
     if (only && !strcmp(only, "picked")) return checkPickedTeam(list), 0;
     if (only && !strcmp(only, "wormcrate")) return checkWormInventoryCrate(list), 0;
+    if (only && !strcmp(only, "dyn")) return checkDroppedDynamite(list), 0;
     if (only && !strcmp(only, "cratepos")) return checkCratePlacement(list), 0;
     if (only && !strcmp(only, "idle")) return checkIdle(list), 0;
     if (only && !strcmp(only, "target")) return checkScriptedTarget(list), 0;
