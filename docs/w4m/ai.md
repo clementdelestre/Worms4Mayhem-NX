@@ -196,3 +196,6 @@ Values shared by all 5 levels:
 8. **Timings**: DelayBeforeFire 0.5 s (CPU5 0.2 s), a 0.5 s pause after a pre-fire move, and 1.0 s after firing before the retreat. Today there is one fixed 20-tick pause.
 9. **Crates dominate** at higher levels (base 1000→60000). Health crates count ×3 when poisoned or below 25 hp (50 at CPU5). Move score falls off beyond 100 units and when the turn time left is under 20–40 s. Moves are forbidden under 10 s.
 10. **Jumps in paths**: no forward jump at CPU1, backflip only at CPU4+, plus the jump error. Today the AI jumps whenever it is stuck, at every level.
+
+## GunWobble on AI shots [disasm]
+Shotgun and Sniper Rifle shots of a CPU worm get the same GunWobble as a human's (docs/w4m/turn.md, WindGuns): the Fire gate 0x55e1b8 is the weapon's `IsAimedWeapon` (1 for both guns), and the logical camera zoom (+0x5c) is 1 under the AI's Default / Head cameras, so the factor min(1.5 z, 1) = 1. KickSize is 0, so there is no random walk. The planned ray therefore misses by up to about 0.12 rad at the shot's peak; the AI does not correct for it.

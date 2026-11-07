@@ -124,6 +124,10 @@ Commentary (lib_Comment, lib_Display{Failure,Success,SuddenDeath}Comment: Commen
     Both are multiplied by min(1.5 camera zoom, 1). A firing tick adds the kick (KickSize 0 for both guns, but one RNG draw).
   - Tweaks [data: WEAPTWK]: MaxAmp 0.03, Period 5000, Speed 0.004.
   - The shot uses it (Fire 0x55df90: pitch at 0x55e1d8, yaw at 0x55e1ff), and HeadCam adds it to the view (0x528eb5).
+  - **AI shots wobble like human ones** [disasm]: the gate `[esi+0x110]` (0x55e1b8) is `IsAimedWeapon`, a `GunWeaponPropertiesContainer` field (pe.py schema; WEAPTWK: 1 for Shotgun and Sniper Rifle), not an input or team flag. Nothing in the update 0x55f9e0 or its caller 0x55ed10 (`[entity+0x90]` set, arg = state == 2) tests who owns the gun.
+  - The zoom factor is 1 for a CPU turn: every logical camera starts at `+0x5c` = 1 (base ctor 0x51b570, `fld1` 0x51b6e6) and HeadCam resets it at EndTurn, which the AI never changes (no ZoomIn/Out input). The AI's SetCamera "Head" / "Default" both give min(1.5, 1) = 1: our `zoom` 255 is right.
+  - The random-walk term (+0x74 / +0x78, 0x55fb62..0x55fba4) runs only on the firing tick, once per `KickFrequency` ms, adding `KickSize` and (rand − 0.5)·`KickSize`; KickSize is 0 for both guns (WEAPTWK), so it stays 0 (the RNG draw is real, the value is not). `Game::wobbleStep` needs no such term.
+  - So a CPU shot gets pitch = amp·Σ0..3 and yaw = amp·Σ4..7 with amp = 0.03·cos(t/5000)·f, f = 1 outside the Wind modes: the same as a human's at zoom ≥ 2/3 (about ±0.025 rad RMS, ±0.12 rad at most). The AI does not compensate it (its queue only does SetAimAngle once, then Delay + FireWeapon, 0x49e6d0).
 - **BlimpView** (+0x44): byte 0x90ea75 = 0 and `Camera.Disable "Blimp"`.
   - SetCamera 0x51e4e0 then refuses the Blimp; targeting still works from the aim view (0x583a10).
   - The AI skips Homing (0x4a03ab) and the Airstrike, Donkey, SuperAirstrike and Fatkins plans (0x4a0f18).
