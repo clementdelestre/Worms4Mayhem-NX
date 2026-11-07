@@ -2684,7 +2684,9 @@ void Game::stepWorm(Worm &w) {
     auto settle = [&](float e) { return wormBody(terrain, w.pos, w.vel, w.grounded, w.motion, w.yaw, hung ? 0 : gravity(), pot, e, hung ? Vector2{} : wormWind(), &cs); };
     // hung: Position = canopy + 40 units (sin a right - cos a up); ours reaches it through the body's sweep (voxel land), Velocity kept
     const Vector3 hv = w.vel, f = flat(w.yaw);
-    if (hung) w.vel = Vector3Scale(Vector3Subtract(Vector3Add(chuteAt, {2 * sinf(chuteAng) * f.z, -2 * cosf(chuteAng), -2 * sinf(chuteAng) * f.x}), w.pos), 1 / DT);
+    const Vector3 hangTo = Vector3Add(chuteAt, {2 * sinf(chuteAng) * f.z, -2 * cosf(chuteAng), -2 * sinf(chuteAng) * f.x});
+    if (hung && !rodsFit(terrain, w.pos, hangTo)) chute = hung = false;  // 0x5792a0: the canopy move must Fit (0x59edf0), else it closes (0x57967e)
+    if (hung) w.vel = Vector3Scale(Vector3Subtract(hangTo, w.pos), 1 / DT);
     if (punching && &w == &worms[current]) {
         // W4M 0x5693e0: Fits 0x59edf0 at the advanced position every step. Rising (Velocity.y > Weapon.Firepunch.MinVelocity 0): on failure
         // Land.ClearVoxel (0x473470) the cell the rod hit; ours: the 3 rods, the cell just past the hit. Falling: a failure ends the leap.
@@ -3797,7 +3799,7 @@ void Game::step(const Input &raw) {
                 weapon = secondary, secondary = -1, power = 0;
                 use(w);
                 weapon = tool;
-            } else if (armed && !gunState && weapon >= 0 && ((stock(w.team, weapon) && !delays[w.team][weapon]) || shotsLeft || spare) && !(w.nailed && !nailUsable(weaponDef(weapon).kind))) {
+            } else if (armed && !gunState && weapon >= 0 && ((stock(w.team, weapon) && !delays[w.team][weapon]) || shotsLeft || spare || (chute && weaponDef(weapon).kind == Kind::Parachute)) && !(w.nailed && !nailUsable(weaponDef(weapon).kind))) {
                 Vector3 h;
                 // W4M CanFire is asked on Input.FirePressed only (0x586092); a charge started goes on to its release
                 if (!powered(weaponDef(weapon))) { if ((pressed & Input::FIRE) && fireable(w) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire

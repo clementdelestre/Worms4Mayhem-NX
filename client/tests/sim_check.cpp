@@ -3451,6 +3451,19 @@ static void checkParachute() {
     Vector3 f = flat(a.yaw), off = Vector3Subtract(a.pos, g.chuteAt);
     assert(g.chute && fabsf(off.y + 2 * cosf(g.chuteAng)) < 0.05f && fabsf(off.x - 2 * sinf(g.chuteAng) * f.z) < 0.05f);
     assert(Vector3Distance(at, g.chuteAt) > 0.5f);
+    // a vertical wall across the drift: the canopy move no longer Fits, the chute closes (0x57967e) and the worm falls
+    g.ammo[a.team][chute] = 0, g.wind = 8, g.chute = false;
+    for (int z = 0; z < Terrain::NZ; z++)
+        for (int y = 179; y < Terrain::NY; y++)
+            for (int x = 0; x < Terrain::NX; x++) if (x * Terrain::VOX >= 24 && x * Terrain::VOX < 26) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
+    a.pos = {20, 58, 20}, a.vel = {0, 0, 0}, a.grounded = false, a.yaw = PI / 2;
+    g.chuteOpen(a);
+    for (int t = 0; t < 60 * 5 && g.chute; t++) g.step(Input{});
+    assert(!g.chute && a.pos.x < 24 && !a.grounded);
+    // A closes an open chute with no ammo left (0x578db0 does not read the inventory)
+    g.chuteOpen(a), g.weapon = chute, a.pos = {10, 58, 10}, a.grounded = false;
+    g.step(Input{}), g.step(fire);
+    assert(!g.chute);
 }
 
 // W4M PayloadWeapon 0x5833a0 -> 0x549bb0: PostLaunchDelay after the launch, movement back and StartRetreatTimer, the shell still
