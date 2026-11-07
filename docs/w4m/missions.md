@@ -505,6 +505,7 @@ Crates (CrateLogicEntity, vtable 0x8619a0, HandleMessage 0x5cb330, spawn 0x5c9bd
   CrateGraphicEntity 0x5c4d10 draws Crate.Weapon / .Health / .Utility / .Target / .Mystery, a custom crate the Crate.CustomGraphic
   resource (a level detail mesh: D02_04 gems, D04_05 ...) [disasm + data].
 - Fall 0x5c9420 only with Gravity; Gravity 0 never moves and drops the active object (0x5c96d2).
+- Scanner dot [disasm 0x5f6aa0, 0x5f6d00]: ScannerHudEntity stores per crate (+0x86 radar flag set) its Type byte (+0x20: weapon 0, health 1, utility 2, target 3, mystery 4, custom 5, 0x5c9200) as the dot's icon, and 5 for every mine (0x5f6efd): a custom crate (GhostHillGraveyard gold, CustomGraphic D04_01) shares the mine dot. HUD.CrateDot atlas (radar_objects, 4x2): cell = that index [data: sprite sheet, assumed cell order = index].
 - Collision 0x5cb7e0: a worm (flags 1) -> 0x5c8370: TeamCollectable -1 or the worm's team's AlliedGroup (TeamData +0x6c); UXB marks it
   to detonate; else collected by that worm. Collider flags 0x88 (sheep-like payloads) -> 0x5c9750: the same for the active worm.
   Collection 0x5cb5a0 by type (table 0x5cb7c4): weapon / utility add NumContents as a u8 to the alliance's inventory (0xff infinite; the

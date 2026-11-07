@@ -759,9 +759,10 @@ Vector3 muzzle(const Terrain &t, Vector3 pos, Vector3 spawn) {
 }
 
 Vector3 restOn(const Terrain &t, Vector3 p, float r) {
-    Vector3 s = p;
-    for (int k = 0; k < 8 && !t.solid({s.x, s.y - 0.02f, s.z}); k++) s.y -= 0.02f;
-    return t.solid({s.x, s.y - 0.02f, s.z}) ? Vector3Add(s, Vector3Scale(t.normal(s), r)) : p;  // in the air: as is
+    float d;
+    Vector3 n;
+    if (!t.cast(p, {0, -1, 0}, 0.18f, &d, &n)) return p;  // in the air: as is; the normal is the face the downward ray enters by (W4M 0x46a070), not the nearest one
+    return Vector3Add({p.x, p.y - d, p.z}, Vector3Scale(n, r));
 }
 
 static Vector3 probePoint(Vector3 pos, int i) { return {pos.x + PROBE[i % 4].x, pos.y - Game::R + (i < 4 ? 0 : 1.0f), pos.z + PROBE[i % 4].y}; }

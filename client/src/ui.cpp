@@ -4320,7 +4320,8 @@ static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
         if (ob.dead || ob.type == Object::Barrel || !ob.radar) continue;  // radar: W4M Crate.RadarHide / RadarDisplay (crate +0x86)
         Kind k = ob.weapon >= 0 && ob.weapon < (int)WEAPONS.size() ? WEAPONS[ob.weapon].kind : Kind::Shell;
         bool util = utility(k);
-        int cell = ob.type == Object::Mine ? 5 : ob.type == Object::Sentry ? 4 : ob.weapon < 0 ? 1 : util ? 2 : 0;
+        // crate type +0x20 (0x5c9200: weapon 0, health 1, utility 2, target 3, mystery 4, custom 5) is the dot's cell; a mine (0x5f6efd) is 5 too
+        int cell = ob.type == Object::Mine ? 5 : ob.type == Object::Sentry ? 4 : ob.type == Object::Target ? 3 : ob.weapon == -2 ? 5 : ob.mystery >= 0 ? 4 : ob.weapon < 0 ? 1 : util ? 2 : 0;
         Vector2 p = at(ob.pos);
         if (!sprite("radar_objects", p, 0.45f, {16, 16}, 0, WHITE, {(cell % 4) * 32.0f, (cell / 4) * 32.0f, 32, 32}))
             DrawRectangleV({p.x - 3, p.y - 3}, {6, 6}, cell == 5 ? RED : BROWN);
