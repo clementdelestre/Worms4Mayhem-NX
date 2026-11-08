@@ -346,6 +346,7 @@ bool Terrain::load(const std::string &map, unsigned seed) {
         if (v < 0 || v >= (int)L.cell.size()) continue;
         L.cell[v] = (int)i;
     }
+    indexFrames(0);
     for (const Json &e : j["emitters"].arr) emitters.push_back({e["fx"].s(), vec(e["pos"], {cx, 8, cz})});
     for (const Json &l : j["lights"].arr)
         lights.push_back({vec(l["pos"], {cx, 8, cz}), {(unsigned char)l["col"][0].f(), (unsigned char)l["col"][1].f(), (unsigned char)l["col"][2].f(), 255}, l["r"].f(), l["code"].s()});
@@ -769,6 +770,7 @@ void Terrain::addCell(const Vector3 *c) {
     for (int i = 0; i < 3; i++) for (int k = 0; k < 3; k++) l.w[i * 3 + k] = (&ax[k].x)[i];
     l.n[0] = l.n[1] = l.n[2] = 1, l.e.assign(2, {}), l.cell = {-1};
     landUV.push_back(std::move(l));
+    indexFrames(frameIdx.n + 1 == landUV.size() ? frameIdx.n : 0);
     Vector3 lo = c[0], hi = c[0];
     for (int k = 0; k < 8; k++) lo = Vector3Min(lo, c[k]), hi = Vector3Max(hi, c[k]);
     int a[3] = {std::max(0, (int)ceilf(lo.x * IVOX)), std::max(0, (int)ceilf(lo.y * IVOX)), std::max(0, (int)ceilf(lo.z * IVOX))};
@@ -861,26 +863,94 @@ Terrain::Shade Terrain::sunShade(Vector3 p, float off, bool back) const {
     return {floorf(t / u) / 1000, true, Vector3Add(a, Vector3Scale(d, t + 0.05f))};
 }
 
-// The first frame (0x473190's order) whose sampled land holds p, -1 none (heightmap, edits); *q: p in its lattice
-int Terrain::frameAt(Vector3 p, Vector3 *q) const {
-    for (size_t f = 0; f < landUV.size(); f++) {
-        const LandUV &L = landUV[f];
-        const float *a = L.a;
-        const Vector3 l = lattice::toLattice(L.n, L.e, L.h, {a[0] * p.x + a[1] * p.y + a[2] * p.z + a[3] + L.n[0] * 0.5f,
-                                                              a[4] * p.x + a[5] * p.y + a[6] * p.z + a[7] + L.n[1] * 0.5f,
-                                                              a[8] * p.x + a[9] * p.y + a[10] * p.z + a[11] + L.n[2] * 0.5f});
-        const int x = (int)floorf(l.x), y = (int)floorf(l.y), z = (int)floorf(l.z), v = frameCell(L, x, y, z);
-        if (!frameSolid(L, x, y, z)) continue;
-        if (v >= 0) {  // the sampler (§23): one of the cell's pieces holds p
-            const WCell &w = wcells[v];
-            uint32_t h = w.hex;
-            while (h < w.hex + w.nhex && !sharp.inside(h, p)) h++;
-            if (h == w.hex + w.nhex) continue;
-        }
-        if (q) *q = l;
-        return (int)f;
+// Frame f's sampled land holds p (the frame's lattice cell is land, and in a listed cell one of its pieces holds p); *q: p in its lattice
+bool Terrain::frameHolds(size_t f, Vector3 p, Vector3 *q) const {
+    const LandUV &L = landUV[f];
+    const float *a = L.a;
+    const Vector3 l = lattice::toLattice(L.n, L.e, L.h, {a[0] * p.x + a[1] * p.y + a[2] * p.z + a[3] + L.n[0] * 0.5f,
+                                                          a[4] * p.x + a[5] * p.y + a[6] * p.z + a[7] + L.n[1] * 0.5f,
+                                                          a[8] * p.x + a[9] * p.y + a[10] * p.z + a[11] + L.n[2] * 0.5f});
+    const int x = (int)floorf(l.x), y = (int)floorf(l.y), z = (int)floorf(l.z), v = frameCell(L, x, y, z);
+    if (!frameSolid(L, x, y, z)) return false;
+    if (v >= 0) {  // the sampler (§23): one of the cell's pieces holds p
+        const WCell &w = wcells[v];
+        uint32_t h = w.hex;
+        while (h < w.hex + w.nhex && !sharp.inside(h, p)) h++;
+        if (h == w.hex + w.nhex) return false;
     }
+    if (q) *q = l;
+    return true;
+}
+
+// The first frame (0x473190's order) whose sampled land holds p, -1 none (heightmap, edits); *q: p in its lattice. Only the frames
+// whose land box covers p's column are tried (a scan of every frame cost 15-50 us a call on a 700-frame map).
+int Terrain::frameAt(Vector3 p, Vector3 *q) const {
+    const FrameIndex &I = frameIdx;
+    if (I.n != landUV.size()) {
+        for (size_t f = 0; f < landUV.size(); f++) if (frameHolds(f, p, q)) return (int)f;
+        return -1;
+    }
+    constexpr int G = FrameIndex::G;
+    const int cx = std::min(G - 1, std::max(0, (int)(p.x / (NX * VOX) * G))), cz = std::min(G - 1, std::max(0, (int)(p.z / (NZ * VOX) * G)));
+    for (int f : I.col[cz * G + cx])
+        if (p.x >= I.lo[f].x && p.y >= I.lo[f].y && p.z >= I.lo[f].z && p.x <= I.hi[f].x && p.y <= I.hi[f].y && p.z <= I.hi[f].z && frameHolds(f, p, q)) return f;
     return -1;
+}
+
+// World box of each frame's land cells: the cells' lattice range, through every layer's EdgeOffset ends and the HeightMap's range, to world
+// by the inverse of the frame's affine map. A frame whose map cannot be inverted is a candidate everywhere.
+void Terrain::indexFrames(size_t first) {
+    FrameIndex &I = frameIdx;
+    constexpr int G = FrameIndex::G;
+    if (!first) for (auto &c : I.col) c.clear();
+    I.lo.resize(landUV.size(), {-1e9f, -1e9f, -1e9f}), I.hi.resize(landUV.size(), {1e9f, 1e9f, 1e9f}), I.n = landUV.size();
+    for (size_t f = first; f < landUV.size(); f++) {
+        const LandUV &L = landUV[f];
+        const int *n = L.n;
+        int r[6] = {n[0], n[1], n[2], -1, -1, -1};  // lattice cell range of the land: min x y z, max x y z
+        for (int z = 0, v = 0; z < n[2]; z++)
+            for (int x = 0; x < n[0]; x++)
+                for (int y = 0; y < n[1]; y++, v++)
+                    if (L.cell[v] != -2) r[0] = std::min(r[0], x), r[1] = std::min(r[1], y), r[2] = std::min(r[2], z), r[3] = std::max(r[3], x), r[4] = std::max(r[4], y), r[5] = std::max(r[5], z);
+        if (r[3] < 0) { I.lo[f] = {1e9f, 1e9f, 1e9f}, I.hi[f] = {-1e9f, -1e9f, -1e9f}; continue; }  // no land: never holds a point
+        const float *a = L.a;
+        const float det = a[0] * (a[5] * a[10] - a[6] * a[9]) - a[1] * (a[4] * a[10] - a[6] * a[8]) + a[2] * (a[4] * a[9] - a[5] * a[8]);
+        float hlo = 0, hhi = 0;
+        if (!L.h.empty()) hlo = *std::min_element(L.h.begin(), L.h.end()), hhi = *std::max_element(L.h.begin(), L.h.end());
+        float pre[6] = {1e9f, r[1] + hlo, 1e9f, -1e9f, r[4] + 1 + hhi, -1e9f};  // frame-local point before toLattice: min, max x y z
+        bool ok = fabsf(det) > 1e-12f;
+        // toLattice lerps the EdgeOffsets by the point's y (extrapolating past the end layers): linear between integer y, so the ends and every layer in range bound it
+        std::vector<float> ys = {pre[1], pre[4]};
+        for (int j = std::max(0, (int)ceilf(pre[1])); j <= std::min(n[1], (int)floorf(pre[4])); j++) ys.push_back((float)j);
+        for (float y : ys)
+            for (int k = 0; k < 2 && ok; k++) {
+                const int j = std::min(std::max((int)y, 0), n[1] - 1);
+                const float t = y - j;
+                const Vector4 e = {L.e[j].x * (1 - t) + L.e[j + 1].x * t, L.e[j].y * (1 - t) + L.e[j + 1].y * t, L.e[j].z * (1 - t) + L.e[j + 1].z * t, L.e[j].w * (1 - t) + L.e[j + 1].w * t};
+                const float sx = (e.z - e.x) / n[0] + 1, sz = (e.w - e.y) / n[2] + 1;
+                ok &= sx > 0 && sz > 0;
+                const float x = (k ? r[3] + 1 : r[0]), z = (k ? r[5] + 1 : r[2]);
+                pre[0] = std::min(pre[0], e.x + x * sx), pre[3] = std::max(pre[3], e.x + x * sx);
+                pre[2] = std::min(pre[2], e.y + z * sz), pre[5] = std::max(pre[5], e.y + z * sz);
+            }
+        if (ok) {
+            Vector3 lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
+            const float inv[9] = {a[5] * a[10] - a[6] * a[9], a[2] * a[9] - a[1] * a[10], a[1] * a[6] - a[2] * a[5],
+                                  a[6] * a[8] - a[4] * a[10], a[0] * a[10] - a[2] * a[8], a[2] * a[4] - a[0] * a[6],
+                                  a[4] * a[9] - a[5] * a[8], a[1] * a[8] - a[0] * a[9], a[0] * a[5] - a[1] * a[4]};
+            for (int c = 0; c < 8; c++) {
+                const float d[3] = {pre[c & 1 ? 3 : 0] - a[3] - n[0] * 0.5f, pre[c & 2 ? 4 : 1] - a[7] - n[1] * 0.5f, pre[c & 4 ? 5 : 2] - a[11] - n[2] * 0.5f};
+                const Vector3 w = {(inv[0] * d[0] + inv[1] * d[1] + inv[2] * d[2]) / det, (inv[3] * d[0] + inv[4] * d[1] + inv[5] * d[2]) / det, (inv[6] * d[0] + inv[7] * d[1] + inv[8] * d[2]) / det};
+                lo = Vector3Min(lo, w), hi = Vector3Max(hi, w);
+            }
+            const float pad = 0.01f;  // float rounding of the forward map
+            I.lo[f] = {lo.x - pad, lo.y - pad, lo.z - pad}, I.hi[f] = {hi.x + pad, hi.y + pad, hi.z + pad};
+        }
+        const Vector3 lo = I.lo[f], hi = I.hi[f];
+        const int c0 = std::min(G - 1, std::max(0, (int)(lo.x / (NX * VOX) * G))), c1 = std::min(G - 1, std::max(0, (int)(hi.x / (NX * VOX) * G)));
+        const int z0 = std::min(G - 1, std::max(0, (int)(lo.z / (NZ * VOX) * G))), z1 = std::min(G - 1, std::max(0, (int)(hi.z / (NZ * VOX) * G)));
+        for (int z = z0; z <= z1; z++) for (int x = c0; x <= c1; x++) I.col[z * G + x].push_back((int)f);
+    }
 }
 
 // 0x43e0d0 on the frame's own voxel bits, less the cells blasts and clears took
