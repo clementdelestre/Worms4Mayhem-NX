@@ -5109,7 +5109,8 @@ void Hud::queue(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     // HudClockEntity (0x5f0ae0 init, 0x5f0a60 update): root HUD.Clock.Position (254, -170) tilted HUD.Clock.Orientation z -0.1, disc HUD.Clock.Back half 44 (Clock.Scale)
     const ScriptHud sh = scriptHud(g);
-    const int ms = aiming && !g.hotSeat ? g.timer * 50 / 3 : 0, secs = (ms + 999) / 1000;
+    // a charge start posts Timer.EndTurn: ClockDisplayMode 1, no turn digits (0x50fbf1 -> 0x50ef60)
+    const int ms = aiming && !g.hotSeat && g.power <= 0 ? g.timer * 50 / 3 : 0, secs = (ms + 999) / 1000;
     if (!panelShown) {  // WeaponPanel.Open hides every BaseHudObject (0x5dad00)
         // ClockDisplayMode 2 (a running turn): the turn digits (0x5efe80) while the shown seconds > 0 and HUD.HideTurnTime was not sent; retreat and post-activity are mode 0
         const bool digitsOn = secs > 0 && !sh.endless && !sh.hideTurn;

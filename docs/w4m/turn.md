@@ -208,7 +208,7 @@ Overrides in the scripts [data, lua.py]:
 Members:
 - data-key handles: +0x74 RoundTime, +0x78 TurnTime, +0x7c HotSeatTime, +0x80 PostActivityTime, +0x84 RetreatTime.
 - remaining times: +0x88 Round, +0x8c Turn, +0x90 HotSeat, +0x94 PostActivity, +0x98 Retreat (all "...Remaining").
-- other keys: +0x9c ElapsedRoundTime, +0xa0 ClockDisplayMode (1 hot seat, 2 turn, 0 post-activity or retreat).
+- other keys: +0x9c ElapsedRoundTime, +0xa0 ClockDisplayMode (1 hot seat, 2 turn, 0 post-activity or retreat). Timer.EndTurn (0x50fbd5) and the hot-seat timeout (0x50f2e6) call 0x50ef60(0): HotSeatTimeRemaining = 0 and ClockDisplayMode = 1, so a powered weapon's charge start (0x586ec0 -> 0x549ad0 -> Timer.EndTurn) hides the turn digits and the round text takes the whole clock [disasm; observed]. Ours: `Ui` turn digits off while `Game::power > 0` [ours = disasm].
 - The HUD clock (HudClockEntity init 0x5f0ae0) binds RoundTimeRemaining, TurnTimeRemaining, HotSeatTimeRemaining and RoundTime / TurnTime, not RetreatTimeRemaining (read only by TimerService 0x50f87e and the CMS 0x51ff68) [disasm]; what it shows in mode 0 (retreat) is not traced.
 - flags: +0x69 game paused, +0x6a turn, +0x6b round, +0x6c hot seat, +0x6d post-activity, +0x6e retreat, +0x6f round paused, +0x70 turn paused.
 
