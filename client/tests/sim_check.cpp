@@ -6143,6 +6143,24 @@ static void checkLatticeFrames() {
     assert(checked > 10000);
 }
 
+// frameAt's column index finds the same first frame as testing every frame, on points in the air and on the land
+static void checkFrameIndex() {
+    Terrain t;
+    assert(t.load("HighNoonHiJinx", 1) && t.landUV.size() > 100);
+    uint32_t r = 12345;
+    auto rnd = [&] { r = r * 1664525u + 1013904223u; return (r >> 8) / 16777216.0f; };
+    int inside = 0;
+    for (int i = 0; i < 40000; i++) {
+        Vector3 p{rnd() * Terrain::NX * Terrain::VOX, rnd() * Terrain::NY * Terrain::VOX * 0.6f, rnd() * Terrain::NZ * Terrain::VOX}, hit;
+        if (i % 2 && t.raycast({{p.x, Terrain::NY * Terrain::VOX, p.z}, {0, -1, 0}}, Terrain::NY * Terrain::VOX, &hit)) p = {hit.x, hit.y - 0.02f, hit.z};
+        int want = -1;
+        for (size_t f = 0; f < t.landUV.size() && want < 0; f++) if (t.frameHolds(f, p, nullptr)) want = (int)f;
+        assert(t.frameAt(p) == want);
+        inside += want >= 0;
+    }
+    assert(inside > 1000);
+}
+
 // W4M GLG 0x457130: uv = floor / wall row . lattice point + offset; a thin cell's corner 1 (4) is its corner 0 one lattice step along x (z)
 static void checkLandUV() {
     Terrain t;
@@ -6347,6 +6365,7 @@ int main() {
     checkLowLedges();
     checkStartNormal();
     checkLatticeFrames();
+    checkFrameIndex();
     checkRootPerm();
     checkVault();
     checkNarrowSlot();
