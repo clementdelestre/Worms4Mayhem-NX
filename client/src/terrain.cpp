@@ -907,6 +907,7 @@ void Terrain::indexFrames(size_t first) {
     for (size_t f = first; f < landUV.size(); f++) {
         const LandUV &L = landUV[f];
         const int *n = L.n;
+        I.lo[f] = {-1e9f, -1e9f, -1e9f}, I.hi[f] = {1e9f, 1e9f, 1e9f};  // a previous map's box must not survive a failed inverse
         int r[6] = {n[0], n[1], n[2], -1, -1, -1};  // lattice cell range of the land: min x y z, max x y z
         for (int z = 0, v = 0; z < n[2]; z++)
             for (int x = 0; x < n[0]; x++)
