@@ -435,7 +435,8 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkCrateColliders` | W4M 0x5cb7e0: a crate dropped on a drum rests on it ("Crate Spawn" released) and drops to the slab once the drum is gone; a drum dropped on a crate falls through it to the land. |
 | `checkPayloadBounce` | W4M 0x518f40 values (Min dampings, Bounce.MinSpeed stop, the 1 m/s floor, v.n > 0, zero dampings) and the WEAPTWK dampings loaded from weapons.json. |
 | `checkGravestone` | W4M DeathThroes gravestone: made 1 m over the feet with the team's GraveIndex and yaw, rests on land, unmoved by a blast's push, falls when its land is carved, stops a bullet, is in the payload mask and not the worm's, removed 1.5 m under the water. |
-| `checkAbduction` | W4M alien abduction: UFO lifts worms in reach nearest first, spits them out 2.1 s apart at half health. |
+| `checkAbduction` | W4M alien abduction: UFO lifts worms in reach nearest first, spits them out 2.1 s apart at half health. Also: `start()`'s first TurnStart reaches the first step once. |
+| `checkFrameIndex` | `Terrain::frameAt`'s column index finds the same first frame as testing every frame (HighNoonHiJinx, 40 000 points in the air and on the land). |
 | `checkSuperSheep` | Super Sheep: walks, FIRE takes off (25 s flight), FIRE again blows it up. |
 | `checkOldWoman` | Old Woman: steered, FIRE explodes, each enemy bumped loses 1-8 of a weapon to her team. |
 | `checkDonkey` | Concrete Donkey: smashes down every 0.75 s until its 8 s LifeTime or the water. |
@@ -493,6 +494,7 @@ scheme plays with sudden death; a King + Vampire match replays bit-identically.
 | `checkHurtEndsTurn` (alone: `W4NX_MISSION=hurt`) | DeathMatch6, 3 CPU turns: the active worm hurt ends its turn at once (Worm_Damaged_Current); the second shoots its own feet with the first of two shotgun shots: Weapon.Delete puts the gun in state 5, EndTurn counts its token (WaitUntilNoActivity), the next worm plays within 30 s (0x55db30). |
 | `checkSelfShot` (alone: `W4NX_MISSION=selfshot`) | MineAllMine seed 1, AI on every team, 4 minutes: no CPU worm is hurt by its own shotgun shot (direct plan IsPossible 0x4ac880). |
 | `checkIdle` (alone: `W4NX_MISSION=idle`) | [ours] Games chained in one process (ChallengeNavigation2, DeathMatch1, SneakyBridgeThieves, ChallengeNavigation2 again, a local game): the human team's cpu is 0; with the intro skipped and no input, 20 s of `Controls::tick(Controls::read)` give a zero Input and the worm keeps its position and yaw. |
+| `checkCrates` | Script crates' contents and counts on pickup (Crate_9 BaseballBat NumContents -1, Bazooka x10, HomingMissile x4 then x1, a random crate 1 item); HighNoonHiJinx's `Initialise` crate (Girder_Crate) gets its CrateDrop (by `uid`) on the first step; a `lib_SpawnCrate` crate: CrateDrop once, `born` at creation, `landAt` when it rests (Create / Bounce clips, 0x5c4a40). |
 | `checkMovies` (alone: `W4NX_MISSION=movies`) | TinCanWally's Intro plays in the sim for 80.39 s (its last camera's look-at, 600 steps, holds the end); `SKIP_MOVIE` ends it at once; DestructAndServe's `JEFF` coded land frames (the DeLorean) leave no solid voxel once cleared. |
 
 `main` also asserts: `Progress` save/load keeps done, best time and the `unlock` lines; with no imported mission it stops

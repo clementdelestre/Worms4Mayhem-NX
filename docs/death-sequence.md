@@ -26,7 +26,7 @@ How long the camera stays on a worm that dies, in W4M and here. 60 ticks = 1 s.
 
 ## Sequence (`sim.h` `countSpan`, `blastAt`, `dying`, `POST_ACTIVITY`)
 
-Settle (`docs/sim.md`, W4M stdlib.lub): wait for no activity (no timeout), PostActivityTime 2400 ms, then ApplyDamage: every hurt worm's damage display at once (`COUNT_DAMAGE` 2500 ms, all together, no camera travel), the dead queued in worm order.
+Settle (`docs/sim.md`, W4M stdlib.lub): wait for no activity (no timeout), PostActivityTime 2400 ms, then ApplyDamage: every hurt worm's damage display at once (`COUNT_DAMAGE` 2500 ms, all together, no camera travel), the dead queued in worm order. Only ApplyDamage counts (0x5abc50): a worm a script respawns (Worm.Respawn) shows its Energy at once, no count up from 0, no camera (`Hud::trackHp`) [ours = disasm].
 
 | t | Event |
 |---|---|
