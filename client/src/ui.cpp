@@ -4479,14 +4479,17 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     }
     if (hpt.size() != g.worms.size() || tick < hpTick || g.clock < hpClock) {  // new match, replay seek or instant replay
         hpt.assign(g.worms.size(), {});
-        for (size_t i = 0; i < hpt.size(); i++) hpt[i].seen = g.worms[i].counted, hpt[i].shown = hpt[i].seen;
+        for (size_t i = 0; i < hpt.size(); i++) hpt[i].seen = g.worms[i].counted, hpt[i].shown = hpt[i].seen, hpt[i].alive = g.worms[i].alive;
         popups.clear(), order.clear(), counting = -1;
     }
     hpTick = tick, hpClock = g.clock;
     for (size_t i = 0; i < hpt.size(); i++) {  // labels follow the sim's counted hp; out of Settle only poison moves it
         HpTrack &t = hpt[i];
         const Worm &w = g.worms[i];
+        const bool spawned = w.alive && !t.alive;
+        t.alive = w.alive;
         if (w.counted == t.seen) continue;
+        if (spawned) { t.seen = w.counted, t.shown = t.from = (float)w.counted; continue; }  // Worm.Respawn: its Energy at once (only ApplyDamage counts, 0x5abc50)
         if (w.counted > t.seen && g.phase != Phase::Settle) {  // health crate: +N on the spot, no count
             popups.push_back({(int)i, w.counted - t.seen, 0, 0, false, false});
             t.seen = w.counted, t.shown = t.from = (float)w.counted;
