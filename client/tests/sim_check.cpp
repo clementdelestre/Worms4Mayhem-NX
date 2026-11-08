@@ -4406,17 +4406,25 @@ static void checkAbduction() {
     assert(fabsf(t - Game::ABD_SPIT * 60) < 2 && g.worms[second].hp == hp2 - hp2 / 2);
     for (t = 0; g.efmvActive(); t++) g.step(Input{});
     assert(fabsf(t - (Game::ABD_SPIT + Game::ABD_LEAVE) * 60) < 3 && g.abductees.empty());  // the next SpitOutWorm finds nobody: AbductEnd
+    {  // start()'s first TurnStart (GameLogic.Turn.Started, every turn) reaches the first step's events, once
+        Game f;
+        f.start({29, 2, 1, "", 0});
+        f.step(Input{});
+        assert(std::count_if(f.events.begin(), f.events.end(), [](const GameEvent &e) { return e.kind == GameEvent::TurnStart; }) == 1);
+        f.step(Input{});
+        assert(std::none_of(f.events.begin(), f.events.end(), [](const GameEvent &e) { return e.kind == GameEvent::TurnStart; }));
+    }
     // an abductee unhurt between two turn starts gets random health; a Zap while it moves (UpdateAbductee)
     Game h;
     h.start({29, 2, 1, "", 0}), h.hotSeat = 0;
     Worm &v = h.worms[1 - h.current];
     v.abducted = true, v.zap = Game::ZAP_FIRST;
     int turns = 0, hp = v.hp;
-    for (int k = 0; k < 60 * 400 && turns < 2; k++) {
+    for (int k = 0; k < 60 * 400 && turns < 3; k++) {  // the first: start()'s, delivered by the first step
         h.step(Input{});
         for (const GameEvent &e : h.events) turns += e.kind == GameEvent::TurnStart;
     }
-    assert(turns == 2 && v.calm == v.hp && v.hp != hp && v.hp < 100);
+    assert(turns == 3 && v.calm == v.hp && v.hp != hp && v.hp < 100);
     {  // ApplyPoison 0x5ac060 runs in DoPostActivity before the damage is applied: rand % 100 == 0 leaves 0 hp and kills (no minimum)
         Game z0;
         z0.start({29, 2, 1, "", 0});

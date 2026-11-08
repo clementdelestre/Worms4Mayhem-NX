@@ -4429,11 +4429,13 @@ void hudEvent(const Game &g, const GameEvent &e) {
         if (defaults) comment("StartTurn", wormName(g.cfg, g.worms[e.worm].team, g.wormSlot(e.worm)));
     } else if (e.kind == GameEvent::SuddenDeath) {  // StartSuddenDeath: Comment.SuddenDeath through the CommentService queue
         if (defaults) banners.push_back({tr("Comment.SuddenDeath", "SUDDEN DEATH!")});
-    } else if (e.kind == GameEvent::CrateDrop && !g.objects.empty()) {  // the spawned object is the last one
-        int wi = g.objects.back().weapon;
-        Kind k = wi >= 0 && wi < (int)WEAPONS.size() ? WEAPONS[wi].kind : Kind::Shell;
-        bool util = utility(k);
-        if (defaults && g.objects.back().type == Object::Crate && g.objects.back().weapon >= -1) comment(g.objects.back().mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
+    } else if (e.kind == GameEvent::CrateDrop) {  // a script may spawn several in one tick
+        auto o = std::find_if(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.type == Object::Crate && x.uid == e.obj; });
+        if (o != g.objects.end()) {
+            int wi = o->weapon;
+            bool util = wi >= 0 && wi < (int)WEAPONS.size() && utility(WEAPONS[wi].kind);
+            if (defaults && wi >= -1) comment(o->mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
+        }
         crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
     } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15 && !subMode) {  // CommentaryPanel.Comment: the item's Text.k<name>
         banners.push_back({mysteryText(e.weapon)});

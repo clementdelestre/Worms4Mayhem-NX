@@ -2348,7 +2348,12 @@ void Game::doPostActivity() {
 // CreateRandomCrate 0x4fa4b0, 300 units over the land
 void Game::dropCrates(int n, bool roll) {
     for (; n > 0; n--)
-        if ((!roll || (int)(rand01() * 100) < cfg.scheme.crateChance) && addObject(Object::Crate, 15)) emit(GameEvent::CrateDrop, objects.back().pos);
+        if ((!roll || (int)(rand01() * 100) < cfg.scheme.crateChance) && addObject(Object::Crate, 15)) crateDrop();
+}
+
+void Game::crateDrop() {
+    numberObjects();
+    emit(GameEvent::CrateDrop, objects.back().pos), events.back().obj = objects.back().uid;
 }
 
 // The damage display (COUNT_DAMAGE), then the death queue 0x4f9b30, ticked before the worms: the front worm's throes once nothing
@@ -3672,7 +3677,8 @@ void Game::stepShots(const Input &in, bool detonate) {
 }
 
 void Game::step(const Input &raw) {
-    events.clear();  // also when over: GameOver must reach the listeners once
+    events.erase(events.begin(), events.begin() + std::min(stepped, events.size()));  // also when over: GameOver must reach the listeners once
+    struct Mark { Game &g; ~Mark() { g.stepped = g.events.size(); } } mark{*this};
     terrain.blobs.step(DT * 1000, gravity() / 1e6f * -1, terrain.origin.y);  // 0x464fc0 each game clock step; the pieces are render only
     if (phase == Phase::GameOver && !scriptMovieOn(*this)) return;  // the world runs on under the EFMV.GameOverMovie
     if (raw.flags & Input::SKIP_MOVIE) scriptSkipMovie(*this);

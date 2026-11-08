@@ -310,6 +310,7 @@ struct GameEvent {
     const char *sfx = nullptr;  // Boom: the FEV event its caller plays besides the effect's own EmitterSoundFX (a payload's DetonationSfx)
     int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories; Hurt (Game::hurt): the hp lost; SentryHit: the sentry's id
     float amount = 0;  // SentryHit (0x56d2a0): the damage its graphic takes (command 4); weapon = 1 in the full-damage core (Turn.MaxDamage)
+    int obj = -1;  // CrateDrop: the crate's Object::uid
 };
 
 // Match options, identical on every client (sent in the network Start message).
@@ -539,7 +540,8 @@ struct Game {
     void stepGraves();
     struct Gas { Vector3 pos; float life, poison; };
     std::vector<Gas> gas;  // poison clouds: drift with the wind, poison every worm inside
-    std::vector<GameEvent> events;  // cleared at the start of each step()
+    std::vector<GameEvent> events;  // step() drops the previous step's and keeps those emitted since (a script's Initialise)
+    size_t stepped = 0;  // events.size() when the last step() returned
     std::vector<int> nextWorm;
     // W4M inventories (0x50d900): ammo rows are Inventory.AllianceNN in versus (row = alliance), a script's per-team view under a script;
     // teamAmmo [team][weapon] Inventory.TeamNN (versus Specialist only, empty otherwise)
@@ -807,6 +809,7 @@ private:
     void floatStep(Worm &w);
     void surrender(int team);
     void dropCrates(int n, bool roll);
+    void crateDrop();  // the crate just pushed: its uid, then CrateDrop (CrateGraphicEntity 0x5c4a40: sound, comment, camera, acting)
     bool standing(int team) const;
     int activeAlliances() const;
     int survivingTeam() const;

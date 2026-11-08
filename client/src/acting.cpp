@@ -655,7 +655,7 @@ void Acting::event(const Game &g, const GameEvent &e) {
     case GameEvent::CrateDrop:  // CrateGraphicEntity 0x5c4710, as the crate spawns (any type): Acting.Trigger CrateDrop, the crate as payload
         if (cur != NONE) line(cur, V::CrateDrop);
         for (size_t k = 0; k < g.objects.size(); k++)
-            if (g.objects[k].type == Object::Crate && g.objects[k].weapon >= -1 && Vector3Equals(g.objects[k].pos, e.pos)) { fire(g, CRATE_DROP, NONE, worms() + (int)k); break; }
+            if (g.objects[k].type == Object::Crate && g.objects[k].weapon >= -1 && g.objects[k].uid == e.obj) { fire(g, CRATE_DROP, NONE, worms() + (int)k); break; }
         break;
     case GameEvent::GameOver:
         for (size_t i = 0; i < actors.size(); i++)

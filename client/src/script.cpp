@@ -674,7 +674,7 @@ struct ScriptHost {
         }
         o.born = g.clock, o.landAt = o.spawning ? -1 : g.clock;
         g.objects.push_back(o);
-        g.emit(GameEvent::CrateDrop, o.pos);  // CrateGraphicEntity 0x5c4a40: every crate's first update (fx, sound, comment, camera)
+        g.crateDrop();
         if (num("Crate.AddToWormInventory") != 0) S->toWorm.insert(o.tag), put("Crate.AddToWormInventory", 0);  // reset per crate (0x4f2245)
         const Val *gfx = key("Crate.CustomGraphic");
         if (type("custom") && gfx && !gfx->s.empty()) S->graphic[o.tag] = gfx->s;  // render only (CrateGraphicEntity 0x5c4ea1)
@@ -1215,7 +1215,7 @@ void scriptStep(Game &g) {
     if (S->endless && g.phase == Phase::Aim) g.timer = std::max(g.timer, 99 * 60);
     S->tagged.clear();
     for (const Object &o : g.objects) if (o.tag >= 0 && crate(o)) S->tagged.push_back(o);
-    g.events.insert(g.events.end(), S->ui.begin(), S->ui.end());  // also Initialise's, which ran before the first step cleared the events
+    g.events.insert(g.events.end(), S->ui.begin(), S->ui.end());
     S->ui.clear();
 }
 
