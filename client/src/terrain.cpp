@@ -1376,6 +1376,7 @@ void Terrain::chunkGeometry(int ci, ChunkGeo &geo) const {
                 c[n] = in ? d[idx(x, y, z)] * IQ : -1;
                 mt[n] = !in ? 0 : isSteel(idx(x, y, z)) ? HARD : !mats.empty() ? mats[idx(x, y, z)] : 0;
                 wt[n] = in && !wgt.empty() ? wgt[idx(x, y, z)] : 0;
+                if (mt[n] == HIDDEN) c[n] = -fabsf(c[n]);  // undrawn land is air for the mesh: the heightmap under it stays drawn (W4M draws it apart)
                 r |= (uint64_t)(c[n] > 0) << i;
             }
         }
