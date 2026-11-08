@@ -253,7 +253,7 @@ private:
     void queue(const Game &g, const Camera3D &cam, uint32_t tick);  // draw()'s body: its draws go to `bins`, capturing by value
     int introWorm = -1;       // the worm whose turn it is: a change is a turn start
     // W4M hp count: labels/bars show `shown`, which ticks toward the sim's counted hp (Settle: timed by the sim)
-    struct HpTrack { int seen = 0; float shown = 0, from = 0; bool poison = false; };
+    struct HpTrack { int seen = 0; float shown = 0, from = 0; bool poison = false, alive = false; };
     struct Popup { int worm, amount; float age, punch; bool poison, live; };  // big damage counter; age runs once its count ends
     std::vector<HpTrack> hpt;
     std::vector<Popup> popups;

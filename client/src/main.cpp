@@ -194,6 +194,10 @@ static bool drawObject(const Game &g, const Object &o) {
         if (at >= 0) clip = "MineOn", t = (g.clock - at) * Game::DT;
         if (Vector3Distance(viewEye, o.pos) > 15 && Models::has("mine_low")) model = "mine_low", clip = nullptr;
     }
+    if (o.type == Object::Crate || o.type == Object::Target) {  // CrateGraphicEntity 0x5c4a40: Create at its first update, Bounce once "Crate Spawn" is released
+        clip = o.landAt >= 0 ? "Bounce" : "Create";
+        t = (g.clock - (o.landAt >= 0 ? o.landAt : o.born)) * Game::DT;
+    }
     Models::pick(clip, t);
     Models::lightMul({1, 1, 1}, LightShade::k(LightShade::key(LightShade::Object, (int)(&o - g.objects.data()))));  // the object's light: crates, drums, mines, sentries
     if (o.type == Object::Sentry) { bool ok = Turret::draw(g, o); return Models::pick(nullptr), Models::lightMul({1, 1, 1}), ok; }
@@ -202,9 +206,10 @@ static bool drawObject(const Game &g, const Object &o) {
     const char *custom = o.type == Object::Crate && o.weapon < -1 ? scriptCrateGraphic(g, o.tag) : nullptr;
     for (int k = 0; custom && k < 15; k++) gfx[k] = (char)tolower((unsigned char)custom[k]);
     if (custom && Models::has(gfx)) model = gfx;
-    float k = (o.type == Object::Crate || o.type == Object::Target ? o.scale : 1) / (model == gfx || o.type == Object::Target ? 20 : 1);  // Crate.Scale
+    const bool rawUnits = o.type == Object::Crate || o.type == Object::Target;  // every crate model keeps its raw units (clips)
+    float k = (rawUnits ? o.scale / 20 : 1);  // Crate.Scale
     Vector3 at = o.pos;
-    bool ok = k == 1 ? Models::draw(model, at, yaw) : Models::draw(model, MatrixMultiply(MatrixMultiply(MatrixScale(k, k, k), MatrixRotateY(yaw)), MatrixTranslate(at.x, at.y, at.z)));
+    bool ok = k == 1 ? Models::draw(model, at, yaw) : Models::draw(model, MatrixMultiply(MatrixMultiply(MatrixScale(k, k, k), MatrixRotateY(yaw)), MatrixTranslate(at.x, at.y, at.z)), WHITE, rawUnits ? clip : nullptr, t, false);
     return Models::pick(nullptr), Models::lightMul({1, 1, 1}), ok;
 }
 static void floodFx(const Game &g, float stop) {  // FloodLogicEntity 0x555720: Land.Center x / z, Land.MaxHeight + 800 units
@@ -275,7 +280,7 @@ static void onEvent(const Game &g, const GameEvent &e) {
     case GameEvent::Hurt: say(Voice::Hurt); break;
     case GameEvent::Jump: say(Voice::Jump); break;
     case GameEvent::TurnStart: Audio::play(Sfx::TurnStart); say(Voice::Idle); break;
-    case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, e.pos); break;
+    case GameEvent::CrateDrop: Audio::play(Sfx::CrateLand, e.pos); break;  // 0x5c4710: weapons/CrateSpawn
     case GameEvent::CrateLand:
         Audio::play(e.weapon == -1 ? Sfx::CrateImpactHealth : e.weapon >= 0 && utility(WEAPONS[e.weapon].kind) ? Sfx::CrateImpactUtil : Sfx::CrateImpactWeapon, e.pos);  // mystery (-2): Weapon (0x5ca143)
         break;

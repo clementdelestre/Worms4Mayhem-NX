@@ -170,5 +170,4 @@ Pure arithmetic of the worm graphic entity, apart from the renderer so `sim_chec
 
 - `SpawnAccessory` is not done: the `Particle.WXPMesh36` antenna of the Abducted20c/30a movies, and `WXM_Telepath` (an object clip).
 - Clips named but missing from the file: PointAndWave, ShakeFist, CoverHead, WaveANdPoint, ANgry. They play nothing, and W4M does not find them either (assumed: case-sensitive).
-- The ambient cycle guard (0x5b3280, [esp+0x30]) is not decoded.
 - An `Interesting` track is never cast (no object tagged), so Idle200a does not play.

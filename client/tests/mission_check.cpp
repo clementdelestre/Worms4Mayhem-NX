@@ -245,6 +245,28 @@ static void checkCrates(const std::vector<MissionSpec> &list) {
         g.objects.back().tag = 50;
         assert(collect(g, 50).second == 11);
     }
+    {  // Initialise's crate (HighNoonHiJinx: Girder_Crate) reaches the first tick's events, its uid set
+        Game g;
+        for (const MissionSpec &m : list) if (m.id == std::string("HighNoonHiJinx")) g.start(missionConfig(m, 3));
+        auto c = std::find_if(g.objects.begin(), g.objects.end(), [](const Object &x) { return x.type == Object::Crate; });
+        assert(c != g.objects.end() && c->uid >= 0);
+        const int uid = c->uid;
+        g.step(Input{});
+        assert(std::any_of(g.events.begin(), g.events.end(), [&](const GameEvent &e) { return e.kind == GameEvent::CrateDrop && e.obj == uid; }));
+    }
+    {  // a script's crate spawns like any crate (CrateGraphicEntity 0x5c4a40): CrateDrop at its position, Create clip from its birth, Bounce from its landing
+        Game g;
+        start("HighNoonHiJinx", g);
+        size_t n = g.objects.size();
+        scriptEval(g, "lib_SpawnCrate(\"Bazooka_Crate\")");
+        assert(g.objects.size() == n + 1);
+        Object o = g.objects.back();
+        assert(o.spawning && o.born == g.clock && o.landAt < 0);
+        assert(std::count_if(g.events.begin(), g.events.end(), [&](const GameEvent &e) { return e.kind == GameEvent::CrateDrop && e.obj == o.uid && o.uid >= 0; }) == 1);
+        g.step(Input{});  // emitted between two steps: kept for this one
+        for (int t = 0; t < 60 * 20 && g.objects[n].spawning; t++) g.step(Input{});
+        assert(!g.objects[n].spawning && g.objects[n].landAt > g.objects[n].born);
+    }
 }
 
 // W4M Worm_Damaged_Current (stdlib): the active worm hurt in its turn, a CPU's too, runs EndTurn at once

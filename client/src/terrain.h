@@ -83,6 +83,7 @@ struct Terrain {
     // slip: the frame's name or an ancestor's holds SLIPPY (W4M frame flag +0x16 bit 0, IsSlippy 0x475770)
     struct LandUV { float a[12], w[9], t[16]; int n[3]; std::vector<Vector4> e; std::vector<float> h; std::vector<int> cell; bool slip = false; };
     std::vector<LandUV> landUV;
+    struct FrameIndex { static constexpr int G = 64; std::vector<Vector3> lo, hi; std::vector<int> col[G * G]; size_t n = 0; } frameIdx;
     Bricks<uint16_t> uvOf;  // per voxel: landUV index + 1 of the frame its material came from, 0 none (heightmap, steel)
     enum Face { FLOOR, WALL, ROOF, TRIPLANAR, COVERED, HMAP };  // COVERED: a floor taking field 6; HMAP: the heightmap's planar uv
     // the W4M uv of point p of frame f (landUV index + 1) on a face of that kind; kind < 0: from normal n (its dominant lattice axis)
@@ -168,6 +169,8 @@ struct Terrain {
     void weld(Vector3 c, Vector3 half);  // a solid girder box (W4M Land.SpawnPiece), half extents
     void addCell(const Vector3 *c);  // a parallelepiped land cell, exact as an imported map's: a 1x1x1 lattice frame (corners bit 1 +x, 2 +y, 4 +z)
     int frameAt(Vector3 p, Vector3 *q = nullptr) const;  // the landUV frame whose sampled land holds p, -1 none
+    bool frameHolds(size_t f, Vector3 p, Vector3 *q) const;  // frame f's sampled land holds p (frameAt's per-frame test)
+    void indexFrames(size_t first);  // frameAt's candidates (frames from `first`): per frame the world box of its land cells, per map column the frames that may hold it
     bool slippy(Vector3 p) const { const int f = anySlip ? frameAt(p) : -1; return f >= 0 && landUV[f].slip; }  // W4M IsSlippy of the solid sample p
     bool anySlip = false;
     bool heightmap(Vector3 p) const;  // the voxel nearest p is .hmp land (materials 65, 66): W4M frame 0xffff

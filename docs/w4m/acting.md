@@ -212,6 +212,12 @@ The `.wmv` files are separate. `MoviePlayerService` plays them full screen.
 - EFMVMovie: PC Space (DIK 0x39) = `Input.QuitEFMV`, Esc = `App.Pause` (0x4e1360); pad: Back (button 6) and Y (button 3) = QuitEFMV,
   on the press, any pad (0x4e4a20).
 - Neither the borders nor GameLogic touch the input; AIService does not read `EFMV.Active`.
+- Every reader / writer of `EFMV.Active` (string 0x834254) [disasm, xref 2026-11-08]: GameLogicService 0x4ff239 (`EFMV.Play` while a movie runs:
+  asserts and drops it), WXWormManagerService 0x5b4bf0 / 0x5b3280 (ambient acting triggers frozen, docs/worm-reactions.md), weapon scene
+  cams 0x548aa0 (sets 1, `EFMV.Start`) / 0x547080 (sets 0, `Camera.StopFollowingSceneCam`), the EFMV entity 0x525540 / 0x526f70, HUD
+  0x5ea400 / 0x5efe80 / 0x5fdb70, 0x4e53c0 / 0x606eb0 (audio), acting 0x60b090 (bound by 0x60b5f0). None pauses the turn flow: settling,
+  ApplyDamage, crates, Worm.Respawn and the script run on during a movie; only input, the turn / round clocks (camera type 14) and the
+  above stop.
 
 ### TriggerSpeech playback [disasm 0x59e63d..0x59e6ee]
 - The worm graphic reads actor+8 once and clears it. `*Name` -> 0x59cc70: event `EFMV/<Level>/<Name>` (Level = WXD.Level.Current after

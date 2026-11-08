@@ -536,6 +536,16 @@ int main() {
         for (int s = 30; s < 90; s++) hud.bins.add(s, [&] { n++; });
         std::vector<int> order = hud.draw(g, cam, 1);
         EndDrawing();
+        {  // Worm.Respawn in Settle: the label shows its Energy at once, no count, no camera (only ApplyDamage counts, 0x5abc50)
+            Game r;
+            r.start({29, 2, 1, "", 0});
+            Ui::Hud h;
+            Worm &w = r.worms[1];
+            w.alive = false, w.hp = w.counted = 0;
+            BeginDrawing(), h.labels(r, cam, 1), EndDrawing();
+            r.phase = Phase::Settle, w.alive = true, w.hp = w.counted = 100;
+            for (uint32_t t = 2; t < 40; t++) BeginDrawing(), h.labels(r, cam, t), EndDrawing(), assert(h.counting < 0);
+        }
         Ui::unload();
         CloseWindow();
         assert(std::is_sorted(order.begin(), order.end()) && at == 38 - 30 + 1);  // the probes of 30..38 ran before it, 39's after

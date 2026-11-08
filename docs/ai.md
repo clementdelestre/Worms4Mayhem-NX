@@ -254,6 +254,13 @@ no cap at 1, worms get a falloff, the GameLogicService object term is not ported
 - Exact land (docs/sim.md "Exact land") counts in the same unit, one `field()` read: each `SharpLand::eval` 4 (+1 through
   `sample`), each `first()` 6 plus its evals, each cell a `Terrain::cast` steps through 1. Measured on desktop (3 imported maps, warm
   points): a unit then costs 0.7-1.2 `field()` reads in `sample`, `normal` and casts of 0.3-1.3 m [ours].
+- `Terrain::frameAt` (the first `landUV` frame whose land holds a point; node heights call `slippy` for each of a node's 9 rays on a map
+  with a SLIPPY frame) is not counted in `samples`. Testing every frame cost 10-50 us a call on a 400-800 frame map: on HighNoonHiJinx
+  (774 frames) 77% of the CPU turn's think time, 12-24 ms a frame on desktop at the turn start instead of the ~3-4 ms of a map without a
+  SLIPPY frame. It now tries only the frames whose world box (their land cells' lattice range through the EdgeOffsets, HeightMap range and
+  the inverse affine map, padded 1 cm) covers the point's map column (64 x 64 columns), in frame order: same frame, 0.03 us a call
+  (1.5M random points on every mission map: 0 differences; `checkFrameIndex` in sim_check). Think time per turn on HighNoonHiJinx, desktop,
+  all teams AI: 2344 / 1800 / 663 ms before for turns 1-3, 464 / 60 / 44 ms after [ours, measured].
 - Measured (desktop, 8 imported maps x CPU1/3/5, 8 turns each) [ours]: before the exact land, worst tick 1.8-2.0 ms, p99.9 1.0 ms,
   23-25 ns per sample, 35.6 damage per turn; exact land uncounted 2.9-3.9 ms, p99.9 1.3-1.4 ms, 31-34 ns; counted with the walks
   split 1.8-2.1 ms, p99.9 0.9-1.1 ms, 20-23 ns, 34.3 damage per turn (34.8 uncounted; 21 of 24 matches deal the same damage, the

@@ -4429,11 +4429,13 @@ void hudEvent(const Game &g, const GameEvent &e) {
         if (defaults) comment("StartTurn", wormName(g.cfg, g.worms[e.worm].team, g.wormSlot(e.worm)));
     } else if (e.kind == GameEvent::SuddenDeath) {  // StartSuddenDeath: Comment.SuddenDeath through the CommentService queue
         if (defaults) banners.push_back({tr("Comment.SuddenDeath", "SUDDEN DEATH!")});
-    } else if (e.kind == GameEvent::CrateDrop && !g.objects.empty()) {
-        int wi = g.objects.back().weapon;
-        Kind k = wi >= 0 && wi < (int)WEAPONS.size() ? WEAPONS[wi].kind : Kind::Shell;
-        bool util = utility(k);
-        if (defaults) comment(g.objects.back().mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
+    } else if (e.kind == GameEvent::CrateDrop) {  // a script may spawn several in one tick
+        auto o = std::find_if(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.type == Object::Crate && x.uid == e.obj; });
+        if (o != g.objects.end()) {
+            int wi = o->weapon;
+            bool util = wi >= 0 && wi < (int)WEAPONS.size() && utility(WEAPONS[wi].kind);
+            if (defaults && wi >= -1) comment(o->mystery >= 0 ? "Mystery" : wi < 0 ? "Health" : util ? "Utility" : "Crate", "");  // Comment.MysteryCrateSpawn
+        }
         crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
     } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15 && !subMode) {  // CommentaryPanel.Comment: the item's Text.k<name>
         banners.push_back({mysteryText(e.weapon)});
@@ -4479,14 +4481,17 @@ bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
     }
     if (hpt.size() != g.worms.size() || tick < hpTick || g.clock < hpClock) {  // new match, replay seek or instant replay
         hpt.assign(g.worms.size(), {});
-        for (size_t i = 0; i < hpt.size(); i++) hpt[i].seen = g.worms[i].counted, hpt[i].shown = hpt[i].seen;
+        for (size_t i = 0; i < hpt.size(); i++) hpt[i].seen = g.worms[i].counted, hpt[i].shown = hpt[i].seen, hpt[i].alive = g.worms[i].alive;
         popups.clear(), order.clear(), counting = -1;
     }
     hpTick = tick, hpClock = g.clock;
     for (size_t i = 0; i < hpt.size(); i++) {  // labels follow the sim's counted hp; out of Settle only poison moves it
         HpTrack &t = hpt[i];
         const Worm &w = g.worms[i];
+        const bool spawned = w.alive && !t.alive;
+        t.alive = w.alive;
         if (w.counted == t.seen) continue;
+        if (spawned) { t.seen = w.counted, t.shown = t.from = (float)w.counted; continue; }  // Worm.Respawn: its Energy at once (only ApplyDamage counts, 0x5abc50)
         if (w.counted > t.seen && g.phase != Phase::Settle) {  // health crate: +N on the spot, no count
             popups.push_back({(int)i, w.counted - t.seen, 0, 0, false, false});
             t.seen = w.counted, t.shown = t.from = (float)w.counted;
@@ -5109,7 +5114,8 @@ void Hud::queue(const Game &g, const Camera3D &cam, uint32_t tick) {
     }
     // HudClockEntity (0x5f0ae0 init, 0x5f0a60 update): root HUD.Clock.Position (254, -170) tilted HUD.Clock.Orientation z -0.1, disc HUD.Clock.Back half 44 (Clock.Scale)
     const ScriptHud sh = scriptHud(g);
-    const int ms = aiming && !g.hotSeat ? g.timer * 50 / 3 : 0, secs = (ms + 999) / 1000;
+    // a charge start posts Timer.EndTurn: ClockDisplayMode 1, no turn digits (0x50fbf1 -> 0x50ef60)
+    const int ms = aiming && !g.hotSeat && g.power <= 0 ? g.timer * 50 / 3 : 0, secs = (ms + 999) / 1000;
     if (!panelShown) {  // WeaponPanel.Open hides every BaseHudObject (0x5dad00)
         // ClockDisplayMode 2 (a running turn): the turn digits (0x5efe80) while the shown seconds > 0 and HUD.HideTurnTime was not sent; retreat and post-activity are mode 0
         const bool digitsOn = secs > 0 && !sh.endless && !sh.hideTurn;
