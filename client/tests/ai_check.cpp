@@ -481,7 +481,7 @@ static void steepNode() {
             const NodeH h = nodeH(g.terrain, g.water, gr, nc, gr.ci(30), gr.cj(12), 0, pot);
             const float ny = 1 / sqrtf(1 + slope * slope);
             printf("slope %.1f pot %d: flag %d\n", slope, (int)pot, h.flag);
-            assert(h.flag == (ny <= (pot ? 0.81915f : 0.5f) ? 2 : 0));
+            assert(h.flag == (ny <= slideCos(pot, 0) ? 2 : 0));
         }
 }
 

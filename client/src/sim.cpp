@@ -532,11 +532,13 @@ static constexpr float FALL_SAFE = 15, FALL_SCALE = 2;
 // W4M slide tables 0x92009c.. (0x5a5d30, TWEAK WXWorm.*_Default / _Slippy) by surface material: cos SlideAngle 60 / 10; SlideFriction
 // 0.95 / 0.999 per 20 ms frame, here per 1/60 s tick; Start / StopSlideVel 0.2 / 0.06 and 0.01 units/ms
 struct SlideMat { float ny, friction, start, stop; };
-static constexpr SlideMat SLIDE_DEFAULT{0.5f, 0.9582f, 10, 3}, SLIDE_SLIPPY{0.98481f, 0.99917f, 0.5f, 0.5f};
+static constexpr SlideMat SLIDE_DEFAULT{0.5f, 0.9582f, 10, 3}, SLIDE_SLIPPY{0.98480775f, 0.99917f, 0.5f, 0.5f};
 // Wormpot Slippy (0x5d59c0): each *_Default moved halfway to *_Slippy: 35 deg, friction 0.9745, Start / StopSlideVel 0.105 / 0.035
-static constexpr SlideMat SLIDE_POT{0.81915f, 0.97870f, 5.25f, 1.75f};
+static constexpr SlideMat SLIDE_POT{0.81915204f, 0.97870f, 5.25f, 1.75f};
 static const SlideMat &slideMat(uint64_t pot, int mat) { return mat ? SLIDE_SLIPPY : wpOn(pot, WP_SLIPPY) ? SLIDE_POT : SLIDE_DEFAULT; }
 float slideCos(uint64_t pot, int mat) { return slideMat(pot, mat).ny; }
+// W4M 0x4adda0 and its inline copies (0x5af6d3, 0x5b04a6): strictly over cos SlideAngle
+static bool walkable(Vector3 n, const SlideMat &sm) { return n.y > sm.ny; }
 static const float WIND_CAP[] = {0, 0.3f, 0.5f, 1};  // WindMaxStrength / 10: the schemes' 0, 3, 10 and the editor's Medium 5 (0x7539b0)
 
 // W4M melee box: in front of the attacker, a worm height up or down; the Fire Punch (a leap) also reaches above.
@@ -673,7 +675,7 @@ bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vaul
         Vector3 gn = c.n;
         int mat = c.mat;
         if (int id = resolve(cs, pos, to, &cn); id >= 0 && cn.y > 0) gn = cn, sup = id, mat = 0;  // 0x5b1235: an object under it is the ground
-        if (gn.y < slideMat(pot, mat).ny || !rodsFit(t, pos, to)) return false;
+        if (!walkable(gn, slideMat(pot, mat)) || !rodsFit(t, pos, to)) return false;
         standOn(m, cs, sup);
         if (m) m->mat = mat;
         if (vault) { *vault = {pos, to, in, {}, msTicks(250)}; return false; }  // 0x5b1285: no move this frame
@@ -693,7 +695,7 @@ bool walkStep(const Terrain &t, Vector3 &pos, float yaw, float dist, Vault *vaul
         standOn(m, cs, sup);
         if (m) m->mat = 0;  // 0x5b1698, 0x5b188d
     } else if (c.d >= -5) {
-        if (Vector3DotProduct(c.n, Vector3Subtract(to, pos)) < 0 && c.n.y < slideMat(pot, c.mat).ny) return false;  // 0x5b1920: into the ground only if walkable
+        if (Vector3DotProduct(c.n, Vector3Subtract(to, pos)) < 0 && !walkable(c.n, slideMat(pot, c.mat))) return false;  // 0x5b1920: into the ground only if walkable
         for (int k = 0; k <= 4; k++)  // push-out +0..+4 units (0x5b194c)
             if (rodsFit(t, pos, {to.x, to.y + k * U, to.z})) {
                 pos = {to.x, to.y + k * U, to.z};
@@ -913,7 +915,7 @@ static void slideStep(const Terrain &t, Vector3 &pos, Vector3 &vel, Motion &m, f
         m.spinTo -= 2 * Vector3DotProduct(Vector3CrossProduct(nn, n), Vector3Scale(vel, 1.0f / 50));
         m.normal = nn;  // 0x5b04a1
         const SlideMat &sm = slideMat(pot, m.mat);  // 0x5b04a6
-        if (nn.y >= sm.ny && Vector3LengthSqr(vel) < sm.stop * sm.stop) return landed();
+        if (walkable(nn, sm) && Vector3LengthSqr(vel) < sm.stop * sm.stop) return landed();
     }
     if (m.stuck >= STUCK_MAX) landed();
 }
@@ -959,7 +961,7 @@ float wormBody(const Terrain &t, Vector3 &pos, Vector3 &vel, bool &grounded, Mot
         vel = Vector3Subtract(vel, Vector3Scale(n, vn));  // vt
         float v2 = Vector3LengthSqr(vel);
         if (fall && v2 < vn * vn) v2 *= 0.5f;  // 0x5af6be: |vt|² halved when below vn²
-        if ((fall && (m.flags & (WF_FALL_ONCE | WF_NO_FALL))) || (n.y >= sm.ny && v2 < start * start)) vel = {0, 0, 0};  // lands walking (0x5af6f9: Flags 0x8040 always)
+        if ((fall && (m.flags & (WF_FALL_ONCE | WF_NO_FALL))) || (walkable(n, sm) && v2 < start * start)) vel = {0, 0, 0};  // lands walking (0x5af6f9: Flags 0x8040 always)
         else m.slide = true, m.spin = m.spinTo = 0;  // event 17, Sliding with Velocity = vt
         m.normal = n;  // SupportNormal 0x5af5ba
     };
