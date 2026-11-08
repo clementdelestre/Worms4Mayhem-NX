@@ -18,16 +18,16 @@ const MODELS: &[(&str, &str, f32, bool, &[&str])] = &[
     ("sheep", "Sheep", 0.8, false, &["Run", "Jump"]),
     ("airstrike", "Airstrike.Payload", 1.2, false, &["Spin"]),  // 24 units at 20 per metre; WEAPTWK AnimTravel
     ("donkey", "Donkey", 10.02, false, &[]),  // 167 units tall x WEAPTWK Scale 1.2 at 20 per metre
-    // size -0.05: 20 units per metre about W4M's own origin (crates and mine at their centre, OilDrum at its base)
-    ("crate_health", "Crate.Health", -0.05, false, &[]),
-    ("crate_weapon", "Crate.Weapon", -0.05, false, &[]),
-    ("crate_utility", "Crate.Utility", -0.05, false, &[]),
-    ("crate_mystery", "Crate.Mystery", -0.05, false, &[]),
+    // size -0.05: 20 units per metre about W4M's own origin (mine at its centre, OilDrum at its base); crates stay raw units for their Create / Bounce clips
+    ("crate_health", "Crate.Health", 0.0, false, &["Create", "Bounce"]),
+    ("crate_weapon", "Crate.Weapon", 0.0, false, &["Create", "Bounce"]),
+    ("crate_utility", "Crate.Utility", 0.0, false, &["Create", "Bounce"]),
+    ("crate_mystery", "Crate.Mystery", 0.0, false, &["Create", "Bounce"]),
     ("mine", "Landmine", -0.05, false, &[]),
     // PayloadGraphicEntity 0x57d9dd: drawn instead of Landmine past 300 units from the camera
     ("mine_low", "LandmineLow", -0.05, false, &[]),
     ("barrel", "OilDrum", -0.05, false, &[]),
-    ("target", "Crate.Target", 0.0, false, &[]),  // a target crate (CrateGraphicEntity 0x5c4e69), raw units
+    ("target", "Crate.Target", 0.0, false, &["Create", "Bounce"]),  // a target crate (CrateGraphicEntity 0x5c4e69), raw units
     // MineFactoryLogicEntity's graphic at the factory position, no rotation (0x5cf020); raw units, clips by its messages
     ("mine_factory", "MineFactory", 0.0, false, &["MineFactoryStart", "MineFactoryFireStart", "MineFactoryFireEnd"]),
     // script custom crates' Crate.CustomGraphic (CrateGraphicEntity 0x5c4ea1), raw units

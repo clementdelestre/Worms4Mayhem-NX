@@ -245,6 +245,18 @@ static void checkCrates(const std::vector<MissionSpec> &list) {
         g.objects.back().tag = 50;
         assert(collect(g, 50).second == 11);
     }
+    {  // a script's crate spawns like any crate (CrateGraphicEntity 0x5c4a40): CrateDrop at its position, Create clip from its birth, Bounce from its landing
+        Game g;
+        start("HighNoonHiJinx", g);
+        size_t n = g.objects.size();
+        scriptEval(g, "lib_SpawnCrate(\"Bazooka_Crate\")");
+        assert(g.objects.size() == n + 1);
+        Object o = g.objects.back();
+        assert(o.spawning && o.born == g.clock && o.landAt < 0);
+        assert(std::any_of(g.events.begin(), g.events.end(), [&](const GameEvent &e) { return e.kind == GameEvent::CrateDrop && Vector3Equals(e.pos, o.pos); }));
+        for (int t = 0; t < 60 * 20 && g.objects[n].spawning; t++) g.step(Input{});
+        assert(!g.objects[n].spawning && g.objects[n].landAt > g.objects[n].born);
+    }
 }
 
 // W4M Worm_Damaged_Current (stdlib): the active worm hurt in its turn, a CPU's too, runs EndTurn at once

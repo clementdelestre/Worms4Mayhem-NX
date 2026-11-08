@@ -672,7 +672,9 @@ struct ScriptHost {
             if (g.terrain.raycast({p, {0, -1, 0}}, 1000, &hit)) o.pos.y = hit.y + 0.5f * o.scale;  // + the radius, 10 x Scale units (0x5c8137: +0x44)
             else o.pos.y = g.water;
         }
+        o.born = g.clock, o.landAt = o.spawning ? -1 : g.clock;
         g.objects.push_back(o);
+        g.emit(GameEvent::CrateDrop, o.pos);  // CrateGraphicEntity 0x5c4a40: every crate's first update (fx, sound, comment, camera)
         if (num("Crate.AddToWormInventory") != 0) S->toWorm.insert(o.tag), put("Crate.AddToWormInventory", 0);  // reset per crate (0x4f2245)
         const Val *gfx = key("Crate.CustomGraphic");
         if (type("custom") && gfx && !gfx->s.empty()) S->graphic[o.tag] = gfx->s;  // render only (CrateGraphicEntity 0x5c4ea1)

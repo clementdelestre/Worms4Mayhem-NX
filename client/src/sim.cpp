@@ -1742,7 +1742,7 @@ bool Game::addObject(Object::Type t, float lift) {
     if (!dropPoint(t, p)) return false;
     Vector3 at = {p.x, lift > 0 ? p.y + lift : p.y + halfHeight(t) + 0.05f, p.z};  // CreateRandomCrate 0x5c67a8: the crate centre 300 units over the ground point
     Object o = t == Object::Mine ? newMine(at) : t == Object::Barrel ? newDrum(at) : Object{t, at, {0, 0, 0}, -1, -1, false, false};
-    o.spawning = t == Object::Crate && lift > 0;
+    o.spawning = t == Object::Crate && lift > 0, o.born = clock, o.landAt = o.spawning ? -1 : clock;
     const Scheme &sc = cfg.scheme;
     float pick = t == Object::Crate ? rand01() * (sc.healthShare + sc.weaponShare + sc.utilityShare + sc.mysteryShare) : -1;
     if (pick >= sc.healthShare + sc.weaponShare + sc.utilityShare) {  // 0x4f4b90: the item at spawn, by its Mystery.Crate weight
@@ -1871,7 +1871,7 @@ void Game::stepObjects() {
     numberObjects();
     // CrateLogicEntity 0x5c8900, land or collider: v = 0.2 (vx, -vy, vz), at rest under 0.02 units/ms, "Crate Spawn" released there
     auto crateRest = [&](Object &o) {
-        if (o.spawning) emit(GameEvent::CrateLand, o.pos, -1, o.mystery >= 0 ? -2 : o.weapon);
+        if (o.spawning) emit(GameEvent::CrateLand, o.pos, -1, o.mystery >= 0 ? -2 : o.weapon), o.landAt = clock;
         o.vel = {0, 0, 0}, o.spawning = false;
     };
     auto crateBounce = [&](Object &o) {  // 0x5c8900: true when it rested (the +0x63 skip stays), else the fall runs this tick

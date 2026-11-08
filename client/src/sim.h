@@ -261,6 +261,7 @@ struct Object {
     int courtesy = 0;  // mine: ticks before a worm can arm it (W4M ArmingCourtesyTime)
     bool hooked = false;  // W4M kRopeModeAttachedToObject: swings on Game::rope about the worm's feet
     bool spawning = false;  // crate: W4M "Crate Spawn" active object (0x5c9bd0) until a bounce leaves it under 1 m/s (0x5c8900)
+    int born = 0, landAt = -1;  // crate / target: `clock` at creation (its Create clip) and when "Crate Spawn" was released (its Bounce clip, 0x5c4a40); render only
     bool bounced = false;   // crate: bounced once (+0x8c, 0x5c8900); another crate's sweep ignores it while it never did, nor rests
     float delay = -1;  // mine: fuse s drawn at creation (W4M CreateMine 0x4f97cf); -1: drawn when armed
     bool fizzle = false;  // mine: its dud roll, drawn with delay
