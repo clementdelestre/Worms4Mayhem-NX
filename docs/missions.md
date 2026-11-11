@@ -122,7 +122,7 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   `selfHurt` for the active worm only, 0x5ad754) then Worm_Damaged with DamagedWorm.Id;
   Payload_Deleted with Payload.Deleted.Id when a payload goes (every shot but the bomber planes and the UFO, every mine: 0x580560;
   a placed mine gives its Mine.Id, the others a fresh number); Worm_Died with DeadWorm.Id at the death blast (or a vapourised worm); Crate_Collected / Sunk / Destroyed
-  with Crate.Index when a crate with an Index leaves; Timer_GameTimedOut when the round clock (from Timer.StartGame) runs out; due timers
+  with Crate.Index when any crate leaves (tracked by uid, Index -1 too; Collected from its Collect / Mystery event); Timer_GameTimedOut when the round clock (from Timer.StartGame) runs out; due timers
   in deadline order; queued callbacks (EFMV_Terminated).
 - **Timers**: 10 slots, deadline in game ms = ticks x 1000 / 60 [disasm: TaskManager logical time].
 - **Movies** (`EFMV.Play`, `ScriptState::Movie`, docs/w4m/acting.md §19): the player runs in the sim and is checksummed (name, clock,

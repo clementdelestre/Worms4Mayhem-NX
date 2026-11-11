@@ -310,7 +310,7 @@ struct GameEvent {
     const char *sfx = nullptr;  // Boom: the FEV event its caller plays besides the effect's own EmitterSoundFX (a payload's DetonationSfx)
     int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories; Hurt (Game::hurt): the hp lost; SentryHit: the sentry's id
     float amount = 0;  // SentryHit (0x56d2a0): the damage its graphic takes (command 4); weapon = 1 in the full-damage core (Turn.MaxDamage)
-    int obj = -1;  // CrateDrop: the crate's Object::uid
+    int obj = -1;  // CrateDrop, Collect, Mystery: the crate's Object::uid
 };
 
 // Match options, identical on every client (sent in the network Start message).
