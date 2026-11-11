@@ -2617,6 +2617,29 @@ static void checkDynamite() {
     assert(g.current != first);
 }
 
+// W4M stdlib StartTurn -> SetWind is the only wind change; the scanner and wind needle take their heading from the view's right axis
+// (0x5f7cf0, 0x5fc6e0), so a view looking up past 45 degrees shows the same needle as a level one
+static void checkWindTurn() {
+    Game g;
+    g.start({44, 2, 1, "", 0}), g.hotSeat = 0;
+    settle(g);
+    g.hotSeat = 0, g.weapon = weaponNamed("Bazooka");
+    const int first = g.current;
+    const float wx = g.wind, wz = g.windZ;
+    assert(wx != 0 || wz != 0);
+    Input fire;
+    fire.buttons = Input::FIRE;
+    for (int t = 0; t < 120 && g.phase == Phase::Aim; t++) g.step(t < 30 ? fire : Input{});
+    assert(g.phase == Phase::Flying);
+    for (int t = 0; t < 60 * 60 && !(g.phase == Phase::Aim && g.current != first); t++) assert(g.wind == wx && g.windZ == wz), g.step(Input{});
+    assert(g.current != first && (g.wind != wx || g.windZ != wz));
+    Camera3D level = {{0, 2, 0}, {3, 2, 4}, {0, 1, 0}, 45, CAMERA_PERSPECTIVE}, steep = level;
+    steep.target.y = 9, steep.up = Controls::viewUp(steep);  // 54 degrees up, the up the view is drawn with
+    Vector2 h = Ui::hudHeading(level), hs = Ui::hudHeading(steep);
+    assert(Vector2Distance(h, {0.6f, 0.8f}) < 1e-4f && Vector2Distance(h, hs) < 1e-4f);
+    assert(Vector2Distance(Ui::windPointer(true, wx, wz, h), Ui::windPointer(true, wx, wz, hs)) < 1e-4f);
+}
+
 // A shot leaving the map flies on (Flying, camera on it) until it falls into the sea with a splash.
 static void checkOffMapShot() {
     Game g;
@@ -6344,6 +6367,7 @@ static void checkPayloadColliders() {
 }
 
 int main() {
+    checkWindTurn();
     checkWormPose();
     checkTeamSlots();
     checkAlliances();

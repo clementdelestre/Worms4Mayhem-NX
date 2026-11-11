@@ -386,7 +386,7 @@ What the client does:
 - **Pitch range** [0, π/2], as in W4M (0x52a5e0). Pitch 0 is a horizontal view and π/2 looks straight down: the camera sits at focus + R(pitch, yaw)·(0, 0, -StickLength), with DefaultPitch 1 tilted down (0x52a0a0), and our `blimpEye` uses the same convention.
   - The camera's up vector is R(pitch, yaw)·(0, 1, 0) (W4M 0x52a0a0).
   - A fixed (0, 1, 0) up made the view matrix degenerate when looking straight down, and the screen filled with the fog colour (the "yellow screen").
-  - The compass and the wind arrow take their heading from forward + up for the same reason.
+  - The compass and the wind arrow take their heading from the view's right axis (`Ui::hudHeading`), as W4M (0x5f7cf0, 0x5fc6e0), so no pitch flips them.
   - At pitch 0 the centre ray can miss everything within reach: no target, red reticle, Fire refused. That is the W4M rule, but the reach we use is a simplification: 200 m in our build versus Land.Radius + max(Land.Radius, distance) in W4M.
   - Desktop: WASD look, arrows pan, X/Z zoom.
 - The camera is exactly the sim's: `Game::blimpEye(cursor, cursorYaw, cursorPitch)` looking at `Game::cursor`, so the reticle (`Ui::targetCursor`) is the screen centre.
@@ -493,7 +493,7 @@ Labels per row: **data** (CAMTWK / tweak value), **disasm** (read in the code), 
 
 | Item | Value / rule | Label | Source |
 |---|---|---|---|
-| On screen | the point times the drawn camera's view matrix (0x4d5210 vfunc 0x1c) then projection (vfunc 0x10); true when x/w and y/w are both in [−1, 1] and w > 0: the screen rectangle, not a cone. The camera is always the drawn one, whoever asks | disasm | 0x51b3b0–0x51b533 |
+| On screen | the point times the drawn camera's view matrix (0x4d5210 vfunc 0x10, with its translation) then projection (vfunc 0x1c, the divide by w at 0x51b4c3); true when x/w and y/w are both in [−1, 1] and w > 0: the screen rectangle, not a cone. The camera is always the drawn one, whoever asks | disasm | 0x51b3b0–0x51b533 |
 
 ### 11.4 Turn start (0x51ef80)
 
