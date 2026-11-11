@@ -62,12 +62,12 @@ struct ScriptState {
     int outro = -1;  // at the end: -1 GameOverLogicEntity's pace, 0 the GameOverMovie plays, 1 the result now
     int nextId = 0;  // Mine.Id of a placed mine, Payload.Deleted.Id of the other payloads: only ever compared with each other
     std::vector<int> poison;  // Worm.ApplyPoison's damage, for the next GameLogic.ApplyDamage
-    std::vector<Object> tagged;  // last tick's crates with an Index
+    std::vector<Object> tagged;  // last tick's crates, scripted or random (Index -1 too: 0x5cb5a0 posts for every crate)
     std::map<int, std::string> graphic;  // custom crate Index -> CustomGraphic, render only
     std::vector<bool> died;
     std::vector<std::vector<int>> shown;  // per team: the ammo last given to the sim, from the inventories of
     std::vector<int> ammoSlot;            // this worm slot (the team's active worm)
-    std::set<int> toWorm;                 // Crate.Index of the crates made with Crate.AddToWormInventory
+    std::set<int> toWorm;                 // Object::uid of the crates made with Crate.AddToWormInventory
     std::vector<GameEvent> ui;  // UI-only events (commentary, emitters, shake), into g.events at the end of the tick
     int emitters = 0;           // Particle.Handle of the last script emitter
     bool noDefault = false;     // Commentary.NoDefault: CommentService +0x138
@@ -221,7 +221,7 @@ struct ScriptHost {
         for (GameEvent &e : g.events) {  // a crate adds to the alliance's count, or the collector's with AddToWormInventory (0x5c8820)
             if (e.kind != GameEvent::Collect || !e.count || e.worm < 0 || e.weapon < 0) continue;
             int t = g.worms[e.worm].team;
-            bool mine = std::any_of(S->tagged.begin(), S->tagged.end(), [&](const Object &o) { return S->toWorm.count(o.tag) && Vector3Distance(e.pos, o.pos) < 0.01f; });
+            bool mine = S->toWorm.count(e.obj);
             std::string to = mine ? slotName("Inventory.Worm%02d", slotOf(e.worm)) : invName(t, 0);
             for (auto &f : weaponFields())
                 if (Val *v = f.second == e.weapon ? field(ctn(to), f.first.c_str()) : nullptr) v->n = crateAdd((int)v->n, e.count), S->wroteCtns.insert(to);
@@ -675,7 +675,7 @@ struct ScriptHost {
         o.born = g.clock, o.landAt = o.spawning ? -1 : g.clock;
         g.objects.push_back(o);
         g.crateDrop();
-        if (num("Crate.AddToWormInventory") != 0) S->toWorm.insert(o.tag), put("Crate.AddToWormInventory", 0);  // reset per crate (0x4f2245)
+        if (num("Crate.AddToWormInventory") != 0) S->toWorm.insert(g.objects.back().uid), put("Crate.AddToWormInventory", 0);  // reset per crate (0x4f2245)
         const Val *gfx = key("Crate.CustomGraphic");
         if (type("custom") && gfx && !gfx->s.empty()) S->graphic[o.tag] = gfx->s;  // render only (CrateGraphicEntity 0x5c4ea1)
     }
@@ -864,9 +864,9 @@ struct ScriptHost {
             S->died[i] = true;
             put("DeadWorm.Id", slotOf((int)i)), call("Worm_Died");
         }
-        for (const Object &o : S->tagged) {  // a crate with an Index left: collected, sunk or destroyed
-            if (std::any_of(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.tag == o.tag && x.type == o.type; })) continue;
-            bool got = std::any_of(ev.begin(), ev.end(), [&](const GameEvent &e) { return e.kind == GameEvent::Collect && Vector3Distance(e.pos, o.pos) < 1; });
+        for (const Object &o : S->tagged) {  // a crate left: collected, sunk or destroyed
+            if (std::any_of(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.uid == o.uid; })) continue;
+            bool got = std::any_of(ev.begin(), ev.end(), [&](const GameEvent &e) { return (e.kind == GameEvent::Collect || e.kind == GameEvent::Mystery) && e.obj == o.uid; });
             put("Crate.Index", o.tag);
             call(got ? "Crate_Collected" : o.pos.y < g.water ? "Crate_Sunk" : "Crate_Destroyed");  // 0x5cb748: any crate type
         }
@@ -1214,7 +1214,7 @@ void scriptStep(Game &g) {
     }
     if (S->endless && g.phase == Phase::Aim) g.timer = std::max(g.timer, 99 * 60);
     S->tagged.clear();
-    for (const Object &o : g.objects) if (o.tag >= 0 && crate(o)) S->tagged.push_back(o);
+    for (const Object &o : g.objects) if (crate(o)) S->tagged.push_back(o);
     g.events.insert(g.events.end(), S->ui.begin(), S->ui.end());
     S->ui.clear();
 }

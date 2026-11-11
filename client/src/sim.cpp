@@ -2012,7 +2012,7 @@ void Game::stepObjects() {
                 if (!(sheep && &w == &worms[current]) && (!w.alive || !touching(w))) continue;
                 if (o.teamCollect >= 0 && alliance(w.team) != o.teamCollect) continue;
                 int add = 0;
-                if (o.mystery >= 0) opened = o.mystery, opener = int(&w - worms.data()), emit(GameEvent::Mystery, o.pos, opener, o.mystery);
+                if (o.mystery >= 0) opened = o.mystery, opener = int(&w - worms.data()), emit(GameEvent::Mystery, o.pos, opener, o.mystery), events.back().obj = o.uid;
                 else if (o.type == Object::Target || o.weapon < -1) {  // a target or a script's custom crate: no contents (0x5cb61e)
                 } else if (o.weapon < 0) {  // NumContents (0x5c86af); label jumps on pickup (W4M); Worm.Antidote also clears 0x400 (0x5adecd)
                     int hp = o.count == CRATE_STOCK ? cfg.scheme.crateHealth : o.count;
@@ -2022,7 +2022,7 @@ void Game::stepObjects() {
                 else if (WEAPONS[o.weapon].kind == Kind::CrateSpy) spy[w.team] = 1;  // never reset (0x5c8b20)
                 else if (WEAPONS[o.weapon].kind == Kind::Armour) w.armour = true;  // Armour.Collected: the collector (0x5c9928 -> 0x5ae1ea)
                 else gain(w.team, o.weapon, o.count), add = o.count;
-                if (o.mystery < 0) emit(GameEvent::Collect, o.pos, int(&w - worms.data()), o.weapon), events.back().count = add;  // mystery: no pickup sound, the reveal's
+                if (o.mystery < 0) emit(GameEvent::Collect, o.pos, int(&w - worms.data()), o.weapon), events.back().count = add, events.back().obj = o.uid;  // mystery: no pickup sound, the reveal's
                 gone = true;
                 break;
             }

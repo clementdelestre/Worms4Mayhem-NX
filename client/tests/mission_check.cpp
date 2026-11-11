@@ -31,7 +31,7 @@ static void assist(Game &g, bool survive, int trigIndex, bool &blasted, bool &po
         o.dead = true, blasted |= hits, popped = true;
     }
     for (const Object &o : g.objects)
-        if (o.tag >= 0 && o.type == Object::Crate && (o.teamCollect < 0 || o.teamCollect == g.alliance(0))) { me.pos = o.pos, me.vel = {}; return; }
+        if (o.type == Object::Crate && (o.teamCollect < 0 || o.teamCollect == g.alliance(0))) { me.pos = o.pos, me.vel = {}; return; }
     for (const Game::Trigger &t : g.triggers)  // only the kind the script answers: a silent one would be lost
         if (scriptDefines(g, "Trigger_Collected") && (t.mask & 1) && !t.gone && t.teamCollect <= 0 && (t.wormCollect == -1 || t.wormCollect == g.current)) {
             me.pos = {t.pos.x, t.pos.y + t.radius / 2, t.pos.z}, me.vel = {};  // inside its sphere, above water (ChuteToVictory's last one sits just under it)
@@ -244,6 +244,23 @@ static void checkCrates(const std::vector<MissionSpec> &list) {
         g.objects.push_back({Object::Crate, g.worms[g.current].pos, {0, 0, 0}, bazooka, 0, false, false});  // a random crate: 1 item
         g.objects.back().tag = 50;
         assert(collect(g, 50).second == 11);
+    }
+    {  // an Index -1 crate posts Crate_Collected too (0x5cb748): EscapeFromTreeRex drops the next bazooka crate once the alliance has none
+        Game g;
+        start("EscapeFromTreeRex", g);
+        auto c = std::find_if(g.objects.begin(), g.objects.end(), [](const Object &x) { return x.type == Object::Crate; });
+        assert(c != g.objects.end() && c->tag == -1 && scriptEval(g, "return g_nCratesOnLand") == 1);
+        const int bz = c->weapon, uid = c->uid;
+        g.worms[g.current].pos = c->pos, g.worms[g.current].vel = {}, g.hotSeat = 0;
+        for (int t = 0; t < 20; t++) g.step(Input{});
+        assert(scriptEval(g, "return g_nCratesOnLand") == 0 && scriptEval(g, "return QueryContainer(\"Inventory.Alliance00\").Bazooka") == 2);
+        g.ammo[0][bz] = 0, g.timer = 1;  // both shots spent, the turn ends
+        auto t2 = std::find_if(g.terrain.markers.begin(), g.terrain.markers.end(), [](const Terrain::Marker &k) { return k.name == "Trigger2"; });
+        assert(t2 != g.terrain.markers.end());
+        auto next = [&] { return std::find_if(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.type == Object::Crate && x.uid != uid; }); };
+        for (int t = 0; t < 60 * 60 && next() == g.objects.end(); t++) g.step(Input{});
+        assert(next() != g.objects.end() && next()->weapon == bz && fabsf(next()->pos.x - t2->pos.x) < 0.01f && fabsf(next()->pos.z - t2->pos.z) < 0.01f);
+        printf("EscapeFromTreeRex: CrateSpawn1 collected, the next bazooka crate at Trigger2\n");
     }
     {  // Initialise's crate (HighNoonHiJinx: Girder_Crate) reaches the first tick's events, its uid set
         Game g;
