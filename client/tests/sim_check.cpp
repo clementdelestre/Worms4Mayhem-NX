@@ -3461,8 +3461,10 @@ static void checkParachute() {
     for (int t = 0; t < 60 * 5 && g.chute; t++) g.step(Input{});
     assert(!g.chute && a.pos.x < 24 && !a.grounded);
     // A closes an open chute with no ammo left (0x578db0 does not read the inventory)
-    g.chuteOpen(a), g.weapon = chute, a.pos = {10, 58, 10}, a.grounded = false;
-    g.step(Input{}), g.step(fire);
+    g.weapon = chute, a.pos = {10, 58, 10}, a.grounded = false, g.chuteOpen(a);
+    g.step(Input{});
+    assert(g.chute);
+    g.step(fire);
     assert(!g.chute);
 }
 
@@ -3564,7 +3566,7 @@ static void checkToolWeapons() {
         int dyn = g.secondary;
         g.ammo[a.team][dyn] = 1, g.delays[a.team][dyn] = 0;
         Input fire;
-        fire.buttons = rope ? Input::FIRE : Input::JUMP;  // W4M Fire.Second drops from the jetpack, FIRE thrusts
+        fire.buttons = rope ? Input::PITCH : Input::JUMP;  // W4M Fire.Second drops, FIRE thrusts or lets go
         g.step(fire);
         assert(g.phase != Phase::Aim && (rope ? g.roped : g.jetting) && g.ammo[a.team][dyn] == 0 && g.secondary < 0 && g.weapon == weaponNamed(tool));
         assert((g.phase == Phase::Flying || g.phase == Phase::Retreat) && (rope ? g.roped : g.jetting));
@@ -4741,7 +4743,7 @@ static Worm &ropeFloor(Game &g) {
 }
 
 // W4M rope mode 2 (0x572800 / 0x573d00): the hook flies 1 unit/ms from the eye; a standing worm's hook catches a crate
-// (0x571d90, mask 0x1e) without spending a shot; reeled in and out; jump lets it go.
+// (0x571d90, mask 0x1e) without spending a shot; reeled in and out; FIRE lets it go.
 static void checkRopeShots() {
     Game g;
     Worm &a = ropeFloor(g);
@@ -4764,9 +4766,7 @@ static void checkRopeShots() {
     reel.aim = -127;
     for (int k = 0; k < 10; k++) g.step(reel);
     assert(g.rope.len[0] > 4.5f && g.objects[0].hooked && fabsf(hang() - g.rope.len[0]) < 0.05f);
-    Input jump;
-    jump.buttons = Input::JUMP;
-    g.step(jump);
+    g.step(fire);
     assert(!g.objects[0].hooked && g.ammo[a.team][g.weapon] == ammo);  // the ammo goes at the rope's cleanup (0x5727b0)
     int rope = g.weapon;
     int bz = weaponNamed("Bazooka");
@@ -4810,6 +4810,56 @@ static void checkGrapple() {
     assert(fabsf(h.vel.y - h.vel.z) < 1e-3f && h.vel.z > 0);
     h = Game::grappleFire({0, 0, 0}, 0, 0.3f, {0, 0, -5}, true);  // backward at 5 m/s: 22.5 deg behind the vertical
     assert(fabsf(atan2f(-h.vel.z, h.vel.y) - PI / 8) < 1e-3f);
+}
+
+// NinjaRopeUtilityLogicEntity: 5 land hooks per rope wielded, in one endless turn; let go with none left, NinjaRope.Kill puts it away
+// (0x573a01, 0x565920); FireUtil reads no inventory (0x573790, 0x562270) and has no phase test
+static void checkRopeEntity() {
+    Game g;
+    Worm &a = ropeFloor(g);
+    for (int z = 118; z < 122; z++)  // a wall 9.5 m ahead
+        for (int y = 180; y < 240; y++)
+            for (int x = 0; x < Terrain::NX; x++) g.terrain.d.w(Terrain::idx(x, y, z)) = 127;
+    const int rope = g.weapon, ammo = g.ammo[a.team][rope];
+    Input fire;
+    fire.buttons = Input::FIRE;
+    for (int n = 1; n <= Game::ROPE_SHOTS; n++) {
+        for (int t = 0; t < 120 && !a.grounded; t++) g.step(Input{});
+        a.pos.z = 20, a.vel = {}, a.yaw = 0, a.pitch = 0;
+        g.step(Input{}), g.step(fire);
+        int left = -1;
+        for (int t = 0; t < 30 && !g.roped; t++) {
+            g.step(Input{});
+            for (const GameEvent &e : g.events) if (e.kind == GameEvent::RopeShots) left = e.weapon;
+        }
+        assert(g.roped && g.ropeShots == n && left == Game::ROPE_SHOTS - n);  // FETXT.NinjaLastShot / RopeShotsRemaining
+        Input jump;
+        jump.buttons = Input::JUMP;
+        g.step(jump);
+        assert(g.roped);
+        g.step(Input{}), g.step(fire);
+        assert(!g.roped && g.phase == Phase::Aim);
+        assert(n < Game::ROPE_SHOTS ? g.weapon == rope : g.weapon == -1 && g.ammo[a.team][rope] == ammo - 1);  // the empty hand
+    }
+    g.step(Input{}), g.step(fire);
+    assert(!g.grapple.on);  // a 6th hook: no rope in hand
+    g.step(Input::pick(rope));
+    assert(g.weapon == rope && g.ropeShots == 0);  // a new rope entity
+    g.ammo[a.team][rope] = 0;  // GibbonTake's EditContainer while it is wielded
+    for (int t = 0; t < 120 && !a.grounded; t++) g.step(Input{});
+    g.step(Input{}), g.step(fire);
+    assert(g.grapple.on);
+    g.step(Input{}), g.step(fire);
+    assert(!g.grapple.on && g.weapon == rope);  // retracted, shots left: still in hand
+    g.phase = Phase::Retreat, g.timer = 1000;
+    g.step(Input{}), g.step(fire);
+    assert(g.grapple.on);  // until the turn ends
+    Game j;
+    Worm &b = ropeFloor(j);
+    int jp = weaponNamed("Jetpack");
+    j.weapon = jp, j.ammo[b.team][jp] = 0;
+    j.step(fire);
+    assert(j.jetting);  // 0x562270 tests only the fuel
 }
 
 // 0x56fcb0: a worm's rope (mask 0x19) bounces off drums and mines, not crates; a hooked object's (0x3f) off crates too
@@ -5333,6 +5383,9 @@ static void checkIcarus() {
     assert(g.icarus == 3 && a.hp == 40 && Vector3Distance(p, a.pos) < 0.01f && WEAPONS[g.weapon].kind == Kind::Icarus);
     for (int t = 0; t < msTicks(500) && g.icarus == 3; t++) g.step(Input{});
     assert(a.hp == 40 && a.poison == 0 && g.icarus == 1 && g.phase == Phase::Aim);  // InitialEnergy is never set: no heal (0x587866)
+    g.ammo[a.team][g.weapon] = 2;
+    g.step(press(Input::FIRE)), g.step(Input{});
+    assert(g.icarus == 1 && g.ammo[a.team][g.weapon] == 2);  // 0x58761b: drunk already, FIRE ignored
     g.step(press(Input::JUMP));
     for (int t = 0; t < 20 && g.icarus != 2; t++) g.step(Input{});
     assert(g.icarus == 2);
@@ -5343,6 +5396,23 @@ static void checkIcarus() {
     while (g.clock < open) g.step(Input{});
     g.step(press(Input::JUMP));
     assert(flapped() && fabsf(a.vel.y - Game::FLAP) < 0.3f);
+    {  // the turn ends mid-flight: stdlib Utility.Delete, no flap in Settle, the landing hurts
+        Game f = g;
+        Worm &b = f.worms[f.current];
+        b.pos.y += 25, f.timer = 1;
+        f.step(Input{});
+        assert(f.phase == Phase::Settle && f.icarus == 0 && !(b.motion.flags & WF_FALL_ONCE));
+        f.step(Input{});
+        while (f.clock < f.flapAt + 1) f.step(Input{});
+        f.step(press(Input::JUMP));
+        bool flap = false, fell = false;
+        for (const GameEvent &e : f.events) flap |= e.kind == GameEvent::Jump;
+        for (int t = 0; t < 600 && !b.grounded; t++) {
+            f.step(Input{});
+            for (const GameEvent &e : f.events) fell |= e.kind == GameEvent::Fall;
+        }
+        assert(!flap && b.grounded && fell);
+    }
     g.weapon = weaponNamed("Bazooka");
     g.step(Input{});
     assert(g.icarus == 0);
@@ -5527,7 +5597,12 @@ static void checkRope() {
         Vector3 at = feetOf(u), v = low.ropeRelease(low.rope, at, 0);
         Input jump;
         jump.buttons = Input::JUMP;
-        low.step(jump);  // 0x573530: one more swing step's motion over its time, then a plain fall
+        Game hold = low;
+        hold.step(jump);
+        assert(hold.roped);  // no jump on the rope: the roped worm is Override (5)
+        Input fire;
+        fire.buttons = Input::FIRE;
+        low.step(fire);  // 0x573530 on FireUtil: one more swing step's motion over its time, then a plain fall
         assert(!low.roped && fabsf(u.vel.z - v.z) < 1e-3f && fabsf(u.vel.y - (v.y - 12.5f * Game::DT)) < 0.05f && v.z > 3);
         assert(fabsf(Vector3DotProduct(v, Vector3Subtract(at, hook))) < 0.05f * Vector3Length(v) * low.rope.len[0]);
     }
@@ -6433,6 +6508,7 @@ int main() {
     checkMineTypes();
     checkRopeShots();
     checkGrapple();
+    checkRopeEntity();
     checkRopeColliders();
     checkScouser();
     checkGasCloud();

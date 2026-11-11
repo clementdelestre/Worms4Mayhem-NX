@@ -303,9 +303,9 @@ struct GameEvent {
                           Launch, Zap, Poof, AbdDamage, Abducted, BubbleNew, BubbleHit, BubblePop, Fall, Arm, Mystery, Debris, JetStart, Deleted,
                           Comment, CommentClear, Emitter, EmitterOff, Shake, Pop,
                           Vanish, Appear,  // a telepad's worm clips TelepadVanish / TelepadAppear (0x5d4120, 0x5d42e0)
-                          Movie, Speech, MovieSound, MovieStart, MovieEnd, SuddenDeath, SentryHit, Antidote } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
+                          Movie, Speech, MovieSound, MovieStart, MovieEnd, SuddenDeath, SentryHit, Antidote, RopeShots } kind;  // mission scripts, UI only (script.cpp ScriptHost::ui)  // Arm: a payload armed on impact (the arrow's ArmSfxLoop)  // Zap / Poof: an abductee's new / old spot; AbdDamage: its random hp  // Launch: a bomber dropped a payload (W4M LaunchSfx: BombWhistle, CowFall)  // JetStart: a jetpack takes off from Ambulatory (PackAccessory.Trigger 0x5623a7)  // Deleted: a payload removed (W4M Payload.Deleted 0x580560), weapon = the mine's id
     Vector3 pos;
-    int worm, weapon;
+    int worm, weapon;  // RopeShots: weapon = the rope's shots left
     const char *fx = nullptr;  // Boom, Splash, Pop: the PARTTWK effect its W4M caller starts (render only)
     const char *sfx = nullptr;  // Boom: the FEV event its caller plays besides the effect's own EmitterSoundFX (a payload's DetonationSfx)
     int count = 0;  // Collect: an ammo crate's NumContents, until script.cpp books it into the W4M inventories; Hurt (Game::hurt): the hp lost; SentryHit: the sentry's id
@@ -460,7 +460,7 @@ struct Game {
     static constexpr int BARREL_FUSE = msTicks(50), BARREL_END = msTicks(100);  // OilDrumLogicEntity 0x5d2200: ticks from being set off to the blast, to its fire effect and removal
     static constexpr Blast MINE_CLUSTER_BLAST = {2.025f, 2.9f, 25, 10, 4.25f, 2.25f};  // W4M kWeaponLandmineCluster (kDT_Clusters)
     enum : int { DT_NORMAL = 1, DT_FIRE, DT_CLUSTERS, DT_BIGPUSH };  // W4M DetonationTypeEnum 0x90c8f0
-    static constexpr int ROPE_SHOTS = 5;     // W4M Ninja.NumShots: hooks on land per turn (0x573ea3; misses and objects are free)
+    static constexpr int ROPE_SHOTS = 5;     // W4M Ninja.NumShots: hooks on land per rope wielded (0x573ea3; misses and objects are free)
     static constexpr float HOOK_SPEED = 50;  // 1 unit/ms (0x572800)
     // Ninja rope (W4M 0x574480 per 20 ms; shared with the AI's planner). hang: attach at `hook` (0x573d00); tick: reel by aim's
     // sign, swing by `swing` (-1, 0, 1), bounce or wrap, unwrap; release: the velocity on letting go (0x573530)
@@ -626,7 +626,7 @@ struct Game {
     int gunState = 0;   // W4M GunWeaponLogicEntity (0x55ed10) state 3 / 4 after a shot with shots left, 5 deleted mid-burst; 0 accepts Input.FirePressed
     bool gunWaiting = false;  // GameLogicService+0x1b1, set by GameLogic.GunWaiting, cleared by the next death-queue pop
     bool gunSent = false;  // state 3 has sent GameLogic.ApplyDamage
-    int ropeShots = 0;  // rope hooks on land this turn
+    int ropeShots = 0;  // hooks on land by the rope in hand (W4M entity +0x3c)
     Phase phase = Phase::Aim;
     uint8_t prevButtons = 0;
     uint32_t rng = 1;
@@ -798,6 +798,8 @@ private:
     float mineFuse();  // a new mine's fuse, s (Scheme mineFuse, random: one draw)
     void beginTurn(int last, bool sameTeam = false);  // W4M SelectNextWorm 0x5b5630: last = the worm that played, -1 on the first turn
     void ropeCleanup();  // the rope entity goes: a hooked rope spends its ammo
+    void ropeDone();     // after a let go or retract: no shot left, the rope is put away
+    void deleteUtility();  // W4M Utility.Delete: rope, jetpack, parachute and Redbull end
     // stdlib.lub turn end: ApplyDamage, CheckActivity, DoPostActivity's two passes; ApplyPoison 0x5ac060; SurrenderTeam 0x5b4d00
     void applyDamage(const std::vector<int> *type6 = nullptr);  // type6: ApplyPoison's damage, no display but the vampire's
     std::vector<int> applyPoison();
