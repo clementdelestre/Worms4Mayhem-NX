@@ -4336,21 +4336,40 @@ static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
     if (aiming && !sprite("radar_objects", at(g.target()), 0.5f, {16, 16}, 0, WHITE, {96, 0, 32, 32})) DrawCircleLinesV(at(g.target()), 5, WHITE);
 }
 
+// HUD units: 480 tall, centre origin, y up; drawn in px under rl matrices
+static const float HU = 720 / 480.0f;
 // W4M commentary banner (com_panel), queued; crateFocus: seconds the camera follows a dropped crate
 static int bannerClock = 0;  // g.clock of the event being handled
-struct Banner { std::string s; float life = 0; int clock = bannerClock; };  // life s; 0: ours, 3 s (2 s while others wait)
+struct Banner { std::vector<std::string> lines; float life = 0; int clock = bannerClock; };  // life s; 0: ours, 3 s (2 s while others wait)
 static std::vector<Banner> banners;
 static float bannerAge = 0, crateFocus = 0;
-static const float BANNER_SIZE = 26, BANNER_W = 680;
-static std::vector<std::string> wrapBanner(const std::string &s) {
-    std::vector<std::string> lines(1);
-    for (size_t i = 0, j; i < s.size(); i = j + 1) {
-        j = std::min(s.find(' ', i), s.size());
-        std::string word = s.substr(i, j - i), line = lines.back().empty() ? word : lines.back() + " " + word;
-        if (textWidth(line.c_str(), BANNER_SIZE) > BANNER_W && !lines.back().empty()) lines.push_back(word);
-        else lines.back() = line;
+// AddComment 0x5e0680: n chars fit `w` units of FE.Font at `scale` (0x6b1470); the line ends at the last ' ' or '-' from char n
+// down to char 1, the next line starts with it; none: n' chars fit w minus a '-', then '-' (0x5e08d8)
+static std::vector<std::string> commentLines(std::string s, float w, float scale) {
+    auto fit = [&](float room) {
+        size_t n = 0;
+        for (size_t k = 1; k <= s.size(); k++) {
+            if (k < s.size() && (s[k] & 0xC0) == 0x80) continue;  // inside a UTF-8 character
+            if (feWidthPx(s.substr(0, k).c_str(), scale * HU) > room * HU) break;
+            n = k;
+        }
+        return n;
+    };
+    std::vector<std::string> lines;
+    while (!s.empty()) {
+        size_t n = fit(w), b = n;
+        if (n >= s.size()) { lines.push_back(s); break; }
+        while (b > 0 && s[b] != ' ' && s[b] != '-') b--;
+        if (b == 0) b = std::max<size_t>(1, fit(w - feWidthPx("-", scale * HU) / HU)), lines.push_back(s.substr(0, b) + "-");
+        else lines.push_back(s.substr(0, b));
+        s.erase(0, b);
     }
     return lines;
+}
+// the box (0x5dcd00 / 0x5dcd10): 300 units at scale 18; it shows two queued lines for 2 x the delay (0x5dd093)
+static void addBanner(const std::string &s, float life = 0) {
+    std::vector<std::string> l = commentLines(s, 300, 18);
+    for (size_t i = 0; i < l.size(); i += 2) banners.push_back(i + 1 < l.size() ? Banner{{l[i], l[i + 1]}, 2 * life} : Banner{{l[i]}, life});
 }
 static uint32_t bannerTick = 0;
 static std::vector<uint8_t> announced;  // per worm death, per team wipe (replays re-emit events)
@@ -4361,7 +4380,6 @@ static std::vector<Sub> subs;
 void (*onNarrator)(int n) = nullptr;
 static float subAge = 0;
 static bool subMode = false;
-static const float SUB_SIZE = 20 * BANNER_SIZE / 18, SUB_W = 600 * BANNER_SIZE / 18;
 static void syncSubs(const Game &g) {  // Subtitles.On kills the box and empties the queue (0x5e4cf7); Off ends the line and the queue
     bool on = scriptMovie(g).subtitles;
     if (on == subMode) return;
@@ -4377,7 +4395,7 @@ static void comment(const char *cat, const char *name) {
     if (lines.empty()) return;
     std::string s = lines[GetRandomValue(0, (int)lines.size() - 1)];
     if (size_t at = s.find("%s"); at != std::string::npos) s.replace(at, 2, name);
-    banners.push_back({s});
+    addBanner(s);
 }
 
 void hudEvent(const Game &g, const GameEvent &e) {
@@ -4396,19 +4414,11 @@ void hudEvent(const Game &g, const GameEvent &e) {
         std::string s = t && *t ? t : e.kind == GameEvent::Comment && e.pos.x ? id : std::string("** INVALID STRING ID: ") + id;  // ScriptText keeps an unknown id as text
         float d = (delay ? delay : 1200) / 1000.f;
         if (subMode) {
-            std::vector<std::string> lines(1);
-            for (size_t i = 0, j; i < s.size(); i = j + 1) {  // breaks at a space or '-' (0x5e0a43)
-                j = std::min(s.find_first_of(" -", i), s.size());
-                std::string word = s.substr(i, j - i + (j < s.size() && s[j] == '-')), line = lines.back().empty() ? word : lines.back() + " " + word;
-                if (textWidth(line.c_str(), SUB_SIZE) > SUB_W && !lines.back().empty()) lines.push_back(word);
-                else lines.back() = line;
-            }
             int n = 0;
             sscanf(id, "Miss.Generic.Lose%d", &n);  // CommentService +0x148 (atoi(id + 17)), played once with the next line shown
-            for (const std::string &l : lines) subs.push_back({l, d, n}), n = 0;
+            for (const std::string &l : commentLines(s, 600, 20)) subs.push_back({l, d, n}), n = 0;  // 0x5f8f90 / 0x5f8fa0
         } else {
-            std::vector<std::string> lines = wrapBanner(s);
-            for (size_t i = 0; i < lines.size(); i += 2) banners.push_back(i + 1 < lines.size() ? Banner{lines[i] + " " + lines[i + 1], 2 * d} : Banner{lines[i], d});
+            addBanner(s, d);
         }
     } else if (e.kind == GameEvent::MovieEnd && subMode) {  // 0x5dff70: the movie's end empties the queue and hides the line
         subs.clear(), subAge = 0;
@@ -4428,7 +4438,7 @@ void hudEvent(const Game &g, const GameEvent &e) {
     } else if (e.kind == GameEvent::TurnStart && e.worm >= 0) {  // CommentService GameLogic.Turn.Started (0x5e1e80): Comment.StartTurn.1-17, %s = the active worm, every turn
         if (defaults) comment("StartTurn", wormName(g.cfg, g.worms[e.worm].team, g.wormSlot(e.worm)));
     } else if (e.kind == GameEvent::SuddenDeath) {  // StartSuddenDeath: Comment.SuddenDeath through the CommentService queue
-        if (defaults) banners.push_back({tr("Comment.SuddenDeath", "SUDDEN DEATH!")});
+        if (defaults) addBanner(tr("Comment.SuddenDeath", "SUDDEN DEATH!"));
     } else if (e.kind == GameEvent::CrateDrop) {  // a script may spawn several in one tick
         auto o = std::find_if(g.objects.begin(), g.objects.end(), [&](const Object &x) { return x.type == Object::Crate && x.uid == e.obj; });
         if (o != g.objects.end()) {
@@ -4438,15 +4448,15 @@ void hudEvent(const Game &g, const GameEvent &e) {
         }
         crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
     } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15 && !subMode) {  // CommentaryPanel.Comment: the item's Text.k<name>
-        banners.push_back({mysteryText(e.weapon)});
+        addBanner(mysteryText(e.weapon));
     } else if (e.kind == GameEvent::RopeShots && defaults) {  // 0x573fcc: CommentaryPanel.CrateText too
-        banners.push_back({e.weapon == 1 ? tr("FETXT.NinjaLastShot", "1 Shot Remaining") : TextFormat(tr("RopeShotsRemaining", "%d Shots Remaining"), e.weapon)});
+        addBanner(e.weapon == 1 ? tr("FETXT.NinjaLastShot", "1 Shot Remaining") : TextFormat(tr("RopeShotsRemaining", "%d Shots Remaining"), e.weapon));
     } else if (e.kind == GameEvent::Collect && e.worm >= 0 && defaults) {  // CommentaryPanel.CrateText
         const Worm &w = g.worms[e.worm];
         const char *who = wormName(g.cfg, w.team, g.wormSlot(e.worm));
-        if (e.weapon == -1) banners.push_back({TextFormat("%s : +%d", who, (int)g.cfg.scheme.crateHealth)});
+        if (e.weapon == -1) addBanner(TextFormat("%s : +%d", who, (int)g.cfg.scheme.crateHealth));
         else if (e.weapon >= 0 && e.weapon < (int)WEAPONS.size()) {
-            banners.push_back({TextFormat("%s : %s", who, weaponName(WEAPONS[e.weapon]))});
+            addBanner(TextFormat("%s : %s", who, weaponName(WEAPONS[e.weapon])));
         }
     }
 }
@@ -4456,23 +4466,27 @@ static void drawSubtitle(Bins &bins, float dt) {  // SubtitleGraphicEntity 0x5f9
     if (subs[0].lose > 0 && onNarrator) onNarrator(subs[0].lose);
     subs[0].lose = 0;
     if ((subAge += dt) > subs[0].life) { subs.erase(subs.begin()), subAge = 0; return; }
-    bins.add(82, [s = subs[0].s] { text(s.c_str(), 640, 360 + 210 * 720 / 540.f - SUB_SIZE / 2, SUB_SIZE, WHITE, 1); });
+    bins.add(82, [s = subs[0].s] { static const Color W[2] = {WHITE, WHITE}; feTextPx(s.c_str(), 640, 360 + 210 * HU, 20 * HU, W, 1); });
 }
 
 // CommentaryBoxGraphicEntity 0x5dd430: WXFE.Border.ComPanel in scene 41, its two FE.Font texts in 42
 static void drawBanner(Bins &bins, float dt, bool shown) {  // shown false: the hot seat hides the box (BaseHudObject 0x5dad00), its queue keeps running
     if (banners.empty()) return;
-    const float LIFE = banners[0].life > 0 ? banners[0].life : banners.size() > 1 ? 2 : 3, SIZE = BANNER_SIZE;  // queued: keeps pace with the death queue (2 s a worm)
+    const float LIFE = banners[0].life > 0 ? banners[0].life : banners.size() > 1 ? 2 : 3;  // queued: keeps pace with the death queue (2 s a worm)
     if ((bannerAge += dt) > LIFE) { banners.erase(banners.begin()), bannerAge = 0; return; }
     if (!shown) return;
-    std::vector<std::string> lines = wrapBanner(banners[0].s);
+    const std::vector<std::string> &lines = banners[0].lines;
     float w = 0;
-    for (const std::string &l : lines) w = fmaxf(w, textWidth(l.c_str(), SIZE));
+    for (const std::string &l : lines) w = fmaxf(w, feWidthPx(l.c_str(), 18 * HU));
     w += 80;
-    float h = 44 + 30 * lines.size(), y = 360 - 140 * 1.5f - h / 2 - (h + 60) * (fmaxf(0, 1 - bannerAge / 0.2f) + fmaxf(0, (bannerAge - LIFE + 0.2f) / 0.2f));  // HUD.Comment.Position y 140
+    float h = 44 + 18 * HU * lines.size(), y = 360 - 140 * HU - h / 2 - (h + 60) * (fmaxf(0, 1 - bannerAge / 0.2f) + fmaxf(0, (bannerAge - LIFE + 0.2f) / 0.2f));  // HUD.Comment.Position y 140
     Rectangle r = {640 - w / 2, y, w, h};
     bins.add(41, [r] { if (!comPanel(r)) DrawRectangleRounded(r, 0.3f, 6, {0, 104, 138, 230}); });
-    bins.add(42, [lines, y, SIZE] { for (size_t i = 0; i < lines.size(); i++) text(lines[i].c_str(), 640, y + 20 + 30 * i, SIZE, WHITE, 1); });
+    // scale 18; two lines at +9 / -9 units, one at 0 (0x5dd04b, 0x5dd10b)
+    bins.add(42, [lines, y, h] {
+        static const Color W[2] = {WHITE, WHITE};
+        for (size_t i = 0; i < lines.size(); i++) feTextPx(lines[i].c_str(), 640, y + h / 2 + (2 * i + 1.0f - lines.size()) * 9 * HU, 18 * HU, W, 1);
+    });
 }
 
 bool Hud::trackHp(const Game &g, bool turnStart, uint32_t tick) {
@@ -4701,8 +4715,6 @@ static void drawHst(const std::string &worm, const std::string &team, Color tc, 
 
 // ---------------------------------------------------------------- weapon panel (docs/w4m/render.md "Weapon panel")
 
-// HUD units: 480 tall, centre origin, y up; drawn in px under rl matrices
-static const float HU = 720 / 480.0f;
 // A HUD root entity's centre in px: HUDTWK position x 0x4d4cc0 (x 4/3, y 1 at 16:9), 480 units high, centre origin, y up [disasm 0x4d4cc0]
 static Vector2 hudAt(float x, float y) { return {640 + x * 4 / 3.0f * HU, 360 - y * HU}; }
 // [ours, user-requested] every corner element's outer rim sits HUD_EDGE px from the screen edge, rims measured on the drawn sprites (alpha > 20)
@@ -5034,7 +5046,7 @@ void Hud::queue(const Game &g, const Camera3D &cam, uint32_t tick) {
         if (g.weapon >= 0 && (g.weapon != cw || fuse != cf) && !subMode) {
             std::string c = weaponName(wd);
             if (wd.userFuse) c = TextFormat("%s, %d %s", c.c_str(), fuse, tr("Text.Seconds", "secs", "secondes"));
-            banners.assign(1, Banner{c, 1.2f});
+            banners.clear(), addBanner(c, 1.2f);
             bannerAge = 0;
         }
         cw = g.weapon, cf = fuse;

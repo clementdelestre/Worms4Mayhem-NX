@@ -183,8 +183,9 @@ The `.wmv` files are separate. `MoviePlayerService` plays them full screen.
   senders: GameOverLogicEntity 0x4fffb6, weapons (0x548d3c, 0x54cdf8, SuperBomber 0x58adc6 / 0x58b211) and the -w3d scripts.
 - Border init (0x5e6b90): HUD.Hide, EFMV.Subtitles.On, data `EFMV.BordersActive` 1. Two black bars (colour 0, 0, 0, 255) at y = +-0x4c,
   x scale +0x48, y scale BorderHeight x f + 0x50 (update 0x5e68c0): ctor 0x5e66c0 sets +0x4c = 240 (1 - w) + 265 w, +0x50 = +0x4c - 240,
-  +0x48 = (330 (1 - w) + 360 w) x aspect scale (0x4d4cc0), w the widescreen factor [0x95a100]+0x8c: in 16:9 the bars sit at +-265 of a
-  +-270 HUD, half height 25 + 50 f, inner edges at 190 units from the middle. f grows over BorderOnTime (0: at once), then posts
+  +0x48 = (330 (1 - w) + 360 w) x aspect scale (0x4d4cc0), w = [0x95a100]+0x8c, the `/SHRINKHUD` scale
+  (0x4da525, "Shrinking the HUD, scale ="; 0 by default, render.md §146): the HUD is +-240 units, the bars sit at +-240, half height
+  50 f, inner edges at 190 units from the middle (the earlier "+-265 of a +-270 HUD" read w as a widescreen factor) [disasm]. f grows over BorderOnTime (0: at once), then posts
   EFMV.Ready; EFMV.End (0x5e6e37, asserted if twice) posts EFMV.Subtitles.Off and f falls to 0 over BorderOffTime (inner edges 190 ->
   240), then the entity goes: BordersActive 0, EFMV.Ready, HUD.Show (0x5e65d0). `EFMV.Borders` is the XSpriteSetDescriptor
   Bundl10 #88 (XGroup #294: one XShape on `WhiteOut.tga`, an empty XBillboardSpriteSet #950) [data]; registry 0x917a30 gives it scene 81, which
@@ -199,9 +200,23 @@ The `.wmv` files are separate. `MoviePlayerService` plays them full screen.
   SubtitleGraphicEntity in subtitle mode, else the box (0x5de5b0); Subtitles.Off kills the subtitle and empties the queue. In subtitle
   mode only TimedText, ScriptText, DebugText, Clear, NoDefault, EnableDefault are handled (0x5e510f): no death, crate, turn or weapon
   comments. The movie's end (skip included) empties the queue and hides the line in subtitle mode (0x5dff70 -> 0x5f9290).
-- AddComment (0x5e0680) in subtitle mode: no `<CLS>`, width 600 at scale 20 (the box: 300, 18); a line breaks back at a ' ' or '-' (the
-  next line starts with it), each line its own entry with the full delay (Duration; 0 -> 1200 ms).
-- SubtitleGraphicEntity (init 0x5f93b0, update 0x5f9350, pop 0x5f90a0): one FE.Font text, scale 20, at (0, -210), centred, white, its
+- AddComment (0x5e0680) in subtitle mode: no `<CLS>`, width 600 at scale 20 (0x5f8f90 / 0x5f8fa0; the box: 300, 18, 0x5dcd00 /
+  0x5dcd10; a third pair `HUD.Comment.PixelWidth` / `.Fontsize` is taken only with the third argument set, which every caller passes 0)
+  [disasm]. Each entry is the delay (Duration; 0 -> 1200 ms) and one line of the rest of the text [disasm 0x5e076e..0x5e0b4d]:
+  - n = 0x6b1470(rest, width, scale): the chars whose FE.Font width (scale x (advance + kerning / 256), in em) stays <= width.
+  - n >= length: the rest is the last line. Else the line backs up from char n (the first char that does not fit) to a ' ' or '-',
+    never to char 0. Line = the chars before it (0x638382 Left), rest = from it on (0x6386e1 Right): the next line starts with the ' '
+    or '-', which is drawn and measured (a centred second line moves half a space right).
+  - No ' ' or '-' found: n' chars fit width - scale x width('-') (0x6b1430), line = those + '-' (' ' when `SAVE.Language` is 6), rest =
+    from char n'.
+  Ours: `commentLines` (ui.cpp) for the subtitle (600, 20) and the box (300, 18), measured as every FE text (`feWidthPx`, FE_EM),
+  without kerning: `tools/w4m-ui` does not export XMultiTexFont `Kerning` (u16[] at +0x40, frontend.md "FE.Font glyph quads") and our
+  text renderer applies no pair kerning, so a line within a kerning pair's width of the limit may break one word apart from W4M [ours].
+- CommentaryBoxGraphicEntity line layout [disasm 0x5dd02a..0x5dd115]: FE.Font texts at scale 18; one line at y 0, two lines at +9 / -9
+  units (pitch 18) and the panel's second scale 18 -> 32.4; its width is (the widest line x 18 + [0x920800]) / 2. Ours: `drawBanner`
+  draws the box's stored lines (no re-wrap) at 18 units x FE_EM, +-9 units apart; the panel padding (80 px, 44 px) stays ours.
+- SubtitleGraphicEntity (init 0x5f93b0, update 0x5f9350, pop 0x5f90a0): one FE.Font text, scale 20, at (0, -210) HUD units (480 tall:
+  y 675 px of 720, inside the bottom bar), centred, white, its
   shadow colour 0 (premultiplied: none), no panel, no fade; pops an entry, shows it for its delay (game time), hides it, the next at the
   following update: one line at a time, FIFO. Its creation value 0x52 is a render layer (82 of 88, GRM 0x6af860; the box's 0x2a = 42): drawn over the commentary box and the HUD [disasm; the draw list 0x6edeea walks the bins in index order, render.md §1 "Render bins"]. A `Miss.Generic.Lose<n>` line plays `EFMV/Failures/Failures_Narrator_0<n>` when shown
   (CommentService +0x148); the box never does.

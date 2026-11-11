@@ -157,8 +157,8 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
     `GameEvent::Movie` events played by `Acting::movie` on the cast actors with the acting-scene code (a "PROP <name>" detail is a look
     target, 0x5cd12e); a plain TriggerSpeech name plays the worm's voice category there. AnimateDetail plays the coded details' clip once
     from that frame (`Efmv::event`), held on its last pose (0x7ad288). No EFMV event moves a worm: only clips (none in the data).
-  - Subtitles (ui.cpp): in subtitle mode (borders up until EFMV.End) Comment lines wrap at 600 units, scale 20 (the box's 300 / 18 ratio
-    on our banner font), each shown alone for its delay, white, centred at (0, -210); the mode's start drops the box and its queue, its
+  - Subtitles (ui.cpp): in subtitle mode (borders up until EFMV.End) Comment lines wrap at 600 units, scale 20 (`commentLines`, W4M's
+    break, acting.md §19), each shown alone for its delay, white, 20 units x FE_EM at (0, -210); the mode's start drops the box and its queue, its
     end and the movie's end drop the subtitles; default comments (deaths, crates) are dropped meanwhile. FailureComment: Miss.Generic.Lose
     1..5 by GetRandomValue (W4M's graphical rng), Delay = Duration.
   - Audio hooks (the other side is audio.cpp): `GameEvent::Speech` {fx = Speech name (`*Name`: the level's EFMV bank line, else a voice
@@ -173,7 +173,8 @@ docs/w4m/missions.md §23]. Patches (`tools/patches/lua-5.0.1-w4m.patch`): float
   Initialise's (run before the first step clears the events) reach the listeners too. Persistent HUD state is read by `scriptHud()`.
   - Commentary: TimedText (`CommentaryPanel.Comment`, `.Delay`) / ScriptText (delay 0 = 1200 ms) and the movies' Critical Comment
     (Delay = Duration) go to the commentary banner (`Ui::hudEvent`) as W4M's queue: the text (W4M `tr()`, FR / EN from `EngLS` / `FreLS`;
-    unknown id: `** INVALID STRING ID: id`, ScriptText: the id itself) wrapped to the banner width, two lines per banner shown 2 x the
+    unknown id: `** INVALID STRING ID: id`, ScriptText: the id itself) wrapped at 300 units, scale 18 (`commentLines`, every banner text
+    goes through it), two lines per banner shown 2 x the
     delay, a last single line 1 x. Commentary.Clear drops the waiting banners, not the shown one. Commentary.NoDefault mutes our default
     banners (deaths, team wipe, crate drop, crate pickup); the mystery-crate text stays.
   - HUD: `HUD.Counter.Active` shows `HUD.Counter.Value` ("%d", "%d%" with Percent) in orange on a wind backing at the clock's lower left
