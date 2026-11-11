@@ -77,7 +77,7 @@ Multiple Girders (`WP_MULTI_GIRDER`, W4M GirdersDontEndTurn, disasm 0x55ac30).
 
 ### Turn start (`beginTurn`)
 
-In order: bubbles age one turn end (W4M Bubble.Lifetime, data); Icarus, girder preview, Double Damage and binoculars reset (W4M
+In order: bubbles age one turn end (W4M Bubble.Lifetime, data); the utility entity goes (`deleteUtility`, below), girder preview, Double Damage and binoculars reset (W4M
 DoPostActivity `SetData("DoubleDamage", 0)`, data); poison takes `poison` hp from each worm, never below 1 (W4M Worm.Poison, data);
 game over check: one alliance or none left standing (`activeAlliances`, W4M GetActiveAlliances 0x5b4030), the winner the last
 standing team (`survivingTeam`, GetSurvivingTeam 0x5b3d40), disasm; sudden death (below); the next worm by W4M SelectNextWorm
@@ -484,10 +484,16 @@ W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm 
 - Firing (`use`, `grappleFire`, `grappleStep`, `Game::grapple`, checksummed in flight) [disasm 0x573790 / 0x572800 / 0x573d00]: FIRE
   launches the hook from the eye (feet + 0.75 m) at 50 m/s (1 unit/ms) along the aim, or, once hooked since the worm last stood
   (`Rope::swung`, W4M +0x79, cleared idle off Ballistic 0x574b96), along 0x570650's pitch: straight up, tilted 45° toward the horizontal
-  motion at 10 m/s and over (proportionally below). FIRE again while it flies retracts it. Each tick: a standing worm's hook takes the
+  motion at 10 m/s and over (proportionally below). FIRE again while it flies retracts it. FireUtil (0x573790) reads no inventory and
+  asks no phase: a wielded rope fires whatever its ammo (a script zeroing it changes nothing) and answers FIRE in `Flying` / `Retreat`
+  too, until the turn ends; the inventory is checked only when it is picked (`usable`). Each tick: a standing worm's hook takes the
   first object its 0.25 m sphere touches (mask 0x1e: crates but mission targets, a still mine, a drum; a bubble retracts it); else land
   within the tick's flight hooks (`ropeOn`); else it moves on and retracts past MaxLength from the feet. Only a hook on land counts
-  against Ninja.NumShots (`ropeShots`, 0x573ea3); the ammo goes once the rope has hooked, when it is put away or the turn ends
+  against Ninja.NumShots (`ropeShots`, 0x573ea3), 5 per rope wielded (W4M entity +0x3c, read at its creation 0x570efb): `pick` makes a
+  new rope, the turn start too; an endless turn (TurnTime 0) does not refill it. Each land hook posts the shots left as
+  CommentaryPanel.CrateText (`GameEvent::RopeShots`: FETXT.NinjaLastShot at 1, else RopeShotsRemaining, 0x573eb8). Let go or
+  retracted with none left, NinjaRope.Kill puts it away (`ropeDone`, 0x573aa7 → 0x565920): the secondary in hand, else the empty
+  hand; a 6th hook needs the rope picked again. The ammo goes once the rope has hooked, when it is put away or the turn ends
   (`ropeCleanup`, 0x5727b0 on +0x7b). Ours: the 20 ms step runs per tick. Not ported [ours, the sim has no camera view]: W4M refuses a
   standing fire from the first-person "Head" camera without a target (FEError, 0x573845).
 - Hooking (`ropeOn`): length from the feet, angle = acos of the eye's drop below the hook (> 0: behind the facing), negated when hooked
@@ -505,14 +511,20 @@ W4M NinjaRopeUtilityLogicEntity, docs/w4m/weapons.md "Ninja rope swing" [disasm 
   their Radius; mines 3 units), drums (0x10, 9 units at their Position) and bubbles (0x10, 9 units); crates (2 / health 4 / target
   0x20) do not block a worm. A hooked object's rope uses mask 0x3f (crates too) and its own size: a crate 10 units, else 5 (0x571d90,
   0x572269). Rope.MAX 16 bends: a wrap past it bounces instead.
-- Velocity while swinging is W4M's 0x56fd60 value, the step's motion × 0.001 units/ms (1/50 of the motion's speed); letting go (`JUMP`)
-  sets the velocity of one more swing step over its time (0x573530, DetachVelocityMulti 1).
+- Velocity while swinging is W4M's 0x56fd60 value, the step's motion × 0.001 units/ms (1/50 of the motion's speed); letting go (`FIRE`,
+  FireUtil) sets the velocity of one more swing step over its time (0x573530, DetachVelocityMulti 1). `JUMP` does nothing on the rope
+  (the roped worm is Override, StartJump 0x5acd40 runs only walking); the secondary drops with Fire.Second (`PITCH`, as a landed
+  jetpack; the client's R).
 - `ropeSwing` (0x571820): without `HEADING`, the sign of `walk`; with it, the stick's direction against the facing: under 81° forward,
   over 99° back, 0 between.
 - A hooked crate, drum or mine (0x571d90) runs the same update about the worm's feet at the hook time, its plane facing away from the
-  worm, no spin; it hangs by its centre minus 10 units (crate, 0x5cbc86) or 9 (drum, 0x5d2135); `stepObjects` leaves it alone; `JUMP`
+  worm, no spin; it hangs by its centre minus 10 units (crate, 0x5cbc86) or 9 (drum, 0x5d2135); `stepObjects` leaves it alone; `FIRE`
   lets it go with `ropeRelease`'s velocity (NinjaRope.EndSwing).
-- The AI's rope planner (`Mover`, ai.cpp) flies the hook with the same `grappleFire` / `grappleStep`, objects aside.
+- The AI's rope planner (`Mover`, ai.cpp) flies the hook with the same `grappleFire` / `grappleStep`, objects aside; a roped CPU lets
+  go with FIRE.
+- Turn end (`deleteUtility`, stdlib Utility.Delete, also sent by the script): rope, jetpack and parachute end, and the Redbull entity
+  goes (0x587540: `icarus` 0, aftertouch cleared, flag 0x40 cleared, so no flap in `Settle` and the next landing hurts). Called where
+  the turn ends (`Aim` / `Retreat` timeouts, script `Utility.Delete`) and at the turn start.
 
 ### Shots in water (`stepShots`' `wet`)
 

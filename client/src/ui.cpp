@@ -4439,6 +4439,8 @@ void hudEvent(const Game &g, const GameEvent &e) {
         crateFocus = 30;  // until it lands: the sim holds the turn meanwhile
     } else if (e.kind == GameEvent::Mystery && e.weapon >= 0 && e.weapon < 15 && !subMode) {  // CommentaryPanel.Comment: the item's Text.k<name>
         banners.push_back({mysteryText(e.weapon)});
+    } else if (e.kind == GameEvent::RopeShots && defaults) {  // 0x573fcc: CommentaryPanel.CrateText too
+        banners.push_back({e.weapon == 1 ? tr("FETXT.NinjaLastShot", "1 Shot Remaining") : TextFormat(tr("RopeShotsRemaining", "%d Shots Remaining"), e.weapon)});
     } else if (e.kind == GameEvent::Collect && e.worm >= 0 && defaults) {  // CommentaryPanel.CrateText
         const Worm &w = g.worms[e.worm];
         const char *who = wormName(g.cfg, w.team, g.wormSlot(e.worm));
@@ -5353,7 +5355,7 @@ void Hud::queue(const Game &g, const Camera3D &cam, uint32_t tick) {
     // state hints and button legends: the help consoles are WXFE items of layer 5, scene 0x24 + 5 = 41 (0x5f8bd2, 0x5db702)
     std::vector<std::string> states;
     if (g.shotsLeft) states.push_back(TextFormat("%d shot(s) left", g.shotsLeft));
-    if (g.roped) states.push_back("Rope: stick swings, aim = length, jump releases");
+    if (g.roped) states.push_back("Rope: stick swings, aim = length, fire releases");
     if (g.jetting) states.push_back(keyGlyphs() ? "Jetpack: Space thrust, arrows steer, Backspace drop" : "Jetpack: A/ZR thrust, stick steers, B drop");  // HelpText.kUtilityJetpack0
     const float fuel = g.jetting ? Clamp(g.fuel / fmaxf(g.jetInit, 0.01f), 0, 1) : -1;  // Jetpack.InitFuel
     std::vector<Hint> legend;

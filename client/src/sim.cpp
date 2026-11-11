@@ -1322,10 +1322,9 @@ void Game::start(const GameConfig &c) {
 }
 
 void Game::beginTurn(int last, bool sameTeam) {
-    ropeCleanup(), grapple.on = false;
+    ropeCleanup(), grapple.on = false, deleteUtility();
     for (size_t i = 0; i < bubbles.size();) if (--bubbles[i].life <= 0) emit(GameEvent::BubblePop, bubbles[i].pos), bubbles.erase(bubbles.begin() + i); else i++;  // GameLogic.Turn.Ended
-    if (icarus && current >= 0) worms[current].motion.flags &= ~WF_FALL_ONCE;  // the Redbull's removal (0x587540)
-    girderOn = false, icarus = 0, bubbleAt = -1, drift = {}, doubleDamage = changing = false, scout.t = -1, walkVel = {};  // DoPostActivity: SetData("DoubleDamage", 0)
+    girderOn = false, bubbleAt = -1, doubleDamage = changing = false, scout.t = -1, walkVel = {};  // DoPostActivity: SetData("DoubleDamage", 0)
     crated = false;
     wobble.weapon = -1;  // the gun entity is made anew each turn
     mysteryWalk = mysteryLow = false;  // GameLogic.Turn.Ended: Worm.VelocityScale 1 (0x4f59f0), Low.Gravity.GameDefault (0x4f24f0)
@@ -1368,7 +1367,7 @@ void Game::beginTurn(int last, bool sameTeam) {
             float r = rand01(), sp = WIND_CAP[std::min<int>(sc.wind, 3)] * r * r, dir = rand01() * 2 * 3.14f;
             wind = sp * cosf(dir), windZ = sp * sinf(dir);
         }
-        roped = jetting = jetUsed = chute = cursorOn = blimp = locked = false, fuel = jetInit, boost = 0, secondary = launched = -1;
+        jetUsed = cursorOn = blimp = locked = false, fuel = jetInit, boost = 0, secondary = launched = -1;
         for (Object &o : objects) o.hooked = false;
         shotsLeft = ropeShots = gunState = 0, gunSent = false, rope.swung = false;
         weapon = -1;  // W4M GameLogic.Turn.Started (0x566d57): kWeaponUndefined, the empty hand
@@ -1399,7 +1398,7 @@ void Game::pick(int team, int k) {
     if (keep && !wp(WP_NO_BOMBING) && toolDrop(WEAPONS[k])) { secondary = k; return; }
     if (tool) roped = jetting = chute = false;
     for (Object &o : objects) o.hooked &= !tool;
-    weapon = k, secondary = -1, jetUsed = false, fuel = jetInit;  // a new jetpack on the ground (new W4M entity)
+    weapon = k, secondary = -1, jetUsed = false, fuel = jetInit, ropeShots = 0;  // a new jetpack on the ground, a new rope (new W4M entities)
 }
 
 // Y / R: the next selectable weapon (ours); under a tool only the tool and its toolDrop()s, so a step never ends it
@@ -2430,7 +2429,7 @@ void Game::use(Worm &w) {
         return;
     }
     if (wd.kind == Kind::Rope) {  // 0x573790: FIRE launches the hook (NumShots left) or retracts it in flight
-        if (grapple.on) grapple.on = false;
+        if (grapple.on) grapple.on = false, ropeDone();
         else if (ropeShots < ROPE_SHOTS) {
             grapple = grappleFire({w.pos.x, w.pos.y - R, w.pos.z}, w.yaw, w.pitch, w.vel, rope.swung), ropeMax = wd.speed;
             emit(GameEvent::Fire, w.pos, current, weapon);
@@ -2464,6 +2463,7 @@ void Game::use(Worm &w) {
         emit(GameEvent::Fire, w.pos, current, weapon);
         return;
     }
+    if (wd.kind == Kind::Icarus && icarus) return;  // 0x58761b: drunk already (state != 0)
     if (!shotsLeft && !(wd.kind == Kind::ChangeWorm && changing)) spend(w.team, weapon);
     Vector3 dir = aimDir(w), f = flat(w.yaw), tgt = target();
     // W4M 0x585a52 / 0x585bc5: off its feet and moving, a payload starts 30 units further along the worm's velocity and inherits it
@@ -2988,6 +2988,17 @@ int Game::grappleStep(Hook &h, Vector3 feet, float maxLen, bool standing, Vector
 void Game::ropeCleanup() {  // 0x572620: a rope that hooked (+0x7b) decrements the inventory as it goes
     if (ropeUsed < 0) return;
     spend(worms[current].team, ropeUsed), ropeUsed = -1;
+}
+
+// 0x573a01: let go or retracted with no NumShots left, NinjaRope.Kill; 0x565920 wields the secondary, else the empty hand
+void Game::ropeDone() {
+    if (ropeShots >= ROPE_SHOTS) weapon = secondary, secondary = -1;
+}
+
+// stdlib Utility.Delete at the turn end: the utility entity goes; the Redbull's removal clears flag 0x40 (0x587540)
+void Game::deleteUtility() {
+    if (icarus && current >= 0 && current < (int)worms.size()) worms[current].motion.flags &= ~WF_FALL_ONCE;
+    roped = jetting = chute = false, icarus = 0, drift = {};
 }
 
 // W4M DamageImpulseMessage 0x518cbf: a direct hit (gun, melee) sets the worm's velocity, doubled under Double Damage, and launches it
@@ -3762,13 +3773,14 @@ void Game::step(const Input &raw) {
         jetting = tool = true, thrust = weaponDef(weapon).speed, boost = 0;
         emit(GameEvent::Fire, w.pos, current, weapon);
     }
-    if (w.alive && (phase == Phase::Aim || (tool && (phase == Phase::Flying || phase == Phase::Retreat)))) {
+    const bool ropeHand = weaponDef(weapon).kind == Kind::Rope;  // 0x573790 asks no phase: the rope answers FIRE until the turn ends
+    if (w.alive && (phase == Phase::Aim || ((tool || ropeHand) && (phase == Phase::Flying || phase == Phase::Retreat)))) {
         bool armed = phase == Phase::Aim && !utility(weaponDef(weapon).kind);  // a weapon in hand: FIRE and the aim axis are its own
         ropeIn = {(int8_t)ropeSwing(in, w.yaw), armed ? (int8_t)0 : in.aim};
-        if (roped) {  // 0x573530 on letting go; the swing itself runs with the worms (ropeTick)
-            if (pressed & Input::JUMP) roped = false, w.vel = ropeRelease(rope, {w.pos.x, w.pos.y - R, w.pos.z}, ropeIn.swing);
+        if (roped) {  // 0x573530 on FireUtil; the swing itself runs with the worms (ropeTick)
+            if (pressed & Input::FIRE) roped = false, w.vel = ropeRelease(rope, {w.pos.x, w.pos.y - R, w.pos.z}, ropeIn.swing), ropeDone();
         } else if (Object *o = hooked()) {
-            if (pressed & Input::JUMP) o->hooked = false, o->vel = ropeRelease(rope, ropePoint(*o), ropeIn.swing);  // NinjaRope.EndSwing
+            if (pressed & Input::FIRE) o->hooked = false, o->vel = ropeRelease(rope, ropePoint(*o), ropeIn.swing), ropeDone();  // NinjaRope.EndSwing
         } else if (jetting) {  // W4M 0x562810 every 20 ms, here per tick; FIRE held = FireUtil, whatever the hand holds
             bool burn = in.buttons & Input::FIRE;
             if ((w.grounded && !burn) || (burn && fuel <= JET_DRY)) jetting = false;  // landed (0x562f72), or dry (0x562990): it falls
@@ -3799,16 +3811,17 @@ void Game::step(const Input &raw) {
             if (chosen >= 0 && !shotsLeft) pick(w.team, chosen);
             else if ((pressed & Input::NEXT_WEAPON) && !shotsLeft) nextWeapon(w.team);
             if (weaponDef(weapon).userFuse) fuses[w.team] = std::clamp(fuses[w.team] + !!(pressed & Input::FUSE_UP) - !!(pressed & Input::FUSE_DOWN), 1, 5);
-            bool spare = jetUsed && weaponDef(weapon).kind == Kind::Jetpack;  // takes off again without ammo
-            // Fire.Second: JUMP in flight, PITCH without TARGET on a landed jetpack (UtilityFire stays on: FIRE takes off, JUMP jumps)
-            uint8_t second = jetting ? Input::JUMP : jetLanded() ? (in.buttons & Input::TARGET ? 0 : Input::PITCH) : Input::FIRE;
+            const Kind k = weaponDef(weapon).kind;
+            bool wielded = k == Kind::Jetpack || k == Kind::Parachute;  // W4M FireUtil reads no inventory (0x562270, 0x578db0)
+            // Fire.Second: JUMP in flight, PITCH without TARGET on a landed jetpack or the rope (UtilityFire on: FIRE takes off / lets go)
+            uint8_t second = jetting ? Input::JUMP : jetLanded() || k == Kind::Rope ? (in.buttons & Input::TARGET ? 0 : Input::PITCH) : Input::FIRE;
             bool drop2 = secondary >= 0 && (pressed & second) && usable(w.team, secondary) && !w.nailed;
             if (drop2) {  // W4M UtilityFire group 0x4e1d50: Fire.Second fires the secondary, the tool stays in hand
                 int tool = weapon;
                 weapon = secondary, secondary = -1, power = 0;
                 use(w);
                 weapon = tool;
-            } else if (armed && !gunState && weapon >= 0 && ((stock(w.team, weapon) && !delays[w.team][weapon]) || shotsLeft || spare || (chute && weaponDef(weapon).kind == Kind::Parachute)) && !(w.nailed && !nailUsable(weaponDef(weapon).kind))) {
+            } else if (armed && !gunState && weapon >= 0 && k != Kind::Rope && (wielded || (stock(w.team, weapon) && !delays[w.team][weapon]) || shotsLeft) && !(w.nailed && !nailUsable(k))) {
                 Vector3 h;
                 // W4M CanFire is asked on Input.FirePressed only (0x586092); a charge started goes on to its release
                 if (!powered(weaponDef(weapon))) { if ((pressed & Input::FIRE) && fireable(w) && !(aimCursor && cursorOn && !blimpHit(&h))) use(w); }  // W4M: no target, NotClearToFire
@@ -3823,6 +3836,7 @@ void Game::step(const Input &raw) {
                 }
             }
         }
+        if (weaponDef(weapon).kind == Kind::Rope && !tool && (pressed & Input::FIRE) && !w.nailed) use(w);  // fires or retracts the hook
     }
 
     if (secondary >= 0 && !toolOut() && !jetLanded()) weapon = secondary, secondary = -1, jetUsed = false, fuel = jetInit;
@@ -3900,7 +3914,7 @@ void Game::step(const Input &raw) {
         Vector3 hit;
         int obj = -1, r = w.alive && weaponDef(weapon).kind == Kind::Rope ? grappleStep(grapple, {w.pos.x, w.pos.y - R, w.pos.z}, ropeMax, ambulatory(w), &hit, &obj) : 0;
         grapple.on = r == 1;
-        if (r == 2) ropeShots++, ropeUsed = weapon, ropeOn(hit);  // 0x573ea3: NumShots counts the hooks on land
+        if (r == 2) ropeShots++, ropeUsed = weapon, ropeOn(hit), emit(GameEvent::RopeShots, w.pos, current, ROPE_SHOTS - ropeShots);  // 0x573ea3
         if (r == 3) {  // 0x571d90: the object swings about the worm's feet, its plane facing away from the worm, no spin
             Object &o = objects[obj];
             Vector3 feet = {w.pos.x, w.pos.y - R, w.pos.z}, d = Vector3Subtract(ropePoint(o), feet);
@@ -3958,14 +3972,14 @@ void Game::step(const Input &raw) {
     case Phase::Aim:  // a script ends the turn through its Timer_* / Worm_Damaged_Current callbacks (stdlib EndTurn)
         // 0x586e75: a powered weapon's FirePressed posts Timer.EndTurn (0x549ad0), clearing the turn-running flag +0x6a until the shot
         if (script) { if (!hotSeat && power <= 0 && !gunState && !scriptMovieCamera(*this) && --timer <= 0) scriptEvent(*this, "Timer_TurnTimedOut"); }  // 0x50f383
-        else if (!w.alive || selfHurt || over || (!hotSeat && power <= 0 && !gunState && --timer <= 0)) { deleteWeapon(); phase = Phase::Settle; timer = 1; roped = jetting = chute = false; }
+        else if (!w.alive || selfHurt || over || (!hotSeat && power <= 0 && !gunState && --timer <= 0)) deleteWeapon(), deleteUtility(), phase = Phase::Settle, timer = 1;
         break;
     case Phase::Flying:
         if (shots.empty()) phase = Phase::Retreat;
         [[fallthrough]];
     case Phase::Retreat:  // W4M Timer_RetreatTimedOut / Worm_Damaged_Current -> EndTurn, which waits for the shots (ObjectCount.Active)
         if (script) { if (--timer <= 0) scriptEvent(*this, "Timer_RetreatTimedOut"); }
-        else if (!w.alive || selfHurt || over || --timer <= 0) deleteWeapon(), phase = Phase::Settle, timer = 1, jumpDelay = 0, roped = jetting = chute = false;
+        else if (!w.alive || selfHurt || over || --timer <= 0) deleteWeapon(), deleteUtility(), phase = Phase::Settle, timer = 1, jumpDelay = 0;
         break;
     case Phase::Settle:  // stdlib.lub EndTurn: timer > 0 WaitUntilNoActivity, < 0 PostActivityTime; no timeout, as W4M
         if (in.flags & Input::SKIP_COUNT) countT = std::max(countT, COUNT_DAMAGE);  // observed in W4M by the user, 2026-10-03: X ends the display, deaths follow as usual

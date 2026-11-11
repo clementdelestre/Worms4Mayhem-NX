@@ -1565,7 +1565,7 @@ Input Ai::think(const Game &g) {
     lastTimer = g.timer;
     if (wait > 0) { wait--; return in; }  // W4M DelayAtStart is 0: no pause before thinking
     if (g.jetting) return in;
-    if (g.roped) { in.buttons = g.prevButtons ? 0 : Input::JUMP; return in; }
+    if (g.roped) { in.buttons = g.prevButtons ? 0 : Input::FIRE; return in; }  // FireUtil lets go (0x573790)
     switch (mode) {
     case Mode::Eval:
     case Mode::Search:

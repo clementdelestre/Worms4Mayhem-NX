@@ -107,7 +107,7 @@ hold − diagram), main.cpp (perf overlay, replays). Switch names; keyboard in t
 | Homing missile: first-person aim, lock (first press), charge and fire (next press) | hold L or ZL, then A / ZR | hold right mouse, then Space |
 | Homing missile: sky view (no lock until A / ZR), lock on the cursor, then L or ZL to aim and fire in first person (lock kept) | Y; then A / ZR; then hold L or ZL | E (toggle) |
 | Sky view: fire (homing: lock the cursor point, then charge and fire) / leave / pan / look / zoom | A / B (or Y) / left stick / right stick / D-pad ↑ ↓ | Space / Enter or E / arrows / W A S D / Z X, wheel |
-| Rope | stick swings, right stick reels, A or R fires the held secondary, B lets go | arrows, W S, Space, Enter |
+| Rope: fire / let go (5 hooks on land, then it is put away) / swing / reel / drop the secondary (dynamite, mine, sheep) | A or ZR / left stick / right stick / R | Space / arrows / W S / Backspace |
 | Jetpack: take off and thrust / steer / forward thrust / drop the secondary (dynamite, mine, sheep) | hold A or ZR / left stick / D-pad ↑ / R (in flight and once landed; B jumps) | hold Space / arrows / W / Backspace |
 | Steered shot (Super Sheep, Bovine Blitz, Old Woman, Scouser): steer / detonate | left stick (left right: turn, up down: pitch) / A | left right arrows, W S / Space |
 | Girder preview: move / raise, lower, turn the view / place | left stick / right stick / A | arrows / W S, A D / Space |

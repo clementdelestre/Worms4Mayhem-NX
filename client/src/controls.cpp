@@ -303,7 +303,7 @@ Input read(const Game &g, int pad, bool live, float dt) {
     bool drop = down(pad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1) || (kb && IsKeyDown(KEY_BACKSPACE));
     if (g.jetting) { if (drop) in.buttons |= Input::JUMP; }
     else {
-        if (drop && g.secondary >= 0 && !tv && !gk) in.buttons |= g.jetLanded() ? Input::PITCH : Input::FIRE;  // landed jetpack / rope, parachute
+        if (drop && g.secondary >= 0 && !tv && !gk) in.buttons |= g.jetLanded() || weaponDef(g.weapon).kind == Kind::Rope ? Input::PITCH : Input::FIRE;  // parachute: FIRE
         if (jumpDown && !tv && !swallowJump) in.buttons |= Input::JUMP;
     }
     bool dpL = down(pad, GAMEPAD_BUTTON_LEFT_FACE_LEFT), dpR = down(pad, GAMEPAD_BUTTON_LEFT_FACE_RIGHT);
