@@ -215,6 +215,7 @@ private:
 void reticle(Bins &bins, const WeaponDef &wd, Vector2 c);
 // W4M Blimp-view reticle at the screen centre: Bomber cursor (arrows = the run, left to right) or Targeting cursor.
 void targetCursor(Bins &bins, const WeaponDef &wd, int state, const Vector2 *lock = nullptr, const Vector2 *at = nullptr);  // state: 0 valid, 1 water, 2 no target, -1 none; lock: homing marker; at: centre, default screen centre
+Vector2 hudHeading(const Camera3D &c);  // the camera's ground heading (x, z) the compass and wind needle turn by
 Vector2 windPointer(bool live, float wx, float wz, Vector2 fwd);  // wind meter needle on screen (y down), length foreshortened
 float text3dPlace(Vector3 p, float scale, const Camera3D &cam, Vector3 fwd, Vector2 screen, Vector2 &at);  // Text3D em (px) and centre
 // W4M PiP (HUDTWK PiP.*, WXFE_Border_Bubble): the event camera's picture in its tilted inset; show / full as Controls::inset

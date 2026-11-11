@@ -406,6 +406,7 @@ checksum and that every weapon fires twice bit-identically (`fireEach`).
 | `checkLaunchAtWall` | W4M launch from the eye against a thin wall: bazooka on its own side, shotgun on the near face, dynamite ahead. |
 | `checkPointBlankDown` | Fired down at point blank: the shot passes the shooter's body, the floor blast hurts it. |
 | `checkPayloadForces` | W4M payloads: wind adds Wind.Speed; homing missile has no gravity, homes only in stage 2. |
+| `checkWindTurn` | W4M StartTurn -> SetWind: the wind holds from a bazooka shot to the next turn start, then changes; the HUD heading (`Ui::hudHeading`, the view's right axis, W4M 0x5fc6e0 / 0x5f7cf0) and the wind needle are the same for a level view and one 54° up. |
 | `checkJumpAtWall` | StartJump 0x5acd40 tests no wall: against an upright or 6 degree overhanging cliff, on each side, facing it or away, tap, double tap or stick held, the worm leaves the ground over 1.5 m. |
 | `checkJumps` | DetectJump: double-press window, forward jump speeds, variant picked when the 300 ms window ends. |
 | `checkW4MWalkRules` | UpdateWalking / Sliding rules on 70° slopes (walked into from 20 approach phases: never walks up it, any step onto it Slides back to the foot); a worm whose rods cross a slab with nothing under its feet: the fall is undone (stuck +2), Rebound stops it (under 0.01 units/ms) into Sliding, whose Landed clears the count, and it then stays put Ambulatory (W4M Ballistic 0x5afb17, Rebound 0x5acea0, Sliding 0x5b05c2). |

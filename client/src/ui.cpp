@@ -4044,6 +4044,12 @@ void Hud::input(const Game &g, Input &in, bool local, int pad, uint32_t tick) {
     if (pick >= 0) in.buttons = (in.buttons & ~(Input::FIRE | Input::JUMP)) | Input::NEXT_WEAPON, in.aim = Input::pick(pick).aim;  // pending pick: Controls still sees the old weapon, so a bounce press would fire it unaimed
 }
 
+// W4M Scanner 0x5f7cf0 and WindMeterEntity 0x5fc6e0 turn by the right axis of the inverted view (0x69d23d): the pitch never turns them
+Vector2 hudHeading(const Camera3D &c) {
+    Vector3 r = Vector3CrossProduct(Vector3Subtract(c.target, c.position), c.up);
+    return Vector2Normalize({r.z, -r.x});
+}
+
 // WindMeterEntity 0x5fc6e0: the pointer's yaw (camera-relative downwind - sin(OnScreenPos.x -268 / 640), grey -pi/2) under
 // locator1's ArrowOrien (0.75, 0, -0.2), XYZ order; the tip (0, 0, -1) seen down -z, screen y down
 Vector2 windPointer(bool live, float wx, float wz, Vector2 fwd) {
@@ -4291,11 +4297,10 @@ void targetCursor(Bins &bins, const WeaponDef &wd, int state, const Vector2 *loc
     }
 }
 
-// Top-left compass centred on the active worm, up = camera forward: worm dots, crates, mines, aim target.
-static void radar(const Game &g, Vector2 c, Vector3 fwd, bool aiming) {
+// Top-left compass centred on the active worm, up = the camera heading f: worm dots, crates, mines, aim target.
+static void radar(const Game &g, Vector2 c, Vector2 f, bool aiming) {
     const float R = 54, RANGE = 40;  // px, metres
     const Color TEAL = {0, 104, 138, 210};
-    Vector2 f = Vector2Normalize({fwd.x, fwd.z});
     Vector3 o = g.worms[g.current].pos;
     auto dir = [&](float dx, float dz) { return Vector2{-dx * f.y + dz * f.x, -(dx * f.x + dz * f.y)}; };
     auto at = [&](Vector3 p) {
@@ -5052,7 +5057,8 @@ void Hud::queue(const Game &g, const Camera3D &cam, uint32_t tick) {
         cw = g.weapon, cf = fuse;
     }
     const Vector2 rc = {HUD_EDGE + COMPASS_R, HUD_EDGE + COMPASS_R};
-    bins.add(37, [&g, rc, f = Vector3Add(fwd, cam.up), on = aiming && mine] { radar(g, rc, f, on); });  // HUD.Scanner 37; + up: a Blimp looking straight down keeps its heading
+    const Vector2 head = hudHeading(cam);
+    bins.add(37, [&g, rc, head, on = aiming && mine] { radar(g, rc, head, on); });  // HUD.Scanner 37
     // W4M WindMeterEntity (docs/w4m/render.md): downwind arrow in the camera frame, tilted 0.75 rad; grey and fixed under 0.05
     Vector2 wc = {rc.x + (-268 + 241) * 4 / 3.0f * HU, rc.y + (167 - 90) * HU};  // exe: Wind.OnScreenPos (-268, 90) from Scanner.Position (-241, 167)
     float ratio = hypotf(g.wind, g.windZ);
@@ -5060,7 +5066,7 @@ void Hud::queue(const Game &g, const Camera3D &cam, uint32_t tick) {
     bins.add(g.cfg.scheme.wind ? 37 : 39, [wc, on = g.cfg.scheme.wind] {  // HUD.WindBacking 37, HUD.WindDisabled 39
         if (!sprite(on ? "wind_back" : "wind_backdisabled", wc, 2 * 25 * HU / 128, {64, 64})) DrawCircleV(wc, 25 * HU, {0, 104, 138, 220});
     });
-    Vector2 v = windPointer(ratio >= 0.05f, g.wind, g.windZ, {fwd.x + cam.up.x, fwd.z + cam.up.z});
+    Vector2 v = windPointer(ratio >= 0.05f, g.wind, g.windZ, head);
     Color ac = ratio >= 0.05f ? Color{255, 170, 30, 255} : Color{150, 150, 150, 255};
     const float AK = (26.8f + 16) * 0.8f * HU / 117;  // arrow mesh tip -26.8 / tail +16 x Wind.Scale 0.8, over the sprite's 117 px of arrow
     bins.add(38, [wc, v, ac, AK] {  // HUD.WindPointer(Grey) 38
