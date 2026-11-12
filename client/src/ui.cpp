@@ -2638,7 +2638,7 @@ void Frontend::cardList(Rectangle d, const Pop &c) {
         const int last = (int)lab.size() - 1;
         for (int i = 0; i < 3; i++) inRow(i, [&] { feRow({x, rowY(i), w, 38}, i == c.row ? 1 : 0, lab[i], "", i == c.row, &cell[i]); });
         inRow(3, [&] {
-            feTextPx(lab[3], x + 38 * 0.8f, rowY(3) - 15, 18, GC_LIST_LABLE_BLUE, 0, BC_BLACK);  // at the row labels' x (feRow pad)
+            feTextPx(lab[3], x + 38 * 0.8f, rowY(3) - 16, 22, GC_LIST_LABLE_BLUE, 0, BC_BLACK);  // at the row labels' x (feRow pad)
             feSelect({x, rowY(3), w, 38}, c.row == 3 ? 1 : 0, ctlText.c_str());
         });
         inRow(last, [&] {  // Close: W4M's popup text button (ConfirmList row 26: centred, List_Lable_Blue, Solid_White + charcoal brush on the highlight)
