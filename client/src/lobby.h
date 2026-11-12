@@ -62,12 +62,6 @@ struct Lobby {
             if (playing(k) && canEdit(k) && !cfg.teamSetup[k].cpu && !(present >> cfg.teamSetup[k].pad & 1)) cfg.teamSetup[k].pad = (uint8_t)__builtin_ctz(present), moved = true;
         return moved;
     }
-    // the pads that human teams of this console use, as a bit set
-    unsigned padsUsed() const {
-        unsigned m = 0;
-        for (int k = 0; k < MAX_TEAMS; k++) if (playing(k) && canEdit(k) && !cfg.teamSetup[k].cpu) m |= 1u << cfg.teamSetup[k].pad;
-        return m;
-    }
     // the match: the playing slots in order
     GameConfig match() const {
         GameConfig c = cfg;

@@ -2265,10 +2265,10 @@ int main(int argc, char **argv) {
                 if (frame == 28 && (foreign || !strcmp(uiShot, "setup3slot"))) Ui::Frontend::sim[0].ok = true;
             }
             if (uiShot && !strcmp(uiShot, "setupcards")) Ui::Frontend::simPads = 3;  // setup.txt's teams as they are: pad 1 white, pad 2 a red / blue Joy-Con pair
-            if (uiShot && !strcmp(uiShot, "setupslot")) {  // slot 1's settings (pad 1), on its alliance row
+            if (uiShot && !strcmp(uiShot, "setupslot")) {  // slot 1's settings (pad 1), on its Control row
                 Ui::Frontend::simPads = 1;
                 if (frame == 4) Ui::Frontend::sim[0].ok = true;
-                if (frame == 6) Ui::Frontend::sim[0].dy = 1;
+                if (frame == 6 || frame == 8 || frame == 10) Ui::Frontend::sim[0].dy = 1;
             }
             Ui::Frontend::Action a = front.frame(opt, maps, host, port, name);
             if (a == Ui::Frontend::Quit) break;

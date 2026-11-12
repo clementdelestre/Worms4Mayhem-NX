@@ -116,11 +116,11 @@ int Barracks::create(const std::string &name, int skill, const std::string &rand
     return (int)teams.size() - 1;
 }
 
-std::vector<int> Barracks::list(List kind, const std::function<bool(const std::string &)> &placed, bool cpuOk) const {
+std::vector<int> Barracks::list(List kind, const std::function<bool(const std::string &)> &placed) const {
     std::vector<int> rows;
     for (int i = 0; i < (int)teams.size(); i++) {
         const SavedTeam &t = teams[i];
-        if (kind == List::Human ? t.skill != 0 : kind == List::Delete ? !canDelete(i) : kind == List::Insert && ((placed && placed(t.name)) || (t.skill && !cpuOk))) continue;
+        if (kind == List::Human ? t.skill != 0 : kind == List::Delete ? !canDelete(i) : kind == List::Insert && (t.skill || (placed && placed(t.name)))) continue;
         rows.push_back(i);
     }
     return rows;

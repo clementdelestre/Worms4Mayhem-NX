@@ -1658,20 +1658,17 @@ static bool swkbd(std::string &s, const char *hint) {
     return true;
 }
 
-// system controller applet: lets players pair, split or turn single Joy-Cons sideways.
-// players: controllers the match needs; team k always lands on pad k afterwards (padInitialize No1..No4 order).
-// true when the player confirmed with enough pads connected (B / cancel returns a failed Result).
-static bool controllerApplet(int players) {
+// system controller applet: 1 to 4 players pair, split or turn single Joy-Cons sideways (pads No1..No4).
+// No left justify: a pad that stays keeps its number, so only the teams of removed pads move (Lobby::rehome).
+static void controllerApplet() {
     HidLaControllerSupportArg arg;
-    HidLaControllerSupportResultInfo info;
     hidLaCreateControllerSupportArg(&arg);
-    arg.hdr.player_count_min = arg.hdr.player_count_max = (s8)Clamp(players, 1, 4);
-    arg.hdr.enable_single_mode = players == 1;  // lets 1 player stay in handheld mode
+    arg.hdr.player_count_min = 1;
+    arg.hdr.player_count_max = 4;
+    arg.hdr.enable_left_justify = 0;
     arg.hdr.enable_identification_color = 1;
     for (int i = 0; i < 4; i++) arg.identification_color[i] = {TEAM_COLORS[i].r, TEAM_COLORS[i].g, TEAM_COLORS[i].b, TEAM_COLORS[i].a};
-    info = {};
-    Result rc = hidLaShowControllerSupport(&info, &arg);
-    return R_SUCCEEDED(rc) && info.player_count >= Clamp(players, 1, 4);
+    hidLaShowControllerSupport(nullptr, &arg);
 }
 #endif
 
@@ -1735,7 +1732,8 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
             int i = barracks.find(line + n);
             if (i < 0 || placed(line + n)) continue;
             cfg.teamSetup[a] = barracks.teams[i].slot(Clamp(w, 1, 6), Clamp(al, 0, 3), Clamp(h, -1, 1), customs);
-            cfg.teamSetup[a].pad = (uint8_t)Clamp(b, 0, 3);
+            const int ctl = Clamp(b, 0, 8);  // controlOf: a pad 0..3, a CPU level as 4..8
+            cfg.teamSetup[a].cpu = (uint8_t)(ctl < 4 ? 0 : ctl - 3), cfg.teamSetup[a].pad = (uint8_t)(ctl < 4 ? ctl : 0);
             lobby.used |= 1u << a;
             lobby.cfg.teamSetup.resize(4), lobby.cfg.teamSetup[a] = cfg.teamSetup[a];
         }
@@ -1750,7 +1748,7 @@ void Frontend::saveSetup(const GameConfig &cfg) const {
     s += "\n";
     for (int k = 0; k < (int)cfg.teamSetup.size(); k++) {
         const GameConfig::Team &t = cfg.teamSetup[k];
-        if (lobby.playing(k)) s += TextFormat("slot %d %d %d %d %d %s\n", k, t.pad, cfg.teamWorms(k), t.alliance < 0 ? 0 : t.alliance, t.handicap, t.name.c_str());
+        if (lobby.playing(k)) s += TextFormat("slot %d %d %d %d %d %s\n", k, controlOf(t), cfg.teamWorms(k), t.alliance < 0 ? 0 : t.alliance, t.handicap, t.name.c_str());
     }
     SaveFileText(DATA_DIR "setup.txt", s.data());
 }
@@ -2059,21 +2057,24 @@ const Color GC_TEXTBOX_YELLOW[2] = {{255, 242, 182, 255}, {255, 212, 119, 255}},
             GC_DISABLED[2] = {{128, 128, 128, 255}, {192, 192, 192, 255}}, GC_ERROR_RED[2] = {{255, 0, 0, 255}, {255, 0, 0, 255}}, GC_BLACK[2] = {BLACK, BLACK};
 
 
-#ifdef __SWITCH__
+unsigned presentPads() {
+    unsigned m = 0;
+    for (int p = 0; p < 4; p++) m |= padPresent(p) << p;
+    return m;
+}
+
 bool padMissing(const Lobby &L) {
     for (int k = 0; k < L.cfg.teams; k++) if (L.playing(k) && L.canEdit(k) && !L.cfg.teamSetup[k].cpu && !padPresent(L.cfg.teamSetup[k].pad)) return true;
     return false;
 }
-#endif
 
-// false while a human team of this console lacks its pad and the controller applet (Switch) did not fix it
-bool padsReady(const Lobby &L) {
+// a lacking pad opens the controller applet (Switch), then teams of pads gone move to pad 1; false while no pad is left
+bool padsReady(Lobby &L) {
 #ifdef __SWITCH__
-    return !padMissing(L) || controllerApplet(__builtin_popcount(L.padsUsed()));
-#else
-    (void)L;
-    return true;
+    if (padMissing(L)) controllerApplet();
 #endif
+    L.rehome(presentPads());
+    return !padMissing(L);
 }
 
 // W4M text without its /*token*/ markup and space runs (inline icons)
@@ -2179,6 +2180,18 @@ void feRow(Rectangle r, int state, const char *label, const char *value, bool ar
     marquee(label, {r.x + pad, cy - px, fmaxf(room, 0), 2 * px}, px, lg, 0, edge, now());  // a long label scrolls too [user-requested]
 }
 
+// a full-width select [ours]: the value centred between textitem_arrows at the row's ends
+void feSelect(Rectangle r, int state, const char *value) {
+    feBorder(r, state);
+    const bool hi = state == 1;
+    const float px = r.height * 0.62f, pad = r.height * 0.45f, cy = r.y + r.height / 2, ah = r.height * 0.6f, aw = ah * 0.5f;
+    Texture2D a = tex("fe/textitem_arrows");
+    const Color ac = hi ? Color{42, 22, 0, 255} : GC_LIST_DATA_ORANGE[0];
+    if (a.id) DrawTexturePro(a, {0, 0, 32, 64}, {r.x + pad, cy - ah / 2, aw, ah}, {}, 0, ac), DrawTexturePro(a, {32, 0, 32, 64}, {r.x + r.width - pad - aw, cy - ah / 2, aw, ah}, {}, 0, ac);
+    const float vw = fminf(feWidthPx(value, px), r.width - 2 * (pad + aw + 8));
+    marquee(value, {r.x + (r.width - vw) / 2, cy - px, vw, 2 * px}, px, hi ? GC_BLACK : GC_LIST_DATA_ORANGE, 1, rowOutline(state), now());
+}
+
 // Blue divide, scrolling watermark and Title Control of the setup screens [data MENUTWKX WXFE.CreateAGame: AnimDivide$In_Curve, Scrolling 1-4, Title Control]; p: the
 // panel's slide-in. The three steps (top right) are ours: W4M's CreateAGame is a single screen. In a room, W4M's lobby timer disc (WXNET.Lobby.Timer,
 // TimerBack (-120, -105), `%.2d`, `--` with no deadline) sits on the panel's foot.
@@ -2256,7 +2269,7 @@ void legend(const LegendEntry *all, int n) {
 const LegendEntry backLegend = {"B", "Esc", nullptr, "Back", "Retour"};
 
 void teamsLegend() {
-    static const LegendEntry L[] = {{"A", "Enter", nullptr, "Pick / settings", "Choisir / réglages"}, {"-", "F1", nullptr, "Remove a team", "Enlever une équipe"},
+    static const LegendEntry L[] = {{"A", "Enter", nullptr, "Pick / settings", "Choisir / réglages"}, {"Y", "Y", nullptr, "Remove a team", "Enlever une équipe"},
                                     {"X", "X", nullptr, "Controllers", "Manettes"}, {"+", "N", nullptr, "Next", "Suivant"}, backLegend};
     legend(L, 5);
 }
@@ -2297,7 +2310,7 @@ Frontend::PadIn Frontend::padIn(int p) {
     in.dy = pressed(p, {DOWN}, {}) - pressed(p, {UP}, {});
     in.dx = pressed(p, {RIGHT}, {}) - pressed(p, {LEFT}, {});
     in.card = pressed(p, {GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, K({KEY_PAGE_DOWN})) - pressed(p, {GAMEPAD_BUTTON_LEFT_TRIGGER_1}, K({KEY_PAGE_UP}));
-    in.minus = pressed(p, {MINUS}, K({KEY_F1})), in.pads = pressed(p, {GAMEPAD_BUTTON_RIGHT_FACE_UP}, K({KEY_X})), in.ok = pressed(p, {A}, K({KEY_ENTER, KEY_SPACE})), in.back = pressed(p, {B}, K({KEY_BACKSPACE, KEY_ESCAPE}));
+    in.remove = pressed(p, {YB}, K({KEY_Y})), in.pads = pressed(p, {GAMEPAD_BUTTON_RIGHT_FACE_UP}, K({KEY_X})), in.ok = pressed(p, {A}, K({KEY_ENTER, KEY_SPACE})), in.back = pressed(p, {B}, K({KEY_BACKSPACE, KEY_ESCAPE}));
     return in;
 }
 
@@ -2346,19 +2359,20 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
         for (size_t i = 0; i < ls.size(); i++) line(ls[i].c_str(), 20, x + gw + 10, x + gw + 10 + tw, y + G / 2 + (i - (ls.size() - 1) / 2.0f) * 24, GC_WHITE, 0);
         return chrome();
     }
-    const float wy = d.y + 88, x0 = d.x + 16;
-    if (cpu) line(cpuText(m.cpu), 18, x0, d.x + d.width - 16, wy, GC_LIST_LABLE_BLUE, 0);
+    float iy = d.y + 45;  // the info lines under the ribbon, centred: who plays, then the handicap
+    auto info = [&](const char *s, const Color *g) { line(s, 18, d.x + 16, d.x + d.width - 16, iy, g, 1), iy += 26; };
+    if (cpu) info(cpuText(m.cpu), GC_LIST_LABLE_BLUE);
     else if (mine) {
-        if (!padPresent(m.pad)) line(TextFormat(tr(nullptr, "Pad %d missing", "Manette %d absente"), m.pad + 1), 18, x0, d.x + d.width - 16, wy, GC_ERROR_RED, 0);
+        if (!padPresent(m.pad)) info(TextFormat(tr(nullptr, "Pad %d missing", "Manette %d absente"), m.pad + 1), GC_ERROR_RED);
     } else {  // another console's player: its name
         auto pl = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
-        if (pl != net->players.end()) line(pl->name.c_str(), 18, x0, d.x + d.width - 16, wy, GC_DISABLED, 0);
+        if (pl != net->players.end()) info(pl->name.c_str(), GC_DISABLED);
     }
-    DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, {cx - 107.5f, d.y + d.height + 4 - 290, 215, 290}, {}, 0, Fade(WHITE, 1 - fade));
+    DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, {cx - 107.5f, d.y + d.height + 10 - 290, 215, 290}, {}, 0, Fade(WHITE, 1 - fade));
     if (m.handicap) {  // the handicap's real effect (lib_SetupMultiplayerTeam) with W4M's plus / minus icon (HandicapAllies:0 / 1), plain text on the card
         const int e = handicapHealth(c.scheme.health, m.handicap) - c.scheme.health;
         const char *txt = TextFormat(tr(nullptr, "%+d health", "%+d points de vie"), e);
-        const float ic = 22, cy = d.y + 45, w = feWidthPx(txt, 18), x = fmaxf(d.x + 16, cx - (ic + 6 + w) / 2);
+        const float ic = 22, cy = iy, w = feWidthPx(txt, 18), x = fmaxf(d.x + 16, cx - (ic + 6 + w) / 2);
         feIcon("fe/teaminfo04", 4, 2, m.handicap < 0 ? 1 : 0, {x, cy - ic / 2, ic, ic});
         marquee(txt, {x + ic + 6, cy - 18, fminf(w, d.x + d.width - 16 - x - ic - 6), 36}, 18, GC_LIST_LABLE_BLUE, 0, BC_NONE, now());
     }
@@ -2379,10 +2393,12 @@ bool Frontend::placed(const std::string &name) const {
     return room() && std::any_of(myTeams.begin(), myTeams.end(), [&](const GameConfig::Team &t) { return t.name == name; });
 }
 
-bool Frontend::slotTake(const Pop &p) const {
-    if (p.kind != Pop::Slot || !lobby.playing(p.slot) || !lobby.canEdit(p.slot)) return false;
-    const GameConfig::Team &m = lobby.cfg.teamSetup[p.slot];
-    return !m.cpu && m.pad != p.pad;
+// the slot's Control row: the connected pads (0..3), then CPU levels 1..5 as 4..8 (a room's CPU teams are the host's)
+std::vector<int> Frontend::controlChoices() const {
+    std::vector<int> v;
+    for (int p = 0; p < 4; p++) if (padPresent(p)) v.push_back(p);
+    if (!room() || lobby.isHost()) for (int s = 1; s <= 5; s++) v.push_back(3 + s);
+    return v;
 }
 
 const Frontend::Pop *Frontend::cardOf(int k) const {
@@ -2414,12 +2430,13 @@ void Frontend::closePop() {
 void Frontend::placeTeam(int s, int pad, int index) {
     const SavedTeam &st = barracks.teams[index];
     const int worms = std::max(1, lobby.newWorms());
+    GameConfig::Team nt = st.slot(worms, room() ? -1 : lobby.freeAlliance(), 0, customs);
+    nt.cpu = 0;  // the picking pad plays it; the slot's Control row hands it to another pad or a CPU
     if (room()) {  // the slot appears with the host's LOBBY; the alliance resolves by join order
-        GameConfig::Team nt = st.slot(worms, -1, 0, customs);
         nt.pad = (uint8_t)pad;
         myTeams.push_back(nt);
         net->sendTeams(myTeams), cursors.slot[pad] = lobby.cfg.teams;  // the TEAMS message carries the team's weapon (slot(.., customs))
-    } else lobby.place(s, pad, st.slot(worms, lobby.freeAlliance(), 0, customs));
+    } else lobby.place(s, pad, nt);
 }
 
 void Frontend::releaseSlot(int s) {
@@ -2436,20 +2453,18 @@ Frontend::Pop Frontend::teamsPop(Pop::Use use, int pad, int slot, int arg) const
     Pop p;
     p.kind = Pop::Teams, p.use = use, p.pad = pad, p.slot = slot, p.arg = arg;
     using L = Barracks::List;
-    p.ids = barracks.list(use == Pop::Insert ? L::Insert : use == Pop::Edit ? L::Edit : use == Pop::Delete ? L::Delete : L::Human, [&](const std::string &n) { return placed(n); },
-                          !room() || lobby.isHost());  // a CPU team: the host's in a room [ours]
+    p.ids = barracks.list(use == Pop::Insert ? L::Insert : use == Pop::Edit ? L::Edit : use == Pop::Delete ? L::Delete : L::Human, [&](const std::string &n) { return placed(n); });
     if ((use == Pop::Insert || use == Pop::Mission) && barracks.canCreate()) p.ids.push_back(-1);  // Create Team
     return p;
 }
 
 void Frontend::openTeams(Pop::Use use, int pad, int slot, int arg) { setPop(teamsPop(use, pad, slot, arg)); }
 
-// PrepareTeam$CreateNew: "player controlled?" (not where CPU teams are off), the CPU level, the name, then the editor
+// PrepareTeam$CreateNew: "player controlled?" and the CPU level (the team manager only: a slot's Control row sets it), the name, then the editor
 void Frontend::startCreate(Pop::Use use) {
     Pop p = pop;
     p.use = use, p.row = 0, p.err = false, p.typing = false, p.name.clear(), p.skill = 0;
-    const bool cpuOk = use == Pop::Create || (use == Pop::Insert && (!room() || lobby.isHost()));
-    p.kind = cpuOk ? Pop::Ask : Pop::Name;
+    p.kind = use == Pop::Create ? Pop::Ask : Pop::Name;
     setPop(p);
 }
 
@@ -2462,7 +2477,7 @@ static std::string trimmed(std::string s) {
 // A popup's input. The Teams screen hands in its pad's presses, every other screen any pad's.
 void Frontend::popInput(PadIn in, float t) {
     (void)t;
-    const int n = pop.kind == Pop::Teams ? (int)pop.ids.size() : pop.kind == Pop::Cpu ? 5 : pop.kind == Pop::Slot ? 4 + slotTake() : pop.kind == Pop::Pick ? (int)pop.vals.size() : 2;
+    const int n = pop.kind == Pop::Teams ? (int)pop.ids.size() : pop.kind == Pop::Cpu ? 5 : pop.kind == Pop::Slot ? 5 : pop.kind == Pop::Pick ? (int)pop.vals.size() : 2;
     if (pop.kind != Pop::Name && in.dy && n) pop.row = clampWrap(pop.row + in.dy, n), Audio::play(pop.kind == Pop::Pick ? Audio::Sfx::FeChange : Audio::Sfx::FeHighlight);  // a ListControl's Audio_Highlighted Click2
     switch (pop.kind) {
     case Pop::Teams: {
@@ -2534,19 +2549,23 @@ void Frontend::popInput(PadIn in, float t) {
 #endif
         break;
     }
-    case Pop::Slot: {  // WXFEP.TeamSettingsList: worms, allies, handicap, [Control with this pad], Close
+    case Pop::Slot: {  // WXFEP.TeamSettingsList: worms, allies, handicap, control, Close
         if (!lobby.playing(pop.slot) || !lobby.canEdit(pop.slot)) { closePop(); break; }
         GameConfig::Team &m = lobby.cfg.teamSetup[pop.slot];
-        const int take = slotTake() ? 3 : -1, close = 3 + (take >= 0);
-        int d = in.dx ? in.dx : in.ok && pop.row < 3 ? 1 : 0;
+        const int d = in.dx;  // A never steps a value [user-requested]
         if (d && pop.row == 0) {
             int mx = lobby.maxWorms(pop.slot), v = lobby.cfg.teamWorms(pop.slot) + d;
             m.worms = (uint8_t)(v > mx ? 1 : v < 1 ? mx : v);
         } else if (d && pop.row == 1) m.alliance = (int8_t)clampWrap(lobby.cfg.alliance(pop.slot) + d, 4);
         else if (d && pop.row == 2) m.handicap = (int8_t)(m.handicap + d > 1 ? -1 : m.handicap + d < -1 ? 1 : m.handicap + d);
+        else if (d && pop.row == 3) {
+            const std::vector<int> o = controlChoices();
+            const int v = o[clampWrap(int(std::find(o.begin(), o.end(), controlOf(m)) - o.begin()) + d, (int)o.size())];
+            if (v < 4) m.cpu = 0, m.pad = (uint8_t)v;
+            else m.cpu = (uint8_t)(v - 3);
+        }
         if (d) Audio::play(Audio::Sfx::FeChange);
-        if (in.ok && pop.row == take) m.pad = (uint8_t)pop.pad, Audio::play(Audio::Sfx::FeClick), closePop();
-        else if ((in.ok && pop.row == close) || in.back) closePop();
+        if ((in.ok && pop.row == 4) || in.back) closePop();
         break;
     }
     case Pop::Confirm:  // WXFEP.ConfirmDeleteTeam / QuitTeamOptions: No is the default row
@@ -2597,10 +2616,11 @@ void listPanel(const char *title, const std::vector<std::string> &labels, const 
 // A pad's open list inside its card: the slot options (WXFEP.TeamSettingsList rows) or the saved teams (WXFEP.InsertTeam rows), W4M list rows that scale in one after the other
 void Frontend::cardList(Rectangle d, const Pop &c) {
     const float rh = 44, top = d.y + 30, x = d.x + 12, w = d.width - 24, since = now() - c.t0;
+    auto rowY = [&](int i) { return top + i * rh + (c.kind == Pop::Slot && i >= 3 ? 30 : 0); };  // the slot's Control select has its title above
     auto inRow = [&](int i, auto draw) {  // In_ScaleY of the row
         const float a = rowAppear(since, -1, i, 0.04f);
         if (a <= 0) return;
-        const float cy = top + i * rh + 19;
+        const float cy = rowY(i) + 19;
         rlPushMatrix(), rlTranslatef(0, cy, 0), rlScalef(1, a, 1), rlTranslatef(0, -cy, 0);
         draw();
         rlPopMatrix();
@@ -2608,18 +2628,22 @@ void Frontend::cardList(Rectangle d, const Pop &c) {
     if (c.kind == Pop::Slot) {
         if (!lobby.playing(c.slot)) return;
         const GameConfig::Team &m = lobby.cfg.teamSetup[c.slot];
-        std::vector<const char *> lab = {tr("FETXT.Worms", "Worms", "Vers"), tr("FETXT.Team", "Team", "Équipe"), tr("FETXT.Handicap", "Handicap", "Handicap")};
-        if (slotTake(c)) lab.push_back(tr(nullptr, "Control with this pad", "Contrôler avec cette manette"));
-        lab.push_back(tr("FETXT.Close", "Close", nullptr));
+        const std::vector<const char *> lab = {tr("FETXT.Worms", "Worms", "Vers"), tr("FETXT.Team", "Team", "Équipe"), tr("FETXT.Handicap", "Handicap", "Handicap"),
+                                               tr(nullptr, "Control", "Contrôle"), tr("FETXT.Close", "Close", nullptr)};
+        const int ctl = controlOf(m);
+        const std::string ctlText = ctl < 4 ? TextFormat(tr(nullptr, "Pad %d", "Manette %d"), ctl + 1) : cpuText(ctl - 3);
         // 0x4c0640: the rows' values are icons: x1..x6 (WXFE.TeamInfo01:0..3, 02:0..1), the alliance's colour (WXFE.HandicapAllies:3..6), the handicap (:1 -1, :2 0, :0 +1)
         const int nw = lobby.cfg.teamWorms(c.slot);
         const FeCell cell[3] = {{nw <= 4 ? "fe/teaminfo01" : "fe/teaminfo02", 2, 2, (nw - 1) % 4}, {"fe/teaminfo04", 4, 2, 3 + (lobby.cfg.alliance(c.slot) & 3)},
                                 {"fe/teaminfo04", 4, 2, m.handicap < 0 ? 1 : m.handicap > 0 ? 0 : 2}};
         const int last = (int)lab.size() - 1;
-        for (int i = 0; i < last; i++)
-            inRow(i, [&] { feRow({x, top + i * rh, w, 38}, i == c.row ? 1 : 0, lab[i], "", i < 3 && i == c.row, i < 3 ? &cell[i] : nullptr); });
+        for (int i = 0; i < 3; i++) inRow(i, [&] { feRow({x, rowY(i), w, 38}, i == c.row ? 1 : 0, lab[i], "", i == c.row, &cell[i]); });
+        inRow(3, [&] {
+            feTextPx(lab[3], x + 38 * 0.8f, rowY(3) - 16, 22, GC_LIST_LABLE_BLUE, 0, BC_BLACK);  // at the row labels' x (feRow pad)
+            feSelect({x, rowY(3), w, 38}, c.row == 3 ? 1 : 0, ctlText.c_str());
+        });
         inRow(last, [&] {  // Close: W4M's popup text button (ConfirmList row 26: centred, List_Lable_Blue, Solid_White + charcoal brush on the highlight)
-            const float px = 22, tw = feWidthPx(lab[last], px), cy = top + last * rh + 19, cx = d.x + d.width / 2;
+            const float px = 22, tw = feWidthPx(lab[last], px), cy = rowY(last) + 19, cx = d.x + d.width / 2;
             if (c.row == last) brush({cx - tw / 2 - px * 0.45f, cy - px * 0.55f, tw + px * 0.9f, px * 1.15f});
             feTextPx(lab[last], cx, cy, px, c.row == last ? GC_WHITE : GC_LIST_LABLE_BLUE, 1, BC_BLACK);  // ConfirmList ColourBACK 2 in every state
         });
@@ -2630,8 +2654,7 @@ void Frontend::cardList(Rectangle d, const Pop &c) {
     for (int i = first; i < n && i < first + vis; i++) {
         const int id = c.ids[i];
         const std::string lab = id < 0 ? tr("FETXT.CreateTeam", "Create Team", "Créer une équipe") : barracks.teams[id].name;
-        const std::string val = id >= 0 && barracks.teams[id].skill ? cpuText(barracks.teams[id].skill) : "";
-        inRow(i - first, [&] { feRow({x, top + (i - first) * rh, w - (n > vis ? 8 : 0), 38}, i == c.row ? 1 : 0, lab.c_str(), val.c_str(), false); });
+        inRow(i - first, [&] { feRow({x, top + (i - first) * rh, w - (n > vis ? 8 : 0), 38}, i == c.row ? 1 : 0, lab.c_str(), "", false); });
     }
     if (n > vis) {  // scroll bar
         const float bh = vis * rh * vis / n;
@@ -3126,9 +3149,7 @@ bool Frontend::setupTeams(bool plus, float t) {
             cursors.slot[p] = own >= 0 ? own : std::max(free_, 0), tokenAt[p] = {-1, -1};
         }
     }
-    unsigned present = 0;
-    for (int p = 0; p < 4; p++) present |= padPresent(p) << p;
-    if (lobby.rehome(present) && !room()) saveSetup(c);
+    if (lobby.rehome(presentPads()) && !room()) saveSetup(c);
     bool back = false, leave = false, openApplet = false;
     for (int p = 0; p < 4; p++) {
         PadIn in = padIn(p);
@@ -3173,7 +3194,7 @@ bool Frontend::setupTeams(bool plus, float t) {
         }
         if (in.pads) openApplet = true;
         if (in.back) back = true;
-        else if (in.minus && mineSlot) releaseSlot(s), Audio::play(Audio::Sfx::FeClick);  // - takes the team under the cursor out, like Remove Team
+        else if (in.remove && mineSlot) releaseSlot(s), Audio::play(Audio::Sfx::FeClick);  // Y takes the team under the cursor out, like Remove Team
     }
     leave = back && room();
     const bool goOn = plus && padsReady(lobby) && (room() || lobby.canStart());
@@ -3182,7 +3203,7 @@ bool Frontend::setupTeams(bool plus, float t) {
     if (back && !room()) saveSetup(c), go(Local);
     if (goOn) screen = SetupMap;
 #ifdef __SWITCH__
-    if (openApplet) controllerApplet(__builtin_popcount(lobby.padsUsed()));
+    if (openApplet) controllerApplet();
 #endif
 
     const bool settled = from >= SetupTeams && from <= SetupRules && leaving < 0;  // coming from a sibling step: no slide-in

@@ -86,7 +86,7 @@ struct Frontend {
     Net *net = nullptr;             // the connection of a network room: SetupTeams / Map / Rules then show net->lobby
     bool wantLan = false;           // Salon: Réseau local, else En ligne
     int timer = -1;                 // lobby timer seconds (ReadyTimer::seconds), -1 none
-    struct PadIn { int dx = 0, dy = 0, card = 0; bool ok = false, back = false, plus = false, minus = false, pads = false; };
+    struct PadIn { int dx = 0, dy = 0, card = 0; bool ok = false, back = false, plus = false, remove = false, pads = false; };
     static unsigned simPads;        // tests (--ui setup2): pads that count as connected and take `sim` instead of the real pad
     static PadIn sim[4];
     static std::string simText;     // tests (W4NX_INPUTSCRIPT): characters typed into a text entry, which the keyboard cannot send as key events
@@ -180,8 +180,8 @@ private:
     void setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps);
     bool setupRules(int dx, int dy, bool ok, bool back, bool plus);  // true: START
     void wormPreview(int k, const GameConfig::Team &tm, float t);
-    bool slotTake() const { return slotTake(pop); }
-    bool slotTake(const Pop &p) const;  // the slot popup offers "Control with this pad": the team is a human one another pad plays
+    std::vector<int> controlChoices() const;
+    static int controlOf(const GameConfig::Team &m) { return m.cpu ? 3 + m.cpu : m.pad; }
     void loadTeams();
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;
