@@ -180,8 +180,8 @@ private:
     void setupMap(int dx, int dy, bool back, bool plus, const std::vector<std::string> &maps);
     bool setupRules(int dx, int dy, bool ok, bool back, bool plus);  // true: START
     void wormPreview(int k, const GameConfig::Team &tm, float t);
-    bool slotTake() const { return slotTake(pop); }
-    bool slotTake(const Pop &p) const;  // the slot popup offers "Control with this pad": the team is a human one another pad plays
+    std::vector<int> controlChoices() const;
+    static int controlOf(const GameConfig::Team &m) { return m.cpu ? 3 + m.cpu : m.pad; }
     void loadTeams();
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;
