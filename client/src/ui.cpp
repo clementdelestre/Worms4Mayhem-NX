@@ -2359,19 +2359,20 @@ void Frontend::teamSlot(Rectangle d, int k, float t) {
         for (size_t i = 0; i < ls.size(); i++) line(ls[i].c_str(), 20, x + gw + 10, x + gw + 10 + tw, y + G / 2 + (i - (ls.size() - 1) / 2.0f) * 24, GC_WHITE, 0);
         return chrome();
     }
-    const float wy = d.y + 88, x0 = d.x + 16;
-    if (cpu) line(cpuText(m.cpu), 18, x0, d.x + d.width - 16, wy, GC_LIST_LABLE_BLUE, 0);
+    float iy = d.y + 45;  // the info lines under the ribbon, centred: who plays, then the handicap
+    auto info = [&](const char *s, const Color *g) { line(s, 18, d.x + 16, d.x + d.width - 16, iy, g, 1), iy += 26; };
+    if (cpu) info(cpuText(m.cpu), GC_LIST_LABLE_BLUE);
     else if (mine) {
-        if (!padPresent(m.pad)) line(TextFormat(tr(nullptr, "Pad %d missing", "Manette %d absente"), m.pad + 1), 18, x0, d.x + d.width - 16, wy, GC_ERROR_RED, 0);
+        if (!padPresent(m.pad)) info(TextFormat(tr(nullptr, "Pad %d missing", "Manette %d absente"), m.pad + 1), GC_ERROR_RED);
     } else {  // another console's player: its name
         auto pl = std::find_if(net->players.begin(), net->players.end(), [&](const NetPlayer &q) { return (int)q.id == lobby.owner[k]; });
-        if (pl != net->players.end()) line(pl->name.c_str(), 18, x0, d.x + d.width - 16, wy, GC_DISABLED, 0);
+        if (pl != net->players.end()) info(pl->name.c_str(), GC_DISABLED);
     }
-    DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, {cx - 107.5f, d.y + d.height + 4 - 290, 215, 290}, {}, 0, Fade(WHITE, 1 - fade));
+    DrawTexturePro(wormRt[k].texture, {0, 0, 256, -346}, {cx - 107.5f, d.y + d.height + 10 - 290, 215, 290}, {}, 0, Fade(WHITE, 1 - fade));
     if (m.handicap) {  // the handicap's real effect (lib_SetupMultiplayerTeam) with W4M's plus / minus icon (HandicapAllies:0 / 1), plain text on the card
         const int e = handicapHealth(c.scheme.health, m.handicap) - c.scheme.health;
         const char *txt = TextFormat(tr(nullptr, "%+d health", "%+d points de vie"), e);
-        const float ic = 22, cy = d.y + 45, w = feWidthPx(txt, 18), x = fmaxf(d.x + 16, cx - (ic + 6 + w) / 2);
+        const float ic = 22, cy = iy, w = feWidthPx(txt, 18), x = fmaxf(d.x + 16, cx - (ic + 6 + w) / 2);
         feIcon("fe/teaminfo04", 4, 2, m.handicap < 0 ? 1 : 0, {x, cy - ic / 2, ic, ic});
         marquee(txt, {x + ic + 6, cy - 18, fminf(w, d.x + d.width - 16 - x - ic - 6), 36}, 18, GC_LIST_LABLE_BLUE, 0, BC_NONE, now());
     }
@@ -2551,7 +2552,7 @@ void Frontend::popInput(PadIn in, float t) {
     case Pop::Slot: {  // WXFEP.TeamSettingsList: worms, allies, handicap, control, Close
         if (!lobby.playing(pop.slot) || !lobby.canEdit(pop.slot)) { closePop(); break; }
         GameConfig::Team &m = lobby.cfg.teamSetup[pop.slot];
-        int d = in.dx ? in.dx : in.ok && pop.row < 4 ? 1 : 0;
+        const int d = in.dx;  // A never steps a value [user-requested]
         if (d && pop.row == 0) {
             int mx = lobby.maxWorms(pop.slot), v = lobby.cfg.teamWorms(pop.slot) + d;
             m.worms = (uint8_t)(v > mx ? 1 : v < 1 ? mx : v);
