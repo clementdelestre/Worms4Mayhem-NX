@@ -1658,20 +1658,17 @@ static bool swkbd(std::string &s, const char *hint) {
     return true;
 }
 
-// system controller applet: lets players pair, split or turn single Joy-Cons sideways.
-// players: controllers the match needs; team k always lands on pad k afterwards (padInitialize No1..No4 order).
-// true when the player confirmed with enough pads connected (B / cancel returns a failed Result).
-static bool controllerApplet(int players) {
+// system controller applet: 1 to 4 players pair, split or turn single Joy-Cons sideways (pads No1..No4).
+// No left justify: a pad that stays keeps its number, so only the teams of removed pads move (Lobby::rehome).
+static void controllerApplet() {
     HidLaControllerSupportArg arg;
-    HidLaControllerSupportResultInfo info;
     hidLaCreateControllerSupportArg(&arg);
-    arg.hdr.player_count_min = arg.hdr.player_count_max = (s8)Clamp(players, 1, 4);
-    arg.hdr.enable_single_mode = players == 1;  // lets 1 player stay in handheld mode
+    arg.hdr.player_count_min = 1;
+    arg.hdr.player_count_max = 4;
+    arg.hdr.enable_left_justify = 0;
     arg.hdr.enable_identification_color = 1;
     for (int i = 0; i < 4; i++) arg.identification_color[i] = {TEAM_COLORS[i].r, TEAM_COLORS[i].g, TEAM_COLORS[i].b, TEAM_COLORS[i].a};
-    info = {};
-    Result rc = hidLaShowControllerSupport(&info, &arg);
-    return R_SUCCEEDED(rc) && info.player_count >= Clamp(players, 1, 4);
+    hidLaShowControllerSupport(nullptr, &arg);
 }
 #endif
 
@@ -2059,21 +2056,24 @@ const Color GC_TEXTBOX_YELLOW[2] = {{255, 242, 182, 255}, {255, 212, 119, 255}},
             GC_DISABLED[2] = {{128, 128, 128, 255}, {192, 192, 192, 255}}, GC_ERROR_RED[2] = {{255, 0, 0, 255}, {255, 0, 0, 255}}, GC_BLACK[2] = {BLACK, BLACK};
 
 
-#ifdef __SWITCH__
+unsigned presentPads() {
+    unsigned m = 0;
+    for (int p = 0; p < 4; p++) m |= padPresent(p) << p;
+    return m;
+}
+
 bool padMissing(const Lobby &L) {
     for (int k = 0; k < L.cfg.teams; k++) if (L.playing(k) && L.canEdit(k) && !L.cfg.teamSetup[k].cpu && !padPresent(L.cfg.teamSetup[k].pad)) return true;
     return false;
 }
-#endif
 
-// false while a human team of this console lacks its pad and the controller applet (Switch) did not fix it
-bool padsReady(const Lobby &L) {
+// a lacking pad opens the controller applet (Switch), then teams of pads gone move to pad 1; false while no pad is left
+bool padsReady(Lobby &L) {
 #ifdef __SWITCH__
-    return !padMissing(L) || controllerApplet(__builtin_popcount(L.padsUsed()));
-#else
-    (void)L;
-    return true;
+    if (padMissing(L)) controllerApplet();
 #endif
+    L.rehome(presentPads());
+    return !padMissing(L);
 }
 
 // W4M text without its /*token*/ markup and space runs (inline icons)
@@ -3126,9 +3126,7 @@ bool Frontend::setupTeams(bool plus, float t) {
             cursors.slot[p] = own >= 0 ? own : std::max(free_, 0), tokenAt[p] = {-1, -1};
         }
     }
-    unsigned present = 0;
-    for (int p = 0; p < 4; p++) present |= padPresent(p) << p;
-    if (lobby.rehome(present) && !room()) saveSetup(c);
+    if (lobby.rehome(presentPads()) && !room()) saveSetup(c);
     bool back = false, leave = false, openApplet = false;
     for (int p = 0; p < 4; p++) {
         PadIn in = padIn(p);
@@ -3182,7 +3180,7 @@ bool Frontend::setupTeams(bool plus, float t) {
     if (back && !room()) saveSetup(c), go(Local);
     if (goOn) screen = SetupMap;
 #ifdef __SWITCH__
-    if (openApplet) controllerApplet(__builtin_popcount(lobby.padsUsed()));
+    if (openApplet) controllerApplet();
 #endif
 
     const bool settled = from >= SetupTeams && from <= SetupRules && leaving < 0;  // coming from a sibling step: no slide-in

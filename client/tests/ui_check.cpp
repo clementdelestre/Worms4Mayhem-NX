@@ -29,9 +29,9 @@ int main() {
         l.cfg.teams = Lobby::MAX_TEAMS, l.cfg.teamSetup.resize(Lobby::MAX_TEAMS);
         GameConfig::Team h, cpu;
         h.name = "H", cpu.name = "D", cpu.cpu = 3;
-        assert(l.count() == 0 && l.place(2, 1, h) && !l.place(2, 0, h) && l.place(0, 1, h) && l.playing(0) && l.playing(2) && !l.playing(1) && l.padsUsed() == 0b10);
+        assert(l.count() == 0 && l.place(2, 1, h) && !l.place(2, 0, h) && l.place(0, 1, h) && l.playing(0) && l.playing(2) && !l.playing(1));
         assert(l.ownedBy(2, 1) && !l.ownedBy(2, 0) && !l.ownedBy(1, 1));
-        assert(l.place(3, 0, cpu) && l.cfg.teamSetup[3].cpu == 3 && l.padsUsed() == 0b10 && !l.ownedBy(3, 0));
+        assert(l.place(3, 0, cpu) && l.cfg.teamSetup[3].cpu == 3 && !l.ownedBy(3, 0));
         assert(l.release(3) && !l.playing(3) && !l.release(3));
         l.cfg.teamSetup[0].name = "A", l.cfg.teamSetup[2].name = "C", l.place(3, 0, cpu);
         GameConfig m = l.match();  // playing slots 0, 2, 3 in order
@@ -45,7 +45,7 @@ int main() {
             assert(!r.rehome(0) && r.cfg.teamSetup[0].pad == 0);
         }
         l.owner[0] = 7;  // another console's slot is read-only
-        assert(!l.ownedBy(0, 1) && !l.release(0) && !l.place(0, 1, h) && l.padsUsed() == 0b10);
+        assert(!l.ownedBy(0, 1) && !l.release(0) && !l.place(0, 1, h));
     }
     {  // Teams screen tokens move on their own and a room's later slots shift up on a release
         TeamCursors c;
