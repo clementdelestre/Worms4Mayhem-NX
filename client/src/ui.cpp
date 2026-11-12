@@ -1732,7 +1732,8 @@ void Frontend::loadSetup(GameConfig &cfg, const std::vector<std::string> &maps) 
             int i = barracks.find(line + n);
             if (i < 0 || placed(line + n)) continue;
             cfg.teamSetup[a] = barracks.teams[i].slot(Clamp(w, 1, 6), Clamp(al, 0, 3), Clamp(h, -1, 1), customs);
-            cfg.teamSetup[a].pad = (uint8_t)Clamp(b, 0, 3);
+            const int ctl = Clamp(b, 0, 8);  // controlOf: a pad 0..3, a CPU level as 4..8
+            cfg.teamSetup[a].cpu = (uint8_t)(ctl < 4 ? 0 : ctl - 3), cfg.teamSetup[a].pad = (uint8_t)(ctl < 4 ? ctl : 0);
             lobby.used |= 1u << a;
             lobby.cfg.teamSetup.resize(4), lobby.cfg.teamSetup[a] = cfg.teamSetup[a];
         }
@@ -1747,7 +1748,7 @@ void Frontend::saveSetup(const GameConfig &cfg) const {
     s += "\n";
     for (int k = 0; k < (int)cfg.teamSetup.size(); k++) {
         const GameConfig::Team &t = cfg.teamSetup[k];
-        if (lobby.playing(k)) s += TextFormat("slot %d %d %d %d %d %s\n", k, t.pad, cfg.teamWorms(k), t.alliance < 0 ? 0 : t.alliance, t.handicap, t.name.c_str());
+        if (lobby.playing(k)) s += TextFormat("slot %d %d %d %d %d %s\n", k, controlOf(t), cfg.teamWorms(k), t.alliance < 0 ? 0 : t.alliance, t.handicap, t.name.c_str());
     }
     SaveFileText(DATA_DIR "setup.txt", s.data());
 }
@@ -2179,6 +2180,18 @@ void feRow(Rectangle r, int state, const char *label, const char *value, bool ar
     marquee(label, {r.x + pad, cy - px, fmaxf(room, 0), 2 * px}, px, lg, 0, edge, now());  // a long label scrolls too [user-requested]
 }
 
+// a full-width select [ours]: the value centred between textitem_arrows at the row's ends
+void feSelect(Rectangle r, int state, const char *value) {
+    feBorder(r, state);
+    const bool hi = state == 1;
+    const float px = r.height * 0.62f, pad = r.height * 0.45f, cy = r.y + r.height / 2, ah = r.height * 0.6f, aw = ah * 0.5f;
+    Texture2D a = tex("fe/textitem_arrows");
+    const Color ac = hi ? Color{42, 22, 0, 255} : GC_LIST_DATA_ORANGE[0];
+    if (a.id) DrawTexturePro(a, {0, 0, 32, 64}, {r.x + pad, cy - ah / 2, aw, ah}, {}, 0, ac), DrawTexturePro(a, {32, 0, 32, 64}, {r.x + r.width - pad - aw, cy - ah / 2, aw, ah}, {}, 0, ac);
+    const float vw = fminf(feWidthPx(value, px), r.width - 2 * (pad + aw + 8));
+    marquee(value, {r.x + (r.width - vw) / 2, cy - px, vw, 2 * px}, px, hi ? GC_BLACK : GC_LIST_DATA_ORANGE, 1, rowOutline(state), now());
+}
+
 // Blue divide, scrolling watermark and Title Control of the setup screens [data MENUTWKX WXFE.CreateAGame: AnimDivide$In_Curve, Scrolling 1-4, Title Control]; p: the
 // panel's slide-in. The three steps (top right) are ours: W4M's CreateAGame is a single screen. In a room, W4M's lobby timer disc (WXNET.Lobby.Timer,
 // TimerBack (-120, -105), `%.2d`, `--` with no deadline) sits on the panel's foot.
@@ -2602,10 +2615,11 @@ void listPanel(const char *title, const std::vector<std::string> &labels, const 
 // A pad's open list inside its card: the slot options (WXFEP.TeamSettingsList rows) or the saved teams (WXFEP.InsertTeam rows), W4M list rows that scale in one after the other
 void Frontend::cardList(Rectangle d, const Pop &c) {
     const float rh = 44, top = d.y + 30, x = d.x + 12, w = d.width - 24, since = now() - c.t0;
+    auto rowY = [&](int i) { return top + i * rh + (c.kind == Pop::Slot && i >= 3 ? 30 : 0); };  // the slot's Control select has its title above
     auto inRow = [&](int i, auto draw) {  // In_ScaleY of the row
         const float a = rowAppear(since, -1, i, 0.04f);
         if (a <= 0) return;
-        const float cy = top + i * rh + 19;
+        const float cy = rowY(i) + 19;
         rlPushMatrix(), rlTranslatef(0, cy, 0), rlScalef(1, a, 1), rlTranslatef(0, -cy, 0);
         draw();
         rlPopMatrix();
@@ -2622,10 +2636,13 @@ void Frontend::cardList(Rectangle d, const Pop &c) {
         const FeCell cell[3] = {{nw <= 4 ? "fe/teaminfo01" : "fe/teaminfo02", 2, 2, (nw - 1) % 4}, {"fe/teaminfo04", 4, 2, 3 + (lobby.cfg.alliance(c.slot) & 3)},
                                 {"fe/teaminfo04", 4, 2, m.handicap < 0 ? 1 : m.handicap > 0 ? 0 : 2}};
         const int last = (int)lab.size() - 1;
-        for (int i = 0; i < last; i++)
-            inRow(i, [&] { feRow({x, top + i * rh, w, 38}, i == c.row ? 1 : 0, lab[i], i == 3 ? ctlText.c_str() : "", i == c.row, i < 3 ? &cell[i] : nullptr); });
+        for (int i = 0; i < 3; i++) inRow(i, [&] { feRow({x, rowY(i), w, 38}, i == c.row ? 1 : 0, lab[i], "", i == c.row, &cell[i]); });
+        inRow(3, [&] {
+            feTextPx(lab[3], d.x + d.width / 2, rowY(3) - 15, 18, GC_LIST_LABLE_BLUE, 1, BC_BLACK);
+            feSelect({x, rowY(3), w, 38}, c.row == 3 ? 1 : 0, ctlText.c_str());
+        });
         inRow(last, [&] {  // Close: W4M's popup text button (ConfirmList row 26: centred, List_Lable_Blue, Solid_White + charcoal brush on the highlight)
-            const float px = 22, tw = feWidthPx(lab[last], px), cy = top + last * rh + 19, cx = d.x + d.width / 2;
+            const float px = 22, tw = feWidthPx(lab[last], px), cy = rowY(last) + 19, cx = d.x + d.width / 2;
             if (c.row == last) brush({cx - tw / 2 - px * 0.45f, cy - px * 0.55f, tw + px * 0.9f, px * 1.15f});
             feTextPx(lab[last], cx, cy, px, c.row == last ? GC_WHITE : GC_LIST_LABLE_BLUE, 1, BC_BLACK);  // ConfirmList ColourBACK 2 in every state
         });
