@@ -327,14 +327,14 @@ int main() {
         assert(t.name == "Funky Dudes" && t.worms == 5 && t.alliance == 2 && t.handicap == -1 && t.glasses == "WXFE.A.Glasses.Star" && t.wormNames.size() == 6);
         remove(path), remove(setup);
     }
-    {  // W4M team lists: Insert hides the teams already in a slot; the human lists skip CPU teams; Delete protects the last human team
+    {  // W4M team lists: Insert hides the teams already in a slot and the CPU ones; the human lists skip CPU teams; Delete protects the last human team
         Barracks b;
         remove("barracks_check.txt");
         b.load("barracks_check.txt", "assets/defteams.txt");
         auto placed = [](const std::string &n) { return n == "Gunslingers" || n == "CPU Easy"; };
-        assert(b.list(Barracks::List::Insert).size() == 7 && b.list(Barracks::List::Edit).size() == 7 && b.list(Barracks::List::Human).size() == 4);
+        assert(b.list(Barracks::List::Insert).size() == 4 && b.list(Barracks::List::Edit).size() == 7 && b.list(Barracks::List::Human).size() == 4);
         std::vector<int> ins = b.list(Barracks::List::Insert, placed);
-        assert(ins.size() == 5 && b.teams[ins[0]].name == "Funky Dudes");
+        assert(ins.size() == 3 && b.teams[ins[0]].name == "Funky Dudes" && b.teams[ins.back()].name == "Scots");
         assert(b.list(Barracks::List::Delete).size() == 7);
         while (b.humans() > 1) b.remove(0);
         std::vector<int> del = b.list(Barracks::List::Delete);

@@ -120,7 +120,7 @@ std::vector<int> Barracks::list(List kind, const std::function<bool(const std::s
     std::vector<int> rows;
     for (int i = 0; i < (int)teams.size(); i++) {
         const SavedTeam &t = teams[i];
-        if (kind == List::Human ? t.skill != 0 : kind == List::Delete ? !canDelete(i) : kind == List::Insert && placed && placed(t.name)) continue;
+        if (kind == List::Human ? t.skill != 0 : kind == List::Delete ? !canDelete(i) : kind == List::Insert && (t.skill || (placed && placed(t.name)))) continue;
         rows.push_back(i);
     }
     return rows;

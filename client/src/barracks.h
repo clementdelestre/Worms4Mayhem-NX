@@ -31,7 +31,7 @@ struct Barracks {
     // (Flag.Terminator for a CPU), voclassi; -1 when full, the name is empty or taken
     int create(const std::string &name, int skill, const std::string &randomNames, const std::string &flag, uint32_t seed);
     bool canDelete(int i) const;  // WXDeleteTeam 0x4c4790: never the last human team
-    // The rows of W4M's team lists (indexes): Insert (WXAllTeamAvailable 0x4bf9f0: not already in a slot), Human (WXStoryTeam 0x4c3590 / WXOnlineTeam 0x4c4110:
+    // The rows of W4M's team lists (indexes): Insert (WXAllTeamAvailable 0x4bf9f0: not already in a slot; no CPU team, a slot's Control row sets the CPU [ours]), Human (WXStoryTeam 0x4c3590 / WXOnlineTeam 0x4c4110:
     // Skill 0), Edit (every team), Delete (never the last human team); the Create Team row follows them while canCreate()
     enum class List { Insert, Human, Edit, Delete };
     std::vector<int> list(List kind, const std::function<bool(const std::string &)> &placed = {}) const;
