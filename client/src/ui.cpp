@@ -2256,7 +2256,7 @@ void legend(const LegendEntry *all, int n) {
 const LegendEntry backLegend = {"B", "Esc", nullptr, "Back", "Retour"};
 
 void teamsLegend() {
-    static const LegendEntry L[] = {{"A", "Enter", nullptr, "Pick / settings", "Choisir / réglages"}, {"-", "F1", nullptr, "Remove a team", "Enlever une équipe"},
+    static const LegendEntry L[] = {{"A", "Enter", nullptr, "Pick / settings", "Choisir / réglages"}, {"Y", "Y", nullptr, "Remove a team", "Enlever une équipe"},
                                     {"X", "X", nullptr, "Controllers", "Manettes"}, {"+", "N", nullptr, "Next", "Suivant"}, backLegend};
     legend(L, 5);
 }
@@ -2297,7 +2297,7 @@ Frontend::PadIn Frontend::padIn(int p) {
     in.dy = pressed(p, {DOWN}, {}) - pressed(p, {UP}, {});
     in.dx = pressed(p, {RIGHT}, {}) - pressed(p, {LEFT}, {});
     in.card = pressed(p, {GAMEPAD_BUTTON_RIGHT_TRIGGER_1}, K({KEY_PAGE_DOWN})) - pressed(p, {GAMEPAD_BUTTON_LEFT_TRIGGER_1}, K({KEY_PAGE_UP}));
-    in.minus = pressed(p, {MINUS}, K({KEY_F1})), in.pads = pressed(p, {GAMEPAD_BUTTON_RIGHT_FACE_UP}, K({KEY_X})), in.ok = pressed(p, {A}, K({KEY_ENTER, KEY_SPACE})), in.back = pressed(p, {B}, K({KEY_BACKSPACE, KEY_ESCAPE}));
+    in.remove = pressed(p, {YB}, K({KEY_Y})), in.pads = pressed(p, {GAMEPAD_BUTTON_RIGHT_FACE_UP}, K({KEY_X})), in.ok = pressed(p, {A}, K({KEY_ENTER, KEY_SPACE})), in.back = pressed(p, {B}, K({KEY_BACKSPACE, KEY_ESCAPE}));
     return in;
 }
 
@@ -3171,7 +3171,7 @@ bool Frontend::setupTeams(bool plus, float t) {
         }
         if (in.pads) openApplet = true;
         if (in.back) back = true;
-        else if (in.minus && mineSlot) releaseSlot(s), Audio::play(Audio::Sfx::FeClick);  // - takes the team under the cursor out, like Remove Team
+        else if (in.remove && mineSlot) releaseSlot(s), Audio::play(Audio::Sfx::FeClick);  // Y takes the team under the cursor out, like Remove Team
     }
     leave = back && room();
     const bool goOn = plus && padsReady(lobby) && (room() || lobby.canStart());
