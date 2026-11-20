@@ -1918,6 +1918,7 @@ int main(int argc, char **argv) {
         recSaved = shotDone = false;
         irEnd = -1;
         if (loader.joinable()) loader.join();  // online: Start again mid-load
+        game.terrain.unload();  // the old land's GL objects go here, on the GL thread: the loader's Terrain::load must not touch GL
         loadCfg = c, loadStep = 0, warmIcon = 0;
         for (double &m : loadMs) m = 0;
         loaderDone = false, loadT0 = GetTime();  // from the intro on: off the main thread's core it doesn't touch the menu frames

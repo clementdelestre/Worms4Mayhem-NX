@@ -1191,6 +1191,7 @@ void Game::start(const GameConfig &c) {
     worms.clear();
     shots.clear();
     objects.clear(), graves.clear(), triggers.clear(), allied.clear(), noTurn = false, sentries = 0, uids = 0;
+    telepads.clear(), mysteryTeleports.clear(), abductees.clear(), abdCam = -1;
     factory = {}, factoryData = {};
     gas.clear();
     nextWorm.assign(teams, 0);
