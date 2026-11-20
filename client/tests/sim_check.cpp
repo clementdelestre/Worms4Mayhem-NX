@@ -4300,6 +4300,8 @@ static void checkTelepads() {
     g.explode({q.pos.x, q.pos.y + 0.25f, q.pos.z}, Game::MINE_BLAST);
     for (int k = 0; k < Game::PAD_BOOM + 2; k++) g.step(Input{});
     assert(q.st == 5 && q.exploded);
+    g.start(c);  // a new match on the same Game: only its own four pads
+    assert(g.telepads.size() == 4);
 }
 
 // W4M Mystery Teleport (CrateLogicEntity 0x5ca1f0, GameLogic MysteryTeleport.End 0x4f76a0): held 3.0 s (TelepadVanish), then put on the spot found, freed at once
@@ -4313,6 +4315,13 @@ static void checkMysteryTeleport() {
     int timer = g.timer;
     g.openMystery(MY_TELEPORT, w);
     assert(g.mysteryTeleports.size() == 1 && g.padHeld(cur) && Vector3Distance(from, w.pos) < 1e-5f);
+    {
+        Game r;  // a match restarted mid-teleport: the new one holds nobody
+        r.start({29, 2, 1, "", 0});
+        r.openMystery(MY_TELEPORT, r.worms[r.current]);
+        r.start({29, 2, 1, "", 0});
+        assert(r.mysteryTeleports.empty() && !r.padHeld(r.current));
+    }
     Vector3 to = g.mysteryTeleports[0].to;
     assert(!g.terrain.solid(to) && to.y > g.water);
     int t;
