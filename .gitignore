@@ -4,7 +4,7 @@ client/assets
 
 # NSP build (tools/nsp/build-nsp.sh): fetched/compiled hacBrewPack, packed exefs/control/nsp output
 tools/nsp/out/
-client/build_nsp/
-client/worms4nx_nsp.*
+client/build_nsp*/
+client/worms4nx_nsp*
 client/replays/
 .tags

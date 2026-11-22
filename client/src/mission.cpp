@@ -34,12 +34,12 @@ bool loadMission(const std::string &path, MissionSpec &m) {
     return true;
 }
 
-std::vector<MissionSpec> listMissions(const char *romfsDir, const char *dataDir) {
+std::vector<MissionSpec> listMissions(const char *romfsDir, const char *assetsDir) {
     std::vector<MissionSpec> out;
-    for (const std::string &path : Loading::list(std::string(dataDir) + "assets/missions", ".json")) {
+    for (const std::string &path : Loading::list(std::string(assetsDir) + "missions", ".json")) {
         MissionSpec m;
         if (!loadMission(path, m)) continue;
-        bool map = m.map.empty() || FileExists((std::string(dataDir) + "assets/maps/" + m.map + ".json").c_str()) ||
+        bool map = m.map.empty() || FileExists((std::string(assetsDir) + "maps/" + m.map + ".json").c_str()) ||
                    FileExists((std::string(romfsDir) + "maps/" + m.map + ".json").c_str());
         if (map && std::none_of(out.begin(), out.end(), [&](const MissionSpec &o) { return o.id == m.id; })) out.push_back(m);
     }

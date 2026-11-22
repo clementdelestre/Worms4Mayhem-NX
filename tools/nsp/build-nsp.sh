@@ -4,12 +4,18 @@
 #     -> nso (elf2nso) + npdm (npdmtool, tools/nsp/worms4nx.json)
 #     -> nacp (nacptool) + icon (client/icon.jpg, already 256x256)
 #     -> hacBrewPack (built from source, cached) packs romfs + exefs + control into a signed/encrypted NSP.
-# Usage: tools/nsp/build-nsp.sh [path-to-prod.keys]
+# Usage: [BUNDLE_ASSETS=1] tools/nsp/build-nsp.sh [path-to-prod.keys]
+#   BUNDLE_ASSETS=1 packs client/assets into the romfs (W4NX_BUNDLED_ASSETS build, out/nsp-bundled/); default reads them from the SD card.
 set -euo pipefail
 
 TITLE_ID=0100576F524D3000
 TARGET=worms4nx_nsp
 BUILD_DIR=build_nsp
+NSP_DIR=nsp
+DEFINES=
+if [ "${BUNDLE_ASSETS:-0}" = 1 ]; then
+    TARGET=worms4nx_nsp_bundled BUILD_DIR=build_nsp_bundled NSP_DIR=nsp-bundled DEFINES=-DW4NX_BUNDLED_ASSETS
+fi
 NSP_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="$NSP_SRC_DIR/out"
 
@@ -20,7 +26,7 @@ if [ ! -d /opt/devkitpro ]; then
     [ -f "$KEYS" ] || { echo "prod.keys not found: $KEYS" >&2; exit 1; }
     exec docker run --rm -u "$(id -u):$(id -g)" \
         -v "$REPO_ROOT":/w -w /w \
-        -v "$KEYS":/keys/prod.keys:ro \
+        -v "$KEYS":/keys/prod.keys:ro -e BUNDLE_ASSETS \
         devkitpro/devkita64 bash tools/nsp/build-nsp.sh /keys/prod.keys
 fi
 
@@ -32,7 +38,7 @@ awk -F' *= *' '{ sub(/\r$/, "") } $1 == "header_key" || (length($2) == 32 && $2 
 mkdir -p "$OUT/exefs" "$OUT/control"
 
 echo "== 1/4 building elf (BUILD=$BUILD_DIR TARGET=$TARGET, isolated from the .nro build) =="
-make -C client -f Makefile.switch BUILD="$BUILD_DIR" TARGET="$TARGET" NO_ICON=1 NO_NACP=1
+make -C client -f Makefile.switch BUILD="$BUILD_DIR" TARGET="$TARGET" DEFINES="$DEFINES" NO_ICON=1 NO_NACP=1
 
 echo "== 2/4 nso + npdm + nacp + icon =="
 elf2nso "client/$TARGET.elf" "$OUT/exefs/main"
@@ -57,20 +63,27 @@ if [ ! -x "$HBP_BIN" ]; then
 fi
 
 echo "== 4/4 packing NSP =="
-rm -rf "$OUT/nsp" "$OUT/hacbrewpack_nca" "$OUT/hacbrewpack_temp" "$OUT/hacbrewpack_backup"
+ROMFS=client/romfs
+if [ -n "$DEFINES" ]; then
+    [ -d client/assets ] || { echo "BUNDLE_ASSETS=1 needs client/assets" >&2; exit 1; }
+    ROMFS="$OUT/romfs-bundled"
+    rm -rf "$ROMFS" && cp -a client/romfs "$ROMFS"
+    cp -al client/assets "$ROMFS/assets" 2>/dev/null || { rm -rf "$ROMFS/assets"; cp -a client/assets "$ROMFS/assets"; }  # hardlinks: no 1.6 GB copy
+fi
+rm -rf "$OUT/$NSP_DIR" "$OUT/hacbrewpack_nca" "$OUT/hacbrewpack_temp" "$OUT/hacbrewpack_backup"
 "$HBP_BIN" -k "$HBP_KEYS" \
     --exefsdir="$OUT/exefs" \
     --controldir="$OUT/control" \
-    --romfsdir=client/romfs \
+    --romfsdir="$ROMFS" \
     --nologo \
     --keepncadir \
-    --nspdir="$OUT/nsp" \
+    --nspdir="$OUT/$NSP_DIR" \
     --ncadir="$OUT/hacbrewpack_nca" \
     --tempdir="$OUT/hacbrewpack_temp" \
     --backupdir="$OUT/hacbrewpack_backup" \
     --titleid="$TITLE_ID" 2>&1 | grep -vi 'key area'
 
-NSP_FILE=$(ls "$OUT"/nsp/*.nsp | head -1)
+NSP_FILE=$(ls "$OUT/$NSP_DIR"/*.nsp | head -1)
 echo "NSP: $NSP_FILE"
 
 echo "== verify (hactool, never prints key material) =="

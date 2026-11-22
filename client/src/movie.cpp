@@ -16,15 +16,11 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "external/stb_image.h"
 
-#ifdef __SWITCH__
-#define DATA_DIR "sdmc:/switch/worms4nx/"
-#else
-#define DATA_DIR "./"
-#endif
+#include "paths.h"
 
 namespace Movie {
 namespace {
-const char *path(const char *name, const char *ext) { return TextFormat(DATA_DIR "assets/movies/%s.%s", name, ext); }
+const char *path(const char *name, const char *ext) { return TextFormat(ASSETS_DIR "movies/%s.%s", name, ext); }
 
 struct Header { int w = 0, h = 0, fps = 0; };
 

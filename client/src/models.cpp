@@ -22,11 +22,8 @@
 #include <string>
 #include <vector>
 
-#ifdef __SWITCH__
-#define MODEL_DIR "sdmc:/switch/worms4nx/assets/models"
-#else
-#define MODEL_DIR "./assets/models"
-#endif
+#include "paths.h"
+#define MODEL_DIR ASSETS_DIR "models"
 
 namespace {
 // W4M XChildSelector (w4m-models root extras "sel"): the mesh showing child 0 and each child's material; per clip keying it,

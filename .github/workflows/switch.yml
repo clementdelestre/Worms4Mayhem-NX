@@ -1,0 +1,21 @@
+name: switch
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: [server/**, docs/**, '**.md']
+  pull_request:
+    paths-ignore: [server/**, docs/**, '**.md']
+  workflow_dispatch:
+
+jobs:
+  nro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/raylib-nx-build.sh
+      - run: docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/w -w /w/client devkitpro/devkita64 make -f Makefile.switch -j"$(nproc)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worms4nx-nro
+          path: client/worms4nx.nro

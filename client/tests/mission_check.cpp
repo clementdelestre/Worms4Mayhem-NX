@@ -810,7 +810,7 @@ static void checkPickedTeam(const std::vector<MissionSpec> &list) {
 
 int main() {
     assert(loadWeapons("romfs/weapons.json"));
-    std::vector<MissionSpec> list = listMissions("./romfs/", "./");
+    std::vector<MissionSpec> list = listMissions("./romfs/", "./assets/");
     Progress p;
     p.open("progress_check.txt", "progress_check_team.txt");
     p.record("a", false, 0), p.record("a", true, 900), p.record("a", true, 1200);

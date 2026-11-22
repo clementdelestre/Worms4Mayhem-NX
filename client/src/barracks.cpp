@@ -7,11 +7,7 @@
 #include <fstream>
 #include <sstream>
 
-#ifdef __SWITCH__
-#define ASSET_DIR "sdmc:/switch/worms4nx/assets/"
-#else
-#define ASSET_DIR "./assets/"
-#endif
+#include "paths.h"
 
 GameConfig::Team SavedTeam::slot(int count, int alliance, int handicap, const std::vector<WeaponDef> &factory) const {
     GameConfig::Team t;
@@ -235,6 +231,6 @@ std::vector<std::string> Catalog::usable(int type, const std::vector<std::string
 const Catalog &catalog() {
     static Catalog c;
     static bool loaded = false;
-    if (!loaded) c.load(ASSET_DIR), loaded = true;
+    if (!loaded) c.load(ASSETS_DIR), loaded = true;
     return c;
 }

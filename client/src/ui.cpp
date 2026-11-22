@@ -32,16 +32,7 @@
 #include <mutex>
 #include <thread>
 
-#ifdef __SWITCH__
-#define DATA_DIR "sdmc:/switch/worms4nx/"
-#else
-#define DATA_DIR "./"
-#endif
-#ifdef __SWITCH__
-#define ROMFS_DIR "romfs:/"
-#else
-#define ROMFS_DIR "./romfs/"
-#endif
+#include "paths.h"
 
 namespace Ui {
 
@@ -120,7 +111,7 @@ Texture2D tex(const std::string &name) {
         SetTextureFilter(t, TEXTURE_FILTER_TRILINEAR);
         return cache[name] = t;
     }
-    const char *p = TextFormat(DATA_DIR "assets/ui/%s.png", name.c_str());
+    const char *p = TextFormat(ASSETS_DIR "ui/%s.png", name.c_str());
     if (FileExists(p)) {
         double start = GetTime();
         t = LoadTexture(p);
@@ -149,7 +140,7 @@ void decodeArt() {
 #endif
     for (int i = 0; i < NPRE; i++) {
         char p[160];
-        snprintf(p, sizeof p, DATA_DIR "assets/ui/%s.png", PRELOAD[i]);
+        snprintf(p, sizeof p, ASSETS_DIR "ui/%s.png", PRELOAD[i]);
         int n = 0;
         if (unsigned char *d = FileExists(p) ? LoadFileData(p, &n) : nullptr) preImg[i] = LoadImageFromMemory(".png", d, n), UnloadFileData(d);
         ImageMipmaps(&preImg[i]);  // here: no GPU mipmap blits on the main thread
@@ -265,7 +256,7 @@ const MapInfo &mapInfo(const std::string &m) {
     auto &cache = mapCache;
     if (std::lock_guard<std::mutex> l(mapMu); cache.count(m)) return cache[m];
     MapInfo info;
-    for (const char *dir : {DATA_DIR "assets/maps/", ROMFS_DIR "maps/"}) {
+    for (const char *dir : {ASSETS_DIR "maps/", ROMFS_DIR "maps/"}) {
         FILE *f = m.empty() ? nullptr : fopen((dir + m + ".json").c_str(), "rb");
         if (!f) continue;
         char head[400] = {};
@@ -304,9 +295,9 @@ std::string preview(const std::string &m) {
 
 // W4M's level name, else from the file name: "EscapeFromTreeRex" -> "Escape From Tree Rex", "Alien-w3d" -> "Alien (W3D)"
 void mapHeads(const std::vector<std::string> &maps) {
-    for (std::string p : Loading::list(DATA_DIR "assets/ui/levels", ".png")) levelPics.insert(p.substr(p.rfind('/') + 1, p.size() - p.rfind('/') - 5));
+    for (std::string p : Loading::list(ASSETS_DIR "ui/levels", ".png")) levelPics.insert(p.substr(p.rfind('/') + 1, p.size() - p.rfind('/') - 5));
     // w4m-maps' index.tsv holds those heads in one read; a map it lacks (added by hand) has its own head read
-    if (FILE *f = fopen(DATA_DIR "assets/maps/index.tsv", "rb")) {
+    if (FILE *f = fopen(ASSETS_DIR "maps/index.tsv", "rb")) {
         std::map<std::string, MapInfo> idx;
         for (char l[512]; fgets(l, sizeof l, f);) {
             std::string c[4];
@@ -323,7 +314,7 @@ void mapHeads(const std::vector<std::string> &maps) {
 
 // W4M's WXFEP.SelectLandscape2: the Prebuilt landscapes (multimaps.txt, tools/w4m-re/setuplists.py) and, kept on purpose, the Worms 3D maps
 void multiplayerMaps(std::vector<std::string> &maps) {
-    char *txt = FileExists(DATA_DIR "assets/multimaps.txt") ? LoadFileText(DATA_DIR "assets/multimaps.txt") : nullptr;
+    char *txt = FileExists(ASSETS_DIR "multimaps.txt") ? LoadFileText(ASSETS_DIR "multimaps.txt") : nullptr;
     if (!txt) return;
     std::set<std::string> keep;
     for (char *l = strtok(txt, "\r\n"); l; l = strtok(nullptr, "\r\n")) keep.insert(l);
@@ -487,7 +478,7 @@ static std::map<std::string, std::string> strings;
 static int stringsFor = -1;
 
 const char *tr(const char *key, const char *en, const char *fr) {
-    const char *path = TextFormat(DATA_DIR "assets/lang/%s.txt", language ? "fr" : "en");
+    const char *path = TextFormat(ASSETS_DIR "lang/%s.txt", language ? "fr" : "en");
     if (stringsFor != language && (stringsFor = language, strings.clear(), FileExists(path))) {
         char *txt = LoadFileText(path);
         for (char *l = strtok(txt, "\n"); l; l = strtok(nullptr, "\n")) {
@@ -552,10 +543,14 @@ void load() {
 #endif
     // W4M's FE.Font (tools/w4m-ui, user's install), else the Switch shared font / a desktop TTF
 #ifdef __SWITCH__
-    chdir(DATA_DIR);  // raylib turns the BMFont page dir of "sdmc:/..." into "./sdmc:/...": load it relative
+    chdir(ASSETS_BASE);  // raylib turns the BMFont page dir of "sdmc:/..." into "./sdmc:/...": load it relative
 #endif
-    if (FileExists("assets/ui/font/w4m.fnt")) {
-        font = LoadFont("assets/ui/font/w4m.fnt");
+    bool fnt = FileExists("assets/ui/font/w4m.fnt");
+    if (fnt) font = LoadFont("assets/ui/font/w4m.fnt");
+#ifdef __SWITCH__
+    chdir(DATA_DIR);  // relative captures (ui.png) land in the writable dir
+#endif
+    if (fnt) {
         fontLoaded = font.texture.id != GetFontDefault().texture.id;  // LoadFont falls back to the default font
         if (fontLoaded) {
             GenTextureMipmaps(&font.texture);
@@ -571,7 +566,7 @@ void load() {
         fontLoaded = font.texture.id != 0;
     }
 #else
-    for (const char *p : {DATA_DIR "assets/ui/font.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"}) {
+    for (const char *p : {ASSETS_DIR "ui/font.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"}) {
         if (!FileExists(p)) continue;
         font = LoadFontEx(p, 48, cps.data(), (int)cps.size());
         fontLoaded = font.texture.id != 0;
@@ -597,7 +592,7 @@ void predecode(const std::vector<std::string> &names) {
         svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3F);  // core 0 below the main thread: runs while it waits (vsync, GPU)
 #endif
         for (const std::string &name : todo) {
-            std::string p = DATA_DIR "assets/ui/" + name + ".png";
+            std::string p = ASSETS_DIR "ui/" + name + ".png";
             int n = 0;
             Image img{};
             if (unsigned char *d = FileExists(p.c_str()) ? LoadFileData(p.c_str(), &n) : nullptr) img = LoadImageFromMemory(".png", d, n), UnloadFileData(d);
@@ -1686,7 +1681,7 @@ bool Frontend::edit(std::string &s, const char *hint) {
 // teams.txt, seeded from W4M's defaults (and an older setup.txt's teams) when missing
 void Frontend::loadTeams() {
     if (!barracks.teams.empty()) return;
-    barracks.load(DATA_DIR "teams.txt", DATA_DIR "assets/defteams.txt", DATA_DIR "setup.txt");
+    barracks.load(DATA_DIR "teams.txt", ASSETS_DIR "defteams.txt", DATA_DIR "setup.txt");
     if (!FileExists(DATA_DIR "teams.txt")) barracks.save(DATA_DIR "teams.txt");
 }
 
@@ -3497,7 +3492,7 @@ bool warmHud(int &i, double until) {
         for (const WeaponDef &w : WEAPONS) names.push_back(iconOf(w));
         for (const Catalog::Item &f : catalog().flags) names.push_back(f.model);
         for (const char *n : {"fe/team_health", "fe/com_panel", "fe/speech_popup", "fe2/homing_inner"}) names.push_back(n);
-        for (const std::string &p : Loading::list(DATA_DIR "assets/ui/hud", ".png"))
+        for (const std::string &p : Loading::list(ASSETS_DIR "ui/hud", ".png"))
             if (const char *f = GetFileNameWithoutExt(p.c_str()); strncmp(f, "wxp_", 4)) names.push_back(std::string("hud/") + f);
     }
     while (i < (int)names.size() && GetTime() < until) tex(names[i++]);

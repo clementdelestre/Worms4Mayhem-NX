@@ -10,6 +10,7 @@ meshes, animations, sounds, voices, maps, missions, menu art and acting scenes a
 - `client/` C++17 + [raylib-nx](https://github.com/luizpestana/raylib-nx) game: voxel destructible terrain, deterministic lockstep sim, local and online play.
 - `server/` Rust lobby + input relay server (see `server/README.md`, protocol in `PROTOCOL.md`).
 - `third_party/raylib-nx/` (cloned, not committed): `git clone --depth 1 https://github.com/luizpestana/raylib-nx third_party/raylib-nx`.
+  Switch lib only (pinned revision, every patch, as CI does): `tools/raylib-nx-build.sh`.
 - `third_party/lua-5.0.1/` (committed): lua.org's Lua 5.0.1 (MIT), patched by `tools/patches/lua-5.0.1-w4m.patch` (4-byte size_t and instructions, float numbers: the W4M `.lub` format); it runs the W4M mission scripts.
 
 ## Build
@@ -30,6 +31,7 @@ cd client && make && ./worms4nx            # desktop; make check = determinism t
 docker run --rm -u $(id -u):$(id -g) -v "$PWD":/w -w /w/client devkitpro/devkita64 make -f Makefile.switch   # -> client/worms4nx.nro
 ```
 NSP: `./tools/nsp/build-nsp.sh [prod.keys]` (docker, `docs/nsp.md`) → `tools/nsp/out/nsp/0100576f524d3000.nsp`.
+Self-contained NSP (assets in romfs, nothing to copy to the SD card): `BUNDLE_ASSETS=1 ./tools/nsp/build-nsp.sh` → `tools/nsp/out/nsp-bundled/`.
 Server: `cd server && cargo run --release -- 0.0.0.0:7777` (or `docker build -t worms4nx-server server`).
 
 ## Tests
