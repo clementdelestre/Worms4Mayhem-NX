@@ -79,9 +79,11 @@ fn skip_team(r: &mut R) -> Option<()> {
     r.take(3)?;
     if r.u8()? != 0 {
         r.str()?;
-        r.take(1 + 13 * 4 + 4 * 4 + 1)?;  // kind, 13 f32, 4 i32, flags
+        r.take(1 + 13 * 4 + 4 * 4 + 1)?;  // kind, 13 f32, 4 i32, wind
         r.str()?;
         r.str()?;
+        r.take(3 + 4 + 1 + 3 * 4)?;  // launch, 2 detonates, fuse time, flags, 3 f32
+        for _ in 0..3 { r.str()?; }
     }
     Some(())
 }

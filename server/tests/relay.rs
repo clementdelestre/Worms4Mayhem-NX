@@ -116,7 +116,10 @@ fn teams(list: &[(&str, u8, bool)]) -> W {
     let mut w = W::new(TEAMS).u8(list.len() as u8);
     for (n, cpu, weapon) in list {
         w = (0..6).fold(w.str(n).u8(*cpu), |w, _| w.str("")).u8(0).u8(1).str("Worm").u8(1).u8(0xff).u8(0).u8(*weapon as u8);
-        if *weapon { w = (0..13 + 4).fold(w.str("Lobber").u8(0), |w, _| w.u32(0)).u8(1).str("holy").str(""); }
+        if *weapon {
+            w = (0..13 + 4).fold(w.str("Lobber").u8(0), |w, _| w.u32(0)).u8(1).str("holy").str("");
+            w = (0..3).fold(w.u8(0).u8(1).u8(1).u32(3000).u8(1), |w, _| w.u32(0)).str("").str("").str("Lobber.Graphic");
+        }
     }
     w
 }
