@@ -44,12 +44,8 @@
 
 #ifdef __SWITCH__
 #include <switch.h>
-#define DATA_DIR "sdmc:/switch/worms4nx/"
-#define ROMFS_DIR "romfs:/"
-#else
-#define DATA_DIR "./"
-#define ROMFS_DIR "./romfs/"
 #endif
+#include "paths.h"
 
 extern "C" void glFinish(void);  // perf overlay only; rlgl does not wrap it
 extern "C" void glClear(unsigned int mask);
@@ -1499,7 +1495,7 @@ int main(int argc, char **argv) {
     });
     std::thread mapList([&] {
         double t = GetTime();
-        for (const char *dir : {ROMFS_DIR "maps", DATA_DIR "assets/maps"}) {  // assets/ = maps imported from the user's W4M install
+        for (const char *dir : {ROMFS_DIR "maps", ASSETS_DIR "maps"}) {  // assets/ = maps imported from the user's W4M install
             for (std::string m : Loading::list(dir, ".json")) {
                 m = m.substr(m.find_last_of('/') + 1), m.resize(m.size() - 5);  // GetFileNameWithoutExt() isn't thread-safe
                 if (std::find(maps.begin(), maps.end(), m) == maps.end()) maps.push_back(m);
@@ -1545,7 +1541,7 @@ int main(int argc, char **argv) {
         Audio::loadRest();
         missionsF = std::async(std::launch::async, [] {  // the Missions page's list
             Loading::pinCore(2);
-            std::vector<MissionSpec> l = listMissions(ROMFS_DIR, DATA_DIR);
+            std::vector<MissionSpec> l = listMissions(ROMFS_DIR, ASSETS_DIR);
             misList = (GetTime() - titleT) * 1000;
             return l;
         }).share();
@@ -1721,7 +1717,7 @@ int main(int argc, char **argv) {
     if (shot) {
         GameConfig sc = {1234, 2, 2, shotMap, argc > 4 && !fixedView ? (uint32_t)atoi(argv[4]) : 0u};
         std::vector<WeaponDef> mine;  // --utilshot <Factory weapon name>: both teams' Weapon Factory weapon (ours or a stock one)
-        for (const char *f : {DATA_DIR "custom_weapons.json", DATA_DIR "assets/stockweapons.json"})
+        for (const char *f : {DATA_DIR "custom_weapons.json", ASSETS_DIR "stockweapons.json"})
             if (utilShot && loadCustomWeapons(f, mine))
                 for (const WeaponDef &d : mine) if (d.name == utilShot) sc.teamSetup.resize(2), sc.teamSetup[0].secret = sc.teamSetup[1].secret = d;
         game.start(sc);
@@ -1993,7 +1989,7 @@ int main(int argc, char **argv) {
     auto openMissions = [&] {
         if (missions.empty()) {
             double t = GetTime();
-            missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, DATA_DIR);
+            missions = missionsF.valid() ? missionsF.get() : listMissions(ROMFS_DIR, ASSETS_DIR);
             TraceLog(LOG_INFO, "MISSIONS: opened +%.0f ms after the menu scene, waited %.1f ms (list at +%.0f)", (t - titleT) * 1000,
                      (GetTime() - t) * 1000, misList);
             misFrames = 0;
@@ -2067,7 +2063,7 @@ int main(int argc, char **argv) {
             net.roomId = 1, net.hostId = 1;
             net.players = {{1, "Clem's Switch", true}, {2, "Living room", true}, {3, "Bedroom", true}};
             Barracks saved;
-            saved.load("/nonexistent", DATA_DIR "assets/defteams.txt");  // W4M's default teams
+            saved.load("/nonexistent", ASSETS_DIR "defteams.txt");  // W4M's default teams
             auto shotTeam = [&](int i) { return saved.teams[i].slot(3, -1); };
             net.consoleTeams[1] = {shotTeam(0), shotTeam(5)};
             net.consoleTeams[2] = {shotTeam(1)};

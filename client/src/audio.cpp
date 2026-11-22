@@ -17,18 +17,12 @@
 #include <thread>
 #include <vector>
 
-#ifdef __SWITCH__
-#define ASSET_ROOT "sdmc:/switch/worms4nx/assets/"
-#define ROMFS_ROOT "romfs:/"
-#else
-#define ASSET_ROOT "./assets/"
-#define ROMFS_ROOT "./romfs/"
-#endif
+#include "paths.h"
 
 namespace Audio {
 namespace {
 
-// importer drops extracted W4M sounds under ASSET_ROOT/sfx/<file>; bundled CC0 defaults live in ROMFS_ROOT
+// importer drops extracted W4M sounds under ASSETS_DIR/sfx/<file>; bundled CC0 defaults live in ROMFS_DIR
 // W4M WormsX.fev via tools/w4m-re/fev.py (docs/w4m/audio.md §12): event, dB (event + sounddef + category), loop, 3D rolloff min..max m (0 = 2D), max playbacks,
 // fade s, wave weights (null: equal), sounddef mode (pick), trigger delay / respawn ms (+64/+66, +4/+8), log rolloff, pitch spread (+08, x 4 octaves)
 // env: emitter() gain over time (Time-param envelope x event fade-in), (s, gain, shape) triples ending at s < 0; layer: oneshot layer started with it
@@ -421,7 +415,7 @@ Music loadMusic(const char *name) {
             ready.erase(ready.begin() + i);
             return m;
         }
-    for (const char *root : {ASSET_ROOT, ROMFS_ROOT}) {
+    for (const char *root : {ASSETS_DIR, ROMFS_DIR}) {
         std::string s = std::string(root) + "music/" + name + ".ogg";
         if (!FileExists(s.c_str())) continue;
         Music m = LoadMusicStream(s.c_str());
@@ -450,8 +444,8 @@ bool menuSfx(int i) { return !strncmp(DEFS[i].file, "fe_", 3) || !strncmp(DEFS[i
 void loadSfx(int first, bool menu, Variants *out) {  // every other sound from first: two decoders
     for (int i = first; i < (int)Sfx::Count && !stopLoads; i += 2) {
         if (menuSfx(i) != menu) continue;
-        out[i] = loadVariants(std::string(ASSET_ROOT "sfx/") + DEFS[i].file, DEFS[i].maxpb);
-        if (!out[i].n) out[i] = loadVariants(std::string(ROMFS_ROOT "sfx/") + DEFS[i].file, DEFS[i].maxpb);
+        out[i] = loadVariants(std::string(ASSETS_DIR "sfx/") + DEFS[i].file, DEFS[i].maxpb);
+        if (!out[i].n) out[i] = loadVariants(std::string(ROMFS_DIR "sfx/") + DEFS[i].file, DEFS[i].maxpb);
     }
 }
 
@@ -467,8 +461,8 @@ void init() {
     });  // mostly SD seeks (the ogg's length): overlaps the decoders
     std::thread odd([] { Loading::pinCore(2), loadSfx(1, true, sfx); });  // core 0 decodes the menu art
     loadSfx(0, true, sfx), odd.join();
-    std::vector<std::string> dirs = bankDirs(ASSET_ROOT);
-    if (dirs.empty()) dirs = bankDirs(ROMFS_ROOT);
+    std::vector<std::string> dirs = bankDirs(ASSETS_DIR);
+    if (dirs.empty()) dirs = bankDirs(ROMFS_DIR);
     for (auto &d : dirs) banks.push_back(Bank{d, false, {}});
     music.join();
 }
@@ -807,7 +801,7 @@ void efmvLevel(const char *level) {
     if (want == efmvLoaded && !efmvs.empty()) return;
     for (Efmv &e : efmvs) unload(e.v);
     efmvs.clear(), envs.clear(), speaking.clear(), looping = nullptr, efmvLoaded = want;
-    std::string root = ASSET_ROOT "efmv";
+    std::string root = ASSETS_DIR "efmv";
     std::vector<std::string> l = Loading::list(root, "/");
     for (const char *g : {want.c_str(), "failures"})
         for (const std::string &d : l)

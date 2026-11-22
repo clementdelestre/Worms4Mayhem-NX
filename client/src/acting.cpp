@@ -13,11 +13,8 @@
 #include <string>
 #include <strings.h>
 
-#ifdef __SWITCH__
-#define ACTING_FILE "sdmc:/switch/worms4nx/assets/acting.txt"
-#else
-#define ACTING_FILE "./assets/acting.txt"
-#endif
+#include "paths.h"
+#define ACTING_FILE ASSETS_DIR "acting.txt"
 
 namespace {
 using V = Audio::Voice;

@@ -11,10 +11,8 @@
 #include <string>
 #ifdef __SWITCH__
 #include <switch.h>
-#define DATA_DIR "sdmc:/switch/worms4nx/"
-#else
-#define DATA_DIR "./"
 #endif
+#include "paths.h"
 
 namespace {
 // WXFE.PreStart pops in at its 250 ms Delay_Incoming and sends StartGame$NOW once its last item (1500 ms + In_ScaleY 0.25 s)
@@ -200,7 +198,7 @@ std::vector<std::string> list(const std::string &dir, const char *ext, bool recu
 
 // The icon alone on black (W4M mode 1, 0x509ba0: FE.LoadingIcon at (0, 40)); true once `loaded`
 bool boot(bool loaded) {
-    static Texture2D icon = LoadTexture(DATA_DIR "assets/ui/fe2/loading_worm.png");
+    static Texture2D icon = LoadTexture(ASSETS_DIR "ui/fe2/loading_worm.png");
     static const double t0 = GetTime();  // double: raw GetTime() is huge on Switch
     ClearBackground(BLACK);
     if (icon.id) sprite(icon, {640, 360 - 40 * 1.3333f}, 190, (float)(GetTime() - t0) * 360 / 1.166f, WHITE);

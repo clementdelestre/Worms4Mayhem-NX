@@ -17,11 +17,7 @@
 #include <functional>
 #include <vector>
 
-#ifdef __SWITCH__
-#define DATA_DIR "sdmc:/switch/worms4nx/"
-#else
-#define DATA_DIR "./"
-#endif
+#include "paths.h"
 
 extern "C" void glClear(unsigned int mask);
 
@@ -404,7 +400,7 @@ void decodeData() {
     struct Spr { int tex; bool add; };
     std::map<std::string, Spr> sprites;
     const int rampBase = (int)ramps.size(), texBase = (int)tex.size();
-    if (char *t = LoadFileText(DATA_DIR "assets/fx/sprites.txt")) {
+    if (char *t = LoadFileText(ASSETS_DIR "fx/sprites.txt")) {
         for (char *l = strtok(t, "\n"); l; l = strtok(nullptr, "\n")) {
             char name[96];
             SprState st;
@@ -416,7 +412,7 @@ void decodeData() {
                 {"particle.trailsprite_w", TRAIL_W}, {"particle.wxsprite6", CROSS}, {"particle.wxsprite22", QUESTION}, {"particle.wxsprite23", BUBBLE},
                 {"particle.wxsprite11", SOAP}, {"particle.whiteout", WHITEOUT}};
             for (const auto &[n, t] : BUILT) if (lower(name) == n) dataSt[t] = st;
-            std::string f = DATA_DIR "assets/fx/" + lower(name) + ".png";
+            std::string f = ASSETS_DIR "fx/" + lower(name) + ".png";
             if (!FileExists(f.c_str())) continue;
             Image img = LoadImage(f.c_str());
             if (!img.data) continue;
@@ -429,7 +425,7 @@ void decodeData() {
         }
         UnloadFileText(t);
     }
-    char *txt = LoadFileText(DATA_DIR "assets/fx/parttwk.json");
+    char *txt = LoadFileText(ASSETS_DIR "fx/parttwk.json");
     if (!txt) return;
     Json j;
     bool ok = Json::parse(txt, j);
@@ -454,7 +450,7 @@ void decodeData() {
                     joined += (joined.empty() ? "" : "+") + part.substr(part.find(':') + 1), n = k + 1;
                 }
             MeshSet ms{lower(c["MeshSet"][0].s()), joined, loop};
-            if (char *b = LoadFileText((DATA_DIR "assets/models/fx/" + ms.model + ".blend").c_str())) {
+            if (char *b = LoadFileText((ASSETS_DIR "models/fx/" + ms.model + ".blend").c_str())) {
                 float rot;
                 sscanf(b, "%d %d %f %f %f %f", &ms.src, &ms.dst, &rot, &ms.u, &ms.v, &ms.t1);
                 UnloadFileText(b);
@@ -635,7 +631,7 @@ Vector3 floodAt{};
 int floodRain = 0;
 
 Texture2D loadTex(const char *dir, const char *name, bool mips) {
-    const char *f = TextFormat(DATA_DIR "assets/ui/%s/%s.png", dir, name);
+    const char *f = TextFormat(ASSETS_DIR "ui/%s/%s.png", dir, name);
     if (!FileExists(f)) return Texture2D{};
     Texture2D t = LoadTexture(f);
     if (mips) GenTextureMipmaps(&t);
@@ -784,13 +780,13 @@ static void skyKey(const std::string &theme, const std::string &time, char &l, c
 std::string gradientFile(const std::string &theme, const std::string &time, bool side) {
     char l, suffix;
     skyKey(theme, time, l, suffix);
-    return TextFormat(DATA_DIR "assets/ui/sky/%c_%ssky0%c.png", l, side ? "side" : "", suffix);
+    return TextFormat(ASSETS_DIR "ui/sky/%c_%ssky0%c.png", l, side ? "side" : "", suffix);
 }
 
 std::string skyFile(const std::string &theme, const std::string &time) {
     char l, suffix;
     skyKey(theme, time, l, suffix);
-    return TextFormat(DATA_DIR "assets/models/sky/%c_sky0%c.glb", l, suffix);
+    return TextFormat(ASSETS_DIR "models/sky/%c_sky0%c.glb", l, suffix);
 }
 
 void theme(const std::string &theme, Color sky, const std::string &time, bool levelSky) {
@@ -821,7 +817,7 @@ void theme(const std::string &theme, Color sky, const std::string &time, bool le
         if (t.id) UnloadTexture(t), t = {};
     skyTex = {};
     fogCol = sky;
-    const char *f = TextFormat(DATA_DIR "assets/ui/sky/%c_sky0%c.png", l, suffix);
+    const char *f = TextFormat(ASSETS_DIR "ui/sky/%c_sky0%c.png", l, suffix);
     if (FileExists(f)) {
         Image im = LoadImage(f);
         fogCol = GetImageColor(im, im.width * 3 / 4, 0);  // sky colour at the horizon

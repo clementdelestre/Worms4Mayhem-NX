@@ -21,6 +21,8 @@ static void mesherForget(const struct Terrain *t);
 #include <cstring>
 #include <map>
 
+#include "paths.h"
+
 static size_t idx(int x, int y, int z) { return Terrain::idx(x, y, z); }
 static constexpr unsigned char HIDDEN = 67;  // Visible 0 land frame: solid, never drawn (w4m-maps)
 static constexpr unsigned char HARD = 62;  // girder voxels: W4M theme material 61 (GirderSmall.xom), 1-based like mats
@@ -120,11 +122,7 @@ static float sdf(const Prefab &s, Vector3 p) {
 }
 
 static bool readMap(const std::string &map, Json &j, std::string &dirOut) {
-#ifdef __SWITCH__
-    const char *dirs[] = {"sdmc:/switch/worms4nx/assets/maps/", "romfs:/maps/"};
-#else
-    const char *dirs[] = {"./assets/maps/", "./romfs/maps/"};
-#endif
+    const char *dirs[] = {ASSETS_DIR "maps/", ROMFS_DIR "maps/"};
     for (const char *dir : dirs) {
         std::string path = dir + map + ".json";
         if (!FileExists(path.c_str())) continue;
@@ -2356,11 +2354,7 @@ void main() {
 )";
 
 void Terrain::drawObjects(float clock, bool draw, int pick, std::vector<Vector4> *at) const {
-#ifdef __SWITCH__
-    static const std::string dir = "sdmc:/switch/worms4nx/assets/models/decor/";
-#else
-    static const std::string dir = "./assets/models/decor/";
-#endif
+    static const std::string dir = ASSETS_DIR "models/decor/";
     struct State { int src = -1, dst = -1, cull = -1; int test = -1, t = 0; float ref = 0; bool zwrite = true, lit = true; Vector3 emit{}; std::vector<Vector2> uv; };
     // st: per model material (0 = raylib's default); clip: W4M 0x5cd38e plays "Go" looped from a random time, "GoSync" from 0;
     // anim: tools/w4m-models' skinned copy when the clip moves parts

@@ -7,11 +7,8 @@
 #include <algorithm>
 #include <cmath>
 
-#ifdef __SWITCH__
-#define DIR "sdmc:/switch/worms4nx/assets/models/frontend/"
-#else
-#define DIR "./assets/models/frontend/"
-#endif
+#include "paths.h"
+#define DIR ASSETS_DIR "models/frontend/"
 
 namespace {
 const float S = 0.05f;  // metres per FE unit
