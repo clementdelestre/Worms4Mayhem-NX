@@ -1694,6 +1694,7 @@ int main(int argc, char **argv) {
     GameConfig opt;
     uint32_t tick = 0;
     std::string status;
+    bool statusWarn = false;  // status is an error (drawn as a warning), not information
     std::map<uint32_t, float> offlineSince;  // player id -> clock when seen offline
     // --shot [weapon] [map] [rules]
     // the shot flag file may name the map (Switch has no args)
@@ -2154,7 +2155,7 @@ int main(int argc, char **argv) {
                 case Net::Welcome:
                     if (lanHost.running()) net.createRoom((name + "'s game").c_str(), 4);
                     else net.listRooms();
-                    status = std::string(Ui::tr(nullptr, "Connected to ", "Connecté à ")) + connHost;
+                    status = std::string(Ui::tr(nullptr, "Connected to ", "Connecté à ")) + connHost, statusWarn = false;
                     break;
                 case Net::RoomList: if (lan && !net.roomId && !net.rooms.empty()) net.joinRoom(net.rooms[0].id); break;
                 case Net::RoomState:
@@ -2177,7 +2178,7 @@ int main(int argc, char **argv) {
                 case Net::LobbyChanged:
                     if (netbot && !net.isHost() && !botSaw && opt.rules && net.lobby.rules == opt.rules) botSaw = true, printf("[%s] lobby shows the host's rules\n", name.c_str());
                     break;
-                case Net::Error: status = std::string(Ui::tr(nullptr, "Server: ", "Serveur : ")) + e.text; break;
+                case Net::Error: status = std::string(Ui::tr(nullptr, "Server: ", "Serveur : ")) + e.text, statusWarn = true; break;
                 case Net::Start:
                     if (netbot && !net.isHost() && (net.lobby.map != net.cfg.map || net.lobby.rules != net.cfg.rules || net.lobby.teams.size() != net.owners.size() || !net.allReady()))
                         printf("[%s] LOBBY mirror differs from Start\n", name.c_str()), desynced = true;
@@ -2186,10 +2187,10 @@ int main(int argc, char **argv) {
                     if (netbot && !net.isHost() && opt.rules && !botSaw) printf("[%s] never saw the host's rules in the lobby\n", name.c_str()), desynced = true;
                     startMatch(net.cfg), status.clear();
                     break;
-                case Net::Desync: status = TextFormat(Ui::tr(nullptr, "DESYNC at tick %u", "DÉSYNCHRONISATION au tick %u"), e.a); desynced = true; break;
-                case Net::Chat: status = e.text; break;
+                case Net::Desync: status = TextFormat(Ui::tr(nullptr, "DESYNC at tick %u", "DÉSYNCHRONISATION au tick %u"), e.a), statusWarn = true; desynced = true; break;
+                case Net::Chat: status = e.text, statusWarn = false; break;
                 case Net::Disconnected:
-                    status = std::string(Ui::tr(nullptr, "Disconnected: ", "Déconnecté : ")) + e.text, reconnectAt = clock + 3;
+                    status = std::string(Ui::tr(nullptr, "Disconnected: ", "Déconnecté : ")) + e.text, statusWarn = true, reconnectAt = clock + 3;
                     if (screen == Screen::Menu && net.roomId) {  // in the room's setup: back to the salon
                         if (lan) leaveLan();
                         net.roomId = 0, net.players.clear(), net.consoleTeams.clear(), net.lobby = {};
@@ -2299,8 +2300,8 @@ int main(int argc, char **argv) {
             } else if (a == Ui::Frontend::Salon) {
                 online = true, lan = front.wantLan, connHost = host, connPort = port, salonSt = {}, status.clear();
                 net.close();
-                if (lan) status = lanScan.open() ? "" : Ui::tr(nullptr, "Network unavailable", "Réseau indisponible");
-                else status = net.connect(host.c_str(), port, name.c_str()) ? std::string(Ui::tr(nullptr, "Connecting to ", "Connexion à ")) + host + "..." : std::string(Ui::tr(nullptr, "Cannot reach ", "Impossible de joindre ")) + host;
+                if (lan) status = lanScan.open() ? "" : Ui::tr(nullptr, "Network unavailable", "Réseau indisponible"), statusWarn = true;
+                else statusWarn = !net.connect(host.c_str(), port, name.c_str()), status = statusWarn ? std::string(Ui::tr(nullptr, "Cannot reach ", "Impossible de joindre ")) + host : std::string(Ui::tr(nullptr, "Connecting to ", "Connexion à ")) + host + "...";
                 screen = Screen::Lobby;
             } else if (a == Ui::Frontend::RoomStart) {
                 opt.seed = (uint32_t)(clock * 1000) + frame;
@@ -2466,7 +2467,7 @@ int main(int argc, char **argv) {
             int pick = 0;
             BeginDrawing();
             Ui::background();
-            if (!netbot) pick = Ui::salon(salonSt, lan, names, info, status);
+            if (!netbot) pick = Ui::salon(salonSt, lan, names, info, status, statusWarn);
             if (Ui::helpHeld()) Ui::controls(false);
             if (uiShot && std::count(uiFrames.begin(), uiFrames.end(), frame)) {
                 rlDrawRenderBatchActive();
@@ -2480,7 +2481,7 @@ int main(int argc, char **argv) {
             const LanGame *heard = scanning && pick == 2 && salonSt.sel < (int)lanScan.games.size() ? &lanScan.games[netbot ? 0 : salonSt.sel] : nullptr;
             if (pick == 1 && lan && scanning) {
                 if (lanHost.open(port, (name + "'s game").c_str())) connHost = "127.0.0.1", connPort = port;
-                else status = TextFormat(Ui::tr(nullptr, "Cannot host: port %d busy", "Impossible d'héberger : port %d occupé"), port);
+                else status = TextFormat(Ui::tr(nullptr, "Cannot host: port %d busy", "Impossible d'héberger : port %d occupé"), port), statusWarn = true;
             } else if (pick == 1 && !lan) net.createRoom((name + "'s room").c_str(), 4);
             else if (heard) {
                 connHost = heard->ip, connPort = heard->port;
@@ -2488,7 +2489,7 @@ int main(int argc, char **argv) {
             } else if (pick == 2 && !scanning && salonSt.sel < (int)net.rooms.size()) net.joinRoom(net.rooms[salonSt.sel].id);
             if (scanning && (heard || lanHost.running())) {
                 lanScan.close();
-                status = net.connect(connHost.c_str(), connPort, name.c_str()) ? std::string(Ui::tr(nullptr, "Connecting to ", "Connexion à ")) + connHost + "..." : std::string(Ui::tr(nullptr, "Cannot reach ", "Impossible de joindre ")) + connHost;
+                statusWarn = !net.connect(connHost.c_str(), connPort, name.c_str()), status = statusWarn ? std::string(Ui::tr(nullptr, "Cannot reach ", "Impossible de joindre ")) + connHost : std::string(Ui::tr(nullptr, "Connecting to ", "Connexion à ")) + connHost + "...";
             }
             if (!netbot && !scanning && !lan && salonSt.joining && pressedAny(-1, {GAMEPAD_BUTTON_RIGHT_FACE_LEFT}, {KEY_R})) net.listRooms();
             if (pick == -1) {
@@ -3058,7 +3059,7 @@ int main(int argc, char **argv) {
             Ui::playbackBar(paused, speed, freeCam, tick * Game::DT, play.inputs.size() * Game::DT,
                             !end ? "" : play.checksum && game.checksum() != play.checksum ? "Replay out of sync (other game version?)" : "End of replay");
         } else if (irEnd >= 0) Ui::replayBadge();
-        if (online && !status.empty()) Ui::text(status.c_str(), 640, 120, 24, ORANGE, 1);
+        if (online && !status.empty()) Ui::text(status.c_str(), 640, 120, 24, statusWarn ? ORANGE : RAYWHITE, 1);
         Loading::overlay(dt);
         if (Ui::helpHeld()) Ui::controls(true);
         if (perfOn && !bench) {  // bench: keep the overlay out of the measured ui cost
