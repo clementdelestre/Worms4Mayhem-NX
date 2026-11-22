@@ -3414,7 +3414,7 @@ void Frontend::toNet() {
 
 // ---------------------------------------------------------------- network salon: Créer / Rejoindre
 
-int salon(Salon &st, bool lan, const std::vector<std::string> &names, const std::vector<std::string> &info, const std::string &status) {
+int salon(Salon &st, bool lan, const std::vector<std::string> &names, const std::vector<std::string> &info, const std::string &status, bool warn) {
     int dy = P({DOWN}, {KEY_DOWN}) - P({UP}, {KEY_UP}), n = (int)names.size(), ret = 0;
     bool ok = P({A}, {KEY_ENTER, KEY_SPACE}), back = P({B}, {KEY_BACKSPACE, KEY_ESCAPE});
     if (!st.joining) {
@@ -3454,7 +3454,7 @@ int salon(Salon &st, bool lan, const std::vector<std::string> &names, const std:
         }
         if (!n) feLine(lan ? tr(nullptr, "Looking for games on this network...", "Recherche de parties sur ce réseau...") : tr(nullptr, "No lobby yet", "Aucun salon pour l'instant"), 150, 40, 20, GC_WHITE, 1);
     }
-    setupFront(t, status.empty() ? nullptr : status.c_str(), !status.empty(), -1);
+    setupFront(t, status.empty() ? nullptr : status.c_str(), warn, -1);
     return ret;
 }
 
