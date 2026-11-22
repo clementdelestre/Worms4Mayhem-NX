@@ -4,11 +4,22 @@ services:
     image: ghcr.io/clementdelestre/worms4nx-server:latest
     restart: unless-stopped
     init: true  # the scratch binary ignores SIGTERM as PID 1
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    pids_limit: 64
+    logging:
+      options: { max-size: 10m, max-file: "3" }
     networks: [traefik]
     labels:
       traefik.enable: "true"
       traefik.tcp.routers.worms.entrypoints: worms
       traefik.tcp.routers.worms.rule: HostSNI(`*`)
+      traefik.tcp.routers.worms.middlewares: worms-conn
+      # per source IP; 8 = a full room of consoles behind one home NAT
+      traefik.tcp.middlewares.worms-conn.inflightconn.amount: "8"
       traefik.tcp.services.worms.loadbalancer.server.port: "7777"
 
 networks:
