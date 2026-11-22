@@ -1,0 +1,22 @@
+[
+    {
+        "UpdateStageName": "Server Download",
+        "UpdateSourcePlatform": "Linux",
+        "UpdateSourceArch": "x86_64",
+        "UpdateSource": "GithubRelease",
+        "UpdateSourceArgs": "clementdelestre/Worms4Mayhem-NX",
+        "UpdateSourceData": "worms4nx-server-linux-x86_64",
+        "UpdateSourceVersion": "server-latest",
+        "UpdateSourceTarget": "{{$FullBaseDir}}",
+        "UnzipUpdateSource": false,
+        "OverwriteExistingFiles": true,
+        "SkipOnFailure": false
+    },
+    {
+        "UpdateStageName": "Set Executable Flag",
+        "UpdateSourcePlatform": "Linux",
+        "UpdateSource": "SetExecutableFlag",
+        "UpdateSourceArgs": "{{$FullBaseDir}}worms4nx-server-linux-x86_64",
+        "SkipOnFailure": false
+    }
+]

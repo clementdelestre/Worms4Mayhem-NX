@@ -11,6 +11,10 @@ docker build -t worms4nx-server . && docker run -p 7777:7777 worms4nx-server
 docker compose up -d                       # VPS: ghcr image behind Traefik (entrypoint `worms` on :7777)
 ```
 
+Each push to main also publishes the static binary `worms4nx-server-linux-x86_64` on the `server-latest`
+release, and copies `amp/` to the `amp-templates` branch. In AMP: Configuration → Instance Deployment →
+add the repository `clementdelestre/Worms4Mayhem-NX:amp-templates`, Fetch, then create a Worms4NX instance.
+
 C++ interop check (real sim, two clients through the server):
 
 ```sh
