@@ -14,4 +14,5 @@ if [ ! -d "$D" ]; then
     git -C "$D" checkout -q FETCH_HEAD
     for p in tools/patches/raylib-nx-*.patch; do git -C "$D" apply "../../$p"; done
 fi
+mkdir -p "$D/out/nx"
 make -C "$D/src" PLATFORM=PLATFORM_NX RAYLIB_RELEASE_PATH=../out/nx CUSTOM_CFLAGS=-DNX_DISABLE_GAMEPAD_EMULATION -j"$(nproc)"
