@@ -31,9 +31,13 @@ jobs:
             || gh release create server-latest --prerelease --target "$GITHUB_SHA" --title "Server (latest main)" --notes "Built from main by the server workflow."
           gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/server-latest" -f sha="$GITHUB_SHA" -F force=true >/dev/null
           gh release upload server-latest worms4nx-server-linux-x86_64 --clobber
-          cd server/amp && git init -q -b amp-templates && git add . \
-            && git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -qm "AMP template from $GITHUB_SHA" \
-            && git push -qf "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" HEAD:amp-templates
+          # Append-only: AMP pulls its clone of the branch, so a rewritten history is never picked up.
+          url="https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY"
+          git clone -q --depth 1 -b amp-templates "$url" amp-branch || git init -q -b amp-templates amp-branch
+          find amp-branch -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp server/amp/* amp-branch/
+          cd amp-branch && git add -A
+          git diff --cached --quiet || { git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -qm "AMP template from $GITHUB_SHA" && git push -q "$url" HEAD:amp-templates; }
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
