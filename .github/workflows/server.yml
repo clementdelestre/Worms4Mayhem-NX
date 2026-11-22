@@ -1,0 +1,37 @@
+name: server
+
+on:
+  push:
+    branches: [main]
+    paths: [server/**, .github/workflows/server.yml]
+  pull_request:
+    paths: [server/**, .github/workflows/server.yml]
+  workflow_dispatch:
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --locked
+        working-directory: server
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: server
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/worms4nx-server:latest
+            ghcr.io/${{ github.repository_owner }}/worms4nx-server:${{ github.sha }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

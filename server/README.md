@@ -8,6 +8,7 @@ reconnects and compares end-of-turn checksums.
 cargo run --release -- 0.0.0.0:7777        # or W4NX_BIND=0.0.0.0:7777; default 0.0.0.0:7777
 cargo test                                 # lobby, start, relay, desync, reconnect replay
 docker build -t worms4nx-server . && docker run -p 7777:7777 worms4nx-server
+docker compose up -d                       # VPS: ghcr image behind Traefik (entrypoint `worms` on :7777)
 ```
 
 C++ interop check (real sim, two clients through the server):
