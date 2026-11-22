@@ -158,7 +158,8 @@ impl State {
         });
         let p = self.players.get_mut(&id).unwrap();
         p.conn = conn;
-        p.tx = Some(tx.clone());
+        // AMP counts players from these two lines (server/amp Console.UserJoinRegex / UserLeaveRegex).
+        if p.tx.replace(tx.clone()).is_none() { println!("player joined: #{id} {}", p.name.escape_debug()); }
         let (token, room) = (p.token, p.room);
         self.send(id, &W::new(WELCOME).u32(id).u64(token).done());
         if let Some(rid) = room {
@@ -339,6 +340,7 @@ impl State {
         let Some(p) = self.players.get_mut(&id) else { return };
         if p.conn != conn { return; } // a newer connection took this player over
         p.tx = None;
+        println!("player left: #{id} {}", p.name.escape_debug());
         match p.room {
             Some(rid) if self.rooms[&rid].start.is_some() => self.after_change(rid),
             _ => { self.leave(id); self.players.remove(&id); }
