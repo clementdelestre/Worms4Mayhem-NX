@@ -1638,14 +1638,14 @@ const char *wormName(const GameConfig &c, int team, int i) {  // the team's own 
 // ---------------------------------------------------------------- frontend
 
 #ifdef __SWITCH__
-static bool swkbd(std::string &s, const char *hint) {
+static bool swkbd(std::string &s, const char *hint, size_t maxLen) {
     SwkbdConfig kbd;
-    char out[32] = "";
+    char out[256] = "";
     if (R_FAILED(swkbdCreate(&kbd, 0))) return false;
     swkbdConfigMakePresetDefault(&kbd);
     swkbdConfigSetInitialText(&kbd, s.c_str());
     swkbdConfigSetGuideText(&kbd, hint);
-    swkbdConfigSetStringLenMax(&kbd, 20);
+    swkbdConfigSetStringLenMax(&kbd, maxLen);
     Result rc = swkbdShow(&kbd, out, sizeof out);
     swkbdClose(&kbd);
     if (R_FAILED(rc) || !out[0] || s == out) return false;
@@ -1667,12 +1667,12 @@ static void controllerApplet() {
 }
 #endif
 
-bool Frontend::edit(std::string &s, const char *hint) {
+bool Frontend::edit(std::string &s, const char *hint, size_t maxLen) {
 #ifdef __SWITCH__
-    return swkbd(s, hint);
+    return swkbd(s, hint, maxLen);
 #else
     (void)hint;
-    editing = &s;
+    editing = &s, editMax = maxLen;
     while (GetCharPressed()) {}
     return false;
 #endif
@@ -1777,7 +1777,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
     if (editing) {
         for (int c = GetCharPressed(); c; c = GetCharPressed()) simText.push_back((char)(c < 256 ? c : 0));
         for (char c : simText)
-            if (c >= 32 && editing->size() < 20) editing->push_back(c), Audio::play(Audio::Sfx::FeType);
+            if (c >= 32 && editing->size() < editMax) editing->push_back(c), Audio::play(Audio::Sfx::FeType);
         simText.clear();
         if (IsKeyPressed(KEY_BACKSPACE) && !editing->empty()) editing->pop_back(), Audio::play(Audio::Sfx::FeType);
         if (IsKeyPressed(KEY_ENTER) || IsGamepadButtonPressed(editPad, A)) editing = nullptr, Audio::play(Audio::Sfx::FeClick);
@@ -1896,6 +1896,10 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         row = clampWrap(row + dy, n);
         heading(tr("FETXT.Options", "Options", "Options"), 640, 40, 60);
         popup({230, 150, 820, 420});
+        // a typed "host:port" sets the port too (the D-pad steps it by 1)
+        size_t colon = host.rfind(':');
+        if (!typing && colon != std::string::npos && colon + 1 < host.size() && host.find_first_not_of("0123456789", colon + 1) == std::string::npos)
+            port = Clamp(atoi(host.c_str() + colon + 1), 1, 65535), host.resize(colon);
         std::string portS = TextFormat("%d", port);
         const char *labels[n] = {tr(nullptr, "Player name", "Nom du joueur"), tr(nullptr, "Server", "Serveur"), tr(nullptr, "Music", "Musique"), tr("FETXT.Language", "Language", "Langue")};
         const std::string vals[n] = {name, host + ":" + portS, music ? tr("FETXT.On", "On", "Oui") : tr("FETXT.Off", "Off", "Non"), language ? "Français" : "English"};
@@ -1910,7 +1914,7 @@ Frontend::Action Frontend::frame(GameConfig &cfg, const std::vector<std::string>
         if (row == 2 && (dx || ok)) music = !music, Audio::music(music, nullptr, true);
         if (row == 3 && (dx || ok)) language = !language, SaveFileText(DATA_DIR "lang.txt", (char *)(language ? "fr\n" : "en\n"));
         if (ok && row == 0) edit(name, "Player name");
-        if (ok && row == 1) edit(host, "Server address");
+        if (ok && row == 1) edit(host, "Server address (host:port)", 69);  // host up to 63 (server.txt) + ":65535"
         if (typing) hints({{nullptr, "Enter", "Done"}, {nullptr, "Backspace", "Delete"}});
         else if (row == 1) hints({{"A", "Enter", "Edit address"}, {"D-pad", "Left/Right", "Port"}, {"B", "Esc", "Save & back"}});
         else hints({{"A", "Enter", row >= 2 ? tr(nullptr, "Toggle", "Changer") : tr(nullptr, "Edit", "Modifier")}, {"B", "Esc", tr(nullptr, "Save & back", "Enregistrer")}});

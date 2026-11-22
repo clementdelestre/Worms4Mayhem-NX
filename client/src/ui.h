@@ -110,6 +110,7 @@ private:
     void menu(const MenuItem *items, int n, int &sel, int dy, float t, bool live = true);  // live: animate + take input
     bool online = false, lan = false, loaded = false, music = true, layout = false;  // layout: Controls shows the pad diagram  // online: network setup (LAN or server)
     std::string *editing = nullptr;  // desktop text entry target
+    size_t editMax = 20;
     Barracks barracks;               // the saved teams (teams.txt), loaded by loadSetup
     Lobby lobby;                     // the match being set up (SetupTeams / SetupMap / SetupRules): local, or a view of net->lobby
     std::vector<GameConfig::Team> myTeams;  // network: this console's teams, with their local pads; sent as TEAMS
@@ -185,7 +186,7 @@ private:
     void loadTeams();
     void loadSetup(GameConfig &cfg, const std::vector<std::string> &maps);
     void saveSetup(const GameConfig &cfg) const;
-    bool edit(std::string &s, const char *hint);  // true when s changed (Switch: swkbd, desktop: starts inline entry)
+    bool edit(std::string &s, const char *hint, size_t maxLen = 20);  // true when s changed (Switch: swkbd, desktop: starts inline entry)
     // Wormpot slot machine (3 reels) and Weapon Factory (custom_weapons.json, sent to the room in Start)
     int reel = 0, spinTo[3] = {}, facSel = 0;
     // the Weapon Factory editor (WXD.EditWeapon / WXD.BackupWeapon): facIndex the weapon in customs (-1 new), facFocus the item, facPage its list page,
